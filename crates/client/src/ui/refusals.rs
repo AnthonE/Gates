@@ -39,12 +39,26 @@ pub const CONNECT: [&str; 3] = [
 ];
 
 /// `sim_core::craft`'s `REFUSE_*: u32`.
-pub const CRAFT: [&str; 5] = [
+pub const CRAFT: [&str; 6] = [
     "no such recipe",
     "bad count",
     "needs a station",
     "queue full",
     "missing ingredients",
+    // Not "no such recipe": the recipe exists and the player can see it,
+    // which is exactly why this reason is its own code (research v0). The
+    // sentence names the verb that fixes it, because a refusal a player
+    // cannot act on is a refusal that reads as a bug.
+    "not researched — take one to a research table",
+];
+
+/// `sim_core::research`'s `REFUSE_R_*: u32`.
+pub const RESEARCH: [&str; 5] = [
+    "no research table in reach",
+    "nothing in that slot",
+    "that cannot be researched",
+    "already known",
+    "not enough obol",
 ];
 
 /// `sim_core::build`'s `REFUSE_B_*: u32` — a build, an upgrade or a repair
@@ -121,6 +135,11 @@ pub fn craft(code: u8) -> String {
     text(&CRAFT, code as u32)
 }
 
+/// Why the research was turned down.
+pub fn research(code: u8) -> String {
+    text(&RESEARCH, code as u32)
+}
+
 /// Why the build, upgrade or repair was turned down.
 pub fn build(code: u8) -> String {
     text(&BUILD, code as u32)
@@ -149,6 +168,13 @@ mod tests {
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
         src.lines()
             .filter(|l| l.trim_start().starts_with(&format!("pub const {prefix}")))
+            // `…_MAX` names the ledger rather than sitting in it — it is the
+            // highest live reason, restated so the wire's field can be
+            // bounded against a constant instead of a literal. Counting it
+            // would demand a sentence for a code no sim ever emits, which
+            // is the opposite of what this gate is for. Same exemption the
+            // protocol's domain table spells as `exempt: &["MAX"]`.
+            .filter(|l| !l.contains(&format!("{prefix}MAX")))
             .count()
     }
 
@@ -162,6 +188,12 @@ mod tests {
                 "REFUSE_",
                 CRAFT.len(),
                 "CRAFT",
+            ),
+            (
+                "crates/sim-core/src/research.rs",
+                "REFUSE_R_",
+                RESEARCH.len(),
+                "RESEARCH",
             ),
             (
                 "crates/sim-core/src/build.rs",

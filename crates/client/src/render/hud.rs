@@ -656,6 +656,7 @@ pub fn feedback(
             super::feed::Refused::Craft => crate::ui::refusals::craft(code),
             super::feed::Refused::Build => crate::ui::refusals::build(code),
             super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
+            super::feed::Refused::Research => crate::ui::refusals::research(code),
         });
     }
     // Knocks and grants (lock v1). A knock is broadcast, so this fires

@@ -286,6 +286,21 @@ pub const EV_KNOCK: u8 = 31;
 /// codes and a client cannot mistake silence for a grant.
 pub const EV_AUTH: u8 = 32;
 
+/// EV_RESEARCH: a = the player who learned it, b = recipe index, c = the
+/// coin burned. **Own-fact** — a blueprint is personal (`research.rs`), so
+/// nobody else's client has any use for it and broadcasting what a rival
+/// has unlocked would be handing out their tech level for free.
+///
+/// The cost rides `c` rather than being looked up, because it is what the
+/// player just paid and the table can change under a shard: an ack that
+/// re-derived the price would tell them a number they were not charged.
+pub const EV_RESEARCH: u8 = 33;
+/// EV_RESEARCH_REFUSED: a = the player who asked, b = a
+/// `research::REFUSE_R_*` reason. Own-fact, `EV_CRAFT_REFUSED`'s shape
+/// exactly: a verb that refuses says why, in an integer, to the one hand
+/// that pressed.
+pub const EV_RESEARCH_REFUSED: u8 = 34;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -293,7 +308,7 @@ pub const EV_AUTH: u8 = 32;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_AUTH;
+pub const EV_MAX: u8 = EV_RESEARCH_REFUSED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -427,6 +442,11 @@ pub struct Player {
     pub jobs: [CraftJob; CRAFT_QUEUE],
     /// Tick the head job's current unit completes at; 0 = idle.
     pub craft_done_at: u64,
+    /// Blueprints this player has researched: bit `i` = recipe `i`
+    /// (research.rs). Sim state, saved with the player, and the reason
+    /// `Player` carries a mask rather than a set — one shift on the craft
+    /// path, nothing to iterate, nothing to allocate.
+    pub known: u64,
     /// Hit points. A join grants `CombatContent::player_hp`, so inert
     /// content leaves this 0 and nothing can be killed (combat.rs).
     pub hp: u16,
@@ -519,6 +539,7 @@ impl Default for Player {
             ws_hits: 0,
             jobs: [CraftJob::default(); CRAFT_QUEUE],
             craft_done_at: 0,
+            known: 0,
             hp: 0,
             hp_max: 0,
             deaths: 0,
@@ -630,6 +651,15 @@ pub enum Command {
         id: u32,
         recipe: u16,
         count: u16,
+    },
+    /// Learn the blueprint for whatever is in inventory `slot`, at a
+    /// research table in reach, paying the row's coin (research.rs).
+    /// The slot is the sender's claim and the sim is the verdict: a forged
+    /// index, an empty hand and a stack of wood all land on the same
+    /// announced refusal, exactly as `Consume`'s does.
+    Research {
+        id: u32,
+        slot: u8,
     },
     /// Cancel the queue job at `index`, refunding its remaining inputs.
     CraftCancel {
@@ -833,6 +863,9 @@ pub struct World {
     /// inert default leaves every fire cold, which is the game that
     /// existed before the module.
     pub cook: crate::oven::CookContent,
+    /// Baked research rules (research.rs). Construction input, like every
+    /// other content table; `EMPTY` teaches nothing.
+    pub research: crate::research::ResearchContent,
     /// Baked melee rows + max hp (combat.rs). Construction input too; the
     /// inert default leaves the world unable to hurt anyone.
     pub combat: CombatContent,
@@ -959,6 +992,7 @@ impl World {
             build: BuildContent::EMPTY,
             deploy: DeployContent::EMPTY,
             cook: crate::oven::CookContent::EMPTY,
+            research: crate::research::ResearchContent::EMPTY,
             combat: CombatContent::EMPTY,
             backpack: BackpackContent::EMPTY,
             survival: SurvivalContent::EMPTY,
@@ -1111,7 +1145,7 @@ impl World {
     /// only a corpse may send, and `Input`, which is the client's own
     /// frame and keeps flowing so prediction and the server agree about a
     /// body that is standing still (the tick zeroes what it acts on).
-    fn live_slot_of(&self, id: u32) -> Option<usize> {
+    pub fn live_slot_of(&self, id: u32) -> Option<usize> {
         self.slot_of(id).filter(|&s| !self.players[s].dead)
     }
 
@@ -1795,6 +1829,18 @@ impl World {
                         &mut self.players[slot],
                         recipe,
                         count,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::Research { id, slot } => {
+                if let Some(s) = self.live_slot_of(id) {
+                    crate::research::research(
+                        &self.research,
+                        &self.deploy,
+                        &self.deploys,
+                        &mut self.players[s],
+                        slot,
                         &mut self.events,
                     );
                 }
@@ -2597,11 +2643,19 @@ impl World {
                 sb[2..4].copy_from_slice(&s.count.to_le_bytes());
                 h.update(&sb);
             }
-            let mut cb = [0u8; 8 + CRAFT_QUEUE * 4];
+            let mut cb = [0u8; 16 + CRAFT_QUEUE * 4];
             cb[0..8].copy_from_slice(&p.craft_done_at.to_le_bytes());
+            // The blueprint mask (research v0). It belongs here for the
+            // reason `[backpack]`'s ladder had to reach `canon::hash`, one
+            // layer over: a `Command::Research` mutates it, and what it
+            // changes is which craft requests the sim will honour from
+            // then on. Two replays of one WAL that disagreed about a
+            // player's blueprints would diverge on the first gated craft
+            // — silently, because every other field still matched.
+            cb[8..16].copy_from_slice(&p.known.to_le_bytes());
             for (j, job) in p.jobs.iter().enumerate() {
-                cb[8 + j * 4..8 + j * 4 + 2].copy_from_slice(&job.recipe.to_le_bytes());
-                cb[8 + j * 4 + 2..8 + j * 4 + 4].copy_from_slice(&job.remaining.to_le_bytes());
+                cb[16 + j * 4..16 + j * 4 + 2].copy_from_slice(&job.recipe.to_le_bytes());
+                cb[16 + j * 4 + 2..16 + j * 4 + 4].copy_from_slice(&job.remaining.to_le_bytes());
             }
             h.update(&cb);
         }

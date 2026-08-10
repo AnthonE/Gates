@@ -20,7 +20,7 @@ use crate::{
 use sim_core::backpack::BackpackRec;
 use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_N, MAT_METAL, SHAPE_ROOF};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_FURNACE};
-use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_LOCK, PLACE_DOOR};
+use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_RESEARCH, PLACE_DOOR};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
 use sim_core::limits::{
@@ -186,7 +186,20 @@ const SUB_AUTH: u32 = 43;
 /// probe of a **live** code — it caught it here only because the new
 /// decoder arm rejected its all-zero payload, which is luck, not a gate.
 /// Deriving the probe from this constant is what makes it stay a probe.
-const SUB_MAX: u32 = SUB_AUTH;
+/// A blueprint learned (research v0). Own-fact, `SUB_AUTH`'s posture:
+/// what a rival has unlocked is their tech level and nobody else's
+/// business.
+const SUB_RESEARCH: u32 = 44;
+/// A research request bounced, with its `research::REFUSE_R_*` reason.
+const SUB_RESEARCH_REFUSED: u32 = 45;
+/// The whole known-blueprint mask, restated. Sent on join and on any
+/// change rather than only as a delta, for the reason `structures.rs`
+/// reads the mirror rather than the deltas: a client that missed one
+/// `SUB_RESEARCH` would grey a recipe the player has paid for, forever,
+/// with no event left to correct it. Sixty-four bits is cheaper than that
+/// failure and it makes the state unloseable by construction.
+const SUB_KNOWN: u32 = 46;
+const SUB_MAX: u32 = SUB_KNOWN;
 /// And the field must hold it. A subtype declared past `SUB_BITS` would
 /// truncate on the way out and decode as a *different, live* code — the
 /// worst shape of wire drift there is, since both ends would agree on
@@ -255,6 +268,10 @@ const CATALOG_TOTAL_BITS: u32 = 7;
 const CATALOG_COUNT_BITS: u32 = 4;
 const NAME_LEN_BITS: u32 = 5;
 const CRAFT_Q_COUNT_BITS: u32 = 3;
+/// A `research::REFUSE_R_*` reason: five values today, and the decoder
+/// range-checks rather than trusting the width — the `BAG_GONE_BITS`
+/// posture.
+const RESEARCH_REFUSE_BITS: u32 = 3;
 const RECIPE_TOTAL_BITS: u32 = 7;
 const RECIPE_COUNT_BITS: u32 = 3;
 /// Craft time crosses as raw ticks (the value the sim runs), not seconds
@@ -278,9 +295,12 @@ const DEPLOY_COSTS_BITS: u32 = 3;
 const DEPLOY_SYNC_COUNT_BITS: u32 = 5;
 const DEPLOY_DEFS_TOTAL_BITS: u32 = 5;
 const DEPLOY_DEFS_COUNT_BITS: u32 = 4;
-/// Three bits, and `ARCH_LOCK` = 7 is now the last value one holds — a
-/// ninth archetype costs a width bump and a `PROTO_VER` turn.
-const ARCH_BITS: u32 = 3;
+/// Widened 3 → 4 in wire v31: `ARCH_RECYCLER` = 8 is the ninth archetype
+/// (recycler v0) and three bits held exactly eight. Seven of the sixteen
+/// values are now forgeable, so the decoder range-checks the field — the
+/// same shape `PLACEMENT_BITS` took one version earlier, and for the same
+/// reason: a width with slack is a width that has to be policed.
+const ARCH_BITS: u32 = 4;
 /// Widened 2 → 3 in wire v28: `PLACE_DOOR` is the fifth placement class
 /// (lock v1) and two bits held exactly four. Three of the eight values
 /// are now forgeable, so the decoder range-checks the field, which two
@@ -399,6 +419,15 @@ pub enum EventMsg {
     /// One craft unit completed: `added` units of `item` landed (0 = full
     /// inventory — the loss is announced). The toast; `Inv` is the truth.
     CraftDone { item: u16, added: u16 },
+    /// A blueprint was learned: `recipe` is now craftable by this player,
+    /// and `cost` is what it actually burned (research.rs).
+    Research { recipe: u16, cost: u16 },
+    /// A research request bounced: `reason` is a
+    /// `sim_core::research::REFUSE_R_*` code.
+    ResearchRefused { reason: u8 },
+    /// Every blueprint this player knows, as a bitmask over recipe
+    /// indices. The whole mask, not a delta — see `SUB_KNOWN`.
+    Known { mask: u64 },
     /// A craft request bounced: `reason` is a `sim_core::craft::REFUSE_*`
     /// code (unknown values render as a generic refusal).
     CraftRefused { reason: u8 },
@@ -898,6 +927,36 @@ pub fn encode_event_craft_done(item: u16, added: u16, buf: &mut [u8]) -> Result<
     Ok(w.finish())
 }
 
+pub fn encode_event_research(recipe: u16, cost: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if recipe as usize >= MAX_RECIPES {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_RESEARCH)?;
+    w.write(recipe as u32, 16)?;
+    w.write(cost as u32, 16)?;
+    Ok(w.finish())
+}
+
+pub fn encode_event_research_refused(reason: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if reason as u32 > sim_core::research::REFUSE_R_MAX {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_RESEARCH_REFUSED)?;
+    w.write(reason as u32, RESEARCH_REFUSE_BITS)?;
+    Ok(w.finish())
+}
+
+pub fn encode_event_known(mask: u64, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_KNOWN)?;
+    // Two halves rather than a 64-bit write: `BitWriter::write` takes a
+    // `u32`, and splitting here keeps the one place that knows the mask is
+    // wider than the writer's word next to the one place that reassembles
+    // it.
+    w.write((mask & 0xFFFF_FFFF) as u32, 32)?;
+    w.write((mask >> 32) as u32, 32)?;
+    Ok(w.finish())
+}
+
 pub fn encode_event_craft_refused(reason: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_CRAFT_REFUSED)?;
     w.write(reason as u32, 8)?;
@@ -937,6 +996,11 @@ pub fn encode_event_recipes(
         w.write(def.out_count as u32, 8)?;
         w.write(def.ticks, RECIPE_TICKS_BITS)?;
         w.write(def.station as u32, STATION_BITS)?;
+        // One bit, and it has to cross: a client that did not know a
+        // recipe was locked would offer it, take the press, and be told
+        // "you have not learned this" by a server the player cannot see.
+        // The craft panel greys it instead (research v0).
+        w.write_bit(def.blueprint)?;
         w.write(def.n_inputs as u32, N_INPUTS_BITS)?;
         for &(item, per) in def.inputs.iter().take(def.n_inputs as usize) {
             w.write(item as u32, 16)?;
@@ -1243,7 +1307,7 @@ pub fn encode_event_deploy_defs(
     w.write(first as u32, DEPLOY_DEFS_TOTAL_BITS)?;
     w.write(count as u32, DEPLOY_DEFS_COUNT_BITS)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_LOCK || def.placement > PLACE_DOOR || def.hp == 0 {
+        if def.arch > ARCH_RESEARCH || def.placement > PLACE_DOOR || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS {
@@ -1977,6 +2041,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let out_count = r.read(8)? as u16;
                 let ticks = r.read(RECIPE_TICKS_BITS)?;
                 let station = r.read(STATION_BITS)? as u8;
+                let blueprint = r.read_bit()?;
                 let n_inputs = r.read(N_INPUTS_BITS)? as u8;
                 if out_count == 0
                     || ticks == 0
@@ -1995,6 +2060,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     out_count,
                     ticks,
                     station,
+                    blueprint,
                     n_inputs,
                     inputs,
                 };
@@ -2173,7 +2239,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let hp = r.read(16)? as u16;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_LOCK
+                if arch > ARCH_RESEARCH
                     || placement > PLACE_DOOR
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
@@ -2743,6 +2809,11 @@ mod tests {
                 out_count: 255,
                 ticks: 65_535 * sim_core::limits::TICK_HZ,
                 station: STATION_FURNACE,
+                // Set, because this is the worst-shape batch test and the
+                // bit is one more bit per row: a fixture that left it
+                // false would size the batch against a packet the game can
+                // actually send one bit wider (research v0).
+                blueprint: true,
                 n_inputs: MAX_RECIPE_INPUTS as u8,
                 inputs: [(u16::MAX, u16::MAX); MAX_RECIPE_INPUTS],
             };
@@ -2941,7 +3012,7 @@ mod tests {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
-        assert_eq!(took, 6, "fixture has 6 rows, all fit one batch");
+        assert_eq!(took, 8, "fixture has 8 rows, all fit one batch");
         match decode_event(&buf[..len]).unwrap() {
             EventMsg::DeployDefs {
                 total,
@@ -2949,19 +3020,24 @@ mod tests {
                 count,
                 rows,
             } => {
-                assert_eq!((total, first, count), (6, 0, 6));
+                assert_eq!((total, first, count), (8, 0, 8));
                 assert_eq!(rows[0], dc.defs[0], "decode rebuilds the sim row");
                 assert_eq!(rows[3], dc.defs[3]);
-                // The oven row (oven v0) and the code lock row (lock v1),
-                // the fixture's two newest and therefore the ones a batch
-                // walk would drop off the end.
+                // The oven row (oven v0), the code lock (lock v1), the
+                // recycler (recycler v0) and the research table (research
+                // v0) — the fixture's newest, and therefore the ones a
+                // batch walk would drop off the end. The last two carry
+                // archetypes that did not fit the old three-bit field, so
+                // this is where an `ARCH_BITS` left at 3 would surface.
                 assert_eq!(rows[4], dc.defs[4]);
                 assert_eq!(rows[5], dc.defs[5]);
+                assert_eq!(rows[6], dc.defs[6]);
+                assert_eq!(rows[7], dc.defs[7]);
             }
             other => panic!("wrong variant: {other:?}"),
         }
         assert_eq!(
-            encode_event_deploy_defs(&dc, 6, &mut buf),
+            encode_event_deploy_defs(&dc, 8, &mut buf),
             Err(WireError::Range),
             "cursor past the table refuses"
         );
@@ -3020,7 +3096,7 @@ mod tests {
         full.def_count = MAX_DEPLOY_DEFS as u16;
         for i in 0..MAX_DEPLOY_DEFS {
             full.defs[i] = DeployDef {
-                arch: (i % 7) as u8,
+                arch: (i % 10) as u8,
                 placement: (i % 4) as u8,
                 hp: u16::MAX,
                 item: u16::MAX,
@@ -3364,7 +3440,7 @@ mod tests {
 /// `test_protocol_golden` pins **layout**: which field, how wide, in what
 /// order. Every constant below is a *domain* — which values a field of
 /// already-fixed width is allowed to carry — and a domain can drift
-/// without moving one byte of layout. `sim-core` grows a seventh archetype
+/// without moving one byte of layout. `sim-core` grows a ninth archetype
 /// or a fourth death cause, the encoder's range check still reads the old
 /// bound, and the golden is green because the packet it pins never
 /// contained the new value. The only witness is `Err(Range)` at runtime,
@@ -3490,6 +3566,10 @@ mod wire_domains {
         Module {
             file: "persist.rs",
             src: include_str!("../../sim-core/src/persist.rs"),
+        },
+        Module {
+            file: "research.rs",
+            src: include_str!("../../sim-core/src/research.rs"),
         },
         Module {
             file: "pitch_lut.rs",
@@ -3697,6 +3777,18 @@ mod wire_domains {
             live_max: 2,
         },
         Domain {
+            what: "research refusal",
+            sim_site: "research.rs REFUSE_R_*",
+            wire_site: "RESEARCH_REFUSE_BITS",
+            home: "research.rs",
+            prefix: "pub const REFUSE_R_",
+            ty: ": u32 = ",
+            exempt: &["MAX"],
+            min_members: 5,
+            bits: RESEARCH_REFUSE_BITS,
+            live_max: 4,
+        },
+        Domain {
             what: "deploy archetype",
             sim_site: "deploy.rs ARCH_*",
             wire_site: "ARCH_BITS",
@@ -3704,9 +3796,9 @@ mod wire_domains {
             prefix: "pub const ARCH_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 8,
+            min_members: 10,
             bits: ARCH_BITS,
-            live_max: 7,
+            live_max: 9,
         },
         Domain {
             what: "deploy placement",
@@ -3908,7 +4000,7 @@ mod wire_domains {
     fn the_domain_table_states_its_own_coverage() {
         assert_eq!(
             DOMAINS.len(),
-            13,
+            14,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \

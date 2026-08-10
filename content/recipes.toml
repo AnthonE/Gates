@@ -217,6 +217,36 @@ inputs = [
     { item = "item.metal_frags", count = 50 },
 ]
 
+# The research table (research v0). Cheaper than the recycler and asking
+# for no salvage, deliberately: the sink must be standable-at before the
+# faucet is worth running, or a player banks coin with nowhere to spend it.
+[[recipe]]
+id = "recipe.research_table"
+output = "item.research_table"
+count = 1
+station = "workbench1"
+seconds = 20
+inputs = [
+    { item = "item.wood", count = 200 },
+    { item = "item.metal_frags", count = 75 },
+]
+
+# The recycler (recycler v0). Priced between the furnace (275 units of
+# raw + lowgrade) and the large box, and it asks for **gears** on purpose:
+# the machine that makes salvage worth carrying is gated behind carrying
+# some. Two is a single barrel's luck, so it is a gate and not a grind.
+[[recipe]]
+id = "recipe.recycler"
+output = "item.recycler"
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+    { item = "item.wood", count = 200 },
+    { item = "item.gears", count = 2 },
+]
+
 [[recipe]]
 id = "recipe.box_large"
 output = "item.box_large"
@@ -247,6 +277,7 @@ inputs = [{ item = "item.cloth", count = 25 }]
 [[recipe]]
 id = "recipe.arrow_metal"
 output = "item.arrow_metal"
+blueprint = true
 count = 3
 station = "workbench1"
 seconds = 5
@@ -322,6 +353,7 @@ inputs = [{ item = "item.wood", count = 1 }]
 [[recipe]]
 id = "recipe.gunpowder"
 output = "item.gunpowder"
+blueprint = true
 count = 10
 station = "workbench1"
 seconds = 5
@@ -333,6 +365,7 @@ inputs = [
 [[recipe]]
 id = "recipe.revolver"
 output = "item.revolver"
+blueprint = true
 count = 1
 station = "workbench1"
 seconds = 60
@@ -356,6 +389,7 @@ inputs = [
 [[recipe]]
 id = "recipe.satchel_charge"
 output = "item.satchel_charge"
+blueprint = true
 count = 1
 station = "workbench1"
 seconds = 30
@@ -388,6 +422,7 @@ inputs = [{ item = "item.metal_frags", count = 200 }]
 [[recipe]]
 id = "recipe.armor_roadsign_body"
 output = "item.armor_roadsign_body"
+blueprint = true
 count = 1
 station = "workbench1"
 seconds = 30
@@ -400,6 +435,7 @@ inputs = [
 [[recipe]]
 id = "recipe.medkit"
 output = "item.medkit"
+blueprint = true
 count = 1
 station = "workbench1"
 seconds = 20

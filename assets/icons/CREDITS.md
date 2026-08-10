@@ -51,8 +51,11 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `metal_pickaxe.png` | `delapouite/mining-helmet` |
 | `metal_spear.png` | `lorc/barbed-spear` |
 | `mushrooms.png` | `delapouite/mushrooms` |
+| `obol.png` | `delapouite/two-coins` |
 | `pistol_round.png` | `delapouite/heavy-bullets` |
 | `raw_meat.png` | `delapouite/steak` |
+| `recycler.png` | `lorc/recycle` |
+| `research_table.png` | `lorc/scroll-unfurled` |
 | `revolver.png` | `delapouite/revolver` |
 | `roadsign_vest.png` | `lorc/armor-vest` |
 | `rock.png` | `john-redman/rock` |

@@ -36,7 +36,7 @@ use protocol::event::WireBag;
 use sim_core::build::BUILD_CELL_M;
 use sim_core::deploy::{
     box_key, DeployContent, DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
-    ARCH_HEARTH,
+    ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH,
 };
 
 pub use sim_core::build::BUILD_REACH_M as REACH_M;
@@ -62,6 +62,18 @@ pub enum Verb {
     /// A fire or a furnace — one verb for both, because they are one
     /// thing in the sim (`sim-core/oven.rs`) and the prompt names a KIND.
     Fire,
+    /// A recycler. The same sim class as the two above and deliberately
+    /// **not** the same verb: the prompt names a KIND, and "FIRE" over a
+    /// machine that burns nothing would teach the wrong noun for the
+    /// second key. What it shares with `Fire` is the shape of the
+    /// interaction — a container with a switch — and that shows up as the
+    /// two arms agreeing everywhere the code asks a question about
+    /// containers, never as one variant doing both jobs.
+    Recycler,
+    /// A research table (research v0). The one verb here that acts on what
+    /// is in your HAND rather than on what is at the address — the table
+    /// holds nothing — so the prompt names the held item and `E` spends it.
+    Research,
 }
 
 impl Verb {
@@ -89,6 +101,8 @@ impl Verb {
             // forbids. The rung exists so the order is total, not because
             // anything can reach it.
             Verb::Fire => 5,
+            Verb::Recycler => 6,
+            Verb::Research => 7,
         }
     }
 
@@ -102,6 +116,8 @@ impl Verb {
             Verb::Box => "BOX",
             Verb::Hearth => "HEARTH",
             Verb::Fire => "FIRE",
+            Verb::Recycler => "RECYCLER",
+            Verb::Research => "RESEARCH TABLE",
         }
     }
 }
@@ -201,6 +217,18 @@ impl Pick {
                 "[E] OPEN FIRE  ·  [C] {}",
                 if self.lit { "PUT OUT" } else { "LIGHT" }
             ),
+            // The same two keys and a different pair of words, because a
+            // recycler is switched rather than lit — "LIGHT" over a
+            // machine with no fire in it is the prompt lying about the
+            // mechanism.
+            Verb::Recycler => format!(
+                "[E] OPEN RECYCLER  ·  [C] {}",
+                if self.lit { "STOP" } else { "START" }
+            ),
+            // Not "OPEN": there is nothing to open, and a prompt that
+            // promised a panel would be teaching the wrong gesture. What
+            // `E` does here is spend the held item, so the prompt says so.
+            Verb::Research => "[E] RESEARCH HELD ITEM".to_string(),
             v => format!("[E] OPEN {}", v.label()),
         }
     }
@@ -327,6 +355,8 @@ pub fn resolve(
             ARCH_BOX => Verb::Box,
             ARCH_HEARTH => Verb::Hearth,
             ARCH_FIRE | ARCH_FURNACE => Verb::Fire,
+            ARCH_RECYCLER => Verb::Recycler,
+            ARCH_RESEARCH => Verb::Research,
             _ => continue,
         };
         // A box is addressed by its packed cell. `box_key(0, 0, 0)` is 0 and
@@ -335,7 +365,7 @@ pub fn resolve(
         // one this client should not have, so it is not offered at all —
         // better than a prompt for a box the key would decline to open.
         let mut handle = 0u32;
-        if verb == Verb::Box || verb == Verb::Fire {
+        if verb == Verb::Box || verb == Verb::Fire || verb == Verb::Recycler {
             handle = box_key(rec.cx, rec.cz, rec.level);
             if handle == 0 {
                 continue;
