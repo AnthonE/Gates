@@ -585,6 +585,14 @@ hangup through the menu's own teardown. Remaining:
    `DECISIONS.md` §open and an operator act: serve `servers.json`, set
    `servers.url` in scry's `data/launcher/gates.manifest.json`. Until then
    both the menu and the launcher's Servers window are correctly dark.
+   ⚠ **Measured 2026-08-10: "serve it" has no route to serve it from.**
+   `ci/shardlist.py` prints `https://scry.moreright.xyz/depot/gates/servers.json`
+   and `/depot/` is not a `location` in `deploy/nginx/scry.moreright.xyz.conf`
+   — the only depot path there is `/games/gates/alpha/`, the deleted browser
+   client's. So this is two acts, not one: add the route, then the copy. The
+   scry-side manifest note now carries the same finding, and `servers.url`
+   stays null rather than pointing at a 404 — an error dialog on a game that
+   is running fine is worse than an honest "no shards published".
 2. **Player counts: the code is done end to end; what is left is operator
    acts.** A row may carry `status_url` and both readers poll it every
    `STATUS_POLL_SECS` (`DECISIONS.md` §open "shard status poll v0"); the
