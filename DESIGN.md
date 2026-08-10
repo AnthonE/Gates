@@ -115,7 +115,12 @@ between them. A player holding any coin is one swap from any other.
 OBOL plays the role scrap plays in Rust: the ground-truth currency of grind,
 trade, and progression — earned by play, spent in play, lootable in play.
 
-**Two states, and the whole design is the difference:**
+**Two states, and they are two different things wearing one name — read
+this before reading anything else about the coin** (operator, 2026-08-10:
+*"this isnt the same as the crypto coin u can cash out as"*). The carried
+half is an item and nothing more; the banked half is the claim rail. Only
+the second is redeemable, only the second stages (`ALPHA.md` §2), and
+conflating them once already shipped an inert currency for a day:
 
 | state | where it lives | can you lose it? |
 |---|---|---|
@@ -132,13 +137,25 @@ server holds no keys, mints nothing, and the on-chain supply it draws from
 is an operator-funded allotment on the scry side **(knob: allotment size and
 claim cadence — an operator act, not a game mechanic)**.
 
-**Faucets** (all in-world): salvage from barrels; recycler at the haven
-(feed it components → OBOL); a trickle from monument crates.
-**Sinks** (all burn against the shard ledger): blueprint research (the main
-sink, exactly scrap's job), recycler service fee, market-stall listing fee
-at the haven, and the bank terminal's deposit fee **(knob: default 2%)**.
-Banking costs a little so carrying stays rational; the fee burns so the
-house never earns from the game loop.
+**Faucets** (all in-world): salvage from barrels; the recycler (feed it
+components → OBOL); a trickle from monument crates. **Built**
+(`content/cooking.toml`, recycler v0) — the recycler is a placeable
+machine rather than a haven fixture for now, which is the one thing that
+paragraph promises and the world does not yet do.
+
+**Sinks.** The distinction the rest of this section turns on applies here
+too, and this line used to blur it: *carried* sinks burn an item stack in
+your pocket, and only the bank terminal's fee touches a ledger.
+
+- **Blueprint research — the main sink, exactly scrap's job. Built**
+  (research v0): a sample plus coin at a research table, per player,
+  saved. Carried, not banked.
+- Recycler service fee and the haven's market-stall listing fee: unbuilt,
+  both carried.
+- The bank terminal's deposit fee **(knob: default 2%)**: the one that
+  burns against the shard ledger, and it arrives with the terminal at A2.
+  Banking costs a little so carrying stays rational; the fee burns so the
+  house never earns from the game loop.
 
 **Player-to-player is free.** Players may trade anything for anything,
 including OBOL for a rifle. That is players trading with players — the
@@ -581,9 +598,12 @@ strangers can fight over a base with bows.
 **M2 — combat true.** Lag-comp ring + rewound raycasts, ballistic
 projectile step, T2 firearm + satchel, damage model by material tier.
 Exit: the netem profile (150 ms / 5% loss) feels fair on both ends.
-**M3 — OBOL.** Salvage → recycler → carried/banked split, bank terminal +
-fee burn, BP research sink, shard ledger + WAL settlement events, merkle
-export at wipe, wipe machinery end-to-end on a test shard.
+**M3 — OBOL.** Salvage → recycler and the BP research sink are **done**
+(2026-08-10), which is the carried half of this milestone: the coin is
+earned and spent in world, on shards nobody has to arm. What is left is
+the claim rail and everything that touches it — carried/banked split, bank
+terminal + fee burn, shard ledger + WAL settlement events, merkle export
+at wipe, wipe machinery end-to-end on a test shard.
 **M4 — the counter + the door.** Skin catalog, till verification
 (three-valued), entitlements by wallet, wallet-bind flow, first public
 shard, and the board's delivery: repo + playable link + a recorded round

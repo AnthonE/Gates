@@ -157,6 +157,12 @@ pub struct Row {
     /// dimmed — the reference greys an unaffordable recipe rather than
     /// hiding it, so the player can see what to go and get.
     pub affordable: u32,
+    /// Blueprint-gated and not yet learned (research v0). **Shown, not
+    /// hidden**, for `affordable`'s reason exactly: a recipe you cannot
+    /// craft yet is the thing that tells you what a research table is
+    /// for, and hiding it would make the whole verb invisible to a player
+    /// who has never seen one.
+    pub locked: bool,
 }
 
 /// Does this recipe belong in `cat`?
@@ -235,6 +241,7 @@ pub fn rows(
     catalog: &ItemCatalog,
     facts: &Facts,
     favs: &[u16],
+    known: u64,
     cat: Cat,
     query: &str,
     out: &mut Vec<Row>,
@@ -263,6 +270,10 @@ pub fn rows(
             out_count: def.out_count,
             station: def.station,
             affordable: affordable(def, inv),
+            // The sim's own predicate, imported rather than re-derived:
+            // one shift written once, so a client cannot disagree with the
+            // server about what a player knows.
+            locked: def.blueprint && !sim_core::research::knows(known, recipe),
         });
     }
 }

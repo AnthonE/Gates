@@ -172,6 +172,13 @@ pub const APPLIED2_CONT: u32 = 1 << 1;
 /// caveat: the charge you most need drawn is the one you did not plant.
 pub const APPLIED2_CHARGE: u32 = 1 << 2;
 
+/// Something about research landed: a blueprint learned, a refusal, or the
+/// known-mask restated (research v0). **One flag for all three**, the
+/// shape `APPLIED_CONSUME` takes: the reader's response to any of them is
+/// the same — re-read `known()` and drain the rings — so three bits would
+/// be three ways to spell one redraw.
+pub const APPLIED2_RESEARCH: u32 = 1 << 3;
+
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
 /// (`MAX_SLOT_LIVES` covers every slot a seed produces); a server-driven
@@ -684,6 +691,19 @@ pub struct ClientCore {
     craft_toasts: [(u16, u16); TOAST_RING],
     craft_toast_head: usize,
     craft_toast_len: usize,
+    /// Blueprints this client's player knows, as the server last stated
+    /// them (research v0). The **whole mask** every time, never a delta —
+    /// `SUB_KNOWN` says why: a dropped success would otherwise grey a
+    /// recipe the player paid for with no event left to correct it.
+    known: u64,
+    /// `(recipe, cost)` per blueprint learned, and the refusal reasons —
+    /// both drop-oldest and cosmetic, `craft_toasts`' posture exactly.
+    research_toasts: [(u16, u16); TOAST_RING],
+    research_toast_head: usize,
+    research_toast_len: usize,
+    research_refusals: [u8; REFUSAL_RING],
+    research_refusal_head: usize,
+    research_refusal_len: usize,
     refusals: [u8; REFUSAL_RING],
     refusal_head: usize,
     refusal_len: usize,
@@ -971,6 +991,13 @@ impl ClientCore {
             stock: [(0, 0); HEARTH_STOCK_ROWS],
             stock_count: 0,
             applied2: 0,
+            known: 0,
+            research_toasts: [(0, 0); TOAST_RING],
+            research_toast_head: 0,
+            research_toast_len: 0,
+            research_refusals: [0; REFUSAL_RING],
+            research_refusal_head: 0,
+            research_refusal_len: 0,
             events_applied: 0,
             event_errors: 0,
         }
@@ -1100,6 +1127,37 @@ impl ClientCore {
                 self.refusals[(self.refusal_head + self.refusal_len) % REFUSAL_RING] = reason;
                 self.refusal_len += 1;
                 flags |= APPLIED_CRAFT_REFUSED;
+            }
+            EventMsg::Known { mask } => {
+                self.known = mask;
+                self.applied2 |= APPLIED2_RESEARCH;
+            }
+            EventMsg::Research { recipe, cost } => {
+                if self.research_toast_len == TOAST_RING {
+                    self.research_toast_head = (self.research_toast_head + 1) % TOAST_RING;
+                    self.research_toast_len -= 1;
+                }
+                self.research_toasts
+                    [(self.research_toast_head + self.research_toast_len) % TOAST_RING] =
+                    (recipe, cost);
+                self.research_toast_len += 1;
+                // The mask is NOT set here, deliberately: `SUB_KNOWN`
+                // follows on the same tick and is the authority. Setting
+                // the bit locally would work right up until a content
+                // hotfix moved the recipe indices under a client that had
+                // been told one number and inferred another.
+                self.applied2 |= APPLIED2_RESEARCH;
+            }
+            EventMsg::ResearchRefused { reason } => {
+                if self.research_refusal_len == REFUSAL_RING {
+                    self.research_refusal_head = (self.research_refusal_head + 1) % REFUSAL_RING;
+                    self.research_refusal_len -= 1;
+                }
+                self.research_refusals
+                    [(self.research_refusal_head + self.research_refusal_len) % REFUSAL_RING] =
+                    reason;
+                self.research_refusal_len += 1;
+                self.applied2 |= APPLIED2_RESEARCH;
             }
             EventMsg::Recipes {
                 total,
@@ -1885,6 +1943,35 @@ impl ClientCore {
         self.chat_head = (self.chat_head + 1) % CHAT_RING;
         self.chat_len -= 1;
         Some(c)
+    }
+
+    /// Blueprints known, as the server last stated them. The craft panel
+    /// asks this per row; `sim_core::research::knows` is the one place the
+    /// shift is written, so nothing here re-implements it.
+    pub fn known(&self) -> u64 {
+        self.known
+    }
+
+    /// Oldest buffered `(recipe, cost)` learned.
+    pub fn pop_research_toast(&mut self) -> Option<(u16, u16)> {
+        if self.research_toast_len == 0 {
+            return None;
+        }
+        let t = self.research_toasts[self.research_toast_head];
+        self.research_toast_head = (self.research_toast_head + 1) % TOAST_RING;
+        self.research_toast_len -= 1;
+        Some(t)
+    }
+
+    /// Oldest buffered research refusal (`sim_core::research::REFUSE_R_*`).
+    pub fn pop_research_refusal(&mut self) -> Option<u8> {
+        if self.research_refusal_len == 0 {
+            return None;
+        }
+        let r = self.research_refusals[self.research_refusal_head];
+        self.research_refusal_head = (self.research_refusal_head + 1) % REFUSAL_RING;
+        self.research_refusal_len -= 1;
+        Some(r)
     }
 
     /// Oldest buffered craft refusal reason (`sim_core::craft::REFUSE_*`).

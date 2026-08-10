@@ -52,6 +52,28 @@ archetype = "workbench"
 placement = "foundation"
 hp = 400
 
+# The recycler (recycler v0): a container that converts without burning.
+# `placement = "any"` and hp 300 are the furnace's, because it is the
+# furnace's shape of object — a workbench-era converter you put down once
+# and feed — and a second set of numbers for the same silhouette would be
+# a distinction with nothing behind it. What separates the two is which
+# `cooking.toml` rows name them.
+[[deployable]]
+id = "item.recycler"
+archetype = "recycler"
+placement = "any"
+hp = 300
+
+# The research table (research v0). `foundation` like the workbench it sits
+# beside — a table is furniture for a base, not something you drop in a
+# field — and hp 400 is the workbench's, because they are the same object
+# to a raider: the thing that makes the base a workshop.
+[[deployable]]
+id = "item.research_table"
+archetype = "research"
+placement = "foundation"
+hp = 400
+
 [[deployable]]
 id = "item.lock_code"
 archetype = "lock"

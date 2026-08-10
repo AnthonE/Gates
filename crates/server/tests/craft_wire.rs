@@ -11,7 +11,7 @@ use client_core::core::{
 use protocol::{ActionMsg, ItemCatalog};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
-use sim_core::craft::{CraftContent, REFUSE_STATION};
+use sim_core::craft::{CraftContent, REFUSE_BLUEPRINT};
 use sim_core::gather::GatherContent;
 
 const SEED: u64 = 20_260_731;
@@ -175,7 +175,15 @@ fn craft_rides_the_wire() {
         "3 of item 0 refunded"
     );
 
-    // A station-gated recipe refuses with its reason, on the wire.
+    // A gated recipe refuses with its reason, on the wire.
+    //
+    // Fixture row 2 is gated **twice** — a station and a blueprint — and
+    // since research v0 the blueprint is what a player hears, because a
+    // station refusal would send someone who needs a research table back
+    // to the bench they are standing at (`craft::enqueue` states the
+    // order; `sim-core/tests/research.rs` asserts it both ways). What this
+    // test owns is the wire: a reason computed in the sim reaches the
+    // right client as the same integer.
     act(
         &mut core,
         0,
@@ -187,7 +195,7 @@ fn craft_rides_the_wire() {
     let flags = pump(&mut core, &stats, &mut clients);
     assert_ne!(flags[0] & APPLIED_CRAFT_REFUSED, 0, "refusal never arrived");
     let c0 = &mut clients[0].1;
-    assert_eq!(c0.pop_craft_refusal(), Some(REFUSE_STATION as u8));
+    assert_eq!(c0.pop_craft_refusal(), Some(REFUSE_BLUEPRINT as u8));
     assert_eq!(c0.jobs_count, 0, "refused request must not queue");
 
     // The bystander heard the recipe drip but none of the crafter's

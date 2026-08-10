@@ -52,14 +52,15 @@ pub use event::{
     encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
-    encode_event_hit, encode_event_inv, encode_event_knock, encode_event_move_refused,
-    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_removed, encode_event_respawn, encode_event_slot_change, encode_event_slot_sync,
-    encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
-    EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH,
-    DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES,
-    PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
+    encode_event_hit, encode_event_inv, encode_event_knock, encode_event_known,
+    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
+    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_research,
+    encode_event_research_refused, encode_event_respawn, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
+    encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH,
+    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
+    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -320,6 +321,26 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// like, and it is worth looking at: a diff here with more than one file in
 /// it would mean the layout moved after all.
 ///
+/// v31 — **the recycler** (recycler v0). One layout change and it is the
+/// expensive kind: `ARCH_BITS` widened 3 → 4, because `ARCH_RECYCLER` = 8
+/// is the ninth archetype and three bits held exactly eight. Every
+/// `SUB_DEPLOY_DEFS` row moved by a bit, both range checks moved to the new
+/// ceiling, and all 82 goldens regenerated. A v30 client against a v31
+/// server would read every deployable definition one bit short from the
+/// archetype onward — placement landing on hp, hp on the item id — so the
+/// handshake refusal is doing real work here rather than being a
+/// formality.
+///
+/// v32 — **research** (research v0). Three changes, none of them a width:
+/// `ACT_RESEARCH` = 17 is the eighteenth action and the first to spend one
+/// of the fifteen codes `ACT_DEMOLISH`'s bump bought; `SUB_RESEARCH`,
+/// `SUB_RESEARCH_REFUSED` and `SUB_KNOWN` are three new event subtypes
+/// (44–46 of sixty-four); and `SUB_RECIPES` grew **one bit** per row for
+/// `RecipeDef::blueprint`, which is the layout move that makes this a
+/// turn rather than an additive version. A v31 client would read a recipe
+/// row a bit short from `n_inputs` onward and offer a craft ladder whose
+/// ingredient lists are garbage.
+///
 /// v30 — **the code lock, the crew, and demolish**, landed in one turn
 /// because they merged from one branch (lock v1 + hearth crew v1 +
 /// demolish v1; `reference/DOORS.md` and `reference/BUILDING.md`). Five
@@ -353,7 +374,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// Fixtures are keyed `v30_*` — all renamed and every C→S action
 /// regenerated, plus the hello and the three door/deploy-carrying cases,
 /// plus three new: `v30_action_demolish`, `v30_knock` and `v30_auth`.
-pub const PROTO_VER: u16 = 30;
+pub const PROTO_VER: u16 = 32;
 
 /// Datagram kind field width.
 ///
@@ -655,8 +676,20 @@ const ACT_THROW: u32 = 15;
 /// stores** with a leading bit like `Repair` and `Throw`, and hanging it
 /// off the access verb would have made one action mean "who may" and
 /// "take it down" at once. The lane now has fifteen codes spare, which is
-/// where the price bought something: the next verb is free.
+/// where the price bought something: the next verb is free — and
+/// `ACT_RESEARCH` below is that verb, landed one version later at the cost
+/// of a subtype and no layout at all.
 const ACT_DEMOLISH: u32 = 16;
+/// Learn the blueprint for what is in inventory `slot`, at a research
+/// table in reach (wire v32, research v0). **The eighteenth action, and
+/// the first one that was free** — `ACTION_SUB_BITS` widened to 5 for
+/// `ACT_DEMOLISH` one version earlier and holds thirty-two, so this cost
+/// a subtype and not a layout.
+///
+/// Payload is the slot alone. The table is found by proximity the way a
+/// workbench is (`research.rs`), so there is no address to aim and nothing
+/// for the client to guess about which table it meant.
+const ACT_RESEARCH: u32 = 17;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -666,7 +699,7 @@ const ACT_DEMOLISH: u32 = 16;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_DEMOLISH;
+const ACT_MAX: u32 = ACT_RESEARCH;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -857,6 +890,11 @@ pub enum ActionMsg {
     /// wood, and a full pair of meters all come back as a consume-refused
     /// event rather than as a wire error.
     Consume { slot: u8 },
+    /// Learn the blueprint for what is in inventory `slot` (research.rs).
+    /// `Consume`'s shape exactly, and for the same reason: the slot is the
+    /// sender's claim and the sim is the verdict, so a forged index is a
+    /// refusal rather than a disconnect.
+    Research { slot: u8 },
     /// Drink from the water at your feet (survival.rs). **Payload-free
     /// for `Loot`'s reason, and a stronger one**: the only thing a drink
     /// acts on is the heightfield, which is a pure function of the seed
@@ -1007,6 +1045,17 @@ pub fn encode_action_drink(buf: &mut [u8]) -> Result<usize, WireError> {
 
 /// The eat verb. `slot` rides the inventory-slot width the event lane
 /// already uses, so the width itself is the range check.
+pub fn encode_action_research(slot: u8, buf: &mut [u8]) -> Result<usize, WireError> {
+    if slot as usize >= sim_core::limits::INV_SLOTS {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_RESEARCH, ACTION_SUB_BITS)?;
+    w.write(slot as u32, ACTION_SLOT_BITS)?;
+    Ok(w.finish())
+}
+
 pub fn encode_action_consume(slot: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if slot as usize >= sim_core::limits::INV_SLOTS {
         return Err(WireError::Range);
@@ -1465,6 +1514,13 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             ActionMsg::Consume { slot }
+        }
+        ACT_RESEARCH => {
+            let slot = r.read(ACTION_SLOT_BITS)? as u8;
+            if slot as usize >= sim_core::limits::INV_SLOTS {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Research { slot }
         }
         ACT_DRINK => ActionMsg::Drink,
         ACT_RESPAWN => ActionMsg::Respawn {
@@ -2309,13 +2365,16 @@ mod tests {
     /// that could not dodge, because it addresses two stores rather than
     /// asking an access question, so it paid the bump: five bits, every
     /// action message a bit longer, every C→S golden regenerated. The
-    /// count is **fifteen** now, and the next verb is free.
+    /// count was **fifteen** at v30, and `ACT_RESEARCH` spent the first
+    /// of them at v32 — which is the shape this assert exists to make
+    /// visible: a verb landing is supposed to move a number in a comment,
+    /// not slip in against a stale one.
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
-        assert_eq!(ACT_MAX, ACT_DEMOLISH);
+        assert_eq!(ACT_MAX, ACT_RESEARCH);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            15,
+            14,
             "the spare action codes moved — say so where the count is written"
         );
     }

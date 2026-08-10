@@ -236,10 +236,21 @@ const TICKS: u64 = 900;
 /// cannot both be right about it, so it is read fresh off the merged
 /// tree.
 ///
+/// Regenerated again at **research v0**, and this time for two causes
+/// that both belong in the number. The craft probe fixture's row 2 is
+/// blueprint-gated now, so a script that used to enqueue it is refused —
+/// a real behaviour change, deliberately chosen so the gate covers the
+/// refusal. And `Player::known` joined `state_hash`, which it had to:
+/// a `Command::Research` mutates it and what it changes is which craft
+/// requests the sim honours from then on, so a mask outside the hash
+/// would let two replays of one WAL diverge on the first gated craft
+/// with every other field still matching — `[backpack]`'s defect one
+/// layer over.
+///
 /// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
 /// this value was read off, which is the check that keeps a regenerated
 /// golden evidence rather than a shrug.
-const GOLDEN_FINAL_HASH: u64 = 0x7278_55C8_AA9A_A6D4;
+const GOLDEN_FINAL_HASH: u64 = 0x1C79_7791_1C59_CC18;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

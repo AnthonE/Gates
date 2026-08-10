@@ -134,7 +134,11 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// a file instead of a packet. The header check below is what makes a
 /// forgotten bump a loud refusal instead of a silent reinterpretation of
 /// somebody's inventory.
-pub const SAVE_FORMAT: u16 = 1;
+///
+/// **1 → 2 at research v0**: `PlayerSave` grew the blueprint mask, so the
+/// record went 260 → 268 bytes. There is no migrator by design — a save
+/// written by an older build is moved aside, which is what a wipe is.
+pub const SAVE_FORMAT: u16 = 2;
 
 /// Header size. Fixed so record `i` is at a computable offset.
 pub const SAVE_HEADER_BYTES: usize = 48;
@@ -825,7 +829,7 @@ mod tests {
     fn the_layout_is_the_size_the_header_declares() {
         assert_eq!(REC_SUM + 8, SAVE_RECORD_BYTES);
         assert_eq!(REC_SAVE, 64, "the save body's offset moved");
-        assert_eq!(SAVE_RECORD_BYTES, 260);
+        assert_eq!(SAVE_RECORD_BYTES, 268);
         let head = encode_header(7, 0xdead_beef);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,

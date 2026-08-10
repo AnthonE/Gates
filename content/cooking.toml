@@ -58,3 +58,93 @@ input = "item.cooked_meat"
 output = "item.burnt_meat"
 station = "fire"
 seconds = 20
+
+# --- the recycler -------------------------------------------------------
+#
+# `station = "recycler"` is the third converter (recycler v0). It burns
+# nothing, so no fuel row applies to it, and it is the first thing on the
+# island that pays you for something you did not farm: the coast road's
+# barrels drop components, and until now a gear was a crafting reagent for
+# two recipes and dead weight otherwise.
+#
+# **Several rows may share one input and they all fire together**, off one
+# slot timer — which is how a gear pays a material AND a coin on one pass
+# (the OBOL block below). The bake holds such a set to one `seconds` and
+# refuses two rows paying the same output (`validate::structural`).
+#
+# **The yields are ours, not the reference's, and that is a gap rather
+# than a choice.** `reference/RIPLIST.md` has no recycler row — nobody has
+# researched what theirs pays — so these are derived from our own anchor
+# instead: a component is 4 road-minutes (`balance.toml`
+# `component_minutes`) and metal ore farms at 30/min, so full farm parity
+# would be ~120 fragments a gear. That is refused deliberately: it would
+# make the road strictly better than the ore node and inverts the gradient
+# nodes exist to hold. These sit at ~15 seconds of mining instead — enough
+# that salvage is worth the pocket space, not enough to replace a pickaxe.
+# Knob, PROPOSED, `DECISIONS.md` §open "recycler v0".
+#
+# 5 s each: fast enough that a full hopper clears while you sort the rest
+# of the run, slow enough that you put it down and do something else.
+[[cook]]
+input = "item.gears"
+output = "item.metal_frags"
+count = 8
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.rope"
+output = "item.cloth"
+count = 5
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.tarp"
+output = "item.cloth"
+count = 8
+station = "recycler"
+seconds = 5
+
+# --- the OBOL faucet ------------------------------------------------------
+#
+# **OBOL is scrap** (operator, 2026-08-10: *"what the hell is obol turned off
+# for its just like scrap"*). It is an item you carry, drop on death and
+# spend at a research table — no wallet, no ledger, nothing redeemable. The
+# thing `ALPHA.md` §2 stages is the CLAIM RAIL (a banked balance keyed to a
+# wallet, and its merkle export), which is a different thing that shares a
+# name; an item stack in a save file cannot be cashed out, so there was
+# never a token risk here to gate against.
+#
+# These ride the SAME inputs as the three rows above, which is what
+# multi-row conversion is for: a gear becomes 8 fragments AND 2 obol on one
+# 5 s timer, rather than the player choosing which machine to feed. The
+# `seconds` must match the row it shares an input with — the bake refuses
+# otherwise.
+#
+# The counts are a knob (`DECISIONS.md` §open, "OBOL faucet v0"), anchored
+# on the research prices in `research.toml` rather than on the reference:
+# `reference/RIPLIST.md` still has no recycler row, so what theirs pays per
+# component is unresearched. A component pays 1–2, so a full barrel run is
+# a research or two — the pace that makes a road trip worth taking without
+# making the ore node pointless.
+[[cook]]
+input = "item.gears"
+output = "item.obol"
+count = 2
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.rope"
+output = "item.obol"
+count = 1
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.tarp"
+output = "item.obol"
+count = 1
+station = "recycler"
+seconds = 5

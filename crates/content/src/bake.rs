@@ -21,8 +21,8 @@ use sim_core::combat::{CombatContent, MeleeDef, RangedDef, ThrowDef};
 use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
 use sim_core::deploy::{
     DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
-    ARCH_LOCK, ARCH_WORKBENCH, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION,
-    PLACE_GROUND,
+    ARCH_LOCK, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY,
+    PLACE_FOUNDATION, PLACE_GROUND,
 };
 use sim_core::gather::ItemStack;
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
@@ -31,13 +31,15 @@ use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
     ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS,
     MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
-    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
+    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
+    MAX_RESEARCH_ROWS, TICK_HZ,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
 };
 use sim_core::mob::{MobContent, MobDef, MOB_LOOT_ROWS, MOB_PIG};
 use sim_core::oven::{CookContent, CookRow};
+use sim_core::research::{ResearchContent, ResearchRow};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
 
 /// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
@@ -186,6 +188,7 @@ impl Content {
                 ));
             }
             let mut def = RecipeDef {
+                blueprint: r.blueprint,
                 output: self
                     .item_index(&r.output)
                     .ok_or_else(|| format!("bake: `{}` output missing", r.id))?,
@@ -383,6 +386,8 @@ impl Content {
                     DeployArchetype::Workbench => ARCH_WORKBENCH,
                     DeployArchetype::Door => ARCH_DOOR,
                     DeployArchetype::Lock => ARCH_LOCK,
+                    DeployArchetype::Recycler => ARCH_RECYCLER,
+                    DeployArchetype::Research => ARCH_RESEARCH,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -839,18 +844,71 @@ impl Content {
                 .seconds
                 .checked_mul(TICK_HZ)
                 .ok_or_else(|| format!("bake: cook `{}` {} s overflows", c.input, c.seconds))?;
+            let count = u16::try_from(c.count).map_err(|_| {
+                format!(
+                    "bake: cook `{}` pays {} units, past a u16",
+                    c.input, c.count
+                )
+            })?;
             cc.rows[i] = CookRow {
                 input,
                 output,
+                count,
                 ticks,
                 arch: match c.station {
                     CookStation::Fire => ARCH_FIRE,
                     CookStation::Furnace => ARCH_FURNACE,
+                    CookStation::Recycler => ARCH_RECYCLER,
                 },
             };
         }
         cc.row_count = self.cooks.len() as u16;
         Ok(cc)
+    }
+
+    /// The research table: what may be learned, what it unlocks, and what
+    /// it is paid in (`content/research.toml`, `sim-core/research.rs`).
+    ///
+    /// The recipe is resolved HERE, from the item, which is the whole
+    /// reason the file names an item and never a recipe id: the two cannot
+    /// then disagree about which thing was learned, and a row for an item
+    /// nothing crafts is a bake error rather than a coin sink that unlocks
+    /// nothing.
+    pub fn bake_research(&self) -> Result<ResearchContent, String> {
+        let mut rc = ResearchContent::EMPTY;
+        rc.coin = self.item_index(&self.research_coin.item).ok_or_else(|| {
+            format!(
+                "bake: research coin `{}` names no item",
+                self.research_coin.item
+            )
+        })?;
+        if self.research.len() > MAX_RESEARCH_ROWS {
+            return Err(format!(
+                "bake: {} research rows exceed the sim's {MAX_RESEARCH_ROWS}-row table",
+                self.research.len()
+            ));
+        }
+        for (i, r) in self.research.iter().enumerate() {
+            let item = self
+                .item_index(&r.item)
+                .ok_or_else(|| format!("bake: research item `{}` names no item", r.item))?;
+            let recipe_id = self
+                .recipes
+                .iter()
+                .find(|c| c.output == r.item)
+                .ok_or_else(|| {
+                    format!(
+                        "bake: research row `{}` unlocks nothing — no recipe outputs it",
+                        r.item
+                    )
+                })?;
+            let recipe = self.recipe_index(&recipe_id.id).expect("own id resolves");
+            let cost = u16::try_from(r.cost)
+                .map_err(|_| format!("bake: research `{}` costs {}, past a u16", r.item, r.cost))?;
+            rc.rows[i] = ResearchRow { item, recipe, cost };
+        }
+        rc.row_count = self.research.len() as u16;
+        Ok(rc)
     }
 
     pub fn bake_backpack(&self) -> Result<BackpackContent, String> {

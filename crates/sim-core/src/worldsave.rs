@@ -126,7 +126,11 @@ const SECTION_COUNTS: usize = 8 * 2 + 4;
 /// The tail: id, `slept_at`, the seven input-frame fields, `next_swing`,
 /// the weak-spot pair, the four death-screen facts, and `craft_done_at`.
 const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + 6 + 9 + 8;
-const PLAYER_BYTES: usize = PLAYER_SAVE_BYTES + PLAYER_TAIL_BYTES;
+/// On-disk stride of one saved body. Public because two byte-poking
+/// tests in `tests/worldsave.rs` have to seek past the player section, and
+/// a hand-copied 240 there is a silent wrong-offset the day `PlayerSave`
+/// grows — which is exactly what happened at research v0.
+pub const PLAYER_BYTES: usize = PLAYER_SAVE_BYTES + PLAYER_TAIL_BYTES;
 /// A piece record plus its placement tick, which lives in a parallel
 /// array in the store (`build.rs` says why it is not on the record) and
 /// is written inline here for `DEPLOY_BYTES`' reason — a file has no
@@ -677,6 +681,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             body: save.body,
             inv: save.inv,
             jobs: save.jobs,
+            known: save.known,
             hp: save.hp,
             hp_max: save.hp_max,
             deaths: save.deaths,
@@ -1077,7 +1082,7 @@ mod tests {
     fn the_ceiling_is_what_the_caps_add_up_to() {
         assert_eq!(PLAYER_TAIL_BYTES, 52);
         assert_eq!(
-            PLAYER_BYTES, 240,
+            PLAYER_BYTES, 248,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -1088,7 +1093,7 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 54                    // head
-            + 100 * 240                     // players
+            + 100 * 248                     // players
             + 8_192 * 19                    // pieces + placement tick
             + 1_024 * 33                    // deploys + bag_ready + placed
             + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
@@ -1112,7 +1117,7 @@ mod tests {
         assert_eq!(DEPLOY_BYTES, 33);
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 571_446,
+            WORLD_SAVE_MAX_BYTES, 572_246,
             "the world save ceiling moved"
         );
     }

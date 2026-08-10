@@ -29,6 +29,7 @@ pub mod persist;
 mod pitch_lut;
 pub mod probe;
 pub mod ranged;
+pub mod research;
 pub mod rng;
 pub mod roster;
 pub mod survival;
