@@ -78,8 +78,25 @@ armor_extra_hits_max = 2
 # only the total, so the hit count stays ours and this band stays put.
 node_yield = [250, 1000]
 node_hits = [8, 12]
-# "A full wood wall ≈ 7 min of wood at T1 tools" (CONTENT §4 anchor 3).
-wood_wall_minutes = [5, 9]
+# A full wood wall in farm-minutes of wood at T1 tools (CONTENT §4 anchor 3).
+#
+# **Re-spoken 7 → 4 on 2026-08-10** (`DECISIONS.md` §open "twig v0"), and
+# it is `reference/BALANCE.md` §7's rule working rather than a loosening:
+# their wood wall is 200 wood, which prices at 4.0 here, and the question
+# a band break asks is which of the two is out of date. This one was. The
+# band was written around a cost column that had never been compared to
+# anything — the 2026-08-08 balance pass took the hp ladder out of
+# `building.toml` and left `cost` alone, and `RIPLIST.md` never opened a
+# row for it — so [5, 9] was a fence around our own invented number.
+#
+# The node take of 2026-08-10 is what made it visible: once a tree paid
+# **their** 810 wood, a wall priced at **ours** cost 1.75× theirs in
+# trees, which is the unit a player actually feels. Taking the cost column
+# makes both halves of "how many trees is a wall" come from one game.
+#
+# [3, 5] keeps the old band's shape — ±29% around the value, one unit
+# either side after the anchor's rounding — so it still catches drift.
+wood_wall_minutes = [3, 5]
 # Anchor 1 — satchels-to-break-a-stone-wall in farm-minutes over the
 # starter build in farm-minutes; below ~1.0 nobody builds, above ~3
 # nobody raids. Percent (100 = 1.0×) so the file stays integer-only.

@@ -433,16 +433,31 @@ outstanding. Items 3, 4 and 8 stand as written.
 
 The rest of this section is **§7b's half**, added 2026-08-10.
 
-11. **Our cost grammar has no shape economy at all, and theirs is the
-    game.** Ours prices foundation, wall, floor and roof identically
+11. **Our cost grammar had no shape economy at all, and theirs is the
+    game. TAKEN WHOLE 2026-08-10 — the ratios first, then the
+    absolutes.** Ours priced foundation, wall, floor and roof identically
     (350 wood / 350 stone / 200 frags), the doorway at 0.8 and stairs at
-    0.57 — so every shape buys the same hp for the same resource and the
-    only reason to prefer one is that it is the shape that fits. Theirs
-    spans 4× (§7b.3). Since our hp is already per material and our cost
-    already per shape × material, **the entire difference is six numbers
-    in `content/building.toml`** — wall 7, no code. It is the cheapest
-    real improvement in this document, exactly as item 6 was, and it is
-    the one the operator pointed at.
+    0.57, so every shape bought the same hp for the same resource and the
+    only reason to prefer one was that it was the shape that fit; theirs
+    spans 4× (§7b.3). `content/building.toml` is now their grade base
+    (twig 50 / wood 200 / stone 300 / metal 200) with §7b.3's ratios off
+    it, which makes our 24 cells their 24 cells for the six shapes we
+    have.
+
+    **The part worth remembering is why it was off at all**, because
+    nothing had noticed: our `cost` column was **never taken and never
+    queued**. The 2026-08-08 balance pass took the hp ladder and the
+    satchel out of this very file and left `cost` alone, and
+    `RIPLIST.md` opened no row for it, so 350/350/200 stood as first
+    written in the M1 build slice — derived from our own `farm_per_min`
+    and compared against nothing. What exposed it was the **node take**:
+    once a tree paid *their* 810 wood, a wall priced at *ours* cost
+    **1.75× theirs in trees**, numerator theirs and denominator ours.
+    That is `BALANCE.md` §4.1's false-familiarity trap one level out, and
+    the general lesson is the one `RIPLIST.md` §1a already carries from
+    the other side: **taking one half of a ratio is worse than taking
+    neither**, because the halves are what a player feels and neither
+    half alone is checked by anything.
 12. **Twig is a mechanism and we do not have it.** We have one act where
     they have two: our `place` names a finished grade and pays for it
     outright, so a misplaced stone wall costs a stone wall. Adding a rung

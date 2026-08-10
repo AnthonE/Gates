@@ -212,10 +212,16 @@ reference's.
    4–6; headshot × 2. Armor may add at most +2 hits. Asserted from data.
 3. **Farm rate** — a node pays the reference game's total over ~10 swings
    (2026-08-10: stone 1000, metal 600, sulfur 300, large tree 870 — it
-   read "≈ 300 units" for every node before that); a full wood wall ≈ 7
-   min of wood at T1 tools. The wall figure is unchanged by the node take
-   and that is not an oversight: it is priced off `[globals] farm_per_min`,
-   which the take left alone (`reference/RIPLIST.md` §1a). Upkeep (DESIGN §2) prices decay in these
+   read "≈ 300 units" for every node before that); a full wood wall ≈ **4**
+   min of wood at T1 tools. **That figure was 7 and moved the same day the
+   build costs were taken** (`DECISIONS.md` §open "twig v0"): their wood
+   wall is 200 wood where ours was 350, and 350 had never been compared to
+   anything — the 2026-08-08 balance pass took the hp ladder out of
+   `building.toml` and left the `cost` column alone. What made it visible
+   was the node take: once a tree paid *their* 810 wood, a wall priced at
+   *ours* cost 1.75× theirs in trees, the unit a player actually feels. So
+   the pair now comes from one game. The band moved [5, 9] → [3, 5] and
+   that is `BALANCE.md` §7's rule, not a loosening. Upkeep (DESIGN §2) prices decay in these
    same farm-minutes; the band keeps a solo's daily upkeep under ~15 min
    **(knob)**.
 
