@@ -110,7 +110,7 @@ fn fire_world() -> (World, u32, u16, u16) {
         "a fire is a container: placing one stands a record up in the box store"
     );
     assert!(
-        w.deploys.oven_states()[0].is_oven(),
+        w.deploys.oven_states()[0].burns(),
         "and that record's state says oven, not box"
     );
     (w, box_key(cx, cz, 0), cx, cz)
@@ -579,5 +579,262 @@ fn the_period_divides_a_second_without_remainder() {
         0,
         "an oven step that does not divide the second makes every content \
          `seconds` value approximate"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The recycler (recycler v0) — the third archetype on this code path, and
+// the two things it does differently.
+//
+// It is an oven that does not burn, so the gates it owes are the two
+// deltas and nothing else: the switch must not ask for fuel, and a
+// conversion must pay EVERY row over its input or none of them. The rest
+// of this file already covers what the two share, because they are one
+// sweep.
+
+/// `DeployContent::probe_fixture` row 6 is the recycler; it costs one unit
+/// of item 8 to place. `CookContent::probe_fixture` rows 1 and 2 are its
+/// table: item 2 pays 2 × item 6 AND 1 × item 7, both on one 30-tick clock.
+const RECYCLER_ROW: u16 = 6;
+const RECYCLER_ITEM: u16 = 8;
+const SALVAGE: u16 = 2;
+const YIELD_A: u16 = 6;
+const YIELD_B: u16 = 7;
+const RECYCLE_TICKS: u64 = 30;
+
+/// `fire_world`'s shape with the other archetype: one player beside a
+/// placed, switched-off, empty recycler.
+fn recycler_world() -> (World, u32, u16, u16) {
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    w.build = BuildContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.cook = CookContent::probe_fixture();
+
+    let (cx, cz) = buildable_cell(SEED);
+    let (x, z) = cell_center(cx, cz);
+    w.dev_spawn = Some((x, z));
+    w.tick(&[Command::Join { id: PLAYER }]);
+    w.players[0].body = sim_core::movement::Body::at(SEED, x, z);
+    w.players[0].inv[0] = ItemStack {
+        item: RECYCLER_ITEM,
+        count: 1,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: SALVAGE,
+        count: 8,
+    };
+    w.players[0].inv[2] = ItemStack {
+        item: FUEL,
+        count: 40,
+    };
+    w.tick(&[Command::PlaceDeploy {
+        id: PLAYER,
+        row: RECYCLER_ROW,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(w.deploys.len(), 1, "the fixture needs its recycler placed");
+    assert_eq!(
+        w.deploys.boxes().len(),
+        1,
+        "a recycler is a container: placing one stands a record up in the box store"
+    );
+    let st = w.deploys.oven_states()[0];
+    assert!(
+        st.is_converter() && !st.burns(),
+        "and that record's state says converter-that-does-not-burn"
+    );
+    (w, box_key(cx, cz, 0), cx, cz)
+}
+
+/// The first delta. A fire with nothing in it refuses the match
+/// (`a_cold_empty_fire_refuses_the_match`, above); a recycler has no fuel
+/// to lay, so the same press on the same empty container must WORK — a
+/// refusal for want of something it never consumes is a rule with nothing
+/// behind it.
+#[test]
+fn an_empty_recycler_switches_on_where_an_empty_fire_would_not() {
+    let (mut w, key, cx, cz) = recycler_world();
+    assert!(!lit(&w, key), "it starts off");
+    press(&mut w, cx, cz);
+    assert!(lit(&w, key), "the switch is just a switch");
+    assert_eq!(
+        refusal(&w, EV_DEPLOY_REFUSED),
+        None,
+        "and nothing refused: REFUSE_D_FUEL is the burner's rule"
+    );
+    assert_eq!(
+        events(&w, EV_OVEN),
+        1,
+        "the state is announced like a fire's"
+    );
+    press(&mut w, cx, cz);
+    assert!(!lit(&w, key), "and it toggles back off");
+}
+
+/// It also never snuffs itself. A fire that runs dry goes out with no hand
+/// on it; a recycler spends nothing, so the only thing that stops one is
+/// the switch — even after long enough that a fire would have burned 40
+/// units of fuel.
+#[test]
+fn a_running_recycler_spends_nothing_and_stays_on() {
+    let (mut w, key, cx, cz) = recycler_world();
+    press(&mut w, cx, cz);
+    let before = w.deploys.oven_states()[w.deploys.box_index(key).unwrap()];
+    idle(&mut w, 40 * RECYCLE_TICKS);
+    assert!(lit(&w, key), "nothing ran out, because nothing was spent");
+    let after = w.deploys.oven_states()[w.deploys.box_index(key).unwrap()];
+    assert_eq!(after.burn, before.burn, "and the burn timer never moved");
+    assert_eq!(after.bank, 0, "nor did the byproduct bank");
+}
+
+/// The second delta, and the reason `CookRow` grew a `count`: one input
+/// pays EVERY row that names it, together, off one clock.
+#[test]
+fn a_conversion_pays_every_row_over_its_input() {
+    let (mut w, key, cx, cz) = recycler_world();
+    load(&mut w, key, 0, SALVAGE, 3);
+    press(&mut w, cx, cz);
+
+    idle(&mut w, RECYCLE_TICKS);
+    assert_eq!(slot(&w, key, 0).count, 2, "one unit went in");
+    assert_eq!(total(&w, key, YIELD_A), 2, "and paid the first row's 2");
+    assert_eq!(total(&w, key, YIELD_B), 1, "and the second row's 1");
+
+    idle(&mut w, RECYCLE_TICKS * 2);
+    assert_eq!(total(&w, key, SALVAGE), 0, "the hopper empties");
+    assert_eq!(total(&w, key, YIELD_A), 6, "3 units × 2");
+    assert_eq!(total(&w, key, YIELD_B), 3, "3 units × 1");
+}
+
+/// And it is all-or-nothing. With room for the first row's pay and not the
+/// second's, NOTHING may happen: the input is not consumed, neither output
+/// lands, and the progress holds at the line. A per-row check would pass
+/// the first payment and strand the conversion half-applied, which is a
+/// dupe or a loss depending on which half you count.
+#[test]
+fn a_conversion_that_cannot_pay_it_all_pays_none_of_it() {
+    let (mut w, key, cx, cz) = recycler_world();
+    let cap = GatherContent::probe_fixture().stack_max_of(YIELD_A);
+    // One slot of salvage, and every other slot filled with something the
+    // recycler's outputs cannot top up — so `YIELD_A` has exactly one
+    // slot's worth of room and `YIELD_B` has none at all.
+    load(&mut w, key, 0, SALVAGE, 4);
+    load(&mut w, key, 1, YIELD_A, cap - 2);
+    for s in 2..BOX_SLOTS {
+        load(&mut w, key, s, FUEL, cap);
+    }
+    press(&mut w, cx, cz);
+    idle(&mut w, RECYCLE_TICKS * 3);
+
+    assert_eq!(
+        total(&w, key, SALVAGE),
+        4,
+        "the input is untouched: a conversion that cannot complete does not start"
+    );
+    assert_eq!(
+        total(&w, key, YIELD_A),
+        cap as u32 - 2,
+        "and the row that WOULD have fit paid nothing — that is the whole point"
+    );
+    assert_eq!(
+        total(&w, key, YIELD_B),
+        0,
+        "the row that could not fit, likewise"
+    );
+
+    // Free the room and the same held conversion pays out whole.
+    load(&mut w, key, 2, 0, 0);
+    idle(&mut w, RECYCLE_TICKS);
+    assert_eq!(total(&w, key, SALVAGE), 3, "now it lands");
+    assert_eq!(total(&w, key, YIELD_A), cap as u32, "both rows paid,");
+    assert_eq!(total(&w, key, YIELD_B), 1, "in the same step");
+}
+
+/// The move verb's half of the archetype split. A fire admits fuel because
+/// it burns it; a recycler must not, or the rule that keeps a campfire
+/// from being a cheap wood chest hands the job to the recycler instead.
+#[test]
+fn a_recycler_refuses_the_fuel_a_fire_admits() {
+    let cc = CookContent::probe_fixture();
+    assert!(cc.accepts(ARCH_FIRE, FUEL), "a fire burns it");
+    assert!(
+        !cc.accepts(sim_core::deploy::ARCH_RECYCLER, FUEL),
+        "a recycler has no use for it and must not hold it"
+    );
+    assert!(
+        !cc.accepts(sim_core::deploy::ARCH_RECYCLER, CHAR),
+        "nor the byproduct of a burn it never performs"
+    );
+    assert!(
+        cc.accepts(sim_core::deploy::ARCH_RECYCLER, SALVAGE),
+        "its own input, though,"
+    );
+    for out in [YIELD_A, YIELD_B] {
+        assert!(
+            cc.accepts(sim_core::deploy::ARCH_RECYCLER, out),
+            "and what it made comes back out through its own door"
+        );
+    }
+
+    // The refusal is the live one, through the verb.
+    let (mut w, key, _, _) = recycler_world();
+    w.tick(&[Command::Move {
+        id: PLAYER,
+        cont: key,
+        from_kind: CONT_SELF,
+        from_slot: 2,
+        to_kind: CONT_BOX,
+        to_slot: 0,
+        count: 1,
+    }]);
+    assert_eq!(
+        refusal(&w, EV_MOVE_REFUSED),
+        Some(REFUSE_M_OVEN),
+        "the move verb says why"
+    );
+    assert_eq!(total(&w, key, FUEL), 0, "and nothing went in");
+}
+
+/// The **last** unit in a full oven, which used to be a deadlock and is
+/// fixed as a side effect of the scratch commit — gated because it is a
+/// behaviour change on a shipped path, not because it was asked for.
+///
+/// The old room check ran before the input was consumed, so it could not
+/// see the slot the conversion itself was about to free. An oven with one
+/// unit left in its last non-full slot therefore asked for room that only
+/// existed after the step it was blocking: it held at the line forever,
+/// with a player watching a fire that would never finish. Consuming into a
+/// scratch copy and asking whether the result fits asks the honest
+/// question instead.
+#[test]
+fn the_last_unit_cooks_into_the_slot_it_frees() {
+    let (mut w, key, cx, cz) = fire_world();
+    let cc = CookContent::probe_fixture();
+    let row = cc
+        .row_for(ARCH_FIRE, RAW)
+        .copied()
+        .expect("the fixture cooks");
+    let cap = GatherContent::probe_fixture().stack_max_of(COOKED);
+    // Fuel, then ONE raw unit, then every remaining slot full of something
+    // the output can neither join nor displace. The only room in the whole
+    // container is the raw unit's own slot.
+    load(&mut w, key, 0, FUEL, 20);
+    load(&mut w, key, 1, RAW, 1);
+    for s in 2..BOX_SLOTS {
+        load(&mut w, key, s, CHAR, cap);
+    }
+    press(&mut w, cx, cz);
+    idle(&mut w, row.ticks as u64 * 2);
+
+    assert_eq!(total(&w, key, RAW), 0, "the last unit went in");
+    assert_eq!(
+        total(&w, key, COOKED),
+        1,
+        "and came out into the slot it vacated — the old check could not \
+         see that room and held here forever"
     );
 }

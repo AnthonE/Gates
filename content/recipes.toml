@@ -217,6 +217,22 @@ inputs = [
     { item = "item.metal_frags", count = 50 },
 ]
 
+# The recycler (recycler v0). Priced between the furnace (275 units of
+# raw + lowgrade) and the large box, and it asks for **gears** on purpose:
+# the machine that makes salvage worth carrying is gated behind carrying
+# some. Two is a single barrel's luck, so it is a gate and not a grind.
+[[recipe]]
+id = "recipe.recycler"
+output = "item.recycler"
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+    { item = "item.wood", count = 200 },
+    { item = "item.gears", count = 2 },
+]
+
 [[recipe]]
 id = "recipe.box_large"
 output = "item.box_large"

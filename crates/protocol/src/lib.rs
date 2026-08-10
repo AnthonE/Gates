@@ -346,7 +346,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// Fixtures are keyed `v30_*` — all renamed and every C→S action
 /// regenerated, plus the hello and the three door/deploy-carrying cases,
 /// plus three new: `v30_action_demolish`, `v30_knock` and `v30_auth`.
-pub const PROTO_VER: u16 = 30;
+pub const PROTO_VER: u16 = 31;
 
 /// Datagram kind field width.
 ///

@@ -122,6 +122,33 @@ tier = 1
 rarity = "uncommon"
 slot = "none"
 
+# The working coin (DESIGN.md §3.1) — scrap's job in this game, and an
+# ordinary item stack on purpose: **carried** OBOL is dropped on death,
+# raidable in your base, and lost on a wipe, which is what makes the walk
+# to the haven worth anything. Banked OBOL is not this row and never will
+# be — it is a ledger balance keyed to a wallet (A2), and the whole design
+# is the difference between the two states.
+#
+# **Nothing pays it and nothing charges it, deliberately.** `ALPHA.md` §2
+# stages the economy and A1 is *faucets off, salvage drops components
+# only*; arming A2 is an operator act (`CLAUDE.md` loop discipline), not a
+# loop's. So the item ships and the tables stay silent: the faucet is
+# three commented rows in `cooking.toml` and the sink is a recipe input,
+# both content edits, neither one a code change. That is the whole reason
+# the recycler pays out of a content table rather than a function.
+#
+# Stack 1000 like the raw materials rather than 50 like the components:
+# a hoard is the point, and a coin that filled your pockets at 50 would
+# make the tense walk home a matter of inventory management instead of
+# nerve.
+[[item]]
+id = "item.obol"
+name = "Obol"
+stack = 1000
+tier = 0
+rarity = "rare"
+slot = "none"
+
 # --- T0, the naked era -------------------------------------------------
 
 [[item]]
@@ -273,6 +300,18 @@ slot = "hand"
 [[item]]
 id = "item.lock_code"
 name = "Code Lock"
+stack = 1
+tier = 1
+rarity = "uncommon"
+slot = "hand"
+
+# The recycler (recycler v0). Priced beside the furnace it resembles —
+# both are workbench-era converters you place once and feed forever — and
+# built from what a road walk already pays, so the thing that makes
+# salvage worth carrying is itself made of salvage.
+[[item]]
+id = "item.recycler"
+name = "Recycler"
 stack = 1
 tier = 1
 rarity = "uncommon"

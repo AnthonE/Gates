@@ -186,6 +186,17 @@ do not rediscover)
   are open, a queue with a single-consumer contract needs an owner named in
   code, not in a comment, and the gate for it is a grep for the call site
   (`tests/sound.rs`), because the defect is a call site and not a value.
+- **A type shared across the feature line has its exhaustive matches on
+  only one side of it.** `ui::interact::Verb` compiles in both builds;
+  every `match` that must cover it lives in `render/verbs.rs`, which
+  `--features render` gates. So adding a variant is **green on
+  `cargo test --workspace`, twice, and red at the Bevy gate** — the one
+  that costs five minutes to reach. Found 2026-08-10 adding
+  `Verb::Recycler`: the sim, the wire, the content and every non-render
+  client test passed while `E` and `C` had no arm for the thing they were
+  pointed at. Same shape for any `pub enum` or archetype table read from
+  `render::`. When you add a variant, grep the feature-gated modules for
+  its type before believing a green workspace run.
 - **A judge names the symptom; fix the cause.** Optimizing the judge's
   literal sentence is how a loop circles for three passes — elsewhere,
   "untextured" was really diffuse contrast crushed by an earlier fix for

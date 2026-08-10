@@ -210,9 +210,16 @@ impl GatherContent {
     /// moment a bot's slot 0 fills. Real values bake from content/*.toml.
     pub fn probe_fixture() -> Self {
         let mut c = Self::EMPTY;
-        c.item_count = 8;
+        // Nine, not eight: every index below is spoken for by a fixture
+        // deployable's `item` (hearth 2, workbench 3, door 4, bag 5, fire
+        // 6, lock 7) and the recycler is the ninth thing to need one. Two
+        // deployables sharing an item is what `DeployContent::
+        // probe_fixture` warns about at the lock row — the give-back hands
+        // out the wrong object — so the fixture widens rather than
+        // doubling up.
+        c.item_count = 9;
         let mut i = 0;
-        while i < 8 {
+        while i < 9 {
             c.stack_max[i] = 100;
             i += 1;
         }

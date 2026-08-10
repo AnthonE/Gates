@@ -671,11 +671,18 @@ entry names the landed gate and keeps the mechanism as the lesson.)
 
 ## 4b · The world lane: what the second tier left open
 
-- **A destination still offers no verb you cannot perform at your own
-  base.** The recycler is the only one of `DESIGN.md` §2's three fixtures
-  not blocked on an operator act (bank is A2/A3, vendor is skins). Container
-  verb + `content/*.toml` yields — **systems lane**, and it is what turns a
-  loot gradient into a reason.
+- **The recycler exists and the haven does not have one.** Landed
+  (recycler v0, `DECISIONS.md` §open): `ARCH_RECYCLER` converts salvage on
+  `oven::sweep` with the burn skipped, `CookRow::count` plus multi-row
+  firing pays several outputs off one clock, wire v31. What is still open
+  is the half this item was really about: **every deployable comes from a
+  player placing one**, so the recycler is craftable and a destination
+  still offers no verb you cannot perform at your own base. An authored
+  worldgen deployable is the missing mechanism — a `DeployRec` standing at
+  the pad that no player placed, which has to answer to persistence (a
+  restart must not duplicate it) and to `pick_up` (nobody pockets the
+  haven's machine). Systems lane. Bank and vendor stay blocked on an
+  operator act.
 - **The waystations want a silhouette, and it must be a *different* one.**
   Their containers and loot tables differ from the pad's now; the site
   itself is still two boxes on bare ground, and a second copy of
@@ -723,6 +730,21 @@ crate-wide, but its *contiguity* claim is file-local.
   sit at a destination — the gate deliberately counts barrel rows alone.
 - **Day/night does not exist.** `DESIGN.md` §2 pairs it with the survival
   clock; nothing in `crates/` reads a time of day.
+- **OBOL is an item nothing pays and nothing charges** (recycler v0). The
+  faucet is three rows commented out at the foot of `content/cooking.toml`
+  and arming them is an operator act (`ALPHA.md` A1 → A2), so the loop's
+  half is done. **The sink is not**, and it is the open design question:
+  scrap's job in the reference is the research/tech-tree, which we have
+  cut, so without something to spend it on a coin is a lootable trophy.
+  Cheapest honest answer that needs no new system — OBOL as an input to
+  recipes that already exist, the workbench first, which is how the
+  reference prices its own bench. Content only. Wants a spoken call before
+  it lands, not a loop's guess.
+- **No verb opens a world container.** `loot.crate` and `loot.cache` are
+  parsed, content-hashed, placed and openable by nothing — barrels are
+  smashed, and `Occupant::{CrateSlot, CacheSlot}` appear only in terrain
+  placement and collision radii. With the recycler landed this is the
+  other half of the same walk: the thing you carry salvage home *from*.
 
 ---
 

@@ -139,6 +139,10 @@ ITEMS = {
     "furnace": "delapouite/furnace",
     "box_large": "delapouite/cargo-crate",
     "lock_code": "delapouite/dial-padlock",
+    "recycler": "lorc/recycle",
+    # The coin that pays the ferryman (DESIGN.md §3.1). Two coins rather
+    # than one because a single disc at 44 px reads as a full stop.
+    "obol": "delapouite/two-coins",
     "door_wood": "delapouite/door",
     "building_plan": "delapouite/notebook",
     "hammer": "lorc/claw-hammer",

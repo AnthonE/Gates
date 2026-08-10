@@ -292,6 +292,7 @@ pub fn hash(c: &Content) -> u64 {
     for k in cooks {
         h.s(&k.input);
         h.s(&k.output);
+        h.u(k.count);
         h.u(k.seconds);
         h.u(k.station as u32);
     }

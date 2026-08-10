@@ -253,6 +253,11 @@ pub enum DeployArchetype {
     /// bolts onto a door's address and lives in the sim's lock store
     /// (`sim-core/lock.rs`, `reference/DOORS.md` §9.1).
     Lock,
+    /// A recycler (recycler v0): a container that converts without
+    /// burning. An oven in the sim (`sim-core/oven.rs`) minus the fuel,
+    /// and the economy's first faucet — what it pays is rows in
+    /// `content/cooking.toml`, never code.
+    Recycler,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -285,25 +290,45 @@ pub struct Fuel {
     pub byproduct_pct: u32,
 }
 
-/// Which oven runs a cook row. The archetype names of
-/// `content/deployables.toml`, narrowed to the two that burn — a row that
-/// named `box` would be a transformation with no station.
+/// Which container runs a cook row. The archetype names of
+/// `content/deployables.toml`, narrowed to the three that convert — a row
+/// that named `box` would be a transformation with no station.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CookStation {
     Fire,
     Furnace,
+    /// Converts without burning (recycler v0). The station that makes this
+    /// table the economy's arming point: a row here is a faucet.
+    Recycler,
 }
 
-/// One transformation an oven performs: one unit in, one unit out, over
-/// `seconds`, at `station`.
+/// One transformation a container performs: one unit in, `count` units of
+/// `output` out, over `seconds`, at `station`.
+///
+/// **Several rows may share one `(station, input)`** — that is how a
+/// component recycles into metal *and* coin — and when they do, the sim
+/// fires all of them together on one clock. `validate::structural`
+/// therefore holds such a set to a single `seconds` and refuses two rows
+/// that pay the same output.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cook {
     pub input: String,
     pub output: String,
+    /// Units of `output` one conversion pays. Defaults to 1, which is
+    /// every cooking row — the field exists for the recycler, where a
+    /// component is worth eight fragments.
+    #[serde(default = "one")]
+    pub count: u32,
     pub seconds: u32,
     pub station: CookStation,
+}
+
+/// `Cook::count`'s default. A free function because `serde(default = …)`
+/// takes a path and not a literal.
+fn one() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Deserialize)]

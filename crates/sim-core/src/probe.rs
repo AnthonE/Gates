@@ -283,11 +283,19 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 level: ((t / 32) % 2) as u8,
                 loc: ((t / 16) % 4) as u8,
             };
-            // Bot 2 pokes the deploy verb at its own feet: row 4 is out
-            // of range and loc/level cycle, so placements AND every
-            // deploy refusal reason ride the surface; feed mostly hits
-            // the no-hearth refusal, and the successes cover stock. The
-            // gated craft (recipe 2) arms once bot 2's workbench stands.
+            // Bot 2 pokes the deploy verb at its own feet: loc/level
+            // cycle, so placements AND every deploy refusal reason ride
+            // the surface; feed mostly hits the no-hearth refusal, and the
+            // successes cover stock. The gated craft (recipe 2) arms once
+            // bot 2's workbench stands.
+            //
+            // The modulus is the fixture's `def_count` (7 since recycler
+            // v0), so every archetype the table declares gets placed here
+            // — including the lock, which almost always refuses because no
+            // door stands at the address, and the recycler, whose switch
+            // must NOT refuse for want of fuel. Widening it was the whole
+            // cost of putting the new archetype inside the parity, replay
+            // and alloc surfaces.
             let own2 = {
                 let b = &world.players[1].body;
                 let cx = crate::build::build_cell_of(b.qx as f32 * crate::movement::POS_XZ_Q);
@@ -296,7 +304,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
             };
             let place_deploy = Command::PlaceDeploy {
                 id: 2,
-                row: ((t / 16) % 5) as u16,
+                row: ((t / 16) % 7) as u16,
                 cx: own2.0,
                 cz: own2.1,
                 level: ((t / 64) % 2) as u8,

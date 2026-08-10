@@ -58,15 +58,19 @@ properly. The short version:
   the stacks a kill pays. `content/mobs.toml`; the sim's side is
   `sim-core/src/mob.rs` and the design is `reference/ANIMALS.md` §9.
 - **deployable**: entity archetype (bag, hearth, cupboard, box, furnace,
-  workbench), placement rules, hp
+  workbench, door, lock, recycler), placement rules, hp
 - **fuel / cook** (`cooking.toml`): what an oven burns — item, seconds per
   unit, byproduct + `byproduct_pct` (hundredths of a unit per unit burned,
   banked and paid whole, never rolled) — and one row per transformation:
-  input → output, seconds, `station` (`fire|furnace`). A campfire and a
-  furnace are one thing in the sim (`oven.rs`); the station column is the
-  only thing that separates them. **No cook row ships yet**: cooking wants
-  a raw food and the island pays none (§2's food line), so the table is
-  the machinery arriving before its first row.
+  input → output, `count` (units paid, default 1), seconds, `station`
+  (`fire|furnace|recycler`). All three are one thing in the sim
+  (`oven.rs`); the station column is the only thing that separates them,
+  and the recycler is the one that burns nothing.
+  **Several rows may share a `(station, input)` and they fire together**
+  off one slot timer — the bake holds such a set to a single `seconds` and
+  refuses two rows paying the same output. That is what lets one component
+  pay a material *and* a coin, and it is why arming `ALPHA.md`'s A2 faucet
+  is an edit to this file rather than to `crates/`.
 - **loot_table**: container archetype → weighted entries + count range
 - **skin**: id, covers (item id), price (SCRY or MYRRH — one coin per
   row, bare tickers), season — the catalog is content too (dark until A3)

@@ -40,7 +40,8 @@ use sim_core::build::{
 };
 use sim_core::collide::{DOOR_POST_W_M, PIECE_LIFT_M, WALL_THICKNESS_M};
 use sim_core::deploy::{
-    DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH, ARCH_WORKBENCH,
+    DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH, ARCH_RECYCLER,
+    ARCH_WORKBENCH,
 };
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain;
@@ -70,7 +71,7 @@ const TIER: [(Color, f32, f32); 3] = [
 ];
 
 /// Deployable stand-ins by archetype (`sim_core::deploy` order: bag, hearth,
-/// box, fire, furnace, workbench, door): full size `w × h × d` in metres,
+/// box, fire, furnace, workbench, door, lock, recycler): full size `w × h × d` in metres,
 /// colour, roughness, metallic. Cosmetics, same registry row.
 /// Public so the DEPLOY GHOST can be the size of what it becomes. Sharing the
 /// table is the whole point: a preview sized independently of the thing it
@@ -80,7 +81,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
     Vec3::new(w, h, d)
 }
 
-const DEPLOY: [([f32; 3], Color, f32, f32); 7] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 9] = [
     (
         [1.2, 0.25, 0.7],
         Color::srgb(0.478, 0.612, 0.306),
@@ -98,6 +99,23 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 7] = [
         0.82,
         0.0,
     ), // door
+    // 7 · the code lock, and it is **never drawn**: a lock mints no
+    // `DeployRec` (it lives in `sim-core/lock.rs`), so nothing indexes
+    // here. The row exists so index 8 is the recycler rather than the
+    // door, which is `Occupant`'s skipped slot 8 one table over and the
+    // same failure if it were left out — no compile error, no golden
+    // move, and a recycler drawn as a doorway.
+    ([0.2, 0.3, 0.12], Color::srgb(0.235, 0.247, 0.267), 0.6, 0.5), // lock
+    // 8 · the recycler (recycler v0). Metal and squat where the furnace
+    // is metal and tall, because the two stand next to each other in a
+    // base and a silhouette is how you tell them apart at a glance —
+    // `ART.md`'s read, applied to a greybox.
+    (
+        [1.3, 1.15, 0.9],
+        Color::srgb(0.325, 0.353, 0.376),
+        0.55,
+        0.6,
+    ), // recycler
 ];
 
 /// A locked door wears banded iron: the one bit of door state a passer-by
@@ -133,8 +151,8 @@ struct Kit {
     /// mesh and the three slab shapes share one slab.
     shape_mesh: [[Option<Handle<Mesh>>; MAX_PARTS]; N_SHAPES],
     tier: [Handle<StandardMaterial>; 3],
-    deploy_mesh: [Handle<Mesh>; 7],
-    deploy_mat: [Handle<StandardMaterial>; 7],
+    deploy_mesh: [Handle<Mesh>; DEPLOY.len()],
+    deploy_mat: [Handle<StandardMaterial>; DEPLOY.len()],
     door_locked: Handle<StandardMaterial>,
     bag_mesh: Handle<Mesh>,
     bag_mat: Handle<StandardMaterial>,
@@ -699,6 +717,14 @@ fn spawn_deploy(
 /// of the archetype table, not of the key that opens one.
 pub fn is_container(arch: u8) -> bool {
     matches!(arch, ARCH_BOX | ARCH_BAG)
+}
+
+/// Which archetypes convert what is inside them — the ovens and the
+/// recycler. `sim_core::oven::OvenState::arch_converts` is the sim's
+/// answer and this is the client's read of the same fact; both are the
+/// archetype table, so neither invents anything.
+pub fn is_converter(arch: u8) -> bool {
+    matches!(arch, ARCH_FIRE | ARCH_FURNACE | ARCH_RECYCLER)
 }
 
 /// Which archetypes are craft stations — the proximity tokens `craft.rs`

@@ -52,6 +52,18 @@ archetype = "workbench"
 placement = "foundation"
 hp = 400
 
+# The recycler (recycler v0): a container that converts without burning.
+# `placement = "any"` and hp 300 are the furnace's, because it is the
+# furnace's shape of object — a workbench-era converter you put down once
+# and feed — and a second set of numbers for the same silhouette would be
+# a distinction with nothing behind it. What separates the two is which
+# `cooking.toml` rows name them.
+[[deployable]]
+id = "item.recycler"
+archetype = "recycler"
+placement = "any"
+hp = 300
+
 [[deployable]]
 id = "item.lock_code"
 archetype = "lock"

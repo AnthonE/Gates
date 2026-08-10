@@ -20,7 +20,7 @@ use crate::{
 use sim_core::backpack::BackpackRec;
 use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_N, MAT_METAL, SHAPE_ROOF};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_FURNACE};
-use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_LOCK, PLACE_DOOR};
+use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_RECYCLER, PLACE_DOOR};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
 use sim_core::limits::{
@@ -278,9 +278,12 @@ const DEPLOY_COSTS_BITS: u32 = 3;
 const DEPLOY_SYNC_COUNT_BITS: u32 = 5;
 const DEPLOY_DEFS_TOTAL_BITS: u32 = 5;
 const DEPLOY_DEFS_COUNT_BITS: u32 = 4;
-/// Three bits, and `ARCH_LOCK` = 7 is now the last value one holds — a
-/// ninth archetype costs a width bump and a `PROTO_VER` turn.
-const ARCH_BITS: u32 = 3;
+/// Widened 3 → 4 in wire v31: `ARCH_RECYCLER` = 8 is the ninth archetype
+/// (recycler v0) and three bits held exactly eight. Seven of the sixteen
+/// values are now forgeable, so the decoder range-checks the field — the
+/// same shape `PLACEMENT_BITS` took one version earlier, and for the same
+/// reason: a width with slack is a width that has to be policed.
+const ARCH_BITS: u32 = 4;
 /// Widened 2 → 3 in wire v28: `PLACE_DOOR` is the fifth placement class
 /// (lock v1) and two bits held exactly four. Three of the eight values
 /// are now forgeable, so the decoder range-checks the field, which two
@@ -1243,7 +1246,7 @@ pub fn encode_event_deploy_defs(
     w.write(first as u32, DEPLOY_DEFS_TOTAL_BITS)?;
     w.write(count as u32, DEPLOY_DEFS_COUNT_BITS)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_LOCK || def.placement > PLACE_DOOR || def.hp == 0 {
+        if def.arch > ARCH_RECYCLER || def.placement > PLACE_DOOR || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS {
@@ -2173,7 +2176,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let hp = r.read(16)? as u16;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_LOCK
+                if arch > ARCH_RECYCLER
                     || placement > PLACE_DOOR
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
@@ -2941,7 +2944,7 @@ mod tests {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_deploy_defs(&dc, 0, &mut buf).unwrap();
         assert!(len <= MAX_EVENT_MSG_BYTES);
-        assert_eq!(took, 6, "fixture has 6 rows, all fit one batch");
+        assert_eq!(took, 7, "fixture has 7 rows, all fit one batch");
         match decode_event(&buf[..len]).unwrap() {
             EventMsg::DeployDefs {
                 total,
@@ -2949,19 +2952,23 @@ mod tests {
                 count,
                 rows,
             } => {
-                assert_eq!((total, first, count), (6, 0, 6));
+                assert_eq!((total, first, count), (7, 0, 7));
                 assert_eq!(rows[0], dc.defs[0], "decode rebuilds the sim row");
                 assert_eq!(rows[3], dc.defs[3]);
-                // The oven row (oven v0) and the code lock row (lock v1),
-                // the fixture's two newest and therefore the ones a batch
-                // walk would drop off the end.
+                // The oven row (oven v0), the code lock row (lock v1) and
+                // the recycler (recycler v0) — the fixture's three newest
+                // and therefore the ones a batch walk would drop off the
+                // end. The recycler is also the one carrying an archetype
+                // that did not fit the old three-bit field, so this is
+                // where a `ARCH_BITS` that stayed at 3 would surface.
                 assert_eq!(rows[4], dc.defs[4]);
                 assert_eq!(rows[5], dc.defs[5]);
+                assert_eq!(rows[6], dc.defs[6]);
             }
             other => panic!("wrong variant: {other:?}"),
         }
         assert_eq!(
-            encode_event_deploy_defs(&dc, 6, &mut buf),
+            encode_event_deploy_defs(&dc, 7, &mut buf),
             Err(WireError::Range),
             "cursor past the table refuses"
         );
@@ -3020,7 +3027,7 @@ mod tests {
         full.def_count = MAX_DEPLOY_DEFS as u16;
         for i in 0..MAX_DEPLOY_DEFS {
             full.defs[i] = DeployDef {
-                arch: (i % 7) as u8,
+                arch: (i % 9) as u8,
                 placement: (i % 4) as u8,
                 hp: u16::MAX,
                 item: u16::MAX,
@@ -3364,7 +3371,7 @@ mod tests {
 /// `test_protocol_golden` pins **layout**: which field, how wide, in what
 /// order. Every constant below is a *domain* — which values a field of
 /// already-fixed width is allowed to carry — and a domain can drift
-/// without moving one byte of layout. `sim-core` grows a seventh archetype
+/// without moving one byte of layout. `sim-core` grows a ninth archetype
 /// or a fourth death cause, the encoder's range check still reads the old
 /// bound, and the golden is green because the packet it pins never
 /// contained the new value. The only witness is `Err(Range)` at runtime,
@@ -3704,9 +3711,9 @@ mod wire_domains {
             prefix: "pub const ARCH_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 8,
+            min_members: 9,
             bits: ARCH_BITS,
-            live_max: 7,
+            live_max: 8,
         },
         Domain {
             what: "deploy placement",

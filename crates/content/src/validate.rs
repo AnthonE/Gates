@@ -781,7 +781,37 @@ pub fn structural(c: &Content) -> Result<(), String> {
             f.item
         ));
     }
-    let mut cook_seen = BTreeSet::new();
+    // Every station a row names must have a deployable to stand in the
+    // world, or the row is a transformation with nowhere to happen — the
+    // same silently-inert failure the fuel checks above refuse, one level
+    // out. Cheap to check and it is what catches a `recycler` row shipped
+    // before the recycler itself.
+    for k in &c.cooks {
+        let arch = match k.station {
+            CookStation::Fire => DeployArchetype::Fire,
+            CookStation::Furnace => DeployArchetype::Furnace,
+            CookStation::Recycler => DeployArchetype::Recycler,
+        };
+        if !c.deployables.iter().any(|d| d.archetype == arch) {
+            return Err(format!(
+                "cook: `{}` runs at {:?}, and no deployable is one",
+                k.input, k.station
+            ));
+        }
+    }
+    // Rows may share a `(station, input)` — that is how one component
+    // recycles into metal AND coin — so what has to be refused is not the
+    // second row but a SET that cannot run as one conversion. The sim
+    // fires every row over an input together off one slot timer
+    // (`oven::sweep`), which imposes exactly two rules:
+    //
+    // - they must agree about `seconds`, because a slot holds one clock;
+    // - they must pay distinct outputs, or which row is "the" payer of an
+    //   item becomes an accident of file order — the positional-payload
+    //   trap wearing a content hat, which is what the one-row-per-input
+    //   rule that stood here used to prevent outright.
+    let mut cook_seen: std::collections::BTreeMap<(u32, String), (u32, BTreeSet<String>)> =
+        std::collections::BTreeMap::new();
     for k in &c.cooks {
         if !c.items.iter().any(|i| i.id == k.input) {
             return Err(format!("cook: input `{}` is not an item", k.input));
@@ -792,26 +822,42 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if k.seconds == 0 {
             return Err(format!("cook: `{}` converts in 0 s", k.input));
         }
+        if k.count == 0 {
+            return Err(format!(
+                "cook: `{}` pays 0 units of `{}` — an inert row",
+                k.input, k.output
+            ));
+        }
         if k.input == k.output {
             return Err(format!("cook: `{}` cooks into itself", k.input));
         }
-        // The fuel is not a cook input, at any station: an oven consumes
-        // it as fuel first, so a row for it could never fire, and the
-        // move verb would be admitting an item for a transformation that
-        // does not happen.
-        if k.input == f.item {
+        // The fuel is not a cook input **at a station that burns**: such
+        // an oven consumes it as fuel first, so the row could never fire,
+        // and the move verb would be admitting an item for a
+        // transformation that does not happen. A recycler burns nothing,
+        // so the conflict does not exist there and the rule does not
+        // reach — it is scoped rather than global because an over-broad
+        // rule with a stale reason is how a comment starts lying.
+        if k.input == f.item && k.station != CookStation::Recycler {
             return Err(format!(
                 "cook: `{}` is the fuel — it burns, it does not cook",
                 k.input
             ));
         }
-        // One row per (station, input). Two would make which one runs an
-        // accident of file order, which is the positional-payload trap
-        // wearing a content hat.
-        if !cook_seen.insert((k.station as u32, k.input.clone())) {
+        let group = cook_seen
+            .entry((k.station as u32, k.input.clone()))
+            .or_insert_with(|| (k.seconds, BTreeSet::new()));
+        if group.0 != k.seconds {
             return Err(format!(
-                "cook: two rows for `{}` at the same station",
-                k.input
+                "cook: rows for `{}` at the same station disagree about seconds ({} vs {}) — \
+                 they fire together off one slot timer, so they share one clock",
+                k.input, group.0, k.seconds
+            ));
+        }
+        if !group.1.insert(k.output.clone()) {
+            return Err(format!(
+                "cook: two rows pay `{}` for `{}` at the same station",
+                k.output, k.input
             ));
         }
     }

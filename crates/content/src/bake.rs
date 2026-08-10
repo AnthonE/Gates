@@ -21,8 +21,8 @@ use sim_core::combat::{CombatContent, MeleeDef, RangedDef, ThrowDef};
 use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
 use sim_core::deploy::{
     DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
-    ARCH_LOCK, ARCH_WORKBENCH, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION,
-    PLACE_GROUND,
+    ARCH_LOCK, ARCH_RECYCLER, ARCH_WORKBENCH, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY,
+    PLACE_FOUNDATION, PLACE_GROUND,
 };
 use sim_core::gather::ItemStack;
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
@@ -383,6 +383,7 @@ impl Content {
                     DeployArchetype::Workbench => ARCH_WORKBENCH,
                     DeployArchetype::Door => ARCH_DOOR,
                     DeployArchetype::Lock => ARCH_LOCK,
+                    DeployArchetype::Recycler => ARCH_RECYCLER,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -839,13 +840,21 @@ impl Content {
                 .seconds
                 .checked_mul(TICK_HZ)
                 .ok_or_else(|| format!("bake: cook `{}` {} s overflows", c.input, c.seconds))?;
+            let count = u16::try_from(c.count).map_err(|_| {
+                format!(
+                    "bake: cook `{}` pays {} units, past a u16",
+                    c.input, c.count
+                )
+            })?;
             cc.rows[i] = CookRow {
                 input,
                 output,
+                count,
                 ticks,
                 arch: match c.station {
                     CookStation::Fire => ARCH_FIRE,
                     CookStation::Furnace => ARCH_FURNACE,
+                    CookStation::Recycler => ARCH_RECYCLER,
                 },
             };
         }
