@@ -535,25 +535,42 @@ hangup through the menu's own teardown. Remaining:
 3. **Ungated, by hand only:** the end-to-end kill-the-shard-mid-play run
    behind `Screen::Disconnected`.
 
-## 0t · the native pine is generated — what it owes
+## 0t · the forest — what it owes, re-ranked off `reference/PLANTS.md`
 
-Landed: `render/tree.rs` calls `bevy_procedural_tree` as ONE pure function —
-no plugin, no ECS; `props.rs`'s whorl builder stays as the far-LOD
-silhouette. Gate: `crates/client/tests/tree.rs`. Owed, in rank order:
+Landed: `render/tree.rs` calls `bevy_procedural_tree` as ONE pure function.
+**Felling v0** (2026-08-10): a chopped tree topples on a bearing derived from
+the cell key, keeps its own mesh, and stays down — gate `tests/fell.rs`, knob
+`DECISIONS.md` felling v0. Gates: `tests/tree.rs`, `tests/fell.rs`.
 
-1. **The billboard LOD.** 328 trees × 5.9 k tris is 1.9 M against DESIGN
-   §9's 1.5 M, so the full ring is knowingly over budget and only the ~80 m
-   band is affordable; `tests/tree.rs` prints the arithmetic. SeedThree's
-   `impostor.js` is the worked reference (two crossed alpha cards baked
-   front/side in a worker, readback row order probed once); its per-tree
-   `Group` emit is the part to throw away — this client wants an instanced
-   pool. Whatever LOD1 becomes, it sways: a billboard has four vertices to
-   put a wind weight on.
-2. **`aWind`** — `StandardMaterial` cannot read a custom attribute, so wind
-   needs the custom material `RENDER.md` already lists.
-3. **The needle card is generated** (`tree::needle_image`); a photographed
-   sprig is a later swap, not a prerequisite.
-4. **Owed upstream as a bug report:** `BranchForce` pointing down hits the
+**The order below is `PLANTS.md` §6.2's and it inverts what this item used to
+say.** LOD was rank 1; it is now rank 3, because clumping puts MORE stems in
+the near ring and an LOD tuned against today's lattice is tuned against a
+distribution we are about to replace. Measure between the two.
+
+1. **The species table.** One species at three seeds (`tree.rs`'s own words).
+   `TreeType::Deciduous` is a variant we never use and ez-tree ships 15 MIT
+   preset JSONs over the same parameter space — four species × three sizes is
+   a table port, not an asset. Watch `PINE_MAX_R`: it is a *sim* ceiling
+   (`world.rs` derives `SPAWN_CLEAR_M` from it), so a wider crown is a
+   sim-core conversation and not a render one.
+2. **The scatter lattice.** `terrain::scatter` draws one occupant per 8 m cell
+   with ±3 m jitter, so max density is one stem per 64 m² and two trees can
+   never be under 2 m apart — a forest cannot have a thicket. `ART.md` rule 7
+   forbids uniform spacing and this is uniform spacing. Cheapest fix is a
+   two-level draw (clump centres, then members) off another `cell_hash`
+   channel: pure, O(1) per cell, wall-1 clean. **Reddens `test_terrain_golden`
+   and `test_replay` by design** — a regenerate, and a wipe of every world.
+3. **The billboard LOD.** 328 trees × 5.9 k tris is 1.9 M against DESIGN §9's
+   1.5 M. Octahedral impostors beat SeedThree's crossed cards (a card edge-on
+   disappears); `PLANTS.md` §3.3 has both. Whatever LOD1 becomes, it sways.
+4. **`aWind`** — `StandardMaterial` cannot read a custom attribute, so wind
+   needs the custom material `RENDER.md` already lists. Gets LOD1 for free.
+5. **The sub-canopy and shrub layers are empty** (`PLANTS.md` §2). ez-tree's
+   three `bush_*` presets and a small tree at 40 % are new `Occupant`
+   variants plus scatter rows once item 1 lands.
+6. **The needle card is generated** (`tree::needle_image`); `WANTED.md` §9.5
+   is the swap, and it is the highest-value texture on that page.
+7. **Owed upstream as a bug report:** `BranchForce` pointing down hits the
    antipodal singularity in `Quat::from_rotation_arc(Y, dir)` and bends the
    whole tree sideways — droop is the limb ANGLE's job.
 
