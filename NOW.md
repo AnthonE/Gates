@@ -91,10 +91,25 @@ balance number; do not re-derive that list here.
 yields to a number of theirs by default (`BALANCE.md` §6.5); re-speak it
 rather than treating it as evidence. (b) A number **absent** from
 `RIPLIST.md` has not been decided either: asking that question found six
-of twelve content files with zero coverage, now rows 1c/1d/1e. The
-largest single gap on the list is the **tool cupboard at 1,000 wood
-against our 300 + 100 stone** — and 1c must not land without 1d, because
-a door's price without its health is the trap row 1b exists to name.
+of twelve content files with zero coverage.
+
+**Rows 1b, 1c and 1d all landed the same day** — building costs, the
+craft column and deployable hp, `RIPLIST.md` §1c is the record. What is
+left of that thread, in order:
+
+1. **The tool cupboard's own hp** is the largest open cell on the list —
+   ours 500, one weak summary says 100, and it decides whether a cupboard
+   is defended by its health or by being buried in a base. Mechanism
+   question, not a lookup.
+2. **`rock` is disputed** — one source says 10 stone and craftable; it is
+   the item you spawn holding. Wants a second source before ours moves.
+3. **Row 1e**: `armor` · `cooking` · `items` (stack sizes) · `loot` ·
+   `research` still have zero rip coverage. Stack sizes are the cheapest
+   — a pure lookup with no other half.
+4. ⚠ **The source tier dropped to get 1c/1d**: every candidate page is
+   `EGRESS_BLOCKED` here, so the table came through a second assistant —
+   a summary of pages nobody in this loop read. Re-verify against real
+   pages if egress ever opens; §1c names the two disputed cells.
 
 Two results worth carrying at this level. `balance.rs` refuses a
 `farm_per_min` above the sim's at-node ceiling and `tests/farmwalk.rs`

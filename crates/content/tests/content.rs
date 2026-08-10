@@ -644,8 +644,8 @@ fn bake_craft_carries_the_shipped_numbers() {
     assert_eq!(def.n_inputs, 2);
     let wood = c.item_index("item.wood").unwrap();
     let stone = c.item_index("item.stone").unwrap();
-    assert!(def.inputs[..2].contains(&(wood, 100)));
-    assert!(def.inputs[..2].contains(&(stone, 50)));
+    assert!(def.inputs[..2].contains(&(wood, 200)));
+    assert!(def.inputs[..2].contains(&(stone, 100)));
 
     // Station codes map in schema order.
     let furnace = c.recipe_index("recipe.furnace").unwrap() as usize;
