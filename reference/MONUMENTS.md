@@ -401,16 +401,24 @@ Landed:
   historical drift itself (truncate the canopy to six rows → "drawn peak
   3.0000 m against the sim's published 4.1000 m") and under the units bug.
 
-Measured while building it, and **left open deliberately**: the generated
-props block wider than they draw. `blob_mesh` pulls vertices inward from its
-nominal radius, so a boulder `OCCUPANT_R_M` calls 1.5 m actually reaches
-1.1145 m — a 0.39 m invisible collision skirt, and 0.52 m of headroom on the
-ore nodes. It is the canopy's defect in the *survivable* direction (you are
-stopped short of something you can see, rather than walking through
-something solid), and closing it means moving collision radii, which is a
-gameplay change and a replay-golden move. The gate ratchets it at the
-measured values so it cannot widen silently; `DECISIONS.md` §open carries the
-proposal.
+Measured while building it, and **closed the same day on the operator's
+call**: the generated props blocked wider than they drew. `blob_mesh`
+displaces vertices inward from its nominal radius, so a boulder
+`OCCUPANT_R_M` called 1.5 m actually reaches 1.1145 m — a 0.39 m invisible
+collision skirt, and 0.52 m of headroom on the ore nodes. It is the canopy's
+defect in the *survivable* direction (stopped short of something you can see,
+rather than walking through something solid) and it was found the same way:
+by a gate that could finally measure a triangle. The rows are the measured
+bounds now and the ratchet is an equality gate.
+
+**The general lesson is worth more than the fix.** Every one of these rows
+was written off the *generator's parameter* — "DodecahedronGeometry(1.5)" —
+rather than off the geometry the generator produced, and a parameter is not a
+measurement. That is §4's failure at its smallest scale: two descriptions of
+one object, both plausible, drifting because nothing compared them. It is
+also why `walk.rs`'s boulder fixture went red on the fix and was right to —
+it asserted `stop > 1.5`, pinning the nominal, so it had been testing the
+constant rather than the collision.
 
 ### 9.3b · Built this pass: the same seed can no longer mean two islands
 

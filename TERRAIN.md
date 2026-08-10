@@ -668,10 +668,12 @@ true by construction, and it reaches further than the two structures:
   triangle, so the asserts below prove only that this file agrees with itself";
 - a coverage check, so a new occupant arrives measured or explicitly excused.
 
-Left open and ratcheted rather than fixed: the *generated* props block wider
-than they draw (a boulder reaches 1.1145 m inside a 1.5 m blocked cylinder),
-because `blob_mesh` pulls vertices inward from its nominal radius. That is an
-invisible collision skirt — the same defect in the survivable direction — and
-closing it moves collision radii, so it is a knob (`DECISIONS.md` §open,
-"greybox mirror v1") and not a mechanical fix. The gate caps the slack at the
-measured values so it cannot widen unnoticed.
+**Closed the same day, on the operator's call**: the *generated* props blocked
+wider than they drew — a boulder reaching 1.1145 m inside a 1.5 m blocked
+cylinder, because `blob_mesh` displaces vertices inward from its nominal
+radius and the row had been written off the nominal. `OCCUPANT_R_M` and
+`OCCUPANT_TOP_M` carry the measured bounds now (rounded outward at four
+decimals) and the gate's ratchet is an equality check at a one-millimetre
+rounding allowance. Prop skirts tightened with it for free, because
+`skirt_base_r` already reached off `occupant_volume`. `DECISIONS.md`
+2026-08-10 has the call and what it touched.

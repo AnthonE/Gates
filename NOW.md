@@ -84,7 +84,9 @@ the same seed), and the debug/release probe diff that closes float contraction
 on the one axis this box can reach. **All of it looked at** (§0p3 has the
 recipe); two art rows fell out and are in `DECISIONS.md` §open — the shelter's
 corner posts stand 1.2 m proud of its roof and read as stubs, and swept ground
-reads as scattered shards at 2 m because of the pebble mesh.
+reads as scattered shards at 2 m because of the pebble mesh. **The collision
+skirt is closed** (operator, 2026-08-10): every occupant blocks what it draws
+now, within a millimetre, and the gate holds it there.
 
 **Next in this class, and it is a feature rather than a reconciliation: no
 deployable blocks movement.** `movement.rs` never consults `Deploys` and
@@ -518,9 +520,10 @@ and Map exist, the look/strafe inversion is fixed (`look.rs`). Remaining:
    structure is derived from the sim's box table (`props::authored`), so the
    drift cannot recur — and `crates/client/tests/greybox.rs` gates the rest,
    including the occupant table for everything that is not a tree. The sim's
-   list won the authority call; `TERRAIN.md` §7.1 has it. **Still uncovered:
-   the clutter ring**, and the props' *ratcheted* slack (a boulder blocks
-   0.39 m wider than it draws — `DECISIONS.md` §open "greybox mirror v1").
+   list won the authority call, and the props' invisible collision skirt is
+   closed too (a boulder blocked 0.39 m wider than it drew; the rows carry
+   measured bounds now and the gate is an equality check). `TERRAIN.md` §7.1
+   has it. **Still uncovered: the clutter ring.**
 3. **World-space anchors are still dropped** (the HUD line landed —
    `hud::readout` pins struct-hit fraction and the charge clock under the
    toast): the wall's own number at the wall itself, a clock on the charge

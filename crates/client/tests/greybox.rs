@@ -197,17 +197,27 @@ fn excused(o: Occupant) -> Option<&'static str> {
 /// How much wider and taller the sim is allowed to block than the client
 /// draws, in metres, at slot scale 1.0.
 ///
-/// **A ratchet, not a target.** The safe direction is the sim blocking a
-/// little more than the eye sees — the reverse is a wall you can walk through.
-/// But slack is still the canopy's defect in the survivable direction: it is a
-/// collision skirt around something you cannot see. These are the values
-/// measured on 2026-08-10 with the digits kept, so the gap cannot widen
-/// silently and closing it is an edit to one number. The generated blobs are
-/// the whole of it: `blob_mesh(r, jitter, …)` pulls vertices INWARD from its
-/// nominal radius, so a "DodecahedronGeometry(1.5)" boulder actually reaches
-/// 1.1145 m, while `OCCUPANT_R_M` reads 1.5 off the nominal.
-const SLACK_R_M: f32 = 0.39;
-const SLACK_TOP_M: f32 = 0.52;
+/// **Closed 2026-08-10 (operator), so this is now an equality gate.** It
+/// shipped as a ratchet at the measured 0.39 m / 0.52 m, because the slack was
+/// entirely the three generated blobs: `blob_mesh(r, jitter, …)` displaces
+/// vertices INWARD from its nominal radius, so a boulder written into
+/// `OCCUPANT_R_M` as "DodecahedronGeometry(1.5)" actually reached 1.1145 m and
+/// blocked 0.39 m of ground nobody could see. Those rows are the measured
+/// bounds now.
+///
+/// What is left is rounding, and it is deliberately outward:
+/// `SHELTER_CORNER_R_M`'s convention, because erring outward costs a wasted
+/// narrow-phase test while erring inward lets a body stand inside the mesh.
+/// The two authored rows do not even round at the same place — 4.9498 at four
+/// decimals, 3.96 at two, a 0.2 mm artefact — so **one millimetre**, which is
+/// the threshold `the_authored_pair_bounds_equal_what_the_sim_publishes`
+/// already uses a few tests up.
+///
+/// It is a rounding allowance, not a budget. A millimetre is below anything a
+/// player can be stopped by and three orders under the 0.39 m skirt this
+/// closed; raising it re-opens that skirt rather than relaxing a threshold.
+const SLACK_R_M: f32 = 0.001;
+const SLACK_TOP_M: f32 = 0.001;
 
 #[test]
 fn every_drawn_archetype_fits_the_volume_the_sim_blocks() {

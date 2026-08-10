@@ -3070,21 +3070,38 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// no bush. It reads as cover and costs nothing to cross, which is what the
 /// reference does with the same prop.
 ///
-/// Every row is held to the mesh by `ci/occupant_volume.mjs`, which measures
-/// the vertex buffer `ARCHETYPES` actually builds and sandwiches each row
-/// between the mesh's widest horizontal extent below the blocking top and the
-/// mesh's own bound. Nothing in the Rust workspace can see a triangle, so the
-/// asserts below prove only that this file agrees with itself. The gate found
-/// the `CrateSlot` row inward: it read 0.68 against a measured half-diagonal
-/// of 0.680074, which is the bug this doc names, so it is 0.6801 now.
+/// **Every row is held to the mesh by `crates/client/tests/greybox.rs`**,
+/// which builds the archetype's real mesh through `props::archetype_mesh` and
+/// measures its vertices. ⚠ This paragraph used to cite
+/// `ci/occupant_volume.mjs` and say "nothing in the Rust workspace can see a
+/// triangle, so the asserts below prove only that this file agrees with
+/// itself" — that gate went with the browser client and the sentence stayed,
+/// which is the dead-citation failure `CLAUDE.md` warns about: the doc read as
+/// covered while nothing checked it. It is covered again, in Rust, and the
+/// claim is now the stronger one — every row is measured against the drawn
+/// mesh in BOTH directions, so a row wider than what it blocks reddens the
+/// gate rather than becoming an invisible collision skirt.
+///
+/// The old gate found the `CrateSlot` row inward — it read 0.68 against a
+/// measured half-diagonal of 0.680074, so it is 0.6801 now. The new one found
+/// the three generated blobs the same way and larger: `blob_mesh` displaces
+/// vertices INWARD from its nominal radius, so rows written off the nominal
+/// ("DodecahedronGeometry(1.5)") blocked up to 0.39 m wider than anything a
+/// player could see. Those rows are the measured bounds now (operator,
+/// 2026-08-10), and the gate holds them there.
 pub const OCCUPANT_R_M: [f32; 13] = [
-    0.0,                // None
-    0.26,               // Tree — the TRUNK, not the canopy: `CylinderGeometry(0.13, 0.26)`
-    1.0,                // StoneNode  — DodecahedronGeometry(1.0)
-    1.0,                // MetalNode  — DodecahedronGeometry(1.0)
-    1.0,                // SulfurNode — DodecahedronGeometry(1.0)
+    0.0,  // None
+    0.26, // Tree — the TRUNK, not the canopy: `CylinderGeometry(0.13, 0.26)`
+    // The three ore nodes share one mesh, so they share one measurement:
+    // `blob_mesh(1.0, 0.46, …)` reaches 0.914739 m, NOT the nominal 1.0 —
+    // the jitter displaces inward. Rounded outward at 4 dp, the convention
+    // `SHELTER_CORNER_R_M` states: erring outward costs a wasted narrow-phase
+    // test, erring inward lets a body stand inside the mesh.
+    0.9148,             // StoneNode  — measured off blob_mesh(1.0, 0.46)
+    0.9148,             // MetalNode  — the same mesh
+    0.9148,             // SulfurNode — the same mesh
     0.0,                // Bush — deliberately passable
-    1.5,                // Rock — DodecahedronGeometry(1.5)
+    1.1145,             // Rock — measured off blob_mesh(1.5, 0.52); nominal was 1.5
     0.45,               // BarrelSlot — CylinderGeometry(0.45, 0.45, 0.95)
     0.0,                // 8: the client's stump. Not a sim occupant; the hole is the point.
     0.6801,             // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
@@ -3111,13 +3128,16 @@ pub const OCCUPANT_R_M: [f32; 13] = [
 /// costs nothing today and is the correct shape when something flies or a
 /// tree falls. (knob, DECISIONS.md §open: occupant volume v0.)
 pub const OCCUPANT_TOP_M: [f32; 13] = [
-    0.0,            // None
-    5.7,            // Tree — PINE_TRUNK_H
-    1.5,            // StoneNode  — lift 0.5 + radius 1.0
-    1.5,            // MetalNode
-    1.5,            // SulfurNode
+    0.0, // None
+    5.7, // Tree — PINE_TRUNK_H
+    // `lift + the mesh's own max y`, measured, not `lift + the nominal
+    // radius` — the same correction the radii above take, and for the same
+    // reason: the blob never reaches its nominal radius in any axis.
+    1.1269,         // StoneNode  — lift 0.5 + 0.626858; was 1.5 off the nominal
+    1.1269,         // MetalNode
+    1.1269,         // SulfurNode
     0.0,            // Bush
-    2.05,           // Rock — lift 0.55 + radius 1.5
+    1.5403,         // Rock — lift 0.55 + 0.990298; was 2.05 off the nominal
     0.975,          // BarrelSlot — lift 0.5 + half-height 0.475
     0.0,            // 8: the stump
     0.8,            // CrateSlot — lift 0.4 + half-height 0.4
@@ -3177,11 +3197,11 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
     match o {
         Occupant::None => (0.0, 0.0),
         Occupant::Tree => (0.26, 5.7),
-        Occupant::StoneNode => (1.0, 1.5),
-        Occupant::MetalNode => (1.0, 1.5),
-        Occupant::SulfurNode => (1.0, 1.5),
+        Occupant::StoneNode => (0.9148, 1.1269),
+        Occupant::MetalNode => (0.9148, 1.1269),
+        Occupant::SulfurNode => (0.9148, 1.1269),
         Occupant::Bush => (0.0, 0.0),
-        Occupant::Rock => (1.5, 2.05),
+        Occupant::Rock => (1.1145, 1.5403),
         Occupant::BarrelSlot => (0.45, 0.975),
         Occupant::CrateSlot => (0.6801, 0.8),
         Occupant::HavenShelter => (SHELTER_CORNER_R_M, SHELTER_PEAK_M),
