@@ -13,7 +13,11 @@ operator noticed (2026-08-08: *"a lot of this ties down to building rights
 and toolchest"*) and that is exactly right — same defect, same fix, and the
 reference solved them separately and differently.
 
-Dated 2026-08-08. §9 is the part that changes what we build.
+Dated 2026-08-08; **§7b added 2026-08-10** and answers a second question
+the first draft did not — *what may be built, and what does a shape cost*
+— because the operator asked for the cost grammar next and it turns out to
+be four ratios doing the work of a hundred numbers. §9 is the part that
+changes what we build; its last five items are §7b's.
 
 ## 0 · Provenance — read this first
 
@@ -184,6 +188,156 @@ The checklist §9 scores us against:
 | 11 | pick up a deployable | authorized, inside privilege | §2 |
 | 12 | raid it | anyone with explosives | privilege is not armour |
 
+## 7b · The catalogue, and the cost grammar
+
+Added 2026-08-10, from the operator's own reading of the current data
+(*"we need to work on building more"*). **Provenance: tier 3.** These are
+catalogue-and-price numbers of the kind §0 ranks weakest, arriving here
+transcribed rather than fetched, and prices are the second-most re-tuned
+set of numbers in that game after §5's decay figures. What makes them
+worth writing down anyway is not the absolute numbers — it is that they
+are **internally consistent to four ratios**, and a transcription error
+does not usually survive that test.
+
+### 7b.1 The catalogue is 20 × 5
+
+Twenty structural shapes, each available in five grades — twig, wood,
+stone, sheet metal, armoured — for 100 block/grade combinations. That is
+the whole structural menu; everything else that looks like a building
+piece is a **deployable inserted into one** (§7b.4).
+
+| family | shapes |
+|---|---|
+| ground | square foundation · triangle foundation · foundation steps |
+| horizontal | square floor · triangle floor · floor frame · triangle floor frame |
+| vertical | wall · half wall · low wall · doorway · window · wall frame |
+| circulation | ramp · L stairs · U stairs · spiral stairs · triangle spiral stairs |
+| cover | roof · triangle roof |
+
+Two footprint families — **square and equilateral triangle** — generate
+all of it. Nothing is freeform, and that is the point: honeycomb, airlocks,
+offset bunkers, rounded exteriors, shooting floors and external-cupboard
+connectors are all *emergent from snapping those two footprints together*,
+not authored as separate pieces.
+
+### 7b.2 Grades: the price moves, the health doubles
+
+| grade | paid in | full-wall cost | hp |
+|---|---|---|---|
+| twig | wood | 50 | 10 |
+| wood | wood | 200 | 250 |
+| stone | stone | 300 | 500 |
+| sheet metal | metal frags | 200 | 1,000 |
+| armoured | HQM | 25 | 2,000 |
+
+**HP is a property of the grade alone.** A stone floor, a stone wall and a
+stone triangle foundation are all 500. The geometry moves the *price* and
+never the health — §7b.3 is what that implies and it is the most important
+line in this document.
+
+The ladder is × 2 at every rung (250 → 500 → 1,000 → 2,000), which is why
+progression reads instantly to a player who has never seen a number.
+
+### 7b.3 The grammar is four ratios, and one of them is a deliberate refusal
+
+Normalise every shape against the full wall of its own grade and the whole
+100-row table collapses to **four numbers**, holding across all five
+grades (the HQM column rounds at small integers — 13/25 = 0.52 — and
+otherwise it is exact):
+
+| ratio | shapes |
+|---|---|
+| **1.0** | square foundation · wall · **half wall** · all four stairs |
+| **0.7** | doorway · window |
+| **0.5** | triangle foundation · square floor · floor frame · wall frame · low wall · steps · ramp · roof · triangle roof |
+| **0.25** | triangle floor · triangle floor frame |
+
+Two axes generate it. **Family price** — a piece that holds the base up or
+walls it in is 1.0, an opening is 0.7, a horizontal surface above ground
+is 0.5 — and **footprint**, where a triangle is half its square at the
+same tier. The two compose: a triangle floor is ½ × 0.5 = 0.25.
+
+**The generative rule is not volume, it is the socket.** Price tracks what
+the piece *denies an attacker* net of what you still owe to close it:
+
+- A wall denies everything and spends the socket → 1.0.
+- A doorway denies everything **except a door-shaped hole you must buy a
+  door for** → 0.7, and the door is a second purchase (§7b.4).
+- A wall frame is mostly hole and needs a large insert → 0.5.
+- A floor above ground is not what stops a raid coming in the front → 0.5.
+
+Which explains the famous anomaly. **A half wall costs a full wall.** Two
+stacked half walls are 600 stone where one wall is 300, and experienced
+builders therefore do not casually stack them. It is not a mis-tune: a
+half wall **spends the wall socket** — nothing else can go there — so it
+is charged as a wall, and the discount you might expect for half the
+geometry would make the half wall a cheaper full wall wherever a shooting
+slot was wanted anyway. The 1.0 is the design refusing an arbitrage. The
+low wall, which does *not* occupy a wall socket, is 0.5.
+
+**And the ratio table has a 4× spread in defensive value per resource**,
+because §7b.2's hp does not move with it. At stone: a wall is 300 for 500
+hp (1.67 hp per stone), a triangle foundation is 150 for the same 500
+(3.33), a triangle floor is 75 for the same 500 (6.67). That is the
+economic engine under every base shape that game is known for — honeycomb
+is not a trick players found in spite of the pricing, it is **what the
+pricing pays for**, at exactly 2× and 4× a wall's rate. Cost varies by
+shape, health does not, and geometry becomes the optimisation.
+
+### 7b.4 Twig is a scaffold, and the two purchases are separate
+
+Placement and grade are two acts. A **building plan** (20 wood) places any
+shape, always **as twig**; a **hammer** (100 wood) upgrades it, and the
+grade's cost is paid **in addition to** the twig already spent. So a wood
+wall is 50 + 200 = 250 wood, not 200, and the model is:
+
+```
+terrain → twig structural skeleton → permanent material
+```
+
+Twig is the **editable draft**: 10 hp, ~1 h decay (§5), cheap enough to
+lay out a whole base and re-lay it. It is the mechanism that makes the
+§6 grace window mostly unnecessary — you find out the foundation is wrong
+while it still costs 50 wood.
+
+The **socket system** is the same separation one level down. A structural
+frame holds a deployable insert, bought separately and destroyed
+separately:
+
+| socket | insert |
+|---|---|
+| doorway | wooden door 300 wood · sheet metal door 150 frags · armoured door 20 HQM + 5 gears |
+| wall frame | sheet metal double door 200 frags · garage door 300 frags + 2 gears · armoured double door 25 HQM + 5 gears · shopfront |
+| window | bars · glass · shutters · embrasures |
+| floor frame | ladder hatch · floor grill |
+
+Garage doors need a level 2 workbench and armoured doors a level 3; wooden
+and sheet metal doors are default blueprints. **Wall grade and opening
+grade are independent** — an armoured doorway may hold a wooden door — and
+the attacker simply breaks whichever component is cheapest. Ownership is
+not on the door either: a lock is a third purchase (key lock 75 wood, code
+lock 100 frags), which is `DOORS.md`'s whole subject.
+
+### 7b.5 Hard side and soft side
+
+Every piece has an outside (hard) and an inside (soft) face, and the soft
+face is dramatically more vulnerable to melee — stone especially. A base
+built with its soft sides facing out is far weaker than its bill of
+materials suggests. One rule, and it turns placement *orientation* into
+skill expression for free.
+
+### 7b.6 Upkeep is per grade, which makes a mixed base pay three bills
+
+§4's per-material rule meets §7b.2's grades: a base whose shell is stone,
+whose core is metal and whose loot room is armoured draws stone **and**
+frags **and** HQM from one cupboard simultaneously, and running out of any
+one of them rots only that grade's pieces. Structural blocks, doors and
+window inserts count toward upkeep; loose interior deployables such as
+sleeping bags generally do not, and high external walls inside privilege
+are exempt. **A bigger base is not merely expensive to build — it is
+expensive to keep**, which is the sentence that makes this a survival game
+rather than a construction toy.
+
 ## 8 · Sources
 
 Tier 1 (in-tree, MIT): `reference/rust-systems.txt` — `BuildingPrivlidge`,
@@ -201,6 +355,16 @@ Tier 3 (community wikis, guides and decay calculators, **via search
 summary**): the 10-player list cap, the `E`/hold-`E` interaction, the 24
 slots and 24-hour readout, the ~16 m / six-floor / 16 m-cushion figures, the
 §5 decay ladder, and the §6 windows — where two sources disagree.
+
+Tier 3 also, and by a **different route worth naming**: all of §7b — the
+20-shape catalogue, the five grades, the 100-row cost table, the door and
+lock prices, the workbench tiers, hard/soft sides. It came from the
+**operator, 2026-08-10**, transcribed rather than fetched, stating it was
+checked against current data. Treat it exactly as the rest of tier 3 and
+no worse: the internal consistency in §7b.3 (100 rows, four ratios, five
+grades) is stronger evidence of faithful transcription than any single
+figure here, and the ratios are the part §9 acts on. The absolute prices
+are the part to re-check before they are copied anywhere.
 
 ## 9 · What it means for us
 
@@ -261,3 +425,51 @@ Owned by `sim-core/deploy.rs` (the hearth, upkeep, decay) and
     8 rotate ❌ · 9 demolish ❌ · 10 repair ✅ · 11 pick up a deployable ❌ ·
     12 raid ✅. **Five of the twelve are the same missing idea** — 3, 4, 5
     are the list, and 9, 11 are the windowed pickup.
+
+⚠ **Items 1, 2, 5, 6, 7 and verbs 3/4/5/8/9/11 landed 2026-08-08/09** —
+the crew list, the claim volume, per-material decay, demolish. `NOW.md`
+§0aa is the live scorecard; read it before treating anything above as
+outstanding. Items 3, 4 and 8 stand as written.
+
+The rest of this section is **§7b's half**, added 2026-08-10.
+
+11. **Our cost grammar has no shape economy at all, and theirs is the
+    game.** Ours prices foundation, wall, floor and roof identically
+    (350 wood / 350 stone / 200 frags), the doorway at 0.8 and stairs at
+    0.57 — so every shape buys the same hp for the same resource and the
+    only reason to prefer one is that it is the shape that fits. Theirs
+    spans 4× (§7b.3). Since our hp is already per material and our cost
+    already per shape × material, **the entire difference is six numbers
+    in `content/building.toml`** — wall 7, no code. It is the cheapest
+    real improvement in this document, exactly as item 6 was, and it is
+    the one the operator pointed at.
+12. **Twig is a mechanism and we do not have it.** We have one act where
+    they have two: our `place` names a finished grade and pays for it
+    outright, so a misplaced stone wall costs a stone wall. Adding a rung
+    below wood is not a content row — it only means anything if `place`
+    **refuses everything above it**, which is what makes the skeleton a
+    draft and the hammer the commitment. It also gives `demolish`'s grace
+    window (§6) a much smaller job, and gives our claim/upkeep system a
+    grade it should deliberately **never** protect (§7b.4: twig is
+    scaffold, so it always rots).
+13. **Openings are already sockets here, and only doorways know it.** Our
+    doorway takes a door deployable and the door has its own hp and its
+    own lock — §7b.4's exact separation, built. The window and the wall
+    frame are the same idea with the insert unbuilt, and they are the two
+    cheapest catalogue additions we could make: `SHAPE_BITS` is 3 and we
+    use 6 of its 8 codes, so **two shapes fit with no wire widening**.
+    Their prices are already decided by §7b.3 (0.7 and 0.5).
+14. **Triangles are the biggest single gap and the most expensive.** They
+    are half the reason that game's bases look the way they do (§7b.1),
+    and our grid cannot express one: `build.rs`'s cell holds one plane,
+    one riser and two canonical edges, all square. A triangle footprint
+    is a different address space, not a new row — so this is the one item
+    here that is a **grid change**, and it should be costed as one rather
+    than smuggled in behind the cheap items.
+15. **What we should NOT copy, this half**: five grades (ours is three
+    plus twig, and armoured wants an HQM economy we do not have), the
+    workbench tiers gating door blueprints (`research.toml` is our
+    answer to that question and it is a different one), and hard/soft
+    sides (§7b.5) — which is a *good* rule we should want, but it needs
+    a facing on every piece and an attack direction on every swing, and
+    it is worth its own pass rather than a corner of this one.
