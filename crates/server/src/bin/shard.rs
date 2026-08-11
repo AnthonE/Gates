@@ -132,6 +132,23 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    // What this shard IS, before what it loaded. Three numbers and they are
+    // three different questions (`protocol::version`): the build is what to
+    // quote in a bug report, `proto` is the exact wire gate, and the floor is
+    // this operator's own policy about releases. Printed together because the
+    // counter that records a `REFUSE_BUILD` is a bare integer — this line is
+    // the other half of reading it.
+    let (fma, fmi, fpa) = protocol::version::unpack(cfg.min_client);
+    println!(
+        "shard {} · proto v{} · admits clients {}",
+        protocol::version::BUILD_ID,
+        protocol::PROTO_VER,
+        if cfg.min_client == 0 {
+            "of any release".to_string()
+        } else {
+            format!("{fma}.{fmi}.{fpa} and newer")
+        }
+    );
     let a = content.anchors();
     println!(
         "content ok: {} items · hash {:016x}",

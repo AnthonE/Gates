@@ -148,3 +148,29 @@ seed = 20260731
 # at boot rather than clamping a number an operator typed.
 # entitle_timeout_secs = 6
 # entitle_sweep_secs = 120
+
+# ---------------------------------------------------------------------------
+# The oldest CLIENT RELEASE this shard admits. Unset ⇒ 0 ⇒ every client that
+# can talk to this shard at all, which is the shipping default and is not a
+# hole: `PROTO_VER` is an exact gate one step above this and refuses anyone
+# whose bytes disagree, before this key is consulted.
+#
+# THREE VERSION NUMBERS, and this is the third — `crates/protocol/src/version.rs`
+# carries the table. The wire's number (`PROTO_VER`) answers "can these two
+# parse each other"; it is deliberately stingy and two releases a month apart
+# can share it. This answers the question it cannot: "is this client old enough
+# to be WRONG about something that is not a byte" — a prediction rule that
+# moved, a number that changed in `content/`. That is a judgement about a
+# release, which is why it is a config key an operator sets rather than a
+# constant somebody has to rebuild to change.
+#
+# A MINIMUM, not an equality: a client NEWER than this shard is admitted. That
+# direction is what keeps a release shippable — a player who updated first must
+# not be locked out of a shard nobody has restarted yet — and the incompatibility
+# that would actually matter is `PROTO_VER`'s to refuse.
+#
+# Raising it locks out every installed client below it, so publish the release
+# FIRST and raise this after. The `refused_build` counter is how you find out
+# you got that order wrong: a number still climbing days later means the build
+# you told players to get was never actually published.
+# min_client = "0.1.0"

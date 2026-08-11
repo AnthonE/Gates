@@ -409,11 +409,18 @@ logged per player and outliers surface in the anomaly log (§10).
 
 ### 5.9 · Join flow
 
-Bidi stream: `hello{proto_ver}` → version gate → `session{guest_uuid}` or
-wallet bind (§10) → server streams world metadata (seed, tick, time, your
-spawn, catalog hash) on a uni stream while the sim preallocates the
-connection's rings and slots → first keyframe → datagrams flow. A shard at
-cap refuses at `hello` with a posted reason — never a hang.
+Bidi stream: `hello{proto_ver, ver, build}` → **two** version gates →
+`session{guest_uuid}` or wallet bind (§10) → server streams world metadata
+(seed, tick, time, your spawn, catalog hash) on a uni stream while the sim
+preallocates the connection's rings and slots → first keyframe → datagrams
+flow. A shard at cap refuses at `hello` with a posted reason — never a hang.
+
+Two gates because they are two questions (`crates/protocol/src/version.rs`
+owns the table): `proto_ver` is the **exact** wire gate and a mismatch is
+`REFUSE_VERSION`; `ver` is the client's **release**, checked against the
+shard's `min_client` as a **minimum** — below it is `REFUSE_BUILD`, and a
+client *newer* than the shard is admitted on purpose. `build` is a digest of
+the client's build id, carried for the shard's records and gated by nothing.
 
 ## 6 · Hot-path laws
 

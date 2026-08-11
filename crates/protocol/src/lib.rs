@@ -36,6 +36,7 @@ pub mod bits;
 pub mod chat;
 pub mod event;
 pub mod goldens;
+pub mod version;
 
 pub use auth::{
     siwe_message, Address, Auth, Challenge, Signature, ADDRESS_BYTES, DOMAIN_MAX, NONCE_BYTES,
@@ -425,7 +426,32 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// move all named in its message. The pin is now 3.
 ///
 /// Fixtures are keyed `v34_*`. None added, none removed — 83, as v33.
-pub const PROTO_VER: u16 = 34;
+///
+/// v35 puts the **release** on the wire beside the protocol: `Hello` grows
+/// `ver` (the packed semver, [`version::VER`]) and `build` (a 64-bit digest
+/// of the build id), so a shard can refuse a client that is too old to be
+/// right about something that is not a byte, and can name the exact build
+/// in its log when it does not. `REFUSE_BUILD` is the new no.
+///
+/// **This is the bump that admits `PROTO_VER` was answering two questions.**
+/// It is the exact wire gate and it is deliberately stingy — it moves only
+/// on a layout change, so two releases a month apart can share it. That is
+/// right for "can these parse each other's bytes" and useless for "is this
+/// client old enough to mispredict", which is a question about the *release*
+/// and had no field to ask it in. `version.rs`'s header carries the three
+/// numbers and which one gates what.
+///
+/// One fixture moves and it is the only one that could: `hello`, which is
+/// the one message that carries the version — 16 bits of `proto_ver`, now
+/// followed by 32 of `ver` and 64 of `build`. Every other fixture is
+/// byte-identical under a new name. A v34 client is refused at the gate that
+/// reads the first 16 bits, which is unmoved and still the first thing
+/// parsed, so the older build meets a posted reason rather than a
+/// mis-parse — the property `REFUSE_VERSION`'s own doc claims and the reason
+/// the version is the first field in the first message.
+///
+/// Fixtures are keyed `v35_*`. None added, none removed — 83, as v34.
+pub const PROTO_VER: u16 = 35;
 
 /// Datagram kind field width.
 ///
@@ -520,11 +546,28 @@ pub fn peek_kind(buf: &[u8]) -> Result<u32, WireError> {
 // Stream-lane handshake messages (bidi, DESIGN.md §5.9)
 // ---------------------------------------------------------------------------
 
-/// C→S on the bidi stream: `hello{proto_ver}`. The version gate happens
-/// before anything else exists for this client.
+/// C→S on the bidi stream: `hello{proto_ver, ver, build}`. The version gate
+/// happens before anything else exists for this client.
+///
+/// **Field order is load-bearing.** `proto_ver` is first because it is the
+/// only field whose meaning is guaranteed across versions: a shard reads 16
+/// bits, and if they are not its own number it stops without trusting a
+/// single bit that follows. Everything after it is only meaningful once the
+/// two agree on what the bytes are — which is why growing this message is
+/// safe for the refusal path and why it is the message that carries
+/// [`PROTO_VER`] itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hello {
     pub proto_ver: u16,
+    /// The client's **release**, packed by [`version::pack`]. Gated as a
+    /// minimum, not an equality — `version.rs` argues why.
+    pub ver: u32,
+    /// A digest of the client's build id, [`version::BUILD`]. **Logged, never
+    /// gated**: a client states it and nothing trusts it. It exists so a
+    /// shard's log can distinguish two players on the same release who are on
+    /// different commits, which is the first useful fact when one of them is
+    /// reproducing something the other is not.
+    pub build: u64,
 }
 
 /// S→C: the join bundle v0 — player id, world seed, current server tick.
@@ -575,6 +618,30 @@ pub const REFUSE_AUTH: u8 = 2;
 /// golden changes. An older client gets `None` from [`refuse_text`] and
 /// says so in its own words rather than guessing at a reason.
 pub const REFUSE_TICKET: u8 = 3;
+/// The client's **release** is below this shard's `min_client`.
+///
+/// **A separate code from [`REFUSE_VERSION`] because the two are different
+/// facts and only one of them is about bytes.** `REFUSE_VERSION` means the
+/// packet layouts disagree and neither side can parse the other; this means
+/// they parse each other perfectly and the shard has decided the client is
+/// too old to be *right* — a prediction rule that moved, a refusal that grew
+/// a case, a number that changed in `content/`. Merging them would be the
+/// mistake [`REFUSE_AUTH`] makes on purpose and this does not: there is no
+/// oracle to protect here, and the player's fix is the same download either
+/// way, but the *shard operator's* diagnosis is not. One says "your build
+/// cannot talk to mine"; this says "your build talks fine and I do not trust
+/// its arithmetic".
+///
+/// The sentence is deliberately close to `REFUSE_VERSION`'s, because the
+/// player's action really is identical — update the game. The distinction
+/// earns its code in the shard's counters and log line, not in the player's
+/// day. [`version`]'s header carries the three numbers and which gates what.
+///
+/// No layout moved for this: `Refuse.code` has always been a full `u8` and
+/// this is the fifth of 256 values. `PROTO_VER` turns in this commit for
+/// [`Hello`]'s two new fields — the thing this code *reads* — and not for
+/// the code itself.
+pub const REFUSE_BUILD: u8 = 4;
 
 /// What to actually say to the player. One implementation, because the two
 /// call sites that print a refusal (the client's connect path and the bot
@@ -599,6 +666,7 @@ pub fn refuse_text(code: u8) -> Option<&'static str> {
             "this shard checks copies and this wallet holds none — buy a copy on scry, \
              or play a community shard"
         }
+        REFUSE_BUILD => "this shard runs a newer release — update the game",
         _ => return None,
     })
 }
@@ -612,6 +680,11 @@ pub fn encode_hello(msg: &Hello, buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);
     w.write(KIND_HELLO, KIND_BITS)?;
     w.write(msg.proto_ver as u32, 16)?;
+    w.write(msg.ver, 32)?;
+    // `write` tops out at 32 bits (`bits.rs`), so the digest goes low half
+    // first. Two writes, one order, stated here and mirrored in the decoder.
+    w.write(msg.build as u32, 32)?;
+    w.write((msg.build >> 32) as u32, 32)?;
     Ok(w.finish())
 }
 
@@ -621,8 +694,15 @@ pub fn decode_hello(buf: &[u8]) -> Result<Hello, WireError> {
         return Err(WireError::Malformed);
     }
     let proto_ver = r.read(16)? as u16;
+    let ver = r.read(32)?;
+    let lo = r.read(32)? as u64;
+    let hi = r.read(32)? as u64;
     expect_zero_padding(&mut r)?;
-    Ok(Hello { proto_ver })
+    Ok(Hello {
+        proto_ver,
+        ver,
+        build: (hi << 32) | lo,
+    })
 }
 
 /// S→C: sign this nonce. Sent after the version gate and before anything
@@ -2671,6 +2751,7 @@ mod tests {
             (REFUSE_FULL, "REFUSE_FULL"),
             (REFUSE_AUTH, "REFUSE_AUTH"),
             (REFUSE_TICKET, "REFUSE_TICKET"),
+            (REFUSE_BUILD, "REFUSE_BUILD"),
         ] {
             assert!(
                 refuse_text(code).is_some(),
@@ -2679,10 +2760,60 @@ mod tests {
         }
         assert_eq!(
             declared.len(),
-            4,
+            5,
             "a REFUSE_* code was added ({declared:?}) — give it a sentence in \
              `refuse_text` and a row in this list, or a player meets it as a number"
         );
+    }
+
+    /// **The hello's bytes, laid out by hand rather than by the encoder.**
+    ///
+    /// `test_protocol_golden` cannot make this statement and it is worth
+    /// understanding why: the fixture was *written by the encoder*, so at the
+    /// moment a field is added the golden agrees with whatever the encoder
+    /// did, including writing the digest's halves the wrong way round. It
+    /// catches drift from that day forward and is blind on the day itself —
+    /// CLAUDE.md's byte-golden trap, which cost the reference ecosystem ~27
+    /// shipped-wrong payloads, and the reason `tests/event_roles.rs` exists
+    /// for the event lane.
+    ///
+    /// So this builds the bits from the spec in [`Hello`]'s doc — kind, then
+    /// 16 of `proto_ver`, then 32 of `ver`, then the digest **low half
+    /// first** — and asserts the encoder agrees. A swapped pair of halves
+    /// round-trips through `decode_hello` perfectly and fails here.
+    #[test]
+    fn the_hello_writes_its_fields_where_the_doc_says() {
+        let msg = Hello {
+            proto_ver: 0xABCD,
+            ver: 0x1234_5678,
+            build: 0x0011_2233_4455_6677,
+        };
+        let mut got = [0u8; MAX_STREAM_MSG_BYTES];
+        let len = encode_hello(&msg, &mut got).expect("encodes");
+
+        // Little-endian bit packing, LSB-first within each byte (`bits.rs`),
+        // so a 4-bit kind followed by 16 bits of version lands on a nibble
+        // boundary and every field after it is nibble-aligned too.
+        let mut want = [0u8; MAX_STREAM_MSG_BYTES];
+        let mut w = BitWriter::new(&mut want);
+        w.write(KIND_HELLO, KIND_BITS).unwrap();
+        w.write(0xABCD, 16).unwrap();
+        w.write(0x1234_5678, 32).unwrap();
+        w.write(0x4455_6677, 32).unwrap(); // build, low half
+        w.write(0x0011_2233, 32).unwrap(); // build, high half
+        let want_len = w.finish();
+
+        assert_eq!(len, want_len, "the hello changed length");
+        assert_eq!(
+            &got[..len],
+            &want[..want_len],
+            "the hello's fields are not where `Hello`'s doc says they are"
+        );
+
+        // And the field the refusal path depends on is still the first one
+        // parsed, so a client of any other version meets a posted reason
+        // instead of a mis-parse.
+        assert_eq!(decode_hello(&got[..len]).unwrap(), msg);
     }
 
     /// Two codes reading the same is a player who cannot tell which no they
@@ -2690,7 +2821,13 @@ mod tests {
     /// because both are "the shard would not let me in".
     #[test]
     fn no_two_refusals_read_the_same() {
-        let all = [REFUSE_VERSION, REFUSE_FULL, REFUSE_AUTH, REFUSE_TICKET];
+        let all = [
+            REFUSE_VERSION,
+            REFUSE_FULL,
+            REFUSE_AUTH,
+            REFUSE_TICKET,
+            REFUSE_BUILD,
+        ];
         for (i, a) in all.iter().enumerate() {
             for b in all.iter().skip(i + 1) {
                 assert_ne!(

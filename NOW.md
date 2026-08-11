@@ -339,6 +339,29 @@ theirs.
 
 ---
 
+## 0rl · The release path is built and two thirds of it is unverified *(platform lane)*
+
+`.github/workflows/release.yml` builds the client and shard for Linux,
+Windows and macOS on a `v*` tag, re-runs the gates on the tagged commit,
+refuses a tag that disagrees with `[workspace.package] version`, and drafts
+the release. **Only the Linux leg has ever been run** — this box has no
+Windows or macOS, so those two are written and unproven, which is the honest
+state and not a claim.
+
+1. **Run it and read what breaks.** `workflow_dispatch` takes an existing
+   tag, so a dry run costs a tag and no release. The likely Windows failure
+   is `scry_overlay.rs` — it now carries `cfg(windows)` transport, so it
+   should compile, but nothing here has compiled it. macOS has never built
+   this client at all.
+2. **There is no `LICENSE` file at the repo root** and the workspace declares
+   `license = "MIT"`. The release stages `README.md` and the two notice
+   licences that are conditions (icons CC BY, Roboto Apache-2.0) and has no
+   MIT text to stage. Writing one names a copyright holder — an operator
+   call, not a loop's.
+3. **`min_client` has never been raised on a live shard.** The order is
+   publish the release first, raise the floor after; `refused_build` climbing
+   days later is how you find out you did it backwards.
+
 ## 0ab · The store seam — what the SDK re-vendor and the depot job left *(platform lane)*
 
 Landed 2026-08-09. The vendored SDK was **326 lines behind upstream** with

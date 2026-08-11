@@ -402,6 +402,32 @@ pub fn setup(mut commands: Commands) {
         Pickable::IGNORE,
     ));
 
+    // The build stamp, top left — the one free corner (the compass owns top
+    // centre, the hotbar bottom centre, the vitals bottom right, the plan
+    // bottom left).
+    //
+    // **Static text, spawned once and never updated**, because the value is a
+    // compile-time constant: there is no system for it and nothing per-frame
+    // to pay. Dim and 11 px on purpose — its job is to be readable in a
+    // screenshot somebody pastes into a bug report, not to be part of the
+    // frame a player is looking at. `protocol::version::BUILD_ID` is the same
+    // string the shard's boot line prints and the same one `ci/depot.py`
+    // names an install directory with, so a report, a depot receipt and a
+    // server log all say one thing.
+    commands.spawn((
+        super::WorldEntity,
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(10.0),
+            left: Val::Px(12.0),
+            ..default()
+        },
+        Text::new(protocol::version::BUILD_ID),
+        super::ui::font(11.0),
+        TextColor(Color::srgba(0.86, 0.83, 0.76, 0.45)),
+        Pickable::IGNORE,
+    ));
+
     // The crosshair: four ticks around a gap, never a dot. A dot vanishes
     // against light ground and a full cross hides the thing you are aiming
     // at; the reference uses ticks for both reasons.

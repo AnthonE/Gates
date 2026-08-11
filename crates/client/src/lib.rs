@@ -443,6 +443,8 @@ impl Session {
         let len = encode_hello(
             &Hello {
                 proto_ver: PROTO_VER,
+                ver: protocol::version::VER,
+                build: protocol::version::BUILD,
             },
             &mut msg,
         )
