@@ -590,19 +590,20 @@ evidence about the budget, not automatically a defect. Re-deriving them is
 
 ## 11 · Milestones
 
-**M0 — the shell (the overnight).** Exit: two clients walk around each
-other on a seeded island through a real server, and the laws already bite.
-- [ ] workspace + five crates, CI runs fmt/clippy/test on push
-- [ ] `sim-core`: tick loop, seeded worldgen (heightfield), kinematic
-      capsule move/collide vs terrain, command buffer, state_hash
-- [ ] `protocol`: bit codec, input + snapshot v0 schemas, golden tests
-- [ ] `server`: wtransport accept, session hello, rings, 30 Hz sim thread,
-      AOI v0 (radius only), baseline+delta snapshots, keyframe recovery
-- [ ] `client-core` + `client`: connect, predict/reconcile own capsule,
-      interpolate the other guy, Bevy terrain from shared worldgen
-- [ ] gates live: zero-alloc test, replay test, golden tests, wasm/native
-      parity test, 50-bot smoke
-- [ ] `bots` bin: N capsules random-walking for load
+> **This section owns the arc.** `ALPHA.md` §6 folds into it and `NOW.md` §7
+> points at it; neither keeps a second copy. A milestone's *state* is derived,
+> never stamped here — `./ci/gates.sh` and the tree answer that faster than a
+> checkbox anyone has to remember to tick.
+
+**M0 — the shell (the overnight). LANDED.** Exit met: two clients walk
+around each other on a seeded island through a real server, and the laws
+bite. The workspace is six crates rather than the five this line planned for
+(`client-core` split out), the sim, wire, server, client and bot runner all
+exist, and the gates are the ones `ci/gates.sh` runs — derive them from the
+script, which is what CI executes. This item carried seven checkboxes,
+**every one of them unticked while every one of them shipped**: dead state a
+reader trusts, and the reason this section now states outcomes and points at
+commands.
 **M1 — survival verbs.** Gather (nodes/trees/barrels), inventory, craft
 ladder T0–T1, build grid + hearth + upkeep/decay, death/drop. Exit: two
 strangers can fight over a base with bows.
