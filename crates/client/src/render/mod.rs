@@ -725,6 +725,23 @@ impl Plugin for GatesRenderPlugin {
         .add_systems(OnEnter(Screen::Loading), sky::setup.after(rig::setup))
         // The listener IS the camera, so the ears wait for the rig as well.
         .add_systems(OnEnter(Screen::Loading), audio::setup.after(rig::setup))
+        // **The score runs everywhere, which is why it is registered on its
+        // own and not with the audio block below.** `sound::music` is a
+        // gap-and-intensity director (`reference/AUDIO.md` §8) and the menus
+        // are one of the two places it runs: continuous there, four to eight
+        // minutes apart in a world. Nothing it touches belongs to a world —
+        // no `Net`, no `Eye`, no listener — so it needs no run condition at
+        // all, and a music voice is deliberately not a `WorldEntity` so a
+        // piece can ring out across the transition.
+        .add_systems(Update, audio::music)
+        .add_systems(
+            OnEnter(Screen::Menu),
+            audio::music_mode(crate::sound::music::Mode::Menu),
+        )
+        .add_systems(
+            OnEnter(Screen::Loading),
+            audio::music_mode(crate::sound::music::Mode::World),
+        )
         // Leaving a shard resets the step odometer and the bed's fade. The
         // bed entity itself is a `WorldEntity` and goes with the rest.
         .add_systems(OnEnter(Screen::Menu), audio::teardown.after(world_teardown))
@@ -799,6 +816,10 @@ impl Plugin for GatesRenderPlugin {
                     water::stream,
                     props::stream,
                     props::harvest,
+                    // After `harvest`, which owns the discrete transition and
+                    // arms the topple this integrates. Reversed, a tree would
+                    // spend one frame at the pose the previous chop left it.
+                    props::fall,
                     clutter::stream,
                     structures::stream,
                     bodies::stream,

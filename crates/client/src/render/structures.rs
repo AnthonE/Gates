@@ -122,14 +122,24 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 10] = [
     // ⚠ `box_small` and `box_large` share this archetype, so they draw at one
     // size. Splitting them costs an `ARCH_*` and a `PROTO_VER` bump; filed in
     // §open rather than taken here.
-    ([1.2, 0.65, 0.7], Color::srgb(0.478, 0.361, 0.227), 0.85, 0.0), // box
+    (
+        [1.2, 0.65, 0.7],
+        Color::srgb(0.478, 0.361, 0.227),
+        0.85,
+        0.0,
+    ), // box
     // 3 · fire pit. Unchanged, and deliberately: a fire ring is radially
     // symmetric, so a square footprint is correct here and nowhere else.
     ([0.7, 0.4, 0.7], Color::srgb(0.816, 0.439, 0.188), 0.75, 0.0), // fire
     // 4 · furnace. The worst row in the table: 1.1 x 1.5 is TALLER than wide,
     // where a stone smelting forge is squat, wide and shallow. Now 1.37
     // width:height, against the 1.44 a generated mesh reached unprompted.
-    ([1.3, 0.95, 0.85], Color::srgb(0.310, 0.290, 0.271), 0.70, 0.0), // furnace
+    (
+        [1.3, 0.95, 0.85],
+        Color::srgb(0.310, 0.290, 0.271),
+        0.70,
+        0.0,
+    ), // furnace
     // 5 · workbench. Length and height were already right (0.9 is bench
     // height); 0.9 deep was not — a bench you can reach across is ~0.7.
     ([1.6, 0.9, 0.7], Color::srgb(0.631, 0.475, 0.247), 0.85, 0.0), // workbench

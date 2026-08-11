@@ -35,14 +35,20 @@ upkeep_pct_per_day = 10
 repair_cost_pct = 100
 # Unpaid decay per upkeep period (1 h), as a % of the piece's max hp, by
 # the piece's own material. The reference's ladder, converted: it takes a
-# full-health block ~3 h of wood / ~5 h of stone / ~8 h of metal to rot
-# away once its upkeep runs out, so the tougher the grade the SLOWER it
-# goes and an upgrade buys time as well as hp. 100 / hours, rounded up.
+# full-health block ~1 h of twig / ~3 h of wood / ~5 h of stone / ~8 h of
+# metal to rot away once its upkeep runs out, so the tougher the grade the
+# SLOWER it goes and an upgrade buys time as well as hp. 100 / hours,
+# rounded up — which puts twig at exactly 100, one period and gone.
+#
+# Twig's rate is only half of what makes it a draft; the other half is in
+# sim-core `deploy::upkeep_sweep`, where twig is never charged upkeep and
+# therefore never protected by a hearth however well stocked. A scaffold
+# pays no rent and gets no shelter.
 #
 # It replaces one flat 5 % for everything, which made a metal base rot at
 # a wooden one's rate and took twenty hours to do it. Proposed default,
 # DECISIONS.md §open ("upkeep/decay v1").
-decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }
+decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }
 
 [bands]
 # Anchor 2 — TTK in body hits, no armor; per weapon kind.
@@ -72,8 +78,25 @@ armor_extra_hits_max = 2
 # only the total, so the hit count stays ours and this band stays put.
 node_yield = [250, 1000]
 node_hits = [8, 12]
-# "A full wood wall ≈ 7 min of wood at T1 tools" (CONTENT §4 anchor 3).
-wood_wall_minutes = [5, 9]
+# A full wood wall in farm-minutes of wood at T1 tools (CONTENT §4 anchor 3).
+#
+# **Re-spoken 7 → 4 on 2026-08-10** (`DECISIONS.md` §open "twig v0"), and
+# it is `reference/BALANCE.md` §7's rule working rather than a loosening:
+# their wood wall is 200 wood, which prices at 4.0 here, and the question
+# a band break asks is which of the two is out of date. This one was. The
+# band was written around a cost column that had never been compared to
+# anything — the 2026-08-08 balance pass took the hp ladder out of
+# `building.toml` and left `cost` alone, and `RIPLIST.md` never opened a
+# row for it — so [5, 9] was a fence around our own invented number.
+#
+# The node take of 2026-08-10 is what made it visible: once a tree paid
+# **their** 810 wood, a wall priced at **ours** cost 1.75× theirs in
+# trees, which is the unit a player actually feels. Taking the cost column
+# makes both halves of "how many trees is a wall" come from one game.
+#
+# [3, 5] keeps the old band's shape — ±29% around the value, one unit
+# either side after the anchor's rounding — so it still catches drift.
+wood_wall_minutes = [3, 5]
 # Anchor 1 — satchels-to-break-a-stone-wall in farm-minutes over the
 # starter build in farm-minutes; below ~1.0 nobody builds, above ~3
 # nobody raids. Percent (100 = 1.0×) so the file stays integer-only.
@@ -224,9 +247,11 @@ count = 1
 item = "item.torch"
 count = 1
 
+# 3, not 5: the bandage's stack is theirs now (items.toml, RIPLIST §1e)
+# and a kit entry may neither exceed the item's stack nor repeat.
 [[spawn_kit]]
 item = "item.bandage"
-count = 5
+count = 3
 
 # Under the 1000 ceiling on purpose: a grant that sits exactly at an item's
 # stack size is one balance edit away from being refused, and `test_content`

@@ -254,11 +254,18 @@ async fn main() {
             trial.survival = survival;
             trial.cook = cook;
             trial.loot = loot;
+            // The island's own digest, computed once here and carried into
+            // every header this process writes. It is the number
+            // `test_terrain_golden` pins, so a build whose worldgen moved
+            // refuses the file rather than putting bases on ground that
+            // changed shape (`worldfile::H_WORLD`).
+            let world_digest = sim_core::probe::probe_terrain(cfg.seed);
             match server::worldfile::open(
                 Path::new(path),
                 &mut trial,
                 cfg.seed,
                 content.hash(),
+                world_digest,
                 cfg.world_save_interval_ticks,
             ) {
                 Ok((boot, found)) => {

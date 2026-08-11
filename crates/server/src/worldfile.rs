@@ -37,6 +37,12 @@
 //! - **wrong content hash** — item indices moved, so restoring a box would
 //!   hand somebody a different item than the one they put in it. Exactly
 //!   the refusal `store.rs` makes for the same reason.
+//! - **wrong world digest** — the seed matches and the *island generated
+//!   from it does not*. Worldgen changed under a running deployment, so
+//!   every base stands on ground that has moved. This is the refusal that
+//!   makes "a worldgen change is a wipe" (operator, 2026-08-10) a thing the
+//!   shard enforces rather than a thing everyone remembers; see
+//!   [`H_WORLD`].
 //!
 //! ## The identity table, and why it is here rather than in the blob
 //!
@@ -70,12 +76,14 @@ pub const WORLD_MAGIC: [u8; 8] = *b"GATESWLD";
 /// change independently: this one turns when the header or the identity
 /// table moves, that one turns when the sim's state layout does. Both are
 /// checked; a file that fails either is refused.
-pub const WORLD_FILE_FORMAT: u16 = 1;
+pub const WORLD_FILE_FORMAT: u16 = 2;
 
-/// The header, 50 bytes of fields padded to 64: magic (8), file format (2),
+/// The header, 58 bytes of fields padded to 64: magic (8), file format (2),
 /// blob format (2), seed (8), content hash (8), tick (8), sleeper count (2),
-/// blob length (4), checksum (8). Padded so a later field costs no layout
-/// change and no version turn for the padding itself.
+/// blob length (4), checksum (8), world digest (8). Padded so a later field
+/// costs no layout change and no version turn for the padding itself — the
+/// world digest is the first field to spend that padding, which is what it
+/// was for.
 pub const WORLD_HEADER_BYTES: usize = 64;
 const H_MAGIC: usize = 0;
 const H_FILE_FORMAT: usize = 8;
@@ -86,6 +94,23 @@ const H_TICK: usize = 28;
 const H_SLEEPERS: usize = 36;
 const H_BLOB_LEN: usize = 38;
 const H_SUM: usize = 42;
+/// `sim_core::probe::probe_terrain(seed)` — a digest of the island the seed
+/// actually generated, not of the seed.
+///
+/// **The seed is not the island, and that gap is the one hole left in this
+/// header.** `H_SEED` catches an operator pointing a shard at another
+/// island's world. It cannot catch the same seed generating a *different*
+/// island, which is what happens the moment anything in `terrain.rs` moves —
+/// a noise constant, a road width, a site's scoring weight. The file would
+/// load, and every piece in it would sit at coordinates describing ground
+/// that no longer exists: foundations in the air, doorways inside hills.
+///
+/// `probe_terrain` is the right digest and not a new one: it is what
+/// `test_terrain_golden` already pins and what the wasm parity gate already
+/// diffs, so the number this refuses on is the same number CI refuses on.
+/// It costs ~4,100 `height` taps plus a scatter block, computed **once per
+/// boot** by the caller and carried, never per save.
+const H_WORLD: usize = 50;
 
 /// One `(key, body id)` pair: whose body a saved sleeper is.
 pub const IDENT_RECORD_BYTES: usize = 1 + PLAYER_KEY_MAX_BYTES + 4;
@@ -166,6 +191,7 @@ fn rotate_backups(path: &Path) {
 fn encode_header(
     seed: u64,
     content_hash: u64,
+    world_digest: u64,
     tick: u64,
     sleepers: usize,
     blob_len: usize,
@@ -181,6 +207,7 @@ fn encode_header(
     h[H_SLEEPERS..H_SLEEPERS + 2].copy_from_slice(&(sleepers as u16).to_le_bytes());
     h[H_BLOB_LEN..H_BLOB_LEN + 4].copy_from_slice(&(blob_len as u32).to_le_bytes());
     h[H_SUM..H_SUM + 8].copy_from_slice(&body_sum.to_le_bytes());
+    h[H_WORLD..H_WORLD + 8].copy_from_slice(&world_digest.to_le_bytes());
     h
 }
 
@@ -194,6 +221,9 @@ pub struct WorldFile {
     path: Option<PathBuf>,
     seed: u64,
     content_hash: u64,
+    /// Computed once at boot and carried — see [`H_WORLD`] for why it is not
+    /// recomputed per save.
+    world_digest: u64,
 }
 
 impl WorldFile {
@@ -202,6 +232,7 @@ impl WorldFile {
             path: None,
             seed: 0,
             content_hash: 0,
+            world_digest: 0,
         }
     }
 
@@ -246,6 +277,7 @@ impl WorldFile {
         let head = encode_header(
             self.seed,
             self.content_hash,
+            self.world_digest,
             tick,
             idents.len(),
             blob.len(),
@@ -303,6 +335,7 @@ pub fn open(
     world: &mut sim_core::world::World,
     seed: u64,
     content_hash: u64,
+    world_digest: u64,
     interval_ticks: u64,
 ) -> Result<(WorldBoot, WorldLoad), String> {
     // Before the handle and before any validation: a file this boot is
@@ -314,6 +347,7 @@ pub fn open(
         path: Some(path.to_path_buf()),
         seed,
         content_hash,
+        world_digest,
     };
     if !path.exists() {
         return Ok((
@@ -404,6 +438,21 @@ pub fn open(
              shard baked {content_hash:#x} — item indices have moved, so a box \
              restored from it would hand somebody a different item than the one \
              they put in. Restore the content that wrote it, or start a fresh world",
+            path.display()
+        ));
+    }
+    // Last of the identity checks, and the only one the seed cannot make.
+    // Deliberately AFTER the seed test, so the common operator mistake
+    // (pointed at the wrong island) reports as itself rather than as this.
+    let got_world = at64(H_WORLD);
+    if got_world != world_digest {
+        return Err(format!(
+            "world file {} was written against island digest {got_world:#x}, this \
+             build generates {world_digest:#x} from the same seed — worldgen moved, \
+             so every base in it stands on ground that has changed shape. A worldgen \
+             change is a wipe (operator, 2026-08-10): move the file aside to start a \
+             fresh island. There is no converter and there cannot be one — the \
+             coordinates did not move, the ground under them did",
             path.display()
         ));
     }
@@ -531,13 +580,18 @@ mod tests {
         let h = encode_header(
             0x1122_3344_5566_7788,
             0x99AA_BBCC_DDEE_FF00,
+            0x0F1E_2D3C_4B5A_6978,
             4242,
             7,
             99,
             0xDEAD,
         );
         assert_eq!(&h[0..8], b"GATESWLD", "magic at 0");
-        assert_eq!(&h[8..10], &1u16.to_le_bytes(), "file format at 8");
+        assert_eq!(
+            &h[8..10],
+            &WORLD_FILE_FORMAT.to_le_bytes(),
+            "file format at 8"
+        );
         assert_eq!(
             &h[10..12],
             &WORLD_SAVE_FORMAT.to_le_bytes(),
@@ -553,6 +607,12 @@ mod tests {
         assert_eq!(&h[36..38], &7u16.to_le_bytes(), "sleepers at 36");
         assert_eq!(&h[38..42], &99u32.to_le_bytes(), "blob len at 38");
         assert_eq!(&h[42..50], &0xDEADu64.to_le_bytes(), "checksum at 42");
+        assert_eq!(
+            &h[50..58],
+            &0x0F1E_2D3C_4B5A_6978u64.to_le_bytes(),
+            "world digest at 50 — the field that spends the padding, and the one \
+             that makes a worldgen change a refusal instead of bases in the air"
+        );
         assert_eq!(h.len(), 64, "the header is padded to 64");
     }
 

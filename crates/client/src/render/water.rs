@@ -294,6 +294,40 @@ pub fn wave_field(
     (h, gx, gz)
 }
 
+/// [`wave_field`] for a whole grid, once, into `out` as `[h, gx, gz]`.
+///
+/// **The one function that decides which axis a coordinate belongs to**, and
+/// that is why it exists instead of three copies of the loop inside
+/// [`animate`]. `coords[ix]` is an X offset and `coords[iz]` is a Z one; the
+/// grid is square and the wave set is not, so a transposed pair produces a
+/// sea whose swell runs across its own gradient — a picture nothing here
+/// measures and a person would have to notice. `tests/water.rs` pins the
+/// mapping against a direct call.
+///
+/// `out` is the caller's buffer and is written for the first `n·n` entries;
+/// anything shorter is a caller bug and panics on the index rather than
+/// quietly leaving the tail of the sea on the previous frame's surface.
+pub fn resolve_field(
+    centre: Vec2,
+    coords: &[f32],
+    spacing: &[f32],
+    shoal: &[f32],
+    phase: &[f32; WAVE_COUNT],
+    out: &mut [[f32; 3]],
+) {
+    let n = coords.len();
+    for iz in 0..n {
+        for ix in 0..n {
+            let i = iz * n + ix;
+            let x = centre.x + coords[ix];
+            let z = centre.y + coords[iz];
+            let sp = spacing[ix].max(spacing[iz]);
+            let (h, gx, gz) = wave_field(x, z, phase, sp, shoal[i]);
+            out[i] = [h, gx, gz];
+        }
+    }
+}
+
 /// The surface normal for a gradient out of [`wave_field`].
 pub fn wave_normal(gx: f32, gz: f32) -> Vec3 {
     Vec3::new(-gx, 1.0, -gz).normalize()
@@ -747,6 +781,23 @@ pub struct Sea {
     /// a crest against, so a whitecap is relative to the local sea state and
     /// not to a constant.
     reach: Vec<f32>,
+    /// This frame's [`wave_field`] answer per vertex: `[h, gx, gz]`.
+    ///
+    /// **The only cache here that is a function of *when*, and it is a
+    /// performance fix rather than a design one.** The position, the normal
+    /// and the colour are three separate `attribute_mut` borrows and each one
+    /// used to recompute the field it needs, so every vertex paid `wave_field`
+    /// three times a frame — up to twelve `sin_cos` where four would do.
+    /// Measured on the gate box at the shipped 89² grid: 1.01 ms a frame for
+    /// the three passes against 0.38 ms for one pass and three reads, which is
+    /// the single largest steady-state CPU cost the client had.
+    ///
+    /// It is sized once in [`setup`] and mutated in place forever after, like
+    /// every other buffer in this struct — the comment the old code carried
+    /// ("a scratch `Vec` would be the per-frame allocation this whole design
+    /// exists to avoid") was true of a `Vec` built inside the system and is
+    /// not true of one that lives as long as the sea.
+    field: Vec<[f32; 3]>,
     mesh: Option<Handle<Mesh>>,
     material: Option<Handle<StandardMaterial>>,
     /// The snapped grid centre, in [`SNAP_M`] cells. `None` until the first
@@ -872,6 +923,7 @@ pub fn setup(
     sea.shore = vec![0.0; count];
     sea.shoal = vec![0.0; count];
     sea.reach = vec![0.0; count];
+    sea.field = vec![[0.0; 3]; count];
     sea.mesh = Some(mesh.clone());
     sea.material = Some(material.clone());
     sea.cell = None;
@@ -996,6 +1048,14 @@ pub fn stream(
 ///
 /// The only per-frame work: four sines a vertex, three attribute writes, and
 /// one `Affine2` on the material. No `terrain` taps and no allocation.
+///
+/// **"Four sines a vertex" is what this sentence always claimed and what the
+/// code only now does.** The three attribute writes cannot hold their borrows
+/// at once, so the first cut recomputed [`wave_field`] inside each of them —
+/// three times a vertex, twelve `sin_cos` in the core band — and threw two of
+/// the three answers away. The field is resolved once into [`Sea::field`] and
+/// the three passes read it. Same arithmetic, same output: `tests/water.rs`
+/// gates the equality against a direct call rather than trusting the reading.
 pub fn animate(
     mut sea: ResMut<Sea>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -1033,56 +1093,70 @@ pub fn animate(
     let n = sea.coords.len();
     let phase = sea.phase;
 
-    // One pass, three buffers. They are fetched one at a time because
-    // `attribute_mut` borrows the mesh; the height is recomputed rather than
-    // stashed in a scratch `Vec`, which would be the per-frame allocation this
-    // whole design exists to avoid.
+    // The trig, once. Split the borrows the way `stream` does: the field is
+    // written while the coordinate and shoaling caches are read, and all four
+    // live behind the same `&mut`.
+    {
+        let Sea {
+            coords,
+            spacing,
+            shoal: shoal_cache,
+            field,
+            ..
+        } = &mut *sea;
+        resolve_field(
+            Vec2::new(cx, cz),
+            coords,
+            spacing,
+            shoal_cache,
+            &phase,
+            field,
+        );
+    }
+
+    // Three buffers, fetched one at a time because `attribute_mut` borrows the
+    // mesh. Each is now a read out of `field` and an arithmetic write — no
+    // `sin_cos` past this point.
     if let Some(VertexAttributeValues::Float32x3(pos)) =
         mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION)
     {
         for iz in 0..n {
             for ix in 0..n {
                 let i = iz * n + ix;
-                let x = cx + sea.coords[ix];
-                let z = cz + sea.coords[iz];
-                let sp = sea.spacing[ix].max(sea.spacing[iz]);
-                let (h, _, _) = wave_field(x, z, &phase, sp, sea.shoal[i]);
-                pos[i] = [x, SEA_LEVEL + h, z];
+                pos[i] = [
+                    cx + sea.coords[ix],
+                    SEA_LEVEL + sea.field[i][0],
+                    cz + sea.coords[iz],
+                ];
             }
         }
     }
     if let Some(VertexAttributeValues::Float32x3(nor)) = mesh.attribute_mut(Mesh::ATTRIBUTE_NORMAL)
     {
-        for iz in 0..n {
-            for ix in 0..n {
-                let i = iz * n + ix;
-                let x = cx + sea.coords[ix];
-                let z = cz + sea.coords[iz];
-                let sp = sea.spacing[ix].max(sea.spacing[iz]);
-                let (_, gx, gz) = wave_field(x, z, &phase, sp, sea.shoal[i]);
-                let v = wave_normal(gx, gz);
-                nor[i] = [v.x, v.y, v.z];
-            }
+        for (i, slot) in nor.iter_mut().enumerate().take(n * n) {
+            let v = wave_normal(sea.field[i][1], sea.field[i][2]);
+            *slot = [v.x, v.y, v.z];
         }
     }
     if let Some(VertexAttributeValues::Float32x4(col)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
         for iz in 0..n {
             for ix in 0..n {
                 let i = iz * n + ix;
-                let x = cx + sea.coords[ix];
-                let z = cz + sea.coords[iz];
-                let sp = sea.spacing[ix].max(sea.spacing[iz]);
-                let (h, _, _) = wave_field(x, z, &phase, sp, sea.shoal[i]);
                 // The wash breathes; the whitecaps ride the swell. Summed
                 // rather than maxed: a crest breaking inside the surf band is
                 // the whitest thing on the sea, and clamping happens in
                 // `with_foam`.
                 let wash = if sea.shore[i] > 0.0 {
+                    let x = cx + sea.coords[ix];
+                    let z = cz + sea.coords[iz];
                     sea.shore[i] * foam_surge(x, z, phase[0])
                 } else {
                     0.0
                 };
-                col[i] = with_foam(sea.base[i], wash + crest_foam(h, sea.reach[i]));
+                col[i] = with_foam(
+                    sea.base[i],
+                    wash + crest_foam(sea.field[i][0], sea.reach[i]),
+                );
             }
         }
     }

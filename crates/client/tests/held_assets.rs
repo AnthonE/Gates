@@ -77,9 +77,9 @@ fn nothing_held_glows() {
         let (key, rel) = (m.key, m.path);
         let g = glb_json(&asset_path(rel));
         for m in g["materials"].as_array().into_iter().flatten() {
-            let lit = m.get("emissiveFactor").is_some_and(|f| {
-                (0..3).any(|k| f[k].as_f64().unwrap_or(0.0) > 1e-6)
-            });
+            let lit = m
+                .get("emissiveFactor")
+                .is_some_and(|f| (0..3).any(|k| f[k].as_f64().unwrap_or(0.0) > 1e-6));
             assert!(
                 !lit,
                 "{key} ({rel}) has a non-zero emissiveFactor — it would glow \
@@ -169,7 +169,11 @@ fn every_grip_is_on_the_object() {
         );
         // Negative by construction, and worth asserting because the sign is
         // what puts the model below the hand rather than above it.
-        assert!(m.grip_offset_m() <= 0.0, "{} grip offset is positive", m.key);
+        assert!(
+            m.grip_offset_m() <= 0.0,
+            "{} grip offset is positive",
+            m.key
+        );
     }
 }
 

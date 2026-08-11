@@ -277,7 +277,16 @@ mod tests {
         assert_eq!(held_model(&c, ItemStack { item: 0, count: 1 }), None);
         // An id past the catalog is the same answer, never a panic: `sel` and
         // the stack both arrive from outside this function.
-        assert_eq!(held_model(&c, ItemStack { item: 900, count: 1 }), None);
+        assert_eq!(
+            held_model(
+                &c,
+                ItemStack {
+                    item: 900,
+                    count: 1
+                }
+            ),
+            None
+        );
     }
 
     #[test]
@@ -287,11 +296,21 @@ mod tests {
         let c = catalog_with(&["Stone Hatchet", "Wooden Spear"]);
         assert_eq!(
             held_model(&c, ItemStack { item: 0, count: 1 }),
-            Some(HELD_MODELS.iter().position(|m| m.key == "stone_hatchet").unwrap())
+            Some(
+                HELD_MODELS
+                    .iter()
+                    .position(|m| m.key == "stone_hatchet")
+                    .unwrap()
+            )
         );
         assert_eq!(
             held_model_in_hand(&c, &[ItemStack { item: 1, count: 1 }], 0),
-            Some(HELD_MODELS.iter().position(|m| m.key == "wooden_spear").unwrap())
+            Some(
+                HELD_MODELS
+                    .iter()
+                    .position(|m| m.key == "wooden_spear")
+                    .unwrap()
+            )
         );
         assert_eq!(held_model_in_hand(&c, &[], 0), None);
     }

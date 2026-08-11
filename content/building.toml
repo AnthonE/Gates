@@ -4,6 +4,91 @@
 # deployables (deployables.toml) that mount in a doorway — validation
 # asserts a door is always weaker than its material's wall, so the door
 # stays the intended breach point.
+#
+# **Every number below is the reference game's, taken whole 2026-08-10**
+# (`reference/BUILDING.md` §7b, `reference/BALANCE.md` §6.1: no case is
+# needed to take one). Their grade base — the full wall — is twig 50 /
+# wood 200 / stone 300 / metal 200, and their four shape ratios run off it:
+#
+#   1.0  foundation · wall · stairs      0.7  doorway
+#   0.5  floor · roof
+#
+# So these 24 cells ARE their 24 cells for the six shapes we have.
+#
+# hp is a property of the MATERIAL alone and never of the shape, which is
+# what those ratios are for. A stone floor and a stone wall are both 500,
+# so a floor buys twice the hp per stone that a wall does and a player who
+# stacks the cheap shapes is rewarded for it — that spread is the whole
+# reason to have more than one shape, and pricing every shape alike (which
+# is what this file did until 2026-08-10) deletes it.
+#
+# ⚠ **This column was never taken before, and nothing said so.** The
+# 2026-08-08 balance pass took the hp ladder and the satchel out of this
+# very file and left `cost` untouched; `reference/RIPLIST.md` never opened
+# a row for it. So the costs stood as first written in the M1 build slice,
+# derived from our own `farm_per_min` and compared against nothing. What
+# made that visible was the node take of 2026-08-10: once a tree paid
+# THEIR 810 wood, a wall priced at ours cost **1.75× theirs in trees** —
+# the numerator theirs, the denominator ours, which is exactly the
+# false-familiarity trap `BALANCE.md` §4.1 names, one level out.
+
+# --- twig · the placement grade ------------------------------------------
+#
+# Everything enters the world here and only here (sim-core `build::place`
+# refuses any other rung); the hammer commits it upward and the grade is
+# paid ON TOP of what twig already cost. `reference/BUILDING.md` §7b.4.
+#
+# hp 10 and the 50 / 35 / 25 costs are theirs outright. **They landed as
+# 88 / 62 / 44 for one commit** — their ratio against our own wood grade,
+# on the argument that our cost column was farm-minute anchored and theirs
+# was not, so their absolute would be a number in their currency. That
+# argument was answered by looking at where our column came from: it was
+# never derived from anything a player can feel, and the anchor it was
+# priced against is the one `RIPLIST.md` §1a calls a declared number the
+# game's own yields cannot contradict. There is no second currency here to
+# convert between — only an anchor that had never been checked.
+
+[[piece]]
+id = "build.foundation_twig"
+shape = "foundation"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 50 }]
+
+[[piece]]
+id = "build.wall_twig"
+shape = "wall"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 50 }]
+
+[[piece]]
+id = "build.doorway_twig"
+shape = "doorway"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 35 }]
+
+[[piece]]
+id = "build.floor_twig"
+shape = "floor"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 25 }]
+
+[[piece]]
+id = "build.stairs_twig"
+shape = "stairs"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 50 }]
+
+[[piece]]
+id = "build.roof_twig"
+shape = "roof"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 25 }]
 
 # --- foundation ---------------------------------------------------------
 
@@ -12,14 +97,14 @@ id = "build.foundation_wood"
 shape = "foundation"
 material = "wood"
 hp = 250
-cost = [{ item = "item.wood", count = 350 }]
+cost = [{ item = "item.wood", count = 200 }]
 
 [[piece]]
 id = "build.foundation_stone"
 shape = "foundation"
 material = "stone"
 hp = 500
-cost = [{ item = "item.stone", count = 350 }]
+cost = [{ item = "item.stone", count = 300 }]
 
 [[piece]]
 id = "build.foundation_metal"
@@ -35,14 +120,14 @@ id = "build.wall_wood"
 shape = "wall"
 material = "wood"
 hp = 250
-cost = [{ item = "item.wood", count = 350 }]
+cost = [{ item = "item.wood", count = 200 }]
 
 [[piece]]
 id = "build.wall_stone"
 shape = "wall"
 material = "stone"
 hp = 500
-cost = [{ item = "item.stone", count = 350 }]
+cost = [{ item = "item.stone", count = 300 }]
 
 [[piece]]
 id = "build.wall_metal"
@@ -58,21 +143,21 @@ id = "build.doorway_wood"
 shape = "doorway"
 material = "wood"
 hp = 250
-cost = [{ item = "item.wood", count = 280 }]
+cost = [{ item = "item.wood", count = 140 }]
 
 [[piece]]
 id = "build.doorway_stone"
 shape = "doorway"
 material = "stone"
 hp = 500
-cost = [{ item = "item.stone", count = 280 }]
+cost = [{ item = "item.stone", count = 210 }]
 
 [[piece]]
 id = "build.doorway_metal"
 shape = "doorway"
 material = "metal"
 hp = 1000
-cost = [{ item = "item.metal_frags", count = 160 }]
+cost = [{ item = "item.metal_frags", count = 140 }]
 
 # --- floor --------------------------------------------------------------
 
@@ -81,21 +166,21 @@ id = "build.floor_wood"
 shape = "floor"
 material = "wood"
 hp = 250
-cost = [{ item = "item.wood", count = 350 }]
+cost = [{ item = "item.wood", count = 100 }]
 
 [[piece]]
 id = "build.floor_stone"
 shape = "floor"
 material = "stone"
 hp = 500
-cost = [{ item = "item.stone", count = 350 }]
+cost = [{ item = "item.stone", count = 150 }]
 
 [[piece]]
 id = "build.floor_metal"
 shape = "floor"
 material = "metal"
 hp = 1000
-cost = [{ item = "item.metal_frags", count = 200 }]
+cost = [{ item = "item.metal_frags", count = 100 }]
 
 # --- stairs -------------------------------------------------------------
 
@@ -111,14 +196,14 @@ id = "build.stairs_stone"
 shape = "stairs"
 material = "stone"
 hp = 500
-cost = [{ item = "item.stone", count = 200 }]
+cost = [{ item = "item.stone", count = 300 }]
 
 [[piece]]
 id = "build.stairs_metal"
 shape = "stairs"
 material = "metal"
 hp = 1000
-cost = [{ item = "item.metal_frags", count = 120 }]
+cost = [{ item = "item.metal_frags", count = 200 }]
 
 # --- roof ---------------------------------------------------------------
 
@@ -127,18 +212,18 @@ id = "build.roof_wood"
 shape = "roof"
 material = "wood"
 hp = 250
-cost = [{ item = "item.wood", count = 350 }]
+cost = [{ item = "item.wood", count = 100 }]
 
 [[piece]]
 id = "build.roof_stone"
 shape = "roof"
 material = "stone"
 hp = 500
-cost = [{ item = "item.stone", count = 350 }]
+cost = [{ item = "item.stone", count = 150 }]
 
 [[piece]]
 id = "build.roof_metal"
 shape = "roof"
 material = "metal"
 hp = 1000
-cost = [{ item = "item.metal_frags", count = 200 }]
+cost = [{ item = "item.metal_frags", count = 100 }]

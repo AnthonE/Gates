@@ -34,7 +34,9 @@ use client::ui::build::{self, Rings, MATERIALS, SHAPES};
 use client::ui::craft::{self, Cat, Facts};
 use client::ui::load::Progress;
 use client::ui::slots::{self, Grab};
-use sim_core::build::{BuildContent, MAT_METAL, MAT_STONE, MAT_WOOD, SHAPE_FOUNDATION, SHAPE_WALL};
+use sim_core::build::{
+    BuildContent, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD, SHAPE_FOUNDATION, SHAPE_WALL,
+};
 use sim_core::craft::CraftContent;
 use sim_core::deploy::DeployContent;
 use sim_core::gather::ItemStack;
@@ -494,14 +496,22 @@ fn the_band_is_the_references_proportion() {
     );
 }
 
-/// A blueprint places one material and it is the bottom rung.
+/// A blueprint places one material and it is the bottom rung — and since
+/// twig v0 the sim agrees, which is the half that used to be missing.
 #[test]
 fn the_blueprint_places_the_first_rung() {
     assert_eq!(build::PLACE_MATERIAL, MATERIALS[0]);
-    assert_eq!(build::PLACE_MATERIAL, MAT_WOOD);
+    assert_eq!(build::PLACE_MATERIAL, MAT_TWIG);
     // The ladder above it is reachable, or pinning the placement would have
-    // made stone and metal unbuildable rather than upgrade-only.
+    // made every grade unbuildable rather than upgrade-only.
     assert!(MATERIALS.len() > 1, "there is a ladder to climb");
+    // The pin is no longer the client being polite. Offering any other rung
+    // would draw a wheel segment the server refuses with REFUSE_B_TIER, so
+    // this is the client and the sim saying one thing.
+    assert!(
+        MATERIALS[1..].iter().all(|&m| m != build::PLACE_MATERIAL),
+        "the placed rung appears once and is the bottom of the ladder"
+    );
 }
 
 #[test]
@@ -510,16 +520,17 @@ fn a_piece_row_is_searched_for_and_never_computed() {
     // The fixture is deliberately NOT a full shape × material grid, which is
     // the case `shape * 3 + material` would get wrong — and getting it wrong
     // means placing a different piece than the wheel drew.
-    let wood_foundation = build::row_for(&content, SHAPE_FOUNDATION, MAT_WOOD);
-    assert_eq!(wood_foundation, Some(0));
-    let wood_wall = build::row_for(&content, SHAPE_WALL, MAT_WOOD);
-    assert_eq!(wood_wall, Some(1));
+    let twig_foundation = build::row_for(&content, SHAPE_FOUNDATION, MAT_TWIG);
+    assert_eq!(twig_foundation, Some(0));
+    let twig_wall = build::row_for(&content, SHAPE_WALL, MAT_TWIG);
+    assert_eq!(twig_wall, Some(1));
+    let _ = MAT_WOOD;
     // A pair the content has no piece for is `None`, which the wheel draws
     // as a dead segment rather than a live one over the wrong row.
     assert_eq!(build::row_for(&content, SHAPE_FOUNDATION, MAT_METAL), None);
     // And an empty table has nothing at all.
     assert_eq!(
-        build::row_for(&BuildContent::EMPTY, SHAPE_FOUNDATION, MAT_WOOD),
+        build::row_for(&BuildContent::EMPTY, SHAPE_FOUNDATION, MAT_TWIG),
         None
     );
     let _ = MAT_STONE;
@@ -528,7 +539,7 @@ fn a_piece_row_is_searched_for_and_never_computed() {
 #[test]
 fn the_wheel_prices_a_piece_against_the_bag() {
     let content = BuildContent::probe_fixture();
-    let row = build::row_for(&content, SHAPE_FOUNDATION, MAT_WOOD).unwrap();
+    let row = build::row_for(&content, SHAPE_FOUNDATION, MAT_TWIG).unwrap();
     let mut inv = empty();
     inv[0] = ItemStack { item: 0, count: 4 };
     let (lines, n) = build::costs(&content, row, &inv);

@@ -169,12 +169,63 @@ pub struct Fellable {
     /// re-seeds or teleports an entity without resetting `felled` drifts it
     /// 0.17 m per missed pair; an absolute set cannot drift.
     pub base_y: f32,
-    /// Whether this slot leaves a stump. Only a tree does — a rock that stops
-    /// being a rock has nothing to leave behind, so it simply goes.
-    pub stumps: bool,
+    /// The yaw this slot was spawned at, radians. Stored because the fall
+    /// COMPOSES onto it — `Quat::from_axis_angle(..) * from_rotation_y(yaw)`
+    /// — and a system that read the live rotation to find the yaw back would
+    /// be integrating its own output.
+    pub yaw: f32,
+    /// Which piece of the slot this entity is. Was a `stumps: bool` while a
+    /// felled tree was a mesh swap; a topple has four distinct behaviours and
+    /// a bool cannot name them.
+    pub part: FellPart,
     /// What is currently drawn, so the swap happens on the transition rather
     /// than every frame.
     pub felled: bool,
+}
+
+/// How far through its topple a trunk or a canopy is, seconds. Negative means
+/// "not falling" — the resting state both before a chop and after a respawn.
+///
+/// **Its own component, and that is not tidiness — it is a bug that was
+/// written and caught before it shipped.** `fall_t` lived on [`Fellable`]
+/// first, which meant [`fall`] took `&mut Fellable` and marked it changed on
+/// every frame of the ~96-frame topple. `audio::fell` fires on
+/// `Ref<Fellable>::is_changed()`, so one chop would have played the tree-fall
+/// cue ninety-six times — and nothing in this repo would have gone red,
+/// because every assertion about felling is about geometry and the defect is
+/// audible. Splitting the animating field out means `fall` reads `Fellable`
+/// immutably and change detection keeps meaning "the sim retired this slot".
+///
+/// The general shape, which is `CLAUDE.md`'s silent-merge trap one turn on:
+/// **a component that something else change-detects may not carry a field
+/// that changes every frame.**
+#[derive(Component)]
+pub struct Topple {
+    pub t: f32,
+}
+
+/// Which piece of a harvestable slot an entity draws.
+///
+/// **The tree is three entities and the split is what lets it topple.** While
+/// a felled tree was a mesh swap on one entity, `stumps: bool` said everything
+/// there was to say: the bark entity became the stump and the needle entity
+/// hid. A tree that falls needs the trunk to still exist after the cut — so
+/// the stump has to be its own entity, and the trunk's job changes from
+/// "become the stump" to "lie down".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FellPart {
+    /// A node that simply stops being there: an ore node, a bush, a boulder,
+    /// a barrel. Nothing to animate and nothing left behind.
+    Vanish,
+    /// The trunk and its limbs. Topples on the slot's own bearing and **stays
+    /// down** until the slot respawns.
+    Trunk,
+    /// The needle canopy. Rides the trunk down on the same bearing — it is a
+    /// sibling carrying the same transform, never a child, because a child
+    /// would inherit the trunk's pose twice.
+    Canopy,
+    /// The stump, hidden until the cut lands.
+    Stump,
 }
 
 /// What the scatter ring has spawned, one parent entity per chunk.
@@ -704,6 +755,164 @@ fn blob_mesh(radius: f32, jitter: f32, seed: u32, hex: u32, sub: usize, textured
     s.mesh()
 }
 
+// ── The authored structures are DERIVED from the sim's tables ──────────────
+//
+// `TERRAIN.md` §7.1 and `reference/MONUMENTS.md` §9.4. Until this block, the
+// haven shelter and the waystation canopy were declared TWICE — once in
+// `sim_core::terrain` as the volume the sim blocks, once here as the mesh the
+// client draws — and the gate that held the two lists equal was a browser
+// `.mjs` deleted with the browser client. **They had drifted, measured:** the
+// canopy was 9 rows to a 4.1 m finial in the sim and 6 rows topping out at
+// 2.09 m here, so a player was stopped ~0.7 m outside posts they could see;
+// the shelter was 14 rows against 9, missing its four corner posts and its
+// tower-cap, with a 9.2 m peak drawn at 5.6 m. The two tables were also in
+// DIFFERENT UNITS — full size there, half extent here — which is the
+// transcription hazard the deleted gate existed to cover.
+//
+// **The fix is derivation, not a new mirror plus a new gate.** A gate over two
+// hand-written tables can only catch drift after someone writes it; a mesh
+// built from the sim's own rows cannot drift at all, because there is one
+// list. What is left for `tests/greybox.rs` to check is the part derivation
+// cannot make true by construction: that the resulting triangles fit the
+// broad-phase radius and peak the sim publishes (`OCCUPANT_R_M`,
+// `OCCUPANT_TOP_M`), whose own doc admits "nothing in the Rust workspace can
+// see a triangle".
+//
+// Only the COLOURS live here, because the sim has none and should not: what
+// a wall is made of is not a fact about the volume it occupies.
+
+/// Per-row colour for `terrain::SHELTER_BOXES`, index for index.
+///
+/// The array length is the sim table's length as a type, so adding a box to
+/// the sim and forgetting to colour it is a compile error rather than a
+/// silently untinted wall.
+pub const SHELTER_HEX: [u32; terrain::SHELTER_BOXES.len()] = [
+    0x6f6a60, // plinth — the one course that is not wall
+    0x8a8479, // wall-back
+    0x8a8479, // wall-left
+    0x8a8479, // wall-right
+    0x8a8479, // jamb-left
+    0x8a8479, // jamb-right
+    0x8a8479, // lintel
+    0x5f5b53, // roof — darker, so the mass reads against the sky
+    0x8a8479, // post-nw
+    0x8a8479, // post-ne
+    0x8a8479, // post-sw
+    0x8a8479, // post-se
+    0x8a8479, // tower
+    0x5f5b53, // tower-cap — roof stone, because it is roof
+];
+
+/// Per-row colour for `terrain::WAYSTATION_CANOPY_BOXES`, index for index.
+/// Timber rather than the pad's field stone: the two tiers differ in material
+/// as well as in silhouette (`terrain.rs`'s note on the canopy table).
+pub const CANOPY_HEX: [u32; terrain::WAYSTATION_CANOPY_BOXES.len()] = [
+    0x6a5940, // deck
+    0x6a5940, // post-nw
+    0x6a5940, // post-ne
+    0x6a5940, // post-sw
+    0x6a5940, // post-se
+    0x6a5940, // parapet
+    0x7b6a4f, // eave — the plates are lighter, sun-bleached above
+    0x7b6a4f, // cap
+    0x7b6a4f, // finial
+];
+
+/// One sim box table plus its colours, as the `(centre, half-extent, hex)`
+/// triples `boxes_mesh` wants.
+///
+/// **The `* 0.5` is the whole point of this function.** The sim states FULL
+/// size and the mesh builder wants a HALF extent, and that conversion written
+/// by hand at fourteen call sites is exactly how the two lists came apart. It
+/// is written once, here, against a length the type system pins.
+pub fn authored<const N: usize>(
+    rows: &[[f32; 6]; N],
+    hex: &[u32; N],
+) -> Vec<([f32; 3], [f32; 3], u32)> {
+    rows.iter()
+        .zip(hex.iter())
+        .map(|(r, h)| ([r[0], r[1], r[2]], [r[3] * 0.5, r[4] * 0.5, r[5] * 0.5], *h))
+        .collect()
+}
+
+/// How far every prop is pushed into the ground, metres.
+///
+/// `ART.md` rule 2: nothing sits ON the ground, everything sits IN it. Sinking
+/// the lift slightly is the cheapest half of that; the crowding half is the
+/// clutter skirt, which `sim_core` already places.
+///
+/// Hoisted out of `spawn_slot` so `tests/greybox.rs` can evaluate the rule
+/// rather than restate it — "nothing floats" is `lift + mesh_base - SINK_M
+/// <= 0`, which is not checkable while the number is a local.
+pub const SINK_M: f32 = 0.06;
+
+/// The mesh the client draws for one occupant, as a pure function.
+///
+/// **Extracted so the gate can ask the renderer's own question.** Before this,
+/// every archetype's geometry was an expression inside `assets()`, reachable
+/// only through `Assets<Mesh>` and therefore only from a running app — which
+/// is why `OCCUPANT_R_M`'s doc in `sim_core` says, accurately, that "nothing
+/// in the Rust workspace can see a triangle, so the asserts below prove only
+/// that this file agrees with itself". `tests/greybox.rs` calls this and
+/// counts vertices, which is the arithmetic `CLAUDE.md` says a frame may be
+/// gated on.
+///
+/// `None` for the two rows that are not one mesh: `Occupant::None`, and
+/// `Tree`, whose `CONIFER_POOL` variants are generated and gated one by one
+/// in `tests/tree.rs` already.
+pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
+    Some(match o {
+        Occupant::None | Occupant::Tree => return None,
+        // One blob serves all three ore nodes; they differ by material only.
+        Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => {
+            blob_mesh(1.0, 0.46, 0x51ed_270b, 0x9c968a, 2, true)
+        }
+        Occupant::Bush => blob_mesh(0.7, 0.58, 0x2545_f491, 0x2c5f2e, 1, false),
+        Occupant::Rock => blob_mesh(1.5, 0.52, 0x1b87_3593, 0x8e887c, 3, true),
+        // ⚠ THE MEASURED DRUM IS 0.585 x 0.88 AND THIS IS NOT IT, on purpose.
+        // A 55-gallon drum is 1.5x taller than wide; 0.9 across by 0.95 tall is
+        // near-spherical and ~44% too fat, and `Rust Images/barrelroad` plus
+        // Meshy's independent `auto_size` estimate both say so. It stays wrong
+        // here because the number is HALF of a pair: `OCCUPANT_R_M[BarrelSlot]`
+        // in sim-core blocks 0.45, and `greybox.rs`'s
+        // `every_drawn_archetype_fits_the_volume_the_sim_blocks` fails a mesh
+        // narrower than the volume by more than SLACK_R_M — an invisible
+        // collision skirt is a player passing through geometry. Narrowing the
+        // sim is a collision change that moves the replay goldens, so it is a
+        // deliberate slice of its own (`NOW.md`), not a merge's side effect.
+        Occupant::BarrelSlot => Cylinder::new(0.45, 0.95).mesh().resolution(10).build(),
+        Occupant::CrateSlot => boxes_mesh(&[([0., 0., 0.], [0.55, 0.4, 0.4], 0x6b5334)]),
+        Occupant::CacheSlot => boxes_mesh(&[([0., 0., 0.], [0.45, 0.275, 0.35], 0x6a5940)]),
+        Occupant::HavenShelter => boxes_mesh(&authored(&terrain::SHELTER_BOXES, &SHELTER_HEX)),
+        Occupant::WaystationCanopy => {
+            boxes_mesh(&authored(&terrain::WAYSTATION_CANOPY_BOXES, &CANOPY_HEX))
+        }
+    })
+}
+
+/// How far an archetype's mesh origin sits above the slot's ground — the
+/// browser's `lift`, kept because these meshes are centred and a slot's `y` is
+/// the surface.
+///
+/// **One table, read by the draw and by the gate.** `sim_core`'s
+/// `OCCUPANT_TOP_M` documents every one of its rows as "lift + half-extent",
+/// which is a claim about a number that lived only in `spawn_slot`'s match
+/// arm; now the gate can evaluate it.
+pub fn archetype_lift(o: Occupant) -> f32 {
+    match o {
+        Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => 0.5,
+        Occupant::Bush => 0.45,
+        Occupant::Rock => 0.55,
+        Occupant::BarrelSlot => 0.5,
+        Occupant::CrateSlot => 0.4,
+        Occupant::CacheSlot => 0.275,
+        // The two authored structures and the tree stand on their own base:
+        // their tables put ground at y = 0 rather than centring the mesh.
+        Occupant::HavenShelter | Occupant::WaystationCanopy | Occupant::Tree => 0.0,
+        Occupant::None => 0.0,
+    }
+}
+
 /// A box massing, for the two authored structures. Each entry is
 /// `(centre, half-extent, hex)`.
 ///
@@ -866,8 +1075,8 @@ pub fn assets(
         // tens of thousands, which is not the budget's problem.
         // Jitter is up from 0.28/0.32 with the frequency drop above: at the
         // old amplitude a low-frequency lobe is a bulge, not a shape.
-        blob: meshes.add(blob_mesh(1.0, 0.46, 0x51ed_270b, 0x9c968a, 2, true)),
-        boulder: meshes.add(blob_mesh(1.5, 0.52, 0x1b87_3593, 0x8e887c, 3, true)),
+        blob: meshes.add(archetype_mesh(Occupant::StoneNode).expect("node mesh")),
+        boulder: meshes.add(archetype_mesh(Occupant::Rock).expect("boulder mesh")),
         stump: meshes.add(stump_mesh()),
         // The bush keeps its colour in its vertices: it is the one blob that
         // wears the untextured `foliage` material, and there is no leaf map in
@@ -877,41 +1086,14 @@ pub fn assets(
         // bush wants a ragged outline (`ART.md` rule 6) and 320 smooth
         // triangles gave it a green dome. 80 is enough to stop reading as a
         // die and few enough that the lobes stay visible.
-        bush: meshes.add(blob_mesh(0.7, 0.58, 0x2545_f491, 0x2c5f2e, 1, false)),
-        // A 55-gallon steel drum is 0.88 m tall and 0.585 m across — height is
-        // 1.5x the diameter. This was 0.9 across by 0.95 tall (ratio 1.06),
-        // i.e. near-spherical, ~44% too fat, which is the same guessed-number
-        // defect the `DEPLOY` table carried. `Rust Images/barrelroad` shows
-        // the real proportion, and Meshy's `auto_size` vision estimate landed
-        // on 0.880 x 0.585 independently (2026-08-11, `DECISIONS.md` §open).
-        // Radius, not diameter: 0.585 / 2.
-        barrel: meshes.add(Cylinder::new(0.2925, 0.88).mesh().resolution(12).build()),
-        crate_box: meshes.add(boxes_mesh(&[([0., 0., 0.], [0.55, 0.4, 0.4], 0x6b5334)])),
-        cache_box: meshes.add(boxes_mesh(&[([0., 0., 0.], [0.45, 0.275, 0.35], 0x6a5940)])),
-        // The pad's greybox: a walled block with a tower. Not a kit of
-        // wall-sized slots — one slot, one structure (`terrain.rs`
-        // `Occupant::HavenShelter`).
-        shelter: meshes.add(boxes_mesh(&[
-            ([0.0, 0.15, 0.0], [3.5, 0.15, 3.5], 0x6f6a60),
-            ([0.0, 1.6, -3.2], [3.5, 1.45, 0.3], 0x8a8479),
-            ([-3.2, 1.6, 0.0], [0.3, 1.45, 3.5], 0x8a8479),
-            ([3.2, 1.6, 0.0], [0.3, 1.45, 3.5], 0x8a8479),
-            ([-2.35, 1.6, 3.2], [1.15, 1.45, 0.3], 0x8a8479),
-            ([2.35, 1.6, 3.2], [1.15, 1.45, 0.3], 0x8a8479),
-            ([0.0, 2.75, 3.2], [1.2, 0.3, 0.3], 0x8a8479),
-            ([0.0, 3.2, 0.0], [3.6, 0.25, 3.6], 0x5f5b53),
-            ([1.8, 4.4, -1.8], [1.1, 1.2, 1.1], 0x8a8479),
-        ])),
-        // The lesser tier's: an open roof on four posts, deliberately NOT the
-        // pad's building at 0.6 scale — under half its height, squatter.
-        canopy: meshes.add(boxes_mesh(&[
-            ([-1.5, 0.9, -1.5], [0.12, 0.9, 0.12], 0x6a5940),
-            ([1.5, 0.9, -1.5], [0.12, 0.9, 0.12], 0x6a5940),
-            ([-1.5, 0.9, 1.5], [0.12, 0.9, 0.12], 0x6a5940),
-            ([1.5, 0.9, 1.5], [0.12, 0.9, 0.12], 0x6a5940),
-            ([0.0, 1.95, 0.0], [1.9, 0.14, 1.9], 0x7b6a4f),
-            ([0.0, 1.0, -1.62], [1.6, 0.9, 0.1], 0x6a5940),
-        ])),
+        bush: meshes.add(archetype_mesh(Occupant::Bush).expect("bush mesh")),
+        barrel: meshes.add(archetype_mesh(Occupant::BarrelSlot).expect("barrel mesh")),
+        crate_box: meshes.add(archetype_mesh(Occupant::CrateSlot).expect("crate mesh")),
+        cache_box: meshes.add(archetype_mesh(Occupant::CacheSlot).expect("cache mesh")),
+        // Both authored structures come off the sim's own box tables — see
+        // the `authored` block above for what mirroring them by hand cost.
+        shelter: meshes.add(archetype_mesh(Occupant::HavenShelter).expect("shelter mesh")),
+        canopy: meshes.add(archetype_mesh(Occupant::WaystationCanopy).expect("canopy mesh")),
         foliage: surface(0.86, 0.10, materials),
         needle: materials.add(StandardMaterial {
             base_color: Color::WHITE,
@@ -1047,27 +1229,28 @@ fn spawn_slot(
     // above the ground — the browser's `lift`, kept because these meshes are
     // centred and the slot's y is the surface.
     let mut variant = 0usize;
-    let (mesh, material, lift) = match slot.occupant {
+    // The lift comes off `archetype_lift` rather than being written here, so
+    // the number the draw uses and the number `tests/greybox.rs` checks
+    // against `OCCUPANT_TOP_M` are the same number.
+    let lift = archetype_lift(slot.occupant);
+    let (mesh, material) = match slot.occupant {
         Occupant::Tree => {
             variant = (slot.yaw as usize) % a.pines.len();
-            (a.pines[variant].clone(), a.bark.clone(), 0.0)
+            (a.pines[variant].clone(), a.bark.clone())
         }
-        Occupant::StoneNode => (a.blob.clone(), a.ore_stone.clone(), 0.5),
-        Occupant::MetalNode => (a.blob.clone(), a.ore_metal.clone(), 0.5),
-        Occupant::SulfurNode => (a.blob.clone(), a.ore_sulfur.clone(), 0.5),
-        Occupant::Bush => (a.bush.clone(), a.foliage.clone(), 0.45),
-        Occupant::Rock => (a.boulder.clone(), a.rock.clone(), 0.55),
-        Occupant::BarrelSlot => (a.barrel.clone(), a.metal.clone(), 0.5),
-        Occupant::CrateSlot => (a.crate_box.clone(), a.wood.clone(), 0.4),
-        Occupant::CacheSlot => (a.cache_box.clone(), a.wood.clone(), 0.275),
-        Occupant::HavenShelter => (a.shelter.clone(), a.stone.clone(), 0.0),
-        Occupant::WaystationCanopy => (a.canopy.clone(), a.wood.clone(), 0.0),
+        Occupant::StoneNode => (a.blob.clone(), a.ore_stone.clone()),
+        Occupant::MetalNode => (a.blob.clone(), a.ore_metal.clone()),
+        Occupant::SulfurNode => (a.blob.clone(), a.ore_sulfur.clone()),
+        Occupant::Bush => (a.bush.clone(), a.foliage.clone()),
+        Occupant::Rock => (a.boulder.clone(), a.rock.clone()),
+        Occupant::BarrelSlot => (a.barrel.clone(), a.metal.clone()),
+        Occupant::CrateSlot => (a.crate_box.clone(), a.wood.clone()),
+        Occupant::CacheSlot => (a.cache_box.clone(), a.wood.clone()),
+        Occupant::HavenShelter => (a.shelter.clone(), a.stone.clone()),
+        Occupant::WaystationCanopy => (a.canopy.clone(), a.wood.clone()),
         Occupant::None => return,
     };
-    // Rule 2: nothing sits ON the ground, everything sits IN it. Sinking the
-    // lift slightly is the cheapest half of that; the crowding half is the
-    // clutter skirt, which `sim_core` already places.
-    let sink = 0.06;
+    let sink = SINK_M;
     let transform = Transform {
         translation: Vec3::new(slot.x, slot.y + lift * slot.scale - sink, slot.z),
         rotation: Quat::from_rotation_y(yaw),
@@ -1088,16 +1271,36 @@ fn spawn_slot(
             | Occupant::Rock
             | Occupant::BarrelSlot
     );
+    let is_tree = slot.occupant == Occupant::Tree;
+    // One constructor for all three parts: every field but `part` is the same
+    // for the trunk, the canopy and the stump, and writing them out three
+    // times is how the trunk and the canopy would eventually disagree about
+    // the yaw they compose their fall onto.
+    let fellable = |part: FellPart| Fellable {
+        key,
+        variant,
+        base_y: transform.translation.y,
+        yaw,
+        part,
+        felled: false,
+    };
     let mut e = commands.entity(parent);
-    if harvestable {
+    // Three spawn shapes, split rather than merged with a conditional
+    // component: only a tree topples, so only a tree carries a [`Topple`],
+    // and `fall`'s query is then exactly the set of things that can move. A
+    // boulder holding a disabled `Topple` would be a boulder the animation
+    // iterates every frame forever to decide it is not animating.
+    if is_tree {
         e.with_child((
-            Fellable {
-                key,
-                variant,
-                base_y: transform.translation.y,
-                stumps: slot.occupant == Occupant::Tree,
-                felled: false,
-            },
+            fellable(FellPart::Trunk),
+            Topple { t: -1.0 },
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            transform,
+        ));
+    } else if harvestable {
+        e.with_child((
+            fellable(FellPart::Vanish),
             Mesh3d(mesh),
             MeshMaterial3d(material),
             transform,
@@ -1105,24 +1308,47 @@ fn spawn_slot(
     } else {
         e.with_child((Mesh3d(mesh), MeshMaterial3d(material), transform));
     }
-    // The needle half rides as a SIBLING carrying the same transform, never as
-    // a child of the bark entity: the fell swap lifts the bark to the stump's
-    // height, and a child would inherit that lift and hang a canopy over it.
+    // The stump, spawned WITH the tree and hidden until the cut lands.
     //
-    // It carries its own `Fellable` with `stumps: false`, which is not a
-    // trick — that is precisely the "node that leaves no stump" case
-    // `apply_fell` already handles by toggling visibility. So a felled tree
-    // hides its canopy and a respawned one restores it with no new branch in
-    // the swap, and the gate that covers rocks covers this too.
-    if slot.occupant == Occupant::Tree {
+    // **Spawned up front rather than at fell time, because fell time has no
+    // `Commands`.** `apply_fell` runs behind a predicate so it can be gated
+    // headless (`tests/fell.rs`), and handing it a command buffer would put
+    // entity creation inside the one function whose whole purpose is to be
+    // callable without a world to create things in. The cost is one hidden
+    // entity per tree in the ring — ~328 at the measured p90 — against a
+    // `Visibility` flip on a mesh that was going to be built anyway.
+    if is_tree {
         e.with_child((
-            Fellable {
-                key,
-                variant,
-                base_y: transform.translation.y,
-                stumps: false,
-                felled: false,
+            fellable(FellPart::Stump),
+            Mesh3d(a.stump.clone()),
+            MeshMaterial3d(a.wood.clone()),
+            Transform {
+                translation: Vec3::new(
+                    slot.x,
+                    transform.translation.y + STUMP_LIFT_M * slot.scale,
+                    slot.z,
+                ),
+                rotation: Quat::from_rotation_y(yaw),
+                scale: Vec3::splat(slot.scale),
             },
+            Visibility::Hidden,
+        ));
+    }
+    // The needle half rides as a SIBLING carrying the same transform, never as
+    // a child of the trunk entity — and felling v0 changed the reason without
+    // changing the arrangement. It used to be that the swap LIFTED the bark to
+    // the stump's height and a child would inherit that lift. Now the trunk
+    // rotates, and a child canopy would inherit the topple and then apply its
+    // own on top of it: the needles would swing through twice the angle and
+    // leave the tree. `tests/fell.rs` compares the two poses for exactly that.
+    //
+    // What makes two independent entities agree is that neither stores the
+    // bearing: both derive it from the cell key (`fell_bearing`), which is
+    // also what makes two CLIENTS agree.
+    if is_tree {
+        e.with_child((
+            fellable(FellPart::Canopy),
+            Topple { t: -1.0 },
             Mesh3d(a.needles[variant].clone()),
             MeshMaterial3d(a.needle.clone()),
             transform,
@@ -1130,7 +1356,7 @@ fn spawn_slot(
     }
 }
 
-/// Swap a felled tree for its stump, and back when the slot respawns.
+/// Fell the slot the sim retired, and restore it when the slot respawns.
 ///
 /// **This is the whole visible half of gathering.** The sim has owned chopping
 /// for a long time — ten swings with the right tool, a yield table, a
@@ -1138,21 +1364,15 @@ fn spawn_slot(
 /// and the native client's entire contribution was to keep drawing the tree.
 /// The most physical verb in the game read as a rendering bug.
 ///
-/// What this is NOT is the browser's fall animation (`FELL_TICKS` 33, then a
-/// 60-tick sink). That needs a per-instance timer and a fall bearing derived
-/// from the cell hash so two players see the same tree land the same way; it
-/// is a slice, and this is the state change it would animate.
+/// It then read as a *pop*: the first cut swapped the tree's mesh for a stump
+/// in one frame and hid the canopy, so the most physical verb in the game
+/// happened between two frames with nothing in between. The topple is
+/// [`fall`]; this is the discrete state change that starts and reverses it.
 pub fn harvest(
     net: NonSend<Net>,
-    mut store: Local<Option<PropAssets>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut images: ResMut<Assets<Image>>,
-    maps: Res<super::textures::PropMaps>,
     q: Query<(
         &mut Fellable,
-        &mut Mesh3d,
-        &mut MeshMaterial3d<StandardMaterial>,
+        Option<&mut Topple>,
         &mut Transform,
         &mut Visibility,
     )>,
@@ -1160,63 +1380,150 @@ pub fn harvest(
     if q.is_empty() {
         return;
     }
-    let a = store.get_or_insert_with(|| assets(&mut meshes, &mut materials, &mut images, &maps));
     // The session is read through a predicate so the swap below is testable
     // without a socket. `HarvestedSet` is the authority; this is the only
     // place it is consulted.
     let core = &net.session.core;
-    apply_fell(a, q, &|key| core.harvested.contains(key));
+    apply_fell(q, &|key| core.harvested.contains(key));
 }
 
 /// Half a metre of stump lift: the mesh is centred on its own axis while the
 /// slot's `y` is the ground. `web/src/props.js` ships the same 0.17.
 pub const STUMP_LIFT_M: f32 = 0.17;
 
-/// The swap itself, with the wire behind a predicate.
+/// How long a tree takes to go from standing to flat, seconds.
+///
+/// Knob (`DECISIONS.md` §open, "felling v0"). The browser's `FELL_TICKS` was
+/// 33 at 30 Hz — 1.1 s — and this is deliberately slower: the browser then
+/// SANK the trunk out of the world over 60 more ticks, so its fall only had
+/// to hold the eye until the vanish covered for it. Ours has to survive being
+/// looked at afterwards, and 1.1 s reads as a swat rather than as a tree.
+pub const FELL_FALL_S: f32 = 1.6;
+
+/// Hash channel for the fall bearing. Its own channel, never the scatter's:
+/// `spawn_slot` already derives the tree's YAW from `slot.yaw`, and a bearing
+/// sharing that source would make every tree fall the way it happens to face.
+const CH_FELL: u32 = 0x_46_45_4c_4c;
+
+/// Which way this slot's tree goes down, radians, as a pure function of the
+/// cell key.
+///
+/// **Derived rather than stored, because two entities have to agree without
+/// talking.** The trunk and the canopy are siblings, not parent and child
+/// (`spawn_slot` says why), so nothing carries a shared bearing between them.
+/// Both call this with the same key and get the same float — which is also
+/// what makes two *clients* agree, since the key is the sim's own
+/// `gather::cell_key`. A bearing rolled at fell time would differ per client
+/// and two players would watch the same tree land two ways.
+pub fn fell_bearing(key: u32) -> f32 {
+    hash01(key, CH_FELL) * std::f32::consts::TAU
+}
+
+/// The pose of a slot part `t` seconds into its topple.
+///
+/// Split from the system so the curve is gated as arithmetic rather than by
+/// looking at it — `crates/client/tests/fell.rs` drives it at both ends and
+/// in the middle. `RENDER.md`'s framing: what may be gated about a frame is
+/// arithmetic, and an angle is arithmetic.
+///
+/// **The curve is quadratic and that is not laziness.** A rigid rod pivoting
+/// under gravity obeys `θ'' = (3g/2L)·sin θ`, which starts at zero angular
+/// acceleration and whips at the end; integrating it per frame would be a
+/// state variable and a stiffness knob for a motion that lasts 1.6 s. `p²`
+/// has the property that actually reads — slow off the stump, fastest at the
+/// ground — and it is one expression with no state.
+pub fn fell_rotation(yaw: f32, bearing: f32, t: f32) -> Quat {
+    let p = (t / FELL_FALL_S).clamp(0.0, 1.0);
+    let angle = std::f32::consts::FRAC_PI_2 * p * p;
+    // The axis is horizontal and perpendicular to the bearing, so tipping
+    // about it walks the trunk's +Y onto the bearing exactly at 90°.
+    let (sb, cb) = (bearing.sin(), bearing.cos());
+    Quat::from_axis_angle(Vec3::new(cb, 0.0, -sb), angle) * Quat::from_rotation_y(yaw)
+}
+
+/// Advance every topple in flight.
+///
+/// **Only the ones in flight.** [`Topple::t`] is negative while a slot is
+/// standing and clamps at [`FELL_FALL_S`] once it is down, so this touches an
+/// entity
+/// on the ~96 frames of its fall and never again — a forest of felled trees
+/// costs this system one comparison each. That matters because the client is
+/// held to the sim thread's discipline (`CLAUDE.md`'s client trap) and this
+/// runs every frame over every prop in the ring.
+pub fn fall(time: Res<Time>, mut q: Query<(&Fellable, &mut Topple, &mut Transform)>) {
+    let dt = time.delta_secs();
+    for (f, mut top, mut t) in q.iter_mut() {
+        if top.t < 0.0 || top.t >= FELL_FALL_S {
+            continue;
+        }
+        top.t = (top.t + dt).min(FELL_FALL_S);
+        t.rotation = fell_rotation(f.yaw, fell_bearing(f.key), top.t);
+    }
+}
+
+/// The state change itself, with the wire behind a predicate.
 ///
 /// Split out so it can be exercised headless — `crates/client/tests/fell.rs`
-/// drives it with a fixed key set and asserts the mesh, the material and the
-/// lift, in both directions. Without that split the only way to test a felled
-/// tree would be to chop one over a live socket, which is not a gate.
+/// drives it with a fixed key set and asserts the pose and the visibility of
+/// all four parts, in both directions. Without that split the only way to test
+/// a felled tree would be to chop one over a live socket, which is not a gate.
+///
+/// **No mesh or material is touched here any more, and that is the shape of
+/// the change.** A tree that topples keeps being the mesh it already was — it
+/// is the same trunk, lying down — so the trunk's 6 k triangles are the ones
+/// that were already in the frame and a felled forest costs no more than a
+/// standing one. What used to be a mesh swap on one entity is now a pose on
+/// the trunk and a `Visibility` on a stump that was spawned with it.
 pub fn apply_fell(
-    a: &PropAssets,
     mut q: Query<(
         &mut Fellable,
-        &mut Mesh3d,
-        &mut MeshMaterial3d<StandardMaterial>,
+        Option<&mut Topple>,
         &mut Transform,
         &mut Visibility,
     )>,
     harvested: &dyn Fn(u32) -> bool,
 ) {
-    for (mut f, mut mesh, mut mat, mut t, mut vis) in q.iter_mut() {
+    for (mut f, top, mut t, mut vis) in q.iter_mut() {
         let felled = harvested(f.key);
         if felled == f.felled {
             continue;
         }
         f.felled = felled;
-        if !f.stumps {
+        match f.part {
             // A rock that stops being a rock has nothing to animate.
-            *vis = if felled {
-                Visibility::Hidden
-            } else {
-                Visibility::Inherited
-            };
-            continue;
-        }
-        if felled {
-            mesh.0 = a.stump.clone();
-            mat.0 = a.wood.clone();
-            t.translation.y = f.base_y + STUMP_LIFT_M * t.scale.y;
-        } else {
-            // Through the SAME accessor `spawn_slot` and the gate use, not a
-            // raw index. A direct `a.pines[f.variant]` panics the client if a
-            // stored variant ever outlives a pool that shrank under it — and
-            // "two paths derive the variant differently" is the exact bug this
-            // function's own gate was written to catch.
-            mesh.0 = a.pine_mesh(f.variant).clone();
-            mat.0 = a.bark.clone();
-            t.translation.y = f.base_y;
+            FellPart::Vanish => {
+                *vis = if felled {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Inherited
+                };
+            }
+            // Revealed by the cut, and revealed INSTANTLY rather than when the
+            // trunk lands: the stump is what the saw leaves behind, so it is
+            // there from the first frame the trunk starts to lean.
+            FellPart::Stump => {
+                *vis = if felled {
+                    Visibility::Inherited
+                } else {
+                    Visibility::Hidden
+                };
+            }
+            FellPart::Trunk | FellPart::Canopy => {
+                // `Option` because only these two parts carry a [`Topple`].
+                // A missing one is a spawn-site bug rather than a state to
+                // handle, so it leaves the pose alone instead of guessing.
+                let Some(mut top) = top else { continue };
+                if felled {
+                    // Start the topple. `fall` owns the pose from here.
+                    top.t = 0.0;
+                } else {
+                    // Respawned: back upright, and back to "not falling" so
+                    // the next chop starts from the top of the curve rather
+                    // than from wherever the last one ended.
+                    top.t = -1.0;
+                    t.rotation = Quat::from_rotation_y(f.yaw);
+                }
+            }
         }
     }
 }
@@ -1231,6 +1538,13 @@ impl PropAssets {
     }
     pub fn pine_variants(&self) -> usize {
         self.pines.len()
+    }
+    /// The canopy half of a variant. Indexed modulo the pool for the reason
+    /// `pine_mesh` is: the two arrays are built from one `conifers` vector, so
+    /// a variant that is valid for one is valid for the other, and a raw index
+    /// would panic the client rather than wrap if that ever stopped holding.
+    pub fn needle_mesh(&self, variant: usize) -> &Handle<Mesh> {
+        &self.needles[variant % self.needles.len()]
     }
     pub fn wood_material(&self) -> &Handle<StandardMaterial> {
         &self.wood

@@ -135,6 +135,17 @@ pub struct ShardConfig {
     /// Defaults to the bind host, which is right for a dev shard and wrong
     /// for anything behind a name, so a public shard sets it.
     pub domain: String,
+    /// The ticket door (`entitle.rs`): does a joiner own a copy of this game?
+    ///
+    /// [`entitle::Config::off`] is the shipping default and checks **nothing**
+    /// — the same honest state `status_addr` takes. Community and training
+    /// shards run this way on purpose (`DECISIONS.md` 2026-08-04: one build,
+    /// two populations — the armed set is the perimeter), and so does every
+    /// test in this repo.
+    ///
+    /// Armed, it requires `require_auth = true`, because a guest has no wallet
+    /// to ask about; `parse_shard_toml` refuses the pair rather than warning.
+    pub entitle: crate::entitle::Config,
 }
 
 impl ShardConfig {
@@ -153,6 +164,7 @@ impl ShardConfig {
             world_save_interval_ticks: DEFAULT_WORLD_SAVE_INTERVAL_TICKS,
             status_addr: None,
             domain: "127.0.0.1".into(),
+            entitle: crate::entitle::Config::off(),
         }
     }
 }
@@ -173,6 +185,10 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut world_save_interval_ticks: u64 = DEFAULT_WORLD_SAVE_INTERVAL_TICKS;
     let mut status_addr: Option<SocketAddr> = None;
     let mut domain: Option<String> = None;
+    let mut entitle_origin: Option<String> = None;
+    let mut entitle_slug: Option<String> = None;
+    let mut entitle_timeout_secs: Option<u64> = None;
+    let mut entitle_sweep_secs: Option<u64> = None;
     for (n, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -324,6 +340,39 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 }
                 domain = Some(value.to_string());
             }
+            // The ticket door (`entitle.rs`). Absent ⇒ this shard checks no
+            // copies, which is what every test, every community shard and
+            // the local dev flow run on.
+            "entitle_origin" => {
+                if value.is_empty() {
+                    return Err(format!(
+                        "shard.toml line {}: entitle_origin is empty — omit the key \
+                         to check no copies, rather than naming nowhere",
+                        n + 1
+                    ));
+                }
+                if !value.starts_with("https://") && !value.starts_with("http://") {
+                    return Err(format!(
+                        "shard.toml line {}: entitle_origin needs a scheme, e.g. \
+                         https://scry.moreright.xyz",
+                        n + 1
+                    ));
+                }
+                // A trailing slash would build `…//api/…`, which some origins
+                // serve and some 404. Trimmed here rather than at every call.
+                entitle_origin = Some(value.trim_end_matches('/').to_string());
+            }
+            "entitle_slug" => entitle_slug = Some(value.to_string()),
+            "entitle_timeout_secs" => {
+                entitle_timeout_secs = Some(value.parse().map_err(|e| {
+                    format!("shard.toml line {}: bad entitle_timeout_secs: {e}", n + 1)
+                })?);
+            }
+            "entitle_sweep_secs" => {
+                entitle_sweep_secs = Some(value.parse().map_err(|e| {
+                    format!("shard.toml line {}: bad entitle_sweep_secs: {e}", n + 1)
+                })?);
+            }
             other => return Err(format!("shard.toml line {}: unknown key `{other}`", n + 1)),
         }
     }
@@ -331,6 +380,31 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     // its operator believes it is public.
     if cert_pem.is_some() != key_pem.is_some() {
         return Err("shard.toml: cert_pem and key_pem must be set together".into());
+    }
+    let entitle = crate::entitle::Config {
+        origin: entitle_origin,
+        slug: entitle_slug.unwrap_or_else(|| crate::ENTITLE_SLUG.to_string()),
+        timeout: entitle_timeout_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(crate::entitle::DEFAULT_TIMEOUT),
+        sweep: entitle_sweep_secs
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(crate::entitle::DEFAULT_SWEEP),
+    };
+    // Refused here rather than clamped at the call site: a cadence nobody
+    // chose is worse than a boot that says which line to fix.
+    entitle.sane().map_err(|e| format!("shard.toml: {e}"))?;
+    // A ticket door over an open door is a shard that checks copies and then
+    // admits everyone who offers no address at all — the check has nothing to
+    // hang on, because a guest has no wallet to ask about. Refused rather
+    // than warned: unlike the save_file case below it, this one silently
+    // gives the game away.
+    if entitle.armed() && !require_auth.unwrap_or(false) {
+        return Err(
+            "shard.toml: entitle_origin needs require_auth = true — a guest has \
+                    no wallet to check, so a ticket door over an open door checks nobody"
+                .into(),
+        );
     }
     Ok(ShardConfig {
         bind: bind.ok_or("shard.toml: missing `bind`")?,
@@ -350,6 +424,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             let b = bind.expect("checked above");
             b.ip().to_string()
         }),
+        entitle,
     })
 }
 

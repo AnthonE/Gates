@@ -42,7 +42,10 @@ pub fn stem(name: &str) -> String {
 ///
 /// Keyed by normalised display name, the same rule [`stem`] states and the
 /// same one `ui::hold` resolves models by — one rename, one breakage.
-pub fn icon_stem(catalog: &protocol::ItemCatalog, stack: sim_core::gather::ItemStack) -> Option<&'static str> {
+pub fn icon_stem(
+    catalog: &protocol::ItemCatalog,
+    stack: sim_core::gather::ItemStack,
+) -> Option<&'static str> {
     if stack.count == 0 {
         return None;
     }
@@ -160,9 +163,7 @@ mod tests {
     #[test]
     fn an_empty_slot_draws_no_icon() {
         let c = catalog_with(&["Wood"]);
-        let s = |count| {
-            icon_stem(&c, sim_core::gather::ItemStack { item: 0, count })
-        };
+        let s = |count| icon_stem(&c, sim_core::gather::ItemStack { item: 0, count });
         assert_eq!(s(0), None, "an empty slot must draw nothing at all");
         assert_eq!(s(1), Some("wood"));
     }
@@ -180,7 +181,13 @@ mod tests {
         // An id past the catalog is the same answer and not a panic: the id
         // arrives from the wire and the slot index from a keypress.
         assert_eq!(
-            icon_stem(&c, sim_core::gather::ItemStack { item: 999, count: 1 }),
+            icon_stem(
+                &c,
+                sim_core::gather::ItemStack {
+                    item: 999,
+                    count: 1
+                }
+            ),
             None
         );
     }

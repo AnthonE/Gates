@@ -63,6 +63,7 @@ pub struct Persisted {
     pub vol_master: f32,
     pub vol_game: f32,
     pub vol_ambience: f32,
+    pub vol_music: f32,
 }
 
 /// What a parse hands back: the values (defaults where the file was silent
@@ -124,6 +125,7 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
             "vol_master" => num(&mut v.vol_master, value),
             "vol_game" => num(&mut v.vol_game, value),
             "vol_ambience" => num(&mut v.vol_ambience, value),
+            "vol_music" => num(&mut v.vol_music, value),
             // A comma-separated list, because the format is `key = value` and
             // a list of ids does not earn a second one. An id may not contain
             // a comma — `shardlist::parse` caps every field at
@@ -201,6 +203,7 @@ pub fn serialize(v: &Persisted, version: u32, favourites: &[String], unknown: &[
     s.push_str(&format!("vol_master = {}\n", v.vol_master));
     s.push_str(&format!("vol_game = {}\n", v.vol_game));
     s.push_str(&format!("vol_ambience = {}\n", v.vol_ambience));
+    s.push_str(&format!("vol_music = {}\n", v.vol_music));
     // Written unconditionally, empty list included: a `favourites = ""` line
     // is how un-starring the last shard *sticks*. Omitting the key when the
     // list is empty would leave the previous file's line in place on a
@@ -301,6 +304,7 @@ mod tests {
             vol_master: 1.0,
             vol_game: 1.0,
             vol_ambience: 1.0,
+            vol_music: 1.0,
         }
     }
 
@@ -314,6 +318,7 @@ mod tests {
             vol_master: 0.7,
             vol_game: 0.3,
             vol_ambience: 0.0,
+            vol_music: 0.45,
         }
     }
 

@@ -74,7 +74,87 @@ use super::props::{hash2, PINE_H, PINE_MAX_R, PINE_NORMAL_BLEND};
 /// (`DECISIONS.md` §open) pinned to `props.js` at 1, and `ci/knob_registry.mjs`
 /// goes red on the collision — the same trap `PINE_MESH_POOL` already carries
 /// a comment about. One registry name cannot mean two things.
-pub const CONIFER_POOL: usize = 3;
+pub const CONIFER_POOL: usize = SEEDS_PER_SPECIES * SPECIES.len();
+
+/// Distinct seeds generated per species. Three was the whole pool when the
+/// pool was one species; it is now the per-species figure, so the pool grows
+/// with the table rather than being restated.
+pub const SEEDS_PER_SPECIES: usize = 3;
+
+/// What separates one species from another, beyond its parameter block: how
+/// tall `fit_to_bounds` normalises it to, how wide it is allowed to get, and
+/// which two colours its canopy bands between.
+///
+/// **Height and radius are here rather than in `props.rs` because they are
+/// now per-species and `PINE_H`/`PINE_MAX_R` are not.** Those two stay as the
+/// conifer's own numbers — `props.rs`'s whorl builder still reads them for the
+/// far-LOD silhouette — and [`TREE_MAX_R`] is the island-wide ceiling the sim
+/// has to clear.
+pub struct SpeciesDef {
+    pub tree_type: TreeType,
+    pub height_m: f32,
+    /// The radius no part of this species may exceed, metres. A CEILING that
+    /// `tests/tree.rs` measures every seed against, not what it draws.
+    pub max_r_m: f32,
+    pub leaf_lo: u32,
+    pub leaf_hi: u32,
+}
+
+/// The species pool. **Two, where there was one** — `reference/PLANTS.md` §6.1
+/// and `NOW.md` §0t item 1.
+///
+/// The broadleaf is not a taste addition. `TreeType::Deciduous` was a variant
+/// of a crate enum we already depended on and never used, and the file's own
+/// comment said the pool was "one species at three seeds rather than three
+/// species". A temperate island with exactly one tree on it is the single
+/// cheapest thing to fix about this forest.
+pub const SPECIES: [SpeciesDef; 2] = [
+    SpeciesDef {
+        tree_type: TreeType::Evergreen,
+        height_m: PINE_H,
+        max_r_m: PINE_MAX_R,
+        leaf_lo: NEEDLE_LO,
+        leaf_hi: NEEDLE_HI,
+    },
+    // **Shorter than the conifer and much wider**, which is the whole read: a
+    // pine is a spire and a broadleaf is a dome, and if the two shared a
+    // silhouette envelope there would be no point having both. 5.4 m against
+    // 6.6 keeps the conifer as the thing that breaks the skyline.
+    SpeciesDef {
+        tree_type: TreeType::Deciduous,
+        height_m: 5.4,
+        max_r_m: BROADLEAF_MAX_R,
+        leaf_lo: BROADLEAF_LO,
+        leaf_hi: BROADLEAF_HI,
+    },
+];
+
+/// The broadleaf's radius ceiling, metres. Wider than the conifer's by design;
+/// see [`TREE_MAX_R`] for what it costs the sim.
+pub const BROADLEAF_MAX_R: f32 = 2.9;
+
+/// The widest any species may be, metres — the number the sim's spawn
+/// clearance has to cover.
+///
+/// **This is the constant `world.rs` was always talking about and never had.**
+/// `SPAWN_CLEAR_M`'s comment derived itself from `PINE_MAX_R` and credited
+/// `ci/pine_shape.mjs` with closing the arithmetic; that gate does not exist
+/// (it went with the browser), so the derivation was a dead citation — a claim
+/// that something was enforced when nothing was. `tests/tree.rs` closes it in
+/// Rust now, against this.
+pub const TREE_MAX_R: f32 = if PINE_MAX_R > BROADLEAF_MAX_R {
+    PINE_MAX_R
+} else {
+    BROADLEAF_MAX_R
+};
+
+/// Which species a pool index is, and which seed within it. Seeds are grouped
+/// by species so a species can be appended without renumbering the ones
+/// before it — `Fellable::variant` is stored on live entities and a
+/// renumbering would silently re-species every standing tree.
+pub fn species_of(variant: usize) -> usize {
+    (variant / SEEDS_PER_SPECIES).min(SPECIES.len() - 1)
+}
 
 /// Ceiling on one conifer's triangles, bark and needles together.
 ///
@@ -96,6 +176,12 @@ const BARK_LO: u32 = 0x503b2b;
 const BARK_HI: u32 = 0x70583f;
 const NEEDLE_LO: u32 = 0x204825;
 const NEEDLE_HI: u32 = 0x4d8845;
+/// The broadleaf's two greens. Yellower and lighter than the conifer's, which
+/// is the other half of telling the two apart at range — `ART.md` §5 asks for
+/// two greens minimum per canopy, and a second SPECIES wearing the first one's
+/// palette would read as the same tree at a different size.
+const BROADLEAF_LO: u32 = 0x3a5a22;
+const BROADLEAF_HI: u32 = 0x7fa03c;
 
 /// sRGB hex to linear, the same conversion `props.rs` uses.
 fn linear(hex: u32) -> [f32; 3] {
@@ -112,7 +198,7 @@ fn linear(hex: u32) -> [f32; 3] {
 
 /// One conifer's settings. `variant` only reseeds; the shape parameters are
 /// shared so the pool is one species at three seeds rather than three species.
-fn settings() -> TreeMeshSettings {
+fn conifer_settings() -> TreeMeshSettings {
     TreeMeshSettings {
         tree_type: TreeType::Evergreen,
         branch: BranchParams {
@@ -197,6 +283,80 @@ fn settings() -> TreeMeshSettings {
     }
 }
 
+/// The broadleaf's parameters.
+///
+/// **Started from the crate's own `Deciduous` defaults rather than invented**,
+/// which are ez-tree's baseline for the same species family; what moved from
+/// them is listed here and nothing else did, so the diff against upstream is
+/// readable.
+///
+/// - `levels: Two`, not the default `Three`. Leaves attach only to the LAST
+///   level (the conifer's block explains why that matters), and three levels
+///   of `children: [7, 4, 10]` is 280 terminal branches before a single leaf
+///   card — comfortably past `CONIFER_MAX_TRIS` on branch geometry alone.
+///   Two levels puts the canopy on 40 limbs and leaves the budget for cards.
+/// - `children: [6, 7, 0]` against the default `[7, 4, 10]`: fewer primaries
+///   and more secondaries, because with the third level gone the second one
+///   has to carry the crown's whole spread.
+/// - `angle[1] = 52°`, wider than the default 39°. A broadleaf's read is that
+///   its limbs leave the trunk closer to horizontal than a conifer's; at the
+///   default the crown is a narrow vase.
+/// - `force.direction` is `Vec3::Y` and **must be**, for exactly the reason
+///   the conifer's block gives at length: a downward direction hits the
+///   antipodal singularity in `Quat::from_rotation_arc` and bends the whole
+///   tree sideways. Droop is the limb ANGLE's job in both species.
+/// - Bigger cards (0.42 m) and more of them (11) than the crate default's
+///   0.25/3, on the conifer's own measured reasoning: a card's contribution is
+///   its OPAQUE area and the mask cuts most of each card away, so a canopy
+///   sized against solid quads comes out spindly.
+fn broadleaf_settings() -> TreeMeshSettings {
+    TreeMeshSettings {
+        tree_type: TreeType::Deciduous,
+        branch: BranchParams {
+            levels: BranchRecursionLevel::Two,
+            angle: [0.0, 52.0, 44.0, 0.0],
+            children: [6, 7, 0],
+            force: BranchForce {
+                direction: Vec3::Y,
+                strength: 0.04,
+                radius_cutoff: 0.1,
+            },
+            gnarliness: [-0.04, 0.14, 0.10, 0.0],
+            // [0] is proportion only — `fit_to_bounds` normalises height away.
+            // [1] and [2] are what set the crown's WIDTH, which is the sim's
+            // business through `BROADLEAF_MAX_R`; swept against the gate.
+            length: [4.5, 1.75, 1.0, 0.0],
+            trunk_base_radius: 0.22,
+            radius_factor: [1.0, 0.42, 0.34, 0.0],
+            sections: [10, 5, 3, 0],
+            segments: [7, 5, 3, 0],
+            // Limbs from 22% of the trunk, lower than the crate's 32%: on a
+            // 5.4 m tree 32% is 1.7 m, which is head height, and a forest of
+            // bare poles at eye level is what the conifer's block calls a
+            // colonnade.
+            start: [0.0, 0.22, 0.3, 0.0],
+            taper: [0.94, 0.82, 0.85, 0.0],
+            twist: [0.06, -0.05, 0.0, 0.0],
+        },
+        leaves: LeafParams {
+            leaf_billboard: LeafBillboard::Double,
+            angle: 48.0,
+            count: 11,
+            start: 0.0,
+            size: 0.42,
+            size_variance: 0.35,
+        },
+    }
+}
+
+/// The parameter block for a species index.
+fn settings(species: usize) -> TreeMeshSettings {
+    match SPECIES[species].tree_type {
+        TreeType::Evergreen => conifer_settings(),
+        TreeType::Deciduous => broadleaf_settings(),
+    }
+}
+
 /// Every position in a mesh, as a mutable slice. Returns `None` rather than
 /// panicking so a generator change cannot take the client down at boot.
 fn positions_mut(m: &mut Mesh) -> Option<&mut Vec<[f32; 3]>> {
@@ -234,12 +394,12 @@ pub fn bounds(meshes: &[&Mesh]) -> (f32, f32) {
 /// framing, and it is why this normalises rather than trusting `length[0]`.
 /// The trunk gnarls and the top ring tapers to a tip, so the generated height
 /// is never the requested length; measured at 7.34 m for a 7.2 m trunk.
-fn fit_to_bounds(bark: &mut Mesh, needles: &mut Mesh) {
+fn fit_to_bounds(bark: &mut Mesh, needles: &mut Mesh, height_m: f32) {
     let (h, _) = bounds(&[bark, needles]);
     if h <= f32::EPSILON {
         return;
     }
-    let k = PINE_H / h;
+    let k = height_m / h;
     // The generator roots the trunk at the origin, so a scale about the origin
     // keeps the base planted and no translate is owed. Measured, not assumed:
     // `tests/tree.rs` asserts the minimum y is 0 after this runs.
@@ -324,26 +484,29 @@ fn blend_canopy_normals(m: &mut Mesh) {
 /// every client and every run. That is what lets a chunk stream out and back
 /// bit-identical, the same law the whorl builder's hashes carried.
 pub fn conifer(variant: usize) -> (Mesh, Mesh) {
+    let sp = &SPECIES[species_of(variant)];
     // Seeded off the same mixer the rest of `props.rs` uses rather than the
     // raw index, so variant 0 and variant 1 are not neighbouring PRNG streams.
     let mut rng = fastrand::Rng::with_seed(hash2(0x9e37_79b9, variant as u32) as u64);
-    let (mut bark, mut needles) = match generate_tree_meshes(&settings(), &mut rng) {
-        Ok(pair) => pair,
-        // A generator failure must not be a black screen. The only documented
-        // error is index overflow, which `u32_indices` makes unreachable at
-        // these counts — but "unreachable" is not "impossible", and an empty
-        // pair draws nothing rather than panicking a client at boot.
-        Err(_) => (Mesh::from(Cuboid::default()), Mesh::from(Cuboid::default())),
-    };
+    let (mut bark, mut needles) =
+        match generate_tree_meshes(&settings(species_of(variant)), &mut rng) {
+            Ok(pair) => pair,
+            // A generator failure must not be a black screen. The only
+            // documented error is index overflow, which `u32_indices` makes
+            // unreachable at these counts — but "unreachable" is not
+            // "impossible", and an empty pair draws nothing rather than
+            // panicking a client at boot.
+            Err(_) => (Mesh::from(Cuboid::default()), Mesh::from(Cuboid::default())),
+        };
 
-    fit_to_bounds(&mut bark, &mut needles);
-    band(&mut bark, BARK_LO, BARK_HI, 0.0, PINE_H * 0.6, true);
+    fit_to_bounds(&mut bark, &mut needles, sp.height_m);
+    band(&mut bark, BARK_LO, BARK_HI, 0.0, sp.height_m * 0.6, true);
     band(
         &mut needles,
-        NEEDLE_LO,
-        NEEDLE_HI,
-        PINE_H * 0.15,
-        PINE_H,
+        sp.leaf_lo,
+        sp.leaf_hi,
+        sp.height_m * 0.15,
+        sp.height_m,
         false,
     );
     blend_canopy_normals(&mut needles);

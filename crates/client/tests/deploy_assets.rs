@@ -176,8 +176,7 @@ fn only_a_fire_glows() {
             });
         let allowed = MAY_GLOW.contains(&(arch as u8));
         assert_eq!(
-            lit,
-            allowed,
+            lit, allowed,
             "archetype {arch} ({rel}) emissive={lit}, allowed={allowed}. \
              The generator ships `emissiveFactor = [1,1,1]` on nearly every \
              asset and its map is usually junk — a wooden spear measured a \

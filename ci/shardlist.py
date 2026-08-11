@@ -60,6 +60,20 @@ ROOT = Path(__file__).resolve().parent.parent
 
 KIND = "scry-shardlist-v1"
 
+# Where the document is served from once it is on the origin's disk.
+#
+# ⚠ This used to print `https://scry.moreright.xyz/depot/gates/servers.json`
+# and **that url could never have worked**: `/depot/` is not a location on
+# that origin — depot bytes have always come through the meter — so the one
+# act this script told an operator to perform ended at a 404, and
+# `manifest.servers.url` stayed null for days while the public shard was up
+# and both readers drew "no shards published". scry built the route rather
+# than the nginx alias (`GET /api/launcher/servers/{slug}`, scry
+# `docs/client/LAUNCHER.md` §6), serving `$SCRY_DEPOTS_DIR/<slug>/servers.json`
+# byte-for-byte. The scp destination below was always right; only the url the
+# manifest points at was wrong.
+PUBLISH_URL = "https://scry.moreright.xyz/api/launcher/servers/gates"
+
 # The client's caps, from `crates/client/src/shardlist.rs`. Restated rather
 # than imported because that is Rust; `--self-test` is what keeps them honest,
 # and it reads the constants out of the Rust source instead of trusting these.
@@ -338,7 +352,7 @@ def main() -> int:
     print("Publishing is an operator act. To serve it:")
     print(f"  scp {out} <origin>:/data/apps/scry-data/depots/gates/servers.json")
     print("...and point scry's Gates manifest at it, once:")
-    print(f'  "servers": {{"url": "https://scry.moreright.xyz/depot/gates/servers.json",')
+    print(f'  "servers": {{"url": "{PUBLISH_URL}",')
     print(f'               "kind": "{KIND}"}}')
     print("Until that field is set, the launcher's Servers window stays dark by design.")
     return 0

@@ -250,7 +250,20 @@ const TICKS: u64 = 900;
 /// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
 /// this value was read off, which is the check that keeps a regenerated
 /// golden evidence rather than a shrug.
-const GOLDEN_FINAL_HASH: u64 = 0x1C79_7791_1C59_CC18;
+///
+/// **Regenerated 2026-08-10 for `SPAWN_CLEAR_M` 4.0 → 4.5.** The tree pool
+/// gained a second, wider species, so the sim's spawn clearance rose to keep
+/// a fresh spawn standing clear of the widest canopy — and a larger clearance
+/// picks different beach cells, which moves every spawn position and therefore
+/// the whole run. **The drift is in the inputs, not the rules**: the diff that
+/// caused it is one constant in `world.rs` and the rest of that file's change
+/// is comments, `test_terrain_golden` did NOT move (worldgen is untouched, only
+/// which cleared cell a player is placed on), and both determinism assertions
+/// above were green on the run this value came off. That is the evidence;
+/// without those three the honest move would have been to find the bug instead.
+/// Operator, 2026-08-10: *"we have no worlds to wipe so thats fine"* — the
+/// regeneration is cheap because there is nothing live to invalidate.
+const GOLDEN_FINAL_HASH: u64 = 0xC20B_FCE5_BB51_AD6D;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

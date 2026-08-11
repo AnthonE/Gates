@@ -33,6 +33,21 @@ pub struct ShardStats {
     /// refusal is a client that needs updating, an auth refusal is a shard
     /// doing its job.
     pub refused_auth: AtomicU64,
+    /// Joins refused because the chain says this wallet holds no copy
+    /// (`REFUSE_TICKET`, `entitle.rs`). **Only a definite on-chain zero
+    /// lands here** — that is the whole point of keeping it apart from the
+    /// counter below.
+    pub refused_ticket: AtomicU64,
+    /// Ticket checks that could not be answered — a timeout, an unreachable
+    /// origin, an `entitled: null`. **Every one of these ADMITTED a player**,
+    /// which is deliberate (an outage must not empty the shard) and is
+    /// exactly why it is counted: a fail-open that nobody can see is a fail-
+    /// open nobody fixes. A shard whose ticket door is armed and whose
+    /// `refused_ticket` is 0 while this climbs is a shard checking nothing.
+    pub entitle_unknown: AtomicU64,
+    /// Roster sweeps that kicked somebody — a copy sold mid-session. Same
+    /// rule: a definite zero and nothing else.
+    pub entitle_kicked: AtomicU64,
     pub refused_full: AtomicU64,
     pub handshake_errors: AtomicU64,
     /// Input datagrams decoded and ringed.

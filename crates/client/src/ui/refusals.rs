@@ -26,17 +26,16 @@
 //! list cannot self-check. Adding a refusal to the sim turns this red until
 //! the sentence lands, on purpose.
 
-/// `protocol`'s `REFUSE_*: u8` — why a shard turned the connection down at
-/// hello, before there is a world to be in.
-pub const CONNECT: [&str; 3] = [
-    "protocol version mismatch",
-    "shard is full",
-    // `REFUSE_AUTH`. The wire deliberately does not distinguish "you sent no
-    // token" from "your token was rejected" — that split is a probing oracle
-    // — and the player-facing sentence is the same either way, because the
-    // action is the same: sign in through the launcher and come back.
-    "this shard needs a launcher sign-in",
-];
+// The CONNECT sentences used to live here as a fourth table, and they were a
+// SECOND implementation of something `protocol` already had to say — the
+// server formats the same refusals for its own connect helper, and neither
+// crate can see the other's array. That is the `siwe_message` argument
+// exactly: two implementations of one string is two chances to disagree, and
+// the symptom is a player told the wrong reason they cannot play.
+//
+// So `protocol::refuse_text` is the one implementation and this delegates.
+// The tables below stay local because their codes are `sim-core`'s, and
+// nothing outside this client renders them.
 
 /// `sim_core::craft`'s `REFUSE_*: u32`.
 pub const CRAFT: [&str; 6] = [
@@ -125,9 +124,17 @@ fn text(table: &[&str], code: u32) -> String {
     }
 }
 
-/// Why the shard refused the connection.
+/// Why the shard refused the connection — `protocol`'s table, not ours.
+///
+/// It answers `None` for a code this build has no word for, which is the
+/// same case [`text`] handles for the sim's tables: a shard newer than this
+/// client can refuse for a reason we cannot name, and naming the number is
+/// honest where a guess would not be.
 pub fn connect(code: u8) -> String {
-    text(&CONNECT, code as u32)
+    match protocol::refuse_text(code) {
+        Some(s) => s.to_string(),
+        None => format!("code {code}"),
+    }
 }
 
 /// Why the craft was turned down.
@@ -207,12 +214,6 @@ mod tests {
                 DEPLOY.len(),
                 "DEPLOY",
             ),
-            (
-                "crates/protocol/src/lib.rs",
-                "REFUSE_",
-                CONNECT.len(),
-                "CONNECT",
-            ),
         ] {
             let declared = sim_code_count(file, prefix);
             assert_eq!(
@@ -278,15 +279,23 @@ mod tests {
         assert_eq!(craft(REFUSE_QUEUE_FULL as u8), "queue full");
         assert_eq!(craft(REFUSE_INPUTS as u8), "missing ingredients");
 
-        assert_eq!(
-            connect(protocol::REFUSE_VERSION),
-            "protocol version mismatch"
-        );
-        assert_eq!(connect(protocol::REFUSE_FULL), "shard is full");
-        assert_eq!(
-            connect(protocol::REFUSE_AUTH),
-            "this shard needs a launcher sign-in"
-        );
+        // CONNECT is `protocol`'s table now (see the note above `connect`),
+        // and protocol gates its own completeness. What is still this
+        // crate's business is that the client asks IT rather than growing a
+        // second copy — which is what the old assertions here would have
+        // frozen in place.
+        for code in [
+            protocol::REFUSE_VERSION,
+            protocol::REFUSE_FULL,
+            protocol::REFUSE_AUTH,
+            protocol::REFUSE_TICKET,
+        ] {
+            assert_eq!(
+                connect(code),
+                protocol::refuse_text(code).expect("every declared code has one"),
+                "the client must not carry its own connect sentences"
+            );
+        }
     }
 
     /// No two codes in a table may share a sentence, or a player cannot tell
@@ -297,7 +306,6 @@ mod tests {
             (&CRAFT[..], "CRAFT"),
             (&BUILD[..], "BUILD"),
             (&DEPLOY[..], "DEPLOY"),
-            (&CONNECT[..], "CONNECT"),
         ] {
             for (i, a) in table.iter().enumerate() {
                 assert!(!a.is_empty(), "{name}[{i}] is empty");

@@ -226,6 +226,12 @@ pub fn structural(c: &Content) -> Result<(), String> {
     };
     for p in &c.pieces {
         for (lo, hi) in [
+            // Twig is on the ladder because it is where every piece
+            // starts: a shape with a wood rung and no twig rung under it
+            // is a shape nothing can ever place (`build::place` takes
+            // twig and nothing else), which is the same hole the two
+            // rungs below describe, one step lower.
+            (Material::Twig, Material::Wood),
             (Material::Wood, Material::Stone),
             (Material::Stone, Material::Metal),
         ] {
@@ -635,11 +641,16 @@ pub fn structural(c: &Content) -> Result<(), String> {
     // **monotone against toughness** — a tougher grade must not rot
     // faster than a weaker one, or upgrading would cost materials to
     // shorten a base's life. That is the reference's shape (§5's ladder
-    // runs 3 h wood → 5 h stone → 8 h metal) and it is the one property
-    // of these three numbers a reader cannot check by eye.
+    // runs 1 h twig → 3 h wood → 5 h stone → 8 h metal) and it is the one
+    // property of these four numbers a reader cannot check by eye.
     {
         let d = &c.balance.globals.decay_pct_per_period;
-        for m in [Material::Wood, Material::Stone, Material::Metal] {
+        for m in [
+            Material::Twig,
+            Material::Wood,
+            Material::Stone,
+            Material::Metal,
+        ] {
             match d.get(&m) {
                 None => return Err(format!("balance: no decay rate for {m:?}")),
                 Some(0) => {
@@ -653,10 +664,15 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 Some(_) => {}
             }
         }
-        let (w, st, me) = (d[&Material::Wood], d[&Material::Stone], d[&Material::Metal]);
-        if !(w >= st && st >= me) {
+        let (tw, w, st, me) = (
+            d[&Material::Twig],
+            d[&Material::Wood],
+            d[&Material::Stone],
+            d[&Material::Metal],
+        );
+        if !(tw >= w && w >= st && st >= me) {
             return Err(format!(
-                "balance: the decay ladder is not monotone (wood {w}, stone                  {st}, metal {me}) — a tougher grade rotting faster makes an                  upgrade cost materials to shorten a base's life"
+                "balance: the decay ladder is not monotone (twig {tw}, wood {w},                  stone {st}, metal {me}) — a tougher grade rotting faster makes an                  upgrade cost materials to shorten a base's life"
             ));
         }
     }

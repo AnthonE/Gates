@@ -370,7 +370,7 @@ fn dollar_ticker_refused() {
 fn orphan_refs_refused() {
     refuses(
         "recipes.toml",
-        "inputs = [{ item = \"item.stone\", count = 15 }]",
+        "inputs = [{ item = \"item.stone\", count = 10 }]",
         "inputs = [{ item = \"item.unobtanium\", count = 15 }]",
         "not an item",
     );
@@ -555,7 +555,7 @@ fn the_declared_farm_rate_cannot_beat_standing_at_the_node() {
 fn upgrade_ladder_must_be_whole() {
     refuses(
         "building.toml",
-        "[[piece]]\nid = \"build.roof_wood\"\nshape = \"roof\"\nmaterial = \"wood\"\nhp = 250\ncost = [{ item = \"item.wood\", count = 350 }]\n",
+        "[[piece]]\nid = \"build.roof_wood\"\nshape = \"roof\"\nmaterial = \"wood\"\nhp = 250\ncost = [{ item = \"item.wood\", count = 100 }]\n",
         "",
         "upgrade ladder must be whole",
     );
@@ -644,8 +644,8 @@ fn bake_craft_carries_the_shipped_numbers() {
     assert_eq!(def.n_inputs, 2);
     let wood = c.item_index("item.wood").unwrap();
     let stone = c.item_index("item.stone").unwrap();
-    assert!(def.inputs[..2].contains(&(wood, 100)));
-    assert!(def.inputs[..2].contains(&(stone, 50)));
+    assert!(def.inputs[..2].contains(&(wood, 200)));
+    assert!(def.inputs[..2].contains(&(stone, 100)));
 
     // Station codes map in schema order.
     let furnace = c.recipe_index("recipe.furnace").unwrap() as usize;
@@ -681,8 +681,8 @@ fn bake_craft_refuses_out_of_cap_rows() {
     let mut srcs = sources();
     let entry = srcs.iter_mut().find(|(n, _)| *n == "recipes.toml").unwrap();
     entry.1 = entry.1.replace(
-        "inputs = [{ item = \"item.stone\", count = 15 }]",
-        "inputs = [\n    { item = \"item.stone\", count = 15 },\n    { item = \"item.wood\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n    { item = \"item.fat\", count = 1 },\n    { item = \"item.charcoal\", count = 1 },\n]",
+        "inputs = [{ item = \"item.stone\", count = 10 }]",
+        "inputs = [\n    { item = \"item.stone\", count = 10 },\n    { item = \"item.wood\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n    { item = \"item.fat\", count = 1 },\n    { item = \"item.charcoal\", count = 1 },\n]",
     );
     let c = build(&srcs).expect("five inputs is a bake error, not a schema error");
     let err = c.bake_craft().expect_err("five-input recipe baked");
@@ -698,7 +698,7 @@ fn bake_building_carries_the_shipped_numbers() {
     assert_eq!(bc.piece_count as usize, c.pieces.len());
 
     // building.toml build.wall_stone: shape wall, stone, hp 500,
-    // 350 stone — read back from the baked row.
+    // 300 stone — read back from the baked row.
     let idx = c.piece_index("build.wall_stone").unwrap() as usize;
     let def = &bc.pieces[idx];
     assert_eq!(def.shape, sim_core::build::SHAPE_WALL);
@@ -706,7 +706,7 @@ fn bake_building_carries_the_shipped_numbers() {
     assert_eq!(def.hp, 500);
     assert_eq!(def.n_costs, 1);
     let stone = c.item_index("item.stone").unwrap();
-    assert_eq!(def.costs[0], (stone, 350));
+    assert_eq!(def.costs[0], (stone, 300));
 
     // Index mapping is a bijection into 0..len.
     let mut seen = vec![false; c.pieces.len()];
@@ -739,8 +739,8 @@ fn bake_building_refuses_out_of_cap_rows() {
         .find(|(n, _)| *n == "building.toml")
         .unwrap();
     entry.1 = entry.1.replacen(
-        "cost = [{ item = \"item.wood\", count = 350 }]",
-        "cost = [\n    { item = \"item.wood\", count = 350 },\n    { item = \"item.stone\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n]",
+        "cost = [{ item = \"item.wood\", count = 50 }]",
+        "cost = [\n    { item = \"item.wood\", count = 50 },\n    { item = \"item.stone\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n]",
         1,
     );
     let c = build(&srcs).expect("three costs is a bake error, not a schema error");
@@ -756,8 +756,8 @@ fn bake_building_refuses_out_of_cap_rows() {
         .find(|(n, _)| *n == "building.toml")
         .unwrap();
     entry.1 = entry.1.replacen(
-        "cost = [{ item = \"item.wood\", count = 350 }]",
-        "cost = [\n    { item = \"item.wood\", count = 350 },\n    { item = \"item.wood\", count = 1 },\n]",
+        "cost = [{ item = \"item.wood\", count = 50 }]",
+        "cost = [\n    { item = \"item.wood\", count = 50 },\n    { item = \"item.wood\", count = 1 },\n]",
         1,
     );
     let c = build(&srcs).expect("a duplicate cost item is a bake error, not a schema error");
@@ -775,12 +775,12 @@ fn bake_deployables_carries_the_shipped_numbers() {
     assert_eq!(dc.def_count as usize, c.deployables.len());
 
     // deployables.toml item.hearth: hearth archetype, foundation
-    // placement, hp 500 — read back from the baked row.
+    // placement, hp 1000 — read back from the baked row.
     let idx = c.deploy_index("item.hearth").unwrap() as usize;
     let def = &dc.defs[idx];
     assert_eq!(def.arch, sim_core::deploy::ARCH_HEARTH);
     assert_eq!(def.placement, sim_core::deploy::PLACE_FOUNDATION);
-    assert_eq!(def.hp, 500);
+    assert_eq!(def.hp, 1000);
     assert_eq!(def.item, c.item_index("item.hearth").unwrap());
 
     // The doors keep their doorway placement and material pairing.
@@ -1485,22 +1485,30 @@ fn a_container_that_cannot_be_opened_is_refused() {
 
 /// The decay ladder must not invert.
 ///
-/// The three numbers look like taste and one relationship in them is
+/// The four numbers look like taste and one relationship in them is
 /// not: if metal rots faster than wood, an upgrade spends materials to
 /// *shorten* a base's life, and nothing downstream would ever say so —
-/// the sweep would just quietly eat the expensive walls first.
+/// the sweep would just quietly eat the expensive walls first. Twig
+/// leads the ladder and is the same rule at the bottom: a scaffold that
+/// outlasted a wooden wall would be a base, not a draft.
 #[test]
 fn an_inverted_decay_ladder_is_refused() {
     refuses(
         "balance.toml",
-        "decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }",
-        "decay_pct_per_period = { wood = 13, stone = 20, metal = 34 }",
+        "decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { twig = 100, wood = 13, stone = 20, metal = 34 }",
         "not monotone",
     );
     refuses(
         "balance.toml",
-        "decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }",
-        "decay_pct_per_period = { wood = 34, stone = 20, metal = 0 }",
+        "decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { twig = 20, wood = 34, stone = 20, metal = 13 }",
+        "not monotone",
+    );
+    refuses(
+        "balance.toml",
+        "decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 0 }",
         "never rots",
     );
 }

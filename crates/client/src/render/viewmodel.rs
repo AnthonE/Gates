@@ -41,9 +41,9 @@ use bevy::prelude::*;
 use super::feed::Feed;
 use super::props::{tint1, Soup};
 use super::rig::EyeCam;
-use super::Net;
 use super::textures::PropMaps;
 use super::Eye;
+use super::Net;
 
 /// Where the item sits in view space, metres. Low and to the right — the
 /// reference frames all show the held item entering from the lower right and
@@ -451,7 +451,10 @@ pub fn swap(
     let (want, empty) = match net.as_deref() {
         Some(n) => {
             let core = &n.session.core;
-            let stack = core.inv.get(usize::from(n.sel).min(core.inv.len() - 1)).copied();
+            let stack = core
+                .inv
+                .get(usize::from(n.sel).min(core.inv.len() - 1))
+                .copied();
             (
                 crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, n.sel),
                 stack.is_none_or(|s| s.count == 0),
@@ -509,20 +512,24 @@ pub struct Models {
 pub fn load_models(mut commands: Commands, assets: Res<AssetServer>) {
     let (mut mesh, mut mat) = (Vec::new(), Vec::new());
     for m in &crate::ui::hold::HELD_MODELS {
-        mesh.push(assets.load(
-            GltfAssetLabel::Primitive {
-                mesh: 0,
-                primitive: 0,
-            }
-            .from_asset(m.path),
-        ));
-        mat.push(assets.load(
-            GltfAssetLabel::Material {
-                index: 0,
-                is_scale_inverted: false,
-            }
-            .from_asset(m.path),
-        ));
+        mesh.push(
+            assets.load(
+                GltfAssetLabel::Primitive {
+                    mesh: 0,
+                    primitive: 0,
+                }
+                .from_asset(m.path),
+            ),
+        );
+        mat.push(
+            assets.load(
+                GltfAssetLabel::Material {
+                    index: 0,
+                    is_scale_inverted: false,
+                }
+                .from_asset(m.path),
+            ),
+        );
     }
     commands.insert_resource(Models { mesh, mat });
 }

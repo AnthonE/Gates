@@ -397,7 +397,35 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// merge is the resolution; nothing about either feature moved.
 ///
 /// Fixtures are keyed `v33_*`, plus one new: `v33_event_shot`.
-pub const PROTO_VER: u16 = 33;
+///
+/// v34 put **twig** under wood on the material ladder (`build.rs`
+/// `MAT_TWIG = 0`), which renumbered wood, stone and metal to 1, 2 and 3.
+/// **`MATERIAL_BITS` did not move** — it has been 2 since v4 and 2 bits
+/// hold four rungs exactly, so not one field widened and not one message
+/// changed shape. What changed is what the *values* mean: a `1` in that
+/// field was wood on a v33 shard and is twig-plus-one on a v34 one, so a
+/// v33 client would read every piece in the world one rung stronger than
+/// it is and price its own upgrades against the wrong row. That is v18's
+/// case exactly — a widened meaning inside an unchanged layout — and it
+/// is the case `PROTO_VER` exists for, because no byte-golden can see it.
+///
+/// **Three** fixtures move their bytes, and the third is the one that
+/// proves the rest: `action_upgrade` climbs to metal, which is now 3;
+/// `event_piece_defs`'s max-everything row was re-pointed at 3 so the
+/// **top** of the field is pinned by a fixture that actually writes it;
+/// and `hello`, which carries `PROTO_VER` itself and would move on any
+/// bump. The other 80 are byte-identical under a new name — which is the
+/// point, because a renumber that left them alone is exactly the shape of
+/// wire change a byte-golden cannot see.
+///
+/// It is also the first bump whose *cause* was caught by a test rather
+/// than by a reviewer: `wire_domains::every_domain_fits_its_wire_field`
+/// pins each domain's live maximum and failed on `MAT_*` topping out at 3
+/// where it was pinned at 2, with the bump, the regeneration and the pin
+/// move all named in its message. The pin is now 3.
+///
+/// Fixtures are keyed `v34_*`. None added, none removed — 83, as v33.
+pub const PROTO_VER: u16 = 34;
 
 /// Datagram kind field width.
 ///
@@ -527,6 +555,53 @@ pub const REFUSE_FULL: u8 = 1;
 /// the player-facing sentence is the same either way — sign in through the
 /// launcher. `server` distinguishes them in its own counters.
 pub const REFUSE_AUTH: u8 = 2;
+/// This shard checks copies and the chain says this wallet holds none.
+///
+/// **A separate code from [`REFUSE_AUTH`] on purpose, and it is the opposite
+/// call from the one that merged the two auth cases.** There, telling a
+/// stranger which way their signature was wrong is a probing oracle and the
+/// player-facing sentence is identical either way. Here it is neither: the
+/// address was already *proved*, so nothing is leaked by naming the reason
+/// that a `balanceOf` anybody can call does not already say — and the two
+/// sentences point at different doors. "Sign in through the launcher" is
+/// useless advice to somebody who signed in fine and has not bought the
+/// game.
+///
+/// **Only a definite on-chain zero may send this.** A failed read admits;
+/// `server/src/entitle.rs` carries the rule and the type that keeps it.
+///
+/// No layout moved for this: `Refuse.code` has always been a full `u8` and
+/// this is the fourth of 256 values, so `PROTO_VER` does not bump and no
+/// golden changes. An older client gets `None` from [`refuse_text`] and
+/// says so in its own words rather than guessing at a reason.
+pub const REFUSE_TICKET: u8 = 3;
+
+/// What to actually say to the player. One implementation, because the two
+/// call sites that print a refusal (the client's connect path and the bot
+/// helper in `server/net.rs`) each formatted `refused: code {n}` from their
+/// own table — a number is not a sentence, and "code 3" is the least useful
+/// thing to tell somebody whose fix is to buy a copy. Two tables is two
+/// chances to disagree, which is the argument [`siwe_message`] makes about
+/// a message and this makes about a sentence.
+///
+/// **`&'static str`, and `None` rather than a formatted fallback**, because
+/// this crate is on the sim side of wall 3: no `String`, no `format!`. That
+/// turns out to be the better shape anyway — a shard newer than this build
+/// may refuse for something with no word here, and `None` lets each caller
+/// say so in its own voice instead of baking one phrasing into the crate
+/// that can least afford to allocate.
+pub fn refuse_text(code: u8) -> Option<&'static str> {
+    Some(match code {
+        REFUSE_VERSION => "this shard runs a different build — update the game",
+        REFUSE_FULL => "this shard is full",
+        REFUSE_AUTH => "this shard needs a signed identity — sign in through the scry launcher",
+        REFUSE_TICKET => {
+            "this shard checks copies and this wallet holds none — buy a copy on scry, \
+             or play a community shard"
+        }
+        _ => return None,
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Refuse {
@@ -1814,11 +1889,49 @@ pub struct SnapshotEncoder<'a, 'b> {
     w: BitWriter<'a>,
     baseline: &'b [EntityState],
     has_baseline: bool,
+    /// Open-addressed id → baseline record, built once in `begin`. Slot
+    /// holds `index + 1`; 0 is empty, which is why the table can be bytes
+    /// (`MAX_SNAPSHOT_ENTITIES` is 64, so an index+1 never reaches 255).
+    ///
+    /// **This replaces a linear scan of the baseline per entity, which was
+    /// quadratic in the one number the whole snapshot design caps.** Every
+    /// `add_entity` used to walk the baseline looking for the same id;
+    /// a full snapshot against a full baseline is 64 × 64 comparisons, per
+    /// client, at the snapshot cadence — measured 2026-08-11 as ~10 % of
+    /// every instruction the shard executed at `MAX_PLAYERS`
+    /// (`server/src/bin/profile.rs`).
+    ///
+    /// **No byte on the wire moves**, which is the only reason it may
+    /// land: this changes how the baseline record is *found*, never what is
+    /// written once it is found, so `test_protocol_golden` is the proof.
+    /// Duplicate ids — which a snapshot cannot hold, but the type does not
+    /// forbid — resolve to the same record `iter().find` returned: inserts
+    /// walk the probe chain in order, so the earliest occupies the earlier
+    /// slot and a lookup meets it first.
+    bl_index: [u8; BASELINE_INDEX_SLOTS],
     removed_count_at: usize,
     entity_count_at: usize,
     removed: u32,
     entities: u32,
     entity_started: bool,
+}
+
+/// Slots in `SnapshotEncoder::bl_index`: a power of two at twice
+/// `MAX_SNAPSHOT_ENTITIES`, so the table never passes half load and the
+/// probe stays short. Derived, not a knob.
+const BASELINE_INDEX_SLOTS: usize = MAX_SNAPSHOT_ENTITIES * 2;
+const _: () = assert!(
+    BASELINE_INDEX_SLOTS.is_power_of_two() && MAX_SNAPSHOT_ENTITIES < 255,
+    "the baseline index masks with SLOTS-1 and stores index+1 in a byte"
+);
+
+/// Home slot for an entity id. The Fibonacci mix `collide::ColIndex` and
+/// `occupy::SlotCache` already use, for the reason they use it: player ids
+/// are minted `(generation << 8) | slot` and mob ids share a high tag, so
+/// the low bits alone would pile a whole class onto one line.
+#[inline]
+fn bl_home(id: u32) -> usize {
+    (id.wrapping_mul(2_654_435_761) >> 16) as usize & (BASELINE_INDEX_SLOTS - 1)
 }
 
 impl<'a, 'b> SnapshotEncoder<'a, 'b> {
@@ -1834,6 +1947,17 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         if header.baseline_age == 0 && !baseline.is_empty() {
             return Err(WireError::Malformed);
         }
+        // A baseline is a snapshot that was **sent**, and `add_entity`
+        // refuses past `MAX_SNAPSHOT_ENTITIES`, so a longer one cannot
+        // exist and is a caller bug. Refused rather than truncated, for
+        // the reason above it: silently indexing the first 64 and letting
+        // the tail encode absolute would still produce a legal datagram,
+        // which is exactly how a caller with a broken baseline would never
+        // find out. It is also what makes `bl_index`'s half-load argument a
+        // checked precondition instead of a comment.
+        if baseline.len() > MAX_SNAPSHOT_ENTITIES {
+            return Err(WireError::Cap);
+        }
         let mut w = BitWriter::new(buf);
         w.write(KIND_SNAPSHOT, KIND_BITS)?;
         w.write(header.tick, 32)?;
@@ -1844,16 +1968,58 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         w.write(0, COUNT_BITS)?;
         let entity_count_at = w.bit_pos();
         w.write(0, COUNT_BITS)?;
+        // The baseline index, filled only when there is a baseline to index
+        // — a zero-state snapshot has none by definition and would pay a
+        // table for nothing. The length check above is what bounds the fill
+        // at half the table's slots, so an empty slot always exists and
+        // both probe loops terminate.
+        let has_baseline = header.baseline_age != 0;
+        let mut bl_index = [0u8; BASELINE_INDEX_SLOTS];
+        if has_baseline {
+            for (i, e) in baseline.iter().enumerate() {
+                let mut ix = bl_home(e.id);
+                while bl_index[ix] != 0 {
+                    ix = (ix + 1) & (BASELINE_INDEX_SLOTS - 1);
+                }
+                bl_index[ix] = (i + 1) as u8;
+            }
+        }
         Ok(Self {
             w,
             baseline,
-            has_baseline: header.baseline_age != 0,
+            has_baseline,
+            bl_index,
             removed_count_at,
             entity_count_at,
             removed: 0,
             entities: 0,
             entity_started: false,
         })
+    }
+
+    /// Which baseline record carries `id`, or `None`. What
+    /// `baseline.iter().find(|b| b.id == id)` answered, in a probe.
+    ///
+    /// An index rather than the record, so the caller can copy the record
+    /// out and stop borrowing `self` — `encode_delta` needs `&mut self`,
+    /// and `EntityState` is `Copy` precisely so that costs nothing. The
+    /// probe terminates because `begin` never inserts more than
+    /// `MAX_SNAPSHOT_ENTITIES` entries into twice as many slots, so an
+    /// empty slot always exists to stop on.
+    #[inline]
+    fn baseline_ix(&self, id: u32) -> Option<usize> {
+        let mut ix = bl_home(id);
+        loop {
+            let slot = self.bl_index[ix];
+            if slot == 0 {
+                return None;
+            }
+            let i = slot as usize - 1;
+            if self.baseline[i].id == id {
+                return Some(i);
+            }
+            ix = (ix + 1) & (BASELINE_INDEX_SLOTS - 1);
+        }
     }
 
     /// An entity that left the interest set. Must precede every
@@ -1896,7 +2062,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
     fn encode_entity(&mut self, e: &EntityState) -> Result<(), WireError> {
         self.w.write(e.id, 32)?;
         if self.has_baseline {
-            if let Some(b) = self.baseline.iter().find(|b| b.id == e.id) {
+            if let Some(b) = self.baseline_ix(e.id).map(|i| self.baseline[i]) {
                 let dx = e.qx as i64 - b.qx as i64;
                 let dy = e.qy as i64 - b.qy as i64;
                 let dz = e.qz as i64 - b.qz as i64;
@@ -1907,7 +2073,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
                     && fits(dy, DPOS_Y_BIAS, DPOS_Y_BITS)
                     && fits(dz, DPOS_XZ_BIAS, DPOS_XZ_BITS)
                 {
-                    return self.encode_delta(e, b, dx, dy, dz);
+                    return self.encode_delta(e, &b, dx, dy, dz);
                 }
             }
         }
@@ -2221,6 +2387,80 @@ mod tests {
         ));
     }
 
+    /// A baseline longer than a snapshot can carry is a caller bug, and the
+    /// encoder says so rather than indexing what fits. The cap is also what
+    /// keeps `bl_index` under half load, so this is the gate on the probe
+    /// terminating as well as on the refusal.
+    ///
+    /// Both sides, because a refusal that also refuses the legal case is a
+    /// worse bug than the one it prevents: exactly `MAX_SNAPSHOT_ENTITIES`
+    /// is the largest baseline the fill can produce and it must be accepted.
+    #[test]
+    fn a_baseline_longer_than_a_snapshot_is_refused() {
+        let hdr = SnapshotHeader {
+            tick: 1,
+            baseline_age: 1,
+            last_executed_seq: 0,
+            nudge: Nudge::Ok,
+        };
+        let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
+        let full: Vec<EntityState> = (0..MAX_SNAPSHOT_ENTITIES as u32).map(ent).collect();
+        assert!(
+            SnapshotEncoder::begin(&mut buf, &hdr, &full).is_ok(),
+            "a full baseline is what the fill loop produces every snapshot"
+        );
+        let over: Vec<EntityState> = (0..MAX_SNAPSHOT_ENTITIES as u32 + 1).map(ent).collect();
+        assert!(matches!(
+            SnapshotEncoder::begin(&mut buf, &hdr, &over),
+            Err(WireError::Cap)
+        ));
+    }
+
+    /// The baseline lookup is an index now, not a scan, and the delta it
+    /// picks has to be the record `iter().find` would have picked. Every id
+    /// in a full baseline, looked up through the real encode path: a probe
+    /// that lost one would encode absolute, which is legal on the wire and
+    /// therefore invisible to a golden — so the byte length is what tells.
+    #[test]
+    fn every_baseline_id_is_found_by_the_index() {
+        let hdr = SnapshotHeader {
+            tick: 2,
+            baseline_age: 1,
+            last_executed_seq: 0,
+            nudge: Nudge::Ok,
+        };
+        // Ids shaped like the shard's: `(generation << 8) | slot` for
+        // players and the mob tag above them, so the probe meets the same
+        // clustering the real table does.
+        let baseline: Vec<EntityState> = (0..MAX_SNAPSHOT_ENTITIES as u32)
+            .map(|i| {
+                ent(if i < 40 {
+                    (1 << 8) | i
+                } else {
+                    0x4000_0000 | i
+                })
+            })
+            .collect();
+        let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &baseline).expect("begin");
+        for b in &baseline {
+            // Identical to its baseline record: a found delta writes the id
+            // plus six flag bits and nothing else.
+            assert_eq!(enc.add_entity(b), Ok(()), "entity {} did not fit", b.id);
+        }
+        let len = enc.finish().expect("finish");
+        // 64 entities × (32 id bits + 6 delta bits) plus the header; an
+        // absolute record is 32 + 66 bits, so a single missed lookup adds
+        // 60 bits and this bound catches it.
+        let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + COUNT_BITS * 2;
+        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 38).div_ceil(8);
+        assert_eq!(
+            len, want,
+            "the encoder wrote {len} B where {want} B is every entity delta-coded \
+             — a baseline id the index failed to find fell back to absolute"
+        );
+    }
+
     #[test]
     fn removals_precede_entities() {
         let hdr = SnapshotHeader {
@@ -2400,5 +2640,88 @@ mod tests {
             14,
             "the spare action codes moved — say so where the count is written"
         );
+    }
+
+    /// **Every `REFUSE_*` code this crate declares has a real sentence.**
+    ///
+    /// Inherited from `client::ui::refusals`, which carried a hand-written
+    /// copy of these strings and a gate that counted the constants here.
+    /// The copy is gone (one implementation, both sides — the argument
+    /// `siwe_message` makes two hundred lines up), so the gate comes with
+    /// it: this crate now owns the words and owns the check that a new code
+    /// cannot reach a player as `code N`.
+    ///
+    /// Reads its own source, because the alternative is a list of constants
+    /// typed twice — which is the thing being prevented.
+    #[test]
+    fn every_refusal_code_has_a_sentence() {
+        let src = include_str!("lib.rs");
+        let declared: Vec<&str> = src
+            .lines()
+            .filter_map(|l| l.trim_start().strip_prefix("pub const REFUSE_"))
+            .filter_map(|l| l.split(':').next())
+            .collect();
+        assert!(
+            declared.len() >= 4,
+            "the scan found {} codes, so it is not reading this file",
+            declared.len()
+        );
+        for (code, name) in [
+            (REFUSE_VERSION, "REFUSE_VERSION"),
+            (REFUSE_FULL, "REFUSE_FULL"),
+            (REFUSE_AUTH, "REFUSE_AUTH"),
+            (REFUSE_TICKET, "REFUSE_TICKET"),
+        ] {
+            assert!(
+                refuse_text(code).is_some(),
+                "{name} has no sentence — a player would meet it as a bare number"
+            );
+        }
+        assert_eq!(
+            declared.len(),
+            4,
+            "a REFUSE_* code was added ({declared:?}) — give it a sentence in \
+             `refuse_text` and a row in this list, or a player meets it as a number"
+        );
+    }
+
+    /// Two codes reading the same is a player who cannot tell which no they
+    /// got — and the ticket/auth pair is the one that would actually collide,
+    /// because both are "the shard would not let me in".
+    #[test]
+    fn no_two_refusals_read_the_same() {
+        let all = [REFUSE_VERSION, REFUSE_FULL, REFUSE_AUTH, REFUSE_TICKET];
+        for (i, a) in all.iter().enumerate() {
+            for b in all.iter().skip(i + 1) {
+                assert_ne!(
+                    refuse_text(*a).expect("gated above"),
+                    refuse_text(*b).expect("gated above"),
+                    "codes {a} and {b}"
+                );
+            }
+        }
+    }
+
+    /// The layout claim in `REFUSE_TICKET`'s own doc: it is a value in a
+    /// field that was always eight bits wide, so nothing about the wire
+    /// moved and `PROTO_VER` does not bump. If this ever fails, the doc
+    /// comment is lying and the golden needs regenerating.
+    #[test]
+    fn a_new_refusal_code_does_not_move_the_wire() {
+        let mut a = [0u8; 8];
+        let mut b = [0u8; 8];
+        let la = encode_refuse(&Refuse { code: REFUSE_AUTH }, &mut a).unwrap();
+        let lb = encode_refuse(
+            &Refuse {
+                code: REFUSE_TICKET,
+            },
+            &mut b,
+        )
+        .unwrap();
+        assert_eq!(la, lb, "a refusal is a fixed-width frame whatever the code");
+        assert_eq!(decode_refuse(&b[..lb]).unwrap().code, REFUSE_TICKET);
+        // And an older build's code still decodes to itself, which is what
+        // makes this backward-compatible rather than merely small.
+        assert_eq!(decode_refuse(&a[..la]).unwrap().code, REFUSE_AUTH);
     }
 }

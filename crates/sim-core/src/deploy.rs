@@ -290,8 +290,8 @@ pub const UPKEEP_PERIOD_TICKS: u64 = 108_000;
 /// a knob.
 pub const PERIODS_PER_DAY: u32 = 24;
 /// Materials the decay ladder is keyed by — `build::MAT_*`, whose set is
-/// closed and three long.
-pub const DECAY_MATERIALS: usize = 3;
+/// closed and four long (twig, wood, stone, metal).
+pub const DECAY_MATERIALS: usize = 4;
 
 /// Fallback decay per period, % of max hp, for content that prices no
 /// ladder and for the one store that has no material: **deployables**.
@@ -501,8 +501,9 @@ impl DeployContent {
         d.upkeep_pct_per_day = 10;
         // A ladder in the probe fixture, so the parity/replay/alloc gates
         // walk the *keyed* path rather than the fallback — a wall that
-        // only ever sees the default is not watching the feature.
-        d.decay_pct = [34, 20, 13];
+        // only ever sees the default is not watching the feature. Twig
+        // leads at 100: one period and a scaffold is gone.
+        d.decay_pct = [100, 34, 20, 13];
         d
     }
 }
@@ -2217,7 +2218,18 @@ pub fn upkeep_sweep(
             // when it simply costs nothing, and an unpriced piece in open
             // ground would never rot — which is the old rule's one
             // property worth keeping: no hearth, no protection.
-            let mut all_paid = cover_n > 0;
+            //
+            // **And twig is never paid for, at any hearth** (twig v0,
+            // `reference/BUILDING.md` §7b.4). A scaffold is a draft: it
+            // costs no upkeep, so a base under construction does not
+            // quietly drain the stock that keeps the finished half
+            // standing, and no stock can protect it either — starting
+            // `all_paid` false here skips the charge loop entirely and
+            // sends it straight to the decay step, where the ladder's
+            // 100 %/period is waiting. That is the whole difference
+            // between a draft you re-lay for 50 wood and a cheap
+            // permanent base nobody upgrades.
+            let mut all_paid = cover_n > 0 && def.material != crate::build::MAT_TWIG;
             for m in 0..(if all_paid { dc.mat_count as usize } else { 0 }) {
                 let due: u32 = def
                     .costs
@@ -2395,6 +2407,41 @@ mod tests {
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+    }
+
+    /// The probe fixture's **stone** foundation: row 0's rung, and the
+    /// row every fixture here stands on when the question is upkeep.
+    /// Named once so the hp assertions and the two builders cannot drift
+    /// apart (`build::BuildContent::probe_fixture`).
+    const GRADED_FOUNDATION: usize = 5;
+
+    /// `founded`, then committed to stone — a foundation the upkeep sweep
+    /// can actually charge. Twig is never upkept and therefore never
+    /// protected (twig v0), so a test asking *what a hearth pays for*
+    /// cannot ask it of a scaffold: the answer is "nothing" before the
+    /// claim is consulted. Row 5 is row 0's stone rung and carries row 0's
+    /// cost exactly, so every charge in this module's arithmetic comments
+    /// still reads 5 × item 0.
+    fn founded_graded(bc: &BuildContent, pieces: &mut Pieces, p: &mut Player, cx: u16, cz: u16) {
+        founded(bc, pieces, p, cx, cz);
+        let mut ev = EventQueue::default();
+        crate::build::upgrade(
+            bc,
+            &Deploys::new(),
+            pieces,
+            p,
+            cx,
+            cz,
+            0,
+            LOC_PLANE,
+            crate::build::MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(
+            pieces.find(cx, cz, 0, LOC_PLANE).unwrap().row,
+            GRADED_FOUNDATION as u8,
+            "the fixture foundation never reached its stone rung"
+        );
     }
 
     #[test]
@@ -2940,7 +2987,7 @@ mod tests {
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
         let mut p = player_at_cell(CX, CZ, &[(0, 250), (1, 80), (2, 1)]);
-        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
         place_deploy(
             SEED,
             &dc,
@@ -2988,7 +3035,7 @@ mod tests {
         assert_eq!(pieces.len(), 1);
         assert_eq!(
             pieces.entries()[0].hp,
-            bc.pieces[0].hp,
+            bc.pieces[GRADED_FOUNDATION].hp,
             "paid pieces keep hp"
         );
     }
@@ -3051,6 +3098,89 @@ mod tests {
         assert!(codes.contains(&crate::world::EV_DEPLOY_REMOVED));
     }
 
+    /// **A scaffold pays no rent and gets no shelter** (twig v0,
+    /// `reference/BUILDING.md` §7b.4). The half of twig that makes it a
+    /// draft rather than a cheap permanent base: the sweep never charges
+    /// a twig piece upkeep, so no stock can ever protect one, and at
+    /// 100 %/period it is gone in a single hour under a hearth stocked to
+    /// the ceiling. Its graded neighbour on the same claim survives the
+    /// same sweep, which is what makes this about the rung and not about
+    /// the coverage.
+    #[test]
+    fn twig_rots_under_a_full_hearth_and_costs_it_nothing() {
+        let dc = DeployContent::probe_fixture();
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let mut deploys = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell(CX, CZ, &[(0, 250), (1, 250), (2, 2)]);
+
+        // A committed foundation under the hearth, and a twig wall on it.
+        founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
+        crate::build::place(
+            SEED,
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        assert_eq!(
+            bc.pieces[pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row as usize].material,
+            crate::build::MAT_TWIG
+        );
+        place_deploy(
+            SEED,
+            &dc,
+            &bc,
+            &mut pieces,
+            &mut deploys,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(deploys.hearths().len(), 1);
+        // Stocked to the ceiling in both materials: there is nothing this
+        // hearth could be short of.
+        deploys.hearths_mut()[0].stock = [STOCK_MAX; HEARTH_STOCK_ROWS];
+
+        sweep_once(&dc, &bc, &mut pieces, &mut deploys, UPKEEP_PERIOD_TICKS + 1);
+
+        assert!(
+            pieces.find(CX, CZ, 0, LOC_EDGE_W).is_none(),
+            "the twig wall survived a period — a scaffold is not a base"
+        );
+        assert_eq!(
+            pieces.find(CX, CZ, 0, LOC_PLANE).unwrap().hp,
+            bc.pieces[GRADED_FOUNDATION].hp,
+            "and the graded piece on the same claim was paid for as ever"
+        );
+        // The one that says twig was never CHARGED, rather than charged
+        // and then rotted anyway: exactly the graded foundation's row came
+        // out of stock, and the twig wall's cost item is the same item 0,
+        // so a charge for it would show here.
+        let spent = STOCK_MAX - deploys.hearths()[0].stock[0];
+        assert_eq!(
+            spent,
+            charge_of(
+                bc.pieces[GRADED_FOUNDATION].costs[0].1,
+                dc.upkeep_pct_per_day
+            ),
+            "the hearth paid for the foundation and nothing else"
+        );
+    }
+
     #[test]
     fn covered_deployables_are_free_uncovered_ones_decay() {
         let dc = DeployContent::probe_fixture();
@@ -3059,7 +3189,7 @@ mod tests {
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
         let mut p = player_at_cell(CX, CZ, &[(0, 250), (1, 99), (2, 1), (5, 5)]);
-        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
         place_deploy(
             SEED,
             &dc,
@@ -3154,11 +3284,18 @@ mod tests {
     /// long-base fixture the shape tests below share. Built by writing
     /// the stores directly, for `Pieces::insert_for_test`'s stated
     /// reason: the verbs ask the claim, and these tests are about it.
+    ///
+    /// **Row 5, the STONE foundation, not row 0.** These tests ask what a
+    /// hearth protects, and since twig v0 the answer for a twig piece is
+    /// "nothing, ever" — a corridor of scaffold would rot end to end
+    /// whatever the claim said, and every one of them would pass for the
+    /// wrong reason or fail for one. Row 5 costs the same item 0 the
+    /// hearth is stocked with here.
     fn corridor(bc: &BuildContent, n: u16, stock: u32) -> (Pieces, Deploys) {
         let mut pieces = Pieces::new();
         let mut deploys = Deploys::new();
         for cx in 100..100 + n {
-            pieces.insert_for_test(cx, 100, 0, LOC_PLANE, 0, bc);
+            pieces.insert_for_test(cx, 100, 0, LOC_PLANE, GRADED_FOUNDATION as u8, bc);
         }
         deploys.push_hearth_for_test(100, 100, 0, 7);
         deploys.hearths_mut()[0].stock[0] = stock;
@@ -3210,7 +3347,7 @@ mod tests {
         sweep_once(&dc, &bc, &mut pieces, &mut deploys, UPKEEP_PERIOD_TICKS + 1);
         for p in pieces.entries() {
             assert_eq!(
-                p.hp, bc.pieces[0].hp,
+                p.hp, bc.pieces[GRADED_FOUNDATION].hp,
                 "cell {} went unpaid on a base its own hearth reaches",
                 p.cx
             );
@@ -3238,7 +3375,7 @@ mod tests {
             d <= HEARTH_RADIUS_M && d > crate::claim::PRIV_CUSHION_M,
             "the fixture distance no longer separates circle from cushion"
         );
-        pieces.insert_for_test(107, 100, 0, LOC_PLANE, 0, &bc);
+        pieces.insert_for_test(107, 100, 0, LOC_PLANE, GRADED_FOUNDATION as u8, &bc);
         // A workbench the same distance the other way, on open ground.
         assert!(deploys.insert(
             DeployRec {
@@ -3259,11 +3396,11 @@ mod tests {
         sweep_once(&dc, &bc, &mut pieces, &mut deploys, UPKEEP_PERIOD_TICKS + 1);
         assert_eq!(
             pieces.find(100, 100, 0, LOC_PLANE).unwrap().hp,
-            bc.pieces[0].hp,
+            bc.pieces[GRADED_FOUNDATION].hp,
             "the piece the base is made of is paid for"
         );
         assert!(
-            pieces.find(107, 100, 0, LOC_PLANE).unwrap().hp < bc.pieces[0].hp,
+            pieces.find(107, 100, 0, LOC_PLANE).unwrap().hp < bc.pieces[GRADED_FOUNDATION].hp,
             "a detached piece the structure does not reach decays, however \
              close the hearth stands"
         );
@@ -3296,7 +3433,7 @@ mod tests {
         sweep_once(&dc, &bc, &mut pieces, &mut deploys, UPKEEP_PERIOD_TICKS + 1);
         assert_eq!(
             pieces.find(109, 100, 0, LOC_PLANE).unwrap().hp,
-            bc.pieces[0].hp,
+            bc.pieces[GRADED_FOUNDATION].hp,
             "before the demolition the far end is covered"
         );
         assert_eq!(deploys.hearths()[0].stock[0], 1_000 - 10);
@@ -3317,11 +3454,11 @@ mod tests {
         );
         assert_eq!(
             pieces.find(100, 100, 0, LOC_PLANE).unwrap().hp,
-            bc.pieces[0].hp,
+            bc.pieces[GRADED_FOUNDATION].hp,
             "the cell the hearth stands on is still covered"
         );
         assert!(
-            pieces.find(109, 100, 0, LOC_PLANE).unwrap().hp < bc.pieces[0].hp,
+            pieces.find(109, 100, 0, LOC_PLANE).unwrap().hp < bc.pieces[GRADED_FOUNDATION].hp,
             "the second sweep must see the shrunk shape — a far piece the \
              demolition detached has to rot, and if it did not, the claim \
              cache was not invalidated"
@@ -4883,7 +5020,7 @@ mod tests {
         // Two pieces at the same cell: the foundation (row 0, item 0 =
         // "wood") and a floor one storey up (row 2, item 1 = "stone" in
         // the build fixture). One hearth covering both.
-        founded(&bc, &mut pieces, &mut p, CX, CZ);
+        founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
         crate::build::place(
             SEED,
             &bc,
@@ -4912,6 +5049,27 @@ mod tests {
             LOC_PLANE,
             &mut ev,
         );
+        // Commit both to stone. The foundation is already there
+        // (`founded_graded`, row 5, item 0); the wall and the floor climb
+        // to rows 4 and 6, which are priced in item 1. That split — one
+        // graded material stocked, one not — is what this test is about,
+        // and since twig v0 it cannot be told with scaffold on either
+        // side: twig is never charged, so it would rot under any stock at
+        // all and prove nothing about the per-row rule.
+        for (level, loc) in [(0u8, LOC_EDGE_W), (1u8, LOC_PLANE)] {
+            crate::build::upgrade(
+                &bc,
+                &deploys,
+                &mut pieces,
+                &mut p,
+                CX,
+                CZ,
+                level,
+                loc,
+                crate::build::MAT_STONE,
+                &mut ev,
+            );
+        }
         place_deploy(
             SEED,
             &dc,
@@ -4972,17 +5130,19 @@ mod tests {
             "and it must actually have spent the material it had"
         );
 
-        // The ladder: the fixture prices wood 34 / stone 20 / metal 13, so
-        // a wooden piece loses more of its max hp per period than a stone
-        // one. Read off the content rather than typed, so a re-price moves
-        // the assertion with it.
+        // The ladder: the fixture prices twig 100 / wood 34 / stone 20 /
+        // metal 13, so a wooden piece loses more of its max hp per period
+        // than a stone one. Read off the content rather than typed, so a
+        // re-price moves the assertion with it.
+        let twig = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_TWIG));
         let wood = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_WOOD));
         let stone = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_STONE));
         let metal = decay_at(100, piece_decay_pct(&dc, crate::build::MAT_METAL));
         assert!(
-            wood > stone && stone > metal,
-            "the tougher the grade the slower it rots ({wood}/{stone}/{metal})"
+            twig > wood && wood > stone && stone > metal,
+            "the tougher the grade the slower it rots ({twig}/{wood}/{stone}/{metal})"
         );
+        assert_eq!(twig, 100, "a scaffold is gone in one period, not two");
         let _ = rows;
     }
 

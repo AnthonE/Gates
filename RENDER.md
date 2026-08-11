@@ -741,6 +741,18 @@ never a number quietly edited into this table.
 | clutter ring | 5×5 tiles of 16 m, 721 elements/tile peak | `sim-core::terrain`, and it is frame-budget-bound, not design-bound |
 | eye height | 1.6 m | `DECISIONS.md` §open, client cosmetics |
 
+**Every budget above is the GPU's, and the client's CPU frame had never been
+measured at all** — a table of triangle and draw-call ceilings says nothing
+about what the main thread spends before the first draw call is issued. It was
+measured on 2026-08-11 and two of the three biggest items were waste rather
+than work: `water::animate` resolved its wave field three times a vertex
+(1.01 → 0.38 ms **every frame**), and one 65² ground chunk cost 28 ms to build
+— a whole dropped frame, one per streaming frame — of which mikktspace was 12
+and duplicated `terrain::height` taps most of the rest (now 5.4 ms).
+`NOW.md` §0pf carries the ranked remainder and the method; the numbers are
+release, on the gate box, and no GPU has ever run this client, which is why
+they sit here as a note rather than as rows in the table.
+
 The first thing to actually press on the triangle ceiling is the generated
 conifer: a full 328-tree scatter ring at 5.9 k tris a tree is 1.9 M.
 `crates/client/tests/tree.rs` asserts the affordable ~80 m band and *prints*
@@ -907,12 +919,16 @@ missing it survivable.
   generated WAV would have panicked with `UnrecognizedFormat` at the moment
   it played. Audio's boundary rule is this document's rule one surface over —
   **Bevy plays, it does not decide** — with the model in
-  `crates/client/src/sound/` (pure, code tier, 29 assertions) and
+  `crates/client/src/sound/` (pure, code tier, 63 assertions) and
   `render/audio.rs` owning nothing but the bank, the listener and the voices.
-  Still genuinely unused: **`bevy_gltf`** (every mesh in the tree is
-  procedural), **`bevy_scene`** and **`bevy_animation`** (bodies are capsules;
-  this one is wanted eventually and blocked on rigged meshes rather than on a
-  decision). Trimming is a build-time and payload win, not a picture win — it
+  **The score (2026-08-11) is the same rule under load**: `sound::music` is a
+  gap-and-intensity director (`reference/AUDIO.md` §8) that decides which
+  piece plays and when, headless and testable; `render/audio.rs::music` spawns
+  what it names and holds the level. It is also the one audio system with no
+  run condition at all, because the menus have music and have no world.
+  **`bevy_gltf`, `bevy_scene` and `bevy_animation` stopped being unused with
+  the mannequin** (2026-08-07, `render/anim.rs`) — this paragraph named all
+  three as trim candidates and only the reasoning survives. Trimming is a build-time and payload win, not a picture win — it
   happens when it is in the way.
 - **`bevy_scene` is a decided no, not an unexamined gap.** Its three
   advertised wins each land on a wall here. *Entity-ID-preserving save

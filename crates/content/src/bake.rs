@@ -14,7 +14,7 @@ use crate::schema::{
 use crate::Content;
 use sim_core::backpack::BackpackContent;
 use sim_core::build::{
-    BuildContent, PieceDef, MAT_METAL, MAT_STONE, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
+    BuildContent, PieceDef, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
     SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
 };
 use sim_core::combat::{AmmoDef, CombatContent, MeleeDef, RangedDef, ThrowDef};
@@ -263,6 +263,7 @@ impl Content {
                     Shape::Roof => SHAPE_ROOF,
                 },
                 material: match p.material {
+                    Material::Twig => MAT_TWIG,
                     Material::Wood => MAT_WOOD,
                     Material::Stone => MAT_STONE,
                     Material::Metal => MAT_METAL,
@@ -430,6 +431,7 @@ impl Content {
         dc.mat_count = mats.len() as u8;
         for (m, pct) in &self.balance.globals.decay_pct_per_period {
             let idx = match m {
+                Material::Twig => sim_core::build::MAT_TWIG,
                 Material::Wood => sim_core::build::MAT_WOOD,
                 Material::Stone => sim_core::build::MAT_STONE,
                 Material::Metal => sim_core::build::MAT_METAL,

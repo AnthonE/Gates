@@ -27,6 +27,15 @@
 //! Upgrade-in-place (`upgrade`) moves a standing piece up the material
 //! ladder without tearing it down: same shape, same address, same
 //! collision, a higher material's hp and upkeep. Piece damage is M2.
+//!
+//! **Placement and grade are two acts** (twig v0, 2026-08-10,
+//! `reference/BUILDING.md` §7b.4). A piece enters the world as **twig**
+//! and only as twig — `place` refuses every other rung — so the shape of
+//! a base is drafted at a tenth of its price and `upgrade` is what
+//! commits it, paying the grade on top of the twig already spent. Twig
+//! is 10 hp and is the one material `upkeep_sweep` never protects: a
+//! scaffold nobody pays rent on rots on its own clock (`deploy.rs`).
+//! That is what makes it a draft rather than a cheap permanent base.
 
 use crate::craft::{inv_count, inv_take};
 use crate::deploy::{DeployContent, Deploys, UPKEEP_PERIOD_TICKS};
@@ -48,10 +57,19 @@ pub const SHAPE_FLOOR: u8 = 3;
 pub const SHAPE_STAIRS: u8 = 4;
 pub const SHAPE_ROOF: u8 = 5;
 
-/// Material codes (schema order: wood → stone → metal).
-pub const MAT_WOOD: u8 = 0;
-pub const MAT_STONE: u8 = 1;
-pub const MAT_METAL: u8 = 2;
+/// Material codes (schema order: twig → wood → stone → metal). The order
+/// is the ladder: `upgrade` climbs it by comparing these numbers, so a
+/// rung inserted below wood has to renumber everything above it — which
+/// is what twig did (wire v34, `protocol/src/lib.rs`).
+///
+/// **`MAT_TWIG` is not a grade, it is the placement state.** Every piece
+/// enters the world as twig and nothing else (`place` refuses any other
+/// row); a hammer commits it upward. `reference/BUILDING.md` §7b.4 is the
+/// model and DECISIONS.md §open "twig v0" is the row.
+pub const MAT_TWIG: u8 = 0;
+pub const MAT_WOOD: u8 = 1;
+pub const MAT_STONE: u8 = 2;
+pub const MAT_METAL: u8 = 3;
 
 /// Grid locations within a cell. Planes and risers occupy the cell body;
 /// edge pieces are canonical to the cell's west (x = cx·3 m) or north
@@ -65,17 +83,18 @@ pub const LOC_EDGE_N: u8 = 3;
 /// Integer refusal reasons (CLAUDE.md wall 3), carried by
 /// EV_BUILD_REFUSED / the build-refused wire subtype.
 ///
-/// **Growing this list is a two-file act, and the second file is not this
-/// lane's.** `ci/ui_smoke.mjs` §W walks these constants by name and by value
-/// against `BUILD_REFUSE_TEXT` in `web/src/interact.js`, and a code with no
-/// sentence reaches the player as `can't build: code N`. The sim lane owns
-/// this file and may not touch `web/`, so a commit that adds a reason here
-/// turns `ui smoke` red in *every* lane's `ci/gates.sh` until the client half
-/// lands separately. It has happened twice — `REFUSE_B_INTACT` (9), which is
-/// what §W was written for, and `REFUSE_B_UNPRICED` (10), which cost the
-/// following pass in this lane a recovery. Adding a reason means filing the
-/// sentence on `NOW.md` for the ui lane in the same commit; the red between
-/// the two is expected, not a defect.
+/// **Growing this list is still a two-file act, but NOTHING ENFORCES IT
+/// ANY MORE.** This comment used to say `ci/ui_smoke.mjs` §W walked these
+/// constants by name and by value against `BUILD_REFUSE_TEXT` in
+/// `web/src/interact.js`, so a code with no sentence turned a gate red.
+/// That gate went with the browser client (operator, 2026-08-06) and has
+/// no native replacement — `ci/` holds no `.mjs` of that name. The
+/// *hazard* is unchanged and is now unwatched: a code with no sentence
+/// reaches the player as `can't build: code N`, and the only thing
+/// standing between here and that is remembering to add the sentence in
+/// `crates/client/src/ui/` in the same commit. It went wrong twice while
+/// the gate existed (`REFUSE_B_INTACT`, `REFUSE_B_UNPRICED`), which is
+/// the measure of how easy it is to forget without one.
 pub const REFUSE_B_PIECE: u32 = 0;
 pub const REFUSE_B_SPOT: u32 = 1;
 pub const REFUSE_B_SUPPORT: u32 = 2;
@@ -84,8 +103,10 @@ pub const REFUSE_B_REACH: u32 = 4;
 pub const REFUSE_B_COST: u32 = 5;
 pub const REFUSE_B_FULL: u32 = 6;
 pub const REFUSE_B_CLAIM: u32 = 7;
-/// The upgrade verb's own refusal: the named material is not a rung above
-/// this piece's, or the table holds no such rung for its shape.
+/// **The ladder said no**, for either of the two verbs that climb it. On
+/// `upgrade`: the named material is not a rung above this piece's, or the
+/// table holds no such rung for its shape. On `place`: the named row is
+/// not twig, and twig is the only thing a placement may be (twig v0).
 pub const REFUSE_B_TIER: u32 = 8;
 /// The repair verb's own refusal: the piece is already at its baked hp, so
 /// there is nothing to buy. Also the answer on an unbaked table
@@ -135,7 +156,7 @@ pub struct PieceDef {
 impl PieceDef {
     pub const INERT: Self = Self {
         shape: SHAPE_FOUNDATION,
-        material: MAT_WOOD,
+        material: MAT_TWIG,
         hp: 0,
         n_costs: 0,
         costs: [(0, 0); MAX_PIECE_COSTS],
@@ -173,9 +194,21 @@ impl BuildContent {
     /// row 4 is row 1's stone rung, so the upgrade verb has somewhere to
     /// climb to (the upgrade slice) — and it costs the second item, so an
     /// upgrade's payment is distinguishable from the wall's own.
+    ///
+    /// **Rows 0-3 are twig** since twig v0, because those are the rows
+    /// everything *places* and a placement may not be anything else. Row
+    /// 2 keeps the second cost item that is its whole reason for
+    /// existing; only its rung moved. Rows 4, 5 and 6 are the stone rungs
+    /// of rows 1, 0 and 2, so they are both the upgrade verb's targets
+    /// and — being unplaceable — what drives `REFUSE_B_TIER` through the
+    /// probes, which cycle rows `0..6`. Every hp and every cost of rows
+    /// 0-4 is unchanged from when rows 0-3 were labelled wood: nothing
+    /// about the probes' arithmetic moved, only which rung the label
+    /// names. The **doorway is the one shape with nothing above it**,
+    /// which is what a missing-rung refusal is tested against.
     pub fn probe_fixture() -> Self {
         let mut b = Self::EMPTY;
-        b.piece_count = 5;
+        b.piece_count = 7;
         // The shipped default, so a repair driven through this fixture is
         // priced the way a shard prices one. Setting it makes the verb
         // *possible* here and nothing more — what puts it inside the
@@ -186,34 +219,62 @@ impl BuildContent {
         b.repair_pct = 100;
         b.pieces[0] = PieceDef {
             shape: SHAPE_FOUNDATION,
-            material: MAT_WOOD,
+            material: MAT_TWIG,
             hp: 100,
             n_costs: 1,
             costs: [(0, 5), (0, 0)],
         };
         b.pieces[1] = PieceDef {
             shape: SHAPE_WALL,
-            material: MAT_WOOD,
+            material: MAT_TWIG,
             hp: 100,
             n_costs: 1,
             costs: [(0, 3), (0, 0)],
         };
         b.pieces[2] = PieceDef {
             shape: SHAPE_FLOOR,
-            material: MAT_STONE,
+            material: MAT_TWIG,
             hp: 150,
             n_costs: 1,
             costs: [(1, 3), (0, 0)],
         };
         b.pieces[3] = PieceDef {
             shape: SHAPE_DOORWAY,
-            material: MAT_WOOD,
+            material: MAT_TWIG,
             hp: 100,
             n_costs: 1,
             costs: [(0, 3), (0, 0)],
         };
         b.pieces[4] = PieceDef {
             shape: SHAPE_WALL,
+            material: MAT_STONE,
+            hp: 200,
+            n_costs: 1,
+            costs: [(1, 4), (0, 0)],
+        };
+        // Row 5 is row 0's stone rung — the foundation ladder, added with
+        // twig v0. Before it, the shape every fixture base stands on had
+        // nowhere to climb, so no gate could hold a foundation that a
+        // hearth actually pays upkeep for: twig is never protected
+        // (`deploy::upkeep_sweep`), and twig was all a foundation could
+        // ever be. That made "a covered piece survives the sweep"
+        // unprovable for the commonest shape in the world.
+        b.pieces[5] = PieceDef {
+            shape: SHAPE_FOUNDATION,
+            material: MAT_STONE,
+            hp: 200,
+            n_costs: 1,
+            costs: [(0, 5), (0, 0)],
+        };
+        // Row 6 is row 2's stone rung, and it costs the SECOND item on
+        // purpose: rows 5 and 6 are then two graded pieces priced in two
+        // different materials, which is what the per-material upkeep rule
+        // needs to be about anything (`deploy::upkeep_sweep` charges row
+        // by row, so a hearth stocked with one of them must protect one
+        // and rot the other). Before twig v0 the twig-labelled rows did
+        // that job; they cannot now, because twig is never upkept.
+        b.pieces[6] = PieceDef {
+            shape: SHAPE_FLOOR,
             material: MAT_STONE,
             hp: 200,
             n_costs: 1,
@@ -807,6 +868,16 @@ pub fn place(
     let def = &bc.pieces[row as usize];
     if def.hp == 0 {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
+        return;
+    }
+    // Everything enters the world as twig, and a finished grade is only
+    // ever reached by `upgrade` (twig v0, `reference/BUILDING.md` §7b.4).
+    // The client offers no other row, so in normal play this is
+    // unreachable — it is here because the wire is not the client, and a
+    // forged row is how a placement would otherwise skip the skeleton it
+    // is supposed to cost.
+    if def.material != MAT_TWIG {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TIER, 0);
         return;
     }
     let level_ok = (level as usize) < MAX_BUILD_LEVELS
@@ -2254,6 +2325,66 @@ mod tests {
         assert_eq!(rec.uh, 0, "the upkeep clock is not reset by an upgrade");
     }
 
+    /// **A placement is twig or it is refused** (twig v0,
+    /// `reference/BUILDING.md` §7b.4). The rule that makes the skeleton
+    /// cost something, and the one a forged row would otherwise skip: the
+    /// client offers no other rung, so nothing but the wire can ask for
+    /// one, and this is what answers it.
+    #[test]
+    fn a_placement_is_twig_or_it_is_refused() {
+        let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100), (1, 100)]);
+        let before_pieces = pieces.len();
+        let (before_0, before_1) = (inv_count(&p.inv, 0), inv_count(&p.inv, 1));
+
+        // Row 4 is the stone wall — a real row, a legal address, a
+        // supported spot, an affordable price. Only the rung is wrong.
+        assert_eq!(bc.pieces[4].material, MAT_STONE);
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            4,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_N,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_TIER),
+            "a finished grade may only be reached by upgrading into it"
+        );
+        assert_eq!(pieces.len(), before_pieces, "and nothing was placed");
+        assert_eq!(
+            (inv_count(&p.inv, 0), inv_count(&p.inv, 1)),
+            (before_0, before_1),
+            "nor paid for — a refusal costs nothing"
+        );
+
+        // The same address takes the twig doorway, so the refusal above is
+        // about the rung and not about the spot.
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            3,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_N,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        assert_eq!(pieces.len(), before_pieces + 1);
+    }
+
     #[test]
     fn upgrade_refuses_sideways_downward_and_missing_rungs() {
         let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100), (1, 100)]);
@@ -2276,7 +2407,26 @@ mod tests {
                 (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_TIER)
             );
         }
-        // The foundation's shape has no stone rung in the fixture either.
+        // A shape with nothing above twig refuses the same way, and the
+        // **doorway** is that shape — twig v0 gave the foundation and the
+        // floor stone rungs of their own (rows 5 and 6), so the doorway is
+        // the only one left with a ceiling at twig. Put one on the other
+        // edge and ask it to climb.
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            3,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_N,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
         upgrade(
             &bc,
             &nod,
@@ -2285,7 +2435,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_PLANE,
+            LOC_EDGE_N,
             MAT_STONE,
             &mut ev,
         );
@@ -2567,7 +2717,7 @@ mod tests {
         for (row, &shape) in shapes.iter().enumerate() {
             b.pieces[row] = PieceDef {
                 shape,
-                material: MAT_WOOD,
+                material: MAT_TWIG,
                 hp: 100,
                 n_costs: 0,
                 costs: [(0, 0); MAX_PIECE_COSTS],

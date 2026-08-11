@@ -42,6 +42,69 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0wd · A new world register is proposed *(operator lane — blocked, skip)*
+
+**A loop cannot pick this up.** Logged here so it is visible, not queued.
+`WORLD.md` (new, 2026-08-10) carries an exploratory operator direction, and
+is a **roadmap rather than a v1 spec** — nothing in it competes with the
+alpha. `DECISIONS.md` §open has the row; nothing is spoken.
+
+Three findings in it are about the tree rather than the fiction:
+
+- **`ART.md`'s bar and the visual rubric are measured off `Rust Images/`,
+  and the rubric is checksummed outside this repo.** If the register
+  changes, every visual pass is scored against pine-and-granite while
+  building obsidian, and the builder cannot fix it. Three operator acts —
+  palette, a reference set, rubric style section — and 2026-08-01's art row
+  already names that exit. **Until then, no visual pass chases this.**
+- **A ward would invalidate `CONTENT.md` §4 anchor 2 without reddening
+  `test_content`.** The TTK bands compute against `balance.toml`'s
+  `globals.player_hp = 100`; a second regenerating pool makes them measure a
+  different quantity while staying green. Conditional — the ward is
+  explicitly undecided and nothing else depends on it.
+- **Extraction and world states are one system or they are two.** An opened
+  gate at the bank terminal and a repaired monument are the same object: a
+  bounded, tick-expiring, hashed, broadcast state. The terminal lands at A2
+  (`ALPHA.md` §2); if it ships a bespoke gate first, that is one idea paid
+  for twice.
+
+Cheapest real slice if it is ever spoken: the biome gradient — a radial third
+input to `biome(h, moist)` (`terrain.rs:263`) plus regenerated terrain
+goldens. `WORLD.md` §9.2 has the full order, and §9.1 the timing: **decide
+the register early, build it late.**
+
+## 0sp · The tick has been profiled — where it goes *(server lane)*
+
+`crates/server/src/bin/profile.rs` (new, 2026-08-11) builds the stated worst
+case — `MAX_PLAYERS` in one AOI cell, roster alive, store filled, everyone
+acking and swinging — and splits sim from netcode by ablation. **Not a gate
+and must not become one**: it reports elapsed time. `valgrind
+--tool=callgrind` gives the per-function ranking, the half this box repeats.
+
+**It settles half of §0q item 4.** A full tick at 100 clients is ~0.8 ms of
+33.3; the AOI scan is O(clients × (players + mobs)) and ~0.24 ms of it, so
+**the linear scan needs no spatial structure** — the soak still owes jitter
+and real bytes. `state_hash` is 85 µs one tick in 32 and `encode_world`
+24 µs one in 1,800: `reference/SAVES.md` §4's freeze is not ours.
+
+Landed with it, −28 % instructions: `movement::step`'s duplicate terrain
+fan; the AOI rank sort → two selections (the single largest item, ~23 %),
+gated by `snapshot_budget.rs`'s `the_rank_band_agrees_with_a_full_sort…`;
+the encoder's quadratic baseline scan; a whole-field `BitWriter::write`; and
+the one that was a **spike** — `gather::swing` read `terrain::scatter` cold
+instead of through `SlotCache`, so a hundred aligned swing cooldowns cost
+1.9 ms in one `World::tick`, now 0.28.
+
+Open: the encoder is now the largest phase (~0.43 ms of the 0.83), and
+`World::scatter_clear` still resolves cells cold per spawn pick — a respawn
+storm would show it the way the swing did. **And the same defect is next
+door, worse** *(client lane, not taken — one owner per crate)*:
+`ui::interact::resolve_swing` does the identical cold 3×3 scan and
+`render/verbs.rs` calls it **every frame**, ~540 `noise2` at 60 Hz against
+the server's once per 38 ticks. Same three-line fix.
+
+---
+
 ## 0n1 · The class-S join walk has no interest filter *(server lane)*
 
 `reference/NETWORK.md` §9.2.1, measured 2026-08-10. `pump_events` drips the
@@ -69,18 +132,184 @@ its gates are unbuilt**, retitled this pass to stop claiming otherwise).
 
 ---
 
+## 0n2 · Monuments — the solver is two hand-written tiers *(world lane)*
+
+Research landed 2026-08-10: `reference/MONUMENTS.md` (operator briefing —
+**§0 says its provenance is the weakest here**, so read §9, not §1–§8, before
+building). §9.1 is what we already got right and must not relitigate; §9.2 is
+built this pass (`SiteFootprint` / `site_sweep` — a site publishes masks, not
+a radius; clutter no longer grows across the pad).
+
+Landed since: §9.3a (the drawn structure is derived from the sim's box table
+— one list, so the mirror cannot drift again — plus `tests/greybox.rs` over
+**every** archetype), §9.3b (the world file refuses an island that moved under
+the same seed), and the debug/release probe diff that closes float contraction
+on the one axis this box can reach. **All of it looked at** (§0p3 has the
+recipe); two art rows fell out and are in `DECISIONS.md` §open — the shelter's
+corner posts stand 1.2 m proud of its roof and read as stubs, and swept ground
+reads as scattered shards at 2 m because of the pebble mesh. **The collision
+skirt is closed** (operator, 2026-08-10): every occupant blocks what it draws
+now, within a millimetre, and the gate holds it there.
+
+**Next in this class, and it is a feature rather than a reconciliation: no
+deployable blocks movement.** `movement.rs` never consults `Deploys` and
+`collide::blocked` takes only the piece column index, so a player walks
+through a furnace, a box, a hearth and a recycler; only a closed door stops
+anyone, and it does that as a piece-edge bit. The client draws all ten
+archetypes at authored sizes (`structures::deploy_size`), so this is drawn
+geometry with no blocked volume at all — the greybox gate cannot catch it
+because there is nothing on the sim side to compare against. Systems lane.
+
+§9.3 is the gap and it is not urgent yet: `haven()` + `pick_minor` produce two
+kinds of site, the separation floor is one hand-asserted constant
+(`WAYSTATION_MIN_SEP_M`), and there is no reservation ledger. That is correct
+at two tiers and is §1's starvation shape at five. **The trigger to fix it is
+a third destination kind, not a spare pass** — the per-tier check chains stay
+separate by a call the code already records.
+
+Ranked after that, all from §9.4: class S still has no interest filter at all
+(§0n1 — and a monument is the worst place to discover it), per-entity interest
+ranges, then nav the day something defends a site. Vertical AOI layers are
+premature (no underground) and moving monuments are refused on the record.
+
+---
+
+## 0p3 · You can photograph any authored site, and it is a config line *(client lane)*
+
+Found 2026-08-10 while checking the greybox fix by eye. §0p2 item 3 asks for a
+**viewer** for the screens nothing can photograph; four fifths of one already
+exists and nobody had connected the pieces. The capture harness stands its
+camera at the player's spawn, and `shard.toml`'s `dev_spawn = "x,z"` puts that
+spawn anywhere. So:
+
+1. `terrain::haven(seed)` / `haven_shelter` / `waystation_canopy` give the
+   coordinates; stand 15–35 m off on the bearing you want in frame.
+2. `Xvfb :9 -screen 0 1280x720x24 &`, then the shard, then
+   `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json DISPLAY=:9
+   WGPU_BACKEND=vulkan target/release/gates --server 127.0.0.1:4433
+   --capture <dir>` — six vantages, ~40 s.
+3. The vantages face N/E/S/W, so place the camera on the opposite side of
+   what you want to see. Two of four attempts missed for this reason.
+
+**This asserts nothing and must not become a gate** (`CLAUDE.md`: the visual
+gate is a person, and `vantages.mjs` is why). What it changes is the cost of
+looking, which was "boot the game on a machine with a GPU" and is now a
+command on this box. Still owed from §0p2 item 3: the panels, which need the
+camera pointed at a screen rather than at a place.
+
+## 0pf · The client's CPU frame — two paid for, four measured and open *(client lane)*
+
+Landed 2026-08-11. `water::animate` resolved `wave_field` **three times a
+vertex** — once inside each `attribute_mut` borrow, throwing two answers away
+— and now resolves it once into `Sea::field`: **1.01 → 0.38 ms, every frame**,
+the largest steady-state cost the client had. `terrain_mesh::heightfield` —
+one chunk a frame, so its cost IS a dropped frame — went **28 → 5.4 ms** (the
+257² far mesh 485 → 186) on two halves: nine `terrain::height` taps a vertex
+became three where adjacent vertices were already sampling each other's
+points (bit-identical, three shares each checked at the origin rather than
+assumed), and the tangent is now written in closed form instead of solved by
+mikktspace, which was 12 ms of the remaining 17. Gated by `tests/ground.rs`
+(4, four mutants run red) and `tests/water.rs` (28). CPU-only, release, this
+box; no GPU has ever run this client, so `§0u` is still the other half.
+
+Found on the way: **`ci/gates.sh` named its renderer-tier suites one at a
+time and had never named two of them**, so `tests/water.rs` (skipped by
+`required-features`) and `tests/greybox.rs` (built empty without the feature,
+passing on zero tests) had never once run under it. The enumeration is gone —
+every test target the crate has now runs.
+
+Remaining, in the order the measurement ranks them:
+
+1. **`clutter_fill` + `skirt_fill` is 2.8 ms a tile**, one tile a frame —
+   now the largest cost on a streaming frame. It is `sim-core`, so wall 1
+   binds and the fix is not a memo. Its `Soup` is also freshly allocated per
+   tile; a `Local` would reuse it.
+2. **`water::stream` is 2.2 ms every 8 m walked** (5,929 `terrain::height`
+   taps on the `SNAP_M` crossing). The sea's axis is non-uniform, so there is
+   no half-lattice left to share — off-thread or coarser, not cleverer.
+3. **The far mesh is one ~180 ms frame during `Loading`**, with the session
+   pump inside it. `heightfield` is pure and touches no ECS, so
+   `AsyncComputeTaskPool` is the shape; that would also retire item 1's
+   frame cost without touching `sim-core`.
+4. **`terrain::height` is 502 ns** — ~12 `noise2`, four hashes each — and
+   every number above is a count of it. Nearby vertices re-hash the same
+   lattice corners at the low octaves; a memo is sim-core's to refuse.
+5. **The sea's tangent `w` and mikktspace's disagree.** `water.rs` writes
+   `-1` for a planar XZ UV set; mikktspace answers `+1` for the identical
+   parameterisation on the ground (now asserted, `tests/ground.rs`). One of
+   them flips the ripple map's green channel. Which is right is a question
+   about how that map was authored — boot the game and look, do not guess.
+
+## 0bd · The barrel is measured and the sim still blocks the guess *(client+sim lane)*
+
+The drawn barrel and the blocked barrel are one number in two files and they
+disagree with the real object. `OCCUPANT_R_M[BarrelSlot]` is **0.45** and its
+comment cites `CylinderGeometry(0.45, 0.45, 0.95)` — the deleted browser
+client's geometry, i.e. a guess carried forward. A 55-gallon drum is **0.585 m
+across by 0.88 tall** (1.5x taller than wide); 0.9 x 0.95 is near-spherical and
+~44% too fat. Two independent sources agree: `Rust Images/barrelroad`, and
+Meshy's `auto_size` vision estimate landing on 0.880 x 0.585 unprompted
+(2026-08-11).
+
+**Why it is not already done.** It was drawn narrow on a branch, and the merge
+with origin fired `greybox.rs`'s
+`every_drawn_archetype_fits_the_volume_the_sim_blocks`: the sim blocked 0.1575 m
+wider than the client drew, past `SLACK_R_M`. That assert is right — an
+invisible collision skirt is a player passing through geometry — and it means
+the mesh cannot move alone.
+
+**The slice**: narrow `OCCUPANT_R_M` and the `(0.45, 0.975)` pair in
+`terrain.rs`, and `archetype_mesh`'s cylinder, in one commit. It is a
+**collision change**, so `test_replay` and `test_terrain_golden` move with it
+and the goldens are regenerated deliberately in the same commit (wall 5/6).
+Check the other occupants for the same browser-geometry citation while there.
+
 ## 0b · Balance sits on the reference's numbers now — what is still off *(content lane)*
 
 Landed 2026-08-08 (operator: *"balance the game similar to rust so people
 dont get too lost"*). `reference/BALANCE.md` is the research and §6 is the
 standing instruction. Building blocks are 250/500/1000, a stone wall takes
 four satchels, tool and melee damage are theirs, the pig is a 150-hp boar.
-Two bands moved and the raid ratio re-priced itself to 1.04/1.73/3.46.
+Two bands moved and the raid ratio re-priced itself. ⚠ **The three numbers
+that used to sit here — 1.04/1.73/3.46 — were 2026-08-08's and were stale
+by two days**; measured 2026-08-10 the tree read 0.69/1.38/2.77 before that
+day's building work and **0.76/1.52/3.04** after it. Derive it (the probe
+is five lines against `balance::check`), never quote it.
 
 **The measurement landed 2026-08-09 and `reference/RIPLIST.md` is now the
 queue for this item** — what is taken, what is outstanding, what blocks
 each row, and the six steps for executing one. Read it before touching a
 balance number; do not re-derive that list here.
+
+⚠ **Two rules changed on 2026-08-10 and both are operator-spoken.**
+(a) *"lighten our own math and lean on them for now"* — a band of ours
+yields to a number of theirs by default (`BALANCE.md` §6.5); re-speak it
+rather than treating it as evidence. (b) A number **absent** from
+`RIPLIST.md` has not been decided either: asking that question found six
+of twelve content files with zero coverage.
+
+**Rows 1b, 1c and 1d all landed the same day** — building costs, the
+craft column and deployable hp, `RIPLIST.md` §1c is the record. What is
+left of that thread, in order:
+
+1. **Row 1e**: `items.toml` stack sizes ✅ taken 2026-08-11 at tier 3
+   (`RIPLIST.md` §1e: 5 cells moved — ammo 128, arrows 64, bandage 3,
+   gunpowder 1000 — 9 confirmed matched, 12 left open with the reason
+   named; the spawn kit's bandages went 5 → 3 as forced fallout).
+   `armor` · `cooking` · `loot` · `research` still have zero coverage.
+2. ⚠ **The source tier dropped to get 1c/1d**: every candidate page is
+   `EGRESS_BLOCKED` here, so the table came through a second assistant —
+   a summary of pages nobody in this loop read. Re-verify if egress opens.
+   **Re-probed 2026-08-11: closed harder** (fetches blocked for every
+   host, search summaries only — §1e says so), so the re-verify stays
+   owed and a browser is still the only route.
+
+Closed 2026-08-11 by the operator, all three: the rock **is** craftable
+(15 → 10 stone, and the tier-4 source beat my prior — §1c says so), OBOL
+**is** scrap so the research table takes its 20 (my refusal answered
+itself), and the cupboard is **stronger** here on purpose — hp 500 →
+1,000, the metal rung, so taking a base's privilege costs one more wall.
+Nothing about the cupboard is outstanding now; it is a chosen difference.
 
 Two results worth carrying at this level. `balance.rs` refuses a
 `farm_per_min` above the sim's at-node ceiling and `tests/farmwalk.rs`
@@ -132,14 +361,84 @@ What remains, in order:
    publish now exists: live counts via `status_url`, and join links
    (`scry://join/gates/host:port`, `deeplink.rs`). Registering the scheme
    with the desktop is the launcher's installer, and is not done.
-3. **`prove` has no call site.** `sign_siwe` hands the launcher a string this
-   process composed; `Overlay::prove(server, nonce)` binds it to a name and a
-   nonce the SHARD chose, which is the difference between a signature a shard
-   can verify and one it can replay. Wiring it is a wire change (wall 6), so
-   it waits for the identity-in-handshake slice, not for this one.
+3. **`prove` has no call site** — and this is now the *only* thing left in
+   the identity seam, because the ticket door landed on the handshake we
+   already have (2026-08-11, `entitle.rs`). The address is proved today:
+   the shard picks the nonce AND the `issued_at`, the client composes the
+   message through the one shared `protocol::siwe_message`, and the server
+   rebuilds identical bytes and `ecrecover`s. That is sound, and it is why
+   entitlement needed no wire change.
+   What `prove` buys is the *consent prompt*: `sign_siwe` makes the launcher
+   sign a string this process composed, so the player clicks through a dialog
+   on every join; `Overlay::prove` has the launcher compose it, which fires no
+   prompt by construction. **The cost is real and is why this is still open:**
+   the launcher writes its own `Issued At`, so the server can no longer
+   rebuild the bytes and must PARSE an EIP-4361 message instead — and the wire
+   has to carry that message, which IS a layout change (wall 6: version bump +
+   goldens in the same commit). Worth doing for the prompt alone; it is a
+   slice, not a line.
 4. **The depot is Linux only.** `ci/depot.py` says so in its first line and
    scry's platform enum has the other rows. The SDK can now reach a launcher
    on Windows; nothing packages a Windows build of this game.
+
+---
+
+## 0ad · The ticket door is armed but nobody has sold a copy *(platform lane)*
+
+Landed 2026-08-11 (`crates/server/src/entitle.rs`). A shard with
+`entitle_origin` set asks scry `GET /api/ticket/gates/of/<wallet>` at join
+and `POST …/check` for the whole roster every `entitle_sweep_secs`, refusing
+with `REFUSE_TICKET` and kicking on a **definite on-chain zero only** — a
+failed read admits and bumps `entitle_unknown`, because an RPC outage that
+booted every paying player is worse than the freeloader it catches. Unset is
+the default and checks nothing, which is what every test and every community
+shard runs (`DECISIONS.md` 2026-08-04: one build, two populations).
+
+What is left, in order:
+
+1. **Nothing has been driven against a real ticket contract**, because
+   `ScryGameTicket:GATES` is not deployed — scry's `deployments.json` has no
+   address, so `/of/<wallet>` answers `ticketed: false, entitled: true` for
+   everyone and the door is a pass-through by design. Every branch is unit-
+   tested against the response shapes scry actually serves (`tickets.py`),
+   and none has met the live route. **First real check is the day the
+   contract is deployed**, and the honest way to run it is one wallet that
+   owns a copy and one that does not.
+2. **The sweep interval is unspoken.** 120 s is a documented default, not an
+   operator sentence, and it is the whole security property — how long a sold
+   copy keeps playing. `DECISIONS.md` §open carries the row.
+3. **No `prove`**, so a join still costs the player a consent dialog — §0ab
+   item 3 has what that slice actually needs.
+
+---
+
+## 0ac · The catalogue — what twig and the cost grammar left *(systems lane)*
+
+Landed 2026-08-10 (operator: *"we need to work on building more"*).
+`reference/BUILDING.md` §7b is the research, `DECISIONS.md` §open "twig
+v0" the slice: placement is twig-only and the hammer commits it, twig is
+never upkept, and **the whole cost column is theirs** — 24 cells, their
+grade base and their shape ratios (`RIPLIST.md` row 1b, which did not
+exist until it was taken: our costs had never been compared to theirs, and
+the node take is what exposed it). §9 items 11 and 12 are done; 13, 14 and
+15 are not, in cost order:
+
+1. **The window and the wall frame** (§9.13). Openings are already sockets
+   here — a doorway takes a door with its own hp and its own lock — and
+   these are the same idea with the insert unbuilt. `SHAPE_BITS` is 3 and
+   6 of its 8 codes are used, so **two shapes fit with no wire widening**,
+   and §7b.3 has already decided their prices (0.7 and 0.5). The window
+   wants a collision answer first: it blocks a body and not a bullet,
+   which no shape here does yet.
+2. **Hard and soft sides** (§9.15, §7b.5). One rule that turns placement
+   *orientation* into skill, and the reason a base can be weaker than its
+   bill of materials. Needs a facing on every piece and an attack
+   direction on every swing — its own pass, and it pairs with
+   `RIPLIST.md` §2's per-material resistance rather than competing.
+3. **Triangles** (§9.14). Half the reason their bases look like that, and
+   the only item here that is a **grid change**: our cell holds one plane,
+   one riser and two canonical edges, all square. Cost it as one; do not
+   smuggle it in behind items 1 and 2.
 
 ---
 
@@ -176,7 +475,8 @@ analytic normals, per-channel optics, shore foam standing off the waterline),
 `terrain_mesh::wetted`, and `sound/water.rs`. Research `reference/WATER.md`;
 knobs `DECISIONS.md` §open "water v0" / "water audio v0" (the §open row also
 holds the five defects found by LOOKING, not by a gate). Gated by
-`tests/water.rs` (22) and eight assertions in `tests/sound.rs`. Remaining:
+`tests/water.rs` (28) and eight assertions in `tests/sound.rs` — and the
+water suite only started running in CI on 2026-08-11 (§0pf). Remaining:
 
 1. **The last hard edge needs the depth prepass, and that is the next
    slice.** The alpha ramp is a *vertex* quantity off `terrain::height`, so
@@ -407,22 +707,40 @@ footsteps, the place cue. Research `reference/AUDIO.md`; every number is
 1. **Nothing scores it, because `ART.md` has no audio section at all** — and
    **nobody has heard it** (this box has no audio device), so it is honest
    programmer art until someone plays it. `cargo run -p client --bin
-   soundbank -- <dir>` writes all 19 WAVs. Looking already paid twice (the
+   soundbank -- <dir>` writes all 38 WAVs. Looking already paid twice (the
    flat wind bed, then its fix overshooting); neither was reachable from a
-   statistic that only asked "does it have energy".
-2. **Music is the highest-value unbuilt thing and the design is written
-   down.** `reference/AUDIO.md` §8: gap timer, sectioned themes, an
-   intensity scalar off event codes we already have. Every input exists;
-   what does not exist is music — a **content** blocker, not engineering.
+   statistic that only asked "does it have energy". **The score raises the
+   stakes on this item rather than answering it**: nine of those WAVs are
+   music, and music is the thing a listener judges fastest.
+2. **The score is built and unheard** (2026-08-11). `reference/AUDIO.md`
+   §8's whole design is `sound/music.rs`: gap timer, a theme of sectioned
+   pieces, tiers picked at section boundaries off bumps we already had.
+   What remains is the half that was always the blocker — `synth::score`
+   generates nine placeholder pieces, so **the system is real and the music
+   is programmer art**. Swapping in recorded pieces is a change to one
+   function (`synth::render`'s music arm); the licence posture in `synth`'s
+   header is why they are generated and not sourced. Two inputs the
+   reference bumps on and we cannot: a weapon *equipped* (we bump on the
+   swing instead) and a projectile near-miss (`reference/PROJECTILES.md`).
 3. **The `--capture` run is still by hand**, and it is the only thing that
-   proves the audio systems execute at all. It needs Xvfb, lavapipe and a
-   shard, which is why it is not in `ci/gates.sh` yet.
+   proves *most* of the audio systems execute at all. It needs Xvfb, lavapipe
+   and a shard, which is why it is not in `ci/gates.sh` yet. The score is the
+   exception and shows the cheaper shape: `tests/music.rs` builds a bare
+   `App` (`MinimalPlugins`, no window, no device, its own clock) and asserts
+   the two music systems run and spawn what the director names. Every audio
+   system with no world in its arguments could be gated that way.
 4. **Two cues still have no producer**: `ImpactWood`/`ImpactMetal` need to
    know WHAT was hit, which the gather toast does not say, and `UiClick`
    needs a hook in the per-screen click handlers.
 5. **No occlusion, and it needs a prerequisite rather than a pass.** A wall
    between you and a sound needs a geometry query, and the correct one is
    the sim's (`collide.rs`), not a raycast against render meshes.
+6. **The ambience layer is one bird and no clock.** `sound/birds.rs` is
+   `reference/AUDIO.md` §3's *layers* at its smallest: sparse calls on a
+   perch, keyed to cover. Crickets are the obvious companion and they need
+   a day/night cycle, which the client does not have — so that is a
+   prerequisite, not a tuning pass. The reference's localized-emitter
+   *system* is still a later slice (§9.3: it arrives with a cull budget).
 
 ## 0z · The world waits for the server now — what the Bevy audit left *(client lane)*
 
@@ -451,18 +769,14 @@ and Map exist, the look/strafe inversion is fixed (`look.rs`). Remaining:
    49G disk, `rust-lld` SIGBUS), and a green compile is not evidence — Bevy
    answers a missing decoder with a white fallback and keeps going. It wants
    disk headroom and a `--capture` run someone looks at.
-2. **Uncovered since the browser-gate deletion, and now measured as actually
-   drifted.** Eight deleted gates held "the mesh the client draws == the
-   volume the server blocks"; the canopy is already wrong. Sim
-   `WAYSTATION_CANOPY_BOXES` is 9 rows to a 4.1 m finial, the drawn `canopy`
-   is 6 rows topping out at 2.09 m, and that slot is authored `scale: 1.0`,
-   so nothing reconciles them — you are stopped ~0.7 m outside posts you can
-   see. Shelter is 14 rows against 9. The two tables are also in different
-   units (full size vs half extent), which is the transcription hazard the
-   gate covered. Measurements in `TERRAIN.md` §7.1. Replacement shape is
-   `crates/client/tests/tree.rs`; **which list is authoritative is a design
-   call and is not made yet.** Also uncovered: the clutter ring and the
-   occupant table for everything that is not a tree.
+2. **Closed 2026-08-10.** The greybox mirror is one list now — the drawn
+   structure is derived from the sim's box table (`props::authored`), so the
+   drift cannot recur — and `crates/client/tests/greybox.rs` gates the rest,
+   including the occupant table for everything that is not a tree. The sim's
+   list won the authority call, and the props' invisible collision skirt is
+   closed too (a boulder blocked 0.39 m wider than it drew; the rows carry
+   measured bounds now and the gate is an equality check). `TERRAIN.md` §7.1
+   has it. **Still uncovered: the clutter ring.**
 3. **World-space anchors are still dropped** (the HUD line landed —
    `hud::readout` pins struct-hit fraction and the charge clock under the
    toast): the wall's own number at the wall itself, a clock on the charge
@@ -524,6 +838,15 @@ hangup through the menu's own teardown. Remaining:
    `DECISIONS.md` §open and an operator act: serve `servers.json`, set
    `servers.url` in scry's `data/launcher/gates.manifest.json`. Until then
    both the menu and the launcher's Servers window are correctly dark.
+   ⚠ **Measured 2026-08-10: "serve it" had no route to serve it from** —
+   `/depot/` is not a `location` on that origin, so the url this script
+   printed could only 404. **Closed 2026-08-11 on scry's side**: `GET
+   /api/launcher/servers/{slug}` serves `$SCRY_DEPOTS_DIR/<slug>/servers.json`
+   byte-for-byte, keeping 404 (publishes none) apart from 503 (could not
+   look), and `PUBLISH_URL` here points at it. **One act left and it is on
+   the box**: copy the document, then set `servers.url`. In that order —
+   `servers.url` stays null until the file lands, because an error dialog on
+   a game that is running fine is worse than an honest "no shards published".
 2. **Player counts: the code is done end to end; what is left is operator
    acts.** A row may carry `status_url` and both readers poll it every
    `STATUS_POLL_SECS` (`DECISIONS.md` §open "shard status poll v0"); the
@@ -535,25 +858,48 @@ hangup through the menu's own teardown. Remaining:
 3. **Ungated, by hand only:** the end-to-end kill-the-shard-mid-play run
    behind `Screen::Disconnected`.
 
-## 0t · the native pine is generated — what it owes
+## 0t · the forest — what it owes, re-ranked off `reference/PLANTS.md`
 
-Landed: `render/tree.rs` calls `bevy_procedural_tree` as ONE pure function —
-no plugin, no ECS; `props.rs`'s whorl builder stays as the far-LOD
-silhouette. Gate: `crates/client/tests/tree.rs`. Owed, in rank order:
+Landed: `render/tree.rs` calls `bevy_procedural_tree` as ONE pure function.
+**Felling v0** (2026-08-10): a chopped tree topples on a bearing derived from
+the cell key, keeps its own mesh, and stays down — gate `tests/fell.rs`, knob
+`DECISIONS.md` felling v0. Gates: `tests/tree.rs`, `tests/fell.rs`.
 
-1. **The billboard LOD.** 328 trees × 5.9 k tris is 1.9 M against DESIGN
-   §9's 1.5 M, so the full ring is knowingly over budget and only the ~80 m
-   band is affordable; `tests/tree.rs` prints the arithmetic. SeedThree's
-   `impostor.js` is the worked reference (two crossed alpha cards baked
-   front/side in a worker, readback row order probed once); its per-tree
-   `Group` emit is the part to throw away — this client wants an instanced
-   pool. Whatever LOD1 becomes, it sways: a billboard has four vertices to
-   put a wind weight on.
-2. **`aWind`** — `StandardMaterial` cannot read a custom attribute, so wind
-   needs the custom material `RENDER.md` already lists.
-3. **The needle card is generated** (`tree::needle_image`); a photographed
-   sprig is a later swap, not a prerequisite.
-4. **Owed upstream as a bug report:** `BranchForce` pointing down hits the
+**The order below is `PLANTS.md` §6.2's and it inverts what this item used to
+say.** LOD was rank 1; it is now rank 3, because clumping puts MORE stems in
+the near ring and an LOD tuned against today's lattice is tuned against a
+distribution we are about to replace. Measure between the two.
+
+1. **Species v0 landed; the broadleaf has never been LOOKED at.** `SPECIES` is
+   a two-row table (conifer 6.6 m / 2.9 m-wide broadleaf), pool 6, and
+   `SPAWN_CLEAR_M` rose 4.0 → 4.5 with the arithmetic finally gated in Rust
+   (`a_fresh_spawn_stands_clear_of_the_widest_tree` — `ci/pine_shape.mjs` was
+   a dead citation). **Every check on it is arithmetic and arithmetic cannot
+   say whether it reads as a tree.** Boot it and look; the parameters most
+   likely to be wrong are `children`/`angle[1]` (crown spread) and leaf
+   `count`/`size`, and `reference/PLANTS.md` §3.1 has ez-tree's 15 presets to
+   pull real ash/aspen/oak numbers from instead of our derived-from-defaults
+   block. More species is now a row in `SPECIES`, not a refactor.
+2. ~~The scatter lattice~~ — **this item was wrong and is retired.**
+   `terrain::clump` has always existed: an fBm field `scatter` multiplies the
+   whole weight row by, squared for a ragged edge, gated by
+   `sim-core/tests/scatter.rs` against a closed-form independent-draw null.
+   Groves and clearings are built. What is actually open is the density
+   **ceiling** — one occupant per 8 m cell — and `reference/PLANTS.md` §3.2
+   prices the three ways to raise it. All are sim-core, none is cheap, and
+   the cheapest (`CELL_SIZE` 8 → 4) quadruples the live `SlotLives` rows
+   against `TERRAIN.md` §6's budget. Do not start it as a rendering change.
+3. **The billboard LOD.** 328 trees × 5.9 k tris is 1.9 M against DESIGN §9's
+   1.5 M. Octahedral impostors beat SeedThree's crossed cards (a card edge-on
+   disappears); `PLANTS.md` §3.3 has both. Whatever LOD1 becomes, it sways.
+4. **`aWind`** — `StandardMaterial` cannot read a custom attribute, so wind
+   needs the custom material `RENDER.md` already lists. Gets LOD1 for free.
+5. **The sub-canopy and shrub layers are empty** (`PLANTS.md` §2). ez-tree's
+   three `bush_*` presets and a small tree at 40 % are new `Occupant`
+   variants plus scatter rows once item 1 lands.
+6. **The needle card is generated** (`tree::needle_image`); `WANTED.md` §9.5
+   is the swap, and it is the highest-value texture on that page.
+7. **Owed upstream as a bug report:** `BranchForce` pointing down hits the
    antipodal singularity in `Quat::from_rotation_arc(Y, dir)` and bends the
    whole tree sideways — droop is the limb ANGLE's job.
 
@@ -624,7 +970,10 @@ is `crates/`/wire work no single-surface lane may take.
    against a dev shard, held an hour — tick jitter, WAL append rate,
    per-client bandwidth recorded as counts and bytes, never wall-clock
    asserts (`CLAUDE.md`'s clock rule). The numbers land in a `DECISIONS.md`
-   §open row as the measured baseline.
+   §open row as the measured baseline. **The AOI half is settled without
+   it** (§0sp, 2026-08-11): 100 clients in one cell cost ~0.8 ms of a
+   33.3 ms tick, so the linear scan needs no spatial structure. What a soak
+   still owes is what a profiler cannot see — sockets, jitter, real bytes.
 
 ---
 

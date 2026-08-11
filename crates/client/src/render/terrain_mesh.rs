@@ -300,60 +300,228 @@ fn ground_material(
     })
 }
 
+/// One ground vertex's colour: the splat identity mix, the macro break-up,
+/// then the waterline — in that order, which is the whole of what the order
+/// buys (see the comments inside).
+///
+/// Split out of [`heightfield`]'s loop so the tap-sharing gate can compare the
+/// two builds without reaching for `props::hash01`: what that gate is about is
+/// *which points were sampled*, and this is the part that is the same either
+/// way.
+pub fn vertex_color(y: f32, w: [u8; 4], x: f32, z: f32, grad: f32) -> [f32; 4] {
+    // The identity mix, from the same `splat` the browser's material was fed
+    // by — four weights summing to ~255.
+    let inv = 1.0 / 255.0;
+    let mut c = [0.0f32; 3];
+    for (k, wk) in w.iter().enumerate() {
+        let f = *wk as f32 * inv;
+        for ch in 0..3 {
+            c[ch] += GROUND_ALBEDO[k][ch] * f;
+        }
+    }
+    // Rule 1: no surface may be one flat value. This is the MACRO break-up
+    // (0.5–1 m) — the near ring's vertices are 1 m apart, so one hash per
+    // vertex is exactly that scale. The near-field grain under 5 cm is a
+    // texture's job and belongs to the materials slice; this is the half
+    // geometry can carry.
+    let v = 0.88 + 0.24 * super::props::hash01(x.to_bits(), z.to_bits());
+    // The waterline, last: wetness is a modifier on whatever identity the
+    // splat resolved, not a fifth identity. It runs after the macro break-up
+    // so a wet vertex keeps its own grain instead of having it multiplied back
+    // in at full dry strength.
+    let c = wetted([c[0] * v, c[1] * v, c[2] * v], wet_factor(y, grad));
+    [c[0], c[1], c[2], 1.0]
+}
+
 /// Build one heightfield patch. `n` vertices a side, `step` metres apart,
 /// origin at its minimum corner.
+///
+/// **A 65² near chunk cost 28 ms to build and now costs 5.4** (medians,
+/// release, on the gate box; the 257² far mesh went 485 ms → 186). [`stream`]
+/// builds one chunk per frame, so 28 ms was a dropped frame every time the
+/// near ring advanced — twenty-five of them on a join, five more every time
+/// the player crossed a chunk edge. Two halves, both measured here against
+/// what they replaced:
+///
+/// - **Nine `terrain::height` taps a vertex became three, bit-identically**
+///   (15.9 ms → 5.4). Adjacent vertices were already sampling each other's
+///   points and nobody was keeping the answers. (The root Cargo.toml calls a
+///   chunk "4,225 `terrain::height` taps", which is the vertex count; it was
+///   nine times that.)
+/// - **The tangent is written rather than solved** (mikktspace, 12 ms on a
+///   near chunk and 229 on the far mesh, gone). See the note at the bottom of
+///   this function — that one is a near-equality, not an identity, and
+///   `tests/ground.rs` bounds it.
+///
+/// Three shares, and **each one is checked at this origin rather than
+/// assumed**, because every one of them is an f32 identity that holds for the
+/// coordinates we ship and need not hold for coordinates we do not:
+///
+/// - the normal's `±d` arms land on a half-lattice, so vertex `k−1`'s `+d` is
+///   vertex `k`'s `−d` — one row of `n+1` taps for `2n` reads (`share_x`), and
+///   one row of `n` carried down into the next row (`share_z`);
+/// - `terrain::slope`'s arm is a fixed 1 m, so at the near ring's 1 m pitch
+///   its four taps ARE the four neighbouring vertices (`grid_slope`), which a
+///   three-row rolling window with a border column already holds. The far mesh
+///   is 8 m apart and pays the four (its share is the two above);
+/// - `splat` re-derives the height it is standing on; `splat_from` takes the
+///   one already in hand.
+///
+/// Any share whose identity fails falls back to the direct taps, so the
+/// function stays correct for an origin, pitch or size no caller has asked
+/// for yet. `tests/ground.rs` gates the equality against a naive rebuild.
 pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Mesh {
     let count = n * n;
     let mut positions = Vec::with_capacity(count);
     let mut normals = Vec::with_capacity(count);
     let mut colors = Vec::with_capacity(count);
     let mut uvs = Vec::with_capacity(count);
+    let mut tangents = Vec::with_capacity(count);
 
     // The central-difference arm. Half a step keeps the gradient local to the
     // quad it shades without sampling inside its own vertex.
     let d = (step * 0.5).max(0.5);
 
+    // Every world coordinate below is one of these two, written the way the
+    // naive loop wrote it — a share is only legal when two of these
+    // expressions are equal to the bit, which is what the guards check.
+    let vx = |ix: usize| ox + ix as f32 * step;
+    let vz = |iz: usize| oz + iz as f32 * step;
+
+    let share_x = (1..n).all(|k| vx(k - 1) + d == vx(k) - d);
+    let share_z = (1..n).all(|k| vz(k - 1) + d == vz(k) - d);
+    let grid_slope = (1..n).all(|k| {
+        vx(k - 1) + 1.0 == vx(k)
+            && vx(k) - 1.0 == vx(k - 1)
+            && vz(k - 1) + 1.0 == vz(k)
+            && vz(k) - 1.0 == vz(k - 1)
+    });
+
+    // A row of vertex heights with one border column each side, so a vertex on
+    // the patch edge can still read its `slope` neighbour. Column `0` and
+    // column `stride - 1` are written as the naive `x ± 1.0`; the interior is
+    // the vertex lattice.
+    let stride = n + 2;
+    let col_x = |k: usize| {
+        if k == 0 {
+            vx(0) - 1.0
+        } else if k == stride - 1 {
+            vx(n - 1) + 1.0
+        } else {
+            vx(k - 1)
+        }
+    };
+    let row_z = |j: usize| {
+        if j == 0 {
+            vz(0) - 1.0
+        } else if j == stride - 1 {
+            vz(n - 1) + 1.0
+        } else {
+            vz(j - 1)
+        }
+    };
+    let fill_row = |dst: &mut Vec<f32>, j: usize| {
+        dst.clear();
+        let z = row_z(j);
+        for k in 0..stride {
+            // The border columns are only ever read on the `grid_slope` path.
+            dst.push(if grid_slope || (k > 0 && k < stride - 1) {
+                terrain::height(seed, col_x(k), z)
+            } else {
+                0.0
+            });
+        }
+    };
+
+    let mut hprev: Vec<f32> = Vec::with_capacity(stride);
+    let mut hcur: Vec<f32> = Vec::with_capacity(stride);
+    let mut hnext: Vec<f32> = Vec::with_capacity(stride);
+    if grid_slope {
+        fill_row(&mut hprev, 0);
+    }
+    fill_row(&mut hcur, 1);
+    // The normal's arms: `hxm[k]` is `x_k − d` (and `hxm[n]` the last `+ d`);
+    // `hzp` is this row's `+ d`, which becomes the next row's `hzm`.
+    let mut hxm = vec![0.0f32; n + 1];
+    let mut hzm = vec![0.0f32; n];
+    let mut hzp = vec![0.0f32; n];
+
     for iz in 0..n {
+        let z = vz(iz);
+        if grid_slope {
+            fill_row(&mut hnext, iz + 2);
+        }
+        if share_x {
+            for (k, slot) in hxm.iter_mut().enumerate() {
+                let sx = if k == n { vx(n - 1) + d } else { vx(k) - d };
+                *slot = terrain::height(seed, sx, z);
+            }
+        }
+        if share_z && iz > 0 {
+            core::mem::swap(&mut hzm, &mut hzp);
+        } else {
+            for (ix, slot) in hzm.iter_mut().enumerate() {
+                *slot = terrain::height(seed, vx(ix), z - d);
+            }
+        }
+        for (ix, slot) in hzp.iter_mut().enumerate() {
+            *slot = terrain::height(seed, vx(ix), z + d);
+        }
+
         for ix in 0..n {
-            let x = ox + ix as f32 * step;
-            let z = oz + iz as f32 * step;
-            let y = terrain::height(seed, x, z);
+            let x = vx(ix);
+            let y = hcur[ix + 1];
             positions.push([x, y - drop, z]);
 
             // Analytic normal: the surface gradient, not the triangulation.
-            let hx = terrain::height(seed, x + d, z) - terrain::height(seed, x - d, z);
-            let hz = terrain::height(seed, x, z + d) - terrain::height(seed, x, z - d);
+            let hx = if share_x {
+                hxm[ix + 1] - hxm[ix]
+            } else {
+                terrain::height(seed, x + d, z) - terrain::height(seed, x - d, z)
+            };
+            let hz = hzp[ix] - hzm[ix];
             let n_v = Vec3::new(-hx, 2.0 * d, -hz).normalize();
             normals.push([n_v.x, n_v.y, n_v.z]);
 
-            // The identity mix, from the same `splat` the browser's material
-            // was fed by — four weights summing to ~255.
-            let w = terrain::splat(seed, x, z);
-            let inv = 1.0 / 255.0;
-            let mut c = [0.0f32; 3];
-            for (k, wk) in w.iter().enumerate() {
-                let f = *wk as f32 * inv;
-                for ch in 0..3 {
-                    c[ch] += GROUND_ALBEDO[k][ch] * f;
-                }
-            }
-            // Rule 1: no surface may be one flat value. This is the MACRO
-            // break-up (0.5–1 m) — the near ring's vertices are 1 m apart, so
-            // one hash per vertex is exactly that scale. The near-field grain
-            // under 5 cm is a texture's job and belongs to the materials
-            // slice; this is the half geometry can carry.
-            let v = 0.88 + 0.24 * super::props::hash01(x.to_bits(), z.to_bits());
-            // The waterline, last: wetness is a modifier on whatever identity
-            // the splat resolved, not a fifth identity. It runs after the
-            // macro break-up so a wet vertex keeps its own grain instead of
-            // having it multiplied back in at full dry strength.
+            // The tangent, analytically, for the same reason the normal is
+            // analytic — and it is the same gradient, so it is nearly free.
+            // The UVs below are a planar XZ projection at a constant scale, so
+            // `∂P/∂u` is the surface direction with no Z in it: `(2d, hx, 0)`.
+            // That is exactly orthogonal to `n_v` by construction — their dot
+            // is `−2d·hx + 2d·hx` — which is what the shader's mikktspace
+            // frame wants and what a Gram-Schmidt step would otherwise cost.
+            // `w = 1` is mikktspace's own answer for this parameterisation,
+            // kept rather than re-derived: see the module note.
+            let t_v = Vec3::new(2.0 * d, hx, 0.0).normalize();
+            tangents.push([t_v.x, t_v.y, t_v.z, 1.0]);
+
+            // `terrain::slope`'s own body, over taps already in hand.
+            let sl = if grid_slope {
+                let sx = (hcur[ix + 2] - hcur[ix]) * 0.5;
+                let sz = (hnext[ix + 1] - hprev[ix + 1]) * 0.5;
+                (sx * sx + sz * sz).sqrt()
+            } else {
+                terrain::slope(seed, x, z)
+            };
+
+            // `splat_from` rather than `splat` because the height and the
+            // slope are the ones this vertex just resolved; `splat` would
+            // sample both again.
+            let w = terrain::splat_from(y, terrain::moisture(seed, x, z), sl);
             // The gradient the normal was just built from, as a rise/run — the
             // waterline band is a horizontal distance and this is what converts
             // it. Free: `hx` and `hz` are already in hand.
             let grad = ((hx * hx + hz * hz).sqrt()) / (2.0 * d);
-            let c = wetted([c[0] * v, c[1] * v, c[2] * v], wet_factor(y, grad));
-            colors.push([c[0], c[1], c[2], 1.0]);
+            colors.push(vertex_color(y, w, x, z, grad));
             uvs.push([x * 0.25, z * 0.25]);
+        }
+
+        if grid_slope {
+            // Roll the window: this row's `+1 m` is the next row's centre.
+            core::mem::swap(&mut hprev, &mut hcur);
+            core::mem::swap(&mut hcur, &mut hnext);
+        } else if iz + 1 < n {
+            fill_row(&mut hcur, iz + 2);
         }
     }
 
@@ -377,12 +545,24 @@ pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) 
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.insert_indices(Indices::U32(indices));
-    // Tangents, because a normal map without them is not a normal map.
-    // Bevy's PBR shader needs `ATTRIBUTE_TANGENT` to build the tangent frame;
-    // without it the map is ignored and the surface silently stays flat —
-    // the failure that looks like "the texture did not load".
-    mesh.generate_tangents()
-        .expect("terrain mesh has UVs and normals");
+    // Tangents, because a normal map without them is not a normal map: Bevy's
+    // PBR shader needs `ATTRIBUTE_TANGENT` to build the tangent frame, and
+    // without it the map is ignored and the surface silently stays flat — the
+    // failure that looks like "the texture did not load".
+    //
+    // **Written, not solved.** `mesh.generate_tangents()` ran mikktspace over
+    // the triangles and was, once the tap sharing above landed, the single
+    // most expensive thing the client did — **12 ms of a 17 ms near chunk and
+    // 229 ms of a 415 ms far mesh** (medians; the near figure varied 12–18 ms
+    // run to run) — to re-derive a frame this parameterisation has in closed
+    // form. `tests/ground.rs` holds the two builds side by side: the written
+    // tangent is within **0.008° mean / 1.3° worst** of mikktspace's on the
+    // near ring, 0.06° / 4.9° on the far mesh's 8 m triangles. That is the
+    // same triangulation-vs-analytic difference this module's header already
+    // resolved in the analytic direction for normals, and it is a NEAR
+    // equality rather than the bit-identity the tap sharing gets — which is
+    // why the gate states an angle instead of comparing bits.
+    mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tangents);
     mesh
 }
 

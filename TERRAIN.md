@@ -309,6 +309,33 @@ claimed building's privilege volume — no farming your own living room.
 This is the same shape `NETCODE.md` §5 uses for buildings, which is the
 point: **terrain life is just chunk events over a generated backdrop.**
 
+### 2.1 · An authored site publishes masks, not a radius
+
+Landed 2026-08-10; research `reference/MONUMENTS.md` §3, knob row
+`DECISIONS.md` §open "site footprints v0".
+
+The haven pad and the waystations used to carry exactly one number each
+(`HAVEN_RADIUS_M`, `WAYSTATION_RADIUS_M`) answering exactly one question —
+*does the scatter grid stand anything here*. Every other world system either
+asked that same circle or was never told the sites exist. Ground clutter was
+the second kind: `clutter_fill` had no `Haven` parameter, so grass and litter
+grew straight across both tiers while the carriageway through them was
+correctly grit.
+
+`SiteFootprint` is now the site's published table — `scatter_m` (the grid
+veto, asserted equal to the radius it replaced) and `swept_m` (the made
+floor, derived as the container ring plus one clutter cell). Between them
+`site_sweep` is a **smoothstep profile, not a circle**: consumers dither each
+element against it with a hash byte they had already drawn, so the edge of a
+destination is a thinning population rather than a ring on the ground. That
+distinction is the whole of `MONUMENTS.md` §3 — the reference game shipped
+monuments on visible circular plateaus for a decade because a footprint was a
+radius — and `tests/clutter.rs` §S refuses a hard circle explicitly.
+
+Rows this struct gains when a reader exists: build-block (open for the
+operator), a height stamp (there is no carve — §1 stage 8 finds flat ground
+rather than making it), nav, water.
+
 ## 3 · Collision (server truth, client prediction — same code)
 
 - Ground: bilinear height sample under the capsule; walkable up to the
@@ -593,32 +620,60 @@ client (`DECISIONS.md` 2026-08-06), so nothing photographs this at all now.
   site rather than making one (§1 stage 8), so this suite measures the
   generator's best natural ground, and the 3.76 m is the argument for the
   carve rather than evidence it happened.
+- `tests/clutter.rs` §S: the authored sites sweep their own floor, measured
+  against the same seed rendered with the site list parked offshore, so all
+  three claims are exact rather than statistical — the floor is grit and
+  carries no understory, **the wilderness is bit-identical**, and the band
+  between the two masks contains both outcomes. Each is proven red under its
+  own mutant (sweep disabled · sweep as a hard circle · the band collapsed to
+  zero width). §2.1 has the design.
 - Chunk-build time and instancing counts ride the client perf harness.
 
-### 7.1 · ⚠ The greybox mirror lost its gate, and the two halves have drifted
+### 7.1 · The greybox mirror: one list now, and a gate over the rest
 
-**Measured 2026-08-09, while sweeping the browser out of the docs.** The two
-authored structures are declared twice — once as the volume the sim blocks,
-once as the mesh the client draws — and the gate that held the two lists
-equal was `ci/haven_shelter.mjs` + `ci/waystation_canopy.mjs`, both deleted
-with the browser client. **Nothing replaced them**, and the lists no longer
-agree:
+**Was a live defect; fixed 2026-08-10.** The two authored structures were
+declared twice — once in `terrain.rs` as the volume the sim blocks, once in
+`render/props.rs` as the mesh the client draws — and the gate that held the
+lists equal was `ci/haven_shelter.mjs` + `ci/waystation_canopy.mjs`, both
+deleted with the browser client. Nothing replaced them and they had drifted:
 
-| | sim blocks (`terrain.rs`, centre + **full size**) | client draws (`render/props.rs`, centre + **half extent**) |
+| | sim blocked (centre + **full size**) | client drew (centre + **half extent**) |
 |---|---|---|
-| haven shelter | `SHELTER_BOXES`, **14 rows** | `shelter`, **9 rows** |
-| waystation canopy | `WAYSTATION_CANOPY_BOXES`, **9 rows**, finial top **4.1 m**, eave half-width 2.8 m | `canopy`, **6 rows**, top **2.09 m**, plate half-width 1.9 m |
+| haven shelter | `SHELTER_BOXES`, 14 rows, peak 9.2 m | 9 rows, peak 5.6 m — no corner posts, no tower-cap |
+| waystation canopy | `WAYSTATION_CANOPY_BOXES`, 9 rows, finial 4.1 m | 6 rows, top 2.09 m |
 
-The canopy is the loud one: the drawn structure is **about half the blocked
-one in both height and width**, and `scale: 1.0` is authored on that slot
-(`terrain.rs`, "Authored, not drawn"), so no instance transform reconciles
-them. A player is stopped ~0.7 m outside the posts they can see. Note the
-two tables are also in **different units** — full size against half extent —
-which is exactly the transcription hazard the deleted gate existed to cover.
+A player was stopped ~0.7 m outside posts they could see. Note the units: full
+size against half extent, which is the transcription hazard the deleted gate
+existed to cover.
 
-**This is not fixed here** — which list is authoritative is a design call
-(the sim's numbers are the ones `ART.md` §6 and the tier-silhouette argument
-were written against), and this pass is a doc sweep. What is owed is the
-native gate, and `CLAUDE.md` already says its shape: *what may be gated about
-a frame is arithmetic — the mesh fits the volume the sim blocks, in Rust, the
-shape of `crates/client/tests/tree.rs`*. `NOW.md` carries the item.
+**The design call the old text left open is made: the sim's list is
+authoritative** — `ART.md` §6 and the tier-silhouette argument were written
+against those numbers, `OCCUPANT_R_M`/`OCCUPANT_TOP_M` are *defined* as the
+tables' own bounds, and the drawn list was the one that had lost rows.
+
+**And the fix is derivation rather than a second gate.** `props::authored`
+builds the mesh from the sim's rows, converting full size to half extent in
+one place against a length the type system pins; only the colours are the
+client's. There is one list, so this particular drift cannot recur.
+
+What `crates/client/tests/greybox.rs` gates is what derivation cannot make
+true by construction, and it reaches further than the two structures:
+
+- the unit conversion, row for row, on bit patterns;
+- every row reaching the mesh, by vertex count (36 a box, measured);
+- the authored pair's drawn bounds **equalling** the published broad phase in
+  both directions — a gap either way means the scalar and the table came apart;
+- **every other archetype fitting the volume the sim blocks**, which closes
+  `OCCUPANT_R_M`'s own admission that "nothing in the Rust workspace can see a
+  triangle, so the asserts below prove only that this file agrees with itself";
+- a coverage check, so a new occupant arrives measured or explicitly excused.
+
+**Closed the same day, on the operator's call**: the *generated* props blocked
+wider than they drew — a boulder reaching 1.1145 m inside a 1.5 m blocked
+cylinder, because `blob_mesh` displaces vertices inward from its nominal
+radius and the row had been written off the nominal. `OCCUPANT_R_M` and
+`OCCUPANT_TOP_M` carry the measured bounds now (rounded outward at four
+decimals) and the gate's ratchet is an equality check at a one-millimetre
+rounding allowance. Prop skirts tightened with it for free, because
+`skirt_base_r` already reached off `occupant_volume`. `DECISIONS.md`
+2026-08-10 has the call and what it touched.

@@ -50,17 +50,24 @@ const SPAWN_TARGET_H: f32 = 1.2;
 const SPAWN_BISECT_ITERS: i32 = 12;
 /// The walkability shape used by foundations and the old placeholder alike.
 const SPAWN_MAX_SLOPE: f32 = 1.0;
-/// Clearance from any scatter slot center. The widest archetype the client
-/// draws is the tree, whose canopy radius is capped at `PINE_MAX_R` = 1.7 m
-/// (`web/src/props.js`); 1.7 × 1.1 max scale ≈ 1.9 m, add the 0.4 m capsule
-/// and 4 m leaves a spawn standing clear of it, not merely outside it.
+/// Clearance from any scatter slot center, metres.
 ///
-/// That was a sentence about a constant in another language until
-/// `ci/pine_shape.mjs`, which reads this number, the capsule, the scatter's
-/// scale range and the tree's actual vertices, and closes the arithmetic. A
-/// canopy widened for taste on the client used to be able to put fresh spawns
-/// back inside trees with every gate green.
-const SPAWN_CLEAR_M: f32 = 4.0;
+/// **Raised 4.0 → 4.5 when the tree pool gained a second, wider species**
+/// (operator, 2026-08-10: *"im fine with raising the sim or whatever we got
+/// the juice i think"*). The derivation, which is now checked rather than
+/// merely stated: the widest canopy ceiling (`tree::TREE_MAX_R`, 2.9 m) at the
+/// largest scale `scatter` rolls (`SLOT_SCALE_MAX`, 1.1) is a 3.19 m canopy
+/// edge; plus `CAPSULE_RADIUS_M` (0.4) is 3.59 m of touching distance; plus
+/// standing room so a spawn does not open with a trunk filling the frame.
+///
+/// **This used to credit `ci/pine_shape.mjs` with closing that arithmetic, and
+/// that gate does not exist** — it went with the browser client, so the
+/// derivation was a dead citation of the exact kind `CLAUDE.md` says to
+/// assume about any `.mjs` a doc comment names. It is closed in Rust now, by
+/// `crates/client/tests/tree.rs::a_fresh_spawn_stands_clear_of_the_widest_tree`
+/// — the client is the crate that can see both the mesh and this constant.
+/// `pub` for that reason and no other.
+pub const SPAWN_CLEAR_M: f32 = 4.5;
 
 /// Integer event codes (CLAUDE.md wall 3) — the sim's outbound facts, one
 /// ring per tick, drained by the server after `tick` returns.
@@ -2364,6 +2371,7 @@ impl World {
                     &self.loot,
                     &self.scatter,
                     &self.haven,
+                    &mut self.slot_cache,
                     &mut self.slot_lives,
                     &mut self.events,
                     &mut self.players[i],

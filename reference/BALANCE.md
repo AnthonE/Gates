@@ -249,6 +249,24 @@ at the first rung that separates the sources:
    so a later pass can flip it in one line. A tie is not a reason to keep
    our own invented number, which is what deferring actually does.
 
+**6.5 · A band of ours yields to a number of theirs, by default.**
+Operator, 2026-08-10: *"i think we should lighten our own math and lean on
+them for now."* §7 below already said a band break is a reason to look at
+the band; this makes the default explicit and puts the burden on keeping
+our own arithmetic rather than on taking theirs — the same inversion §6
+itself went through, one level up. Our anchors and bands stay: they are
+the safety rail that catches a number our sim cannot express, and
+`test_content` still refuses content that breaks one. What changes is who
+wins a disagreement. **A band is ours, derived from our own declared
+inputs, and it is no longer evidence about their number** — re-speak it in
+`DECISIONS.md` and move on. `wood_wall_minutes` [5, 9] → [3, 5] is the
+first one taken this way, and §7's story is why the rule was needed: the
+band had been a fence around a number nobody had ever compared.
+
+The one thing this does **not** license is re-speaking a band to admit a
+number that our sim means differently — that is §6.2's mechanism test and
+it is unchanged. Lighten the arithmetic, not the model.
+
 **6.4 · What survives from the old rule, and it is the only part that was
 ever right: never average.** 80 and 150 do not make 115. That is a number
 nobody reported and no reading of the game supports, and false precision

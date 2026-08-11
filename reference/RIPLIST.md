@@ -164,6 +164,223 @@ question).
 
 ---
 
+## 1c · The craft and hp take (2026-08-10) — rows 1c + 1d, and a new source tier
+
+⚠ **Provenance, and it is weaker than anything else in this file.** Every
+page a number here could come from is **blocked by this box's egress
+proxy** — `wiki.facepunch.com` and `rusthelp.com` both answer
+`EGRESS_BLOCKED`, and the search layer returns summaries only. So the
+operator pulled the table by hand **through a second assistant**, which
+makes this a *summary of pages neither of us read*: one tier below
+`BUILDING.md` §0's tier 3, which was at least our own search summary.
+Call it **tier 4** and treat it accordingly — the numbers landed because
+§6.1 says no case is needed to take, not because this source is good.
+
+Two things partly redeem it and both are checks rather than trust:
+
+1. **Five rows came back exactly equal to ours** — small wood box 100
+   wood, large wood box 250 wood + 50 frags, metal hatchet 100 wood + 75
+   frags, hunting bow 200 wood + 50 cloth, wooden door **hp** 200, small
+   box **hp** 150 — plus the code lock at 100 frags, taken deliberately at
+   lock v1. Independent agreement on rows nobody was trying to match is
+   §6.3 rung 1 working: the source gets right the cells we can check.
+   **It also says something about us**: parts of our content were taken
+   from that game informally at some point and never recorded, which is
+   the same shape as the metal wall already sitting at their 200 frags.
+2. **Every band held with no re-speak** — six anchors, measured below.
+
+**Egress re-probed 2026-08-11 (the box that took §1e), and it is closed
+harder here**: the fetch tool answers `EGRESS_BLOCKED` for every host —
+`example.com` included, so it is the tool's policy and not a Rust-domain
+rule — the shell proxy 403s CONNECT outright, and only the search layer
+and `raw.githubusercontent.com` work. The re-verify this section owes
+still needs a box (or a human) that can open a page.
+
+**I disputed two of its claims and was wrong about one of them, which is
+the third check on this source and the least comfortable.** I refused
+`rock` at "10 stone → 1, craftable" on the grounds that the rock is the
+item you spawn holding — **the operator confirmed the source, 2026-08-11**
+(*"you can make a rock for 10 stone. it lets a naked with nothing pick up
+lose rock and make a rock"*), and ours moved 15 → 10. A tier-4 source beat
+a confident prior; that is worth remembering the next time this document
+is inclined to trust a reading over a reference. The tool cupboard's hp
+was the other, and it went the other way — see §1c-b below.
+
+### What moved
+
+| row | ours before | theirs, taken |
+|---|---|---|
+| tool cupboard | 300 wood + 100 stone | **1,000 wood** |
+| building plan | 50 wood | 20 wood |
+| hammer | 75 wood | 100 wood |
+| wooden door | 200 wood | 300 wood |
+| sheet metal door | 200 frags | 150 frags |
+| campfire | 100 wood + 50 stone | 100 wood |
+| furnace | 200 stone + 50 wood + 25 lowgrade | 200 stone + 100 wood + 50 lowgrade |
+| sleeping bag | 60 cloth | 30 cloth |
+| workbench 1 | 500 wood + 100 **stone** | 500 wood + 100 **frags** |
+| research table | 200 wood + 75 frags | 200 frags |
+| stone hatchet · stone pickaxe | 100 wood + 50 stone | 200 wood + 100 stone |
+| wooden spear | 120 wood | 300 wood |
+| wooden arrow | → 3 | → **2** (same inputs) |
+| metal pickaxe | 100 wood + 75 frags | 100 wood + 125 frags |
+| crossbow | 150 wood + 75 frags + 2 rope | 200 wood + 75 frags + 2 rope |
+| pistol ammo | 10 frags + 20 gunpowder → 4 | 10 frags + **5** gunpowder → 4 |
+| gunpowder | 20 charcoal + 10 sulfur → 10 | 30 charcoal + 20 sulfur → 10 |
+| torch | 30 wood + 10 cloth | 30 wood + 1 cloth + 1 lowgrade |
+| bandage | 20 cloth | **4 cloth** |
+| low grade fuel | 1 fat + 1 cloth → 4 | 3 fat + 1 cloth → 4 |
+| burlap headwrap · shirt | 15 · 25 cloth | 10 · 20 cloth |
+| **hp** sheet metal door | 800 | **250** |
+| **hp** sleeping bag | 50 | 200 |
+| **hp** large box | 250 | 300 |
+| **hp** campfire | 100 | 50 |
+| **hp** furnace | 300 | 500 |
+| **hp** workbench 1 | 400 | 500 |
+| **hp** research table | 400 | 200 |
+| rock | 15 stone | 10 stone *(2026-08-11)* |
+| research table | *(+ nothing)* | **+ 20 obol** — their 20 scrap *(2026-08-11)* |
+
+### What was refused, and why each is a real reason
+
+None of these is a cost wearing principle's clothes (§6.2); each is a
+**mechanism or a missing item**, which is the one admissible ground.
+
+- **metal spear · metal arrow** — no vanilla equivalent. Theirs are a
+  *stone* spear (a wooden spear + 20 stone) and a *high velocity* arrow;
+  ours are our own items at a rung theirs does not have.
+- **road sign vest · medkit** — theirs run through leather, road signs,
+  sewing kits and medical syringes. We have none of those items, and
+  inventing them to hold a price is the tail wagging the dog.
+- **satchel charge · revolver** — both are component chains we do not
+  have (beancans and a small stash; a metal pipe). **Both already agree
+  with theirs on the half we can express**: 240 gunpowder and 125 frags
+  respectively, unchanged, which is more evidence for §1 above.
+- ~~**research table's 20 scrap**~~ — **RETRACTED 2026-08-11, and it was
+  never a real reason.** I refused it saying "we have no scrap, our
+  currency is `item.obol` on purpose", which is a sentence that answers
+  itself: **OBOL *is* scrap**, said in three places in this tree —
+  `DESIGN.md` §3.1 is titled "OBOL — the working coin (the scrap)",
+  `research.toml` and `cooking.toml` both carry the operator's own
+  2026-08-10 quote. The row is now 200 frags + **20 obol**, whole. This is
+  §6.2's failure mode caught in the act: not a mechanism difference, an
+  item I did not recognise under our own name for it.
+- **recycler** — not craftable there at all; it is a monument fixture.
+  Ours is craftable by design and is the economy's arming point.
+- **code lock hp** — theirs carries no standalone health because a lock
+  is not independently destructible there. **My reason for refusing was
+  wrong and the conclusion was right by accident**: I wrote "ours is a
+  deployable with hp", and it is not — `deploy.rs` mints **no
+  `DeployRec`** for `ARCH_LOCK`, in its own words *"a lock is not a
+  deployable — it is a record about one"*. Our model already matches
+  theirs exactly: you break the door, not the lock. What the row really
+  found is that `deployables.toml`'s `lock_code` carries `hp = 100`
+  that **nothing reads** — dead data on a required schema field, left in
+  place and now labelled in the file.
+
+### §1c-b · The cupboard is ours on purpose (operator, 2026-08-11)
+
+The one cell where we now differ from them **deliberately**, and it is an
+operator call rather than a research gap: *"make cupboard stronger rather
+than weak. plus i think most people blow the locks off."*
+
+Their tool cupboard is fragile — one summary put it at 100 hp — and it
+survives by being buried behind everything else, which their own raid
+meta bears out: the entry point is what gets blown, not the cupboard.
+Ours goes the other way. **`item.hearth` hp 500 → 1,000**, the top of the
+building ladder, so taking a base's privilege costs what another metal
+wall costs. Derived rather than picked: 1,000 is `building.toml`'s metal
+rung, already theirs, so the cupboard is exactly one more wall.
+
+`DECISIONS.md` §open carries the row. It is filed here as a **difference
+we chose**, not an outstanding take, so the queue stops listing it.
+
+### The ×2 hypothesis is dead, and that is worth recording
+
+The previous pass noticed four rows sitting at exactly half of theirs and
+asked whether the whole file had been systematically halved. **It had
+not.** The full table runs in both directions and at several magnitudes:
+the stone hatchet is ½ theirs, the sleeping bag is **2×** theirs, the
+bandage is **5×**, pistol ammo's gunpowder is **4×**, the metal pickaxe
+is 0.6×, and the metal hatchet is exact. There is no transform — the
+column was simply authored row by row against nothing, which is row 1b's
+finding restated with a bigger sample.
+
+### Measured, all six anchors, all in band with no re-speak
+
+| anchor | before 1c/1d | after | band |
+|---|---|---|---|
+| starter base | 77.9 farm-min | **90.4** | — |
+| satchel | — | 42.4 farm-min | — |
+| stone raid ratio | 1.52 | **1.88** | [1.00, 3.00] |
+| door breach swings | — | 50 | [30, 80] |
+| daily upkeep | 6.92 | **8.17** | ≤ 15 |
+| wood wall | 4.0 | 4.0 | [3, 5] |
+
+The starter base rose 16 % on the cupboard alone, and the raid ratio rose
+with it — a base that costs more to build is worth more to defend, which
+is the anchor doing its job rather than a break.
+
+## 1e · The stack-size take (2026-08-11) — row 1e's cheapest column, and an egress re-probe
+
+**The probe first, because §2's row 2 promised one.** This box is *worse*
+than the one that took §1c: the fetch tool answers `EGRESS_BLOCKED` for
+every host including a plain `example.com` — so it is the tool's egress
+policy, not a Rust-domain rule — the shell proxy answers 403 to CONNECT
+for `wiki.facepunch.com`, `rusthelp.com`, `rust.facepunch.com` and
+`corrosionhour.com`, and `gist.githubusercontent.com` is refused where
+`raw.githubusercontent.com` (probed 200) is not. What works is the
+**search layer**, so this take is **tier 3** — our own search summaries,
+one tier above §1c's tier 4 and the tier `BUILDING.md` §7b landed at.
+**§1c's re-verify therefore stays owed**: no page was read here either.
+
+### What moved (5 cells)
+
+| row | ours before | theirs, taken | conf |
+|---|---|---|---|
+| pistol ammo | 100 | **128** | EXACT — multiple independent summaries agree |
+| wooden arrow | 100 | **64** | APPROX — ×64 stated for the HV arrow; the class shares it |
+| metal arrow | 100 | **64** | our item (§1c refused its recipe); the class stack travels |
+| bandage | 10 | **3** | APPROX — stated once, corroborated by a player petition to raise it *to 5* |
+| gunpowder | 500 | **1000** | APPROX — one source states it; every other craft resource sits there |
+
+**One forced edit rode along**: the spawn kit granted 5 bandages, a kit
+entry may neither exceed the item's own stack nor repeat, so the kit
+carries **3** now — `validate.rs` would have refused the boot otherwise.
+No band or anchor reads a stack size, so nothing re-priced.
+
+### What matched, now confirmed at the row
+
+wood · stone · metal ore · sulfur ore · metal frags (all 1000 — §4.4 had
+these already) · cloth 1000 (§1) · **low grade fuel 500** · **satchel
+charge 10** · **obol = their scrap, 1000**. The §1 pattern again: rows
+nobody was trying to match that agree anyway. Everything that stacks 1
+here stacks 1 there (tools, weapons, wearables, deployables) — trivially
+matched, uncited.
+
+### What this box could not source, left open on purpose
+
+Absence from this list was mistaken for a decision once (row 1b), so each
+open cell is named: **animal fat** (ours 500; theirs likely 1000,
+unconfirmed), **charcoal** and **sulfur** (ours 1000, likely matches,
+unconfirmed), **gears / rope / tarp** (ours 50), **berries / mushrooms /
+corn** (ours 50), **raw / cooked / burnt meat** (ours 20), **medkit**
+(§1c's refusal extends — no equivalent item). Search snippets carry these
+items' recipes and lore but never their stack fields, and the pages that
+would answer all of them in one read (`lone.design`'s all-in-one list,
+`wiki.rustclash.com`'s item pages) are exactly what a fetch cannot open.
+A browser answers this in five minutes; the rows are cited open in
+`items.toml` so the file stops reading as decided.
+
+### Two sources discarded by §4.1's test, kept as receipts
+
+- A Fandom **Item Cost List** summary offered "charcoal 42, sulfur 125,
+  animal fat 375" as stacks — against wood and stone held EXACT at 1000.
+  Crafting-cost quantities wearing a stack column's clothes; discarded.
+- One summary offered "arrows stack to 10", read off a **Legacy**
+  hunting-bow page, against the HV arrow's stated ×64. The staleness trap
+  §4.2 names, seen in a stack column; discarded.
+
 ## 2 · Outstanding — the queue
 
 Ranked by what a returning player notices, which is `BALANCE.md` §5's
@@ -179,9 +396,22 @@ sitting here is a row nobody has started, never a row that was decided
 against. §6.2 is the matching rule on the other side: a cost may be
 recorded as a cost and never rewritten as a reason to differ.
 
+⚠ **And a number that is NOT on this list has not thereby been decided
+either** — which is the second half of the same lesson and cost a whole
+column to learn (row 1b, 2026-08-10). `building.toml`'s `cost` had no row
+here, no reason recorded anywhere, and read as settled purely by absence;
+it turned out to be 1.75× theirs. Rows 1c, 1d and 1e exist because that
+question was then asked of every other content file and **six of the
+twelve had zero coverage**. Completeness of this list is now part of what
+it is for: when you take a row, look for the column beside it.
+
 | # | number | status | what it costs to take |
 |---|---|---|---|
 | 1 | ~~**gather yields / node totals**~~ | ✅ **TAKEN 2026-08-10** | Struck — see §1 and §1a. Totals are theirs, the hit count stayed ours, one band ceiling moved. |
+| 1b | ~~**building block costs**~~ | ✅ **TAKEN 2026-08-10** | **This row never existed until the number was already taken, and that is the entry worth reading.** Our `cost` column in `building.toml` — 350 wood / 350 stone / 200 frags for every shape — was written in the M1 build slice off our own `farm_per_min` and **never compared to theirs**. The 2026-08-08 balance pass took the hp ladder and the satchel out of that very file and left `cost` alone; this list opened no row, so nothing was tracking it as outstanding and nothing read as wrong. Row 1's node take is what exposed it: once a tree paid *their* 810 wood, a wall priced at *ours* cost **1.75× theirs in trees**. Taken whole — grade base twig 50 / wood 200 / stone 300 / metal 200, `BUILDING.md` §7b.3's shape ratios off it — so the 24 cells are theirs. One band re-spoken (`wood_wall_minutes` [5, 9] → [3, 5], value 4.0) under §6.2/§7. **The lesson for the rows below**: taking one half of a ratio is worse than taking neither, and a row that is not on this list is not thereby fine — it may simply never have been looked at. |
+| 1c | ~~**the `recipes.toml` cost column**~~ | ✅ **TAKEN 2026-08-10** — 23 of 39 rows moved, 5 already matched, 8 have no equivalent | Struck — §1c below has the row-by-row table, the provenance caveat, and the eight refusals. Headline: the **tool cupboard 300 wood + 100 stone → 1,000 wood**, the wooden door 200 → 300, the sheet metal door 200 → 150 frags, the building plan 50 → 20, the hammer 75 → 100. **Every band held with no re-speak.** |
+| 1d | ~~**`deployables.toml` hp**~~ | ✅ **TAKEN 2026-08-10**, in the same commit as 1c by design | 7 of 12 moved, 2 already matched, 3 refused. The one that matters: **sheet metal door 800 → 250 hp**, which is what makes the door the breach point their design intends rather than a second wall. Wooden door 200 and small box 150 were already theirs. Not taken: the code lock (their lock has no standalone hp — it is not independently destructible, which is a mechanism difference from `lock.rs`), the recycler (no equivalent — theirs is a monument fixture, ours is craftable by design, `DECISIONS.md` "recycler v0"), and the **tool cupboard's own hp**, where the source declined to answer and one earlier search summary said 100 against our 500. That last one is the largest open cell on this list. |
+| 1e | **the files with no coverage at all** — ~~`items.toml` stack sizes~~ ✅ **TAKEN 2026-08-11** (§1e) | `READY` (research not started on the rest) | `armor.toml` · `cooking.toml` · `loot.toml` · `research.toml` (scrap costs) still have zero coverage. Named here because row 1b proved that **absence from this list has been mistaken for a decision**. `armor.toml` has a real §4.1 reason (per-damage-type vs our flat %) and still deserves a row saying so; the other three have no reason recorded anywhere, which is not the same as having one. The stack-size half is struck: §1e took 5 cells at tier 3, confirmed 9 matches, and left 12 cells **explicitly open with the reason named** — those opens are part of this row's remaining work. |
 | 2 | **per-material damage resistance** | `READY` (mechanism build, not a lookup) | The biggest *model* gap, and `BALANCE.md` §4.1 calls it a build: a schema column plus a sim multiply. Their stone wall takes 4 satchels and their sheet metal 23; ours takes 8 because one `structure` column serves every material. Until this exists, their raid numbers above stone cannot be taken at all — the ladder has nowhere to go. |
 | 3 | **smelt rates** ✅ · **craft-time rebate** | smelt: ✅ **TAKEN 2026-08-10** · rebate: `NEEDS-MECHANISM` | Smelt landed via §6.3's ladder — rung 3 picked metal 2.5 / sulfur 2.5 over metal 3.3 / sulfur 1.7, and **the shape was the real win**: theirs smelt alike where ours had sulfur at half of metal, so sulfur went 1 → 2. Both rows sit at 2 because `seconds` is integer (row 3a). The mechanism half already matched — their furnace is parallel per slot and `oven::sweep` is too. **The rebate (50% one tier up, 75% two) is blocked on a ladder we do not have**: every crafted row in `recipes.toml` is `none` or `workbench1`, so there is no second tier for a rebate to key off. Build the tier ladder, then this is a lookup. |
 | 3a | **sub-second smelt/craft precision** | `NEEDS-MECHANISM` (schema) | Their 2.5 s is not expressible: `Recipe::seconds` is a `u32` baked as `seconds × TICK_HZ`, so content can only say 2 or 3 while the sim happily runs 75 ticks. Widen the content field (tenths, or ticks outright) and the smelt rows can carry their real number. Small, self-contained, and it unblocks every future time that is not a whole second. |

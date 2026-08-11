@@ -155,6 +155,28 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
     let dz = wz * speed * DT;
     let mut nx = x;
     let mut nz = z;
+    // The effective ground under wherever the body ends up. It starts as the
+    // ground under where it started, because that is what "no candidate was
+    // accepted" resolves to, and the accepted candidate overwrites it with
+    // the pair that candidate already had to compute.
+    //
+    // **This is a saved terrain fan per step, not a tidy-up.** The vertical
+    // pass below used to re-derive this from (nx, nz), which is by
+    // construction either (x, z) — the identical expression on the line
+    // above — or a candidate whose `g` and `pg` were computed inside the
+    // loop and thrown away. `terrain::height` is ~12 `noise2` evaluations
+    // (a 2-octave warp on each axis, a 5-octave relief, the ridge tap, and
+    // the coast fBm inside `continent`), and it was the single largest line
+    // item in the shard profile: at `MAX_PLAYERS` bodies plus the roster,
+    // 30 times a second, the duplicate was ~30 % of every `noise2` the sim
+    // ran. A body standing still — a sleeper, a corpse on the death screen,
+    // anybody not pressing a key — paid for the whole fan twice.
+    //
+    // Arithmetically identical by construction, which is the only reason it
+    // may land: same `max` of the same two calls at the same coordinates, so
+    // `test_replay`, `test_terrain_golden` and `test_parity_wasm` are the
+    // proof rather than the risk.
+    let mut ground_sel = ground_here;
     // Whether the body is ALREADY inside an occupant, resolved at most once
     // and only if a candidate is vetoed by one. See the veto below.
     let mut inside: Option<bool> = None;
@@ -198,6 +220,7 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
             if ok {
                 nx = cx;
                 nz = cz;
+                ground_sel = g.max(pg);
                 break;
             }
         }
@@ -206,7 +229,7 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
     // Vertical: snap within step range, otherwise fall. Built surfaces
     // count as ground only when the step rule already admitted them
     // (piece_ground's lid), so a floor overhead is a ceiling, not a lift.
-    let ground = terrain::height(seed, nx, nz).max(collide::piece_ground(seed, cols, nx, nz, y));
+    let ground = ground_sel;
     let mut ny = y;
     // A jump is the one thing that takes a *grounded* body off the snap and
     // onto the ballistic path. `grounded` is the whole gate: it is recomputed
