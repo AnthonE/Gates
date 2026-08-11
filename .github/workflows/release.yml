@@ -236,6 +236,16 @@ jobs:
 
   release:
     needs: [check, build]
+    # **`fail-fast: false` was not enough, and the `build` job's own comment
+    # claimed otherwise.** It keeps a failing leg from cancelling the others,
+    # so their artifacts still upload — but a matrix job whose legs did not
+    # all pass concludes as *failure*, and a `needs:` on it skips this job
+    # outright. The result was the opposite of the stated intent: one bad
+    # platform meant NO draft rather than a partial one. `!cancelled()` runs
+    # this on whatever actually built; the "what is about to be attached"
+    # step below already refuses an empty `dist`, so a total failure still
+    # drafts nothing.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
