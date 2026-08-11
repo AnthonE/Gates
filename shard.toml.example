@@ -111,3 +111,40 @@ seed = 20260731
 # 2026-08-03 row in DECISIONS.md for why ufw alone buys nothing there).
 # DECISIONS.md §open "shard status endpoint v0".
 # status_addr = "127.0.0.1:8080"
+
+# The ticket door (crates/server/src/entitle.rs): does a joiner own a copy?
+#
+# Unset — the default — checks NOTHING, and that is the state every test,
+# every community shard and the local dev flow run on. `DECISIONS.md`
+# 2026-08-04 is why that is a posture rather than a gap: one build, two
+# populations. An OFFICIAL shard is armed and its economy is real; a
+# community or training shard runs unarmed and open, and has nothing worth
+# cheating for.
+#
+# Armed, this shard asks scry two questions, both one `balanceOf` underneath:
+# `GET /api/ticket/<slug>/of/<wallet>` at join, and
+# `POST /api/ticket/<slug>/check` for the whole roster every sweep — because
+# a player can sell the ticket and stay logged in.
+#
+# THREE ANSWERS, NEVER TWO, and this is the part to not get wrong: a shard
+# refuses (and kicks) on a definite on-chain zero and NEVER on a failed read.
+# An RPC outage that booted every paying player would be worse than the
+# freeloader it was trying to catch, so an unanswerable check ADMITS and
+# bumps `entitle_unknown` instead. Watch that counter: armed, climbing, with
+# `refused_ticket` at zero is a shard checking nothing.
+#
+# Needs require_auth = true and the shard REFUSES TO BOOT without it — a
+# guest has no wallet, so a ticket door over an open door checks nobody.
+# entitle_origin = "https://scry.moreright.xyz"
+
+# This title's slug in scry's catalog. Defaults to "gates"; set it only if a
+# staging origin files this game under another name.
+# entitle_slug = "gates"
+
+# How long one check may take, and how long between roster sweeps. The sweep
+# interval IS the security property — it is how long a sold copy keeps
+# playing — so it is posted rather than hidden. The timeout must be SHORTER
+# than the sweep or a slow origin stacks rounds; the shard refuses the pair
+# at boot rather than clamping a number an operator typed.
+# entitle_timeout_secs = 6
+# entitle_sweep_secs = 120

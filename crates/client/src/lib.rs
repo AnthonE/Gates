@@ -458,7 +458,10 @@ impl Session {
             Ok(protocol::KIND_CHALLENGE) => {}
             Ok(KIND_REFUSE) => {
                 let r = decode_refuse(reply).map_err(|e| format!("refuse: {e:?}"))?;
-                return Err(format!("refused: code {}", r.code));
+                return Err(match protocol::refuse_text(r.code) {
+                    Some(why) => format!("refused: {why}"),
+                    None => format!("refused: code {}", r.code),
+                });
             }
             other => return Err(format!("expected a challenge, got {other:?}")),
         }
@@ -501,7 +504,10 @@ impl Session {
             Ok(KIND_WELCOME) => decode_welcome(reply).map_err(|e| format!("welcome: {e:?}"))?,
             Ok(KIND_REFUSE) => {
                 let r = decode_refuse(reply).map_err(|e| format!("refuse: {e:?}"))?;
-                return Err(format!("refused: code {}", r.code));
+                return Err(match protocol::refuse_text(r.code) {
+                    Some(why) => format!("refused: {why}"),
+                    None => format!("refused: code {}", r.code),
+                });
             }
             other => return Err(format!("unexpected handshake reply: {other:?}")),
         };

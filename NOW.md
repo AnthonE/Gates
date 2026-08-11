@@ -262,14 +262,54 @@ What remains, in order:
    publish now exists: live counts via `status_url`, and join links
    (`scry://join/gates/host:port`, `deeplink.rs`). Registering the scheme
    with the desktop is the launcher's installer, and is not done.
-3. **`prove` has no call site.** `sign_siwe` hands the launcher a string this
-   process composed; `Overlay::prove(server, nonce)` binds it to a name and a
-   nonce the SHARD chose, which is the difference between a signature a shard
-   can verify and one it can replay. Wiring it is a wire change (wall 6), so
-   it waits for the identity-in-handshake slice, not for this one.
+3. **`prove` has no call site** — and this is now the *only* thing left in
+   the identity seam, because the ticket door landed on the handshake we
+   already have (2026-08-11, `entitle.rs`). The address is proved today:
+   the shard picks the nonce AND the `issued_at`, the client composes the
+   message through the one shared `protocol::siwe_message`, and the server
+   rebuilds identical bytes and `ecrecover`s. That is sound, and it is why
+   entitlement needed no wire change.
+   What `prove` buys is the *consent prompt*: `sign_siwe` makes the launcher
+   sign a string this process composed, so the player clicks through a dialog
+   on every join; `Overlay::prove` has the launcher compose it, which fires no
+   prompt by construction. **The cost is real and is why this is still open:**
+   the launcher writes its own `Issued At`, so the server can no longer
+   rebuild the bytes and must PARSE an EIP-4361 message instead — and the wire
+   has to carry that message, which IS a layout change (wall 6: version bump +
+   goldens in the same commit). Worth doing for the prompt alone; it is a
+   slice, not a line.
 4. **The depot is Linux only.** `ci/depot.py` says so in its first line and
    scry's platform enum has the other rows. The SDK can now reach a launcher
    on Windows; nothing packages a Windows build of this game.
+
+---
+
+## 0ad · The ticket door is armed but nobody has sold a copy *(platform lane)*
+
+Landed 2026-08-11 (`crates/server/src/entitle.rs`). A shard with
+`entitle_origin` set asks scry `GET /api/ticket/gates/of/<wallet>` at join
+and `POST …/check` for the whole roster every `entitle_sweep_secs`, refusing
+with `REFUSE_TICKET` and kicking on a **definite on-chain zero only** — a
+failed read admits and bumps `entitle_unknown`, because an RPC outage that
+booted every paying player is worse than the freeloader it catches. Unset is
+the default and checks nothing, which is what every test and every community
+shard runs (`DECISIONS.md` 2026-08-04: one build, two populations).
+
+What is left, in order:
+
+1. **Nothing has been driven against a real ticket contract**, because
+   `ScryGameTicket:GATES` is not deployed — scry's `deployments.json` has no
+   address, so `/of/<wallet>` answers `ticketed: false, entitled: true` for
+   everyone and the door is a pass-through by design. Every branch is unit-
+   tested against the response shapes scry actually serves (`tickets.py`),
+   and none has met the live route. **First real check is the day the
+   contract is deployed**, and the honest way to run it is one wallet that
+   owns a copy and one that does not.
+2. **The sweep interval is unspoken.** 120 s is a documented default, not an
+   operator sentence, and it is the whole security property — how long a sold
+   copy keeps playing. `DECISIONS.md` §open carries the row.
+3. **No `prove`**, so a join still costs the player a consent dialog — §0ab
+   item 3 has what that slice actually needs.
 
 ---
 

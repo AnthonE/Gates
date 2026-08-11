@@ -304,6 +304,7 @@ pub async fn spawn_shard(
             dev: cfg.dev_spawn.is_some(),
             require_auth: cfg.require_auth,
             domain: cfg.domain.clone(),
+            entitle: cfg.entitle.clone(),
         },
         ctrl_tx,
         grave_rx,
@@ -339,6 +340,9 @@ struct ShardFacts {
     /// The SIWE domain: what this shard calls itself in the message players
     /// sign. Must be the host they dialled (`config.rs`).
     domain: String,
+    /// The ticket door (`entitle.rs`). `Config::off()` — the default — checks
+    /// nothing, which is what every test and every community shard runs.
+    entitle: crate::entitle::Config,
 }
 
 /// What a handshake task hands back once the client said a valid hello.
@@ -365,10 +369,21 @@ struct Handshaken {
 /// the slot, and this loop drains the ring before it installs anyone), and
 /// the id check is what makes it unreachable *by construction* rather than
 /// by argument.
-#[derive(Clone, Copy, Default)]
+///
+/// **`conn` is the roster sweep's only reach into a live connection.** A
+/// player who sells their copy mid-session is not doing anything the sim can
+/// see, so the kick cannot come from the sim thread — it comes from here,
+/// and this is the handle it closes. Held as an `Option` because a guest
+/// slot has no wallet to sweep and a freed slot has nothing at all.
+///
+/// No longer `Copy`: a `Connection` is refcounted and cloning it is a
+/// decision, not a memcpy. The two read sites take `.key` and `.id` by value
+/// as before.
+#[derive(Clone, Default)]
 struct KeySlot {
     key: Option<PlayerKey>,
     id: u32,
+    conn: Option<Connection>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -387,8 +402,29 @@ async fn accept_loop(
     // Net-side plumbing between handshake tasks and this loop; the sim
     // thread never touches it (L3 is about the sim thread, not tokio).
     let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<Handshaken>(MAX_PLAYERS);
-    let mut keys = [KeySlot::default(); MAX_PLAYERS];
+    // `[T; N]` initialiser syntax needs `Copy` and `KeySlot` stopped being
+    // `Copy` when it started holding a `Connection`. Built on the heap and
+    // converted, which is also the shape `boxed_array` uses next door for a
+    // different reason (wasm's shadow stack) — here it is simply the way to
+    // fill a fixed array with a clonable value.
+    let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
     let mut sweep = tokio::time::interval(Duration::from_millis(100));
+    // ---- the roster sweep -------------------------------------------------
+    //
+    // A join check alone is a door with no lock behind it: a player can sell
+    // the ticket and keep playing. This re-asks about everybody on an
+    // interval (`entitle::DEFAULT_SWEEP`), and the interval IS the security
+    // property — it is how long a sold copy can linger, which is a posted
+    // knob rather than a hole.
+    //
+    // Results come back through a channel rather than being awaited inline,
+    // because this loop is also the accept path: a blocked sweep would be a
+    // shard that stops taking players while scry is slow. `in_flight` is the
+    // no-stacking rule — one round at a time, whatever the origin does, the
+    // same refusal `status.rs`'s poller makes.
+    let (kick_tx, mut kick_rx) = tokio::sync::mpsc::channel::<Vec<(usize, u32)>>(1);
+    let mut entitle_sweep = tokio::time::interval(facts.entitle.sweep);
+    let mut sweep_in_flight = false;
     loop {
         tokio::select! {
             incoming = endpoint.accept() => {
@@ -400,6 +436,7 @@ async fn accept_loop(
                     stats,
                     facts.require_auth,
                     facts.domain.clone(),
+                    facts.entitle.clone(),
                 ));
             }
             Some(done) = done_rx.recv() => {
@@ -408,6 +445,77 @@ async fn accept_loop(
                 // written for, and installing first would overwrite that key.
                 drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
                 install(done, &facts, &mut ctrl_tx, &mut keys, &store, &slots, &stats).await;
+            }
+            _ = entitle_sweep.tick(), if facts.entitle.armed() && !sweep_in_flight => {
+                // Snapshot who to ask about, with the generation each answer
+                // must still match when it lands. A slot that turned over
+                // while the round was out is a DIFFERENT player, and kicking
+                // them on the previous tenant's verdict is the same class of
+                // bug the save path's `id` check exists to prevent.
+                let roster: Vec<(usize, u32, String)> = keys
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, ks)| {
+                        let k = ks.key.as_ref()?;
+                        let wallet = std::str::from_utf8(k.as_bytes()).ok()?.to_string();
+                        let gen = crate::slot::generation_of(slots.load(slot));
+                        Some((slot, gen, wallet))
+                    })
+                    .collect();
+                if !roster.is_empty() {
+                    sweep_in_flight = true;
+                    let cfg = facts.entitle.clone();
+                    let tx = kick_tx.clone();
+                    let stats2 = stats.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let wallets: Vec<String> =
+                            roster.iter().map(|(_, _, w)| w.clone()).collect();
+                        let verdicts = crate::entitle::check_many(&cfg, &wallets);
+                        let mut kicks = Vec::new();
+                        for ((slot, gen, _), v) in roster.iter().zip(verdicts) {
+                            match v {
+                                crate::entitle::Verdict::Nope => kicks.push((*slot, *gen)),
+                                crate::entitle::Verdict::Unknown => {
+                                    ShardStats::bump(&stats2.entitle_unknown);
+                                }
+                                crate::entitle::Verdict::Owns => {}
+                            }
+                        }
+                        // Send even when empty: it is what clears the
+                        // in-flight flag, so a quiet round cannot wedge the
+                        // sweep off permanently.
+                        let _ = tx.blocking_send(kicks);
+                    });
+                }
+            }
+            Some(kicks) = kick_rx.recv() => {
+                sweep_in_flight = false;
+                for (slot, gen) in kicks {
+                    // The generation guard: only kick the tenant we asked
+                    // about. A reconnect between the ask and the answer gets
+                    // its own join check, so nothing is skipped by waiting.
+                    if slot >= MAX_PLAYERS
+                        || crate::slot::generation_of(slots.load(slot)) != gen
+                        || crate::slot::state_of(slots.load(slot)) != crate::slot::SLOT_LIVE
+                    {
+                        continue;
+                    }
+                    ShardStats::bump(&stats.entitle_kicked);
+                    slots.mark_leaving(slot, gen);
+                    if let Some(conn) = keys[slot].conn.take() {
+                        // Closed with the refusal code rather than dropped,
+                        // so the player is told WHY by the same table a join
+                        // refusal uses. A silent close reads as a network
+                        // fault, and "my internet is broken" is the wrong
+                        // thing to believe when the fix is to buy a copy.
+                        conn.close(
+                            wtransport::VarInt::from_u32(protocol::REFUSE_TICKET as u32),
+                            protocol::refuse_text(protocol::REFUSE_TICKET)
+                                .unwrap_or("no copy")
+                                .as_bytes(),
+                        );
+                    }
+                }
             }
             _ = sweep.tick() => {
                 while let Ok(link) = grave_rx.pop() {
@@ -672,6 +780,7 @@ async fn handshake_task(
     stats: Arc<ShardStats>,
     require_auth: bool,
     facts_domain: String,
+    entitle: crate::entitle::Config,
 ) {
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let request = incoming.await.map_err(|_| ())?;
@@ -753,6 +862,56 @@ async fn handshake_task(
         spawn_refusal(connection, send, protocol::REFUSE_AUTH);
         return;
     }
+
+    // ---- the ticket door ------------------------------------------------
+    //
+    // Asked only of a PROVED address, and after `require_auth`, because a
+    // guest has no wallet to ask about — `config.rs` refuses the armed-over-
+    // open pairing at boot so this cannot silently check nobody.
+    //
+    // On its own blocking thread rather than inline: `ureq` is synchronous
+    // and this task shares a tokio worker with every other handshake in
+    // flight, so a slow origin would stall strangers who are not waiting on
+    // it. `HANDSHAKE_TIMEOUT` already bounds the whole task above, and
+    // `entitle::Config::timeout` bounds the call itself.
+    //
+    // **`Unknown` admits.** The only value that refuses is a definite
+    // on-chain zero; an outage must not become a shard nobody can join.
+    // `entitle::Verdict::admits` is the one place that decision lives.
+    if entitle.armed() {
+        if let Some(k) = key.as_ref() {
+            // The key IS the wallet: `auth::key_of` builds it from
+            // `Address::to_hex`, which is ASCII `0x…` lowercase. Decoded
+            // rather than transmuted, and a key that somehow is not utf8
+            // becomes an empty string that `entitle::is_wallet` refuses —
+            // which is `Unknown`, which admits.
+            let wallet = std::str::from_utf8(k.as_bytes())
+                .unwrap_or_default()
+                .to_string();
+            let cfg = entitle.clone();
+            let verdict =
+                tokio::task::spawn_blocking(move || crate::entitle::check_one(&cfg, &wallet))
+                    .await
+                    // A panicked or cancelled blocking task is "we could not look",
+                    // and reaches the same door every other failure does.
+                    .unwrap_or(crate::entitle::Verdict::Unknown);
+
+            match verdict {
+                crate::entitle::Verdict::Nope => {
+                    ShardStats::bump(&stats.refused_ticket);
+                    spawn_refusal(connection, send, protocol::REFUSE_TICKET);
+                    return;
+                }
+                // Counted, not logged: the point of the counter is that a
+                // fail-open is VISIBLE to the operator. An address in a log
+                // line would be the other thing.
+                crate::entitle::Verdict::Unknown => {
+                    ShardStats::bump(&stats.entitle_unknown);
+                }
+                crate::entitle::Verdict::Owns => {}
+            }
+        }
+    }
     let _ = done_tx
         .send(Handshaken {
             connection,
@@ -803,7 +962,14 @@ async fn install(
     // Who this connection is, for the whole of its life. Recorded before the
     // sim is told anything, so a record coming back from the very first tick
     // already has a key to be filed under.
-    keys[slot] = KeySlot { key, id };
+    keys[slot] = KeySlot {
+        key,
+        id,
+        // Cloned for the sweep. Every other clone of this handle lives in a
+        // reader/writer task; this one lives exactly as long as the slot
+        // does, and `install` overwrites it on the next tenant.
+        conn: Some(connection.clone()),
+    };
     // Does this shard remember them? A miss is the ordinary case and it is
     // not a failure: a guest, a first visit, or a shard with no save file.
     let save = key.and_then(|k| store.find(&k));
@@ -1231,7 +1397,10 @@ pub async fn client_handshake(
     match peek_kind(&frame[..n]) {
         Ok(protocol::KIND_REFUSE) => {
             let r = protocol::decode_refuse(&frame[..n]).map_err(|e| format!("refuse: {e:?}"))?;
-            return Err(format!("refused: code {}", r.code));
+            return Err(match protocol::refuse_text(r.code) {
+                Some(why) => format!("refused: {why}"),
+                None => format!("refused: code {}", r.code),
+            });
         }
         Ok(protocol::KIND_CHALLENGE) => {}
         other => return Err(format!("expected a challenge, got {other:?}")),
@@ -1283,7 +1452,10 @@ pub async fn client_handshake(
         }
         Ok(protocol::KIND_REFUSE) => {
             let r = protocol::decode_refuse(&frame[..n]).map_err(|e| format!("refuse: {e:?}"))?;
-            Err(format!("refused: code {}", r.code))
+            Err(match protocol::refuse_text(r.code) {
+                Some(why) => format!("refused: {why}"),
+                None => format!("refused: code {}", r.code),
+            })
         }
         other => Err(format!("unexpected handshake reply: {other:?}")),
     }
