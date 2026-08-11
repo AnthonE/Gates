@@ -246,10 +246,19 @@ helps us. then we can replace later."*
 
 The rule that replaces it:
 
-- **CC0 / public-domain sources only** (Poly Haven, ambientCG). No attribution
-  burden, no license file to carry, and orthogonal to the Facepunch rail —
-  which is proper nouns and traced assets, not the existence of a texture.
-  Anything else needs the operator.
+- **Four bases, and the rail is orthogonal to the Facepunch rail** — which is
+  proper nouns and traced assets, not the existence of a texture. **CC0** stays
+  the default (Poly Haven, ambientCG, Quaternius): no attribution burden, no
+  licence file to carry. **CC-BY is accepted** at the price of one `NOTICE`
+  entry plus the manifest row (operator, 2026-08-07). **NC and SA are refused**,
+  not on open-source grounds but because `BUSINESS.md` prices an entry fee, so
+  non-commercial does not survive contact with the product and share-alike does
+  not survive a closed depot. **Generated assets are accepted** — Meshy for
+  meshes, ElevenLabs for audio (operator, 2026-08-11) — and they are a
+  *contract*, not a licence: both vendors restrict commercial use to a paid
+  plan, so anything that ships is generated under one. A generated asset's
+  prompt is subject to the Facepunch rail exactly as a mesh is: it describes
+  the thing, never the source.
 - **`assets/textures/MANIFEST.md` records every file's source and licence.** A
   texture with no manifest row does not ship.
 - **Hybrid, not replacement.** Real maps supply base albedo / normal /
