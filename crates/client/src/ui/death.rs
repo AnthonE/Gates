@@ -11,7 +11,7 @@
 //! with what, from how far.
 
 use protocol::event::ItemCatalog;
-use sim_core::world::{DEATH_BY_ARROW, DEATH_BY_CLOCK, DEATH_BY_HAND, DEATH_BY_SALT};
+use sim_core::world::{DEATH_BY_ARROW, DEATH_BY_CLOCK, DEATH_BY_HAND, DEATH_BY_MOB, DEATH_BY_SALT};
 
 use super::craft::item_name;
 
@@ -71,6 +71,12 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog) -> String {
                 d.range_cm as f32 / 100.0
             )
         }
+        // The killer is a roster slot's tagged id, never a player number —
+        // printing "#8388608" would be the wire's bookkeeping leaking into
+        // a sentence. One species today, so the name is the species'
+        // (`mob::MOB_PIG`); a second species reads its name off the same
+        // slot the renderer already does.
+        DEATH_BY_MOB => "a pig gored you".to_string(),
         other => format!("killed by cause {other}"),
     }
 }

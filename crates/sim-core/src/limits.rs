@@ -751,6 +751,15 @@ pub const MOB_ID_TAG: u32 = 0x8000_0000;
 /// No overflow policy: it is a cadence, not a queue.
 pub const MOB_THINK_TICKS: u64 = 15;
 
+/// The most bites one tick can land across the whole roster (mob.rs
+/// `Bites`). Derived, generously: only a *thinking* animal can bite, so
+/// the true per-tick ceiling is `MAX_MOBS / MOB_THINK_TICKS` ≈ 4 plus
+/// rounding — 8 is that with headroom, not a tuning knob. **Overflow
+/// drops the bite**: a full buffer is one merciful tick, and the phase
+/// lock retries the same pair two seconds later. Never a queue — a bite
+/// carried across ticks would land on a player who has already left.
+pub const MAX_MOB_BITES_PER_TICK: usize = 8;
+
 /// How close a player must be for an animal to be awake, in centimeters.
 ///
 /// The reference game's word for this is *dormant* — NPCs at a distance

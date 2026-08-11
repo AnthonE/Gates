@@ -567,10 +567,12 @@ is a knob — `DECISIONS.md` §open, "tools as weapons".
 1. **A butchering VERB** — the reference's actual interaction, a tool-gated
    harvest on the body. Its landing place exists now: the corpse bag
    (`mob::strike` → `backpack::stand_up`) is the verb's output.
-2. **Nothing fights back.** Needs a mob→player damage path, a new death
-   cause on the wire (**the 2-bit cause field is saturated since wire v24**,
-   so this is the widening), and a combat-feel answer to being hit by
-   something you cannot reliably hit back.
+2. ~~Nothing fights back~~ — **done 2026-08-11** (mob attack v0,
+   `DECISIONS.md` §open: the widening landed as wire v36, the pig charges
+   whole and flees hurt, `DEATH_BY_MOB` names the corpse). Residue: the
+   combat-feel half is minimal — the victim sees hp drop and hears nothing
+   pig-specific; an aggro snort cue and a damage-direction tick are audio/
+   HUD follow-ups, and the charge costs the pig nothing to hold.
 3. **The massing is boxy up close** — at 8 m the head barely separates from
    the body (captured 2026-08-08). Massing detail, not animation; the legs
    already trot.

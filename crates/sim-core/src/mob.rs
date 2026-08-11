@@ -91,11 +91,28 @@ pub struct MobDef {
     /// `InputFrame::move_z` while roaming, `0..=127` — the fraction of
     /// `WALK_SPEED` this animal ambles at.
     pub gait: u8,
-    /// `move_z` while fleeing. The sprint button rides with it, so the
-    /// speed ceiling is `SPRINT_SPEED` rather than `WALK_SPEED`.
+    /// `move_z` while roused — fleeing *or* charging, one fast gait. The
+    /// sprint button rides with it, so the speed ceiling is `SPRINT_SPEED`
+    /// rather than `WALK_SPEED`.
     pub flee_gait: u8,
-    /// How long one fright lasts, in ticks.
+    /// How long one rousing lasts, in ticks — the fright's span and the
+    /// charge's commitment, one number.
     pub flee_ticks: u16,
+    /// Damage per bite. **Zero means this species never fights** — the
+    /// same inert door `hp == 0` is for the whole row, so a pacifist
+    /// animal is a content row and not a code path.
+    pub attack: u16,
+    /// Bite reach, planar centimetres.
+    pub attack_range_cm: i64,
+    /// Ticks between bites. The cooldown is phase-locked — a bite lands
+    /// on ticks where `tick % attack_ticks == slot % attack_ticks` — so
+    /// it needs no per-mob timer, no new hashed state, and replays for
+    /// free (the same trick `MOB_THINK_TICKS` plays with thinking).
+    pub attack_ticks: u16,
+    /// Percent of max hp at which courage runs out: at or above it a
+    /// roused animal charges, below it the same rousing is a flight.
+    /// Their boar's own rule — aggressive when whole, flees hurt.
+    pub brave_pct: u8,
     /// Leash: planar centimetres from the home the seed chose. Past it the
     /// animal heads home instead of wandering — the reference game's own
     /// fix for animals that "ended up at the coast of the island"
@@ -122,6 +139,10 @@ impl MobDef {
         gait: 0,
         flee_gait: 0,
         flee_ticks: 0,
+        attack: 0,
+        attack_range_cm: 0,
+        attack_ticks: 0,
+        brave_pct: 0,
         roam_cm: 0,
         spook_cm: 0,
         respawn_ticks: 0,
@@ -156,6 +177,10 @@ impl MobContent {
             gait: 63,
             flee_gait: 127,
             flee_ticks: 90,
+            attack: 15,
+            attack_range_cm: 200,
+            attack_ticks: 60,
+            brave_pct: 50,
             roam_cm: 6_000,
             spook_cm: 1_200,
             respawn_ticks: 9_000,
@@ -202,7 +227,7 @@ pub struct Mob {
     /// grazing — standing still is a *state*, not the absence of one.
     pub gait: i8,
     /// Fleeing until this tick (0 = calm).
-    pub flee_until: u64,
+    pub roused_until: u64,
     /// Awake, as of the last think tick. Recomputed there and not per
     /// tick, so a dormant animal costs one comparison a tick.
     pub awake: bool,
@@ -309,13 +334,20 @@ fn yaw_toward(dx: f32, dz: f32, current: u16) -> u16 {
 }
 
 /// The nearest player who could see this animal: planar distance² in
-/// centimetre² and the delta to them. Sleepers do not count — a body
-/// nobody is driving has no client watching, so it has no business keeping
-/// wildlife awake — but a body on the death screen does, because that
-/// player is still looking at the world.
-fn nearest_player(players: &[Player; MAX_PLAYERS], body: &Body) -> Option<(i64, i32, i32)> {
-    let mut best: Option<(i64, i32, i32)> = None;
-    for p in players.iter() {
+/// centimetre², the delta to them, and their slot. Sleepers do not count —
+/// a body nobody is driving has no client watching, so it has no business
+/// keeping wildlife awake — but a body on the death screen does, because
+/// that player is still looking at the world. **`hp == 0` is deliberately
+/// NOT filtered here**: under inert combat content every body reads zero
+/// hp, and an animal that went blind on an unarmed shard would freeze the
+/// wake/flee behaviour the roster tests pin. The *bite* checks hp at its
+/// own site — waking at a corpse is fine, worrying one is not.
+fn nearest_player(
+    players: &[Player; MAX_PLAYERS],
+    body: &Body,
+) -> Option<(i64, i32, i32, usize)> {
+    let mut best: Option<(i64, i32, i32, usize)> = None;
+    for (slot, p) in players.iter().enumerate() {
         if !p.active || p.sleeping {
             continue;
         }
@@ -323,11 +355,71 @@ fn nearest_player(players: &[Player; MAX_PLAYERS], body: &Body) -> Option<(i64, 
         let dz = p.body.qz - body.qz;
         // 3 cm quanta into centimetres, in i64 — the AOI convention.
         let d2 = (dx as i64 * 3) * (dx as i64 * 3) + (dz as i64 * 3) * (dz as i64 * 3);
-        if best.is_none_or(|(bd2, _, _)| d2 < bd2) {
-            best = Some((d2, dx, dz));
+        if best.is_none_or(|(bd2, _, _, _)| d2 < bd2) {
+            best = Some((d2, dx, dz, slot));
         }
     }
     best
+}
+
+/// One landed bite, parked for `world::tick` to apply. The roster loop
+/// cannot write a player — it holds the array immutably so the whole
+/// roster reads one consistent tick — so a bite is a record here and a
+/// mutation there, the same split `BoxStore::spill` uses for the same
+/// borrow.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Bite {
+    pub mob_slot: u8,
+    pub victim: u8,
+    pub damage: u16,
+    pub range_cm: u16,
+}
+
+/// The tick's bites, bounded (wall 4). The cap is generous by construction:
+/// only a thinking animal can bite, so at most `MAX_MOBS / MOB_THINK_TICKS`
+/// (+1 rounding) land per tick. **Overflow drops the bite** — a full
+/// buffer is a merciful tick, never a panic and never a queue.
+pub struct Bites {
+    entries: [Bite; crate::limits::MAX_MOB_BITES_PER_TICK],
+    len: usize,
+}
+
+impl Default for Bites {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Bites {
+    pub const fn new() -> Self {
+        Self {
+            entries: [Bite {
+                mob_slot: 0,
+                victim: 0,
+                damage: 0,
+                range_cm: 0,
+            }; crate::limits::MAX_MOB_BITES_PER_TICK],
+            len: 0,
+        }
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    #[inline]
+    pub fn entries(&self) -> &[Bite] {
+        &self.entries[..self.len]
+    }
+
+    #[inline]
+    fn push(&mut self, b: Bite) {
+        if self.len < self.entries.len() {
+            self.entries[self.len] = b;
+            self.len += 1;
+        }
+    }
 }
 
 /// One tick of the whole roster.
@@ -344,7 +436,9 @@ pub fn step(
     occ: &mut Occupants,
     mobs: &mut Mobs,
     players: &[Player; MAX_PLAYERS],
+    bites: &mut Bites,
 ) {
+    bites.clear();
     for slot in 0..MAX_MOBS {
         let mob = &mut mobs.m[slot];
         if !mob.homed {
@@ -365,7 +459,7 @@ pub fn step(
         // The think tick, phase-offset by slot: `MAX_MOBS / MOB_THINK_TICKS`
         // animals decide on any given tick and the rest only integrate.
         if tick % MOB_THINK_TICKS == (slot as u64) % MOB_THINK_TICKS {
-            think(seed, tick, slot, &def, mob, players);
+            think(seed, tick, slot, &def, mob, players, bites);
         }
         if !mob.awake {
             continue;
@@ -374,7 +468,7 @@ pub fn step(
         let frame = InputFrame {
             yaw: mob.yaw,
             move_z: mob.gait,
-            buttons: if mob.flee_until > tick { BTN_SPRINT } else { 0 },
+            buttons: if mob.roused_until > tick { BTN_SPRINT } else { 0 },
             ..InputFrame::default()
         };
         movement::step(seed, cols, occ, &mut mob.body, &frame);
@@ -394,7 +488,7 @@ fn hatch(seed: u64, mob: &mut Mob, def: &MobDef) {
     mob.hp = def.hp;
     mob.alive = true;
     mob.gait = 0;
-    mob.flee_until = 0;
+    mob.roused_until = 0;
     mob.awake = false;
 }
 
@@ -407,9 +501,10 @@ fn think(
     def: &MobDef,
     mob: &mut Mob,
     players: &[Player; MAX_PLAYERS],
+    bites: &mut Bites,
 ) {
     let near = nearest_player(players, &mob.body);
-    mob.awake = near.is_some_and(|(d2, _, _)| d2 <= MOB_WAKE_CM * MOB_WAKE_CM);
+    mob.awake = near.is_some_and(|(d2, _, _, _)| d2 <= MOB_WAKE_CM * MOB_WAKE_CM);
     if !mob.awake {
         // A dormant animal keeps its heading and stops walking, so it does
         // not wake up mid-stride into a wall it never saw.
@@ -417,17 +512,50 @@ fn think(
         return;
     }
 
-    // A player inside the spook radius starts a flight, and refreshes one
-    // already running — which is what makes chasing a pig work: the fright
-    // lasts `flee_ticks` past the last moment you were close.
-    if let Some((d2, _, _)) = near {
+    // A player inside the spook radius rouses the animal, and refreshes a
+    // rousing already running — which is what makes both halves work: a
+    // chase (either direction) lasts `flee_ticks` past the last moment you
+    // were close.
+    if let Some((d2, _, _, _)) = near {
         if d2 <= def.spook_cm * def.spook_cm {
-            mob.flee_until = tick + def.flee_ticks as u64;
+            mob.roused_until = tick + def.flee_ticks as u64;
         }
     }
 
-    if mob.flee_until > tick {
-        if let Some((_, dx, dz)) = near {
+    if mob.roused_until > tick {
+        // Courage decides which way the same rousing points (their boar's
+        // own rule, `reference/ANIMALS.md` §7): whole, it charges the
+        // player; hurt below `brave_pct` of max, the identical state is a
+        // flight. A species with `attack == 0` never charges.
+        let brave = def.attack > 0
+            && (mob.hp as u32) * 100 >= (def.hp as u32) * (def.brave_pct as u32);
+        if let Some((d2, dx, dz, victim)) = near {
+            if brave {
+                // Straight at them, on the same LUT the walk uses.
+                mob.yaw = yaw_toward(dx as f32 * POS_XZ_Q, dz as f32 * POS_XZ_Q, mob.yaw);
+                mob.gait = def.flee_gait.min(127) as i8;
+                // The bite: in reach, on this slot's phase (the doc on
+                // `attack_ticks` — a phase lock is a cooldown with no
+                // state). Recorded, not applied: the borrow is the reason
+                // `Bites` exists.
+                let period = def.attack_ticks.max(1) as u64;
+                if d2 <= def.attack_range_cm * def.attack_range_cm
+                    && players[victim].hp > 0
+                    && tick % period == (slot as u64) % period
+                {
+                    bites.push(Bite {
+                        mob_slot: slot as u8,
+                        victim: victim as u8,
+                        damage: def.attack,
+                        // isqrt on i64 is not on wall 1's float list, but
+                        // f32 sqrt is; the cast is the AOI convention run
+                        // backwards and the range is a sentence's worth of
+                        // precision, not a sim quantity.
+                        range_cm: ((d2 as f32).sqrt()) as u16,
+                    });
+                }
+                return;
+            }
             // Directly away, on the same LUT the walk uses.
             mob.yaw = yaw_toward(-(dx as f32) * POS_XZ_Q, -(dz as f32) * POS_XZ_Q, mob.yaw);
         }
@@ -551,7 +679,7 @@ pub fn strike(
     mob.hp -= def.damage.min(mob.hp);
     // Hurt is the other way into a flight, and the only one that does not
     // need the attacker to be close: shot from range, the animal still runs.
-    mob.flee_until = tick + species.flee_ticks as u64;
+    mob.roused_until = tick + species.flee_ticks as u64;
     mob.awake = true;
     // EV_HIT is the attacker's own fact and the server routes it by `a`,
     // so a tagged mob id in `b` reaches the hand that swung and nothing

@@ -371,6 +371,12 @@ pub const DEATH_BY_SALT: u8 = 2;
 /// different fact about a fight from 1.6 m. `death_item` is the bow, not
 /// the arrow — the weapon is what the killer held.
 pub const DEATH_BY_ARROW: u8 = 3;
+/// An animal's bite (mob.rs — the pig that fights back). `death_by` is
+/// the roster slot's **tagged** id (`mob::mob_id`), which is how the
+/// death screen knows to name a species instead of printing a player
+/// number; `death_item` is `NO_ITEM`, because a boar holds nothing. The
+/// fifth cause, and the one the 2 → 3 bit widening at wire v36 was for.
+pub const DEATH_BY_MOB: u8 = 4;
 
 /// The highest cause above, named rather than counted — `EV_MAX`'s
 /// discipline applied to a *value domain* instead of a code ledger.
@@ -393,7 +399,9 @@ pub const DEATH_BY_ARROW: u8 = 3;
 /// so a cause declared past this line fails loudly instead of silently.
 /// A widened *meaning* is still a wire change (`protocol/src/lib.rs`) —
 /// this makes the widening impossible to do by accident, not permitted.
-pub const DEATH_BY_MAX: u8 = DEATH_BY_ARROW;
+/// (And it was not an accident when it happened: `DEATH_BY_MOB` is the
+/// cause that saturated the two-bit field, and wire v36 widened it.)
+pub const DEATH_BY_MAX: u8 = DEATH_BY_MOB;
 
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
 /// (a door, a box) rather than the piece store. Level, loc and row are all
@@ -2495,6 +2503,7 @@ impl World {
         // depend on the reader's slot index. Before the arrows, because a
         // shot must resolve against where the animal ended this tick — the
         // same rule the player loop's ordering states in the comment above.
+        let mut bites = mob::Bites::new();
         mob::step(
             seed,
             tick,
@@ -2508,7 +2517,36 @@ impl World {
             },
             &mut self.mobs,
             &self.players,
+            &mut bites,
         );
+        // The bites land after the whole roster stepped, so every animal
+        // decided against one consistent tick — the borrow split `Bites`'
+        // own doc names. `combat::strike`'s exact damage liturgy: hp, the
+        // deaths counter, EV_HEALTH to the victim, EV_DEATH broadcast, and
+        // `die` lays the body down with the cause the wire just widened
+        // for. No EV_HIT — a hitmarker is an attacker's fact and a pig has
+        // no screen to draw one on.
+        for b in bites.entries() {
+            let victim = b.victim as usize;
+            let v = &mut self.players[victim];
+            if !v.active || v.hp == 0 {
+                continue; // died to something else since the roster looked
+            }
+            let died = b.damage >= v.hp;
+            v.hp -= b.damage.min(v.hp);
+            let left = v.hp;
+            let victim_id = v.id;
+            if died {
+                v.deaths = v.deaths.saturating_add(1);
+            }
+            self.events
+                .push(EV_HEALTH, victim_id, left as u32, self.combat.player_hp as u32);
+            if died {
+                let by = mob::mob_id(b.mob_slot as usize);
+                self.events.push(EV_DEATH, victim_id, by, 0);
+                self.die(victim, by, DEATH_BY_MOB, NO_ITEM, b.range_cm);
+            }
+        }
 
         // Arrows fly after the player loop, never inside it. Two reasons,
         // both structural: every body has already taken its step, so a shot
@@ -2777,7 +2815,7 @@ impl World {
         // makes one field over: it is a pure function of the seed,
         // recomputed identically by every build, so it is worldgen and not
         // state. What is hashed is everything a tick can move — including
-        // `respawn_at` and `flee_until`, which are deadlines rather than
+        // `respawn_at` and `roused_until`, which are deadlines rather than
         // counters for the reason `charges` states, and `awake`, because
         // two shards that disagree about which animals are dormant will
         // disagree about every position downstream of it.
@@ -2796,7 +2834,7 @@ impl World {
             buf[19] = m.awake as u8;
             buf[20..22].copy_from_slice(&m.yaw.to_le_bytes());
             buf[22..24].copy_from_slice(&m.hp.to_le_bytes());
-            buf[24..32].copy_from_slice(&m.flee_until.to_le_bytes());
+            buf[24..32].copy_from_slice(&m.roused_until.to_le_bytes());
             buf[32..40].copy_from_slice(&m.respawn_at.to_le_bytes());
             h.update(&buf);
         }

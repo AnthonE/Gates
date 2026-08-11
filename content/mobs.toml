@@ -12,9 +12,10 @@
 # argued in. The bake converts; nothing in the sim knows what a second is.
 #
 # Every number below is a **proposed default** registered in DECISIONS.md
-# §open ("animals v0"), not a spoken one. Where the reference game is the
-# source, the reference is named — but our pig is not their boar and does
-# not pretend to be: theirs charges and ours only runs.
+# §open ("animals v0" / "mob attack v0"), not a spoken one. Where the
+# reference game is the source, the reference is named — and since
+# 2026-08-11 the pig IS their boar in the one way it wasn't: it charges
+# when whole and runs when hurt.
 
 [[mob]]
 id = "mob.pig"
@@ -75,6 +76,23 @@ walk_pct = 50
 # trees, winnable on a meadow, which is the chase this wants to be.
 flee_pct = 70
 flee_seconds = 3
+
+# **The bite (mob attack v0, 2026-08-11).** The reference boar's shape at
+# tier 3 (search summaries — the same tier rows 1c/1d landed at): it is
+# aggressive when approached too close, and it breaks off and flees once
+# hurt past half health. That mechanism is `brave_pct = 50` — at or above
+# half of max hp a roused pig charges, below it the identical rousing is
+# the flight it always was.
+#
+# The damage number is tier 4 (recollection — no summary would commit to
+# one): 15 per bite sits under the wolf's commonly-cited 20 and prices an
+# AFK naked at ~10 bites over ~20 s. Re-verify against the page if egress
+# ever opens (`RIPLIST.md` §1e's standing caveat). 2 m reach, one bite
+# every 2 s — the cadence is phase-locked in the sim, so it costs no state.
+attack = 15
+attack_range_m = 2
+attack_seconds = 2
+brave_pct = 50
 
 # The leash and the fright radius, and the pair is the whole behaviour.
 # 60 m of roam keeps a pig findable near where the seed put it — the

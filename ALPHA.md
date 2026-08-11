@@ -139,11 +139,12 @@ haven (TERRAIN's pad carver is the hook) · skin trading/editions (A3
 sells; trading is its own later gate).
 
 **Animals are back in** (operator, 2026-08-08 — `DECISIONS.md`: *"let's get
-a pig in"*). The cut was written as "NPC/animal AI", and what actually
-landed is the first half only: a fixed 64-slot roster of pigs that wander,
-flee and pay fat and cloth when killed. There is still no AI system — nothing
-hunts, packs or fights back — so the expensive part of the original cut
-stands. It was cheap because the walls had already paid for it: the terrain
+a pig in"*). The cut was written as "NPC/animal AI", and what landed is a
+fixed 64-slot roster of pigs that wander, flee, pay fat and cloth when
+killed — and, since 2026-08-11, **fight back** (mob attack v0: a whole pig
+charges and bites, a hurt one flees, `DEATH_BY_MOB` on the wire). There is
+still no AI *system* — nothing hunts across the map or packs — so the
+expensive part of the original cut stands. It was cheap because the walls had already paid for it: the terrain
 is a pure function, so there is no navmesh to bake, and an animal drives the
 same `movement::step` a player does. `reference/ANIMALS.md` is the research
 and §9.5 lists what v0 does not have.
