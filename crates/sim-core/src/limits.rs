@@ -642,6 +642,14 @@ pub const MAX_REMOVALS_PER_TICK: usize = 64;
 /// Proposed default, DECISIONS.md §open (satchel fuse v0).
 pub const MAX_LIVE_CHARGES: usize = 64;
 
+/// The widest blast any content may declare, centimetres — one build cell
+/// (satchel blast v0). Not a tuning knob: `charge::detonate`'s 3×3 column
+/// ring is *complete* only while a blast cannot reach past one cell from
+/// its epicentre, the const block there restates it, and `validate`
+/// refuses a `blast_m` above it at boot. Widening this means widening the
+/// ring in the same commit — the pair is one decision.
+pub const BLAST_MAX_CM: u16 = 300;
+
 /// Arrows in flight across the whole shard (`ranged.rs`). Sized off the
 /// fire rate, not off `MAX_PLAYERS`: a bow is 30 rounds/min (2 shots a
 /// second at 30 Hz is 60 ticks apart) and an arrow lives at most

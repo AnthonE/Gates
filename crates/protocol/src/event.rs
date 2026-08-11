@@ -3793,11 +3793,12 @@ mod wire_domains {
             prefix: "pub const DEATH_BY_",
             ty: ": u8 = ",
             exempt: &["MAX"],
-            min_members: 5,
+            min_members: 6,
             bits: DEATH_CAUSE_BITS,
-            // 4 = DEATH_BY_MOB, the meaning the v36 field widening was
-            // minted for — pin moved in the same merge window as the bump.
-            live_max: 4,
+            // 4 = DEATH_BY_MOB and 5 = DEATH_BY_CHARGE, the meanings the
+            // v36 field widening was minted for — pin moved in the same
+            // merge window as the bump, once per cause.
+            live_max: 5,
         },
         Domain {
             what: "move refusal",

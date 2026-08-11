@@ -377,6 +377,13 @@ pub const DEATH_BY_ARROW: u8 = 3;
 /// number; `death_item` is `NO_ITEM`, because a boar holds nothing. The
 /// fifth cause, and the one the 2 → 3 bit widening at wire v36 was for.
 pub const DEATH_BY_MOB: u8 = 4;
+/// A satchel blast (charge.rs — satchel blast v0). `death_by` is the
+/// planter, who may be the victim: standing at your own bomb is a
+/// sentence of its own on the death screen. `death_item` is `NO_ITEM` —
+/// the bomb already went with the plant — and `death_range_cm` is the
+/// distance from the epicentre, which is the whole story of a blast
+/// death the way range is of an arrow's.
+pub const DEATH_BY_CHARGE: u8 = 5;
 
 /// The highest cause above, named rather than counted — `EV_MAX`'s
 /// discipline applied to a *value domain* instead of a code ledger.
@@ -400,8 +407,9 @@ pub const DEATH_BY_MOB: u8 = 4;
 /// A widened *meaning* is still a wire change (`protocol/src/lib.rs`) —
 /// this makes the widening impossible to do by accident, not permitted.
 /// (And it was not an accident when it happened: `DEATH_BY_MOB` is the
-/// cause that saturated the two-bit field, and wire v36 widened it.)
-pub const DEATH_BY_MAX: u8 = DEATH_BY_MOB;
+/// cause that saturated the two-bit field, and wire v36 widened it;
+/// `DEATH_BY_CHARGE` landed in the same merge window on the same bump.)
+pub const DEATH_BY_MAX: u8 = DEATH_BY_CHARGE;
 
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
 /// (a door, a box) rather than the piece store. Level, loc and row are all
@@ -2485,16 +2493,32 @@ impl World {
         // `removals` is the same allowance the swings above just spent:
         // wall 4 does not hand out a second one because the damage arrived
         // on a timer.
+        let mut blast_kills = crate::charge::BlastKills::new();
         crate::charge::tick_fuses(
+            seed,
             &self.build,
             &self.deploy,
+            self.combat.player_hp,
             &mut self.charges,
             &mut self.pieces,
             &mut self.deploys,
+            &mut self.players,
             tick,
             &mut removals,
+            &mut blast_kills,
             &mut self.events,
         );
+        // The blast's dead, laid down after every fuse resolved — the
+        // bite buffer's split, for its reason: `die` needs the whole
+        // world. The hp is already zero and the events already rang
+        // inside `detonate`; this is the corpse's half.
+        for &(victim, owner, range_cm) in blast_kills.entries() {
+            let slot = victim as usize;
+            if self.players[slot].active && self.players[slot].hp == 0 && !self.players[slot].dead
+            {
+                self.die(slot, owner, DEATH_BY_CHARGE, NO_ITEM, range_cm);
+            }
+        }
 
         // The roster steps after the player loop and before the arrows, and
         // both sides of that are deliberate. After the players, because an
@@ -2901,18 +2925,23 @@ impl World {
         // view of it that a replay resuming mid-fuse would have to rebuild.
         h.update(&(self.charges.len() as u64).to_le_bytes());
         for c in self.charges.entries() {
-            let mut buf = [0u8; 21];
+            let mut buf = [0u8; 25];
             buf[0..2].copy_from_slice(&c.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&c.cz.to_le_bytes());
             buf[4] = c.level;
             buf[5] = c.loc;
             buf[6] = c.deploy as u8;
             buf[7..9].copy_from_slice(&c.structure.to_le_bytes());
-            buf[9..17].copy_from_slice(&c.fires_at.to_le_bytes());
+            // The blast's other two copied-at-plant numbers (satchel
+            // blast v0): two shards disagreeing about a live charge's
+            // radius disagree about which walls are standing next tick.
+            buf[9..11].copy_from_slice(&c.damage.to_le_bytes());
+            buf[11..13].copy_from_slice(&c.blast_cm.to_le_bytes());
+            buf[13..21].copy_from_slice(&c.fires_at.to_le_bytes());
             // The planter rides the digest too: it is on the wire off this
             // record, so a replay that reproduced the blast while
             // inventing the raider would put a different name on it.
-            buf[17..21].copy_from_slice(&c.owner.to_le_bytes());
+            buf[21..25].copy_from_slice(&c.owner.to_le_bytes());
             h.update(&buf);
         }
         // The bag cooldowns, in their own pass rather than widening the

@@ -1006,19 +1006,14 @@ from content, damage through the same `damage_piece`/`damage_deploy` a swing
 uses (`ACT_THROW`/`EV_CHARGE_PLACED`; knobs `DECISIONS.md` §open "satchel
 fuse v0"). X plants it natively and the HUD counts it down. Remaining:
 
-1. **No blast radius** — the content half landed, the arithmetic did not.
-   `blast_m` is schema'd, baked to `ThrowDef::blast_cm`, walked into
-   `canon::hash`, and **nothing reads it**: a charge damages only the
-   address it was planted on. What remains is the falloff and a bounded
-   multi-target scan; `combat::raid`'s 3x3 column-index ring is the shape to
-   copy. The content hash has already moved, so the cost is paid whether or
-   not the slice is taken. Knob: `DECISIONS.md` §open "satchel blast v0"
-   (PROPOSED 3 m).
-2. **Nothing is hurt by standing in one.** `ThrowDef::damage` is carried and
-   `EV_CHARGE_PLACED` has no player-damage half, so the defender's seconds
-   are free to spend standing on the charge. A new `DEATH_BY_*` if taken —
-   and the 2-bit cause field is saturated since wire v24, so that is a
-   widening. Lands with item 1 or not at all — they share the falloff.
+1. ~~No blast radius~~ / ~~nothing is hurt by standing in one~~ — **both
+   done 2026-08-11** (satchel blast v0, `DECISIONS.md` §open: linear
+   falloff over a bounded one-cell ring, bodies take `damage` with the
+   planter included, `DEATH_BY_CHARGE` on the v36 widening,
+   `WORLD_SAVE_FORMAT` 4 carries the blast and fixed the mid-fuse-save
+   refusal found on the way). Residue: no detonation sound or visual —
+   the client learns of a blast only through `EV_STRUCT_HIT`/`EV_HEALTH`,
+   so a near-miss is silent (audio lane); dud and defuse stay unbuilt.
 
 ## 0a · The island has a map now — and the trip has both ends *(ui lane)*
 

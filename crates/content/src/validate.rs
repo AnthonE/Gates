@@ -338,13 +338,25 @@ pub fn structural(c: &Content) -> Result<(), String> {
                     ));
                 }
                 // A zero radius is not "no splash", it is a division no
-                // falloff can do — it will be the divisor once a consumer
-                // exists — so it is refused at the door rather than
-                // guarded at every future use.
+                // falloff can do — the falloff divides by it — so it is
+                // refused at the door rather than guarded at every use.
                 if w.blast_m.unwrap_or(0) == 0 {
                     return Err(format!(
                         "weapon `{}`: throwables need a nonzero blast_m",
                         w.id
+                    ));
+                }
+                // And bounded above at one build cell: the detonation's
+                // 3×3 column ring is complete only while a blast cannot
+                // reach past one cell (`limits::BLAST_MAX_CM`; the const
+                // block in `charge.rs` restates it). A wider blast is a
+                // sim change, not a content edit.
+                if w.blast_m.unwrap_or(0) * 100 > sim_core::limits::BLAST_MAX_CM as u32 {
+                    return Err(format!(
+                        "weapon `{}`: blast_m {} exceeds the sim's one-cell blast scan \
+                         (limits::BLAST_MAX_CM) — widen the ring in charge.rs first",
+                        w.id,
+                        w.blast_m.unwrap_or(0)
                     ));
                 }
             }
