@@ -555,6 +555,53 @@ pub const REFUSE_FULL: u8 = 1;
 /// the player-facing sentence is the same either way — sign in through the
 /// launcher. `server` distinguishes them in its own counters.
 pub const REFUSE_AUTH: u8 = 2;
+/// This shard checks copies and the chain says this wallet holds none.
+///
+/// **A separate code from [`REFUSE_AUTH`] on purpose, and it is the opposite
+/// call from the one that merged the two auth cases.** There, telling a
+/// stranger which way their signature was wrong is a probing oracle and the
+/// player-facing sentence is identical either way. Here it is neither: the
+/// address was already *proved*, so nothing is leaked by naming the reason
+/// that a `balanceOf` anybody can call does not already say — and the two
+/// sentences point at different doors. "Sign in through the launcher" is
+/// useless advice to somebody who signed in fine and has not bought the
+/// game.
+///
+/// **Only a definite on-chain zero may send this.** A failed read admits;
+/// `server/src/entitle.rs` carries the rule and the type that keeps it.
+///
+/// No layout moved for this: `Refuse.code` has always been a full `u8` and
+/// this is the fourth of 256 values, so `PROTO_VER` does not bump and no
+/// golden changes. An older client gets `None` from [`refuse_text`] and
+/// says so in its own words rather than guessing at a reason.
+pub const REFUSE_TICKET: u8 = 3;
+
+/// What to actually say to the player. One implementation, because the two
+/// call sites that print a refusal (the client's connect path and the bot
+/// helper in `server/net.rs`) each formatted `refused: code {n}` from their
+/// own table — a number is not a sentence, and "code 3" is the least useful
+/// thing to tell somebody whose fix is to buy a copy. Two tables is two
+/// chances to disagree, which is the argument [`siwe_message`] makes about
+/// a message and this makes about a sentence.
+///
+/// **`&'static str`, and `None` rather than a formatted fallback**, because
+/// this crate is on the sim side of wall 3: no `String`, no `format!`. That
+/// turns out to be the better shape anyway — a shard newer than this build
+/// may refuse for something with no word here, and `None` lets each caller
+/// say so in its own voice instead of baking one phrasing into the crate
+/// that can least afford to allocate.
+pub fn refuse_text(code: u8) -> Option<&'static str> {
+    Some(match code {
+        REFUSE_VERSION => "this shard runs a different build — update the game",
+        REFUSE_FULL => "this shard is full",
+        REFUSE_AUTH => "this shard needs a signed identity — sign in through the scry launcher",
+        REFUSE_TICKET => {
+            "this shard checks copies and this wallet holds none — buy a copy on scry, \
+             or play a community shard"
+        }
+        _ => return None,
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Refuse {
@@ -2593,5 +2640,88 @@ mod tests {
             14,
             "the spare action codes moved — say so where the count is written"
         );
+    }
+
+    /// **Every `REFUSE_*` code this crate declares has a real sentence.**
+    ///
+    /// Inherited from `client::ui::refusals`, which carried a hand-written
+    /// copy of these strings and a gate that counted the constants here.
+    /// The copy is gone (one implementation, both sides — the argument
+    /// `siwe_message` makes two hundred lines up), so the gate comes with
+    /// it: this crate now owns the words and owns the check that a new code
+    /// cannot reach a player as `code N`.
+    ///
+    /// Reads its own source, because the alternative is a list of constants
+    /// typed twice — which is the thing being prevented.
+    #[test]
+    fn every_refusal_code_has_a_sentence() {
+        let src = include_str!("lib.rs");
+        let declared: Vec<&str> = src
+            .lines()
+            .filter_map(|l| l.trim_start().strip_prefix("pub const REFUSE_"))
+            .filter_map(|l| l.split(':').next())
+            .collect();
+        assert!(
+            declared.len() >= 4,
+            "the scan found {} codes, so it is not reading this file",
+            declared.len()
+        );
+        for (code, name) in [
+            (REFUSE_VERSION, "REFUSE_VERSION"),
+            (REFUSE_FULL, "REFUSE_FULL"),
+            (REFUSE_AUTH, "REFUSE_AUTH"),
+            (REFUSE_TICKET, "REFUSE_TICKET"),
+        ] {
+            assert!(
+                refuse_text(code).is_some(),
+                "{name} has no sentence — a player would meet it as a bare number"
+            );
+        }
+        assert_eq!(
+            declared.len(),
+            4,
+            "a REFUSE_* code was added ({declared:?}) — give it a sentence in \
+             `refuse_text` and a row in this list, or a player meets it as a number"
+        );
+    }
+
+    /// Two codes reading the same is a player who cannot tell which no they
+    /// got — and the ticket/auth pair is the one that would actually collide,
+    /// because both are "the shard would not let me in".
+    #[test]
+    fn no_two_refusals_read_the_same() {
+        let all = [REFUSE_VERSION, REFUSE_FULL, REFUSE_AUTH, REFUSE_TICKET];
+        for (i, a) in all.iter().enumerate() {
+            for b in all.iter().skip(i + 1) {
+                assert_ne!(
+                    refuse_text(*a).expect("gated above"),
+                    refuse_text(*b).expect("gated above"),
+                    "codes {a} and {b}"
+                );
+            }
+        }
+    }
+
+    /// The layout claim in `REFUSE_TICKET`'s own doc: it is a value in a
+    /// field that was always eight bits wide, so nothing about the wire
+    /// moved and `PROTO_VER` does not bump. If this ever fails, the doc
+    /// comment is lying and the golden needs regenerating.
+    #[test]
+    fn a_new_refusal_code_does_not_move_the_wire() {
+        let mut a = [0u8; 8];
+        let mut b = [0u8; 8];
+        let la = encode_refuse(&Refuse { code: REFUSE_AUTH }, &mut a).unwrap();
+        let lb = encode_refuse(
+            &Refuse {
+                code: REFUSE_TICKET,
+            },
+            &mut b,
+        )
+        .unwrap();
+        assert_eq!(la, lb, "a refusal is a fixed-width frame whatever the code");
+        assert_eq!(decode_refuse(&b[..lb]).unwrap().code, REFUSE_TICKET);
+        // And an older build's code still decodes to itself, which is what
+        // makes this backward-compatible rather than merely small.
+        assert_eq!(decode_refuse(&a[..la]).unwrap().code, REFUSE_AUTH);
     }
 }

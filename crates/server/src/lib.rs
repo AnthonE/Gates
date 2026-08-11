@@ -32,6 +32,7 @@ pub mod botclient;
 pub mod client;
 pub mod config;
 pub mod core;
+pub mod entitle;
 pub mod net;
 pub mod slot;
 pub mod stats;
@@ -41,6 +42,14 @@ pub mod worldfile;
 /// The client-side snapshot view lives in `client-core` (the native client
 /// and the bots share one implementation); re-exported for the gates.
 pub use client_core::view;
+
+/// This title's slug in scry's catalog — what its manifest, its depot, its
+/// shard list and its ticket contract are all filed under.
+///
+/// The client has its own copy (`client::scry::SLUG`) and the two are not
+/// shared, because the crates do not depend on each other in that direction
+/// and never should. `crates/server/tests/entitlement.rs` pins them equal.
+pub const ENTITLE_SLUG: &str = "gates";
 
 pub use protocol::PROTO_VER;
 pub use sim_core::limits;

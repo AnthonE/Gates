@@ -5232,6 +5232,7 @@ dependencies = [
  "sim-core",
  "tiny-keccak",
  "tokio",
+ "ureq",
  "wtransport",
  "xxhash-rust",
 ]
