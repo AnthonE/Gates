@@ -165,6 +165,49 @@ looking, which was "boot the game on a machine with a GPU" and is now a
 command on this box. Still owed from §0p2 item 3: the panels, which need the
 camera pointed at a screen rather than at a place.
 
+## 0pf · The client's CPU frame — two paid for, four measured and open *(client lane)*
+
+Landed 2026-08-11. `water::animate` resolved `wave_field` **three times a
+vertex** — once inside each `attribute_mut` borrow, throwing two answers away
+— and now resolves it once into `Sea::field`: **1.01 → 0.38 ms, every frame**,
+the largest steady-state cost the client had. `terrain_mesh::heightfield` —
+one chunk a frame, so its cost IS a dropped frame — went **28 → 5.4 ms** (the
+257² far mesh 485 → 186) on two halves: nine `terrain::height` taps a vertex
+became three where adjacent vertices were already sampling each other's
+points (bit-identical, three shares each checked at the origin rather than
+assumed), and the tangent is now written in closed form instead of solved by
+mikktspace, which was 12 ms of the remaining 17. Gated by `tests/ground.rs`
+(4, four mutants run red) and `tests/water.rs` (28). CPU-only, release, this
+box; no GPU has ever run this client, so `§0u` is still the other half.
+
+Found on the way: **`ci/gates.sh` named its renderer-tier suites one at a
+time and had never named two of them**, so `tests/water.rs` (skipped by
+`required-features`) and `tests/greybox.rs` (built empty without the feature,
+passing on zero tests) had never once run under it. The enumeration is gone —
+every test target the crate has now runs.
+
+Remaining, in the order the measurement ranks them:
+
+1. **`clutter_fill` + `skirt_fill` is 2.8 ms a tile**, one tile a frame —
+   now the largest cost on a streaming frame. It is `sim-core`, so wall 1
+   binds and the fix is not a memo. Its `Soup` is also freshly allocated per
+   tile; a `Local` would reuse it.
+2. **`water::stream` is 2.2 ms every 8 m walked** (5,929 `terrain::height`
+   taps on the `SNAP_M` crossing). The sea's axis is non-uniform, so there is
+   no half-lattice left to share — off-thread or coarser, not cleverer.
+3. **The far mesh is one ~180 ms frame during `Loading`**, with the session
+   pump inside it. `heightfield` is pure and touches no ECS, so
+   `AsyncComputeTaskPool` is the shape; that would also retire item 1's
+   frame cost without touching `sim-core`.
+4. **`terrain::height` is 502 ns** — ~12 `noise2`, four hashes each — and
+   every number above is a count of it. Nearby vertices re-hash the same
+   lattice corners at the low octaves; a memo is sim-core's to refuse.
+5. **The sea's tangent `w` and mikktspace's disagree.** `water.rs` writes
+   `-1` for a planar XZ UV set; mikktspace answers `+1` for the identical
+   parameterisation on the ground (now asserted, `tests/ground.rs`). One of
+   them flips the ripple map's green channel. Which is right is a question
+   about how that map was authored — boot the game and look, do not guess.
+
 ## 0b · Balance sits on the reference's numbers now — what is still off *(content lane)*
 
 Landed 2026-08-08 (operator: *"balance the game similar to rust so people
@@ -336,7 +379,8 @@ analytic normals, per-channel optics, shore foam standing off the waterline),
 `terrain_mesh::wetted`, and `sound/water.rs`. Research `reference/WATER.md`;
 knobs `DECISIONS.md` §open "water v0" / "water audio v0" (the §open row also
 holds the five defects found by LOOKING, not by a gate). Gated by
-`tests/water.rs` (22) and eight assertions in `tests/sound.rs`. Remaining:
+`tests/water.rs` (28) and eight assertions in `tests/sound.rs` — and the
+water suite only started running in CI on 2026-08-11 (§0pf). Remaining:
 
 1. **The last hard edge needs the depth prepass, and that is the next
    slice.** The alpha ramp is a *vertex* quantity off `terrain::height`, so
