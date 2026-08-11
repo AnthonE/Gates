@@ -12,6 +12,12 @@ in both directions and both rewrites were honest measurements:
   hosts plus `wiki.rustclash.com` returning **`EGRESS_BLOCKED`** from the
   egress proxy. That pass ran tier 2 and tier 3 on search summaries alone
   and says so in its own §0.
+- 2026-08-11 (the `RIPLIST.md` §1e stack-size pass, a remote-session box)
+  found the fetch layer blocked for **every** host — `example.com`
+  included, so it is the box's egress policy and not a per-domain rule —
+  the shell proxy answering 403 to CONNECT, `gist.githubusercontent.com`
+  refused. Working: **WebSearch** and **`raw.githubusercontent.com`**
+  (probed 200). Tier 3 only from there.
 
 Neither answer generalises. What does: a doc may record *what a probe
 found, when, and on which pass* — it may not record "reachable" as a

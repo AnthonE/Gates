@@ -3,6 +3,11 @@
 # (DECISIONS.md §open "content opening values"). Ids are permanent strings;
 # renames are new ids. Rarity drives the despawn multiplier (§open row).
 #
+# Stack sizes are the reference's where a row has an equivalent and a
+# source was obtainable (RIPLIST §1e, 2026-08-11, tier 3 — search
+# summaries; every page fetch is egress-blocked). Rows §1e names as OPEN
+# keep ours until somebody with a browser reads the page.
+#
 # tier: 0 naked era · 1 workbench era · 2 powder era
 # slot: hand | head | body | none
 
@@ -48,6 +53,8 @@ tier = 0
 rarity = "common"
 slot = "none"
 
+# 500 is ours; theirs is likely 1000 and no source landed from this box —
+# an OPEN row in RIPLIST §1e, not a decided one.
 [[item]]
 id = "item.fat"
 name = "Animal Fat"
@@ -80,14 +87,17 @@ tier = 1
 rarity = "uncommon"
 slot = "none"
 
+# Theirs (RIPLIST §1e): 1000 [APPROX — one source states it, and every
+# other craft resource already sits there]. 500 was ours.
 [[item]]
 id = "item.gunpowder"
 name = "Gunpowder"
-stack = 500
+stack = 1000
 tier = 2
 rarity = "uncommon"
 slot = "none"
 
+# Stack 500 confirmed theirs (RIPLIST §1e).
 [[item]]
 id = "item.lowgrade"
 name = "Low Grade Fuel"
@@ -97,6 +107,8 @@ rarity = "uncommon"
 slot = "none"
 
 # Components: barrel-only (CONTENT §2) — the reason the coast road matters.
+# Stack 50 is ours on all three — their component stacks did not surface
+# in any summary (RIPLIST §1e, open).
 
 [[item]]
 id = "item.gears"
@@ -141,7 +153,8 @@ slot = "none"
 # Stack 1000 like the raw materials rather than 50 like the components:
 # a hoard is the point, and a coin that filled your pockets at 50 would
 # make the tense walk home a matter of inventory management instead of
-# nerve.
+# nerve. Confirmed 2026-08-11: their scrap stacks 1000 too (RIPLIST §1e),
+# so the hoard call and the reference agree.
 [[item]]
 id = "item.obol"
 name = "Obol"
@@ -200,18 +213,23 @@ tier = 0
 rarity = "common"
 slot = "hand"
 
+# Theirs (RIPLIST §1e): the arrow class stacks 64 [APPROX — ×64 stated
+# for the high-velocity arrow; wooden shares the class].
 [[item]]
 id = "item.arrow_wood"
 name = "Wooden Arrow"
-stack = 100
+stack = 64
 tier = 0
 rarity = "common"
 slot = "none"
 
+# Theirs (RIPLIST §1e): 3 [APPROX — stated once, corroborated by a player
+# petition to raise it *to 5*]. The spawn kit's grant moved 5 → 3 with it
+# (balance.toml — a kit entry may not exceed the item's own stack).
 [[item]]
 id = "item.bandage"
 name = "Bandage"
-stack = 10
+stack = 3
 tier = 0
 rarity = "common"
 slot = "hand"
@@ -369,10 +387,12 @@ tier = 1
 rarity = "uncommon"
 slot = "body"
 
+# Our item (§1c refused its recipe — theirs is the high-velocity arrow),
+# but the stack is class-wide there, so 64 travels (RIPLIST §1e).
 [[item]]
 id = "item.arrow_metal"
 name = "Metal Arrow"
-stack = 100
+stack = 64
 tier = 1
 rarity = "uncommon"
 slot = "none"
@@ -395,14 +415,17 @@ tier = 2
 rarity = "rare"
 slot = "hand"
 
+# Theirs (RIPLIST §1e): pistol/rifle ammo stacks 128 [EXACT — multiple
+# independent summaries agree].
 [[item]]
 id = "item.pistol_ammo"
 name = "Pistol Round"
-stack = 100
+stack = 128
 tier = 2
 rarity = "uncommon"
 slot = "none"
 
+# Stack 10 confirmed theirs (RIPLIST §1e).
 [[item]]
 id = "item.satchel_charge"
 name = "Satchel Charge"
@@ -436,6 +459,8 @@ rarity = "rare"
 slot = "hand"
 
 # --- food (meat cut per DECISIONS.md §open "food set") ------------------
+# Stacks below are ours — no reference stack surfaced in a summary for
+# the foods or the meats (RIPLIST §1e, open rows).
 
 [[item]]
 id = "item.berries"

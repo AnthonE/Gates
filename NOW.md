@@ -193,12 +193,17 @@ of twelve content files with zero coverage.
 craft column and deployable hp, `RIPLIST.md` §1c is the record. What is
 left of that thread, in order:
 
-1. **Row 1e**: `armor` · `cooking` · `items` (stack sizes) · `loot` ·
-   `research` still have zero rip coverage. Stack sizes are the cheapest
-   — a pure lookup with no other half.
+1. **Row 1e**: `items.toml` stack sizes ✅ taken 2026-08-11 at tier 3
+   (`RIPLIST.md` §1e: 5 cells moved — ammo 128, arrows 64, bandage 3,
+   gunpowder 1000 — 9 confirmed matched, 12 left open with the reason
+   named; the spawn kit's bandages went 5 → 3 as forced fallout).
+   `armor` · `cooking` · `loot` · `research` still have zero coverage.
 2. ⚠ **The source tier dropped to get 1c/1d**: every candidate page is
    `EGRESS_BLOCKED` here, so the table came through a second assistant —
    a summary of pages nobody in this loop read. Re-verify if egress opens.
+   **Re-probed 2026-08-11: closed harder** (fetches blocked for every
+   host, search summaries only — §1e says so), so the re-verify stays
+   owed and a browser is still the only route.
 
 Closed 2026-08-11 by the operator, all three: the rock **is** craftable
 (15 → 10 stone, and the tier-4 source beat my prior — §1c says so), OBOL

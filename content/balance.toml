@@ -247,9 +247,11 @@ count = 1
 item = "item.torch"
 count = 1
 
+# 3, not 5: the bandage's stack is theirs now (items.toml, RIPLIST §1e)
+# and a kit entry may neither exceed the item's stack nor repeat.
 [[spawn_kit]]
 item = "item.bandage"
-count = 5
+count = 3
 
 # Under the 1000 ceiling on purpose: a grant that sits exactly at an item's
 # stack size is one balance edit away from being refused, and `test_content`
