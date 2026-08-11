@@ -22,6 +22,7 @@
 
 #![allow(clippy::assertions_on_constants)]
 
+use bevy::math::Vec2;
 use client::render::terrain_mesh::{self, WET_BAND_M, WET_REACH_M, WET_VALUE};
 use client::render::water::*;
 use sim_core::terrain::{ISLAND_SIZE, SEA_LEVEL};
@@ -800,4 +801,66 @@ fn the_damp_band_is_a_few_metres_of_ground_on_any_bank() {
     // bound to have — a gradient of zero would otherwise wet the horizon.
     assert_eq!(terrain_mesh::wet_factor(SEA_LEVEL + WET_BAND_M, 0.0), 0.0);
     assert_eq!(terrain_mesh::wet_factor(SEA_LEVEL + WET_BAND_M, 1e-9), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// The per-frame field.
+// ---------------------------------------------------------------------------
+
+/// `animate` resolves [`wave_field`] once a vertex into a cache, and its three
+/// attribute passes read that cache. Before this it called the field inside
+/// each pass — three times a vertex, up to twelve `sin_cos` where four would
+/// do, at 1.01 ms a frame on the gate box against 0.38 ms.
+///
+/// The saving is only sound if the cache's index means what the passes think
+/// it means, and that is what this pins: `coords[ix]` is an X offset and
+/// `coords[iz]` is a Z one. Transposed, the sea's swell would run across its
+/// own gradient — the grid is square, so nothing would be out of range and
+/// nothing would panic; it would simply be a different sea, on a surface no
+/// gate here photographs.
+#[test]
+fn the_resolved_field_is_the_field_at_that_vertex() {
+    let coords = axis_coords();
+    let spacing = axis_spacing(&coords);
+    let n = coords.len();
+    // A shoaling cache that is different at every vertex, so a transposed or
+    // off-by-one index cannot land on an equal value by luck.
+    let shoal: Vec<f32> = (0..n * n).map(|i| (i % 97) as f32 / 96.0).collect();
+    let centre = Vec2::new(-37.0, 118.0);
+    let mut field = vec![[0.0f32; 3]; n * n];
+    resolve_field(centre, &coords, &spacing, &shoal, &PHASE, &mut field);
+
+    for (iz, iaz) in [(0usize, 0usize), (1, 5), (n / 2, n / 3), (n - 1, n - 2)] {
+        let ix = iaz;
+        let i = iz * n + ix;
+        let sp = spacing[ix].max(spacing[iz]);
+        let want = wave_field(
+            centre.x + coords[ix],
+            centre.y + coords[iz],
+            &PHASE,
+            sp,
+            shoal[i],
+        );
+        assert_eq!(
+            (field[i][0], field[i][1], field[i][2]),
+            want,
+            "vertex (ix {ix}, iz {iz}) is not the field at its own coordinates"
+        );
+    }
+    // And it is the WHOLE grid, not a prefix: a pass reading past what was
+    // resolved would draw the previous frame's surface out there.
+    for iz in 0..n {
+        for ix in 0..n {
+            let i = iz * n + ix;
+            let sp = spacing[ix].max(spacing[iz]);
+            let (h, gx, gz) = wave_field(
+                centre.x + coords[ix],
+                centre.y + coords[iz],
+                &PHASE,
+                sp,
+                shoal[i],
+            );
+            assert_eq!([h, gx, gz], field[i], "vertex {i} of {}", n * n);
+        }
+    }
 }

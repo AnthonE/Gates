@@ -726,6 +726,18 @@ never a number quietly edited into this table.
 | clutter ring | 5×5 tiles of 16 m, 721 elements/tile peak | `sim-core::terrain`, and it is frame-budget-bound, not design-bound |
 | eye height | 1.6 m | `DECISIONS.md` §open, client cosmetics |
 
+**Every budget above is the GPU's, and the client's CPU frame had never been
+measured at all** — a table of triangle and draw-call ceilings says nothing
+about what the main thread spends before the first draw call is issued. It was
+measured on 2026-08-11 and two of the three biggest items were waste rather
+than work: `water::animate` resolved its wave field three times a vertex
+(1.01 → 0.38 ms **every frame**), and one 65² ground chunk cost 28 ms to build
+— a whole dropped frame, one per streaming frame — of which mikktspace was 12
+and duplicated `terrain::height` taps most of the rest (now 5.4 ms).
+`NOW.md` §0pf carries the ranked remainder and the method; the numbers are
+release, on the gate box, and no GPU has ever run this client, which is why
+they sit here as a note rather than as rows in the table.
+
 The first thing to actually press on the triangle ceiling is the generated
 conifer: a full 328-tree scatter ring at 5.9 k tris a tree is 1.9 M.
 `crates/client/tests/tree.rs` asserts the affordable ~80 m band and *prints*
