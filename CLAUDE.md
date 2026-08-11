@@ -22,9 +22,12 @@ It is not lost — it is in git history, on GitHub, and readable when a question
 about a verb needs it: `git show <commit>:web/src/interact.js`. That matters
 more than it sounds, because it WAS the reference implementation of every verb
 the native client now carries (the two pick resolvers, `map.js`'s hillshade,
-`refusals.js`'s tables), and the ~36 doc comments in `crates/` that cite
-`web/src/props.js` for a constant still point at something real. Read it from
-history; never restore it to the tree.
+`refusals.js`'s tables), and the doc comments in `crates/` that cite
+`web/src/props.js` for a constant still point at something real
+(`grep -rn 'props\.js' crates/` — 24 on 2026-08-11, and **the command is the
+claim, not the number**: this line said ~36 until it was re-run, which is the
+same drift the ⚠ below is about). Read it from history; never restore it to
+the tree.
 
 ⚠ **Separate the two kinds of dead citation, because only one is harmless.**
 "The browser held this constant" is history and stays. "`ci/<gate>.mjs`
@@ -90,9 +93,12 @@ pays the same doors and earns the same coins as a human.
 | `reference/ANIMALS.md` | how survival games do animal mobs: the reference game's baked navmesh (100% CPU at boot) and the fixed think rate and dormancy it settled on, Valheim's ring spawners and two caps, Minecraft's mob cap and 1-in-800 despawn roll, and **§9 what it means for us** | **owns nothing** — research, not law, and `AUDIO.md`'s clean-source posture (devblogs, convar lists, wikis; nothing decompiled). The operator un-cut animals off it (`DECISIONS.md` 2026-08-08), so §9 is a landed design: read it before touching `crates/sim-core/src/mob.rs` |
 | `WORLD.md` | the proposed register: **Gates as a threshold dimension** (the name is the fiction — it explains respawn, the wipe cadence and why banked OBOL leaves and carried OBOL does not), an ancient obsidian/lapis/gold civilization, the coast→interior gradient, the monument catalogue, **extraction** as a server-opened window at the haven's bank terminal, world states whose **default is broken** so a wipe cycle is a repair project, and an optional **ward** | **DESIGN — unspoken, none of it built, and a roadmap rather than a v1 spec** (operator, 2026-08-10: *"paths over time"*, and *"i think this is the max deviation"* — it is a ceiling, not a floor). Owns the fiction and nothing in `crates/`. Its §8 is the useful half: five collisions with live gates, two of them real — the visual rubric scores an obsidian world as a defect by construction, and a ward would invalidate `CONTENT.md` §4's TTK anchor *without reddening `test_content`*. §9.1 is the one piece of timing advice: **decide the register early, build it late**, because art made for the wrong register is remade |
 | `reference/PLANTS.md` | how games grow a forest: the five-layer forest structure and which two of ours are empty, space colonization vs L-systems (and that we already ship the solver), Deussen's ecosystem sim as the reference for *placement*, octahedral impostors, and **§6 what it means for us** | **owns nothing** — research, not law, `AUDIO.md`'s clean source posture (a SIGGRAPH paper, four MIT repos, and our own dependency's source; `docs.rs` was proxy-blocked so the crate API came off `raw.githubusercontent.com`). Written because "are our trees good" has an arithmetic answer: **one species at three seeds, on a uniform 8 m scatter lattice that `ART.md` rule 7 forbids**. Read it before buying any foliage — §4 is why a mesh generator is the wrong tool — and before touching `render/tree.rs` or `terrain::scatter` |
+| `reference/SOURCES.md` | the research **reading list**: which document settles which question, in priority order, with tiers 1–3 marked ANSWERED and tier 4 (the threat/logistics decomposition) named as our weakest evidence | **owns nothing** — a worklist for research the way `RIPLIST.md` is one for numbers. ⚠ Its §0 header is the load-bearing part and has been rewritten **in both directions**: reachability is a property of the container, not of the hosts, so *probe* rather than trusting either the "every Rust domain 403s" claim or the "they are open" one — both were honest measurements, on different boxes, days apart |
 | `assets/models/WANTED.md` | the 3D object inventory: 63 meshes and 6 texture sets with sizes read off the code, the glTF/origin/ORM pipeline rules, and what is already covered | **owns nothing** — a sourcing worklist, `RIPLIST.md`'s shape. `MANIFEST.md` records what ships; this records what does not exist yet |
+| `assets/models/MANIFEST.md` | what **ships** in `assets/models/`: vendor, mode, prompt, task id and date per mesh, the KTX2/UASTC-at-1024 texture rule and its VRAM reason, and what the client actually loads | **owns the licence rail's audit trail**, which is the one thing here that is not just a note: `DECISIONS.md` 2026-08-07 is CC0 preferred, CC-BY with a `NOTICE` entry, **NC and SA refused** because the game is sold. Recording the provenance per file is what makes that rail auditable after the fact rather than a promise. `WANTED.md` is the inverse — what does not exist yet |
 | `PLAYERS.md` | the agent player: the verb set, the observation encoder, and the four walls that keep agent play measurable | **DESIGN — none of it built.** The research half is scry's `SUBSTRATE.md`; this owns only what an agent may do here |
 | `marketing/` | what a stranger reads about **OBOL and MYRRH** somewhere that is not this repo — an explorer's token-info field, a DEX listing, a wallet's coin row — plus the four marks | **owns nothing in `crates/`**, and it is here because the coins are ours: scry has exactly one coin and it is SCRY (operator, 2026-08-07), so its repo keeps only our listing row. ⚠ **Every number in it is derived in `scry-forge`**, where the contracts and pool seeds live — re-derive there, paste here |
+| `BRANCH-NOTES.md` | a **transient** handoff note, written on a branch by the loop's builder when it lands a partial slice (`gates-loop/GOAL.md` §the partial rule) — what landed, what is measured, what remains | **owns nothing and is not a queue.** It describes whatever branch wrote it last, so read the heading before trusting a word of it; the current one says it carries no handoff. Not deleted because the loop is paused, not retired, and its builder recreates this file by protocol |
 | `NOW.md` | what next | **the only list that answers that** |
 
 Docs are dated notes, not law. Four things actually bind: the walls below,
@@ -125,8 +131,11 @@ that is the exact failure the header warns about. Grep before citing a gate;
    thread.** Rings only; integer event codes only. → clippy walls
    (`sim-core/clippy.toml` disallows the lock, clock, I/O and `String` types
    by name, and `ci/gates.sh` runs clippy `-D warnings`). ⚠ **The soak
-   tick-jitter assert this line also named does not exist** — there is no
-   soak anywhere in the repo.
+   tick-jitter assert this line also named does not exist.** `bots.rs` can
+   *drive* a 100-bot soak and `NOW.md` §0 asks for one, but nothing asserts
+   tick jitter, so the wall holds on clippy alone. (Re-checked 2026-08-11:
+   `grep -rn soak crates/` returns wet-surface shading and references to the
+   soak that is still wanted — no assert.)
 4. **Bounded everything.** Every queue, map, and per-tick work item has a
    cap in `limits.rs` and a stated overflow policy. No `push` on a
    client-driven path without a cap check. → the review wall, plus
@@ -356,7 +365,15 @@ trim that is owed (`NOW.md` §0x item 4).
 
 ## The loop that builds this repo
 
-Most commits here are written by an autonomous loop, not typed. It lives at
+⚠ **PAUSED since 2026-08-04, and paused is not retired** (operator,
+2026-08-11: *"its paused"*). `STOP` is set, the last judged pass was
+`20260805-154309`, and every commit since — the version split, the Windows
+shard, the toolchain pin, the licence, the marketing rows, PRs #59 and #60 —
+was written on a named branch and merged as a PR. **While it is dark, `NOW.md`
+is the steering.** The harness is intact and restartable; nothing has been
+dismantled, and the table below still works.
+
+The loop wrote most of the commits before that date. It lives at
 `/mnt/hive-data/gates-loop` — **outside this repo, deliberately.** The builder is
 told not to touch it and the rubrics are checksummed between passes; if the
 harness lived in here, an agent would have write access to the criteria it is
@@ -371,6 +388,7 @@ scored against, and a checksum would be the only thing in the way.
 | the frames it captured | `/mnt/hive-data/gates-loop/gallery.py`, then `ssh -L 8899:localhost:8899` |
 | why a pass failed | `/mnt/hive-data/gates-loop/findings/pass-<id>-{judge,visual}.md` |
 | undo a whole run | `git reset --hard gates-anchor-<stamp>` |
+| the frames the visual judge scores against | **outside this repo since 2026-08-11** — `GATES_REFERENCE_DIR`, default `/home/master/gates-reference/rust-images`, held read-only. The runner passes it to all three agents; unset, the judge is told to SKIP rather than score against nothing (`ART.md` §0) |
 | `ci/gates.sh` is red on a clean tree | `GATES_FIX_RED=1 /mnt/hive-data/gates-loop/gates-loop.sh` — one pass, wall only |
 
 Two judges score every pass and neither is the builder — and since harness v2
@@ -380,8 +398,10 @@ judge holding `judge/RUBRIC.md` (ten procedural checks — the merge gate) and
 performs the merge itself on a PASS, then captures and spawns the visual judge
 holding `art/RUBRIC.md` (ten visual criteria against the reference set). Both
 reports end in a `## Ranked gaps` section, and those gaps — not `NOW.md` — are
-where the loop's direction is supposed to come from. Read the newest pair
-before you steer.
+where the loop's direction comes from **while it is running**. It is not, so
+that instruction is suspended rather than deleted: the newest pair is dated
+2026-08-04/05, which makes it evidence about where the frame stood then and
+not a queue. Steer from `NOW.md` until the loop is restarted.
 
 **`git push` is blocked** by a `pre-push` hook the runner installs. Publishing
 is an operator act: read the diff, then `git push --no-verify`.

@@ -65,3 +65,31 @@ world_file = "/home/master/gates-data/island.world"
 # dial — that is the whole of the domain binding, and a mismatch refuses
 # every login rather than failing quietly.
 domain = "game.moreright.xyz"
+
+# The status endpoint (crates/server/src/status.rs): GET /status.json,
+# integers only, read off the shard's counters and never touching the sim.
+# It is what lights the `players` column in the shard list.
+#
+# **LOOPBACK, AND FRONTED BY NGINX** (operator, 2026-08-11). The published
+# url is `https://game.moreright.xyz/gates/status.json`, which is a
+# `location` in the vhost this box already serves on 443. Three reasons this
+# beat binding it publicly, and the first is the one that decided it:
+#
+#   1. **No firewall act.** The `DECISIONS.md` 2026-08-03 measurement is
+#      that a Hetzner CLOUD firewall sits outside this VM and ufw buys
+#      nothing against it; the range the shard's own port lives in was
+#      opened for **udp**. A public TCP port here is unproven and would need
+#      a rule added in a web console — an operator act with no gate on it.
+#      443 is already open, already serving, and already proven.
+#   2. **https, like every other url we publish.** A bare bind would be
+#      plain http, so the one number the client polls would be the one thing
+#      it fetches unauthenticated over cleartext.
+#   3. The status thread answers connections SERIALLY on one thread by
+#      design (bounded, wall 4's spirit). nginx in front of it is a buffer
+#      between that and the open internet.
+#
+# 8431 rather than the example's 8080: 8080 is taken on this box by another
+# service, and a bind failure REFUSES THE BOOT (config.rs says why — a shard
+# whose config names an endpoint it silently does not serve is the defect
+# the parser refuses everywhere else).
+status_addr = "127.0.0.1:8431"

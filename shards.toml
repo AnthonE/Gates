@@ -1,0 +1,49 @@
+# The shards this game publishes. `./ci/shardlist.py` turns this into the
+# `scry-shardlist-v1` document that BOTH the scry launcher's Servers window
+# and the game's own intro screen read (`crates/client/src/shardlist.rs`).
+#
+# `shards.toml.example` is the annotated copy — every field's why lives
+# there. This file is the real one, and it is committed rather than
+# gitignored (unlike `shard.toml`) because it holds no deployment secret:
+# it is the list of public addresses we are asking strangers to dial.
+#
+# Regenerate and publish:
+#   ./ci/shardlist.py                  # -> target/servers.json
+#   ./ci/shardlist.py --self-test      # the gate ci/gates.sh runs
+# then the two OPERATOR acts, in this order and never the other one:
+#   1. copy servers.json into scry's $SCRY_DEPOTS_DIR/gates/
+#   2. set manifest.servers.url to
+#      https://scry.moreright.xyz/api/launcher/servers/gates
+# The order matters: `servers.url` pointing at a file that is not there is
+# an error dialog on a game that is running fine, which is worse than the
+# honest "no shards published" both readers draw while it is null.
+
+[[shard]]
+id = "eu-1"
+name = "Gates EU 1"
+
+# The name, not the address: the certificate is issued for this host and
+# WebTransport needs it for SNI. The port is `shard-public.toml`'s bind, and
+# it sits in 49152-65535 because that is the range the Hetzner cloud
+# firewall actually passes (`DECISIONS.md` 2026-08-03 — measured, not
+# assumed).
+addr = "game.moreright.xyz:61234"
+
+# The seed is what makes one island different from another, so naming it is
+# more useful than naming a map that does not exist.
+map = "island 20260731"
+
+# Where this shard's LIVE count is polled from, every STATUS_POLL_SECS, by
+# both readers. It is `shard-public.toml`'s `status_addr` (127.0.0.1:8431)
+# fronted by the nginx vhost already serving 443 on this box — see that
+# file for why it is not a public bind.
+status_url = "https://game.moreright.xyz/gates/status.json"
+
+# max_players is deliberately absent: it defaults to the sim's own
+# MAX_PLAYERS, read out of crates/sim-core/src/limits.rs by the generator so
+# a published cap cannot disagree with the cap the shard enforces at the door.
+#
+# players / ping_ms are absent and must stay absent. `players` is what
+# status_url lights, live; writing one here freezes it at whatever it was
+# when this file was last edited. `ping_ms` is a measurement only the reader
+# can make.
