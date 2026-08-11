@@ -353,11 +353,9 @@ state and not a claim.
    is `scry_overlay.rs` — it now carries `cfg(windows)` transport, so it
    should compile, but nothing here has compiled it. macOS has never built
    this client at all.
-2. **There is no `LICENSE` file at the repo root** and the workspace declares
-   `license = "MIT"`. The release stages `README.md` and the two notice
-   licences that are conditions (icons CC BY, Roboto Apache-2.0) and has no
-   MIT text to stage. Writing one names a copyright holder — an operator
-   call, not a loop's.
+2. ~~No `LICENSE` file~~ — **done 2026-08-11** (MIT, © MoreRight DAO;
+   `DECISIONS.md`). `LICENSE` + `NOTICE` ship in both the release archive and
+   the scry depot, gated by `ci/depot.py --self-test`.
 3. **`min_client` has never been raised on a live shard.** The order is
    publish the release first, raise the floor after; `refused_build` climbing
    days later is how you find out you did it backwards.

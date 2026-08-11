@@ -188,11 +188,14 @@ jobs:
 
           cp shard.toml.example "$dir/"
           cp README.md "$dir/"
-          # The notices that must travel with what ships (CLAUDE.md, third-
-          # party credit): the icon set is CC BY and the UI face is
-          # Apache-2.0, and both are *notice* licences — the credit IS the
-          # condition, so a missing one is a licence breach and not a cosmetic
-          # gap. Hard failures for that reason.
+          # The licence and the notices that must travel with what ships
+          # (CLAUDE.md, third-party credit). MIT requires its own text to
+          # accompany every copy; the icon set is CC BY and the UI face is
+          # Apache-2.0, and both of those are *notice* licences — the credit
+          # IS the condition, so a missing one is a licence breach and not a
+          # cosmetic gap. Hard failures for that reason.
+          cp LICENSE "$dir/"
+          cp NOTICE "$dir/"
           cp assets/icons/CREDITS.md "$dir/ICONS-CREDITS.md"
           cp crates/client/fonts/LICENSE-ROBOTO.txt "$dir/"
 

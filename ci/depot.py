@@ -370,6 +370,28 @@ def stage_build(out: Path, *, platform: str, do_build: bool,
         sys.exit(f"depot: {src_assets} holds no files — the client would ship untextured")
     print(f"   staged {n_assets} asset file(s) from {src_assets}")
 
+    # **The licence rides along too, and this one is a legal condition rather
+    # than a rendering one.** MIT requires its notice to accompany "all copies
+    # or substantial portions", and a depot installed by the launcher IS a
+    # copy — arguably the main one, since it is how a player receives the
+    # game. `NOTICE` carries the third-party credits that are themselves
+    # conditions: the icon set is CC BY and the UI face is Apache-2.0, and for
+    # both of those the attribution is what the licence is *for*.
+    #
+    # `assets/icons/CREDITS.md` already rides inside `assets/` above, which
+    # covers the icons on its own; these two are the root-level files that
+    # would otherwise be left behind, and were, until 2026-08-11.
+    #
+    # Fatal rather than best-effort. A depot that installs and plays while
+    # missing a licence it is required to carry is exactly the kind of defect
+    # that never surfaces as a bug report.
+    for name in ("LICENSE", "NOTICE"):
+        src = ROOT / name
+        if not src.is_file():
+            sys.exit(f"depot: {src} is missing — a build may not ship without its licence")
+        shutil.copy2(src, stage / name)
+    print("   staged LICENSE + NOTICE")
+
     # The cross target gets the CROSS strip. The host's `strip` on a PE is not
     # a no-op that leaves a fat binary — binutils either refuses the format or
     # rewrites it, and a corrupted .exe passes every check this packager makes
@@ -513,6 +535,26 @@ def self_test() -> int:
     ok(src_assets.is_dir(), f"{src_assets} exists to be staged into the depot")
     tex = sorted((src_assets / "textures").glob("*_albedo.jpg"))
     ok(len(tex) > 0, f"and carries the textures the render path loads ({len(tex)} albedo)")
+
+    # The licence a depot is REQUIRED to carry, for the same reason and with a
+    # harder edge: MIT's notice must accompany every copy, and a depot is how
+    # a player receives this game. Checked here — no compiler, no network — so
+    # a deleted or renamed licence reddens `ci/gates.sh` rather than shipping.
+    for name in ("LICENSE", "NOTICE"):
+        ok((ROOT / name).is_file(), f"{name} exists to be staged into the depot")
+    lic = (ROOT / "LICENSE").read_text("utf-8")
+    ok("MIT License" in lic and "Copyright (c)" in lic,
+       "LICENSE is the MIT text with a copyright line")
+    # `Cargo.toml` states the licence in metadata and `LICENSE` is the grant
+    # itself; the two disagreeing is how a repo ends up promising one thing in
+    # its manifest and another in its file.
+    ws = (ROOT / "Cargo.toml").read_text("utf-8")
+    ok('license = "MIT"' in ws, "the workspace manifest agrees with LICENSE")
+    notice = (ROOT / "NOTICE").read_text("utf-8")
+    # The two notice licences whose credit IS the condition. Named rather than
+    # counted: a count drifts every time an icon lands, a name does not.
+    for who in ("game-icons.net", "CC BY 3.0", "Roboto Condensed", "Apache-2.0"):
+        ok(who in notice, f"NOTICE still credits {who}")
 
     # A nested asset path survives the document writer unchanged — the shape
     # `assets/textures/x.jpg` takes.

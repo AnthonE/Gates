@@ -77,3 +77,27 @@ and chain. Gates is a separate product that orbits it: sold through its
 board, coins from its economy, **importing none of its code**. Agents build
 it, and agents will play it — the deterministic core doubles as an RL
 training environment by construction.
+
+## Licence
+
+**MIT** — [`LICENSE`](LICENSE), © 2026 MoreRight DAO. Fork it, build it, run
+a shard, sell what you make of it.
+
+That is a deliberate call and not an oversight, because the game is also
+*sold* (0.005 ETH a copy, `DECISIONS.md` 2026-08-11): **the code was never
+the moat.** The copy check is server-side — an armed shard asks the chain
+whether your wallet holds one and SIWE proves the wallet, so a rebuilt
+client cannot talk its way past it — and shards that check nothing are
+already part of the design (one build, two populations). Earning coins
+happens on the premium shards. None of that is something a fork takes with
+it, so nothing is protected by keeping the source shut.
+
+**`LICENSE` covers the code, not everything in the tree.** Some of what
+ships is somebody else's work under its own terms, several of them *notice*
+licences where the credit is the condition: game-icons.net icons (CC BY
+3.0), Roboto Condensed (Apache-2.0, © 2011 Google Inc.), and more.
+[`NOTICE`](NOTICE) is the full accounting, and it travels with every
+release build.
+
+Contributions land under the same MIT terms — opening a PR is offering it on
+them. (See the bounty above: merged PRs are paid.)
