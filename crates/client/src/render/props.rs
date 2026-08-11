@@ -878,7 +878,14 @@ pub fn assets(
         // triangles gave it a green dome. 80 is enough to stop reading as a
         // die and few enough that the lobes stay visible.
         bush: meshes.add(blob_mesh(0.7, 0.58, 0x2545_f491, 0x2c5f2e, 1, false)),
-        barrel: meshes.add(Cylinder::new(0.45, 0.95).mesh().resolution(10).build()),
+        // A 55-gallon steel drum is 0.88 m tall and 0.585 m across — height is
+        // 1.5x the diameter. This was 0.9 across by 0.95 tall (ratio 1.06),
+        // i.e. near-spherical, ~44% too fat, which is the same guessed-number
+        // defect the `DEPLOY` table carried. `Rust Images/barrelroad` shows
+        // the real proportion, and Meshy's `auto_size` vision estimate landed
+        // on 0.880 x 0.585 independently (2026-08-11, `DECISIONS.md` §open).
+        // Radius, not diameter: 0.585 / 2.
+        barrel: meshes.add(Cylinder::new(0.2925, 0.88).mesh().resolution(12).build()),
         crate_box: meshes.add(boxes_mesh(&[([0., 0., 0.], [0.55, 0.4, 0.4], 0x6b5334)])),
         cache_box: meshes.add(boxes_mesh(&[([0., 0., 0.], [0.45, 0.275, 0.35], 0x6a5940)])),
         // The pad's greybox: a walled block with a tower. Not a kit of

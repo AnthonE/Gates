@@ -82,18 +82,55 @@ pub fn deploy_size(arch: usize) -> Vec3 {
     Vec3::new(w, h, d)
 }
 
+// **The sizes are real-world dimensions, not greybox taste** (2026-08-11,
+// `DECISIONS.md` §open "deployable proportions"). They were guessed when the
+// only consumer was a flat-coloured cuboid, and a guess is invisible on a
+// cuboid — every box reads as "a box". It stops being invisible the moment a
+// generated mesh is scaled to fit one: the mesh arrives correctly proportioned
+// and the row squashes it. Measured instance, same day: a furnace mesh built
+// to a stated 1.4 width:height was going into a row of 0.73, a 2x distortion.
+//
+// The basis is the physical object, which is checkable by anyone and is what
+// the reference game's own art is drawn from. It is corroborated where we can
+// corroborate it: Meshy's `auto_size` vision estimate returned 0.880 x 0.585 m
+// for a steel drum against a real 55-gallon drum's 0.88 x 0.58, so the method
+// lands within a centimetre on a standard object.
+//
+// `BUILD_CELL_M` is 3.0 here and 3 m is also the reference game's foundation,
+// so these transfer 1:1 with no scale conversion. Nothing in the sim reads
+// this table — `deploy_size` has two callers, the build ghost and its test —
+// so a row is a render fact and moving one costs no wire byte and no replay.
 const DEPLOY: [([f32; 3], Color, f32, f32); 10] = [
+    // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
+    // than a player is tall or it reads as a floor mat. 1.2 was shorter than
+    // the body that spawns on it.
     (
-        [1.2, 0.25, 0.7],
+        [1.9, 0.22, 0.75],
         Color::srgb(0.478, 0.612, 0.306),
         0.92,
         0.0,
     ), // bag
-    ([0.9, 0.9, 0.9], Color::srgb(0.549, 0.231, 0.180), 0.80, 0.0), // hearth
-    ([1.0, 0.7, 1.0], Color::srgb(0.478, 0.361, 0.227), 0.85, 0.0), // box
+    // 1 · hearth. Was a perfect 0.9 cube, which is the tell of a number nobody
+    // chose — a fireplace is wide, shallow and chest-high, and the depth is
+    // what makes it read as a hearth rather than a crate.
+    ([1.2, 1.0, 0.6], Color::srgb(0.549, 0.231, 0.180), 0.80, 0.0), // hearth
+    // 2 · storage box. A chest is wider than deep; the old square 1.0 x 1.0
+    // footprint is why it read as a cube. `Rust Images/storageandtoolchest`
+    // shows the same shape language — clearly wide, clearly shallow.
+    // ⚠ `box_small` and `box_large` share this archetype, so they draw at one
+    // size. Splitting them costs an `ARCH_*` and a `PROTO_VER` bump; filed in
+    // §open rather than taken here.
+    ([1.2, 0.65, 0.7], Color::srgb(0.478, 0.361, 0.227), 0.85, 0.0), // box
+    // 3 · fire pit. Unchanged, and deliberately: a fire ring is radially
+    // symmetric, so a square footprint is correct here and nowhere else.
     ([0.7, 0.4, 0.7], Color::srgb(0.816, 0.439, 0.188), 0.75, 0.0), // fire
-    ([1.1, 1.5, 1.1], Color::srgb(0.310, 0.290, 0.271), 0.70, 0.0), // furnace
-    ([1.6, 0.9, 0.9], Color::srgb(0.631, 0.475, 0.247), 0.85, 0.0), // workbench
+    // 4 · furnace. The worst row in the table: 1.1 x 1.5 is TALLER than wide,
+    // where a stone smelting forge is squat, wide and shallow. Now 1.37
+    // width:height, against the 1.44 a generated mesh reached unprompted.
+    ([1.3, 0.95, 0.85], Color::srgb(0.310, 0.290, 0.271), 0.70, 0.0), // furnace
+    // 5 · workbench. Length and height were already right (0.9 is bench
+    // height); 0.9 deep was not — a bench you can reach across is ~0.7.
+    ([1.6, 0.9, 0.7], Color::srgb(0.631, 0.475, 0.247), 0.85, 0.0), // workbench
     (
         [0.12, 2.1, 0.9],
         Color::srgb(0.420, 0.290, 0.169),
