@@ -30,8 +30,8 @@
 //! That is the positional-payload class, one table over.
 
 use sim_core::build::{
-    BuildContent, MAT_METAL, MAT_STONE, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR, SHAPE_FOUNDATION,
-    SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
+    BuildContent, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
+    SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
 };
 use sim_core::craft::inv_count;
 use sim_core::gather::ItemStack;
@@ -50,8 +50,10 @@ pub const SHAPES: [u8; 6] = [
 ];
 
 /// The middle ring, clockwise from the top: the upgrade ladder in order, so
-/// "further round" is always "stronger".
-pub const MATERIALS: [u8; 3] = [MAT_WOOD, MAT_STONE, MAT_METAL];
+/// "further round" is always "stronger". Twig leads it since twig v0 — it is
+/// the rung every piece is placed at, so a ladder that started at wood would
+/// be missing the only rung the blueprint can actually reach.
+pub const MATERIALS: [u8; 4] = [MAT_TWIG, MAT_WOOD, MAT_STONE, MAT_METAL];
 
 pub fn shape_label(shape: u8) -> &'static str {
     match shape {
@@ -100,6 +102,7 @@ pub fn shape_icon(shape: u8) -> &'static str {
 
 pub fn material_label(material: u8) -> &'static str {
     match material {
+        MAT_TWIG => "Twig",
         MAT_WOOD => "Wood",
         MAT_STONE => "Stone",
         MAT_METAL => "Metal",
@@ -108,6 +111,12 @@ pub fn material_label(material: u8) -> &'static str {
 }
 
 /// **The material a blueprint places in, and it is not a choice.**
+///
+/// **Twig since twig v0 (2026-08-10).** This constant did not move — it is
+/// still `MATERIALS[0]` — but the rung it names is now a real scaffold grade
+/// rather than the wood one, and `sim_core::build::place` refuses anything
+/// else, so the pin below stopped being a client-side courtesy and became
+/// the rule. `reference/BUILDING.md` §7b.4.
 ///
 /// The reference game's building plan places one thing — the cheapest rung —
 /// and the *hammer* is what walks a standing piece up the ladder. Ours had a

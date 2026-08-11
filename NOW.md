@@ -171,12 +171,41 @@ Landed 2026-08-08 (operator: *"balance the game similar to rust so people
 dont get too lost"*). `reference/BALANCE.md` is the research and §6 is the
 standing instruction. Building blocks are 250/500/1000, a stone wall takes
 four satchels, tool and melee damage are theirs, the pig is a 150-hp boar.
-Two bands moved and the raid ratio re-priced itself to 1.04/1.73/3.46.
+Two bands moved and the raid ratio re-priced itself. ⚠ **The three numbers
+that used to sit here — 1.04/1.73/3.46 — were 2026-08-08's and were stale
+by two days**; measured 2026-08-10 the tree read 0.69/1.38/2.77 before that
+day's building work and **0.76/1.52/3.04** after it. Derive it (the probe
+is five lines against `balance::check`), never quote it.
 
 **The measurement landed 2026-08-09 and `reference/RIPLIST.md` is now the
 queue for this item** — what is taken, what is outstanding, what blocks
 each row, and the six steps for executing one. Read it before touching a
 balance number; do not re-derive that list here.
+
+⚠ **Two rules changed on 2026-08-10 and both are operator-spoken.**
+(a) *"lighten our own math and lean on them for now"* — a band of ours
+yields to a number of theirs by default (`BALANCE.md` §6.5); re-speak it
+rather than treating it as evidence. (b) A number **absent** from
+`RIPLIST.md` has not been decided either: asking that question found six
+of twelve content files with zero coverage.
+
+**Rows 1b, 1c and 1d all landed the same day** — building costs, the
+craft column and deployable hp, `RIPLIST.md` §1c is the record. What is
+left of that thread, in order:
+
+1. **Row 1e**: `armor` · `cooking` · `items` (stack sizes) · `loot` ·
+   `research` still have zero rip coverage. Stack sizes are the cheapest
+   — a pure lookup with no other half.
+2. ⚠ **The source tier dropped to get 1c/1d**: every candidate page is
+   `EGRESS_BLOCKED` here, so the table came through a second assistant —
+   a summary of pages nobody in this loop read. Re-verify if egress opens.
+
+Closed 2026-08-11 by the operator, all three: the rock **is** craftable
+(15 → 10 stone, and the tier-4 source beat my prior — §1c says so), OBOL
+**is** scrap so the research table takes its 20 (my refusal answered
+itself), and the cupboard is **stronger** here on purpose — hp 500 →
+1,000, the metal rung, so taking a base's privilege costs one more wall.
+Nothing about the cupboard is outstanding now; it is a chosen difference.
 
 Two results worth carrying at this level. `balance.rs` refuses a
 `farm_per_min` above the sim's at-node ceiling and `tests/farmwalk.rs`
@@ -236,6 +265,36 @@ What remains, in order:
 4. **The depot is Linux only.** `ci/depot.py` says so in its first line and
    scry's platform enum has the other rows. The SDK can now reach a launcher
    on Windows; nothing packages a Windows build of this game.
+
+---
+
+## 0ac · The catalogue — what twig and the cost grammar left *(systems lane)*
+
+Landed 2026-08-10 (operator: *"we need to work on building more"*).
+`reference/BUILDING.md` §7b is the research, `DECISIONS.md` §open "twig
+v0" the slice: placement is twig-only and the hammer commits it, twig is
+never upkept, and **the whole cost column is theirs** — 24 cells, their
+grade base and their shape ratios (`RIPLIST.md` row 1b, which did not
+exist until it was taken: our costs had never been compared to theirs, and
+the node take is what exposed it). §9 items 11 and 12 are done; 13, 14 and
+15 are not, in cost order:
+
+1. **The window and the wall frame** (§9.13). Openings are already sockets
+   here — a doorway takes a door with its own hp and its own lock — and
+   these are the same idea with the insert unbuilt. `SHAPE_BITS` is 3 and
+   6 of its 8 codes are used, so **two shapes fit with no wire widening**,
+   and §7b.3 has already decided their prices (0.7 and 0.5). The window
+   wants a collision answer first: it blocks a body and not a bullet,
+   which no shape here does yet.
+2. **Hard and soft sides** (§9.15, §7b.5). One rule that turns placement
+   *orientation* into skill, and the reason a base can be weaker than its
+   bill of materials. Needs a facing on every piece and an attack
+   direction on every swing — its own pass, and it pairs with
+   `RIPLIST.md` §2's per-material resistance rather than competing.
+3. **Triangles** (§9.14). Half the reason their bases look like that, and
+   the only item here that is a **grid change**: our cell holds one plane,
+   one riser and two canonical edges, all square. Cost it as one; do not
+   smuggle it in behind items 1 and 2.
 
 ---
 

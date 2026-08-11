@@ -163,6 +163,11 @@ pub enum Shape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Material {
+    /// The placement state, not a grade: everything is built as twig and
+    /// a hammer commits it upward (`reference/BUILDING.md` §7b.4). First
+    /// in the enum because the order IS the upgrade ladder — `Ord` here
+    /// is what `decay_pct_per_period`'s map and the ladder checks read.
+    Twig,
     Wood,
     Stone,
     Metal,
@@ -175,7 +180,9 @@ pub struct Piece {
     pub shape: Shape,
     pub material: Material,
     pub hp: u32,
-    /// Direct build cost, and the upgrade-into cost (wood→stone→metal).
+    /// Direct build cost, and the upgrade-into cost. Only a twig row is
+    /// ever paid as a *placement*; the rest are paid on top of it, by the
+    /// hammer (sim-core `build::place` refuses anything else).
     pub cost: Vec<Stack>,
 }
 

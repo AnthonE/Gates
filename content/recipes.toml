@@ -11,7 +11,7 @@ output = "item.rock"
 count = 1
 station = "none"
 seconds = 3
-inputs = [{ item = "item.stone", count = 15 }]
+inputs = [{ item = "item.stone", count = 10 }]
 
 [[recipe]]
 id = "recipe.torch"
@@ -21,7 +21,8 @@ station = "none"
 seconds = 5
 inputs = [
     { item = "item.wood", count = 30 },
-    { item = "item.cloth", count = 10 },
+    { item = "item.cloth", count = 1 },
+    { item = "item.lowgrade", count = 1 },
 ]
 
 [[recipe]]
@@ -30,7 +31,7 @@ output = "item.spear_wood"
 count = 1
 station = "none"
 seconds = 10
-inputs = [{ item = "item.wood", count = 120 }]
+inputs = [{ item = "item.wood", count = 300 }]
 
 [[recipe]]
 id = "recipe.hatchet_stone"
@@ -39,8 +40,8 @@ count = 1
 station = "none"
 seconds = 15
 inputs = [
-    { item = "item.wood", count = 100 },
-    { item = "item.stone", count = 50 },
+    { item = "item.wood", count = 200 },
+    { item = "item.stone", count = 100 },
 ]
 
 [[recipe]]
@@ -50,8 +51,8 @@ count = 1
 station = "none"
 seconds = 15
 inputs = [
-    { item = "item.wood", count = 100 },
-    { item = "item.stone", count = 50 },
+    { item = "item.wood", count = 200 },
+    { item = "item.stone", count = 100 },
 ]
 
 [[recipe]]
@@ -68,7 +69,7 @@ inputs = [
 [[recipe]]
 id = "recipe.arrow_wood"
 output = "item.arrow_wood"
-count = 3
+count = 2
 station = "none"
 seconds = 5
 inputs = [
@@ -82,7 +83,7 @@ output = "item.bandage"
 count = 1
 station = "none"
 seconds = 5
-inputs = [{ item = "item.cloth", count = 20 }]
+inputs = [{ item = "item.cloth", count = 4 }]
 
 [[recipe]]
 id = "recipe.sleeping_bag"
@@ -90,7 +91,7 @@ output = "item.sleeping_bag"
 count = 1
 station = "none"
 seconds = 15
-inputs = [{ item = "item.cloth", count = 60 }]
+inputs = [{ item = "item.cloth", count = 30 }]
 
 [[recipe]]
 id = "recipe.box_small"
@@ -106,10 +107,7 @@ output = "item.fire_pit"
 count = 1
 station = "none"
 seconds = 10
-inputs = [
-    { item = "item.wood", count = 100 },
-    { item = "item.stone", count = 50 },
-]
+inputs = [{ item = "item.wood", count = 100 }]
 
 # Hand-craftable T1 shells: the starter base must not gate on a workbench.
 
@@ -121,7 +119,7 @@ station = "none"
 seconds = 60
 inputs = [
     { item = "item.wood", count = 500 },
-    { item = "item.stone", count = 100 },
+    { item = "item.metal_frags", count = 100 },
 ]
 
 [[recipe]]
@@ -130,10 +128,7 @@ output = "item.hearth"
 count = 1
 station = "none"
 seconds = 30
-inputs = [
-    { item = "item.wood", count = 300 },
-    { item = "item.stone", count = 100 },
-]
+inputs = [{ item = "item.wood", count = 1000 }]
 
 [[recipe]]
 id = "recipe.door_wood"
@@ -141,7 +136,7 @@ output = "item.door_wood"
 count = 1
 station = "none"
 seconds = 15
-inputs = [{ item = "item.wood", count = 200 }]
+inputs = [{ item = "item.wood", count = 300 }]
 
 [[recipe]]
 id = "recipe.building_plan"
@@ -149,7 +144,7 @@ output = "item.building_plan"
 count = 1
 station = "none"
 seconds = 5
-inputs = [{ item = "item.wood", count = 50 }]
+inputs = [{ item = "item.wood", count = 20 }]
 
 [[recipe]]
 id = "recipe.hammer"
@@ -157,7 +152,7 @@ output = "item.hammer"
 count = 1
 station = "none"
 seconds = 5
-inputs = [{ item = "item.wood", count = 75 }]
+inputs = [{ item = "item.wood", count = 100 }]
 
 [[recipe]]
 id = "recipe.lowgrade"
@@ -166,7 +161,7 @@ count = 4
 station = "none"
 seconds = 5
 inputs = [
-    { item = "item.fat", count = 1 },
+    { item = "item.fat", count = 3 },
     { item = "item.cloth", count = 1 },
 ]
 
@@ -180,8 +175,8 @@ station = "workbench1"
 seconds = 30
 inputs = [
     { item = "item.stone", count = 200 },
-    { item = "item.wood", count = 50 },
-    { item = "item.lowgrade", count = 25 },
+    { item = "item.wood", count = 100 },
+    { item = "item.lowgrade", count = 50 },
 ]
 
 [[recipe]]
@@ -203,7 +198,7 @@ station = "workbench1"
 seconds = 20
 inputs = [
     { item = "item.wood", count = 100 },
-    { item = "item.metal_frags", count = 75 },
+    { item = "item.metal_frags", count = 125 },
 ]
 
 [[recipe]]
@@ -227,8 +222,8 @@ count = 1
 station = "workbench1"
 seconds = 20
 inputs = [
-    { item = "item.wood", count = 200 },
-    { item = "item.metal_frags", count = 75 },
+    { item = "item.metal_frags", count = 200 },
+    { item = "item.obol", count = 20 },
 ]
 
 # The recycler (recycler v0). Priced between the furnace (275 units of
@@ -264,7 +259,7 @@ output = "item.armor_burlap_head"
 count = 1
 station = "workbench1"
 seconds = 10
-inputs = [{ item = "item.cloth", count = 15 }]
+inputs = [{ item = "item.cloth", count = 10 }]
 
 [[recipe]]
 id = "recipe.armor_burlap_body"
@@ -272,7 +267,7 @@ output = "item.armor_burlap_body"
 count = 1
 station = "workbench1"
 seconds = 10
-inputs = [{ item = "item.cloth", count = 25 }]
+inputs = [{ item = "item.cloth", count = 20 }]
 
 [[recipe]]
 id = "recipe.arrow_metal"
@@ -293,7 +288,7 @@ count = 1
 station = "workbench1"
 seconds = 30
 inputs = [
-    { item = "item.wood", count = 150 },
+    { item = "item.wood", count = 200 },
     { item = "item.metal_frags", count = 75 },
     { item = "item.rope", count = 2 },
 ]
@@ -358,8 +353,8 @@ count = 10
 station = "workbench1"
 seconds = 5
 inputs = [
-    { item = "item.charcoal", count = 20 },
-    { item = "item.sulfur", count = 10 },
+    { item = "item.charcoal", count = 30 },
+    { item = "item.sulfur", count = 20 },
 ]
 
 [[recipe]]
@@ -383,7 +378,7 @@ station = "workbench1"
 seconds = 10
 inputs = [
     { item = "item.metal_frags", count = 10 },
-    { item = "item.gunpowder", count = 20 },
+    { item = "item.gunpowder", count = 5 },
 ]
 
 [[recipe]]
@@ -417,7 +412,7 @@ output = "item.door_metal"
 count = 1
 station = "workbench1"
 seconds = 30
-inputs = [{ item = "item.metal_frags", count = 200 }]
+inputs = [{ item = "item.metal_frags", count = 150 }]
 
 [[recipe]]
 id = "recipe.armor_roadsign_body"

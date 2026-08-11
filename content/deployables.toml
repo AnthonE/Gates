@@ -14,13 +14,13 @@
 id = "item.sleeping_bag"
 archetype = "bag"
 placement = "ground"
-hp = 50
+hp = 200
 
 [[deployable]]
 id = "item.hearth"
 archetype = "hearth"
 placement = "foundation"
-hp = 500
+hp = 1000
 
 [[deployable]]
 id = "item.box_small"
@@ -32,25 +32,25 @@ hp = 150
 id = "item.box_large"
 archetype = "box"
 placement = "foundation"
-hp = 250
+hp = 300
 
 [[deployable]]
 id = "item.fire_pit"
 archetype = "fire"
 placement = "ground"
-hp = 100
+hp = 50
 
 [[deployable]]
 id = "item.furnace"
 archetype = "furnace"
 placement = "any"
-hp = 300
+hp = 500
 
 [[deployable]]
 id = "item.workbench1"
 archetype = "workbench"
 placement = "foundation"
-hp = 400
+hp = 500
 
 # The recycler (recycler v0): a container that converts without burning.
 # `placement = "any"` and hp 300 are the furnace's, because it is the
@@ -72,9 +72,15 @@ hp = 300
 id = "item.research_table"
 archetype = "research"
 placement = "foundation"
-hp = 400
+hp = 200
 
 [[deployable]]
+# ⚠ `hp` is INERT on this row and nothing reads it. A lock mints no
+# `DeployRec` — `deploy.rs` bolts `has_lock` onto the record it is placed
+# on and returns, "a lock is not a deployable, it is a record about one" —
+# so a lock is never damaged, and a raider goes through the door exactly
+# as they do in the reference game. The field is required by the schema;
+# the number is not a balance knob. `reference/RIPLIST.md` §1c.
 id = "item.lock_code"
 archetype = "lock"
 placement = "door"
@@ -92,4 +98,4 @@ id = "item.door_metal"
 archetype = "door"
 placement = "doorway"
 material = "metal"
-hp = 800
+hp = 250
