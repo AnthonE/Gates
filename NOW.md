@@ -73,6 +73,33 @@ input to `biome(h, moist)` (`terrain.rs:263`) plus regenerated terrain
 goldens. `WORLD.md` §9.2 has the full order, and §9.1 the timing: **decide
 the register early, build it late.**
 
+## 0gh · The GitHub job-agent seam — the door is built; three acts remain *(operator lane + docs)*
+
+Assessed 2026-08-11; the write-up is scry-forge `docs/builders/GITHUB-JOBS.md`.
+Built already: `AGENTS.md` §the deal, the PR template's submit line, `gates`
+CI on every code PR, 100,000 SCRY standing on scry's board (`DECISIONS.md`
+2026-08-09). The board's paid ledger is `[]`; no outside fork has opened a PR.
+
+- **(operator, GitHub)** Branch protection on `main` requiring the `gates`
+  check — PRs #56–58 merged over days of red CI before the toolchain pin
+  (`DECISIONS.md` §open, the compiler); until GitHub enforces it the merge
+  gate is policy. Caveat: the workflow path-filters, so a docs-only PR
+  reports no check; the fix is a same-named instant no-op for those paths.
+- **(operator, wallet)** Sign `scry.sig.json` seq 1. The manifest is
+  committed and gated (`ci/scry_manifest.py`) but unsigned scry applies
+  nothing — the store row and update feed are wired and inert.
+- **(operator, once)** Settle `gates-pr` end to end on the next accepted
+  PR: pay by public transfer, append the row scry-side — the board's
+  `settled_to_a_worker` stops being zero in public.
+- **(docs, anyone)** Milestones live twice — `DESIGN.md` §11 and §7 here,
+  differently numbered, and §11's M0 checkboxes are all unchecked while
+  every item exists. One owner, the other a pointer. The repo's GitHub
+  description still says "three.js frontend" — stale since the browser cut.
+
+Not owed, stated so it is not re-litigated: no issues queue (this file is
+the queue), no auto-pay or auto-merge (merge is the act that pays, a hand
+act), no webhook (the store seam stays a commit and a poke).
+
 ## 0sp · The tick has been profiled — where it goes *(server lane)*
 
 `crates/server/src/bin/profile.rs` (new, 2026-08-11) builds the stated worst
