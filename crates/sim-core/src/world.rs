@@ -1757,6 +1757,13 @@ impl World {
             if arch == crate::deploy::ARCH_DOOR {
                 self.pieces.set_door(d.cx, d.cz, d.level, d.loc, !d.open);
             }
+            // The solid nibble is the shut bit's twin and derived the same
+            // way (deploy collision v0): `Pieces::restore` cleared the
+            // index, so every standing body deploy re-blocks here or a
+            // loaded shard's furniture is walk-through until re-placed.
+            if crate::deploy::solid_vol(arch).is_some() {
+                self.pieces.set_solid(d.cx, d.cz, d.level, Some(arch));
+            }
             if !crate::deploy::lockable(arch) {
                 continue;
             }

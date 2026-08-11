@@ -137,7 +137,14 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
     }
 
     // Wade on the effective ground (a floor over shallows stays dry).
-    let ground_here = terrain::height(seed, x, z).max(collide::piece_ground(seed, cols, x, z, y));
+    // `piece_ground` covers built planes, ramps and solid-deploy tops;
+    // `occ.ground` covers scattered tops — the crate, the boulder, the
+    // shelter plinth (deploy collision v0 / `slot_ground`). Without the
+    // occupant term here, a body standing on one would read the terrain
+    // under it as ground and fall inside on the next vertical pass.
+    let ground_here = terrain::height(seed, x, z)
+        .max(collide::piece_ground(seed, cols, x, z, y))
+        .max(occ.ground(seed, x, z, y));
     let mut speed = if frame.buttons & BTN_SPRINT != 0 {
         SPRINT_SPEED
     } else {
@@ -180,6 +187,9 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
     // Whether the body is ALREADY inside an occupant, resolved at most once
     // and only if a candidate is vetoed by one. See the veto below.
     let mut inside: Option<bool> = None;
+    // The same latch for solid deployables, separately: being stuck in a
+    // pine must not license walking through a furnace.
+    let mut inside_dep: Option<bool> = None;
     if len2 > 0.0 {
         let clamp_x = |v: f32| v.clamp(BORDER_MARGIN, ISLAND_SIZE - BORDER_MARGIN);
         let candidates = [(x + dx, z + dz), (x + dx, z), (x, z + dz)];
@@ -210,17 +220,36 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
                     continue;
                 }
             }
+            // Solid deployables — the furnace, the box, the hearth
+            // (collide::deploy_blocked, deploy collision v0). The same
+            // destination test and the same veto-lift, latched apart: a
+            // deploy CAN be placed around a standing body, and walking out
+            // must stay the escape.
+            if collide::deploy_blocked(seed, cols, cx, cz, y) {
+                if inside_dep.is_none() {
+                    inside_dep = Some(collide::deploy_blocked(seed, cols, x, z, y));
+                }
+                if inside_dep != Some(true) {
+                    continue;
+                }
+            }
             let g = terrain::height(seed, cx, cz);
             let pg = collide::piece_ground(seed, cols, cx, cz, y);
-            let ok = if pg > g {
-                pg - y <= STEP_UP
+            let og = occ.ground(seed, cx, cz, y);
+            // A built or hard surface accepts on the step rule alone; bare
+            // terrain keeps the cliff ratio. Occupant tops count as hard
+            // for the reason piece tops do — the rise onto a plinth is
+            // bounded by the lid, not by a slope that does not exist.
+            let hard = pg.max(og);
+            let ok = if hard > g {
+                hard - y <= STEP_UP
             } else {
                 climbable(y, g, run2.sqrt())
             };
             if ok {
                 nx = cx;
                 nz = cz;
-                ground_sel = g.max(pg);
+                ground_sel = g.max(hard);
                 break;
             }
         }

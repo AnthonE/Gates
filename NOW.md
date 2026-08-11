@@ -151,14 +151,12 @@ reads as scattered shards at 2 m because of the pebble mesh. **The collision
 skirt is closed** (operator, 2026-08-10): every occupant blocks what it draws
 now, within a millimetre, and the gate holds it there.
 
-**Next in this class, and it is a feature rather than a reconciliation: no
-deployable blocks movement.** `movement.rs` never consults `Deploys` and
-`collide::blocked` takes only the piece column index, so a player walks
-through a furnace, a box, a hearth and a recycler; only a closed door stops
-anyone, and it does that as a piece-edge bit. The client draws all ten
-archetypes at authored sizes (`structures::deploy_size`), so this is drawn
-geometry with no blocked volume at all — the greybox gate cannot catch it
-because there is nothing on the sim side to compare against. Systems lane.
+**Deploy collision landed 2026-08-11** (deploy collision v0, `DECISIONS.md`
+§open): six archetypes block at the client's own authored volumes, tops are
+ground, and `tests/greybox.rs` §D holds the sim and drawn tables equal.
+Residue, one line each: arrows still pass through every deployable
+(`ranged.rs` never asks the solid nibbles — same class as its piece gap),
+and whether a sleeper blocks stays unanswered (§0y item 1, untouched).
 
 §9.3 is the gap and it is not urgent yet: `haven()` + `pick_minor` produce two
 kinds of site, the separation floor is one hand-asserted constant
@@ -983,13 +981,10 @@ is `crates/`/wire work no single-surface lane may take.
    (`CLAUDE.md`: wipes of a live shard are operator-only), so the loop's
    share is the mechanism, never the trigger. Needs scoping before it can be
    an item.
-3. **You cannot stand ON anything.** `movement::step` asks `slot_blocks` and
-   nothing asks a ground query for occupants — the shelter's plinth reads as
-   a kerb you sink into, crate and boulder tops the same (`terrain.rs`'s
-   plinth doc still says "nothing here makes a body stand on the plinth").
-   Belongs beside `collide::piece_ground`, a `slot_ground` next to
-   `slot_blocks`; the fourteen-box table is already there for it. Systems
-   lane.
+3. ~~You cannot stand ON anything~~ — **done 2026-08-11** (deploy collision
+   v0: `slot_ground` beside `slot_blocks`, occupant and deploy tops are
+   ground under the lid rule; the plinth, crate, boulder and box tops all
+   stand; gated in `tests/solid_deploy.rs`).
 4. **The 100-bot soak has never been run.** `NETCODE.md` §9's budgets have
    never met 100 real connections: `cargo run -p server --bin bots -- 100`
    against a dev shard, held an hour — tick jitter, WAL append rate,

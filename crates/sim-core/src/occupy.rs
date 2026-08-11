@@ -221,6 +221,45 @@ impl Occupants<'_> {
         self.blocks_volume(seed, x, z, feet_y, CAPSULE_RADIUS_M, CAPSULE_HEIGHT_M)
     }
 
+    /// The highest scattered surface a capsule at `feet_y` may stand on
+    /// under (`x`, `z`), or `collide::NO_SURFACE` — `blocks`'s twin over
+    /// [`terrain::slot_ground`], and the query that makes a crate top, a
+    /// boulder top and the shelter's plinth ground instead of geometry a
+    /// body sinks through (`NOW.md` §0q item 3).
+    ///
+    /// The same 3×3 scan, complete for the same reason with margin: a
+    /// ground footprint is the occupant's own, which reaches strictly
+    /// less far than the capsule-inflated blocking footprint the probe
+    /// bound was proved against. Harvested is asked last and only for a
+    /// slot that would otherwise answer, `blocks`'s own cost argument.
+    pub fn ground(&mut self, seed: u64, x: f32, z: f32, feet_y: f32) -> f32 {
+        let pcx = floor_i32(x / CELL_SIZE);
+        let pcz = floor_i32(z / CELL_SIZE);
+        let mut best = crate::collide::NO_SURFACE;
+        let mut dz = -terrain::OCCUPANT_PROBE_CELLS;
+        while dz <= terrain::OCCUPANT_PROBE_CELLS {
+            let mut dx = -terrain::OCCUPANT_PROBE_CELLS;
+            while dx <= terrain::OCCUPANT_PROBE_CELLS {
+                let (cx, cz) = (pcx + dx, pcz + dz);
+                dx += 1;
+                let slot = self.cache.slot(seed, self.table, self.haven, cx, cz);
+                if slot.occupant == Occupant::None {
+                    continue;
+                }
+                let g = terrain::slot_ground(&slot, x, z, feet_y);
+                if g <= best {
+                    continue;
+                }
+                if self.harvested.is_harvested(cx as u16, cz as u16) {
+                    continue;
+                }
+                best = g;
+            }
+            dz += 1;
+        }
+        best
+    }
+
     /// The same question for a volume that is not a player. `blocks` is this
     /// with the capsule's own two constants; `ranged::step` passes an
     /// arrow's, which is nearly a point.
