@@ -124,15 +124,62 @@ pub fn held_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> Held {
 ///
 /// Order is the model-handle order `render::viewmodel` loads, so an index
 /// here is an index there. Paths are relative to the asset root.
-pub const HELD_MODELS: [(&str, &str); 7] = [
-    ("rock", "models/held/rock.glb"),
-    ("stone_hatchet", "models/held/stone_hatchet.glb"),
-    ("stone_pickaxe", "models/held/stone_pickaxe.glb"),
-    ("hammer", "models/held/hammer.glb"),
-    ("building_plan", "models/held/building_plan.glb"),
-    ("wooden_spear", "models/held/wooden_spear.glb"),
-    ("hunting_bow", "models/held/hunting_bow.glb"),
+pub const HELD_MODELS: [HeldModelDef; 7] = [
+    // A stone is gripped around its middle — there is no handle to hold.
+    HeldModelDef::new("rock", "models/held/rock.glb", 0.20, 0.50),
+    // A hafted tool is held near the butt, far from the head. A quarter up
+    // the haft is where a hand actually sits on an axe.
+    HeldModelDef::new("stone_hatchet", "models/held/stone_hatchet.glb", 0.50, 0.25),
+    HeldModelDef::new("stone_pickaxe", "models/held/stone_pickaxe.glb", 0.60, 0.22),
+    HeldModelDef::new("hammer", "models/held/hammer.glb", 0.35, 0.25),
+    // A rolled document is carried in the middle, like the rock.
+    HeldModelDef::new("building_plan", "models/held/building_plan.glb", 0.30, 0.50),
+    // **The spear is the reason this table has a fraction at all.** At 1.8 m
+    // it is nine times the rock, and one shared offset put its butt through
+    // the camera. A third back from the point is a carry, not a thrust.
+    HeldModelDef::new("wooden_spear", "models/held/wooden_spear.glb", 1.80, 0.35),
+    // A bow is held at the riser, dead centre between the limbs.
+    HeldModelDef::new("hunting_bow", "models/held/hunting_bow.glb", 1.20, 0.50),
 ];
+
+/// One held model: the item it answers to, the file, and where the hand goes.
+///
+/// **The pose lives here rather than in `render` for this crate's standing
+/// rule** — arithmetic in `crate::ui`, headless and gated; nodes and handles
+/// in `render`. A grip offset is arithmetic in the sense that matters: it can
+/// be silently wrong, and being wrong puts the butt of a spear through the
+/// player's eye.
+pub struct HeldModelDef {
+    /// The normalised display name this draws for.
+    pub key: &'static str,
+    /// Asset path, relative to the asset root.
+    pub path: &'static str,
+    /// The model's long axis in metres — the size `ci/import_meshy.py` gave
+    /// it, restated so the grip can be a fraction rather than seven separate
+    /// hand-tuned offsets that drift when an asset is regenerated.
+    pub length_m: f32,
+    /// Where along that axis the hand sits, from the foot: 0.0 is the butt,
+    /// 1.0 the tip, 0.5 the middle.
+    pub grip_frac: f32,
+}
+
+impl HeldModelDef {
+    const fn new(key: &'static str, path: &'static str, length_m: f32, grip_frac: f32) -> Self {
+        Self {
+            key,
+            path,
+            length_m,
+            grip_frac,
+        }
+    }
+
+    /// How far to slide the model DOWN its own long axis so the grip lands at
+    /// the hand, metres. Negative by construction: the asset is authored with
+    /// its foot at zero, so the hand is always somewhere above that.
+    pub fn grip_offset_m(&self) -> f32 {
+        -self.length_m * self.grip_frac
+    }
+}
 
 /// Which [`HELD_MODELS`] row an item draws, or `None` for an empty hand and
 /// for everything we have no model for.
@@ -147,7 +194,7 @@ pub fn held_model(catalog: &ItemCatalog, stack: ItemStack) -> Option<usize> {
     }
     let name = core::str::from_utf8(catalog.name(stack.item as usize)).ok()?;
     let s = stem(name);
-    HELD_MODELS.iter().position(|(k, _)| *k == s)
+    HELD_MODELS.iter().position(|m| m.key == s)
 }
 
 /// [`held_model`] on the selected hotbar slot. Clamped for [`held_in_hand`]'s
@@ -240,11 +287,11 @@ mod tests {
         let c = catalog_with(&["Stone Hatchet", "Wooden Spear"]);
         assert_eq!(
             held_model(&c, ItemStack { item: 0, count: 1 }),
-            Some(HELD_MODELS.iter().position(|(k, _)| *k == "stone_hatchet").unwrap())
+            Some(HELD_MODELS.iter().position(|m| m.key == "stone_hatchet").unwrap())
         );
         assert_eq!(
             held_model_in_hand(&c, &[ItemStack { item: 1, count: 1 }], 0),
-            Some(HELD_MODELS.iter().position(|(k, _)| *k == "wooden_spear").unwrap())
+            Some(HELD_MODELS.iter().position(|m| m.key == "wooden_spear").unwrap())
         );
         assert_eq!(held_model_in_hand(&c, &[], 0), None);
     }

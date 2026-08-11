@@ -79,6 +79,16 @@ const CROSSHAIR_HIT: Color = Color::srgba(0.98, 0.42, 0.30, 0.95);
 #[derive(Component)]
 pub struct Cell(usize);
 
+/// The picture in a hotbar cell. Index-aligned with [`Cell`] rather than
+/// found by parent lookup: the row is spawned once and never reordered, so an
+/// index is stable and a hierarchy walk per frame is not worth its cost.
+#[derive(Component)]
+pub struct CellIcon(usize);
+
+/// The stack count over a hotbar cell's icon.
+#[derive(Component)]
+pub struct CellCount(usize);
+
 /// Which vital a row draws. The reference's order top-to-bottom, which is
 /// also its colour order: green, blue, orange.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -228,11 +238,57 @@ pub fn setup(mut commands: Commands) {
                         width: Val::Px(46.0),
                         height: Val::Px(46.0),
                         border: UiRect::all(Val::Px(2.0)),
+                        // The count sits bottom-right over the icon, which is
+                        // the arrangement every inventory in the genre uses
+                        // and the one `Rust Images/inventory` shows.
+                        justify_content: JustifyContent::FlexEnd,
+                        align_items: AlignItems::FlexEnd,
                         ..default()
                     },
                     BackgroundColor(Color::srgba(0.05, 0.05, 0.06, 0.55)),
                     BorderColor::all(Color::srgba(0.75, 0.72, 0.62, 0.35)),
-                ));
+                ))
+                .with_children(|cell| {
+                    // The icon fills the cell and is spawned EMPTY: a handle
+                    // is set by `fill_cells` when the slot has something in
+                    // it. Absolute so the count can overlap it rather than
+                    // being laid out beside it.
+                    cell.spawn((
+                        CellIcon(i),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(3.0),
+                            top: Val::Px(3.0),
+                            width: Val::Px(36.0),
+                            height: Val::Px(36.0),
+                            ..default()
+                        },
+                        ImageNode {
+                            image: Handle::default(),
+                            // The icons are white-on-transparent silhouettes
+                            // (`icons.rs`), so the tint IS the colour and a
+                            // slightly warm off-white keeps them from
+                            // vibrating against the pale border.
+                            color: Color::srgba(0.90, 0.88, 0.82, 0.95),
+                            ..default()
+                        },
+                        Visibility::Hidden,
+                        Pickable::IGNORE,
+                    ));
+                    cell.spawn((
+                        CellCount(i),
+                        Text::new(""),
+                        super::ui::font_bold(12.0),
+                        TextColor(Color::srgba(0.97, 0.95, 0.88, 0.95)),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            right: Val::Px(3.0),
+                            bottom: Val::Px(1.0),
+                            ..default()
+                        },
+                        Pickable::IGNORE,
+                    ));
+                });
             }
         });
 
@@ -482,6 +538,9 @@ pub fn setup(mut commands: Commands) {
 pub fn update(
     net: NonSend<Net>,
     mut cells: Query<(&Cell, &mut BorderColor, &mut BackgroundColor)>,
+    mut icons: Query<(&CellIcon, &mut ImageNode, &mut Visibility)>,
+    mut counts: Query<(&CellCount, &mut Text), (Without<Plan>, Without<VitalNum>)>,
+    art: Res<super::icons::Icons>,
     mut plan: Query<&mut Text, (With<Plan>, Without<VitalNum>)>,
     mut rows: Query<(&VitalRow, &mut Node), (Without<VitalFill>, Without<Cell>)>,
     mut fills: Query<(&VitalFill, &mut Node), Without<Cell>>,
@@ -562,6 +621,40 @@ pub fn update(
         };
         if text.0 != out {
             text.0 = out;
+        }
+    }
+
+    // The cells' contents. Separate loops from the selection highlight below
+    // because they answer different questions and touch different components
+    // — the highlight is `net.sel`, this is the inventory mirror.
+    for (icon, mut img, mut vis) in icons.iter_mut() {
+        let stack = core.inv.get(icon.0).copied().unwrap_or_default();
+        match crate::ui::icons::icon_stem(&core.catalog, stack).and_then(|s| art.verb(s)) {
+            Some(h) => {
+                if img.image != h {
+                    img.image = h;
+                }
+                *vis = Visibility::Inherited;
+            }
+            // Hidden rather than cleared: an `ImageNode` with a default handle
+            // draws Bevy's white placeholder square, which is a filled cell
+            // claiming to hold something.
+            None => *vis = Visibility::Hidden,
+        }
+    }
+    for (slot, mut text) in counts.iter_mut() {
+        let stack = core.inv.get(slot.0).copied().unwrap_or_default();
+        // A count of 1 is not drawn: every cell would carry a "1" and the
+        // digit stops meaning "how many" and starts being decoration.
+        let want = if stack.count > 1 {
+            let mut s = String::new();
+            let _ = std::fmt::Write::write_fmt(&mut s, format_args!("{}", stack.count));
+            s
+        } else {
+            String::new()
+        };
+        if text.0 != want {
+            text.0 = want;
         }
     }
 

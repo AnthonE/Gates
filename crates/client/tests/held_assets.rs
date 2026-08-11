@@ -31,7 +31,8 @@ fn glb_json(path: &std::path::Path) -> serde_json::Value {
 
 #[test]
 fn every_held_model_ships() {
-    for (key, rel) in HELD_MODELS {
+    for m in &HELD_MODELS {
+        let (key, rel) = (m.key, m.path);
         assert!(
             asset_path(rel).exists(),
             "{key} declares {rel} and it is not in the tree — the item would \
@@ -42,7 +43,8 @@ fn every_held_model_ships() {
 
 #[test]
 fn each_held_model_is_the_single_primitive_the_viewmodel_loads() {
-    for (key, rel) in HELD_MODELS {
+    for m in &HELD_MODELS {
+        let (key, rel) = (m.key, m.path);
         let g = glb_json(&asset_path(rel));
         let prims: usize = g["meshes"]
             .as_array()
@@ -71,7 +73,8 @@ fn nothing_held_glows() {
     // the spear here measured a 0.53 peak before the import stripped it.
     // Nothing a player carries emits light. A torch would be the first, and
     // it would need this list to grow rather than this test to go.
-    for (key, rel) in HELD_MODELS {
+    for m in &HELD_MODELS {
+        let (key, rel) = (m.key, m.path);
         let g = glb_json(&asset_path(rel));
         for m in g["materials"].as_array().into_iter().flatten() {
             let lit = m.get("emissiveFactor").is_some_and(|f| {
@@ -104,7 +107,8 @@ fn every_model_answers_to_an_item_that_exists() {
          content, and a broken parse would pass every assertion below",
         names.len()
     );
-    for (key, rel) in HELD_MODELS {
+    for m in &HELD_MODELS {
+        let (key, rel) = (m.key, m.path);
         assert!(
             names.iter().any(|n| n == key),
             "{rel} answers to {key:?} and no item in content/items.toml \
@@ -115,10 +119,66 @@ fn every_model_answers_to_an_item_that_exists() {
 }
 
 #[test]
-fn the_lookup_is_unambiguous() {
-    for (i, (key, _)) in HELD_MODELS.iter().enumerate() {
+fn the_declared_length_is_the_models_own_length() {
+    // The grip is `-length_m * grip_frac`, so `length_m` being a *restatement*
+    // of what the file measures is the whole assumption. Regenerate an asset
+    // at a different size, forget this table, and the hand silently moves to
+    // the wrong place along the haft — no error, just a spear held by its
+    // point. This is the gate for that.
+    for m in &HELD_MODELS {
+        let g = glb_json(&asset_path(m.path));
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for p in g["meshes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x["primitives"].as_array())
+            .flatten()
+        {
+            let a = &g["accessors"][p["attributes"]["POSITION"].as_u64().unwrap() as usize];
+            for k in 0..3 {
+                lo[k] = lo[k].min(a["min"][k].as_f64().unwrap() as f32);
+                hi[k] = hi[k].max(a["max"][k].as_f64().unwrap() as f32);
+            }
+        }
+        let longest = (0..3).map(|k| hi[k] - lo[k]).fold(0.0f32, f32::max);
+        let err = (longest - m.length_m).abs() / m.length_m;
         assert!(
-            !HELD_MODELS[..i].iter().any(|(k, _)| k == key),
+            err < 0.02,
+            "{} declares length_m = {:.3} and the file measures {:.3} ({:+.0}%). \
+             The grip offset is derived from that number, so the hand is now \
+             {:.3} m off along the haft.",
+            m.key,
+            m.length_m,
+            longest,
+            err * 100.0,
+            (longest - m.length_m).abs() * m.grip_frac
+        );
+    }
+}
+
+#[test]
+fn every_grip_is_on_the_object() {
+    for m in &HELD_MODELS {
+        assert!(
+            (0.0..=1.0).contains(&m.grip_frac),
+            "{} grips at {} of its own length — outside the model, so the item \
+             would float beside the hand rather than in it",
+            m.key,
+            m.grip_frac
+        );
+        // Negative by construction, and worth asserting because the sign is
+        // what puts the model below the hand rather than above it.
+        assert!(m.grip_offset_m() <= 0.0, "{} grip offset is positive", m.key);
+    }
+}
+
+#[test]
+fn the_lookup_is_unambiguous() {
+    for (i, m) in HELD_MODELS.iter().enumerate() {
+        let key = m.key;
+        assert!(
+            !HELD_MODELS[..i].iter().any(|o| o.key == key),
             "{key:?} appears twice in HELD_MODELS — `position` takes the first \
              and the second model is unreachable"
         );

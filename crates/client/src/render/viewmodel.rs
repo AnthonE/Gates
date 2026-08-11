@@ -121,10 +121,11 @@ pub struct HeldModel {
 /// format convention, and merging them makes the next asset's fix ambiguous.
 const MODEL_UPRIGHT_TO_HELD: f32 = -std::f32::consts::FRAC_PI_2;
 
-/// Where a held model's origin sits relative to the hand, metres. The assets
-/// are origin-at-the-foot, so a tool hung at the origin dangles below the
-/// grip; this lifts it so roughly the haft's lower third is at the hand.
-const MODEL_GRIP_LIFT: f32 = -0.10;
+// The grip is per item and lives in `ui::hold::HeldModelDef::grip_offset_m`.
+// **One shared offset was the first cut and it does not survive the set**: a
+// 0.20 m rock and a 1.80 m spear are a factor of nine apart, so an offset that
+// seats the rock puts the spear's butt through the camera. `swap` writes it
+// when the model changes.
 
 /// The motion state. A resource rather than a component: there is exactly one
 /// held item, and this keeps `animate` one cheap system that queries only the
@@ -409,8 +410,7 @@ pub fn spawn_item(
                 HeldModel { shown: None },
                 Mesh3d(Handle::default()),
                 MeshMaterial3d::<StandardMaterial>(Handle::default()),
-                Transform::from_translation(Vec3::new(0.0, MODEL_GRIP_LIFT, 0.0))
-                    .with_rotation(Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)),
+                Transform::from_rotation(Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)),
                 Visibility::Hidden,
             ));
         });
@@ -439,7 +439,13 @@ pub struct Fallback;
 pub fn swap(
     net: Option<NonSend<Net>>,
     models: Res<Models>,
-    mut q: Query<(&mut HeldModel, &mut Mesh3d, &mut MeshMaterial3d<StandardMaterial>, &mut Visibility)>,
+    mut q: Query<(
+        &mut HeldModel,
+        &mut Mesh3d,
+        &mut MeshMaterial3d<StandardMaterial>,
+        &mut Visibility,
+        &mut Transform,
+    )>,
     mut fallback: Query<&mut Visibility, (With<Fallback>, Without<HeldModel>)>,
 ) {
     let (want, empty) = match net.as_deref() {
@@ -454,12 +460,16 @@ pub fn swap(
         None => (None, true),
     };
 
-    for (mut held, mut mesh, mut mat, mut vis) in &mut q {
+    for (mut held, mut mesh, mut mat, mut vis, mut tf) in &mut q {
         if held.shown != want {
             match want {
                 Some(i) => {
                     mesh.0 = models.mesh[i].clone();
                     mat.0 = models.mat[i].clone();
+                    // Slide the model down its own axis so the grip is at the
+                    // hand. Written here and not at spawn because it is a
+                    // property of the ITEM, and the item changes.
+                    tf.translation.y = crate::ui::hold::HELD_MODELS[i].grip_offset_m();
                 }
                 None => {
                     mesh.0 = Handle::default();
@@ -498,20 +508,20 @@ pub struct Models {
 /// scene hierarchy is spawned. `tests/held_assets.rs` is what keeps that true.
 pub fn load_models(mut commands: Commands, assets: Res<AssetServer>) {
     let (mut mesh, mut mat) = (Vec::new(), Vec::new());
-    for (_, path) in crate::ui::hold::HELD_MODELS {
+    for m in &crate::ui::hold::HELD_MODELS {
         mesh.push(assets.load(
             GltfAssetLabel::Primitive {
                 mesh: 0,
                 primitive: 0,
             }
-            .from_asset(path),
+            .from_asset(m.path),
         ));
         mat.push(assets.load(
             GltfAssetLabel::Material {
                 index: 0,
                 is_scale_inverted: false,
             }
-            .from_asset(path),
+            .from_asset(m.path),
         ));
     }
     commands.insert_resource(Models { mesh, mat });

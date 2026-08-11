@@ -30,6 +30,27 @@ pub fn stem(name: &str) -> String {
     out
 }
 
+/// The icon a stack draws in an inventory cell, or `None` for an empty slot
+/// and for an item whose picture we do not ship.
+///
+/// **`None` for a missing icon is deliberate and is not a fallback.** A cell
+/// showing the wrong picture is worse than a cell showing none: the count is
+/// still drawn, so the player can see they are carrying *something*, and an
+/// unfamiliar blank reads as "no art yet" where a wrong silhouette reads as
+/// the wrong item. `tests/ui.rs` §G already fails if `STEMS` and the shipped
+/// directory drift, so a `Some` here is a file that exists.
+///
+/// Keyed by normalised display name, the same rule [`stem`] states and the
+/// same one `ui::hold` resolves models by — one rename, one breakage.
+pub fn icon_stem(catalog: &protocol::ItemCatalog, stack: sim_core::gather::ItemStack) -> Option<&'static str> {
+    if stack.count == 0 {
+        return None;
+    }
+    let name = core::str::from_utf8(catalog.name(stack.item as usize)).ok()?;
+    let s = stem(name);
+    STEMS.iter().copied().find(|k| *k == s)
+}
+
 /// Every stem `assets/icons/` ships.
 ///
 /// A const list rather than a directory walk, because the render path must
@@ -114,7 +135,7 @@ pub const STEMS: [&str; 65] = [
 
 #[cfg(test)]
 mod tests {
-    use super::stem;
+    use super::{icon_stem, stem};
 
     #[test]
     fn the_stem_matches_the_bakers_rule() {
@@ -125,5 +146,60 @@ mod tests {
         // trailing run produces none — the baker's `strip('_')`.
         assert_eq!(stem("  Animal   Fat  "), "animal_fat");
         assert_eq!(stem("Workbench-1"), "workbench_1");
+    }
+
+    fn catalog_with(names: &[&str]) -> protocol::ItemCatalog {
+        let mut c = protocol::ItemCatalog::EMPTY;
+        for (i, n) in names.iter().enumerate() {
+            c.set(i, n.as_bytes()).expect("a short name fits");
+        }
+        c.count = names.len() as u16;
+        c
+    }
+
+    #[test]
+    fn an_empty_slot_draws_no_icon() {
+        let c = catalog_with(&["Wood"]);
+        let s = |count| {
+            icon_stem(&c, sim_core::gather::ItemStack { item: 0, count })
+        };
+        assert_eq!(s(0), None, "an empty slot must draw nothing at all");
+        assert_eq!(s(1), Some("wood"));
+    }
+
+    #[test]
+    fn an_item_we_ship_no_picture_for_is_none_and_never_a_stand_in() {
+        // The cell then shows its COUNT over an empty square, which reads as
+        // "no art yet". A fallback silhouette would read as the wrong item,
+        // which is strictly worse than blank.
+        let c = catalog_with(&["Nonexistent Widget"]);
+        assert_eq!(
+            icon_stem(&c, sim_core::gather::ItemStack { item: 0, count: 3 }),
+            None
+        );
+        // An id past the catalog is the same answer and not a panic: the id
+        // arrives from the wire and the slot index from a keypress.
+        assert_eq!(
+            icon_stem(&c, sim_core::gather::ItemStack { item: 999, count: 1 }),
+            None
+        );
+    }
+
+    #[test]
+    fn the_icon_and_the_model_key_off_one_name() {
+        // The property that makes a rename break in one place: both lookups
+        // normalise the same string with the same function.
+        let c = catalog_with(&["Stone Hatchet"]);
+        let st = sim_core::gather::ItemStack { item: 0, count: 1 };
+        assert_eq!(icon_stem(&c, st), Some("stone_hatchet"));
+        assert_eq!(
+            crate::ui::hold::held_model(&c, st),
+            Some(
+                crate::ui::hold::HELD_MODELS
+                    .iter()
+                    .position(|m| m.key == "stone_hatchet")
+                    .unwrap()
+            )
+        );
     }
 }
