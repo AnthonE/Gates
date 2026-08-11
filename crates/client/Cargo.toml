@@ -89,6 +89,16 @@ name = "look"
 path = "tests/look.rs"
 required-features = ["render"]
 
+# The score's Bevy half: that the two music systems RUN, on a bare `App` with
+# no window, no device and its own clock. `tests/sound.rs` owns the director's
+# rules in the code tier; this owns the wiring, which is the half that has cost
+# this repo a run before (`render/audio::build_bank`'s header). Links Bevy, so
+# it carries the feature and runs in the renderer tier.
+[[test]]
+name = "music"
+path = "tests/music.rs"
+required-features = ["render"]
+
 [dependencies]
 # Default features for now. Trimming is still a follow-up — but the list of
 # what to trim has changed and the old one is now wrong in a load-bearing way:

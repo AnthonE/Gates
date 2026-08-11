@@ -164,6 +164,13 @@ pub fn gather(
     // queue on one held mouse button.
     if swings && mouse.just_pressed(MouseButton::Left) {
         sound.play(crate::sound::mixer::Request::own(crate::sound::Cue::Swing));
+        // The score's *small* bump, and it is here for the same reason the
+        // cue is: this is the only place that knows a swing was a swing and
+        // not a click that closed a panel. `reference/AUDIO.md` §8's
+        // published order puts a weapon in play at the bottom — ours is the
+        // swing rather than the equip because a swing is an event and an
+        // equipped-weapon state is not (`sound::music::BUMP_SWING`).
+        sound.music.bump(crate::sound::music::BUMP_SWING);
     }
 
     // Hotbar 1–6. `set_input` clamps into range, so an out-of-range key

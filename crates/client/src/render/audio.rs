@@ -38,7 +38,9 @@ use bevy::audio::{
 };
 use bevy::prelude::*;
 
+use crate::sound::birds::{self, Birds};
 use crate::sound::mixer::{Mixer, Request, Start};
+use crate::sound::music::{self, Director};
 use crate::sound::pig::Snorts;
 use crate::sound::steps::Steps;
 use crate::sound::water::Waterline;
@@ -102,6 +104,13 @@ pub struct Sound {
     /// Each roster slot's snort clock (`sound::pig` — pure; [`pigs`] is
     /// the producer that reads it against the drawn herd).
     pub snorts: Snorts,
+    /// When a song plays and which piece it is (`sound::music`). Lives on
+    /// the resource rather than on a world entity because it runs on the
+    /// menus too, where there is no world.
+    pub music: Director,
+    /// The forest layer's clock (`sound::birds`), driven by [`bed`], which
+    /// already has the cover score and the props to perch on.
+    pub birds: Birds,
     /// Each bed's current gain, moving toward its target at
     /// [`BED_FADE_PER_S`]. Held rather than recomputed so the crossfade is
     /// state, not a function of a frame.
@@ -126,6 +135,41 @@ pub struct Voice;
 /// One looping bed, and which one.
 #[derive(Component)]
 pub struct Bed(pub Cue);
+
+/// A piece of music that is playing.
+///
+/// **Deliberately not a [`Voice`] and deliberately not a
+/// [`super::WorldEntity`]**, and both are load-bearing:
+///
+/// - Not a `Voice`, so music does not count against `VOICE_CAP` and cannot
+///   be the reason an axe was refused (`sound::mixer` refuses to start a
+///   music cue at all — `Cue::is_music`).
+/// - Not a `WorldEntity`, so leaving a world does not cut a piece off
+///   mid-phrase. A menu piece rings out over the loading screen, which is
+///   how music is supposed to carry a transition.
+#[derive(Component)]
+pub struct MusicVoice {
+    /// Which piece this is, so its level comes from the cue table like every
+    /// other level in the client rather than from a constant here.
+    cue: Cue,
+    /// The piece's own gain, 1 while it is playing normally and ramping to
+    /// zero once [`ending`](Self::ending) is set.
+    fade: f32,
+    /// Set when a screen change orphaned this piece: the director under it
+    /// has been reset, and something else is about to start on top of it.
+    ending: bool,
+}
+
+/// How long an orphaned piece takes to fade out, seconds.
+///
+/// **The one place music fades, and the reference's rule is not being
+/// broken.** `reference/AUDIO.md` §8 says pieces cut to each other *without*
+/// fading, and they still do — the tail covers that join. This is the other
+/// case: leaving a world starts the menu's music immediately, and two pieces
+/// playing over each other is not a join, it is two songs. Short enough not
+/// to be a swell, long enough not to click (`DECISIONS.md` §open,
+/// "music v0").
+pub const MUSIC_FADE_S: f32 = 1.2;
 
 /// Build the bank, at plugin-build time rather than in a schedule.
 ///
@@ -201,8 +245,10 @@ pub fn setup(mut commands: Commands, bank: Res<Bank>, cam: Query<Entity, With<Ey
 pub fn teardown(mut sound: ResMut<Sound>, mut last_hp: ResMut<LastHp>) {
     sound.steps.reset();
     // The herd's clocks too: a countdown carried into the next island would
-    // voice its pigs on this island's schedule.
+    // voice its pigs on this island's schedule. The forest layer's clock is
+    // the same rule and the same reason.
     sound.snorts.reset();
+    sound.birds.reset();
     sound.bed_gain = [0.0; BEDS.len()];
     sound.bed_target = [0.0; BEDS.len()];
     // The waterline and the snapshot go with it, and the second one is the
@@ -298,6 +344,11 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
     // three can be thrown away is work the queue does not need to do.
     if feed.hits > 0 {
         sound.play(Request::own(Cue::Hit));
+        // The middle bump. One per frame however many landed, for the same
+        // reason the marker is: the director reads its tier once a section,
+        // so four bumps in one frame and one bump in one frame are the same
+        // musical fact.
+        sound.music.bump(music::BUMP_HIT);
     }
     for &(victim, _killer) in feed.deaths() {
         // Someone else dying is not your own fact and has no position on this
@@ -433,6 +484,11 @@ pub fn hurt(net: NonSend<Net>, mut last: ResMut<LastHp>, mut sound: ResMut<Sound
     // `last.0 == 0` is "we have never seen one", which a fresh world is.
     if last.0 > 0 && hp < last.0 {
         sound.play(Request::own(Cue::Hurt));
+        // **The biggest bump, and theirs is too** (`reference/AUDIO.md` §8's
+        // published order: a weapon in play < a bullet past your head <
+        // taking damage). Two of these inside two sections is what puts the
+        // score in its top tier.
+        sound.music.bump(music::BUMP_HURT);
     }
     last.0 = hp;
 }
@@ -446,6 +502,9 @@ pub fn hurt(net: NonSend<Net>, mut last: ResMut<LastHp>, mut sound: ResMut<Sound
 /// looping voice whose gain reads how many scatter props are drawn nearby —
 /// so the bed already answers to the world rather than being a constant, and
 /// it costs one query length per frame instead of an emitter set.
+/// The forest layer rides along: [`bed`] already walks the props and already
+/// scores the cover, so a bird costs a countdown and an index. See
+/// `sound::birds` for why a layer is not a bed turned down.
 // Seven: the mix state to write, where the ears are, which island this is, the
 // cover query, the clock, the player's sliders, and the sinks to move.
 #[allow(clippy::too_many_arguments)]
@@ -482,17 +541,37 @@ pub fn bed(
     // side effect of a bug fix, which is the worst way for one to arrive.
     const FOREST_R2: f32 = 22.0 * 22.0;
     const COVER_FULL: f32 = 7.0;
+    // The two halves of "is this a tree near me", as closures, because the
+    // bird layer below walks the same set for a perch and an index into a
+    // set that was filtered differently is an index into nothing.
+    let is_perch = |f: &super::props::Fellable| {
+        matches!(
+            f.part,
+            super::props::FellPart::Trunk | super::props::FellPart::Vanish
+        )
+    };
+    let near_eye = |p: Vec3| p.distance_squared(eye.pos) < FOREST_R2;
     let near = props
         .iter()
-        .filter(|(_, f)| {
-            matches!(
-                f.part,
-                super::props::FellPart::Trunk | super::props::FellPart::Vanish
-            )
-        })
-        .filter(|(t, _)| t.translation().distance_squared(eye.pos) < FOREST_R2)
-        .count() as f32;
-    let cover = (near / COVER_FULL).clamp(0.0, 1.0);
+        .filter(|(t, f)| is_perch(f) && near_eye(t.translation()))
+        .count();
+    let cover = (near as f32 / COVER_FULL).clamp(0.0, 1.0);
+
+    // The forest layer. A second walk of the same query, and it runs on the
+    // one frame in a few hundred that a call actually lands — a buffer of
+    // candidate perches would cost every frame to save that one, and would
+    // cap how much forest the layer can see for nothing.
+    if sound.birds.due(cover, time.delta_secs()) && near > 0 {
+        let want = sound.birds.perch(near);
+        if let Some(p) = props
+            .iter()
+            .filter(|(t, f)| is_perch(f) && near_eye(t.translation()))
+            .map(|(t, _)| t.translation())
+            .nth(want)
+        {
+            sound.play(Request::at(Cue::Bird, [p.x, p.y + birds::PERCH_H_M, p.z]));
+        }
+    }
     // Open ground is windier than the inside of a forest, but a forest is not
     // silent — it is the same wind in the canopy. So the bed never drops
     // below half, and cover moves it rather than gating it.
@@ -550,6 +629,94 @@ pub fn water(net: NonSend<Net>, eye: Res<Eye>, time: Res<Time>, mut sound: ResMu
     let feet = net.session.core.predict.render_position()[1];
     if let Some(gain) = sound.waterline.sample(feet, dt) {
         sound.play(Request::own(Cue::Splash).with_gain(gain));
+    }
+}
+
+/// The score: tick the director, start the piece it asks for, and hold every
+/// sounding piece at the player's music level.
+///
+/// **Runs everywhere, unlike every other system in this file.** There is no
+/// `world_running`, no `Net` and no `Eye` in its arguments, because music
+/// plays on the menus too — `sound::music::Mode::Menu` is what makes that a
+/// different behaviour rather than a different code path.
+///
+/// Starting a piece is a spawn and nothing else: the previous piece is left
+/// alone to ring out under it, which is the whole of `reference/AUDIO.md`
+/// §8's transition design. `PlaybackMode::Despawn` collects it when its tail
+/// ends.
+pub fn music(
+    mut commands: Commands,
+    mut sound: ResMut<Sound>,
+    bank: Res<Bank>,
+    time: Res<Time>,
+    settings: Res<super::Settings>,
+    mut voices: Query<(Entity, &mut MusicVoice, &mut AudioSink)>,
+) {
+    let dt = time.delta_secs();
+    let mix = mix_of(&settings);
+    if let Some(piece) = sound.music.tick(dt) {
+        let def = piece.cue.def();
+        commands.spawn((
+            MusicVoice {
+                cue: piece.cue,
+                fade: 1.0,
+                ending: false,
+            },
+            AudioPlayer(bank.get(piece.cue)),
+            PlaybackSettings {
+                mode: PlaybackMode::Despawn,
+                // **Its real level, not silence.** A spawn is not queryable
+                // until the next flush, so the loop below cannot reach this
+                // voice this frame — starting it silent would put a step from
+                // zero to full one frame into every piece, which is the click
+                // `synth::edges` exists to prevent at the other end of the
+                // same sample. The loop's job is to FOLLOW the slider, not to
+                // set the opening level.
+                volume: Volume::Linear(def.gain * mix.bus_gain(def.bus)),
+                spatial: false,
+                ..default()
+            },
+        ));
+    }
+
+    let step = if MUSIC_FADE_S > 0.0 {
+        dt / MUSIC_FADE_S
+    } else {
+        1.0
+    };
+    for (e, mut voice, mut sink) in voices.iter_mut() {
+        if voice.ending {
+            voice.fade -= step;
+            if voice.fade <= 0.0 {
+                commands.entity(e).despawn();
+                continue;
+            }
+        }
+        let def = voice.cue.def();
+        sink.set_volume(Volume::Linear(
+            def.gain * mix.bus_gain(def.bus) * voice.fade,
+        ));
+    }
+}
+
+/// Put the director on a new screen's schedule.
+///
+/// Called on entering the menu and on entering a world, which are the only
+/// two transitions music has. One function because the rule is one rule, and
+/// it is stated in the condition rather than in the caller: **a sounding
+/// piece is ended only when the new mode is about to start one on top of
+/// it.** Leaving a world does (the menu has no gap), so the old piece fades;
+/// joining one does not (`music::FIRST_GAP_S` is half a minute), so the menu
+/// piece rings out over the loading screen, which is what music is for.
+pub fn music_mode(mode: music::Mode) -> impl Fn(ResMut<Sound>, Query<&mut MusicVoice>) {
+    move |mut sound: ResMut<Sound>, mut voices: Query<&mut MusicVoice>| {
+        sound.music.reset(mode);
+        if sound.music.next_in_s() > crate::sound::music::PIECE_S {
+            return;
+        }
+        for mut v in voices.iter_mut() {
+            v.ending = true;
+        }
     }
 }
 
@@ -643,6 +810,7 @@ fn mix_of(s: &super::Settings) -> Mix {
         master: s.vol_master,
         game: s.vol_game,
         ambience: s.vol_ambience,
+        music: s.vol_music,
     }
 }
 

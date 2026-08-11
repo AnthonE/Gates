@@ -567,22 +567,40 @@ footsteps, the place cue. Research `reference/AUDIO.md`; every number is
 1. **Nothing scores it, because `ART.md` has no audio section at all** — and
    **nobody has heard it** (this box has no audio device), so it is honest
    programmer art until someone plays it. `cargo run -p client --bin
-   soundbank -- <dir>` writes all 19 WAVs. Looking already paid twice (the
+   soundbank -- <dir>` writes all 38 WAVs. Looking already paid twice (the
    flat wind bed, then its fix overshooting); neither was reachable from a
-   statistic that only asked "does it have energy".
-2. **Music is the highest-value unbuilt thing and the design is written
-   down.** `reference/AUDIO.md` §8: gap timer, sectioned themes, an
-   intensity scalar off event codes we already have. Every input exists;
-   what does not exist is music — a **content** blocker, not engineering.
+   statistic that only asked "does it have energy". **The score raises the
+   stakes on this item rather than answering it**: nine of those WAVs are
+   music, and music is the thing a listener judges fastest.
+2. **The score is built and unheard** (2026-08-11). `reference/AUDIO.md`
+   §8's whole design is `sound/music.rs`: gap timer, a theme of sectioned
+   pieces, tiers picked at section boundaries off bumps we already had.
+   What remains is the half that was always the blocker — `synth::score`
+   generates nine placeholder pieces, so **the system is real and the music
+   is programmer art**. Swapping in recorded pieces is a change to one
+   function (`synth::render`'s music arm); the licence posture in `synth`'s
+   header is why they are generated and not sourced. Two inputs the
+   reference bumps on and we cannot: a weapon *equipped* (we bump on the
+   swing instead) and a projectile near-miss (`reference/PROJECTILES.md`).
 3. **The `--capture` run is still by hand**, and it is the only thing that
-   proves the audio systems execute at all. It needs Xvfb, lavapipe and a
-   shard, which is why it is not in `ci/gates.sh` yet.
+   proves *most* of the audio systems execute at all. It needs Xvfb, lavapipe
+   and a shard, which is why it is not in `ci/gates.sh` yet. The score is the
+   exception and shows the cheaper shape: `tests/music.rs` builds a bare
+   `App` (`MinimalPlugins`, no window, no device, its own clock) and asserts
+   the two music systems run and spawn what the director names. Every audio
+   system with no world in its arguments could be gated that way.
 4. **Two cues still have no producer**: `ImpactWood`/`ImpactMetal` need to
    know WHAT was hit, which the gather toast does not say, and `UiClick`
    needs a hook in the per-screen click handlers.
 5. **No occlusion, and it needs a prerequisite rather than a pass.** A wall
    between you and a sound needs a geometry query, and the correct one is
    the sim's (`collide.rs`), not a raycast against render meshes.
+6. **The ambience layer is one bird and no clock.** `sound/birds.rs` is
+   `reference/AUDIO.md` §3's *layers* at its smallest: sparse calls on a
+   perch, keyed to cover. Crickets are the obvious companion and they need
+   a day/night cycle, which the client does not have — so that is a
+   prerequisite, not a tuning pass. The reference's localized-emitter
+   *system* is still a later slice (§9.3: it arrives with a cull budget).
 
 ## 0z · The world waits for the server now — what the Bevy audit left *(client lane)*
 

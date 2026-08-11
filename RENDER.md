@@ -892,12 +892,16 @@ missing it survivable.
   generated WAV would have panicked with `UnrecognizedFormat` at the moment
   it played. Audio's boundary rule is this document's rule one surface over —
   **Bevy plays, it does not decide** — with the model in
-  `crates/client/src/sound/` (pure, code tier, 29 assertions) and
+  `crates/client/src/sound/` (pure, code tier, 63 assertions) and
   `render/audio.rs` owning nothing but the bank, the listener and the voices.
-  Still genuinely unused: **`bevy_gltf`** (every mesh in the tree is
-  procedural), **`bevy_scene`** and **`bevy_animation`** (bodies are capsules;
-  this one is wanted eventually and blocked on rigged meshes rather than on a
-  decision). Trimming is a build-time and payload win, not a picture win — it
+  **The score (2026-08-11) is the same rule under load**: `sound::music` is a
+  gap-and-intensity director (`reference/AUDIO.md` §8) that decides which
+  piece plays and when, headless and testable; `render/audio.rs::music` spawns
+  what it names and holds the level. It is also the one audio system with no
+  run condition at all, because the menus have music and have no world.
+  **`bevy_gltf`, `bevy_scene` and `bevy_animation` stopped being unused with
+  the mannequin** (2026-08-07, `render/anim.rs`) — this paragraph named all
+  three as trim candidates and only the reasoning survives. Trimming is a build-time and payload win, not a picture win — it
   happens when it is in the way.
 - **`bevy_scene` is a decided no, not an unexamined gap.** Its three
   advertised wins each land on a wall here. *Entity-ID-preserving save
