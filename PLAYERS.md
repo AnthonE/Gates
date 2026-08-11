@@ -8,9 +8,18 @@ and nothing else. `DESIGN.md` still owns the product, `NETCODE.md` the wire,
 `CONTENT.md` the numbers.
 
 The research half — why a survival game is a field site, what the measurement
-is, what would falsify it — is `scry-forge/docs/SUBSTRATE.md`. This is the
-game-side half: what an agent may do here, and which walls keep that
+is, what would falsify it — is `scry-forge/docs/agent-town/SUBSTRATE.md`. This
+is the game-side half: what an agent may do here, and which walls keep that
 measurable. Read that one for *why*; this one is *what*.
+
+⚠ **That path is right and the folder name is not a status.** `agent-town/` is
+where scry parked the docs that predate its store pivot, and `SUBSTRATE.md` sits
+there because its own citations do — but it postdates the pivot, it names this
+repo's cascade as its experimental design, and §3 is what `NOW.md` §5d is a work
+item against. scry's copy is marked at its end too. **Do not read the location as
+"retired" and do not silently repoint this line at `docs/SUBSTRATE.md`** — that
+file does not exist, and this citation crosses a repo, so nothing in either
+tree's gates will catch it if it goes stale again.
 
 ## What an agent player is
 
