@@ -27,7 +27,14 @@ on:
 jobs:
   gates:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45, not 30. The first green run after the toolchain pin took **27.4
+    # minutes** on a cold cache — 2.6 minutes under the old ceiling — and a
+    # `Cargo.lock` change busts the cache on exactly the commits that are
+    # least like the last one. A gate that trips on a slow runner reports a
+    # hang, not a defect, and `CLAUDE.md`'s own rule is that widening a
+    # timeout is not a fix; that rule is about *waiting on a clock inside a
+    # test*, which this is not — this is a ceiling for a whole compile.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: toolchain
