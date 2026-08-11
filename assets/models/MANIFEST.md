@@ -81,11 +81,47 @@ spear's map peaked at **0.53** before the import stripped it, i.e. a stick
 that glows in the dark. A torch would be the first exception and would grow
 that list rather than retire the rule.
 
-⚠ **40 MB for five props, against 6.5 MB for the entire texture set.** The 2K
-maps are an operator call (*"i dont wanna nerf looks too much"*) and the real
-lever is format, not resolution: Bevy is built here with
-`features = ["jpeg", "wav"]`, so every one of these decompresses to full RGBA
-in VRAM. `ktx2`/`basis-universal` is the unbuilt fix.
+## Textures are KTX2/UASTC at 1024, and the reason is VRAM
+
+**Every `.glb` here carries GPU-compressed textures since 2026-08-11**
+(`ci/ktx_pack.py`). The problem it solves is video memory, not disk: a JPEG is
+decompressed to full RGBA8 on the GPU, so a 2048² map costs **16.8 MB of VRAM
+whatever it weighs on disk**, and twelve props at three maps each was ~600 MB
+of texture alone. Only a compressed-in-VRAM format moves that number.
+
+Four options were encoded and measured on one prop rather than argued about:
+
+| | disk/prop | VRAM/prop | albedo PSNR |
+|---|---|---|---|
+| 2K JPEG (what shipped) | 7.9 MB | ~50 MB | source, **no mipmaps** |
+| 2K ETC1S | 1.4 MB | 8.4 MB | **28.0 dB — visibly lossy** |
+| 2K UASTC | 11.8 MB | 16.8 MB | ~lossless, but disk *grows* |
+| **1K UASTC — chosen** | **3.2 MB** | **4.2 MB** | **46.9 dB** |
+
+UASTC over ETC1S because 28 dB is a drop you can see and the standing
+instruction is not to nerf the look. 1024 over 2048 because that is what makes
+UASTC *cheaper* than the JPEG it replaces instead of 1.5× dearer. **The
+mipmaps are the quiet win**: the JPEGs had none at all, so every prop aliased
+at distance, and a mipmapped 1K generally reads better in motion than a
+shimmering 2K. Whole set: **95 MB → 42 MB.**
+
+⚠ **These files are deliberately not spec-clean glTF, and it is not an
+oversight.** The standard way to say "this texture is KTX2" is
+`KHR_texture_basisu`; **Bevy 0.18 does not implement it** — its own support
+table marks it ❌ (bevyengine#19104) — and its validator rejects any unknown
+entry in `extensionsRequired` outright. Measured: twelve models, twelve
+`Unsupported extension` errors and a white fallback on every one. What Bevy
+*does* support is ktx2 dispatched off the **mime type**, so `textures[].source`
+stays and only `images[].mimeType` is unusual (`image/ktx2`, where core glTF
+allows jpeg and png). A third-party glTF tool may refuse these. Revisit when
+#19104 lands.
+
+**Re-encoding needs a tool a headless box has no reason to carry.** The
+KTX-Software CLI is not in apt; fetch the release tarball from GitHub and point
+`KTX_BIN`/`LD_LIBRARY_PATH` at it. Same class as the three `-dev` packages
+`ci/gates.sh` names — install it rather than skipping the step. **The 2K
+sources are kept out of tree**, so re-encoding at any resolution is a script
+run and never a regeneration: `ci/import_meshy.py` then `ci/ktx_pack.py`.
 
 ## Why this one, and why a mannequin is the right placeholder
 

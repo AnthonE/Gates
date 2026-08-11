@@ -141,7 +141,27 @@ required-features = ["render"]
 # was played. Vorbis is the wrong answer here — we are the encoder, and pulling
 # a Vorbis encoder in to compress a buffer that was generated in memory and is
 # decoded back in memory buys nothing.
-bevy = { version = "0.18", optional = true, features = ["jpeg", "wav"] }
+#
+# `ktx2` + `basis-universal` + `zstd_rust` are the GPU-compressed texture path,
+# added 2026-08-11 for `assets/models/`. **The problem they solve is VRAM, and
+# only a compressed-in-VRAM format solves it**: a JPEG is decompressed to full
+# RGBA8 on the GPU, so a 2048² map costs 16.8 MB of video memory whatever it
+# weighs on disk, and twelve props at three maps each is ~600 MB of texture
+# alone. `ci/ktx_pack.py` encodes UASTC at 1024 and rewrites the `.glb` to
+# reference it through `KHR_texture_basisu`; `basis-universal` is what
+# transcodes that to the GPU's own format at load, and without it the loader
+# has the container and not the codec. `zstd_rust` over `zstd_c` deliberately:
+# the C path wants a system library on a box that may not have one, and this
+# runs once per texture at load rather than per frame.
+# Same failure shape as `jpeg` above and worth stating in the same breath: a
+# missing feature here does not fail the build, it draws the white fallback.
+bevy = { version = "0.18", optional = true, features = [
+    "jpeg",
+    "wav",
+    "ktx2",
+    "basis-universal",
+    "zstd_rust",
+] }
 # The shard list (`scry-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/scry).
 # `rustls` rather than a system TLS: the same reason wtransport carries its
 # own — one trust store the build controls, on a box that may have no
