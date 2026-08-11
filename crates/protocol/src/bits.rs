@@ -45,6 +45,22 @@ impl<'a> BitWriter<'a> {
 
     /// Write the low `bits` bits of `val` (1..=32). Bits above `bits` must
     /// be zero — anything else is a `Range` refusal, not a silent mask.
+    ///
+    /// Shifted whole rather than walked bit-run by bit-run, which is the
+    /// same bytes: the layout is little-endian within a byte and ascending
+    /// across bytes, so a field at bit offset `b` is exactly
+    /// `(val as u64) << b` spilled over the bytes it reaches. The old loop
+    /// recomputed a byte index, a bit offset, a run length and a mask on
+    /// every pass to say that; a 32-bit field at a 7-bit offset paid it
+    /// five times.
+    ///
+    /// Worth the rewrite because of who calls it: the snapshot encoder
+    /// writes ~10 fields per entity and up to `MAX_SNAPSHOT_ENTITIES`
+    /// entities per client per snapshot, and this was 4 % of every
+    /// instruction the shard executed at `MAX_PLAYERS`
+    /// (`server/bin/profile.rs`, 2026-08-11). Not one byte on the wire
+    /// moves, which is what makes it landable — `test_protocol_golden` is
+    /// the proof, and it would fail on any layout drift this could cause.
     pub fn write(&mut self, val: u32, bits: u32) -> Result<(), WireError> {
         debug_assert!((1..=32).contains(&bits));
         if bits < 32 && (val >> bits) != 0 {
@@ -53,18 +69,18 @@ impl<'a> BitWriter<'a> {
         if self.pos + bits as usize > self.buf.len() * 8 {
             return Err(WireError::Overflow);
         }
-        let mut val = val;
-        let mut remaining = bits as usize;
-        while remaining > 0 {
-            let byte = self.pos / 8;
-            let bit = self.pos % 8;
-            let take = (8 - bit).min(remaining);
-            let mask = ((1u16 << take) - 1) as u8;
-            self.buf[byte] |= ((val as u8) & mask) << bit;
-            val >>= take;
-            self.pos += take;
-            remaining -= take;
+        let byte = self.pos / 8;
+        let bit = self.pos % 8;
+        // At most 32 bits starting at most 7 bits into a byte touches 5
+        // bytes, and `<< bit` cannot overflow a u64 at 32 + 7 = 39 bits.
+        let spread = (val as u64) << bit;
+        let touched = (bit + bits as usize).div_ceil(8);
+        for k in 0..touched {
+            // In range: the overflow check above bounds the last bit
+            // written, so `byte + touched - 1` is the byte holding it.
+            self.buf[byte + k] |= (spread >> (8 * k)) as u8;
         }
+        self.pos += bits as usize;
         Ok(())
     }
 

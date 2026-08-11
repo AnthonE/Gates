@@ -323,6 +323,7 @@ do not rediscover)
 cargo test --workspace              # every gate that runs headless
 cargo run -p server --bin shard     # the server (reads shard.toml)
 cargo run -p server --bin bots -- 100
+cargo run --release -p server --bin profile          # where a tick's 33 ms goes
 cargo run -p client --features render --bin gates    # the game
 cargo clippy -p client --features render --all-targets -- -D warnings
 ./ci/gates.sh                       # exactly what CI runs — run it before merge

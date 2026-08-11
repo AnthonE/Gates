@@ -1842,11 +1842,49 @@ pub struct SnapshotEncoder<'a, 'b> {
     w: BitWriter<'a>,
     baseline: &'b [EntityState],
     has_baseline: bool,
+    /// Open-addressed id → baseline record, built once in `begin`. Slot
+    /// holds `index + 1`; 0 is empty, which is why the table can be bytes
+    /// (`MAX_SNAPSHOT_ENTITIES` is 64, so an index+1 never reaches 255).
+    ///
+    /// **This replaces a linear scan of the baseline per entity, which was
+    /// quadratic in the one number the whole snapshot design caps.** Every
+    /// `add_entity` used to walk the baseline looking for the same id;
+    /// a full snapshot against a full baseline is 64 × 64 comparisons, per
+    /// client, at the snapshot cadence — measured 2026-08-11 as ~10 % of
+    /// every instruction the shard executed at `MAX_PLAYERS`
+    /// (`server/src/bin/profile.rs`).
+    ///
+    /// **No byte on the wire moves**, which is the only reason it may
+    /// land: this changes how the baseline record is *found*, never what is
+    /// written once it is found, so `test_protocol_golden` is the proof.
+    /// Duplicate ids — which a snapshot cannot hold, but the type does not
+    /// forbid — resolve to the same record `iter().find` returned: inserts
+    /// walk the probe chain in order, so the earliest occupies the earlier
+    /// slot and a lookup meets it first.
+    bl_index: [u8; BASELINE_INDEX_SLOTS],
     removed_count_at: usize,
     entity_count_at: usize,
     removed: u32,
     entities: u32,
     entity_started: bool,
+}
+
+/// Slots in `SnapshotEncoder::bl_index`: a power of two at twice
+/// `MAX_SNAPSHOT_ENTITIES`, so the table never passes half load and the
+/// probe stays short. Derived, not a knob.
+const BASELINE_INDEX_SLOTS: usize = MAX_SNAPSHOT_ENTITIES * 2;
+const _: () = assert!(
+    BASELINE_INDEX_SLOTS.is_power_of_two() && MAX_SNAPSHOT_ENTITIES < 255,
+    "the baseline index masks with SLOTS-1 and stores index+1 in a byte"
+);
+
+/// Home slot for an entity id. The Fibonacci mix `collide::ColIndex` and
+/// `occupy::SlotCache` already use, for the reason they use it: player ids
+/// are minted `(generation << 8) | slot` and mob ids share a high tag, so
+/// the low bits alone would pile a whole class onto one line.
+#[inline]
+fn bl_home(id: u32) -> usize {
+    (id.wrapping_mul(2_654_435_761) >> 16) as usize & (BASELINE_INDEX_SLOTS - 1)
 }
 
 impl<'a, 'b> SnapshotEncoder<'a, 'b> {
@@ -1862,6 +1900,17 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         if header.baseline_age == 0 && !baseline.is_empty() {
             return Err(WireError::Malformed);
         }
+        // A baseline is a snapshot that was **sent**, and `add_entity`
+        // refuses past `MAX_SNAPSHOT_ENTITIES`, so a longer one cannot
+        // exist and is a caller bug. Refused rather than truncated, for
+        // the reason above it: silently indexing the first 64 and letting
+        // the tail encode absolute would still produce a legal datagram,
+        // which is exactly how a caller with a broken baseline would never
+        // find out. It is also what makes `bl_index`'s half-load argument a
+        // checked precondition instead of a comment.
+        if baseline.len() > MAX_SNAPSHOT_ENTITIES {
+            return Err(WireError::Cap);
+        }
         let mut w = BitWriter::new(buf);
         w.write(KIND_SNAPSHOT, KIND_BITS)?;
         w.write(header.tick, 32)?;
@@ -1872,16 +1921,58 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         w.write(0, COUNT_BITS)?;
         let entity_count_at = w.bit_pos();
         w.write(0, COUNT_BITS)?;
+        // The baseline index, filled only when there is a baseline to index
+        // — a zero-state snapshot has none by definition and would pay a
+        // table for nothing. The length check above is what bounds the fill
+        // at half the table's slots, so an empty slot always exists and
+        // both probe loops terminate.
+        let has_baseline = header.baseline_age != 0;
+        let mut bl_index = [0u8; BASELINE_INDEX_SLOTS];
+        if has_baseline {
+            for (i, e) in baseline.iter().enumerate() {
+                let mut ix = bl_home(e.id);
+                while bl_index[ix] != 0 {
+                    ix = (ix + 1) & (BASELINE_INDEX_SLOTS - 1);
+                }
+                bl_index[ix] = (i + 1) as u8;
+            }
+        }
         Ok(Self {
             w,
             baseline,
-            has_baseline: header.baseline_age != 0,
+            has_baseline,
+            bl_index,
             removed_count_at,
             entity_count_at,
             removed: 0,
             entities: 0,
             entity_started: false,
         })
+    }
+
+    /// Which baseline record carries `id`, or `None`. What
+    /// `baseline.iter().find(|b| b.id == id)` answered, in a probe.
+    ///
+    /// An index rather than the record, so the caller can copy the record
+    /// out and stop borrowing `self` — `encode_delta` needs `&mut self`,
+    /// and `EntityState` is `Copy` precisely so that costs nothing. The
+    /// probe terminates because `begin` never inserts more than
+    /// `MAX_SNAPSHOT_ENTITIES` entries into twice as many slots, so an
+    /// empty slot always exists to stop on.
+    #[inline]
+    fn baseline_ix(&self, id: u32) -> Option<usize> {
+        let mut ix = bl_home(id);
+        loop {
+            let slot = self.bl_index[ix];
+            if slot == 0 {
+                return None;
+            }
+            let i = slot as usize - 1;
+            if self.baseline[i].id == id {
+                return Some(i);
+            }
+            ix = (ix + 1) & (BASELINE_INDEX_SLOTS - 1);
+        }
     }
 
     /// An entity that left the interest set. Must precede every
@@ -1924,7 +2015,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
     fn encode_entity(&mut self, e: &EntityState) -> Result<(), WireError> {
         self.w.write(e.id, 32)?;
         if self.has_baseline {
-            if let Some(b) = self.baseline.iter().find(|b| b.id == e.id) {
+            if let Some(b) = self.baseline_ix(e.id).map(|i| self.baseline[i]) {
                 let dx = e.qx as i64 - b.qx as i64;
                 let dy = e.qy as i64 - b.qy as i64;
                 let dz = e.qz as i64 - b.qz as i64;
@@ -1935,7 +2026,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
                     && fits(dy, DPOS_Y_BIAS, DPOS_Y_BITS)
                     && fits(dz, DPOS_XZ_BIAS, DPOS_XZ_BITS)
                 {
-                    return self.encode_delta(e, b, dx, dy, dz);
+                    return self.encode_delta(e, &b, dx, dy, dz);
                 }
             }
         }
@@ -2247,6 +2338,80 @@ mod tests {
             SnapshotEncoder::begin(&mut buf, &hdr, &baseline),
             Err(WireError::Malformed)
         ));
+    }
+
+    /// A baseline longer than a snapshot can carry is a caller bug, and the
+    /// encoder says so rather than indexing what fits. The cap is also what
+    /// keeps `bl_index` under half load, so this is the gate on the probe
+    /// terminating as well as on the refusal.
+    ///
+    /// Both sides, because a refusal that also refuses the legal case is a
+    /// worse bug than the one it prevents: exactly `MAX_SNAPSHOT_ENTITIES`
+    /// is the largest baseline the fill can produce and it must be accepted.
+    #[test]
+    fn a_baseline_longer_than_a_snapshot_is_refused() {
+        let hdr = SnapshotHeader {
+            tick: 1,
+            baseline_age: 1,
+            last_executed_seq: 0,
+            nudge: Nudge::Ok,
+        };
+        let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
+        let full: Vec<EntityState> = (0..MAX_SNAPSHOT_ENTITIES as u32).map(ent).collect();
+        assert!(
+            SnapshotEncoder::begin(&mut buf, &hdr, &full).is_ok(),
+            "a full baseline is what the fill loop produces every snapshot"
+        );
+        let over: Vec<EntityState> = (0..MAX_SNAPSHOT_ENTITIES as u32 + 1).map(ent).collect();
+        assert!(matches!(
+            SnapshotEncoder::begin(&mut buf, &hdr, &over),
+            Err(WireError::Cap)
+        ));
+    }
+
+    /// The baseline lookup is an index now, not a scan, and the delta it
+    /// picks has to be the record `iter().find` would have picked. Every id
+    /// in a full baseline, looked up through the real encode path: a probe
+    /// that lost one would encode absolute, which is legal on the wire and
+    /// therefore invisible to a golden — so the byte length is what tells.
+    #[test]
+    fn every_baseline_id_is_found_by_the_index() {
+        let hdr = SnapshotHeader {
+            tick: 2,
+            baseline_age: 1,
+            last_executed_seq: 0,
+            nudge: Nudge::Ok,
+        };
+        // Ids shaped like the shard's: `(generation << 8) | slot` for
+        // players and the mob tag above them, so the probe meets the same
+        // clustering the real table does.
+        let baseline: Vec<EntityState> = (0..MAX_SNAPSHOT_ENTITIES as u32)
+            .map(|i| {
+                ent(if i < 40 {
+                    (1 << 8) | i
+                } else {
+                    0x4000_0000 | i
+                })
+            })
+            .collect();
+        let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &baseline).expect("begin");
+        for b in &baseline {
+            // Identical to its baseline record: a found delta writes the id
+            // plus six flag bits and nothing else.
+            assert_eq!(enc.add_entity(b), Ok(()), "entity {} did not fit", b.id);
+        }
+        let len = enc.finish().expect("finish");
+        // 64 entities × (32 id bits + 6 delta bits) plus the header; an
+        // absolute record is 32 + 66 bits, so a single missed lookup adds
+        // 60 bits and this bound catches it.
+        let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + COUNT_BITS * 2;
+        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 38).div_ceil(8);
+        assert_eq!(
+            len, want,
+            "the encoder wrote {len} B where {want} B is every entity delta-coded \
+             — a baseline id the index failed to find fell back to absolute"
+        );
     }
 
     #[test]

@@ -520,7 +520,27 @@ pub fn weak_mark8(seed: u64, cx: u16, cz: u16, pid: u32, n: u16) -> u8 {
 
 /// One player's swing gate + target pick + payout. Called every tick for
 /// every active player, after movement — bounded: 3×3 scatter cells
-/// scanned only on a swing tick.
+/// scanned only on a swing tick, and read through the same memo the
+/// collision path uses (`cache`).
+///
+/// **That memo is not an optimisation here, it is the difference between a
+/// smooth tick and a spike**, and this function was the one caller in the
+/// tick that went around it. `occupy.rs` says why in its own words — a
+/// `terrain::scatter` is ~60 `noise2` evaluations, so a 3×3 ring resolved
+/// cold is ~540 — and it says a movement step must never re-derive slots
+/// that way. A swing is not a movement step, but it reads the *same nine
+/// cells at the same position on the same tick*, so the lines it wants are
+/// the ones `Occupants::blocks` just filled. Measured 2026-08-11 with
+/// `server/bin/profile.rs` at `MAX_PLAYERS`: a hundred bodies whose swing
+/// cooldowns had lined up cost 1.9 ms in one `World::tick` against a 33 ms
+/// budget — an 8× spike over the same shard's average — and cold scatter
+/// was all of it. `SWING_INTERVAL_TICKS` makes that alignment a normal
+/// event, not a contrivance: everyone who spawns together swings together.
+///
+/// Exact, not approximate, for `SlotCache`'s stated reason: scatter is a
+/// pure function of `(seed, cell)`, so a hit and a miss return the same
+/// bits and eviction can only change how long an answer took. The cache is
+/// not sim state and is not hashed.
 ///
 /// Returns `Swing::Free` when a swing was taken and nothing absorbed it —
 /// the cadence is paid and the arm is still moving, so the caller hands it
@@ -537,6 +557,7 @@ pub fn swing(
     lc: &LootContent,
     scatter: &ScatterTable,
     haven: &terrain::Haven,
+    cache: &mut crate::occupy::SlotCache,
     lives: &mut SlotLives,
     events: &mut EventQueue,
     p: &mut Player,
@@ -561,7 +582,7 @@ pub fn swing(
         while dx_cell <= 1 {
             let cx = pcx + dx_cell;
             let cz = pcz + dz_cell;
-            let s = terrain::scatter(seed, scatter, haven, cx, cz);
+            let s = cache.slot(seed, scatter, haven, cx, cz);
             if let Some(ni) = target_index(s.occupant) {
                 let dx = s.x - px;
                 let dy = s.y - py;
