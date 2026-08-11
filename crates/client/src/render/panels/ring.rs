@@ -20,7 +20,7 @@
 //! resolves the pointer with, so what is drawn and what is picked cannot
 //! disagree — the wheel's oldest rule, kept.
 //!
-//! Colours are measured off `Rust Images/building.jpeg` by locating the ring
+//! Colours are measured off the reference `building.jpeg` by locating the ring
 //! programmatically (bright, low-saturation pixels; centre and radii from
 //! their distribution) rather than by eye: the band is `#f5e7dd` and the
 //! chosen wedge is `#d13f28`.

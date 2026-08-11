@@ -9,7 +9,8 @@
 //! height taps plus an apron — real work, but work done once, on the first
 //! open, off the join path. `web/src/map.js` reached the same conclusion for
 //! the same reason and is explicit that doing it at boot would put it where
-//! `browser_smoke` measures time-to-world.
+//! `browser_smoke` measured time-to-world — that gate is deleted, and the
+//! reasoning is kept because it is about the join path, not about the gate.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::Image;

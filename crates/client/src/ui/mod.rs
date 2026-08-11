@@ -17,7 +17,7 @@
 //!   move verb's marshalling, which `CLAUDE.md` names as the most
 //!   bug-prone thing in the reference: three Oxide fixes in 28 minutes on
 //!   one day, all landing as *the server disconnecting the client*.
-//! - [`craft`] — the craft panel behind `Rust Images/crafting.png`:
+//! - [`craft`] — the craft panel behind the reference `crafting.png`:
 //!   category rail, search, the detail pane, and the
 //!   AMOUNT/ITEM TYPE/TOTAL/HAVE ingredient table.
 //! - [`build`] — the radial build menu. Shape on the outer ring, material

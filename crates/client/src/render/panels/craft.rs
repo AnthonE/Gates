@@ -1,5 +1,5 @@
 //! The craft half of the inventory screen — the frame in
-//! `Rust Images/crafting.png`, built out of `crate::ui::craft`'s arithmetic.
+//! the reference `crafting.png`, built out of `crate::ui::craft`'s arithmetic.
 //!
 //! Four regions, each answering one of the questions the reference frame
 //! answers and ours did not (`MENUS.md` §3):

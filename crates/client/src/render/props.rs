@@ -11,8 +11,10 @@
 //! `web/src/props.js` reached after three passes of stacking cones: a
 //! conifer's canopy is made of alpha cards and an opaque hull cannot get there
 //! from any amount of geometry. `pine_mesh` stays because the far LOD still
-//! wants a cheap opaque silhouette to bake a billboard from, and
-//! `ci/pine_shape.mjs` still scores the browser's copy of it.
+//! wants a cheap opaque silhouette to bake a billboard from. (This used to
+//! add that `ci/pine_shape.mjs` "still scores the browser's copy of it" — the
+//! gate and the copy both went with the browser client, so nothing scores this
+//! silhouette now; `crates/client/tests/tree.rs` is the shape that survived.)
 //!
 //! The one thing not carried across yet is the per-instance colour tint. The
 //! browser had it per instance because it drew through an `InstancedMesh`
@@ -437,8 +439,9 @@ impl Soup {
 /// with a polygon edge cannot get there from any amount of geometry. But the
 /// far LOD is a different problem — a billboard bake needs a cheap opaque
 /// silhouette to render from, and 104 triangles that already measure inside
-/// `PINE_MAX_R` is the right starting point. `props.js` keeps its cone builder
-/// for the same role, and `ci/pine_shape.mjs` still scores that one.
+/// `PINE_MAX_R` is the right starting point. `props.js` kept its cone builder
+/// for the same role and `ci/pine_shape.mjs` scored that one; both went with
+/// the browser client, so this silhouette is ungated.
 #[allow(
     dead_code,
     reason = "the far-LOD silhouette, per TERRAIN.md §4; see above"
@@ -871,7 +874,7 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
         Occupant::Rock => blob_mesh(1.5, 0.52, 0x1b87_3593, 0x8e887c, 3, true),
         // ⚠ THE MEASURED DRUM IS 0.585 x 0.88 AND THIS IS NOT IT, on purpose.
         // A 55-gallon drum is 1.5x taller than wide; 0.9 across by 0.95 tall is
-        // near-spherical and ~44% too fat, and `Rust Images/barrelroad` plus
+        // near-spherical and ~44% too fat, and the reference `barrelroad` plus
         // Meshy's independent `auto_size` estimate both say so. It stays wrong
         // here because the number is HALF of a pair: `OCCUPANT_R_M[BarrelSlot]`
         // in sim-core blocks 0.45, and `greybox.rs`'s

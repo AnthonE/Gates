@@ -131,7 +131,7 @@ meshes are "the same deal when the time comes". This is that.
 **It is a rig, not a character.** That matters more than it sounds. Every other
 reachable CC0 humanoid pack is *stylized low-poly*, which would commit the game
 to an art direction the operator has not spoken — and the one that IS spoken is
-`Rust Images/`, like-for-like (`DECISIONS.md` 2026-08-01). A featureless
+the reference set, like-for-like (`DECISIONS.md` 2026-08-01). A featureless
 mannequin at human proportions reads as "player, untextured" rather than as the
 wrong style, so it can be replaced by a clothed survivor later without anything
 around it changing. The clips are the durable half; the mesh is scaffolding.

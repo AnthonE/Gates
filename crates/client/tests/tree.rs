@@ -14,7 +14,8 @@
 //!
 //! It runs headless — no GPU, no window, no shard. The generator is a pure
 //! function and geometry is countable, which is the same reason
-//! `ci/pine_shape.mjs` is arithmetic rather than a screenshot.
+//! `ci/pine_shape.mjs` was arithmetic rather than a screenshot (that gate is
+//! deleted; this suite is the native shape of the same idea).
 
 #![cfg(feature = "render")]
 

@@ -51,7 +51,7 @@ alpha. `DECISIONS.md` §open has the row; nothing is spoken.
 
 Three findings in it are about the tree rather than the fiction:
 
-- **`ART.md`'s bar and the visual rubric are measured off `Rust Images/`,
+- **`ART.md`'s bar and the visual rubric are measured off the reference set,
   and the rubric is checksummed outside this repo.** If the register
   changes, every visual pass is scored against pine-and-granite while
   building obsidian, and the builder cannot fix it. Three operator acts —
@@ -247,7 +247,7 @@ disagree with the real object. `OCCUPANT_R_M[BarrelSlot]` is **0.45** and its
 comment cites `CylinderGeometry(0.45, 0.45, 0.95)` — the deleted browser
 client's geometry, i.e. a guess carried forward. A 55-gallon drum is **0.585 m
 across by 0.88 tall** (1.5x taller than wide); 0.9 x 0.95 is near-spherical and
-~44% too fat. Two independent sources agree: `Rust Images/barrelroad`, and
+~44% too fat. Two independent sources agree: the reference set’s `barrelroad`, and
 Meshy's `auto_size` vision estimate landing on 0.880 x 0.585 unprompted
 (2026-08-11).
 

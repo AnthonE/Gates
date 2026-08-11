@@ -3,7 +3,7 @@
 //!
 //! The whole screen is one tree — crafting on the left, the detail pane on
 //! the right, the queue under them, your inventory and the container along
-//! the bottom — because that is what `Rust Images/inventory.jpeg` is. A
+//! the bottom — because that is what the reference `inventory.jpeg` is. A
 //! player pulls something out of a box and crafts with it without closing
 //! anything.
 //!

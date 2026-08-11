@@ -15,10 +15,10 @@
 //! **Normals are analytic, never from the triangulation.** A heightfield that
 //! takes its normal from its own triangles renders its own tessellation:
 //! every quad's diagonal shows up as a shading crease that moves when the LOD
-//! does. `ci/bump_basis.mjs` holds that arithmetic as a gate for the browser
-//! and the property it asserts — the world-XZ gradient is continuous across a
-//! triangle edge — is a property of central differences, which is what this
-//! takes. The gate is language-agnostic; only its caller is JS.
+//! does. The property that matters — the world-XZ gradient is continuous
+//! across a triangle edge — is a property of central differences, which is
+//! what this takes. `ci/bump_basis.mjs` held it as a gate and went with the
+//! browser client, so the arithmetic is still right and nothing checks it.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};

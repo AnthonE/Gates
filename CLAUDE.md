@@ -31,10 +31,14 @@ history; never restore it to the tree.
 refuses a drift between them" is a claim that **something is enforced**, and
 eleven deleted gates make many of those false in the present tense — the doc
 reads as covered while nothing checks it. Swept 2026-08-09 in the `.md`
-files. **`crates/` was not swept**: `grep -rn 'ci/[a-z_]*\.mjs\|browser_smoke'
-crates/` returns 33 citations and only 2 say the gate is gone, so assume a
-doc comment naming a `.mjs` gate is describing something that no longer runs.
-The first mirror anybody actually re-checked had drifted (`TERRAIN.md` §7.1).
+files and **2026-08-11 in `crates/`**, which had been the outstanding half:
+15 doc comments claimed a deleted gate in the present tense ("still scores",
+"holds the two equal", "refuses a drift") and now name it in the past with the
+consequence stated, which is usually *nothing enforces this now*. Three gates
+cited from `crates/` are still live — `knob_registry.mjs`, `parity.mjs`,
+`haven_prize.mjs` — and eleven are gone, so the check when you add a citation
+is `ls` the file, not memory. The first mirror anybody actually re-checked had
+drifted (`TERRAIN.md` §7.1).
 
 **Bevy draws, it does not decide.** `sim-core` keeps the walls and
 `ClientCore` keeps prediction, so gameplay state never enters the ECS, where
@@ -68,7 +72,7 @@ pays the same doors and earns the same coins as a human.
 | `CONTENT.md` | every item/recipe/damage/loot number, as data schemas | numbers live here, never in code |
 | `ALPHA.md` | the alpha cut, staged economy arming (A1→A2→A3) | |
 | `BUSINESS.md` | what we sell: IAP, the entry price, and the one thing that stays out (an advantage over another player) | **product, not engineering** — read it when building the store, never otherwise. Nothing in `crates/` reads it |
-| `ART.md` | the art bible: measured targets off `Rust Images/`, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
+| `ART.md` | the art bible: measured targets off the reference set, the hard visual rules, the review checklist | **the visual bar; the art rubric scores against it** |
 | `DECISIONS.md` | dated operator calls; **the knob registry** | authoritative on every **(knob)** |
 | `MENUS.md` | the interaction surface audit: every screen and verb, ours against the reference, measured off the two Rust mod loaders' hook tables | **owns nothing** — a survey to cut items from, never a queue |
 | `RENDER.md` | the **native** client's render path: the Bevy-draws-not-decides boundary, the slice order, the native visual gate, the budgets | owns the path, never the bar — `ART.md` outranks it everywhere |
@@ -374,7 +378,7 @@ Two judges score every pass and neither is the builder — and since harness v2
 ends its pass on its branch, gates green and unmerged; the runner spawns the
 judge holding `judge/RUBRIC.md` (ten procedural checks — the merge gate) and
 performs the merge itself on a PASS, then captures and spawns the visual judge
-holding `art/RUBRIC.md` (ten visual criteria against `Rust Images/`). Both
+holding `art/RUBRIC.md` (ten visual criteria against the reference set). Both
 reports end in a `## Ranked gaps` section, and those gaps — not `NOW.md` — are
 where the loop's direction is supposed to come from. Read the newest pair
 before you steer.

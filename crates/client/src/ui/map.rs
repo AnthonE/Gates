@@ -11,7 +11,7 @@
 //!
 //! ## The palette is a claim, not a starting point
 //!
-//! Read off `Rust Images/mapraw.jpg`, the one reference frame that is a map
+//! Read off the reference `mapraw.jpg`, the one reference frame that is a map
 //! and nothing else. The four ground colours are close in VALUE and far apart
 //! in HUE deliberately: the reference map reads as terrain because relief does
 //! the work and the biome tint is a wash over it, so a palette with strong

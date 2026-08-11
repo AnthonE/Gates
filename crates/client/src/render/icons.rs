@@ -1,6 +1,6 @@
 //! Item, building-shape and hammer-verb icons.
 //!
-//! **Why this exists.** Every cell in `Rust Images/crafting.png` is a picture
+//! **Why this exists.** Every cell in the reference `crafting.png` is a picture
 //! of the thing; every cell of ours was a clipped word (`Gunpowde`,
 //! `Workbenc`). That is the difference between a screen you scan and a screen
 //! you read, and it is why the panels looked like a spreadsheet no matter

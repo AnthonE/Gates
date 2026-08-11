@@ -15,7 +15,7 @@
 //!
 //! | screen | key | reference frame |
 //! |---|---|---|
-//! | inventory + crafting | `Tab` | `Rust Images/inventory.jpeg`, `crafting.png` |
+//! | inventory + crafting | `Tab` | the reference `inventory.jpeg`, `crafting.png` |
 //! | container | opens itself when the sim says one is open | `storageandtoolchest.jpeg` |
 //! | build wheel | hold right, building plan in hand | the radial in the operator's second frame |
 //! | hammer wheel | hold right, hammer in hand | the reference's second radial ("right click when equipped for more options") |

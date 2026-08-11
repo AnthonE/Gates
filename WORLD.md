@@ -474,7 +474,7 @@ gate over a stale number.**
 
 ### 8.1 · The art rubric scores against the wrong world ⚠
 
-`ART.md` is measured off `Rust Images/` — eighteen frames of a temperate
+`ART.md` is measured off the reference set — eighteen frames of a temperate
 pine-and-granite island — and the loop's visual judge scores every pass
 against `gates-loop/art/RUBRIC.md`, which lives **outside this repo and is
 checksummed between passes** precisely so a builder cannot edit the criteria
@@ -490,7 +490,7 @@ as *"rip rust for now"* and said in the same row: *"Revisit when a concrete
 palette is spoken; that changes the style section of the visual rubric only,
 never the ten criteria."* This is that revisit. Three things, all operator
 acts: a spoken palette; a reference set for the new register (the equivalent
-of `Rust Images/`, because `ART.md`'s authority comes entirely from being
+of the reference set, because `ART.md`'s authority comes entirely from being
 *measured*); and the rubric's style section updated to point at it.
 
 **Until all three exist, no visual pass should chase this direction.** The
