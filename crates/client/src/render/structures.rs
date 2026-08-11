@@ -103,9 +103,11 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 const DEPLOY: [([f32; 3], Color, f32, f32); 10] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
-    // the body that spawns on it.
+    // the body that spawns on it. The 0.32 thickness is the pillow end, not
+    // the quilt — measured off the mesh, which was height-clamped to 1.35 m
+    // long by an earlier 0.22 that described flat fabric and forgot the head.
     (
-        [1.9, 0.22, 0.75],
+        [1.9, 0.32, 0.8],
         Color::srgb(0.478, 0.612, 0.306),
         0.92,
         0.0,
@@ -442,7 +444,40 @@ pub fn base_transform(seed: u64, (cx, cz, level, loc): Addr) -> Transform {
     Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw))
 }
 
-fn build_kit(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>) -> Kit {
+/// The generated mesh for an archetype, or `None` where the greybox cuboid is
+/// still what draws. Index-aligned with [`DEPLOY`], which is what keeps a new
+/// archetype from silently inheriting its neighbour's model.
+///
+/// **A row here overrides both the mesh AND the material**, because a `.glb`
+/// carries its own PBR set and the flat colour beside it in `DEPLOY` exists
+/// only to make a cuboid legible. The colour columns stay on the covered rows
+/// rather than being deleted: the build ghost still reads `deploy_size`, and a
+/// row whose model fails to load falls back to a shape rather than to nothing.
+///
+/// Generated 2026-08-11 (`DECISIONS.md`, and `assets/models/MANIFEST.md` for
+/// the per-asset prompt and task id). Sized by `ci/import_meshy.py` against
+/// this file's own [`DEPLOY`] row, never by the generator's estimate — the
+/// reasons are in that script's header and the measurements in `DECISIONS.md`.
+pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
+    Some("models/deploy/bag.glb"),       // 0 bag
+    Some("models/deploy/hearth.glb"),    // 1 hearth
+    Some("models/deploy/box.glb"),       // 2 box
+    Some("models/deploy/fire.glb"),      // 3 fire
+    None,                                // 4 furnace — greybox
+    Some("models/deploy/workbench.glb"), // 5 workbench
+    None,                                // 6 door — a door is a slab, and the
+    // one archetype whose material is state (`door_locked`), so a baked PBR
+    // set would have to be swapped rather than tinted.
+    None, // 7 lock — never drawn
+    None, // 8 recycler — greybox
+    None, // 9 research table — greybox
+];
+
+fn build_kit(
+    assets: &AssetServer,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
+) -> Kit {
     let tier = std::array::from_fn(|i| {
         let (base_color, perceptual_roughness, metallic) = TIER[i];
         materials.add(StandardMaterial {
@@ -452,18 +487,43 @@ fn build_kit(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>
             ..default()
         })
     });
-    let deploy_mesh = std::array::from_fn(|i| {
-        let [w, h, d] = DEPLOY[i].0;
-        meshes.add(Cuboid::new(w, h, d))
+    // A generated asset is one mesh with one primitive and one material —
+    // asserted by `tests/deploy_assets.rs`, because `Primitive { mesh: 0,
+    // primitive: 0 }` would silently draw a fraction of a multi-part model.
+    // Loading the primitive rather than the scene is deliberate: it lands in
+    // the same `Handle<Mesh>` the cuboid used, so `spawn_deploy` is unchanged.
+    // The cost is that a node transform would be dropped — which is exactly
+    // why `ci/import_meshy.py` bakes scale into the vertices.
+    let deploy_mesh = std::array::from_fn(|i| match DEPLOY_ASSET[i] {
+        Some(path) => assets.load(
+            GltfAssetLabel::Primitive {
+                mesh: 0,
+                primitive: 0,
+            }
+            .from_asset(path),
+        ),
+        None => {
+            let [w, h, d] = DEPLOY[i].0;
+            meshes.add(Cuboid::new(w, h, d))
+        }
     });
-    let deploy_mat = std::array::from_fn(|i| {
-        let (_, base_color, perceptual_roughness, metallic) = DEPLOY[i];
-        materials.add(StandardMaterial {
-            base_color,
-            perceptual_roughness,
-            metallic,
-            ..default()
-        })
+    let deploy_mat = std::array::from_fn(|i| match DEPLOY_ASSET[i] {
+        Some(path) => assets.load(
+            GltfAssetLabel::Material {
+                index: 0,
+                is_scale_inverted: false,
+            }
+            .from_asset(path),
+        ),
+        None => {
+            let (_, base_color, perceptual_roughness, metallic) = DEPLOY[i];
+            materials.add(StandardMaterial {
+                base_color,
+                perceptual_roughness,
+                metallic,
+                ..default()
+            })
+        }
     });
     // The piece meshes, from the shared table and nowhere else. Dedup is by
     // exact size — the sizes that repeat are the same expressions evaluated
@@ -514,6 +574,7 @@ fn build_kit(meshes: &mut Assets<Mesh>, materials: &mut Assets<StandardMaterial>
 pub fn stream(
     mut commands: Commands,
     mut ring: ResMut<StructRing>,
+    assets: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     world: Res<WorldId>,
@@ -524,7 +585,7 @@ pub fn stream(
     // `pieces` is a conflict until the struct is split like this.
     let ring = &mut *ring;
     if ring.kit.is_none() {
-        ring.kit = Some(build_kit(&mut meshes, &mut materials));
+        ring.kit = Some(build_kit(&assets, &mut meshes, &mut materials));
     }
     let kit = ring.kit.as_ref().expect("built above");
     let core = &net.session.core;
