@@ -73,6 +73,41 @@ input to `biome(h, moist)` (`terrain.rs:263`) plus regenerated terrain
 goldens. `WORLD.md` §9.2 has the full order, and §9.1 the timing: **decide
 the register early, build it late.**
 
+## 0gh · The GitHub job-agent seam — the door is built; three acts remain *(operator lane + docs)*
+
+Assessed 2026-08-11; the write-up is scry-forge `docs/builders/GITHUB-JOBS.md`.
+Built already: `AGENTS.md` §the deal, the PR template's submit line, `gates`
+CI on every code PR, 100,000 SCRY standing on scry's board (`DECISIONS.md`
+2026-08-09). The board's paid ledger is `[]`; no outside fork has opened a PR.
+
+- **(operator, GitHub)** Branch protection on `main` requiring the `gates`
+  check — PRs #56–58 merged over days of red CI before the toolchain pin
+  (`DECISIONS.md` §open, the compiler); until GitHub enforces it the merge
+  gate is policy. Caveat: the workflow path-filters, so a docs-only PR
+  reports no check; the fix is a same-named instant no-op for those paths.
+- **(operator, wallet)** Sign `scry.sig.json` seq 1 — and the tooling is
+  already here, so **no key is ever pasted**: `./ci/scry_manifest.py
+  --print` shows the exact text, sign it in whatever holds the steward
+  key, then `./ci/scry_manifest.py --sign --seq 1 --signature 0x…
+  --wallet 0x…`. Unsigned, scry applies nothing — the store row and
+  update feed are wired and inert. **It now buys more than the row:**
+  scry's manifest standard grew a `jobs` block (`GAME-REPO.md` §4b), so
+  once signed, this repo posts its own board lane's picked work from
+  `scry.json` — guidance rows, never a price — and the six rows scry
+  currently keeps house-side move here.
+- **(operator, once)** Settle `gates-pr` end to end on the next accepted
+  PR: pay by public transfer, append the row scry-side — the board's
+  `settled_to_a_worker` stops being zero in public.
+- **(operator, GitHub)** The repo description still says "three.js
+  frontend" — stale since the browser cut, and it is the first line a
+  stranger reads above `AGENTS.md`. GitHub → About; no API path for it here.
+- ~~Milestones live twice~~ — **done 2026-08-11.** `DESIGN.md` §11 owns
+  the arc, §7 here points at it, M0's seven dead checkboxes are prose.
+
+Not owed, stated so it is not re-litigated: no issues queue (this file is
+the queue), no auto-pay or auto-merge (merge is the act that pays, a hand
+act), no webhook (the store seam stays a commit and a poke).
+
 ## 0sp · The tick has been profiled — where it goes *(server lane)*
 
 `crates/server/src/bin/profile.rs` (new, 2026-08-11) builds the stated worst
@@ -1216,30 +1251,44 @@ narrowing what decodes. One protocol pass. Systems lane (`crates/protocol`).
 
 ---
 
-## 7 · Milestones
+## 7 · Milestones — the arc is `DESIGN.md` §11; this is what the queue adds
 
-13. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
-14. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
-    projectiles · the anomaly log.
-15. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch · the
-    claim rail · shard ops.
-16. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle.
-17. **M4 — arm A2, then A3** (operator acts): claim rail export · skin rail
-    · the desktop launcher.
-18. **Anti-ESP occlusion culling** — the measure the genre proved
+**Read the arc there, not here.** M0 (landed) → M1 survival verbs → M2
+combat true → M3 OBOL → M4 the counter and the door, with each one's exit
+condition. `ALPHA.md` §6 folds into the same section, and this list used to
+restate it under a second numbering — two lists, one arc, drifting apart.
+Struck 2026-08-11; nothing was lost, because everything struck was a
+paraphrase of §11.
+
+Two gates sit **between** those milestones and belong to the queue rather
+than to the arc:
+
+- **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle,
+  after M3 and before A2/A3 arming (`ALPHA.md` §2). A loop proposes it and
+  never runs it.
+- **Arming A2, then A3** is an operator act, not a milestone anyone here
+  completes (`CLAUDE.md` §loop discipline).
+
+And two items the arc does not carry, which stay real work:
+
+1. **Anti-ESP occlusion culling** — the measure the genre proved
     (Facepunch, 2025, network-wide default). Server-side, costs no client
     trust, and the occlusion grid is a pure function of the seed, so it is
     bakeable at worldgen and a lookup in the tick. Sequence after M2: it
     wants real sightlines to tune against.
-19. **The launcher, in Rust, with the wallet in it** (`DECISIONS.md`
-    2026-08-04). One static binary, `egui`, no webview: patcher, shard
-    list, balances, and a self-custody wallet on `alloy` signing the
-    EIP-191 join the server already accepts — so no protocol moves and
-    nothing enters the sim's blast radius. Key backup is the feature, not a
-    footnote: phrase shown once and confirmed back, encrypted keystore
-    only, never logged and never in the WAL, and the plain sentence that
-    the operator holds no keys and can restore nothing. It is the
-    platform's client for the whole cascade, not a Gates accessory.
+2. **~~The launcher, in Rust, with the wallet in it~~ — BUILT, and not in
+    this repo** (`DECISIONS.md` 2026-08-04 asked for it). It shipped in
+    `scry-forge` as `launcher-rs/` — one binary with no runtime to install,
+    an account generated on the holder's machine and written as an
+    encrypted keystore, and both our depots published and notarized on
+    2026-08-10. It reached this list because the row itself said it is
+    *"the platform's client for the whole cascade, not a Gates
+    accessory"* — which is exactly why it was never ours to build. **What
+    is still ours** is the seam: `crates/client/src/scry_overlay.rs` stays
+    byte-identical to the SDK upstream (`CLAUDE.md` §vendored), and
+    `ci/shardlist.py` writes the document the launcher's Servers window
+    reads. Derive the launcher's real state from scry, never from this
+    line.
 
 Standing rule: anything a playtest breaks jumps this queue; anything a wall
 catches jumps the playtest.
