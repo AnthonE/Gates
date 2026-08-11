@@ -73,6 +73,38 @@ input to `biome(h, moist)` (`terrain.rs:263`) plus regenerated terrain
 goldens. `WORLD.md` §9.2 has the full order, and §9.1 the timing: **decide
 the register early, build it late.**
 
+## 0sp · The tick has been profiled — where it goes *(server lane)*
+
+`crates/server/src/bin/profile.rs` (new, 2026-08-11) builds the stated worst
+case — `MAX_PLAYERS` in one AOI cell, roster alive, store filled, everyone
+acking and swinging — and splits sim from netcode by ablation. **Not a gate
+and must not become one**: it reports elapsed time. `valgrind
+--tool=callgrind` gives the per-function ranking, the half this box repeats.
+
+**It settles half of §0q item 4.** A full tick at 100 clients is ~0.8 ms of
+33.3; the AOI scan is O(clients × (players + mobs)) and ~0.24 ms of it, so
+**the linear scan needs no spatial structure** — the soak still owes jitter
+and real bytes. `state_hash` is 85 µs one tick in 32 and `encode_world`
+24 µs one in 1,800: `reference/SAVES.md` §4's freeze is not ours.
+
+Landed with it, −28 % instructions: `movement::step`'s duplicate terrain
+fan; the AOI rank sort → two selections (the single largest item, ~23 %),
+gated by `snapshot_budget.rs`'s `the_rank_band_agrees_with_a_full_sort…`;
+the encoder's quadratic baseline scan; a whole-field `BitWriter::write`; and
+the one that was a **spike** — `gather::swing` read `terrain::scatter` cold
+instead of through `SlotCache`, so a hundred aligned swing cooldowns cost
+1.9 ms in one `World::tick`, now 0.28.
+
+Open: the encoder is now the largest phase (~0.43 ms of the 0.83), and
+`World::scatter_clear` still resolves cells cold per spawn pick — a respawn
+storm would show it the way the swing did. **And the same defect is next
+door, worse** *(client lane, not taken — one owner per crate)*:
+`ui::interact::resolve_swing` does the identical cold 3×3 scan and
+`render/verbs.rs` calls it **every frame**, ~540 `noise2` at 60 Hz against
+the server's once per 38 ticks. Same three-line fix.
+
+---
+
 ## 0n1 · The class-S join walk has no interest filter *(server lane)*
 
 `reference/NETWORK.md` §9.2.1, measured 2026-08-10. `pump_events` drips the
@@ -811,7 +843,10 @@ is `crates/`/wire work no single-surface lane may take.
    against a dev shard, held an hour — tick jitter, WAL append rate,
    per-client bandwidth recorded as counts and bytes, never wall-clock
    asserts (`CLAUDE.md`'s clock rule). The numbers land in a `DECISIONS.md`
-   §open row as the measured baseline.
+   §open row as the measured baseline. **The AOI half is settled without
+   it** (§0sp, 2026-08-11): 100 clients in one cell cost ~0.8 ms of a
+   33.3 ms tick, so the linear scan needs no spatial structure. What a soak
+   still owes is what a profiler cannot see — sockets, jitter, real bytes.
 
 ---
 

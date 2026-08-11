@@ -455,6 +455,7 @@ where the sim says.
 
 | thing | number |
 |---|---|
+| **the tick itself, 100 clients in one AOI cell, all acking, all swinging** | **~0.8 ms of the 33.3 ms budget** — sim ~0.15, interest + events + drip ~0.24, snapshot encode ~0.43. Measured 2026-08-11, `cargo run --release -p server --bin profile`; the periodic whole-world passes are `state_hash` 85 µs one tick in 32 and `encode_world` 24 µs one tick in 1,800. The one row here that was never measured, and the reason the AOI scan needs no spatial structure |
 | class D entities in a client's interest set, typical / cap | ~15 / 64 |
 | per-client downstream, steady | ≤ 20 kB/s (snapshots) + bursts on approach (chunk streams) |
 | chunk full-state, dense base chunk | ≤ 24 kB (1,500 blocks × 16 B) |

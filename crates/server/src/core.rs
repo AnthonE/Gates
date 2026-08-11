@@ -2357,6 +2357,14 @@ impl ShardCore {
 
         // --- pass 1: measure, and settle what the rank has no say in.
         let mut d2_of = [ABSENT; CANDIDATES];
+        // The same measurements again, compacted to the candidates that
+        // actually exist, in index order — pass 2's field. Built here
+        // rather than in a scan of its own because pass 1 already holds
+        // every value it wants and every index it wants them at: a second
+        // walk of `d2_of` to strip the padding is 164 loads and 164
+        // branches to learn what this loop knew at the time.
+        let mut ranked = [(ABSENT, u16::MAX); CANDIDATES];
+        let mut n_ranked = 0usize;
         // Candidates inside the *exit* radius — the only ones the rank band
         // can have anything to say about, since the distance band already
         // holds everything past it out of the set. Counting these rather
@@ -2382,6 +2390,8 @@ impl ShardCore {
             let dx = (p.body.qx - own.qx) as i64 * 3;
             let dz = (p.body.qz - own.qz) as i64 * 3;
             *d2_out = dx * dx + dz * dz;
+            ranked[n_ranked] = (*d2_out, w as u16);
+            n_ranked += 1;
             n_near += usize::from(*d2_out <= AOI_EXIT_CM * AOI_EXIT_CM);
         }
         // The roster, in the same field and on the same two bands. Simpler
@@ -2406,6 +2416,8 @@ impl ShardCore {
             let dz = (m.body.qz - own.qz) as i64 * 3;
             let d2 = dx * dx + dz * dz;
             d2_of[MAX_PLAYERS + s] = d2;
+            ranked[n_ranked] = (d2, (MAX_PLAYERS + s) as u16);
+            n_ranked += 1;
             n_near += usize::from(d2 <= AOI_EXIT_CM * AOI_EXIT_CM);
         }
 
@@ -2418,15 +2430,50 @@ impl ShardCore {
         // Skipped whole when the field is smaller than the admission rank,
         // which is the ordinary case (NETCODE.md §9: typical ~15 in the
         // set): a sort here would be work done to learn that nothing is
-        // crowded out. Unstable sort — no allocation, and there is nothing
-        // to stabilise over a unique key.
+        // crowded out.
+        //
+        // **Selected, not sorted, and only over the candidates that exist.**
+        // Two order statistics are wanted and a full sort computes 164 of
+        // them; `select_nth_unstable` is linear where a sort is n log n, and
+        // the padding — every slot with no body in it — never enters the
+        // field at all. Measured 2026-08-11 on the clustered worst case
+        // (`bin/profile.rs`): the sort here plus its recursion was the
+        // largest single item in the whole shard profile, ~23 % of every
+        // instruction the server ran, ahead of the snapshot encoder.
+        //
+        // Identical answers, and the two reasons are worth stating because
+        // this is a hot path nothing else gates:
+        //
+        // 1. `ABSENT` is `i64::MAX` and a real `d2` is a squared distance in
+        //    centimetres over an island 2 km across, so **every** present
+        //    key sorts before **every** absent one. The k-th smallest of the
+        //    whole array is therefore the k-th smallest of the present
+        //    prefix, for every k below the present count.
+        // 2. Past that count the old sort yielded `(ABSENT, some index)`,
+        //    and pass 3 only ever compares *present* keys against it — every
+        //    one of which is strictly smaller whatever that index was. So
+        //    `(ABSENT, u16::MAX)` decides identically, which is the same
+        //    substitution the `else` arm below has always made.
         let (enter_key, exit_key) = if n_near > AOI_RANK_ENTER {
-            let mut ranked = [(ABSENT, 0u16); CANDIDATES];
-            for (i, &d2) in d2_of.iter().enumerate() {
-                ranked[i] = (d2, i as u16);
-            }
-            ranked.sort_unstable();
-            (ranked[AOI_RANK_ENTER - 1], ranked[AOI_RANK_EXIT - 1])
+            const ABSENT_KEY: (i64, u16) = (ABSENT, u16::MAX);
+            let n = n_ranked;
+            let field = &mut ranked[..n];
+            // Exit first: it is the higher rank, so selecting it leaves the
+            // 63 smallest keys in the prefix below it and the enter rank is
+            // a second selection over that shorter run rather than the
+            // whole field.
+            let exit_key = if n >= AOI_RANK_EXIT {
+                *field.select_nth_unstable(AOI_RANK_EXIT - 1).1
+            } else {
+                ABSENT_KEY
+            };
+            let head = n.min(AOI_RANK_EXIT - 1);
+            let enter_key = if n >= AOI_RANK_ENTER {
+                *field[..head].select_nth_unstable(AOI_RANK_ENTER - 1).1
+            } else {
+                ABSENT_KEY
+            };
+            (enter_key, exit_key)
         } else {
             ((ABSENT, u16::MAX), (ABSENT, u16::MAX))
         };
@@ -2690,11 +2737,18 @@ impl ShardCore {
             }
         };
 
-        for (w, &was_sent) in sent_mask.iter().enumerate() {
+        // The staleness bookkeeping, over the **candidate list** rather than
+        // the whole packed index. `order[..n_cand]` *is* the interest set —
+        // it was built from `c.interest`/`c.m_interest` a few lines up and
+        // nothing between here and there can change either — so the slots
+        // this skips are exactly the ones the `!interest` guard used to
+        // skip, and it reaches at most `AOI_RANK_EXIT` entries instead of
+        // `MAX_PLAYERS + MAX_MOBS`. Order does not matter: every arm writes
+        // only its own slot.
+        for &(w, _, _) in order[..n_cand].iter() {
+            let w = w as usize;
+            let was_sent = sent_mask[w];
             if w < MAX_PLAYERS {
-                if !c.interest[w] {
-                    continue;
-                }
                 if was_sent {
                     c.accum[w] = 0.0;
                     c.unsent[w] = 0;
@@ -2703,9 +2757,6 @@ impl ShardCore {
                 }
             } else {
                 let slot = w - MAX_PLAYERS;
-                if !c.m_interest[slot] {
-                    continue;
-                }
                 if was_sent {
                     c.m_accum[slot] = 0.0;
                     c.m_unsent[slot] = 0;

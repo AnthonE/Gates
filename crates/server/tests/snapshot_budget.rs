@@ -1063,3 +1063,94 @@ fn test_aoi_hysteresis() {
     let sent = snapshot_round(&mut core, &stats);
     assert!(!saw_peer(&sent), "215 m: must leave");
 }
+
+/// The rank band's two thresholds are **selected**, not sorted for
+/// (`core.rs` pass 2, 2026-08-11): `select_nth_unstable` over the present
+/// candidates replaced a full sort of the whole packed index, because that
+/// sort was the largest single item in the shard profile. This is the gate
+/// on it, and it is a gate on the *rule* rather than on the code — it
+/// re-derives the true ordering here, with a full sort, from the same
+/// positions the server ranked, and requires the interest set to be exactly
+/// the `AOI_RANK_ENTER` nearest.
+///
+/// **Both** thresholds, which is what makes it a gate and not a spot check:
+/// the enter rank says every candidate below it is in the set, the exit
+/// rank says nothing at or above it is, and the two are the two selections.
+/// Equality with the 45 nearest is deliberately *not* asserted — the herd
+/// happens after the joins land, so bodies admitted at their spawn
+/// positions are still held by hysteresis, and that is the band working
+/// rather than the ordering failing. What cannot be true either way is a
+/// near candidate outside the set or a far one inside it.
+///
+/// Two ways for the selection to fail and be caught here: take the wrong
+/// order statistic, and the admitted set is the wrong size at the wrong
+/// distance; drop the absent-padding argument, and a slot with no body in
+/// it ranks ahead of a real one, which shows up as a near candidate the
+/// enter threshold refused.
+#[test]
+fn the_rank_band_agrees_with_a_full_sort_of_the_same_field() {
+    let stats = ShardStats::default();
+    let mut core = clustered_core(&stats);
+    // No content is baked here, so every species has zero hit points and no
+    // roster slot ever hatches (`mob.rs`). Asserted rather than assumed:
+    // one wandering animal would re-rank the field between the settle and
+    // the check, and the failure would read as an ordering bug.
+    assert!(
+        core.world.mobs.m.iter().all(|m| !m.alive),
+        "a live animal makes this scene non-static — the rank would move \
+         under the check and this test would be measuring the roster"
+    );
+    for _ in 0..6 {
+        snapshot_round(&mut core, &stats);
+    }
+
+    for slot in 0..MAX_PLAYERS {
+        let me = core.world.players[core.clients[slot].own_wslot].body;
+        let own_id = core.clients[slot].id;
+        // The true order under the server's own key: planar centimetres
+        // squared, ties broken by the packed candidate index.
+        let mut field: Vec<(i64, u16, u32)> = (0..MAX_PLAYERS)
+            .filter(|&w| core.world.players[w].active && core.world.players[w].id != own_id)
+            .map(|w| {
+                let b = core.world.players[w].body;
+                let dx = (b.qx - me.qx) as i64 * 3;
+                let dz = (b.qz - me.qz) as i64 * 3;
+                (dx * dx + dz * dz, w as u16, core.world.players[w].id)
+            })
+            .collect();
+        assert!(
+            field.len() > AOI_RANK_ENTER,
+            "slot {slot}: {} peers cannot make the admission rank bind",
+            field.len()
+        );
+        field.sort_unstable();
+        let ids = |n: usize| -> std::collections::BTreeSet<u32> {
+            field.iter().take(n).map(|&(_, _, id)| id).collect()
+        };
+        let got = interest_of(&core, slot);
+        let admits = ids(AOI_RANK_ENTER);
+        let holds = ids(AOI_RANK_EXIT);
+        let missed: Vec<u32> = admits.difference(&got).copied().collect();
+        assert!(
+            missed.is_empty(),
+            "slot {slot}: candidates {missed:?} rank inside AOI_RANK_ENTER \
+             ({AOI_RANK_ENTER}) by a full sort of the same field and are NOT \
+             in the interest set — the enter threshold is not the \
+             {AOI_RANK_ENTER}th smallest key"
+        );
+        let kept: Vec<u32> = got.difference(&holds).copied().collect();
+        assert!(
+            kept.is_empty(),
+            "slot {slot}: candidates {kept:?} rank at or past AOI_RANK_EXIT \
+             ({AOI_RANK_EXIT}) by a full sort of the same field and are still \
+             in the interest set — the exit threshold is not the \
+             {AOI_RANK_EXIT}th smallest key"
+        );
+        assert!(
+            got.len() <= AOI_RANK_EXIT,
+            "slot {slot}: {} entities in the interest set — the exit rank \
+             bounds it at {AOI_RANK_EXIT}",
+            got.len()
+        );
+    }
+}

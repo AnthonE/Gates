@@ -2371,6 +2371,7 @@ impl World {
                     &self.loot,
                     &self.scatter,
                     &self.haven,
+                    &mut self.slot_cache,
                     &mut self.slot_lives,
                     &mut self.events,
                     &mut self.players[i],
