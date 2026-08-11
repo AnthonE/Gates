@@ -534,12 +534,17 @@ which is neither.
   two meshes out; the crate's plugin is deliberately unused, because a plugin
   that regenerates entities on change would put tree state in the ECS.
 - **game-icons.net** (CC BY 3.0) — the client's item and building icons,
-  **shipped**: 62 white-on-transparent PNGs in `assets/icons/`, rasterised
-  from the project's public SVG archive by `ci/bake_icons.py`. CC BY is a
-  *notice* licence — `assets/icons/CREDITS.md` names the four authors whose
-  work ships (lorc, delapouite, carl-olsen, john-redman) and `tests/ui.rs` §G
-  fails if it stops travelling or if the baked set and `ui::icons::STEMS`
-  drift apart. **Nothing is traced from the reference game**: an icon set
+  **shipped**: **64 of the 65** white-on-transparent PNGs in `assets/icons/`,
+  rasterised from the project's public SVG archive by `ci/bake_icons.py`.
+  (This line read "62" until 2026-08-11 and the tree said 65 — a count in a
+  doc drifts every time an icon lands, which is why `CREDITS.md` and
+  `STEMS` are the things gated and this is only a pointer.) The 65th,
+  `burnt_meat.png`, is **ours** and the CC BY notice does not cover it;
+  `CREDITS.md` keeps the two in separate tables so the line is written down
+  rather than inferred. CC BY is a *notice* licence — `assets/icons/
+  CREDITS.md` names the four authors whose work ships (lorc, delapouite,
+  carl-olsen, john-redman) and `tests/ui.rs` §G fails if it stops travelling
+  or if the baked set and `ui::icons::STEMS` drift apart. **Nothing is traced from the reference game**: an icon set
   anyone may redistribute with credit is not the IP rail's business, and the
   rail is what forbids copying Rust's own art.
 - **Roboto Condensed** (Apache-2.0, © 2011 Google Inc.) — the client's UI
