@@ -519,8 +519,7 @@ fn detonate(
     if c.damage == 0 || player_hp == 0 {
         return; // a wall-only charge, or unarmed combat content
     }
-    for slot in 0..crate::limits::MAX_PLAYERS {
-        let p = &mut players[slot];
+    for (slot, p) in players.iter_mut().enumerate() {
         if !p.active || p.hp == 0 {
             continue;
         }

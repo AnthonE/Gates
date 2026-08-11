@@ -405,7 +405,7 @@ fn a_whole_pig_charges_and_bites() {
     assert!(full > 0, "combat fixture arms bodies");
     // Two bite periods plus a think: enough for at least one landed bite,
     // asserted on state rather than on which tick it happened.
-    for seq in 0..(MobContent::probe_fixture().def(MOB_PIG).attack_ticks as u16 * 2 + 30) {
+    for seq in 0..(MobContent::probe_fixture().def(MOB_PIG).attack_ticks * 2 + 30) {
         let frame = InputFrame {
             seq,
             ..InputFrame::default()
@@ -484,7 +484,7 @@ fn a_bite_can_kill_and_the_cause_is_the_mob() {
     w.mobs.m[slot].body = Body::at(11, ax + 2.0, az);
     // One bite from dead.
     w.players[0].hp = 1;
-    for seq in 0..(MobContent::probe_fixture().def(MOB_PIG).attack_ticks as u16 * 2 + 30) {
+    for seq in 0..(MobContent::probe_fixture().def(MOB_PIG).attack_ticks * 2 + 30) {
         let frame = InputFrame {
             seq,
             ..InputFrame::default()

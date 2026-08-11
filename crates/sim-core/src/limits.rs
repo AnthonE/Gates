@@ -759,6 +759,30 @@ pub const MOB_ID_TAG: u32 = 0x8000_0000;
 /// No overflow policy: it is a cadence, not a queue.
 pub const MOB_THINK_TICKS: u64 = 15;
 
+/// One full day/night cycle, in ticks — 45 minutes at `TICK_HZ`
+/// (`ALPHA.md` §1's knob; day/night v0, `DECISIONS.md` §open).
+///
+/// **Time of day is a pure function of the tick, and that is the design,
+/// not a shortcut.** The snapshot header already carries the tick on
+/// every datagram and the client already tracks a smoothed estimate of
+/// it (`client-core/clock.rs`), so shipping a second field would be
+/// redundant bytes carrying a derivable number — `NETCODE.md` §3's "time
+/// of day rides the G channel" is satisfied by the tick itself plus this
+/// constant. What the choice costs is a set-time admin verb: with no
+/// offset field anywhere, shifting the clock means shifting the tick,
+/// which nothing may do. That is a wire field away if ever wanted.
+pub const DAY_TICKS: u64 = 81_000;
+
+/// Phase offset into the cycle at tick zero, so a fresh world — and every
+/// capture probe — boots mid-morning with the sun well up, not at the
+/// dawn terminator. ~17% of the cycle before noon (noon is 35% in).
+pub const DAY_PHASE_TICKS: u64 = 14_000;
+
+/// The daylight fraction of the cycle: the first 70% is day (~31.5 min),
+/// the rest night (~13.5 min) — the reference's proportions, where night
+/// is short enough to be weathered and long enough to matter.
+pub const DAY_PORTION: f32 = 0.70;
+
 /// The most bites one tick can land across the whole roster (mob.rs
 /// `Bites`). Derived, generously: only a *thinking* animal can bite, so
 /// the true per-tick ceiling is `MAX_MOBS / MOB_THINK_TICKS` ≈ 4 plus

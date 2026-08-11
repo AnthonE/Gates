@@ -760,12 +760,12 @@ footsteps, the place cue. Research `reference/AUDIO.md`; every number is
 5. **No occlusion, and it needs a prerequisite rather than a pass.** A wall
    between you and a sound needs a geometry query, and the correct one is
    the sim's (`collide.rs`), not a raycast against render meshes.
-6. **The ambience layer is one bird and no clock.** `sound/birds.rs` is
-   `reference/AUDIO.md` §3's *layers* at its smallest: sparse calls on a
-   perch, keyed to cover. Crickets are the obvious companion and they need
-   a day/night cycle, which the client does not have — so that is a
-   prerequisite, not a tuning pass. The reference's localized-emitter
-   *system* is still a later slice (§9.3: it arrives with a cull budget).
+6. **The ambience layer is one bird, and now it has a clock.** Birds are
+   gated to daylight off the server's tick (day/night v0), so the
+   prerequisite this item named is paid: **crickets are now a content-free
+   companion pass** — a night-gated `Cue`, the bird layer's shape with the
+   predicate inverted. The reference's localized-emitter *system* is still
+   a later slice (§9.3: it arrives with a cull budget).
 
 ## 0z · The world waits for the server now — what the Bevy audit left *(client lane)*
 
@@ -1132,8 +1132,14 @@ crate-wide, but its *contiguity* claim is file-local.
   owed, and both are code: a standalone forest-floor pickup archetype and a
   farming lane; plus the cache/crate open verb before loot-only food could
   sit at a destination — the gate deliberately counts barrel rows alone.
-- **Day/night does not exist.** `DESIGN.md` §2 pairs it with the survival
-  clock; nothing in `crates/` reads a time of day.
+- ~~Day/night does not exist~~ — **landed 2026-08-11** (day/night v0,
+  `DECISIONS.md` §open): 45-minute cycle, 70 % day, derived from the tick
+  with **no wire field**, driven through the rig's coupled-set owner.
+  What it does NOT do: no gameplay reads the clock (no nocturnal mobs, no
+  crops, no torch — the survival clock `DESIGN.md` §2 pairs it with is
+  still hunger and thirst alone), no moon or stars in the night sky, and
+  no set-time admin verb — moving the clock means moving the tick, so
+  that one wants the wire field this slice deliberately did not spend.
 - **The coin loop is closed and the tech TREE is not.** OBOL is paid by
   the recycler and burned at the research table (research v0, and the
   operator's 2026-08-10 call that OBOL is scrap — what stages is the claim

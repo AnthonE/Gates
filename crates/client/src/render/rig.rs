@@ -24,6 +24,7 @@
 use bevy::anti_alias::smaa::Smaa;
 use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::core_pipeline::Skybox;
 use bevy::light::{light_consts::lux, CascadeShadowConfigBuilder, SunDisk};
 use bevy::pbr::{Atmosphere, AtmosphereSettings, ScatteringMedium, ScreenSpaceAmbientOcclusion};
 use bevy::post_process::bloom::Bloom;
@@ -241,12 +242,92 @@ pub fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>
 }
 
 /// The sun's rotation: a light pointing along the direction sunlight travels.
+/// The spawn pose — noon-ish; `day_night` rewrites it every frame from the
+/// server's clock, so this is only what a frame with no snapshot yet shows.
 fn sun_rotation() -> Quat {
-    let (se, ce) = (RIG_SUN_ELEVATION.sin(), RIG_SUN_ELEVATION.cos());
+    sun_rotation_at(RIG_SUN_ELEVATION)
+}
+
+/// The same rotation at an arbitrary elevation, azimuth fixed
+/// (`RIG_SUN_AZIMUTH` — the sun climbs and sinks on one bearing at v0; a
+/// sweeping azimuth would drag every shadow through a half-turn a cycle
+/// for no legibility gain).
+fn sun_rotation_at(elevation: f32) -> Quat {
+    let (se, ce) = (elevation.sin(), elevation.cos());
     let (sa, ca) = (RIG_SUN_AZIMUTH.sin(), RIG_SUN_AZIMUTH.cos());
     // Where the sun sits, as a unit vector from the world origin.
     let to_sun = Vec3::new(sa * ce, se, ca * ce);
     Transform::default().looking_at(-to_sun, Vec3::Y).rotation
+}
+
+// ── Day and night (day/night v0 — DECISIONS.md §open) ────────────────────
+//
+// One owner, still: the cycle lives HERE because it moves the sun, the
+// ambient, and (through `daylight`) the cloud deck — the coupled set §2
+// reserves for this file. The clock is the server's tick, derived through
+// `sim_core::world::day_frac` off the smoothed estimate `Feed` carries, so
+// two clients at one campfire see one sky.
+
+/// How far below the horizon the sun sinks at deep night, radians. Deep
+/// enough that the atmosphere's twilight band clears the horizon glow.
+pub const NIGHT_DIP: f32 = 0.35;
+
+/// Ambient at deep night, lux. "Genuinely dark" (`ALPHA.md` §1) against
+/// the fixed ev100 14.2 exposure: shapes read at arm's length, the ridge
+/// line is gone, and a torch will one day be worth carrying. Moonlight is
+/// ~0.25 lux; this is far brighter because the exposure never adapts —
+/// the number is a look, not a photometric claim.
+pub const NIGHT_AMBIENT_LUX: f32 = 60.0;
+
+/// The sun's elevation at a point in the cycle: a sine arch over the day
+/// portion peaking at `RIG_SUN_ELEVATION`, a shallower inverted arch
+/// below the horizon across the night.
+pub fn sun_elevation(frac: f32) -> f32 {
+    use std::f32::consts::PI;
+    let day = sim_core::limits::DAY_PORTION;
+    if frac < day {
+        (PI * frac / day).sin() * RIG_SUN_ELEVATION
+    } else {
+        -((PI * (frac - day) / (1.0 - day)).sin()) * NIGHT_DIP
+    }
+}
+
+/// How much of full daylight the frame gets, `0..=1`: the sun's height as
+/// a fraction of its noon height, zero from the moment it dips. One
+/// scalar feeds the sun's illuminance, the ambient lerp and the cloud
+/// deck's brightness, so the three cannot disagree about what time it is.
+pub fn daylight(frac: f32) -> f32 {
+    (sun_elevation(frac).sin() / RIG_SUN_ELEVATION.sin()).clamp(0.0, 1.0)
+}
+
+/// Drive the rig from the server's clock. Runs every frame; the queries
+/// are empty until `setup` has spawned the rig, which makes the system a
+/// no-op on every screen that is not the world.
+pub fn day_night(
+    feed: Res<super::feed::Feed>,
+    mut sun: Query<(&mut Transform, &mut DirectionalLight), With<Sun>>,
+    mut cam: Query<(&mut AmbientLight, Option<&mut Skybox>), With<EyeCam>>,
+) {
+    let frac = sim_core::world::day_frac(feed.server_tick_est.max(0.0) as u64);
+    let elev = sun_elevation(frac);
+    let light = daylight(frac);
+    if let Ok((mut t, mut d)) = sun.single_mut() {
+        t.rotation = sun_rotation_at(elev);
+        d.illuminance = lux::DIRECT_SUNLIGHT * light;
+        // A light at zero illuminance still schedules its cascades;
+        // shadows off at night saves the passes and no shadow is cast by
+        // a sun that is under the ground anyway.
+        d.shadows_enabled = light > 0.0;
+    }
+    if let Ok((mut amb, sky)) = cam.single_mut() {
+        amb.brightness = NIGHT_AMBIENT_LUX + (lux::AMBIENT_DAYLIGHT * 1.7 - NIGHT_AMBIENT_LUX) * light;
+        if let Some(mut sky) = sky {
+            // The deck was baked lit from the noon sun (`sky.rs`); at any
+            // other hour its lighting is wrong in a way only brightness
+            // can hide, and at night clouds are dark from below anyway.
+            sky.brightness = super::sky::CLOUD_NITS * light;
+        }
+    }
 }
 
 /// The camera rides the eye. Written here rather than in `input` because the

@@ -114,6 +114,14 @@ pub struct Feed {
     pub applied2: u32,
     /// Facts refused for want of room since the last reset — see the header.
     pub dropped: u32,
+    /// The client's smoothed estimate of the server tick
+    /// (`client-core/clock.rs` `server_est`), copied here each drain so
+    /// render systems can read the world's clock as a `Res<Feed>` instead
+    /// of each taking the non-send `Net`. The day/night rig derives the
+    /// time of day from it (`sim_core::world::day_frac`); zero until the
+    /// first snapshot, which reads as the boot phase — mid-morning — and
+    /// is exactly what a loading world should look like.
+    pub server_tick_est: f64,
 }
 
 impl Feed {
@@ -197,6 +205,7 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     feed.applied = core::mem::take(&mut net.session.applied);
     feed.applied2 = core::mem::take(&mut net.session.applied2);
     let core = &mut net.session.core;
+    feed.server_tick_est = core.clock.server_est;
 
     while let Some(d) = core.pop_hit() {
         feed.damage = feed.damage.saturating_add(d);

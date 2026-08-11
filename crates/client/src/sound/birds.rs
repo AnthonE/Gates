@@ -19,10 +19,13 @@
 //! - **Cover is the cause, because cover is a cause we have.** Birds are in
 //!   trees, and `render/audio.rs::bed` already walks the drawn props to score
 //!   how much cover is around the ear — so the layer costs no query of its
-//!   own. It is deliberately NOT keyed to time of day: crickets at night is
-//!   the obvious companion layer and the client has no day/night cycle, so
-//!   dusk would be a cause we invented (`CLAUDE.md`: knobs are spoken, never
-//!   invented).
+//!   own. Since day/night v0 the clock is a cause we have too: `bed` gates
+//!   the layer to daylight off the server's own tick, so birds roost at
+//!   night without this module learning what an hour is. (This bullet used
+//!   to record the refusal — "the client has no day/night cycle, so dusk
+//!   would be a cause we invented" — and the refusal was right until the
+//!   cycle existed.) Crickets are the night companion and still owed
+//!   (`NOW.md` §0x).
 //!
 //! What this is not: the reference's localized-ambience *system*, which is a
 //! set of placed emitters culled and crossfaded, and whose two published bugs

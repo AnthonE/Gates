@@ -411,6 +411,24 @@ pub const DEATH_BY_CHARGE: u8 = 5;
 /// `DEATH_BY_CHARGE` landed in the same merge window on the same bump.)
 pub const DEATH_BY_MAX: u8 = DEATH_BY_CHARGE;
 
+/// Where in the day/night cycle a tick falls, `0.0..1.0` — 0 is dawn,
+/// `limits::DAY_PORTION` is dusk (day/night v0, `DECISIONS.md` §open).
+///
+/// A pure function of the tick, deliberately (`limits::DAY_TICKS`' doc has
+/// the argument): the client derives it from the smoothed tick estimate it
+/// already keeps, so no wire byte carries it, and when gameplay ever reads
+/// the clock — crickets, crops, nocturnal mobs — the sim calls this same
+/// function on its own tick and stays deterministic for free. **Nothing in
+/// the sim reads it today**; the renderer is its only caller, which is why
+/// a wrong curve is a look, not a divergence.
+///
+/// Wall 1: one modulo and one division, no trig — the sun curve the
+/// renderer builds from this is the renderer's own.
+pub fn day_frac(tick: u64) -> f32 {
+    use crate::limits::{DAY_PHASE_TICKS, DAY_TICKS};
+    ((tick.wrapping_add(DAY_PHASE_TICKS)) % DAY_TICKS) as f32 / DAY_TICKS as f32
+}
+
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
 /// (a door, a box) rather than the piece store. Level, loc and row are all
 /// 8-bit fields below it, so bit 24 is the first free one.

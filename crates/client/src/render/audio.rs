@@ -515,6 +515,7 @@ pub fn bed(
     props: Query<(&GlobalTransform, &super::props::Fellable)>,
     time: Res<Time>,
     settings: Res<super::Settings>,
+    feed: Res<super::feed::Feed>,
     mut sinks: Query<(&Bed, &mut AudioSink)>,
 ) {
     // How much cover is within earshot, 0..1. `COVER_FULL` scatter slots
@@ -561,7 +562,14 @@ pub fn bed(
     // one frame in a few hundred that a call actually lands — a buffer of
     // candidate perches would cost every frame to save that one, and would
     // cap how much forest the layer can see for nothing.
-    if sound.birds.due(cover, time.delta_secs()) && near > 0 {
+    //
+    // Daylight only, now that a day exists (day/night v0): birds roost at
+    // night, and the cause is the server's own clock rather than one this
+    // layer invented — the refusal `birds.rs`' header recorded is repaid.
+    // Crickets are the night companion and still owed (`NOW.md` §0x).
+    let is_day = sim_core::world::day_frac(feed.server_tick_est.max(0.0) as u64)
+        < sim_core::limits::DAY_PORTION;
+    if is_day && sound.birds.due(cover, time.delta_secs()) && near > 0 {
         let want = sound.birds.perch(near);
         if let Some(p) = props
             .iter()
