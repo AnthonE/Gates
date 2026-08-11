@@ -146,6 +146,27 @@ pub struct ShardConfig {
     /// Armed, it requires `require_auth = true`, because a guest has no wallet
     /// to ask about; `parse_shard_toml` refuses the pair rather than warning.
     pub entitle: crate::entitle::Config,
+    /// The oldest client **release** this shard will admit, packed by
+    /// [`protocol::version::pack`]. A joiner below it meets `REFUSE_BUILD`.
+    ///
+    /// **Zero is the shipping default and admits everything**, which is the
+    /// same honest state `status_addr` and `entitle` take: a shard requires
+    /// nothing until its operator says so. That is not a hole — `PROTO_VER`
+    /// is still exact and still refuses any client whose bytes disagree, so
+    /// the floor at 0 means "any client that can talk to me may", not "any
+    /// client at all".
+    ///
+    /// It exists for the case the protocol number cannot see: a release that
+    /// parses fine and is wrong about something that is not a byte — a
+    /// prediction rule that moved, a number that changed in `content/`. The
+    /// operator raises the floor when they ship one of those, which is a
+    /// judgement about a release and belongs in a config file rather than in
+    /// a constant somebody has to rebuild to change.
+    ///
+    /// Written in `shard.toml` as a semver string (`min_client = "0.1.0"`),
+    /// because a packed integer in a config file is a number nobody can
+    /// check by eye.
+    pub min_client: u32,
 }
 
 impl ShardConfig {
@@ -165,8 +186,41 @@ impl ShardConfig {
             status_addr: None,
             domain: "127.0.0.1".into(),
             entitle: crate::entitle::Config::off(),
+            min_client: 0,
         }
     }
+}
+
+/// `"0.1.0"` → the packed [`protocol::version::VER`] form. Rejects anything
+/// that is not three plain numbers, and rejects a component ≥ 1000 with the
+/// reason rather than wrapping it into the field above — the packing's own
+/// cap, restated at the one place an operator types a version by hand.
+///
+/// A prerelease suffix is refused rather than ignored: `min_client =
+/// "0.2.0-rc1"` looks like it means something and the decimal packing cannot
+/// express it (`protocol::version`'s header says why), so accepting it would
+/// silently apply a floor of 0.2.0 — the ignored-field-becomes-a-supported-one
+/// failure, arriving as a shard admitting builds its operator meant to refuse.
+pub fn parse_min_client(s: &str) -> Result<u32, String> {
+    let mut parts = s.split('.');
+    let mut got = [0u32; 3];
+    for (i, name) in ["major", "minor", "patch"].iter().enumerate() {
+        let raw = parts.next().ok_or_else(|| {
+            format!("`{s}` is not a version — want three numbers, e.g. \"0.1.0\"")
+        })?;
+        got[i] = raw
+            .parse::<u32>()
+            .map_err(|_| format!("`{s}`: the {name} part `{raw}` is not a plain number"))?;
+    }
+    if parts.next().is_some() {
+        return Err(format!(
+            "`{s}` has more than three parts — want e.g. \"0.1.0\""
+        ));
+    }
+    if got[1] >= 1_000 || got[2] >= 1_000 {
+        return Err(format!("`{s}`: minor and patch must each be below 1000"));
+    }
+    Ok(protocol::version::pack(got[0], got[1], got[2]))
 }
 
 /// Parse `key = value` lines; `#` comments and blanks skipped; string
@@ -176,6 +230,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut bind: Option<SocketAddr> = None;
     let mut seed: Option<u64> = None;
     let mut dev_spawn: Option<(f32, f32)> = None;
+    let mut min_client: Option<u32> = None;
     let mut content_dir: Option<String> = None;
     let mut require_auth: Option<bool> = None;
     let mut cert_pem: Option<String> = None;
@@ -373,6 +428,12 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     format!("shard.toml line {}: bad entitle_sweep_secs: {e}", n + 1)
                 })?);
             }
+            "min_client" => {
+                min_client = Some(
+                    parse_min_client(value)
+                        .map_err(|e| format!("shard.toml line {}: bad min_client: {e}", n + 1))?,
+                );
+            }
             other => return Err(format!("shard.toml line {}: unknown key `{other}`", n + 1)),
         }
     }
@@ -418,6 +479,9 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         world_file,
         world_save_interval_ticks,
         status_addr,
+        // Unset ⇒ 0, which admits every client that can talk to this shard at
+        // all. `PROTO_VER` is still exact; this floor is the operator's extra.
+        min_client: min_client.unwrap_or(0),
         // Unset ⇒ the bind host, which is what a dev shard on loopback
         // wants and what a shard behind a DNS name must override.
         domain: domain.unwrap_or_else(|| {
@@ -431,6 +495,70 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The floor an operator types has to mean what it looks like, and the
+    /// packing is the one place a typo turns into a shard admitting builds it
+    /// meant to refuse.
+    #[test]
+    fn the_client_floor_parses_as_a_version_or_says_why_not() {
+        assert_eq!(
+            parse_min_client("0.1.0").unwrap(),
+            protocol::version::pack(0, 1, 0)
+        );
+        assert_eq!(
+            parse_min_client("1.2.3").unwrap(),
+            protocol::version::pack(1, 2, 3)
+        );
+        assert_eq!(parse_min_client("0.0.0").unwrap(), 0);
+
+        // Ordered the way semver is, which is what makes the shard's gate one
+        // `<`. This is the property, not an implementation detail.
+        assert!(parse_min_client("0.1.0").unwrap() < parse_min_client("0.2.0").unwrap());
+        assert!(parse_min_client("0.9.9").unwrap() < parse_min_client("1.0.0").unwrap());
+        assert!(parse_min_client("0.1.9").unwrap() < parse_min_client("0.1.10").unwrap());
+
+        // Each refusal names the thing that is wrong, because the operator is
+        // reading it at boot with the file open.
+        for bad in [
+            "",
+            "0.1",
+            "0.1.0.0",
+            "1",
+            "v0.1.0",
+            "0.x.0",
+            "0.1.0-rc1",
+            "latest",
+        ] {
+            assert!(
+                parse_min_client(bad).is_err(),
+                "`{bad}` should not parse as a version"
+            );
+        }
+        // A component that would carry into the field above it: 0.1.1000 and
+        // 0.2.0 must not become the same number.
+        assert!(parse_min_client("0.1.1000").is_err());
+        assert!(parse_min_client("0.1000.0").is_err());
+    }
+
+    /// Unset ⇒ 0 ⇒ admits everything, and the key is refused rather than
+    /// ignored when it is malformed — an ignored floor is a shard whose
+    /// operator believes it is gating and is not.
+    #[test]
+    fn the_client_floor_defaults_open_and_refuses_nonsense() {
+        let cfg = parse_shard_toml("bind = \"127.0.0.1:4433\"\nseed = 7\n").unwrap();
+        assert_eq!(cfg.min_client, 0, "an unset floor must admit everything");
+
+        let cfg = parse_shard_toml("bind = \"127.0.0.1:4433\"\nseed = 7\nmin_client = \"0.2.0\"\n")
+            .unwrap();
+        assert_eq!(cfg.min_client, protocol::version::pack(0, 2, 0));
+
+        let err = parse_shard_toml("bind = \"127.0.0.1:4433\"\nseed = 7\nmin_client = \"soon\"\n")
+            .expect_err("a floor that is not a version must refuse the boot");
+        assert!(
+            err.contains("min_client"),
+            "the error must name the key: {err}"
+        );
+    }
 
     #[test]
     fn parses_and_refuses() {

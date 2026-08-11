@@ -127,9 +127,30 @@ def sha256_file(path: Path) -> str:
 # ── the build id ─────────────────────────────────────────────────────────────
 
 def crate_version() -> str:
-    txt = (ROOT / "crates" / "client" / "Cargo.toml").read_text("utf-8")
-    m = re.search(r'^version\s*=\s*"([^"]+)"', txt, re.M)
-    return m.group(1) if m else "0.0.0"
+    """The client's version, following `version.workspace = true` to its source.
+
+    The crate carries the inherited form, so a regex for a quoted version in
+    `crates/client/Cargo.toml` finds nothing there and the old fallback
+    returned `"0.0.0"` — a build id that names no release, written into a
+    directory name on a player's disk, with no error anywhere. That is the
+    failure this function is now shaped to refuse: it raises rather than
+    guessing, because a depot id is not a field worth defaulting.
+    """
+    for path, why in (
+        (ROOT / "crates" / "client" / "Cargo.toml", "the client crate"),
+        (ROOT / "Cargo.toml", "the workspace"),
+    ):
+        txt = path.read_text("utf-8")
+        # `version.workspace = true` means "look one level up", so a bare
+        # quoted version is the only thing that answers here.
+        m = re.search(r'^version\s*=\s*"([^"]+)"', txt, re.M)
+        if m:
+            return m.group(1)
+        del why
+    raise SystemExit(
+        "ci/depot.py: no version found in crates/client/Cargo.toml or the "
+        "workspace Cargo.toml — a depot id must name a real release"
+    )
 
 
 def build_id(binary: Path | None = None) -> str:

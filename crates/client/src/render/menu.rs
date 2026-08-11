@@ -696,7 +696,23 @@ fn header(root: &mut ChildSpawnerCommands, who: &Who) {
     })
     .with_children(|bar| {
         bar.spawn(ui::wordmark());
-        bar.spawn(ui::label(who.0.line(), 13.0, ui::DIM));
+        // The identity and the build, stacked right — two facts about *this
+        // session* that belong in the same corner. The build is here as well
+        // as on the HUD because this is the screen where it answers a
+        // question: a shard that refuses you for `REFUSE_BUILD` says "update
+        // the game", and the next thing anyone does is look for what they are
+        // running. In-world it is only ever evidence in a screenshot.
+        bar.spawn((
+            Node {
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::End,
+                ..default()
+            },
+            children![
+                ui::label(who.0.line(), 13.0, ui::DIM),
+                ui::label(protocol::version::BUILD_ID.to_string(), 11.0, ui::DIM),
+            ],
+        ));
     });
 }
 

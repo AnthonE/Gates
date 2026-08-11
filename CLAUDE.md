@@ -135,7 +135,12 @@ that is the exact failure the header warns about. Grep before citing a gate;
    same state hashes. → `test_replay`, `test_terrain_golden`.
 6. **The wire never drifts by accident.** Packet layouts change only with
    a version bump + regenerated goldens in the same commit. →
-   `test_protocol_golden`.
+   `test_protocol_golden`. ⚠ **`PROTO_VER` is one of three version numbers
+   and only this wall's** — `crates/protocol/src/version.rs` carries the
+   table, and conflating any two of them is what that file exists to prevent.
+   The release (`VER`, from `[workspace.package] version`, shown in the
+   client's corner and floored per-shard by `min_client`) and the commit
+   (`GIT_SHA`) are not this wall's business and do not bump goldens.
 7. **Content never touches code.** New items, recipes, balance passes =
    `content/*.toml` only, validated at boot, content hash pinned into the
    WAL header (a replay replays the content it was played under). →
@@ -328,6 +333,15 @@ cargo run -p client --features render --bin gates    # the game
 cargo clippy -p client --features render --all-targets -- -D warnings
 ./ci/gates.sh                       # exactly what CI runs — run it before merge
 ```
+
+**Cutting a release is a tag, and it is an operator act.** Bump
+`[workspace.package] version` in the root `Cargo.toml` — the one place a
+version is typed, inherited by all six crates — then
+`git tag -a v<x.y.z> -m "…" && git push --no-verify origin v<x.y.z>`.
+`.github/workflows/release.yml` re-runs the gates on the tagged commit,
+refuses a tag that disagrees with the tree, builds Linux/Windows/macOS, and
+leaves a **draft** release for a person to read and publish. A shard's
+`min_client` floor is raised *after* that release is published, never before.
 
 `--features render` is off by default and everything about the client is
 behind it (`crates/client/Cargo.toml` says why). It needs `libwayland-dev`

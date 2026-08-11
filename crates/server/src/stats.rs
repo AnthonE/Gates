@@ -26,6 +26,15 @@ pub struct ShardStats {
     /// shard list's `players` column has been waiting on.
     pub players: AtomicU64,
     pub refused_version: AtomicU64,
+    /// Joins refused for being below this shard's `min_client`
+    /// (`REFUSE_BUILD`). **Counted apart from `refused_version` because the
+    /// two say different things about the same shard**: a version refusal is
+    /// a wire mismatch — somebody is on a build that cannot talk to this one
+    /// at all, and there is nothing to decide. This one is the shard's own
+    /// policy working, and it is the counter an operator watches after
+    /// raising the floor: a number that keeps climbing days later means the
+    /// release nobody could reach was never actually published.
+    pub refused_build: AtomicU64,
     /// Joins refused for want of a proven identity (`REFUSE_AUTH`): a
     /// signature that failed to verify, or a guest where `require_auth`
     /// demands an address. Counted separately from `refused_version`

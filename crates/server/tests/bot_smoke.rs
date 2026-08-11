@@ -340,7 +340,17 @@ async fn test_version_gate_refuses() {
     let opening = connection.open_bi().await.expect("open_bi");
     let (mut send, mut recv) = opening.await.expect("bi");
     let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
-    let len = encode_hello(&Hello { proto_ver: 999 }, &mut buf).expect("encode");
+    // Version wrong, everything else this build's own — so the refusal can
+    // only be about the number under test.
+    let len = encode_hello(
+        &Hello {
+            proto_ver: 999,
+            ver: protocol::version::VER,
+            build: protocol::version::BUILD,
+        },
+        &mut buf,
+    )
+    .expect("encode");
     write_frame(&mut send, &buf[..len]).await.expect("write");
     let (reply, reply_len) = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut recv))
         .await
@@ -352,6 +362,122 @@ async fn test_version_gate_refuses() {
     handle
         .shutdown
         .store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// **The release floor, in both directions** — because the direction that is
+/// easy to get wrong is the one that admits.
+///
+/// A client below `min_client` is refused with `REFUSE_BUILD` and counted
+/// apart from `refused_version`, since the two mean different things about a
+/// shard. A client *above* it is admitted, and that half is the point of the
+/// test: the gate is `<` and not `!=` on purpose (`config.rs` says why), so a
+/// player who updated before the shard operator restarted must still get in.
+/// An `!=` written here by mistake passes every "too old is refused" test
+/// ever written and locks out exactly the people who did the right thing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_min_client_refuses_below_and_admits_above() {
+    use protocol::{encode_hello, Hello, MAX_STREAM_MSG_BYTES};
+    use server::net::{read_frame, write_frame};
+
+    // The floor sits one minor above this build, so this build's own release
+    // is genuinely below it — no hand-picked constant that could drift apart
+    // from what the client actually sends.
+    let (fma, fmi, fpa) = protocol::version::unpack(protocol::version::VER);
+    let floor = protocol::version::pack(fma, fmi + 1, fpa);
+
+    for (ver, want) in [
+        (protocol::version::VER, Some(protocol::REFUSE_BUILD)), // below the floor
+        (floor, None),                                          // exactly the floor: admitted
+        (protocol::version::pack(fma, fmi + 2, fpa), None),     // above it: admitted
+    ] {
+        let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, mobs, catalog) =
+            baked_content();
+        let mut cfg = ShardConfig::ephemeral(11);
+        cfg.min_client = floor;
+        let handle = spawn_shard(
+            cfg,
+            gather,
+            craft,
+            build,
+            deploy,
+            combat,
+            backpack,
+            survival,
+            cook,
+            sim_core::inventory::SpawnKit::EMPTY,
+            loot,
+            mobs,
+            catalog,
+            Saves::off(),
+            server::worldfile::WorldBoot::off(),
+        )
+        .await
+        .expect("boots");
+        let endpoint = bot_endpoint().expect("endpoint");
+        let connection = endpoint
+            .connect(&format!("https://{}", handle.local_addr))
+            .await
+            .expect("connects");
+        let opening = connection.open_bi().await.expect("open_bi");
+        let (mut send, mut recv) = opening.await.expect("bi");
+        let mut buf = [0u8; MAX_STREAM_MSG_BYTES];
+        // The wire version is this build's, always: the floor is a statement
+        // about the RELEASE and must be reachable with the bytes agreeing.
+        let len = encode_hello(
+            &Hello {
+                proto_ver: protocol::PROTO_VER,
+                ver,
+                build: protocol::version::BUILD,
+            },
+            &mut buf,
+        )
+        .expect("encode");
+        write_frame(&mut send, &buf[..len]).await.expect("write");
+
+        let (reply, reply_len) =
+            tokio::time::timeout(Duration::from_secs(5), read_frame(&mut recv))
+                .await
+                .expect("reply inside 5 s")
+                .expect("a frame, not silence");
+        let reply = &reply[..reply_len];
+
+        match want {
+            Some(code) => {
+                let refuse = protocol::decode_refuse(reply).expect("refuse decodes");
+                assert_eq!(
+                    refuse.code, code,
+                    "a client below the floor must be refused"
+                );
+                assert_eq!(
+                    ShardStats::get(&handle.stats.refused_build),
+                    1,
+                    "the build refusal must be counted under its own name"
+                );
+                assert_eq!(
+                    ShardStats::get(&handle.stats.refused_version),
+                    0,
+                    "a release refusal is not a wire refusal"
+                );
+                // A player meets a sentence, never a bare number.
+                assert!(protocol::refuse_text(code).is_some());
+            }
+            None => {
+                // Admitted means the handshake CONTINUES — the next thing a
+                // shard sends is the SIWE challenge, not a refusal. Asserting
+                // on the kind rather than on a full join keeps this test about
+                // the gate under test and nothing else.
+                assert_eq!(
+                    protocol::peek_kind(reply).expect("a kind"),
+                    protocol::KIND_CHALLENGE,
+                    "a client at or above the floor must not be refused"
+                );
+                assert_eq!(ShardStats::get(&handle.stats.refused_build), 0);
+            }
+        }
+        handle
+            .shutdown
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// The dev gate at its source: a shard's welcome carries `dev` true iff it

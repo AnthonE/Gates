@@ -305,6 +305,7 @@ pub async fn spawn_shard(
             require_auth: cfg.require_auth,
             domain: cfg.domain.clone(),
             entitle: cfg.entitle.clone(),
+            min_client: cfg.min_client,
         },
         ctrl_tx,
         grave_rx,
@@ -343,6 +344,10 @@ struct ShardFacts {
     /// The ticket door (`entitle.rs`). `Config::off()` — the default — checks
     /// nothing, which is what every test and every community shard runs.
     entitle: crate::entitle::Config,
+    /// `shard.toml min_client`, packed. 0 — the default — admits every client
+    /// whose `PROTO_VER` already matched, which is every client that could
+    /// have got this far.
+    min_client: u32,
 }
 
 /// What a handshake task hands back once the client said a valid hello.
@@ -437,6 +442,7 @@ async fn accept_loop(
                     facts.require_auth,
                     facts.domain.clone(),
                     facts.entitle.clone(),
+                    facts.min_client,
                 ));
             }
             Some(done) = done_rx.recv() => {
@@ -781,6 +787,7 @@ async fn handshake_task(
     require_auth: bool,
     facts_domain: String,
     entitle: crate::entitle::Config,
+    min_client: u32,
 ) {
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let request = incoming.await.map_err(|_| ())?;
@@ -798,6 +805,26 @@ async fn handshake_task(
     if hello.proto_ver != PROTO_VER {
         ShardStats::bump(&stats.refused_version);
         spawn_refusal(connection, send, REFUSE_VERSION);
+        return;
+    }
+    // The release floor, second because it is only meaningful once the two
+    // sides agree on what the bytes are — `hello.ver` is not a number until
+    // `proto_ver` says the layout it was read from is this one.
+    //
+    // `<`, never `!=`: a client NEWER than the shard is admitted. That is
+    // deliberate and it is the direction that keeps a release shippable — a
+    // player who updated first must not be locked out of a shard its operator
+    // has not restarted yet, and the wire compatibility that would actually
+    // break is `PROTO_VER`'s to refuse, one gate up.
+    if hello.ver < min_client {
+        // The counter is the whole record, and that is this crate's shape
+        // rather than a shortcut: there is no logger in `server`'s lib — the
+        // bins own every line of output — so a refusal is observable the way
+        // every other refusal here is, through `ShardStats`. The shard binary
+        // prints the floor and its own build at boot, which is the other half
+        // an operator needs to read this number.
+        ShardStats::bump(&stats.refused_build);
+        spawn_refusal(connection, send, protocol::REFUSE_BUILD);
         return;
     }
     // ---- SIWE, and the nonce never leaves this stack frame --------------
@@ -1382,6 +1409,12 @@ pub async fn client_handshake(
     let len = protocol::encode_hello(
         &protocol::Hello {
             proto_ver: PROTO_VER,
+            // The bots are this build, so they state this build — which is
+            // also what makes them a real exercise of the floor: a shard with
+            // `min_client` above this release refuses its own bot fleet, and
+            // that is the correct answer rather than a special case.
+            ver: protocol::version::VER,
+            build: protocol::version::BUILD,
         },
         &mut buf,
     )
