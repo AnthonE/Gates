@@ -128,7 +128,7 @@ The sharpest finding, because it is not "we have not built X" but "we ship
 a thing that does nothing." Each already survives `test_content`.
 
 1. **`ARCH_BOX`** — `box_small` (150 hp) and `box_large` (250 hp) bake
-   through `content/bake.rs` into a live archetype. `ARCH_BOX` appears in
+   through `crates/content/src/bake.rs` into a live archetype. `ARCH_BOX` appears in
    exactly two places in the whole workspace: the constant, and the bake
    arm that produces it. A player can craft a box, place a box, and then
    owns a box.
