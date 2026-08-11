@@ -189,14 +189,15 @@ Two things partly redeem it and both are checks rather than trust:
    the same shape as the metal wall already sitting at their 200 frags.
 2. **Every band held with no re-speak** — six anchors, measured below.
 
-**Two claims in the batch are disputed and were NOT taken.** `rock` came
-back as "10 stone → 1, yes craftable"; the rock is the item you spawn
-holding and no other source puts it in a crafting menu, so it wants a
-second source before it moves ours. And the tool cupboard's hp went
-unanswered here while an earlier search summary said 100 against our 500
-— one weak source for a number that decides whether a cupboard is
-defended by its own health or by being buried in a base, which is a
-mechanism question, not a lookup.
+**I disputed two of its claims and was wrong about one of them, which is
+the third check on this source and the least comfortable.** I refused
+`rock` at "10 stone → 1, craftable" on the grounds that the rock is the
+item you spawn holding — **the operator confirmed the source, 2026-08-11**
+(*"you can make a rock for 10 stone. it lets a naked with nothing pick up
+lose rock and make a rock"*), and ours moved 15 → 10. A tier-4 source beat
+a confident prior; that is worth remembering the next time this document
+is inclined to trust a reading over a reference. The tool cupboard's hp
+was the other, and it went the other way — see §1c-b below.
 
 ### What moved
 
@@ -230,6 +231,8 @@ mechanism question, not a lookup.
 | **hp** furnace | 300 | 500 |
 | **hp** workbench 1 | 400 | 500 |
 | **hp** research table | 400 | 200 |
+| rock | 15 stone | 10 stone *(2026-08-11)* |
+| research table | *(+ nothing)* | **+ 20 obol** — their 20 scrap *(2026-08-11)* |
 
 ### What was refused, and why each is a real reason
 
@@ -246,15 +249,44 @@ None of these is a cost wearing principle's clothes (§6.2); each is a
   have (beancans and a small stash; a metal pipe). **Both already agree
   with theirs on the half we can express**: 240 gunpowder and 125 frags
   respectively, unchanged, which is more evidence for §1 above.
-- **research table's 20 scrap** — we have no scrap. Our research currency
-  is `item.obol` on purpose (`DECISIONS.md` "OBOL faucet v0"), and a coin
-  in a build cost is a product decision, not a balance one. The 200 frags
-  half was taken.
+- ~~**research table's 20 scrap**~~ — **RETRACTED 2026-08-11, and it was
+  never a real reason.** I refused it saying "we have no scrap, our
+  currency is `item.obol` on purpose", which is a sentence that answers
+  itself: **OBOL *is* scrap**, said in three places in this tree —
+  `DESIGN.md` §3.1 is titled "OBOL — the working coin (the scrap)",
+  `research.toml` and `cooking.toml` both carry the operator's own
+  2026-08-10 quote. The row is now 200 frags + **20 obol**, whole. This is
+  §6.2's failure mode caught in the act: not a mechanism difference, an
+  item I did not recognise under our own name for it.
 - **recycler** — not craftable there at all; it is a monument fixture.
   Ours is craftable by design and is the economy's arming point.
-- **code lock hp** — their lock carries no standalone health because it
-  is not independently destructible. Ours is a deployable with hp
-  (`lock.rs`, lock v1). Different model, same verb.
+- **code lock hp** — theirs carries no standalone health because a lock
+  is not independently destructible there. **My reason for refusing was
+  wrong and the conclusion was right by accident**: I wrote "ours is a
+  deployable with hp", and it is not — `deploy.rs` mints **no
+  `DeployRec`** for `ARCH_LOCK`, in its own words *"a lock is not a
+  deployable — it is a record about one"*. Our model already matches
+  theirs exactly: you break the door, not the lock. What the row really
+  found is that `deployables.toml`'s `lock_code` carries `hp = 100`
+  that **nothing reads** — dead data on a required schema field, left in
+  place and now labelled in the file.
+
+### §1c-b · The cupboard is ours on purpose (operator, 2026-08-11)
+
+The one cell where we now differ from them **deliberately**, and it is an
+operator call rather than a research gap: *"make cupboard stronger rather
+than weak. plus i think most people blow the locks off."*
+
+Their tool cupboard is fragile — one summary put it at 100 hp — and it
+survives by being buried behind everything else, which their own raid
+meta bears out: the entry point is what gets blown, not the cupboard.
+Ours goes the other way. **`item.hearth` hp 500 → 1,000**, the top of the
+building ladder, so taking a base's privilege costs what another metal
+wall costs. Derived rather than picked: 1,000 is `building.toml`'s metal
+rung, already theirs, so the cupboard is exactly one more wall.
+
+`DECISIONS.md` §open carries the row. It is filed here as a **difference
+we chose**, not an outstanding take, so the queue stops listing it.
 
 ### The ×2 hypothesis is dead, and that is worth recording
 

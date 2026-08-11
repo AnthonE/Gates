@@ -20,7 +20,7 @@ hp = 200
 id = "item.hearth"
 archetype = "hearth"
 placement = "foundation"
-hp = 500
+hp = 1000
 
 [[deployable]]
 id = "item.box_small"
@@ -75,6 +75,12 @@ placement = "foundation"
 hp = 200
 
 [[deployable]]
+# ⚠ `hp` is INERT on this row and nothing reads it. A lock mints no
+# `DeployRec` — `deploy.rs` bolts `has_lock` onto the record it is placed
+# on and returns, "a lock is not a deployable, it is a record about one" —
+# so a lock is never damaged, and a raider goes through the door exactly
+# as they do in the reference game. The field is required by the schema;
+# the number is not a balance knob. `reference/RIPLIST.md` §1c.
 id = "item.lock_code"
 archetype = "lock"
 placement = "door"

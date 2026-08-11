@@ -11,7 +11,7 @@ output = "item.rock"
 count = 1
 station = "none"
 seconds = 3
-inputs = [{ item = "item.stone", count = 15 }]
+inputs = [{ item = "item.stone", count = 10 }]
 
 [[recipe]]
 id = "recipe.torch"
@@ -221,7 +221,10 @@ output = "item.research_table"
 count = 1
 station = "workbench1"
 seconds = 20
-inputs = [{ item = "item.metal_frags", count = 200 }]
+inputs = [
+    { item = "item.metal_frags", count = 200 },
+    { item = "item.obol", count = 20 },
+]
 
 # The recycler (recycler v0). Priced between the furnace (275 units of
 # raw + lowgrade) and the large box, and it asks for **gears** on purpose:

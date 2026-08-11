@@ -97,19 +97,19 @@ of twelve content files with zero coverage.
 craft column and deployable hp, `RIPLIST.md` §1c is the record. What is
 left of that thread, in order:
 
-1. **The tool cupboard's own hp** is the largest open cell on the list —
-   ours 500, one weak summary says 100, and it decides whether a cupboard
-   is defended by its health or by being buried in a base. Mechanism
-   question, not a lookup.
-2. **`rock` is disputed** — one source says 10 stone and craftable; it is
-   the item you spawn holding. Wants a second source before ours moves.
-3. **Row 1e**: `armor` · `cooking` · `items` (stack sizes) · `loot` ·
+1. **Row 1e**: `armor` · `cooking` · `items` (stack sizes) · `loot` ·
    `research` still have zero rip coverage. Stack sizes are the cheapest
    — a pure lookup with no other half.
-4. ⚠ **The source tier dropped to get 1c/1d**: every candidate page is
+2. ⚠ **The source tier dropped to get 1c/1d**: every candidate page is
    `EGRESS_BLOCKED` here, so the table came through a second assistant —
-   a summary of pages nobody in this loop read. Re-verify against real
-   pages if egress ever opens; §1c names the two disputed cells.
+   a summary of pages nobody in this loop read. Re-verify if egress opens.
+
+Closed 2026-08-11 by the operator, all three: the rock **is** craftable
+(15 → 10 stone, and the tier-4 source beat my prior — §1c says so), OBOL
+**is** scrap so the research table takes its 20 (my refusal answered
+itself), and the cupboard is **stronger** here on purpose — hp 500 →
+1,000, the metal rung, so taking a base's privilege costs one more wall.
+Nothing about the cupboard is outstanding now; it is a chosen difference.
 
 Two results worth carrying at this level. `balance.rs` refuses a
 `farm_per_min` above the sim's at-node ceiling and `tests/farmwalk.rs`

@@ -370,7 +370,7 @@ fn dollar_ticker_refused() {
 fn orphan_refs_refused() {
     refuses(
         "recipes.toml",
-        "inputs = [{ item = \"item.stone\", count = 15 }]",
+        "inputs = [{ item = \"item.stone\", count = 10 }]",
         "inputs = [{ item = \"item.unobtanium\", count = 15 }]",
         "not an item",
     );
@@ -681,8 +681,8 @@ fn bake_craft_refuses_out_of_cap_rows() {
     let mut srcs = sources();
     let entry = srcs.iter_mut().find(|(n, _)| *n == "recipes.toml").unwrap();
     entry.1 = entry.1.replace(
-        "inputs = [{ item = \"item.stone\", count = 15 }]",
-        "inputs = [\n    { item = \"item.stone\", count = 15 },\n    { item = \"item.wood\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n    { item = \"item.fat\", count = 1 },\n    { item = \"item.charcoal\", count = 1 },\n]",
+        "inputs = [{ item = \"item.stone\", count = 10 }]",
+        "inputs = [\n    { item = \"item.stone\", count = 10 },\n    { item = \"item.wood\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n    { item = \"item.fat\", count = 1 },\n    { item = \"item.charcoal\", count = 1 },\n]",
     );
     let c = build(&srcs).expect("five inputs is a bake error, not a schema error");
     let err = c.bake_craft().expect_err("five-input recipe baked");
@@ -775,12 +775,12 @@ fn bake_deployables_carries_the_shipped_numbers() {
     assert_eq!(dc.def_count as usize, c.deployables.len());
 
     // deployables.toml item.hearth: hearth archetype, foundation
-    // placement, hp 500 — read back from the baked row.
+    // placement, hp 1000 — read back from the baked row.
     let idx = c.deploy_index("item.hearth").unwrap() as usize;
     let def = &dc.defs[idx];
     assert_eq!(def.arch, sim_core::deploy::ARCH_HEARTH);
     assert_eq!(def.placement, sim_core::deploy::PLACE_FOUNDATION);
-    assert_eq!(def.hp, 500);
+    assert_eq!(def.hp, 1000);
     assert_eq!(def.item, c.item_index("item.hearth").unwrap());
 
     // The doors keep their doorway placement and material pairing.
