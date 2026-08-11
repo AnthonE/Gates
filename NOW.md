@@ -348,11 +348,15 @@ the release. **Only the Linux leg has ever been run** — this box has no
 Windows or macOS, so those two are written and unproven, which is the honest
 state and not a claim.
 
-1. **Run it and read what breaks.** `workflow_dispatch` takes an existing
-   tag, so a dry run costs a tag and no release. The likely Windows failure
-   is `scry_overlay.rs` — it now carries `cfg(windows)` transport, so it
-   should compile, but nothing here has compiled it. macOS has never built
-   this client at all.
+1. **macOS has never been compiled, and Windows has only been typechecked.**
+   Windows: both release binaries `cargo check` clean for
+   `x86_64-pc-windows-gnu` from this box (2026-08-11 — which is how
+   `bin/shard.rs`'s unconditional `tokio::signal::unix` was found, and it is
+   fixed). That covers the cfg-and-API class and **not** msvc linking or ABI,
+   which only a real Windows runner proves. `nightly.yml`'s `cross` job now
+   typechecks both nightly. macOS is unverified end to end — no SDK here, and
+   nothing has compiled it. `fail-fast: false`, so a macOS failure still
+   leaves the other two artifacts.
 2. ~~No `LICENSE` file~~ — **done 2026-08-11** (MIT, © MoreRight DAO;
    `DECISIONS.md`). `LICENSE` + `NOTICE` ship in both the release archive and
    the scry depot, gated by `ci/depot.py --self-test`.
