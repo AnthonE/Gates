@@ -448,6 +448,10 @@ impl Plugin for GatesRenderPlugin {
                 icons::load,
                 anim::load,
                 mobs::load,
+                // The held-item models. Loaded once here rather than per
+                // swap: `AssetServer` dedups, but a `load` still walks and
+                // hashes a path, and `viewmodel::swap` runs every frame.
+                viewmodel::load_models,
                 // The tracer pool. Spawned once here so the frame path
                 // never spawns an entity for an arrow (`tracer.rs`).
                 tracer::setup,
@@ -687,6 +691,11 @@ impl Plugin for GatesRenderPlugin {
                 viewmodel::animate
                     .after(feed::drain)
                     .after(viewmodel::spawn_item),
+                // What is in the hand. After the spawn for the obvious
+                // reason; it writes only handles and visibility where
+                // `animate` writes only a transform, so the two never
+                // contend for one entity and need no order between them.
+                viewmodel::swap.after(viewmodel::spawn_item),
                 // The tracer's two halves. `launch` reads the drained feed,
                 // so it must follow the drain for the swing's reason —
                 // the other order reacts a frame late. `fly` then advances

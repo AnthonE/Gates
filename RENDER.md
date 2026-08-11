@@ -505,9 +505,24 @@ number on it is the server's (`hp`/`hp_max`, `food`, `water` off `ClientCore`),
 and the zero-max rule `core.rs` states is honoured: a shard whose content
 disarms combat draws no bar rather than an empty one.
 
-Still owed: item icons in the cells (the hotbar knows only which cell is
-selected, not what is in it), status chips (`WET 36%`), and a viewmodel that
-is the held item rather than a stand-in.
+**The viewmodel is the held item since 2026-08-11, and the sentence that used
+to stand here was wrong about why it was not.** It read "the hotbar knows only
+which cell is selected, not what is in it", which sounded like a wire gap and
+was not one: `ClientCore.inv` has carried every slot's `ItemStack` since the
+container slice, filled from `EventMsg::Inv`, and `catalog` carries the display
+names. Nothing needed to be added to the wire — the data was already arriving
+and no reader had asked for it. `ui::hold::held_model` resolves the selected
+slot to a model by the same normalised display name the icons key off, and
+`render::viewmodel::swap` puts it in the hand.
+
+Three pictures, deliberately distinct: a modelled item draws its model; an item
+with no model yet draws the generic stand-in tool; an **empty hand draws
+neither**, because a tool that appears when you are carrying nothing is a lie
+about your own inventory.
+
+Still owed: item icons in the cells — same data, same lookup, and now clearly a
+UI slice rather than a wire one — status chips (`WET 36%`), and per-item pose
+tuning, since one grip offset serves a 20 cm rock and a 1.8 m spear.
 
 **The face landed 2026-08-07 and `render/ui.rs` owns it**, the same way it
 owns the palette and for a worse-founded reason: nothing owned it before, so

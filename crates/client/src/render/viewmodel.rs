@@ -41,6 +41,7 @@ use bevy::prelude::*;
 use super::feed::Feed;
 use super::props::{tint1, Soup};
 use super::rig::EyeCam;
+use super::Net;
 use super::textures::PropMaps;
 use super::Eye;
 
@@ -97,6 +98,33 @@ pub const VIEWMODEL_SWING_PUSH: f32 = 0.13;
 /// handle and the head cannot drift apart.
 #[derive(Component)]
 pub struct HeldItem;
+
+/// The child that carries whichever model is in hand. Separate from
+/// [`HeldItem`] so `animate` keeps writing exactly one transform and the swap
+/// below writes only handles — two systems, one entity each, no contention.
+#[derive(Component)]
+pub struct HeldModel {
+    /// The [`crate::ui::hold::HELD_MODELS`] row on screen, or `None` for an
+    /// empty hand. Cached so the swap is a comparison and not a respawn every
+    /// frame: `Mesh3d` is a handle, and writing it unconditionally would
+    /// re-trigger Bevy's change detection on the render world forever.
+    shown: Option<usize>,
+}
+
+/// A generated model is authored standing up with its feet at y = 0 (see
+/// `ci/import_meshy.py`), and a tool in hand points away from the eye. This is
+/// the quarter-turn between those two facts: +Y becomes −Z.
+///
+/// Applied on the model child rather than folded into [`VIEWMODEL_TILT`],
+/// because the tilt is the *pose of the hand* and this is a property of how
+/// the asset was authored — one is art direction and the other is a file
+/// format convention, and merging them makes the next asset's fix ambiguous.
+const MODEL_UPRIGHT_TO_HELD: f32 = -std::f32::consts::FRAC_PI_2;
+
+/// Where a held model's origin sits relative to the hand, metres. The assets
+/// are origin-at-the-foot, so a tool hung at the origin dangles below the
+/// grip; this lifts it so roughly the haft's lower third is at the hand.
+const MODEL_GRIP_LIFT: f32 = -0.10;
 
 /// The motion state. A resource rather than a component: there is exactly one
 /// held item, and this keeps `animate` one cheap system that queries only the
@@ -353,16 +381,140 @@ pub fn spawn_item(
             Visibility::Inherited,
         ))
         .with_children(|item| {
+            // The generic tool, kept as the fallback for every item with no
+            // model of its own. It is NOT what an empty hand draws — see
+            // `swap` — it is what a revolver draws until a revolver is made.
             item.spawn((
                 Mesh3d(meshes.add(handle_mesh())),
                 MeshMaterial3d(wood.clone()),
+                Fallback,
             ));
             item.spawn((
                 Mesh3d(meshes.add(head_mesh())),
                 MeshMaterial3d(steel.clone()),
+                Fallback,
+            ));
+            // The model in hand. Spawned empty and filled by `swap`, which is
+            // what keeps this file free of the inventory: it reads a row index
+            // from `ui::hold` and never an item id.
+            // **The empty handles are load-bearing, not tidiness.** `swap`'s
+            // query is `(&mut HeldModel, &mut Mesh3d, &mut MeshMaterial3d,
+            // &mut Visibility)`, and a Bevy query matches only entities that
+            // have EVERY component in it. Spawned without these two the
+            // entity exists, holds its transform, and is invisible to the one
+            // system that fills it — which is not a compile error, not a
+            // panic, and not a warning: the hand is simply always empty.
+            // Cost one capture to find.
+            item.spawn((
+                HeldModel { shown: None },
+                Mesh3d(Handle::default()),
+                MeshMaterial3d::<StandardMaterial>(Handle::default()),
+                Transform::from_translation(Vec3::new(0.0, MODEL_GRIP_LIFT, 0.0))
+                    .with_rotation(Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)),
+                Visibility::Hidden,
             ));
         });
     });
+}
+
+/// The two-primitive stand-in, so `swap` can hide it without knowing what it
+/// is made of.
+#[derive(Component)]
+pub struct Fallback;
+
+/// Put the selected item's model in the hand.
+///
+/// **The three states are deliberately different pictures**, because
+/// collapsing any two of them tells the player something false:
+///
+///   · a modelled item → its own model, stand-in hidden
+///   · an item with no model yet → the stand-in tool, as before
+///   · an EMPTY hand → neither, because a tool that appears when you are
+///     holding nothing is a lie about your own inventory, and the hotbar
+///     right next to it says the cell is empty
+///
+/// Handles are loaded once into [`Models`] rather than per swap: `AssetServer`
+/// dedups, but a `load` per frame still walks a path and hashes it, and this
+/// runs every frame by construction.
+pub fn swap(
+    net: Option<NonSend<Net>>,
+    models: Res<Models>,
+    mut q: Query<(&mut HeldModel, &mut Mesh3d, &mut MeshMaterial3d<StandardMaterial>, &mut Visibility)>,
+    mut fallback: Query<&mut Visibility, (With<Fallback>, Without<HeldModel>)>,
+) {
+    let (want, empty) = match net.as_deref() {
+        Some(n) => {
+            let core = &n.session.core;
+            let stack = core.inv.get(usize::from(n.sel).min(core.inv.len() - 1)).copied();
+            (
+                crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, n.sel),
+                stack.is_none_or(|s| s.count == 0),
+            )
+        }
+        None => (None, true),
+    };
+
+    for (mut held, mut mesh, mut mat, mut vis) in &mut q {
+        if held.shown != want {
+            match want {
+                Some(i) => {
+                    mesh.0 = models.mesh[i].clone();
+                    mat.0 = models.mat[i].clone();
+                }
+                None => {
+                    mesh.0 = Handle::default();
+                    mat.0 = Handle::default();
+                }
+            }
+            held.shown = want;
+        }
+        *vis = if want.is_some() {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+    // The stand-in covers "no model of its own", never "nothing in hand".
+    let show_fallback = want.is_none() && !empty;
+    for mut v in &mut fallback {
+        *v = if show_fallback {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+    }
+}
+
+/// The held-item models, index-aligned with [`crate::ui::hold::HELD_MODELS`].
+#[derive(Resource)]
+pub struct Models {
+    mesh: Vec<Handle<Mesh>>,
+    mat: Vec<Handle<StandardMaterial>>,
+}
+
+/// Load every held model once at startup. Same `Primitive`/`Material` pair
+/// `structures::build_kit` uses, and for the same reason: these are
+/// single-primitive assets, so the label lands in an ordinary handle and no
+/// scene hierarchy is spawned. `tests/held_assets.rs` is what keeps that true.
+pub fn load_models(mut commands: Commands, assets: Res<AssetServer>) {
+    let (mut mesh, mut mat) = (Vec::new(), Vec::new());
+    for (_, path) in crate::ui::hold::HELD_MODELS {
+        mesh.push(assets.load(
+            GltfAssetLabel::Primitive {
+                mesh: 0,
+                primitive: 0,
+            }
+            .from_asset(path),
+        ));
+        mat.push(assets.load(
+            GltfAssetLabel::Material {
+                index: 0,
+                is_scale_inverted: false,
+            }
+            .from_asset(path),
+        ));
+    }
+    commands.insert_resource(Models { mesh, mat });
 }
 
 /// Integrate the three motions and write the one transform.

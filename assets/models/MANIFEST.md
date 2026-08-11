@@ -44,14 +44,42 @@ gates every claim in this table.
 | `deploy/fire.glb` | 3 fire | `019feff4-8c6e` | 15 | stone ring, charred logs, embers. **The one asset that keeps its emissive map** (measured peak 0.24, genuine glow) |
 | `deploy/workbench.glb` | 5 workbench | `019feff2-cd94` | 24 | plank worktop, vice, scattered tools |
 
-**Held items are generated and deliberately not in the tree yet.** Rock, stone
-hatchet, stone pick, hammer, building plan, wooden spear and bow all exist as
-finished models, and nothing can draw them: the viewmodel is one generic tool
-because `ClientCore` mirrors which hotbar *cell* is lit and not what is *in*
-it (`RENDER.md` §6 owes the same gap for the hotbar's icons). Committing seven
-unreachable binaries would be paying repo weight for a picture nobody can see,
-so they wait for that surface and land with it. Task ids are in
-`DECISIONS.md`'s row; regenerating is `ci/`-side and cheap.
+## `held/` — what the viewmodel puts in your hand
+
+**The surface these were waiting on turned out to already exist.** They were
+held out of the tree on the belief that the client could not know *what* was in
+the selected hotbar cell; `ClientCore.inv` has in fact carried every slot's
+`ItemStack` since the container slice, and `catalog` the display names. No wire
+change was needed and none was made — `RENDER.md` §6 carries the correction.
+
+Resolved by **normalised display name** and nothing else, which is
+`ui::hold`'s existing rule and the reason a rename in `content/items.toml`
+breaks the icon, the mouse modality and the model in one place instead of
+silently breaking one. `crates/client/tests/held_assets.rs` reads
+`items.toml` and fails if any key here has no live item behind it.
+
+| file | item | task id | credits |
+|---|---|---|---|
+| `held/rock.glb` | Rock | `019fefe3-2c88` | 24 |
+| `held/stone_hatchet.glb` | Stone Hatchet | `019fefe7-e4b8` | 24 |
+| `held/stone_pickaxe.glb` | Stone Pickaxe | `019fefe9-a24e` | 24 |
+| `held/hammer.glb` | Hammer | `019feffa-b068` | 24 |
+| `held/building_plan.glb` | Building Plan | `019feffc-45fe` | 24 |
+| `held/wooden_spear.glb` | Wooden Spear | `019feffe-2c4b` | 24 |
+| `held/hunting_bow.glb` | Hunting Bow | `019feff1-37f6` | 24 |
+
+Three of these were regenerated once, and the two prompt failures are worth
+keeping because they are the failure mode of the *prompt*, not the tool: the
+building plan came back with a **disembodied hand** modelled into it (the size
+note said "held in one hand"), and the spear came back as **two crossed
+spears**. The hammer came back a sledgehammer. All three were fixed by saying
+EXACTLY ONE and naming what not to draw.
+
+**Nothing held emits light** and `tests/held_assets.rs` enforces it — the
+generator ships `emissiveFactor = [1,1,1]` on nearly everything, and this
+spear's map peaked at **0.53** before the import stripped it, i.e. a stick
+that glows in the dark. A torch would be the first exception and would grow
+that list rather than retire the rule.
 
 ⚠ **40 MB for five props, against 6.5 MB for the entire texture set.** The 2K
 maps are an operator call (*"i dont wanna nerf looks too much"*) and the real
