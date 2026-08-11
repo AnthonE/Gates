@@ -9,12 +9,78 @@ use server::stats::ShardStats;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
-use tokio::signal::unix::{signal, SignalKind};
 
 /// How long a graceful shutdown will wait for the storage thread before it
 /// gives up and says what it lost. A backstop, not the mechanism — the real
 /// exit is `store_stopped` being raised, which is exact.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
+
+/// **"The supervisor is stopping this service", whatever the OS calls it.**
+///
+/// Ctrl-C is portable and `tokio::signal::ctrl_c` handles it on both
+/// platforms; this is the *other* half, and it is the half that matters in
+/// production, because a shard is almost never stopped by somebody typing at
+/// it. On Unix that is `SIGTERM` — systemd, `docker stop`, every process
+/// supervisor there is. On Windows the same event arrives as a console
+/// control: `CTRL_CLOSE_EVENT` when the window is closed and
+/// `CTRL_SHUTDOWN_EVENT` when the machine is going down.
+///
+/// It exists as a type rather than as two `#[cfg]` arms in the select below
+/// because the select is the part that must not fork: the shutdown path is
+/// the thing that turns a stop into a save, and a second copy of it under a
+/// `cfg` is a copy that only one platform ever runs and neither reviews.
+/// Here the `cfg` covers *which signal*, and the flush is one code path.
+///
+/// **Found by typechecking, not by review** — `tokio::signal::unix` was
+/// imported unconditionally and the Windows build of this binary could not
+/// compile at all, which the three-platform release workflow would have hit
+/// on its first run (2026-08-11).
+struct Stop {
+    #[cfg(unix)]
+    sigterm: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    close: tokio::signal::windows::CtrlClose,
+    #[cfg(windows)]
+    shutdown: tokio::signal::windows::CtrlShutdown,
+}
+
+impl Stop {
+    fn new() -> Result<Self, String> {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            Ok(Stop {
+                sigterm: signal(SignalKind::terminate())
+                    .map_err(|e| format!("SIGTERM handler: {e}"))?,
+            })
+        }
+        #[cfg(windows)]
+        {
+            Ok(Stop {
+                close: tokio::signal::windows::ctrl_close()
+                    .map_err(|e| format!("CTRL_CLOSE handler: {e}"))?,
+                shutdown: tokio::signal::windows::ctrl_shutdown()
+                    .map_err(|e| format!("CTRL_SHUTDOWN handler: {e}"))?,
+            })
+        }
+    }
+
+    /// Resolves when the supervisor says stop, naming the signal for the log.
+    async fn recv(&mut self) -> &'static str {
+        #[cfg(unix)]
+        {
+            self.sigterm.recv().await;
+            "SIGTERM"
+        }
+        #[cfg(windows)]
+        {
+            tokio::select! {
+                _ = self.close.recv() => "CTRL_CLOSE",
+                _ = self.shutdown.recv() => "CTRL_SHUTDOWN",
+            }
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -371,14 +437,12 @@ async fn main() {
     // up to a whole save interval. The flush was real and unreachable.
     //
     // Both signals, because both are how a shard actually goes down: SIGINT
-    // is an operator with a terminal, SIGTERM is systemd, docker stop, and
-    // every process supervisor there is.
-    let mut sigterm = signal(SignalKind::terminate())
-        .map_err(|e| format!("SIGTERM handler: {e}"))
-        .unwrap_or_else(|e| {
-            eprintln!("shard: {e}");
-            std::process::exit(1);
-        });
+    // is an operator with a terminal, and `Stop` is the supervisor — systemd,
+    // docker stop, or the Windows console-control equivalents.
+    let mut stop = Stop::new().unwrap_or_else(|e| {
+        eprintln!("shard: {e}");
+        std::process::exit(1);
+    });
 
     let mut report = tokio::time::interval(Duration::from_secs(10));
     report.tick().await; // immediate first tick consumed
@@ -388,8 +452,8 @@ async fn main() {
                 shutdown(&handle, "SIGINT").await;
                 return;
             }
-            _ = sigterm.recv() => {
-                shutdown(&handle, "SIGTERM").await;
+            name = stop.recv() => {
+                shutdown(&handle, name).await;
                 return;
             }
             _ = report.tick() => {}
