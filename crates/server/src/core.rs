@@ -455,10 +455,11 @@ impl ShardCore {
                     // state, raid included, not the one frozen at the
                     // victim's leave. A keyless victim is a guest: no
                     // record to file, and never was one.
-                    let record = self
-                        .sleepers
-                        .key_of(victim)
-                        .and_then(|k| self.world.save_of(victim).map(|s| (k, s)));
+                    // `zip` rather than `and_then(|k| …map(|s| (k, s)))`: same
+                    // pair, and `save_of` is a pure `&self` lookup
+                    // (`world.rs`) so evaluating it eagerly costs a slot
+                    // lookup on the guest path and changes nothing else.
+                    let record = self.sleepers.key_of(victim).zip(self.world.save_of(victim));
                     if let Some((k, _)) = record.as_ref() {
                         // The arrow points at a body the command below is
                         // about to remove.

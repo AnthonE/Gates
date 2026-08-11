@@ -25,8 +25,14 @@ jobs:
           ref: main
       - name: toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup target add wasm32-unknown-unknown
+          # `rust-toolchain.toml` pins the version, the profile, the two
+          # components and the wasm target, so rustup installs exactly that on
+          # first use and this step only has to exist to make it happen early
+          # (and to fail here rather than mid-gate). Installing `stable` by
+          # name is what this repo did until 2026-08-11, and it is what let CI
+          # and the developer's box drift three releases apart while the gates
+          # read green locally.
+          rustup show active-toolchain || rustup toolchain install
       - name: cache cargo
         uses: actions/cache@v4
         with:
@@ -34,7 +40,17 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: nightly-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          key: nightly-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+      # `ci/gates.sh`'s native-client gate builds `--features render`, and each
+      # of these fails identically without its package: a `pkg-config exited
+      # with status code 1` panic from a *-sys build script, with the crate
+      # named only in the backtrace. Absent here until 2026-08-11, which is the
+      # failure this gate would have hit next once the clippy break above it
+      # was fixed.
+      - name: the three -dev packages --features render needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev
       - name: gates first
         run: ./ci/gates.sh
       - name: build server (release)
@@ -68,7 +84,7 @@ jobs:
           # still has HEAD, but `git describe`-shaped reads want the history.
           fetch-depth: 0
       - name: toolchain
-        run: rustup toolchain install stable --profile minimal
+        run: rustup show active-toolchain || rustup toolchain install
       - name: cache cargo
         uses: actions/cache@v4
         with:
@@ -76,7 +92,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: depot-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          key: depot-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
       # Each of these fails identically without its package — a `pkg-config
       # exited with status code 1` panic from a *-sys build script, 40 lines
       # into a build, with the crate named only in the backtrace. `libwayland`
@@ -162,7 +178,7 @@ jobs:
           ref: main
       - name: toolchain
         run: |
-          rustup toolchain install stable --profile minimal
+          rustup show active-toolchain || rustup toolchain install
           rustup target add ${{ matrix.target }}
       - name: mingw (the gnu triple wants a linker even to check some crates)
         run: |
@@ -177,7 +193,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cross-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cross-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
       # Exactly what the release workflow builds, and nothing else — the point
       # is the shipped artifacts, not the whole workspace.
       - name: the shard
