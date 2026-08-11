@@ -34,7 +34,10 @@
 //! energy, it does not clip, it starts and ends near silence, and the bed's
 //! loop seam is continuous.
 
+use super::music;
 use super::{Cue, CUE_COUNT, SAMPLE_RATE};
+
+use std::f32::consts::{PI, TAU};
 
 /// Peak every cue is normalized to before the table's gain is applied.
 ///
@@ -62,9 +65,20 @@ const BED_LOOP_SECS: f32 = BED_SECS - BED_FADE_SECS;
 
 /// Generate the whole bank, in [`Cue::ALL`] order. Called once, at startup.
 ///
-/// Allocating and not cheap — roughly 1.5 MB of `f32` and a megabyte of WAV.
-/// That is a boot cost, not a frame cost, and it is paid on the loading
-/// screen where the pipelines are already specializing.
+/// **Measured 2026-08-11: 11.7 MB of WAV in ~0.8 s release, ~3.9 s debug** —
+/// and the score is nearly all of both. Nine pieces at
+/// `music::PIECE_S` each is 94 seconds of audio against the ~30 the rest of
+/// the bank comes to, and it is dominated by `f32::sin`: roughly 65 million
+/// evaluations across the drone, the pad and the plucked line.
+///
+/// That is a boot cost, not a frame cost, and it is paid on the loading screen
+/// where the pipelines are already specializing — but it is no longer
+/// negligible, and it is written down rather than implied. **A sine lookup
+/// table was tried and measured SLOWER in both profiles** (release 0.90 →
+/// 1.00 s), because the per-call `LazyLock` deref cost more than the `sin` it
+/// replaced; reverted rather than kept on the theory that it should have
+/// helped. The real lever is not an optimization at all: the day recorded
+/// pieces replace `score`, this cost leaves with it.
 pub fn bank() -> [Vec<u8>; CUE_COUNT] {
     core::array::from_fn(|i| wav(Cue::ALL[i]))
 }
@@ -296,6 +310,25 @@ fn render(cue: Cue) -> Vec<f32> {
         Cue::RemoteStepLitter => render(Cue::StepLitter),
         Cue::RemoteStepRock => render(Cue::StepRock),
         Cue::RemoteStepWater => render(Cue::StepWater),
+
+        // ---- the forest layer -------------------------------------------
+        Cue::Bird => bird(&mut r),
+
+        // ---- the score ---------------------------------------------------
+        // Nine pieces, one generator, and the table decides which: the arm
+        // is a lookup in `music::PIECES` rather than nine parameter sets, so
+        // adding a section or a tier is a change to that table alone.
+        //
+        // **The one wildcard arm in this match, and it is gated rather than
+        // trusted.** A cue added to the enum and forgotten everywhere else
+        // lands here and renders as silence — which `tests/sound.rs`'s
+        // "every cue has energy" assertion turns into a red gate on the next
+        // run. Silence rather than a panic because a bank that refuses to
+        // build is a client that refuses to boot over a sound.
+        _ => match music::piece_of(cue) {
+            Some((section, tier)) => score(&mut r, section, tier),
+            None => Vec::new(),
+        },
     }
 }
 
@@ -835,6 +868,325 @@ fn snort(r: &mut Rng) -> Vec<f32> {
 
 // ---------------------------------------------------------------------------
 // Shaping and containers.
+// ---------------------------------------------------------------------------
+// The forest layer.
+// ---------------------------------------------------------------------------
+
+/// A bird call: three whistled chirps with a gap between them.
+///
+/// **Whistles, not noise bursts**, which is what separates this from every
+/// other cue in the bank: a footstep is filtered noise with an envelope and a
+/// bird is a near-pure tone that MOVES. The tell is the vibrato — a swept
+/// sine with no wobble in it reads as a kettle or a test tone, and 3 % at
+/// 38 Hz is enough to stop it.
+fn bird(r: &mut Rng) -> Vec<f32> {
+    let n = samples(0.62);
+    let mut out = vec![0.0f32; n];
+    // A rising call, a shorter answer, and a falling tail note. The spacing
+    // is jittered off the cue's own stream so the phrase is not three evenly
+    // spaced beeps — `Cue::pitch_var` then varies the whole call, but a
+    // rhythm inside it cannot come from a playback rate.
+    let base = 2_600.0 + r.unit() * 500.0;
+    chirp(&mut out, 0.00, 0.085, base * 0.82, base * 1.06, 1.0);
+    chirp(
+        &mut out,
+        0.15 + r.unit() * 0.03,
+        0.070,
+        base * 1.02,
+        base * 1.18,
+        0.85,
+    );
+    chirp(
+        &mut out,
+        0.30 + r.unit() * 0.04,
+        0.120,
+        base * 1.12,
+        base * 0.74,
+        0.7,
+    );
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// One whistled note: a frequency sweep with vibrato under a bell envelope.
+fn chirp(out: &mut [f32], start_s: f32, dur_s: f32, from_hz: f32, to_hz: f32, amp: f32) {
+    let sr = SAMPLE_RATE as f32;
+    let from = samples(start_s);
+    let n = samples(dur_s);
+    // Phase INTEGRATED, never `sin(2π f(t) t)` — `sweep`'s trap, one function
+    // up: that form sweeps at twice the rate asked for and lands an octave
+    // low.
+    let mut phase = 0.0f32;
+    for k in 0..n {
+        let Some(slot) = out.get_mut(from + k) else {
+            break;
+        };
+        let t = k as f32 / sr;
+        let u = k as f32 / n as f32;
+        let vib = 1.0 + 0.03 * (TAU * 38.0 * t).sin();
+        phase += TAU * (from_hz + (to_hz - from_hz) * u) * vib / sr;
+        // A bell, because a whistle has neither an attack transient nor a
+        // tail: it fades up and back down inside its own length.
+        *slot += (phase.sin() + 0.25 * (phase * 2.0).sin()) * (u * PI).sin() * amp;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The score. `sound::music` decides WHEN; this decides what it sounds like.
+// ---------------------------------------------------------------------------
+
+/// The key. A2, and everything in a piece is a semitone offset from it.
+const ROOT_HZ: f32 = 110.0;
+
+/// Beats per minute. Chosen so a section is a whole number of beats:
+/// `music::SECTION_S` is 8 s, which is exactly 12 beats at 90 — a piece is a
+/// phrase that ends where it should rather than a clip that stops.
+const BPM: f32 = 90.0;
+const BEAT_S: f32 = 60.0 / BPM;
+
+/// Each section's chord, as semitones from [`ROOT_HZ`].
+///
+/// A minor plagal turn — i, ♭VI, ♭VII — which is the most-used progression in
+/// survival and exploration scoring for a reason: it moves without resolving,
+/// so a song can be cut short at any section boundary (which is exactly what
+/// `music::Director` does) and never sound interrupted. **That property is
+/// the whole reason the progression is this one**: a cadence that wanted to
+/// land on the tonic would be a cadence the director keeps stepping on.
+const CHORDS: [[f32; 3]; music::SECTIONS] = [
+    [0.0, 3.0, 7.0],  // i   — A C E
+    [-4.0, 0.0, 3.0], // ♭VI — F A C
+    [-2.0, 2.0, 5.0], // ♭VII— G B D
+];
+
+/// The melody's note set: A minor pentatonic, two octaves up from the root.
+const PENT: [f32; 5] = [12.0, 15.0, 17.0, 19.0, 22.0];
+
+/// One piece: drone, pad, melody, and — at the top tier — a pulse, all under
+/// a reverb whose tail is what makes a cut from any piece to any other sound
+/// like a join.
+///
+/// The buffer is `music::PIECE_S` long and **no note starts after
+/// `music::SECTION_S`**. That is the arithmetic behind the reference's
+/// "pieces end with reverb tails and delays rather than looping cleanly": the
+/// last `music::TAIL_S` holds only what the reverb is still ringing out, so
+/// the next piece can start at the body's end and play over it.
+fn score(r: &mut Rng, section: usize, tier: music::Tier) -> Vec<f32> {
+    let n = samples(music::PIECE_S);
+    let body_s = music::SECTION_S;
+    let mut out = vec![0.0f32; n];
+    let sr = SAMPLE_RATE as f32;
+    let chord = CHORDS[section];
+
+    // How the tiers differ, in one table rather than in three branches. Every
+    // column is a knob (`DECISIONS.md` §open, "music v0") and none is
+    // measured — the ORDER is what is designed: each step up is denser,
+    // lower, and shorter-decayed than the one below it.
+    let (drone_amp, pad_amp, note_amp, decay_s, pulse_amp, subdiv) = match tier {
+        music::Tier::Calm => (0.30, 0.34, 0.30, 1.60, 0.00, 3),
+        music::Tier::Tense => (0.42, 0.28, 0.34, 0.90, 0.10, 2),
+        music::Tier::Combat => (0.55, 0.20, 0.38, 0.55, 0.34, 1),
+    };
+
+    // 1. The drone: root and fifth, detuned against each other so they beat
+    //    slowly. It is the only layer that is present in every sample of the
+    //    body, and it is what makes the nine pieces one theme.
+    for (i, v) in out.iter_mut().enumerate() {
+        let t = i as f32 / sr;
+        let env = attack(t, 1.2) * ((body_s - t) / 2.0).clamp(0.0, 1.0);
+        if env <= 0.0 {
+            continue;
+        }
+        let a = (TAU * ROOT_HZ * t).sin();
+        let b = (TAU * ROOT_HZ * 1.5 * 1.001 * t).sin() * 0.6;
+        // A third partial an octave down gives it a floor without adding a
+        // note: at 55 Hz it is felt more than heard.
+        let c = (TAU * ROOT_HZ * 0.5 * t).sin() * 0.5;
+        *v += (a + b + c) * env * drone_amp * 0.33;
+    }
+
+    // 2. The pad: the section's chord, slow in and slow out. This is the
+    //    layer that says WHICH section you are hearing.
+    for semis in chord {
+        pad(&mut out, hz(semis), pad_amp * 0.33, body_s, 0.0015);
+    }
+
+    // 3. The melody, on the beat grid. `subdiv` is how many beats apart the
+    //    slots are, so the tiers differ in density without differing in
+    //    tempo — a piece that changed tempo could not be cut against its
+    //    neighbours.
+    let beats = (body_s / BEAT_S).floor() as usize;
+    let mut prev = 2usize;
+    for b in (0..beats).step_by(subdiv) {
+        // Not every slot sounds: a rest is what stops a melody being a scale.
+        if r.unit() < 0.18 {
+            continue;
+        }
+        // Step to a neighbouring degree more often than leaping, which is
+        // the cheapest thing that makes a note sequence read as a line
+        // rather than as a draw.
+        let step = (r.next_u32() % 3) as i32 - 1;
+        prev = (prev as i32 + step).clamp(0, PENT.len() as i32 - 1) as usize;
+        let octave = if tier == music::Tier::Combat && r.unit() < 0.4 {
+            -12.0
+        } else {
+            0.0
+        };
+        pluck(
+            &mut out,
+            samples(b as f32 * BEAT_S),
+            hz(PENT[prev] + octave),
+            decay_s,
+            note_amp,
+        );
+        // The top tier answers itself a fifth up on the off-beat: one more
+        // voice, no new material.
+        if tier == music::Tier::Combat {
+            pluck(
+                &mut out,
+                samples((b as f32 + 0.5) * BEAT_S),
+                hz(PENT[prev] + 7.0),
+                decay_s * 0.6,
+                note_amp * 0.5,
+            );
+        }
+    }
+
+    // 4. The pulse: a low thump on every third beat, and only when there is
+    //    something to be tense about. It is the layer a player notices
+    //    arriving, which is the whole point of having tiers at all.
+    if pulse_amp > 0.0 {
+        for b in (0..beats).step_by(3) {
+            thump(&mut out, samples(b as f32 * BEAT_S), pulse_amp);
+        }
+    }
+
+    // 5. The tail. Everything above is dry; this is what rings past the body.
+    let mut out = reverb(&out, 0.38);
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// A semitone offset from [`ROOT_HZ`], in Hz.
+fn hz(semis: f32) -> f32 {
+    ROOT_HZ * (semis / 12.0).exp2()
+}
+
+/// A struck string: four harmonics, each decaying faster than the one below
+/// it. The cheapest thing that is not a sine and does not read as a beep.
+fn pluck(out: &mut [f32], start: usize, hz: f32, decay_s: f32, amp: f32) {
+    let sr = SAMPLE_RATE as f32;
+    // Rendered until it is inaudible rather than for a fixed length, so a
+    // note struck near the end of the body decays INTO the tail instead of
+    // being cut at the body's edge.
+    let n = samples(decay_s * 3.0);
+    for k in 0..n {
+        let Some(slot) = out.get_mut(start + k) else {
+            break;
+        };
+        let t = k as f32 / sr;
+        let mut v = 0.0;
+        // **One `exp` per sample, not four.** The h-th harmonic's envelope is
+        // `exp(-t·h/τ)`, which is `exp(-t/τ)` raised to h — so the four
+        // decays are successive multiplications of the first. Exactly the same
+        // arithmetic, a quarter of the transcendentals, and `exp` is as
+        // expensive as `sin` in the loop that dominates the whole bank's
+        // generation time.
+        let fall = (-t / decay_s).exp();
+        let mut decay = fall;
+        for h in 1..=4u32 {
+            let hf = h as f32;
+            // 1/h² amplitudes and a decay that scales with h: a bright
+            // attack that darkens as it falls, which is what a struck thing
+            // does and a sine does not.
+            v += (TAU * hz * hf * t).sin() * (1.0 / (hf * hf)) * decay;
+            decay *= fall;
+        }
+        *slot += v * attack(t, 0.005) * amp;
+    }
+}
+
+/// A slow chord voice: two detuned sines swelling in and back out over the
+/// body.
+fn pad(out: &mut [f32], hz: f32, amp: f32, body_s: f32, detune: f32) {
+    let sr = SAMPLE_RATE as f32;
+    for (i, v) in out.iter_mut().enumerate() {
+        let t = i as f32 / sr;
+        let env = attack(t, 2.0) * ((body_s - t) / 1.5).clamp(0.0, 1.0);
+        if env <= 0.0 {
+            continue;
+        }
+        let a = (TAU * hz * t).sin();
+        let b = (TAU * hz * (1.0 + detune) * t).sin();
+        *v += (a + b) * 0.5 * env * amp;
+    }
+}
+
+/// The pulse: a pitch-dropping sine with a noise transient on it.
+fn thump(out: &mut [f32], start: usize, amp: f32) {
+    let sr = SAMPLE_RATE as f32;
+    let dur = 0.34;
+    let n = samples(dur);
+    let mut phase = 0.0f32;
+    for k in 0..n {
+        let Some(slot) = out.get_mut(start + k) else {
+            break;
+        };
+        let t = k as f32 / sr;
+        // 92 Hz falling to 45 over the first tenth of a second. Integrated,
+        // for `chirp`'s reason.
+        let f = 45.0 + 47.0 * (-t / 0.045).exp();
+        phase += TAU * f / sr;
+        *slot += phase.sin() * (-t / 0.10).exp() * attack(t, 0.003) * amp;
+    }
+}
+
+/// A Schroeder reverb — four parallel combs into two series allpasses.
+///
+/// **The tail is not decoration; it is the mechanism.** `reference/AUDIO.md`
+/// §8: pieces end with reverb tails rather than looping cleanly, and the
+/// stated reason is that it lets the system cut from any piece to any other
+/// in any order without stopping playback and without fading. Everything
+/// `music::Director` does about transitions rests on there being ~2.5 s of
+/// ring-out after the last note.
+///
+/// The delays are mutually prime-ish in samples so the combs do not reinforce
+/// into a ringing pitch; the feedback is sized for a ~2.3 s RT60 at this
+/// sample rate, which is what fills `music::TAIL_S`.
+fn reverb(dry: &[f32], wet: f32) -> Vec<f32> {
+    const COMBS: [(usize, f32); 4] = [(1557, 0.90), (1617, 0.89), (1491, 0.90), (1422, 0.89)];
+    const ALLPASS: [(usize, f32); 2] = [(225, 0.5), (556, 0.5)];
+    let mut acc = vec![0.0f32; dry.len()];
+    for (len, fb) in COMBS {
+        let mut buf = vec![0.0f32; len];
+        let mut i = 0usize;
+        for (k, x) in dry.iter().enumerate() {
+            let y = buf[i];
+            buf[i] = x + y * fb;
+            i = (i + 1) % len;
+            acc[k] += y * 0.25;
+        }
+    }
+    for (len, g) in ALLPASS {
+        let mut buf = vec![0.0f32; len];
+        let mut i = 0usize;
+        for v in acc.iter_mut() {
+            let d = buf[i];
+            let y = d - g * *v;
+            buf[i] = *v + g * d;
+            i = (i + 1) % len;
+            *v = y;
+        }
+    }
+    dry.iter()
+        .zip(acc.iter())
+        .map(|(d, w)| d * (1.0 - wet) + w * wet)
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 
 fn samples(secs: f32) -> usize {

@@ -9,8 +9,8 @@
 //!
 //! **What is NOT copied is the row count.** The reference's GRAPHICS tab lists
 //! shadow cascades, anisotropic filtering, parallax mapping and a dozen more
-//! because it has a renderer with those switches. Ours has five settings that
-//! do something, and this screen shows five settings. A category with nothing
+//! because it has a renderer with those switches. Ours has nine settings that
+//! do something, and this screen shows nine settings. A category with nothing
 //! behind it says so in a sentence instead of drawing greyed rows that imply
 //! a feature exists — the same rule the HUD already obeys, where "a 0-max
 //! meter is undrawn, not drawn empty", and the same rule the intro screen
@@ -83,12 +83,15 @@ pub struct Settings {
     pub invert_look: bool,
     pub vsync: bool,
     pub fullscreen: bool,
-    /// The three audio buses, 0..1. The reference's `audio.master`,
-    /// `audio.game` and `audio.ambience` — `crate::sound::Mix` is what reads
-    /// them, and `render/audio.rs` is the only thing that builds one.
+    /// The audio buses, 0..1. The reference's `audio.master`, `audio.game`,
+    /// `audio.ambience` and `audio.musicvolume` — `crate::sound::Mix` is what
+    /// reads them, and `render/audio.rs` is the only thing that builds one.
     pub vol_master: f32,
     pub vol_game: f32,
     pub vol_ambience: f32,
+    /// The reference's `audio.musicvolume`, which is the one bus that does
+    /// not open at full — see [`crate::sound::MUSIC_DEFAULT`].
+    pub vol_music: f32,
     /// Which rail row is selected.
     pub cat: usize,
     /// Where Esc returns to. Settings is reachable from the intro screen and
@@ -116,6 +119,11 @@ impl Default for Settings {
             vol_master: 1.0,
             vol_game: 1.0,
             vol_ambience: 1.0,
+            // **Not 1, and it is the reference's number rather than a
+            // taste call**: their `audio.musicvolume` ships at 0.2 while
+            // master and game ship at 1. A score at parity with footsteps
+            // is a score players turn off.
+            vol_music: crate::sound::MUSIC_DEFAULT,
             cat: 0,
             back: Screen::Menu,
             dirty: false,
@@ -135,6 +143,7 @@ pub enum Knob {
     VolMaster,
     VolGame,
     VolAmbience,
+    VolMusic,
 }
 
 impl Settings {
@@ -166,6 +175,7 @@ impl Settings {
             Knob::VolMaster => self.vol_master = step_vol(self.vol_master, delta),
             Knob::VolGame => self.vol_game = step_vol(self.vol_game, delta),
             Knob::VolAmbience => self.vol_ambience = step_vol(self.vol_ambience, delta),
+            Knob::VolMusic => self.vol_music = step_vol(self.vol_music, delta),
         }
         self.dirty = true;
     }
@@ -181,6 +191,7 @@ impl Settings {
             Knob::VolMaster => pct(self.vol_master),
             Knob::VolGame => pct(self.vol_game),
             Knob::VolAmbience => pct(self.vol_ambience),
+            Knob::VolMusic => pct(self.vol_music),
         }
     }
 
@@ -197,6 +208,7 @@ impl Settings {
             vol_master: self.vol_master,
             vol_game: self.vol_game,
             vol_ambience: self.vol_ambience,
+            vol_music: self.vol_music,
         }
     }
 
@@ -217,6 +229,7 @@ impl Settings {
             vol_master: step(p.vol_master, VOL_STEP).clamp(0.0, 1.0),
             vol_game: step(p.vol_game, VOL_STEP).clamp(0.0, 1.0),
             vol_ambience: step(p.vol_ambience, VOL_STEP).clamp(0.0, 1.0),
+            vol_music: step(p.vol_music, VOL_STEP).clamp(0.0, 1.0),
             ..Self::default()
         }
     }
@@ -353,13 +366,15 @@ fn rows(cat: usize) -> Vec<Row> {
         "AUDIO" => vec![
             Row::Number("MASTER VOLUME", Knob::VolMaster, "of full"),
             Row::Number("GAME VOLUME", Knob::VolGame, "steps, tools, hits"),
-            Row::Number("AMBIENCE VOLUME", Knob::VolAmbience, "the wind bed"),
-            // Two facts rather than two dead sliders, and both are the same
-            // rule this screen already obeys: a category with nothing behind
-            // it says so. There is no music and no voice chat, so there is no
-            // music slider and no voice slider.
-            Row::Fact("MUSIC", "None yet - see NOW.md"),
-            Row::Fact("VOICE CHAT", "Not implemented"),
+            Row::Number("AMBIENCE VOLUME", Knob::VolAmbience, "wind, surf, birds"),
+            Row::Number("MUSIC VOLUME", Knob::VolMusic, "the score"),
+            // A fact rather than a dead slider, which is the rule this
+            // screen already obeys: a category with nothing behind it says
+            // so. There is no voice chat, so there is no voice slider.
+            // **There is also only ONE music slider** where the reference
+            // has two - it ships `audio.musicvolume` and
+            // `audio.menumusicvolume` separately, and ours is one number for
+            // both until somebody wants the menu louder than the world.
             Row::Fact("SOUND OCCLUSION", "Off - walls do not muffle sound yet"),
         ],
         "SCREEN" => vec![
