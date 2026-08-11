@@ -451,7 +451,15 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// the version is the first field in the first message.
 ///
 /// Fixtures are keyed `v35_*`. None added, none removed — 83, as v34.
-pub const PROTO_VER: u16 = 35;
+///
+/// **v36 — the death-cause field widened 2 → 3 bits** (`event.rs`
+/// `DEATH_CAUSE_BITS`). The two-bit field had been saturated since v24;
+/// the mob's bite is the fifth cause and needed the third bit, and wall 6
+/// prices that as a bump with regenerated goldens rather than a silent
+/// re-read of the same bytes. Only `event_death` changes shape; every
+/// other fixture is byte-identical under a new name. Fixtures are keyed
+/// `v36_*` — 83 still.
+pub const PROTO_VER: u16 = 36;
 
 /// Datagram kind field width.
 ///
