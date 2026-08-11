@@ -104,7 +104,21 @@ lands clean, and they are judged one at a time.
    content hash pinned into the WAL header. Gate: `test_content`.
 8. What we sell is `BUSINESS.md` — product, not an engineering wall.
    Tickers are bare: SCRY, OBOL, MYRRH — never a `$` prefix. Gate:
-   `ci/gates.sh` docs check.
+   `ci/scry_manifest.py`, over `scry.json` and **only** over `scry.json`.
+   ⚠ This wall named a `ci/gates.sh` docs check and **there has never been
+   one**, so the rule was ungated everywhere. It is now gated at the one
+   place it costs money: an update's text becomes a public post on scry's
+   feed and scry refuses a `$`-prefixed ticker outright, so a `$` there is
+   not a style slip — it is a store row that silently stops moving.
+   Elsewhere in the corpus this is still a rule a reader enforces.
+9. Our store row is a file in this repo. `scry.json` says what this game
+   is; `scry.sig.json` signs its exact bytes; scry reads the pair off this
+   repo's default branch and applies what changed — no commit to scry, no
+   key of theirs, no webhook. **Re-sign whenever you edit it**
+   (`./ci/scry_manifest.py --sign`): an unsigned edit applies nothing, and
+   from scry's side that looks like a row that just stopped moving. Gate:
+   `ci/scry_manifest.py --self-test`. The standard is
+   `GET https://scry.moreright.xyz/api/library/GAME-REPO.md`.
 
 ## Commands (derive, don't quote)
 

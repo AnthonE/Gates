@@ -101,6 +101,17 @@ $NICE python3 ci/depot.py --self-test || fail "depot packaging"
 echo "== gate: shard list (scry-shardlist-v1, docs/LAUNCHER.md §6)"
 $NICE python3 ci/shardlist.py --self-test || fail "shard list"
 
+# The third seam onto scry, and the only one where this repo is the AUTHOR
+# rather than the source of a build. `scry.json` is our store row and our
+# community feed; `scry.sig.json` signs its exact bytes, and scry applies the
+# pair or neither. The failure this catches is the ordinary one — edit the
+# manifest, forget to re-sign — which scry refuses silently as far as we can
+# see from here: the row simply stops moving. Local properties only (the
+# signature covers these bytes; the version equals the workspace's), so it
+# needs no key, no network, and no copy of scry's schema to drift from.
+echo "== gate: scry manifest (the repo desk, GAME-REPO.md)"
+$NICE python3 ci/scry_manifest.py --self-test || fail "scry manifest"
+
 echo "== gate: rustfmt"
 $NICE cargo fmt --all --check || fail "rustfmt"
 

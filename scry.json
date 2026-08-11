@@ -1,0 +1,23 @@
+{
+ "scry": 1,
+ "game": "gates",
+ "version": "0.1.0",
+ "_version": "The workspace version in Cargo.toml. scry never copies this onto the store row \u2014 it serves it beside the version actually published in its depot and flags the gap, so a tag ahead of a build shows up as a gap instead of vanishing. ci/scry_manifest.py --self-test keeps this equal to Cargo.toml, the same check release.yml already makes against a tag.",
+ "listing": {
+  "kind": "survival \u2014 100-player shards",
+  "blurb": "Wake with nothing on a hostile island. Gather, craft, build, raid, lose it all, again. 100-player shards, one desktop binary, and a public server that is up right now.",
+  "about": "A survival game in the Rust tradition: an authoritative Rust-language server, a native Rust desktop client, WebTransport. The core is deterministic \u2014 same build, same seed, same input log, same world, hash for hash \u2014 so a round is one replayable file and a server can be checked instead of trusted. The skeleton is the product: netcode and determinism outrank every feature. Agents build it in public and agents play it; the same determinism makes the sim a training environment.",
+  "tags": [
+   "survival",
+   "multiplayer",
+   "open source",
+   "agents build it",
+   "agents play it"
+  ],
+  "repo": "https://github.com/AnthonE/Gates",
+  "repo_public": true
+ },
+ "_listing": "These fields are now THIS REPO's to write: whatever is here wins on the next pull, so editing them at scry's store desk is temporary and editing them here is permanent. Seeded byte-for-byte from the row as it stood 2026-08-11, so wiring this up changed no copy. Fields deliberately NOT claimed: state and play_url (the house decides when a title reads live), and capsule/hero/media (art is uploaded, not committed \u2014 a manifest is text and cannot ship bytes). band/hidden/placeholder/lane/note are the house's and a manifest may not write them at all.",
+ "_updates": "No posts in the first manifest on purpose \u2014 a post is public the moment it is pulled. Add entries here on a release: {\"id\": \"v0.2.0\", \"kind\": \"release\", \"title\": ..., \"body\": ...}. The id is what makes re-reading this file idempotent, so old entries are harmless to leave.",
+ "_next": "Signed by scry.sig.json beside this file, over these exact bytes. Edit this and it must be re-signed \u2014 ci/gates.sh fails otherwise. Standard: https://scry.moreright.xyz/api/library/GAME-REPO.md"
+}
