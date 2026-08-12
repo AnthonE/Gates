@@ -42,6 +42,35 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0sl · The shard list reaches the game *(operator lane — two acts, in order)*
+
+**A loop cannot finish this.** The tree half landed; publishing is the
+operator's.
+
+What was wrong: the public shard is up and its list is served
+(`/api/launcher/servers/gates`, `servers.url` set), and the in-game browser
+was still empty on every launch that did not come through the launcher's
+Servers window — nothing on the argv could carry the url. scry gained a
+`{servers}` placeholder; `ci/depot.py`'s `LAUNCH_ARGS` now asks for it.
+`shards.toml` also said `eu-1` while the served document said `us-east-1`,
+so the next regeneration would have re-published a row key nobody's
+favourites matched; the served name won.
+
+The two acts, and **this order is not a preference** — a depot using
+`{servers}` needs a launcher that knows it, and nothing in the depot
+document can declare a launcher floor, so an older launcher refuses the
+whole launch:
+
+1. **Ship the launcher** carrying `ARG_VARS` with `servers` in it
+   (scry-forge, `launcher-rs`).
+2. **Re-publish Gates' depot document**, so `launch.args` carries
+   `--servers {servers}`. `python3 ci/depot.py`, then the depot ceremony in
+   scry `docs/client/LAUNCHER.md` §8.
+
+Until (2), the fix is inert and the browser stays empty — `--servers <url>`
+on the command line is the workaround, and joining from the Servers window
+already works.
+
 ## 0wd · A new world register is proposed *(operator lane — blocked, skip)*
 
 **A loop cannot pick this up.** Logged here so it is visible, not queued.
