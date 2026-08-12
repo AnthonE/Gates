@@ -968,6 +968,28 @@ the deleted item (full text in git):
   the coast against 0.95 inland — the two ratios match to a tenth. That is
   the scatter table's business, not the skirt path's.
 
+## 0ad2 · The admin lane is built — what it still cannot do *(server lane)*
+
+Landed 2026-08-11 (admin v0, `DECISIONS.md` §open). Six verbs on the chat
+lane with **no wire change**, the anomaly log with its counter sweep, and
+`/bug`. Gated by `tests/admin_wire.rs` (7) and `protocol::admin` (6).
+Remaining, in order:
+
+1. **A ban dies with the process.** `Bans` is memory only; persisting one
+   wants its own file with its own format version, because sharing the
+   player store's header would wipe it on the next seed change.
+2. **Nothing has typed a command against a live shard.** Every branch is
+   gated headless; the socket half (`conn.close` with `REFUSE_ADMIN`, and
+   the client's dialog for it) has never been driven end to end.
+3. **The log has no reader.** It is JSONL on purpose so `jq` is the
+   reader, but nothing summarises a session — and the alpha gate's "zero
+   silent failures" wants a *verdict*, which is a script somebody runs
+   after a playtest, not a counter.
+4. **No `/who`, no `/tp <a> <b>`, no set-time.** The last is blocked by
+   choice: day/night derives from the tick, so moving the clock means
+   moving the tick — it wants the wire field §0y4 deliberately did not
+   spend.
+
 ## 0q · The gaps nobody has claimed
 
 Lifted out of "done this pass" items before pruning (2026-08-05, again

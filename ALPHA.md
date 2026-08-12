@@ -72,23 +72,30 @@ replay — the deterministic replay is the dupe investigation tool.
 
 ## 3 · Ops (the server is a service the moment one stranger joins)
 
-- **Admin lane**: wallet-allowlisted admin commands on the bidi stream —
-  kick, ban (wallet + IP), teleport, give, broadcast, save-now, wipe-now.
-  Every admin act is a WAL event (visible in replay; abuse of admin is
-  visible too, which is the scry-brand posture).
+- **Admin lane** — **built 2026-08-11** (admin v0, `DECISIONS.md` §open):
+  wallet-allowlisted, on the chat lane rather than a new message (no wire
+  change; `protocol/admin.rs` has the argument). `/kick` `/ban` `/say`
+  `/tp` `/give` `/save` — and `/tp`/`/give` are commands, so an admin act
+  IS in the stream a replay reads, which is what this line asked for.
+  Still owed: a ban that survives a restart (memory only today), IP
+  banning (only the wallet is banned — an IP is not proved by anything),
+  and `wipe-now`, which is §0q item 2's unscoped mechanism.
 - **Config**: one `shard.toml` — every knob in these four docs reads from
   it; a knob not in the file doesn't exist.
 - **Supervision**: systemd unit, restart-on-exit (DESIGN L7 contract),
   ulimits + the UDP sysctls from NETCODE §2.2 in the unit file.
 - **Backups**: snapshot + WAL shipped to object storage every 30 min and
   at wipe; a wipe archives (never deletes) the final state + hash chain.
-- **Observability**: a status JSON on localhost (tick p99, players,
-  entities by class, WAL lag, datagram loss estimate) + a tiny public
-  shard page (players online, wipe clock, uptime) — publish the real
-  numbers, zeros included; that's house style.
-- **Client error capture**: window.onerror + unhandledrejection POSTed
-  with build hash (no third-party SDK at alpha); server pairs it with the
-  anomaly log.
+- **Observability**: a status JSON on localhost — **built, and narrower
+  than this line** (`status.rs` serves players/max/tick; the other four
+  are counters nothing publishes yet) — plus the **anomaly log**, built
+  2026-08-11, which is what §6's "zero silent failures" is measured
+  against. Still owed: the tiny public shard page, and a reader that
+  turns a session's log into a verdict.
+- **Client error capture**: the browser shape of this is retired with the
+  browser client (`window.onerror` describes nothing that exists). A
+  native panic hook posting the build hash is the replacement and is
+  **not built**; the server half it would pair with now exists.
 - **Hosting**: one 4-core/8 GB VPS with UDP-tolerant DDoS filtering
   **(knob: provider)**, game subdomain + ACME cert, no CDN in front of
   the UDP port (there is nothing to CDN). Reference-hardware perf gates
