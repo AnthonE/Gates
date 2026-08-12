@@ -19,8 +19,16 @@
 # honest "no shards published" both readers draw while it is null.
 
 [[shard]]
-id = "eu-1"
-name = "Gates EU 1"
+# **`id` is the row KEY** — a reader builds its row and its favourite from it,
+# so changing one splits a shard into two in everyone's list. This file said
+# `eu-1` while the document actually being served said `us-east-1`, which meant
+# the next person to run this generator would have re-published the split
+# without touching a line. Adopted the SERVED name rather than the committed
+# one, in that direction on purpose: players already have `us-east-1`, and it
+# is also the true one — the box is Hetzner's Ashburn site, so `eu-1` was
+# wrong about geography as well as out of date.
+id = "us-east-1"
+name = "Gates US East 1"
 
 # The name, not the address: the certificate is issued for this host and
 # WebTransport needs it for SNI. The port is `shard-public.toml`'s bind, and

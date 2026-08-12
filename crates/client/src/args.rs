@@ -6,7 +6,8 @@
 //!
 //! ```json
 //! "launch": { "exec": "gates",
-//!             "args": ["--server", "{server}", "--identity", "{wallet}"] }
+//!             "args": ["--server", "{server}", "--identity", "{wallet}",
+//!                      "--servers", "{servers}"] }
 //! ```
 //!
 //! ...so the flags below are not a convenience, they are the interface the
@@ -334,9 +335,20 @@ mod tests {
     #[test]
     fn the_launch_block_shape_parses() {
         // Verbatim the argv a depot's launch args produce once filled.
-        let x = run(&["--server", "10.0.0.4:4433", "--identity", "0xAbC"]);
+        let x = run(&[
+            "--server",
+            "10.0.0.4:4433",
+            "--identity",
+            "0xAbC",
+            "--servers",
+            "https://scry.moreright.xyz/api/launcher/servers/gates",
+        ]);
         assert_eq!(x.server, "10.0.0.4:4433");
         assert_eq!(x.identity.as_deref(), Some("0xAbC"));
+        assert_eq!(
+            x.servers_url.as_deref(),
+            Some("https://scry.moreright.xyz/api/launcher/servers/gates")
+        );
     }
 
     #[test]

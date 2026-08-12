@@ -101,10 +101,20 @@ TARGETS = {
 DEFAULT_ROOT = "https://scry.moreright.xyz/api/launcher/depot/{slug}/{build}/files"
 
 # The launcher fills these. `{server}` is the shard to join, `{wallet}` the
-# address the player asked their launcher to watch. An unset `{wallet}` arrives
-# as an empty string, which `crates/client/src/args.rs` reads as absence — that
-# is the normal anonymous launch, not an error.
-LAUNCH_ARGS = ["--server", "{server}", "--identity", "{wallet}"]
+# address the player asked their launcher to watch, `{servers}` the url of the
+# shard LIST — scry's manifest `servers.url`, the same document its Servers
+# window reads. All three arrive as an empty string when the launcher has
+# nothing to put there, which `crates/client/src/args.rs` reads as absence —
+# that is the normal anonymous launch, not an error.
+#
+# `{servers}` is why the intro screen was empty over a live shard: the list was
+# published and the url was set, and nothing on the argv could carry it, so the
+# in-game browser only ever knew the loopback default. It needs a launcher
+# holding scry-depot's `ARG_VARS` with "servers" in it — an older one refuses
+# the whole launch rather than passing a literal `{servers}` through, which is
+# the right failure but a loud one, so this line and that one ship together.
+LAUNCH_ARGS = ["--server", "{server}", "--identity", "{wallet}",
+               "--servers", "{servers}"]
 
 CHUNK = 262144
 
@@ -472,6 +482,8 @@ def self_test() -> int:
     ok(doc["launch"]["exec"] == "gates", "launch.exec names a staged file")
     ok("{server}" in doc["launch"]["args"], "the launch args carry {server}")
     ok("{wallet}" in doc["launch"]["args"], "and {wallet}")
+    ok("{servers}" in doc["launch"]["args"],
+       "and {servers} — without it the in-game browser is empty over a live shard")
     ok(doc["launch"]["env"] == {}, "nothing is bundled, so nothing redirects the loader")
     ok("{build}" not in doc["root"] and doc["root"].startswith("https://"),
        "the root is filled in and https")
@@ -480,7 +492,7 @@ def self_test() -> int:
     # The placeholders must be ones the launcher knows. An unknown one is a
     # refusal at launch, not a passthrough, so a typo here would ship a build
     # that installs perfectly and never starts.
-    known = {"server", "wallet", "build_dir", "host"}
+    known = {"server", "wallet", "build_dir", "host", "servers"}
     used = {m for a in doc["launch"]["args"] for m in re.findall(r"\{([a-z_]+)\}", a)}
     ok(used <= known, f"every placeholder is one the launcher fills: {sorted(used)}")
 
