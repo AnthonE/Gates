@@ -91,10 +91,23 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
         return None;
     }
     // Valid UTF-8 by `ChatText`'s construction, and control characters are
-    // already refused there, so a split on spaces is total.
+    // already refused there, so a split on spaces is total. Slicing at 1 is
+    // safe on a char boundary because `is_command` just proved byte 0 is an
+    // ASCII slash.
     let line = core::str::from_utf8(text.as_bytes()).ok()?;
-    let mut parts = line[1..].split(' ').filter(|s| !s.is_empty());
-    let verb = parts.next()?;
+    // **The verb and its tail are split ONCE, and the tail is what is left
+    // over rather than a byte offset computed from the verb's length.**
+    // That arithmetic was a bug: with a space after the slash — `/ say hi`,
+    // which `ChatText::sanitize` permits because it only trims the ENDS —
+    // `1 + verb.len()` pointed into the middle of the tail and `/ say hi`
+    // broadcast "y hi". Deriving the remainder cannot drift that way, and
+    // it also cannot land mid-character.
+    let body = line[1..].trim_start_matches(' ');
+    let (verb, rest) = match body.split_once(' ') {
+        Some((v, r)) => (v, r),
+        None => (body, ""),
+    };
+    let mut parts = rest.split(' ').filter(|s| !s.is_empty());
     match verb {
         "kick" => Some(AdminCmd::Kick {
             id: parts.next()?.parse().ok()?,
@@ -117,21 +130,15 @@ pub fn parse(text: &ChatText) -> Option<AdminCmd> {
             (count > 0).then_some(AdminCmd::Give { item, count })
         }
         "save" => Some(AdminCmd::SaveNow),
-        // The tail of these two is free text, so it is taken from the raw
-        // line rather than rejoined from the split — rejoining would eat
-        // the runs of spaces a person typed.
-        "say" => tail(line, "say").map(|text| AdminCmd::Say { text }),
-        "bug" => tail(line, "bug").map(|note| AdminCmd::Bug { note }),
+        // The tail of these two is free text, so it is the remainder
+        // whole — never rejoined from the split, which would eat the runs
+        // of spaces a person typed. Re-sanitized so it is a `ChatText` by
+        // the same rule the whole line was; `None` for an empty tail,
+        // because a `/say` with nothing to say is not a command.
+        "say" => ChatText::sanitize(rest.as_bytes()).map(|text| AdminCmd::Say { text }),
+        "bug" => ChatText::sanitize(rest.as_bytes()).map(|note| AdminCmd::Bug { note }),
         _ => None,
     }
-}
-
-/// Everything after `/<verb> `, re-sanitized so the tail is a `ChatText`
-/// by the same rule the whole line was. `None` for an empty tail: a `/say`
-/// with nothing to say is not a command.
-fn tail(line: &str, verb: &str) -> Option<ChatText> {
-    let rest = line.get(1 + verb.len()..)?;
-    ChatText::sanitize(rest.as_bytes())
 }
 
 #[cfg(test)]
@@ -213,6 +220,51 @@ mod tests {
             parse(&text("/kick   259")),
             Some(AdminCmd::Kick { id: 259 })
         );
+    }
+
+    /// **A space after the slash is a person typing too, and it used to
+    /// corrupt the tail.** The first cut computed the free-text tail as
+    /// `1 + verb.len()` bytes into the line, which is only right when the
+    /// verb starts at byte 1 — so `/ say hi` broadcast "y hi" and
+    /// `/  say hello` broadcast "ay hello". Found by review; the
+    /// regression is cheap to pin.
+    #[test]
+    fn a_space_after_the_slash_does_not_eat_the_tail() {
+        for line in ["/say hi", "/ say hi", "/   say hi"] {
+            let Some(AdminCmd::Say { text: t }) = parse(&text(line)) else {
+                panic!("{line:?} did not parse as a say");
+            };
+            assert_eq!(t.as_bytes(), b"hi", "{line:?} mangled its tail");
+        }
+        assert_eq!(parse(&text("/ kick 259")), Some(AdminCmd::Kick { id: 259 }));
+    }
+
+    /// Multi-byte UTF-8 anywhere in the line must not panic — this parse
+    /// runs on a `ChatText`, which permits any non-control UTF-8, and a
+    /// panic on the sim thread is a shard crash any player could trigger
+    /// by typing in chat.
+    #[test]
+    fn multibyte_text_never_panics() {
+        for s in [
+            "/say h\u{e9}llo w\u{f6}rld",
+            "/\u{65e5}\u{672c}\u{8a9e}",
+            "/ \u{65e5}\u{672c}\u{8a9e} \u{5f15}\u{6570}",
+            "/say \u{1f525}\u{1f525}",
+            "/kick \u{65e5}\u{672c}\u{8a9e}",
+            "/give \u{4e03} 7",
+            "/\u{65e5}",
+            "/ ",
+            "/  ",
+        ] {
+            // The assertion is that this RETURNS rather than panicking;
+            // what it returns is each verb's own business above.
+            let _ = parse(&text(s));
+        }
+        // And the one that must still work with a multi-byte tail.
+        let Some(AdminCmd::Say { text: t }) = parse(&text("/say h\u{e9}llo")) else {
+            panic!("a multi-byte tail must survive");
+        };
+        assert_eq!(t.as_bytes(), "h\u{e9}llo".as_bytes());
     }
 
     /// `is_command` and `parse` must agree about the leading slash, or a

@@ -1009,15 +1009,18 @@ is `crates/`/wire work no single-surface lane may take.
    v0: `slot_ground` beside `slot_blocks`, occupant and deploy tops are
    ground under the lid rule; the plinth, crate, boulder and box tops all
    stand; gated in `tests/solid_deploy.rs`).
-4. **The 100-bot soak has never been run.** `NETCODE.md` §9's budgets have
-   never met 100 real connections: `cargo run -p server --bin bots -- 100`
-   against a dev shard, held an hour — tick jitter, WAL append rate,
-   per-client bandwidth recorded as counts and bytes, never wall-clock
-   asserts (`CLAUDE.md`'s clock rule). The numbers land in a `DECISIONS.md`
-   §open row as the measured baseline. **The AOI half is settled without
-   it** (§0sp, 2026-08-11): 100 clients in one cell cost ~0.8 ms of a
-   33.3 ms tick, so the linear scan needs no spatial structure. What a soak
-   still owes is what a profiler cannot see — sockets, jitter, real bytes.
+4. **The 100-bot soak RAN 2026-08-12** — baseline in `DECISIONS.md` §open.
+   Headline: **`dropped-ticks 0`** over ~61,500 ticks with 100 clients, and
+   **0 shed** of 17.5 M AOI entities offered, so the tick budget and the
+   interest band both held at a population they had never met. The anomaly
+   log's whole path was proven in the same run (8 bots against a full shard
+   made `refused_full` move, and the file gained exactly that line).
+   **Four things it still does not have**, each its own small item: real
+   **bytes** (nothing counts them — the 16.5 kB/s/client figure is a
+   ceiling, not a measurement), jitter as a **distribution** rather than a
+   threshold crossing, an **hour** (this was 25 minutes, so slow leaks are
+   not excluded), and **contention** — bots walk, they do not raid, so wall
+   4's caps are still gated one site at a time.
 
 ---
 
