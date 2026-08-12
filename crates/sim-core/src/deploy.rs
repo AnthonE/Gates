@@ -132,6 +132,72 @@ pub const ARCH_RECYCLER: u8 = 8;
 /// recycler's price bought.
 pub const ARCH_RESEARCH: u8 = 9;
 
+/// The blocked volume of each archetype, `[w, h, d]` full extents in
+/// metres, centred on the deploy's cell centre with its base at the
+/// piece formula's height (`collide::col_base_y + level·LEVEL_H_M` — the
+/// same expression the client's `level_base_y` draws at). **A zero row
+/// never blocks**, and four rows are zero on purpose:
+///
+/// - **bag** — a 0.32 m mat a body walks over, and the respawn anchor; a
+///   bag that blocked would let eight of them wall a doorway for cloth.
+/// - **fire** — the genre walks over its campfire, and the burn the pit
+///   owes a body standing in it is a damage feature, not a wall.
+/// - **door** — blocks as an *edge*, through the shut bits the store
+///   already keeps in lockstep (`collide::ColMasks::shut_*`).
+/// - **lock** — never a `DeployRec` at all.
+///
+/// The six non-zero rows are the client's own authored `DEPLOY` sizes
+/// (`render/structures.rs`), digit for digit — real-world dimensions,
+/// `DECISIONS.md` §open "deployable proportions" — and
+/// `crates/client/tests/greybox.rs` holds the two tables equal, which is
+/// the comparison that item said could not exist while the sim had no
+/// table. Sim truth now: a row here is a collision change (wall 5 —
+/// `test_replay` moves with it, deliberately).
+pub const DEPLOY_VOL: [[f32; 3]; 10] = [
+    [0.0, 0.0, 0.0],   // 0 bag — walk-over
+    [1.2, 1.0, 0.6],   // 1 hearth
+    [1.2, 0.65, 0.7],  // 2 box
+    [0.0, 0.0, 0.0],   // 3 fire — walk-over
+    [1.3, 0.95, 0.85], // 4 furnace
+    [1.6, 0.9, 0.7],   // 5 workbench
+    [0.0, 0.0, 0.0],   // 6 door — the shut bit's business
+    [0.0, 0.0, 0.0],   // 7 lock — never a record
+    [1.3, 1.15, 0.9],  // 8 recycler
+    [1.5, 0.8, 0.8],   // 9 research table
+];
+
+/// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
+/// an archetype that never blocks. The one lookup both `collide.rs`'s
+/// queries and the lockstep writers below go through.
+#[inline]
+pub fn solid_vol(arch: u8) -> Option<(f32, f32, f32)> {
+    let [w, h, d] = *DEPLOY_VOL.get(arch as usize)?;
+    if h <= 0.0 {
+        return None;
+    }
+    Some((w * 0.5, h, d * 0.5))
+}
+
+const _: () = {
+    // Every archetype code must fit the collision index's 4-bit nibble
+    // (`collide::ColMasks::solid`), with 0xF left over as its empty
+    // sentinel.
+    assert!(ARCH_RESEARCH < 0xF);
+    // A solid deploy stands at its cell centre, so the movement query
+    // tests only the candidate's own build cell. That is complete iff no
+    // volume, inflated by the capsule, can reach past the half-cell:
+    // max(w, d)/2 + CAPSULE_RADIUS_M < BUILD_CELL_M/2. Checked here for
+    // every row so a fatter row cannot land without re-proving the reach.
+    let mut i = 0;
+    while i < DEPLOY_VOL.len() {
+        let w = DEPLOY_VOL[i][0];
+        let d = DEPLOY_VOL[i][2];
+        let half = if w > d { w * 0.5 } else { d * 0.5 };
+        assert!(half + crate::collide::CAPSULE_RADIUS_M < crate::build::BUILD_CELL_M * 0.5);
+        i += 1;
+    }
+};
+
 /// The **access verb's** operations — `Command::Access`'s `op`, wire
 /// `ACT_ACCESS`. One action with an op field rather than nine action
 /// codes, because the action space was full at 15 in four bits and a
@@ -1469,6 +1535,15 @@ pub fn place_deploy(
         // Doors place closed and seal their doorway (door v0).
         pieces.set_door(cx, cz, level, loc, true);
     }
+    // A body deploy with a volume becomes movement collision the moment it
+    // stands — the same lockstep the shut bit above keeps, one line down
+    // (deploy collision v0). Nothing checks whether a player is standing
+    // in the new volume, deliberately: the veto-lift in `movement::step`
+    // already makes being inside non-absorbing, exactly as a node
+    // respawning around a body does.
+    if solid_vol(def.arch).is_some() {
+        pieces.set_solid(cx, cz, level, Some(def.arch));
+    }
     if def.arch == ARCH_HEARTH {
         deploys.hearths[deploys.hearth_count] = HearthRec {
             cx,
@@ -2017,6 +2092,14 @@ fn drop_deploy(
     deploys.remove_at(di, dc);
     if dc.defs[rec.row as usize].arch == ARCH_DOOR {
         pieces.set_door(rec.cx, rec.cz, rec.level, rec.loc, false);
+    }
+    // The blocked volume leaves with the record — the clear half of the
+    // lockstep `place_deploy` set. Here rather than at each caller for
+    // `remove_at_address`'s reason one block down: this is the one
+    // removal path, and a solid bit outliving its furnace would wall off
+    // an empty cell forever.
+    if solid_vol(dc.defs[rec.row as usize].arch).is_some() {
+        pieces.set_solid(rec.cx, rec.cz, rec.level, None);
     }
     if lockable(dc.defs[rec.row as usize].arch) {
         // A lock dies with what it is bolted to (`DOORS.md` §2.2) — a

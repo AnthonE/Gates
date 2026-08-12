@@ -53,7 +53,7 @@ fn pump(
     }
     let mut snaps: Vec<(usize, Vec<u8>)> = Vec::new();
     let mut events: Vec<(usize, Vec<u8>)> = Vec::new();
-    core.tick(stats, |lane, slot, bytes| {
+    core.tick_bare(stats, |lane, slot, bytes| {
         match lane {
             Lane::Snapshot => snaps.push((slot, bytes.to_vec())),
             Lane::Event => events.push((slot, bytes.to_vec())),
@@ -86,8 +86,8 @@ fn world_slot(core: &ShardCore, id: u32) -> usize {
         .expect("player in world")
 }
 
-fn armed_core() -> ShardCore {
-    let mut core = ShardCore::new(SEED);
+fn armed_core() -> Box<ShardCore> {
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.combat = CombatContent::probe_fixture();
     core.world.backpack = BackpackContent::probe_fixture();

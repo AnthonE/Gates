@@ -65,7 +65,7 @@ fn a_sprinting_player_can_catch_and_kill_a_pig() {
     // a shipped content set that disarmed backpacks would make every hunt
     // pay nothing — this line is where that regression reddens.
     core.world.backpack = c.bake_backpack().expect("the bag ladder bakes");
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
 
     let slot = core
         .world
@@ -82,7 +82,7 @@ fn a_sprinting_player_can_catch_and_kill_a_pig() {
     // the first tick and the chase is the whole test.
     core.world.dev_spawn = Some((mx + 12.0, mz));
     assert!(core.connect(0, 0x100), "connect");
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     let p = core
         .world
         .players

@@ -382,3 +382,126 @@ fn mob_ids_never_collide_with_player_ids() {
         }
     }
 }
+
+// ── The pig fights back (mob attack v0) ────────────────────────────────────
+
+/// A player standing beside a whole pig within its spook radius: the pig
+/// rouses, charges, and bites — the player's hp drops with no swing taken
+/// against anyone. Their boar's aggressive half, gated.
+#[test]
+fn a_whole_pig_charges_and_bites() {
+    let mut w = World::new(11);
+    w.combat = CombatContent::probe_fixture();
+    w.mob = MobContent::probe_fixture();
+    w.dev_spawn = Some(w.spawn_pos(1));
+    w.tick(&[Command::Join { id: 1 }]);
+    let slot = w.mobs.m.iter().position(|m| m.alive).expect("a live pig");
+    // Stand the pig two metres from the player — inside spook, at bite
+    // reach's edge, so the very first charge think can land one.
+    let b = w.players[0].body;
+    let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
+    w.mobs.m[slot].body = Body::at(11, ax + 2.0, az);
+    let full = w.players[0].hp;
+    assert!(full > 0, "combat fixture arms bodies");
+    // Two bite periods plus a think: enough for at least one landed bite,
+    // asserted on state rather than on which tick it happened.
+    for seq in 0..(MobContent::probe_fixture().def(MOB_PIG).attack_ticks * 2 + 30) {
+        let frame = InputFrame {
+            seq,
+            ..InputFrame::default()
+        };
+        w.tick(&[Command::Input { id: 1, frame }]);
+    }
+    assert!(
+        w.players[0].hp < full,
+        "a whole pig within spook range must bite: hp still {}",
+        w.players[0].hp
+    );
+    assert!(
+        w.players[0].hp > 0,
+        "one or two bites must not kill a full body"
+    );
+}
+
+/// The same pig hurt below its courage floor turns the identical rousing
+/// into a flight: distance grows and no further bite lands. Their boar's
+/// other half — fights whole, flees hurt.
+#[test]
+fn a_hurt_pig_breaks_off_and_flees() {
+    let mut w = World::new(11);
+    w.combat = CombatContent::probe_fixture();
+    w.mob = MobContent::probe_fixture();
+    w.dev_spawn = Some(w.spawn_pos(1));
+    w.tick(&[Command::Join { id: 1 }]);
+    let slot = w.mobs.m.iter().position(|m| m.alive).expect("a live pig");
+    let b = w.players[0].body;
+    let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
+    w.mobs.m[slot].body = Body::at(11, ax + 2.0, az);
+    // Hurt it below the courage floor by hand — the wound, without the
+    // chase that would move both bodies.
+    let def = MobContent::probe_fixture().def(MOB_PIG);
+    let floor = (def.hp as u32 * def.brave_pct as u32).div_ceil(100) as u16;
+    w.mobs.m[slot].hp = floor.saturating_sub(1).max(1);
+    let hp_before = w.players[0].hp;
+    let d2_before = {
+        let m = &w.mobs.m[slot].body;
+        let (dx, dz) = (m.qx - w.players[0].body.qx, m.qz - w.players[0].body.qz);
+        (dx as i64) * (dx as i64) + (dz as i64) * (dz as i64)
+    };
+    for seq in 0..120u16 {
+        let frame = InputFrame {
+            seq,
+            ..InputFrame::default()
+        };
+        w.tick(&[Command::Input { id: 1, frame }]);
+    }
+    let d2_after = {
+        let m = &w.mobs.m[slot].body;
+        let (dx, dz) = (m.qx - w.players[0].body.qx, m.qz - w.players[0].body.qz);
+        (dx as i64) * (dx as i64) + (dz as i64) * (dz as i64)
+    };
+    assert!(
+        d2_after > d2_before,
+        "a pig below its courage floor must open distance: {d2_before} -> {d2_after}"
+    );
+    assert_eq!(
+        w.players[0].hp, hp_before,
+        "a fleeing pig must not land bites"
+    );
+}
+
+/// A bite that finishes a body names the animal: the corpse's cause is
+/// `DEATH_BY_MOB` and the killer id carries the roster tag — the fields
+/// the death screen's "a pig gored you" sentence is made of.
+#[test]
+fn a_bite_can_kill_and_the_cause_is_the_mob() {
+    use sim_core::world::DEATH_BY_MOB;
+    let mut w = World::new(11);
+    w.combat = CombatContent::probe_fixture();
+    w.mob = MobContent::probe_fixture();
+    w.dev_spawn = Some(w.spawn_pos(1));
+    w.tick(&[Command::Join { id: 1 }]);
+    let slot = w.mobs.m.iter().position(|m| m.alive).expect("a live pig");
+    let b = w.players[0].body;
+    let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
+    w.mobs.m[slot].body = Body::at(11, ax + 2.0, az);
+    // One bite from dead.
+    w.players[0].hp = 1;
+    for seq in 0..(MobContent::probe_fixture().def(MOB_PIG).attack_ticks * 2 + 30) {
+        let frame = InputFrame {
+            seq,
+            ..InputFrame::default()
+        };
+        w.tick(&[Command::Input { id: 1, frame }]);
+        if w.players[0].dead {
+            break;
+        }
+    }
+    assert!(w.players[0].dead, "one bite must finish a 1 hp body");
+    assert_eq!(w.players[0].death_cause, DEATH_BY_MOB);
+    assert_ne!(
+        w.players[0].death_by & MOB_ID_TAG,
+        0,
+        "the killer must be the tagged roster id, not a player number"
+    );
+}

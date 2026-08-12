@@ -287,6 +287,18 @@ pub struct ShardStats {
     // in the line that says the shard came up (`store::SaveLoad`, printed by
     // `bin/shard.rs`). A counter nothing ever writes reads as "this never
     // happens" rather than "nobody is counting".
+    /// Admin kicks and bans that took effect (admin v0).
+    pub admin_kicked: AtomicU64,
+    /// Admin acts refused: not on the allowlist, an unknown verb, a target
+    /// who had already left, or a full ring. **One counter for all four**,
+    /// because the anomaly log carries which — a counter answers "is this
+    /// happening", the log answers "what happened".
+    pub admin_refused: AtomicU64,
+    /// Anomaly records the log ring refused (`anomaly.rs`, wall 4's drop
+    /// policy). **Deliberately not in `anomaly::WATCHED`**: a full log ring
+    /// logging its own overflow is the one line guaranteed to make the
+    /// overflow worse.
+    pub anomaly_dropped: AtomicU64,
 }
 
 impl ShardStats {
@@ -324,5 +336,57 @@ impl ShardStats {
 
     pub fn raised(field: &AtomicBool) -> bool {
         field.load(Ordering::Acquire)
+    }
+
+    /// A counter by its field name — the anomaly sweep's whole interface
+    /// (`anomaly::WATCHED`).
+    ///
+    /// **A match rather than reflection, and the table below is the point**:
+    /// Rust has no field lookup by string, so the alternative was for the
+    /// sweep to hold references to thirty counters and for every future
+    /// counter to need threading through. Here a name that does not resolve
+    /// is `None` and a gate catches it
+    /// (`anomaly::the_watch_list_names_real_counters`), which is a louder
+    /// failure than a silently unwatched field.
+    ///
+    /// Only the counters worth watching are listed; load gauges are absent
+    /// for the reason `WATCHED`'s doc gives.
+    pub fn by_name(&self, name: &str) -> Option<&AtomicU64> {
+        Some(match name {
+            "ticks_dropped" => &self.ticks_dropped,
+            "refused_version" => &self.refused_version,
+            "refused_build" => &self.refused_build,
+            "refused_auth" => &self.refused_auth,
+            "refused_ticket" => &self.refused_ticket,
+            "refused_full" => &self.refused_full,
+            "entitle_unknown" => &self.entitle_unknown,
+            "entitle_kicked" => &self.entitle_kicked,
+            "handshake_errors" => &self.handshake_errors,
+            "input_dg_bad" => &self.input_dg_bad,
+            "input_dg_forged" => &self.input_dg_forged,
+            "input_ring_drops" => &self.input_ring_drops,
+            "snap_ring_skips" => &self.snap_ring_skips,
+            "snap_send_errors" => &self.snap_send_errors,
+            "encode_range_errors" => &self.encode_range_errors,
+            "snap_entities_shed" => &self.snap_entities_shed,
+            "forced_resyncs" => &self.forced_resyncs,
+            "ev_resyncs" => &self.ev_resyncs,
+            "ev_send_errors" => &self.ev_send_errors,
+            "actions_bad" => &self.actions_bad,
+            "chat_bad" => &self.chat_bad,
+            "chat_rate_limited" => &self.chat_rate_limited,
+            "chat_ring_drops" => &self.chat_ring_drops,
+            "chat_undelivered" => &self.chat_undelivered,
+            "piece_walk_restarts" => &self.piece_walk_restarts,
+            "save_ring_drops" => &self.save_ring_drops,
+            "saves_evicted" => &self.saves_evicted,
+            "save_write_errors" => &self.save_write_errors,
+            "world_save_errors" => &self.world_save_errors,
+            "world_load_errors" => &self.world_load_errors,
+            "sleepers_evicted" => &self.sleepers_evicted,
+            "admin_kicked" => &self.admin_kicked,
+            "admin_refused" => &self.admin_refused,
+            _ => return None,
+        })
     }
 }

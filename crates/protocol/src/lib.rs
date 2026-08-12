@@ -31,6 +31,9 @@
 //! arbitrary bytes (client-driven on the server side), and the golden
 //! suite flips bits to prove it.
 
+/// Admin commands, parsed out of a chat line — no wire bytes of their own
+/// (`admin.rs`'s header has the transport argument).
+pub mod admin;
 pub mod auth;
 pub mod bits;
 pub mod chat;
@@ -451,7 +454,15 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// the version is the first field in the first message.
 ///
 /// Fixtures are keyed `v35_*`. None added, none removed — 83, as v34.
-pub const PROTO_VER: u16 = 35;
+///
+/// **v36 — the death-cause field widened 2 → 3 bits** (`event.rs`
+/// `DEATH_CAUSE_BITS`). The two-bit field had been saturated since v24;
+/// the mob's bite is the fifth cause and needed the third bit, and wall 6
+/// prices that as a bump with regenerated goldens rather than a silent
+/// re-read of the same bytes. Only `event_death` changes shape; every
+/// other fixture is byte-identical under a new name. Fixtures are keyed
+/// `v36_*` — 83 still.
+pub const PROTO_VER: u16 = 36;
 
 /// Datagram kind field width.
 ///
@@ -643,6 +654,20 @@ pub const REFUSE_TICKET: u8 = 3;
 /// the code itself.
 pub const REFUSE_BUILD: u8 = 4;
 
+/// An admin kicked or banned this connection (admin v0, `ALPHA.md` §3).
+///
+/// Its own code rather than a silent close, the entitle kick's argument
+/// applied to a person rather than a wallet: a dropped connection with no
+/// reason reads as a network fault, and "my internet broke" is the wrong
+/// thing for a kicked player to believe. **One code for both verbs** — a
+/// ban says nothing a kick does not until the player tries to come back,
+/// and telling a griefer which of the two they earned is a courtesy the
+/// shard does not owe.
+///
+/// No layout moved for this: `Refuse.code` is a full `u8` and this is the
+/// sixth of 256 values.
+pub const REFUSE_ADMIN: u8 = 5;
+
 /// What to actually say to the player. One implementation, because the two
 /// call sites that print a refusal (the client's connect path and the bot
 /// helper in `server/net.rs`) each formatted `refused: code {n}` from their
@@ -667,6 +692,7 @@ pub fn refuse_text(code: u8) -> Option<&'static str> {
              or play a community shard"
         }
         REFUSE_BUILD => "this shard runs a newer release — update the game",
+        REFUSE_ADMIN => "an admin removed you from this shard",
         _ => return None,
     })
 }
@@ -2752,6 +2778,7 @@ mod tests {
             (REFUSE_AUTH, "REFUSE_AUTH"),
             (REFUSE_TICKET, "REFUSE_TICKET"),
             (REFUSE_BUILD, "REFUSE_BUILD"),
+            (REFUSE_ADMIN, "REFUSE_ADMIN"),
         ] {
             assert!(
                 refuse_text(code).is_some(),
@@ -2760,7 +2787,7 @@ mod tests {
         }
         assert_eq!(
             declared.len(),
-            5,
+            6,
             "a REFUSE_* code was added ({declared:?}) — give it a sentence in \
              `refuse_text` and a row in this list, or a player meets it as a number"
         );

@@ -338,13 +338,25 @@ pub fn structural(c: &Content) -> Result<(), String> {
                     ));
                 }
                 // A zero radius is not "no splash", it is a division no
-                // falloff can do — it will be the divisor once a consumer
-                // exists — so it is refused at the door rather than
-                // guarded at every future use.
+                // falloff can do — the falloff divides by it — so it is
+                // refused at the door rather than guarded at every use.
                 if w.blast_m.unwrap_or(0) == 0 {
                     return Err(format!(
                         "weapon `{}`: throwables need a nonzero blast_m",
                         w.id
+                    ));
+                }
+                // And bounded above at one build cell: the detonation's
+                // 3×3 column ring is complete only while a blast cannot
+                // reach past one cell (`limits::BLAST_MAX_CM`; the const
+                // block in `charge.rs` restates it). A wider blast is a
+                // sim change, not a content edit.
+                if w.blast_m.unwrap_or(0) * 100 > sim_core::limits::BLAST_MAX_CM as u32 {
+                    return Err(format!(
+                        "weapon `{}`: blast_m {} exceeds the sim's one-cell blast scan \
+                         (limits::BLAST_MAX_CM) — widen the ring in charge.rs first",
+                        w.id,
+                        w.blast_m.unwrap_or(0)
                     ));
                 }
             }
@@ -744,6 +756,41 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 "mob `{}`: a zero respawn hatches the slot on the tick it died",
                 m.id
             ));
+        }
+        // The bite is armed whole or not at all: `attack = 0` is the
+        // pacifist row and every other field must be zero with it, while
+        // an armed row needs a reach, a cadence and a courage floor —
+        // half-armed states are the "reads as a bug in the sim" class
+        // this block exists for (a biter with zero reach never lands one;
+        // zero seconds is a bite every tick).
+        if m.attack == 0 {
+            if m.attack_range_m != 0 || m.attack_seconds != 0 || m.brave_pct != 0 {
+                return Err(format!(
+                    "mob `{}`: attack fields set on a species with zero attack",
+                    m.id
+                ));
+            }
+        } else {
+            if m.attack_range_m == 0 || m.attack_seconds == 0 {
+                return Err(format!(
+                    "mob `{}`: an armed bite needs a range and a cadence",
+                    m.id
+                ));
+            }
+            if m.brave_pct > 100 {
+                return Err(format!(
+                    "mob `{}`: brave_pct is a percent of max hp, 0–100",
+                    m.id
+                ));
+            }
+            // A bite from further than the spook radius would be an animal
+            // attacking players it has not even noticed.
+            if m.attack_range_m > m.spook_m {
+                return Err(format!(
+                    "mob `{}`: a {}m bite outreaches its {}m spook radius",
+                    m.id, m.attack_range_m, m.spook_m
+                ));
+            }
         }
         if m.drops.is_empty() {
             return Err(format!("mob `{}`: killing it pays nothing", m.id));

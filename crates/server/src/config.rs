@@ -167,6 +167,13 @@ pub struct ShardConfig {
     /// because a packed integer in a config file is a number nobody can
     /// check by eye.
     pub min_client: u32,
+    /// Wallets trusted with the admin lane (`admin_wallets`, admin v0).
+    /// **Empty by default: nobody is an admin** — `entitle.rs`'s
+    /// one-build-two-populations posture applied to privilege.
+    pub admins: crate::admin::Admins,
+    /// Where the anomaly log is appended (`anomaly_file`). `None` ⇒ no log
+    /// and every push is a no-op, which is what a test shard runs.
+    pub anomaly_file: Option<String>,
 }
 
 impl ShardConfig {
@@ -187,6 +194,8 @@ impl ShardConfig {
             domain: "127.0.0.1".into(),
             entitle: crate::entitle::Config::off(),
             min_client: 0,
+            admins: crate::admin::Admins::none(),
+            anomaly_file: None,
         }
     }
 }
@@ -242,6 +251,8 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut domain: Option<String> = None;
     let mut entitle_origin: Option<String> = None;
     let mut entitle_slug: Option<String> = None;
+    let mut admins: Option<crate::admin::Admins> = None;
+    let mut anomaly_file: Option<String> = None;
     let mut entitle_timeout_secs: Option<u64> = None;
     let mut entitle_sweep_secs: Option<u64> = None;
     for (n, line) in text.lines().enumerate() {
@@ -428,6 +439,22 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     format!("shard.toml line {}: bad entitle_sweep_secs: {e}", n + 1)
                 })?);
             }
+            "admin_wallets" => {
+                // Refused whole on any bad entry (`Admins::parse`): a
+                // typo'd admin address is an operator expecting a
+                // privilege they do not have, and boot is the cheap place
+                // to find out.
+                admins = Some(
+                    crate::admin::Admins::parse(value)
+                        .map_err(|e| format!("shard.toml line {}: {e}", n + 1))?,
+                );
+            }
+            "anomaly_file" => {
+                if value.is_empty() {
+                    return Err(format!("shard.toml line {}: anomaly_file is empty", n + 1));
+                }
+                anomaly_file = Some(value.to_string());
+            }
             "min_client" => {
                 min_client = Some(
                     parse_min_client(value)
@@ -489,6 +516,8 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             b.ip().to_string()
         }),
         entitle,
+        admins: admins.unwrap_or_else(crate::admin::Admins::none),
+        anomaly_file,
     })
 }
 

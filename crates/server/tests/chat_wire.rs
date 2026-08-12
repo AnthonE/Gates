@@ -40,7 +40,7 @@ fn pump(
     seen: &mut Vec<(usize, EventMsg)>,
 ) -> [u32; 3] {
     let mut events: Vec<(usize, Vec<u8>)> = Vec::new();
-    core.tick(stats, |lane, slot, bytes| {
+    core.tick_bare(stats, |lane, slot, bytes| {
         if lane == Lane::Event {
             events.push((slot, bytes.to_vec()));
         }
@@ -102,7 +102,7 @@ fn setup(core: &mut ShardCore) -> Vec<(usize, ClientCore)> {
 #[test]
 fn chat_rides_the_wire() {
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     let mut clients = setup(&mut core);
     let mut seen = Vec::new();
     // Land the joins so every speaker has a position to measure from.
@@ -184,7 +184,7 @@ fn chat_rides_the_wire() {
 #[test]
 fn the_local_radius_is_exact() {
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     let mut clients = setup(&mut core);
     let mut seen = Vec::new();
     pump(&mut core, &stats, &mut clients, &mut seen);
@@ -249,7 +249,7 @@ fn chat_never_touches_the_state_hash() {
 
 fn chat_never_touches_the_state_hash_body() {
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     let mut clients = setup(&mut core);
     let mut seen = Vec::new();
     for _ in 0..3 {
@@ -308,7 +308,7 @@ fn chat_never_touches_the_state_hash_body() {
 #[test]
 fn a_line_from_a_speaker_the_world_has_lost_is_dropped() {
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     let mut clients = setup(&mut core);
     let mut seen = Vec::new();
     pump(&mut core, &stats, &mut clients, &mut seen);

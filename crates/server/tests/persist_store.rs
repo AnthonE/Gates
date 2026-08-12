@@ -63,8 +63,8 @@ fn sweep(path: &Path) {
     }
 }
 
-fn armed_core() -> ShardCore {
-    let mut core = ShardCore::new(SEED);
+fn armed_core() -> Box<ShardCore> {
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.combat = CombatContent::probe_fixture();
     core.world.craft = CraftContent::probe_fixture();
     core.world.gather = GatherContent::probe_fixture();
@@ -104,7 +104,7 @@ fn a_shard_restart_remembers_a_player() {
         let stats = ShardStats::default();
         let mut core = armed_core();
         assert!(core.connect(0, id_of(0)), "a fresh join");
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
 
         // Do something worth keeping.
         let slot = world_slot(&core, id_of(0));
@@ -113,7 +113,7 @@ fn a_shard_restart_remembers_a_player() {
             count: 128,
         };
         core.world.players[slot].hp = 37;
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         let want_inv = core.world.players[slot].inv;
         let want_body = core.world.players[slot].body;
 
@@ -146,7 +146,7 @@ fn a_shard_restart_remembers_a_player() {
         Some(Admitted::Restored),
         "a restoring join"
     );
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
 
     let slot = world_slot(&core, id_of(0));
     let p = core.world.players[slot];
@@ -179,7 +179,7 @@ fn an_unknown_key_is_a_fresh_character() {
         Some(Admitted::Fresh),
         "a keyless join"
     );
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     let p = core.world.players[world_slot(&core, id_of(0))];
     assert_eq!(p.hp, core.world.combat.player_hp, "a fresh body is whole");
     assert!(p.inv.iter().all(|s| s.count == 0), "naked spawn");
@@ -195,7 +195,7 @@ fn the_autosave_sweep_is_bounded_and_skips_the_unchanged() {
     let stats = ShardStats::default();
     let mut core = armed_core();
     assert!(core.connect(0, id_of(0)));
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
 
     // A full lap of the cursor: exactly one record for the one connected
     // player, whatever else the lap visits.
@@ -267,13 +267,13 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
             .map(|(how, _)| how),
         Some(Admitted::Fresh)
     );
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     let slot = world_slot(&core, id_of(0));
     core.world.players[slot].inv[0] = carried;
     let (_, frozen) = core.disconnect(0).expect("a leaving player has a record");
     assert_eq!(frozen.inv[0], carried);
     store.put(&me, 1, frozen);
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.sleepers(), 1);
 
     // The raid, after the record froze: the sleeper is looted where it
@@ -284,7 +284,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
     for s in 1..MAX {
         assert!(core.connect(s, id_of(s)), "filler {s}");
     }
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.sleepers(), 1, "the fill must not evict");
 
     // The join that needs the sleeper's slot. Phase one hands back the
@@ -305,7 +305,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
     );
     // File it exactly as `drain_saves` would: by key, over the frozen one.
     store.put(&me, 2, current);
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(
         core.world.evictions, 1,
         "the evict must land under the join"
@@ -324,7 +324,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
     // logging off; its keyless sleeper is the next eviction's victim,
     // which also pins the guest arm: no key, no record, still evicted.
     core.disconnect(5);
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     let restored = store.find(&me).expect("the eviction filed a record");
     assert_eq!(restored.inv[0], ItemStack::default());
     let (how, evicted) = core
@@ -339,7 +339,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
         evicted.is_none(),
         "a keyless victim has no record to file — and never had one"
     );
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     let p = core.world.players[world_slot(&core, id2_of(5))];
     assert_eq!(
         p.inv[0],
@@ -366,17 +366,17 @@ fn two_joins_in_one_window_evict_two_different_sleepers() {
     // is the longest asleep and must be the first pick.
     assert!(core.connect_as(0, id_of(0), Some(a), None).is_some());
     assert!(core.connect_as(1, id_of(1), Some(b), None).is_some());
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     core.disconnect(0);
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     core.disconnect(1);
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.sleepers(), 2);
 
     for s in 2..MAX {
         assert!(core.connect(s, id_of(s)), "filler {s}");
     }
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
 
     // One window, no tick between: the second pick must see the first's
     // queued `Evict` and pass over its victim.
@@ -398,7 +398,7 @@ fn two_joins_in_one_window_evict_two_different_sleepers() {
          body, and the second join seats nobody"
     );
 
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.evictions, 2);
     assert_eq!(core.world.sleepers(), 0);
     for id in [id2_of(0), id2_of(1)] {
@@ -426,13 +426,13 @@ fn a_takeover_under_slot_pressure_evicts_nobody() {
     let me = key("comes-back");
 
     assert!(core.connect_as(0, id_of(0), Some(me), None).is_some());
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     core.disconnect(0);
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     for s in 1..MAX {
         assert!(core.connect(s, id_of(s)), "filler {s}");
     }
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.sleepers(), 1);
 
     let (how, evicted) = core
@@ -440,7 +440,7 @@ fn a_takeover_under_slot_pressure_evicts_nobody() {
         .expect("admitted");
     assert_eq!(how, Admitted::TookOver);
     assert!(evicted.is_none(), "a takeover charged somebody a body");
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.evictions, 0);
     assert_eq!(core.world.sleepers(), 0, "the body is awake, not gone");
 }
@@ -453,7 +453,7 @@ fn a_second_disconnect_hands_back_nothing() {
     let stats = ShardStats::default();
     let mut core = armed_core();
     assert!(core.connect(0, id_of(0)));
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert!(core.disconnect(0).is_some(), "the first leave has a record");
     assert!(
         core.disconnect(0).is_none(),

@@ -1119,6 +1119,16 @@ impl Content {
                         .ok_or_else(|| format!("bake: mob `{}` flee span overflows", m.id))?,
                     "flee_seconds",
                 )?,
+                attack: small(m.attack, "attack")?,
+                attack_range_cm: m.attack_range_m as i64 * 100,
+                attack_ticks: small(
+                    m.attack_seconds
+                        .checked_mul(TICK_HZ)
+                        .ok_or_else(|| format!("bake: mob `{}` bite cadence overflows", m.id))?,
+                    "attack_seconds",
+                )?,
+                // Validate bounded it to 0..=100; the cast cannot truncate.
+                brave_pct: m.brave_pct as u8,
                 roam_cm: m.roam_m as i64 * 100,
                 spook_cm: m.spook_m as i64 * 100,
                 respawn_ticks: m

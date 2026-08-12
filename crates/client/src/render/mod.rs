@@ -860,6 +860,12 @@ impl Plugin for GatesRenderPlugin {
         // rather than `world_placed` because a ring nobody drains overflows,
         // which is the reason `hud::feedback` gives for its own placement.
         .add_systems(Update, feed::drain.before(Stream).run_if(world_running))
+        // The rig follows the server's clock (day/night v0). After the
+        // drain so it reads this frame's tick estimate, not last frame's.
+        .add_systems(
+            Update,
+            rig::day_night.after(feed::drain).run_if(world_running),
+        )
         // Audio runs AFTER the streamers and `pump` runs last of all: every
         // producer must have had its say before the mixer resolves the frame,
         // or a cue requested by a system scheduled later is heard a frame

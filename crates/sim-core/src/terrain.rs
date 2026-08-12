@@ -2868,10 +2868,10 @@ pub const SHELTER_BOXES: [[f32; 6]; 14] = [
 /// thing the walls stand on. Widen it into a wall and it stops being the
 /// floor line and the build stops.
 ///
-/// **What this costs today:** nothing here makes a body stand on the plinth
-/// either, so at 0.2 m the floor reads as a kerb a player sinks into rather
-/// than steps onto. That is the ground-query half of the same seam and it
-/// lives in the systems lane's `collide.rs`; this table is what it will need.
+/// The ground-query half of the seam is [`slot_ground`] (deploy collision
+/// v0): the blocking loop skips this row, the ground loop reads it, so the
+/// plinth is a floor a body steps onto rather than a kerb it sinks into —
+/// `tests/solid_deploy.rs` walks it.
 pub const SHELTER_FLOOR_IX: usize = 0;
 
 /// Bounding radius of the shelter's boxes about the slot, meters — the
@@ -3398,6 +3398,73 @@ pub fn slot_blocks(
         ),
         _ => true,
     }
+}
+
+/// The highest surface of this slot's occupant a capsule at `feet_y` may
+/// stand on, or `collide::NO_SURFACE` — `slot_blocks`'s twin, and the
+/// `slot_ground` `terrain.rs:1126`'s note and `NOW.md` §0q item 3 named
+/// as missing: until it existed a crate top, a boulder top and the
+/// shelter's plinth were all drawn geometry a body sank through, because
+/// the vertical pass had no occupant surface to snap to.
+///
+/// "May stand on" is `piece_ground`'s lid rule — a top more than
+/// `STEP_UP` above the feet is a wall face, not a floor — which is what
+/// keeps a pine's 10 m crown from ever being ground while letting a jump
+/// arc land on a barrel. The footprint is the occupant's own (NOT
+/// inflated by the capsule): a body stands on a crate with its centre
+/// over the crate, the same rule a floor slab applies at its cell edge.
+pub fn slot_ground(slot: &Slot, x: f32, z: f32, feet_y: f32) -> f32 {
+    let (r, top) = occupant_volume(slot.occupant);
+    if r <= 0.0 {
+        return crate::collide::NO_SURFACE;
+    }
+    let lid = feet_y + crate::movement::STEP_UP;
+    let dx = x - slot.x;
+    let dz = z - slot.z;
+    match slot.occupant {
+        Occupant::HavenShelter => boxes_ground(slot, &SHELTER_BOXES, dx, dz, lid),
+        Occupant::WaystationCanopy => boxes_ground(slot, &WAYSTATION_CANOPY_BOXES, dx, dz, lid),
+        _ => {
+            let reach = r * slot.scale;
+            if dx * dx + dz * dz >= reach * reach {
+                return crate::collide::NO_SURFACE;
+            }
+            let t = slot.y + top * slot.scale;
+            if t <= lid {
+                t
+            } else {
+                crate::collide::NO_SURFACE
+            }
+        }
+    }
+}
+
+/// The box-list half of [`slot_ground`]: the highest box top under the
+/// point, floor box included — that row is exactly the plinth/deck the
+/// blocking loop skips, and standing on it is this function's whole job.
+fn boxes_ground(slot: &Slot, boxes: &[[f32; 6]], dx: f32, dz: f32, lid: f32) -> f32 {
+    // World → local, `boxes_block`'s inverse basis.
+    let (s, c) = crate::yaw_lut::yaw_dir((slot.yaw as u16) << 8);
+    let lx = dx * c - dz * s;
+    let lz = dx * s + dz * c;
+    let mut best = crate::collide::NO_SURFACE;
+    let mut i = 0;
+    while i < boxes.len() {
+        let b = &boxes[i];
+        i += 1;
+        let hx = b[3] * 0.5 * slot.scale;
+        let hz = b[5] * 0.5 * slot.scale;
+        let cx = b[0] * slot.scale;
+        let cz = b[2] * slot.scale;
+        if fabs(lx - cx) > hx || fabs(lz - cz) > hz {
+            continue;
+        }
+        let t = slot.y + (b[1] + b[4] * 0.5) * slot.scale;
+        if t <= lid && t > best {
+            best = t;
+        }
+    }
+    best
 }
 
 /// The box-list narrow phase, called only after a greybox's bounding circle

@@ -174,3 +174,56 @@ seed = 20260731
 # you got that order wrong: a number still climbing days later means the build
 # you told players to get was never actually published.
 # min_client = "0.1.0"
+
+# ---------------------------------------------------------------------------
+# The admin lane (admin v0, ALPHA.md §3) and the anomaly log.
+# ---------------------------------------------------------------------------
+#
+# WALLETS TRUSTED WITH ADMIN COMMANDS. Comma-separated, 0x-prefixed. Unset
+# means NOBODY is an admin, which is what every test and every community
+# shard runs — the same one-build-two-populations posture `entitle_origin`
+# takes.
+#
+# Admin rights are checked against the address SIWE proved at the handshake
+# (`auth.rs`), so a client cannot claim them: it never asserts them at all.
+# There is no in-game promotion verb and there is not going to be one — a
+# shard whose admin list grows at runtime is a shard where one compromised
+# key is every key. Case does not matter; a checksummed address pasted from
+# a block explorer matches.
+#
+# A BAD ENTRY REFUSES THE BOOT, whole. A typo'd admin address is an operator
+# expecting a privilege they do not have, and finding out now is cheaper than
+# finding out during a raid.
+#
+# The verbs, typed into the game's own chat box (no client build needed —
+# the lane is the chat lane, and nothing on the wire moved for it):
+#
+#   /kick <id>          drop that player now; their body stays as a sleeper
+#   /ban <id>           kick, and refuse the wallet for the rest of uptime
+#   /say <text>         a line from the house, to everybody, marked [server]
+#   /tp <id>            put yourself at that player's feet
+#   /give <item> <n>    put items in your own pockets (n defaults to 1)
+#   /save               write the world now rather than at the cadence
+#
+# The id is the number the death screen and the chat prefix already show.
+# A ban is remembered as the WALLET (an id means nothing after a reconnect)
+# and is MEMORY ONLY at v0: a restart forgets it. Persisting one wants its
+# own file with its own format version, which is not built.
+# admin_wallets = "0xabc...,0xdef..."
+
+# WHERE THE ANOMALY LOG IS APPENDED. Unset means no log, and every push
+# becomes a no-op that costs nothing.
+#
+# This is the file ALPHA.md §6's gate is about — "zero silent failures in
+# the anomaly log" — and it is what turns fifty-odd counters into a
+# timeline. One JSON object per line: a watched counter that moved (with
+# its delta), every admin act and every refused one, and every `/bug` a
+# player filed with the tick and position stamped by the server.
+#
+# APPEND, never truncated, and it grows without bound by design: it is a
+# wipe-cycle artifact you rotate or delete, and shortening the record of a
+# bad hour to save bytes is the opposite of the point. A configured log
+# that cannot be opened REFUSES THE BOOT rather than downgrading silently —
+# an operator who asked for a log and got none would be reading an empty
+# file after the incident they wanted it for.
+# anomaly_file = "gates-anomaly.jsonl"

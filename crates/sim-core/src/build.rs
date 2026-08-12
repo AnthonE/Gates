@@ -498,6 +498,13 @@ impl Pieces {
         self.cols.set_door(cx, cz, level, loc, shut);
     }
 
+    /// Set or clear the solid-deployable nibble at (column, level) —
+    /// `set_door`'s twin (deploy collision v0; deploy.rs owns when:
+    /// placement, removal, and the load path's `World::rebuild_doors`).
+    pub(crate) fn set_solid(&mut self, cx: u16, cz: u16, level: u8, arch: Option<u8>) {
+        self.cols.set_solid(cx, cz, level, arch);
+    }
+
     /// Replace the store from a decoded world save, rebuilding the column
     /// index from the records rather than reading one out of the file.
     ///

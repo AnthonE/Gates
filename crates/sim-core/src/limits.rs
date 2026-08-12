@@ -642,6 +642,14 @@ pub const MAX_REMOVALS_PER_TICK: usize = 64;
 /// Proposed default, DECISIONS.md §open (satchel fuse v0).
 pub const MAX_LIVE_CHARGES: usize = 64;
 
+/// The widest blast any content may declare, centimetres — one build cell
+/// (satchel blast v0). Not a tuning knob: `charge::detonate`'s 3×3 column
+/// ring is *complete* only while a blast cannot reach past one cell from
+/// its epicentre, the const block there restates it, and `validate`
+/// refuses a `blast_m` above it at boot. Widening this means widening the
+/// ring in the same commit — the pair is one decision.
+pub const BLAST_MAX_CM: u16 = 300;
+
 /// Arrows in flight across the whole shard (`ranged.rs`). Sized off the
 /// fire rate, not off `MAX_PLAYERS`: a bow is 30 rounds/min (2 shots a
 /// second at 30 Hz is 60 ticks apart) and an arrow lives at most
@@ -750,6 +758,39 @@ pub const MOB_ID_TAG: u32 = 0x8000_0000;
 ///
 /// No overflow policy: it is a cadence, not a queue.
 pub const MOB_THINK_TICKS: u64 = 15;
+
+/// One full day/night cycle, in ticks — 45 minutes at `TICK_HZ`
+/// (`ALPHA.md` §1's knob; day/night v0, `DECISIONS.md` §open).
+///
+/// **Time of day is a pure function of the tick, and that is the design,
+/// not a shortcut.** The snapshot header already carries the tick on
+/// every datagram and the client already tracks a smoothed estimate of
+/// it (`client-core/clock.rs`), so shipping a second field would be
+/// redundant bytes carrying a derivable number — `NETCODE.md` §3's "time
+/// of day rides the G channel" is satisfied by the tick itself plus this
+/// constant. What the choice costs is a set-time admin verb: with no
+/// offset field anywhere, shifting the clock means shifting the tick,
+/// which nothing may do. That is a wire field away if ever wanted.
+pub const DAY_TICKS: u64 = 81_000;
+
+/// Phase offset into the cycle at tick zero, so a fresh world — and every
+/// capture probe — boots mid-morning with the sun well up, not at the
+/// dawn terminator. ~17% of the cycle before noon (noon is 35% in).
+pub const DAY_PHASE_TICKS: u64 = 14_000;
+
+/// The daylight fraction of the cycle: the first 70% is day (~31.5 min),
+/// the rest night (~13.5 min) — the reference's proportions, where night
+/// is short enough to be weathered and long enough to matter.
+pub const DAY_PORTION: f32 = 0.70;
+
+/// The most bites one tick can land across the whole roster (mob.rs
+/// `Bites`). Derived, generously: only a *thinking* animal can bite, so
+/// the true per-tick ceiling is `MAX_MOBS / MOB_THINK_TICKS` ≈ 4 plus
+/// rounding — 8 is that with headroom, not a tuning knob. **Overflow
+/// drops the bite**: a full buffer is one merciful tick, and the phase
+/// lock retries the same pair two seconds later. Never a queue — a bite
+/// carried across ticks would land on a player who has already left.
+pub const MAX_MOB_BITES_PER_TICK: usize = 8;
 
 /// How close a player must be for an animal to be awake, in centimeters.
 ///

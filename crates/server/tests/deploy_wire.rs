@@ -58,7 +58,7 @@ fn pump_seen(
     }
     let mut snaps: Vec<(usize, Vec<u8>)> = Vec::new();
     let mut events: Vec<(usize, Vec<u8>)> = Vec::new();
-    core.tick(stats, |lane, slot, bytes| {
+    core.tick_bare(stats, |lane, slot, bytes| {
         match lane {
             Lane::Snapshot => snaps.push((slot, bytes.to_vec())),
             Lane::Event => events.push((slot, bytes.to_vec())),
@@ -100,7 +100,7 @@ fn act(core: &mut ShardCore, slot: usize, a: ActionMsg) {
 fn deployables_ride_the_wire() {
     let fixture = DeployContent::probe_fixture();
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.build = BuildContent::probe_fixture();
     core.world.deploy = fixture;
@@ -349,7 +349,7 @@ fn deployables_ride_the_wire() {
 #[test]
 fn doors_toggle_across_the_wire() {
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.build = BuildContent::probe_fixture();
     core.world.deploy = DeployContent::probe_fixture();
@@ -851,7 +851,7 @@ fn addrs(recs: &[sim_core::build::PieceRec]) -> Vec<(u16, u16, u8, u8, u8)> {
 #[test]
 fn a_removal_storm_leaves_every_walk_standing() {
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.build = BuildContent::probe_fixture();
     core.world.deploy = DeployContent::probe_fixture();
@@ -1050,7 +1050,7 @@ fn a_removal_storm_leaves_every_walk_standing() {
 #[test]
 fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.build = BuildContent::probe_fixture();
     core.world.deploy = DeployContent::probe_fixture();

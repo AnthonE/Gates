@@ -140,7 +140,7 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
         .unwrap_or((fx + 5.0, fz));
     core.world.dev_spawn = Some((sx, sz));
     assert!(core.connect(0, 0x100), "connect");
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     let p = core
         .world
         .players

@@ -56,6 +56,11 @@ impl ChatText {
         len: 0,
     };
 
+    /// [`CHAT_MAX_BYTES`], reachable through the type — so a caller that
+    /// slices a line (`admin::BUG_NOTE_MAX`) states its bound in terms of
+    /// the thing it is slicing rather than restating the number.
+    pub const CAP: usize = CHAT_MAX_BYTES;
+
     /// The line's bytes — valid UTF-8 by construction (`sanitize` is the
     /// only way to build a non-empty one).
     pub fn as_bytes(&self) -> &[u8] {

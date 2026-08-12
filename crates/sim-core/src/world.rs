@@ -371,6 +371,19 @@ pub const DEATH_BY_SALT: u8 = 2;
 /// different fact about a fight from 1.6 m. `death_item` is the bow, not
 /// the arrow — the weapon is what the killer held.
 pub const DEATH_BY_ARROW: u8 = 3;
+/// An animal's bite (mob.rs — the pig that fights back). `death_by` is
+/// the roster slot's **tagged** id (`mob::mob_id`), which is how the
+/// death screen knows to name a species instead of printing a player
+/// number; `death_item` is `NO_ITEM`, because a boar holds nothing. The
+/// fifth cause, and the one the 2 → 3 bit widening at wire v36 was for.
+pub const DEATH_BY_MOB: u8 = 4;
+/// A satchel blast (charge.rs — satchel blast v0). `death_by` is the
+/// planter, who may be the victim: standing at your own bomb is a
+/// sentence of its own on the death screen. `death_item` is `NO_ITEM` —
+/// the bomb already went with the plant — and `death_range_cm` is the
+/// distance from the epicentre, which is the whole story of a blast
+/// death the way range is of an arrow's.
+pub const DEATH_BY_CHARGE: u8 = 5;
 
 /// The highest cause above, named rather than counted — `EV_MAX`'s
 /// discipline applied to a *value domain* instead of a code ledger.
@@ -393,7 +406,28 @@ pub const DEATH_BY_ARROW: u8 = 3;
 /// so a cause declared past this line fails loudly instead of silently.
 /// A widened *meaning* is still a wire change (`protocol/src/lib.rs`) —
 /// this makes the widening impossible to do by accident, not permitted.
-pub const DEATH_BY_MAX: u8 = DEATH_BY_ARROW;
+/// (And it was not an accident when it happened: `DEATH_BY_MOB` is the
+/// cause that saturated the two-bit field, and wire v36 widened it;
+/// `DEATH_BY_CHARGE` landed in the same merge window on the same bump.)
+pub const DEATH_BY_MAX: u8 = DEATH_BY_CHARGE;
+
+/// Where in the day/night cycle a tick falls, `0.0..1.0` — 0 is dawn,
+/// `limits::DAY_PORTION` is dusk (day/night v0, `DECISIONS.md` §open).
+///
+/// A pure function of the tick, deliberately (`limits::DAY_TICKS`' doc has
+/// the argument): the client derives it from the smoothed tick estimate it
+/// already keeps, so no wire byte carries it, and when gameplay ever reads
+/// the clock — crickets, crops, nocturnal mobs — the sim calls this same
+/// function on its own tick and stays deterministic for free. **Nothing in
+/// the sim reads it today**; the renderer is its only caller, which is why
+/// a wrong curve is a look, not a divergence.
+///
+/// Wall 1: one modulo and one division, no trig — the sun curve the
+/// renderer builds from this is the renderer's own.
+pub fn day_frac(tick: u64) -> f32 {
+    use crate::limits::{DAY_PHASE_TICKS, DAY_TICKS};
+    ((tick.wrapping_add(DAY_PHASE_TICKS)) % DAY_TICKS) as f32 / DAY_TICKS as f32
+}
 
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
 /// (a door, a box) rather than the piece store. Level, loc and row are all
@@ -675,6 +709,44 @@ pub enum Command {
     /// minted by `ShardCore::connect_as` alone, beside `Join` and `Leave`.
     Evict {
         id: u32,
+    },
+    /// Move `id`'s body to `to`'s feet — the admin lane's travel verb
+    /// (admin v0, `ALPHA.md` §3).
+    ///
+    /// **Not reachable from the wire**, `Evict`'s posture and for a
+    /// stronger reason: no `ActionMsg` maps here, so a client cannot ask
+    /// for it however it forges its bytes, and the only mint site is the
+    /// server's admin dispatch behind a wallet allowlist. It is a
+    /// `Command` rather than a poke at `world.players` from outside
+    /// because **the WAL is the command stream** (`Command::JoinAs`'
+    /// argument): a body that moved by side channel would replay as a
+    /// body that never moved, and every hash after it would differ. An
+    /// admin act being *visible in a replay* is also what `ALPHA.md` §3
+    /// asks for in the same breath as the lane.
+    ///
+    /// A miss — either id naming nobody live — is a legal no-op, `Wake`'s
+    /// posture, because a WAL replayed against a world that diverged must
+    /// refuse rather than teleport somebody into a hole.
+    ///
+    /// The destination is the *target's* body, not a coordinate, and that
+    /// is the whole safety story: an arbitrary xyz would need bounds, a
+    /// walkability check and a "you are now inside a rock" answer;
+    /// somewhere a player is already standing is known-good ground.
+    AdminTeleport {
+        id: u32,
+        to: u32,
+    },
+    /// Put `count` of item row `item` in `id`'s inventory — the admin
+    /// lane's other verb, `AdminTeleport`'s posture in every respect
+    /// (not wire-reachable, minted only behind the allowlist, a command
+    /// so it replays).
+    ///
+    /// Overflow is `gather::inv_add`'s documented policy and not this
+    /// command's business: a full inventory keeps what fits.
+    AdminGive {
+        id: u32,
+        item: u16,
+        count: u16,
     },
     Input {
         id: u32,
@@ -1757,6 +1829,13 @@ impl World {
             if arch == crate::deploy::ARCH_DOOR {
                 self.pieces.set_door(d.cx, d.cz, d.level, d.loc, !d.open);
             }
+            // The solid nibble is the shut bit's twin and derived the same
+            // way (deploy collision v0): `Pieces::restore` cleared the
+            // index, so every standing body deploy re-blocks here or a
+            // loaded shard's furniture is walk-through until re-placed.
+            if crate::deploy::solid_vol(arch).is_some() {
+                self.pieces.set_solid(d.cx, d.cz, d.level, Some(arch));
+            }
             if !crate::deploy::lockable(arch) {
                 continue;
             }
@@ -1837,6 +1916,31 @@ impl World {
             }
             Command::Wake { id, sleeper } => self.take_over(id, sleeper),
             Command::Evict { id } => self.evict(id),
+            Command::AdminTeleport { id, to } => {
+                // Both bodies resolved before either is touched, and a
+                // miss on either is a no-op: `Wake`'s rule, because a WAL
+                // replayed against a diverged world must refuse rather
+                // than move somebody somewhere nobody is standing.
+                if let (Some(from), Some(dest)) = (self.live_slot_of(id), self.live_slot_of(to)) {
+                    if from != dest {
+                        let body = self.players[dest].body;
+                        self.players[from].body = body;
+                    }
+                }
+            }
+            Command::AdminGive { id, item, count } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    // An unknown row is refused rather than stored: the
+                    // stack cap is read off the item table, and an index
+                    // past it would be a stack with no rule.
+                    if (item as usize) < self.gather.stack_max.len() {
+                        let cap = self.gather.stack_max[item as usize];
+                        if cap > 0 {
+                            crate::gather::inv_add(&mut self.players[slot].inv, item, count, cap);
+                        }
+                    }
+                }
+            }
             Command::Input { id, frame } => {
                 if let Some(slot) = self.slot_of(id) {
                     let mut frame = frame;
@@ -2470,16 +2574,31 @@ impl World {
         // `removals` is the same allowance the swings above just spent:
         // wall 4 does not hand out a second one because the damage arrived
         // on a timer.
+        let mut blast_kills = crate::charge::BlastKills::new();
         crate::charge::tick_fuses(
+            seed,
             &self.build,
             &self.deploy,
+            self.combat.player_hp,
             &mut self.charges,
             &mut self.pieces,
             &mut self.deploys,
+            &mut self.players,
             tick,
             &mut removals,
+            &mut blast_kills,
             &mut self.events,
         );
+        // The blast's dead, laid down after every fuse resolved — the
+        // bite buffer's split, for its reason: `die` needs the whole
+        // world. The hp is already zero and the events already rang
+        // inside `detonate`; this is the corpse's half.
+        for &(victim, owner, range_cm) in blast_kills.entries() {
+            let slot = victim as usize;
+            if self.players[slot].active && self.players[slot].hp == 0 && !self.players[slot].dead {
+                self.die(slot, owner, DEATH_BY_CHARGE, NO_ITEM, range_cm);
+            }
+        }
 
         // The roster steps after the player loop and before the arrows, and
         // both sides of that are deliberate. After the players, because an
@@ -2488,6 +2607,7 @@ impl World {
         // depend on the reader's slot index. Before the arrows, because a
         // shot must resolve against where the animal ended this tick — the
         // same rule the player loop's ordering states in the comment above.
+        let mut bites = mob::Bites::new();
         mob::step(
             seed,
             tick,
@@ -2501,7 +2621,40 @@ impl World {
             },
             &mut self.mobs,
             &self.players,
+            &mut bites,
         );
+        // The bites land after the whole roster stepped, so every animal
+        // decided against one consistent tick — the borrow split `Bites`'
+        // own doc names. `combat::strike`'s exact damage liturgy: hp, the
+        // deaths counter, EV_HEALTH to the victim, EV_DEATH broadcast, and
+        // `die` lays the body down with the cause the wire just widened
+        // for. No EV_HIT — a hitmarker is an attacker's fact and a pig has
+        // no screen to draw one on.
+        for b in bites.entries() {
+            let victim = b.victim as usize;
+            let v = &mut self.players[victim];
+            if !v.active || v.hp == 0 {
+                continue; // died to something else since the roster looked
+            }
+            let died = b.damage >= v.hp;
+            v.hp -= b.damage.min(v.hp);
+            let left = v.hp;
+            let victim_id = v.id;
+            if died {
+                v.deaths = v.deaths.saturating_add(1);
+            }
+            self.events.push(
+                EV_HEALTH,
+                victim_id,
+                left as u32,
+                self.combat.player_hp as u32,
+            );
+            if died {
+                let by = mob::mob_id(b.mob_slot as usize);
+                self.events.push(EV_DEATH, victim_id, by, 0);
+                self.die(victim, by, DEATH_BY_MOB, NO_ITEM, b.range_cm);
+            }
+        }
 
         // Arrows fly after the player loop, never inside it. Two reasons,
         // both structural: every body has already taken its step, so a shot
@@ -2770,7 +2923,7 @@ impl World {
         // makes one field over: it is a pure function of the seed,
         // recomputed identically by every build, so it is worldgen and not
         // state. What is hashed is everything a tick can move — including
-        // `respawn_at` and `flee_until`, which are deadlines rather than
+        // `respawn_at` and `roused_until`, which are deadlines rather than
         // counters for the reason `charges` states, and `awake`, because
         // two shards that disagree about which animals are dormant will
         // disagree about every position downstream of it.
@@ -2789,7 +2942,7 @@ impl World {
             buf[19] = m.awake as u8;
             buf[20..22].copy_from_slice(&m.yaw.to_le_bytes());
             buf[22..24].copy_from_slice(&m.hp.to_le_bytes());
-            buf[24..32].copy_from_slice(&m.flee_until.to_le_bytes());
+            buf[24..32].copy_from_slice(&m.roused_until.to_le_bytes());
             buf[32..40].copy_from_slice(&m.respawn_at.to_le_bytes());
             h.update(&buf);
         }
@@ -2856,18 +3009,23 @@ impl World {
         // view of it that a replay resuming mid-fuse would have to rebuild.
         h.update(&(self.charges.len() as u64).to_le_bytes());
         for c in self.charges.entries() {
-            let mut buf = [0u8; 21];
+            let mut buf = [0u8; 25];
             buf[0..2].copy_from_slice(&c.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&c.cz.to_le_bytes());
             buf[4] = c.level;
             buf[5] = c.loc;
             buf[6] = c.deploy as u8;
             buf[7..9].copy_from_slice(&c.structure.to_le_bytes());
-            buf[9..17].copy_from_slice(&c.fires_at.to_le_bytes());
+            // The blast's other two copied-at-plant numbers (satchel
+            // blast v0): two shards disagreeing about a live charge's
+            // radius disagree about which walls are standing next tick.
+            buf[9..11].copy_from_slice(&c.damage.to_le_bytes());
+            buf[11..13].copy_from_slice(&c.blast_cm.to_le_bytes());
+            buf[13..21].copy_from_slice(&c.fires_at.to_le_bytes());
             // The planter rides the digest too: it is on the wire off this
             // record, so a replay that reproduced the blast while
             // inventing the raider would put a different name on it.
-            buf[17..21].copy_from_slice(&c.owner.to_le_bytes());
+            buf[21..25].copy_from_slice(&c.owner.to_le_bytes());
             h.update(&buf);
         }
         // The bag cooldowns, in their own pass rather than widening the

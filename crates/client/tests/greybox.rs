@@ -306,3 +306,49 @@ fn every_occupant_is_measured_or_excused() {
     assert_eq!(terrain::SHELTER_BOXES.len(), SHELTER_HEX.len());
     assert_eq!(terrain::WAYSTATION_CANOPY_BOXES.len(), CANOPY_HEX.len());
 }
+
+// ── §D · Deployables: the drawn box is the blocked box ─────────────────────
+
+/// Every solid deploy archetype blocks exactly the volume the client draws,
+/// and every walk-over archetype is walk-over on purpose.
+///
+/// This is the comparison `NOW.md` §0n2 said could not exist — "the greybox
+/// gate cannot catch it because there is nothing on the sim side to compare
+/// against". The sim side exists now (`sim_core::deploy::DEPLOY_VOL`, deploy
+/// collision v0), and the contract is exact equality with
+/// `structures::deploy_size`'s authored rows: both are real-world dimensions
+/// typed by a person, so a drift is a typo and not a tolerance question.
+#[test]
+fn every_solid_deploy_blocks_what_it_draws() {
+    use client::render::structures::deploy_size;
+    use sim_core::deploy::{solid_vol, DEPLOY_VOL};
+
+    assert_eq!(
+        DEPLOY_VOL.len(),
+        10,
+        "the sim volume table and the archetype space drifted"
+    );
+    for (arch, [w, h, d]) in DEPLOY_VOL.iter().enumerate() {
+        let drawn = deploy_size(arch);
+        match solid_vol(arch as u8) {
+            Some((hw, sh, hd)) => {
+                assert_eq!(
+                    (drawn.x, drawn.y, drawn.z),
+                    (*w, *h, *d),
+                    "arch {arch}: the sim blocks a different box than the client draws"
+                );
+                assert_eq!((hw * 2.0, sh, hd * 2.0), (*w, *h, *d));
+            }
+            None => {
+                // Walk-over rows, by index: bag, fire, door, lock. The door
+                // blocks as an edge (shut bits) and the lock never mints a
+                // record; the bag and the fire are the two deliberate
+                // walk-overs (`DEPLOY_VOL`'s doc).
+                assert!(
+                    matches!(arch, 0 | 3 | 6 | 7),
+                    "arch {arch} became walk-over without the doc's excuse list"
+                );
+            }
+        }
+    }
+}

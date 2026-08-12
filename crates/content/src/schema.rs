@@ -446,10 +446,23 @@ pub struct Mob {
     pub hp: u32,
     /// Amble speed, percent of `WALK_SPEED`.
     pub walk_pct: u32,
-    /// Flight speed, percent of `SPRINT_SPEED`.
+    /// Flight-and-charge speed, percent of `SPRINT_SPEED` — one fast gait
+    /// for both directions of a rousing.
     pub flee_pct: u32,
-    /// How long one fright lasts.
+    /// How long one rousing lasts — the fright's span and the charge's
+    /// commitment.
     pub flee_seconds: u32,
+    /// Damage per bite. Zero = this species never fights (the pacifist
+    /// row stays expressible; validate refuses the half-armed states).
+    pub attack: u32,
+    /// Bite reach, metres.
+    pub attack_range_m: u32,
+    /// Seconds between bites.
+    pub attack_seconds: u32,
+    /// Percent of max hp at which courage runs out: at or above it a
+    /// roused animal charges its tormentor, below it the same rousing is
+    /// a flight. The reference boar's rule — fights whole, flees hurt.
+    pub brave_pct: u32,
     /// Leash radius from the home the seed chose.
     pub roam_m: u32,
     /// A player closer than this starts a flight.

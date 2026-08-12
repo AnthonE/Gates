@@ -210,6 +210,10 @@ pub fn hash(c: &Content) -> u64 {
         h.u(m.walk_pct);
         h.u(m.flee_pct);
         h.u(m.flee_seconds);
+        h.u(m.attack);
+        h.u(m.attack_range_m);
+        h.u(m.attack_seconds);
+        h.u(m.brave_pct);
         h.u(m.roam_m);
         h.u(m.spook_m);
         h.u(m.respawn_seconds);

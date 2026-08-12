@@ -100,7 +100,16 @@ use crate::world::{Player, World};
 /// Merging them makes a third layout that is neither, and a version number
 /// that two different files can both claim is worse than no version number
 /// at all, so the merge takes the next free one.
-pub const WORLD_SAVE_FORMAT: u16 = 3;
+///
+/// **4 — a charge carries its blast** (satchel blast v0): two `u16`s,
+/// `damage` and `blast_cm`, between `structure` and `fires_at`, copied at
+/// plant time like the field they follow. The same bump deletes a check
+/// that would have refused any real save mid-fuse: the decoder compared
+/// `structure` — a damage *amount* — against the content table's row
+/// *count*, so a satchel's 125 against a dozen rows was "an impossible
+/// structure". No live world ever hit it (a ten-second fuse rarely meets
+/// a save), which is exactly why it survived to be found by reading.
+pub const WORLD_SAVE_FORMAT: u16 = 4;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
 /// the next bag id, and the nine section counts.
@@ -161,7 +170,9 @@ const BOX_BYTES: usize = 9 + BOX_SLOTS * 4 + 6 + BOX_SLOTS * 2;
 const LOCK_BYTES: usize =
     6 + 4 + 2 + 2 + 1 + 1 + 1 + LOCK_AUTH_CAP * 4 + LOCK_GUEST_CAP * 4 + 1 + 8 + 8;
 const BACKPACK_BYTES: usize = 28 + INV_SLOTS * 4;
-const CHARGE_BYTES: usize = 21;
+/// A burning fuse: address + store bit + the three copied-at-plant
+/// numbers (structure, damage, blast — format 4) + deadline + planter.
+const CHARGE_BYTES: usize = 25;
 const SLOT_LIFE_BYTES: usize = 14;
 
 /// The largest blob this world can produce — every store at capacity.
@@ -465,6 +476,8 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u8(c.loc);
         o.b(c.deploy);
         o.u16(c.structure);
+        o.u16(c.damage);
+        o.u16(c.blast_cm);
         o.u64(c.fires_at);
         o.u32(c.owner);
     }
@@ -998,13 +1011,22 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let loc = r.u8()?;
         let deploy = r.b()?;
         let structure = r.u16()?;
+        let damage = r.u16()?;
+        let blast_cm = r.u16()?;
         let fires_at = r.u64()?;
         let owner = r.u32()?;
         if !build_addr_ok(cx, cz, level) {
             return Err(WorldSaveError::AddressOutOfRange);
         }
-        let rows = if deploy { deploy_rows } else { piece_rows };
-        if structure as usize >= rows {
+        // Format 3 compared `structure` — a damage amount — against the
+        // content table's row COUNT here, which would have refused any
+        // real save holding a live satchel (125 damage against a dozen
+        // rows read as "an impossible structure"). The field is a number,
+        // not an index; the address check above is the whole shape test.
+        // What IS bounded is the blast, against the same one-cell ceiling
+        // `validate` holds content to — a forged radius past the scan's
+        // ring would damage walls the detonation never looks at.
+        if blast_cm > crate::limits::BLAST_MAX_CM {
             return Err(WorldSaveError::BadCharge);
         }
         *c = ChargeRec {
@@ -1014,6 +1036,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             loc,
             deploy,
             structure,
+            damage,
+            blast_cm,
             fires_at,
             owner,
         };
@@ -1100,7 +1124,7 @@ mod tests {
             + 256 * 87                      // containers: 57 + the oven's 30
             + 512 * 98                      // code locks
             + 256 * 148                     // bags
-            + 64 * 21                       // charges
+            + 64 * 25                       // charges
             + 16_384 * 14; // harvested slots
         assert_eq!(HEAD_BYTES, 54);
         // A lock is 98: 6 address + 4 owner + 2 + 2 codes + 1 locked + 2
@@ -1116,8 +1140,10 @@ mod tests {
         assert_eq!(PIECE_BYTES, 19);
         assert_eq!(DEPLOY_BYTES, 33);
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
+        // Moved 572_246 → 572_502 at format 4: a charge grew four bytes
+        // (damage + blast_cm, satchel blast v0) and there are 64 of them.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 572_246,
+            WORLD_SAVE_MAX_BYTES, 572_502,
             "the world save ceiling moved"
         );
     }

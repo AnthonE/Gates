@@ -150,7 +150,7 @@ fn fill_clients(core: &mut ShardCore, stats: &ShardStats, a: &Args) {
     for slot in 0..a.clients {
         assert!(core.connect(slot, id_of(slot)), "connect {slot}");
         if (slot + 1) % 32 == 0 || slot + 1 == a.clients {
-            core.tick(stats, |_, _, _| true);
+            core.tick_bare(stats, |_, _, _| true);
         }
     }
     let side = (a.clients as f32).sqrt().ceil().max(1.0) as usize;
@@ -292,7 +292,7 @@ fn main() {
     for _ in 0..a.warmup {
         feed(&mut core, &mut seq, &last_snap);
         let snap_tick = (core.world.tick + 1) as u16;
-        core.tick(&stats, |lane, slot, _| {
+        core.tick_bare(&stats, |lane, slot, _| {
             if lane == Lane::Snapshot {
                 last_snap[slot] = snap_tick;
             }
@@ -308,7 +308,7 @@ fn main() {
         let snap_tick = (core.world.tick + 1) as u16;
         let is_snap = (core.world.tick + 1).is_multiple_of(SNAPSHOT_INTERVAL_TICKS);
         let t = Instant::now();
-        core.tick(&stats, |lane, slot, _| {
+        core.tick_bare(&stats, |lane, slot, _| {
             if lane == Lane::Snapshot {
                 last_snap[slot] = snap_tick;
             }

@@ -24,13 +24,18 @@ fn id_of(slot: usize) -> u32 {
 
 /// A core with the full cap connected and every body herded into a 60 m
 /// square (well inside the 176 m enter radius of everyone).
-fn clustered_core(stats: &ShardStats) -> ShardCore {
-    let mut core = ShardCore::new(SEED);
+/// **Boxed, and `chat_wire.rs` says why from the other side**: `ShardCore`
+/// is far too big to hand back by value, and a factory that does it
+/// overflows a test thread's 2 MiB stack — measured, in release, on a
+/// clean tree. Every direct construction below is boxed for the same
+/// reason.
+fn clustered_core(stats: &ShardStats) -> Box<ShardCore> {
+    let mut core = Box::new(ShardCore::new(SEED));
     for slot in 0..MAX_PLAYERS {
         assert!(core.connect(slot, id_of(slot)), "connect {slot}");
         if (slot + 1) % 32 == 0 || slot + 1 == MAX_PLAYERS {
             // Command budget reserves headroom; land joins in batches.
-            core.tick(stats, |_, _, _| true);
+            core.tick_bare(stats, |_, _, _| true);
         }
     }
     for (i, p) in core.world.players.iter_mut().enumerate() {
@@ -65,7 +70,7 @@ fn snapshot_round(core: &mut ShardCore, stats: &ShardStats) -> Vec<(usize, Vec<u
     let mut out = Vec::new();
     loop {
         let mut sent = Vec::new();
-        core.tick(stats, |lane, slot, bytes| {
+        core.tick_bare(stats, |lane, slot, bytes| {
             if lane == Lane::Snapshot {
                 sent.push((slot, bytes.to_vec()));
             }
@@ -259,7 +264,7 @@ fn the_shed_counter_sees_the_budget_refuse() {
     // the rank band's exit side runs at all.
     let stats = ShardStats::default();
     let mut core = clustered_core(&stats);
-    core.tick(&stats, |_, _, _| true); // populate `tracked_id`
+    core.tick_bare(&stats, |_, _, _| true); // populate `tracked_id`
     let ids: Vec<(usize, u32)> = (0..MAX_PLAYERS)
         .filter(|&w| core.world.players[w].active)
         .map(|w| (w, core.world.players[w].id))
@@ -303,10 +308,10 @@ fn the_shed_counter_sees_the_budget_refuse() {
     // record in a snapshot is its own entity. Nothing is offered that does
     // not fit, so nothing may be counted as shed.
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     assert!(core.connect(0, id_of(0)));
     assert!(core.connect(1, id_of(1)));
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     for m in core.world.mobs.m.iter_mut() {
         // The roster is worldgen's, not this test's: an animal that happens
         // to stand near a player is a candidate, and this assertion is about
@@ -385,7 +390,7 @@ fn the_fill_counts_what_it_offered_and_what_it_carried() {
     // the shed term of the identity is a real number instead of zero.
     let stats = ShardStats::default();
     let mut core = clustered_core(&stats);
-    core.tick(&stats, |_, _, _| true); // populate `tracked_id`
+    core.tick_bare(&stats, |_, _, _| true); // populate `tracked_id`
     let ids: Vec<(usize, u32)> = (0..MAX_PLAYERS)
         .filter(|&w| core.world.players[w].active)
         .map(|w| (w, core.world.players[w].id))
@@ -440,10 +445,10 @@ fn the_fill_counts_what_it_offered_and_what_it_carried() {
     // neither counts the own entity, which is present in every one of these
     // snapshots and must appear in neither number.
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     assert!(core.connect(0, id_of(0)));
     assert!(core.connect(1, id_of(1)));
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     for m in core.world.mobs.m.iter_mut() {
         // `alive = false` on its own is a state the roster undoes: a dead
         // slot hatches again on `respawn_at`, and a pig that walks inside
@@ -563,7 +568,7 @@ fn the_offered_counter_is_the_interest_set_and_nothing_else() {
     // full candidate list — the one case that tells a bump above the return
     // apart from a bump below it.
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     for m in core.world.mobs.m.iter_mut() {
         // `alive = false` alone is undone by `respawn_at`, and a hatched pig
         // is a candidate like any body (`a_near_animal_outranks_a_far_player`
@@ -574,7 +579,7 @@ fn the_offered_counter_is_the_interest_set_and_nothing_else() {
     const PEERS: usize = 6;
     for slot in 0..=PEERS {
         assert!(core.connect(slot, id_of(slot)), "connect {slot}");
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
     }
     let q = |m: f32| (m / 0.03) as i32;
     // Slot 0 stands a kilometre up. `POS_Y_BITS`/`POS_Y_BIAS` window the
@@ -692,13 +697,13 @@ fn the_interest_set_is_capped_at_what_a_snapshot_can_carry() {
 #[test]
 fn a_rank_boundary_entity_does_not_flap() {
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     // Two more than the admission rank, so ranks either side of it exist
     // and the two we jitter are the pair that straddles it.
     let n_players = AOI_RANK_ENTER + 3;
     for slot in 0..n_players {
         assert!(core.connect(slot, id_of(slot)), "connect {slot}");
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
     }
     for m in core.world.mobs.m.iter_mut() {
         // Worldgen's roster would rank among the peers and move the
@@ -833,7 +838,7 @@ fn a_near_animal_outranks_a_far_player() {
 
     // --- displacement: the herd walks in and the far peers lose the ranks.
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     for m in core.world.mobs.m.iter_mut() {
         // Down for the staging phase and unable to hatch back into it.
         m.alive = false;
@@ -843,7 +848,7 @@ fn a_near_animal_outranks_a_far_player() {
     let n_ray = 2 + FAR;
     for slot in 0..n_ray {
         assert!(core.connect(slot, id_of(slot)), "connect {slot}");
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
     }
     // Slot 0 observes from the origin of the ranking; slot 1 at 12 m, nearer
     // than anything this scene will ever contain; the other twenty at
@@ -937,7 +942,7 @@ fn a_near_animal_outranks_a_far_player() {
     // --- the converse: the animals are the ones out of rank, and get no
     // exemption for being animals.
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     for m in core.world.mobs.m.iter_mut() {
         m.alive = false;
         m.respawn_at = u64::MAX;
@@ -947,7 +952,7 @@ fn a_near_animal_outranks_a_far_player() {
     let n_dense = AOI_RANK_ENTER + 5;
     for slot in 0..n_dense {
         assert!(core.connect(slot, id_of(slot)), "connect {slot}");
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
     }
     let place_dense = |core: &mut ShardCore, herd: bool| {
         for p in core.world.players.iter_mut() {
@@ -1022,10 +1027,10 @@ fn a_near_animal_outranks_a_far_player() {
 #[test]
 fn test_aoi_hysteresis() {
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     assert!(core.connect(0, id_of(0)));
     assert!(core.connect(1, id_of(1)));
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
 
     let q = |m: f32| (m / 0.03) as i32;
     let place = |core: &mut ShardCore, x0: f32, x1: f32| {

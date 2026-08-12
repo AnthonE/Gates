@@ -235,6 +235,12 @@ pub async fn spawn_shard(
     // when the correct answer to a slow disk is to skip a save.
     let (world_tx, world_rx) = RingBuffer::<WorldMsg>::new(WORLD_RING_CAP);
     let (world_done_tx, world_done_rx) = RingBuffer::<WorldDone>::new(WORLD_RING_CAP);
+    // The admin path, sim → accept, one direction: a kick needs a socket
+    // and the sim thread holds none (`admin.rs`'s split). Shallow because
+    // an admin is a person typing — `CTRL_RING_CAP` is the same size for
+    // the same reason — and a full ring refuses the act out loud rather
+    // than queueing a kick nobody remembers ordering.
+    let (admin_tx, admin_rx) = RingBuffer::<crate::admin::AdminAct>::new(CTRL_RING_CAP);
     let crate::worldfile::WorldBoot {
         file: world_file,
         idents: world_idents,
@@ -242,12 +248,30 @@ pub async fn spawn_shard(
         interval_ticks: world_interval,
     } = world_boot;
 
+    // The anomaly log, opened before the sim thread that writes to it —
+    // and a failure to open is a **boot** failure, not a silent downgrade:
+    // an operator who configured a log and got none would be reading an
+    // empty file after the incident they wanted it for (`anomaly.rs`).
+    let log = match cfg.anomaly_file.as_deref() {
+        Some(path) => {
+            let (sink, _thread) = crate::anomaly::spawn(std::path::Path::new(path), stats.clone())
+                .map_err(|e| format!("anomaly log `{path}`: {e}"))?;
+            // The handle is deliberately dropped: the thread ends when the
+            // sim thread's `Sink` drops at shutdown, which is the signal
+            // that every record has been written — joining here would mean
+            // waiting for it before the shard has started.
+            sink
+        }
+        None => crate::anomaly::Sink::off(),
+    };
+
     {
         let stats = stats.clone();
         let shutdown = shutdown.clone();
         let slots = slots.clone();
         let seed = cfg.seed;
         let dev_spawn = cfg.dev_spawn;
+        let admins = cfg.admins.clone();
         std::thread::Builder::new()
             .name("sim".into())
             .spawn(move || {
@@ -274,6 +298,9 @@ pub async fn spawn_shard(
                     save_tx,
                     world_tx,
                     world_done_rx,
+                    admin_tx,
+                    log,
+                    admins,
                     slots,
                     stats,
                     shutdown,
@@ -311,6 +338,7 @@ pub async fn spawn_shard(
         grave_rx,
         save_rx,
         write_tx,
+        admin_rx,
         saves.store,
         slots,
         stats.clone(),
@@ -399,6 +427,7 @@ async fn accept_loop(
     mut grave_rx: rtrb::Consumer<Link>,
     mut save_rx: rtrb::Consumer<SaveMsg>,
     mut write_tx: rtrb::Producer<WriteMsg>,
+    mut admin_rx: rtrb::Consumer<crate::admin::AdminAct>,
     mut store: SaveStore,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
@@ -413,6 +442,10 @@ async fn accept_loop(
     // different reason (wasm's shadow stack) — here it is simply the way to
     // fill a fixed array with a clonable value.
     let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+    // Wallets banned for this uptime (admin v0). Memory only, and
+    // `admin.rs`' header says why that is stated rather than hidden: a
+    // persisted ban wants its own file with its own format version.
+    let mut bans = crate::admin::Bans::new();
     let mut sweep = tokio::time::interval(Duration::from_millis(100));
     // ---- the roster sweep -------------------------------------------------
     //
@@ -526,6 +559,51 @@ async fn accept_loop(
             _ = sweep.tick() => {
                 while let Ok(link) = grave_rx.pop() {
                     drop(link); // net side deallocates, never the sim
+                }
+                // Admin kicks and bans, on the same cadence as the
+                // graveyard: an admin is a person typing, so 100 ms is
+                // immediate and the arm costs a pop on an empty ring.
+                while let Ok(act) = admin_rx.pop() {
+                    let (id, ban_key) = match act {
+                        crate::admin::AdminAct::Kick { id } => (id, None),
+                        crate::admin::AdminAct::Ban { id, key } => (id, Some(key)),
+                    };
+                    if let Some(key) = ban_key {
+                        // Recorded before the kick, so a full list refuses
+                        // the BAN rather than kicking and forgetting why.
+                        if !bans.insert(key) {
+                            ShardStats::bump(&stats.admin_refused);
+                            continue;
+                        }
+                    }
+                    // The slot is found by id rather than carried, because
+                    // the sim named a player and slots are the accept
+                    // loop's business — and a reconnect between the two
+                    // must not be kicked in the first one's name.
+                    let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].key.is_some())
+                    else {
+                        ShardStats::bump(&stats.admin_refused);
+                        continue;
+                    };
+                    let word = slots.load(slot);
+                    if crate::slot::state_of(word) != crate::slot::SLOT_LIVE {
+                        ShardStats::bump(&stats.admin_refused);
+                        continue;
+                    }
+                    ShardStats::bump(&stats.admin_kicked);
+                    slots.mark_leaving(slot, crate::slot::generation_of(word));
+                    if let Some(conn) = keys[slot].conn.take() {
+                        // Closed with a posted reason, the entitle kick's
+                        // rule: a silent close reads as a network fault,
+                        // and "my internet broke" is the wrong thing for a
+                        // kicked player to believe.
+                        conn.close(
+                            wtransport::VarInt::from_u32(protocol::REFUSE_ADMIN as u32),
+                            protocol::refuse_text(protocol::REFUSE_ADMIN)
+                                .unwrap_or("kicked")
+                                .as_bytes(),
+                        );
+                    }
                 }
                 drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
                 if shutdown.load(Ordering::Relaxed) {
@@ -1529,6 +1607,9 @@ fn sim_thread(
     mut save_tx: rtrb::Producer<SaveMsg>,
     mut world_tx: rtrb::Producer<WorldMsg>,
     mut world_done_rx: rtrb::Consumer<WorldDone>,
+    mut admin_tx: rtrb::Producer<crate::admin::AdminAct>,
+    mut log: crate::anomaly::Sink,
+    admins: crate::admin::Admins,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     shutdown: Arc<AtomicBool>,
@@ -1547,6 +1628,9 @@ fn sim_thread(
     core.world.loot = loot;
     core.world.mob = mobs;
     core.catalog = catalog;
+    core.install_admins(admins);
+    // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
+    let mut watch = crate::anomaly::Watch::new();
     // **The load, and this is the only place it may happen**: after the
     // content tables above are installed — the decoder range-checks every
     // row against them — and before the first tick, because a loaded world
@@ -1706,8 +1790,15 @@ fn sim_thread(
                 &stats,
             );
         }
-        // Tick + publish.
-        core.tick(&stats, |lane, slot, bytes| {
+        // Tick + publish. `Ops` is the tick's three side channels (admin
+        // v0) — the anomaly log, the kick ring, and `/save`'s flag.
+        let mut save_now = false;
+        let mut ops = crate::core::Ops {
+            log: &mut log,
+            admin_tx: Some(&mut admin_tx),
+            save_now: &mut save_now,
+        };
+        core.tick(&stats, &mut ops, |lane, slot, bytes| {
             let Some(link) = links[slot].as_mut() else {
                 return false;
             };
@@ -1735,6 +1826,24 @@ fn sim_thread(
             }
         });
         ShardStats::bump(&stats.ticks);
+        // `/save` asked for the world now rather than at the cadence. Set
+        // the deadline to this tick and let the cadence check above take
+        // it on the next pass — the admin verb moves the deadline, it does
+        // not perform the write, so there is one world-save path and not
+        // two (`take_world_save` is still the only writer).
+        if save_now {
+            next_world_save = core.world.tick;
+        }
+        // The anomaly log's counter sweep, once a second rather than once a
+        // tick: a counter that moved is interesting to the second, and the
+        // sweep is ~30 atomic loads (`anomaly::Watch`).
+        if core
+            .world
+            .tick
+            .is_multiple_of(sim_core::limits::TICK_HZ as u64)
+        {
+            watch.sweep(core.world.tick, &stats, &mut log);
+        }
         stats.current_tick.store(core.world.tick, Ordering::Relaxed);
         // Three gauges, mirrored off the state rather than accumulated here:
         // the eviction policy lives in `World::seat` and nothing on this

@@ -186,14 +186,12 @@ reads as scattered shards at 2 m because of the pebble mesh. **The collision
 skirt is closed** (operator, 2026-08-10): every occupant blocks what it draws
 now, within a millimetre, and the gate holds it there.
 
-**Next in this class, and it is a feature rather than a reconciliation: no
-deployable blocks movement.** `movement.rs` never consults `Deploys` and
-`collide::blocked` takes only the piece column index, so a player walks
-through a furnace, a box, a hearth and a recycler; only a closed door stops
-anyone, and it does that as a piece-edge bit. The client draws all ten
-archetypes at authored sizes (`structures::deploy_size`), so this is drawn
-geometry with no blocked volume at all — the greybox gate cannot catch it
-because there is nothing on the sim side to compare against. Systems lane.
+**Deploy collision landed 2026-08-11** (deploy collision v0, `DECISIONS.md`
+§open): six archetypes block at the client's own authored volumes, tops are
+ground, and `tests/greybox.rs` §D holds the sim and drawn tables equal.
+Residue, one line each: arrows still pass through every deployable
+(`ranged.rs` never asks the solid nibbles — same class as its piece gap),
+and whether a sleeper blocks stays unanswered (§0y item 1, untouched).
 
 §9.3 is the gap and it is not urgent yet: `haven()` + `pick_minor` produce two
 kinds of site, the separation floor is one hand-asserted constant
@@ -630,10 +628,12 @@ is a knob — `DECISIONS.md` §open, "tools as weapons".
 1. **A butchering VERB** — the reference's actual interaction, a tool-gated
    harvest on the body. Its landing place exists now: the corpse bag
    (`mob::strike` → `backpack::stand_up`) is the verb's output.
-2. **Nothing fights back.** Needs a mob→player damage path, a new death
-   cause on the wire (**the 2-bit cause field is saturated since wire v24**,
-   so this is the widening), and a combat-feel answer to being hit by
-   something you cannot reliably hit back.
+2. ~~Nothing fights back~~ — **done 2026-08-11** (mob attack v0,
+   `DECISIONS.md` §open: the widening landed as wire v36, the pig charges
+   whole and flees hurt, `DEATH_BY_MOB` names the corpse). Residue: the
+   combat-feel half is minimal — the victim sees hp drop and hears nothing
+   pig-specific; an aggro snort cue and a damage-direction tick are audio/
+   HUD follow-ups, and the charge costs the pig nothing to hold.
 3. **The massing is boxy up close** — at 8 m the head barely separates from
    the body (captured 2026-08-08). Massing detail, not animation; the legs
    already trot.
@@ -821,12 +821,12 @@ footsteps, the place cue. Research `reference/AUDIO.md`; every number is
 5. **No occlusion, and it needs a prerequisite rather than a pass.** A wall
    between you and a sound needs a geometry query, and the correct one is
    the sim's (`collide.rs`), not a raycast against render meshes.
-6. **The ambience layer is one bird and no clock.** `sound/birds.rs` is
-   `reference/AUDIO.md` §3's *layers* at its smallest: sparse calls on a
-   perch, keyed to cover. Crickets are the obvious companion and they need
-   a day/night cycle, which the client does not have — so that is a
-   prerequisite, not a tuning pass. The reference's localized-emitter
-   *system* is still a later slice (§9.3: it arrives with a cull budget).
+6. **The ambience layer is one bird, and now it has a clock.** Birds are
+   gated to daylight off the server's tick (day/night v0), so the
+   prerequisite this item named is paid: **crickets are now a content-free
+   companion pass** — a night-gated `Cue`, the bird layer's shape with the
+   predicate inverted. The reference's localized-emitter *system* is still
+   a later slice (§9.3: it arrives with a cull budget).
 
 ## 0z · The world waits for the server now — what the Bevy audit left *(client lane)*
 
@@ -1034,6 +1034,28 @@ the deleted item (full text in git):
   the coast against 0.95 inland — the two ratios match to a tenth. That is
   the scatter table's business, not the skirt path's.
 
+## 0ad2 · The admin lane is built — what it still cannot do *(server lane)*
+
+Landed 2026-08-11 (admin v0, `DECISIONS.md` §open). Six verbs on the chat
+lane with **no wire change**, the anomaly log with its counter sweep, and
+`/bug`. Gated by `tests/admin_wire.rs` (7) and `protocol::admin` (6).
+Remaining, in order:
+
+1. **A ban dies with the process.** `Bans` is memory only; persisting one
+   wants its own file with its own format version, because sharing the
+   player store's header would wipe it on the next seed change.
+2. **Nothing has typed a command against a live shard.** Every branch is
+   gated headless; the socket half (`conn.close` with `REFUSE_ADMIN`, and
+   the client's dialog for it) has never been driven end to end.
+3. **The log has no reader.** It is JSONL on purpose so `jq` is the
+   reader, but nothing summarises a session — and the alpha gate's "zero
+   silent failures" wants a *verdict*, which is a script somebody runs
+   after a playtest, not a counter.
+4. **No `/who`, no `/tp <a> <b>`, no set-time.** The last is blocked by
+   choice: day/night derives from the tick, so moving the clock means
+   moving the tick — it wants the wire field §0y4 deliberately did not
+   spend.
+
 ## 0q · The gaps nobody has claimed
 
 Lifted out of "done this pass" items before pruning (2026-08-05, again
@@ -1059,6 +1081,22 @@ is `crates/`/wire work no single-surface lane may take.
    (`CLAUDE.md`: wipes of a live shard are operator-only), so the loop's
    share is the mechanism, never the trigger. Needs scoping before it can be
    an item.
+3. ~~You cannot stand ON anything~~ — **done 2026-08-11** (deploy collision
+   v0: `slot_ground` beside `slot_blocks`, occupant and deploy tops are
+   ground under the lid rule; the plinth, crate, boulder and box tops all
+   stand; gated in `tests/solid_deploy.rs`).
+4. **The 100-bot soak RAN 2026-08-12** — baseline in `DECISIONS.md` §open.
+   Headline: **`dropped-ticks 0`** over ~61,500 ticks with 100 clients, and
+   **0 shed** of 17.5 M AOI entities offered, so the tick budget and the
+   interest band both held at a population they had never met. The anomaly
+   log's whole path was proven in the same run (8 bots against a full shard
+   made `refused_full` move, and the file gained exactly that line).
+   **Four things it still does not have**, each its own small item: real
+   **bytes** (nothing counts them — the 16.5 kB/s/client figure is a
+   ceiling, not a measurement), jitter as a **distribution** rather than a
+   threshold crossing, an **hour** (this was 25 minutes, so slow leaks are
+   not excluded), and **contention** — bots walk, they do not raid, so wall
+   4's caps are still gated one site at a time.
 4. **You cannot stand ON anything.** `movement::step` asks `slot_blocks` and
    nothing asks a ground query for occupants — the shelter's plinth reads as
    a kerb you sink into, crate and boulder tops the same (`terrain.rs`'s
@@ -1085,19 +1123,14 @@ from content, damage through the same `damage_piece`/`damage_deploy` a swing
 uses (`ACT_THROW`/`EV_CHARGE_PLACED`; knobs `DECISIONS.md` §open "satchel
 fuse v0"). X plants it natively and the HUD counts it down. Remaining:
 
-1. **No blast radius** — the content half landed, the arithmetic did not.
-   `blast_m` is schema'd, baked to `ThrowDef::blast_cm`, walked into
-   `canon::hash`, and **nothing reads it**: a charge damages only the
-   address it was planted on. What remains is the falloff and a bounded
-   multi-target scan; `combat::raid`'s 3x3 column-index ring is the shape to
-   copy. The content hash has already moved, so the cost is paid whether or
-   not the slice is taken. Knob: `DECISIONS.md` §open "satchel blast v0"
-   (PROPOSED 3 m).
-2. **Nothing is hurt by standing in one.** `ThrowDef::damage` is carried and
-   `EV_CHARGE_PLACED` has no player-damage half, so the defender's seconds
-   are free to spend standing on the charge. A new `DEATH_BY_*` if taken —
-   and the 2-bit cause field is saturated since wire v24, so that is a
-   widening. Lands with item 1 or not at all — they share the falloff.
+1. ~~No blast radius~~ / ~~nothing is hurt by standing in one~~ — **both
+   done 2026-08-11** (satchel blast v0, `DECISIONS.md` §open: linear
+   falloff over a bounded one-cell ring, bodies take `damage` with the
+   planter included, `DEATH_BY_CHARGE` on the v36 widening,
+   `WORLD_SAVE_FORMAT` 4 carries the blast and fixed the mid-fuse-save
+   refusal found on the way). Residue: no detonation sound or visual —
+   the client learns of a blast only through `EV_STRUCT_HIT`/`EV_HEALTH`,
+   so a near-miss is silent (audio lane); dud and defuse stay unbuilt.
 
 ## 0a · The island has a map now — and the trip has both ends *(ui lane)*
 
@@ -1216,8 +1249,14 @@ crate-wide, but its *contiguity* claim is file-local.
   owed, and both are code: a standalone forest-floor pickup archetype and a
   farming lane; plus the cache/crate open verb before loot-only food could
   sit at a destination — the gate deliberately counts barrel rows alone.
-- **Day/night does not exist.** `DESIGN.md` §2 pairs it with the survival
-  clock; nothing in `crates/` reads a time of day.
+- ~~Day/night does not exist~~ — **landed 2026-08-11** (day/night v0,
+  `DECISIONS.md` §open): 45-minute cycle, 70 % day, derived from the tick
+  with **no wire field**, driven through the rig's coupled-set owner.
+  What it does NOT do: no gameplay reads the clock (no nocturnal mobs, no
+  crops, no torch — the survival clock `DESIGN.md` §2 pairs it with is
+  still hunger and thirst alone), no moon or stars in the night sky, and
+  no set-time admin verb — moving the clock means moving the tick, so
+  that one wants the wire field this slice deliberately did not spend.
 - **The coin loop is closed and the tech TREE is not.** OBOL is paid by
   the recycler and burned at the research table (research v0, and the
   operator's 2026-08-10 call that OBOL is scrap — what stages is the claim

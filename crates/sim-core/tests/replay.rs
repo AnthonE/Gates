@@ -263,7 +263,19 @@ const TICKS: u64 = 900;
 /// without those three the honest move would have been to find the bug instead.
 /// Operator, 2026-08-10: *"we have no worlds to wipe so thats fine"* — the
 /// regeneration is cheap because there is nothing live to invalidate.
-const GOLDEN_FINAL_HASH: u64 = 0xC20B_FCE5_BB51_AD6D;
+///
+/// **Regenerated 2026-08-11 for deploy collision v0**, and it is purely
+/// the first shape — a verb changing, no state widened. `movement::step`
+/// now consults the solid-deploy nibbles and stands bodies on occupant
+/// and deploy tops (`slot_ground` / `piece_ground`'s solid arm), so every
+/// walk in this script that passes near the placed box, the door's cell
+/// or a scattered rock can resolve to a different quantized position from
+/// that tick on. Nothing joined `state_hash` — the collision index is
+/// derived state and stays out of it — and `test_terrain_golden` did NOT
+/// move (worldgen untouched). `hashes_a == hashes_b` and
+/// `final_a == final_b` were green on the run this value was read off,
+/// which is what separates a landed verb from a drift.
+const GOLDEN_FINAL_HASH: u64 = 0x9F66_6BB9_66C2_1357;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

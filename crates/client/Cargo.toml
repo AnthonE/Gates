@@ -99,6 +99,14 @@ name = "music"
 path = "tests/music.rs"
 required-features = ["render"]
 
+# The day/night cycle: the sun curve as arithmetic, plus `rig::day_night`
+# actually reaching the sun and the ambient on a bare `App` — `music.rs`'
+# shape, applied to the coupled lighting set (day/night v0).
+[[test]]
+name = "daynight"
+path = "tests/daynight.rs"
+required-features = ["render"]
+
 [dependencies]
 # Default features for now. Trimming is still a follow-up — but the list of
 # what to trim has changed and the old one is now wrong in a load-bearing way:

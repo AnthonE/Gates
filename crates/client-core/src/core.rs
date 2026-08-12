@@ -302,6 +302,13 @@ impl PieceSet {
         self.cols.set_door(cx, cz, level, loc, shut);
     }
 
+    /// `set_door`'s twin for the solid-deployable nibbles (deploy
+    /// collision v0): the furnace the sim walls off, the predictor walls
+    /// off, through the same index the sim's own lockstep writes.
+    fn set_solid(&mut self, cx: u16, cz: u16, level: u8, arch: Option<u8>) {
+        self.cols.set_solid(cx, cz, level, arch);
+    }
+
     /// True if the set changed (a known address with the same row is a
     /// duplicate, not a change).
     fn insert(&mut self, rec: PieceRec, defs: &BuildContent, have: u16) -> bool {
@@ -594,6 +601,20 @@ impl ClientCore {
 /// the defs-arrival handler re-derives once the rows land.
 fn is_door(defs: &DeployContent, have: u16, row: u8) -> bool {
     (row as u16) < have.min(defs.def_count) && defs.defs[row as usize].arch == ARCH_DOOR
+}
+
+/// The archetype of a solid (movement-blocking) deploy row, or `None` —
+/// `is_door`'s twin for the collision index's solid nibbles (deploy
+/// collision v0). Same `have` gate, same consequence: a row that has not
+/// dripped yet blocks nothing, and the defs-arrival handler re-derives.
+/// Until then prediction under-blocks and the server corrects — the
+/// bounded, self-healing staleness every mirror here accepts.
+fn solid_arch(defs: &DeployContent, have: u16, row: u8) -> Option<u8> {
+    if (row as u16) >= have.min(defs.def_count) {
+        return None;
+    }
+    let arch = defs.defs[row as usize].arch;
+    sim_core::deploy::solid_vol(arch).map(|_| arch)
 }
 
 /// What `on_datagram` did with the bytes (the bridge's status code).
@@ -1480,6 +1501,9 @@ impl ClientCore {
                     if is_door(&self.deploy_defs, self.deploy_defs_have, gone.row) {
                         self.pieces.set_door(cx, cz, level, loc, false);
                     }
+                    if solid_arch(&self.deploy_defs, self.deploy_defs_have, gone.row).is_some() {
+                        self.pieces.set_solid(cx, cz, level, None);
+                    }
                     self.removed_addr = (cx, cz, level, loc);
                     flags |= APPLIED_DEPLOY_REMOVED;
                 }
@@ -1807,20 +1831,25 @@ impl ClientCore {
         }
     }
 
-    /// One record's contribution to the predictor's door bits: a closed
-    /// door seals its doorway, an open one (and every non-door) doesn't.
+    /// One record's contribution to the predictor's collision index: a
+    /// closed door seals its doorway, a solid body deploy walls its cell
+    /// (deploy collision v0). An open door — and every archetype that is
+    /// neither — contributes nothing.
     fn seal_for(&mut self, rec: DeployRec) {
         if is_door(&self.deploy_defs, self.deploy_defs_have, rec.row) {
             self.pieces
                 .set_door(rec.cx, rec.cz, rec.level, rec.loc, !rec.open);
         }
+        if let Some(arch) = solid_arch(&self.deploy_defs, self.deploy_defs_have, rec.row) {
+            self.pieces.set_solid(rec.cx, rec.cz, rec.level, Some(arch));
+        }
     }
 
-    /// Re-seal every closed door in the mirror. The collision index is
-    /// derived state, so anything that clears or rebuilds it drops the
-    /// door bits along with the piece bits — this puts them back. One
-    /// bounded pass over the deploy mirror, event-lane cadence only,
-    /// never the render loop.
+    /// Re-seal every closed door and re-wall every solid deploy in the
+    /// mirror. The collision index is derived state, so anything that
+    /// clears or rebuilds it drops the door and solid bits along with the
+    /// piece bits — this puts them back. One bounded pass over the deploy
+    /// mirror, event-lane cadence only, never the render loop.
     fn apply_doors(&mut self) {
         let Self {
             pieces,
@@ -1832,6 +1861,9 @@ impl ClientCore {
         for rec in deploys.entries() {
             if is_door(deploy_defs, *deploy_defs_have, rec.row) {
                 pieces.set_door(rec.cx, rec.cz, rec.level, rec.loc, !rec.open);
+            }
+            if let Some(arch) = solid_arch(deploy_defs, *deploy_defs_have, rec.row) {
+                pieces.set_solid(rec.cx, rec.cz, rec.level, Some(arch));
             }
         }
     }

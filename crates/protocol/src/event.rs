@@ -231,12 +231,15 @@ const MOVE_SLOT_BITS: u32 = 5;
 /// zero is reserved as "no reason", refused at both ends the way
 /// `SUB_CONSUME_REFUSED` already refuses its own zero.
 const REFUSE_M_BITS: u32 = 4;
-/// Death-cause width (`sim_core::world::DEATH_BY_*`: hand, clock, salt).
-/// Three values in two bits, so the fourth is forgeable and both the
-/// encoder and the decoder refuse it — the hotbar selector's posture. Two
-/// and not three because a cause is a *closed* set the sim owns: a fourth
-/// way to die is a wire change, which is the point of wall 6.
-const DEATH_CAUSE_BITS: u32 = 2;
+/// Death-cause width (`sim_core::world::DEATH_BY_*`). Widened 2 → 3 at
+/// wire v36: the two-bit field had been saturated since v24 (hand, clock,
+/// salt, arrow), so the next cause — the mob's bite — was a widening
+/// rather than a spare code, exactly as the const block below promised.
+/// Three bits hold eight; the unspent values are forgeable and both the
+/// encoder and the decoder refuse them — the hotbar selector's posture. A
+/// cause is a *closed* set the sim owns: a ninth way to die is the next
+/// wire change, which is the point of wall 6.
+const DEATH_CAUSE_BITS: u32 = 3;
 /// **Derived, never restated.** This was the literal `2`, and a literal
 /// here is a copy of a fact that lives in another crate — which is exactly
 /// how the 2026-08-05 FAIL shipped: the sim grew `DEATH_BY_ARROW = 3`, the
@@ -3790,9 +3793,12 @@ mod wire_domains {
             prefix: "pub const DEATH_BY_",
             ty: ": u8 = ",
             exempt: &["MAX"],
-            min_members: 4,
+            min_members: 6,
             bits: DEATH_CAUSE_BITS,
-            live_max: 3,
+            // 4 = DEATH_BY_MOB and 5 = DEATH_BY_CHARGE, the meanings the
+            // v36 field widening was minted for — pin moved in the same
+            // merge window as the bump, once per cause.
+            live_max: 5,
         },
         Domain {
             what: "move refusal",
