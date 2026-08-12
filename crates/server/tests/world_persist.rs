@@ -86,8 +86,8 @@ fn install_content(w: &mut World) {
     w.combat = CombatContent::probe_fixture();
 }
 
-fn armed_core() -> ShardCore {
-    let mut core = ShardCore::new(SEED);
+fn armed_core() -> Box<ShardCore> {
+    let mut core = Box::new(ShardCore::new(SEED));
     install_content(&mut core.world);
     core
 }
@@ -160,7 +160,7 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
             Some(Admitted::Fresh),
             "a first visit"
         );
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
 
         // Build something worth coming back to.
         let slot = core
@@ -189,13 +189,13 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
                 loc: LOC_PLANE,
             },
         );
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         assert_eq!(core.world.pieces.len(), 1, "the fixture built nothing");
 
         // Log off. The body stays as a sleeper — that is the previous
         // slice — and this one is about it surviving the process too.
         core.disconnect(0);
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         assert_eq!(core.world.sleepers(), 1);
         let body = core.world.players[slot].body;
 
@@ -241,7 +241,7 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
         Some(Admitted::TookOver),
         "the returning player did not get their body back"
     );
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     let p = core
         .world
         .players
@@ -269,9 +269,9 @@ fn a_body_with_no_identity_beside_it_is_unclaimable() {
     let blob = {
         let mut core = armed_core();
         assert!(core.connect(0, id_of(0)), "a keyless join");
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         core.disconnect(0);
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         assert_eq!(core.world.sleepers(), 1);
 
         let mut trial = World::new(SEED);
@@ -327,7 +327,7 @@ fn the_shutdown_flush_takes_the_world_before_it_drops_the_players() {
             .map(|(how, _)| how),
         Some(Admitted::Fresh)
     );
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
 
     let mut ids = vec![(PlayerKey::PLACEHOLDER, 0u32); sim_core::limits::MAX_PLAYERS];
     assert_eq!(
@@ -347,7 +347,7 @@ fn the_shutdown_flush_takes_the_world_before_it_drops_the_players() {
 
     // And once the `Leave` has actually been applied, they are back — as a
     // sleeper, through the other table.
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.sleepers(), 1);
     assert_eq!(
         core.identities(&mut ids),
@@ -373,7 +373,7 @@ fn a_wrong_world_file_is_refused_by_reason() {
         let stats = ShardStats::default();
         let mut core = armed_core();
         assert!(core.connect(0, id_of(0)));
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         write_world(&core, &mut file);
     }
     let reopen_with = |seed: u64, content: u64, digest: u64| {
@@ -440,7 +440,7 @@ fn a_refused_file_does_not_half_load_the_world() {
         let stats = ShardStats::default();
         let mut core = armed_core();
         assert!(core.connect(0, id_of(0)));
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         write_world(&core, &mut file);
     }
     let mut w = World::new(SEED);
@@ -465,7 +465,7 @@ fn a_successful_write_leaves_no_temp_file_behind() {
     let stats = ShardStats::default();
     let mut core = armed_core();
     assert!(core.connect(0, id_of(0)));
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     write_world(&core, &mut file);
 
     let mut tmp = path.as_os_str().to_os_string();
@@ -487,7 +487,7 @@ fn no_world_file_is_a_no_op_and_not_a_failure() {
     let stats = ShardStats::default();
     let mut core = armed_core();
     assert!(core.connect(0, id_of(0)));
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
 
     let mut off = WorldFile::closed();
     assert!(!off.is_open());

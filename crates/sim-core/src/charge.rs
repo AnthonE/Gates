@@ -399,7 +399,9 @@ pub fn tick_fuses(
             i += 1;
             continue;
         }
-        detonate(seed, bc, dc, player_hp, &c, pieces, deploys, players, budget, kills, events);
+        detonate(
+            seed, bc, dc, player_hp, &c, pieces, deploys, players, budget, kills, events,
+        );
         // Swap-remove without advancing: the entry now at `i` is the one
         // that was last, and it has not been tested yet.
         charges.remove_at(i);
@@ -538,7 +540,12 @@ fn detonate(
         if died {
             p.deaths = p.deaths.saturating_add(1);
         }
-        events.push(crate::world::EV_HEALTH, victim_id, left as u32, player_hp as u32);
+        events.push(
+            crate::world::EV_HEALTH,
+            victim_id,
+            left as u32,
+            player_hp as u32,
+        );
         if died {
             events.push(crate::world::EV_DEATH, victim_id, c.owner, 0);
             kills.push(slot as u8, c.owner, d.clamp(0, u16::MAX as i64) as u16);

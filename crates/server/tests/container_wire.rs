@@ -103,7 +103,7 @@ fn pump(
         }
     }
     let mut events: Vec<(usize, Vec<u8>)> = Vec::new();
-    core.tick(stats, |lane, slot, bytes| {
+    core.tick_bare(stats, |lane, slot, bytes| {
         if matches!(lane, Lane::Event) {
             events.push((slot, bytes.to_vec()));
         }
@@ -156,8 +156,8 @@ fn syncs(seen: &[(usize, EventMsg)]) -> Vec<Sync> {
         .collect()
 }
 
-fn armed_core() -> ShardCore {
-    let mut core = ShardCore::new(SEED);
+fn armed_core() -> Box<ShardCore> {
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.combat = CombatContent::probe_fixture();
     // Long-lived bags: these tests assert on a bag many ticks after it
@@ -608,7 +608,7 @@ fn a_box_opens_by_its_packed_address() {
     let (cx, cz) = buildable_cell(SEED);
     let (x, z) = cell_center(cx, cz);
 
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.build = BuildContent::probe_fixture();
     core.world.deploy = box_fixture();
@@ -729,7 +729,7 @@ fn a_corpse_is_shown_no_container() {
     let (cx, cz) = buildable_cell(SEED);
     let (x, z) = cell_center(cx, cz);
 
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.combat = CombatContent::probe_fixture();
     core.world.build = BuildContent::probe_fixture();
@@ -946,7 +946,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
     let (cx, cz) = buildable_cell(SEED);
     let (x, z) = cell_center(cx, cz);
 
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.build = BuildContent::probe_fixture();
     core.world.deploy = locked_box_fixture();

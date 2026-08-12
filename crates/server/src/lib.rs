@@ -26,6 +26,10 @@
 //! channels, and nondeterministic maps crate-wide (net code included — it
 //! never needed them).
 
+/// Who may run an admin verb, and what one does (admin v0).
+pub mod admin;
+/// The append-only anomaly log — the evidence an alpha produces.
+pub mod anomaly;
 pub mod auth;
 pub mod boot;
 pub mod botclient;

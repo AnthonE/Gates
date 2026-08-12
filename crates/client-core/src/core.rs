@@ -1841,8 +1841,7 @@ impl ClientCore {
                 .set_door(rec.cx, rec.cz, rec.level, rec.loc, !rec.open);
         }
         if let Some(arch) = solid_arch(&self.deploy_defs, self.deploy_defs_have, rec.row) {
-            self.pieces
-                .set_solid(rec.cx, rec.cz, rec.level, Some(arch));
+            self.pieces.set_solid(rec.cx, rec.cz, rec.level, Some(arch));
         }
     }
 

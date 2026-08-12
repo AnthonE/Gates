@@ -167,6 +167,36 @@ pub struct ShardCore {
     /// it ([`Self::adopt_identities`]) so the bodies it restored are
     /// claimable.
     sleepers: SleeperIndex,
+    /// The wallets this shard trusts with the admin lane (admin v0). Pure
+    /// config, read once at boot and never written — the same standing as
+    /// the baked content tables, and the reason it may live on a struct
+    /// whose header says it holds no `ShardStats`: a list of addresses is
+    /// data, not a side effect.
+    admins: crate::admin::Admins,
+}
+
+/// The three side channels an admin verb needs and the sim's own state
+/// cannot provide — passed into [`ShardCore::tick`] rather than held,
+/// because every one of them belongs to a thread that is not this one.
+///
+/// A bundle rather than three parameters for `charge::tick_fuses`' reason
+/// inverted: these are not distinct owners of the world, they are one
+/// answer to "what does this tick owe the outside".
+pub struct Ops<'a> {
+    /// The anomaly log's producer. Every admin act and every `/bug` lands
+    /// here; so do the counter deltas, on the sweep's cadence.
+    pub log: &'a mut crate::anomaly::Sink,
+    /// Kicks and bans, bound for the accept loop that owns the sockets.
+    ///
+    /// `None` ⇒ **nowhere to send one**, which is a real state and not a
+    /// test stub: a shard driven without an accept loop has no socket to
+    /// close. It takes the same path a full ring takes — the act is
+    /// refused, counted and logged — so the two cannot diverge.
+    pub admin_tx: Option<&'a mut rtrb::Producer<crate::admin::AdminAct>>,
+    /// Raised by `/save`, read and cleared by the sim thread's world-save
+    /// cadence — a flag rather than a call because the blob is written by
+    /// a different thread again, and this tick has no business waiting.
+    pub save_now: &'a mut bool,
 }
 
 /// Which of the three doors a join came through
@@ -286,6 +316,7 @@ impl ShardCore {
             dg_buf: [0; DATAGRAM_BUDGET_BYTES],
             catalog: ItemCatalog::EMPTY,
             ev_buf: [0; MAX_EVENT_MSG_BYTES],
+            admins: crate::admin::Admins::none(),
             autosave_at: 0,
             last_saved: vec![PlayerSave::EMPTY; MAX_PLAYERS].into_boxed_slice(),
             keys: vec![None; MAX_PLAYERS].into_boxed_slice(),
@@ -685,7 +716,33 @@ impl ShardCore {
     /// then — on the 15 Hz cadence — one encoded snapshot per connected
     /// client. All bytes go to `send(lane, slot, bytes)`; its bool is the
     /// ring's verdict and only the event lane acts on it.
-    pub fn tick(&mut self, stats: &ShardStats, mut send: impl FnMut(Lane, usize, &[u8]) -> bool) {
+    /// [`Self::tick`] with no side channels — no log, nowhere to send a
+    /// kick, and `/save` answered by nobody.
+    ///
+    /// **Not a second tick and not a stub**: it builds the same [`Ops`]
+    /// the shard builds, with every channel in its absent state, and every
+    /// absent state is one a real shard can be in (an unconfigured log, an
+    /// accept loop that has stopped reading). So a verb exercised here
+    /// takes exactly the path it takes in production when the outside
+    /// world is not listening. It costs no allocation, which is why the
+    /// suites that drive thousands of ticks use it.
+    pub fn tick_bare(&mut self, stats: &ShardStats, send: impl FnMut(Lane, usize, &[u8]) -> bool) {
+        let mut log = crate::anomaly::Sink::off();
+        let mut save_now = false;
+        let mut ops = Ops {
+            log: &mut log,
+            admin_tx: None,
+            save_now: &mut save_now,
+        };
+        self.tick(stats, &mut ops, send);
+    }
+
+    pub fn tick(
+        &mut self,
+        stats: &ShardStats,
+        ops: &mut Ops<'_>,
+        mut send: impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
         let mut n = self.queued_len;
         self.cmd_buf[..n].copy_from_slice(&self.queued[..n]);
         self.queued_len = 0;
@@ -879,7 +936,7 @@ impl ShardCore {
             }
         }
 
-        self.pump_chat(stats, &mut send);
+        self.pump_chat(stats, ops, &mut send);
         self.pump_events(stats, &mut send);
 
         if self.world.tick.is_multiple_of(SNAPSHOT_INTERVAL_TICKS) {
@@ -909,6 +966,199 @@ impl ShardCore {
         (p.active && p.id == c.id).then_some(w)
     }
 
+    /// Install the admin allowlist. Boot-only, beside the content tables,
+    /// for the same reason: it is construction input, and a list that
+    /// could change mid-run is a privilege that could change mid-run.
+    pub fn install_admins(&mut self, admins: crate::admin::Admins) {
+        self.admins = admins;
+    }
+
+    /// Run one slash line on behalf of `from_slot` (admin v0).
+    ///
+    /// **Permission is the wallet's, never the client's claim.** The key
+    /// compared here is the one SIWE proved at the handshake (`auth.rs`),
+    /// which is why there is no forgeable path into this function: a
+    /// client that types `/kick` without being on the list gets a private
+    /// refusal and a line in the anomaly log.
+    ///
+    /// Every outcome is logged — the act, and the refusal too. A refused
+    /// admin attempt is exactly the thing an operator wants to read
+    /// afterwards, and it is the half a design that only logged successes
+    /// would lose.
+    fn run_command(
+        &mut self,
+        from_slot: usize,
+        text: &protocol::ChatText,
+        stats: &ShardStats,
+        ops: &mut Ops<'_>,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
+        use crate::admin::{self, AdminAct};
+        use crate::anomaly::{Kind, Record};
+        use protocol::admin::AdminCmd;
+
+        let tick = self.world.tick;
+        let who = self.clients[from_slot].id;
+        let Some(cmd) = protocol::admin::parse(text) else {
+            // Shaped like a command, not one we know. Logged with the
+            // verb code that means "unknown" so a typo is visible, and
+            // the line is swallowed rather than relayed.
+            ops.log.push(Record::new(
+                tick,
+                Kind::AdminRefused,
+                admin::VERB_UNKNOWN,
+                who,
+            ));
+            return;
+        };
+
+        // `/bug` is everybody's (`ALPHA.md` §4). The server stamps the
+        // tick and the position so the note is all a player has to type —
+        // which is the whole reason it is a server verb and not a client
+        // one: a client-side bug report cannot prove where it was.
+        if let AdminCmd::Bug { note } = cmd {
+            let (qx, qy, qz) = match self.live_wslot(from_slot) {
+                Some(w) => {
+                    let b = self.world.players[w].body;
+                    (b.qx as i64, b.qy as i64, b.qz as i64)
+                }
+                // No body — a bug filed from the death screen or the
+                // one-tick window before the join lands. Still worth
+                // keeping; the zeros say "nowhere" rather than "origin",
+                // and the tick is what a replay needs anyway.
+                None => (0, 0, 0),
+            };
+            ops.log.push(
+                Record::new(tick, Kind::Bug, 0, who)
+                    .with(qx, qy, qz)
+                    .note(note.as_bytes()),
+            );
+            return;
+        }
+
+        // Everything else needs the allowlist.
+        let allowed = self.keys[from_slot]
+            .as_ref()
+            .is_some_and(|k| self.admins.allows(k));
+        let verb = admin::verb_of(&cmd);
+        if !allowed {
+            ops.log
+                .push(Record::new(tick, Kind::AdminRefused, verb, who));
+            return;
+        }
+
+        // The id an admin types is a *player* id; resolve it once, here,
+        // so every verb below is working on a live slot or refusing.
+        let target_slot = |me: &Self, id: u32| -> Option<usize> {
+            (0..MAX_PLAYERS).find(|&s| me.clients[s].connected && me.clients[s].id == id)
+        };
+
+        let mut logged = Record::new(tick, Kind::AdminAct, verb, who);
+        match cmd {
+            AdminCmd::Kick { id } | AdminCmd::Ban { id } => {
+                let ban = matches!(cmd, AdminCmd::Ban { .. });
+                let Some(slot) = target_slot(self, id) else {
+                    ops.log.push(
+                        Record::new(tick, Kind::AdminRefused, verb, who).with(id as i64, 0, 0),
+                    );
+                    return;
+                };
+                let act = if ban {
+                    // The wallet, not the id: an id is meaningless after a
+                    // reconnect, which is the whole point of a ban.
+                    let Some(key) = self.keys[slot] else {
+                        ops.log.push(
+                            Record::new(tick, Kind::AdminRefused, verb, who).with(id as i64, 0, 0),
+                        );
+                        return;
+                    };
+                    AdminAct::Ban { id, key }
+                } else {
+                    AdminAct::Kick { id }
+                };
+                let sent = ops.admin_tx.as_mut().is_some_and(|tx| tx.push(act).is_ok());
+                if !sent {
+                    // The ring to the accept loop is full — the act did
+                    // NOT happen, and saying so is the difference between
+                    // a bounded queue and a lie.
+                    ops.log.push(
+                        Record::new(tick, Kind::AdminRefused, verb, who).with(id as i64, 0, 0),
+                    );
+                    return;
+                }
+                logged = logged.with(id as i64, 0, 0);
+            }
+            AdminCmd::Say { text } => {
+                // The house's line, marked and sent from `from = 0` — an
+                // id no player can hold (ids start at 256), so no client
+                // has to learn a new message shape to render it.
+                let line = admin::server_line(&text);
+                let len = match protocol::encode_event_chat(0, true, &line, &mut self.ev_buf) {
+                    Ok(len) => len,
+                    Err(_) => {
+                        ShardStats::bump(&stats.encode_range_errors);
+                        return;
+                    }
+                };
+                for to_slot in 0..MAX_PLAYERS {
+                    if !self.clients[to_slot].connected {
+                        continue;
+                    }
+                    if send(Lane::Event, to_slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                    } else {
+                        // `pump_chat`'s policy: a lost line is counted and
+                        // not resynced, because no walk would bring it back.
+                        ShardStats::bump(&stats.chat_undelivered);
+                    }
+                }
+                logged = logged.note(text.as_bytes());
+            }
+            AdminCmd::Teleport { id } => {
+                let Some(slot) = target_slot(self, id) else {
+                    ops.log.push(
+                        Record::new(tick, Kind::AdminRefused, verb, who).with(id as i64, 0, 0),
+                    );
+                    return;
+                };
+                // Queued as a command, so it lands next tick and lands in
+                // the WAL — `Command::AdminTeleport`'s own doc has the
+                // argument. `queue` refusing (a full buffer) is a dropped
+                // act and is logged as a refusal rather than assumed.
+                let to = self.clients[slot].id;
+                if !self.queue(Command::AdminTeleport { id: who, to }) {
+                    ops.log.push(
+                        Record::new(tick, Kind::AdminRefused, verb, who).with(id as i64, 0, 0),
+                    );
+                    return;
+                }
+                logged = logged.with(id as i64, 0, 0);
+            }
+            AdminCmd::Give { item, count } => {
+                if !self.queue(Command::AdminGive {
+                    id: who,
+                    item,
+                    count,
+                }) {
+                    ops.log
+                        .push(Record::new(tick, Kind::AdminRefused, verb, who).with(
+                            item as i64,
+                            count as i64,
+                            0,
+                        ));
+                    return;
+                }
+                logged = logged.with(item as i64, count as i64, 0);
+            }
+            AdminCmd::SaveNow => {
+                *ops.save_now = true;
+            }
+            // Handled above, before the allowlist.
+            AdminCmd::Bug { .. } => return,
+        }
+        ops.log.push(logged);
+    }
+
     /// Chat's whole fan-out (ALPHA.md §1: "global text + 20 m local").
     /// Runs after the sim step and before the event pump, on the
     /// positions this tick just produced.
@@ -919,11 +1169,24 @@ impl ShardCore {
     /// connected client; local reaches everyone within `CHAT_LOCAL_CM`
     /// planar of the speaker, the speaker included: the echo is the
     /// delivery receipt, so a client never renders its own line on faith.
-    fn pump_chat(&mut self, stats: &ShardStats, send: &mut impl FnMut(Lane, usize, &[u8]) -> bool) {
+    fn pump_chat(
+        &mut self,
+        stats: &ShardStats,
+        ops: &mut Ops<'_>,
+        send: &mut impl FnMut(Lane, usize, &[u8]) -> bool,
+    ) {
         for from_slot in 0..MAX_PLAYERS {
             let Some(msg) = self.clients[from_slot].pending_chat.take() else {
                 continue;
             };
+            // A slash line is addressed to the server, not to the room —
+            // intercepted before the fan-out so a mistyped `/kick` never
+            // announces to everybody what you were trying to do (admin
+            // v0; `protocol::admin`'s header has the transport argument).
+            if protocol::admin::is_command(&msg.text) {
+                self.run_command(from_slot, &msg.text, stats, ops, send);
+                continue;
+            }
             if !self.clients[from_slot].connected {
                 // The speaker left between the line being ringed and this
                 // tick. Counted like every other undelivered line — a
@@ -2812,7 +3075,7 @@ mod tests {
     fn quiet_core(stats: &ShardStats) -> ShardCore {
         let mut core = ShardCore::new(SEED);
         assert!(core.connect(0, PLAYER), "connect");
-        core.tick(stats, |_, _, _| true);
+        core.tick_bare(stats, |_, _, _| true);
         // A direct world tick clears the ring; with no content armed and
         // nobody moving, nothing refills it.
         core.world.tick(&[]);

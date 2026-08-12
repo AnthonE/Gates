@@ -342,10 +342,7 @@ fn yaw_toward(dx: f32, dz: f32, current: u16) -> u16 {
 /// hp, and an animal that went blind on an unarmed shard would freeze the
 /// wake/flee behaviour the roster tests pin. The *bite* checks hp at its
 /// own site — waking at a corpse is fine, worrying one is not.
-fn nearest_player(
-    players: &[Player; MAX_PLAYERS],
-    body: &Body,
-) -> Option<(i64, i32, i32, usize)> {
+fn nearest_player(players: &[Player; MAX_PLAYERS], body: &Body) -> Option<(i64, i32, i32, usize)> {
     let mut best: Option<(i64, i32, i32, usize)> = None;
     for (slot, p) in players.iter().enumerate() {
         if !p.active || p.sleeping {
@@ -468,7 +465,11 @@ pub fn step(
         let frame = InputFrame {
             yaw: mob.yaw,
             move_z: mob.gait,
-            buttons: if mob.roused_until > tick { BTN_SPRINT } else { 0 },
+            buttons: if mob.roused_until > tick {
+                BTN_SPRINT
+            } else {
+                0
+            },
             ..InputFrame::default()
         };
         movement::step(seed, cols, occ, &mut mob.body, &frame);
@@ -527,8 +528,8 @@ fn think(
         // own rule, `reference/ANIMALS.md` §7): whole, it charges the
         // player; hurt below `brave_pct` of max, the identical state is a
         // flight. A species with `attack == 0` never charges.
-        let brave = def.attack > 0
-            && (mob.hp as u32) * 100 >= (def.hp as u32) * (def.brave_pct as u32);
+        let brave =
+            def.attack > 0 && (mob.hp as u32) * 100 >= (def.hp as u32) * (def.brave_pct as u32);
         if let Some((d2, dx, dz, victim)) = near {
             if brave {
                 // Straight at them, on the same LUT the walk uses.

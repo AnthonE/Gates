@@ -11,9 +11,7 @@
 
 #![allow(clippy::disallowed_macros)]
 
-use sim_core::build::{
-    foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_W, LOC_PLANE,
-};
+use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_W, LOC_PLANE};
 use sim_core::combat::CombatContent;
 use sim_core::deploy::DeployContent;
 use sim_core::gather::{GatherContent, ItemStack};
@@ -203,7 +201,10 @@ fn the_blast_kills_at_the_epicentre_and_spares_nobody() {
         w.players[1].death_by, w.players[0].id,
         "the killer is the planter"
     );
-    assert!(w.players[0].dead, "the planter is not spared from their own bomb");
+    assert!(
+        w.players[0].dead,
+        "the planter is not spared from their own bomb"
+    );
     assert_eq!(w.players[0].death_cause, DEATH_BY_CHARGE);
     assert_eq!(
         w.players[0].death_by, w.players[0].id,

@@ -84,7 +84,7 @@ fn pump(
     }
     let mut outs: Vec<(usize, Vec<u8>)> = Vec::new();
     let mut ev_outs: Vec<(usize, Vec<u8>)> = Vec::new();
-    core.tick(stats, |lane, slot, bytes| {
+    core.tick_bare(stats, |lane, slot, bytes| {
         match lane {
             Lane::Snapshot => outs.push((slot, bytes.to_vec())),
             Lane::Event => ev_outs.push((slot, bytes.to_vec())),
@@ -112,7 +112,7 @@ fn pump(
 #[test]
 fn clean_delivery_predicts_bit_exact() {
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     pin_together(&mut core);
     assert!(core.connect(0, id_of(0)));
     assert!(core.connect(1, id_of(1)));
@@ -165,7 +165,7 @@ fn clean_delivery_predicts_bit_exact() {
 #[test]
 fn loss_corrects_and_reconverges() {
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     assert!(core.connect(0, id_of(0)));
     let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
     let mut rng = Pcg32::new(SEED, 13);
@@ -224,7 +224,7 @@ fn loss_corrects_and_reconverges() {
 #[test]
 fn churn_keeps_the_body_and_marks_it_asleep() {
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     pin_together(&mut core);
     assert!(core.connect(0, id_of(0)));
     assert!(core.connect(1, id_of(1)));

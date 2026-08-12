@@ -320,7 +320,8 @@ pub fn day_night(
         d.shadows_enabled = light > 0.0;
     }
     if let Ok((mut amb, sky)) = cam.single_mut() {
-        amb.brightness = NIGHT_AMBIENT_LUX + (lux::AMBIENT_DAYLIGHT * 1.7 - NIGHT_AMBIENT_LUX) * light;
+        amb.brightness =
+            NIGHT_AMBIENT_LUX + (lux::AMBIENT_DAYLIGHT * 1.7 - NIGHT_AMBIENT_LUX) * light;
         if let Some(mut sky) = sky {
             // The deck was baked lit from the noon sun (`sky.rs`); at any
             // other hour its lighting is wrong in a way only brightness

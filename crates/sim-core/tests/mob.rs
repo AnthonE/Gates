@@ -417,7 +417,10 @@ fn a_whole_pig_charges_and_bites() {
         "a whole pig within spook range must bite: hp still {}",
         w.players[0].hp
     );
-    assert!(w.players[0].hp > 0, "one or two bites must not kill a full body");
+    assert!(
+        w.players[0].hp > 0,
+        "one or two bites must not kill a full body"
+    );
 }
 
 /// The same pig hurt below its courage floor turns the identical rousing

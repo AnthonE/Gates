@@ -154,16 +154,16 @@ pub const ARCH_RESEARCH: u8 = 9;
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
 pub const DEPLOY_VOL: [[f32; 3]; 10] = [
-    [0.0, 0.0, 0.0],    // 0 bag — walk-over
-    [1.2, 1.0, 0.6],    // 1 hearth
-    [1.2, 0.65, 0.7],   // 2 box
-    [0.0, 0.0, 0.0],    // 3 fire — walk-over
-    [1.3, 0.95, 0.85],  // 4 furnace
-    [1.6, 0.9, 0.7],    // 5 workbench
-    [0.0, 0.0, 0.0],    // 6 door — the shut bit's business
-    [0.0, 0.0, 0.0],    // 7 lock — never a record
-    [1.3, 1.15, 0.9],   // 8 recycler
-    [1.5, 0.8, 0.8],    // 9 research table
+    [0.0, 0.0, 0.0],   // 0 bag — walk-over
+    [1.2, 1.0, 0.6],   // 1 hearth
+    [1.2, 0.65, 0.7],  // 2 box
+    [0.0, 0.0, 0.0],   // 3 fire — walk-over
+    [1.3, 0.95, 0.85], // 4 furnace
+    [1.6, 0.9, 0.7],   // 5 workbench
+    [0.0, 0.0, 0.0],   // 6 door — the shut bit's business
+    [0.0, 0.0, 0.0],   // 7 lock — never a record
+    [1.3, 1.15, 0.9],  // 8 recycler
+    [1.5, 0.8, 0.8],   // 9 research table
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
@@ -193,10 +193,7 @@ const _: () = {
         let w = DEPLOY_VOL[i][0];
         let d = DEPLOY_VOL[i][2];
         let half = if w > d { w * 0.5 } else { d * 0.5 };
-        assert!(
-            half + crate::collide::CAPSULE_RADIUS_M
-                < crate::build::BUILD_CELL_M * 0.5
-        );
+        assert!(half + crate::collide::CAPSULE_RADIUS_M < crate::build::BUILD_CELL_M * 0.5);
         i += 1;
     }
 };

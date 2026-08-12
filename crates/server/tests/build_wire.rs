@@ -41,7 +41,7 @@ fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientC
     }
     let mut snaps: Vec<(usize, Vec<u8>)> = Vec::new();
     let mut events: Vec<(usize, Vec<u8>)> = Vec::new();
-    core.tick(stats, |lane, slot, bytes| {
+    core.tick_bare(stats, |lane, slot, bytes| {
         match lane {
             Lane::Snapshot => snaps.push((slot, bytes.to_vec())),
             Lane::Event => events.push((slot, bytes.to_vec())),
@@ -80,7 +80,7 @@ fn act(core: &mut ShardCore, slot: usize, a: ActionMsg) {
 fn build_rides_the_wire() {
     let fixture = BuildContent::probe_fixture();
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.build = fixture;
     core.world.dev_spawn = Some(SPAWN);
@@ -222,7 +222,7 @@ fn build_rides_the_wire() {
 fn upgrade_rides_the_wire() {
     let fixture = BuildContent::probe_fixture();
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.build = fixture;
     core.world.dev_spawn = Some(SPAWN);

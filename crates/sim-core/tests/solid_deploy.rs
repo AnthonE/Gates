@@ -104,7 +104,6 @@ fn pos(b: &Body) -> (f32, f32, f32) {
     )
 }
 
-
 /// `f32::abs` is walled everywhere, tests included (`tests/solid.rs`'s
 /// note): a magnitude is the max of the signed pair.
 fn mag(v: f32) -> f32 {
@@ -153,7 +152,10 @@ fn occupant_tops_obey_the_lid() {
     // Feet on the floor: the top is more than STEP_UP up — a wall face.
     if rock_top > STEP_UP {
         let g = terrain::slot_ground(&rock, 0.0, 0.0, 0.0);
-        assert_eq!(g, NO_SURFACE, "a {rock_top} m top is not ground from the floor");
+        assert_eq!(
+            g, NO_SURFACE,
+            "a {rock_top} m top is not ground from the floor"
+        );
     }
     // Outside the footprint: nothing.
     let g = terrain::slot_ground(&rock, rock_r + 0.05, 0.0, rock_top - 0.1);
@@ -162,7 +164,10 @@ fn occupant_tops_obey_the_lid() {
     // The tree: its crown top is never reachable from its own floor.
     let tree = slot_at_origin(Occupant::Tree);
     let g = terrain::slot_ground(&tree, 0.0, 0.0, 0.0);
-    assert_eq!(g, NO_SURFACE, "a tree top must never be ground from the floor");
+    assert_eq!(
+        g, NO_SURFACE,
+        "a tree top must never be ground from the floor"
+    );
 }
 
 /// The shelter's plinth: +0.2 above the slot's ground, inside the 7×7
@@ -270,7 +275,13 @@ fn a_jump_lands_on_the_box_top() {
     let mut b = Body::at(SEED, fx, fz - 1.6);
     let mut stood_on_top = false;
     for _ in 0..300 {
-        movement::step(SEED, &cols, &mut occ.occupants(), &mut b, &walk(0, BTN_JUMP));
+        movement::step(
+            SEED,
+            &cols,
+            &mut occ.occupants(),
+            &mut b,
+            &walk(0, BTN_JUMP),
+        );
         let (x, y, z) = pos(&b);
         let over = mag(x - fx) <= 0.6 && mag(z - fz) <= 0.35;
         if over && b.grounded {
@@ -473,10 +484,7 @@ fn walking_into_the_shelter_stands_on_the_plinth() {
     // re-derivation (walk.rs's find(), narrowed to the shelter's cell).
     let table = terrain::ScatterTable::alpha_default();
     let mut found: Option<Slot> = None;
-    let (scx, scz) = (
-        (sx / CELL_SIZE) as i32,
-        (sz / CELL_SIZE) as i32,
-    );
+    let (scx, scz) = ((sx / CELL_SIZE) as i32, (sz / CELL_SIZE) as i32);
     'scan: for cz in (scz - 2).max(0)..(scz + 3).min(CELLS_PER_SIDE) {
         for cx in (scx - 2).max(0)..(scx + 3).min(CELLS_PER_SIDE) {
             let s = terrain::scatter(seed, &table, &haven, cx, cz);
@@ -507,7 +515,13 @@ fn walking_into_the_shelter_stands_on_the_plinth() {
     }
     let mut on_plinth = false;
     for _ in 0..400 {
-        movement::step(seed, &cols, &mut occ.occupants(), &mut b, &walk(best_yaw, 0));
+        movement::step(
+            seed,
+            &cols,
+            &mut occ.occupants(),
+            &mut b,
+            &walk(best_yaw, 0),
+        );
         let (x, y, z) = pos(&b);
         let (dx, dz) = (x - slot.x, z - slot.z);
         // Inside the plinth footprint (7×7 local; the walk comes straight
@@ -547,7 +561,10 @@ fn the_volume_table_covers_every_archetype() {
             "solid_vol and the table disagree at arch {arch}"
         );
         if solid {
-            assert!(*w > 0.0 && *d > 0.0, "a solid row needs a footprint: {arch}");
+            assert!(
+                *w > 0.0 && *d > 0.0,
+                "a solid row needs a footprint: {arch}"
+            );
         }
     }
     // The four walk-over rows, by name, so a bag growing a volume is a

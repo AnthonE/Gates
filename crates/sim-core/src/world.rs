@@ -710,6 +710,44 @@ pub enum Command {
     Evict {
         id: u32,
     },
+    /// Move `id`'s body to `to`'s feet — the admin lane's travel verb
+    /// (admin v0, `ALPHA.md` §3).
+    ///
+    /// **Not reachable from the wire**, `Evict`'s posture and for a
+    /// stronger reason: no `ActionMsg` maps here, so a client cannot ask
+    /// for it however it forges its bytes, and the only mint site is the
+    /// server's admin dispatch behind a wallet allowlist. It is a
+    /// `Command` rather than a poke at `world.players` from outside
+    /// because **the WAL is the command stream** (`Command::JoinAs`'
+    /// argument): a body that moved by side channel would replay as a
+    /// body that never moved, and every hash after it would differ. An
+    /// admin act being *visible in a replay* is also what `ALPHA.md` §3
+    /// asks for in the same breath as the lane.
+    ///
+    /// A miss — either id naming nobody live — is a legal no-op, `Wake`'s
+    /// posture, because a WAL replayed against a world that diverged must
+    /// refuse rather than teleport somebody into a hole.
+    ///
+    /// The destination is the *target's* body, not a coordinate, and that
+    /// is the whole safety story: an arbitrary xyz would need bounds, a
+    /// walkability check and a "you are now inside a rock" answer;
+    /// somewhere a player is already standing is known-good ground.
+    AdminTeleport {
+        id: u32,
+        to: u32,
+    },
+    /// Put `count` of item row `item` in `id`'s inventory — the admin
+    /// lane's other verb, `AdminTeleport`'s posture in every respect
+    /// (not wire-reachable, minted only behind the allowlist, a command
+    /// so it replays).
+    ///
+    /// Overflow is `gather::inv_add`'s documented policy and not this
+    /// command's business: a full inventory keeps what fits.
+    AdminGive {
+        id: u32,
+        item: u16,
+        count: u16,
+    },
     Input {
         id: u32,
         frame: InputFrame,
@@ -1878,6 +1916,31 @@ impl World {
             }
             Command::Wake { id, sleeper } => self.take_over(id, sleeper),
             Command::Evict { id } => self.evict(id),
+            Command::AdminTeleport { id, to } => {
+                // Both bodies resolved before either is touched, and a
+                // miss on either is a no-op: `Wake`'s rule, because a WAL
+                // replayed against a diverged world must refuse rather
+                // than move somebody somewhere nobody is standing.
+                if let (Some(from), Some(dest)) = (self.live_slot_of(id), self.live_slot_of(to)) {
+                    if from != dest {
+                        let body = self.players[dest].body;
+                        self.players[from].body = body;
+                    }
+                }
+            }
+            Command::AdminGive { id, item, count } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    // An unknown row is refused rather than stored: the
+                    // stack cap is read off the item table, and an index
+                    // past it would be a stack with no rule.
+                    if (item as usize) < self.gather.stack_max.len() {
+                        let cap = self.gather.stack_max[item as usize];
+                        if cap > 0 {
+                            crate::gather::inv_add(&mut self.players[slot].inv, item, count, cap);
+                        }
+                    }
+                }
+            }
             Command::Input { id, frame } => {
                 if let Some(slot) = self.slot_of(id) {
                     let mut frame = frame;
@@ -2532,8 +2595,7 @@ impl World {
         // inside `detonate`; this is the corpse's half.
         for &(victim, owner, range_cm) in blast_kills.entries() {
             let slot = victim as usize;
-            if self.players[slot].active && self.players[slot].hp == 0 && !self.players[slot].dead
-            {
+            if self.players[slot].active && self.players[slot].hp == 0 && !self.players[slot].dead {
                 self.die(slot, owner, DEATH_BY_CHARGE, NO_ITEM, range_cm);
             }
         }
@@ -2581,8 +2643,12 @@ impl World {
             if died {
                 v.deaths = v.deaths.saturating_add(1);
             }
-            self.events
-                .push(EV_HEALTH, victim_id, left as u32, self.combat.player_hp as u32);
+            self.events.push(
+                EV_HEALTH,
+                victim_id,
+                left as u32,
+                self.combat.player_hp as u32,
+            );
             if died {
                 let by = mob::mob_id(b.mob_slot as usize);
                 self.events.push(EV_DEATH, victim_id, by, 0);

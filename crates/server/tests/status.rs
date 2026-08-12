@@ -146,7 +146,7 @@ fn status_addr_is_absent_by_default_and_refuses_junk() {
 /// must not move the gauge's source.
 #[test]
 fn connected_counts_occupancy() {
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     assert_eq!(core.connected(), 0);
     assert!(core.connect(0, 1));
     assert!(core.connect(1, 2));

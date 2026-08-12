@@ -105,7 +105,7 @@ fn pump(
     }
     let mut snaps: Vec<(usize, Vec<u8>)> = Vec::new();
     let mut events: Vec<(usize, Vec<u8>)> = Vec::new();
-    core.tick(stats, |lane, slot, bytes| match lane {
+    core.tick_bare(stats, |lane, slot, bytes| match lane {
         Lane::Snapshot => {
             snaps.push((slot, bytes.to_vec()));
             true
@@ -140,7 +140,7 @@ fn gather_rides_the_wire() {
     let tree = fixture.nodes[0];
 
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = fixture;
     core.world.dev_spawn = Some(pos);
     core.catalog = probe_catalog();
@@ -298,7 +298,7 @@ fn event_ring_overflow_heals_by_resync() {
     let tree = fixture.nodes[0];
 
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = fixture;
     core.world.dev_spawn = Some(pos);
     assert!(core.connect(0, id_of(0)));
