@@ -1,4 +1,4 @@
-//! The craft panel's model — `Rust Images/crafting.png`, read as a list of
+//! The craft panel's model — the reference `crafting.png`, read as a list of
 //! things a panel must be able to answer.
 //!
 //! The reference frame answers six questions at once and ours answered one.

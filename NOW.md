@@ -51,7 +51,7 @@ alpha. `DECISIONS.md` §open has the row; nothing is spoken.
 
 Three findings in it are about the tree rather than the fiction:
 
-- **`ART.md`'s bar and the visual rubric are measured off `Rust Images/`,
+- **`ART.md`'s bar and the visual rubric are measured off the reference set,
   and the rubric is checksummed outside this repo.** If the register
   changes, every visual pass is scored against pine-and-granite while
   building obsidian, and the builder cannot fix it. Three operator acts —
@@ -72,6 +72,41 @@ Cheapest real slice if it is ever spoken: the biome gradient — a radial third
 input to `biome(h, moist)` (`terrain.rs:263`) plus regenerated terrain
 goldens. `WORLD.md` §9.2 has the full order, and §9.1 the timing: **decide
 the register early, build it late.**
+
+## 0gh · The GitHub job-agent seam — the door is built; three acts remain *(operator lane + docs)*
+
+Assessed 2026-08-11; the write-up is scry-forge `docs/builders/GITHUB-JOBS.md`.
+Built already: `AGENTS.md` §the deal, the PR template's submit line, `gates`
+CI on every code PR, 100,000 SCRY standing on scry's board (`DECISIONS.md`
+2026-08-09). The board's paid ledger is `[]`; no outside fork has opened a PR.
+
+- **(operator, GitHub)** Branch protection on `main` requiring the `gates`
+  check — PRs #56–58 merged over days of red CI before the toolchain pin
+  (`DECISIONS.md` §open, the compiler); until GitHub enforces it the merge
+  gate is policy. Caveat: the workflow path-filters, so a docs-only PR
+  reports no check; the fix is a same-named instant no-op for those paths.
+- **(operator, wallet)** Sign `scry.sig.json` seq 1 — and the tooling is
+  already here, so **no key is ever pasted**: `./ci/scry_manifest.py
+  --print` shows the exact text, sign it in whatever holds the steward
+  key, then `./ci/scry_manifest.py --sign --seq 1 --signature 0x…
+  --wallet 0x…`. Unsigned, scry applies nothing — the store row and
+  update feed are wired and inert. **It now buys more than the row:**
+  scry's manifest standard grew a `jobs` block (`GAME-REPO.md` §4b), so
+  once signed, this repo posts its own board lane's picked work from
+  `scry.json` — guidance rows, never a price — and the six rows scry
+  currently keeps house-side move here.
+- **(operator, once)** Settle `gates-pr` end to end on the next accepted
+  PR: pay by public transfer, append the row scry-side — the board's
+  `settled_to_a_worker` stops being zero in public.
+- **(operator, GitHub)** The repo description still says "three.js
+  frontend" — stale since the browser cut, and it is the first line a
+  stranger reads above `AGENTS.md`. GitHub → About; no API path for it here.
+- ~~Milestones live twice~~ — **done 2026-08-11.** `DESIGN.md` §11 owns
+  the arc, §7 here points at it, M0's seven dead checkboxes are prose.
+
+Not owed, stated so it is not re-litigated: no issues queue (this file is
+the queue), no auto-pay or auto-merge (merge is the act that pays, a hand
+act), no webhook (the store seam stays a commit and a poke).
 
 ## 0sp · The tick has been profiled — where it goes *(server lane)*
 
@@ -245,7 +280,7 @@ disagree with the real object. `OCCUPANT_R_M[BarrelSlot]` is **0.45** and its
 comment cites `CylinderGeometry(0.45, 0.45, 0.95)` — the deleted browser
 client's geometry, i.e. a guess carried forward. A 55-gallon drum is **0.585 m
 across by 0.88 tall** (1.5x taller than wide); 0.9 x 0.95 is near-spherical and
-~44% too fat. Two independent sources agree: `Rust Images/barrelroad`, and
+~44% too fat. Two independent sources agree: the reference set’s `barrelroad`, and
 Meshy's `auto_size` vision estimate landing on 0.880 x 0.585 unprompted
 (2026-08-11).
 
@@ -337,30 +372,32 @@ theirs.
 
 ---
 
-## 0rl · The release path is built and two thirds of it is unverified *(platform lane)*
+## 0rl · The release path ran, on all three platforms *(platform lane)*
 
 `.github/workflows/release.yml` builds the client and shard for Linux,
 Windows and macOS on a `v*` tag, re-runs the gates on the tagged commit,
 refuses a tag that disagrees with `[workspace.package] version`, and drafts
-the release. **Only the Linux leg has ever been run** — this box has no
-Windows or macOS, so those two are written and unproven, which is the honest
-state and not a claim.
+the release.
 
-1. **macOS has never been compiled, and Windows has only been typechecked.**
-   Windows: both release binaries `cargo check` clean for
-   `x86_64-pc-windows-gnu` from this box (2026-08-11 — which is how
-   `bin/shard.rs`'s unconditional `tokio::signal::unix` was found, and it is
-   fixed). That covers the cfg-and-API class and **not** msvc linking or ABI,
-   which only a real Windows runner proves. `nightly.yml`'s `cross` job now
-   typechecks both nightly. macOS is unverified end to end — no SDK here, and
-   nothing has compiled it. `fail-fast: false`, so a macOS failure still
-   leaves the other two artifacts.
+1. ~~macOS has never been compiled, Windows only typechecked~~ — **retired
+   2026-08-11, by the tag.** `v0.1.0`'s release run is green in all six
+   jobs, including `build (macos-latest, aarch64-apple-darwin)` and `build
+   (windows-latest, x86_64-pc-windows-msvc)`. So msvc linking and the Apple
+   toolchain are no longer written-and-unproven: they compiled, linked,
+   staged and archived on real runners. **The three artifacts have still
+   never been RUN** — nothing here has a Mac or a Windows box to start one
+   on — so the honest state moved from "does it build" to "does it launch",
+   which is a tester's question and not CI's.
 2. ~~No `LICENSE` file~~ — **done 2026-08-11** (MIT, © MoreRight DAO;
    `DECISIONS.md`). `LICENSE` + `NOTICE` ship in both the release archive and
    the scry depot, gated by `ci/depot.py --self-test`.
-3. **`min_client` has never been raised on a live shard.** The order is
-   publish the release first, raise the floor after; `refused_build` climbing
-   days later is how you find out you did it backwards.
+3. **The draft is drafted and nobody has published it.** That is the one
+   operator act left on the release itself: open it, read what is attached,
+   publish. Until then the tag exists and the download does not.
+4. **`min_client` has never been raised on a live shard**, and the public
+   shard now running prints `admits clients of any release`. The order is
+   publish the release FIRST and raise the floor after; `refused_build`
+   climbing days later is how you find out you did it backwards.
 
 ## 0ab · The store seam — what the SDK re-vendor and the depot job left *(platform lane)*
 
@@ -376,12 +413,26 @@ What remains, in order:
 
 1. **Nothing here publishes.** A build goes live when the origin's
    `published.json` names it and the digest is notarized — operator acts,
-   both. The nightly artifact is the tree those acts consume.
-2. **The shard list is written and never served.** `ci/shardlist.py` produces
-   the document and both consumers parse it, but `manifest.servers.url` on
-   scry's side is `null`, so the launcher's Servers window and our own menu
-   are dark for the same missing file. Everything downstream of that one
-   publish now exists: live counts via `status_url`, and join links
+   both. The nightly artifact is the tree those acts consume, and it
+   **exists**: `gates-depot-<run>` off nightly run 31475002978, 34 MB, live.
+   ⚠ Two things checked 2026-08-11 and worth knowing before you reach for
+   it. The `depot` job in that run passed while the run reads **failure** —
+   the `nightly` job failed at "gates first", at 08:50Z, which is before the
+   toolchain pin merged that evening, so it is the same red every `gates`
+   run had that day and should be green on the next fire. And **neither
+   publish act can happen from this box**: `scry.moreright.xyz` is a
+   different host (Cloudflare-fronted, not 5.161.193.186) and there is no
+   `scry` binary on PATH, so `scry digest` — the one implementation of the
+   number that gets notarized — is not runnable here by construction.
+2. **The shard list is written, generated, and not yet served.**
+   `shards.toml` exists now and `./ci/shardlist.py` writes the one-row
+   document; `manifest.servers.url` on scry's side is still `null`, so the
+   launcher's Servers window and our own menu stay dark for the same missing
+   file. scry's serving half is confirmed live rather than assumed —
+   `GET /api/launcher/servers/gates` answers **404**, its documented
+   "publishes none", not the 503 it reserves for "could not look".
+   Everything downstream of that one publish exists: live counts via
+   `status_url` (answering now), and join links
    (`scry://join/gates/host:port`, `deeplink.rs`). Registering the scheme
    with the desktop is the launcher's installer, and is not done.
 3. **`prove` has no call site** — and this is now the *only* thing left in
@@ -403,6 +454,16 @@ What remains, in order:
 4. **The depot is Linux only.** `ci/depot.py` says so in its first line and
    scry's platform enum has the other rows. The SDK can now reach a launcher
    on Windows; nothing packages a Windows build of this game.
+5. **The public shard is up and no one has ever joined it** (2026-08-11).
+   Boot, persistence, the SIGTERM flush and the status endpoint are all
+   measured; the join is not, and **the tools here cannot measure it**:
+   `bots` takes a `SocketAddr`, so it cannot dial `game.moreright.xyz` by
+   name at all — which is the half that matters, because the certificate is
+   issued for the name and the client validates against the platform root
+   store on a non-loopback address (`tls_posture.rs`) — and it carries no
+   wallet, so `require_auth = true` refuses it correctly. The first real
+   join is a person with the published build, which is why it sits behind
+   §0rl item 3.
 
 ---
 
@@ -859,27 +920,32 @@ failed connect returns with the reason, settings persist (`crate::config`,
 `DECISIONS.md` §open "settings v0"), and `Screen::Disconnected` latches a
 hangup through the menu's own teardown. Remaining:
 
-1. **Nothing is published, so every list is the Direct row.** The url is
-   `DECISIONS.md` §open and an operator act: serve `servers.json`, set
-   `servers.url` in scry's `data/launcher/gates.manifest.json`. Until then
-   both the menu and the launcher's Servers window are correctly dark.
-   ⚠ **Measured 2026-08-10: "serve it" had no route to serve it from** —
-   `/depot/` is not a `location` on that origin, so the url this script
-   printed could only 404. **Closed 2026-08-11 on scry's side**: `GET
-   /api/launcher/servers/{slug}` serves `$SCRY_DEPOTS_DIR/<slug>/servers.json`
-   byte-for-byte, keeping 404 (publishes none) apart from 503 (could not
-   look), and `PUBLISH_URL` here points at it. **One act left and it is on
-   the box**: copy the document, then set `servers.url`. In that order —
-   `servers.url` stays null until the file lands, because an error dialog on
-   a game that is running fine is worse than an honest "no shards published".
-2. **Player counts: the code is done end to end; what is left is operator
-   acts.** A row may carry `status_url` and both readers poll it every
-   `STATUS_POLL_SECS` (`DECISIONS.md` §open "shard status poll v0"); the
-   count is never baked into the document, because a generated number is
-   stale before it is served. The three remaining steps are all on a box:
-   set `status_addr` in `shard.toml`, open that TCP port (the cloud firewall
-   too), and put the url in `shards.toml`. Until then every row draws `?`,
-   which is correct.
+1. **The document exists now; the two acts that serve it are on scry's
+   box.** `shards.toml` is written and `./ci/shardlist.py` produces
+   `target/servers.json` — one row, `game.moreright.xyz:61234`, carrying a
+   `status_url`. What is left is exactly what it always was and no more:
+   copy the document into `$SCRY_DEPOTS_DIR/gates/`, **then** set
+   `servers.url`. In that order — `servers.url` pointing at a file that is
+   not there is an error dialog on a game that is running fine, which is
+   worse than the honest "no shards published" both readers draw now.
+   ⚠ **scry's half is confirmed live, not assumed**: `GET
+   /api/launcher/servers/gates` answers **404** as of 2026-08-11, which is
+   its documented "publishes none" and is a different answer from the 503 it
+   reserves for "could not look". The route is built and waiting for bytes.
+   (The 2026-08-10 finding this replaces was that `/depot/` was not a
+   `location` on that origin at all, so the url printed here could only 404
+   for the wrong reason.)
+2. ~~Player counts: three steps on a box~~ — **two of the three are done
+   2026-08-11, and the count is live.** `status_addr = "127.0.0.1:8431"` is
+   in `shard-public.toml` and the url is in `shards.toml`. The third step
+   was "open that TCP port (the cloud firewall too)" and it was **not taken,
+   on purpose**: the endpoint binds LOOPBACK and nginx fronts it on the 443
+   this box already serves, so `https://game.moreright.xyz/gates/status.json`
+   needs no console act, carries the same certificate as everything else we
+   publish, and puts a buffer in front of a status thread that answers
+   serially by design. It answers `{"players":0,"max_players":100,"tick":T}`
+   right now. Both readers still draw `?` until item 1's copy happens —
+   there is no list to draw a row in.
 3. **Ungated, by hand only:** the end-to-end kill-the-shard-mid-play run
    behind `Screen::Disconnected`.
 
@@ -996,11 +1062,21 @@ Lifted out of "done this pass" items before pruning (2026-08-05, again
 2026-08-09) — each was written down **only** inside a done item. All of it
 is `crates/`/wire work no single-surface lane may take.
 
-1. **Shore barrels as a second destination class.** The road pays unevenly
+1. **The UDP socket buffer is a `NETCODE.md` row and nothing else** (found
+   2026-08-11 standing the public shard up). §2.2's config-of-record says
+   `SO_RCVBUF/SNDBUF 8 MiB, passed via with_bind_socket`; nothing in
+   `crates/` calls it, and the shard is running on this box's default
+   `rmem_max` of 212992 — the ~208 KiB the row's own "why" column names as
+   too small, quoting quinn's README. Two halves and the order matters: the
+   **code** half asks for the buffer (one `with_bind_socket` at the
+   endpoint), and only then does an ops sysctl raise the ceiling it would
+   otherwise hit. Doing ops first buys nothing measurable, which is why this
+   is a `crates/` item and not a runbook line. The row is marked ⚠ in place.
+2. **Shore barrels as a second destination class.** The road pays unevenly
    now (the bay slots landed) and the haven pad is the one place worth
    walking to. A second class on the shore would give the ring two ends
    rather than one. Nothing else in this file mentions it.
-2. **The wipe.** Named by both judges, described nowhere. A shard lifecycle
+3. **The wipe.** Named by both judges, described nowhere. A shard lifecycle
    act with an economy half (`ALPHA.md` A1→A3) and an operator half
    (`CLAUDE.md`: wipes of a live shard are operator-only), so the loop's
    share is the mechanism, never the trigger. Needs scoping before it can be
@@ -1021,6 +1097,22 @@ is `crates/`/wire work no single-surface lane may take.
    threshold crossing, an **hour** (this was 25 minutes, so slow leaks are
    not excluded), and **contention** — bots walk, they do not raid, so wall
    4's caps are still gated one site at a time.
+4. **You cannot stand ON anything.** `movement::step` asks `slot_blocks` and
+   nothing asks a ground query for occupants — the shelter's plinth reads as
+   a kerb you sink into, crate and boulder tops the same (`terrain.rs`'s
+   plinth doc still says "nothing here makes a body stand on the plinth").
+   Belongs beside `collide::piece_ground`, a `slot_ground` next to
+   `slot_blocks`; the fourteen-box table is already there for it. Systems
+   lane.
+5. **The 100-bot soak has never been run.** `NETCODE.md` §9's budgets have
+   never met 100 real connections: `cargo run -p server --bin bots -- 100`
+   against a dev shard, held an hour — tick jitter, WAL append rate,
+   per-client bandwidth recorded as counts and bytes, never wall-clock
+   asserts (`CLAUDE.md`'s clock rule). The numbers land in a `DECISIONS.md`
+   §open row as the measured baseline. **The AOI half is settled without
+   it** (§0sp, 2026-08-11): 100 clients in one cell cost ~0.8 ms of a
+   33.3 ms tick, so the linear scan needs no spatial structure. What a soak
+   still owes is what a profiler cannot see — sockets, jitter, real bytes.
 
 ---
 
@@ -1198,30 +1290,44 @@ narrowing what decodes. One protocol pass. Systems lane (`crates/protocol`).
 
 ---
 
-## 7 · Milestones
+## 7 · Milestones — the arc is `DESIGN.md` §11; this is what the queue adds
 
-13. **M1 — survival verbs** + bags, hotbar, chat (`ALPHA.md` §1/§6).
-14. **M2 — combat true**: lag-comp ring + rewound raycasts · ballistic
-    projectiles · the anomaly log.
-15. **M3 — economy dark + ops**: OBOL machinery behind the A1 switch · the
-    claim rail · shard ops.
-16. **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle.
-17. **M4 — arm A2, then A3** (operator acts): claim rail export · skin rail
-    · the desktop launcher.
-18. **Anti-ESP occlusion culling** — the measure the genre proved
+**Read the arc there, not here.** M0 (landed) → M1 survival verbs → M2
+combat true → M3 OBOL → M4 the counter and the door, with each one's exit
+condition. `ALPHA.md` §6 folds into the same section, and this list used to
+restate it under a second numbering — two lists, one arc, drifting apart.
+Struck 2026-08-11; nothing was lost, because everything struck was a
+paraphrase of §11.
+
+Two gates sit **between** those milestones and belong to the queue rather
+than to the arc:
+
+- **A1 playtest** (operator schedules): 10–20 testers, one wipe cycle,
+  after M3 and before A2/A3 arming (`ALPHA.md` §2). A loop proposes it and
+  never runs it.
+- **Arming A2, then A3** is an operator act, not a milestone anyone here
+  completes (`CLAUDE.md` §loop discipline).
+
+And two items the arc does not carry, which stay real work:
+
+1. **Anti-ESP occlusion culling** — the measure the genre proved
     (Facepunch, 2025, network-wide default). Server-side, costs no client
     trust, and the occlusion grid is a pure function of the seed, so it is
     bakeable at worldgen and a lookup in the tick. Sequence after M2: it
     wants real sightlines to tune against.
-19. **The launcher, in Rust, with the wallet in it** (`DECISIONS.md`
-    2026-08-04). One static binary, `egui`, no webview: patcher, shard
-    list, balances, and a self-custody wallet on `alloy` signing the
-    EIP-191 join the server already accepts — so no protocol moves and
-    nothing enters the sim's blast radius. Key backup is the feature, not a
-    footnote: phrase shown once and confirmed back, encrypted keystore
-    only, never logged and never in the WAL, and the plain sentence that
-    the operator holds no keys and can restore nothing. It is the
-    platform's client for the whole cascade, not a Gates accessory.
+2. **~~The launcher, in Rust, with the wallet in it~~ — BUILT, and not in
+    this repo** (`DECISIONS.md` 2026-08-04 asked for it). It shipped in
+    `scry-forge` as `launcher-rs/` — one binary with no runtime to install,
+    an account generated on the holder's machine and written as an
+    encrypted keystore, and both our depots published and notarized on
+    2026-08-10. It reached this list because the row itself said it is
+    *"the platform's client for the whole cascade, not a Gates
+    accessory"* — which is exactly why it was never ours to build. **What
+    is still ours** is the seam: `crates/client/src/scry_overlay.rs` stays
+    byte-identical to the SDK upstream (`CLAUDE.md` §vendored), and
+    `ci/shardlist.py` writes the document the launcher's Servers window
+    reads. Derive the launcher's real state from scry, never from this
+    line.
 
 Standing rule: anything a playtest breaks jumps this queue; anything a wall
 catches jumps the playtest.

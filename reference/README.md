@@ -71,9 +71,15 @@ Three things fall out that a hook *name* list cannot give you:
   surfaces: clans, racked weapons, apartments, CUI drag/drop). Deliberately
   **not** a source for anything committed here, so nothing in this repo is
   derived from GPL work.
-- `Rust Images/` — the reference frames, already in the repo, which is what
+- **The reference set** — the eighteen reference frames, which is what
   `MENUS.md` cross-reads the hook table against when the two disagree about
-  whether something is one screen or two.
+  whether something is one screen or two. **They are not in this repo**
+  (removed 2026-08-11; they lived in `Rust Images/`): they are the reference
+  game's screenshots and this repo is public, so carrying them here would be
+  redistributing them — the same line this file draws around Carbon and the
+  `SPAWN.md` decompile, applied to pictures. `ART.md` §0 has the posture, the
+  recorded measurements, and the `GATES_REFERENCE_DIR` path for re-deriving
+  them from your own copy.
 
 **`SPAWN.md` is the exception, and it is flagged rather than buried.** Its
 source is a community decompile of an Oxide-patched `Assembly-CSharp`

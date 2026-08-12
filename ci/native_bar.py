@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 """The tonal bar, measured on both sides by one estimator.
 
-`ci/reference_bar.mjs` does this for the browser client by decoding in a page.
 The native client's captures are PNGs on disk, so this reads them directly —
-and, critically, reads `Rust Images/` the same way in the same run. A bar
+and, critically, reads the reference set the same way in the same run. A bar
 computed a different way than the frame it judges is not a bar (`ART.md` §7).
 
 Rec.601 luma, whole frame, plus the sky band (top 25% of rows) and near band
 (bottom 35%), which are the bands `ART.md` §3's table is stated in.
 
-    python3 ci/native_bar.py <dir-of-pngs>
+    GATES_REFERENCE_DIR=/path/to/reference-frames \\
+        python3 ci/native_bar.py <dir-of-pngs>
+
+**The reference frames are not in this repository** (`ART.md` §0, operator
+2026-08-11): they are the reference game's screenshots, this repo is public and
+MIT, and carrying them here would be redistributing them. They lived in
+`Rust Images/` until 2026-08-11. So the directory is named by
+`GATES_REFERENCE_DIR` and, when it is unset or incomplete, this tool **says so
+loudly and exits nonzero** rather than scoring against nothing — a bar that
+silently measures one side is the pass-it-didn't-earn class `CLAUDE.md` warns
+about, and `ART.md` §3's table is already the recorded answer if you only want
+the number.
 
 Prints one row per frame plus the reference median, so a capture is read next
 to the thing it is being compared to rather than against a remembered number.
@@ -21,11 +31,11 @@ import glob
 import numpy as np
 from PIL import Image
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REFERENCE_DIR_ENV = "GATES_REFERENCE_DIR"
 
-# The outdoor-daylight subset, identical to ci/reference_bar.mjs's list. The
-# interiors, menus and maps are excluded on purpose: a tonal bar taken over a
-# fullscreen inventory screen would be a bar about UI, not about light.
+# The outdoor-daylight subset, inherited from the deleted ci/reference_bar.mjs.
+# The interiors, menus and maps are excluded on purpose: a tonal bar taken over
+# a fullscreen inventory screen would be a bar about UI, not about light.
 REFERENCE_FRAMES = [
     "generichighview2.jpg",
     "gameplayfoundbase.jpeg",
@@ -109,12 +119,28 @@ def main():
         row(os.path.basename(p), s)
     row("MEDIAN", median(ours))
 
-    print("reference (Rust Images/):")
+    ref_dir = os.environ.get(REFERENCE_DIR_ENV)
+    if not ref_dir:
+        print(
+            f"native_bar: SKIP — {REFERENCE_DIR_ENV} is unset, so the reference\n"
+            f"  side of the bar cannot be measured and only 'ours' is printed above.\n"
+            f"  The reference frames are deliberately not in this repo (ART.md §0).\n"
+            f"  Point {REFERENCE_DIR_ENV} at your own copy of the eighteen-frame set,\n"
+            f"  or read ART.md §3's table, which is the same measurement recorded.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    print(f"reference ({ref_dir}):")
     refs = []
     for f in REFERENCE_FRAMES:
-        p = os.path.join(ROOT, "Rust Images", f)
+        p = os.path.join(ref_dir, f)
         if not os.path.exists(p):
-            print(f"native_bar: missing reference {f}", file=sys.stderr)
+            print(
+                f"native_bar: missing reference {f} under {ref_dir} — a missing\n"
+                f"  frame is a moved bar, not a skip, so this is fatal.",
+                file=sys.stderr,
+            )
             sys.exit(1)
         s = stats(p)
         refs.append(s)

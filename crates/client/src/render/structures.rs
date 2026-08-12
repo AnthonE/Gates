@@ -117,7 +117,7 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 10] = [
     // what makes it read as a hearth rather than a crate.
     ([1.2, 1.0, 0.6], Color::srgb(0.549, 0.231, 0.180), 0.80, 0.0), // hearth
     // 2 · storage box. A chest is wider than deep; the old square 1.0 x 1.0
-    // footprint is why it read as a cube. `Rust Images/storageandtoolchest`
+    // footprint is why it read as a cube. the reference `storageandtoolchest`
     // shows the same shape language — clearly wide, clearly shallow.
     // ⚠ `box_small` and `box_large` share this archetype, so they draw at one
     // size. Splitting them costs an `ARCH_*` and a `PROTO_VER` bump; filed in

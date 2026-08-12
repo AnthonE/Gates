@@ -32,7 +32,7 @@ procedural cloud deck in the sky, resolves with SSAO + SMAA + bloom, draws a
 HUD and a viewmodel, and captures a fixed vantage list headless under Xvfb +
 lavapipe.
 
-`ci/native_bar.py` reads our captures and `Rust Images/` **in the same run,
+`ci/native_bar.py` reads our captures and the reference set **in the same run,
 through the same estimator** — a bar computed a different way than the frame
 it judges is not a bar. Medians over the six vantages:
 
@@ -362,7 +362,7 @@ lane.** (§2, first bullet — this is the rule that was measured, not a style.)
 - `Atmosphere` on the camera, sun as a `DirectionalLight` in the 30–40° band
   (§3's unblock), shadows on with cascades, `pcss` if it is cheap enough on
   the gate box.
-- Tonemapper chosen by *measurement* against `ci/reference_bar.mjs`'s frames,
+- Tonemapper chosen by *measurement* against the reference set's frames,
   not by name. The paid-for datum: a transfer with a quadratic toe over the
   shaded range (Khronos PBR Neutral, `x - 6.25x²` under 0.08) squares the
   shadows and is why a shaded face arrived at 8/255. `ART.md` rule 3's floor —
@@ -396,7 +396,7 @@ hard parts now.
      tolerates. Nothing but a measurement catches this — the sky looked better
      the whole time.
 
-**Do not meter the tonal bar here.** p10/p50/p90 against `Rust Images/` is R5's
+**Do not meter the tonal bar here.** p10/p50/p90 against the reference set is R5's
 job, after there is content in the frame. A bar measured on an empty world is
 the beige-smear trap with a different file name.
 
@@ -465,9 +465,12 @@ that work is lost; it moves to WGSL.
 
 ### R5 · The light rig, metered — the tonal bar
 
-Now that the frame has content, meter it. `ci/reference_bar.mjs` reads the six
+Now that the frame has content, meter it. `ci/native_bar.py` reads the
 outdoor-daylight reference frames with the same code path that reads ours;
-port that discipline, not the numbers. Targets are `ART.md` §3's.
+port that discipline, not the numbers. Targets are `ART.md` §3's. (The browser
+tier's `ci/reference_bar.mjs` did this first and is deleted — it needed a page
+this repo no longer opens. The frames it read are out of the tree too, so
+`native_bar` wants `GATES_REFERENCE_DIR`; `ART.md` §0 has the posture.)
 
 ### R9 · Bodies and the held item — **LANDED**
 
@@ -646,7 +649,7 @@ called the first one a pass.
 `gates --capture <dir>` settles on observable state (all three rings full —
 25 chunks, 25 scatter parents, 25 clutter tiles, reported at the frame it
 happens), warms 30 frames, shoots six vantages and exits; `ci/native_bar.py`
-reads those captures and `Rust Images/` through one estimator. What neither
+reads those captures and the reference set through one estimator. What neither
 does yet is FAIL. Nothing in `ci/gates.sh` runs either, and until it does the
 render path's coverage is `cargo clippy -p client --features render` and a
 human looking at a PNG. That is the top of §8's list, it is the pivot's stated

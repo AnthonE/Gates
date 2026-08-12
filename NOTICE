@@ -87,3 +87,16 @@ Nothing here is traced from Rust (Facepunch)
 No proper noun and no asset of theirs is in this repository. Where a number or
 a technique of theirs is used, it is cited as a measurement in `reference/`,
 which is a fact about a target rather than a copy of a work.
+
+**This became true on 2026-08-11, and had been false before that** — recorded
+here rather than quietly corrected, because the sentence above is the kind a
+reader is entitled to check. Eighteen screenshots of their game were carried in
+`Rust Images/` from the first commits: the evidence base `ART.md` measures the
+visual bar off. They were never packaged into a release build, but this
+repository is public, and hosting them here was redistribution regardless of
+what was shipped. They were removed; `ART.md` §0 states the posture and holds
+the measurements, which are statistics rather than images and stay. Anyone
+re-deriving the bar points `GATES_REFERENCE_DIR` at their own copy.
+
+The general rule the removal encodes: **a measurement off a work may live here;
+the work may not.**

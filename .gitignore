@@ -1,13 +1,12 @@
 # Build output
 /target/
 **/target/
-/web/node_modules/
 **/node_modules/
-/web/dist/
-**/pkg/
 *.wasm.map
-# Copied wasm artifact (dev.sh / ci/gates.sh place it; cargo owns it)
-/web/public/client_wasm.wasm
+# The `/web/` entries that stood here are gone with the browser client
+# (operator, 2026-08-06) — `web/` is not in the tree and is not coming back.
+# `wasm32-unknown-unknown` is still built, but only as `test_parity_wasm`'s
+# second target under `target/`, so it needs no rule of its own.
 
 # Cargo.lock IS committed — ashfall ships binaries, not a library.
 

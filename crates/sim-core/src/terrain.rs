@@ -576,8 +576,9 @@ pub const HAVEN_PHASE_TRIES: i32 = 16;
 pub const HAVEN_PHASE_STEP: i32 = 256 / HAVEN_CRATES / HAVEN_PHASE_TRIES;
 
 /// Half the shelter's outer footprint, meters — the one number the sim knows
-/// about the greybox standing on the pad, and the one the client's mesh is
-/// gated against (`ci/haven_shelter.mjs`, the `PINE_MAX_R` pattern).
+/// about the greybox standing on the pad, and the one the client's mesh was
+/// gated against (`ci/haven_shelter.mjs`, the `PINE_MAX_R` pattern — that gate
+/// went with the browser client and has no native replacement).
 ///
 /// The sim does not care what the structure looks like; it cares that the
 /// thing occupies its corner of the pad without reaching a container or the
@@ -2116,9 +2117,10 @@ pub const CLUTTER_CELLS_PER_TILE: i32 = 25;
 /// the count rule 4's structural argument is about, and it is uniform by
 /// construction — which is exactly what makes it insufficient on its own
 /// (see `CLUTTER_RICH_PER_TILE`).
-/// A literal, not the product, because `ci/clutter_shape.mjs` reads these
-/// numbers out of this source text to hold the JS mirror equal — and the
-/// const-assert below is what keeps the literal honest.
+/// A literal, not the product, because `ci/clutter_shape.mjs` read these
+/// numbers out of this source text to hold the JS mirror equal. That gate and
+/// that mirror are both gone; **the const-assert below is what keeps the
+/// literal honest, and it is now the whole of the enforcement.**
 pub const CLUTTER_BASE_PER_TILE: usize = 625;
 /// The RICHNESS stratum's per-tile budget — a bound, not a measurement, and
 /// the reason the grid layer's cap is no longer just `25 × 25`.
@@ -2136,7 +2138,8 @@ pub const CLUTTER_BASE_PER_TILE: usize = 625;
 ///
 /// 96 is NOT a design number — it is what the frame budget left, and the
 /// first draft asked for 256 and was refused by a gate. The arithmetic, so a
-/// later pass does not have to rediscover it: `ci/clutter_shape.mjs` §4 caps
+/// later pass does not have to rediscover it: `ci/clutter_shape.mjs` §4 (now
+/// deleted, so this is a derivation on record rather than a live cap) capped
 /// the worst kind's whole-ring fleet at 20% of DESIGN §9's 1.5 M triangles,
 /// the worst kind is the tuft at 12 tris, and the ring is `CLUTTER_RING = 2`
 /// — 5×5 tiles. That gives 300 k / 12 = 25 000 instances of pool, / 25 tiles
@@ -2645,7 +2648,8 @@ pub const SKIRT_TILE_CELLS: i32 = 2;
 /// apron, because a prop jittered toward the edge skirts across it.
 pub const SKIRT_SCAN_CELLS: i32 = SKIRT_TILE_CELLS + 2;
 /// Skirt elements one tile can produce. A literal so `ci/clutter_shape.mjs`
-/// can read it out of this source, and a bound rather than a measurement:
+/// could read it out of this source — that gate is deleted, so the literal is
+/// now only a literal — and a bound rather than a measurement:
 /// every scanned cell holding a max-reach prop, all of it landing inside.
 pub const SKIRT_PER_TILE: usize = 256;
 /// Elements one tile can produce in total — the fill buffer's real cap, and
@@ -2820,8 +2824,10 @@ pub fn skirt_fill(
 /// y = 0 and the doorway on +Z.
 ///
 /// A row-for-row mirror of `web/src/props.js`'s `HAVEN_SHELTER_PARTS` minus
-/// the part name, and `ci/haven_shelter.mjs` holds the two equal number for
-/// number. That gate is the whole reason this is a table rather than a shape:
+/// the part name, and `ci/haven_shelter.mjs` held the two equal number for
+/// number. **Both went with the browser client, so this table is unmirrored
+/// and ungated now.** That gate was the whole reason this is a table rather
+/// than a shape:
 /// a building is the one occupant whose volume cannot be checked by eye
 /// against its mesh, because the interesting part is the hole in it. Drift
 /// here is not a wrong radius, it is a doorway the client draws and the
@@ -2884,9 +2890,10 @@ pub const SHELTER_PEAK_M: f32 = 9.2;
 
 /// The lesser tier's greybox, as a box list on `SHELTER_BOXES`' terms:
 /// `[cx, cy, cz, sx, sy, sz]`, center and full size, in the slot's own frame,
-/// y measured from the slot's ground. `web/src/props.js` holds the same nine
-/// rows as `WAYSTATION_CANOPY_PARTS` and `ci/waystation_canopy.mjs` refuses a
-/// drift between them.
+/// y measured from the slot's ground. `web/src/props.js` held the same nine
+/// rows as `WAYSTATION_CANOPY_PARTS` and `ci/waystation_canopy.mjs` refused a
+/// drift between them; both went with the browser client, so nothing refuses a
+/// drift now.
 ///
 /// **It is an open canopy because it must not be a second shelter.**
 /// `NOW.md` §4b states the rule — "a second copy of `HAVEN_SHELTER` makes the

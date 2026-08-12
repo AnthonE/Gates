@@ -53,7 +53,7 @@ use sim_core::limits::{BOX_SLOTS, HOTBAR_SLOTS, INV_SLOTS};
 pub use sim_core::inventory::slots_in;
 
 /// Rows of six below the belt, so 6 + 24 = `INV_SLOTS`. The reference frame
-/// (`Rust Images/inventory.jpeg`) is the same shape and for the same reason:
+/// (the reference `inventory.jpeg`) is the same shape and for the same reason:
 /// the belt is the row the world can see.
 pub const GRID_COLS: usize = HOTBAR_SLOTS;
 /// Rows in the main grid, below the belt.

@@ -1525,7 +1525,7 @@ impl World {
     ///
     /// The bag is asked first and the ring is the fallback, which is also
     /// the order of the two `dev_spawn` obeys: `dev_spawn` pins the *ring*
-    /// (its doc says so, and `browser_smoke` uses it to put two tabs on
+    /// (its doc says so, and `browser_smoke` used it to put two tabs on
     /// one beach), and a bag is not the ring. A shard pinned for testing
     /// still honours a bag its player placed, which is the behaviour the
     /// player would report a bug about otherwise.
@@ -3135,9 +3135,9 @@ mod tests {
     use super::*;
     use crate::terrain;
 
-    /// The point and seed `ci/browser_smoke.mjs` puts both tabs on. Guarded
-    /// here natively so a worldgen change that sinks or steepens it fails
-    /// this test, not the browser gate.
+    /// The point and seed `ci/browser_smoke.mjs` put both tabs on. That gate
+    /// is deleted; this native guard is what it was written to back up, so a
+    /// worldgen change that sinks or steepens the spawn fails here.
     const SMOKE_SEED: u64 = 20260731;
     const SMOKE_SPAWN: (f32, f32) = (1024.0, 1024.0);
 

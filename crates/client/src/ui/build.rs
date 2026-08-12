@@ -138,8 +138,8 @@ pub const PLACE_MATERIAL: u8 = MATERIALS[0];
 /// (`DECISIONS.md` §open, "build wheel v0").
 ///
 /// **One ring since 2026-08-07** — see [`PLACE_MATERIAL`]. The inner radius
-/// is `0.66 × rim`, which is the ratio measured off `Rust Images/
-/// building.jpeg` (the ring located programmatically, not by eye), and the
+/// is `0.66 × rim`, which is the ratio measured off the reference
+/// `building.jpeg` (the ring located programmatically, not by eye), and the
 /// dead centre it leaves is far roomier than the old 96 — which the readout
 /// needed, because five lines in a 192 px circle was already tight.
 #[derive(Clone, Copy, Debug)]

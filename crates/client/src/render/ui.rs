@@ -15,7 +15,7 @@
 //! pin this module to the name of Bevy's spawner type, which has been renamed
 //! twice in as many releases.
 //!
-//! Colours are read off the reference's own options screen (`Rust Images/`,
+//! Colours are read off the reference's own options screen (the reference set,
 //! and the frame the operator pasted): near-black panels a shade lighter than
 //! the background, an olive selection block for the chosen category, warm
 //! off-white type, and a hairline rule the same warm hue at low alpha.
@@ -111,7 +111,7 @@ pub fn font_bold(size: f32) -> TextFont {
 
 // ---- the palette, re-derived 2026-08-07 ----------------------------------
 //
-// **Every value below is sampled off `Rust Images/crafting.png`**, the
+// **Every value below is sampled off the reference `crafting.png`**, the
 // reference's own inventory frame, by averaging a 7×7 patch at the named
 // place. The previous palette was neither measured nor close: it was a
 // **cool near-black** (`0.082,0.082,0.090` — blue the largest channel) with
@@ -121,9 +121,10 @@ pub fn font_bold(size: f32) -> TextFont {
 // reads as the reference while the ground under it is the wrong colour.
 //
 // The olive it replaces was described as measured off "the reference's own
-// options screen" — a frame that is not in `Rust Images/` and cannot be
+// options screen" — a frame that is not in the reference set and cannot be
 // re-checked. If the options screen really does select in olive, that is a
-// per-screen exception to add back with the frame committed beside it; it is
+// per-screen exception to add back once that frame is in the set and the
+// measurement is recorded in `ART.md` beside the others; it is
 // not the inventory's colour, and the inventory is the screen a player lives
 // in. `DECISIONS.md` "menu skin v0" carries the change.
 //
@@ -444,7 +445,7 @@ pub fn nav_item(text: &str, picked: bool) -> impl Bundle {
 ///
 /// **Its tint is ours, and that is stated rather than hidden.** The
 /// reference's is a warm red at low alpha over the blurred scene; the frames
-/// that show it are not in `Rust Images/`, so it cannot be sampled the way
+/// that show it are not in the reference set, so it cannot be sampled the way
 /// every colour in the palette above was, and inventing a number while
 /// claiming a measurement is the failure mode `ART.md` exists to prevent.
 /// This is [`PANEL`] — measured, off `crafting.png` — until a frame lands

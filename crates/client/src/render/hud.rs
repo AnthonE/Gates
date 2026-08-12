@@ -5,7 +5,7 @@
 //! criterion in the art rubric and the one the browser client had first, so
 //! the native client is not shipping captures without it.
 //!
-//! The reference set's shape, measured off `Rust Images/`: a **bottom-centre
+//! The reference set's shape, measured off the reference set: a **bottom-centre
 //! hotbar** with item cells, a **right-side vitals stack** with numbers —
 //! small, unobtrusive, never centred — and a **held item** in the lower
 //! right of frame.
@@ -240,7 +240,7 @@ pub fn setup(mut commands: Commands) {
                         border: UiRect::all(Val::Px(2.0)),
                         // The count sits bottom-right over the icon, which is
                         // the arrangement every inventory in the genre uses
-                        // and the one `Rust Images/inventory` shows.
+                        // and the the one the reference `inventory` shows.
                         justify_content: JustifyContent::FlexEnd,
                         align_items: AlignItems::FlexEnd,
                         ..default()
@@ -293,7 +293,7 @@ pub fn setup(mut commands: Commands) {
         });
 
     // The vitals stack: right side, small, never centred — and **bars, not
-    // text**. `Rust Images/crafting.png` draws three filled bars with an icon
+    // text**. the reference `crafting.png` draws three filled bars with an icon
     // square each, bottom right; ours read `HP 100/100` in a column, which is
     // a debug readout wearing a HUD's position. A bar is also the only one of
     // the two that answers the question a player actually asks mid-fight,

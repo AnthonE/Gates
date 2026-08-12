@@ -760,8 +760,9 @@ fn the_pad_fits_inside_the_world_it_is_placed_in() {
 /// It also asserts the two arithmetic claims the greybox rests on, because
 /// neither is visible from the mesh: the footprint clears every container it
 /// stands among, and the whole of it stands on ground the exclusion zone
-/// already cleared. `ci/haven_shelter.mjs` holds the client to the same two
-/// numbers from the other side.
+/// already cleared. `ci/haven_shelter.mjs` held the client to the same two
+/// numbers from the other side and went with the browser client, so this test
+/// is now the only side that checks them.
 #[test]
 fn the_pad_carries_the_shelter_at_its_center() {
     let table = ScatterTable::alpha_default();

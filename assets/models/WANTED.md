@@ -70,7 +70,7 @@ export; do not ask for a separate roughness JPEG.
 
 `DESIGN.md`'s rail is proper nouns and traced assets. A generator prompt is a
 place both can leak: do not name the reference game, its items, or its
-studio in a prompt, and do not feed it screenshots from `Rust Images/`.
+studio in a prompt, and do not feed it screenshots from the reference set.
 Describe the object — "weathered steel drum, dented, rust streaks" — which is
 what `ART.md` §1 asks for anyway. Generated output is yours; it needs a
 `MANIFEST.md` row (source: the generator, date, prompt) but no licence notice.
