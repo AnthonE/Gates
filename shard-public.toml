@@ -93,3 +93,38 @@ domain = "game.moreright.xyz"
 # whose config names an endpoint it silently does not serve is the defect
 # the parser refuses everywhere else).
 status_addr = "127.0.0.1:8431"
+
+# ── the ticket door ──────────────────────────────────────────────────────────
+#
+# **COMMENTED OUT, AND THAT IS THE LIVE STATE: this shard checks no ticket.**
+# `entitle::Config::off()` is the shipping default (`config.rs`), so with this
+# key absent every joiner is admitted and the sweep never runs.
+#
+# Correct today — gates has no ticket contract, so there is no licence to
+# enforce and `POST /api/ticket/gates/check` answers
+# `every_wallet_entitled: true` to anyone who asks. Uncommenting now would add
+# a network round trip per join to learn nothing.
+#
+# ⚠ **THE DAY THE TICKET IS ARMED, THIS LINE IS THE WHOLE ENFORCEMENT.** The
+# depot gate is off by default and deliberately so — scry's `tickets.py` says
+# it in its own words, *"downloads ship open — the servers are the wall"*,
+# because the game is open source and the bytes were never the secret. So the
+# official servers are not one enforcement point among several; they are the
+# only one, and this key is how one exists. scry's `TICKET.md` §8b step 8 is
+# the same instruction from the other side, and
+# `deploy/launch_preflight.py --shard-config <this file>` grades it.
+#
+# `entitle_slug` defaults to `crate::ENTITLE_SLUG` ("gates") and the timeout
+# and sweep to 6s / 120s, so the one line below is the whole arming. The sweep
+# window is how long a sold copy can linger — a posted knob, not a hole.
+#
+# Order it AFTER `SCRY_TICKET_GATES` is set on the origin: pointed at an
+# unticketed title this admits everyone anyway, which proves nothing.
+#
+# The kick rule is in `entitle.rs` and does not bend: kick on a definite
+# on-chain zero, NEVER on a failed read. An RPC outage that booted every
+# paying player would be the never-raises trap with a boot on. Watch
+# `entitle_unknown` in the stats — armed and climbing means the door is open
+# and nobody can see it.
+#
+# entitle_origin = "https://scry.moreright.xyz"
