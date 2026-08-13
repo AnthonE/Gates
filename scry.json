@@ -1,7 +1,7 @@
 {
  "scry": 1,
  "game": "gates",
- "version": "0.1.0",
+ "version": "0.2.0",
  "_version": "The workspace version in Cargo.toml. scry never copies this onto the store row \u2014 it serves it beside the version actually published in its depot and flags the gap, so a tag ahead of a build shows up as a gap instead of vanishing. ci/scry_manifest.py --self-test keeps this equal to Cargo.toml, the same check release.yml already makes against a tag.",
  "listing": {
   "kind": "survival \u2014 100-player shards",

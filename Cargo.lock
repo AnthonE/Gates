@@ -1971,7 +1971,7 @@ dependencies = [
 
 [[package]]
 name = "client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy",
  "bevy_procedural_tree",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "client-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "protocol",
  "sim-core",
@@ -2085,7 +2085,7 @@ dependencies = [
 
 [[package]]
 name = "content"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "sim-core",
@@ -4615,7 +4615,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "sim-core",
 ]
@@ -5241,7 +5241,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "client",
  "client-core",
@@ -5323,7 +5323,7 @@ dependencies = [
 
 [[package]]
 name = "sim-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "xxhash-rust",
 ]
