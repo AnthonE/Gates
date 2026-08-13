@@ -307,6 +307,33 @@ do not rediscover)
   (measured elsewhere: three parallel rounds worsened visual defects
   60→66; one sequential owner over the coupled set cut them to 26). The
   lighting gap, when attacked, is a single iteration's single ownership.
+- **A depot build id has no platform in it, and scry's origin keys by build id
+  alone.** `ci/depot.py`'s `build_id()` is `<version>-g<sha>` (plus a
+  content-keyed `-dirty` marker); the origin stores
+  `$SCRY_DEPOTS_DIR/<slug>/<build>/depot.json` and `published.json` maps
+  *platform → build id*. So **two platforms packaged from one commit are one
+  directory**, holding one `depot.json`, which carries a single `platform` and
+  `launch.exec` — and both platform rows resolve to it. A linux player would be
+  handed the Windows depot, silently. `depot.py` even prints the same rsync
+  destination for both. It has never fired only because the two builds
+  published 2026-08-10 happened to be cut at different commits, which is luck
+  wearing a design's clothes. **Do not fix it with a platform suffix on the
+  id**: scry's `meter/gamerepo.py::version_of` strips `-g[0-9a-f]+…$` anchored
+  at `$`, so `0.2.0-g<sha>-win-x86_64` stops parsing back to `0.2.0` and the
+  store row's declared-vs-published gap goes permanently red; a fake-hex sha
+  parses and lies about the commit. Until the origin keys by (build, platform),
+  the workaround is what 2026-08-13 did — **package each platform from a
+  different commit**, which is why the two live depots name adjacent shas.
+- **`x86_64-pc-windows-gnu` needs mingw's POSIX threading, and half a switch
+  is worse than none.** Ubuntu's default alternative is `13-win32`, whose
+  `libgcc.a(gthr-win32.o)` has no `__mingwthr_key_dtor` — the client fails at
+  link with every gate green. Pointing only `CARGO_TARGET_..._LINKER` at
+  `-posix` moves the error rather than fixing it: the C++ deps
+  (`basis_universal_sys`, via `cc` calling `x86_64-w64-mingw32-g++`) are still
+  compiled win32 and die on `__gthr_win32_mutex_*`. Both halves must agree —
+  `update-alternatives --set` for **gcc and g++** — and `target/
+  x86_64-pc-windows-gnu` must be deleted, because the C++ objects are cached
+  per threading model. Set to `manual` on this box 2026-08-13.
 
 ## The loop discipline
 
