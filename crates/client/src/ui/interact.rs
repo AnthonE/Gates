@@ -642,8 +642,10 @@ mod tests {
 
 use sim_core::fmath::{fabs, floor_i32};
 use sim_core::gather::{CONE_COS, DY_MAX_M, POINT_BLANK_M2, REACH_M as SWING_REACH_M};
-use sim_core::occupy::Harvested;
-use sim_core::terrain::{scatter, Haven, Occupant, ScatterTable, CELL_SIZE};
+use sim_core::occupy::{Harvested, SlotCache};
+// `scatter` itself is deliberately NOT imported: every read on this path goes
+// through `Island::slot`, and `tests/ui.rs`'s call-site gate says so.
+use sim_core::terrain::{Haven, Occupant, ScatterTable, Slot, CELL_SIZE};
 
 /// What a swing would land on, or `Occupant::None` for a whiff.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -712,11 +714,35 @@ pub struct SwingAim {
 /// takes `&dyn Fn`: the caller's harvest state is `ClientCore`'s in the game
 /// and a fixture in the gate, and neither should force a generic through
 /// every signature between here and the HUD.
+///
+/// This is `sim_core::occupy::Occupants` plus the seed, deliberately — the
+/// sim bundles the identical four borrows for the identical scan, and
+/// `ClientCore::island` hands both halves over in one call so the client's
+/// crosshair and the client's predictor share one set of cache lines.
 pub struct Island<'a> {
     pub seed: u64,
     pub table: &'a ScatterTable,
     pub haven: &'a Haven,
     pub harvested: &'a dyn Harvested,
+    /// **The memo, and the only door to `terrain::scatter` on this path.**
+    /// A cold `scatter` costs ~60 `noise2` taps, a 3×3 window nine of them,
+    /// and the crosshair resolves that window every frame — so the resolver
+    /// reads through here and `tests/ui.rs`'s call-site gate refuses a
+    /// direct call that would walk past it.
+    pub cache: &'a mut SlotCache,
+}
+
+impl Island<'_> {
+    /// The slot in cell (`cx`, `cz`), memoized.
+    ///
+    /// Identical bits to `terrain::scatter(seed, table, haven, cx, cz)` — the
+    /// cache is a pure function's memo, so a hit and a miss return the same
+    /// answer and eviction can only change how long it took
+    /// (`occupy::SlotCache`'s own argument). `tests/ui.rs` proves that
+    /// equality over a walk of the island rather than asserting it here.
+    pub fn slot(&mut self, cx: i32, cz: i32) -> Slot {
+        self.cache.slot(self.seed, self.table, self.haven, cx, cz)
+    }
 }
 
 /// The nearest standing swingable slot in reach and inside the aim cone.
@@ -727,9 +753,12 @@ pub struct Island<'a> {
 /// grid), and `d2 < best` is strict so the FIRST cell in that order keeps it,
 /// which is what `gather::swing`'s `is_none_or(|b| d2 < b.d2)` does.
 ///
-/// Allocates nothing and takes no `&mut`: the caller may run it every frame
-/// for the prompt and again on the click without the two disagreeing.
-pub fn resolve_swing(at: SwingAim, island: Island<'_>) -> SwingPick {
+/// Allocates nothing and is **idempotent**: the caller may run it every frame
+/// for the prompt and again on the click without the two disagreeing. It took
+/// no `&mut` at all until the memo landed, and the weaker word is the honest
+/// one — `island.cache` is written, but only with answers `terrain::scatter`
+/// would have recomputed, so nothing observable moves.
+pub fn resolve_swing(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
     let SwingAim { x, y, z, fx, fz } = at;
     let mut out = SwingPick::default();
     let mut best = f32::INFINITY;
@@ -753,7 +782,7 @@ pub fn resolve_swing(at: SwingAim, island: Island<'_>) -> SwingPick {
             let cx = pcx + dx_cell;
             let cz = pcz + dz_cell;
             dx_cell += 1;
-            let s = scatter(island.seed, island.table, island.haven, cx, cz);
+            let s = island.slot(cx, cz);
             if !swingable(s.occupant) {
                 continue;
             }

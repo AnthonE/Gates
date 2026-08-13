@@ -653,7 +653,7 @@ fn the_counts_line_names_which_wait_it_is_in() {
 
 use client::ui::interact::{resolve_swing, swing_label, Island, SwingAim, SwingPick};
 use sim_core::gather::{CONE_COS, DY_MAX_M, POINT_BLANK_M2, REACH_M as SWING_REACH_M};
-use sim_core::occupy::{Harvested, Pristine};
+use sim_core::occupy::{Harvested, Pristine, SlotCache};
 use sim_core::terrain::{scatter, Occupant, ScatterTable, CELL_SIZE};
 
 /// A harvested set naming exactly one cell, so "the sim already took it" is
@@ -687,6 +687,7 @@ fn a_swing_names_what_it_would_hit() {
     let seed = 7;
     let table = ScatterTable::alpha_default();
     let haven = sim_core::terrain::haven(seed);
+    let mut cache = SlotCache::new();
     let mut named = 0;
     let mut kinds = Vec::new();
     for want in [
@@ -710,11 +711,12 @@ fn a_swing_names_what_it_would_hit() {
                 fx: 1.0,
                 fz: 0.0,
             },
-            Island {
+            &mut Island {
                 seed,
                 table: &table,
                 haven: &haven,
                 harvested: &Pristine,
+                cache: &mut cache,
             },
         );
         assert_eq!(
@@ -756,6 +758,7 @@ fn the_cone_is_the_aim() {
     let seed = 7;
     let table = ScatterTable::alpha_default();
     let haven = sim_core::terrain::haven(seed);
+    let mut cache = SlotCache::new();
     let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
     let px = sx - 1.0;
 
@@ -767,11 +770,12 @@ fn the_cone_is_the_aim() {
             fx: 1.0,
             fz: 0.0,
         },
-        Island {
+        &mut Island {
             seed,
             table: &table,
             haven: &haven,
             harvested: &Pristine,
+            cache: &mut cache,
         },
     );
     assert_eq!(toward.occupant, Occupant::Tree as u8);
@@ -784,11 +788,12 @@ fn the_cone_is_the_aim() {
             fx: -1.0,
             fz: 0.0,
         },
-        Island {
+        &mut Island {
             seed,
             table: &table,
             haven: &haven,
             harvested: &Pristine,
+            cache: &mut cache,
         },
     );
     assert_eq!(
@@ -803,6 +808,7 @@ fn point_blank_ignores_the_cone() {
     let seed = 7;
     let table = ScatterTable::alpha_default();
     let haven = sim_core::terrain::haven(seed);
+    let mut cache = SlotCache::new();
     let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
     // Inside POINT_BLANK_M2, facing the wrong way entirely.
     let off = (POINT_BLANK_M2.sqrt()) * 0.5;
@@ -814,11 +820,12 @@ fn point_blank_ignores_the_cone() {
             fx: -1.0,
             fz: 0.0,
         },
-        Island {
+        &mut Island {
             seed,
             table: &table,
             haven: &haven,
             harvested: &Pristine,
+            cache: &mut cache,
         },
     );
     assert_eq!(
@@ -835,6 +842,7 @@ fn reach_bounds_the_prompt() {
     let seed = 7;
     let table = ScatterTable::alpha_default();
     let haven = sim_core::terrain::haven(seed);
+    let mut cache = SlotCache::new();
     let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
 
     let inside = resolve_swing(
@@ -845,11 +853,12 @@ fn reach_bounds_the_prompt() {
             fx: 1.0,
             fz: 0.0,
         },
-        Island {
+        &mut Island {
             seed,
             table: &table,
             haven: &haven,
             harvested: &Pristine,
+            cache: &mut cache,
         },
     );
     assert_eq!(
@@ -866,11 +875,12 @@ fn reach_bounds_the_prompt() {
             fx: 1.0,
             fz: 0.0,
         },
-        Island {
+        &mut Island {
             seed,
             table: &table,
             haven: &haven,
             harvested: &Pristine,
+            cache: &mut cache,
         },
     );
     assert_eq!(outside.occupant, 0, "1.1 x reach must whiff");
@@ -885,6 +895,7 @@ fn the_sim_having_taken_it_ends_the_prompt() {
     let seed = 7;
     let table = ScatterTable::alpha_default();
     let haven = sim_core::terrain::haven(seed);
+    let mut cache = SlotCache::new();
     let (cx, cz, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
     let px = sx - 1.0;
 
@@ -896,11 +907,12 @@ fn the_sim_having_taken_it_ends_the_prompt() {
             fx: 1.0,
             fz: 0.0,
         },
-        Island {
+        &mut Island {
             seed,
             table: &table,
             haven: &haven,
             harvested: &Pristine,
+            cache: &mut cache,
         },
     );
     assert_eq!(standing.occupant, Occupant::Tree as u8);
@@ -914,11 +926,12 @@ fn the_sim_having_taken_it_ends_the_prompt() {
             fx: 1.0,
             fz: 0.0,
         },
-        Island {
+        &mut Island {
             seed,
             table: &table,
             haven: &haven,
             harvested: &taken,
+            cache: &mut cache,
         },
     );
     assert_eq!(
@@ -934,6 +947,7 @@ fn the_vertical_window_bounds_it() {
     let seed = 7;
     let table = ScatterTable::alpha_default();
     let haven = sim_core::terrain::haven(seed);
+    let mut cache = SlotCache::new();
     let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
     let px = sx - 1.0;
 
@@ -945,11 +959,12 @@ fn the_vertical_window_bounds_it() {
             fx: 1.0,
             fz: 0.0,
         },
-        Island {
+        &mut Island {
             seed,
             table: &table,
             haven: &haven,
             harvested: &Pristine,
+            cache: &mut cache,
         },
     );
     assert_eq!(level.occupant, Occupant::Tree as u8);
@@ -962,11 +977,12 @@ fn the_vertical_window_bounds_it() {
             fx: 1.0,
             fz: 0.0,
         },
-        Island {
+        &mut Island {
             seed,
             table: &table,
             haven: &haven,
             harvested: &Pristine,
+            cache: &mut cache,
         },
     );
     assert_eq!(
@@ -982,6 +998,7 @@ fn the_swing_pick_is_stable() {
     let seed = 7;
     let table = ScatterTable::alpha_default();
     let haven = sim_core::terrain::haven(seed);
+    let mut cache = SlotCache::new();
     let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
     let a = resolve_swing(
         SwingAim {
@@ -991,11 +1008,12 @@ fn the_swing_pick_is_stable() {
             fx: 1.0,
             fz: 0.0,
         },
-        Island {
+        &mut Island {
             seed,
             table: &table,
             haven: &haven,
             harvested: &Pristine,
+            cache: &mut cache,
         },
     );
     let b = resolve_swing(
@@ -1006,11 +1024,12 @@ fn the_swing_pick_is_stable() {
             fx: 1.0,
             fz: 0.0,
         },
-        Island {
+        &mut Island {
             seed,
             table: &table,
             haven: &haven,
             harvested: &Pristine,
+            cache: &mut cache,
         },
     );
     assert_eq!(a, b);
@@ -2336,4 +2355,250 @@ fn the_connect_screen_still_claims_an_identity() {
          a declared `--identity` and a launcher-reported one. Reading the \
          flag alone is what left a signed-in player anonymous"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The crosshair's memo (`NOW.md` §0sp, client half).
+//
+// `resolve_swing` runs on the crosshair EVERY FRAME — `render/verbs.rs`'s
+// `resolve` writes `Swung` per frame so the prompt is there before the click.
+// It walks a 3×3 cell window, and `terrain::scatter` is ~60 `noise2` taps a
+// cell, so a cold scan is ~540 taps at 60 Hz against the server's once per 38
+// ticks for the same nine cells. `gather::swing` had the identical defect and
+// fixed it the identical way on 2026-08-11 (a hundred aligned swing cooldowns
+// cost 1.9 ms in one `World::tick`); this is that fix on the hotter side.
+//
+// The three things a memo has to earn, and one gate each:
+//   1. it returns what the pure function returns (`the_memo_is_the_function`)
+//   2. sharing it across calls changes no pick (`a_shared_cache_picks_the_same`)
+//   3. it actually saves the work (`standing_still_costs_nothing_after_the_first`)
+// Plus a call-site scan, because a future edit re-opens this by writing
+// `scatter(` rather than by changing a value — `tls_callsite.rs`'s reasoning.
+
+use sim_core::terrain::CELLS_PER_SIDE;
+
+/// A slot of the wanted kind whose whole 3×3 window is inside the island, so
+/// the resolve count below is exactly nine rather than nine-minus-the-sea.
+fn find_interior_slot(seed: u64, want: Occupant) -> Option<(i32, i32, f32, f32, f32)> {
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    for cz in 1..CELLS_PER_SIDE - 1 {
+        for cx in 1..CELLS_PER_SIDE - 1 {
+            let s = scatter(seed, &table, &haven, cx, cz);
+            if s.occupant == want {
+                return Some((cx, cz, s.x, s.y, s.z));
+            }
+        }
+    }
+    None
+}
+
+/// **The memo returns the function's own bits.** `Island::slot` is only sound
+/// because `scatter` is pure in `(seed, cell)`; the cache is direct-mapped and
+/// evicts silently, so a line that answered for the wrong cell would be a
+/// wrong prompt rather than a slow one. Walked over enough cells to force
+/// collisions — `SLOT_CACHE_SLOTS` is 1,024 and this visits ~10,000.
+#[test]
+fn the_memo_is_the_function() {
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let mut cache = SlotCache::new();
+    let mut island = Island {
+        seed,
+        table: &table,
+        haven: &haven,
+        harvested: &Pristine,
+        cache: &mut cache,
+    };
+    let mut occupied = 0;
+    for cz in 40..140 {
+        for cx in 40..140 {
+            let memo = island.slot(cx, cz);
+            let cold = scatter(seed, &table, &haven, cx, cz);
+            assert_eq!(
+                (memo.occupant, memo.x, memo.y, memo.z, memo.yaw, memo.scale),
+                (cold.occupant, cold.x, cold.y, cold.z, cold.yaw, cold.scale),
+                "the memo disagreed with `scatter` at cell ({cx},{cz})"
+            );
+            if memo.occupant != Occupant::None {
+                occupied += 1;
+            }
+        }
+    }
+    // A walk that found nothing would agree with `scatter` about ten thousand
+    // empty cells and prove nothing about a slot's fields.
+    assert!(
+        occupied > 100,
+        "only {occupied} of 10,000 cells held a slot - this walk is not \
+         exercising the fields it claims to compare"
+    );
+    println!("memo agreed with scatter over 10,000 cells, {occupied} occupied");
+}
+
+/// **A cache carried across calls picks what a fresh one picks.** This is the
+/// defect the shared cache could actually introduce: `ClientCore`'s cache is
+/// filled by the predictor's movement step and then read by the crosshair, so
+/// its lines are never fresh in the game. A pick that depended on which lines
+/// happened to be resident would be a prompt that changed while the world
+/// stood still.
+#[test]
+fn a_shared_cache_picks_the_same() {
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, sx, sy, sz) = find_slot(seed, Occupant::Tree).expect("seed 7 has a tree");
+
+    // One cache, walked over the whole approach - the game's shape.
+    let mut shared = SlotCache::new();
+    let mut carried = Vec::new();
+    // A second cache, thrown away between calls - the old cold path.
+    let mut fresh = Vec::new();
+
+    let mut step = 0;
+    while step <= 20 {
+        let aim = SwingAim {
+            x: sx - 4.0 + step as f32 * 0.4,
+            y: sy,
+            z: sz,
+            fx: 1.0,
+            fz: 0.0,
+        };
+        carried.push(resolve_swing(
+            aim,
+            &mut Island {
+                seed,
+                table: &table,
+                haven: &haven,
+                harvested: &Pristine,
+                cache: &mut shared,
+            },
+        ));
+        let mut once = SlotCache::new();
+        fresh.push(resolve_swing(
+            aim,
+            &mut Island {
+                seed,
+                table: &table,
+                haven: &haven,
+                harvested: &Pristine,
+                cache: &mut once,
+            },
+        ));
+        step += 1;
+    }
+    assert_eq!(
+        carried, fresh,
+        "the pick depended on which cache lines were resident"
+    );
+    // And the walk actually crossed the reach boundary, so the equality above
+    // covers a pick appearing rather than twenty-one identical whiffs.
+    assert!(
+        carried.iter().any(|p| p.occupant != 0) && carried.iter().any(|p| p.occupant == 0),
+        "the approach never crossed from whiff to pick: {carried:?}"
+    );
+}
+
+/// **The saving, as a count.** A cold 3×3 window is nine `scatter` calls; the
+/// next frame at the same position is none. A count rather than a duration on
+/// purpose — this box is shared and cannot quote a timing (`GOAL.md`), while a
+/// resolve count is identical here and on the reference VPS.
+#[test]
+fn standing_still_costs_nothing_after_the_first() {
+    let seed = 7;
+    let table = ScatterTable::alpha_default();
+    let haven = sim_core::terrain::haven(seed);
+    let (_, _, sx, sy, sz) =
+        find_interior_slot(seed, Occupant::Tree).expect("seed 7 has an interior tree");
+    let aim = SwingAim {
+        x: sx - 1.0,
+        y: sy,
+        z: sz,
+        fx: 1.0,
+        fz: 0.0,
+    };
+    let mut cache = SlotCache::new();
+    assert_eq!(cache.resolves(), 0);
+
+    let first = resolve_swing(
+        aim,
+        &mut Island {
+            seed,
+            table: &table,
+            haven: &haven,
+            harvested: &Pristine,
+            cache: &mut cache,
+        },
+    );
+    assert_eq!(
+        cache.resolves(),
+        9,
+        "a cold 3x3 window is nine cells - if this is not nine the scan moved \
+         and the cost claim below is about a different loop"
+    );
+    assert_eq!(first.occupant, Occupant::Tree as u8);
+
+    // Sixty more frames of the player not moving: the crosshair re-resolves
+    // every one of them and the island is not consulted again.
+    let mut frame = 0;
+    while frame < 60 {
+        let again = resolve_swing(
+            aim,
+            &mut Island {
+                seed,
+                table: &table,
+                haven: &haven,
+                harvested: &Pristine,
+                cache: &mut cache,
+            },
+        );
+        assert_eq!(again, first, "the pick moved while the player did not");
+        frame += 1;
+    }
+    assert_eq!(
+        cache.resolves(),
+        9,
+        "60 frames standing still cost {} scatter calls - the crosshair is \
+         resolving cold again",
+        cache.resolves() - 9
+    );
+    println!("61 frames of crosshair on one node: 9 scatter calls, not 549");
+}
+
+/// **And nothing on this path may call `scatter` directly.** The memo is only
+/// worth having if every read goes through it, and that is a property of call
+/// sites rather than of values — so a source scan is the instrument, the same
+/// reasoning as `tests/tls_callsite.rs` and `tests/sound.rs`'s drain gate.
+///
+/// `render/props.rs` is deliberately NOT listed: the chunk builder resolves 64
+/// *distinct* cells once per chunk and never revisits them, so a memo there is
+/// pure overhead. This names the two files that read the same cells every
+/// frame.
+#[test]
+fn the_swing_path_reads_the_island_through_the_memo() {
+    const SITES: [&str; 2] = ["src/ui/interact.rs", "src/render/verbs.rs"];
+    for site in SITES {
+        let src = std::fs::read_to_string(site).unwrap_or_else(|e| panic!("{site}: {e}"));
+        // Comments may name the call freely - every one of them is *about*
+        // this rule. `tls_callsite.rs`'s `code_of`, inlined for two files.
+        let code: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for needle in ["scatter(", "terrain::scatter"] {
+            assert!(
+                !code.contains(needle),
+                "{site} calls `{needle}` directly. Every read on the swing \
+                 path goes through `Island::slot` so it lands in the cache \
+                 the predictor already filled - a direct call is ~60 `noise2` \
+                 taps, every frame, per cell (`NOW.md` §0sp)."
+            );
+        }
+        assert!(
+            code.contains("island.slot(") || code.contains("Island<'_>"),
+            "{site} no longer touches the island at all - this gate is \
+             watching a ghost, so drop it from SITES in the same commit"
+        );
+    }
 }

@@ -64,13 +64,22 @@ the one that was a **spike** — `gather::swing` read `terrain::scatter` cold
 instead of through `SlotCache`, so a hundred aligned swing cooldowns cost
 1.9 ms in one `World::tick`, now 0.28.
 
+**The client half landed 2026-08-13.** `resolve_swing` reads through
+`ClientCore`'s own `SlotCache` — the predictor's, warm with the cells this
+frame's movement step just filled — via `ClientCore::island`. Counted, not
+timed: 61 frames of crosshair on one node cost **9 `scatter` calls, not
+549** (`SlotCache::resolves`, a memo statistic, never hashed). Four gates in
+`tests/ui.rs`, three proven red under their own mutation; the fourth is a
+call-site scan refusing a direct `scatter(` on this path
+(`tls_callsite.rs`'s shape). `render/props.rs` is deliberately excluded —
+64 *distinct* cells once per chunk is not a memo's case.
+
 Open: the encoder is now the largest phase (~0.43 ms of the 0.83), and
-`World::scatter_clear` still resolves cells cold per spawn pick — a respawn
-storm would show it the way the swing did. **And the same defect is next
-door, worse** *(client lane, not taken — one owner per crate)*:
-`ui::interact::resolve_swing` does the identical cold 3×3 scan and
-`render/verbs.rs` calls it **every frame**, ~540 `noise2` at 60 Hz against
-the server's once per 38 ticks. Same three-line fix.
+`World::scatter_clear` still resolves cells cold per spawn pick. **It is
+not the same three-line fix** — it is `&self`, and unlike the crosshair its
+3×3 window *moves every candidate* along the spawn ring, so the cells are
+distinct and a memo only pays across repeated picks. Measure a respawn
+storm before threading `&mut self` through the picker.
 
 ---
 

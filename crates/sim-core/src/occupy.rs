@@ -139,6 +139,18 @@ pub struct SlotCache {
     /// The seed the lines were resolved under. A cache handed a different
     /// seed is not stale, it is wrong, so it is emptied rather than trusted.
     seed: u64,
+    /// How many times this cache has actually run `terrain::scatter` — the
+    /// work it exists to avoid, counted so "it is cached" is a measurement
+    /// rather than a claim. Monotonic across `reset`, because a seed change
+    /// does not un-spend the taps already made.
+    ///
+    /// **A statistic, not sim state**, exactly like the lines it counts: it
+    /// is never hashed, and two peers whose caches disagree about it still
+    /// answer every query identically. It is what lets a gate assert a cold
+    /// scan costs nine resolves and the next one at the same position costs
+    /// none — a COUNT, which is quotable on any box, unlike the elapsed time
+    /// that motivated the cache.
+    resolves: u32,
     lines: [Line; SLOT_CACHE_SLOTS],
 }
 
@@ -146,11 +158,17 @@ impl SlotCache {
     pub fn new() -> Self {
         Self {
             seed: 0,
+            resolves: 0,
             lines: [Line {
                 key: NO_KEY,
                 slot: EMPTY_SLOT,
             }; SLOT_CACHE_SLOTS],
         }
+    }
+
+    /// The running count of `terrain::scatter` calls this cache has made.
+    pub fn resolves(&self) -> u32 {
+        self.resolves
     }
 
     /// Drop every line. Not a tick path — only a seed change reaches it.
@@ -190,6 +208,7 @@ impl SlotCache {
             return self.lines[ix].slot;
         }
         let slot = terrain::scatter(seed, table, haven, cx, cz);
+        self.resolves = self.resolves.wrapping_add(1);
         self.lines[ix] = Line { key, slot };
         slot
     }
