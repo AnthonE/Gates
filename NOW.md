@@ -42,101 +42,6 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
-## 0sl · The shard list reaches the game *(operator lane — two acts, in order)*
-
-**A loop cannot finish this.** The tree half landed; publishing is the
-operator's.
-
-What was wrong: the public shard is up and its list is served
-(`/api/launcher/servers/gates`, `servers.url` set), and the in-game browser
-was still empty on every launch that did not come through the launcher's
-Servers window — nothing on the argv could carry the url. scry gained a
-`{servers}` placeholder; `ci/depot.py`'s `LAUNCH_ARGS` now asks for it.
-`shards.toml` also said `eu-1` while the served document said `us-east-1`,
-so the next regeneration would have re-published a row key nobody's
-favourites matched; the served name won.
-
-The two acts, and **this order is not a preference** — a depot using
-`{servers}` needs a launcher that knows it, and nothing in the depot
-document can declare a launcher floor, so an older launcher refuses the
-whole launch:
-
-1. **Ship the launcher** carrying `ARG_VARS` with `servers` in it
-   (scry-forge, `launcher-rs`).
-2. **Re-publish Gates' depot document**, so `launch.args` carries
-   `--servers {servers}`. `python3 ci/depot.py`, then the depot ceremony in
-   scry `docs/client/LAUNCHER.md` §8.
-
-Until (2), the fix is inert and the browser stays empty — `--servers <url>`
-on the command line is the workaround, and joining from the Servers window
-already works.
-
-## 0wd · A new world register is proposed *(operator lane — blocked, skip)*
-
-**A loop cannot pick this up.** Logged here so it is visible, not queued.
-`WORLD.md` (new, 2026-08-10) carries an exploratory operator direction, and
-is a **roadmap rather than a v1 spec** — nothing in it competes with the
-alpha. `DECISIONS.md` §open has the row; nothing is spoken.
-
-Three findings in it are about the tree rather than the fiction:
-
-- **`ART.md`'s bar and the visual rubric are measured off the reference set,
-  and the rubric is checksummed outside this repo.** If the register
-  changes, every visual pass is scored against pine-and-granite while
-  building obsidian, and the builder cannot fix it. Three operator acts —
-  palette, a reference set, rubric style section — and 2026-08-01's art row
-  already names that exit. **Until then, no visual pass chases this.**
-- **A ward would invalidate `CONTENT.md` §4 anchor 2 without reddening
-  `test_content`.** The TTK bands compute against `balance.toml`'s
-  `globals.player_hp = 100`; a second regenerating pool makes them measure a
-  different quantity while staying green. Conditional — the ward is
-  explicitly undecided and nothing else depends on it.
-- **Extraction and world states are one system or they are two.** An opened
-  gate at the bank terminal and a repaired monument are the same object: a
-  bounded, tick-expiring, hashed, broadcast state. The terminal lands at A2
-  (`ALPHA.md` §2); if it ships a bespoke gate first, that is one idea paid
-  for twice.
-
-Cheapest real slice if it is ever spoken: the biome gradient — a radial third
-input to `biome(h, moist)` (`terrain.rs:263`) plus regenerated terrain
-goldens. `WORLD.md` §9.2 has the full order, and §9.1 the timing: **decide
-the register early, build it late.**
-
-## 0gh · The GitHub job-agent seam — the door is built; three acts remain *(operator lane + docs)*
-
-Assessed 2026-08-11; the write-up is scry-forge `docs/builders/GITHUB-JOBS.md`.
-Built already: `AGENTS.md` §the deal, the PR template's submit line, `gates`
-CI on every code PR, 100,000 SCRY standing on scry's board (`DECISIONS.md`
-2026-08-09). The board's paid ledger is `[]`; no outside fork has opened a PR.
-
-- **(operator, GitHub)** Branch protection on `main` requiring the `gates`
-  check — PRs #56–58 merged over days of red CI before the toolchain pin
-  (`DECISIONS.md` §open, the compiler); until GitHub enforces it the merge
-  gate is policy. Caveat: the workflow path-filters, so a docs-only PR
-  reports no check; the fix is a same-named instant no-op for those paths.
-- **(operator, wallet)** Sign `scry.sig.json` seq 1 — and the tooling is
-  already here, so **no key is ever pasted**: `./ci/scry_manifest.py
-  --print` shows the exact text, sign it in whatever holds the steward
-  key, then `./ci/scry_manifest.py --sign --seq 1 --signature 0x…
-  --wallet 0x…`. Unsigned, scry applies nothing — the store row and
-  update feed are wired and inert. **It now buys more than the row:**
-  scry's manifest standard grew a `jobs` block (`GAME-REPO.md` §4b), so
-  once signed, this repo posts its own board lane's picked work from
-  `scry.json` — guidance rows, never a price — and the six rows scry
-  currently keeps house-side move here.
-- **(operator, once)** Settle `gates-pr` end to end on the next accepted
-  PR: pay by public transfer, append the row scry-side — the board's
-  `settled_to_a_worker` stops being zero in public.
-- **(operator, GitHub)** The repo description still says "three.js
-  frontend" — stale since the browser cut, and it is the first line a
-  stranger reads above `AGENTS.md`. GitHub → About; no API path for it here.
-- ~~Milestones live twice~~ — **done 2026-08-11.** `DESIGN.md` §11 owns
-  the arc, §7 here points at it, M0's seven dead checkboxes are prose.
-
-Not owed, stated so it is not re-litigated: no issues queue (this file is
-the queue), no auto-pay or auto-merge (merge is the act that pays, a hand
-act), no webhook (the store seam stays a commit and a poke).
-
 ## 0sp · The tick has been profiled — where it goes *(server lane)*
 
 `crates/server/src/bin/profile.rs` (new, 2026-08-11) builds the stated worst
@@ -1401,3 +1306,131 @@ small.
 
 Not this lane's call: what an agent pays to enter and what it earns
 (`ALPHA.md` + scry side).
+
+## OP · the operator lane — a loop cannot pick any of these
+
+Moved to the bottom 2026-08-13, unchanged. They sat at the top of the
+file for a week, so every pass read ~100 lines of work it is not allowed
+to do before reaching an item it could take. They are still live and
+still the operator's; nothing here is a queue entry for a builder.
+
+## 0vj · The visual judge is off, and the port back is one script *(operator lane — harness)*
+
+**A loop cannot do this**: the harness is outside the repo by design
+(`CLAUDE.md` §the loop that builds this repo). Recorded here so the loop's
+missing half is work rather than an absence nobody notices.
+
+The loop restarted 2026-08-13 with `GATES_CAPTURE=0`. `art/capture.mjs`
+drives Playwright against the browser client and has been dead since
+2026-08-06 — it would fail every pass. So **no frames are captured and no
+`-visual.md` is written**: every render pass until this lands is scored by
+the merge-gate judge alone, which is the blind-pass condition the visual half
+was built to end (M1 slices 15–20).
+
+The replacement is already in the tree and needs no new design:
+`crates/client/src/render/capture.rs` — `gates --capture DIR`, the same six
+fixed vantages, settling on ring state rather than a clock, `--no-hud` for a
+clean plate. `CLAUDE.md` carries this box's working `VK_DRIVER_FILES` + `Xvfb`
+invocation. What is missing is a shell wrapper the runner can call in place of
+`capture.mjs`, plus re-pointing `TRIPWIRE_FILES` and flipping the default back.
+
+One repo-side half is genuinely ours and worth doing first either way: the
+probe writes PNGs only, and the visual judge's prompt asks for a
+`manifest.json` carrying the run's errors. A capture that reports what the
+client logged while shooting is better evidence than six pictures alone.
+
+## 0sl · The shard list reaches the game *(operator lane — two acts, in order)*
+
+**A loop cannot finish this.** The tree half landed; publishing is the
+operator's.
+
+What was wrong: the public shard is up and its list is served
+(`/api/launcher/servers/gates`, `servers.url` set), and the in-game browser
+was still empty on every launch that did not come through the launcher's
+Servers window — nothing on the argv could carry the url. scry gained a
+`{servers}` placeholder; `ci/depot.py`'s `LAUNCH_ARGS` now asks for it.
+`shards.toml` also said `eu-1` while the served document said `us-east-1`,
+so the next regeneration would have re-published a row key nobody's
+favourites matched; the served name won.
+
+The two acts, and **this order is not a preference** — a depot using
+`{servers}` needs a launcher that knows it, and nothing in the depot
+document can declare a launcher floor, so an older launcher refuses the
+whole launch:
+
+1. **Ship the launcher** carrying `ARG_VARS` with `servers` in it
+   (scry-forge, `launcher-rs`).
+2. **Re-publish Gates' depot document**, so `launch.args` carries
+   `--servers {servers}`. `python3 ci/depot.py`, then the depot ceremony in
+   scry `docs/client/LAUNCHER.md` §8.
+
+Until (2), the fix is inert and the browser stays empty — `--servers <url>`
+on the command line is the workaround, and joining from the Servers window
+already works.
+
+## 0wd · A new world register is proposed *(operator lane — blocked, skip)*
+
+**A loop cannot pick this up.** Logged here so it is visible, not queued.
+`WORLD.md` (new, 2026-08-10) carries an exploratory operator direction, and
+is a **roadmap rather than a v1 spec** — nothing in it competes with the
+alpha. `DECISIONS.md` §open has the row; nothing is spoken.
+
+Three findings in it are about the tree rather than the fiction:
+
+- **`ART.md`'s bar and the visual rubric are measured off the reference set,
+  and the rubric is checksummed outside this repo.** If the register
+  changes, every visual pass is scored against pine-and-granite while
+  building obsidian, and the builder cannot fix it. Three operator acts —
+  palette, a reference set, rubric style section — and 2026-08-01's art row
+  already names that exit. **Until then, no visual pass chases this.**
+- **A ward would invalidate `CONTENT.md` §4 anchor 2 without reddening
+  `test_content`.** The TTK bands compute against `balance.toml`'s
+  `globals.player_hp = 100`; a second regenerating pool makes them measure a
+  different quantity while staying green. Conditional — the ward is
+  explicitly undecided and nothing else depends on it.
+- **Extraction and world states are one system or they are two.** An opened
+  gate at the bank terminal and a repaired monument are the same object: a
+  bounded, tick-expiring, hashed, broadcast state. The terminal lands at A2
+  (`ALPHA.md` §2); if it ships a bespoke gate first, that is one idea paid
+  for twice.
+
+Cheapest real slice if it is ever spoken: the biome gradient — a radial third
+input to `biome(h, moist)` (`terrain.rs:263`) plus regenerated terrain
+goldens. `WORLD.md` §9.2 has the full order, and §9.1 the timing: **decide
+the register early, build it late.**
+
+## 0gh · The GitHub job-agent seam — the door is built; three acts remain *(operator lane + docs)*
+
+Assessed 2026-08-11; the write-up is scry-forge `docs/builders/GITHUB-JOBS.md`.
+Built already: `AGENTS.md` §the deal, the PR template's submit line, `gates`
+CI on every code PR, 100,000 SCRY standing on scry's board (`DECISIONS.md`
+2026-08-09). The board's paid ledger is `[]`; no outside fork has opened a PR.
+
+- **(operator, GitHub)** Branch protection on `main` requiring the `gates`
+  check — PRs #56–58 merged over days of red CI before the toolchain pin
+  (`DECISIONS.md` §open, the compiler); until GitHub enforces it the merge
+  gate is policy. Caveat: the workflow path-filters, so a docs-only PR
+  reports no check; the fix is a same-named instant no-op for those paths.
+- **(operator, wallet)** Sign `scry.sig.json` seq 1 — and the tooling is
+  already here, so **no key is ever pasted**: `./ci/scry_manifest.py
+  --print` shows the exact text, sign it in whatever holds the steward
+  key, then `./ci/scry_manifest.py --sign --seq 1 --signature 0x…
+  --wallet 0x…`. Unsigned, scry applies nothing — the store row and
+  update feed are wired and inert. **It now buys more than the row:**
+  scry's manifest standard grew a `jobs` block (`GAME-REPO.md` §4b), so
+  once signed, this repo posts its own board lane's picked work from
+  `scry.json` — guidance rows, never a price — and the six rows scry
+  currently keeps house-side move here.
+- **(operator, once)** Settle `gates-pr` end to end on the next accepted
+  PR: pay by public transfer, append the row scry-side — the board's
+  `settled_to_a_worker` stops being zero in public.
+- **(operator, GitHub)** The repo description still says "three.js
+  frontend" — stale since the browser cut, and it is the first line a
+  stranger reads above `AGENTS.md`. GitHub → About; no API path for it here.
+- ~~Milestones live twice~~ — **done 2026-08-11.** `DESIGN.md` §11 owns
+  the arc, §7 here points at it, M0's seven dead checkboxes are prose.
+
+Not owed, stated so it is not re-litigated: no issues queue (this file is
+the queue), no auto-pay or auto-merge (merge is the act that pays, a hand
+act), no webhook (the store seam stays a commit and a poke).
+
