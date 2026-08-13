@@ -593,6 +593,38 @@ impl ClientCore {
     pub fn ovens(&self) -> &LitOvens {
         &self.ovens
     }
+
+    /// The island this client stands on, as the seed plus the same four
+    /// borrows the predictor hands `movement::step` — including **the very
+    /// `SlotCache` the predictor just filled**.
+    ///
+    /// That sharing is the whole point, and it is `gather::swing`'s argument
+    /// one crate over: a swing reads the same nine cells at the same position
+    /// on the same tick as the movement step that preceded it, so the lines it
+    /// wants are already resolved. `ui::interact::resolve_swing` runs on the
+    /// crosshair EVERY FRAME rather than once per swing, so a cold 3×3 scan
+    /// there costs ~540 `noise2` at 60 Hz against the server's once per 38
+    /// ticks (`NOW.md` §0sp) — the same defect the sim already fixed, on the
+    /// hotter side of the wire.
+    ///
+    /// The seed comes off the predictor rather than from the caller for a
+    /// reason the borrow checker cannot state: `SlotCache::slot` **flushes**
+    /// when handed a seed it does not hold, so a caller free to pass its own
+    /// could empty the predictor's lines every frame and turn the memo into a
+    /// slower cold scan. `render::WorldId` keeps a second `seed`/`haven`/
+    /// `table` triple derived the same way, and this is the copy that owns the
+    /// cache.
+    pub fn island(&mut self) -> (u64, Occupants<'_>) {
+        (
+            self.predict.seed(),
+            Occupants {
+                table: &self.scatter_table,
+                haven: &self.haven,
+                harvested: &self.harvested,
+                cache: &mut self.slot_cache,
+            },
+        )
+    }
 }
 
 /// True if deploy row `row` is a door **and this client knows it is**.

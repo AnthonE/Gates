@@ -76,6 +76,14 @@ impl Predictor {
         &self.tail[..self.tail_len]
     }
 
+    /// The seed this predictor steps under — the one `movement::step` is
+    /// handed, and therefore the one the shared `SlotCache` holds lines for.
+    /// Read by `ClientCore::island`, so a caller asking the cache about a
+    /// cell cannot supply a *different* seed and silently flush it.
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
     /// One local input: append to the tail and, once started, step the
     /// predicted body and record it under the frame's seq. `cols` is the
     /// client piece mirror's collision index — the predictor collides

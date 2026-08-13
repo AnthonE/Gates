@@ -77,8 +77,13 @@ pub struct Near(pub Option<Target>);
 /// server declines at the edge of the aim radius — the quantize-both-sides
 /// law (`CLAUDE.md`) applied to aiming, which is exactly what the browser's
 /// `aimDir` does for the same reason.
+/// `NonSendMut` rather than `NonSend` for one reason: the swing pick reads
+/// the island through `ClientCore`'s own `SlotCache` — the predictor's, warm
+/// with the very cells this frame's movement step just resolved — and a memo
+/// is written to. It costs no extra scheduling: `keys` below already takes
+/// the session mutably, so these two were serialized before this line changed.
 pub fn resolve(
-    net: NonSend<Net>,
+    mut net: NonSendMut<Net>,
     look: Res<Look>,
     mut aimed: ResMut<Aimed>,
     mut near: ResMut<Near>,
@@ -86,7 +91,7 @@ pub fn resolve(
     mut in_weak: ResMut<InWeak>,
     world: Option<Res<crate::render::WorldId>>,
 ) {
-    let core = &net.session.core;
+    let core = &mut net.session.core;
     let [x, y, z] = core.predict.render_position();
     let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
     aimed.0 = interact::resolve(
@@ -103,36 +108,43 @@ pub fn resolve(
         aimed.0.verb,
         interact::Verb::Fire | interact::Verb::Recycler
     ) && core.ovens().is_lit(aimed.0.cx, aimed.0.cz, aimed.0.level);
+    // The weak-spot chase, read before the island borrows the core mutably.
+    // Both are `Copy` scalars, so this is a read and not a hold.
+    let (mark_cell, mark8) = (core.mark_cell, core.mark8);
     // The scatter pick needs the island, which does not exist until the
     // welcome names a seed — so this is `Option` and stands down rather than
     // guessing one. `render::world_placed`'s discipline, applied to a verb.
-    swung.0 = match world.as_deref() {
-        Some(w) => interact::resolve_swing(
-            SwingAim { x, y, z, fx, fz },
-            interact::Island {
-                seed: w.seed,
-                table: &w.table,
-                haven: &w.haven,
-                harvested: &core.harvested,
-            },
-        ),
-        None => SwingPick::default(),
-    };
-    // The weak sector, but only for the node actually aimed at: the chase is
-    // per-node and the server restarts it when the player switches targets,
-    // so a mark for the tree behind you says nothing about this one.
-    in_weak.0 = match world.as_deref() {
-        Some(w) if interact::mark_is_for(core.mark_cell, &swung.0) => {
-            let s = sim_core::terrain::scatter(
-                w.seed,
-                &w.table,
-                &w.haven,
-                swung.0.cx as i32,
-                swung.0.cz as i32,
-            );
-            interact::in_weak_sector(x, z, s.x, s.z, core.mark8)
+    //
+    // The island comes from `ClientCore::island` rather than from `WorldId`,
+    // and the two are the same triple derived twice from the same seed. The
+    // core's copy is the one that owns the cache, and handing the cache a
+    // *second* seed would flush it every frame — see that method's header.
+    // `w` is still what says a world exists at all.
+    (swung.0, in_weak.0) = match world.as_deref() {
+        Some(_) => {
+            let (seed, occ) = core.island();
+            let mut island = interact::Island {
+                seed,
+                table: occ.table,
+                haven: occ.haven,
+                harvested: occ.harvested,
+                cache: occ.cache,
+            };
+            let pick = interact::resolve_swing(SwingAim { x, y, z, fx, fz }, &mut island);
+            // The weak sector, but only for the node actually aimed at: the
+            // chase is per-node and the server restarts it when the player
+            // switches targets, so a mark for the tree behind you says
+            // nothing about this one. The cell was just resolved by the scan
+            // above, so this read is a cache hit by construction.
+            let weak = if interact::mark_is_for(mark_cell, &pick) {
+                let s = island.slot(pick.cx as i32, pick.cz as i32);
+                interact::in_weak_sector(x, z, s.x, s.z, mark8)
+            } else {
+                false
+            };
+            (pick, weak)
         }
-        _ => false,
+        None => (SwingPick::default(), false),
     };
     near.0 = structure::nearest(
         (x, z),
