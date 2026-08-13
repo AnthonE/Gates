@@ -112,7 +112,19 @@ impl Default for Settings {
             sensitivity: 1.0,
             invert_look: false,
             vsync: true,
-            fullscreen: false,
+            // **On** (operator, 2026-08-13). A survival game opens filling
+            // the screen; the windowed default was Bevy's, never a choice.
+            // Borderless rather than exclusive, which is what `apply_window`
+            // already resolves this to — an alt-tab must not change a video
+            // mode.
+            //
+            // Safe to move because this is a DEFAULT and not an assignment:
+            // `load` only reaches it for a key the settings file does not
+            // carry, so a player who already turned fullscreen off keeps it
+            // off. The one path that takes the defaults wholesale is a
+            // `--capture` run, and `render::mod` pins that one windowed on
+            // purpose — a probe's frame size is the visual gate's unit.
+            fullscreen: true,
             // The reference opens master and game at 1. Ours opens the bed
             // lower than either of them, but that belongs to the cue's own
             // gain rather than to a bus a player would then have to put back.

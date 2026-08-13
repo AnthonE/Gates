@@ -392,7 +392,17 @@ impl Plugin for GatesRenderPlugin {
                 app.insert_resource(disk);
             }
         } else {
-            app.init_resource::<Settings>();
+            app.insert_resource(Settings {
+                // The defaults, with ONE pinned: a capture run stays
+                // windowed however the shipping default moves. The probe's
+                // frame is the visual gate's unit, and
+                // `WindowMode::BorderlessFullscreen` would size it to
+                // whatever `Xvfb -screen` this box was started with — the
+                // same "a frame must not depend on the box" rule that makes
+                // the branch above load no file.
+                fullscreen: false,
+                ..default()
+            });
         }
 
         // `Menu` is inserted either way, because a system that reads it must
