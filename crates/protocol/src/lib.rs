@@ -943,8 +943,14 @@ const _: () = assert!(
 /// decode" — the `BUILD_MAT_BITS` posture — and that was true while three
 /// kinds were live and 3 was spare. `CONT_WORLD` *is* 3, so no value this
 /// field can carry is out of range any more: the `kind > CONT_MAX` guards
-/// at `decode_action_container` and `decode_event_cont_sync` cannot fire
-/// today. They are kept, not deleted, because they are the thing that
+/// cannot fire today. They live in match arms rather than in functions of
+/// their own — `decode_action`'s `ACT_CONTAINER` arm (`lib.rs`) and
+/// `decode_event`'s `SUB_CONT_SYNC` arm (`event.rs`), both reading this
+/// 2-bit field. (This paragraph named `decode_action_container` and
+/// `decode_event_cont_sync`; neither symbol has ever existed, which
+/// defeated the whole point of a note whose job is to let a later reader
+/// find the guards it is asking them to keep. Judge, pass -07, fix 3.)
+/// They are kept, not deleted, because they are the thing that
 /// starts working again the moment this width is widened ahead of the kind
 /// set — which is the next container kind's first move. A guard that
 /// currently refuses nothing is cheap; re-deriving why it was needed after

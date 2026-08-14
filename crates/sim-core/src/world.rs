@@ -2583,6 +2583,12 @@ impl World {
             // an archer's shot for the crime of standing next to a tree —
             // and standing next to a tree is where an archer stands. The
             // bow answers first or it does not work at all.
+            // What a full pack could not hold this tick. Written by
+            // `gather::swing` and `craft::step`, drained once below into a
+            // bag at this body's feet — one fixed drain point, because two
+            // producers each standing their own bag up is the shape
+            // CLAUDE.md's single-consumer trap is about.
+            let mut spill = [ItemStack::default(); INV_SLOTS];
             let swung = if ranged::draw(
                 tick,
                 &self.combat,
@@ -2603,6 +2609,7 @@ impl World {
                     &mut self.slot_lives,
                     &mut self.events,
                     &mut self.players[i],
+                    &mut spill,
                 )
             };
             craft::step(
@@ -2611,6 +2618,7 @@ impl World {
                 tick,
                 &mut self.players[i],
                 &mut self.events,
+                &mut spill,
             );
             if let Swing::Smashed { cx, cz, qx, qy, qz } = swung {
                 // The barrel is already gone (gather.rs marked the slot and
@@ -2639,6 +2647,32 @@ impl World {
                     qz,
                     owner,
                     &items,
+                    tick,
+                    &mut self.events,
+                );
+            }
+            // Drain the tick's spill. After the barrel arm on purpose: a
+            // smashed barrel's bag stands at arm's length, so a spill in
+            // the same tick merges into it instead of minting a second
+            // container a step away.
+            if spill.iter().any(|s| s.count > 0) {
+                let (owner, sx, sy, sz) = {
+                    let p = &self.players[i];
+                    (
+                        p.id,
+                        p.body.qx,
+                        p.body.qy + crate::backpack::BAG_Y_OFFSET_Q,
+                        p.body.qz,
+                    )
+                };
+                self.backpacks.spill_at(
+                    &self.backpack,
+                    &self.gather,
+                    sx,
+                    sy,
+                    sz,
+                    owner,
+                    &mut spill,
                     tick,
                     &mut self.events,
                 );

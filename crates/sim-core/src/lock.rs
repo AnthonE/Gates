@@ -519,8 +519,12 @@ pub fn shock(hp: &mut u16, amount: u16) -> u16 {
 }
 
 /// Give the lock item back to a hand that took its lock off. Returns what
-/// would not fit, which the caller drops on the floor — the same posture
-/// every other give in this crate takes toward a full inventory.
+/// **fit** — 1 or 0 — which is `inv_add`'s contract; this line said
+/// "returns what would not fit, which the caller drops on the floor" and
+/// was wrong twice over (inverted, and nothing drops anything). Both call
+/// sites discard it, so a full pack still destroys the lock: this is a
+/// give-back path and `NOW.md` §0sp2 owes it the spill lane that a node's
+/// yield and a finished craft now take.
 pub fn give_back(inv: &mut [ItemStack; INV_SLOTS], item: u16, stack_max: u16) -> u16 {
     inv_add(inv, item, 1, stack_max)
 }
