@@ -825,31 +825,70 @@ figure, a **contested-vs-uncontested throughput ratio**, or **offline-raid
 prevalence** — the four numbers that would settle the threat term
 properly.
 
-**The `oezp.at` paper is identified but still unread, and the reason
-changed** (2026-08-09). It is Jan Byczkowski, *"The Potential for Survival
+**The `oezp.at` paper is READ — 2026-08-14, at primary tier, from this
+box.** Jan Byczkowski / Ömer Furkan Alp, *"The Potential for Survival
 Games as a Research Medium in Political Science: Investigating the
 Hobbesian and Lockean State of Nature in Rust"*, **Austrian Journal of
-Political Science vol. 54 no. 2 (2025)**,
-`oezp.at/OEZP/en/article/view/4231` (PDF galley `/download/4231/3257`).
-It is **not** blocked by policy — every article URL on that OJS instance
-exceeds 10 redirects, and `academia.edu` 403s. So it is a broken fetch,
-not a denial, and a browser would very likely just open it.
-
-Confirmed from the abstract, three independent search summaries agreeing:
-in the game's anarchic environment — *which in certain aspects encourages
-violence by lowering the stakes* — **players nonetheless favour
-non-violent behaviour and defensive violence over offensive violence.**
-
-**What is still missing is every number in it**: encounter count, sample
-size, and the violent/non-violent and offensive/defensive percentages.
-The direction of the finding is established and it cuts against a large
-threat term; the magnitude is not. **Do not price a threat term off the
-abstract** — the headline is qualitative and §5.2 already warns that
-threat acts on trip shape rather than rate.
+Political Science (OZP) vol. 54 no. 2 (2025)**. The 2026-08-09 redirect
+loop did not reproduce on the `de` download route —
+`oezp.at/OEZP/de/article/download/4231/3257/10571` served the whole PDF
+on the first try (`SOURCES.md` §header, the 2026-08-14 probe). §5.6
+below is the record; every number in it is the paper's own (Tables 1–3).
 
 **r/playrust remains unavailable and is now known to be unavailable at the
 tool layer**, not the network: fetches are refused before egress, so no
 amount of open proxy fixes it. Vanilla-1× throughput, "how long to T3" and
 solo-vs-group session shape are still entirely unsourced. A human with a
-browser is the only route to both this and the paper — `SOURCES.md` §0
-Tier 4 is where they belong, and both rows stand.
+browser is the only route — `SOURCES.md` §0 Tier 4 item 15 is where it
+belongs and that row stands; the paper's row closed 2026-08-14 (§5.6).
+
+### 5.6 · The violence study, read (2026-08-14) — PRIMARY, and it settles shape, not magnitude
+
+Method, from the paper: 146 usable players out of 404 Twitch users / 640
+VODs collected in three batches; 30 observed minutes each (73
+player-hours), the window starting after the stream's 30th minute (or at
+actual gameplay); excluded: under 30 min of regular vanilla play and
+stream-sniping victims; breaks and modded segments paused the clock.
+Interactions were coded per 10-second interval from the streamer's
+perspective — non-violent {ignore, avoid/escape, communication,
+cooperation, alliance}, defence {warning shots/cover fire, threat,
+defence fight, base defence}, offence {pre-emptive/distrust, attack,
+base attack} — and an encounter that changed category was split into
+separate events.
+
+**The mix** (Table 1, per-player average shares): **35% non-violent + 17%
+defensive = 52% non-offensive, vs 48% offensive**. Absolute counts (Table
+3): **359 / 140 / 416 of 915 events** — offensive is 45.5% of events.
+**76% of players (111/146) committed at least one offensive act**; 10%
+(15) never interacted; 24% (35) were never offensive.
+
+**The tail is the finding** (Table 3): the 20 purely-offensive players
+(14%) averaged **2.45** offensive acts — *below* the 2.84 population
+mean, and removing them **raises** the remainder's mean to 2.91. The
+concentration sits in the **5% most violent (7 players): 94 offensive
+acts, 13.42 each**; removing them drops the mean 2.84 → 2.31 (−19%) and
+the offensive share 48% → 46%. So aggression is near-universal at low
+intensity and hyper-concentrated at the top — heavy-tailed, not a
+bimodal killers-vs-farmers split.
+
+**A rate, derived by us** (not the paper's framing, APPROX): 915 events /
+73 h ≈ 12.5 interactions per player-hour, ~5.7 of them offensive —
+early-session vanilla, under the persona caveat below.
+
+**Stated limitations**: 30 min is a small slice of a session; the VODs
+have since expired (Twitch keeps them 7–60 days), so the dataset cannot
+be re-checked; category calls needed researcher judgement; and streamers
+plausibly perform violence for viewers — the authors raise it themselves
+and answer that veterans' on-stream personas are settled habits.
+
+**What it settles and what it does not.** It settles the *shape* of the
+threat term: §5.2's trip-shape model, said by a measurement — danger is
+concentrated in actors (and plausibly places), most interactions are
+non-offensive, and the right model is hotspots, risky routes and
+occasional catastrophic loss, never a uniform farm-rate tax. It prices
+nothing: no farming trips, no carried value, no interruption rate, no
+deaths/hour — §5.5's four missing session numbers are all still missing,
+and `SOURCES.md`'s old framing of this row as "the missing magnitude" is
+corrected there. The magnitude question moves to the LOGISTICS row
+(`SOURCES.md` §3b): whether the 10–30× term is a constant or an
+early-wipe phenomenon is now the highest-value open question.

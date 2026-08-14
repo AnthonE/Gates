@@ -18,6 +18,14 @@ in both directions and both rewrites were honest measurements:
   the shell proxy answering 403 to CONNECT, `gist.githubusercontent.com`
   refused. Working: **WebSearch** and **`raw.githubusercontent.com`**
   (probed 200). Tier 3 only from there.
+- 2026-08-14 (the survey-intake pass, a remote-session box) found the
+  `oezp.at` **PDF galley fetchable**: the `de`-route URL with a third
+  path segment — `oezp.at/OEZP/de/article/download/4231/3257/10571` —
+  served the whole 406 KB PDF on the first try, and tier-4 item 14
+  closed at primary tier off it (`RIPLIST.md` §5.6). The 2026-08-09
+  redirect loop was an honest measurement and did not reproduce for that
+  one URL; the `en` article pages were not re-probed. WebSearch also
+  worked; nothing else was probed.
 
 Neither answer generalises. What does: a doc may record *what a probe
 found, when, and on which pass* — it may not record "reachable" as a
@@ -44,7 +52,7 @@ not hold on 2026-08-10 (see above)*. Probe the row you need:
 | `wiki.rustclash.com` (ex-`rustlabs.com`) | **403** | bot protection, not policy; `rustlabs.com` 301s here |
 | `rust.fandom.com` | **402** | Fandom paywall/bot wall |
 | `reddit.com` | **BLOCKED** | refused by the *tool layer*, not the network — no workaround from here |
-| `oezp.at` | **REDIRECT LOOP** | every article URL exceeds 10 redirects; abstract reachable by search only |
+| `oezp.at` | **PDF OPEN** (2026-08-14, one URL) | the `de` download galley (`…/de/article/download/4231/3257/10571`) serves the PDF whole; the article pages redirect-looped on 2026-08-09 and were not re-probed |
 | `raw.githubusercontent.com` | OPEN | as before |
 
 Unchanged rails: blocked hosts must not be pulled through a fetch proxy
@@ -87,18 +95,19 @@ looking.
 
 ### Tier 4 — the threat/logistics decomposition, our weakest evidence
 
-14. **STILL OPEN, and now fully identified.** Jan Byczkowski, *"The
-    Potential for Survival Games as a Research Medium in Political
-    Science: Investigating the Hobbesian and Lockean State of Nature in
-    Rust"*, Austrian Journal of Political Science **54(2), 2025** —
-    `oezp.at/OEZP/en/article/view/4231`, PDF galley
-    `oezp.at/OEZP/en/article/download/4231/3257`. **Not blocked: the OJS
-    instance redirect-loops (>10 hops) on every article URL from here,
-    and `academia.edu` 403s.** A browser will very likely just open it.
-    Bring back: encounter count, sample size, and the violent/non-violent
-    and offensive/defensive percentages. The abstract is confirmed
-    (players favour non-violent and *defensive* violence); it is the
-    magnitudes we lack. Highest-value single item on this page.
+14. ✅ **ANSWERED 2026-08-14, at primary tier.** The PDF galley opened
+    from this box (§header) and `RIPLIST.md` §5.6 carries Tables 1–3
+    whole: 146 players / 73 h; **52% / 48%** non-offensive / offensive as
+    the per-player average; **76%** offending at least once; and the
+    concentration statistic — 7 hyperactives (5%) at **13.42** offensive
+    acts each against a 2.84 mean, while the 20 purely-offensive players
+    sit *below* that mean. **The row's framing moved with the reading**:
+    this was queued as "the missing magnitude" for the threat term, and
+    it is not one — the paper measures the interaction *mix*, not farming
+    throughput; no trips, loads, interruptions or deaths/hour are in it.
+    What it settles is threat **shape** — heavy-tailed and concentrated,
+    `RIPLIST.md` §5.2's trip-shape model said by a measurement. The
+    magnitude question moves to the LOGISTICS row (§3b).
 15. **r/playrust**, searched for "sulfur per hour", "how long to T3",
     "solo vs group" — player-reported throughput on **vanilla 1×**, and
     how much of a session is farming vs travel vs fighting. Reddit was
@@ -132,9 +141,33 @@ cluster caught contradicting itself 3–6×.
 
 | source | what to look for | why |
 |---|---|---|
-| **Austrian Journal of Political Science**, "The Potential for Survival Games as a Research Medium in Political Science: Investigating the Hobbesian and Lockean State of Nature in Rust" (`oezp.at`) | Its actual encounter percentages — how often players met violence vs avoided it | **The highest-value single fetch on this list.** Real methodology, and its headline finding (players favour defensive over offensive violence) *cuts against* a large threat term |
+| ~~**Austrian Journal of Political Science**, "…the Hobbesian and Lockean State of Nature in Rust" (`oezp.at`)~~ | ✅ **read 2026-08-14** — `RIPLIST.md` §5.6 | Settled the *shape* (heavy-tailed, concentrated, mostly non-offensive), not the magnitude — §0 item 14 has why the framing moved |
 | **r/playrust** — search "sulfur per hour", "how long to T3", "solo vs group" | Player-reported throughput on **vanilla 1×**, and how much of a session is farming vs travel vs fighting | Reddit was unreachable to the research agent by fetch *and* by search; it is the primary community source and we have none of it |
 | **PC Gamer, "Pivot or Die" coverage** | The solo-vs-clan progression divergence, and the radiation-timer mechanic gating monument access | The clearest documented case of threat acting as a hard progression ceiling rather than a rate penalty |
+
+## 3b · The systems queue (2026-08-14) — their game over time, not another number
+
+An operator-relayed survey (raw text and per-claim tiers:
+`reference/dumps/20260814-systems-survey.md`) landed one framing worth
+adopting: the micromechanics are well-ripped, and the open value is in
+the reference's **systems over time** — how a naked's logistics become a
+veteran's, how a solo becomes a clan, how a quiet map is periodically
+forced to converge, how chores disappear, how a month-long world stays
+worth logging into. Seven candidate docs, in the survey's priority
+order. Each row names the questions to bring back; **the pass that
+writes a doc re-sources every claim first** — most below are
+summary-tier, several postdate 2026-01, and two are already corroborated
+by a second independent route (marked).
+
+| doc | the questions | why now |
+|---|---|---|
+| `LOGISTICS.md` | ONE table: effective collection throughput **naked → established solo → established group** — travel speed, carried value per trip, acquisition/fuel overhead, deposit-trip interval, exposure time per unit gathered, transport-loss probability, effective gather/min. Material: the 2020 modular-vehicle update (roads widened for it), Feb 2026 modular boats with fuel-priced engines, the intermittently-opening Deep Sea | Decides whether §5.1's **10–30× logistics term is a constant or an early-wipe phenomenon** — `RIPLIST.md` §2 row 5 (the largest un-charged term in our economy) needs exactly this before the island is made harder to farm |
+| `EVENTS.md` | Per event, across generations (airdrop → patrol heli → cargo ship → oil rig/hackable crates → wipe events → Deep Sea): **cadence · warning time · access investment · visible telegraph · objective dwell time · reward · exit exposure**. Cargo is the clean specimen (historically every 2–4 in-game days, announces itself by circling, boat to access, timed hack, winner defends a moving objective) | These seven columns are the knobs of `WORLD.md`'s extraction windows, and the reference ran that experiment for a decade — the strongest single map onto the register roadmap |
+| `PROGRESSION.md` | The 2020 tech tree's rationale (deterministic paths so the unlucky still progress); **Oct 2025 "Meta Shift"** (✓ corroborated: BP fragments, 5 basic → WB2 / 5 advanced → WB3, non-craftable, monument-sourced, stated intent to push players into contested ground and slow clan snowballing); **Nov 2025's reversal** (✓ corroborated: BP wipe + sharply cheaper unlocks, "might become a regular thing"); May 2026 workbench rares (single-summary). Extract: **what fraction of progression is reachable without leaving your base, per stage** | A weeks-between-resets game *is* its progression pacing, and 2025–26 is a published two-sided experiment in exactly our cadence question — the lesson candidate: progression exists partly to manufacture reasons to cross dangerous space |
+| `SOCIAL.md` | The July 2, 2026 "Common Ground" clans (✓ corroborated: craftable Clan Table, ≤100 members, roles/permissions/chat/MOTD/logs, clanmates on the map, tables standing in safe zones, researched at WB1). Bring back: what each role can authorize; team size vs clan size; which permissions are per-person vs inherited; map-visibility range; the claimed Hardcore disable (single-summary); how cupboards/locks/turrets/respawns key off membership; what happens on kick while assets stay authorized | It separates **membership → authority → communication → identification → position** — the decomposition `lock.rs` and `claim.rs` will face the day grouping outgrows ad-hoc teams, better read before that day than after |
+| `INDUSTRY.md` | The 2023 Industrial update: **which chores mature players stop doing by hand, per wipe stage**; the published throughput bounds (16 containers/conveyor, 32 items of a stack per move, 5 s work interval, 12 stacks per industrial tick — all APPROX, single-summary) | The in-base half of LOGISTICS' decomposition (acquisition → transport → sorting → processing → crafting → redeploy) — late-wipe players contesting instead of sorting boxes is a week-3 retention mechanism |
+| `MODERATION.md` | The F7 report payload (reporter/target identity, report type, server/location context, playtime, optional screenshot; console print or an HTTP endpoint), `combatlog <id>`'s fields, and the client-demo vs **full-server-demo** split (disk allocation, upload URL, playback client reportedly unfinished) | Wiki-documented, so plausibly reachable at primary tier. Pairs with `anomaly.rs`: the stack is report → immutable identifiers → **compact adjudication log** → escalate to replay evidence only when needed → action with reason and duration — and a deterministic core makes the expensive rung cheaper for us than it is for them |
+| `TRADE.md` (safe zones · shops · raid windows — three mechanisms, kept separate) | Outpost's 2021 drone marketplace (20-scrap delivery, ≤5 min, 10-min terminal reservation, invulnerable drones — exchange de-risked *on purpose*, their stated goal being more trading); July 2026 rentable shops (hourly rent, 12 h minimum stake, escalating takeover, 24 h eviction recovery — existence ✓ corroborated, numbers single-summary); Softcore raid windows 18:00–21:00 server-local + the 1 h cupboard aging (✓ corroborated) | The haven and the bank/extraction seam map onto all three, and the raid window is their shipped answer to "I cannot be online 24/7 on a weeks-long shard" — read it before we invent ours |
 
 ## 4 · Reachable from here, and already used
 
