@@ -412,12 +412,30 @@ impl Res {
         let sr = SAMPLE_RATE as f32;
         let r = (-std::f32::consts::PI * bw / sr).exp();
         let theta = std::f32::consts::TAU * hz / sr;
+        let a1 = 2.0 * r * theta.cos();
+        let a2 = -r * r;
+        // **Normalized to unity gain AT THE PEAK, evaluated rather than
+        // approximated**, and the difference is not cosmetic. The obvious
+        // `b0 = 1 − r²` looks like a normalization and is not one: a
+        // resonator's gain rises as its bandwidth narrows, so with the four
+        // bandwidths in `WOLF_FORMANTS` it hands F1 a peak of 20.6 and F4 a
+        // peak of 3.0 — and then a −6 dB/oct tilt on top multiplies a spread
+        // that is already there, for 48:1 in F1's favour. That is one formant
+        // with three inaudible companions, which would have made `growl`'s
+        // doc comment a claim about a filter bank it did not have.
+        //
+        // `|1 − a₁e^{−jθ} − a₂e^{−2jθ}|` is that gain in closed form, so
+        // dividing it out leaves every formant peaking at 1 and the source's
+        // own spectrum is then the only thing shaping the envelope — which is
+        // what the model says it is.
+        let (c, s) = (theta.cos(), theta.sin());
+        let (c2, s2) = ((2.0 * theta).cos(), (2.0 * theta).sin());
+        let re = 1.0 - a1 * c - a2 * c2;
+        let im = a1 * s + a2 * s2;
         Self {
-            // Normalized so the peak is about unity rather than about `1/B`,
-            // which would make a narrow formant the loud one.
-            b0: 1.0 - r * r,
-            a1: 2.0 * r * theta.cos(),
-            a2: -r * r,
+            b0: (re * re + im * im).sqrt(),
+            a1,
+            a2,
             y1: 0.0,
             y2: 0.0,
         }
@@ -1087,18 +1105,29 @@ fn growl(r: &mut Rng) -> Vec<f32> {
     let n = samples(dur);
     let sr = SAMPLE_RATE as f32;
     let mut out = vec![0.0f32; n];
-    // The tract, as four parallel resonators. Weighted by the same −6 dB/oct
-    // tilt `formant_gain` applies analytically for the howl — one model, two
-    // sources, which is the whole reason to build it this way.
-    let mut tract: Vec<(Res, f32)> = WOLF_FORMANTS
+    // The tract, as four parallel resonators at equal weight — `Res::new`
+    // normalizes each to unity peak, so equal here means equal.
+    //
+    // **The spectral tilt lives on the SOURCE for this voice, not on the
+    // filter**, which is the one place the two halves of the shared model are
+    // expressed differently. `formant_gain` folds the −6 dB/oct into a
+    // per-harmonic weight because the howl is a harmonic sum with a known
+    // list of frequencies; a pulse train has no such list, so the same tilt
+    // has to be a filter on the source — and it has to be somewhere. A
+    // hard-edged pulse has infinite bandwidth and drives F2, F3 and F4 as
+    // hard as F1: the first cut of this function did exactly that and came
+    // out BRIGHTER than the howl, which
+    // `a_growl_is_the_darkest_voice_and_a_held_one` caught.
+    let mut tract: Vec<Res> = WOLF_FORMANTS
         .iter()
-        .map(|&(centre, bw)| (Res::new(centre, bw), WOLF_FORMANTS[0].0 / centre))
+        .map(|&(centre, bw)| Res::new(centre, bw))
         .collect();
-    let mut air_lp = Lp::new(3_200.0);
-    let mut air_hp = Lp::new(1_000.0);
+    // Two one-poles in series: −12 dB/oct above 260 Hz, the textbook glottal
+    // source spectrum. A real fold does not emit a sawtooth.
     // The glottal pulse. `ph` walks in seconds and the period is redrawn each
     // time it wraps, so no two cycles are the same length — 0.3–0.7 % jitter
     // is what a real fold does and a fixed period is what a sawtooth does.
+    let mut glottis = [Lp::new(260.0), Lp::new(260.0)];
     let mut ph = 0.0f32;
     let mut period = 1.0 / 92.0;
     let mut alternate = false;
@@ -1123,21 +1152,28 @@ fn growl(r: &mut Rng) -> Vec<f32> {
             -1.0
         };
         let level = if doubling && alternate { 0.6 } else { 1.0 };
-        let src = pulse * level;
-        let mut voiced = 0.0f32;
-        for (res, w) in tract.iter_mut() {
-            voiced += res.run(src) * *w;
+        let mut src = pulse * level;
+        for lp in glottis.iter_mut() {
+            src = lp.run(src);
         }
-        let x = r.noise();
-        let air = {
-            let l = air_lp.run(x);
-            l - air_hp.run(l)
-        };
+        // **The aperiodic layer is summed at the SOURCE, not over the
+        // output**, which is the textbook chain and was the second half of
+        // the same mistake: breath is made at the glottis, so the tract
+        // shapes it exactly as it shapes the pulse. Mixed in after the
+        // filters it is raw wideband hiss, and it then dominates the
+        // brightness of a sound whose whole character is that it is dark.
+        // Not low-passed with the pulse, because that rolloff describes the
+        // *pulse shape* and aspiration has none.
+        src += r.noise() * 0.20;
+        let mut voiced = 0.0f32;
+        for res in tract.iter_mut() {
+            voiced += res.run(src);
+        }
         // ±3 dB at 6 Hz — breath across a held sound, not a tremolo.
         let ripple = 0.85 + 0.15 * (std::f32::consts::TAU * 6.0 * t).sin();
         // Near-square: 40 ms on, 80 ms off, sustained in between.
         let env = attack(t, 0.040) * (1.0 - smooth(((u - 0.93) / 0.07).clamp(0.0, 1.0)));
-        *v = (voiced * 0.9 + air * 0.20) * ripple * env * edges(i, n);
+        *v = voiced * ripple * env * edges(i, n);
     }
     out
 }
