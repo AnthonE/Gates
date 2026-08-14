@@ -370,6 +370,19 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
     if feed.refusals().next().is_some() {
         sound.play(Request::own(Cue::Refused));
     }
+    // A spill borrows that cue rather than minting one, on the same
+    // argument one step out: the player is looking at the TREE, not at the
+    // toast line, so what they need from the ear is "that did not go the
+    // way you expected" — and the toast says which. It is not literally a
+    // refusal (the swing paid; the payment is in a bag at your feet), so a
+    // voice of its own is a fair later change; it would cost a `synth.rs`
+    // row and a bank entry, which is more than this fact is worth today.
+    //
+    // Not folded into the `if` above: these are separate arrays and a
+    // frame can hold both, but one buzz per frame per class is the point.
+    if !feed.spills().is_empty() {
+        sound.play(Request::own(Cue::Refused));
+    }
 }
 
 /// A scatter slot going away — the loudest positional cue in the client.

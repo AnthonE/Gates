@@ -72,6 +72,15 @@ pub struct Feed {
     n_gathered: usize,
     crafted: [(u16, u16); FEED_CAP],
     n_crafted: usize,
+    /// Items that did not fit and went to the ground this frame — a gather
+    /// or a craft whose payout the pack could not hold. Own-fact, like the
+    /// two rings above it and unlike `knocks`/`shots`.
+    ///
+    /// The item index only: the wire says what reached the hands and never
+    /// what was paid, so there is no amount to carry (`client-core`'s
+    /// `spills` says why in full).
+    spills: [u16; FEED_CAP],
+    n_spills: usize,
     /// `(recipe, coin burned)` per blueprint learned this frame.
     learned: [(u16, u16); FEED_CAP],
     n_learned: usize,
@@ -143,6 +152,11 @@ impl Feed {
         &self.crafted[..self.n_crafted]
     }
 
+    /// Item indices the pack could not hold this frame, oldest first.
+    pub fn spills(&self) -> &[u16] {
+        &self.spills[..self.n_spills]
+    }
+
     /// `(recipe index, coin burned)` learned this frame (research v0).
     pub fn learned(&self) -> &[(u16, u16)] {
         &self.learned[..self.n_learned]
@@ -171,6 +185,7 @@ impl Feed {
         self.n_refusals = 0;
         self.n_gathered = 0;
         self.n_crafted = 0;
+        self.n_spills = 0;
         self.n_learned = 0;
         self.n_knocks = 0;
         self.n_auths = 0;
@@ -294,6 +309,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_crafted;
             feed.crafted[n] = t;
             feed.n_crafted += 1;
+        }
+    }
+    while let Some(item) = core.pop_spill() {
+        if feed.n_spills >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_spills;
+            feed.spills[n] = item;
+            feed.n_spills += 1;
         }
     }
 }

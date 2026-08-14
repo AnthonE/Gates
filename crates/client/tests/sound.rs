@@ -1367,11 +1367,12 @@ fn only_the_feed_drain_pops_the_core() {
     // single-reader surface by nature (one composer) and `render/chat.rs` owns
     // it — if a second reader ever wants it, it joins the feed and joins this
     // list in the same commit.
-    const DESTRUCTIVE: [&str; 8] = [
+    const DESTRUCTIVE: [&str; 9] = [
         "pop_hit(",
         "pop_death(",
         "pop_toast(",
         "pop_craft_toast(",
+        "pop_spill(",
         "pop_craft_refusal(",
         "pop_build_refusal(",
         "pop_deploy_refusal(",

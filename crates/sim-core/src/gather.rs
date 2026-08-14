@@ -768,12 +768,28 @@ pub fn swing(
         pay,
         gc.stack_max[def.output as usize],
     );
-    events.push(
-        EV_GATHER,
-        p.id,
-        ((def.output as u32) << 16) | added as u32,
-        0,
-    );
+    // **`pay > 0` is what makes `added == 0` mean something.** The cumulative
+    // schedule above legitimately pays nothing on some swings — `pool` need
+    // not divide `budget`, so a node worth 10 over 20 hits pays on half of
+    // them — and an `EV_GATHER` for one of those said "0 units entered your
+    // inventory" from a swing that was never owed any. That is the same
+    // sentence a FULL PACK produces, so the client could not tell the two
+    // apart and correctly showed neither (`client-core`'s `if added > 0`).
+    //
+    // A swing that paid nothing is not a gather, so it no longer announces
+    // itself, and `added == 0` on a surviving `EV_GATHER` now says exactly
+    // one thing: it was paid and none of it fit. That is the spill signal,
+    // carried on a field the wire already has — see `world.rs`'s doc line.
+    // The loot path never needed this (`backpack.rs` skips a `took == 0`
+    // slot) and the secondary payout below is already guarded by `sec_pay`.
+    if pay > 0 {
+        events.push(
+            EV_GATHER,
+            p.id,
+            ((def.output as u32) << 16) | added as u32,
+            0,
+        );
+    }
     // The side payout: its own `EV_GATHER`, so the client's toast stack
     // reads `+10 Cloth` *and* `+5 Berries` rather than one line that lies
     // about half of what arrived. Two pushes on a bounded ring, once per

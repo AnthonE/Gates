@@ -859,6 +859,18 @@ pub fn feedback(
         let label = crate::ui::craft::item_label(&core.catalog, item);
         toast.say(format!("crafted {count} × {label}"));
     }
+    // Last, so it wins the line. `Toast` is single-slot last-writer-wins,
+    // and of everything that can land in one frame this is the one the
+    // player most needs: gathering into a full pack used to print nothing
+    // at all, so the only signal was a bag silently appearing underfoot.
+    //
+    // No amount, because the wire has none to give — see `Feed::spills`.
+    // "at your feet" is where `world.rs`'s `drain_spill` stands the bag up;
+    // a merge into a bag already standing puts it within the same reach.
+    for &item in feed.spills() {
+        let label = crate::ui::craft::item_label(&core.catalog, item);
+        toast.say(format!("pack full — {label} dropped at your feet"));
+    }
 
     // ---- the timers -----------------------------------------------------
     let dt = time.delta_secs();

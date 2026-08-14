@@ -42,32 +42,31 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
-## 0sp2 · Nothing destroys an item at a full pack now — the spill is silent *(systems lane)*
+## 0sp2 · The spill speaks now — for the whole of one, not part of one *(systems lane)*
 
-Landed 2026-08-14, both halves. The two paths that *pay* (`gather::swing`,
-`craft::step`) went first; the four that *give back* — a demolish refund, a
-deployable pick-up, a lock removal, a craft cancel — took the same buffer
-the same day. Six producers, one drain (`World::drain_spill`), no wire
-change and no knob (`DECISIONS.md` §open "ground drops v0"). 13 tests in
-`sim-core/tests/spill.rs`, each proven red under its own revert.
+Landed 2026-08-14: six producers, one drain (`World::drain_spill`), and the
+same day the signal, which was this item's own open half. **It was a
+client-side read of facts already on the wire, and the answer is written
+down now rather than guessed at** — the zero was always there
+(`EV_CRAFT_DONE` has declared "0 = full inventory" since it landed) and the
+client discarded it, gather on an `if added > 0`, craft by printing
+`crafted 0 × Stone Hatchet`, which said a craft had failed that had in fact
+succeeded and was on the floor. Cost: one guard in `gather::swing` so the
+zero has exactly one cause (a swing the cumulative schedule owed nothing
+produced the identical event), a ring in `client-core`, and the HUD line
+*"pack full — Wood dropped at your feet"*. No wire change, no version bump,
+no knob. Left, and the first two need a wire field:
 
-The address question this item held the give-backs for is answered: all six
-verbs refuse beyond `BUILD_REACH_M`, `LOOT_REACH_M` *is* `BUILD_REACH_M`,
-and that is the merge radius — so the object's address is inside merge
-reach of the feet by construction and the feet win on cost. Two latent
-defects went with it (judge fix 2, pass -08: `spill_at` left the caller's
-buffer holding what a minted bag took; and `craft::cancel`'s chunk loop
-broke early, losing most of a large refund). Left:
-
-- **A spill is silent.** `EV_GATHER` correctly reports what reached the
-  hands — zero — so the toast reads `+0`, and the only signal a player gets
-  is a bag appearing underfoot. A "pack full" line is a client-side read of
-  facts already on the wire, or a new event if it is not. Operator: whether
-  it is worth a wire field.
+- **A partial spill is still invisible.** Some fits, some does not, and the
+  shortfall never leaves the sim — the wire carries what reached the hands
+  and never what was paid, so `+3 × Wood` cannot say the other 7 fell.
+- **The four give-backs say nothing at all** — demolish refund, pick-up,
+  unbolt, craft cancel emit no payout event, spilled or not. Operator:
+  those two together are what a wire field buys (`DECISIONS.md` §open).
 - **The merge ignores ownership** — a spill lands in whatever bag is
   nearest, including someone else's death bag. §open carries it.
-- **Nobody has seen one.** Gap 1 of the same report stands: this is proven
-  by headless tests only, and that now covers six verbs rather than two.
+- **Nobody has seen one.** Judge gap 1 stands: proven headless only. The
+  new line included — no frame in this repo has ever shown it.
 
 ## 0wc · The crate opens — what world containers v0 left *(systems lane)*
 
