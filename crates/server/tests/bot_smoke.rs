@@ -227,17 +227,24 @@ async fn test_bot_smoke_50() {
 /// — every one of those a counter that read 0 before the kit.
 ///
 /// **What this still does not assert, and why it is not asserted.**
-/// `struct_hits` remains 0. That is *not* affordability and not the fuse
-/// window: with the fleet funded, 27 charges armed over a 30 s run at a
-/// measured 905 shard ticks — three times the shipped 300-tick fuse — and
-/// no `EV_STRUCT_HIT` ever reached a client. `damage_piece` pushes that
-/// event unconditionally (`deploy.rs`, before the removal branch) and the
-/// relay broadcasts it (`core.rs`), with `forced_resyncs` and `ev_resyncs`
-/// both 0, so the drop is upstream of both. The mechanism is unexplained,
-/// so it is written down rather than gated: `NOW.md` §0rf and
+/// `struct_hits` remains 0, and for THIS gate that is arithmetic rather
+/// than a defect: `WINDOW` is 4 s = 120 ticks against the shipped
+/// 300-tick fuse, so no charge planted in this run can possibly detonate
+/// inside it. Nothing to assert, and lengthening the window to reach a
+/// detonation would make a wire gate wait on a clock, which this box may
+/// not do (`CLAUDE.md`: assert on observable state, never on elapsed ms).
+///
+/// The detonation itself is gated where it can be — in the sim, on the
+/// same shipped content, at the same 300-tick fuse:
+/// `crates/server/tests/raid.rs`. That gate is green, which means the
+/// remaining half of the mystery is narrower than the note that recorded
+/// it: `detonate`, the overkill case and the fuse length are all now
+/// proven on shipped rows, so the unexplained 30 s measurement (27 plants
+/// over 905 ticks, still no `EV_STRUCT_HIT`) is somewhere in the bot
+/// arrangement, not in the verb. `NOW.md` §0rf and
 /// `gates-loop/findings/note-20260814-charge-never-detonates.md` carry the
-/// full chain. A gate asserting a number nobody can explain is the pass it
-/// did not earn.
+/// chain. A gate asserting a number nobody can explain is the pass it did
+/// not earn.
 ///
 /// The exchange rate this begins to make sayable, from `content/`: a twig
 /// wall is 50 wood at hp 10 and one satchel is `structure` 125 — a 12.5×

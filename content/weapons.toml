@@ -152,15 +152,18 @@ fuse_s = 10
 # to clear is the cell it was planted on: the wall you stuck it to, the
 # floor under that wall, and whatever shares the cell's corner.
 #
-# NOTHING READS THIS YET. The column is baked, validated and hashed, and no
-# sim code consumes the result: `charge.rs` has `place` and `tick_fuses`
-# and no falloff. So a charge today still damages the one address it was
-# planted on, exactly as `satchel fuse v0` says it does, and `balance.rs`
-# anchor 1 still divides wall hp by this row's 500 undisturbed. The
-# intended curve — both damage columns falling linearly to zero at this
-# distance, `structure` whole at the planted address because the distance
-# there is zero, and `damage` becoming what the blast takes off a player
-# standing in it — is the NEXT slice's, not this one's.
+# READ BY `charge::detonate` since satchel blast v0. This line said
+# "NOTHING READS THIS YET" through the whole slice that made it load-
+# bearing, which is the drift `CLAUDE.md` warns about: a comment claiming
+# a column is inert reads as permission to change it freely.
+#
+# The curve it describes is the one that shipped: both damage columns fall
+# linearly to zero at this distance, `structure` lands whole at the planted
+# address because the distance there is zero, and `damage` is what the
+# blast takes off a body standing in it. The scan is the 3×3 column ring
+# around the epicentre, and `charge.rs`'s const block asserts this radius
+# cannot outrun that ring — so widening `blast_m` past one build cell is a
+# sim change, not a content change.
 # Proposed default, DECISIONS.md §open ("satchel blast v0").
 blast_m = 3
 
