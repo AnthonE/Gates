@@ -11,6 +11,7 @@
 //! with what, from how far.
 
 use protocol::event::ItemCatalog;
+use sim_core::mob;
 use sim_core::world::{
     DEATH_BY_ARROW, DEATH_BY_CHARGE, DEATH_BY_CLOCK, DEATH_BY_HAND, DEATH_BY_MOB, DEATH_BY_SALT,
 };
@@ -75,10 +76,15 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog) -> String {
         }
         // The killer is a roster slot's tagged id, never a player number —
         // printing "#8388608" would be the wire's bookkeeping leaking into
-        // a sentence. One species today, so the name is the species'
-        // (`mob::MOB_PIG`); a second species reads its name off the same
-        // slot the renderer already does.
-        DEATH_BY_MOB => "a pig gored you".to_string(),
+        // a sentence. The species comes off that slot through `mob::kind_of`,
+        // which is what the renderer picks the mesh with and what the sim
+        // built the roster with: three readers, one pure function, and no
+        // wire field. A death screen that named the wrong animal would be
+        // the cheapest possible way to find out the three had drifted.
+        DEATH_BY_MOB => match mob::slot_of_id(d.killer).map(mob::kind_of) {
+            Some(mob::MOB_WOLF) => "a wolf ran you down".to_string(),
+            _ => "a pig gored you".to_string(),
+        },
         // The blast's whole story is the distance, an arrow's rule — and
         // the planter may be the victim, which gets the sentence a
         // self-inflicted bomb has earned since bombs existed.
@@ -174,6 +180,41 @@ mod tests {
             ..Death::default()
         };
         assert_eq!(sentence(&d, &cat), "you did it to yourself");
+    }
+
+    /// **Each species gets its own sentence, off the roster slot.** The
+    /// killer id is tagged (`MOB_ID_TAG`) and its low bits are the slot, so
+    /// the same `mob::kind_of` the sim built the roster with and the
+    /// renderer picks the mesh with also picks the verb here. Three readers
+    /// of one pure function and no wire field between them — this is the
+    /// cheapest of the three to check, so it is the one that reddens first
+    /// if they ever drift.
+    #[test]
+    fn the_death_screen_names_the_animal_that_killed_you() {
+        let cat = ItemCatalog::EMPTY;
+        let said = |slot: usize| {
+            sentence(
+                &Death {
+                    cause: DEATH_BY_MOB,
+                    killer: mob::mob_id(slot),
+                    ..Death::default()
+                },
+                &cat,
+            )
+        };
+        let wolf = (0..sim_core::limits::MAX_MOBS)
+            .find(|&s| mob::kind_of(s) == mob::MOB_WOLF)
+            .expect("the roster holds a predator");
+        let pig = (0..sim_core::limits::MAX_MOBS)
+            .find(|&s| mob::kind_of(s) == mob::MOB_PIG)
+            .expect("the roster holds prey");
+        assert_eq!(said(wolf), "a wolf ran you down");
+        assert_eq!(said(pig), "a pig gored you");
+        assert_ne!(
+            said(wolf),
+            said(pig),
+            "both species share one sentence — the screen is guessing"
+        );
     }
 
     /// `DEATH_BY_MAX`'s doc records a judged FAIL where a fourth cause would

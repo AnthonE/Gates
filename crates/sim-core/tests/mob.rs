@@ -121,7 +121,10 @@ fn armed_content_hatches_the_whole_roster() {
         MAX_MOBS / 4,
         "1-in-4 of {MAX_MOBS} slots is a predator, exactly, on every seed"
     );
-    assert_eq!(w.mobs.m.iter().filter(|m| m.kind == MOB_PIG).count(), MAX_MOBS - wolves);
+    assert_eq!(
+        w.mobs.m.iter().filter(|m| m.kind == MOB_PIG).count(),
+        MAX_MOBS - wolves
+    );
 }
 
 /// Dormancy is the reference game's measure and ours is a hard skip: with
@@ -735,5 +738,8 @@ fn a_closed_charge_settles_instead_of_orbiting() {
          the animal is orbiting, and a bite phase that samples the far side \
          of that orbit never lands"
     );
-    assert_eq!(lo, hi, "a settled charge must not still be moving: {lo}..{hi}");
+    assert_eq!(
+        lo, hi,
+        "a settled charge must not still be moving: {lo}..{hi}"
+    );
 }

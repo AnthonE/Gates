@@ -42,6 +42,36 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0pr · The wolf hunts — what predator v0 left *(systems lane)*
+
+From `findings/pass-20260813-230343-01-judge.md` ranked gap 1 ("the island
+holds one animal and it is prey"). Landed 2026-08-14 as a content row:
+`MOB_KINDS` 2, `kind_of(slot)` (a stride — 16 of 64, no wire byte, v29's
+rejected `kind` field still rejected), the wolf in `mobs.toml`, its massing
+and the death sentence. **Nothing in `mob.rs` branches on species** — a
+hunter is `brave_pct = 0` plus a 30 m notice radius. `DECISIONS.md` §open
+"predator v0" has the numbers and their sources; 10 new gates, each proven
+red under its own mutation.
+
+**It found a bug three green gates could not see.** A charge held `flee_gait`
+at any distance, so a closed animal overshot and orbited on a 30-tick cycle;
+the bite is phase-locked to 60, a multiple of 30, so the bite sampled the
+same point of that orbit forever — a slot whose phase fell outside reach
+could never bite. Slot 0's fell inside and every bite gate hunted slot 0.
+
+Owed, in rank order:
+
+1. **Every animal still sounds like a pig.** `sound/pig.rs`'s snort plays
+   for a wolf (`render/audio.rs::pigs`). A howl and an aggro cue are the
+   audio half of an encounter, and `NOW.md` §0m item 2 already wanted them.
+2. **A wolf pays no hide and no bone** — refused here because two new items
+   drag recipes and `ui::icons::STEMS` into a roster slice.
+3. **Nothing hunts harder at night.** `day/night v0` is drawn, not
+   simulated; a nocturnal notice radius is what would make night cost
+   something. A knob, so §open first.
+4. **16 predators is arithmetic, not a playtest** — the one number here a
+   person answers.
+
 ## 0sp · The tick has been profiled — where it goes *(server lane)*
 
 `crates/server/src/bin/profile.rs` (new, 2026-08-11) builds the stated worst

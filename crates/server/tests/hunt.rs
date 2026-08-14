@@ -284,7 +284,10 @@ fn a_wolf_kills_a_player_who_never_reacts() {
     for t in 0..HUNT_LIMIT_TICKS {
         let mut f = frame;
         f.seq = (t % 65_536) as u16;
-        core.world.tick(&[Command::Input { id: 0x100, frame: f }]);
+        core.world.tick(&[Command::Input {
+            id: 0x100,
+            frame: f,
+        }]);
         if core.world.players[p].dead {
             killed = Some(t);
             break;
@@ -292,10 +295,7 @@ fn a_wolf_kills_a_player_who_never_reacts() {
     }
 
     let t = killed.unwrap_or_else(|| {
-        let (px, pz) = (
-            core.world.players[p].body.qx,
-            core.world.players[p].body.qz,
-        );
+        let (px, pz) = (core.world.players[p].body.qx, core.world.players[p].body.qz);
         let (bx, bz) = (
             core.world.mobs.m[slot].body.qx,
             core.world.mobs.m[slot].body.qz,

@@ -101,14 +101,112 @@ pub const PIG_LEG_FULL_MPS: f32 = 3.85;
 pub const PIG_LEN_M: f32 = 1.5;
 pub const PIG_H_M: f32 = 0.78;
 
-/// The shared meshes and material, built once. Body and leg are separate
-/// meshes because the legs move and the body does not; all five parts share
-/// one material, so a herd still batches.
-#[derive(Resource)]
-pub struct PigAssets {
+/// The wolf, as a box massing, facing **+Z** (predator v0).
+///
+/// Same construction as the pig above and deliberately so — this file's job
+/// is to draw the roster, not to invent a second way of drawing. What
+/// changes is the proportions, and they are the whole tell at the distance
+/// the animal is first seen: **leaner, longer-legged, and the high point is
+/// the shoulder**, where the pig's line runs downhill to the tail. 1.6 m
+/// nose to tail and 0.85 m at the shoulder is a grey wolf, and it is still
+/// well under `EYE_HEIGHT` — a player looks down at this too, which matters
+/// more here than for the pig, because a silhouette at eye level reads as a
+/// person and this one is going to be running at you.
+///
+/// The ears are the cheapest legible difference and they are why they are
+/// here: two pricked cards on the skull. A boar's head has none, and at
+/// 20 m the ear line is what separates the two silhouettes before the gait
+/// does.
+const WOLF_BODY: &[([f32; 3], [f32; 3], u32)] = &[
+    // Chest and barrel — leaner than the pig's, which is most of the read.
+    ([0.0, 0.62, -0.02], [0.19, 0.19, 0.42], 0x6a6258),
+    // The withers: a wolf's highest point, and the reverse of the boar's
+    // downhill line.
+    ([0.0, 0.70, 0.16], [0.20, 0.15, 0.20], 0x5f584e),
+    // Neck, carried forward rather than up.
+    ([0.0, 0.62, 0.46], [0.13, 0.13, 0.16], 0x6a6258),
+    ([0.0, 0.56, 0.66], [0.105, 0.105, 0.14], 0x746a5e),
+    // Muzzle — long and narrow where the pig's is a blunt snout disc.
+    ([0.0, 0.52, 0.80], [0.06, 0.065, 0.10], 0x8a7b6b),
+    ([-0.075, 0.70, 0.62], [0.035, 0.055, 0.02], 0x5a5148),
+    ([0.075, 0.70, 0.62], [0.035, 0.055, 0.02], 0x5a5148),
+    ([0.0, 0.62, -0.42], [0.185, 0.175, 0.16], 0x5f584e),
+    // Tail carried low and straight.
+    ([0.0, 0.50, -0.60], [0.05, 0.05, 0.13], 0x554e46),
+];
+
+/// One wolf leg — longer and thinner than the pig's, hip at the local
+/// origin on the same convention, hanging to y = −0.40.
+const WOLF_LEG: &[([f32; 3], [f32; 3], u32)] =
+    &[([0.0, -0.20, 0.0], [0.055, 0.20, 0.055], 0x4e483f)];
+
+/// The wolf's four hips. Diagonal pairs in phase, exactly as the pig's —
+/// a wolf trots too, and a species that paced would read as a camel here
+/// for the same reason it would there. The stance is longer front-to-back
+/// and narrower across, which is the other half of the leaner silhouette.
+pub const WOLF_LEG_ANCHORS: [([f32; 3], f32); 4] = [
+    ([-0.14, 0.40, 0.34], 0.0),
+    ([0.14, 0.40, 0.34], std::f32::consts::PI),
+    ([-0.14, 0.40, -0.40], std::f32::consts::PI),
+    ([0.14, 0.40, -0.40], 0.0),
+];
+
+/// The wolf's flight gait: `flee_pct` 85 of the player's 5.5 m/s sprint.
+/// Higher than the pig's 3.85, so at the same ground speed a wolf's legs
+/// swing *shallower* — which is right, because it is the animal for whom
+/// that speed is closer to a lope than a bolt.
+pub const WOLF_LEG_FULL_MPS: f32 = 4.675;
+
+/// What the wolf massing claims, read off the mesh by the gate.
+pub const WOLF_LEN_M: f32 = 1.6;
+pub const WOLF_H_M: f32 = 0.85;
+
+/// One species' meshes. Body and leg are separate because the legs move and
+/// the body does not.
+pub struct SpeciesAssets {
     pub body: Handle<Mesh>,
     pub leg: Handle<Mesh>,
+    pub anchors: [([f32; 3], f32); 4],
+}
+
+/// The roster's meshes and the one material, built once.
+///
+/// **One material across both species**, so a mixed herd still batches — the
+/// hexes are vertex colours, which is what makes a second animal free at
+/// draw time. Two species is the roster's whole shape and the resource
+/// carries them by name rather than by index, because a `[SpeciesAssets;
+/// MOB_KINDS]` would be a table this file has to keep in step with an
+/// ordinal in another crate.
+#[derive(Resource)]
+pub struct HerdAssets {
+    pub pig: SpeciesAssets,
+    pub wolf: SpeciesAssets,
     pub material: Handle<StandardMaterial>,
+}
+
+impl HerdAssets {
+    /// The meshes for a roster slot — the client's half of `mob::kind_of`.
+    ///
+    /// **This is the whole reason the wire carries no species field.** The
+    /// sim asks `kind_of` at world construction and the renderer asks it
+    /// here, off the slot inside the entity id, so the two sides cannot
+    /// disagree about what is on screen without disagreeing about a pure
+    /// function. `protocol` v29 rejected a `kind` on `EntityState` on cost;
+    /// this is the thing that makes the rejection free rather than a debt.
+    pub fn of(&self, slot: usize) -> &SpeciesAssets {
+        match mob::kind_of(slot) {
+            mob::MOB_WOLF => &self.wolf,
+            _ => &self.pig,
+        }
+    }
+}
+
+/// The stride speed at which a slot's species reaches full swing.
+pub fn full_mps_of(slot: usize) -> f32 {
+    match mob::kind_of(slot) {
+        mob::MOB_WOLF => WOLF_LEG_FULL_MPS,
+        _ => PIG_LEG_FULL_MPS,
+    }
 }
 
 /// The whole animal at rest — body plus all four legs at their anchors,
@@ -144,14 +242,49 @@ pub fn pig_leg_mesh() -> Mesh {
     boxes_mesh_with(PIG_LEG, linear, 1.0)
 }
 
+/// The whole wolf at rest, assembled from the shipped tables — `pig_mesh`'s
+/// contract for the other species, so the gate measures the geometry that
+/// draws rather than a copy of it.
+pub fn wolf_mesh() -> Mesh {
+    let mut parts: Vec<([f32; 3], [f32; 3], u32)> = WOLF_BODY.to_vec();
+    for (anchor, _) in WOLF_LEG_ANCHORS {
+        for (c, h, hex) in WOLF_LEG {
+            parts.push((
+                [c[0] + anchor[0], c[1] + anchor[1], c[2] + anchor[2]],
+                *h,
+                *hex,
+            ));
+        }
+    }
+    boxes_mesh_with(&parts, linear, 1.0)
+}
+
+/// The wolf's body alone — what the entity itself wears.
+pub fn wolf_body_mesh() -> Mesh {
+    boxes_mesh_with(WOLF_BODY, linear, 1.0)
+}
+
+/// One wolf leg, hip at the origin.
+pub fn wolf_leg_mesh() -> Mesh {
+    boxes_mesh_with(WOLF_LEG, linear, 1.0)
+}
+
 pub fn load(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    commands.insert_resource(PigAssets {
-        body: meshes.add(pig_body_mesh()),
-        leg: meshes.add(pig_leg_mesh()),
+    commands.insert_resource(HerdAssets {
+        pig: SpeciesAssets {
+            body: meshes.add(pig_body_mesh()),
+            leg: meshes.add(pig_leg_mesh()),
+            anchors: LEG_ANCHORS,
+        },
+        wolf: SpeciesAssets {
+            body: meshes.add(wolf_body_mesh()),
+            leg: meshes.add(wolf_leg_mesh()),
+            anchors: WOLF_LEG_ANCHORS,
+        },
         // Untextured, like the bush and the crate: `assets/textures/` has no
         // hide map and a bristled animal wearing the bark photograph would
         // be worse than one wearing its own vertex colours. The roughness is
@@ -185,9 +318,9 @@ pub struct Herd {
 pub fn stream(
     mut commands: Commands,
     mut herd: ResMut<Herd>,
-    mut q: Query<(&mut Transform, &mut Gait), With<Pig>>,
+    mut q: Query<(&mut Transform, &mut Gait), With<Animal>>,
     time: Res<Time>,
-    assets: Option<Res<PigAssets>>,
+    assets: Option<Res<HerdAssets>>,
     net: NonSend<Net>,
 ) {
     let Some(assets) = assets else {
@@ -227,23 +360,26 @@ pub fn stream(
                 }
             }
             None => {
+                // Which animal this is, off the slot — the same pure
+                // function the sim built the roster with.
+                let species = assets.of(slot);
                 let entity = commands
                     .spawn((
                         super::WorldEntity,
-                        Pig(id),
+                        Animal(id),
                         Gait::new(slot),
-                        Mesh3d(assets.body.clone()),
+                        Mesh3d(species.body.clone()),
                         MeshMaterial3d(assets.material.clone()),
                         Transform::from_translation(pos).with_rotation(facing),
                     ))
                     // The legs: child transforms, NOT `WorldEntity` — the
                     // teardown marks roots only and a recursive despawn of
-                    // the pig takes them (`render/mod.rs::WorldEntity`).
+                    // the animal takes them (`render/mod.rs::WorldEntity`).
                     .with_children(|parent| {
-                        for (anchor, leg_phase) in LEG_ANCHORS {
+                        for (anchor, leg_phase) in species.anchors {
                             parent.spawn((
-                                PigLeg(leg_phase),
-                                Mesh3d(assets.leg.clone()),
+                                AnimalLeg(leg_phase),
+                                Mesh3d(species.leg.clone()),
                                 MeshMaterial3d(assets.material.clone()),
                                 Transform::from_translation(Vec3::from_array(anchor)),
                             ));
@@ -270,12 +406,18 @@ pub fn stream(
 /// (`mob::slot_of_id`) is what keys the voice's per-animal cadence
 /// (`sound::pig`), so the identity has to ride the entity rather than be
 /// re-derived from a position.
+///
+/// Named for what it is rather than for the one species that used to be in
+/// the world: a `Pig` component on a wolf is the same class of lie as a
+/// wolf wearing the pig's mesh, and both were true of this file until
+/// predator v0.
 #[derive(Component)]
-pub struct Pig(pub u32);
+pub struct Animal(pub u32);
 
-/// One leg, carrying its place in the stride (its entry in [`LEG_ANCHORS`]).
+/// One leg, carrying its place in the stride (its entry in its species'
+/// anchor table).
 #[derive(Component)]
-pub struct PigLeg(pub f32);
+pub struct AnimalLeg(pub f32);
 
 /// The animal's stride, derived — the wire carries no velocity and no gait,
 /// so this is `anim::BodyAnim`'s speed derivation (difference the
@@ -289,6 +431,11 @@ pub struct Gait {
     pub speed: f32,
     /// Where in the stride cycle this animal is, radians in `[0, TAU)`.
     pub phase: f32,
+    /// The speed at which THIS animal's swing reaches full amplitude — its
+    /// species' flight gait, taken from the slot at spawn. Carried on the
+    /// component rather than looked up in `trot`, because `trot` walks
+    /// children and no longer has the slot in hand.
+    pub full_mps: f32,
     /// Last interpolated position, for the difference.
     last: Option<Vec3>,
 }
@@ -302,6 +449,7 @@ impl Gait {
         Self {
             speed: 0.0,
             phase: crate::sound::pig::hash01(slot as u32, 0) * std::f32::consts::TAU,
+            full_mps: full_mps_of(slot),
             last: None,
         }
     }
@@ -336,11 +484,17 @@ impl Gait {
 ///
 /// The sine keys the stride, the leg's own phase offset makes the diagonal
 /// pairs agree and the lateral pairs mirror, and the amplitude scales
-/// linearly with speed to [`PIG_LEG_SWING_RAD`] at [`PIG_LEG_FULL_MPS`] — so
-/// a standing animal's legs rest at vertical no matter where its phase
+/// linearly with speed to [`PIG_LEG_SWING_RAD`] at `full_mps` — so a
+/// standing animal's legs rest at vertical no matter where its phase
 /// stopped.
-pub fn leg_swing_rad(phase: f32, leg_phase: f32, speed_mps: f32) -> f32 {
-    let amp = PIG_LEG_SWING_RAD * (speed_mps / PIG_LEG_FULL_MPS).clamp(0.0, 1.0);
+///
+/// `full_mps` is the species' flight gait and is a parameter rather than a
+/// constant since predator v0: a wolf's 4.675 against a pig's 3.85 means the
+/// same ground speed is a shallower swing on the faster animal, which is
+/// the arithmetic saying that speed is a lope for one and a bolt for the
+/// other. The swing ceiling stays shared — that one is anatomy, not gait.
+pub fn leg_swing_rad(phase: f32, leg_phase: f32, speed_mps: f32, full_mps: f32) -> f32 {
+    let amp = PIG_LEG_SWING_RAD * (speed_mps / full_mps).clamp(0.0, 1.0);
     (phase + leg_phase).sin() * amp
 }
 
@@ -348,13 +502,18 @@ pub fn leg_swing_rad(phase: f32, leg_phase: f32, speed_mps: f32) -> f32 {
 /// Runs right after it in the same chain, so the legs read this frame's
 /// stride and not the last one's.
 pub fn trot(
-    herd: Query<(&Gait, &Children), With<Pig>>,
-    mut legs: Query<(&PigLeg, &mut Transform)>,
+    herd: Query<(&Gait, &Children), With<Animal>>,
+    mut legs: Query<(&AnimalLeg, &mut Transform)>,
 ) {
     for (gait, children) in herd.iter() {
         for child in children.iter() {
             if let Ok((leg, mut t)) = legs.get_mut(child) {
-                t.rotation = Quat::from_rotation_x(leg_swing_rad(gait.phase, leg.0, gait.speed));
+                t.rotation = Quat::from_rotation_x(leg_swing_rad(
+                    gait.phase,
+                    leg.0,
+                    gait.speed,
+                    gait.full_mps,
+                ));
             }
         }
     }
