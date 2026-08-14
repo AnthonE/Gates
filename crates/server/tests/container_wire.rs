@@ -17,7 +17,9 @@
 //! *other* client was told nothing) cannot be made against a mirror at
 //! all. The `backpack_wire` shape, for the same reason it uses it.
 //!
-//! Four things a container view can get wrong, one test each:
+//! Five things a container view can get wrong, one test each — and the
+//! fifth was found the hard way, shipped and green, in 2026-08-14's sweep
+//! of what world containers v0 left (`NOW.md` §0wc):
 //!
 //! 1. **It pays the wrong audience.** The whole security property.
 //! 2. **It trusts the open.** An open is a subscription, not a permission
@@ -33,6 +35,9 @@
 //!    exist" has to be answered by the view, and answered with nothing.
 //! 4. **It sends the wrong slots.** The diff after the open, which is
 //!    where a shadow that was not zeroed shows up.
+//! 5. **It reads the right slot of the wrong store.** A kind dispatch
+//!    written as an `if/else` over the kinds that existed that day, which
+//!    keeps compiling and stops being true when the next kind lands.
 
 use client_core::core::{ClientCore, APPLIED2_CONT};
 use protocol::{EventMsg, ItemCatalog};
@@ -42,11 +47,13 @@ use sim_core::backpack::BackpackContent;
 use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_PLANE};
 use sim_core::combat::CombatContent;
 use sim_core::deploy::{box_key, DeployContent, DeployDef, ARCH_BOX, PLACE_FOUNDATION};
-use sim_core::gather::{GatherContent, ItemStack, SWING_INTERVAL_TICKS};
+use sim_core::gather::{cell_key, GatherContent, ItemStack, SWING_INTERVAL_TICKS};
 use sim_core::input::BTN_PRIMARY;
-use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF};
+use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WORLD};
 use sim_core::limits::{BOX_SLOTS, INV_SLOTS, MAX_ITEM_DEFS};
+use sim_core::loot::{LootContent, LootEntryDef, LootTableDef, LOOT_CRATE};
 use sim_core::movement::Body;
+use sim_core::terrain::{self, Haven, Occupant, ScatterTable, CELL_SIZE, HAVEN_CRATES};
 use sim_core::world::Command;
 
 const SEED: u64 = 20_260_804;
@@ -1105,3 +1112,183 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         "the unlocked view pays the same contents the owner saw"
     );
 }
+
+// --- the world crate: the panel is drawn from the crate's own store ------
+
+/// A world container's view carries the *world container's* contents.
+///
+/// The fifth thing a container view can get wrong, and the only one the
+/// four above could not see: **it reads the right slot of the wrong
+/// store.** Every test in this file until now named `CONT_BAG` or
+/// `CONT_BOX`, which were the two ground kinds alive when the drip was
+/// written, and the drip dispatched them with a two-way
+/// `if kind == CONT_BAG { backpacks } else { deploys }`. World containers
+/// v0 (wire v37) added a third kind and that `else` swallowed it: opening
+/// the pad's crate indexed `deploys.box_slot` with a `world_conts` index.
+///
+/// It could not crash — `MAX_WORLD_CONTS` is 64 and the deploy store is
+/// 1 024, so the index is always in range and `box_slot` answers a deploy
+/// that is usually not a box, which reads as empty. So the crate opened,
+/// the panel drew, the handle round-tripped, the move verb worked (it
+/// resolves through `World::cont_slot`, which had all three arms), and the
+/// player saw an **empty crate** holding four stacks of loot. Seventeen
+/// sim checks and eighty-six protocol fixtures were green over it, because
+/// the defect lives in neither: it is one store read on the server, in the
+/// one code path no test named.
+///
+/// That is `CLAUDE.md`'s byte-golden trap one level out — three green
+/// gates over a wrong *store* rather than a wrong *field* — and it is why
+/// `NOW.md` §0wc item 1 says nobody has opened one in the running game.
+/// The claim this test makes is the one nothing else could: the bytes on
+/// the lane match `world_conts`, not `deploys`.
+#[test]
+fn a_world_crate_is_drawn_from_the_crate_store() {
+    let stats = ShardStats::default();
+    let table = ScatterTable::alpha_default();
+    let haven = terrain::haven(SEED);
+    let (cx, cz, x, z) = a_pad_crate(&table, &haven);
+
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.loot = crate_fixture();
+    core.world.dev_spawn = Some((x, z));
+    core.catalog = ItemCatalog::EMPTY;
+    let mut clients = two_clients(&mut core, &stats);
+
+    // Stand on the crate. `LOOT_REACH_M` is 5 m against an 8 m cell, so
+    // the anchor is the only place the open resolves from.
+    let w0 = world_slot(&core, id_of(0));
+    core.world.players[w0].body = Body::at(SEED, x, z);
+
+    let key = cell_key(cx, cz);
+    let mut seen = Vec::new();
+    ask(&mut core, 0, CONT_WORLD, key);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+
+    // The store minted and rolled on the open, and the fixture rolls a
+    // constant: four stacks of one `CRATE_LOOT`. Asserted before the wire
+    // claim so a failure says which half broke.
+    assert_eq!(
+        core.world.world_conts.len(),
+        1,
+        "the open must mint exactly one record"
+    );
+    let held: Vec<(u8, ItemStack)> = (0..INV_SLOTS)
+        .map(|s| (s as u8, core.world.world_conts.slot(0, s)))
+        .filter(|(_, st)| st.count > 0)
+        .collect();
+    // Units, not slots: four rolls of one stack into a single slot of
+    // four, and how many slots that lands in is the stack limit's business
+    // rather than this test's. What has to be true is that the crate is
+    // **not empty** — an empty crate is exactly what the defect below
+    // produced, so a vacuous fixture would let the wire claim pass on the
+    // broken code.
+    let units: u32 = held.iter().map(|(_, st)| st.count as u32).sum();
+    assert_eq!(
+        units, CRATE_ROLLS,
+        "the crate fixture must roll {CRATE_ROLLS} units: {held:?}"
+    );
+    assert!(
+        held.iter().all(|(_, st)| st.item == CRATE_LOOT),
+        "the crate fixture rolls one item only: {held:?}"
+    );
+
+    let got = syncs(&seen);
+    assert_eq!(got.len(), 1, "one open, one payment: {got:?}");
+    let (slot, kind, handle, reset, rows) = &got[0];
+    assert_eq!((*slot, *kind, *handle, *reset), (0, CONT_WORLD, key, true));
+
+    // **The claim.** Under the two-way dispatch this was `[]` — the drip
+    // read `deploys.box_slot(0, s)` on a shard with no deploys placed, so
+    // every slot came back empty, no slot differed from `last_cont`, and
+    // the open sent a reset with zero rows. A crate full of loot drew as
+    // an empty panel and nothing anywhere went red.
+    assert_eq!(
+        rows, &held,
+        "the crate's panel must carry the crate's own store, not a deploy's"
+    );
+
+    // And it crossed the ABI, so this is a claim about what the client
+    // draws rather than about bytes alone.
+    assert_eq!(
+        (clients[0].1.cont_kind, clients[0].1.cont_handle),
+        (CONT_WORLD, key),
+        "the handle must round-trip exactly — it is what a move will carry"
+    );
+    let mirrored: Vec<(u8, ItemStack)> = clients[0].1.cont[..INV_SLOTS]
+        .iter()
+        .enumerate()
+        .filter(|(_, st)| st.count > 0)
+        .map(|(s, st)| (s as u8, *st))
+        .collect();
+    assert_eq!(
+        mirrored, held,
+        "the client's mirror of the crate must agree with the store"
+    );
+}
+
+/// The pad's crate, named rather than scanned.
+///
+/// `worldcont.rs` sweeps all 65 536 cells for the first `CrateSlot`
+/// because it only needs *a* container. This file wants **the pad's**, the
+/// one `NOW.md` §0wc is about, so it asks `terrain::haven_crate` for the
+/// anchor and re-derives the cell — then confirms through `terrain::
+/// scatter` that the cell really reports a crate, because the shelter is
+/// tested first and can shadow one. Five scatter calls instead of 65 536.
+fn a_pad_crate(table: &ScatterTable, haven: &Haven) -> (u16, u16, f32, f32) {
+    for k in 0..HAVEN_CRATES {
+        let (ax, az, _) = terrain::haven_crate(haven, k);
+        let (cx, cz) = (
+            (ax * (1.0 / CELL_SIZE)) as i32,
+            (az * (1.0 / CELL_SIZE)) as i32,
+        );
+        let s = terrain::scatter(SEED, table, haven, cx, cz);
+        if s.occupant == Occupant::CrateSlot {
+            return (cx as u16, cz as u16, s.x, s.z);
+        }
+    }
+    panic!("seed {SEED} puts no crate cell on its haven pad — the generator moved");
+}
+
+/// One item, a constant number of stacks: "what did this pay" has to be a
+/// constant, or the wire claim cannot tell "read the wrong store" from
+/// "rolled differently". `worldcont.rs`'s fixture, minus the cache table
+/// this file never opens.
+const CRATE_LOOT: u16 = 2;
+const CRATE_ROLLS: u32 = 4;
+
+fn crate_fixture() -> LootContent {
+    let mut c = LootContent::probe_fixture();
+    let mut t = LootTableDef::INERT;
+    t.entries[0] = LootEntryDef {
+        item: CRATE_LOOT,
+        weight: 1,
+        count_min: 1,
+        count_max: 1,
+    };
+    t.len = 1;
+    t.total_weight = 1;
+    t.rolls_min = CRATE_ROLLS as u16;
+    t.rolls_max = CRATE_ROLLS as u16;
+    c.tables[LOOT_CRATE] = t;
+    c
+}
+
+/// **When a fifth container kind lands, this file stops compiling.**
+///
+/// The defect above was not a typo — it was a file that covered every kind
+/// alive when it was written and had no way to notice a new one. The kinds
+/// are wire `u8` constants, so no `match` can be exhaustive over them and
+/// the compiler cannot ask for the missing arm. This can: `CONT_MAX` is
+/// declared as an alias of the newest kind, so raising it breaks this
+/// assertion, and whoever raises it has to come here and add the test that
+/// proves their kind is drawn from its own store.
+///
+/// Do not "fix" a failure here by bumping the literal. The failure is the
+/// notice.
+const _: () = assert!(
+    sim_core::inventory::CONT_MAX == CONT_WORLD,
+    "a container kind was added without a container_wire test that opens it"
+);

@@ -53,13 +53,32 @@ inside `open` so the store costs the tick nothing, and the crate rides the
 existing move/refusal/sync path (`DECISIONS.md` §open "world containers
 v0"; wire v37; save format 5; `tests/worldcont.rs`, 17 checks).
 
+**The panel was wired to the wrong store, and it shipped green
+(2026-08-14).** The server's per-tick container drip dispatched the kind as
+`if kind == CONT_BAG { backpacks } else { deploys }` — true for the two
+ground kinds alive when it was written, and silently false the day
+`CONT_WORLD` landed: the crate's panel read `deploys.box_slot` with a
+`world_conts` index. It cannot panic (64 world containers index safely into
+1 024 deploys), so **opening the pad's crate drew an empty panel over four
+units of loot**, with 17 sim checks and 86 protocol fixtures green over it.
+Fixed by making `World::cont_slot` — which had all three arms — `pub` and
+the drip's only answer; `container_wire.rs` gains
+`a_world_crate_is_drawn_from_the_crate_store` (proven red under the old
+dispatch: `left: []`) and a `CONT_MAX` compile guard so a fifth kind breaks
+that file until someone covers it. Two stale protocol claims went with it
+(the kind field saturated at v37; `kind > CONT_MAX` now refuses nothing).
+
 Owed, in rank order:
 
-1. **Nobody has opened one in the running game.** Every claim above is a
-   sim test or a byte golden. The pad's crate has never been walked to
-   with the client attached — the prompt string, the panel title, the
-   drag out of a 30-slot grid and what an emptied crate looks like are
-   all unverified. First thing to do on a `--capture` or a real boot.
+1. **Nobody has opened one in the running game — and this pass is why that
+   matters, not why it is settled.** A headless test found the defect
+   above, but only because someone went looking; the reason to look was
+   that no one had booted it. Still unverified with the client attached:
+   the prompt string, the panel title, the drag out of a 30-slot grid, what
+   an emptied crate looks like. The capture probe **cannot** substitute —
+   `VANTAGES` (`render/capture.rs`) is yaw/pitch from the spawn eye with no
+   position, so it can only ever photograph wherever the player already is.
+   Standing the probe somewhere is itself unbuilt work.
 2. **An emptied crate says nothing at a distance.** The only way to learn
    the pad is farmed out is to walk to it, which makes a wasted trip the
    normal case once a shard is populated. Wants either a visible lid
