@@ -26,6 +26,15 @@ in both directions and both rewrites were honest measurements:
   redirect loop was an honest measurement and did not reproduce for that
   one URL; the `en` article pages were not re-probed. WebSearch also
   worked; nothing else was probed.
+- 2026-08-14, later the same day (the re-verify pass, same box): the
+  fetch layer here is **broadly open** — `rusthelp.com` `/items/<slug>`
+  and `/world/<node>` pages serve whole (the §1c/§1e re-verify ran off
+  them at page tier), and `rust.facepunch.com/news/pivot-or-die` served
+  the primary post. Still closed, re-probed the same hour:
+  `wiki.rustclash.com` **403** (bot wall, unchanged since 2026-08-09)
+  and `reddit.com` **refused at the tool layer** (tier-4 item 15 stays
+  open). `wiki.facepunch.com` answered 404 on a guessed path — not
+  probed conclusively. The lesson unchanged: this box ≠ the next box.
 
 Neither answer generalises. What does: a doc may record *what a probe
 found, when, and on which pass* — it may not record "reachable" as a
@@ -123,16 +132,16 @@ looking.
 | **Devblog 166** (`rust.facepunch.com/news/`, Mar 2017) | The ore finishing bonus. Is the final-strike share **exactly** 20% or "about" 20%? Their own text reportedly hedges. Also: is HQM *only* obtainable from that final strike? | `finish_bonus_pct = 20` is shipped on our ore nodes off this; a precise number replaces our reading of a summary |
 | **Devblog 170** (2017) | The ore hotspot: 150% base rising to 300%, resetting to zero on a miss. Confirm the ceiling and whether the ramp is per-hit-linear. Confirm the "you will not earn more resources, only faster" line verbatim — **our whole marker model now rests on it** | our `weak_spot_bonus_pct` semantics |
 | **Devblog 186 / 187 / 188** (Nov–Dec 2017) | The tree minigame. The metal hatchet's 16→30 per-hit ramp (+2 per mark hit); the **half-on-the-fall** split; whether the mark truly never appears on the first hit | `finish_bonus_pct = 50` on our tree, and the ramp we did *not* copy |
-| **`wiki.facepunch.com` → Ore nodes** | Per-node totals and, if listed, per-hit yields and hit counts for **stone, metal, sulfur** — the three we have totals for but no per-hit data | `RIPLIST.md` §2 row 1, the largest queued row |
-| **rustlabs.com** (tool pages) | Gather-rate multipliers per tool, if they publish them as stats rather than measurements. Our 0.8 stone-vs-best ratio is inferred from two data points | the tool ladder |
+| ~~**`wiki.facepunch.com` → Ore nodes**~~ | ✅ **confirmed unobtainable 2026-08-14, at the page**: the node pages publish *durations* per tool, never hit counts or per-hit yields — §0's "do not go looking" verdict re-verified on primary text (`rusthelp.com/world/*-node`) | closed — `RIPLIST.md` §2 row 1's per-hit half stays ours by necessity, and our schema does not need it |
+| ~~**rustlabs.com** (tool pages)~~ | ✅ **settled 2026-08-14 by the node pages instead**: no published multiplier exists — the ratio manifests as per-tool TOTALS on each node, now read at page tier for all three (stone pickaxe 794/1000 · 485/600 · 257/300 = **0.79–0.86 of best**, nine data points where we had two) | the tool ladder — `RIPLIST.md` §4.2's ~0.8 upgraded from inference to measurement (and widened: sulfur's 0.857 says it is a band, not a constant) |
 
 ## 2 · Would settle a disputed number
 
 | source | what to look for | why |
 |---|---|---|
-| **Any wiki, sulfur node** | Total per node: **300 or 200?** Sources split, and the 200 camp traces to one SEO site claiming a 2026 re-verification | `RIPLIST.md` §4.1 records both; a live check resolves it |
-| **Any wiki, tree yields** | Per-species totals. "500 / 750 / 1000 by prefab" is one unattributed claim; "large ~650" is another | our tree total, if row 1 lands |
-| **Patch notes, 2024–2026** | Whether any of the 2017-era mechanics above have been reworked since. **Our best hit-count data is from 2017 and predates both minigames** — this is the single biggest staleness risk in the research | everything in §1 |
+| ~~**Any wiki, sulfur node**~~ | ✅ **settled 2026-08-14 at the page** (`rusthelp.com/world/sulfur-node`): **300 with any proper tool** (jackhammer/icepick/pickaxe ×300, stone pickaxe ×257, rock ×100) — the 200 camp is refuted, or was reading a low-tool total | `RIPLIST.md` §4.1's EXACT holds; the per-tool column is §4.2's shape again |
+| ~~**Any wiki, tree yields**~~ | ✅ **settled 2026-08-14 at the page** (`rusthelp.com/world/tree`): per-prefab RANGES, not three constants — large 500–1,000 · medium 376–750 · small 250–500 (some 125–250) · saplings 50–200 · swamp 150–300 · driftwood 125–300. Both prior claims were partial truths of this table ("500/750/1000" is the class ceilings; "large ~650" sits inside the large band) | our tree total — a `BALANCE.md` §6 pass may now take a banded species spread instead of one number |
+| **Patch notes, 2024–2026** | Whether the 2017-era mechanics above were reworked since. **Swept 2026-08-14, nothing found**: current guides and the node pages describe the same 150→300% hotspot (reset on miss, speed-not-yield — the node pages carry a "Duration (Hotspots)" column and identical yields) in the present tense; the only node changes surfaced are cosmetic (the sparkle appears only after the first hit) and the type-purity rework our content already models. Not closed — a sweep proves absence of evidence, not absence — but the staleness risk is down from "single biggest" to background | everything in §1 |
 
 ## 3 · Would settle the threat/logistics decomposition
 
@@ -143,7 +152,7 @@ cluster caught contradicting itself 3–6×.
 |---|---|---|
 | ~~**Austrian Journal of Political Science**, "…the Hobbesian and Lockean State of Nature in Rust" (`oezp.at`)~~ | ✅ **read 2026-08-14** — `RIPLIST.md` §5.6 | Settled the *shape* (heavy-tailed, concentrated, mostly non-offensive), not the magnitude — §0 item 14 has why the framing moved |
 | **r/playrust** — search "sulfur per hour", "how long to T3", "solo vs group" | Player-reported throughput on **vanilla 1×**, and how much of a session is farming vs travel vs fighting | Reddit was unreachable to the research agent by fetch *and* by search; it is the primary community source and we have none of it |
-| **PC Gamer, "Pivot or Die" coverage** | The solo-vs-clan progression divergence, and the radiation-timer mechanic gating monument access | The clearest documented case of threat acting as a hard progression ceiling rather than a rate penalty |
+| ~~**PC Gamer, "Pivot or Die" coverage**~~ | ✅ **read 2026-08-14** — and the mechanic itself at **primary** tier from `rust.facepunch.com/news/pivot-or-die` (Nov 2025): monuments emit **unsurvivable radiation around loot/puzzle rooms 10 minutes before refresh**, and the puzzle resets only after **5 accumulated minutes clear of players**; the same post is the BP wipe + research-cost cut (common 20→15, uncommon 75→30, rare 125→60, very rare 500→120, scrap crafting costs removed from workbenches). PC Gamer's angle (summary tier): solos/small groups stall at WB1–2 while clans hold WB3 through monument control | The hard-ceiling case `RIPLIST.md` §5.3 cites, now with the mechanism named — and the primary anchor for §3b's PROGRESSION row |
 
 ## 3b · The systems queue (2026-08-14) — their game over time, not another number
 

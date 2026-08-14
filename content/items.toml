@@ -53,12 +53,12 @@ tier = 0
 rarity = "common"
 slot = "none"
 
-# 500 is ours; theirs is likely 1000 and no source landed from this box —
-# an OPEN row in RIPLIST §1e, not a decided one.
+# Theirs (RIPLIST §1e, closed 2026-08-14 at the page): 1000. 500 was ours
+# while the row was open.
 [[item]]
 id = "item.fat"
 name = "Animal Fat"
-stack = 500
+stack = 1000
 tier = 0
 rarity = "common"
 slot = "none"
@@ -107,13 +107,13 @@ rarity = "uncommon"
 slot = "none"
 
 # Components: barrel-only (CONTENT §2) — the reason the coast road matters.
-# Stack 50 is ours on all three — their component stacks did not surface
-# in any summary (RIPLIST §1e, open).
+# Stacks are theirs (RIPLIST §1e, closed 2026-08-14 at the page): gears 20,
+# tarp 20 — and rope's 50 was already a match nobody had confirmed.
 
 [[item]]
 id = "item.gears"
 name = "Gears"
-stack = 50
+stack = 20
 tier = 1
 rarity = "uncommon"
 slot = "none"
@@ -129,7 +129,7 @@ slot = "none"
 [[item]]
 id = "item.tarp"
 name = "Tarp"
-stack = 50
+stack = 20
 tier = 1
 rarity = "uncommon"
 slot = "none"
@@ -459,13 +459,15 @@ rarity = "rare"
 slot = "hand"
 
 # --- food (meat cut per DECISIONS.md §open "food set") ------------------
-# Stacks below are ours — no reference stack surfaced in a summary for
-# the foods or the meats (RIPLIST §1e, open rows).
+# Stacks are theirs (RIPLIST §1e, closed 2026-08-14 at the page): berry 20,
+# mushroom 10, corn 20 — and the meats' 20 was already a match. Note the
+# mushroom cap equals the largest single grant (a whole tree's 10,
+# gatherables.toml), which is tight on purpose rather than an accident.
 
 [[item]]
 id = "item.berries"
 name = "Berries"
-stack = 50
+stack = 20
 tier = 0
 rarity = "common"
 slot = "hand"
@@ -473,7 +475,7 @@ slot = "hand"
 [[item]]
 id = "item.mushrooms"
 name = "Mushrooms"
-stack = 50
+stack = 10
 tier = 0
 rarity = "common"
 slot = "hand"
@@ -481,7 +483,7 @@ slot = "hand"
 [[item]]
 id = "item.corn"
 name = "Corn"
-stack = 50
+stack = 20
 tier = 0
 rarity = "common"
 slot = "hand"
