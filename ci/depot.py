@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
-"""Package the Linux desktop build as a scry depot.
+"""Package a desktop build as a scry depot.
 
     ./ci/depot.py                       build + stage + write the depot index
+    ./ci/depot.py --platform win-x86_64 the Windows depot (x86_64-pc-windows-gnu)
     ./ci/depot.py --root https://...    bake a different download root
     ./ci/depot.py --no-build            package whatever is already compiled
     ./ci/depot.py --self-test           the gate: no compiler, no network
+
+⚠ This line read *"Package the Linux desktop build"* until 2026-08-14, and it
+was quoted as evidence that the depot was Linux-only — while `TARGETS` had
+held `win-x86_64` for as long as anyone remembers, four of `--self-test`'s
+checks assert the Windows spec and the `.exe` launch contract, and Windows
+depots have been published and notarized repeatedly. **A first line is what
+everyone reads and nobody re-checks; this one was wrong in the direction that
+hides a shipped capability.** The finding is `fix/us-east-shard`'s (2026-08-12)
+and sat unmerged on a branch, which is its own version of the same lesson.
 
 A **depot** is one build of one game: a flat list of files each with a sha256,
 plus the single command that starts it. The scry launcher installs it by
