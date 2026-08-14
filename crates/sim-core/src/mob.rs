@@ -1,7 +1,26 @@
 //! Animals — the roster, the wander, and the kill (`reference/ANIMALS.md`).
 //!
-//! One species at v0 (the pig) and the whole file is written so a second
-//! costs a content row and nothing else.
+//! **Two species: prey and a predator.** This header said "one species at
+//! v0 and the whole file is written so a second costs a content row and
+//! nothing else" for three days, and adding the second is what measured the
+//! claim. It was two thirds right. The *behaviour* was genuinely free — a
+//! hunter is `brave_pct = 0` (courage that never runs out, so the rousing
+//! is always a charge) and a notice radius wide enough to start one across
+//! open ground, both numbers in `content/mobs.toml` and not one branch in
+//! this file. What was NOT free is the roster itself: `MOB_KINDS` was 1,
+//! `Mobs::new` wrote `MOB_PIG` into all 64 slots, and the bake matched one
+//! string. So the honest form of the old claim, which is now true, is: a
+//! third species costs a content row, a bake arm, and an ordinal — and no
+//! behaviour, unless it wants a mechanism these two do not have (packs,
+//! and a blind spot, are the two `ANIMALS.md` §9.5 still names).
+//!
+//! **What separates a predator from brave prey is the reaction, not the
+//! bite.** One rousing timer serves both and always did: a player inside
+//! `spook_cm` starts it, and `brave_pct` decides which way the animal then
+//! points. A pig is whole-hearted at full health and a coward under half of
+//! it; a wolf's floor is zero, so the same state is a charge at 1 hp. The
+//! bite is `attack != 0` and neither species has a code path the other
+//! lacks.
 //!
 //! **There is no navmesh here and there is not going to be one**, which is
 //! the single biggest thing the research changed. The reference game bakes
@@ -54,10 +73,45 @@ use crate::yaw_lut::yaw_dir;
 
 /// Species ordinals. The wire does not carry one — a client reads the
 /// species off the roster slot the id names, because the roster's kinds are
-/// worldgen and worldgen is shared. One entry today; the array below is
-/// what makes a second a content row.
+/// worldgen and worldgen is shared.
 pub const MOB_PIG: u8 = 0;
-pub const MOB_KINDS: usize = 1;
+pub const MOB_WOLF: u8 = 1;
+pub const MOB_KINDS: usize = 2;
+
+/// One roster slot in this many is a predator (`DECISIONS.md` §open,
+/// "predator v0"). 64 slots at 1-in-4 is **16 wolves and 48 pigs**, exactly,
+/// on every seed.
+///
+/// A stride and not a hashed draw, which is the bounded form wall 4 wants:
+/// the predator count is a stated number a gate can count rather than a
+/// distribution a gate has to sample. What the seed still varies is *where*
+/// they live — `home_of` draws per slot — so two shards agree on how many
+/// wolves exist and on nothing else about them.
+const WOLF_SLOT_EVERY: usize = 4;
+
+/// Which species a roster slot holds.
+///
+/// **This function is why the wire carries no species field.** `protocol`
+/// v29 rejected a `kind` on `EntityState` on cost — bits on every record of
+/// every snapshot, for a value that never changes for the life of an
+/// entity — and the rejection is only affordable because the answer is
+/// derivable on both sides. A client masks a mob id down to its slot
+/// (`slot_of_id`) and asks here; the sim asks here at construction. There
+/// is no handshake field, no snapshot bit, and no way for the two sides to
+/// disagree about what is chasing you.
+///
+/// It takes no seed on purpose. It could — `home_of` does — but a species
+/// that varied per seed would be a fact the client cannot check against
+/// anything, and the roster's *positions* already carry all the per-seed
+/// variety a world needs.
+#[inline]
+pub const fn kind_of(slot: usize) -> u8 {
+    if slot % WOLF_SLOT_EVERY == 0 {
+        MOB_WOLF
+    } else {
+        MOB_PIG
+    }
+}
 
 /// Item rows one species may drop. Structural cap, not a knob: the bake
 /// refuses a longer table rather than truncating one.
@@ -112,6 +166,12 @@ pub struct MobDef {
     /// Percent of max hp at which courage runs out: at or above it a
     /// roused animal charges, below it the same rousing is a flight.
     /// Their boar's own rule — aggressive when whole, flees hurt.
+    ///
+    /// **Zero is the predator**, and it is the whole of what makes one: a
+    /// floor of zero is a floor no wound can go under, so every rousing is
+    /// a charge and the animal never breaks off. Prey and hunter differ by
+    /// this number and by how far away they notice you, and by nothing in
+    /// this file.
     pub brave_pct: u8,
     /// Leash: planar centimetres from the home the seed chose. Past it the
     /// animal heads home instead of wandering — the reference game's own
@@ -119,7 +179,13 @@ pub struct MobDef {
     /// (`reference/ANIMALS.md` §2), and the reason nothing here needs to
     /// know how to swim.
     pub roam_cm: i64,
-    /// A player closer than this, planar centimetres, starts a flight.
+    /// A player closer than this, planar centimetres, is **noticed** — and
+    /// what the animal does about it is `brave_pct`'s business, not this
+    /// field's. On prey it reads as a fright radius, which is what it was
+    /// named for; on a predator the same number is the range it hunts from,
+    /// and the two are one field because they are one comparison. The
+    /// content validator gates `attack_range_m <= spook_m` on exactly this
+    /// reading: nothing bites what it has not noticed.
     pub spook_cm: i64,
     /// Ticks between a death and the same slot hatching again at the same
     /// home. **The same home**, which is where we and the reference part
@@ -165,11 +231,18 @@ impl MobContent {
         defs: [MobDef::INERT; MOB_KINDS],
     };
 
-    /// The fixture the probe and the sim tests run on — the alpha pig's
+    /// The fixture the probe and the sim tests run on — the alpha roster's
     /// shape without a content directory. Loot is deliberately `NO_ITEM`
     /// here: item *indices* are a property of the loaded set, and a
     /// fixture that invented them would be asserting against a table it
     /// made up.
+    ///
+    /// **Both species, because `Mobs::new` makes both.** A fixture that
+    /// armed only the pig would leave every wolf slot inert (`hp == 0`
+    /// never hatches), so a third of the roster would silently not exist
+    /// and every test here would be measuring a world the shipped content
+    /// does not produce — the shape of an assertion that passes for the
+    /// wrong reason.
     pub fn probe_fixture() -> Self {
         let mut c = Self::EMPTY;
         c.defs[MOB_PIG as usize] = MobDef {
@@ -183,6 +256,23 @@ impl MobContent {
             brave_pct: 50,
             roam_cm: 6_000,
             spook_cm: 1_200,
+            respawn_ticks: 9_000,
+            loot: [ItemStack {
+                item: NO_ITEM,
+                count: 0,
+            }; MOB_LOOT_ROWS],
+        };
+        c.defs[MOB_WOLF as usize] = MobDef {
+            hp: 100,
+            gait: 69,
+            flee_gait: 107,
+            flee_ticks: 180,
+            attack: 20,
+            attack_range_cm: 200,
+            attack_ticks: 60,
+            brave_pct: 0,
+            roam_cm: 9_000,
+            spook_cm: 3_000,
             respawn_ticks: 9_000,
             loot: [ItemStack {
                 item: NO_ITEM,
@@ -259,7 +349,7 @@ impl Mobs {
             m: [Mob::default(); MAX_MOBS],
         };
         for (slot, mob) in mobs.m.iter_mut().enumerate() {
-            mob.kind = MOB_PIG;
+            mob.kind = kind_of(slot);
             let Some((x, z)) = home_of(seed, haven, slot) else {
                 continue;
             };
@@ -534,16 +624,36 @@ fn think(
             if brave {
                 // Straight at them, on the same LUT the walk uses.
                 mob.yaw = yaw_toward(dx as f32 * POS_XZ_Q, dz as f32 * POS_XZ_Q, mob.yaw);
-                mob.gait = def.flee_gait.min(127) as i8;
+                let in_reach = d2 <= def.attack_range_cm * def.attack_range_cm;
+                // **Closed: stand and bite.** A charge that keeps sprinting
+                // at a target it has already reached does not stop there —
+                // it runs past, turns on its next think, and runs back, and
+                // the result is an animal orbiting the player on a
+                // two-think (30-tick) cycle.
+                //
+                // That is worse than ugly, because the bite is phase-locked
+                // to `attack_ticks` (60) and 60 is a multiple of 30: the
+                // bite therefore samples the *same point* of the orbit
+                // forever. If that point is outside reach, that slot can
+                // never bite that player — not rarely, never. Slot 0's
+                // phase happened to land inside reach, which is why the pig
+                // bit anything at all and why `a_whole_pig_charges_and_bites`
+                // was green for three days; the first pig to hatch anywhere
+                // else (slot 1, once `kind_of` gave slot 0 to the wolf) had
+                // its bite locked out permanently. Two correct periods
+                // beating against each other, and the gate could not see it
+                // because the gate only ever hunted slot 0.
+                mob.gait = if in_reach {
+                    0
+                } else {
+                    def.flee_gait.min(127) as i8
+                };
                 // The bite: in reach, on this slot's phase (the doc on
                 // `attack_ticks` — a phase lock is a cooldown with no
                 // state). Recorded, not applied: the borrow is the reason
                 // `Bites` exists.
                 let period = def.attack_ticks.max(1) as u64;
-                if d2 <= def.attack_range_cm * def.attack_range_cm
-                    && players[victim].hp > 0
-                    && tick % period == (slot as u64) % period
-                {
+                if in_reach && players[victim].hp > 0 && tick % period == (slot as u64) % period {
                     bites.push(Bite {
                         mob_slot: slot as u8,
                         victim: victim as u8,
