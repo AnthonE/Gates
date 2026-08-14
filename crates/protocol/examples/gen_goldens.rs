@@ -376,4 +376,20 @@ fn main() {
         let len = encode_event_shot(shooter, yaw, pitch, speed, drop, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[82], &buf[..len]);
     }
+
+    // World containers v0 (v37): the fourth container kind, on all three
+    // of the lanes it travels.
+    {
+        let (kind, cont) = goldens::action_container_world();
+        let len = encode_action_container(kind, cont, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[83], &buf[..len]);
+
+        let (cont, fk, fs, tk, ts, count) = goldens::action_move_world();
+        let len = encode_action_move(cont, fk, fs, tk, ts, count, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[84], &buf[..len]);
+
+        let (kind, cont, reset, slots) = goldens::event_cont_sync_world();
+        let len = encode_event_cont_sync(kind, cont, reset, &slots, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[85], &buf[..len]);
+    }
 }

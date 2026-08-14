@@ -25,7 +25,7 @@
 //! world that rarely moves between the two.
 
 use bevy::prelude::*;
-use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF};
+use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WORLD};
 
 use crate::look::yaw_u16;
 use crate::ui::interact::{self, Aim, Pick, SwingAim, SwingPick, Verb};
@@ -131,6 +131,31 @@ pub fn resolve(
                 cache: occ.cache,
             };
             let pick = interact::resolve_swing(SwingAim { x, y, z, fx, fz }, &mut island);
+            // The open pick, on the same island borrow and the same aim.
+            // Folded into `aimed` rather than kept beside it, because to
+            // the player there is one `E` and one centre prompt — a
+            // second pick with its own key would teach two verbs for one
+            // gesture. It loses every tie to a deployable on purpose: a
+            // box placed against a waystation cache is a thing a player
+            // built and meant, and the authored container is not going
+            // anywhere.
+            if aimed.0.is_none() {
+                let open = interact::resolve_open(SwingAim { x, y, z, fx, fz }, &mut island);
+                if open.occupant != 0 {
+                    aimed.0 = interact::Pick {
+                        verb: interact::Verb::Crate,
+                        cx: open.cx,
+                        cz: open.cz,
+                        // The wire handle is the cell key — the same value
+                        // `EV_SLOT_HARVESTED` carries for this cell, and
+                        // the same one `worldcont::index_of` resolves.
+                        handle: sim_core::gather::cell_key(open.cx, open.cz),
+                        d2: open.d2,
+                        aimed: true,
+                        ..Default::default()
+                    };
+                }
+            }
             // The weak sector, but only for the node actually aimed at: the
             // chase is per-node and the server restarts it when the player
             // switches targets, so a mark for the tree behind you says
@@ -348,6 +373,27 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             send(net, toast, "feed", |buf| {
                 protocol::encode_action_feed(cx, cz, level, buf)
             });
+        }
+        // A world container opens exactly the way a box does — the same
+        // `ACT_CONTAINER`, the same panel — and the only difference is
+        // which kind travels in two bits. That is the whole reason it was
+        // built as a container kind rather than as a verb of its own:
+        // there is no second screen and no second move path to keep in
+        // step with this one.
+        //
+        // Unlike a box, the open also reaches the sim, because a crate's
+        // contents do not exist until this arrives (`server/core.rs` on
+        // the `ActionMsg::Container` split). Nothing is predicted: the
+        // roll is the server's and the client has no seed to guess it
+        // with, so the panel opens on the `ContSync` that follows rather
+        // than on the keypress.
+        Verb::Crate => {
+            let handle = pick.handle;
+            if send(net, toast, "open crate", |buf| {
+                protocol::encode_action_container(CONT_WORLD, handle, buf)
+            }) {
+                open_panel(ui);
+            }
         }
         // The honest answer, and the one a chain of `if`s could not give: the
         // browser's old dispatch reported "no hearth in reach" on an empty

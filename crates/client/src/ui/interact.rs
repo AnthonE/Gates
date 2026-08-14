@@ -74,6 +74,22 @@ pub enum Verb {
     /// is in your HAND rather than on what is at the address — the table
     /// holds nothing — so the prompt names the held item and `E` spends it.
     Research,
+    /// An authored world container — the haven pad's crate, a waystation's
+    /// cache (`sim-core/worldcont.rs`).
+    ///
+    /// **The one verb on this enum that is not a deployable.** Every other
+    /// variant is born from an `ARCH_*` on a record the deploy sync sent;
+    /// this one is born from a terrain `Occupant`, which terrain places as
+    /// a pure function of the seed and no packet ever mentions. So it is
+    /// resolved by the *second* resolver (`resolve_open`, beside
+    /// `resolve_swing`) and folded into the pick by the caller — the
+    /// deploy scan cannot see it, because there is nothing there to see.
+    ///
+    /// One variant for both kinds, `Fire`'s argument exactly: a crate and
+    /// a cache are one thing in the sim, differing only in the loot table
+    /// their occupant selects, and the prompt names a KIND. What the
+    /// player is told apart is what is inside.
+    Crate,
 }
 
 impl Verb {
@@ -103,6 +119,13 @@ impl Verb {
             Verb::Fire => 5,
             Verb::Recycler => 6,
             Verb::Research => 7,
+            // Last, and unlike `Fire`'s rung this one is genuinely
+            // unreachable: a world container is not a deployable, so it
+            // cannot tie with one — the two resolvers scan different
+            // things and the caller only consults this one when the
+            // deploy scan came back `None`. The rung exists so the order
+            // stays total.
+            Verb::Crate => 8,
         }
     }
 
@@ -118,6 +141,7 @@ impl Verb {
             Verb::Fire => "FIRE",
             Verb::Recycler => "RECYCLER",
             Verb::Research => "RESEARCH TABLE",
+            Verb::Crate => "CRATE",
         }
     }
 }
@@ -640,6 +664,7 @@ mod tests {
 // is driven directly off `harvested(key)` and swaps the mesh on the event, so
 // the harvested set is the whole truth and there is no second state to test.
 
+use sim_core::backpack::LOOT_REACH_M as OPEN_REACH_M;
 use sim_core::fmath::{fabs, floor_i32};
 use sim_core::gather::{CONE_COS, DY_MAX_M, POINT_BLANK_M2, REACH_M as SWING_REACH_M};
 use sim_core::occupy::{Harvested, SlotCache};
@@ -759,6 +784,43 @@ impl Island<'_> {
 /// one — `island.cache` is written, but only with answers `terrain::scatter`
 /// would have recomputed, so nothing observable moves.
 pub fn resolve_swing(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
+    scan_slots(at, island, swingable, SWING_REACH_M)
+}
+
+/// Whether an occupant is something `E` OPENS.
+///
+/// The mirror of `swingable`, and its complement rather than a subset:
+/// nothing on the island is both smashed and opened. A barrel is hit until
+/// it bursts and pays into a bag on the ground; a crate is furniture with
+/// a lid. That split is the sim's — `gather::target_index` claims the
+/// barrel and `worldcont::table_of` claims these two — and this is those
+/// two predicates read from the client side, never a third opinion.
+fn openable(o: Occupant) -> bool {
+    matches!(o, Occupant::CrateSlot | Occupant::CacheSlot)
+}
+
+/// What `E` would OPEN in the scatter, or `Occupant::None` for nothing.
+///
+/// Same scan, same cone, same 3×3 memo as `resolve_swing` — a different
+/// predicate and a different reach, because an open is priced at the arm
+/// every other container uses (`backpack::LOOT_REACH_M`) and a swing at
+/// the longer `gather::REACH_M`. Sharing the body rather than copying it
+/// is the point: the two prompts must never disagree about which cell the
+/// player is standing at, and two hand-written 3×3 walks would eventually
+/// do exactly that.
+pub fn resolve_open(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
+    scan_slots(at, island, openable, OPEN_REACH_M)
+}
+
+/// The 3×3 scatter walk both slot resolvers run: nearest cell whose
+/// occupant satisfies `want`, inside `reach`, inside the aim cone or
+/// point-blank, not already harvested.
+fn scan_slots(
+    at: SwingAim,
+    island: &mut Island<'_>,
+    want: fn(Occupant) -> bool,
+    reach: f32,
+) -> SwingPick {
     let SwingAim { x, y, z, fx, fz } = at;
     let mut out = SwingPick::default();
     let mut best = f32::INFINITY;
@@ -783,14 +845,14 @@ pub fn resolve_swing(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
             let cz = pcz + dz_cell;
             dx_cell += 1;
             let s = island.slot(cx, cz);
-            if !swingable(s.occupant) {
+            if !want(s.occupant) {
                 continue;
             }
             let dx = s.x - x;
             let dy = s.y - y;
             let dz = s.z - z;
             let d2 = dx * dx + dz * dz;
-            if d2 > SWING_REACH_M * SWING_REACH_M {
+            if d2 > reach * reach {
                 continue;
             }
             if fabs(dy) > DY_MAX_M {

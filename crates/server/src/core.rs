@@ -29,7 +29,7 @@ use sim_core::build::{PieceRec, LOC_PLANE};
 use sim_core::craft::CraftJob;
 use sim_core::deploy::DeployRec;
 use sim_core::gather::{ItemStack, NO_ITEM};
-use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF};
+use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WORLD};
 use sim_core::limits::{
     AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, CHAT_LOCAL_CM, CRAFT_QUEUE,
     DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_MOBS,
@@ -768,21 +768,39 @@ impl ShardCore {
             }
             if let Some(act) = c.pending_action.take() {
                 self.cmd_buf[n] = match act {
-                    // The one action that is not a command, and it says so
-                    // where the table says everything else: it changes what
-                    // this connection is *shown*, not what the world *is*.
-                    // No `Command` carries it, the sim never hears it, the
-                    // WAL never records it, and `World::state_hash` is
-                    // identical either way. The `continue` is the whole
-                    // statement — the arm's type is `!`, so no command is
-                    // written and none is counted, and a future reader
-                    // cannot add a `Command::Container` without deleting
-                    // this sentence. It still spends the same one-action-
-                    // per-tick hand as every other action, so an open
-                    // cannot be spammed to jump the queue.
+                    // The action that is **usually** not a command, and the
+                    // split is the whole of what world containers v0 added
+                    // here. For a bag and a box it changes what this
+                    // connection is *shown*, not what the world *is*: the
+                    // contents already exist, so no `Command` carries it,
+                    // the sim never hears it, the WAL never records it, and
+                    // `World::state_hash` is identical either way. The
+                    // `continue` is the whole statement — the arm's type is
+                    // `!`, so no command is written and none is counted.
+                    //
+                    // `CONT_WORLD` is the exception, and it is an exception
+                    // about **state**, not about permissions: a crate's
+                    // loot does not exist until somebody opens it, so the
+                    // open IS the roll. That has to reach the sim, the WAL
+                    // and the hash, or a replay would rebuild a shard whose
+                    // crates were all still full. The subscription is set
+                    // either way — the sim decides whether there is
+                    // anything to subscribe *to*, and a handle naming an
+                    // empty meadow mints a record for nobody, after which
+                    // the next tick's drip finds no container and closes
+                    // the panel (`worldcont::open`).
+                    //
+                    // Both halves still spend the same one-action-per-tick
+                    // hand as every other action, so an open cannot be
+                    // spammed to jump the queue — which is also the only
+                    // rate limit on the roll.
                     ActionMsg::Container { kind, cont } => {
                         c.open_container(kind, cont);
-                        continue;
+                        if kind == sim_core::inventory::CONT_WORLD {
+                            Command::OpenWorldCont { id: c.id, cont }
+                        } else {
+                            continue;
+                        }
                     }
                     ActionMsg::Craft { recipe, count } => Command::Craft {
                         id: c.id,
@@ -2436,6 +2454,20 @@ impl ShardCore {
                                 .deploys
                                 .lock_passes(b.cx, b.cz, b.level, LOC_PLANE, p.id)
                         }),
+                    // A world container resolves against the store, never
+                    // against terrain: `worldcont::open` already paid the
+                    // `terrain::scatter` that proved the cell, and paying
+                    // it again here would be ~60 `noise2` evaluations per
+                    // open panel per tick — the cold-scatter spike
+                    // `occupy.rs` exists to refuse, in the one loop that
+                    // runs for every connected client. An unopened cell
+                    // resolves to nothing, which is correct: there is no
+                    // container there yet.
+                    CONT_WORLD => self
+                        .world
+                        .world_conts
+                        .index_of(handle)
+                        .filter(|&i| self.world.world_conts.in_reach(i, p)),
                     _ => None,
                 }
             };

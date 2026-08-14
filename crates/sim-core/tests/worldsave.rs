@@ -29,7 +29,7 @@ use sim_core::loot::LootContent;
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::survival::SurvivalContent;
 use sim_core::world::{Command, World};
-use sim_core::worldsave::{self, WorldSaveError, PLAYER_BYTES, WORLD_SAVE_MAX_BYTES};
+use sim_core::worldsave::{self, WorldSaveError, HEAD_BYTES, PLAYER_BYTES, WORLD_SAVE_MAX_BYTES};
 
 const SEED: u64 = 20260807;
 /// The doorway row in the build fixture, and the door row in the deploy
@@ -518,7 +518,9 @@ fn a_corrupt_world_is_refused_by_reason() {
         assert!(world.load(&b).is_err(), "a {cut}-byte blob must refuse");
     }
     // A player count past MAX_PLAYERS. Counts start at offset 34 (2 format
-    // + 8 tick + 12 sweeps + 8 evictions + 4 next_bag).
+    // + 8 tick + 12 sweeps + 8 evictions + 4 next_bag) and run to the end
+    // of the head — which is `HEAD_BYTES` and NOT a hand-copied total, for
+    // that constant's own stated reason.
     const COUNTS_AT: usize = 34;
     assert_eq!(
         bent(&|b| b[COUNTS_AT..COUNTS_AT + 2].copy_from_slice(&u16::MAX.to_le_bytes())),
@@ -534,16 +536,17 @@ fn a_corrupt_world_is_refused_by_reason() {
         bent(&|b| b[COUNTS_AT + 10..COUNTS_AT + 12].copy_from_slice(&u16::MAX.to_le_bytes())),
         Err(WorldSaveError::CountOverCap)
     );
-    // A slot-life count past MAX_SLOT_LIVES — the u32 one.
+    // A slot-life count past MAX_SLOT_LIVES — the u32 one, and the last
+    // four bytes of the head whatever else lands before it.
     assert_eq!(
-        bent(&|b| b[COUNTS_AT + 16..COUNTS_AT + 20].copy_from_slice(&u32::MAX.to_le_bytes())),
+        bent(&|b| b[HEAD_BYTES - 4..HEAD_BYTES].copy_from_slice(&u32::MAX.to_le_bytes())),
         Err(WorldSaveError::CountOverCap)
     );
 
     // A piece naming a content row that does not exist. The first piece
     // record's `row` byte sits after the player section.
     let players = w.players.iter().filter(|p| p.active).count();
-    let piece0 = COUNTS_AT + 20 + players * PLAYER_BYTES;
+    let piece0 = HEAD_BYTES + players * PLAYER_BYTES;
     assert_eq!(
         bent(&|b| b[piece0 + 6] = 200),
         Err(WorldSaveError::BadContentRow),
@@ -582,9 +585,8 @@ fn forged_lock_bits_load_cleared_never_trusted() {
     // head + counts, players at `PLAYER_BYTES` each, pieces at 19 (11 + the
     // placement tick), then 25 per deploy record (17 + bag_ready) with
     // `locked` at offset 16 of each.
-    const COUNTS_AT: usize = 34;
     let players = w.players.iter().filter(|p| p.active).count();
-    let deploy0 = COUNTS_AT + 20 + players * PLAYER_BYTES + w.pieces.len() * 19;
+    let deploy0 = HEAD_BYTES + players * PLAYER_BYTES + w.pieces.len() * 19;
     let mut saw = (false, false);
     for (i, rec) in w.deploys.entries().iter().enumerate() {
         let at = deploy0 + i * 25;

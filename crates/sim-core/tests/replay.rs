@@ -275,7 +275,20 @@ const TICKS: u64 = 900;
 /// move (worldgen untouched). `hashes_a == hashes_b` and
 /// `final_a == final_b` were green on the run this value was read off,
 /// which is what separates a landed verb from a drift.
-const GOLDEN_FINAL_HASH: u64 = 0x9F66_6BB9_66C2_1357;
+///
+/// **Regenerated 2026-08-14 for world containers v0**, and this one is the
+/// *other* shape — state widened, no verb changed. `World::world_conts`
+/// joined `state_hash`, and this script never opens a container, so what
+/// entered the digest is a length of **zero** and sixty-four records that
+/// do not exist. The run is byte-identical in every other respect: no
+/// command in the script is new, no existing rule moved, and
+/// `test_terrain_golden` did NOT move (worldgen untouched). That is the
+/// cheapest possible cause for a moved golden and also the easiest to
+/// wave through, so the evidence is the same as every entry above —
+/// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
+/// this value was read off, which is why the equality asserts sit *before*
+/// the pin rather than after it.
+const GOLDEN_FINAL_HASH: u64 = 0x2D61_AAB2_F881_0C4C;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

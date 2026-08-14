@@ -462,7 +462,30 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// re-read of the same bytes. Only `event_death` changes shape; every
 /// other fixture is byte-identical under a new name. Fixtures are keyed
 /// `v36_*` — 83 still.
-pub const PROTO_VER: u16 = 36;
+///
+/// **v37 — the container-kind field spends its last value** (world
+/// containers v0, `sim_core::inventory::CONT_WORLD`). `CONT_KIND_BITS` has
+/// been 2 since v18 and only three of its four values were containers;
+/// value 3 decoded as `Malformed` at both ends. It is now the authored
+/// world container — the haven pad's crate, a waystation's cache — named
+/// by `gather::cell_key(cx, cz)`.
+///
+/// **Not one field moved.** No width changed, no message grew, and every
+/// pre-existing fixture is byte-identical under a new name. What changed
+/// is the *accepted value set* on three messages (`ACT_CONTAINER`,
+/// `ACT_MOVE`, `SUB_CONT_SYNC`), and that is a compatibility break in one
+/// direction — a v37 client's crate open is `Malformed` to a v36 server —
+/// which is exactly what the version number is for. Bumping on a value
+/// set rather than a layout is the conservative reading of wall 6, and
+/// the right one: "the wire never drifts by accident" is about what the
+/// two ends agree a byte *means*, not only about where it sits.
+///
+/// Fixtures are keyed `v37_*` — **86**, three added: the open, the
+/// withdrawal and the opening sync, all on kind 3. Three and not one for
+/// the reason `goldens::action_move_box` records in its own doc: when the
+/// third kind landed, only its open was pinned, and the bytes meaning
+/// "take it out" went a whole version unchecked.
+pub const PROTO_VER: u16 = 37;
 
 /// Datagram kind field width.
 ///
@@ -2673,12 +2696,13 @@ mod tests {
     /// reference's own move verb kept causing (`inventory.rs`).
     #[test]
     fn container_action_round_trips_and_refuses_only_its_two_shapes() {
-        use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_MAX, CONT_SELF};
+        use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_MAX, CONT_SELF, CONT_WORLD};
         let mut buf = [0u8; 64];
 
         for (kind, cont) in [
             (CONT_BAG, 1u32),
             (CONT_BOX, 0x0123_2E85),
+            (CONT_WORLD, 0x0093_005C),
             (CONT_BAG, u32::MAX),
             (CONT_SELF, 0),
         ] {
@@ -2701,14 +2725,19 @@ mod tests {
             encode_action_container(CONT_SELF, 1, &mut buf),
             Err(WireError::Range)
         );
-        // And both again off the wire, forged past what the encoder emits.
-        let mut w = BitWriter::new(&mut buf);
-        w.write(KIND_ACTION, KIND_BITS).unwrap();
-        w.write(ACT_CONTAINER, ACTION_SUB_BITS).unwrap();
-        w.write(CONT_MAX as u32 + 1, CONT_KIND_BITS).unwrap();
-        w.write(0, 32).unwrap();
-        let len = w.finish();
-        assert_eq!(decode_action(&buf[..len]), Err(WireError::Malformed));
+        // The kind field is **saturated** as of wire v37 (world containers
+        // v0): `CONT_MAX` is 3 and the field is two bits, so there is no
+        // longer a bit pattern that decodes as a forged kind, and the
+        // forged-kind half of this test cannot be written any more. That
+        // is a real change in the wire's shape, so it is asserted rather
+        // than deleted — the day a fifth kind widens `CONT_KIND_BITS`,
+        // this line goes red and the forged case becomes writable again.
+        assert_eq!(
+            CONT_MAX as u32,
+            (1 << CONT_KIND_BITS) - 1,
+            "the container-kind field is saturated; if it was widened, \
+             restore the forged-kind decode case below it"
+        );
 
         let mut w = BitWriter::new(&mut buf);
         w.write(KIND_ACTION, KIND_BITS).unwrap();

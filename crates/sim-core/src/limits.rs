@@ -401,6 +401,23 @@ pub const MAX_BACKPACKS: usize = 256;
 /// never placed. Proposed default, DECISIONS.md §open (box v0).
 pub const MAX_BOXES: usize = 256;
 
+/// Authored world containers that have ever been opened at once
+/// (`worldcont.rs`: the haven pad's crates, a waystation's caches). Not a
+/// budget for how many terrain places — `terrain::scatter` decides that,
+/// and this store only ever holds the ones a player has actually reached.
+/// The island authors nine today, so the cap is ~7× the live set and the
+/// overflow branch is unreachable; `tests/worldcont.rs`'s
+/// `the_cap_is_above_what_terrain_authors` is what keeps that true when
+/// a monument lands.
+///
+/// Overflow policy: **refuse** the open — the container does not open and
+/// the panel closes, exactly as it does for a bag that despawned. Never
+/// **evict**: an emptied record carries the tick it may roll again, so
+/// dropping one and re-minting it on the next open would re-roll the loot
+/// immediately, which turns the cap into a dupe rather than a limit.
+/// Proposed default, DECISIONS.md §open (world containers v0).
+pub const MAX_WORLD_CONTS: usize = 64;
+
 /// Slots inside one deployed box. Deliberately under `INV_SLOTS`: a box
 /// is a place to put things down, not a second inventory, and the whole
 /// store is sized against this (`MAX_BOXES * BOX_SLOTS` stacks). Both

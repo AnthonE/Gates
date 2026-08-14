@@ -42,6 +42,34 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0wc · The crate opens — what world containers v0 left *(systems lane)*
+
+Gap-pass item, from the merge-gate judge's ranked gap 1
+(`findings/pass-20260813-230343-04-judge.md`): the destination gradient was
+fully built and gated and *paid nobody* — `loot.rs:33` said "No verb opens
+one yet." Landed 2026-08-14: `CONT_WORLD` is a fourth container kind, the
+open re-derives the cell through `terrain::scatter`, the refill is lazy
+inside `open` so the store costs the tick nothing, and the crate rides the
+existing move/refusal/sync path (`DECISIONS.md` §open "world containers
+v0"; wire v37; save format 5; `tests/worldcont.rs`, 15 checks).
+
+Owed, in rank order:
+
+1. **Nobody has opened one in the running game.** Every claim above is a
+   sim test or a byte golden. The pad's crate has never been walked to
+   with the client attached — the prompt string, the panel title, the
+   drag out of a 30-slot grid and what an emptied crate looks like are
+   all unverified. First thing to do on a `--capture` or a real boot.
+2. **An emptied crate says nothing at a distance.** The only way to learn
+   the pad is farmed out is to walk to it, which makes a wasted trip the
+   normal case once a shard is populated. Wants either a visible lid
+   state on the mesh or the refill window shortened; the mesh is
+   `render/props.rs`, the knob is in §open.
+3. **The prize is still unguarded** — the judge's gap 2, untouched. The
+   roster is two species deep and `SiteFootprint`/`site_sweep` places a
+   site today; what it needs is a leash exemption and a loot tier. That
+   is its own pass and it is the one that makes the walk cost something.
+
 ## 0pr · The wolf hunts — what predator v0 left *(systems lane)*
 
 Predator v0 landed 2026-08-14: the wolf is a content row, and **nothing in

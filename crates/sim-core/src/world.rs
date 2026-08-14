@@ -925,10 +925,31 @@ pub enum Command {
     Loot {
         id: u32,
     },
+    /// Open the authored world container at cell key `cont`
+    /// (`worldcont.rs`) — the haven pad's crate, a waystation's cache.
+    ///
+    /// **The only container verb that enters the sim at all.** Opening a
+    /// bag or a box is pure server-side subscription (`open_container`):
+    /// the contents already exist, so a view of them changes no state and
+    /// mints no command. A world container's contents do *not* exist until
+    /// somebody opens it — the roll is the state change — so this one has
+    /// to be a `Command`, has to be in the WAL, and has to be in
+    /// `state_hash`. A replay that skipped it would replay a shard whose
+    /// crates were all still full.
+    ///
+    /// Payload is the cell key alone, and the sim treats it as a claim:
+    /// `terrain::scatter` re-derives what actually stands there, so a
+    /// handle naming an empty meadow opens nothing. Reach is re-proved
+    /// here and again on every tick the panel is open.
+    OpenWorldCont {
+        id: u32,
+        cont: u32,
+    },
     /// Move `count` items between two slots (`inventory.rs`). `cont` names
     /// the one ground container this move touches — a bag id for
-    /// `CONT_BAG`, a packed `deploy::box_key` address for `CONT_BOX`, zero
-    /// when the move is inside the sender's own inventory.
+    /// `CONT_BAG`, a packed `deploy::box_key` address for `CONT_BOX`, a
+    /// packed `gather::cell_key` for `CONT_WORLD`, zero when the move is
+    /// inside the sender's own inventory.
     ///
     /// Unlike `Loot`, this one *does* carry a target, and it has to: the
     /// whole verb is the player choosing which slot, which is the choice
@@ -1058,6 +1079,13 @@ pub struct World {
     /// for its client array — keeps `World`'s stack footprint where this
     /// slice found it. Nothing here allocates in the tick (wall 2).
     pub backpacks: Box<Backpacks>,
+    /// Authored world containers a player has opened — sim state, hashed
+    /// (`worldcont.rs`). Boxed inside, for `backpacks`' reason: 64 records
+    /// of `INV_SLOTS` stacks is ~8.7 kB of fixed capacity on a stack-built
+    /// `World`. Nothing here allocates in the tick, and nothing here runs
+    /// in the tick at all — a world container is touched only by the verb
+    /// that opens it and the move that empties it.
+    pub world_conts: crate::worldcont::WorldConts,
     /// Upkeep/decay sweep cursors (deploy.rs) — sim state, hashed.
     pub sweep_piece: u32,
     pub sweep_deploy: u32,
@@ -1136,6 +1164,7 @@ impl World {
             deploys: Deploys::new(),
             charges: crate::charge::Charges::new(),
             backpacks: Box::new(Backpacks::new()),
+            world_conts: crate::worldcont::WorldConts::new(),
             sweep_piece: 0,
             sweep_deploy: 0,
             sweep_support: 0,
@@ -1306,6 +1335,7 @@ impl World {
         match kind {
             inventory::CONT_BAG => self.backpacks.slot(ci, s as usize),
             inventory::CONT_BOX => self.deploys.box_slot(ci, s as usize),
+            inventory::CONT_WORLD => self.world_conts.slot(ci, s as usize),
             _ => self.players[slot].inv[s as usize],
         }
     }
@@ -1315,6 +1345,17 @@ impl World {
         match kind {
             inventory::CONT_BAG => self.backpacks.set_slot(ci, s as usize, v),
             inventory::CONT_BOX => self.deploys.set_box_slot(ci, s as usize, v),
+            // The one kind whose write needs the clock: emptying the last
+            // stack arms the refill timer, and the jitter is the barrel's
+            // own so a crate and a barrel come back on one schedule
+            // (`gather::RESPAWN_*`, DECISIONS.md §open "node/barrel
+            // respawn 20–45 min" — reused, not re-spoken).
+            inventory::CONT_WORLD => {
+                let c = self.world_conts.entries()[ci];
+                let refill = crate::worldcont::refill_ticks(self.seed, c.cx, c.cz, self.tick);
+                self.world_conts
+                    .set_slot(ci, s as usize, v, self.tick, refill);
+            }
             _ => self.players[slot].inv[s as usize] = v,
         }
     }
@@ -1416,6 +1457,27 @@ impl World {
                 {
                     self.events
                         .push(EV_DEPLOY_REFUSED, pid, deploy::REFUSE_D_OWNER, 0);
+                    return;
+                }
+                Some(i)
+            }
+            // A world container resolves by cell key, and — unlike a bag
+            // and a box — a handle that resolves to nothing is the
+            // *ordinary* case rather than a lost container: it means
+            // nobody has opened this crate yet, so no record exists. The
+            // move still refuses. `open` is the only path that mints one,
+            // because minting is where the loot is rolled, and rolling
+            // from inside the move verb would let a client skip the reach
+            // and occupant checks that `open` is made of.
+            inventory::CONT_WORLD => {
+                let Some(i) = self.world_conts.index_of(cont) else {
+                    self.events
+                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
+                    return;
+                };
+                if !self.world_conts.in_reach(i, &self.players[slot]) {
+                    self.events
+                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
                     return;
                 }
                 Some(i)
@@ -2322,6 +2384,21 @@ impl World {
                     );
                 }
             }
+            Command::OpenWorldCont { id, cont } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    self.world_conts.open(
+                        self.seed,
+                        &self.scatter,
+                        &self.haven,
+                        &self.loot,
+                        &self.gather,
+                        self.tick,
+                        (cont >> 16) as u16,
+                        (cont & 0xFFFF) as u16,
+                        &self.players[slot],
+                    );
+                }
+            }
             Command::Move {
                 id,
                 cont,
@@ -3149,6 +3226,28 @@ impl World {
         // thing, and every downstream client keyed on it would agree with
         // neither.
         h.update(&self.backpacks.next_id().to_le_bytes());
+        // World containers (`worldcont.rs`). Every field is hashed
+        // including `refill_at`: two shards whose crates were emptied on
+        // different ticks agree about the contents (both empty) and
+        // disagree about *when they pay again*, which is a divergence that
+        // would otherwise stay silent until the first refill.
+        h.update(&(self.world_conts.len() as u64).to_le_bytes());
+        for c in self.world_conts.entries() {
+            let mut buf = [0u8; 21];
+            buf[0..2].copy_from_slice(&c.cx.to_le_bytes());
+            buf[2..4].copy_from_slice(&c.cz.to_le_bytes());
+            buf[4..8].copy_from_slice(&c.qx.to_le_bytes());
+            buf[8..12].copy_from_slice(&c.qz.to_le_bytes());
+            buf[12] = c.table;
+            buf[13..21].copy_from_slice(&c.refill_at.to_le_bytes());
+            h.update(&buf);
+            for s in c.items.iter() {
+                let mut sb = [0u8; 4];
+                sb[0..2].copy_from_slice(&s.item.to_le_bytes());
+                sb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                h.update(&sb);
+            }
+        }
         h.update(&self.sweep_piece.to_le_bytes());
         h.update(&self.sweep_deploy.to_le_bytes());
         h.update(&self.sweep_support.to_le_bytes());

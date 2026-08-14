@@ -76,11 +76,31 @@ pub const CONT_BAG: u8 = 1;
 /// Still not owner-only: a bare box is anyone's, and breaking a locked
 /// one spills its contents — a raid takes what a raid breaks open.
 pub const CONT_BOX: u8 = 2;
-/// The highest kind the sim understands. Two bits cross the wire, so
-/// value 3 is forgeable and refuses — at decode as `Malformed`
-/// (`protocol`), and here as `REFUSE_M_SLOT` for a command that never
-/// crossed a wire at all (a bot, a replayed WAL).
-pub const CONT_MAX: u8 = CONT_BOX;
+/// An authored container standing in the world — the haven pad's crate,
+/// a waystation's cache (`worldcont.rs`) — named by
+/// `gather::cell_key(cx, cz)`, the same key `EV_SLOT_HARVESTED` already
+/// carries for the cell it stands at. Like a box it is an **address**
+/// rather than an id, and for the same reason: terrain places it as a
+/// pure function of the seed, so the client can name one from the world
+/// it is already drawing without a byte of new wire.
+///
+/// Open to anyone who can reach it. A crate has no owner to have — it is
+/// scenery that pays, and the whole point of the destination gradient is
+/// that the walk is the price. What is NOT free is the roll: the sim
+/// re-derives the cell through `terrain::scatter` before it mints
+/// anything, so a handle naming a cell that holds no container opens
+/// nothing (`worldcont::open`).
+///
+/// The one asymmetry with a bag and a box: a world container **refills**.
+/// It is furniture that outlives being emptied, so an emptied one carries
+/// the tick it may roll again rather than despawning.
+pub const CONT_WORLD: u8 = 3;
+/// The highest kind the sim understands, and — since world containers v0
+/// — the highest value the two wire bits can hold. There is no forgeable
+/// kind left: every value of the field is now a real container, which is
+/// why `worldcont::open`'s scatter re-derivation is the authorization and
+/// not the kind check.
+pub const CONT_MAX: u8 = CONT_WORLD;
 
 /// Slots addressable in a container of `kind`. A box is smaller than an
 /// inventory (`BOX_SLOTS` against `INV_SLOTS`), so the address check is
