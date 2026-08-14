@@ -818,7 +818,10 @@ fn think_once(w: &mut World) {
 fn dusk_is_one_boundary_and_the_day_is_the_longer_half() {
     let nights = (0..DAY_TICKS).filter(|&t| world::is_night(t)).count() as u64;
     let days = DAY_TICKS - nights;
-    assert!(days > nights, "the day must be the longer half: {days}/{nights}");
+    assert!(
+        days > nights,
+        "the day must be the longer half: {days}/{nights}"
+    );
     // The split is `DAY_PORTION` of the cycle, to the tick.
     let want_day = (DAY_TICKS as f32 * DAY_PORTION) as u64;
     assert!(
@@ -872,9 +875,7 @@ fn the_wolf_hunts_a_narrower_circle_after_dusk() {
             "a wolf 25 m away at {label} (tick {hour}): roused_until is {}, \
              and the radius in force is {} cm",
             w.mobs.m[slot].roused_until,
-            MobContent::probe_fixture()
-                .def(MOB_WOLF)
-                .spook_at(hour)
+            MobContent::probe_fixture().def(MOB_WOLF).spook_at(hour)
         );
     }
 }
