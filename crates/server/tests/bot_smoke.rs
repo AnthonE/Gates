@@ -208,10 +208,43 @@ async fn test_bot_smoke_50() {
 /// session*), and the sim answers on the event lane (`*_refused`).
 ///
 /// That last one is the measurement, not a fault. Roughly half of what
-/// `raid_step` claims is meant to be refused, and a naked spawn can afford
-/// none of the rest; what had never happened before this test is those
-/// refusal paths being reached **through the net stack** rather than by a
-/// direct `World::tick`.
+/// `raid_step` claims is meant to be refused; what had never happened
+/// before this test is those refusal paths being reached **through the net
+/// stack** rather than by a direct `World::tick`.
+///
+/// **And now the success paths too** (`NOW.md` §0rs remaining item 1). The
+/// first cut of this gate spawned the fleet naked and measured `struct_hits
+/// == 0` and `auths == 0` across all 8 raiders: every claim died on
+/// affordability *before* the rule it was aimed at ever ran, so a fleet
+/// that could not ask scored identically to one that asked and was told no.
+/// The kit below answers that — one satchel stack, one box, one lock, one
+/// stack of wood, every index and count read out of shipped content. The
+/// owner cycle now actually builds: foundation, two walls, a box, a lock on
+/// the box (`deploy.rs` `lockable()` admits `ARCH_BOX`, so the profile
+/// needs no door), `SET_CODE`, and the `ENTER` at step 7 that emits
+/// `EV_AUTH`. Measured on this box 2026-08-14, 8 raiders × 4 s: ~66 pieces
+/// placed, 3 deploys, 18 charges armed, and auths per owner ranging 0..15
+/// — every one of those a counter that read 0 before the kit.
+///
+/// **What this still does not assert, and why it is not asserted.**
+/// `struct_hits` remains 0. That is *not* affordability and not the fuse
+/// window: with the fleet funded, 27 charges armed over a 30 s run at a
+/// measured 905 shard ticks — three times the shipped 300-tick fuse — and
+/// no `EV_STRUCT_HIT` ever reached a client. `damage_piece` pushes that
+/// event unconditionally (`deploy.rs`, before the removal branch) and the
+/// relay broadcasts it (`core.rs`), with `forced_resyncs` and `ev_resyncs`
+/// both 0, so the drop is upstream of both. The mechanism is unexplained,
+/// so it is written down rather than gated: `NOW.md` §0rf and
+/// `gates-loop/findings/note-20260814-charge-never-detonates.md` carry the
+/// full chain. A gate asserting a number nobody can explain is the pass it
+/// did not earn.
+///
+/// The exchange rate this begins to make sayable, from `content/`: a twig
+/// wall is 50 wood at hp 10 and one satchel is `structure` 125 — a 12.5×
+/// overkill, so the interesting number was never what the wall costs to
+/// build but what the *charge* costs to craft (240 gunpowder at
+/// `workbench1`). Pricing that is `reference/RIPLIST.md` §0's threat frame
+/// and is not this gate's claim.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_bots_raid_over_the_wire() {
     /// Even, so the fleet is half attackers and half owners (`run_bot`
@@ -224,6 +257,19 @@ async fn test_bots_raid_over_the_wire() {
     let content = content::Content::load_dir(&dir).expect("shipped content loads");
     // Resolved by id, exactly as `bin/bots` resolves them — a row typed here
     // would pass while the shipped table said otherwise (wall 7).
+    // The slot a raider *addresses* and the slot the kit *fills* are one
+    // fact, so they are typed once. `grant_kit` writes the kit into slots in
+    // order, and `raid_step` reaches for `charge_slot` / `goods_slot` by
+    // number: typed twice they drift in silence — `charge_slot` would come
+    // to point at the wood and every Throw would refuse as "not a
+    // throwable" with every count in this gate still green. That is the
+    // positional-payload shape `CLAUDE.md`'s trap list names, one level out
+    // from the event roles it was learned on.
+    const KIT_CHARGE: usize = 0;
+    const KIT_CONTAINER: usize = 1;
+    const KIT_GOODS: usize = 2;
+    const KIT_LOCK: usize = 3;
+
     let rows = sim_core::bots::RaidRows {
         foundation: content
             .piece_index("build.foundation_twig")
@@ -235,13 +281,84 @@ async fn test_bots_raid_over_the_wire() {
         lock: content
             .deploy_index("item.lock_code")
             .expect("shipped lock"),
-        charge_slot: 0,
-        goods_slot: 2,
+        charge_slot: KIT_CHARGE as u8,
+        goods_slot: KIT_GOODS as u8,
         code: 4242,
     };
 
     let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, mobs, catalog) =
         baked_content();
+
+    // ---- what a raider can afford ---------------------------------------
+    //
+    // Every index and every count below is *read* out of the shipped tables,
+    // never typed: a fixture that named its own price would pass while
+    // `content/` said otherwise, which is wall 7 pointed at a test. The
+    // stack maxima are the ceiling on all four rows — `grant_kit` writes
+    // slots without clamping, so a count over the max would seat a stack
+    // the sim can never reproduce.
+    let item = |id: &str| {
+        content
+            .item_index(id)
+            .unwrap_or_else(|| panic!("shipped {id}"))
+    };
+    let (satchel, box_item, wood, lock_item) = (
+        item("item.satchel_charge"),
+        item("item.box_small"),
+        item("item.wood"),
+        item("item.lock_code"),
+    );
+    let mut kit = sim_core::inventory::SpawnKit::EMPTY;
+    let stack = |i: u16| sim_core::gather::ItemStack {
+        item: i,
+        count: gather.stack_max_of(i),
+    };
+    assert!(kit.set(KIT_CHARGE, stack(satchel)), "charge slot");
+    assert!(kit.set(KIT_CONTAINER, stack(box_item)), "container slot");
+    assert!(kit.set(KIT_GOODS, stack(wood)), "goods slot");
+    assert!(kit.set(KIT_LOCK, stack(lock_item)), "lock slot");
+    // The layout is the contract `RaidRows` addresses by number; assert it
+    // rather than trusting that the two lists above stayed in step.
+    assert_eq!(
+        kit.stacks[rows.charge_slot as usize].item, satchel,
+        "charge_slot does not address the throwable — every Throw would refuse"
+    );
+    assert_eq!(
+        kit.stacks[rows.goods_slot as usize].item, wood,
+        "goods_slot does not address a stackable — every Move would refuse"
+    );
+
+    // What one plot costs the owner cycle: a foundation and two walls, read
+    // off the baked rows. Stated so the run is priced rather than merely
+    // funded — one wood stack buys this many plots and then the cost
+    // refusals resume, which is why both halves stay assertable below.
+    let wood_cost = |row: u16| -> u32 {
+        let d = &build.pieces[row as usize];
+        (0..d.n_costs as usize)
+            .filter(|&i| d.costs[i].0 == wood)
+            .map(|i| d.costs[i].1 as u32)
+            .sum()
+    };
+    let per_plot = wood_cost(rows.foundation) + 2 * wood_cost(rows.wall);
+    assert!(
+        per_plot > 0,
+        "the twig plot is free — nothing here is under contest"
+    );
+    let plots_funded = gather.stack_max_of(wood) as u32 / per_plot;
+    assert!(
+        plots_funded > 0,
+        "one wood stack does not fund a single plot: {per_plot} wood per plot"
+    );
+
+    // The satchel is a live throwable in the shipped table — asserted
+    // rather than assumed, because `charge::place` refuses an inert row as
+    // `REFUSE_B_COST`, which is indistinguishable here from an empty hand.
+    assert!(
+        combat.held_throw(satchel).is_some(),
+        "the shipped satchel is not a live throwable — every plant would refuse"
+    );
+    const WINDOW: Duration = Duration::from_secs(4);
+
     let handle = spawn_shard(
         ShardConfig::ephemeral(0x5A1D),
         gather,
@@ -252,12 +369,17 @@ async fn test_bots_raid_over_the_wire() {
         backpack,
         survival,
         cook,
-        // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
-        // for a human looking at the game, and a suite that asserted on a
-        // fresh inventory would be asserting on content instead of on code.
-        // It also makes the claim sharper — a bot that can afford nothing
-        // still has to have its claims *heard and refused* on the real path.
-        sim_core::inventory::SpawnKit::EMPTY,
+        // Not the shipped `[[spawn_kit]]`, and not `EMPTY` either. The alpha
+        // kit is scaffolding for a human looking at the game and asserting
+        // on it would be asserting on content; `EMPTY` is what this gate
+        // started with, and it is why the two counters that say a raid
+        // *connected* both read 0. The fixture kit above is composed here
+        // from shipped indices for the same reason `RaidRows` is: the shard
+        // stays priced by `content/`, and what a raider carries stays a
+        // property of this suite rather than a balance decision nobody
+        // spoke. A satchel in a real player's spawn is exactly that, so it
+        // does not go in `content/balance.toml`.
+        kit,
         loot,
         mobs,
         catalog,
@@ -275,14 +397,7 @@ async fn test_bots_raid_over_the_wire() {
     for i in 0..RAIDERS {
         let endpoint = endpoint.clone();
         tasks.push(tokio::spawn(async move {
-            run_bot(
-                &endpoint,
-                addr,
-                i as u64,
-                Duration::from_secs(4),
-                Some(rows),
-            )
-            .await
+            run_bot(&endpoint, addr, i as u64, WINDOW, Some(rows)).await
         }));
         // Stagger the TLS herd; the raid windows still overlap heavily.
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -347,6 +462,50 @@ async fn test_bots_raid_over_the_wire() {
     // survived the storm with nothing malformed and no forced resync.
     let build_refusals: u64 = reports.iter().map(|r| r.build_refused).sum();
     assert!(build_refusals > 0, "no raider's Place ever reached the sim");
+
+    // ---- the success half -------------------------------------------------
+    //
+    // **Sum the unicast, max the broadcast.** `core.rs`'s relay routes
+    // these two ways and the arithmetic has to match, or the gate reads
+    // eight times the truth: `EV_AUTH` is unicast to the player it names
+    // (`client_slot_of(ev.c)`), while a placement, a deploy and a plant are
+    // world facts broadcast to every connected client — so each bot's copy
+    // of those is the *same* event, and `max` is what one client saw of a
+    // fleet-wide total. Measured 2026-08-14: the broadcast counts came back
+    // within 4 of each other across all 8 raiders, the unicast ones ranged
+    // 0..15, which is the routing map read off the wire.
+    let placed = reports.iter().map(|r| r.pieces_placed).max().unwrap_or(0);
+    let deployed = reports.iter().map(|r| r.deploys_placed).max().unwrap_or(0);
+    let planted = reports.iter().map(|r| r.charges_planted).max().unwrap_or(0);
+    let auths: u64 = reports.iter().map(|r| r.auths).sum();
+    assert!(
+        placed > 0,
+        "no raider ever placed a piece: {per_plot} wood per plot, one stack funds {plots_funded}"
+    );
+    assert!(
+        deployed > 0,
+        "no raider ever deployed: the box, the lock and the loot verbs all hang off this"
+    );
+    // The code lock's whole point, and the one verb in the profile that is
+    // an *authorization* rather than a purchase: the owner set a code on
+    // its own box and was then let in by it. Reached only if the container
+    // and the lock both landed first, so this is the deepest into the owner
+    // cycle the fleet gets, and it is the counter that was flatly 0 before
+    // the kit existed.
+    assert!(
+        auths > 0,
+        "no code was ever accepted: {deployed} deploys landed, so the lock never took or never opened"
+    );
+    // The attacker's half, as far as it is proven: a satchel selected off
+    // the hotbar, planted on a structure that had to already be standing
+    // there (`charge::place` refuses an empty address as `REFUSE_B_SPOT`),
+    // and armed. **Not** that it went off — see `NOW.md` §0rf. `struct_hits`
+    // is still 0 and this gate deliberately does not assert it, because a
+    // measurement nobody has explained is not a gate.
+    assert!(
+        planted > 0,
+        "no charge ever armed: {placed} pieces stood to plant one on"
+    );
     let s = &handle.stats;
     assert!(ShardStats::get(&s.actions_ok) > 0, "no action decoded");
     assert_eq!(
