@@ -14,10 +14,11 @@
 //
 // `crates/sim-core/tests/haven.rs` proves the geometry: the pad concentrates
 // containers 2.64x denser than the road shoulder. That is only half the
-// claim. The other half lives in `content/loot.toml`, which the sim does not
-// read at all (no verb opens a container yet — `crates/content/src/
-// validate.rs` says so in its own words), so nothing in the workspace
-// notices if the tables stop being different.
+// claim. The other half lives in `content/loot.toml`, whose gradient no Rust
+// gate reads: `worldcont.rs` opens a crate and a cache now (world containers
+// v0, 2026-08-14), but what it asserts is that the roll HAPPENED, never that
+// the pad's table still out-pays the road's. So nothing in the workspace
+// notices if the tables stop being different, which is why this file exists.
 //
 // They started identical in the way that matters. `findings/pass-20260804-
 // 205133-01-judge.md` ranked gap 2: "what the new route pays is, by

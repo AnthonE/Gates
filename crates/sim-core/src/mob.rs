@@ -115,6 +115,80 @@ pub const fn kind_of(slot: usize) -> u8 {
     }
 }
 
+/// Guards standing at each authored site (`DECISIONS.md` §open, "site
+/// guards v0"). The pad and every live waystation get this many.
+const GUARDS_PER_SITE: usize = 2;
+
+/// Roster slots spent guarding, across every site. A stated number and not
+/// a hashed draw, for `WOLF_SLOT_EVERY`'s reason: a gate counts it instead
+/// of sampling it. One pad plus [`terrain::WAYSTATIONS`] at
+/// `GUARDS_PER_SITE` each is **6 of the 16 wolves**, leaving 10 hunting the
+/// island as before.
+pub const SITE_GUARDS: usize = (1 + terrain::WAYSTATIONS) * GUARDS_PER_SITE;
+
+const _: () = assert!(
+    SITE_GUARDS * WOLF_SLOT_EVERY <= MAX_MOBS,
+    "the guard slots run past the roster — every guard is a wolf slot, so \
+     SITE_GUARDS * WOLF_SLOT_EVERY is the last slot one can claim"
+);
+
+/// Which authored site a roster slot keeps, or `None` for the free roster.
+/// **Site 0 is the haven pad; 1..=`WAYSTATIONS` index [`Haven::minor`].**
+///
+/// Guards are drawn from the *predator* slots and are not a species: a
+/// guard is a wolf that lives at a destination, so `kind_of` still answers
+/// what is chasing you and the wire still carries no species field. That is
+/// deliberate and it is the reason this landed without a client change —
+/// every species match in the client is a `_ =>` fall-through to the pig
+/// (`render/mobs.rs`, `sound/voice.rs`, `ui/death.rs`), so a third *kind*
+/// would draw and sound as a pig until five separate arms were written.
+///
+/// Pure in the slot ordinal for `kind_of`'s reason: worldgen the two sides
+/// recompute rather than transmit. What the seed still varies is *where* on
+/// its site the guard stands.
+#[inline]
+pub const fn guard_site_of(slot: usize) -> Option<usize> {
+    if !slot.is_multiple_of(WOLF_SLOT_EVERY) {
+        return None;
+    }
+    let g = slot / WOLF_SLOT_EVERY;
+    if g >= SITE_GUARDS {
+        return None;
+    }
+    Some(g / GUARDS_PER_SITE)
+}
+
+/// The footprint a site presents — the same [`terrain::SiteFootprint`] the
+/// clutter sweep reads, picked by site index rather than by position, so a
+/// guard's leash costs no terrain probe.
+#[inline]
+fn footprint_of(site: usize) -> terrain::SiteFootprint {
+    if site == 0 {
+        terrain::HAVEN_FOOTPRINT
+    } else {
+        terrain::WAYSTATION_FOOTPRINT
+    }
+}
+
+/// A guard's leash in planar centimetres — **the site's scatter radius, not
+/// the species' `roam_cm`**. This is the whole of what makes a guard guard.
+///
+/// A wolf roams 90 m, which is five and a half pad radii: left on the
+/// species number a guard would spend most of its life somewhere else and
+/// the crates would be unattended exactly when someone walked up to them.
+/// Bound to `SiteFootprint::scatter_m` it holds the ground it was placed
+/// on, and the ground is the same disc the sweep already clears.
+///
+/// It does not shorten a chase. The leash is only consulted when the animal
+/// is *not* roused (see `think`), so a guard still charges a player it
+/// notices at the wolf's full spook radius and still commits for
+/// `flee_ticks` past the last moment they were close — it simply comes home
+/// afterwards instead of wandering off with the pad behind it.
+#[inline]
+pub fn guard_leash_cm(slot: usize) -> Option<i64> {
+    guard_site_of(slot).map(|s| (footprint_of(s).scatter_m * 100.0) as i64)
+}
+
 /// Item rows one species may drop. Structural cap, not a knob: the bake
 /// refuses a longer table rather than truncating one.
 pub const MOB_LOOT_ROWS: usize = 4;
@@ -342,11 +416,14 @@ impl MobContent {
     }
 }
 
-/// One roster slot. Every field is sim state and every one of them is
-/// hashed — including `home_q*`, which never changes, because a shard that
-/// somehow disagreed about where an animal lives would disagree about every
-/// step it takes afterwards and the hash should say so on the first tick
-/// rather than the tenth.
+/// One roster slot. Every field a tick can move is hashed
+/// (`world.rs::state_hash`) — **`home_q*` and `homed` are not**, and this
+/// doc claimed the opposite until 2026-08-14. They are a pure function of
+/// the seed, recomputed identically by every build, so they are worldgen and
+/// `haven` one field over is excluded for the same reason. The consequence
+/// worth knowing: a disagreement about where an animal *lives* is not caught
+/// on the first tick by the hash — it is caught on the first tick the animal
+/// moves, because every position downstream of it is hashed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Mob {
     pub kind: u8,
@@ -742,8 +819,21 @@ fn think(
     let home_d2 = (hdx as i64 * 3) * (hdx as i64 * 3) + (hdz as i64 * 3) * (hdz as i64 * 3);
     let x = mob.body.qx as f32 * POS_XZ_Q;
     let z = mob.body.qz as f32 * POS_XZ_Q;
-    let beached = terrain::height(seed, x, z) <= terrain::BEACH_MAX_H;
-    if home_d2 > def.roam_cm * def.roam_cm || beached {
+    // A guard's radius is its site's, not its species' (`guard_leash_cm`),
+    // and its floor is the land line rather than the beach band for the
+    // reason `guard_home_of` states in full: a pad that sits inside the
+    // band — as seed 1's does — would otherwise leave its guard reading as
+    // beached while standing at its own post, steering home forever from
+    // home. The two facts travel together because they are one question:
+    // where does this animal belong. Everything else about the leash — that
+    // a rousing skips it entirely, so a chase is never shortened — is the
+    // same for both.
+    let (leash_cm, floor) = match guard_leash_cm(slot) {
+        Some(cm) => (cm, terrain::LAND_MIN_H),
+        None => (def.roam_cm, terrain::BEACH_MAX_H),
+    };
+    let beached = terrain::height(seed, x, z) <= floor;
+    if home_d2 > leash_cm * leash_cm || beached {
         mob.yaw = yaw_toward(hdx as f32 * POS_XZ_Q, hdz as f32 * POS_XZ_Q, mob.yaw);
         mob.gait = def.gait.min(127) as i8;
         return;
@@ -895,6 +985,10 @@ pub fn strike(
 /// but a handful of slots. What we do steal is the structure they got
 /// right: **sample cheaply and approximately, reject exactly.**
 fn home_of(seed: u64, haven: &Haven, slot: usize) -> Option<(f32, f32)> {
+    // A guard's home is the one place this function otherwise refuses.
+    if let Some(site) = guard_site_of(slot) {
+        return guard_home_of(seed, haven, slot, site);
+    }
     for attempt in 0..HOME_TRIES {
         let h = cell_hash(seed, slot as i32, attempt, CH_MOB_HOME);
         let x = ((h & 0xFFFF) as f32 / 65536.0) * terrain::ISLAND_SIZE;
@@ -912,6 +1006,76 @@ fn home_of(seed: u64, haven: &Haven, slot: usize) -> Option<(f32, f32)> {
         // free kill on a schedule, which is the opposite of what a
         // destination is for.
         if terrain::in_haven(haven, x, z) || terrain::in_waystation(haven, x, z) {
+            continue;
+        }
+        return Some((x, z));
+    }
+    None
+}
+
+/// Where a site guard stands: the **swept apron**, the annulus between its
+/// site's `swept_m` and `scatter_m`.
+///
+/// Both radii come from the site's own [`terrain::SiteFootprint`] and each
+/// is doing a job. The outer one is the leash, so a guard placed outside it
+/// would walk home on its first think. The inner one is the floor the
+/// clutter sweep already clears for the site's structures — the crate ring
+/// and the shelter — so drawing outside it is what keeps a guard from
+/// hatching inside a container it would then be shoved out of every tick.
+/// The apron is also simply where a guard belongs: between the road and the
+/// prize, with the crates at its back.
+///
+/// Uniform by *area*, which is why the draw is on r² and not on r; the
+/// straightforward version crowds every guard onto the inner edge. The
+/// bearing is the yaw LUT's, so no trigonometry enters wall 1's float list.
+///
+/// A waystation the solver never filled has no apron and no guard: the slot
+/// stays unhomed, which is the same honest empty a slot that found no land
+/// gets, and `step` skips it for the same reason.
+fn guard_home_of(seed: u64, haven: &Haven, slot: usize, site: usize) -> Option<(f32, f32)> {
+    let (sx, sz) = if site == 0 {
+        (haven.x, haven.z)
+    } else {
+        let w = &haven.minor[site - 1];
+        if !w.live {
+            return None;
+        }
+        (w.x, w.z)
+    };
+    let fp = footprint_of(site);
+    let lo2 = fp.swept_m * fp.swept_m;
+    let hi2 = fp.scatter_m * fp.scatter_m;
+    for attempt in 0..HOME_TRIES {
+        let h = cell_hash(seed, slot as i32, attempt, CH_MOB_HOME);
+        let t = (h & 0xFFFF) as f32 / 65536.0;
+        let r = (lo2 + t * (hi2 - lo2)).sqrt();
+        let (fx, fz) = yaw_dir((((h >> 16) & 0xFF) as u16) << 8);
+        let x = sx + fx * r;
+        let z = sz + fz * r;
+        // **The land line, not the beach band** — the one place a guard's
+        // walkability differs from a wanderer's, and it is not a loosened
+        // check, it is a different question.
+        //
+        // `BEACH_MAX_H` (sea + 2 m) is a *margin*: `home_of` keeps the free
+        // roster well clear of the water so a leash centre is never
+        // somewhere the go-home rule fires on, and so nothing has to learn
+        // to swim. But the haven is scored for low relief near the coast
+        // road, and on real seeds the pad lands inside that margin — seed
+        // 1's pad centre is at **1.28 m**, under the 2.0 band, with the
+        // crates and the shelter standing on it regardless. Rejecting the
+        // apron for that refuses to guard exactly the destinations the
+        // solver likes best; measured, seed 1 had **no** admissible bearing
+        // at any radius and seed 42 had roughly half.
+        //
+        // `LAND_MIN_H` (sea + 0.6 m) is the question actually being asked —
+        // terrain.rs calls it "the land line: ground below this is water's
+        // edge, not somewhere a thing stands or a road runs", and scatter
+        // and the coast road already share it. A guard stands where the
+        // road runs.
+        if terrain::height(seed, x, z) <= terrain::LAND_MIN_H {
+            continue;
+        }
+        if terrain::slope(seed, x, z) >= HOME_MAX_SLOPE {
             continue;
         }
         return Some((x, z));
