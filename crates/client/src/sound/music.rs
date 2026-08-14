@@ -255,7 +255,7 @@ pub struct Director {
     bumped: bool,
     /// The gap and song-length stream. Deterministic and owned here rather
     /// than pulled from the OS — the house style (`mixer::Mixer::rng`,
-    /// `synth`'s seeding, `pig::hash01`), and what makes a whole session's
+    /// `synth`'s seeding, `voice::hash01`), and what makes a whole session's
     /// music replayable in a test.
     rng: u32,
 }
@@ -331,7 +331,7 @@ impl Director {
     /// At most one piece per call by construction — the two clocks are
     /// reloaded from constants that are never zero, so no `dt` can cross two
     /// boundaries and no loop is needed. A hitch that swallowed a whole
-    /// section costs that section, which is the `pig::Snorts` rule
+    /// section costs that section, which is the `voice::Voices` rule
     /// (assign on fire, never bank).
     pub fn tick(&mut self, dt_s: f32) -> Option<Piece> {
         // The intensity's own clock, and it runs in the gap too.
@@ -403,7 +403,7 @@ impl Director {
         x ^= x >> 17;
         x ^= x << 5;
         self.rng = x;
-        // Top 24 bits: exact in f32, uniform, never 1.0 — `pig::hash01`'s
+        // Top 24 bits: exact in f32, uniform, never 1.0 — `voice::hash01`'s
         // convention, so two draws in this module cannot disagree about what
         // "uniform" means.
         (x >> 8) as f32 / (1u32 << 24) as f32

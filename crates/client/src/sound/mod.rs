@@ -47,13 +47,15 @@ pub mod mixer;
 // When a song plays and which piece it is. `reference/AUDIO.md` §8 is the
 // design; this is the whole of it.
 pub mod music;
-// When a pig speaks. Pure cadence — the render half reads the drawn herd.
-pub mod pig;
 pub mod steps;
 pub mod synth;
 // What water sounds like from where you are standing. `reference/WATER.md` §7
 // is the research; this is the model, and `render/audio.rs` plays it.
 pub mod water;
+// When an animal speaks. Pure cadence — the render half reads the drawn herd,
+// asks it what the species in that roster slot says at that range, and plays
+// exactly the cue it is handed back.
+pub mod voice;
 
 /// The mixer's output sample rate, Hz.
 ///
@@ -168,11 +170,31 @@ pub enum Cue {
     MusicCloseCalm,
     MusicCloseTense,
     MusicCloseCombat,
+    /// The wolf's far voice: a contact call, heard from further than any
+    /// other diegetic cue but the falling tree. Appended after the score —
+    /// the enum's append-order rule, for the reason `Snort` states.
+    ///
+    /// The pair with [`Cue::Growl`] is **two registers of one animal, chosen
+    /// by distance**, and the distance is not a third number: it is this
+    /// cue's sibling's own [`CueDef::radius_m`]. See [`crate::sound::voice`].
+    Howl,
+    /// The wolf's near voice: the threat, at the short end.
+    ///
+    /// ⚠ **It means "a wolf is close", not "a wolf is hunting you"** — the
+    /// client cannot see that. `Mob::roused_until` and `MobDef::brave_pct`
+    /// are sim-side only (`sim-core/src/mob.rs`), the snapshot carries
+    /// `EntityState` and no mob state or def lane exists on the wire, and
+    /// duplicating a content radius into client code would be wall 7. So
+    /// the register is the honest half of the encounter: a growl is a
+    /// close-range threat call and a howl is a long-range contact call,
+    /// which is what the two vocalizations *are*, whatever the animal is
+    /// currently deciding.
+    Growl,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 38;
+pub const CUE_COUNT: usize = 40;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -219,6 +241,8 @@ impl Cue {
         Cue::MusicCloseCalm,
         Cue::MusicCloseTense,
         Cue::MusicCloseCombat,
+        Cue::Howl,
+        Cue::Growl,
     ];
 
     /// Is this cue a piece of music?
@@ -297,7 +321,16 @@ impl Cue {
             | Cue::Splash
             | Cue::TreeFall
             | Cue::Snort
+            | Cue::Growl
             | Cue::Hurt => 0.07,
+            // Wider than any diegetic cue but the bird, and for the bird's
+            // reason turned up one notch: a howl is the most *exposed* tonal
+            // call in the bank — a near-pure pitched tone held for seconds,
+            // where a growl hides its repetition under noise. Two wolves
+            // answering each other at the same pitch is a chorus in unison,
+            // which is the machine-gun tell this knob exists for, and unison
+            // is what a real chorus is specifically not.
+            Cue::Howl => 0.12,
             // The forest layer's variation is the whole of it: one recording
             // of one bird, retriggered every few seconds at exactly its own
             // pitch, is the machine-gun tell this knob exists for, and a
@@ -458,7 +491,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // the boar is identified by its snorting), so it carries past the
     // impacts but nowhere near a falling tree. Priority with the footsteps'
     // register: ambience, not signal. The cooldown is per-cue, so it is the
-    // herd's stagger, not one animal's — `sound::pig` spaces one animal.
+    // herd's stagger, not one animal's — `sound::voice` spaces one animal.
     row(GAME, 40.0, 0.55, 150, 2, true),   // snort
     // Remote footsteps: the STEP family heard at another body — see RSTEP.
     RSTEP, RSTEP, RSTEP, RSTEP, RSTEP,
@@ -485,6 +518,35 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     M_CALM, M_TENSE, M_COMBAT,
     M_CALM, M_TENSE, M_COMBAT,
     M_CALM, M_TENSE, M_COMBAT,
+    // The wolf, in two registers (`sound::voice`). Both GAME rather than
+    // AMBIENCE for the pig's reason: an animal is a thing in the world, not
+    // scenery, and a player who turns the bed down must not turn the
+    // predator down with it.
+    //
+    // **The howl is the second-furthest-carrying cue in the table**, behind
+    // only the falling tree that sets `MAX_AUDIBLE_M` — which is the point of
+    // it. The wolf notices a player at 30 m by day and 15 m at night
+    // (`content/mobs.toml`), so 88 m means the island tells you it has
+    // wolves, and roughly where, long before one of them can act on you. The
+    // cooldown is per-CUE and therefore the pack's stagger, not one animal's
+    // — `sound::voice` spaces one animal, as `sound::birds` does for a flock.
+    row(GAME, 88.0, 0.60, 900, 2, true),   // howl
+    // The growl's radius is doing a SECOND job and it is the load-bearing
+    // one: `sound::voice` picks the register by comparing the listener's
+    // distance against this very number (`CUES[Growl].radius_m`), so the two
+    // cannot disagree — a growl is never chosen and then culled by the
+    // mixer's falloff, and a howl is never chosen inside growl range. There
+    // is no third "switch distance" knob to drift.
+    //
+    // 14 m sits inside the wolf's *smallest* notice radius (15 m, at night),
+    // so in practice a wolf you can hear growl has already seen you. ⚠ **That
+    // relationship is a design intent and nothing enforces it** — the client
+    // has no mob-def lane on the wire and no dependency on the `content`
+    // crate, so the two numbers live in different worlds and a `mobs.toml`
+    // edit will not redden anything here. `NOW.md` §0pr carries the owed gate.
+    // Priority 5: above the impacts, below the hitmarker — a growl at this
+    // range is information a player's life turns on.
+    row(GAME, 14.0, 0.65, 200, 5, true),   // growl
 ];
 
 /// The five footsteps share every number but their timbre — see [`CUES`].

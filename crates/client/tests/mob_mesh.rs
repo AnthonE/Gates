@@ -308,7 +308,7 @@ fn the_stride_integrates_ground_not_frames() {
 }
 
 /// Two pigs do not march in step: the phase origin is hashed from the
-/// roster slot (`sound::pig::hash01`, the snort's own convention), so a
+/// roster slot (`sound::voice::hash01`, the snort's own convention), so a
 /// herd walked into is strides in four places rather than a chorus line.
 #[test]
 fn two_pigs_do_not_march_in_step() {
