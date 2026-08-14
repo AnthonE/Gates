@@ -60,19 +60,51 @@ Measured, 8 raiders × 4 s: ~110 actions each, 12 plot re-seats, plots
 scattered, 0 unencodable, 0 malformed server-side, and the sim answered
 47–59 build + 23–48 deploy + 12–23 move refusals apiece.
 
+Item 1 (the fleet could not afford to play) landed 2026-08-14: a fixture
+raid kit — satchel / box / wood / lock, every index and count read out of
+shipped content, at the slots `RaidRows` addresses. The owner cycle now
+builds and locks for real. Measured, 8 × 4 s: ~66 pieces placed, 3 deploys,
+18 charges armed, `auths` 0..15 per owner — all four flatly 0 before. Proven
+red three ways: a naked fleet, a kit whose layout drifts from `charge_slot`,
+a dropped `ChargePlaced` arm. `struct_hits` did **not** move; that is §0rf,
+not this item.
+
 Remaining, ranked:
 
-1. **It reaches the refusal paths and not the success ones**: `struct_hits`
-   and `auths` were **0** for all 8. A naked spawn affords nothing, so
-   every claim is refused on cost before the interesting rule runs. Give
-   the fleet a spawn kit (or a gather warmup) and the same gate starts
-   measuring what a raid *costs* — which is the exchange rate gap 1 asks
-   for and the thing this slice still cannot say.
-2. **Bodies are out of the storm** — the throwable's `damage` is 0, so the
+1. **Bodies are out of the storm** — the throwable's `damage` is 0, so the
    raid never kills and `MAX_BACKPACKS` plus the death/respawn ring are the
    one client-driven family it misses.
-3. `CLAUDE.md` wall 4's ⚠ still says `test_raid_storm` does not exist; a
+2. `CLAUDE.md` wall 4's ⚠ still says `test_raid_storm` does not exist; a
    loop may not edit the walls list, so striking it is an operator act.
+
+---
+
+## 0rf · A planted satchel never detonates *(systems lane)*
+
+Found while landing §0rs item 1, and it is not what that item predicted. With
+the fleet funded, charges **arm** and `struct_hits` stays exactly 0: 27 plants
+over a 30 s run at a measured 905 shard ticks — three times the shipped
+300-tick fuse — and no `EV_STRUCT_HIT` ever reaches a client.
+
+Ruled out, with evidence: affordability, the fuse window, the plant itself
+(`REFUSE_B_SPOT` means a structure *was* standing there), the emit
+(`damage_piece` pushes the event unconditionally, before the removal branch),
+routing (broadcast, and the other broadcast events arrive), ring pressure
+(`forced_resyncs` and `ev_resyncs` both 0), and decode (0 errors; a variant
+histogram shows 16 other subtypes arriving and `StructHit` never once). So
+`damage_piece` is never reached from `tick_fuses` on a live shard.
+
+Not ruled out, in order: `detonate`'s target scan (the column presence mask,
+then the `find_index` re-resolve); the piece being removed during the 10 s
+fuse; and **overkill** — twig foundation hp 10 against `structure` 125.
+`blast.rs` never tests that combination: `raid_world()` bumps its fixture rows
+to `hp = 1000` precisely so pieces survive the blast, and its fuse is 60
+ticks. The shipped combination is covered by no test in the tree.
+
+Next step, cheap: a sim test on *shipped* content — twig foundation, satchel
+planted, tick past 300, assert `EV_STRUCT_HIT`. Red ⇒ that is the regression
+gate. Green ⇒ the difference between that world and a shard is the answer.
+Full chain: `gates-loop/findings/note-20260814-charge-never-detonates.md`.
 
 ---
 

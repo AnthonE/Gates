@@ -151,7 +151,7 @@ async fn main() {
                         "bot {i}: id {} · snaps {} (delta {}, stale {}, nobase {}) · \
                          decode err {} · inputs {} (exec {}) · own {} · maxent {} · \
                          events {} (err {}) · raid {}c actions {} (unenc {}, lane err {}) · \
-                         refused b{} d{} m{} · hits {} · auth {}",
+                         refused b{} d{} m{} · placed p{} d{} · hits {} · auth {}",
                         r.player_id,
                         r.snapshots_applied,
                         r.delta_snapshots,
@@ -171,6 +171,8 @@ async fn main() {
                         r.build_refused,
                         r.deploy_refused,
                         r.move_refused,
+                        r.pieces_placed,
+                        r.deploys_placed,
                         r.struct_hits,
                         r.auths,
                     );

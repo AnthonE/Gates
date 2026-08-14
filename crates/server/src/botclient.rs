@@ -89,6 +89,20 @@ pub struct BotReport {
     /// was actually accepted — the two events that say the raid connected.
     pub struct_hits: u64,
     pub auths: u64,
+    /// The **success** half of the same lane: claims the sim granted rather
+    /// than refused. Counted because the refusal counters above cannot tell
+    /// "the rule ran and said no" apart from "the bot could not afford to
+    /// ask" — a fleet that never places anything scores identically to one
+    /// whose every claim was rejected on the interesting rule. These are
+    /// what a raid *cost*, and they were 0 for all 8 raiders until the
+    /// fleet was given something to spend.
+    pub pieces_placed: u64,
+    pub deploys_placed: u64,
+    /// Charges that actually armed. Separate from `struct_hits` because a
+    /// charge is **planted and fused**, not thrown: those are two different
+    /// failures ten seconds apart, and one counter cannot tell "the throw
+    /// was refused" from "the run ended before the fuse did".
+    pub charges_planted: u64,
 }
 
 /// Event-lane counters, shared with the drain task. One allocation, so a
@@ -102,6 +116,9 @@ struct EventTally {
     move_refused: AtomicU64,
     struct_hits: AtomicU64,
     auths: AtomicU64,
+    pieces_placed: AtomicU64,
+    deploys_placed: AtomicU64,
+    charges_planted: AtomicU64,
 }
 
 impl EventTally {
@@ -112,6 +129,9 @@ impl EventTally {
             EventMsg::MoveRefused { .. } => &self.move_refused,
             EventMsg::StructHit { .. } => &self.struct_hits,
             EventMsg::Auth { .. } => &self.auths,
+            EventMsg::PiecePlaced { .. } => &self.pieces_placed,
+            EventMsg::DeployPlaced { .. } => &self.deploys_placed,
+            EventMsg::ChargePlaced { .. } => &self.charges_planted,
             _ => return,
         };
         c.fetch_add(1, Ordering::Relaxed);
@@ -416,6 +436,9 @@ pub async fn run_bot(
                 report.move_refused = tally.move_refused.load(Ordering::Relaxed);
                 report.struct_hits = tally.struct_hits.load(Ordering::Relaxed);
                 report.auths = tally.auths.load(Ordering::Relaxed);
+                report.pieces_placed = tally.pieces_placed.load(Ordering::Relaxed);
+                report.deploys_placed = tally.deploys_placed.load(Ordering::Relaxed);
+                report.charges_planted = tally.charges_planted.load(Ordering::Relaxed);
                 return Ok(report);
             }
         }
