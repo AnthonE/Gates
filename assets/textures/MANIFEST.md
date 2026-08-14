@@ -1,5 +1,14 @@
 # assets/textures — CC0 PBR source set
 
+**This file records what SHIPS. The queue of what does not exist yet is
+`CANDIDATES.md` beside it** — 84 rows for the six foliage/bark sets, 80 CC0 and
+4 CC-BY, with the fetch script, the CSV and the sheet in this directory and the
+CC-BY notice drafts in `CANDIDATES_CC_BY.md`. Same split as
+`assets/models/{MANIFEST,WANTED}.md`. Fetched candidates land in
+`candidates/`, which is **gitignored** (~1.3 GB of other people's pristine
+source); a candidate earns a line here only once it is measured, packed and its
+licence recorded.
+
 **Every file here is CC0 / public domain.** Sources: [Poly Haven](https://polyhaven.com)
 and [ambientCG](https://ambientcg.com), both of which release all assets under CC0
 — no attribution required, no license file to carry, no restriction on commercial
