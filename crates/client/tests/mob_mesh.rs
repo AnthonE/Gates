@@ -471,7 +471,10 @@ fn the_wolf_stands_on_its_own_legs() {
          the two silhouettes are the same animal at two scales"
     );
     assert!(WOLF_LEG_ANCHORS[0].0[0].abs() < LEG_ANCHORS[0].0[0].abs());
-    assert!(WOLF_H_M > PIG_H_M && WOLF_LEN_M > PIG_LEN_M);
+    // Compile-time, the file's own convention for a claim about two
+    // constants: a wolf is the taller and longer animal, and the massing
+    // that says otherwise never builds.
+    const { assert!(WOLF_H_M > PIG_H_M && WOLF_LEN_M > PIG_LEN_M) };
 }
 
 /// **The stride's full-speed point follows the slot's species.**
@@ -491,10 +494,9 @@ fn each_species_swings_to_its_own_flight_gait() {
         .expect("the roster holds prey");
     assert_eq!(full_mps_of(wolf), WOLF_LEG_FULL_MPS);
     assert_eq!(full_mps_of(pig), PIG_LEG_FULL_MPS);
-    assert!(
-        WOLF_LEG_FULL_MPS > PIG_LEG_FULL_MPS,
-        "the predator is the faster animal and its content row says so"
-    );
+    // The predator is the faster animal and its content row says so —
+    // compile-time, since both sides are constants.
+    const { assert!(WOLF_LEG_FULL_MPS > PIG_LEG_FULL_MPS) };
     // The component carries it, because `trot` walks children and has no
     // slot in hand by then.
     assert_eq!(Gait::new(wolf).full_mps, WOLF_LEG_FULL_MPS);

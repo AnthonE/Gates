@@ -576,12 +576,18 @@ fn alone_with(kind: u8, metres: f32) -> (World, usize) {
     (w, slot)
 }
 
-/// Planar centimetres between the player and a roster slot.
-fn gap_cm(w: &World, slot: usize) -> i64 {
+/// Planar **squared** centimetres between the player and a roster slot.
+///
+/// Squared because wall 1 disallows `sqrt` in this crate, and squared is
+/// what the sim itself compares in (`nearest_player`, every radius check) —
+/// so the tests are reading the same quantity the code decides on rather
+/// than a rounded metre. Every comparison below is monotone in the square,
+/// which is the whole reason the sim can live without the root either.
+fn gap2(w: &World, slot: usize) -> i64 {
     let m = &w.mobs.m[slot].body;
     let dx = (m.qx - w.players[0].body.qx) as i64 * 3;
     let dz = (m.qz - w.players[0].body.qz) as i64 * 3;
-    (((dx * dx + dz * dz) as f64).sqrt()) as i64
+    dx * dx + dz * dz
 }
 
 /// **The notice radius is the whole difference between prey and a hunter.**
@@ -623,7 +629,7 @@ fn a_wolf_notices_a_player_at_a_range_the_pig_ignores() {
 fn a_wolf_runs_down_a_player_who_stands_still() {
     use sim_core::world::DEATH_BY_MOB;
     let (mut w, slot) = alone_with(MOB_WOLF, 25.0);
-    let start = gap_cm(&w, slot);
+    let start = gap2(&w, slot);
     let full = w.players[0].hp;
     assert!(full > 0, "the combat fixture arms bodies");
     // 20 s. The claim is *possible*, not *quick* — `hunt.rs`'s own reason
@@ -642,9 +648,9 @@ fn a_wolf_runs_down_a_player_who_stands_still() {
     assert!(
         w.players[0].dead,
         "a wolf noticed a motionless player 25 m away and did not finish \
-         them in 20 s: {} hp left, {} cm away (started {start} cm)",
+         them in 20 s: {} hp left, {} cm² away (started {start} cm²)",
         w.players[0].hp,
-        gap_cm(&w, slot)
+        gap2(&w, slot)
     );
     assert_eq!(w.players[0].death_cause, DEATH_BY_MOB);
 
@@ -675,7 +681,7 @@ fn a_wolf_runs_down_a_player_who_stands_still() {
 fn a_wolf_at_one_hit_point_never_breaks_off() {
     let (mut w, slot) = alone_with(MOB_WOLF, 2.0);
     w.mobs.m[slot].hp = 1;
-    let before = gap_cm(&w, slot);
+    let before = gap2(&w, slot);
     let full = w.players[0].hp;
     for seq in 0..240u16 {
         let frame = InputFrame {
@@ -686,10 +692,10 @@ fn a_wolf_at_one_hit_point_never_breaks_off() {
     }
     assert_eq!(w.mobs.m[slot].hp, 1, "nothing here hurts the wolf further");
     assert!(
-        gap_cm(&w, slot) <= before,
-        "a wolf at 1 hp opened distance: {before} -> {} cm. That is the \
+        gap2(&w, slot) <= before,
+        "a wolf at 1 hp opened distance: {before} -> {} cm². That is the \
          pig's courage floor leaking into a species that has none",
-        gap_cm(&w, slot)
+        gap2(&w, slot)
     );
     assert!(
         w.players[0].hp < full,
@@ -723,9 +729,12 @@ fn a_closed_charge_settles_instead_of_orbiting() {
             ..InputFrame::default()
         };
         w.tick(&[Command::Input { id: 1, frame }]);
-        gaps.push(gap_cm(&w, slot));
+        gaps.push(gap2(&w, slot));
     }
-    let reach = MobContent::probe_fixture().def(MOB_WOLF).attack_range_cm;
+    let reach2 = {
+        let r = MobContent::probe_fixture().def(MOB_WOLF).attack_range_cm;
+        r * r
+    };
     // The last two think cycles, long after the approach is over.
     let settled = &gaps[gaps.len() - 2 * MOB_THINK_TICKS as usize..];
     let (lo, hi) = (
@@ -733,8 +742,8 @@ fn a_closed_charge_settles_instead_of_orbiting() {
         *settled.iter().max().unwrap(),
     );
     assert!(
-        hi <= reach,
-        "a closed charge drifted to {hi} cm, past its own {reach} cm reach — \
+        hi <= reach2,
+        "a closed charge drifted to {hi} cm², past its own {reach2} cm² reach — \
          the animal is orbiting, and a bite phase that samples the far side \
          of that orbit never lands"
     );

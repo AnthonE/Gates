@@ -106,7 +106,7 @@ const WOLF_SLOT_EVERY: usize = 4;
 /// variety a world needs.
 #[inline]
 pub const fn kind_of(slot: usize) -> u8 {
-    if slot % WOLF_SLOT_EVERY == 0 {
+    if slot.is_multiple_of(WOLF_SLOT_EVERY) {
         MOB_WOLF
     } else {
         MOB_PIG
