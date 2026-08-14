@@ -2,7 +2,7 @@
 //!
 //! What a native game (Gates) uses to reach a running scry launcher: who is
 //! playing, a signature, the catalog, the shard list. **It holds no key and
-//! has no code path that could.** See `sdk/PROTOCOL.md` and `docs/SDK.md`.
+//! has no code path that could.** See `sdk/PROTOCOL.md` and `docs/client/SDK.md`.
 //!
 //! `ignore`, not `no_run`: `submit`, `show` and `log` below are the GAME's own
 //! functions, so this sketch never compiled — and nothing noticed until Gates
@@ -319,7 +319,13 @@ use json::{Field, Value};
 /// `day` is UTC `YYYY-MM-DD`; pass `None` for today. It is a parameter because
 /// a round that straddles midnight should sign the day it started, and a
 /// client that cannot express that would silently sign the wrong one.
-pub fn play_message(action: &str, vow_id: &str, detail: &str, day: Option<&str>) -> String {
+/// The exact text a wallet signs for one game action.
+///
+/// ⚠ The subject is the WALLET, and it was the vow_id until 2026-08-12: the
+/// signature recovers the signer, so a player does not swear a vow to act. The
+/// address is LOWERCASED here — a checksummed one is different bytes and would
+/// verify differently, which is the detail that bites a hand-rolled string.
+pub fn play_message(action: &str, wallet: &str, detail: &str, day: Option<&str>) -> String {
     let today;
     let day = match day {
         Some(d) => d,
@@ -328,7 +334,8 @@ pub fn play_message(action: &str, vow_id: &str, detail: &str, day: Option<&str>)
             &today
         }
     };
-    format!("scry play\naction: {action}\nvow: {vow_id}\nday: {day}\ndetail: {detail}")
+    let wallet = wallet.to_ascii_lowercase();
+    format!("scry play\naction: {action}\nwallet: {wallet}\nday: {day}\ndetail: {detail}")
 }
 
 /// UTC `YYYY-MM-DD` from the clock, with no `chrono`. Civil-from-days is
@@ -924,8 +931,8 @@ mod tests {
     #[test]
     fn play_message_matches_the_servers_format() {
         assert_eq!(
-            play_message("answer", "vow_1", "abc", Some("2026-08-04")),
-            "scry play\naction: answer\nvow: vow_1\nday: 2026-08-04\ndetail: abc"
+            play_message("answer", "0xAbC1", "abc", Some("2026-08-04")),
+            "scry play\naction: answer\nwallet: 0xabc1\nday: 2026-08-04\ndetail: abc"
         );
     }
 

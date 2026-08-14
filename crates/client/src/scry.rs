@@ -1,8 +1,9 @@
 //! Reaching the scry launcher — identity and signatures, with no key in this
 //! process and no crate added to the tree.
 //!
-//! `scry_overlay.rs` beside this file is **vendored byte-for-byte** from the
-//! scry repo, `sdk/rust/scry_overlay.rs` (first vendored 2026-08-05). It is
+//! `scry_overlay.rs` beside this file is **vendored byte-for-byte** from
+//! `sdk/rust/scry_overlay.rs` in **`AnthonE/scry-forge`** (first vendored
+//! 2026-08-05; this line said `AnthonE/scry` until 2026-08-14, see below). It is
 //! `std`-only by design, so vendoring costs nothing and adds no dependency —
 //! which is the whole reason that file was written the way it was.
 //!
@@ -33,9 +34,19 @@
 //!
 //! ```text
 //! sha256sum crates/client/src/scry_overlay.rs
-//! # must appear in sdk/SHA256SUMS in AnthonE/scry — if it does not, upstream
-//! # has moved: re-vendor, re-pin, and run the client's tests.
+//! # must appear in sdk/SHA256SUMS in AnthonE/scry-forge — if it does not,
+//! # upstream has moved: re-vendor, re-pin, and run the client's tests.
 //! ```
+//!
+//! ⚠ **Run that check against `AnthonE/scry-forge`, and against nothing else.**
+//! There are two repos holding an `sdk/` and they are not the same file.
+//! `scry-forge` is where the SDK is edited and where the launcher is built;
+//! **`AnthonE/scryward` is the public mirror of the open half and it lags.**
+//! On 2026-08-14 the mirror still published `3a81c70…` while the source had
+//! moved to `3df3d41a…`, so checking the pin against the mirror returned a
+//! clean match over a copy two days stale — a **false green**, which is worse
+//! than the drift it was run to find. The mirror is the wrong side of a check
+//! whose whole job is to notice that upstream moved.
 //!
 //! That file did not exist until this re-vendor asked for it, and neither did
 //! the two upstream checks beside it (`sdk/test_sdk.py` §what a vendoring game
@@ -49,6 +60,17 @@
 //! (`Option<Value>` → `Option<String>`) and nothing here calls it, which is
 //! luck rather than design — check the call sites, not just the compile, on
 //! the next one.
+//!
+//! Re-vendored again 2026-08-14 (`3a81c70…` → `3df3d41a…`), and the next one
+//! was the same shape: **[`play_message`] changed the message a wallet signs**,
+//! its second field going from `vow: {vow_id}` to `wallet: {wallet}` with the
+//! address lowercased (upstream, 2026-08-12 — a checksummed address is
+//! different bytes and verifies differently). That is a signed-format change,
+//! not a rename: a client on the old string and a server on the new one
+//! disagree about what was signed, and both compile. It cost us nothing only
+//! because [`play_message`] is re-exported below and **called nowhere in this
+//! tree** — luck for the second re-vendor running. The drift also carried the
+//! doc-path fix `docs/SDK.md` → `docs/client/SDK.md`.
 //!
 //! ## What the launcher is for, and what it is not
 //!
@@ -96,11 +118,12 @@ pub use overlay::{play_message, Overlay, SignError, Signature};
 /// its shard list are all filed under.
 pub const SLUG: &str = "gates";
 
-/// sha256 of the vendored `scry_overlay.rs`, byte-for-byte as it ships in the
-/// scry repo. Regenerate ONLY when re-vendoring an upstream change:
+/// sha256 of the vendored `scry_overlay.rs`, byte-for-byte as it ships in
+/// `AnthonE/scry-forge` (the source — **not** the `AnthonE/scryward` mirror,
+/// which lags). Regenerate ONLY when re-vendoring an upstream change:
 /// `sha256sum crates/client/src/scry_overlay.rs`.
 pub const VENDORED_SHA256: &str =
-    "3a81c7020ef166702d34f4dd5708e1782df0adc75b09d7aa679915e2deab93cd";
+    "3df3d41a51885759f27e66f526962f46eedb21f19576805c18ad7cec9818a656";
 
 /// Who is playing, and how we came to believe it. The variants are kept
 /// distinct because they carry different weight and a single `Option<String>`
@@ -266,7 +289,7 @@ mod tests {
             sha256_hex(bytes),
             VENDORED_SHA256,
             "crates/client/src/scry_overlay.rs has been edited. It is VENDORED from \
-             AnthonE/scry sdk/rust/scry_overlay.rs — fix it there and re-vendor, or \
+             AnthonE/scry-forge sdk/rust/scry_overlay.rs — fix it there and re-vendor, or \
              every other game keeps the broken version. If this IS a re-vendor, \
              update scry::VENDORED_SHA256 in the same commit."
         );

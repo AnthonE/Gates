@@ -559,7 +559,8 @@ which is neither.
 ## Vendored, and not to be edited here
 
 - `crates/client/src/scry_overlay.rs` is **scry's SDK, byte-for-byte**
-  (`sdk/rust/scry_overlay.rs` in `AnthonE/scry`). It is how this game reaches
+  (`sdk/rust/scry_overlay.rs` in **`AnthonE/scry-forge`** — this line said
+  `AnthonE/scry` until 2026-08-14, which is a different repo). It is how this game reaches
   a running scry launcher for identity and signatures with no key in the game
   process and no crate added to the tree. `scry::VENDORED_SHA256` pins it and
   a test fails on any local edit — **fix it upstream and re-vendor**, because
@@ -576,6 +577,18 @@ which is neither.
   in `sdk/SHA256SUMS` upstream. Re-vendoring is `cp` + re-pin + `cargo test
   -p client --lib scry`, and check the CALL SITES, not just the compile —
   `Overlay::title` changed shape under us and only luck kept it uncalled.
+  ⚠ **Run that check against `scry-forge` and nothing else — there are two
+  repos with an `sdk/` and the other one lies.** `AnthonE/scryward` is the
+  public mirror of the open half (launcher, sdk, contracts, docs) and it
+  **lags**: on 2026-08-14 it still published `3a81c70…` while the source had
+  moved to `3df3d41a…`, so the pin checked against the mirror matched a copy
+  two days stale — a **false green**, worse than the drift it was run to find.
+  That re-vendor also proved the call-site rule twice over: `play_message`
+  changed the bytes a wallet signs (`vow:` → lowercased `wallet:`, upstream
+  2026-08-12), which two sides can disagree about while both compile. It is
+  re-exported by `scry.rs` and called nowhere, so again nothing broke, and
+  again that was luck. The trees are on morr: `/data/apps/scry-forge`
+  (`launcher-rs/`, `sdk/`) is the one that is edited and built from.
 - The depot the launcher installs is written by `ci/depot.py`, gated by
   `--self-test` in `ci/gates.sh`. It deliberately does **not** compute the
   depot digest — `scry digest` does, and a second implementation of the number
