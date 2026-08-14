@@ -2494,12 +2494,30 @@ impl ShardCore {
                 Some(i) => {
                     let width = slots_in(kind);
                     let mut now = [ItemStack::default(); INV_SLOTS];
+                    // **Through `World::cont_slot`, never a store directly.**
+                    // This read used to be its own two-way dispatch —
+                    // `if kind == CONT_BAG { backpacks } else { deploys }`
+                    // — which was correct while two ground kinds existed
+                    // and became a silent defect the day a third landed:
+                    // `CONT_WORLD` fell through the `else` and indexed
+                    // `deploys.box_slot` with a `world_conts` index, so
+                    // the pad's crate drew a deploy box's contents. It
+                    // never panicked (64 world containers index safely
+                    // into 1 024 deploys) and no gate named `CONT_WORLD`
+                    // here, so world containers v0 shipped with its panel
+                    // wired to the wrong store and every wall green. The
+                    // kinds are wire `u8`s and cannot be matched
+                    // exhaustively, so the defence is arithmetic having
+                    // one owner: `cont_slot` is that owner, and the drip
+                    // asks it rather than answering again.
+                    //
+                    // `own_wslot` is passed for the `CONT_SELF` arm the
+                    // drip can never reach (line ~2409 already proved the
+                    // kind is a ground container); it is the honest
+                    // argument rather than a placeholder, so the call
+                    // stays correct if that guard ever moves.
                     for (s, out) in now.iter_mut().enumerate().take(width) {
-                        *out = if kind == CONT_BAG {
-                            self.world.backpacks.slot(i, s)
-                        } else {
-                            self.world.deploys.box_slot(i, s)
-                        };
+                        *out = self.world.cont_slot(c.own_wslot, kind, s as u8, i);
                     }
                     // At most `width` slots can differ and `width` is at
                     // most `INV_SLOTS`, which is `CONT_SYNC_BATCH` — so the

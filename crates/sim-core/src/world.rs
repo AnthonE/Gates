@@ -1312,26 +1312,26 @@ impl World {
         self.slot_of(id).filter(|&s| !self.players[s].dead)
     }
 
-    /// The move verb's one mutating body. Everything it decides is decided
-    /// by `inventory.rs`, which cannot write; everything it writes is
-    /// below the last `return`, and there are exactly two writes.
-    ///
-    /// Read the shape rather than the lines: the source and destination
-    /// stacks are read out **by value** (`ItemStack` is `Copy`), so the
-    /// planner is never handed a reference into a container and the two
-    /// sides cannot alias even when both are the same array — which is the
-    /// ordinary case, since arranging your own hotbar is `CONT_SELF` to
-    /// `CONT_SELF`. That is also why the same-slot ask is refused up front
-    /// instead of being allowed to fall through as a no-op: with copies, a
-    /// slot moved onto itself would be written twice and the second write
-    /// would win, which is a dupe.
-    ///
-    /// Every exit before the writes announces itself. There is no silent
-    /// path and no path that ends the session.
     /// One slot of whichever container `kind` names, by value. `ci` is the
     /// resolved ground-container index and is only read when the kind is a
     /// ground container — the caller has already proved it resolves.
-    fn cont_slot(&self, slot: usize, kind: u8, s: u8, ci: usize) -> ItemStack {
+    ///
+    /// **`pub` because it is the only answer to "what is in slot `s` of
+    /// this kind", and a second answer is a shipped defect.** It was
+    /// private until 2026-08-14, so the server's per-tick container drip
+    /// could not call it and re-implemented the dispatch as a two-way
+    /// `if kind == CONT_BAG { backpacks } else { deploys }`
+    /// (`server/core.rs`). That was correct for the two kinds alive when
+    /// it was written and silently wrong the moment a third landed:
+    /// `CONT_WORLD` fell through the `else` and read `deploys.box_slot`
+    /// with a `world_conts` index — an index that is always in range
+    /// (`MAX_WORLD_CONTS` 64 < 1 024 deploys) and therefore never panics,
+    /// so opening the pad's crate drew a *deploy box's* contents with
+    /// every gate green. The kinds are wire `u8` constants, so no
+    /// exhaustive `match` can be made to catch the next one; the only
+    /// structural defence is that there is one function, and it is this
+    /// one. Call it — do not re-derive it.
+    pub fn cont_slot(&self, slot: usize, kind: u8, s: u8, ci: usize) -> ItemStack {
         match kind {
             inventory::CONT_BAG => self.backpacks.slot(ci, s as usize),
             inventory::CONT_BOX => self.deploys.box_slot(ci, s as usize),
@@ -1360,6 +1360,26 @@ impl World {
         }
     }
 
+    /// The move verb's one mutating body. Everything it decides is decided
+    /// by `inventory.rs`, which cannot write; everything it writes is
+    /// below the last `return`, and there are exactly two writes.
+    ///
+    /// Read the shape rather than the lines: the source and destination
+    /// stacks are read out **by value** (`ItemStack` is `Copy`), so the
+    /// planner is never handed a reference into a container and the two
+    /// sides cannot alias even when both are the same array — which is the
+    /// ordinary case, since arranging your own hotbar is `CONT_SELF` to
+    /// `CONT_SELF`. That is also why the same-slot ask is refused up front
+    /// instead of being allowed to fall through as a no-op: with copies, a
+    /// slot moved onto itself would be written twice and the second write
+    /// would win, which is a dupe.
+    ///
+    /// Every exit before the writes announces itself. There is no silent
+    /// path and no path that ends the session.
+    //
+    // (This block sat on `cont_slot` until 2026-08-14 — a doc comment
+    // attaches to the item that follows it, and an intervening helper had
+    // been added above `move_item` without moving it down.)
     #[allow(clippy::too_many_arguments)]
     fn move_item(
         &mut self,

@@ -932,14 +932,27 @@ const _: () = assert!(
     "an action subtype past the field width would truncate into a live code"
 );
 /// Container-kind width, on the move action and now the container verb.
-/// Two bits for **three** live kinds (`inventory::CONT_SELF`, `CONT_BAG`,
-/// `CONT_BOX`), so only 3 is forgeable and it refuses at decode — the
-/// `BUILD_MAT_BITS` posture. Spending the pair at v17 rather than one bit
-/// is what let the box land at v18 and the container verb at v19 without
-/// moving a single existing message; the width is now full, and a fourth
-/// kind widens this field and every fixture with it. Every check is
-/// against `inventory::CONT_MAX`, never against this width — the two are
-/// deliberately not the same number.
+/// Two bits for **four** live kinds — `inventory::CONT_SELF`, `CONT_BAG`,
+/// `CONT_BOX` and, since v37, `CONT_WORLD`. Spending the pair at v17
+/// rather than one bit is what let the box land at v18, the container verb
+/// at v19 and world containers at v37 without moving a single existing
+/// message.
+///
+/// **The width is now exactly full, and that changed a property this
+/// comment used to state.** It read "only 3 is forgeable and it refuses at
+/// decode" — the `BUILD_MAT_BITS` posture — and that was true while three
+/// kinds were live and 3 was spare. `CONT_WORLD` *is* 3, so no value this
+/// field can carry is out of range any more: the `kind > CONT_MAX` guards
+/// at `decode_action_container` and `decode_event_cont_sync` cannot fire
+/// today. They are kept, not deleted, because they are the thing that
+/// starts working again the moment this width is widened ahead of the kind
+/// set — which is the next container kind's first move. A guard that
+/// currently refuses nothing is cheap; re-deriving why it was needed after
+/// it was removed is not.
+///
+/// Every check is against `inventory::CONT_MAX`, never against this width
+/// — the two are deliberately not the same number, and the paragraph above
+/// is what that separation buys.
 const CONT_KIND_BITS: u32 = 2;
 /// Move-count width. Full `u16`, matching `ItemStack::count` and the
 /// stack ladder's own type, so no count a container can legally hold is
@@ -1787,8 +1800,12 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
         ACT_CONTAINER => {
             let kind = r.read(CONT_KIND_BITS)? as u8;
             let cont = r.read(32)?;
-            // Two bits hold three kinds, so value 3 is forgeable. The
-            // handle is *not* range-checked and deliberately: a bag id and
+            // Two bits held three kinds until v37, when `CONT_WORLD` took
+            // value 3 and saturated the field — so the `kind > CONT_MAX`
+            // below refuses nothing today and is kept for the widening
+            // that makes it live again (`CONT_KIND_BITS`, and the
+            // saturation assert in this file's `action_container` test).
+            // The handle is *not* range-checked and deliberately: a bag id and
             // a packed box address have no shape a decoder could tell apart
             // from a wrong one, and "that container does not exist" is a
             // fact only the sim's stores hold. The server answers it by
