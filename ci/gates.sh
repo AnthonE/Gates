@@ -79,9 +79,11 @@ $NICE node ci/knob_registry.mjs || fail "knob registry"
 
 # Also pure text, also no build. The sim proves the haven pad concentrates
 # containers; this proves the containers it concentrates are the richer kind.
-# That half lives entirely in content/loot.toml, which no Rust gate reads —
-# no verb opens a container yet — so without this the gradient is one
-# rebalance away from being the defect the coast road already had.
+# That half lives entirely in content/loot.toml, which no Rust gate scores
+# for richness — the verb exists (Command::OpenWorldCont, world.rs) but it
+# opens a container, it does not check the container was worth opening — so
+# without this the gradient is one rebalance away from being the defect the
+# coast road already had.
 echo "== gate: haven prize (the destination outpays the route, in content)"
 $NICE node ci/haven_prize.mjs || fail "haven prize"
 

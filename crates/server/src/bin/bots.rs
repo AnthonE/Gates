@@ -29,48 +29,27 @@ use server::botclient::{bot_endpoint, run_bot};
 use sim_core::bots::RaidRows;
 use std::net::SocketAddr;
 use std::path::Path;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Hotbar slot the attacker selects for its charge, and the container slot
-/// the two `Move` steps address. Slot **addresses**, not balance numbers —
-/// they are the ones `sim-core/tests/raid_storm.rs` drives the same profile
-/// with, reused so the wire raid and the gated in-sim one exercise the same
-/// path rather than two nearly-identical ones. `DECISIONS.md` §open carries
-/// them in case a fleet ever needs to vary them.
-const RAID_CHARGE_SLOT: u8 = 0;
-const RAID_GOODS_SLOT: u8 = 2;
-/// The code every owner bot sets and every attacker bot must guess. One
-/// shared value is the point: `lock.rs`'s shock/lockout ladder only runs on
-/// a *wrong* guess, and with 10,000 codes a random draw is wrong ~99.99% of
-/// the time whatever this is.
-const RAID_OWNER_CODE: u16 = 4242;
-
-/// The raid profile's rows, resolved by content id. `None` if the content
-/// set cannot be read or does not carry one of the four — the fleet then
-/// walks, and says why, rather than raiding with a wrong row.
+/// The raid profile's rows, resolved by content id. `Err` if the content set
+/// cannot be read or does not carry one of the four — the fleet then walks,
+/// and says why, rather than raiding with a wrong row.
+///
+/// The resolution itself lives in `server::population`, which is the other
+/// caller and the one a shard boots: two copies of "which row is a twig
+/// foundation" is two things to renumber, and the profile a load tool drives
+/// has to be the profile a shard seats or neither measures the other.
+///
+/// What stays here is the **path**: this is a dev load tool run out of the
+/// tree, so it reads `content/` relative to the crate. A shard hands over the
+/// content it already loaded from its own `content_dir`.
 fn raid_rows() -> Result<RaidRows, String> {
-    // Compile-time path: this is a dev load tool run out of the tree, and
-    // the shard's own `content_dir` config is a server-side setting the
-    // client half has no business reading.
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let content = content::Content::load_dir(&dir).map_err(|e| format!("content: {e}"))?;
-    let row = |what: &str, got: Option<u16>| got.ok_or_else(|| format!("content: no {what}"));
-    Ok(RaidRows {
-        // Twig: the editable draft tier (`reference/BUILDING.md` §7b), so a
-        // bot plants what a bot can afford.
-        foundation: row(
-            "build.foundation_twig",
-            content.piece_index("build.foundation_twig"),
-        )?,
-        wall: row("build.wall_twig", content.piece_index("build.wall_twig"))?,
-        container: row("item.box_small", content.deploy_index("item.box_small"))?,
-        lock: row("item.lock_code", content.deploy_index("item.lock_code"))?,
-        charge_slot: RAID_CHARGE_SLOT,
-        goods_slot: RAID_GOODS_SLOT,
-        code: RAID_OWNER_CODE,
-    })
+    server::population::raid_rows(&content)
 }
 
 #[tokio::main]

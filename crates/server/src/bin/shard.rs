@@ -5,6 +5,7 @@
 
 use server::config::parse_shard_toml;
 use server::net::spawn_shard;
+use server::population::{Population, PopulationStats};
 use server::stats::ShardStats;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -398,6 +399,16 @@ async fn main() {
     // proves they hold the private key behind the address they claim
     // (`auth.rs`), which is the thing the warning was waiting for.
     let status_addr = cfg.status_addr;
+    // **The shard's own inhabitants** (`population.rs`), resolved before the
+    // config moves into `spawn_shard`. The rows come off the content this
+    // process already loaded and validated, by id — `bin/bots` has to read a
+    // second copy of the tree because it is a separate process, and that is
+    // the one thing an in-shard population does not have to do.
+    // Cloned because `cfg` moves into `spawn_shard` and the population is
+    // seated after the bind — it needs the bound port, which does not exist
+    // until that call returns. One clone at boot, never in a loop.
+    let boot_cfg = cfg.clone();
+    let population = cfg.population;
     let handle = match spawn_shard(
         cfg, gather, craft, build, deploy, combat, backpack, survival, cook, spawn_kit, loot, mobs,
         catalog, saves, world_boot,
@@ -444,16 +455,50 @@ async fn main() {
         std::process::exit(1);
     });
 
+    // Seated after the bind and after the status endpoint, because a post
+    // that dials before the accept loop is up just burns its backoff. The
+    // shutdown flag is the shard's own, so `systemctl stop` ends the
+    // population and the sim thread with one store.
+    let mut pop = match server::population::seat(
+        &boot_cfg,
+        &content,
+        handle.local_addr,
+        handle.shutdown.clone(),
+    ) {
+        Ok(Some(s)) => {
+            // Loud downgrade, never silent: a population that walks is
+            // scenery, and an operator who asked for opponents has to be
+            // told they got bodies instead.
+            match &s.no_raid {
+                Some(why) => {
+                    eprintln!("shard: population {population} walks, it cannot raid — {why}")
+                }
+                None => println!("population {population} seated on {} — raiding", s.dial),
+            }
+            Some(s.population)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            // A refusal here is the count or the endpoint, both of which the
+            // operator can fix and neither of which is worth running a wrong
+            // world for.
+            eprintln!("shard: population: {e}");
+            std::process::exit(1);
+        }
+    };
+
     let mut report = tokio::time::interval(Duration::from_secs(10));
     report.tick().await; // immediate first tick consumed
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 shutdown(&handle, "SIGINT").await;
+                drain(pop.take()).await;
                 return;
             }
             name = stop.recv() => {
                 shutdown(&handle, name).await;
+                drain(pop.take()).await;
                 return;
             }
             _ = report.tick() => {}
@@ -500,6 +545,42 @@ async fn main() {
             ShardStats::get(&s.world_saves_skipped),
             ShardStats::get(&s.world_save_errors),
         );
+        // Its own line, and only when there is one: the shard's counters
+        // cannot tell an inhabitant from a player — which is the point of
+        // seating them over the wire — so this is the only place the split
+        // is readable. `live` against the configured count is the health
+        // number; `errors` climbing is a population fighting its own wire.
+        if let Some(p) = &pop {
+            let g = &p.stats;
+            println!(
+                "population {}/{} live · shifts {}/{} started/ended, {} errored · \
+                 sent in/act {}/{} · placed pieces/deploys {}/{} · \
+                 charges {} · struct hits {}",
+                p.live(),
+                population,
+                PopulationStats::get(&g.shifts_started),
+                PopulationStats::get(&g.shifts_ended),
+                PopulationStats::get(&g.shift_errors),
+                PopulationStats::get(&g.inputs_sent),
+                PopulationStats::get(&g.actions_sent),
+                PopulationStats::get(&g.pieces_placed),
+                PopulationStats::get(&g.deploys_placed),
+                PopulationStats::get(&g.charges_planted),
+                PopulationStats::get(&g.struct_hits),
+            );
+        }
+    }
+}
+
+/// Wait for the inhabitants to leave. `shutdown` has already set the flag
+/// they watch, so this is a join and not a signal — and it is a join rather
+/// than a `return` straight into process exit because a post dropped
+/// mid-handshake leaves the accept loop holding a half-open connection the
+/// shard then has to time out.
+async fn drain(pop: Option<Population>) {
+    if let Some(p) = pop {
+        p.join().await;
+        println!("population left");
     }
 }
 

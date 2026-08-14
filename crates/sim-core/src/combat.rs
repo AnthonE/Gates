@@ -99,15 +99,18 @@ pub struct ThrowDef {
     /// to hurt. Zero is a legal row and means a charge that breaks walls
     /// and not people — the counted fixtures below rely on it.
     ///
-    /// **Carried, not applied**: no sim code reads it, so a charge hurts
-    /// nobody today.
+    /// **Applied since the blast grew a falloff**: `charge.rs:521` gates on
+    /// it (a zero row hurts nobody and skips the body scan outright) and
+    /// `:532` scales it by distance. This line said *"carried, not applied:
+    /// no sim code reads it"* through two judges who each checked.
     pub damage: u16,
     /// Damage the blast takes off the piece or deployable it was planted
     /// on — the same `structure` column the melee rows read, and the
     /// number `balance.toml`'s raid ratio divides wall hp by. It arrives
-    /// whole at the planted address, and today that is the ONLY address it
-    /// reaches: no neighbour takes anything, because nothing applies a
-    /// falloff yet.
+    /// whole at the planted address and **falls off linearly to zero at
+    /// `blast_cm`** for everything else in the volume (`charge::falloff`,
+    /// `:347`). This line said the planted address was the only one it
+    /// reached, which stopped being true when the falloff landed.
     pub structure: u16,
     /// Ticks between planting and the blast, baked from `fuse_s` against
     /// `TICK_HZ` so the sim never divides a content number itself. `u16`
@@ -120,15 +123,17 @@ pub struct ThrowDef {
     pub reach_cm: u16,
     /// Blast radius, `blast_m × 100`.
     ///
-    /// **Nothing reads this.** `charge.rs` has `place` and `tick_fuses`
-    /// and no falloff, so the radius is carried from content to the sim
-    /// and stops. It is landed ahead of its consumer deliberately: the
-    /// content boundary (schema · validate · canon · bake) is the half
-    /// that has gates, and the arithmetic is the half that does not exist.
-    /// When a falloff lands, both damage columns are meant to fall off
-    /// linearly to zero here and this becomes its divisor — which is why
-    /// `validate` and the bake already refuse a zero rather than leaving
-    /// the sim to guard one every tick.
+    /// **It is the falloff's divisor**, which is what it was landed ahead of:
+    /// `charge::falloff` (`:347-351`) scales both damage columns linearly to
+    /// zero at this radius, `:436` reads it off the live charge, and
+    /// `:277-279` copies all three off the row at plant time so a table swap
+    /// cannot change what an armed charge does. `validate` and the bake still
+    /// refuse a zero, which is why the sim does not guard one every tick.
+    ///
+    /// This line said *"nothing reads this"* through two judges. The
+    /// mechanism worth remembering is the one `CLAUDE.md` names: a doc that
+    /// claims a field is inert is read as *this is safe to change*, and
+    /// nothing in CI compares a doc comment to a call site.
     pub blast_cm: u16,
 }
 

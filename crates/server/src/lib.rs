@@ -38,6 +38,7 @@ pub mod config;
 pub mod core;
 pub mod entitle;
 pub mod net;
+pub mod population;
 pub mod slot;
 pub mod stats;
 pub mod status;

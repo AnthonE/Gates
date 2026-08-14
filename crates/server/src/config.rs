@@ -174,6 +174,23 @@ pub struct ShardConfig {
     /// Where the anomaly log is appended (`anomaly_file`). `None` ⇒ no log
     /// and every push is a no-op, which is what a test shard runs.
     pub anomaly_file: Option<String>,
+    /// **How many resident inhabitants the shard seats itself**
+    /// (`population.rs`). Bots, dialled over this shard's own wire after the
+    /// bind, running the raid profile — half owners building and locking,
+    /// half attackers planting charges.
+    ///
+    /// **Zero is the shipping default**, and it is the honest one for a
+    /// public shard: a population is scaffolding for a world that does not
+    /// have enough players yet, and an operator who has players does not want
+    /// bots eating their slots. It exists because the opposite state was
+    /// worse — three consecutive judges ranked "a shard has no inhabitants"
+    /// the largest playable gap in the game, and until this key every
+    /// opponent in the tree lived inside a `#[test]`.
+    ///
+    /// Capped at [`crate::population::MAX_POPULATION`] and refused above it,
+    /// so at least one seat is always a person's. Refused outright when
+    /// `require_auth` is set, because an inhabitant handshakes as a guest.
+    pub population: usize,
 }
 
 impl ShardConfig {
@@ -196,6 +213,7 @@ impl ShardConfig {
             min_client: 0,
             admins: crate::admin::Admins::none(),
             anomaly_file: None,
+            population: 0,
         }
     }
 }
@@ -253,6 +271,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut entitle_slug: Option<String> = None;
     let mut admins: Option<crate::admin::Admins> = None;
     let mut anomaly_file: Option<String> = None;
+    let mut population: Option<usize> = None;
     let mut entitle_timeout_secs: Option<u64> = None;
     let mut entitle_sweep_secs: Option<u64> = None;
     for (n, line) in text.lines().enumerate() {
@@ -461,6 +480,30 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                         .map_err(|e| format!("shard.toml line {}: bad min_client: {e}", n + 1))?,
                 );
             }
+            // Refused above the cap rather than clamped, which is wall 4's
+            // "a bound with a stated overflow policy" at a config line: a
+            // shard that seated 99 of the 200 an operator asked for would be
+            // running a population nobody chose, and the operator would read
+            // the number they typed as the number that is playing.
+            "population" => {
+                let v: usize = value.parse().map_err(|_| {
+                    format!(
+                        "shard.toml line {}: population must be a whole number of \
+                         inhabitants (0 seats none, which is the default)",
+                        n + 1
+                    )
+                })?;
+                if v > crate::population::MAX_POPULATION {
+                    return Err(format!(
+                        "shard.toml line {}: population {v} is over the {} cap — a \
+                         shard whose every slot is a bot refuses the player it was \
+                         seated for",
+                        n + 1,
+                        crate::population::MAX_POPULATION
+                    ));
+                }
+                population = Some(v);
+            }
             other => return Err(format!("shard.toml line {}: unknown key `{other}`", n + 1)),
         }
     }
@@ -494,6 +537,20 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 .into(),
         );
     }
+    // An inhabitant handshakes as `Address::GUEST` (`botclient::run_bot`), so
+    // a shard that refuses guests refuses every one of them — and the
+    // supervisor would re-man each post forever against its own front door,
+    // a reconnect storm a shard runs against itself. Refused here, with the
+    // two keys named, rather than discovered as a `refused_auth` counter
+    // climbing at 0.5 Hz on a shard whose config asked for company.
+    if population.unwrap_or(0) > 0 && require_auth.unwrap_or(false) {
+        return Err(
+            "shard.toml: population needs require_auth = false — an inhabitant \
+                    joins as a guest, so an authenticating shard refuses every one \
+                    of them and the population re-dials its own closed door"
+                .into(),
+        );
+    }
     Ok(ShardConfig {
         bind: bind.ok_or("shard.toml: missing `bind`")?,
         seed: seed.ok_or("shard.toml: missing `seed`")?,
@@ -518,6 +575,8 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         entitle,
         admins: admins.unwrap_or_else(crate::admin::Admins::none),
         anomaly_file,
+        // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
+        population: population.unwrap_or(0),
     })
 }
 
