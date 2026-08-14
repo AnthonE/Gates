@@ -42,6 +42,30 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0tq · The HUD says every fact of a frame, not the last one *(client lane)*
+
+**Gap pass, from `findings/pass-20260813-230343-10-judge.md` ranked gap 2**
+("the game speaks one sentence per frame and silently drops the rest").
+
+Landed 2026-08-14: `hud::Toast` is a bounded queue — `TOAST_LINES = 4` rows,
+newest at the top where the single line always sat, one clock each,
+drop-oldest and counted. The same report's ranked fix 1 was the proof it
+mattered on shipped content: a tree pays a secondary, so one swing into a
+full pack says two spill lines and the single slot showed the mushrooms and
+ate the wood. Five hud tests, each proven red under its own revert. Also
+that report's ranked fix 2 (a positive control in `spill.rs`, so half one's
+three negatives cannot go green on a swing that missed) and fix 3b (the
+word "measured" in `DECISIONS.md`). Left:
+
+- **A frame with more than four facts still drops the oldest of them**, and
+  the oldest is the refusal — `feedback`'s write order puts refusals first
+  and spills last. `Toast::dropped` counts it and nothing reads the counter;
+  a HUD that could say "+2 more" would need the sink to know it was full.
+- **Nobody has seen it.** Same as §0sp2's last bullet, and the same judge
+  gap 1: no frame in this repo has ever shown one line, let alone four.
+  Row pitch, the per-row dim and the readout's new home are all unlooked-at
+  arithmetic.
+
 ## 0sp2 · The spill speaks now — for the whole of one, not part of one *(systems lane)*
 
 Landed 2026-08-14: six producers, one drain (`World::drain_spill`), and the
