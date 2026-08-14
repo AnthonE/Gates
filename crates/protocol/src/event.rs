@@ -3595,8 +3595,8 @@ mod wire_domains {
         prefix: &'static str,
         ty: &'static str,
         /// Members that name the ledger rather than sit in it. These are
-        /// declared as an alias (`CONT_MAX = CONT_BOX`), so they would
-        /// fail the literal parse below — skipping them is not a
+        /// declared as an alias (`CONT_MAX = CONT_WORLD` today), so they
+        /// would fail the literal parse below — skipping them is not a
         /// convenience, it is the difference between a gate and a panic.
         exempt: &'static [&'static str],
         /// Below this the parser has stopped seeing the block and the
@@ -3761,6 +3761,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/world.rs"),
         },
         Module {
+            file: "worldcont.rs",
+            src: include_str!("../../sim-core/src/worldcont.rs"),
+        },
+        Module {
             file: "worldsave.rs",
             src: include_str!("../../sim-core/src/worldsave.rs"),
         },
@@ -3844,9 +3848,17 @@ mod wire_domains {
             prefix: "pub const CONT_",
             ty: ": u8 = ",
             exempt: &["MAX"],
-            min_members: 3,
+            min_members: 4,
             bits: CONT_KIND_BITS,
-            live_max: 2,
+            // Moved 2 -> 3 at wire v37 (world containers v0), which is
+            // the case this pin was written for: no field widened and no
+            // fixture's bytes moved, but value 3 stopped being forged and
+            // started being the crate on the haven pad. The domain is now
+            // **saturated** — `live_max == capacity - 1` — so the next
+            // container kind cannot be added without widening
+            // `CONT_KIND_BITS`, and the fit assert above is what will say
+            // so.
+            live_max: 3,
         },
         Domain {
             what: "piece shape",

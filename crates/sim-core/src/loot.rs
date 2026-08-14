@@ -30,7 +30,10 @@ const CH_LOOT: u32 = 99;
 /// invent a container the sim has no verb for.
 pub const LOOT_BARREL: usize = 0;
 /// Baked table index for `container = "crate"` — the haven pad's container
-/// (`terrain::Occupant::CrateSlot`). No verb opens one yet.
+/// (`terrain::Occupant::CrateSlot`). **Opened by `worldcont.rs`** since
+/// world containers v0; this line said "No verb opens one yet" for the
+/// whole time the pad stood there paying nobody, which is what the
+/// merge-gate judge eventually ranked first.
 pub const LOOT_CRATE: usize = 1;
 /// Baked table index for `container = "cache"` — the waystations', the tier
 /// between the road's barrel and the pad's crate

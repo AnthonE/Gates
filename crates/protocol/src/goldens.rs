@@ -27,93 +27,102 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 83] = [
-    "v36_input_acks_only.bin",
-    "v36_input_full.bin",
-    "v36_snapshot_keyframe.bin",
-    "v36_snapshot_delta.bin",
-    "v36_snapshot_cap.bin",
-    "v36_hello.bin",
-    "v36_welcome.bin",
-    "v36_refuse_full.bin",
-    "v36_event_gather.bin",
-    "v36_event_inv.bin",
-    "v36_event_slot_harvested.bin",
-    "v36_event_slot_respawned.bin",
-    "v36_event_slot_sync.bin",
-    "v36_event_catalog.bin",
-    "v36_event_weak_mark.bin",
-    "v36_event_craft_q.bin",
-    "v36_event_craft_done.bin",
-    "v36_event_craft_refused.bin",
-    "v36_event_recipes.bin",
-    "v36_action_craft.bin",
-    "v36_action_cancel.bin",
-    "v36_action_place.bin",
-    "v36_event_piece_placed.bin",
-    "v36_event_piece_sync.bin",
-    "v36_event_build_refused.bin",
-    "v36_event_piece_defs.bin",
-    "v36_action_deploy.bin",
-    "v36_action_feed.bin",
-    "v36_event_deploy_placed.bin",
-    "v36_event_deploy_sync.bin",
-    "v36_event_deploy_refused.bin",
-    "v36_event_deploy_defs.bin",
-    "v36_event_piece_removed.bin",
-    "v36_event_deploy_removed.bin",
-    "v36_event_stock.bin",
-    "v36_action_use.bin",
-    "v36_action_access.bin",
-    "v36_event_door.bin",
-    "v36_action_upgrade.bin",
-    "v36_chat.bin",
-    "v36_event_chat.bin",
-    "v36_event_hit.bin",
-    "v36_event_health.bin",
-    "v36_event_death.bin",
-    "v36_action_loot.bin",
-    "v36_event_bag_dropped.bin",
-    "v36_event_bag_sync.bin",
-    "v36_event_bag_removed.bin",
-    "v36_event_struct_hit_piece.bin",
-    "v36_event_struct_hit_deploy.bin",
-    "v36_event_vitals.bin",
-    "v36_event_consumed.bin",
-    "v36_event_consume_refused.bin",
-    "v36_action_consume.bin",
-    "v36_event_drank.bin",
-    "v36_action_drink.bin",
-    "v36_event_respawn.bin",
-    "v36_action_respawn.bin",
-    "v36_action_move.bin",
-    "v36_event_moved.bin",
-    "v36_event_move_refused.bin",
-    "v36_action_move_box.bin",
-    "v36_action_container.bin",
-    "v36_action_container_close.bin",
-    "v36_event_cont_sync.bin",
-    "v36_event_cont_close.bin",
-    "v36_action_repair_piece.bin",
-    "v36_action_repair_deploy.bin",
-    "v36_event_piece_repaired_piece.bin",
-    "v36_event_piece_repaired_deploy.bin",
-    "v36_action_throw_piece.bin",
-    "v36_action_throw_deploy.bin",
-    "v36_event_charge_placed_piece.bin",
-    "v36_event_charge_placed_deploy.bin",
-    "v36_challenge.bin",
-    "v36_auth.bin",
-    "v36_event_oven_lit.bin",
-    "v36_event_oven_out.bin",
+pub const FIXTURES: [&str; 86] = [
+    "v37_input_acks_only.bin",
+    "v37_input_full.bin",
+    "v37_snapshot_keyframe.bin",
+    "v37_snapshot_delta.bin",
+    "v37_snapshot_cap.bin",
+    "v37_hello.bin",
+    "v37_welcome.bin",
+    "v37_refuse_full.bin",
+    "v37_event_gather.bin",
+    "v37_event_inv.bin",
+    "v37_event_slot_harvested.bin",
+    "v37_event_slot_respawned.bin",
+    "v37_event_slot_sync.bin",
+    "v37_event_catalog.bin",
+    "v37_event_weak_mark.bin",
+    "v37_event_craft_q.bin",
+    "v37_event_craft_done.bin",
+    "v37_event_craft_refused.bin",
+    "v37_event_recipes.bin",
+    "v37_action_craft.bin",
+    "v37_action_cancel.bin",
+    "v37_action_place.bin",
+    "v37_event_piece_placed.bin",
+    "v37_event_piece_sync.bin",
+    "v37_event_build_refused.bin",
+    "v37_event_piece_defs.bin",
+    "v37_action_deploy.bin",
+    "v37_action_feed.bin",
+    "v37_event_deploy_placed.bin",
+    "v37_event_deploy_sync.bin",
+    "v37_event_deploy_refused.bin",
+    "v37_event_deploy_defs.bin",
+    "v37_event_piece_removed.bin",
+    "v37_event_deploy_removed.bin",
+    "v37_event_stock.bin",
+    "v37_action_use.bin",
+    "v37_action_access.bin",
+    "v37_event_door.bin",
+    "v37_action_upgrade.bin",
+    "v37_chat.bin",
+    "v37_event_chat.bin",
+    "v37_event_hit.bin",
+    "v37_event_health.bin",
+    "v37_event_death.bin",
+    "v37_action_loot.bin",
+    "v37_event_bag_dropped.bin",
+    "v37_event_bag_sync.bin",
+    "v37_event_bag_removed.bin",
+    "v37_event_struct_hit_piece.bin",
+    "v37_event_struct_hit_deploy.bin",
+    "v37_event_vitals.bin",
+    "v37_event_consumed.bin",
+    "v37_event_consume_refused.bin",
+    "v37_action_consume.bin",
+    "v37_event_drank.bin",
+    "v37_action_drink.bin",
+    "v37_event_respawn.bin",
+    "v37_action_respawn.bin",
+    "v37_action_move.bin",
+    "v37_event_moved.bin",
+    "v37_event_move_refused.bin",
+    "v37_action_move_box.bin",
+    "v37_action_container.bin",
+    "v37_action_container_close.bin",
+    "v37_event_cont_sync.bin",
+    "v37_event_cont_close.bin",
+    "v37_action_repair_piece.bin",
+    "v37_action_repair_deploy.bin",
+    "v37_event_piece_repaired_piece.bin",
+    "v37_event_piece_repaired_deploy.bin",
+    "v37_action_throw_piece.bin",
+    "v37_action_throw_deploy.bin",
+    "v37_event_charge_placed_piece.bin",
+    "v37_event_charge_placed_deploy.bin",
+    "v37_challenge.bin",
+    "v37_auth.bin",
+    "v37_event_oven_lit.bin",
+    "v37_event_oven_out.bin",
     // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
-    "v36_event_knock.bin",
-    "v36_event_auth.bin",
-    "v36_action_access_crew.bin",
-    "v36_action_demolish.bin",
-    "v36_event_shot.bin",
+    "v37_event_knock.bin",
+    "v37_event_auth.bin",
+    "v37_action_access_crew.bin",
+    "v37_action_demolish.bin",
+    "v37_event_shot.bin",
+    // World containers v0 (v37): the fourth container kind. Three
+    // fixtures and not one, because `action_move_box`'s own doc records
+    // what happens otherwise — the third kind crossed the wire for a
+    // whole version with only the *open* pinned, so the bytes that mean
+    // "take it out of the box" were checked by nothing. Kind 3 gets its
+    // open, its move and its sync in the commit that legalises it.
+    "v37_action_container_world.bin",
+    "v37_action_move_world.bin",
+    "v37_event_cont_sync_world.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -1123,4 +1132,72 @@ pub fn event_oven_out() -> (u16, u16, u8, bool, u32) {
 /// the pitch's width would truncate visibly rather than plausibly.
 pub fn event_shot() -> (u32, u16, u8, u16, u16) {
     (0x0000_2B17, 41_234, 203, 1_333, 22)
+}
+
+/// Opening a **world container** (wire v37) — the fourth kind, and the
+/// first whose open reaches the sim rather than only the subscription.
+///
+/// The handle is a real `gather::cell_key(147, 92)` — `cx << 16 | cz` on
+/// a 256×256 grid — and both halves are chosen to be distinguishable from
+/// each other and from every other handle in this file: a `cell_key`
+/// whose two 8-bit cells were transposed, or read at the wrong width,
+/// moves bytes here. It is deliberately unlike `action_container`'s
+/// `box_key`, which packs three fields into the same 32 bits; two
+/// different packings sharing a constant is how a decoder that used the
+/// wrong one would still pass.
+pub fn action_container_world() -> (u8, u32) {
+    (3, 0x0093_005C)
+}
+
+/// Taking something **out of** a world container (wire v37).
+///
+/// Withdrawal rather than deposit, so the direction that actually matters
+/// for a crate is the one pinned — and the reverse of `action_move_box`'s
+/// deposit, so a copy-paste between the two shows as drifted bytes. The
+/// handle is a third distinct `cell_key`, `(31, 208)`, for the reason
+/// `action_move_box` gives about sharing a constant.
+///
+/// The source slot is 23: inside `INV_SLOTS` and past `BOX_SLOTS`, which
+/// is the one address a world container accepts and a box does not, so a
+/// decoder that resolved kind 3's width against the box's table would
+/// refuse this fixture rather than quietly narrow the container.
+pub fn action_move_world() -> (u32, u8, u8, u8, u8, u16) {
+    (0x001F_00D0, 3, 23, 0, 4, 9)
+}
+
+/// A world container's contents arriving as an opening `reset`
+/// (wire v37) — the shape a crate always sends first, since the roll is
+/// what the open produced and the client has nothing to diff against.
+///
+/// `reset` is true here where `event_cont_sync`'s is false, so the fourth
+/// kind is pinned in the state the third one is not. The slot indices
+/// again reach past `BOX_SLOTS` and up to 29 — the last addressable slot
+/// of the widest container — because the ceiling is exactly what a
+/// per-kind width check gets wrong.
+pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
+    (
+        3,
+        0x0093_005C,
+        true,
+        [
+            InvSlot {
+                slot: 0,
+                stack: ItemStack {
+                    item: 19,
+                    count: 64,
+                },
+            },
+            InvSlot {
+                slot: 14,
+                stack: ItemStack { item: 7, count: 2 },
+            },
+            InvSlot {
+                slot: 29,
+                stack: ItemStack {
+                    item: 44,
+                    count: 11,
+                },
+            },
+        ],
+    )
 }

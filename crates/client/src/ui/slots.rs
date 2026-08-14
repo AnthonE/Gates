@@ -45,7 +45,7 @@
 
 use protocol::{encode_action_move, WireError};
 use sim_core::gather::ItemStack;
-use sim_core::inventory::{CONT_BOX, CONT_MAX, CONT_SELF};
+use sim_core::inventory::{CONT_BOX, CONT_MAX, CONT_SELF, CONT_WORLD};
 use sim_core::limits::{BOX_SLOTS, HOTBAR_SLOTS, INV_SLOTS};
 
 /// Slots addressable in a container of `kind` — `sim_core::inventory`'s
@@ -274,6 +274,13 @@ pub fn container_title(kind: u8) -> &'static str {
     match kind {
         CONT_BOX => "BOX",
         CONT_SELF => "-",
+        // Named rather than left to the fallback, and that is the whole
+        // point of touching this function: the wildcard below reads every
+        // unknown kind as a bag, so world containers v0 would have
+        // titled the haven pad's crate "BAG" with nothing failing. A
+        // fallback that is a real answer for one kind is a fallback that
+        // lies about the next one.
+        CONT_WORLD => "CRATE",
         _ => "BAG",
     }
 }

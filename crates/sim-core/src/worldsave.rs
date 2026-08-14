@@ -78,14 +78,16 @@ use crate::limits::HOTBAR_SLOTS;
 use crate::limits::{
     BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP,
     MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_HEARTHS,
-    MAX_LIVE_CHARGES, MAX_LOCKS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES,
+    MAX_LIVE_CHARGES, MAX_LOCKS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES, MAX_WORLD_CONTS,
 };
 use crate::lock::{LockRec, CODE_MAX, CODE_NONE};
+use crate::loot::{LOOT_CACHE, LOOT_CRATE};
 use crate::movement;
 use crate::oven::OvenState;
 use crate::persist::{PlayerSave, SaveError, PLAYER_SAVE_BYTES};
-use crate::terrain::ISLAND_SIZE;
+use crate::terrain::{self, ISLAND_SIZE};
 use crate::world::{Player, World};
+use crate::worldcont::WorldContRec;
 
 /// The blob's own format version, and it moves for the same reason
 /// `SAVE_FORMAT` and `PROTO_VER` do: the layout below **is** the format, and
@@ -109,15 +111,26 @@ use crate::world::{Player, World};
 /// *count*, so a satchel's 125 against a dozen rows was "an impossible
 /// structure". No live world ever hit it (a ten-second fuse rarely meets
 /// a save), which is exactly why it survived to be found by reading.
-pub const WORLD_SAVE_FORMAT: u16 = 4;
+pub const WORLD_SAVE_FORMAT: u16 = 5;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
-/// the next bag id, and the nine section counts.
-const HEAD_BYTES: usize = 2 + 8 + 4 * 3 + 8 + 4 + SECTION_COUNTS;
-/// Eight `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
+/// the next bag id, and the ten section counts.
+///
+/// **Public for `PLAYER_BYTES`' reason, and it was made public the day that
+/// reason came true a second time.** Two byte-poking tests in
+/// `tests/worldsave.rs` seek past this head to reach the first piece and
+/// the first deploy, and both spelled the length as `34 + 20` — correct
+/// until format 5 added a ninth section count, at which point they poked
+/// two bytes short and failed with "the deploy stride drifted" rather than
+/// with anything about the head. A hand-copied offset is a silent
+/// wrong-seek the day the layout grows; naming the constant is what makes
+/// the next section free.
+pub const HEAD_BYTES: usize = 2 + 8 + 4 * 3 + 8 + 4 + SECTION_COUNTS;
+/// Nine `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
 /// so does not fit a `u16` with room to be over-cap and *refused* rather
 /// than wrapping — the count has to be able to say an illegal number).
-const SECTION_COUNTS: usize = 8 * 2 + 4;
+/// The ninth is `world_conts` (format 5).
+const SECTION_COUNTS: usize = 9 * 2 + 4;
 
 /// One body: everything `PlayerSave` already validates, plus every
 /// remaining field `World::state_hash` reads off a player.
@@ -170,6 +183,14 @@ const BOX_BYTES: usize = 9 + BOX_SLOTS * 4 + 6 + BOX_SLOTS * 2;
 const LOCK_BYTES: usize =
     6 + 4 + 2 + 2 + 1 + 1 + 1 + LOCK_AUTH_CAP * 4 + LOCK_GUEST_CAP * 4 + 1 + 8 + 8;
 const BACKPACK_BYTES: usize = 28 + INV_SLOTS * 4;
+/// One authored world container (format 5, `worldcont.rs`): the cell, the
+/// quantized stand position, the table it rolls, the refill deadline, and
+/// its slots. The position is saved rather than re-derived from
+/// `terrain::scatter` on load for the reason the record stores it at all —
+/// a load must not cost 60 `noise2` evaluations per container — and the
+/// decoder re-checks it against the cell it claims, so a hand-edited save
+/// cannot move a crate to the player's feet.
+const WORLD_CONT_BYTES: usize = 2 + 2 + 4 + 4 + 1 + 8 + INV_SLOTS * 4;
 /// A burning fuse: address + store bit + the three copied-at-plant
 /// numbers (structure, damage, blast — format 4) + deadline + planter.
 const CHARGE_BYTES: usize = 25;
@@ -190,6 +211,7 @@ pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + MAX_BOXES * BOX_BYTES
     + MAX_LOCKS * LOCK_BYTES
     + MAX_BACKPACKS * BACKPACK_BYTES
+    + MAX_WORLD_CONTS * WORLD_CONT_BYTES
     + MAX_LIVE_CHARGES * CHARGE_BYTES
     + MAX_SLOT_LIVES * SLOT_LIFE_BYTES;
 
@@ -239,6 +261,17 @@ pub enum WorldSaveError {
     /// `lock::CODE_NONE`). Refused rather than clamped: a clamped code is
     /// a door whose owner's own four digits no longer open it.
     BadCode,
+    /// A world container names a loot table that is not a container's
+    /// (`LOOT_CRATE` or `LOOT_CACHE`). Refused rather than coerced to a
+    /// default: a crate silently rolling the barrel's table is the whole
+    /// destination gradient quietly deleted, and it would look like
+    /// nothing at all in a log.
+    BadWorldContTable,
+    /// Two world containers claim one cell. The move verb resolves by
+    /// `index_of`, which takes the first — so the second is loot nothing
+    /// can reach and a `state_hash` term nothing can explain. The
+    /// duplicate-bag-id refusal, one store over.
+    DuplicateWorldCont,
 }
 
 impl WorldSaveError {
@@ -258,6 +291,8 @@ impl WorldSaveError {
             Self::BadCharge => "a charge names an impossible structure",
             Self::BadHotbarSlot => "a body selects a hotbar slot that does not exist",
             Self::BadCode => "a code lock carries a code that is not four digits",
+            Self::BadWorldContTable => "a world container names a table no container rolls",
+            Self::DuplicateWorldCont => "two world containers claim the same cell",
         }
     }
 }
@@ -341,6 +376,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
     o.u16(w.deploys.boxes().len() as u16);
     o.u16(w.deploys.locks().len() as u16);
     o.u16(w.backpacks.len() as u16);
+    o.u16(w.world_conts.len() as u16);
     o.u16(w.charges.len() as u16);
     o.u32(w.slot_lives.len() as u32);
 
@@ -466,6 +502,17 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u32(b.owner);
         o.u64(b.expires);
         for s in b.items.iter() {
+            o.stack(s);
+        }
+    }
+    for c in w.world_conts.entries() {
+        o.u16(c.cx);
+        o.u16(c.cz);
+        o.i32(c.qx);
+        o.i32(c.qz);
+        o.u8(c.table);
+        o.u64(c.refill_at);
+        for s in c.items.iter() {
             o.stack(s);
         }
     }
@@ -628,6 +675,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     let n_boxes = r.count(MAX_BOXES)?;
     let n_locks = r.count(MAX_LOCKS)?;
     let n_bags = r.count(MAX_BACKPACKS)?;
+    let n_conts = r.count(MAX_WORLD_CONTS)?;
     let n_charges = r.count(MAX_LIVE_CHARGES)?;
     let n_slots = r.count32(MAX_SLOT_LIVES)?;
 
@@ -1002,6 +1050,74 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         }
     }
 
+    // --- authored world containers (format 5) ---------------------------
+    let mut conts = crate::boxed_array::<WorldContRec, MAX_WORLD_CONTS>(WorldContRec::default());
+    for c in conts.iter_mut().take(n_conts) {
+        let cx = r.u16()?;
+        let cz = r.u16()?;
+        let qx = r.i32()?;
+        let qz = r.i32()?;
+        let table = r.u8()?;
+        let refill_at = r.u64()?;
+        let mut items = [ItemStack::default(); INV_SLOTS];
+        for s in items.iter_mut() {
+            *s = r.stack(max_item)?;
+        }
+        // A save is the one non-command path into `World`, so the file is
+        // checked and never trusted (`reference/SAVES.md` §9.3 — their
+        // loader trusts it, ours cannot). Three claims, three checks:
+        //
+        // 1. The cell is on the island. `CELLS_PER_SIDE` is the grid, and
+        //    a cell past it would index a scatter that refuses and leave a
+        //    container nothing can ever resolve.
+        // 2. The table is one a container actually rolls. A forged index
+        //    into `LootContent::tables` would silently pay a barrel's
+        //    table — or, past the array, pay nothing forever.
+        // 3. The stand position is inside the cell it claims. This is the
+        //    check that matters, because `qx`/`qz` are what the reach test
+        //    reads: without it, a hand-edited save moves the haven pad's
+        //    crate to a player's feet and the walk — which is the entire
+        //    price of the loot — is gone.
+        if !(0..terrain::CELLS_PER_SIDE).contains(&(cx as i32))
+            || !(0..terrain::CELLS_PER_SIDE).contains(&(cz as i32))
+        {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
+        if table as usize != LOOT_CRATE && table as usize != LOOT_CACHE {
+            return Err(WorldSaveError::BadWorldContTable);
+        }
+        let cell_m = terrain::CELL_SIZE;
+        let x = qx as f32 * movement::POS_XZ_Q;
+        let z = qz as f32 * movement::POS_XZ_Q;
+        if x < cx as f32 * cell_m
+            || x >= (cx as f32 + 1.0) * cell_m
+            || z < cz as f32 * cell_m
+            || z >= (cz as f32 + 1.0) * cell_m
+        {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
+        *c = WorldContRec {
+            cx,
+            cz,
+            qx,
+            qz,
+            table,
+            refill_at,
+            items,
+        };
+    }
+    // One record per cell. Two records naming one cell is the world
+    // container's version of the duplicate-bag-id defect above: the move
+    // verb resolves by `index_of`, which takes the first, so the second
+    // would be loot nothing can reach and a hash nothing can explain.
+    for i in 0..n_conts {
+        for j in (i + 1)..n_conts {
+            if conts[i].cx == conts[j].cx && conts[i].cz == conts[j].cz {
+                return Err(WorldSaveError::DuplicateWorldCont);
+            }
+        }
+    }
+
     // --- burning fuses ---------------------------------------------------
     let mut charges = [ChargeRec::default(); MAX_LIVE_CHARGES];
     for c in charges.iter_mut().take(n_charges) {
@@ -1084,6 +1200,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         &locks[..n_locks],
     );
     w.backpacks.restore(&bags[..n_bags], next_bag);
+    w.world_conts.restore(&conts[..n_conts]);
     w.charges.restore(&charges[..n_charges]);
     w.slot_lives.restore(&slots[..n_slots]);
     // The collision index is derived, so it is rebuilt rather than stored —
@@ -1116,7 +1233,7 @@ mod tests {
         // is 9 + 12 stacks = 57, and 55 is what you get by forgetting that
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
-        let by_hand = 54                    // head
+        let by_hand = 56                    // head
             + 100 * 248                     // players
             + 8_192 * 19                    // pieces + placement tick
             + 1_024 * 33                    // deploys + bag_ready + placed
@@ -1124,9 +1241,14 @@ mod tests {
             + 256 * 87                      // containers: 57 + the oven's 30
             + 512 * 98                      // code locks
             + 256 * 148                     // bags
+            + 64 * 141                      // world containers: 21 + 30 stacks
             + 64 * 25                       // charges
             + 16_384 * 14; // harvested slots
-        assert_eq!(HEAD_BYTES, 54);
+                           // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
+        assert_eq!(HEAD_BYTES, 56);
+        // A world container is 141: 4 cell + 8 quantized position + 1 table
+        // + 8 refill deadline, then `INV_SLOTS` stacks at four bytes.
+        assert_eq!(WORLD_CONT_BYTES, 141);
         // A lock is 98: 6 address + 4 owner + 2 + 2 codes + 1 locked + 2
         // counts + 8 auth ids + 8 guest ids at four bytes each + 1 miss
         // counter + 8 + 8 for the two tick deadlines.
@@ -1142,8 +1264,10 @@ mod tests {
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
         // Moved 572_246 → 572_502 at format 4: a charge grew four bytes
         // (damage + blast_cm, satchel blast v0) and there are 64 of them.
+        // Moved 572_502 → 581_528 at format 5: the world-container section,
+        // `MAX_WORLD_CONTS` (64) × 141, plus two head bytes for its count.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 572_502,
+            WORLD_SAVE_MAX_BYTES, 581_528,
             "the world save ceiling moved"
         );
     }
