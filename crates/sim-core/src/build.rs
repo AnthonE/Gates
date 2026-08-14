@@ -1091,12 +1091,31 @@ const _: () = assert!(
 ///    about whose base is whose.
 /// 3. **A full refund**, in the piece's own cost rows. It is an undo, not
 ///    a salvage: a fraction would make misplacing a foundation a tax, and
-///    the reference does not charge one either.
+///    the reference does not charge one either. A refund a full pack
+///    cannot hold falls at the demolisher's feet rather than ceasing to
+///    exist (`spill`, 2026-08-14) — see the `spill` parameter for why the
+///    feet and not the wall.
 ///
 /// The removal is `drop_piece` + `collapse_from` — the **same** path decay
 /// and a raid take, cascade included. A verb with its own removal is a
 /// second chance for a floating floor to survive something that should
 /// have brought it down.
+///
+/// `spill` is the caller's buffer, exactly `gather::swing`'s: this module
+/// owns no container store and is not about to acquire one, so the
+/// remainder goes out as data and `world.rs`'s single drain point stands
+/// the bag up.
+///
+/// **The fall-point is the player's feet, and the wall is not a rival
+/// answer.** `NOW.md` §0sp2 left this path open on the ground that a
+/// demolished wall's refund belongs where the wall was; the arithmetic
+/// says the two addresses cannot be far enough apart to matter. This verb
+/// refuses beyond `BUILD_REACH_M` (below), `backpack::LOOT_REACH_M` **is**
+/// `BUILD_REACH_M` (one `pub use`, not two knobs), and that is the radius
+/// `spill_at` merges within — so a bag minted at the wall is always inside
+/// the merge reach of the feet and the reverse. Picking the feet therefore
+/// costs nothing a player could find, needs no piece-anchor geometry on
+/// the drain, and keeps every give-back in one tick to one bag.
 #[allow(clippy::too_many_arguments)]
 pub fn demolish(
     dc: &DeployContent,
@@ -1112,6 +1131,7 @@ pub fn demolish(
     loc: u8,
     budget: &mut usize,
     events: &mut EventQueue,
+    spill: &mut [crate::gather::ItemStack; crate::limits::INV_SLOTS],
 ) {
     let Some(i) = pieces.find_index(cx, cz, level, loc) else {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
@@ -1149,7 +1169,7 @@ pub fn demolish(
     // Refund before removal: `drop_piece` invalidates the index, and a
     // refund computed after it would be pricing a swapped-in neighbour.
     for &(item, count) in def.costs.iter().take(def.n_costs as usize) {
-        crate::gather::inv_add(&mut p.inv, item, count, gc.stack_max_of(item));
+        crate::gather::inv_add_spilling(&mut p.inv, spill, item, count, gc.stack_max_of(item));
     }
     crate::deploy::drop_piece(dc, pieces, deploys, i, def.shape, events);
     *budget -= 1;
@@ -1321,7 +1341,7 @@ mod tests {
     use super::*;
     use crate::deploy::UPKEEP_PERIOD_TICKS;
     use crate::gather::ItemStack;
-    use crate::limits::MAX_REMOVALS_PER_TICK;
+    use crate::limits::{INV_SLOTS, MAX_REMOVALS_PER_TICK};
 
     /// One tick's structural removal budget, as `World::tick` hands it
     /// out. These fixtures collapse or raid one structure at a time and
@@ -2017,6 +2037,7 @@ mod tests {
             LOC_PLANE,
             &mut budget,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(pieces.len(), 0, "the foundation came down");
         assert_eq!(
@@ -2057,6 +2078,7 @@ mod tests {
             LOC_PLANE,
             &mut budget,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(
             (last(&ev).0, last(&ev).2),
@@ -2082,6 +2104,7 @@ mod tests {
             LOC_PLANE,
             &mut budget,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(pieces.len(), 0, "the second piece has its own clock");
     }
@@ -2113,6 +2136,7 @@ mod tests {
             LOC_PLANE,
             &mut budget,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(last(&ev).2, REFUSE_B_SPOT, "nothing at that address");
         let _ = &mut ev;
@@ -2155,6 +2179,7 @@ mod tests {
             LOC_PLANE,
             &mut budget,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(last(&ev).2, REFUSE_B_REACH, "demolish has the build reach");
 
@@ -2191,6 +2216,7 @@ mod tests {
             LOC_PLANE,
             &mut budget,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(
             (last(&ev).0, last(&ev).2),

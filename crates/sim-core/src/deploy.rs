@@ -83,7 +83,7 @@ use crate::build::{
 use crate::craft::{inv_count, inv_take};
 use crate::gather::{GatherContent, ItemStack};
 use crate::limits::{
-    BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, MAX_BOXES, MAX_BOX_SPILL_PER_TICK,
+    BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BOXES, MAX_BOX_SPILL_PER_TICK,
     MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_HEARTHS,
     MAX_LOCKS, UPKEEP_SWEEP_PER_TICK,
 };
@@ -1774,6 +1774,7 @@ pub fn lock_op(
     code: u16,
     tick: u64,
     events: &mut EventQueue,
+    spill: &mut [ItemStack; INV_SLOTS],
 ) {
     let Some(di) = door_in_reach(dc, deploys, p, cx, cz, level, loc, lockable, events) else {
         return;
@@ -1790,12 +1791,14 @@ pub fn lock_op(
         Outcome::Removed => {
             // The lock item comes back to the hand that unbolted it, and
             // the door is anyone's again (`DOORS.md` §7 verb 8). A full
-            // inventory loses it, which is what every other give here
-            // does; the alternative is a lock that cannot be taken off by
-            // a player carrying a full load, and that is worse.
+            // inventory used to lose it, and this comment used to argue
+            // that was correct because every other give here did the same
+            // — which stopped being true the moment the other gives took
+            // the spill. It falls at the unbolter's feet now, so a player
+            // carrying a full load can still take a lock off *and* keep it.
             if let Some(r) = lock_row(dc) {
                 let item = dc.defs[r].item;
-                lock::give_back(&mut p.inv, item, gc.stack_max_of(item));
+                lock::give_back(&mut p.inv, spill, item, gc.stack_max_of(item));
             }
             deploys.entries[di].has_lock = false;
             deploys.entries[di].locked = false;
@@ -1851,6 +1854,12 @@ pub fn lock_op(
 /// Devblog 149's list) — so a guest-code holder is refused here exactly
 /// as `ACCESS_OP_TAKE` refuses them. An unlocked one stays anyone's,
 /// which is demolish v1's landed rule.
+///
+/// `spill` catches both gives — the deployable and a lock that came up
+/// with it — for a pack that has no room (`NOW.md` §0sp2, 2026-08-14). The
+/// fall-point is the picker's feet and `build::demolish`'s doc has the
+/// whole argument for why the deployable's own cell is not a rival answer:
+/// this verb refuses beyond `BUILD_REACH_M` too, which is the merge radius.
 #[allow(clippy::too_many_arguments)]
 pub fn pick_up(
     dc: &DeployContent,
@@ -1863,6 +1872,7 @@ pub fn pick_up(
     level: u8,
     loc: u8,
     events: &mut EventQueue,
+    spill: &mut [ItemStack; INV_SLOTS],
 ) {
     let Some(i) = deploys.find_index(cx, cz, level, loc) else {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_SPOT, 0);
@@ -1909,10 +1919,10 @@ pub fn pick_up(
     if deploys.locks.find(cx, cz, level, loc).is_some() {
         if let Some(r) = lock_row(dc) {
             let item = dc.defs[r].item;
-            lock::give_back(&mut p.inv, item, gc.stack_max_of(item));
+            lock::give_back(&mut p.inv, spill, item, gc.stack_max_of(item));
         }
     }
-    crate::gather::inv_add(&mut p.inv, def.item, 1, gc.stack_max_of(def.item));
+    crate::gather::inv_add_spilling(&mut p.inv, spill, def.item, 1, gc.stack_max_of(def.item));
     drop_deploy(dc, pieces, deploys, i, events);
 }
 
@@ -3886,6 +3896,7 @@ mod tests {
             code,
             0,
             ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
     }
 
@@ -4001,6 +4012,7 @@ mod tests {
             1234,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(
             (last(&ev).0, last(&ev).2 & 0xff, last(&ev).3),
@@ -4079,6 +4091,7 @@ mod tests {
                 4321,
                 0,
                 ev,
+                &mut [ItemStack::default(); INV_SLOTS],
             );
         };
         wrong(&mut deploys, &mut raider, &mut ev);
@@ -4109,6 +4122,7 @@ mod tests {
             1234,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(last(&ev).2, REFUSE_D_LOCKOUT);
         assert!(!deploys.lock_passes(CX, CZ, 0, LOC_EDGE_W, raider.id));
@@ -4147,6 +4161,7 @@ mod tests {
             0,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(last(&ev).2, REFUSE_D_NO_LOCK);
 
@@ -4207,6 +4222,7 @@ mod tests {
                 1111,
                 0,
                 &mut ev,
+                &mut [ItemStack::default(); INV_SLOTS],
             );
             assert_eq!(last(&ev).2, REFUSE_D_OWNER, "op {op} is full-rights");
         }
@@ -4226,6 +4242,7 @@ mod tests {
             0,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(last(&ev).2, REFUSE_D_DOOR, "no door at that address");
         let mut far = player_at_cell(CX + 7, CZ, &[]);
@@ -4242,6 +4259,7 @@ mod tests {
             0,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(last(&ev).2, REFUSE_D_REACH, "a lock has the build reach");
         assert!(
@@ -4264,6 +4282,7 @@ mod tests {
             0,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(deploys.locks().len(), 0);
         assert_eq!(
@@ -4323,6 +4342,7 @@ mod tests {
             0,
             LOC_PLANE,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(deploys.len(), 0, "unclaimed furniture is anyone's");
         assert_eq!(
@@ -4366,6 +4386,7 @@ mod tests {
             0,
             LOC_PLANE,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(
             (last(&ev).0, last(&ev).2),
@@ -4384,6 +4405,7 @@ mod tests {
             0,
             LOC_PLANE,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(deploys.hearths().len(), 0, "emptied, it lifts");
     }
@@ -4430,6 +4452,7 @@ mod tests {
             0,
             LOC_EDGE_W,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(
             (last(&ev).0, last(&ev).2),
@@ -4454,6 +4477,7 @@ mod tests {
             0,
             LOC_EDGE_W,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(deploys.len(), 0);
         assert_eq!(deploys.locks().len(), 0, "and the lock came off with it");
@@ -4573,6 +4597,7 @@ mod tests {
             1234,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert!(deploys.locks.is_locked(CX, CZ, 0, LOC_PLANE));
         assert!(
@@ -4597,6 +4622,7 @@ mod tests {
             4321,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         lock_op(
             &dc,
@@ -4611,6 +4637,7 @@ mod tests {
             4321,
             1,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(
             (last(&ev).0, last(&ev).2 & 0xff),
@@ -4633,6 +4660,7 @@ mod tests {
             0,
             2,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert!(!deploys.locks.is_locked(CX, CZ, 0, LOC_PLANE));
         assert!(!deploys.find(CX, CZ, 0, LOC_PLANE).unwrap().locked);
@@ -4731,6 +4759,7 @@ mod tests {
             1234,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
 
         let mut stranger = player_at_cell(CX, CZ, &[]);
@@ -4746,6 +4775,7 @@ mod tests {
             0,
             LOC_PLANE,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(
             (last(&ev).0, last(&ev).2),
@@ -4770,6 +4800,7 @@ mod tests {
             0,
             LOC_PLANE,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(deploys.len(), 0);
         assert_eq!(deploys.locks().len(), 0, "the lock record came off with it");
@@ -4829,6 +4860,7 @@ mod tests {
             4321,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
 
         let mut guest = player_at_cell(CX, CZ, &[]);
@@ -4846,6 +4878,7 @@ mod tests {
             4321,
             1,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(
             (last(&ev).0, last(&ev).2 & 0xff),
@@ -4905,6 +4938,7 @@ mod tests {
             0,
             LOC_EDGE_W,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(
             (last(&ev).0, last(&ev).2),
@@ -4934,6 +4968,7 @@ mod tests {
             1234,
             2,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         pick_up(
             &dc,
@@ -4946,6 +4981,7 @@ mod tests {
             0,
             LOC_EDGE_W,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(deploys.len(), 0, "a full member lifts it");
         assert_eq!(deploys.locks().len(), 0);
@@ -4993,6 +5029,7 @@ mod tests {
             1234,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         lock_op(
             &dc,
@@ -5007,6 +5044,7 @@ mod tests {
             4321,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
 
         let mut guest = player_at_cell(CX, CZ, &[]);
@@ -5024,6 +5062,7 @@ mod tests {
             4321,
             1,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert!(
             deploys.lock_passes(CX, CZ, 0, LOC_PLANE, guest.id),
@@ -5040,6 +5079,7 @@ mod tests {
             0,
             LOC_PLANE,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(
             (last(&ev).0, last(&ev).2),
@@ -5064,6 +5104,7 @@ mod tests {
             0,
             2,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         let mut nobody = player_at_cell(CX, CZ, &[]);
         nobody.id = 21;
@@ -5078,6 +5119,7 @@ mod tests {
             0,
             LOC_PLANE,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(
             deploys.len(),

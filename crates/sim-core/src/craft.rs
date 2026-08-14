@@ -13,15 +13,16 @@
 //! refunds the remaining units' inputs · **an output an inventory can't
 //! hold now falls at the crafter's feet** (2026-08-14: `step` spills into
 //! the caller's tick buffer and `world.rs` stands a bag up, the same lane
-//! gather's yield takes), while a **cancel's refund is still lost** — the
-//! give-back paths are the half of that sweep `NOW.md` §0sp2 still owes ·
+//! gather's yield takes), **and so does a cancel's refund** — the four
+//! give-back paths took the same lane later the same day, so nothing in
+//! this module destroys items at a full pack any more ·
 //! station-gated recipes need a placed station deployable
 //! (workbench/furnace archetype, deploy.rs) within `STATION_RADIUS_M` of
 //! the crafter at enqueue — enqueue-time only, the reference behavior:
 //! walking away never cancels a queue.
 
 use crate::deploy::{DeployContent, Deploys, ARCH_FURNACE, ARCH_WORKBENCH};
-use crate::gather::{inv_add, inv_add_spilling, GatherContent, ItemStack};
+use crate::gather::{inv_add_spilling, GatherContent, ItemStack};
 use crate::limits::{
     CRAFT_COUNT_MAX, CRAFT_QUEUE, INV_SLOTS, MAX_ITEM_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
 };
@@ -297,11 +298,31 @@ pub fn rearm(cc: &CraftContent, tick: u64, p: &mut Player) {
     };
 }
 
-/// Apply one cancel (`Command::CraftCancel`): refund the remaining units'
+/// Apply one cancel (`Command::CraftCancel`, &mut [ItemStack::default(); INV_SLOTS]): refund the remaining units'
 /// inputs (the in-progress unit refunds whole) and close the gap. An
 /// index naming no live job is ignored — a cancel racing a completion is
 /// a race, not an attack.
-pub fn cancel(cc: &CraftContent, gc: &GatherContent, tick: u64, p: &mut Player, index: u16) {
+///
+/// `spill` is `step`'s buffer and the fall-point is the same — the
+/// crafter's feet — because a cancel is the one give-back of the four with
+/// no second address even arguable: there is no object in the world to
+/// refund *from* (`NOW.md` §0sp2, 2026-08-14).
+///
+/// **The chunk loop no longer breaks**, and that is the whole fix here. It
+/// used to stop at the first chunk that did not fit whole, losing both the
+/// short chunk's tail and every chunk after it; a cancel of a large queue
+/// at a nearly-full pack could therefore destroy most of a refund and
+/// report nothing. Every chunk now lands in the pack or in the spill, so
+/// the loop runs to `left == 0` and the only remaining bound is the
+/// spill's own `INV_SLOTS`, which `inv_add_spilling` documents.
+pub fn cancel(
+    cc: &CraftContent,
+    gc: &GatherContent,
+    tick: u64,
+    p: &mut Player,
+    index: u16,
+    spill: &mut [ItemStack; INV_SLOTS],
+) {
     let index = index as usize;
     if index >= CRAFT_QUEUE || p.jobs[index].remaining == 0 {
         return;
@@ -314,11 +335,8 @@ pub fn cancel(cc: &CraftContent, gc: &GatherContent, tick: u64, p: &mut Player, 
             let mut left = refund;
             while left > 0 {
                 let chunk = left.min(u16::MAX as u32) as u16;
-                let added = inv_add(&mut p.inv, item, chunk, gc.stack_max[item as usize]);
+                inv_add_spilling(&mut p.inv, spill, item, chunk, gc.stack_max[item as usize]);
                 left -= chunk as u32;
-                if added < chunk {
-                    break; // inventory full: the rest is lost (documented)
-                }
             }
         }
     }
@@ -533,7 +551,14 @@ mod tests {
 
         // Cancel the head mid-batch: full refund (nothing completed yet),
         // job 1 becomes the head and re-arms from `tick`.
-        cancel(&cc, &gc, 55, &mut p, 0);
+        cancel(
+            &cc,
+            &gc,
+            55,
+            &mut p,
+            0,
+            &mut [ItemStack::default(); INV_SLOTS],
+        );
         assert_eq!(inv_count(&p.inv, 0), 30, "9 refunded");
         assert_eq!(
             p.jobs[0],
@@ -549,15 +574,36 @@ mod tests {
         // remaining unit refunds.
         step_nospill(&cc, &gc, 58, &mut p, &mut ev);
         assert_eq!(p.jobs[0].remaining, 1);
-        cancel(&cc, &gc, 60, &mut p, 0);
+        cancel(
+            &cc,
+            &gc,
+            60,
+            &mut p,
+            0,
+            &mut [ItemStack::default(); INV_SLOTS],
+        );
         assert_eq!(inv_count(&p.inv, 1), 18, "2 of 4 came back");
         assert_eq!(inv_count(&p.inv, 2), 19, "1 of 2 came back");
         assert_eq!(p.craft_done_at, 0);
 
         // Cancelling nothing is silent.
         let before = ev.len();
-        cancel(&cc, &gc, 61, &mut p, 3);
-        cancel(&cc, &gc, 61, &mut p, 99);
+        cancel(
+            &cc,
+            &gc,
+            61,
+            &mut p,
+            3,
+            &mut [ItemStack::default(); INV_SLOTS],
+        );
+        cancel(
+            &cc,
+            &gc,
+            61,
+            &mut p,
+            99,
+            &mut [ItemStack::default(); INV_SLOTS],
+        );
         assert_eq!(ev.len(), before);
     }
 
