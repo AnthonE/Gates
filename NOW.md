@@ -42,15 +42,49 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0pop · The shard has inhabitants — what they cannot yet do *(server lane)*
+
+From `findings/pass-20260813-230343-18-judge.md` §B.1, ranked first by three
+consecutive judges: *"a shard has no inhabitants, so none of the last four
+passes' work is reachable by a player."*
+
+**Landed 2026-08-14.** `shard.toml` grows `population = N` and
+`crates/server/src/population.rs` seats it — bots dialled over the shard's
+own wire after the bind, full handshake, `run_bot`, so the server cannot tell
+one from a player. Resident rather than a fleet: a post runs a bounded shift,
+reports its `BotReport` into a gauge, and is re-manned until the shutdown
+flag. Bounded at `MAX_PLAYERS - 1`, so a seat always stays a person's, and
+refused outright beside `require_auth` (an inhabitant is a guest, so an
+authenticating shard would have it re-dial its own closed door). Gate:
+`crates/server/tests/population.rs`, 8 tests; the live one seats 4 on an
+ephemeral shard and waits on `joins`/`input_dg_ok`/`actions_ok`, observed red
+with no post manned (`joins 0, live 0, inputs 0, actions 0`).
+Measured, 4 seated: joins 4, inputs 10, actions 3, 0 malformed, one 100 ms
+look. `bin/bots`'s row resolver now calls the same one.
+
+Remaining, ranked:
+1. **Nobody has run one for longer than a test.** A shift is 300 s and the
+   suite exercises ~0.2 s of it, so re-manning, the backoff and the shift
+   report are gated only by construction. Cheapest next step: `population = 8`
+   in `shard.toml`, run it, read the population line.
+2. **They act, but nobody has checked what they can afford.** The suite uses
+   the shipped spawn kit deliberately and asserts only that actions land —
+   judge -18 §B.2 is the live half of this, and the satchel is still granted
+   everywhere rather than crafted.
+3. Two proposed defaults are in `DECISIONS.md` §open ("shard population v0").
+
+---
+
 ## 0rc · The raid completes — what is left of it *(systems lane)*
 
 From `findings/pass-20260813-230343-16-judge.md` §B.1, ranked the largest
 playable gap in the game: *"You cannot get into anyone's base."*
 
-**Landed this pass.** §0rf's named cheap next step, taken: the detonation is
+**Landed this pass.** The cheap next step named by
+`findings/note-20260814-charge-never-detonates.md`, taken: the detonation is
 gated in the sim on *shipped* content — `crates/server/tests/raid.rs`, twig
 foundation at hp 10 against `structure` 125, the real 300-tick fuse. It went
-**green first run**, so the verb was never broken. That clears §0rf's whole
+**green first run**, so the verb was never broken. That clears that note's
 suspect list: `detonate`'s scan, the `find_index` re-resolve, the overkill
 case (`dealt` is clamped to the piece's 10, not the charge's 125), the fuse
 length. Also read and cleared this pass: the wire encoder's `EV_STRUCT_HIT`
@@ -71,15 +105,18 @@ judge -17 §B.3 — but it is not the explanation, and the two were one thing.)
 
 **What remains, ranked.** All wire-only, since the harness is the optimistic
 case and still raids.
-1. **Nobody checked the window held the ticks assumed.** 905 was `30 s ×
-   TICK_HZ`, not a reading; under 355 ticks sees zero by construction.
-   `bot_smoke.rs` now diffs `ShardStats::ticks`. Cheapest next step: run
-   `bin/bots` 30 s and read it.
-2. **Dropped actions skip, not retry** — `core::wants_action` takes one per
+1. **Dropped actions skip, not retry** — `core::wants_action` takes one per
    client per tick; a lost step 4 leaves step 5 throwing at nothing.
-3. The jitter buffer's held-item timing. Cannot be the whole story: 27
+2. The jitter buffer's held-item timing. Cannot be the whole story: 27
    charges did arm. Chain:
    `findings/note-20260814-the-arrangement-raids.md`.
+
+**Struck 2026-08-14, do not re-run it** (judge -18 ranked fix 1, checked
+here). This list's old #1 said 905 ticks "was `30 s × TICK_HZ`, not a
+reading". `TICK_HZ` is 30 (`limits.rs:15`) and 30 × 30 is **900**, so 905
+cannot be that product; 905/30 = 30.17, which is the "30.2 Hz" the note
+quotes, i.e. the Hz was derived *from* 905 and 905 is the measurement. The
+window held.
 
 ---
 
@@ -107,8 +144,9 @@ shipped content, at the slots `RaidRows` addresses. The owner cycle now
 builds and locks for real. Measured, 8 × 4 s: ~66 pieces placed, 3 deploys,
 18 charges armed, `auths` 0..15 per owner — all four flatly 0 before. Proven
 red three ways: a naked fleet, a kit whose layout drifts from `charge_slot`,
-a dropped `ChargePlaced` arm. `struct_hits` did **not** move; that is §0rf,
-not this item.
+a dropped `ChargePlaced` arm. `struct_hits` did **not** move; that is §0rc,
+not this item. (Cited as `§0rf` until 2026-08-14 — a label this file has
+never had, in all three places, judge -18 ranked fix 2.)
 
 Remaining, ranked:
 

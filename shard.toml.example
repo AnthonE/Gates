@@ -227,3 +227,36 @@ seed = 20260731
 # an operator who asked for a log and got none would be reading an empty
 # file after the incident they wanted it for.
 # anomaly_file = "gates-anomaly.jsonl"
+
+# HOW MANY RESIDENT INHABITANTS THIS SHARD SEATS ITSELF. Unset ⇒ 0, and a
+# shard seats nobody but the players who dial it.
+#
+# Bots, dialled over this shard's own wire after the bind — the full
+# QUIC handshake, `Address::GUEST`, and the same `run_bot` a load test uses,
+# so the server cannot tell one from a player. Half own (build a twig base,
+# deploy a box, arm a code lock) and half attack (select a charge, plant it,
+# guess the code, take the goods). Which half a post is depends on its index
+# and never changes, so a base outlives the raider shooting at it.
+#
+# IT EXISTS BECAUSE THE OPPOSITE STATE WAS WORSE. Three consecutive
+# merge-gate judges ranked the same thing the largest playable gap in the
+# game: every opponent in this tree lived inside a `#[test]` or needed an
+# operator to start `bin/bots` by hand, so a human who joined the alpha shard
+# met a silent island. This is the key that makes four passes of raid work
+# reachable by a player.
+#
+# It is SCAFFOLDING, not a feature, and zero is the shipping default for that
+# reason: a population is for a world that does not have enough players yet,
+# and an operator who has players does not want bots eating their slots.
+#
+# Two refusals at boot rather than a surprise later:
+#   * over MAX_PLAYERS - 1 — a shard whose every slot is a bot refuses the
+#     player it was seated for, so at least one seat stays a person's;
+#   * together with `require_auth = true` — an inhabitant joins as a guest,
+#     so an authenticating shard refuses every one of them and the population
+#     would re-dial its own closed door forever.
+#
+# The shard's report line grows a `population` row when this is set: live
+# against configured, shifts started/ended/errored, and what the finished
+# shifts placed. `live` below the configured count is the health signal.
+# population = 8
