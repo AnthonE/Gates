@@ -44,33 +44,20 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ## 0pr · The wolf hunts — what predator v0 left *(systems lane)*
 
-From `findings/pass-20260813-230343-01-judge.md` ranked gap 1 ("the island
-holds one animal and it is prey"). Landed 2026-08-14 as a content row:
-`MOB_KINDS` 2, `kind_of(slot)` (a stride — 16 of 64, no wire byte, v29's
-rejected `kind` field still rejected), the wolf in `mobs.toml`, its massing
-and the death sentence. **Nothing in `mob.rs` branches on species** — a
-hunter is `brave_pct = 0` plus a 30 m notice radius. `DECISIONS.md` §open
-"predator v0" has the numbers and their sources; 10 new gates, each proven
-red under its own mutation.
-
-**It found a bug three green gates could not see.** A charge held `flee_gait`
-at any distance, so a closed animal overshot and orbited on a 30-tick cycle;
-the bite is phase-locked to 60, a multiple of 30, so the bite sampled the
-same point of that orbit forever — a slot whose phase fell outside reach
-could never bite. Slot 0's fell inside and every bite gate hunted slot 0.
+Predator v0 landed 2026-08-14: the wolf is a content row, and **nothing in
+`mob.rs` branches on species** — a hunter is `brave_pct = 0` plus a notice
+radius. `DECISIONS.md` §open "predator v0" has the numbers, the sources and
+the phase-locked-bite bug the stride exposed. (Trimmed to the bound
+2026-08-14; the landing story is in that row, not here.)
 
 **Item 3 landed 2026-08-14 — pointing the other way.** The sim reads the
 clock now: `world::is_night` is the door, `MobDef::spook_at` the selector,
-`night_spook_m` the content field, and `mob::think`'s notice test the one
-line through it. `day_frac` had *no caller in the sim at all* before this
-and its own doc said so. But the wolf hunts **worse** after dusk, not
-better — the reference cut its predator's night sight in 2024 because an
-animal that hunts you in pitch black "feels a bit like a landmine", and no
-game in the survey publishes a night sense ratio above 1×. 30 m → 15 m;
-the pig is unchanged and gated so. **7 new tests and 3 existing ones
-extended; all 10 proven red under their own mutation.** Sources and the one
-number that is ours (the 0.5×) are in `DECISIONS.md` §open "nocturnal
-senses".
+`night_spook_m` the content field, `mob::think`'s notice test the one line
+through it. But the wolf hunts **worse** after dusk: the reference cut its
+predator's night sight in 2024, and no game in the survey publishes a night
+sense ratio above 1×. 30 m → 15 m, pig unchanged and gated so. 7 new tests,
+3 extended, all 10 proven red under their own mutation. Sources and the one
+number that is ours (the 0.5×) are in §open "nocturnal senses".
 
 Owed, in rank order:
 
