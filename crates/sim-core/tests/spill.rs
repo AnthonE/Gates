@@ -18,7 +18,7 @@ use sim_core::craft::{inv_count, CraftContent};
 use sim_core::deploy::{
     DeployContent, DeployDef, ACCESS_OP_SET_CODE, ACCESS_OP_TAKE, ARCH_BOX, PLACE_FOUNDATION,
 };
-use sim_core::gather::{GatherContent, ItemStack, SWING_INTERVAL_TICKS};
+use sim_core::gather::{GatherContent, ItemStack, HIT_UNIT, SWING_INTERVAL_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::INV_SLOTS;
 use sim_core::movement::{Body, POS_XZ_Q};
@@ -169,6 +169,58 @@ fn a_full_pack_drops_the_yield_at_your_feet() {
             .iter()
             .any(|e| e.code == EV_BAG_DROPPED && e.a == bag.id),
         "a new container on the ground announces itself"
+    );
+}
+
+/// **The shipped shape the probe fixture does not have.** `content/
+/// gatherables.toml` gives the tree a secondary (mushrooms beside the
+/// wood), and the fixture's tree pays one thing — so every other case here
+/// sees exactly one `EV_GATHER` and the two-payout path was covered
+/// nowhere. It is the interesting one: two zeros in a single swing, which
+/// is what the client has to draw two lines for. The merge-gate judge's
+/// ranked fix 1 (pass 20260813-230343-10) named the gap from the client end.
+#[test]
+fn a_node_that_pays_twice_spills_twice_and_announces_both() {
+    let (pos, yaw) = find_isolated(SEED, Occupant::Tree);
+    let mut w = full_pack_world(pos);
+    let tree = w.gather.nodes[0];
+    // Any item that is neither the primary nor the junk walling the pack
+    // off; the fixture stacks everything to 100, so none of it fits either.
+    let sec: u16 = if tree.output == 5 { 6 } else { 5 };
+    let sec_units: u16 = 3;
+    w.gather.nodes[0].secondary = (sec, sec_units);
+
+    w.tick(&[hold_primary(yaw, 0)]);
+
+    let gathers: Vec<_> = w
+        .events
+        .entries()
+        .iter()
+        .filter(|e| e.code == EV_GATHER)
+        .collect();
+    assert_eq!(
+        gathers.len(),
+        2,
+        "both payouts announce — the client draws one line per event, and a \
+         swallowed one is a spill the player is never told about"
+    );
+    assert_eq!(gathers[0].b >> 16, tree.output as u32, "primary first");
+    assert_eq!(gathers[0].b & 0xFFFF, 0, "and none of it reached the hands");
+    assert_eq!(gathers[1].b >> 16, sec as u32, "then the secondary");
+    assert_eq!(gathers[1].b & 0xFFFF, 0, "which did not fit either");
+
+    // Both are on the floor, in the one bag, whole.
+    assert_eq!(w.backpacks.len(), 1, "one swing stands up one bag");
+    let bag = w.backpacks.entries()[0];
+    assert_eq!(
+        inv_count(&bag.items, tree.output),
+        tree.hand_yield as u32,
+        "the primary is in it"
+    );
+    assert_eq!(
+        inv_count(&bag.items, sec),
+        sec_units as u32,
+        "and the secondary beside it, not destroyed"
     );
 }
 
@@ -374,6 +426,25 @@ fn only_a_full_pack_makes_the_gather_event_say_zero() {
     w.tick(&[Command::Join { id: 1 }]);
     let thin = w.gather.nodes[0];
     w.tick(&[hold_primary(yaw, 0)]);
+
+    // The positive control first, because everything below it is a
+    // NEGATIVE. Half one builds its own world rather than inheriting
+    // `full_pack_world`'s proof that a swing lands at this pos/yaw, so if
+    // the scatter, the spawn or the reach ever drifts and the swing MISSES,
+    // three assertions about what a swing did not do all go green while
+    // guarding nothing. A miss touches no slot: one entry, one unmarked
+    // `HIT_UNIT` of budget spent (`weak_pct` is zeroed above, so a marked
+    // bite cannot be what landed).
+    assert_eq!(
+        w.slot_lives.len(),
+        1,
+        "the swing missed the node entirely — every negative below is vacuous"
+    );
+    assert_eq!(
+        w.slot_lives.entries()[0].hits as u32,
+        HIT_UNIT,
+        "the swing connected but spent the wrong budget"
+    );
 
     assert_eq!(
         inv_count(&w.players[0].inv, thin.output),

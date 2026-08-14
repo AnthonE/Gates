@@ -28,6 +28,33 @@ use super::Net;
 /// is not a gate").
 pub const TOAST_SECS: f32 = 3.0;
 
+/// How many announce lines are on screen at once, newest at the top.
+///
+/// **The cap is the point, not the count.** One frame can produce a refusal,
+/// a kill, two gathers and two spills; the sink used to be one `String` and
+/// last-writer-wins, so five of those six were computed, formatted and
+/// thrown away. Overflow policy, stated as wall 4 asks: **drop-oldest,
+/// counted** ([`Toast::dropped`]) — the newest fact is the one a player is
+/// reacting to, and a queue that dropped the newest would be a queue that
+/// hides the thing that just happened.
+///
+/// Four because four rows fit between the prompt and the readout at the
+/// pitch below without reaching the crosshair. Knob: `DECISIONS.md` §open,
+/// client cosmetics (declared there, so `ci/knob_registry.mjs` pins it).
+pub const TOAST_LINES: usize = 4;
+
+/// Where the newest announce line sits, percent of screen height, and the
+/// gap to the next one. Row 0 keeps the single toast's own position, so
+/// nothing moved for the one-line case that was all this could ever show.
+/// Cosmetic (`DECISIONS.md` §open, client cosmetics).
+const TOAST_TOP_PCT: f32 = 58.0;
+const TOAST_PITCH_PCT: f32 = 2.8;
+
+/// How much dimmer each row is than the one above it. The stack has to read
+/// as a stack — without it four equal lines are a paragraph, and the eye has
+/// no reason to start at the new one. Cosmetic (as above).
+const TOAST_ROW_DIM: f32 = 0.16;
+
 /// How long the hitmarker flashes, seconds. Short on purpose — it is
 /// confirmation, not a readout.
 pub const HITMARK_SECS: f32 = 0.25;
@@ -38,18 +65,65 @@ pub const HITMARK_SECS: f32 = 0.25;
 pub const VITAL_BAR_W: f32 = 118.0;
 pub const VITAL_BAR_H: f32 = 19.0;
 
-/// The one line that says what just happened in the world: a refusal, a
-/// full action lane, a verb that found nothing.
+/// One announce line, with its own clock.
+#[derive(Default)]
+pub struct Say {
+    /// The line as drawn, repeat suffix and all.
+    text: String,
+    /// Bytes of `text` that are the sentence itself. The repeat suffix is
+    /// rewritten from here, so the fifth swing at a tree costs no allocation
+    /// — a `String` grown once and truncated back, never a new one. The
+    /// client is a hot path too (`CLAUDE.md`, "no per-frame allocations").
+    base: usize,
+    /// Seconds left before this line goes.
+    left: f32,
+    /// How many times this exact sentence was said while it was up.
+    reps: u16,
+}
+
+impl Say {
+    /// The line as it should appear on screen.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Seconds left. The fade reads it; nothing asserts on it.
+    pub fn left(&self) -> f32 {
+        self.left
+    }
+
+    pub fn reps(&self) -> u16 {
+        self.reps
+    }
+}
+
+/// What just happened in the world: a refusal, a full action lane, a verb
+/// that found nothing, a gather, a spill, a death.
+///
+/// **A bounded queue, not a line.** Until 2026-08-14 this was one `String`
+/// and one timer, so `feedback` wrote gathers, crafts, refusals, knocks,
+/// kills and spills into the same slot in a fixed order and the player saw
+/// whichever spoke last. That was not cosmetic: chopping a shipped tree with
+/// a full pack pushes two `EV_GATHER` zeros (wood and the mushroom
+/// secondary, `content/gatherables.toml`), so the one thing the spill line
+/// exists to say — *your wood went on the floor* — was overwritten by the
+/// mushrooms every time. Every fact in `Feed` is already bounded and
+/// drained once; only the sink was one slot.
 ///
 /// Distinct from `panels::Ui::status`, which says what happened *in a panel*
 /// and is only on screen while one is open. Every refusal the sim announces
 /// used to reach this client and stop — `pop_hit`, `pop_toast`,
 /// `pop_craft_refusal`, `pop_build_refusal` and `pop_deploy_refusal` had zero
 /// call sites in the whole render path.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct Toast {
-    pub text: String,
-    pub left: f32,
+    /// Oldest first. `len` of these are live; the rest are spent slots kept
+    /// for their allocation.
+    lines: [Say; TOAST_LINES],
+    len: usize,
+    /// Lines the cap ate, ever. Wall 4 wants an overflow policy *and* a way
+    /// to see it fire; a drop nobody counts is a drop nobody can find.
+    dropped: u32,
     /// Seconds left on the hitmarker, counted down beside the text because
     /// the two are the same kind of thing: a brief confirmation the player
     /// reads without looking away from the crosshair.
@@ -58,10 +132,100 @@ pub struct Toast {
     pub hit_damage: u16,
 }
 
+impl Default for Toast {
+    fn default() -> Self {
+        Self {
+            lines: std::array::from_fn(|_| Say::default()),
+            len: 0,
+            dropped: 0,
+            hit_left: 0.0,
+            hit_damage: 0,
+        }
+    }
+}
+
 impl Toast {
+    /// Add a line. A repeat of the newest live line refreshes it and counts
+    /// instead of spending a slot: ten swings at a tree must not push a
+    /// refusal off the stack, and "+1 × WOOD ×10" is more honest than ten
+    /// identical rows anyway.
     pub fn say(&mut self, what: impl Into<String>) {
-        self.text = what.into();
-        self.left = TOAST_SECS;
+        let what = what.into();
+        if self.len > 0 {
+            let top = &mut self.lines[self.len - 1];
+            if top.text[..top.base] == what {
+                top.left = TOAST_SECS;
+                top.reps = top.reps.saturating_add(1);
+                top.text.truncate(top.base);
+                use std::fmt::Write as _;
+                let _ = write!(top.text, "  ×{}", top.reps);
+                return;
+            }
+        }
+        if self.len == TOAST_LINES {
+            // Drop-oldest: shift the whole window down one and reuse the
+            // slot that falls off the front.
+            self.lines.rotate_left(1);
+            self.len -= 1;
+            self.dropped = self.dropped.saturating_add(1);
+        }
+        let slot = &mut self.lines[self.len];
+        slot.text.clear();
+        slot.text.push_str(&what);
+        slot.base = slot.text.len();
+        slot.left = TOAST_SECS;
+        slot.reps = 1;
+        self.len += 1;
+    }
+
+    /// Count every line's clock down and retire the ones that ran out.
+    ///
+    /// Expiry is by timer rather than by position: the newest line's clock
+    /// is refreshed by a repeat, so "oldest first" is an insertion order and
+    /// not a promise about which runs out first.
+    pub fn tick(&mut self, dt: f32) {
+        let mut keep = 0;
+        for r in 0..self.len {
+            self.lines[r].left = (self.lines[r].left - dt).max(0.0);
+            if self.lines[r].left > 0.0 {
+                self.lines.swap(keep, r);
+                keep += 1;
+            }
+        }
+        for slot in self.lines[keep..].iter_mut() {
+            slot.text.clear();
+            slot.base = 0;
+            slot.left = 0.0;
+            slot.reps = 0;
+        }
+        self.len = keep;
+        if self.hit_left > 0.0 {
+            self.hit_left = (self.hit_left - dt).max(0.0);
+        }
+    }
+
+    /// The line drawn in row `row`, newest first. `None` past the live end,
+    /// which is the empty row the HUD blanks rather than leaves stale.
+    pub fn row(&self, row: usize) -> Option<&Say> {
+        if row >= self.len {
+            return None;
+        }
+        Some(&self.lines[self.len - 1 - row])
+    }
+
+    /// How many lines are up.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// How many lines the cap has eaten. Never reset — it is a counter, not
+    /// a state.
+    pub fn dropped(&self) -> u32 {
+        self.dropped
     }
 
     pub fn hit(&mut self, damage: u16) {
@@ -160,9 +324,10 @@ pub struct Plan;
 #[derive(Component)]
 pub struct PromptLine;
 
-/// The toast line, under the prompt.
+/// One row of the announce stack, under the prompt. Row 0 is the newest and
+/// sits where the single toast line always sat; the rest run downward.
 #[derive(Component)]
-pub struct ToastLine;
+pub struct ToastLine(pub usize);
 
 /// The pinned readout, under the toast: the WHERE half of the two latched
 /// address-carrying signals (`NOW.md` §0x item 6) — the wall being broken
@@ -490,25 +655,31 @@ pub fn setup(mut commands: Commands) {
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
     ));
-    commands.spawn((
-        super::WorldEntity,
-        ToastLine,
-        Node {
-            position_type: PositionType::Absolute,
-            top: Val::Percent(58.0),
-            width: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        },
-        Text::new(""),
-        super::ui::font(14.0),
-        TextColor(Color::srgba(0.98, 0.82, 0.55, 0.0)),
-        TextLayout::new_with_justify(Justify::Center),
-        Pickable::IGNORE,
-    ));
+    // The announce stack. Absolutely positioned per row rather than a flex
+    // column: every row then has a fixed home whether or not the ones above
+    // it are live, so a line arriving does not shove the readout — a number
+    // being watched must not move under the eye watching it.
+    for row in 0..TOAST_LINES {
+        commands.spawn((
+            super::WorldEntity,
+            ToastLine(row),
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Percent(TOAST_TOP_PCT + row as f32 * TOAST_PITCH_PCT),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+            Text::new(""),
+            super::ui::font(14.0),
+            TextColor(Color::srgba(0.98, 0.82, 0.55, 0.0)),
+            TextLayout::new_with_justify(Justify::Center),
+            Pickable::IGNORE,
+        ));
+    }
 
-    // The pinned readout, under the toast (cosmetics as the toast's: same
-    // family, one step down the screen). Bold where the toast is not,
+    // The pinned readout, under the whole stack (cosmetics as the toast's:
+    // same family, one step down the screen). Bold where the toast is not,
     // because it is a number being watched rather than a sentence being
     // noticed.
     commands.spawn((
@@ -516,7 +687,7 @@ pub fn setup(mut commands: Commands) {
         ReadoutLine,
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Percent(62.0),
+            top: Val::Percent(TOAST_TOP_PCT + TOAST_LINES as f32 * TOAST_PITCH_PCT),
             width: Val::Percent(100.0),
             justify_content: JustifyContent::Center,
             ..default()
@@ -753,7 +924,7 @@ pub fn feedback(
     mut toast: ResMut<Toast>,
     time: Res<Time>,
     mut marks: Query<&mut BackgroundColor, With<HitMark>>,
-    mut lines: Query<(&mut Text, &mut TextColor), With<ToastLine>>,
+    mut lines: Query<(&ToastLine, &mut Text, &mut TextColor)>,
 ) {
     let core = &net.session.core;
 
@@ -859,10 +1030,13 @@ pub fn feedback(
         let label = crate::ui::craft::item_label(&core.catalog, item);
         toast.say(format!("crafted {count} × {label}"));
     }
-    // Last, so it wins the line. `Toast` is single-slot last-writer-wins,
-    // and of everything that can land in one frame this is the one the
-    // player most needs: gathering into a full pack used to print nothing
-    // at all, so the only signal was a bag silently appearing underfoot.
+    // Last, so it is the top row: `Toast` is a queue now and nothing is
+    // discarded, but the newest line is the brightest and the one the eye
+    // starts at, and of everything that can land in one frame this is the
+    // one the player most needs. Gathering into a full pack used to print
+    // nothing at all, so the only signal was a bag appearing underfoot; then
+    // it printed one spill and swallowed the other, which is worse, because
+    // a wrong sentence is read as the whole truth.
     //
     // No amount, because the wire has none to give — see `Feed::spills`.
     // "at your feet" is where `world.rs`'s `drain_spill` stands the bag up;
@@ -873,13 +1047,11 @@ pub fn feedback(
     }
 
     // ---- the timers -----------------------------------------------------
-    let dt = time.delta_secs();
-    if toast.left > 0.0 {
-        toast.left = (toast.left - dt).max(0.0);
-    }
-    if toast.hit_left > 0.0 {
-        toast.hit_left = (toast.hit_left - dt).max(0.0);
-    }
+    // Every line runs its own clock and the expired ones are retired here,
+    // AFTER this frame's says — a line that arrived and expired in the same
+    // frame is not a thing, and a `dt` applied before the push would make
+    // one.
+    toast.tick(time.delta_secs());
 
     let hot = toast.hit_left > 0.0;
     for mut bg in marks.iter_mut() {
@@ -889,12 +1061,21 @@ pub fn feedback(
         }
     }
 
-    if let Ok((mut text, mut color)) = lines.single_mut() {
-        // Fade over the last second rather than vanishing, so a toast that
-        // was replaced reads as replaced and not as a flicker.
-        let alpha = (toast.left).min(1.0);
-        if text.0 != toast.text {
-            text.0 = toast.text.clone();
+    for (row, mut text, mut color) in lines.iter_mut() {
+        // Fade over the last second rather than vanishing, so a line that
+        // ran out reads as spent and not as a flicker. Each row dims a step
+        // further than the one above so the stack reads newest-first, and an
+        // empty row is blanked rather than left holding stale news.
+        let (want, alpha) = match toast.row(row.0) {
+            Some(say) => (
+                say.text(),
+                say.left().min(1.0) * (1.0 - TOAST_ROW_DIM * row.0 as f32).max(0.0),
+            ),
+            None => ("", 0.0),
+        };
+        if text.0 != want {
+            text.0.clear();
+            text.0.push_str(want);
         }
         color.0 = color.0.with_alpha(alpha);
     }
@@ -1327,6 +1508,126 @@ fn compass_strip(yaw: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The defect this queue exists for, in the shipped world.** A tree
+    /// carries a secondary (`content/gatherables.toml`: wood, then
+    /// mushrooms), so one swing into a full pack pushes two `EV_GATHER`
+    /// zeros and `feedback` says two spill lines in one frame. The single
+    /// slot showed the second and ate the first, so the player was told
+    /// about the mushrooms and never about the wood — the one fact the
+    /// feature was built to deliver.
+    ///
+    /// Red before the queue: with `say` as an overwrite, `row(1)` is `None`.
+    #[test]
+    fn both_spills_of_one_swing_survive_the_frame() {
+        let mut t = Toast::default();
+        t.say("pack full — WOOD dropped at your feet");
+        t.say("pack full — MUSHROOMS dropped at your feet");
+        assert_eq!(t.len(), 2, "two facts in one frame must be two lines");
+        // Newest first: the row the eye starts at is the last thing said.
+        assert_eq!(
+            t.row(0).map(Say::text),
+            Some("pack full — MUSHROOMS dropped at your feet")
+        );
+        assert_eq!(
+            t.row(1).map(Say::text),
+            Some("pack full — WOOD dropped at your feet"),
+            "the earlier line of the same frame must still be on screen"
+        );
+        assert_eq!(
+            t.row(2).map(Say::text),
+            None,
+            "and nothing beyond the live end"
+        );
+        assert_eq!(t.dropped(), 0, "nothing was over the cap");
+    }
+
+    /// The cap holds and says so. Drop-OLDEST is the policy (`TOAST_LINES`'
+    /// doc): the newest fact is the one being reacted to, so the queue may
+    /// never refuse the new line in favour of an old one.
+    #[test]
+    fn the_stack_is_bounded_and_drops_the_oldest() {
+        let mut t = Toast::default();
+        for i in 0..TOAST_LINES + 2 {
+            t.say(format!("line {i}"));
+        }
+        assert_eq!(t.len(), TOAST_LINES, "the cap is the cap");
+        assert_eq!(t.dropped(), 2, "and the two it ate are counted");
+        let newest = format!("line {}", TOAST_LINES + 1);
+        assert_eq!(
+            t.row(0).map(Say::text),
+            Some(newest.as_str()),
+            "the newest survives"
+        );
+        assert_eq!(
+            t.row(TOAST_LINES - 1).map(Say::text),
+            Some("line 2"),
+            "the oldest two went, in order"
+        );
+        assert_eq!(t.row(TOAST_LINES).map(Say::text), None);
+    }
+
+    /// A repeat refreshes and counts rather than spending a slot. Ten swings
+    /// at a tree would otherwise flush every other fact off the stack, which
+    /// is the single-slot defect wearing a queue's clothes.
+    #[test]
+    fn a_repeat_counts_instead_of_spending_a_slot() {
+        let mut t = Toast::default();
+        t.say("nothing in reach");
+        t.say("+1 × WOOD");
+        t.say("+1 × WOOD");
+        t.say("+1 × WOOD");
+        assert_eq!(t.len(), 2, "three identical swings are one line");
+        assert_eq!(t.row(0).map(Say::text), Some("+1 × WOOD  ×3"));
+        assert_eq!(t.row(0).map(Say::reps), Some(3));
+        // The suffix is rewritten from the sentence, never appended to the
+        // last render of it — `×2×3×4` is the bug this guards.
+        t.say("+1 × WOOD");
+        assert_eq!(t.row(0).map(Say::text), Some("+1 × WOOD  ×4"));
+        // And the refusal it must not have evicted is still there.
+        assert_eq!(t.row(1).map(Say::text), Some("nothing in reach"));
+        // A different sentence takes its own row even if the old one is up.
+        t.say("+1 × STONE");
+        assert_eq!(t.len(), 3);
+        assert_eq!(t.row(1).map(Say::text), Some("+1 × WOOD  ×4"));
+    }
+
+    /// Each line runs its own clock, and the survivors close ranks. Only a
+    /// repeat can refresh a line, and only the newest can be repeated, so
+    /// the queue always retires from the front — but `tick` retires by
+    /// TIMER, and this proves the compaction rather than the assumption.
+    #[test]
+    fn every_line_keeps_its_own_clock() {
+        let mut t = Toast::default();
+        t.say("old news");
+        t.tick(TOAST_SECS - 0.5);
+        t.say("fresh news");
+        assert_eq!(t.len(), 2);
+        // Half a second later the first is out of clock and the second is
+        // not, and the second must slide up into row 0's brightness.
+        t.tick(0.6);
+        assert_eq!(t.len(), 1, "the expired line went");
+        assert_eq!(t.row(0).map(Say::text), Some("fresh news"));
+        assert!(t.row(0).unwrap().left() > 0.0);
+        assert_eq!(t.dropped(), 0, "an expiry is not an overflow");
+        // Run the rest of its clock out and the stack is empty, not stale.
+        t.tick(TOAST_SECS);
+        assert!(t.is_empty());
+        assert_eq!(t.row(0).map(Say::text), None);
+    }
+
+    /// The hitmarker keeps its own, shorter clock, and a talkative frame
+    /// must not extend it — it is confirmation, not a readout.
+    #[test]
+    fn the_hitmarker_is_not_a_toast() {
+        let mut t = Toast::default();
+        t.hit(37);
+        t.say("+1 × WOOD");
+        assert_eq!(t.hit_damage, 37);
+        t.tick(HITMARK_SECS + 0.01);
+        assert_eq!(t.hit_left, 0.0, "the marker is off");
+        assert_eq!(t.len(), 1, "…while the line it landed with is still up");
+    }
 
     /// `E` outranks the swing and the swing fills the silence. Asserted
     /// here because it is an ORDERING, and an ordering is the one thing a
