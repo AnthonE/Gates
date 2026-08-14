@@ -68,10 +68,29 @@ the stack empties, and rides the last live row as a suffix (`…+2 more`) —
 a suffix because the bottom row is where a rescued alarm now sits. Four
 tests, each observed red under its own revert. Left:
 
-- **Nobody has seen it.** Same as §0sp2's last bullet, and the same judge
-  gap 1: no frame in this repo has ever shown one line, let alone four.
-  Row pitch, the per-row dim and the readout's new home are all unlooked-at
-  arithmetic.
+Landed 2026-08-14 (third slice, judge ranked fixes 1–3 of pass -12): the
+arithmetic half of "nobody has looked at it". The layout numbers were
+literals inside `setup` — the two spawns computed one rule twice — and are
+now named constants and four derived functions the spawns call, gated by
+four tests, each observed red under its own revert. What they found: the
+pitch is a **percent** of window height and the type size is **px**, so the
+stack self-overlaps below a 600 px window against the 720 the client opens
+at (read off `Window::default()`, not typed) — a 120 px margin nobody had
+computed. Also that `TOAST_LINES` × `TOAST_ROW_DIM` multiply: at 8 rows the
+deepest draws at alpha 0, so the cap would hold a line nothing can show.
+Plus the two cheap fixes — a repeat now raises a line's rank and never
+lowers it (the one write path that skipped the field eviction reads), and
+the three places naming the old drop-oldest policy now name the shipped one.
+Left:
+
+- **Nobody has LOOKED at it**, and this is now the whole of what remains.
+  Same as §0sp2's last bullet: no frame in this repo has ever shown one
+  line, let alone four with a `…+N more` suffix. What the gates above
+  cannot answer is whether 0.52 alpha on the deepest row reads, and whether
+  the suffix — appended into a centre-justified row — shifts the sentence
+  under the eye. Needs a capture with a forced five-fact stack; the probe
+  has no way to force one, and a frame this loop scores itself is
+  diagnosis, never evidence.
 
 ## 0sp2 · The spill speaks now — for the whole of one, not part of one *(systems lane)*
 

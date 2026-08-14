@@ -33,14 +33,24 @@ pub const TOAST_SECS: f32 = 3.0;
 /// **The cap is the point, not the count.** One frame can produce a refusal,
 /// a kill, two gathers and two spills; the sink used to be one `String` and
 /// last-writer-wins, so five of those six were computed, formatted and
-/// thrown away. Overflow policy, stated as wall 4 asks: **drop-oldest,
-/// counted** ([`Toast::dropped`]) — the newest fact is the one a player is
-/// reacting to, and a queue that dropped the newest would be a queue that
-/// hides the thing that just happened.
+/// thrown away. Overflow policy, stated as wall 4 asks: **drop-oldest-note,
+/// then drop-oldest, counted** ([`Toast::dropped`]) — the victim is the
+/// oldest [`Rank::Note`], and only an all-alarm stack falls back to the
+/// oldest line outright. A push is never refused either way: the newest fact
+/// is the one a player is reacting to, and a queue that dropped the newest
+/// would be a queue that hides the thing that just happened. [`Toast::push`]
+/// is where the rule lives.
 ///
 /// Four because four rows fit between the prompt and the readout at the
-/// pitch below without reaching the crosshair. Knob: `DECISIONS.md` §open,
-/// client cosmetics (declared there, so `ci/knob_registry.mjs` pins it).
+/// pitch below without reaching the crosshair — a sentence that was prose
+/// until 2026-08-14 and is now three assertions in
+/// `the_stack_hangs_between_the_prompt_and_the_hotbar`. Knob:
+/// `DECISIONS.md` §open, client cosmetics (declared there, so
+/// `ci/knob_registry.mjs` pins it).
+///
+/// **It multiplies with [`TOAST_ROW_DIM`]**, which is why raising it is not
+/// free: at 8 the deepest row draws at alpha zero and the cap would hold a
+/// line nothing can show (`every_row_the_cap_holds_can_be_seen`).
 pub const TOAST_LINES: usize = 4;
 
 /// Where the newest announce line sits, percent of screen height, and the
@@ -55,9 +65,129 @@ const TOAST_PITCH_PCT: f32 = 2.8;
 /// no reason to start at the new one. Cosmetic (as above).
 const TOAST_ROW_DIM: f32 = 0.16;
 
+/// The announce stack's own type size, px. Named rather than typed at the
+/// spawn because [`toast_min_window_height_px`] divides by its line box, and
+/// a font size that lived only at the spawn site would be a number the
+/// geometry could not see.
+const TOAST_FONT_PX: f32 = 14.0;
+
+/// The centre prompt: where it sits and how big it is. The announce stack
+/// hangs below it, so it is one of the two ends of the "four rows fit
+/// between the prompt and the readout" claim in [`TOAST_LINES`]' doc — and
+/// that claim was prose until [`the_stack_hangs_between_the_prompt_and_the_
+/// hotbar`] made it arithmetic.
+const PROMPT_TOP_PCT: f32 = 54.0;
+const PROMPT_FONT_PX: f32 = 15.0;
+
+/// The crosshair's centre and the `(dx, dy, w, h)` of its four ticks. The
+/// tick table is here rather than inline in [`setup`] because the other half
+/// of the same claim — *without reaching the crosshair* — is a question
+/// about how far the bottom tick reaches, which is arithmetic over this
+/// table and not a number anybody should retype.
+const CROSSHAIR_CENTRE_PCT: f32 = 50.0;
+const CROSSHAIR_TICKS: [(f32, f32, f32, f32); 4] = [
+    (0.0, -9.0, 2.0, 7.0),
+    (0.0, 9.0, 2.0, 7.0),
+    (-9.0, 0.0, 7.0, 2.0),
+    (9.0, 0.0, 7.0, 2.0),
+];
+
+/// The hotbar's two numbers: how far its row floats off the bottom edge, and
+/// how tall a cell is. Named for the same reason as the prompt's — the
+/// readout has to clear them, and a clearance is arithmetic between two
+/// things that must both be visible to it.
+///
+/// **They are px off the BOTTOM and the stack is percent off the TOP**, which
+/// is the whole reason [`toast_min_window_height_px`] exists: the gap between
+/// the two shrinks as the window does, and nothing in this file could see
+/// that until both ends had names.
+const HOTBAR_BOTTOM_PX: f32 = 18.0;
+const HOTBAR_CELL_PX: f32 = 46.0;
+
 /// How long the hitmarker flashes, seconds. Short on purpose — it is
 /// confirmation, not a readout.
 pub const HITMARK_SECS: f32 = 0.25;
+
+// ---- the announce stack's geometry --------------------------------------
+//
+// **Four knobs that are coupled, and nothing checked the coupling.**
+// `TOAST_LINES`, `TOAST_TOP_PCT`, `TOAST_PITCH_PCT` and `TOAST_ROW_DIM` were
+// each defensible alone and were only ever read at the two spawn sites, which
+// computed the same expression twice and agreed by luck. Three passes landed
+// announce work on top of that and `NOW.md` §0tq ended every one of them on
+// the same sentence: *row pitch, the per-row dim and the readout's new home
+// are all unlooked-at arithmetic.*
+//
+// This block is the looking. It is arithmetic about a frame — the shape
+// `CLAUDE.md` explicitly allows ("what may be gated about a frame is
+// arithmetic … in Rust, the shape of `crates/client/tests/tree.rs`") and not
+// a pixel statistic, which that same list forbids for the reason a beige
+// smear once scored 36 of 36.
+
+/// Where announce row `row` sits, percent of screen height. Row 0 is the
+/// newest and keeps the single toast's own position.
+///
+/// A function rather than the expression it replaces, because [`setup`]
+/// computed it in two places — once per row and once for the readout — and
+/// two copies of one rule is one rule and one bug waiting.
+fn toast_row_top_pct(row: usize) -> f32 {
+    TOAST_TOP_PCT + row as f32 * TOAST_PITCH_PCT
+}
+
+/// Where the pinned readout sits: one pitch below the last row the stack can
+/// hold, whether or not that row is live.
+///
+/// **Derived from [`TOAST_LINES`], never typed.** The readout is the thing a
+/// deeper stack would land on top of, so a cap that grew and a readout that
+/// did not is the exact drift this expression exists to make impossible.
+fn readout_top_pct() -> f32 {
+    toast_row_top_pct(TOAST_LINES)
+}
+
+/// What row `row`'s alpha is scaled by — 1.0 at the newest, one
+/// [`TOAST_ROW_DIM`] step per row down. Clamped at zero, which is also the
+/// value [`every_row_the_cap_holds_can_be_seen`] refuses to reach.
+fn toast_row_dim(row: usize) -> f32 {
+    (1.0 - TOAST_ROW_DIM * row as f32).max(0.0)
+}
+
+/// A text node's line box, px.
+///
+/// **Read off Bevy's own default rather than written down as 1.2.** In Bevy
+/// 0.18 `LineHeight` stopped being a `TextFont` field and became a required
+/// component of `Text` in its own right, and nothing in this crate sets one —
+/// so every HUD line takes the default, and a bump that moves it must move
+/// this with it. A literal here would go quietly wrong at exactly that
+/// moment.
+///
+/// `#[cfg(test)]` because the RUNTIME never needs it — Bevy lays the text out
+/// and this only says what Bevy will do. The two functions below it are the
+/// same: they derive a consequence of the shipped constants for the gate to
+/// assert, which is the opposite of a gate computing its own answer.
+#[cfg(test)]
+fn line_box_px(font_size: f32) -> f32 {
+    match bevy::text::LineHeight::default() {
+        bevy::text::LineHeight::Px(px) => px,
+        bevy::text::LineHeight::RelativeToFont(scale) => scale * font_size,
+    }
+}
+
+/// The shortest window in which the announce stack does not overlap itself.
+///
+/// **The mixed-unit seam, and the one number in this file nobody had.** The
+/// pitch is a percent of window height and the type size is px, so the gap
+/// between two rows shrinks with the window while the text in them does not.
+/// Above this height the rows are separated; below it row 1's box climbs into
+/// row 0's and four lines become a smear — the same failure the single-slot
+/// sink had, arriving from the other direction.
+///
+/// At the shipped knobs this is 600 px, against the 720 the client opens at,
+/// so the margin is real but it is not large: a `TOAST_PITCH_PCT` trimmed to
+/// 2.3 would put the threshold above the default window.
+#[cfg(test)]
+fn toast_min_window_height_px() -> f32 {
+    line_box_px(TOAST_FONT_PX) / (TOAST_PITCH_PCT / 100.0)
+}
 
 /// A vitals bar, px. The reference's are ~112 × 19 in a 1200-wide frame;
 /// these are the same proportion at 1280, and the height is what makes the
@@ -228,12 +358,24 @@ impl Toast {
     /// order stays recency**: rank picks what leaves, never where a survivor
     /// sits, so a frame that does not overflow looks exactly as it did
     /// before rank existed.
+    ///
+    /// **A repeat can only raise a line's rank, never lower it.** The fast
+    /// path returns without spending a slot, so it is the one write that
+    /// does not set the rank the eviction reads — and a sentence that
+    /// arrives once as recoverable and again as an alarm is an alarm, since
+    /// the second arrival is a fact that dies with the line whatever the
+    /// first one was. The reverse would be worse than the bug it fixes: an
+    /// alarm demoted by a later note would put a refusal back on the menu
+    /// the cap eats from.
     fn push(&mut self, rank: Rank, what: String) {
         if self.len > 0 {
             let top = &mut self.lines[self.len - 1];
             if top.text[..top.base] == what {
                 top.left = TOAST_SECS;
                 top.reps = top.reps.saturating_add(1);
+                if rank == Rank::Alarm {
+                    top.rank = rank;
+                }
                 top.text.truncate(top.base);
                 use std::fmt::Write as _;
                 let _ = write!(top.text, "  ×{}", top.reps);
@@ -514,7 +656,7 @@ pub fn setup(mut commands: Commands) {
             super::WorldEntity,
             Node {
                 position_type: PositionType::Absolute,
-                bottom: Val::Px(18.0),
+                bottom: Val::Px(HOTBAR_BOTTOM_PX),
                 width: Val::Percent(100.0),
                 justify_content: JustifyContent::Center,
                 column_gap: Val::Px(6.0),
@@ -527,8 +669,8 @@ pub fn setup(mut commands: Commands) {
                 row.spawn((
                     Cell(i),
                     Node {
-                        width: Val::Px(46.0),
-                        height: Val::Px(46.0),
+                        width: Val::Px(HOTBAR_CELL_PX),
+                        height: Val::Px(HOTBAR_CELL_PX),
                         border: UiRect::all(Val::Px(2.0)),
                         // The count sits bottom-right over the icon, which is
                         // the arrangement every inventory in the genre uses
@@ -728,8 +870,8 @@ pub fn setup(mut commands: Commands) {
             super::WorldEntity,
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Percent(50.0),
-                top: Val::Percent(50.0),
+                left: Val::Percent(CROSSHAIR_CENTRE_PCT),
+                top: Val::Percent(CROSSHAIR_CENTRE_PCT),
                 width: Val::Px(0.0),
                 height: Val::Px(0.0),
                 justify_content: JustifyContent::Center,
@@ -739,13 +881,7 @@ pub fn setup(mut commands: Commands) {
             Pickable::IGNORE,
         ))
         .with_children(|c| {
-            // (offset x, offset y, w, h) for the four ticks.
-            for (dx, dy, w, h) in [
-                (0.0, -9.0, 2.0, 7.0),
-                (0.0, 9.0, 2.0, 7.0),
-                (-9.0, 0.0, 7.0, 2.0),
-                (9.0, 0.0, 7.0, 2.0),
-            ] {
+            for (dx, dy, w, h) in CROSSHAIR_TICKS {
                 c.spawn((
                     Crosshair,
                     HitMark,
@@ -771,13 +907,13 @@ pub fn setup(mut commands: Commands) {
         PromptLine,
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Percent(54.0),
+            top: Val::Percent(PROMPT_TOP_PCT),
             width: Val::Percent(100.0),
             justify_content: JustifyContent::Center,
             ..default()
         },
         Text::new(""),
-        super::ui::font_bold(15.0),
+        super::ui::font_bold(PROMPT_FONT_PX),
         TextColor(Color::srgba(0.96, 0.94, 0.88, 0.92)),
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
@@ -792,13 +928,13 @@ pub fn setup(mut commands: Commands) {
             ToastLine(row),
             Node {
                 position_type: PositionType::Absolute,
-                top: Val::Percent(TOAST_TOP_PCT + row as f32 * TOAST_PITCH_PCT),
+                top: Val::Percent(toast_row_top_pct(row)),
                 width: Val::Percent(100.0),
                 justify_content: JustifyContent::Center,
                 ..default()
             },
             Text::new(""),
-            super::ui::font(14.0),
+            super::ui::font(TOAST_FONT_PX),
             TextColor(Color::srgba(0.98, 0.82, 0.55, 0.0)),
             TextLayout::new_with_justify(Justify::Center),
             Pickable::IGNORE,
@@ -814,7 +950,7 @@ pub fn setup(mut commands: Commands) {
         ReadoutLine,
         Node {
             position_type: PositionType::Absolute,
-            top: Val::Percent(TOAST_TOP_PCT + TOAST_LINES as f32 * TOAST_PITCH_PCT),
+            top: Val::Percent(readout_top_pct()),
             width: Val::Percent(100.0),
             justify_content: JustifyContent::Center,
             ..default()
@@ -1202,7 +1338,7 @@ pub fn feedback(
             Some((say, extra)) => (
                 say.text(),
                 extra,
-                say.left().min(1.0) * (1.0 - TOAST_ROW_DIM * row.0 as f32).max(0.0),
+                say.left().min(1.0) * toast_row_dim(row.0),
             ),
             None => ("", "", 0.0),
         };
@@ -1683,8 +1819,12 @@ mod tests {
         assert_eq!(t.dropped(), 0, "nothing was over the cap");
     }
 
-    /// The cap holds and says so. Drop-OLDEST is the policy (`TOAST_LINES`'
-    /// doc): the newest fact is the one being reacted to, so the queue may
+    /// The cap holds and says so. **Every line here is a `say`, so the whole
+    /// stack is notes and drop-oldest-note IS drop-oldest** — this case
+    /// exercises the common half of the policy (`TOAST_LINES`' doc), not the
+    /// all-alarm fallback, which `a_flood_of_notes_cannot_push_the_refusal_off`
+    /// and `an_all_alarm_stack_still_drops_the_oldest` own. What it holds either
+    /// way: the newest fact is the one being reacted to, so the queue may
     /// never refuse the new line in favour of an old one.
     #[test]
     fn the_stack_is_bounded_and_drops_the_oldest() {
@@ -1864,6 +2004,51 @@ mod tests {
         t.say("+1 × STONE");
         assert_eq!(t.len(), 3);
         assert_eq!(t.row(1).map(Say::text), Some("+1 × WOOD  ×4"));
+    }
+
+    /// **A repeat raises a line's rank and never lowers it.** The fast path
+    /// is the one write that returns without touching the field the eviction
+    /// reads, so a sentence first said as a note stayed evictable no matter
+    /// how it arrived the second time. Not reachable on today's call sites —
+    /// no string is produced by both a `say` and a `warn` — which is exactly
+    /// why it needs a gate rather than a comment: the next `warn` that
+    /// borrows a payout's wording would re-open it silently.
+    ///
+    /// Red without the two-line upgrade in `push`: the flood eats the line
+    /// and `row(TOAST_LINES - 1)` is a note.
+    #[test]
+    fn a_repeat_can_only_raise_a_lines_rank() {
+        let mut t = Toast::default();
+        t.say("your pack is full");
+        t.warn("your pack is full");
+        assert_eq!(t.len(), 1, "it is still one line");
+        assert_eq!(t.row(0).map(Say::reps), Some(2), "and it still counted");
+        assert_eq!(
+            t.row(0).map(Say::rank),
+            Some(Rank::Alarm),
+            "the alarm arrival wins — the fact dies with the line either way"
+        );
+        // The upgrade is worth what the eviction pays for it, so prove it
+        // there rather than on the field alone.
+        for i in 0..TOAST_LINES {
+            t.say(format!("+1 × WOOD {i}"));
+        }
+        assert_eq!(
+            t.row(TOAST_LINES - 1).map(Say::text),
+            Some("your pack is full  ×2"),
+            "and it survives the flood it would have been eaten by"
+        );
+
+        // The other direction: an alarm is never demoted by a later note,
+        // which would put a refusal back on the menu the cap eats from.
+        let mut t = Toast::default();
+        t.warn("you do not have the parts");
+        t.say("you do not have the parts");
+        assert_eq!(
+            t.row(0).map(Say::rank),
+            Some(Rank::Alarm),
+            "a note repeat cannot demote an alarm"
+        );
     }
 
     /// Each line runs its own clock, and the survivors close ranks. Only a
@@ -2102,5 +2287,202 @@ mod tests {
         assert!(compass_strip(3.0 * std::f32::consts::FRAC_PI_2).starts_with('W'));
         // And it wraps rather than reading 360.
         assert!(compass_strip(std::f32::consts::TAU - 0.001).starts_with('N'));
+    }
+
+    // ---- the announce stack's geometry ----------------------------------
+    //
+    // **`NOW.md` §0tq's last bullet, and the merge-gate judge's ranked fix 3
+    // of pass -12: nobody has looked at the arithmetic.** Three passes landed
+    // announce work — the stack, the spill line, the rank and the `…+N more`
+    // marker — and every one of them ended on the same sentence.
+    //
+    // What these gate is the part of "looking" that a person is BAD at and a
+    // machine is good at: whether four boxes of a known size, placed at known
+    // percentages of a window of a known height, land on top of each other or
+    // on top of something else. What they deliberately do not gate is whether
+    // the result reads well, which is a person's job and which `CLAUDE.md`
+    // forbids automating for a reason it paid for once already.
+
+    /// The height the client actually opens at.
+    ///
+    /// **Read off Bevy rather than written down as 720.** The client sets no
+    /// `WindowPlugin` (`bin/gates.rs` overrides `AssetPlugin` and nothing
+    /// else), so the window it gets is the dependency's default — and a
+    /// `--capture` run pins itself windowed (`render/mod.rs`), which is why
+    /// every PNG the probe has ever written is this tall. A literal here
+    /// would keep passing through a Bevy bump that moved the default out from
+    /// under the layout.
+    fn opening_height_px() -> f32 {
+        Window::default().resolution.physical_height() as f32
+    }
+
+    /// How far the lowest crosshair tick reaches below the aim point, px.
+    fn crosshair_reach_px() -> f32 {
+        CROSSHAIR_TICKS
+            .iter()
+            .map(|&(_, dy, _, h)| dy - h * 0.5 + h)
+            .fold(f32::MIN, f32::max)
+    }
+
+    /// **[`TOAST_LINES`]' doc claim, made arithmetic.** It says four rows fit
+    /// *between the prompt and the readout* *without reaching the crosshair*,
+    /// and until now that was three assertions in prose with nothing behind
+    /// them. Every box below is `top` + its line box, in px, at the window
+    /// the client opens at.
+    ///
+    /// Red if any knob is nudged into its neighbour: `TOAST_TOP_PCT` down to
+    /// 55 puts row 0 inside the prompt, `PROMPT_TOP_PCT` up to 51 puts the
+    /// prompt on the crosshair.
+    #[test]
+    fn the_stack_hangs_between_the_prompt_and_the_hotbar() {
+        let h = opening_height_px();
+        let pct = |p: f32| p / 100.0 * h;
+
+        // The crosshair is the top end, and text over the aim point is text
+        // in the way of the thing it describes.
+        let crosshair_bottom = pct(CROSSHAIR_CENTRE_PCT) + crosshair_reach_px();
+        let prompt_top = pct(PROMPT_TOP_PCT);
+        assert!(
+            prompt_top > crosshair_bottom,
+            "the prompt sits on the crosshair: prompt {prompt_top} vs tick {crosshair_bottom}"
+        );
+
+        // The prompt is the stack's own ceiling.
+        let prompt_bottom = prompt_top + line_box_px(PROMPT_FONT_PX);
+        let row0_top = pct(toast_row_top_pct(0));
+        assert!(
+            row0_top >= prompt_bottom,
+            "row 0 overlaps the prompt: row {row0_top} vs prompt bottom {prompt_bottom}"
+        );
+
+        // The readout is the floor, and it must clear the last row the cap
+        // can hold rather than the last row that happens to be live.
+        let last_row_bottom = pct(toast_row_top_pct(TOAST_LINES - 1)) + line_box_px(TOAST_FONT_PX);
+        let readout_top = pct(readout_top_pct());
+        assert!(
+            readout_top >= last_row_bottom,
+            "the readout overlaps the deepest row: {readout_top} vs {last_row_bottom}"
+        );
+
+        // And the whole thing clears the hotbar, which is the one neighbour
+        // measured from the OTHER edge of the screen.
+        let readout_bottom = readout_top + line_box_px(TOAST_FONT_PX);
+        let hotbar_top = h - HOTBAR_BOTTOM_PX - HOTBAR_CELL_PX;
+        assert!(
+            readout_bottom < hotbar_top,
+            "the readout is behind the hotbar: {readout_bottom} vs {hotbar_top}"
+        );
+    }
+
+    /// **The mixed-unit seam: pitch is a percent, type is px.** So the gap
+    /// between two rows shrinks with the window and the text in them does
+    /// not, and below some height four lines are a smear — the single-slot
+    /// defect arriving from the other direction.
+    ///
+    /// Nobody had computed that height. It is 600 px against the 720 the
+    /// client opens at, so the shipped margin is 120 px and this test is what
+    /// notices when a knob spends it.
+    ///
+    /// Red at `TOAST_PITCH_PCT = 2.3`, which is a plausible tightening and
+    /// would put the threshold at 730 — above the window the probe photographs
+    /// in.
+    #[test]
+    fn the_rows_do_not_overlap_at_the_window_the_client_opens_at() {
+        let min = toast_min_window_height_px();
+        assert!(
+            min <= opening_height_px(),
+            "the announce rows overlap at the window the client opens at: \
+             needs {min} px, opens at {} px",
+            opening_height_px()
+        );
+        // The threshold is the pitch's own definition, so state it both ways
+        // — a pitch that no longer separates the boxes is the same bug as a
+        // window that is too short.
+        let pitch_px = TOAST_PITCH_PCT / 100.0 * opening_height_px();
+        assert!(
+            pitch_px >= line_box_px(TOAST_FONT_PX),
+            "a row's box is taller than the step to the next one: \
+             box {} px, pitch {pitch_px} px",
+            line_box_px(TOAST_FONT_PX)
+        );
+        // Rows march one way. A negative pitch would satisfy the two checks
+        // above on absolute value alone.
+        for row in 1..TOAST_LINES {
+            assert!(
+                toast_row_top_pct(row) > toast_row_top_pct(row - 1),
+                "row {row} is not below row {}",
+                row - 1
+            );
+        }
+    }
+
+    /// **Every row the cap holds must be a row something can be seen in.**
+    /// [`TOAST_LINES`] and [`TOAST_ROW_DIM`] multiply, and nothing said so:
+    /// at the shipped 4 × 0.16 the deepest row draws at 0.52, but at 7 rows
+    /// it is 0.04 and at 8 it is exactly zero — a queue that accepts a line,
+    /// counts it as delivered and renders it invisible, which is worse than
+    /// the drop it replaced because `dropped` would not move either.
+    ///
+    /// The floor asserted is *greater than zero*, not a legibility number.
+    /// Whether 0.52 is dim enough to read is a look, and a look is the
+    /// operator's — this is only the half that can be wrong arithmetically.
+    #[test]
+    fn every_row_the_cap_holds_can_be_seen() {
+        for row in 0..TOAST_LINES {
+            assert!(
+                toast_row_dim(row) > 0.0,
+                "row {row} of {TOAST_LINES} draws at alpha {} — the cap holds \
+                 a line nothing can show",
+                toast_row_dim(row)
+            );
+        }
+        // Newest brightest, and each step a real step: equal rows are the
+        // paragraph `TOAST_ROW_DIM` exists to break up.
+        assert_eq!(toast_row_dim(0), 1.0, "the newest line is undimmed");
+        for row in 1..TOAST_LINES {
+            assert!(
+                toast_row_dim(row) < toast_row_dim(row - 1),
+                "row {row} is not dimmer than the one above it"
+            );
+        }
+    }
+
+    /// **One rule, one place — asserted on the spawn, not on the function.**
+    /// The two geometry calls used to be the same expression typed twice, and
+    /// a test that calls `toast_row_top_pct` cannot tell whether [`setup`]
+    /// still does. This is a grep, in the shape `tests/ui.rs` §F and
+    /// `tests/sound.rs` already use for the same reason: the defect is a call
+    /// site rather than a value, so the value cannot detect it.
+    ///
+    /// Red the moment either spawn goes back to computing its own top.
+    #[test]
+    fn the_spawn_reads_the_geometry_rather_than_recomputing_it() {
+        let src = include_str!("hud.rs");
+        // A spawn writes a percent `Val`; the geometry functions return a
+        // bare `f32` and never mention `Val`. So the two appearing on one
+        // line is exactly the shape being forbidden — a placement computing
+        // its own answer — and it cannot match the functions themselves.
+        //
+        // Both needles are assembled at runtime so this test does not match
+        // its OWN source, which is the first thing it did.
+        let placed = ["Val::", "Percent("].concat();
+        let raw_top = ["TOAST_", "TOP_PCT"].concat();
+        for (n, line) in src.lines().enumerate() {
+            assert!(
+                !(line.contains(&placed) && line.contains(&raw_top)),
+                "hud.rs:{} is computing its own row top again — call \
+                 toast_row_top_pct/readout_top_pct instead:\n  {}",
+                n + 1,
+                line.trim()
+            );
+        }
+        assert!(
+            src.contains("Val::Percent(toast_row_top_pct(row))"),
+            "the announce rows no longer take their top from the geometry"
+        );
+        assert!(
+            src.contains("Val::Percent(readout_top_pct())"),
+            "the readout no longer takes its top from the geometry"
+        );
     }
 }
