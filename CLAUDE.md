@@ -95,6 +95,7 @@ pays the same doors and earns the same coins as a human.
 | `reference/PLANTS.md` | how games grow a forest: the five-layer forest structure and which two of ours are empty, space colonization vs L-systems (and that we already ship the solver), Deussen's ecosystem sim as the reference for *placement*, octahedral impostors, and **§6 what it means for us** | **owns nothing** — research, not law, `AUDIO.md`'s clean source posture (a SIGGRAPH paper, four MIT repos, and our own dependency's source; `docs.rs` was proxy-blocked so the crate API came off `raw.githubusercontent.com`). Written because "are our trees good" has an arithmetic answer: **one species at three seeds, on a uniform 8 m scatter lattice that `ART.md` rule 7 forbids**. Read it before buying any foliage — §4 is why a mesh generator is the wrong tool — and before touching `render/tree.rs` or `terrain::scatter` |
 | `reference/SOURCES.md` | the research **reading list**: which document settles which question, in priority order, with tiers 1–3 marked ANSWERED and tier 4 (the threat/logistics decomposition) named as our weakest evidence | **owns nothing** — a worklist for research the way `RIPLIST.md` is one for numbers. ⚠ Its §0 header is the load-bearing part and has been rewritten **in both directions**: reachability is a property of the container, not of the hosts, so *probe* rather than trusting either the "every Rust domain 403s" claim or the "they are open" one — both were honest measurements, on different boxes, days apart |
 | `assets/models/WANTED.md` | the 3D object inventory: 63 meshes and 6 texture sets with sizes read off the code, the glTF/origin/ORM pipeline rules, and what is already covered | **owns nothing** — a sourcing worklist, `RIPLIST.md`'s shape. `MANIFEST.md` records what ships; this records what does not exist yet |
+| `assets/textures/CANDIDATES.md` | the texture sourcing queue for the six foliage/bark sets: 84 candidate rows (80 CC0, 4 CC-BY) with licence, fetch mode and the measurement columns still empty, plus `fetch_gates_texture_candidates.py`, the csv/xlsx it reads and `CANDIDATES_CC_BY.md`'s draft notices | **owns nothing** — `WANTED.md`'s shape for pixels rather than meshes, and the measurement still decides (`ART.md` §7's estimator, never the fetcher's). The 1.3 GB it downloads is gitignored; `assets/textures/MANIFEST.md` records what ships |
 | `assets/models/MANIFEST.md` | what **ships** in `assets/models/`: vendor, mode, prompt, task id and date per mesh, the KTX2/UASTC-at-1024 texture rule and its VRAM reason, and what the client actually loads | **owns the licence rail's audit trail**, which is the one thing here that is not just a note: `DECISIONS.md` 2026-08-07 is CC0 preferred, CC-BY with a `NOTICE` entry, **NC and SA refused** because the game is sold. Recording the provenance per file is what makes that rail auditable after the fact rather than a promise. `WANTED.md` is the inverse — what does not exist yet |
 | `PLAYERS.md` | the agent player: the verb set, the observation encoder, and the four walls that keep agent play measurable | **DESIGN — none of it built.** The research half is scry's `SUBSTRATE.md`; this owns only what an agent may do here |
 | `marketing/` | what a stranger reads about **OBOL and MYRRH** somewhere that is not this repo — an explorer's token-info field, a DEX listing, a wallet's coin row — plus the four marks | **owns nothing in `crates/`**, and it is here because the coins are ours: scry has exactly one coin and it is SCRY (operator, 2026-08-07), so its repo keeps only our listing row. ⚠ **Every number in it is derived in `scry-forge`**, where the contracts and pool seeds live — re-derive there, paste here |
@@ -222,6 +223,25 @@ do not rediscover)
   pointed at. Same shape for any `pub enum` or archetype table read from
   `render::`. When you add a variant, grep the feature-gated modules for
   its type before believing a green workspace run.
+- **A sweep window that agrees with itself across every case is still not
+  validated, and this one nearly wiped a live shard.** On 2026-08-14 a pass
+  measured 40 islands and concluded the shipped seed was the flattest of them —
+  46.32 m, max slope 0.890, granite on 0.00% of its land — which read as
+  airtight: 40 seeds, one method, a clean ranking, a gate written to hold it.
+  Every sweep ran `-1024..1024` on both axes. `terrain::continent` centres the
+  island on `(ISLAND_SIZE/2, ISLAND_SIZE/2)`, so world coordinates run 0..2048
+  and that square's **corner** is the island's centre: it sampled one quadrant,
+  632 k m² of a 2.9 M m² island, and not the quadrant the capture camera stands
+  in. Whole-island, the same seed is 106.00 m / 2.665 / 10.0% — **upper third of
+  44**. The comparison was sound because the bug was uniform, which is exactly
+  what made it invisible: consistency across cases proves the *method* is
+  constant, never that it is aimed at the right thing. What would have caught it
+  is one number checked against a second source — the land-sample count implied
+  a quarter-disc all along, and `World::spawn_pos` starts from `c = ISLAND_SIZE
+  * 0.5` twelve lines from the sweep. **Cross-check a sweep's window against
+  something that already knows where the world is**, before the finding earns a
+  gate and a doc paragraph. `sim-core/tests/relief.rs` holds the retraction and
+  a gate on the window itself.
 - **A judge names the symptom; fix the cause.** Optimizing the judge's
   literal sentence is how a loop circles for three passes — elsewhere,
   "untextured" was really diffuse contrast crushed by an earlier fix for
@@ -392,15 +412,20 @@ trim that is owed (`NOW.md` §0x item 4).
 
 ## The loop that builds this repo
 
-⚠ **PAUSED since 2026-08-04, and paused is not retired** (operator,
-2026-08-11: *"its paused"*). `STOP` is set, the last judged pass was
-`20260805-154309`, and every commit since — the version split, the Windows
-shard, the toolchain pin, the licence, the marketing rows, PRs #59 and #60 —
-was written on a named branch and merged as a PR. **While it is dark, `NOW.md`
-is the steering.** The harness is intact and restartable; nothing has been
-dismantled, and the table below still works.
+⚠ **STOPPED, not retired — and "stopped" is a state that changes, so read the
+harness rather than this line.** It was paused 2026-08-04 through 2026-08-13
+(operator, 2026-08-11: *"its paused"*), then **ran again: 18 judged passes
+under `gates-anchor-20260813-230343` (2026-08-13 23:44 → 2026-08-14 14:16) and
+3 under `gates-anchor-20260814-142610` (15:31 → 17:44), all 21 PASS at the
+merge gate and merged by the runner.** `STOP` was touched at 17:16 on
+2026-08-14, the runner finished its pass and exited cleanly, and nothing is
+running now. **The check is `loop-status.sh` and `ls .../STOP`, in that order**
+— this paragraph has been wrong about the loop's state at least once, and a
+dated claim about a live process is the shape `CLAUDE.md` warns about
+everywhere else. While it is dark, `NOW.md` is the steering; the harness is
+intact and the table below still works.
 
-The loop wrote most of the commits before that date. It lives at
+The loop wrote most of the commits in this tree. It lives at
 `/mnt/hive-data/gates-loop` — **outside this repo, deliberately.** The builder is
 told not to touch it and the rubrics are checksummed between passes; if the
 harness lived in here, an agent would have write access to the criteria it is
@@ -425,10 +450,13 @@ judge holding `judge/RUBRIC.md` (ten procedural checks — the merge gate) and
 performs the merge itself on a PASS, then captures and spawns the visual judge
 holding `art/RUBRIC.md` (ten visual criteria against the reference set). Both
 reports end in a `## Ranked gaps` section, and those gaps — not `NOW.md` — are
-where the loop's direction comes from **while it is running**. It is not, so
-that instruction is suspended rather than deleted: the newest pair is dated
-2026-08-04/05, which makes it evidence about where the frame stood then and
-not a queue. Steer from `NOW.md` until the loop is restarted.
+where the loop's direction comes from **while it is running**. It is stopped,
+so that instruction is suspended rather than deleted, and the reports are
+evidence rather than a queue. **The newest pair is 2026-08-14
+(`pass-20260814-142610-03-{judge,visual}.md`)**, and all six frames in it were
+shot on seed 20260731 under `art/capture-native.sh` — the same island the
+shard ships, which is the only reason those gaps are about our world at all.
+Steer from `NOW.md` until the loop is restarted.
 
 **`git push` is blocked** by a `pre-push` hook the runner installs. Publishing
 is an operator act: read the diff, then `git push --no-verify`.
