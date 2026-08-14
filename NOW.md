@@ -42,6 +42,36 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0rs · The bots raid now — in sim-core, not on the wire *(systems lane)*
+
+From `findings/pass-20260813-230343-13-judge.md` gap 1, *"a player has no
+opponent"* — gap-pass item, 2026-08-14.
+
+Landed: `bots::raid_step` (build, lock, arm, plant, guess, take — one
+command per call, its own rng stream, so no existing digest moved) and
+`test_raid_storm`, wall 4's named-and-absent gate. 32 plots × 2 players,
+400 ticks at the 256-command ceiling. Measured: charges 64/64 answering
+`REFUSE_B_FULL`, removals pinned 64/64, event ring exactly full and
+overflowing on 90 ticks, 14 codes. Proven red by deleting the
+`MAX_LIVE_CHARGES` check.
+
+Remaining, ranked:
+
+1. **The wire half — this is still not an opponent.** `botclient.rs` sends
+   `encode_input` and nothing else, so the 100-bot soak walks. It already
+   holds a live `SendStream` and `net::write_frame` is `pub`
+   (`tests/bot_smoke.rs:199` is the precedent): derive a plot cell from the
+   bot's body, feed `raid_step`, write the frame. Only then is a balance
+   number being driven by contested play.
+2. **Bodies are out of the storm** — the throwable's `damage` is 0, so the
+   raid never kills and `MAX_BACKPACKS` plus the death/respawn ring are the
+   one client-driven family it misses.
+3. `CLAUDE.md` wall 4's ⚠ still says the gate does not exist; a loop may
+   not edit the walls list, so striking it is an operator act. Five other
+   docs were corrected this pass.
+
+---
+
 ## 0tq · The HUD says every fact of a frame, not the last one *(client lane)*
 
 **Gap pass, from `findings/pass-20260813-230343-10-judge.md` ranked gap 2**
@@ -288,8 +318,10 @@ Landed this pass: `piece_walk_restarts` counts the restart, so the
 livelock is visible before it is fixed. Not landed: the filter. The fix is
 `NETCODE.md` §7's chunk subscription — one spatial truth for both classes,
 which the doc already specifies and the tree has never had — and it wants
-`test_stream_in` and `test_raid_storm` with it (§11 there: **all seven of
-its gates are unbuilt**, retitled this pass to stop claiming otherwise).
+`test_stream_in` and §11's `test_raid_storm` with it (§11 there: **all
+seven of its gates are unbuilt**, retitled to stop claiming otherwise —
+and note the name is now shared, see §0rs: the sim-core storm that landed
+is wall 4's caps gate, not §11's wire one).
 
 ---
 

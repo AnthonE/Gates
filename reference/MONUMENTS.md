@@ -466,8 +466,10 @@ message at boot instead of a bug report a week later.
 5. **Moving monuments (§7): refused, on the record.** Not "later" — the bill
    in §7 is a feature, and nothing in `DESIGN.md` asks for one.
 6. **The §8 benchmark shape is owed and is not written.** `NETCODE.md` §11's
-   seven gates are all unbuilt and `test_raid_storm` does not exist
-   (`CLAUDE.md` wall 4). Whatever it becomes, the load case is *at a
+   seven gates are still unbuilt. `test_raid_storm` now exists
+   (`crates/sim-core/tests/raid_storm.rs`, 2026-08-14) but it is wall 4's
+   caps gate, not §11's wire storm — it times nothing, which is exactly what
+   a benchmark shape needs. Whatever it becomes, the load case is *at a
    destination*, not on open ground.
 7. **Only x86_64 ↔ wasm32 is gated, and a third CPU is not runnable here.**
    aarch64 (Apple Silicon) and Windows/MSVC are latent; the depot is Linux

@@ -647,9 +647,20 @@ A change that reddens a wall does not merge. The walls are the skeleton.
 is the design's list, not `ci/gates.sh`'s — derive the real one from the
 script, which is what CI runs. The gap matters beyond this file: the missing
 soak was cited as the enforcement of wall 3 in both `CLAUDE.md` and
-`AGENTS.md`, and `test_raid_storm` — which also does not exist — as wall 4's.
-Both walls hold on their other half (clippy for 3, per-site cap tests for 4),
-and both lists now say which half is missing rather than implying coverage.
+`AGENTS.md`, and `test_raid_storm` — which also did not exist — as wall 4's.
+The soak is still missing and wall 3 still holds on clippy alone.
+**Wall 4's half landed 2026-08-14**: `crates/sim-core/tests/raid_storm.rs`
+drives 64 synthetic players through build/lock/plant/guess/move/loot at the
+tick's full command ceiling and asserts every store's cap per tick — it fills
+the charge store to 64 of 64, pins the removal budget at 64 of 64 and
+overflows the event ring on 90 of 400 ticks, so the caps are held *under
+pressure* rather than observed at rest.
+
+⚠ **`NETCODE.md` §11 names a different gate by the same name and it is still
+absent.** That one is the *wire* storm — 20 subscribers, coalescing caps,
+tick p99, byte counts — and none of that is in the sim-core gate, which
+speaks to no socket and times nothing. Two gates, one name; check which
+before citing either.
 
 ## 13 · How it ships through scry
 
