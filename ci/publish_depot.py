@@ -23,20 +23,24 @@ refuse. This script is the ORDER, the refusals, and the checks between.
    but it is not reproducible from a commit, and a build a player is running
    must name one. Publishing is not the moment to be clever about this.
 
-2. **A build id already published for a DIFFERENT platform.** This is the trap
-   `CLAUDE.md` names: the id has no platform in it and the origin keys by id
-   alone, so `<slug>/<build>/` is ONE directory holding ONE `depot.json` with
-   one `platform` and one `launch.exec`. Two platforms packaged from one commit
-   resolve to the same directory and the second silently overwrites the first —
-   after which a Linux player is handed the Windows depot. It has never fired
-   only because the two live builds happened to be cut at different commits,
-   which is luck wearing a design's clothes.
+2. **A build id whose LEGACY directory is already taken.** The trap this used
+   to guard is gone at the root: the origin keys by (build, platform) since
+   2026-08-14, so `<build>/<platform>/` is this platform's own directory and
+   two platforms from one commit are two depots. Publishing both from one
+   commit is now the normal case, which is the point.
 
-   The right fix is for the origin to key by (build, platform); until it does,
-   this refuses rather than collides. **Do not "fix" it with a platform suffix
-   on the id** — scry's `meter/gamerepo.py::version_of` strips `-g[0-9a-f]+…$`
-   anchored at `$`, so `0.2.0-gsha-win-x86_64` stops parsing back to `0.2.0`
-   and the store's declared-vs-published check goes permanently red.
+   What survives is the seam. A depot published before that change sits at
+   `<build>/depot.json` with no platform segment and **stays there forever** —
+   its url is baked into its own document, the digest covers the document, and
+   that digest is sealed in `ScryNotary`. Writing a keyed directory beside it
+   would leave two documents claiming one build, and the origin prefers the
+   keyed one, so the notarized depot would quietly stop being served. That is
+   a decision, not a default, so it refuses.
+
+   **Do not "fix" any of this with a platform suffix on the id** — scry's
+   `meter/gamerepo.py::version_of` strips `-g[0-9a-f]+…$` anchored at `$`, so
+   `0.2.0-gsha-win-x86_64` stops parsing back to `0.2.0` and the store's
+   declared-vs-published check goes permanently red.
 
 3. **An upload that does not re-hash at the far end.** rsync reports what it
    sent, which is not the same claim as *the origin now holds these bytes*. We
@@ -101,11 +105,23 @@ def require_clean_tree() -> str:
     return run(["git", "rev-parse", "--short=9", "HEAD"], cwd=ROOT).stdout.strip()
 
 
-def refuse_platform_collision(host: str, depots: str, build: str, platform: str) -> None:
-    """The id has no platform in it and the origin keys by id alone.
+def refuse_legacy_collision(host: str, depots: str, build: str, platform: str) -> None:
+    """Would this upload land on top of a depot published under the OLD layout?
 
-    Reads the far end rather than trusting local bookkeeping: the question is
-    what THAT directory already holds, and only the origin can answer it.
+    scry keys by (build, platform) since 2026-08-14, so `<build>/<platform>/` is
+    this platform's own directory and two platforms from one commit no longer
+    collide — that is the whole point and it is why this function no longer
+    refuses the ordinary case.
+
+    What it still guards is the seam. A depot published BEFORE the change sits
+    at `<build>/depot.json` with no platform segment, and it stays there
+    forever: its url is baked into its own document, the digest covers the
+    document, and that digest is sealed in ScryNotary, so moving it would
+    orphan the number on chain. Writing `<build>/<platform>/` beside a legacy
+    `<build>/depot.json` is therefore safe for the bytes but ambiguous for a
+    reader — two documents claiming one build. The origin prefers the keyed one
+    and would quietly stop serving what was notarized, so this refuses and asks
+    for a decision instead.
     """
     remote = f"{depots}/{SLUG}/{build}/depot.json"
     got = ssh(host, f"cat {shlex.quote(remote)} 2>/dev/null || true")
@@ -115,16 +131,14 @@ def refuse_platform_collision(host: str, depots: str, build: str, platform: str)
         there = json.loads(got).get("platform")
     except json.JSONDecodeError:
         sys.exit(f"publish: {remote} exists and is not readable JSON — look before writing")
-    if there == platform:
-        print(f"   note: {build} is already uploaded for {platform}; re-uploading over it")
-        return
     sys.exit(
-        f"publish: REFUSING — {SLUG}/{build}/ already holds a {there} depot.\n"
-        f"         The build id carries no platform, so publishing {platform} here\n"
-        f"         would overwrite it and hand every {there} player the wrong build.\n"
-        f"         Package this platform from a different commit, or teach the origin\n"
-        f"         to key by (build, platform). Do NOT add a platform suffix to the id\n"
-        f"         — `version_of` would stop parsing it back to a release."
+        f"publish: REFUSING — {SLUG}/{build}/ holds a LEGACY {there} depot,\n"
+        f"         published before the origin keyed by (build, platform). It cannot\n"
+        f"         move: its url is inside its own digest and that digest is on chain.\n"
+        f"         Publishing {platform} under this same build id would leave two\n"
+        f"         documents claiming one build, and the origin prefers the keyed one\n"
+        f"         — so the notarized depot would quietly stop being served.\n"
+        f"         Package from a different commit, or retire that build first."
     )
 
 
@@ -156,8 +170,9 @@ def package(platform: str, do_build: bool) -> Path:
     return out / build
 
 
-def upload(stage: Path, host: str, depots: str, build: str, dry: bool) -> None:
-    dest = f"{host}:{depots}/{SLUG}/{build}/"
+def upload(stage: Path, host: str, depots: str, build: str, platform: str,
+           dry: bool) -> None:
+    dest = f"{host}:{depots}/{SLUG}/{build}/{platform}/"
     print(f"== upload · {stage} → {dest}")
     if dry:
         print("   (dry-run: nothing sent)")
@@ -165,9 +180,9 @@ def upload(stage: Path, host: str, depots: str, build: str, dry: bool) -> None:
     run(["rsync", "-a", "--info=stats1", f"{stage}/", dest])
 
 
-def verify_at_origin(host: str, depots: str, build: str) -> int:
+def verify_at_origin(host: str, depots: str, build: str, platform: str) -> int:
     """Re-hash every file where it landed. rsync's report is not this claim."""
-    here = f"{depots}/{SLUG}/{build}"
+    here = f"{depots}/{SLUG}/{build}/{platform}"
     print("== verify · re-hashing every file at the origin")
     checker = (
         "import json,hashlib,pathlib,sys;"
@@ -301,11 +316,11 @@ def main() -> int:
     print(f"== {SLUG} {a.platform} · commit {sha} · build {build}"
           + ("  [DRY RUN]" if a.dry_run else ""))
 
-    refuse_platform_collision(a.host, a.depots, build, a.platform)
+    refuse_legacy_collision(a.host, a.depots, build, a.platform)
     stage = package(a.platform, do_build=not a.no_build)
-    upload(stage, a.host, a.depots, build, a.dry_run)
+    upload(stage, a.host, a.depots, build, a.platform, a.dry_run)
     if not a.dry_run:
-        verify_at_origin(a.host, a.depots, build)
+        verify_at_origin(a.host, a.depots, build, a.platform)
     publish_pointer(a.host, a.depots, build, a.platform, a.dry_run)
     digest = None if a.dry_run else confirm_live(a.api, build, a.platform)
 
