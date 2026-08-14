@@ -398,7 +398,7 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
         // The honest answer, and the one a chain of `if`s could not give: the
         // browser's old dispatch reported "no hearth in reach" on an empty
         // island because the hearth happened to be the last link tried.
-        Verb::None => toast.say("nothing in reach"),
+        Verb::None => toast.warn("nothing in reach"),
     }
 }
 
@@ -418,7 +418,7 @@ fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
     // there. The refusal that separates them is the sim's — a fire with
     // nothing to burn answers `REFUSE_D_FUEL` and a recycler never does.
     if !matches!(pick.verb, Verb::Fire | Verb::Recycler) {
-        toast.say("nothing to switch in reach");
+        toast.warn("nothing to switch in reach");
         return;
     }
     let (cx, cz, level, loc) = (pick.cx, pick.cz, pick.level, pick.loc);
@@ -474,14 +474,14 @@ fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, leave:
     }
     match lock_target(pick) {
         LockTarget::Pad(cx, cz, level, loc) => pad.0.open(cx, cz, level, loc),
-        LockTarget::Bare => toast.say(format!(
+        LockTarget::Bare => toast.warn(format!(
             "no lock on that {} — deploy one",
             // "DOOR"/"BOX", said the toast's way. The label is never
             // empty here: a bare `lock_target` means the pick resolved a
             // real lockable archetype, and every verb of one has a noun.
             pick.verb.label().to_lowercase()
         )),
-        LockTarget::None => toast.say("nothing to authorize in reach"),
+        LockTarget::None => toast.warn("nothing to authorize in reach"),
     }
 }
 
@@ -551,7 +551,7 @@ fn keypad_keys(keys: &ButtonInput<KeyCode>, net: &Net, pad: &mut Pad, toast: &mu
         Needs::Code => match pad.0.code() {
             Some(c) => c,
             None => {
-                toast.say("four digits");
+                toast.warn("four digits");
                 return;
             }
         },
@@ -617,7 +617,7 @@ pub fn hammer_fire(net: &Net, near: &Option<Target>, seg: usize, toast: &mut Toa
                 protocol::encode_action_repair(deploy, cx, cz, level, loc, buf)
             });
         }
-        Act::Say(s) => toast.say(s),
+        Act::Say(s) => toast.warn(s),
     }
 }
 
@@ -634,7 +634,7 @@ pub fn hammer_fire(net: &Net, near: &Option<Target>, seg: usize, toast: &mut Toa
 /// it stopped being.
 fn demolish_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
     let Some(t) = near else {
-        toast.say("nothing to take down in reach");
+        toast.warn("nothing to take down in reach");
         return;
     };
     let (deploy, cx, cz, level, loc) = (t.store == Store::Deploy, t.cx, t.cz, t.level, t.loc);
@@ -651,18 +651,18 @@ fn demolish_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
 /// in front of me" is genuinely ambiguous at exactly one kind of spot.
 fn upgrade_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
     let Some(t) = near else {
-        toast.say("nothing to upgrade in reach");
+        toast.warn("nothing to upgrade in reach");
         return;
     };
     if t.store != Store::Piece {
-        toast.say("that is not a building piece");
+        toast.warn("that is not a building piece");
         return;
     }
     let core = &net.session.core;
     let Some(material) = structure::next_material(&core.piece_defs, core.piece_defs_have, t.row)
     else {
         // `REFUSE_B_TIER`'s own sentence, said before the round trip.
-        toast.say("nothing to upgrade into");
+        toast.warn("nothing to upgrade into");
         return;
     };
     let (cx, cz, level, loc) = (t.cx, t.cz, t.level, t.loc);
@@ -674,14 +674,14 @@ fn upgrade_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
 /// `R` — mend the nearest structure, either store.
 fn repair_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
     let Some(t) = near else {
-        toast.say("nothing to repair in reach");
+        toast.warn("nothing to repair in reach");
         return;
     };
     if !t.damaged() && t.hp_max > 0 {
         // `REFUSE_B_INTACT`'s sentence, said before the round trip. Guarded
         // on a known maximum: an undripped row reports 0 and the server is
         // the one that knows.
-        toast.say("not damaged");
+        toast.warn("not damaged");
         return;
     }
     let (deploy, cx, cz, level, loc) = (t.store.is_deploy(), t.cx, t.cz, t.level, t.loc);
@@ -703,7 +703,7 @@ fn repair_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
 /// disagrees with the charge.
 fn throw_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
     let Some(t) = near else {
-        toast.say("nothing to plant one on");
+        toast.warn("nothing to plant one on");
         return;
     };
     let (deploy, cx, cz, level, loc) = (t.store.is_deploy(), t.cx, t.cz, t.level, t.loc);
@@ -762,12 +762,12 @@ fn send(
         Ok(len) => match net.session.send_action(&buf[..len]) {
             Ok(()) => true,
             Err(e) => {
-                toast.say(e.to_string());
+                toast.warn(e.to_string());
                 false
             }
         },
         Err(e) => {
-            toast.say(format!("{what} would not encode ({e:?})"));
+            toast.warn(format!("{what} would not encode ({e:?})"));
             false
         }
     }

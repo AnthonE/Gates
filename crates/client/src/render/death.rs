@@ -86,7 +86,7 @@ pub fn awaken(
         return;
     }
     if let Some(line) = woke(answer.asked_for_bag, net.session.core.woke_on_bag) {
-        toast.say(line);
+        toast.warn(line);
     }
     // Take the pointer back, so waking up does not need a click that would
     // also swing the axe — `pause::act`'s rule, for the same reason.
@@ -243,9 +243,9 @@ pub fn act(
             // A full lane means the respawn was NOT sent (wall 4). Leaving
             // `sent` false is what lets the player press again, which is the
             // whole point of reporting rather than dropping.
-            Err(e) => toast.say(e.to_string()),
+            Err(e) => toast.warn(e.to_string()),
         },
-        Err(e) => toast.say(format!("respawn would not encode ({e:?})")),
+        Err(e) => toast.warn(format!("respawn would not encode ({e:?})")),
     }
 }
 
