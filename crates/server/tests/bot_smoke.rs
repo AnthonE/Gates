@@ -223,28 +223,33 @@ async fn test_bot_smoke_50() {
 /// the box (`deploy.rs` `lockable()` admits `ARCH_BOX`, so the profile
 /// needs no door), `SET_CODE`, and the `ENTER` at step 7 that emits
 /// `EV_AUTH`. Measured on this box 2026-08-14, 8 raiders × 4 s: ~66 pieces
-/// placed, 3 deploys, 18 charges armed, and auths per owner ranging 0..15
-/// — every one of those a counter that read 0 before the kit.
+/// placed, 3 deploys, and auths per owner ranging 0..15 — every one of those
+/// a counter that read 0 before the kit. (The charge count that stood here
+/// belonged to a different configuration:
+/// `findings/note-20260814-charge-never-detonates.md` records 18 as the
+/// **14 s** row and 27 as the 30 s one, and neither is this gate's 4 s.)
 ///
 /// **What this still does not assert, and why it is not asserted.**
 /// `struct_hits` remains 0, and for THIS gate that is arithmetic rather
-/// than a defect: `WINDOW` is 4 s = 120 ticks against the shipped
-/// 300-tick fuse, so no charge planted in this run can possibly detonate
-/// inside it. Nothing to assert, and lengthening the window to reach a
-/// detonation would make a wire gate wait on a clock, which this box may
-/// not do (`CLAUDE.md`: assert on observable state, never on elapsed ms).
+/// than a defect: the window cannot hold the shipped 300-tick fuse, so no
+/// charge planted in this run can possibly detonate inside it. That used to
+/// be paper arithmetic — 4 s × `TICK_HZ` — and is now read off
+/// `ShardStats::ticks` below, which is both the honest form of the claim and
+/// the instrument the open question needs. Lengthening the window to reach a
+/// detonation would make a wire gate wait on a clock, which this box may not
+/// do (`CLAUDE.md`: assert on observable state, never on elapsed ms).
 ///
 /// The detonation itself is gated where it can be — in the sim, on the
 /// same shipped content, at the same 300-tick fuse:
-/// `crates/server/tests/raid.rs`. That gate is green, which means the
-/// remaining half of the mystery is narrower than the note that recorded
-/// it: `detonate`, the overkill case and the fuse length are all now
-/// proven on shipped rows, so the unexplained 30 s measurement (27 plants
-/// over 905 ticks, still no `EV_STRUCT_HIT`) is somewhere in the bot
-/// arrangement, not in the verb. `NOW.md` §0rf and
-/// `gates-loop/findings/note-20260814-charge-never-detonates.md` carry the
-/// chain. A gate asserting a number nobody can explain is the pass it did
-/// not earn.
+/// `crates/server/tests/raid.rs` for the verb, and
+/// `crates/server/tests/raid_shape.rs` for this fleet's own arrangement,
+/// replayed into `World::tick`. Both are green, and the second one is the
+/// reason the sentence that used to end this paragraph is gone: it said the
+/// unexplained 30 s measurement was *"somewhere in the bot arrangement"*,
+/// and the arrangement raids — 21 plants and 12 `EV_STRUCT_HIT` under this
+/// fleet's exact seating, first breach at tick 355. `NOW.md` §0rc carries
+/// what is left, which is the wire-only half. A gate asserting a number
+/// nobody can explain is the pass it did not earn.
 ///
 /// The exchange rate this begins to make sayable, from `content/`: a twig
 /// wall is 50 wood at hp 10 and one satchel is `structure` 125 — a 12.5×
@@ -364,6 +369,13 @@ async fn test_bots_raid_over_the_wire() {
         combat.held_throw(satchel).is_some(),
         "the shipped satchel is not a live throwable — every plant would refuse"
     );
+    // Carried out of `combat` before the shard takes it, so the window
+    // arithmetic below is stated against shipped content instead of a
+    // number typed into a doc comment.
+    let fuse_ticks = combat
+        .held_throw(satchel)
+        .expect("checked above")
+        .fuse_ticks as u64;
     const WINDOW: Duration = Duration::from_secs(4);
 
     let handle = spawn_shard(
@@ -400,6 +412,7 @@ async fn test_bots_raid_over_the_wire() {
     let addr = handle.local_addr;
 
     let endpoint = std::sync::Arc::new(bot_endpoint().expect("client endpoint"));
+    let ticks_before = ShardStats::get(&handle.stats.ticks);
     let mut tasks = Vec::with_capacity(RAIDERS);
     for i in 0..RAIDERS {
         let endpoint = endpoint.clone();
@@ -418,6 +431,29 @@ async fn test_bots_raid_over_the_wire() {
             .unwrap_or_else(|e| panic!("raider {i} failed: {e}"));
         reports.push(report);
     }
+    let window_ticks = ShardStats::get(&handle.stats.ticks) - ticks_before;
+
+    // **Why `struct_hits` is not asserted, measured instead of assumed.**
+    // The doc block above says this window cannot contain a detonation, and
+    // until now that was arithmetic on paper: 4 s × `TICK_HZ`. This reads
+    // what the shard actually completed, which is the honest form of the
+    // claim and the instrument the next probe needs — `raid_shape.rs` puts
+    // the earliest breach the wire's own arrangement can produce at tick
+    // 355, so *how many ticks a window held* is the question the
+    // unexplained 30 s run never answered.
+    //
+    // It is safe against this box's load rule (`CLAUDE.md`: never assert on
+    // elapsed ms) because it can only fail in the impossible direction. At
+    // `TICK_HZ` 30 a 4 s window tops out at ~120 ticks, so a contended box
+    // makes this MORE true, never less; the only way it reddens is a shard
+    // ticking faster than its own rate.
+    assert!(
+        window_ticks < fuse_ticks,
+        "the shard completed {window_ticks} ticks in this window against a \
+         {fuse_ticks}-tick fuse — a charge could now detonate inside the \
+         gate, so `struct_hits` stops being un-assertable arithmetic and \
+         this suite owes an assertion on it"
+    );
 
     for (i, r) in reports.iter().enumerate() {
         // The plot came off the snapshot stream: no body, no raid.
@@ -506,7 +542,7 @@ async fn test_bots_raid_over_the_wire() {
     // The attacker's half, as far as it is proven: a satchel selected off
     // the hotbar, planted on a structure that had to already be standing
     // there (`charge::place` refuses an empty address as `REFUSE_B_SPOT`),
-    // and armed. **Not** that it went off — see `NOW.md` §0rf. `struct_hits`
+    // and armed. **Not** that it went off — see `NOW.md` §0rc. `struct_hits`
     // is still 0 and this gate deliberately does not assert it, because a
     // measurement nobody has explained is not a gate.
     assert!(
