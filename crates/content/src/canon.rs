@@ -216,6 +216,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(m.brave_pct);
         h.u(m.roam_m);
         h.u(m.spook_m);
+        h.u(m.night_spook_m);
         h.u(m.respawn_seconds);
         h.stacks(&m.drops);
     }

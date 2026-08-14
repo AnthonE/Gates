@@ -1132,6 +1132,7 @@ impl Content {
                 brave_pct: m.brave_pct as u8,
                 roam_cm: m.roam_m as i64 * 100,
                 spook_cm: m.spook_m as i64 * 100,
+                night_spook_cm: m.night_spook_m as i64 * 100,
                 respawn_ticks: m
                     .respawn_seconds
                     .checked_mul(TICK_HZ)

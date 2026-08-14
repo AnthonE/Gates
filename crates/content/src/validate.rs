@@ -736,19 +736,31 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 m.id
             ));
         }
+        // The notice radius is now two numbers, one per hour, and every band
+        // below is stated against the hour that can break it. Before
+        // nocturnal senses these three read `spook_m` alone; that was total
+        // when there was one radius and would have been a hole the day the
+        // second arrived — a species could have been given a night radius
+        // outside its leash, or a blind night, or a bite it could not have
+        // noticed after dusk, and every band here would still have passed.
+        let widest = m.spook_m.max(m.night_spook_m);
+        let narrowest = m.spook_m.min(m.night_spook_m);
         // The leash has to be wider than the fright radius, or the animal
         // spends its whole life being turned around at the leash while a
         // player stands inside the radius that started it.
-        if m.roam_m <= m.spook_m {
+        if m.roam_m <= widest {
             return Err(format!(
                 "mob `{}`: a {}m leash inside a {}m spook radius is a treadmill",
-                m.id, m.roam_m, m.spook_m
+                m.id, m.roam_m, widest
             ));
         }
-        if m.spook_m == 0 || m.flee_seconds == 0 {
+        if narrowest == 0 || m.flee_seconds == 0 {
             return Err(format!(
-                "mob `{}`: an animal that never flees is scenery",
-                m.id
+                "mob `{}`: an animal that never flees is scenery — and an \
+                 animal that never flees *at one hour* is scenery for that \
+                 half of the day, which is the same row written less \
+                 obviously (spook {}m by day, {}m by night)",
+                m.id, m.spook_m, m.night_spook_m
             ));
         }
         if m.respawn_seconds == 0 {
@@ -784,11 +796,13 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 ));
             }
             // A bite from further than the spook radius would be an animal
-            // attacking players it has not even noticed.
-            if m.attack_range_m > m.spook_m {
+            // attacking players it has not even noticed — at the hour whose
+            // radius is the tighter of the two, since a reach legal at noon
+            // and illegal at midnight is illegal.
+            if m.attack_range_m > narrowest {
                 return Err(format!(
                     "mob `{}`: a {}m bite outreaches its {}m spook radius",
-                    m.id, m.attack_range_m, m.spook_m
+                    m.id, m.attack_range_m, narrowest
                 ));
             }
         }

@@ -325,3 +325,159 @@ fn a_wolf_kills_a_player_who_never_reacts() {
         "the wolf died too — something other than the hunt happened here"
     );
 }
+
+/// **The same wolf, the same 25 m, the same shipped content — and the hour
+/// decides whether it is an encounter at all.**
+///
+/// The A/B its sim-core sibling cannot run: `sim-core/tests/mob.rs` proves
+/// the radius against `probe_fixture`, and this proves the number in
+/// `content/mobs.toml` survives the whole path into a running shard core.
+/// Everything is identical between the two runs but `World::tick`'s value,
+/// so a difference in outcome has exactly one cause.
+///
+/// The direction is the reference game's, not the obvious one: it shipped a
+/// predator that saw *further* in the dark and removed it, because being
+/// hunted by something the player cannot see is an ambush rather than a
+/// difficulty (`content/mobs.toml`, `DECISIONS.md` §open "nocturnal
+/// senses"). What the player gets is the first tactic the clock sells them.
+///
+/// **The window is 5 s and that is load-bearing, not timidity.** The first
+/// draft of this test stood still for 60 s and asserted the night player
+/// survived; it failed, and the failure was the honest kind — an unroused
+/// wolf *ambles*, and over a minute this seed's random walk carried it from
+/// 25 m to 0.7 m, at which point it could see the player perfectly well and
+/// the run had stopped being about the clock. Five seconds is bounded by
+/// arithmetic instead: an ambling wolf cannot cross the 10 m between the
+/// stand-off and its night radius in that time, and the test asserts the
+/// distance it actually kept so a future retune cannot quietly invalidate
+/// the margin. What that costs is the kill — `a_wolf_kills_a_player_who
+/// _never_reacts` still owns that claim, by day.
+///
+/// No clock and no sockets, like its siblings: ticks and observable state.
+#[test]
+fn the_hour_decides_whether_the_wolf_finds_you_at_all() {
+    /// Long enough for every slot to think several times over, short enough
+    /// that an amble cannot close the 10 m of margin.
+    const WINDOW_TICKS: u32 = 5 * TICK_HZ;
+
+    let day = (0..sim_core::limits::DAY_TICKS)
+        .find(|&t| !sim_core::world::is_night(t))
+        .expect("the cycle has a day");
+    let night = (0..sim_core::limits::DAY_TICKS)
+        .find(|&t| {
+            sim_core::world::is_night(t) && sim_core::world::is_night(t + WINDOW_TICKS as u64)
+        })
+        .expect("night must be longer than the window");
+
+    let by_day = stand_off_at(day, WINDOW_TICKS);
+    let by_night = stand_off_at(night, WINDOW_TICKS);
+
+    assert!(
+        by_day.noticed,
+        "at noon a wolf 25 m away is inside its 30 m notice radius and must \
+         have roused: it stayed {:.1} m off and never did",
+        by_day.closest_m
+    );
+    assert!(
+        !by_night.noticed,
+        "at midnight the same wolf notices from 15 m and must not have \
+         roused at 25 m: it did, closest approach {:.1} m",
+        by_night.closest_m
+    );
+    // The reason has to be the radius and not the animal having gone
+    // somewhere: if the night amble ever carried it inside the 15 m it
+    // *can* see from, this run no longer isolates the hour and says so
+    // rather than passing quietly.
+    assert!(
+        by_night.closest_m > 15.0,
+        "the night wolf came within {:.1} m — inside the radius it notices \
+         from, so this window no longer isolates the hour",
+        by_night.closest_m
+    );
+    // And by day it is not merely roused but coming: the rousing has to be
+    // a hunt rather than a flag, or this passes on a predator that stands
+    // and thinks about it.
+    assert!(
+        by_day.closest_m < 25.0 - 1.0,
+        "a roused wolf must have closed ground: closest {:.1} m of 25",
+        by_day.closest_m
+    );
+}
+
+struct StandOff {
+    /// Did the wolf ever rouse inside the window?
+    noticed: bool,
+    /// Nearest it ever got, metres.
+    closest_m: f32,
+}
+
+/// One stand-still at 25 m from the island's only wolf, starting at `hour`
+/// and lasting `ticks`. The player sends idle frames and never moves.
+fn stand_off_at(hour: u64, ticks: u32) -> StandOff {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+    let c = content::Content::load_dir(&dir).expect("shipped content loads");
+    let stats = ShardStats::default();
+    let mut core = ShardCore::new(20260731);
+    core.world.mob = c.bake_mobs().expect("animals bake");
+    core.world.combat = c.bake_combat().expect("weapons bake");
+    core.world.spawn_kit = c.bake_spawn_kit().expect("the kit bakes");
+    core.world.backpack = c.bake_backpack().expect("the bag ladder bakes");
+    core.tick_bare(&stats, |_, _, _| true);
+
+    let slot = core
+        .world
+        .mobs
+        .m
+        .iter()
+        .position(|m| m.alive && m.kind == MOB_WOLF)
+        .expect("the roster hatched a wolf");
+    // Every other animal out of the world: a second one in reach would
+    // rouse against the same player and muddy which animal answered.
+    for (i, m) in core.world.mobs.m.iter_mut().enumerate() {
+        if i != slot {
+            m.alive = false;
+        }
+    }
+    let (mx, mz) = (
+        core.world.mobs.m[slot].body.qx as f32 * POS_XZ_Q,
+        core.world.mobs.m[slot].body.qz as f32 * POS_XZ_Q,
+    );
+    core.world.dev_spawn = Some((mx + 25.0, mz));
+    assert!(core.connect(0, 0x100), "connect");
+    core.tick_bare(&stats, |_, _, _| true);
+    let p = core
+        .world
+        .players
+        .iter()
+        .position(|p| p.active)
+        .expect("seated");
+
+    // Set the hour only now: both runs are identical up to this line and
+    // differ in nothing afterwards but the clock they keep.
+    core.world.tick = hour;
+
+    let frame = InputFrame {
+        yaw: core.world.players[p].frame.yaw,
+        ..InputFrame::default()
+    };
+    let mut noticed = false;
+    let mut closest_m = f32::MAX;
+    for t in 0..ticks {
+        let mut f = frame;
+        f.seq = (t % 65_536) as u16;
+        core.world.tick(&[Command::Input {
+            id: 0x100,
+            frame: f,
+        }]);
+        let (px, pz) = (core.world.players[p].body.qx, core.world.players[p].body.qz);
+        let (bx, bz) = (
+            core.world.mobs.m[slot].body.qx,
+            core.world.mobs.m[slot].body.qz,
+        );
+        let dx = (bx - px) as f32 * POS_XZ_Q;
+        let dz = (bz - pz) as f32 * POS_XZ_Q;
+        closest_m = closest_m.min((dx * dx + dz * dz).sqrt());
+        noticed |= core.world.mobs.m[slot].roused_until > core.world.tick;
+    }
+    StandOff { noticed, closest_m }
+}

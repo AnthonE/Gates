@@ -59,6 +59,19 @@ the bite is phase-locked to 60, a multiple of 30, so the bite sampled the
 same point of that orbit forever — a slot whose phase fell outside reach
 could never bite. Slot 0's fell inside and every bite gate hunted slot 0.
 
+**Item 3 landed 2026-08-14 — pointing the other way.** The sim reads the
+clock now: `world::is_night` is the door, `MobDef::spook_at` the selector,
+`night_spook_m` the content field, and `mob::think`'s notice test the one
+line through it. `day_frac` had *no caller in the sim at all* before this
+and its own doc said so. But the wolf hunts **worse** after dusk, not
+better — the reference cut its predator's night sight in 2024 because an
+animal that hunts you in pitch black "feels a bit like a landmine", and no
+game in the survey publishes a night sense ratio above 1×. 30 m → 15 m;
+the pig is unchanged and gated so. **7 new tests and 3 existing ones
+extended; all 10 proven red under their own mutation.** Sources and the one
+number that is ours (the 0.5×) are in `DECISIONS.md` §open "nocturnal
+senses".
+
 Owed, in rank order:
 
 1. **Every animal still sounds like a pig.** `sound/pig.rs`'s snort plays
@@ -66,11 +79,15 @@ Owed, in rank order:
    audio half of an encounter, and `NOW.md` §0m item 2 already wanted them.
 2. **A wolf pays no hide and no bone** — refused here because two new items
    drag recipes and `ui::icons::STEMS` into a roster slice.
-3. **Nothing hunts harder at night.** `day/night v0` is drawn, not
-   simulated; a nocturnal notice radius is what would make night cost
-   something. A knob, so §open first.
+3. **Night still costs the player nothing.** Nocturnal senses made the hour
+   a *tactic*; it did not make the dark dangerous, and nothing else in the
+   sim reads the clock. The sourced follow-on is the genre's own answer and
+   it is **not** more tuning of `night_spook_m`: a night-only roster
+   variant (Minecraft and Valheim both gate *spawns* on darkness; the one
+   published 2× detection is a variant, not a clock). The judge's gap 1
+   wanted a warmth stat, which is the bigger version of the same hole.
 4. **16 predators is arithmetic, not a playtest** — the one number here a
-   person answers.
+   person answers, alongside the 0.5×.
 
 ## 0sp · The tick has been profiled — where it goes *(server lane)*
 
@@ -335,13 +352,14 @@ node / 50% of a tree is withheld for whoever lands the last swing. Gated
 in `sim-core tests/gather.rs`; no wire byte moved.
 
 Still wrong for a returning player, in rank order, all of it detailed in
-`RIPLIST.md` §2: the boar does not fight back; no per-material damage
-resistance (one `structure` column, so the ladder above stone is
-compressed); one animal; and gather yields, smelt and craft times are
-still ours — node totals are `READY` now, per-hit yields are not, and our
-schema does not need them. Upkeep, decay and the armour ladder differ on
-purpose (`BALANCE.md` §4.1), though the upkeep *rate* turned out to match
-theirs.
+`RIPLIST.md` §2: no per-material damage resistance (one `structure`
+column, so the ladder above stone is compressed); and gather yields, smelt
+and craft times are still ours — node totals are `READY` now, per-hit
+yields are not, and our schema does not need them. Upkeep, decay and the
+armour ladder differ on purpose (`BALANCE.md` §4.1), though the upkeep
+*rate* turned out to match theirs. (Struck 2026-08-14: "the boar does not
+fight back" and "one animal" were falsified by `mob attack v0` and the
+wolf and had been left standing — the last judge's ranked fix 1.)
 
 ---
 

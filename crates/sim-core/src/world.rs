@@ -416,17 +416,44 @@ pub const DEATH_BY_MAX: u8 = DEATH_BY_CHARGE;
 ///
 /// A pure function of the tick, deliberately (`limits::DAY_TICKS`' doc has
 /// the argument): the client derives it from the smoothed tick estimate it
-/// already keeps, so no wire byte carries it, and when gameplay ever reads
-/// the clock — crickets, crops, nocturnal mobs — the sim calls this same
-/// function on its own tick and stays deterministic for free. **Nothing in
-/// the sim reads it today**; the renderer is its only caller, which is why
-/// a wrong curve is a look, not a divergence.
+/// already keeps, so no wire byte carries it, and gameplay that reads the
+/// clock calls this same function on the sim's own tick and stays
+/// deterministic for free.
+///
+/// **The sim reads it now** — [`is_night`] is the door, and `mob::think`
+/// walked through it (nocturnal senses, 2026-08-14). The bet this doc used
+/// to hedge on has been called: the curve is a divergence surface today,
+/// not just a look, which is why `is_night` exists as one comparison rather
+/// than as a threshold each caller writes for itself.
 ///
 /// Wall 1: one modulo and one division, no trig — the sun curve the
 /// renderer builds from this is the renderer's own.
 pub fn day_frac(tick: u64) -> f32 {
     use crate::limits::{DAY_PHASE_TICKS, DAY_TICKS};
     ((tick.wrapping_add(DAY_PHASE_TICKS)) % DAY_TICKS) as f32 / DAY_TICKS as f32
+}
+
+/// Is this tick after dusk? The one place the day/night boundary is a
+/// comparison, for both the sim and the renderer.
+///
+/// It exists because the renderer's bird layer had already open-coded the
+/// threshold (`render/audio.rs` compared `day_frac` against `DAY_PORTION`
+/// itself), and the moment the sim wanted the same answer a second hand-
+/// written `<` would be a determinism surface keyed off a boundary two
+/// files could disagree about. Both call this now, so a species is
+/// nocturnal on exactly the ticks the birds stop, by construction rather
+/// than by two matching literals.
+///
+/// `render/rig.rs::sun_elevation` still names `DAY_PORTION` and is
+/// deliberately not a caller: it takes a *fraction*, not a tick, and uses
+/// the constant as the breakpoint between two half-sine arcs rather than
+/// as a question about an hour. Same number, different job.
+///
+/// Dusk itself (`frac == DAY_PORTION`) is night — the half-open convention
+/// the renderer's own curve already used, so the sun is at the horizon on
+/// the first night tick and not on the last day one.
+pub fn is_night(tick: u64) -> bool {
+    day_frac(tick) >= crate::limits::DAY_PORTION
 }
 
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store

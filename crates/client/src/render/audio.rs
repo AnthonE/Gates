@@ -567,8 +567,13 @@ pub fn bed(
     // night, and the cause is the server's own clock rather than one this
     // layer invented — the refusal `birds.rs`' header recorded is repaid.
     // Crickets are the night companion and still owed (`NOW.md` §0x).
-    let is_day = sim_core::world::day_frac(feed.server_tick_est.max(0.0) as u64)
-        < sim_core::limits::DAY_PORTION;
+    //
+    // Through `world::is_night` rather than the open-coded comparison this
+    // used to carry: the sim reads the same boundary now (a predator's
+    // notice radius is the hour's), and two hand-written thresholds against
+    // one constant is how the birds and the wolves come to disagree about
+    // when dusk was.
+    let is_day = !sim_core::world::is_night(feed.server_tick_est.max(0.0) as u64);
     if is_day && sound.birds.due(cover, time.delta_secs()) && near > 0 {
         let want = sound.birds.perch(near);
         if let Some(p) = props

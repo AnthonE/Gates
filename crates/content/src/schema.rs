@@ -465,8 +465,15 @@ pub struct Mob {
     pub brave_pct: u32,
     /// Leash radius from the home the seed chose.
     pub roam_m: u32,
-    /// A player closer than this starts a flight.
+    /// A player closer than this starts a flight — in daylight.
     pub spook_m: u32,
+    /// The same radius after dusk. Required, like every other field here:
+    /// a species that did not say what it does at night would be defaulted
+    /// into an answer, and the whole point of the field is that the hour is
+    /// a content decision. Free to be larger, smaller or equal — validate
+    /// holds the reachability bands at *both* hours and takes no view on
+    /// the direction.
+    pub night_spook_m: u32,
     /// Time between a death and the same slot standing up again at the
     /// same home.
     pub respawn_seconds: u32,

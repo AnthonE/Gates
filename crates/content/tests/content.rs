@@ -193,6 +193,21 @@ fn hash_moves_with_values() {
         build(&srcs).unwrap().hash(),
         "the declared farm rate must move the content hash"
     );
+
+    // The night notice radius — now the newest field on this path, and the
+    // one with the sharpest reason to be here: it is the only content
+    // number the *hour* selects, so two sets differing only in it produce
+    // shards that hunt differently for a third of every cycle while
+    // agreeing about every other byte. Exactly the "plays differently,
+    // canonicalises the same" defect above, with a clock in front of it.
+    let mut srcs = sources();
+    let m = srcs.iter_mut().find(|(n, _)| *n == "mobs.toml").unwrap();
+    m.1 = m.1.replace("night_spook_m = 15", "night_spook_m = 16");
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "the night notice radius must move the content hash"
+    );
 }
 
 /// The raid tool reaches the sim, and the raid ratio is arithmetic a
@@ -1978,6 +1993,11 @@ fn the_shipped_pig_bakes() {
     // Metres → centimetres, the unit the sim compares distances in.
     assert_eq!(pig.roam_cm, 6_000);
     assert_eq!(pig.spook_cm, 1_200);
+    // Prey's flinch is not clock-keyed. Asserted rather than assumed
+    // because the field is required on every row, so "the pig's night
+    // radius" is a number somebody chose and not one the schema defaulted:
+    // equal is the choice, and this is where changing it costs a test.
+    assert_eq!(pig.night_spook_cm, pig.spook_cm);
     // The leash must be wider than the fright radius or a pig spends its
     // life being turned around — validate refuses it, assert it here too
     // because this is the pair that produces the behaviour.
@@ -1991,6 +2011,51 @@ fn the_shipped_pig_bakes() {
     }
     assert_eq!(pig.loot[3].item, sim_core::gather::NO_ITEM);
     assert_ne!(pig.loot[0].item, pig.loot[1].item);
+}
+
+/// **The shipped wolf hunts a narrower circle after dusk, and the sim asks
+/// the right question to find that out.**
+///
+/// Two halves, deliberately in one test because either alone passes for the
+/// wrong reason: the *table* (30 m by day, 15 m by night, through the same
+/// metres→centimetres crossing every other radius makes) and the *selector*
+/// (`spook_at` returns the day number in daylight and the night number
+/// after dusk). A table with no selector is a field nothing reads; a
+/// selector over equal numbers is a branch nothing distinguishes.
+///
+/// The direction is asserted as an inequality rather than as `15`, so a
+/// balance pass may retune the number without touching this file — but it
+/// may not quietly invert the design, which is the part that has a source
+/// (`content/mobs.toml`'s comment, and `DECISIONS.md` §open "nocturnal
+/// senses").
+#[test]
+fn the_shipped_wolf_hunts_a_narrower_circle_after_dusk() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let mc = c.bake_mobs().expect("the wolf must bake");
+    let wolf = mc.def(sim_core::mob::MOB_WOLF);
+
+    assert_eq!(wolf.spook_cm, 3_000);
+    assert_eq!(wolf.night_spook_cm, 1_500);
+    assert!(
+        wolf.night_spook_cm < wolf.spook_cm,
+        "the predator's night radius must not be the wider one: the \
+         reference game shipped wider-at-night and removed it"
+    );
+    // The leash still clears the widest radius in force at any hour.
+    assert!(wolf.roam_cm > wolf.spook_cm.max(wolf.night_spook_cm));
+    // And the bite is reachable at the tighter hour, or it is a bite on
+    // something the animal never noticed.
+    assert!(wolf.attack_range_cm <= wolf.night_spook_cm);
+
+    // The selector, against the shipped table.
+    let day = (0..sim_core::limits::DAY_TICKS)
+        .find(|&t| !sim_core::world::is_night(t))
+        .expect("the cycle must contain a day");
+    let night = (0..sim_core::limits::DAY_TICKS)
+        .find(|&t| sim_core::world::is_night(t))
+        .expect("the cycle must contain a night");
+    assert_eq!(wolf.spook_at(day), wolf.spook_cm);
+    assert_eq!(wolf.spook_at(night), wolf.night_spook_cm);
 }
 
 /// **The loop, across three content files that cannot see each other.**
@@ -2294,6 +2359,32 @@ fn mob_refusals() {
         "flee_seconds = 3",
         "flee_seconds = 0",
         "scenery",
+    );
+    // **The same three bands, stated at the other hour.** Before nocturnal
+    // senses each of these read `spook_m` alone, which was total when there
+    // was one radius and became a hole the moment there were two: a species
+    // could be given a night radius outside its own leash, a night it is
+    // blind through, or a bite reaching further than it can notice after
+    // dark, and every band above would still have passed it. The wolf's
+    // `night_spook_m = 15` is the anchor because it is the only row that
+    // carries that value.
+    refuses(
+        "mobs.toml",
+        "night_spook_m = 15",
+        "night_spook_m = 200",
+        "treadmill",
+    );
+    refuses(
+        "mobs.toml",
+        "night_spook_m = 15",
+        "night_spook_m = 0",
+        "scenery",
+    );
+    refuses(
+        "mobs.toml",
+        "night_spook_m = 15",
+        "night_spook_m = 1",
+        "outreaches",
     );
     refuses(
         "mobs.toml",
