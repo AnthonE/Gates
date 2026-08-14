@@ -151,7 +151,7 @@ async fn main() {
                         "bot {i}: id {} · snaps {} (delta {}, stale {}, nobase {}) · \
                          decode err {} · inputs {} (exec {}) · own {} · maxent {} · \
                          events {} (err {}) · raid {}c actions {} (unenc {}, lane err {}) · \
-                         refused b{} d{} m{} · placed p{} d{} · hits {} · auth {}",
+                         refused b{} d{} m{} · placed p{} d{} · armed {} · hits {} · auth {}",
                         r.player_id,
                         r.snapshots_applied,
                         r.delta_snapshots,
@@ -173,6 +173,13 @@ async fn main() {
                         r.move_refused,
                         r.pieces_placed,
                         r.deploys_placed,
+                        // The one number that says a raid ARMED. It was
+                        // collected and never printed, so the operator's
+                        // only view of the raid lane was `hits`, which is
+                        // the number after the fuse — and a fleet whose
+                        // plants were all refused looked identical to one
+                        // whose blasts all landed on nothing.
+                        r.charges_planted,
                         r.struct_hits,
                         r.auths,
                     );

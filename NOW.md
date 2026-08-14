@@ -42,6 +42,38 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0rc · The raid completes — what is left of it *(systems lane)*
+
+From `findings/pass-20260813-230343-16-judge.md` §B.1, ranked the largest
+playable gap in the game: *"You cannot get into anyone's base."*
+
+**Landed this pass.** §0rf's named cheap next step, taken: the detonation is
+gated in the sim on *shipped* content — `crates/server/tests/raid.rs`, twig
+foundation at hp 10 against `structure` 125, the real 300-tick fuse. It went
+**green first run**, so the verb was never broken. That clears §0rf's whole
+suspect list: `detonate`'s scan, the `find_index` re-resolve, the overkill
+case (`dealt` is clamped to the piece's 10, not the charge's 125), the fuse
+length. Also read and cleared this pass: the wire encoder's `EV_STRUCT_HIT`
+arm, and any early sweep of a live charge — the only writes to
+`World::charges` are `place`, `tick_fuses` and the save restore.
+
+**Half the mystery is now arithmetic.** `bot_smoke.rs`'s raid `WINDOW` is
+4 s = 120 ticks against a 300-tick fuse, so that gate could never have seen
+a detonation; its comment claiming an unexplained mechanism is corrected.
+
+**What remains.** The 30 s run (905 ticks, 27 plants, still 0 hits) is
+unexplained. It is in the bot arrangement, not the verb: over the wire each
+bot seats its plan from *its own* cell and re-seats every 10 steps while
+walking (`botclient.rs:370-380`), so attacker and owner never share a plot —
+unlike `raid_storm.rs`, and unlike `bots.rs:111`'s doc claim. Next
+measurement is an instrumented 30 s run recording per plant the tick planted
+and the tick due; the live suspicion is the plants cluster in the final 300
+ticks. Do **not** lengthen a wire gate to reach a detonation — that is a gate
+waiting on a clock. Chain:
+`findings/note-20260814-raid-completes-in-the-sim.md`.
+
+---
+
 ## 0rs · The bots raid on the wire — what a naked raider cannot reach *(systems lane)*
 
 From `findings/pass-20260813-230343-{13,14}-judge.md` gap 1, *"a player has
@@ -76,35 +108,6 @@ Remaining, ranked:
    one client-driven family it misses.
 2. `CLAUDE.md` wall 4's ⚠ still says `test_raid_storm` does not exist; a
    loop may not edit the walls list, so striking it is an operator act.
-
----
-
-## 0rf · A planted satchel never detonates *(systems lane)*
-
-Found while landing §0rs item 1, and it is not what that item predicted. With
-the fleet funded, charges **arm** and `struct_hits` stays exactly 0: 27 plants
-over a 30 s run at a measured 905 shard ticks — three times the shipped
-300-tick fuse — and no `EV_STRUCT_HIT` ever reaches a client.
-
-Ruled out, with evidence: affordability, the fuse window, the plant itself
-(`REFUSE_B_SPOT` means a structure *was* standing there), the emit
-(`damage_piece` pushes the event unconditionally, before the removal branch),
-routing (broadcast, and the other broadcast events arrive), ring pressure
-(`forced_resyncs` and `ev_resyncs` both 0), and decode (0 errors; a variant
-histogram shows 16 other subtypes arriving and `StructHit` never once). So
-`damage_piece` is never reached from `tick_fuses` on a live shard.
-
-Not ruled out, in order: `detonate`'s target scan (the column presence mask,
-then the `find_index` re-resolve); the piece being removed during the 10 s
-fuse; and **overkill** — twig foundation hp 10 against `structure` 125.
-`blast.rs` never tests that combination: `raid_world()` bumps its fixture rows
-to `hp = 1000` precisely so pieces survive the blast, and its fuse is 60
-ticks. The shipped combination is covered by no test in the tree.
-
-Next step, cheap: a sim test on *shipped* content — twig foundation, satchel
-planted, tick past 300, assert `EV_STRUCT_HIT`. Red ⇒ that is the regression
-gate. Green ⇒ the difference between that world and a shard is the answer.
-Full chain: `gates-loop/findings/note-20260814-charge-never-detonates.md`.
 
 ---
 
