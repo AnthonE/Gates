@@ -73,18 +73,31 @@ Remaining, in order:
    `CLIFF_SLOPE_RATIO` and `biome()`'s Highland edge, and
    `crates/sim-core/tests/relief.rs` is red under that edit and now also under
    the quadrant window's return.
-2. **So the missing green is the renderer's, and item 3 is the live one.**
-   Nothing about the world explains a frame with no granite in it — the rock is
-   there, in view distance of the spawn. Whatever eats it sits between
-   `splat`/`vertex_color` and the pixel.
-3. **Something between `vertex_color` and the pixel eats the green.** The OLD
-   constants already held two hue populations (31.1° and 84.0°) while the judge
-   measured 29–35° with nothing above it. Untested: the granite photograph's
-   chroma through `base_color_texture`, the lighting, the tonemap, or a near
-   band that is mostly clutter and props rather than ground.
+2. ~~The missing green is the renderer's~~ — **struck 2026-08-14. Nothing eats
+   it.** Gate `crates/client/tests/ground_where_the_green_goes.rs`, 5 tests,
+   red under two inversions; measurements in
+   `gates-loop/findings/note-20260814-where-the-green-goes.md`. The material
+   side is exactly hue-preserving (worst 0.000061° over 39,300 samples, in
+   LINEAR space — the encoded space reads 0.262° and that is the sRGB curve,
+   not a tint), and `ground_detail.jpg` is neutral at every percentile. The
+   island is a **mosaic**: `SPLAT_MOIST_BAND` is 0.08 wide across a moisture
+   field spanning ~0.9, so 48.8% of land reads as grass alone, 34.7% as litter
+   alone, only 7.0% blends — and the two are 30.5° apart in hue.
+3. **The capture probe's ground colour is a draw, and this is the live item.**
+   `VANTAGES` is six yaw/pitch pairs with no translation, so all six frames are
+   shot from the spawn point; `spawn_pos` draws a bearing from the player id.
+   Near-band green-dominant over 16 bearings: **0.0%, 78.6%, 81.2%, 85.2%,
+   85.3%** — bimodal, and the judge drew the litter side three reports running.
+   So consecutive `-visual.md` are not comparable on anything ground colour
+   touches, compounding the unpinned sun (its own defect 17). `dev_spawn`
+   already exists (`world.rs:1223`) and §0p3 has the recipe; the knob is
+   `DECISIONS.md` §open, "the capture probe's spawn".
 4. **The judge read real geometry as paint.** `render/clutter.rs` ships 721
    elements a tile and is drawn; what it lacks is a shadow (`NotShadowCaster`,
    deliberately) and any contact darkening (no SSAO anywhere). `ART.md` rule 2.
+5. **The mosaic is not itself a defect, but litter wins every mix.** Grass is
+   the darkest identity and litter 3.2× brighter, so grass needs **≥82.1%** of
+   a blend to still read green. That is why the boundary never reads as grass.
 
 ## 0pop · The shard has inhabitants — what they cannot yet do *(server lane)*
 
