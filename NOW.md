@@ -42,6 +42,33 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0sp2 · A full pack stops eating what it is paid — the give-backs are left *(systems lane)*
+
+Gap-pass item, from the merge-gate judge's ranked gap 2
+(`findings/pass-20260813-230343-07-judge.md`): *"`gather::inv_add` still
+loses overflow, so a full pack quietly eats the pickup."* Landed
+2026-08-14: `gather::swing` and `craft::step` write what will not fit into
+a caller-owned tick buffer and `world.rs` drains it into a bag at the
+player's feet, merging into the nearest bag within `LOOT_REACH_M` first so
+farming at a full pack costs one bag and not one per swing. No new
+archetype, no wire change, no knob (`DECISIONS.md` §open "ground drops
+v0"). Six tests in `sim-core/tests/spill.rs`, each proven red under its own
+revert. Left:
+
+- **The four give-back paths still discard their leftover** — a demolish
+  refund (`build.rs:1152`), a deployable pick-up (`deploy.rs:1915`), a lock
+  removal (`lock.rs:525`, whose doc claimed otherwise until this pass) and
+  a craft cancel's refund (`craft.rs:314`). Same helper, same drain point;
+  the reason it is not done here is that each has its own address question
+  (a demolished wall's refund falls where the wall was, not where you are).
+- **A spill is silent.** `EV_GATHER` correctly reports what reached the
+  hands — zero — so the toast reads `+0`, and the only signal a player gets
+  is a bag appearing underfoot. A "pack full" line is a client-side read of
+  facts already on the wire, or a new event if it is not. Operator: whether
+  it is worth a wire field.
+- **Nobody has seen one.** Gap 1 of the same report stands: this is proven
+  by headless tests only.
+
 ## 0wc · The crate opens — what world containers v0 left *(systems lane)*
 
 Gap-pass item, from the merge-gate judge's ranked gap 1
@@ -78,7 +105,13 @@ Owed, in rank order:
    an emptied crate looks like. The capture probe **cannot** substitute —
    `VANTAGES` (`render/capture.rs`) is yaw/pitch from the spawn eye with no
    position, so it can only ever photograph wherever the player already is.
-   Standing the probe somewhere is itself unbuilt work.
+   **Standing the probe at the pad is NOT unbuilt work** — this line said it
+   was and the judge measured it false (pass -07, ranked fix 1):
+   `shard.toml dev_spawn = "x,z"` is parsed (`config.rs:283`), carried into
+   the world (`net.rs:1618`) and returned ahead of the spawn ring
+   (`world.rs:1213`). Derive the crate's anchor the way `a_pad_crate` does,
+   put it in `shard.toml`, boot. That is the cheapest route to the
+   verification this item asks for.
 2. **An emptied crate says nothing at a distance.** The only way to learn
    the pad is farmed out is to walk to it, which makes a wasted trip the
    normal case once a shard is populated. Wants either a visible lid
@@ -101,6 +134,14 @@ Owed, in rank order:
 4. **Nobody has fought a guard in the running game.** Same standing as
    item 1 and now more of the pad's story: the wolf that hatches at the
    crates has never been seen, heard or fought with the client attached.
+5. **`inventory::slots_in` is the same defect shape one function over**
+   (judge, pass -07, fix 2): `CONT_BOX => BOX_SLOTS, _ => INV_SLOTS`, and
+   the drip takes the panel's width from it. Right today only because a
+   world container happens to be `INV_SLOTS` wide; a fifth ground kind of a
+   different width draws the wrong slot count silently, and
+   `a_world_crate_is_drawn_from_the_crate_store` reads `0..INV_SLOTS` so it
+   would not catch it. Wants an explicit arm under the same `CONT_MAX`
+   compile guard `container_wire.rs` just gained.
 
 ## 0pr · The wolf hunts — what predator v0 left *(systems lane)*
 

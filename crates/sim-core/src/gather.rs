@@ -353,10 +353,27 @@ pub struct ItemStack {
 }
 
 /// Add `amount` of `item` to an inventory: top up matching stacks in slot
-/// order, then fill empty slots. Returns what actually fit — the rest is
-/// lost (documented policy, DECISIONS.md §open: ground drops land with
-/// the death/backpack slice).
+/// order, then fill empty slots. Returns what actually fit.
+///
+/// **What does not fit is destroyed here, and that is now the exception
+/// rather than the rule** — `inv_add_spilling` is the payout adder, and it
+/// hands the remainder to a caller-owned spill buffer that `world.rs`
+/// stands up as a bag at the player's feet. This bare form stays for the
+/// paths that genuinely have nowhere to put a leftover (a container write,
+/// an admin give) and for `inv_add_spilling`'s own two calls.
+///
+/// A `stack_max` of zero adds nothing and **writes nothing**. Without that
+/// guard the empty-slot pass sets `s.item = item` before computing a take
+/// of zero, so an item with no stack rule stamped its index across every
+/// empty slot as `{ item, count: 0 }` — non-canonical empties, which
+/// `world.rs`'s hash reads unconditionally, so two shards that had handled
+/// a zero-ceiling item differently would diverge on state a player cannot
+/// see. Three of the nine callers guarded it by hand; the other six did
+/// not, and `deploy.rs`'s pick-up already documented hitting it.
 pub fn inv_add(inv: &mut [ItemStack; INV_SLOTS], item: u16, amount: u16, stack_max: u16) -> u16 {
+    if stack_max == 0 {
+        return 0;
+    }
     let mut left = amount;
     for s in inv.iter_mut() {
         if left == 0 {
@@ -380,6 +397,34 @@ pub fn inv_add(inv: &mut [ItemStack; INV_SLOTS], item: u16, amount: u16, stack_m
         }
     }
     amount - left
+}
+
+/// Pay `amount` of `item` into an inventory and put whatever will not fit
+/// into `spill` instead of destroying it. Returns what reached the
+/// inventory — **not** what was paid, because that return feeds
+/// `EV_GATHER`/`EV_CRAFT_DONE`, whose meaning is "this entered your hands"
+/// (`backpack.rs`'s loot path pays in the same currency) and a spilled
+/// stack did not.
+///
+/// The spill is an ordinary `[ItemStack; INV_SLOTS]` the caller owns for
+/// the tick, which is what lets `gather` and `craft` keep their promise not
+/// to own a container store: they name what fell, `world.rs` decides where
+/// it lands, exactly as `Swing::Smashed` already splits the barrel's bit
+/// from the barrel's loot. A spill that overflows its own 30 slots loses
+/// the excess — bounded and stated, though a single tick's payout is at
+/// most two item kinds and cannot reach it.
+pub fn inv_add_spilling(
+    inv: &mut [ItemStack; INV_SLOTS],
+    spill: &mut [ItemStack; INV_SLOTS],
+    item: u16,
+    amount: u16,
+    stack_max: u16,
+) -> u16 {
+    let added = inv_add(inv, item, amount, stack_max);
+    if added < amount {
+        inv_add(spill, item, amount - added, stack_max);
+    }
+    added
 }
 
 /// One slot's life record. `respawn_at == 0` ⇒ standing (damaged);
@@ -549,6 +594,11 @@ pub fn weak_mark8(seed: u64, cx: u16, cz: u16, pid: u32, n: u16) -> u8 {
 /// and the nearest standing thing is always the nearer claim on it.
 /// `Smashed` is a barrel that came apart — absorbed, and with a container
 /// owed at the address it names.
+///
+/// `spill` catches yield the swinger's inventory could not hold. It is the
+/// caller's buffer for the tick and this function only writes into it; the
+/// caller stands it up as a bag, because gather owns the slot bit and not
+/// the container store — the same split `Smashed` already makes.
 #[allow(clippy::too_many_arguments)]
 pub fn swing(
     seed: u64,
@@ -561,6 +611,7 @@ pub fn swing(
     lives: &mut SlotLives,
     events: &mut EventQueue,
     p: &mut Player,
+    spill: &mut [ItemStack; INV_SLOTS],
 ) -> Swing {
     if p.frame.buttons & BTN_PRIMARY == 0 || tick < p.next_swing {
         return Swing::Absorbed;
@@ -708,8 +759,11 @@ pub fn swing(
         pay += total - pool;
     }
     let pay = pay.min(u16::MAX as u64) as u16;
-    let added = inv_add(
+    // A full pack no longer eats the swing: what will not fit goes to the
+    // spill and `world.rs` drops it where the swinger stands.
+    let added = inv_add_spilling(
         &mut p.inv,
+        spill,
         def.output,
         pay,
         gc.stack_max[def.output as usize],
@@ -726,8 +780,9 @@ pub fn swing(
     // landed swing, on the nodes whose content declares one.
     let (sec_item, sec_pay) = def.secondary;
     if sec_item != NO_ITEM && (sec_item as usize) < MAX_ITEM_DEFS && sec_pay > 0 {
-        let got = inv_add(
+        let got = inv_add_spilling(
             &mut p.inv,
+            spill,
             sec_item,
             sec_pay,
             gc.stack_max[sec_item as usize],
@@ -842,6 +897,45 @@ mod tests {
                 count: 100
             }
         );
+    }
+
+    /// A stack ceiling of zero must add nothing AND write nothing. Before
+    /// the guard, the empty-slot pass set `s.item` before computing a take
+    /// of zero, so this stamped `{ item: 9, count: 0 }` across all 30
+    /// slots — non-canonical empties, which `world.rs`'s state hash reads
+    /// unconditionally. Red without the guard: the second assert fails on
+    /// `inv[0].item == 9`.
+    #[test]
+    fn a_ceiling_of_zero_writes_nothing() {
+        let mut inv = [ItemStack::default(); INV_SLOTS];
+        assert_eq!(inv_add(&mut inv, 9, 5, 0), 0, "nothing fits at ceiling 0");
+        assert!(
+            inv.iter().all(|s| *s == ItemStack::default()),
+            "a zero ceiling must leave the inventory canonically empty"
+        );
+    }
+
+    /// The payout adder hands the remainder to the spill instead of
+    /// destroying it, and reports only what reached the hands.
+    #[test]
+    fn spilling_keeps_what_the_pack_could_not_hold() {
+        let mut inv = [ItemStack::default(); INV_SLOTS];
+        let mut spill = [ItemStack::default(); INV_SLOTS];
+        // One free slot, ceiling 100, paid 250: 100 lands, 150 spills.
+        for s in inv.iter_mut() {
+            *s = ItemStack {
+                item: 3,
+                count: 100,
+            };
+        }
+        inv[7] = ItemStack::default();
+        assert_eq!(inv_add_spilling(&mut inv, &mut spill, 7, 250, 100), 100);
+        assert_eq!(crate::craft::inv_count(&spill, 7), 150, "the rest fell");
+        // Nothing spills when it all fits, and the spill is untouched.
+        let mut inv2 = [ItemStack::default(); INV_SLOTS];
+        let mut spill2 = [ItemStack::default(); INV_SLOTS];
+        assert_eq!(inv_add_spilling(&mut inv2, &mut spill2, 4, 30, 100), 30);
+        assert!(spill2.iter().all(|s| s.count == 0));
     }
 
     #[test]

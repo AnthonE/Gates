@@ -10,15 +10,18 @@
 //! Verb rules below are proposed defaults, DECISIONS.md §open ("craft
 //! verb v0" row): queue of `CRAFT_QUEUE` jobs · count ≤ `CRAFT_COUNT_MAX`
 //! per request · inputs consumed up front for the whole batch · cancel
-//! refunds the remaining units' inputs · output (and refund) an inventory
-//! can't hold is lost, the same documented policy as gather until ground
-//! drops land · station-gated recipes need a placed station deployable
+//! refunds the remaining units' inputs · **an output an inventory can't
+//! hold now falls at the crafter's feet** (2026-08-14: `step` spills into
+//! the caller's tick buffer and `world.rs` stands a bag up, the same lane
+//! gather's yield takes), while a **cancel's refund is still lost** — the
+//! give-back paths are the half of that sweep `NOW.md` §0sp2 still owes ·
+//! station-gated recipes need a placed station deployable
 //! (workbench/furnace archetype, deploy.rs) within `STATION_RADIUS_M` of
 //! the crafter at enqueue — enqueue-time only, the reference behavior:
 //! walking away never cancels a queue.
 
 use crate::deploy::{DeployContent, Deploys, ARCH_FURNACE, ARCH_WORKBENCH};
-use crate::gather::{inv_add, GatherContent, ItemStack};
+use crate::gather::{inv_add, inv_add_spilling, GatherContent, ItemStack};
 use crate::limits::{
     CRAFT_COUNT_MAX, CRAFT_QUEUE, INV_SLOTS, MAX_ITEM_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
 };
@@ -328,12 +331,18 @@ pub fn cancel(cc: &CraftContent, gc: &GatherContent, tick: u64, p: &mut Player, 
 /// One player's per-tick craft progress: at most one unit completes per
 /// tick (recipe ticks are ≥ 1 by bake), paying the output and starting
 /// the next unit's — or the next job's — timer.
+///
+/// `spill` is the caller's tick buffer, the same one `gather::swing`
+/// writes: a finished craft whose output does not fit falls at the
+/// crafter's feet instead of vanishing, which matters more here than at a
+/// node because the ingredients are already spent.
 pub fn step(
     cc: &CraftContent,
     gc: &GatherContent,
     tick: u64,
     p: &mut Player,
     events: &mut EventQueue,
+    spill: &mut [ItemStack; INV_SLOTS],
 ) {
     if p.jobs[0].remaining == 0 || tick < p.craft_done_at {
         return;
@@ -347,8 +356,9 @@ pub fn step(
         return;
     }
     let def = &cc.recipes[recipe as usize];
-    let added = inv_add(
+    let added = inv_add_spilling(
         &mut p.inv,
+        spill,
         def.output,
         def.out_count,
         gc.stack_max[def.output as usize],
@@ -372,6 +382,25 @@ mod tests {
     use crate::gather::NO_CELL;
     use crate::input::InputFrame;
     use crate::movement::Body;
+
+    /// `step` for the cases where the crafter's pack has room. Asserts the
+    /// spill stayed empty, so a future change that starts dropping a
+    /// craftable on the ground when it did not have to reddens the whole
+    /// existing suite rather than passing under it.
+    fn step_nospill(
+        cc: &CraftContent,
+        gc: &GatherContent,
+        tick: u64,
+        p: &mut Player,
+        events: &mut EventQueue,
+    ) {
+        let mut spill = [ItemStack::default(); INV_SLOTS];
+        step(cc, gc, tick, p, events, &mut spill);
+        assert!(
+            spill.iter().all(|s| s.count == 0),
+            "nothing should have spilled at tick {tick}"
+        );
+    }
 
     fn player(inv0: &[(u16, u16)]) -> Player {
         let mut p = Player {
@@ -430,9 +459,9 @@ mod tests {
         assert_eq!(inv_count(&p.inv, 0), 4, "3 × 2 consumed up front");
         assert_eq!(p.craft_done_at, 102);
 
-        step(&cc, &gc, 101, &mut p, &mut ev);
+        step_nospill(&cc, &gc, 101, &mut p, &mut ev);
         assert!(ev.is_empty(), "not due yet");
-        step(&cc, &gc, 102, &mut p, &mut ev);
+        step_nospill(&cc, &gc, 102, &mut p, &mut ev);
         assert_eq!(ev.len(), 1);
         assert_eq!(ev.entries()[0].code, EV_CRAFT_DONE);
         assert_eq!(ev.entries()[0].b, (2 << 16) | 2, "item 2 × 2 landed");
@@ -440,7 +469,7 @@ mod tests {
         assert_eq!(p.jobs[0].remaining, 1);
         assert_eq!(p.craft_done_at, 104, "next unit re-arms");
 
-        step(&cc, &gc, 104, &mut p, &mut ev);
+        step_nospill(&cc, &gc, 104, &mut p, &mut ev);
         assert_eq!(p.jobs[0], CraftJob::default(), "batch done, queue empty");
         assert_eq!(p.craft_done_at, 0);
         assert_eq!(inv_count(&p.inv, 2), 4);
@@ -518,7 +547,7 @@ mod tests {
 
         // Cancel the now-head after one unit completes: only the
         // remaining unit refunds.
-        step(&cc, &gc, 58, &mut p, &mut ev);
+        step_nospill(&cc, &gc, 58, &mut p, &mut ev);
         assert_eq!(p.jobs[0].remaining, 1);
         cancel(&cc, &gc, 60, &mut p, 0);
         assert_eq!(inv_count(&p.inv, 1), 18, "2 of 4 came back");
@@ -589,8 +618,15 @@ mod tests {
         assert_eq!((e.code, e.b), (EV_CRAFT_REFUSED, REFUSE_STATION));
     }
 
+    /// Was `overflowing_output_is_lost_not_wedged` until 2026-08-14: the
+    /// output is no longer lost, it spills. Every assertion that test made
+    /// is still made here — the event still reports **zero** reaching the
+    /// hands, and the batch still advances — with the one that matters
+    /// added, that the units are in the spill rather than nowhere. The
+    /// queue not wedging on a full pack is the half that was always the
+    /// point, and it is unchanged.
     #[test]
-    fn overflowing_output_is_lost_not_wedged() {
+    fn overflowing_output_spills_and_the_queue_still_advances() {
         let (cc, gc) = fixture();
         let (dc, nod) = (DeployContent::EMPTY, Deploys::new());
         // 7 of item 0: the batch consumes 6, so slot 0 keeps one unit and
@@ -604,11 +640,21 @@ mod tests {
             };
         }
         let mut ev = EventQueue::default();
+        let mut spill = [ItemStack::default(); INV_SLOTS];
         enqueue(&cc, &dc, &nod, 10, &mut p, 0, 2, &mut ev);
-        step(&cc, &gc, 12, &mut p, &mut ev);
+        step(&cc, &gc, 12, &mut p, &mut ev, &mut spill);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!(e.code, EV_CRAFT_DONE);
-        assert_eq!(e.b & 0xFFFF, 0, "nothing fit; the loss is announced");
+        assert_eq!(
+            e.b & 0xFFFF,
+            0,
+            "nothing reached the hands, and the event says so"
+        );
         assert_eq!(p.jobs[0].remaining, 1, "the batch still advances");
+        assert_eq!(
+            inv_count(&spill, 2),
+            cc.recipes[0].out_count as u32,
+            "the whole output fell to the spill instead of being destroyed"
+        );
     }
 }

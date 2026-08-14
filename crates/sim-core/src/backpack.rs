@@ -30,9 +30,18 @@
 //! is not), no id-targeted loot (the pick is the nearest bag in reach,
 //! the same shape `gather::swing` and `combat::strike` use, so nothing
 //! spoofable crosses the wire), no bag hp and so no destroying one
-//! without opening it, and no ground drops from a full inventory —
-//! `gather::inv_add` still loses that overflow, and the drop-what-won't-
-//! fit lane is its own item.
+//! without opening it, and no player-initiated drop verb (there is no
+//! `Command::Drop` — putting a chosen stack on the ground is a different
+//! feature from catching one that had nowhere to go).
+//!
+//! **Ground drops from a full inventory landed 2026-08-14** and were the
+//! last line of that list: `spill_at` catches what `inv_add` used to
+//! destroy. It is armed on the two paths that *pay* a player — a node's
+//! yield and a finished craft — and not yet on the paths that *give one
+//! back*: a demolish refund (`build.rs`), a deployable pick-up and a lock
+//! removal (`deploy.rs`, `lock.rs`) and a craft cancel's refund
+//! (`craft.rs`) all still discard their leftover. `NOW.md` §0sp2 carries
+//! the rest of the sweep.
 
 use crate::gather::{inv_add, GatherContent, ItemStack};
 use crate::limits::{INV_SLOTS, MAX_BACKPACKS, MAX_ITEM_DEFS};
@@ -318,6 +327,93 @@ impl Backpacks {
         self.len += 1;
         events.push(EV_BAG_DROPPED, id, owner, 0);
         Some(id)
+    }
+
+    /// Catch what an inventory could not hold. Merge into the nearest bag
+    /// already standing in reach of `(qx, qz)` first, then stand a new one
+    /// up for whatever still will not fit; `items` is left holding
+    /// whatever nothing took. Returns the bag that ended up with the last
+    /// of it, or `None` when nothing was caught.
+    ///
+    /// **The merge is what makes this bounded**, and it is the whole
+    /// reason this is not just `stand_up`. A player swinging at a full
+    /// pack pays a swing every `SWING_INTERVAL_TICKS` — roughly 47 a
+    /// minute — and a bag per swing would churn `MAX_BACKPACKS` in five
+    /// minutes of one player farming, evicting other people's death bags
+    /// to do it. Merging first means standing still costs one bag however
+    /// long you swing, and the eviction ladder keeps meaning what it says.
+    ///
+    /// The radius is `LOOT_REACH_M` — not a new knob, and the same arm
+    /// that decides you may open a bag decides your spill can reach it.
+    /// The pick is nearest-first with ties to the lower index, exactly
+    /// `loot_nearest`'s rule, so it is a pure function of state.
+    ///
+    /// A bag that grows gets its expiry pushed out to what its new
+    /// contents ask for and never pulled in — otherwise dropping a common
+    /// item into a bag holding a rare one would shorten the rare one's
+    /// clock, which is the ladder paying backwards.
+    ///
+    /// An inert ladder (`base_ticks == 0`) catches nothing and the
+    /// overflow is destroyed exactly as it was before this lane existed —
+    /// the same disarm `stand_up` and `drop_for` honour, so content that
+    /// never armed the module still gets the pre-backpack world.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spill_at(
+        &mut self,
+        bc: &BackpackContent,
+        gc: &GatherContent,
+        qx: i32,
+        qy: i32,
+        qz: i32,
+        owner: u32,
+        items: &mut [ItemStack; INV_SLOTS],
+        tick: u64,
+        events: &mut EventQueue,
+    ) -> Option<u32> {
+        if bc.base_ticks == 0 {
+            return None; // inert content: the module is disarmed
+        }
+        if items.iter().all(|s| s.count == 0) {
+            return None; // nothing to catch
+        }
+        let px = qx as f32 * POS_XZ_Q;
+        let pz = qz as f32 * POS_XZ_Q;
+        let mut best: Option<(f32, usize)> = None;
+        for i in 0..self.len {
+            let dx = self.entries[i].qx as f32 * POS_XZ_Q - px;
+            let dz = self.entries[i].qz as f32 * POS_XZ_Q - pz;
+            let d2 = dx * dx + dz * dz;
+            if d2 > LOOT_REACH_M * LOOT_REACH_M {
+                continue;
+            }
+            if best.is_none_or(|(bd2, _)| d2 < bd2) {
+                best = Some((d2, i));
+            }
+        }
+        if let Some((_, i)) = best {
+            for stack in items.iter_mut() {
+                if stack.count == 0 {
+                    continue;
+                }
+                let cap = gc.stack_max_of(stack.item);
+                let took = inv_add(&mut self.entries[i].items, stack.item, stack.count, cap);
+                if took == 0 {
+                    continue;
+                }
+                stack.count -= took;
+                if stack.count == 0 {
+                    stack.item = 0; // canonical empty
+                }
+            }
+            let want = tick + bc.lifetime_ticks(&self.entries[i].items) as u64;
+            if want > self.entries[i].expires {
+                self.entries[i].expires = want;
+            }
+            if items.iter().all(|s| s.count == 0) {
+                return Some(self.entries[i].id);
+            }
+        }
+        self.stand_up(bc, qx, qy, qz, owner, items, tick, events)
     }
 
     /// Retire every bag whose timer ran out. One pass over the live
