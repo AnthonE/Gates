@@ -44,20 +44,20 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ## 0pr · The wolf hunts — what predator v0 left *(systems lane)*
 
-From `findings/pass-20260813-230343-01-judge.md` ranked gap 1 ("the island
-holds one animal and it is prey"). Landed 2026-08-14 as a content row:
-`MOB_KINDS` 2, `kind_of(slot)` (a stride — 16 of 64, no wire byte, v29's
-rejected `kind` field still rejected), the wolf in `mobs.toml`, its massing
-and the death sentence. **Nothing in `mob.rs` branches on species** — a
-hunter is `brave_pct = 0` plus a 30 m notice radius. `DECISIONS.md` §open
-"predator v0" has the numbers and their sources; 10 new gates, each proven
-red under its own mutation.
+Predator v0 landed 2026-08-14: the wolf is a content row, and **nothing in
+`mob.rs` branches on species** — a hunter is `brave_pct = 0` plus a notice
+radius. `DECISIONS.md` §open "predator v0" has the numbers, the sources and
+the phase-locked-bite bug the stride exposed. (Trimmed to the bound
+2026-08-14; the landing story is in that row, not here.)
 
-**It found a bug three green gates could not see.** A charge held `flee_gait`
-at any distance, so a closed animal overshot and orbited on a 30-tick cycle;
-the bite is phase-locked to 60, a multiple of 30, so the bite sampled the
-same point of that orbit forever — a slot whose phase fell outside reach
-could never bite. Slot 0's fell inside and every bite gate hunted slot 0.
+**Item 3 landed 2026-08-14 — pointing the other way.** The sim reads the
+clock now: `world::is_night` is the door, `MobDef::spook_at` the selector,
+`night_spook_m` the content field, `mob::think`'s notice test the one line
+through it. But the wolf hunts **worse** after dusk: the reference cut its
+predator's night sight in 2024, and no game in the survey publishes a night
+sense ratio above 1×. 30 m → 15 m, pig unchanged and gated so. 7 new tests,
+3 extended, all 10 proven red under their own mutation. Sources and the one
+number that is ours (the 0.5×) are in §open "nocturnal senses".
 
 Owed, in rank order:
 
@@ -66,11 +66,15 @@ Owed, in rank order:
    audio half of an encounter, and `NOW.md` §0m item 2 already wanted them.
 2. **A wolf pays no hide and no bone** — refused here because two new items
    drag recipes and `ui::icons::STEMS` into a roster slice.
-3. **Nothing hunts harder at night.** `day/night v0` is drawn, not
-   simulated; a nocturnal notice radius is what would make night cost
-   something. A knob, so §open first.
+3. **Night still costs the player nothing.** Nocturnal senses made the hour
+   a *tactic*; it did not make the dark dangerous, and nothing else in the
+   sim reads the clock. The sourced follow-on is the genre's own answer and
+   it is **not** more tuning of `night_spook_m`: a night-only roster
+   variant (Minecraft and Valheim both gate *spawns* on darkness; the one
+   published 2× detection is a variant, not a clock). The judge's gap 1
+   wanted a warmth stat, which is the bigger version of the same hole.
 4. **16 predators is arithmetic, not a playtest** — the one number here a
-   person answers.
+   person answers, alongside the 0.5×.
 
 ## 0sp · The tick has been profiled — where it goes *(server lane)*
 
@@ -335,13 +339,14 @@ node / 50% of a tree is withheld for whoever lands the last swing. Gated
 in `sim-core tests/gather.rs`; no wire byte moved.
 
 Still wrong for a returning player, in rank order, all of it detailed in
-`RIPLIST.md` §2: the boar does not fight back; no per-material damage
-resistance (one `structure` column, so the ladder above stone is
-compressed); one animal; and gather yields, smelt and craft times are
-still ours — node totals are `READY` now, per-hit yields are not, and our
-schema does not need them. Upkeep, decay and the armour ladder differ on
-purpose (`BALANCE.md` §4.1), though the upkeep *rate* turned out to match
-theirs.
+`RIPLIST.md` §2: no per-material damage resistance (one `structure`
+column, so the ladder above stone is compressed); and gather yields, smelt
+and craft times are still ours — node totals are `READY` now, per-hit
+yields are not, and our schema does not need them. Upkeep, decay and the
+armour ladder differ on purpose (`BALANCE.md` §4.1), though the upkeep
+*rate* turned out to match theirs. (Struck 2026-08-14: "the boar does not
+fight back" and "one animal" were falsified by `mob attack v0` and the
+wolf and had been left standing — the last judge's ranked fix 1.)
 
 ---
 

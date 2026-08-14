@@ -54,9 +54,12 @@ properly. The short version:
   rate, range falloff curve, ballistic (speed, drop) or hitscan, ammo id
 - **armor**: slot, damage reduction %, movement penalty
 - **consumable**: health/food/water deltas over seconds
-- **mob**: one animal species — hp, speeds as a percentage of the player's
-  own, the leash and fright radii in metres, the respawn in seconds, and
-  the stacks a kill pays. `content/mobs.toml`; the sim's side is
+- **mob**: one row per animal species — hp, speeds as a percentage of the
+  player's own, the leash in metres, **two notice radii** (day and night,
+  the only content number the *hour* selects — `night_spook_m`), the
+  respawn in seconds, and the stacks a kill pays. Two species ship, prey
+  and hunter, and they differ by content numbers alone: nothing in
+  `mob.rs` branches on species. `content/mobs.toml`; the sim's side is
   `sim-core/src/mob.rs` and the design is `reference/ANIMALS.md` §9.
 - **deployable**: entity archetype (bag, hearth, cupboard, box, furnace,
   workbench, door, lock, recycler, research), placement rules, hp

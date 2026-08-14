@@ -107,6 +107,13 @@ brave_pct = 50
 roam_m = 60
 spook_m = 12
 
+# Night changes nothing for prey, and that is a statement rather than a
+# placeholder. The reference game's rework was of its PREDATOR's senses and
+# said nothing about its boar's, so a nocturnal pig would be a difference
+# with no mechanism behind it — which `reference/BALANCE.md` §6.2 refuses in
+# exactly those words. Equal, until something is measured.
+night_spook_m = 12
+
 # Five minutes. Long enough that clearing the pigs near your base is worth
 # doing and short enough that it is not permanent. The slot hatches at its
 # OWN home, which is where we and the reference part company: theirs
@@ -212,6 +219,33 @@ brave_pct = 0
 # requires — a leash inside the radius that starts a charge is a treadmill.
 roam_m = 90
 spook_m = 30
+
+# **It hunts worse at night, not better, and that is the reference's own
+# direction rather than ours** (nocturnal senses, `DECISIONS.md` §open).
+#
+# The obvious design — a predator that ranges wider in the dark — is the one
+# the reference game shipped and then removed. Its 2024 predator rework cut
+# wolf sight at night on the stated grounds that the old animal "feels a bit
+# like a landmine… that issue is of course amplified in the pitch black
+# night": night danger in this genre is a problem of what the PLAYER can
+# see, and sharpening the animal on top of that is not difficulty, it is an
+# ambush the player was never given the information to avoid. No game in the
+# survey publishes a day→night sense ratio above 1× for one creature. The
+# one published 2× is a night-only *variant* — a different row in this file,
+# not this field.
+#
+# **Half is ours and the §open row says so.** The direction is sourced; the
+# ratio is not, because nobody publishes one. 0.5× is the best-supported
+# number in the survey for the analogous "this creature senses less right
+# now" case: two games independently use it for crouch (30 m sight → 15 m
+# crouched). 30 → 15 borrows that rather than inventing a third figure.
+#
+# What it buys the player is the first decision the CLOCK makes: crossing
+# open ground after dusk is a real tactic against the thing that hunts you,
+# and the cost of taking it is that you cannot see either. Before this, the
+# hour was a colour grade — nothing in the sim read it (`world::is_night`
+# is the door, and this is what walked through it).
+night_spook_m = 15
 
 # The pig's five minutes, deliberately unchanged. Clearing the wolves near
 # your base should be worth the same kind of doing, and no mechanism argues

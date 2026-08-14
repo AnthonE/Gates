@@ -16,8 +16,10 @@
 //!
 //! **What separates a predator from brave prey is the reaction, not the
 //! bite.** One rousing timer serves both and always did: a player inside
-//! `spook_cm` starts it, and `brave_pct` decides which way the animal then
-//! points. A pig is whole-hearted at full health and a coward under half of
+//! the notice radius starts it, and `brave_pct` decides which way the
+//! animal then points. Which radius is the hour's — `spook_cm` by day and
+//! `night_spook_cm` after dusk (`MobDef::spook_at`, the sim's only reader
+//! of the world clock). A pig is whole-hearted at full health and a coward under half of
 //! it; a wolf's floor is zero, so the same state is a charge at 1 hp. The
 //! bite is `attack != 0` and neither species has a code path the other
 //! lacks.
@@ -186,7 +188,31 @@ pub struct MobDef {
     /// and the two are one field because they are one comparison. The
     /// content validator gates `attack_range_m <= spook_m` on exactly this
     /// reading: nothing bites what it has not noticed.
+    ///
+    /// Daylight only, since nocturnal senses: [`MobDef::spook_at`] picks
+    /// between this and `night_spook_cm` off the world clock.
     pub spook_cm: i64,
+    /// The same radius after dusk, planar centimetres — the first number in
+    /// this file that the *hour* decides.
+    ///
+    /// **It is a second radius rather than a multiplier, and it is not
+    /// required to be the smaller one**, because the direction is content's
+    /// call and not the sim's (wall 7). The shipped roster points it down:
+    /// the reference game's 2024 predator rework *reduced* wolf sight at
+    /// night, on the grounds that an animal that hunts you in pitch black
+    /// "feels a bit like a landmine" — night danger there is a problem of
+    /// what the *player* can see, and sharpening the animal on top of it
+    /// was the defect they were fixing. No game in the survey publishes a
+    /// day→night sense ratio above 1× for one creature; the one published
+    /// 2× is a night-only *variant*, which is a different row in this table
+    /// and not this field (`DECISIONS.md` §open, "nocturnal senses").
+    ///
+    /// A rousing already running is untouched by dusk falling across it —
+    /// `think` refreshes `roused_until` while you are inside the radius and
+    /// otherwise lets it run out, so a chase that starts in daylight ends
+    /// on `flee_ticks` and not on a boundary. That is the desirable shape
+    /// and it costs no code: it falls out of refresh-not-recheck.
+    pub night_spook_cm: i64,
     /// Ticks between a death and the same slot hatching again at the same
     /// home. **The same home**, which is where we and the reference part
     /// company on purpose: their refill re-samples the distribution and the
@@ -211,12 +237,31 @@ impl MobDef {
         brave_pct: 0,
         roam_cm: 0,
         spook_cm: 0,
+        night_spook_cm: 0,
         respawn_ticks: 0,
         loot: [ItemStack {
             item: NO_ITEM,
             count: 0,
         }; MOB_LOOT_ROWS],
     };
+
+    /// The notice radius in force on `tick`, planar centimetres.
+    ///
+    /// The whole of the clock's reach into the sim. Everything downstream —
+    /// which way the animal points, whether it bites, how long it commits —
+    /// is `brave_pct`'s and `flee_ticks`' business exactly as before, so the
+    /// hour changes *when an encounter starts* and nothing about how it goes.
+    /// That is deliberately the smallest surface that makes the day
+    /// different from the night, and it keeps one comparison
+    /// (`world::is_night`) as the only new determinism input.
+    #[inline]
+    pub fn spook_at(&self, tick: u64) -> i64 {
+        if crate::world::is_night(tick) {
+            self.night_spook_cm
+        } else {
+            self.spook_cm
+        }
+    }
 }
 
 /// The baked species table (`content::Content::bake_mobs`).
@@ -256,6 +301,12 @@ impl MobContent {
             brave_pct: 50,
             roam_cm: 6_000,
             spook_cm: 1_200,
+            // Prey's flinch is not clock-keyed: the reference changed its
+            // predator's senses and said nothing about its boar's, and
+            // `reference/BALANCE.md` §6.2 refuses a difference with no
+            // mechanism behind it. Equal here is a statement, not a stub —
+            // `the_clock_moves_the_hunter_and_not_the_prey` reads it.
+            night_spook_cm: 1_200,
             respawn_ticks: 9_000,
             loot: [ItemStack {
                 item: NO_ITEM,
@@ -273,6 +324,7 @@ impl MobContent {
             brave_pct: 0,
             roam_cm: 9_000,
             spook_cm: 3_000,
+            night_spook_cm: 1_500,
             respawn_ticks: 9_000,
             loot: [ItemStack {
                 item: NO_ITEM,
@@ -607,8 +659,15 @@ fn think(
     // rousing already running — which is what makes both halves work: a
     // chase (either direction) lasts `flee_ticks` past the last moment you
     // were close.
+    //
+    // The radius is the hour's (`MobDef::spook_at`), and this is the only
+    // line in the sim that reads the world clock. Because it refreshes
+    // rather than re-checks, dusk falling mid-chase does not call the chase
+    // off — it stops feeding it, and `flee_ticks` finishes what daylight
+    // started.
     if let Some((d2, _, _, _)) = near {
-        if d2 <= def.spook_cm * def.spook_cm {
+        let spook_cm = def.spook_at(tick);
+        if d2 <= spook_cm * spook_cm {
             mob.roused_until = tick + def.flee_ticks as u64;
         }
     }

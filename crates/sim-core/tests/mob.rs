@@ -8,11 +8,13 @@ use sim_core::backpack::BackpackContent;
 use sim_core::combat::CombatContent;
 use sim_core::gather::{GatherContent, ItemStack, SWING_INTERVAL_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::limits::{MAX_MOBS, MAX_PLAYERS, MOB_ID_TAG, MOB_THINK_TICKS, MOB_WAKE_CM};
+use sim_core::limits::{
+    DAY_PORTION, DAY_TICKS, MAX_MOBS, MAX_PLAYERS, MOB_ID_TAG, MOB_THINK_TICKS, MOB_WAKE_CM,
+};
 use sim_core::mob::{self, MobContent, MOB_PIG, MOB_WOLF};
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::terrain;
-use sim_core::world::{Command, World};
+use sim_core::world::{self, Command, World};
 use sim_core::yaw_dir;
 
 fn armed(seed: u64) -> World {
@@ -750,5 +752,220 @@ fn a_closed_charge_settles_instead_of_orbiting() {
     assert_eq!(
         lo, hi,
         "a settled charge must not still be moving: {lo}..{hi}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Nocturnal senses — the first thing in the sim that reads the world clock.
+// ---------------------------------------------------------------------------
+
+/// A tick that is unambiguously night, and one that is unambiguously day.
+///
+/// Chosen off `is_night` itself rather than off arithmetic repeated here: a
+/// helper that recomputed the boundary would agree with a broken boundary.
+/// The `+ 32` headroom is so a test may drive a full think cycle without
+/// crossing dusk by accident, which would make a failure read as the wrong
+/// bug entirely.
+fn a_night_tick() -> u64 {
+    let t = (0..DAY_TICKS)
+        .find(|&t| world::is_night(t) && world::is_night(t + 32))
+        .expect("the cycle must contain a night");
+    assert!(world::is_night(t), "helper picked a daylight tick");
+    t
+}
+
+fn a_day_tick() -> u64 {
+    let t = (0..DAY_TICKS)
+        .find(|&t| !world::is_night(t) && !world::is_night(t + 32))
+        .expect("the cycle must contain a day");
+    assert!(!world::is_night(t), "helper picked a night tick");
+    t
+}
+
+/// `alone_with`, wound forward to a given hour.
+///
+/// `World::tick` is public and so is the counter, so the hour is set rather
+/// than played to: driving 42 700 ticks to reach dusk would be a
+/// twenty-second test that measured a respawn cadence and a hunger bar on
+/// the way past. Nothing in the sim stores an absolute deadline before the
+/// first think here — `roused_until` and the respawn clocks are all zero —
+/// so the jump is state-neutral by inspection.
+fn alone_with_at(kind: u8, metres: f32, hour: u64) -> (World, usize) {
+    let (mut w, slot) = alone_with(kind, metres);
+    w.tick = hour;
+    (w, slot)
+}
+
+/// One full think cycle: every slot has decided at least once.
+fn think_once(w: &mut World) {
+    for seq in 0..(MOB_THINK_TICKS as u16 + 1) {
+        let frame = InputFrame {
+            seq,
+            ..InputFrame::default()
+        };
+        w.tick(&[Command::Input { id: 1, frame }]);
+    }
+}
+
+/// **The boundary is one comparison and the cycle has both halves of it.**
+///
+/// Gated in `sim-core` rather than beside the renderer's curve
+/// (`client/tests/daynight.rs`) because `is_night` stopped being a look the
+/// moment `mob::think` read it: it is a determinism input now, so it belongs
+/// in a suite that runs headless in `cargo test --workspace` and under the
+/// wasm parity gate, not one behind `--features render`.
+#[test]
+fn dusk_is_one_boundary_and_the_day_is_the_longer_half() {
+    let nights = (0..DAY_TICKS).filter(|&t| world::is_night(t)).count() as u64;
+    let days = DAY_TICKS - nights;
+    assert!(
+        days > nights,
+        "the day must be the longer half: {days}/{nights}"
+    );
+    // The split is `DAY_PORTION` of the cycle, to the tick.
+    let want_day = (DAY_TICKS as f32 * DAY_PORTION) as u64;
+    assert!(
+        days.abs_diff(want_day) <= 1,
+        "daylight is {days} ticks, DAY_PORTION asks for {want_day}"
+    );
+    // Exactly one transition each way, so "night" is a contiguous span and
+    // not a stripe pattern something upstream could alias against.
+    let flips = (0..DAY_TICKS)
+        .filter(|&t| world::is_night(t) != world::is_night((t + 1) % DAY_TICKS))
+        .count();
+    assert_eq!(flips, 2, "the clock must cross dusk and dawn once each");
+    // Dusk itself is night — the half-open convention the doc states.
+    assert!(world::is_night(tick_of_frac(DAY_PORTION)));
+    assert!(!world::is_night(0), "dawn is daylight");
+}
+
+/// The tick whose `day_frac` is `want` — `daynight.rs`' helper, restated
+/// here because that file is behind `--features render` and this suite is
+/// not.
+fn tick_of_frac(want: f32) -> u64 {
+    use sim_core::limits::DAY_PHASE_TICKS;
+    ((want * DAY_TICKS as f32) as u64 + DAY_TICKS - DAY_PHASE_TICKS) % DAY_TICKS
+}
+
+/// **The wolf hunts a narrower circle after dusk — and it is the reference's
+/// direction, not the obvious one.**
+///
+/// 25 m is inside the 30 m it notices from in daylight and outside the 15 m
+/// it notices from at night, so the same geometry is an encounter at noon
+/// and nothing at midnight. Asserted on `roused_until` at the first think
+/// rather than on an outcome, for `a_wolf_notices_a_player_at_a_range_the_pig_ignores`'
+/// reason: an outcome is also satisfied by an animal that wandered into
+/// range on its own.
+///
+/// The design argument is in `content/mobs.toml`. In one line: the reference
+/// game shipped the wider-at-night predator and then removed it, because
+/// being hunted by something the player cannot see is an ambush rather than
+/// a difficulty.
+#[test]
+fn the_wolf_hunts_a_narrower_circle_after_dusk() {
+    for (hour, label, notices) in [
+        (a_day_tick(), "noon", true),
+        (a_night_tick(), "midnight", false),
+    ] {
+        let (mut w, slot) = alone_with_at(MOB_WOLF, 25.0, hour);
+        think_once(&mut w);
+        assert_eq!(
+            w.mobs.m[slot].roused_until > hour,
+            notices,
+            "a wolf 25 m away at {label} (tick {hour}): roused_until is {}, \
+             and the radius in force is {} cm",
+            w.mobs.m[slot].roused_until,
+            MobContent::probe_fixture().def(MOB_WOLF).spook_at(hour)
+        );
+    }
+}
+
+/// Night narrows the circle; it does not blind the animal. At 10 m the wolf
+/// has you at either hour, so the gate above is measuring a radius and not
+/// an off switch.
+#[test]
+fn a_wolf_is_not_blind_at_night() {
+    for hour in [a_day_tick(), a_night_tick()] {
+        let (mut w, slot) = alone_with_at(MOB_WOLF, 10.0, hour);
+        think_once(&mut w);
+        assert!(
+            w.mobs.m[slot].roused_until > hour,
+            "a wolf 10 m away at tick {hour} must notice at every hour: \
+             roused_until {}",
+            w.mobs.m[slot].roused_until
+        );
+    }
+}
+
+/// **The clock moves the hunter and not the prey.**
+///
+/// The pig's two radii are equal in content on purpose — the reference
+/// reworked its predator's senses and said nothing about its boar's, and
+/// `reference/BALANCE.md` §6.2 refuses a difference with no mechanism. This
+/// is the gate that keeps that a decision: give the pig a night radius and
+/// this fails, which is the right amount of friction for a change nobody
+/// has a source for.
+#[test]
+fn the_clock_moves_the_hunter_and_not_the_prey() {
+    let fixture = MobContent::probe_fixture();
+    assert_eq!(
+        fixture.def(MOB_PIG).spook_cm,
+        fixture.def(MOB_PIG).night_spook_cm,
+        "prey's flinch is not clock-keyed"
+    );
+    assert!(
+        fixture.def(MOB_WOLF).night_spook_cm < fixture.def(MOB_WOLF).spook_cm,
+        "the hunter's is, and it points down"
+    );
+    // And the sim agrees with the table: 8 m rouses a pig at either hour.
+    for hour in [a_day_tick(), a_night_tick()] {
+        let (mut w, slot) = alone_with_at(MOB_PIG, 8.0, hour);
+        think_once(&mut w);
+        assert!(
+            w.mobs.m[slot].roused_until > hour,
+            "a pig 8 m away at tick {hour} must flinch at every hour"
+        );
+    }
+}
+
+/// **Dusk does not call off a chase that daylight started.**
+///
+/// `think` refreshes `roused_until` while you are inside the radius and
+/// otherwise lets it run out, so crossing the boundary mid-pursuit stops
+/// feeding the rousing rather than cancelling it. The alternative — a
+/// re-check that drops the animal the instant the sun sets — would make the
+/// dusk tick a cliff a player could stand still and watch, and it is only
+/// *not* what happens because of the shape of the existing code. That makes
+/// it worth a gate: it is a property nobody chose on purpose and a
+/// re-write of `think` could quietly lose.
+#[test]
+fn dusk_does_not_call_off_a_chase_already_running() {
+    let dusk = (0..DAY_TICKS)
+        .find(|&t| !world::is_night(t) && world::is_night(t + 1))
+        .expect("the cycle must cross dusk");
+    // Start one think cycle before the boundary, inside the daylight radius
+    // and outside the night one.
+    let (mut w, slot) = alone_with_at(MOB_WOLF, 25.0, dusk - MOB_THINK_TICKS - 1);
+    think_once(&mut w);
+    let roused = w.mobs.m[slot].roused_until;
+    assert!(roused > w.tick, "daylight must have started the chase");
+    assert!(
+        roused > dusk,
+        "the fixture's commitment ({} ticks) must outlast the boundary for \
+         this test to be about anything: roused_until {roused}, dusk {dusk}",
+        MobContent::probe_fixture().def(MOB_WOLF).flee_ticks
+    );
+    // Now walk across dusk. The player never moves, so nothing refreshes it.
+    while w.tick < dusk + 2 {
+        think_once(&mut w);
+    }
+    assert!(world::is_night(w.tick), "we must be past dusk");
+    assert_eq!(
+        w.mobs.m[slot].roused_until, roused,
+        "the hour changed and re-dated a rousing it should not have touched"
+    );
+    assert!(
+        w.mobs.m[slot].roused_until > w.tick,
+        "the chase must still be running on the far side of dusk"
     );
 }
