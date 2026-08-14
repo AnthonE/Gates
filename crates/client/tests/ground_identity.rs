@@ -16,8 +16,8 @@
 //!
 //! **Every test here was run red before it was run green**, against the
 //! constants this pass replaced: 4 of 5 failed on the old `GROUND_ALBEDO` and
-//! the fifth (`granite_never_reaches_the_ground`) is independent of it. A gate
-//! nobody has seen fail is not evidence.
+//! the fifth (`granite_never_reaches_the_ground_on_the_capture_seed`) is
+//! independent of it. A gate nobody has seen fail is not evidence.
 //!
 //! **Why albedo may be compared to a lit measurement at all**, which is the
 //! one thing that could make this gate bogus. It may for hue and for HSV
@@ -327,6 +327,20 @@ fn the_island_is_more_than_one_surface() {
             .position(|b| h >= b.hue.0 && h <= b.hue.1)
             .map_or("no band", |k| BANDS[k].name)
     };
+    // Both ends must land in a NAMED band before their difference means
+    // anything. Without this, one end resolving to "no band" satisfies the
+    // `assert_ne!` below on its own — the rule would pass on an island whose
+    // p10 sits in no §3 surface at all, which is not "more than one surface",
+    // it is one surface and one unrecognised colour. Named by the merge-gate
+    // judge of pass 20260814-142610-02 as a hole in this test.
+    for (label, h) in [("p10", p10), ("p90", p90)] {
+        assert_ne!(
+            band_of(h),
+            "no band",
+            "resolved hue {label} {h:.1}° falls in none of ART.md §3's bands, \
+             so this test cannot say the island is more than one surface"
+        );
+    }
     assert_ne!(
         band_of(p10),
         band_of(p90),
@@ -337,8 +351,8 @@ fn the_island_is_more_than_one_surface() {
     );
 }
 
-/// Granite is authored, gated above, and **never drawn** — both of
-/// `splat_from`'s routes to it are closed by the terrain's own range.
+/// Granite is authored, gated above, and **never drawn on this seed** — both
+/// of `splat_from`'s routes to it are closed by *this island's* range.
 ///
 /// Measured over 39,521 land samples at 4 m, seed 20260731:
 ///
@@ -347,19 +361,27 @@ fn the_island_is_more_than_one_surface() {
 /// | `SPLAT_ALPINE_BAND` (height) | 44.0 m | max 46.32 m, p99.9 **43.63 m** |
 /// | `SPLAT_CLIFF_BAND` (slope) | 0.952 | max **0.890** — never reached, once |
 ///
-/// So the alpine ramp opens on a handful of summit samples to a maximum weight
-/// of 15/255, the cliff mask — the one veto that *forces* rock — never fires
-/// anywhere on the island, and the mean granite weight is 0.004 of 255. The
-/// brightest identity, the one carrying `ART.md` §3's "granite is warm grey and
-/// much brighter than turf", is not on the ground.
+/// ⚠ **"On this seed" is the whole of the correction, and the sentence this
+/// comment used to open with — "granite is never drawn" — was false.** It read
+/// as a fact about `splat_from`; it is a fact about seed 20260731. Re-measured
+/// 2026-08-14 across 40 seeds (`crates/sim-core/tests/relief.rs`, and the note
+/// in `gates-loop/findings/`): the median island tops out at **93.89 m** with a
+/// max slope of **2.203** and paints a legible rock weight on **6.11%** of its
+/// land, and this seed is the **minimum of the forty on all three axes**.
+/// Granite reaches the ground on 38 of 40 islands. `NOW.md` §0gi item 1 read
+/// the table above as "move the bands"; moving them decouples the cliff ramp
+/// from `CLIFF_SLOPE_RATIO` and the alpine ramp from `biome()`'s Highland edge,
+/// which is a relationship `DECISIONS.md` §open materials v0 and `TERRAIN.md`
+/// §7.1 both state — so `relief.rs` gates it, and it is red under exactly that
+/// edit.
 ///
-/// **This test asserts the mechanism, not the defect.** It holds the two
-/// extremes that make granite unreachable, so the next pass — which is
-/// `sim-core`, and moves `test_terrain_golden` and the scatter distribution
-/// with it (`NOW.md` §0gi) — cannot be written against a stale measurement.
-/// When those bands move, this goes red with the new numbers in hand.
+/// **This test asserts the mechanism, not the defect**, and the mechanism it
+/// now holds is *the outlier*: these four numbers are why every visual report
+/// this loop has written was written against a pancake. Which island the probe
+/// photographs is `DECISIONS.md` §open, not a builder's call. When that is
+/// answered this goes red with the new numbers in hand.
 #[test]
-fn granite_never_reaches_the_ground() {
+fn granite_never_reaches_the_ground_on_the_capture_seed() {
     const STEP: f32 = 4.0;
     const HALF: f32 = 1024.0;
 
