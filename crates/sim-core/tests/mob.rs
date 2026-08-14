@@ -9,7 +9,7 @@ use sim_core::combat::CombatContent;
 use sim_core::gather::{GatherContent, ItemStack, SWING_INTERVAL_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{MAX_MOBS, MAX_PLAYERS, MOB_ID_TAG, MOB_THINK_TICKS, MOB_WAKE_CM};
-use sim_core::mob::{self, MobContent, MOB_PIG};
+use sim_core::mob::{self, MobContent, MOB_PIG, MOB_WOLF};
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::terrain;
 use sim_core::world::{Command, World};
@@ -19,6 +19,25 @@ fn armed(seed: u64) -> World {
     let mut w = World::new(seed);
     w.mob = MobContent::probe_fixture();
     w
+}
+
+/// The first live slot of a named species.
+///
+/// **Every test below now says which animal it is about**, and that is not
+/// tidiness. The roster stopped being uniform when the wolf landed —
+/// `mob::kind_of` makes every fourth slot a predator, starting at slot 0 —
+/// so the `position(|m| m.alive).expect("a live pig")` these all used
+/// silently started returning a wolf: a different courage floor, a wider
+/// notice radius, a longer leash. Three of them failed loudly, which was
+/// lucky; the rest would have gone on passing while measuring an animal
+/// they were not written about. A test that takes whatever is in slot 0 and
+/// calls it a pig is a test with an expiry date.
+fn first_alive(w: &World, kind: u8) -> usize {
+    w.mobs
+        .m
+        .iter()
+        .position(|m| m.alive && m.kind == kind)
+        .unwrap_or_else(|| panic!("the roster hatched no live animal of kind {kind}"))
 }
 
 /// A seed's roster finds land for effectively all of its slots, and every
@@ -71,19 +90,41 @@ fn inert_content_never_hatches() {
 }
 
 /// Armed content hatches every homed slot on the first tick, at its own
-/// home, standing on the ground.
+/// home, standing on the ground — **as the species `kind_of` says that slot
+/// is**, which is the invariant the whole two-species roster rests on.
 #[test]
 fn armed_content_hatches_the_whole_roster() {
     let mut w = armed(11);
     w.tick(&[]);
     assert_eq!(w.mobs.alive(), w.mobs.homed());
-    for m in w.mobs.m.iter().filter(|m| m.alive) {
-        assert_eq!(m.kind, MOB_PIG);
-        assert_eq!(m.hp, MobContent::probe_fixture().def(MOB_PIG).hp);
+    let fixture = MobContent::probe_fixture();
+    for (slot, m) in w.mobs.m.iter().enumerate().filter(|(_, m)| m.alive) {
+        assert_eq!(
+            m.kind,
+            mob::kind_of(slot),
+            "slot {slot} hatched as kind {} and `kind_of` says {}",
+            m.kind,
+            mob::kind_of(slot)
+        );
+        assert_eq!(m.hp, fixture.def(m.kind).hp);
         assert_eq!(m.body.qx, m.home_qx);
         assert_eq!(m.body.qz, m.home_qz);
         assert!(m.body.grounded);
     }
+    // Both species are actually present. Without this the assertions above
+    // are satisfied by a roster of 64 pigs — the state the tree was in
+    // before the wolf, and the thing a `kind_of`-shaped assertion cannot
+    // notice on its own.
+    let wolves = w.mobs.m.iter().filter(|m| m.kind == MOB_WOLF).count();
+    assert_eq!(
+        wolves,
+        MAX_MOBS / 4,
+        "1-in-4 of {MAX_MOBS} slots is a predator, exactly, on every seed"
+    );
+    assert_eq!(
+        w.mobs.m.iter().filter(|m| m.kind == MOB_PIG).count(),
+        MAX_MOBS - wolves
+    );
 }
 
 /// Dormancy is the reference game's measure and ours is a hard skip: with
@@ -111,7 +152,7 @@ fn an_empty_shard_never_moves_an_animal() {
 fn an_animal_near_a_player_wakes_and_walks() {
     let mut w = armed(11);
     w.tick(&[]);
-    let slot = w.mobs.m.iter().position(|m| m.alive).expect("a live pig");
+    let slot = first_alive(&w, MOB_PIG);
     let (mx, mz) = (
         w.mobs.m[slot].body.qx as f32 * POS_XZ_Q,
         w.mobs.m[slot].body.qz as f32 * POS_XZ_Q,
@@ -155,7 +196,7 @@ fn an_animal_near_a_player_wakes_and_walks() {
 fn the_leash_holds() {
     let mut w = armed(11);
     w.tick(&[]);
-    let slot = w.mobs.m.iter().position(|m| m.alive).expect("a live pig");
+    let slot = first_alive(&w, MOB_PIG);
     let (mx, mz) = (
         w.mobs.m[slot].body.qx as f32 * POS_XZ_Q,
         w.mobs.m[slot].body.qz as f32 * POS_XZ_Q,
@@ -190,7 +231,7 @@ fn two_shards_agree_about_the_roster() {
     let build = || {
         let mut w = armed(11);
         w.tick(&[]);
-        let slot = w.mobs.m.iter().position(|m| m.alive).unwrap();
+        let slot = first_alive(&w, MOB_PIG);
         let (mx, mz) = (
             w.mobs.m[slot].body.qx as f32 * POS_XZ_Q,
             w.mobs.m[slot].body.qz as f32 * POS_XZ_Q,
@@ -248,7 +289,7 @@ fn hunt_world() -> (World, usize) {
     };
     w.dev_spawn = Some(w.spawn_pos(1));
     w.tick(&[Command::Join { id: 1 }]);
-    let slot = w.mobs.m.iter().position(|m| m.alive).expect("a live pig");
+    let slot = first_alive(&w, MOB_PIG);
     // Stand the pig one metre in front of the player's yaw-0 facing —
     // inside the weapon's 2 m reach, outside point blank.
     let (fx, fz) = yaw_dir(0);
@@ -395,7 +436,7 @@ fn a_whole_pig_charges_and_bites() {
     w.mob = MobContent::probe_fixture();
     w.dev_spawn = Some(w.spawn_pos(1));
     w.tick(&[Command::Join { id: 1 }]);
-    let slot = w.mobs.m.iter().position(|m| m.alive).expect("a live pig");
+    let slot = first_alive(&w, MOB_PIG);
     // Stand the pig two metres from the player — inside spook, at bite
     // reach's edge, so the very first charge think can land one.
     let b = w.players[0].body;
@@ -433,7 +474,7 @@ fn a_hurt_pig_breaks_off_and_flees() {
     w.mob = MobContent::probe_fixture();
     w.dev_spawn = Some(w.spawn_pos(1));
     w.tick(&[Command::Join { id: 1 }]);
-    let slot = w.mobs.m.iter().position(|m| m.alive).expect("a live pig");
+    let slot = first_alive(&w, MOB_PIG);
     let b = w.players[0].body;
     let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
     w.mobs.m[slot].body = Body::at(11, ax + 2.0, az);
@@ -481,7 +522,7 @@ fn a_bite_can_kill_and_the_cause_is_the_mob() {
     w.mob = MobContent::probe_fixture();
     w.dev_spawn = Some(w.spawn_pos(1));
     w.tick(&[Command::Join { id: 1 }]);
-    let slot = w.mobs.m.iter().position(|m| m.alive).expect("a live pig");
+    let slot = first_alive(&w, MOB_PIG);
     let b = w.players[0].body;
     let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
     w.mobs.m[slot].body = Body::at(11, ax + 2.0, az);
@@ -503,5 +544,211 @@ fn a_bite_can_kill_and_the_cause_is_the_mob() {
         w.players[0].death_by & MOB_ID_TAG,
         0,
         "the killer must be the tagged roster id, not a player number"
+    );
+}
+
+// ── The predator (predator v0) ─────────────────────────────────────────────
+
+/// Stand one animal of a named species `metres` from a fresh player, with
+/// the rest of the roster taken out of the world, and hand back the world
+/// and the slot.
+///
+/// **The rest of the roster is emptied on purpose.** These tests assert on
+/// the player's hp, and hp is a fact any animal in bite reach can move — a
+/// second one wandering in would make the assertion read the wrong animal.
+/// Emptying is the honest isolation: no numbers are changed, one animal is
+/// simply the only one in the world.
+fn alone_with(kind: u8, metres: f32) -> (World, usize) {
+    let mut w = World::new(11);
+    w.combat = CombatContent::probe_fixture();
+    w.mob = MobContent::probe_fixture();
+    w.dev_spawn = Some(w.spawn_pos(1));
+    w.tick(&[Command::Join { id: 1 }]);
+    let slot = first_alive(&w, kind);
+    for (i, m) in w.mobs.m.iter_mut().enumerate() {
+        if i != slot {
+            m.alive = false;
+        }
+    }
+    let b = w.players[0].body;
+    let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
+    w.mobs.m[slot].body = Body::at(11, ax + metres, az);
+    (w, slot)
+}
+
+/// Planar **squared** centimetres between the player and a roster slot.
+///
+/// Squared because wall 1 disallows `sqrt` in this crate, and squared is
+/// what the sim itself compares in (`nearest_player`, every radius check) —
+/// so the tests are reading the same quantity the code decides on rather
+/// than a rounded metre. Every comparison below is monotone in the square,
+/// which is the whole reason the sim can live without the root either.
+fn gap2(w: &World, slot: usize) -> i64 {
+    let m = &w.mobs.m[slot].body;
+    let dx = (m.qx - w.players[0].body.qx) as i64 * 3;
+    let dz = (m.qz - w.players[0].body.qz) as i64 * 3;
+    dx * dx + dz * dz
+}
+
+/// **The notice radius is the whole difference between prey and a hunter.**
+///
+/// At 25 m the wolf has seen you and the pig has not: one rousing timer,
+/// two content numbers (30 m against 12 m), and no branch in `mob.rs` that
+/// asks which animal it is holding. Asserted on the first think tick rather
+/// than on an outcome, because an outcome would also be satisfied by an
+/// animal that wandered into range on its own.
+#[test]
+fn a_wolf_notices_a_player_at_a_range_the_pig_ignores() {
+    for (kind, notices) in [(MOB_WOLF, true), (MOB_PIG, false)] {
+        let (mut w, slot) = alone_with(kind, 25.0);
+        // One full think cycle: every slot has decided exactly once.
+        for seq in 0..(MOB_THINK_TICKS as u16 + 1) {
+            let frame = InputFrame {
+                seq,
+                ..InputFrame::default()
+            };
+            w.tick(&[Command::Input { id: 1, frame }]);
+        }
+        assert_eq!(
+            w.mobs.m[slot].roused_until > 0,
+            notices,
+            "kind {kind} at 25 m: roused_until is {} and the species' notice \
+             radius is {} cm — a predator that has to be crowded is prey",
+            w.mobs.m[slot].roused_until,
+            MobContent::probe_fixture().def(kind).spook_cm
+        );
+    }
+}
+
+/// The wolf closes that distance and takes the player apart while they stand
+/// still. The pig, at the identical distance, never lays a tooth on them.
+///
+/// This is the gap the judge's report named — the island held one animal and
+/// it was prey, so nothing on it ever chose the player as a target.
+#[test]
+fn a_wolf_runs_down_a_player_who_stands_still() {
+    use sim_core::world::DEATH_BY_MOB;
+    let (mut w, slot) = alone_with(MOB_WOLF, 25.0);
+    let start = gap2(&w, slot);
+    let full = w.players[0].hp;
+    assert!(full > 0, "the combat fixture arms bodies");
+    // 20 s. The claim is *possible*, not *quick* — `hunt.rs`'s own reason
+    // for a generous bound: 25 m closed at 4.67 m/s is ~5.4 s, and the
+    // bites that follow are paced by content.
+    for seq in 0..600u16 {
+        let frame = InputFrame {
+            seq,
+            ..InputFrame::default()
+        };
+        w.tick(&[Command::Input { id: 1, frame }]);
+        if w.players[0].dead {
+            break;
+        }
+    }
+    assert!(
+        w.players[0].dead,
+        "a wolf noticed a motionless player 25 m away and did not finish \
+         them in 20 s: {} hp left, {} cm² away (started {start} cm²)",
+        w.players[0].hp,
+        gap2(&w, slot)
+    );
+    assert_eq!(w.players[0].death_cause, DEATH_BY_MOB);
+
+    // The control, and it is the half that makes the claim about *hunting*
+    // rather than about damage: the same 25 m, the same 20 s, the animal
+    // whose only difference is two content numbers.
+    let (mut w, _) = alone_with(MOB_PIG, 25.0);
+    let full = w.players[0].hp;
+    for seq in 0..600u16 {
+        let frame = InputFrame {
+            seq,
+            ..InputFrame::default()
+        };
+        w.tick(&[Command::Input { id: 1, frame }]);
+    }
+    assert_eq!(
+        w.players[0].hp, full,
+        "a pig hurt a player who never came near it — prey answers being \
+         crowded and nothing else"
+    );
+}
+
+/// **Courage with no floor.** `a_hurt_pig_breaks_off_and_flees` is this
+/// test's mirror: the identical wound, the identical rousing, and the
+/// opposite outcome, because `brave_pct = 0` is a floor nothing can drop
+/// under. A wolf at 1 hp is still coming.
+#[test]
+fn a_wolf_at_one_hit_point_never_breaks_off() {
+    let (mut w, slot) = alone_with(MOB_WOLF, 2.0);
+    w.mobs.m[slot].hp = 1;
+    let before = gap2(&w, slot);
+    let full = w.players[0].hp;
+    for seq in 0..240u16 {
+        let frame = InputFrame {
+            seq,
+            ..InputFrame::default()
+        };
+        w.tick(&[Command::Input { id: 1, frame }]);
+    }
+    assert_eq!(w.mobs.m[slot].hp, 1, "nothing here hurts the wolf further");
+    assert!(
+        gap2(&w, slot) <= before,
+        "a wolf at 1 hp opened distance: {before} -> {} cm². That is the \
+         pig's courage floor leaking into a species that has none",
+        gap2(&w, slot)
+    );
+    assert!(
+        w.players[0].hp < full,
+        "a wolf at 1 hp stopped biting: hp still {}",
+        w.players[0].hp
+    );
+}
+
+/// A charging animal that has closed **stands and bites** rather than
+/// sprinting past and coming back.
+///
+/// This is a regression gate for a defect that hid behind a phase
+/// coincidence for three days. The charge used to hold `flee_gait` at any
+/// distance, so an animal in reach overshot, turned on its next think and
+/// ran back — a 30-tick orbit. The bite is phase-locked to `attack_ticks`
+/// (60 ticks), and 60 is a multiple of 30, so the bite sampled the *same*
+/// point of that orbit forever: for a slot whose phase landed outside
+/// reach, the animal could never bite that player at all. Slot 0's phase
+/// landed inside, every bite test hunted slot 0, and all of them were
+/// green. The first pig to hatch anywhere else could not bite.
+///
+/// Asserted as **settling**, which is the property that kills the orbit:
+/// once closed, the gap stops changing.
+#[test]
+fn a_closed_charge_settles_instead_of_orbiting() {
+    let (mut w, slot) = alone_with(MOB_WOLF, 2.0);
+    let mut gaps = Vec::new();
+    for seq in 0..120u16 {
+        let frame = InputFrame {
+            seq,
+            ..InputFrame::default()
+        };
+        w.tick(&[Command::Input { id: 1, frame }]);
+        gaps.push(gap2(&w, slot));
+    }
+    let reach2 = {
+        let r = MobContent::probe_fixture().def(MOB_WOLF).attack_range_cm;
+        r * r
+    };
+    // The last two think cycles, long after the approach is over.
+    let settled = &gaps[gaps.len() - 2 * MOB_THINK_TICKS as usize..];
+    let (lo, hi) = (
+        *settled.iter().min().unwrap(),
+        *settled.iter().max().unwrap(),
+    );
+    assert!(
+        hi <= reach2,
+        "a closed charge drifted to {hi} cm², past its own {reach2} cm² reach — \
+         the animal is orbiting, and a bite phase that samples the far side \
+         of that orbit never lands"
+    );
+    assert_eq!(
+        lo, hi,
+        "a settled charge must not still be moving: {lo}..{hi}"
     );
 }

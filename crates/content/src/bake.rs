@@ -37,7 +37,7 @@ use sim_core::limits::{
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
 };
-use sim_core::mob::{MobContent, MobDef, MOB_LOOT_ROWS, MOB_PIG};
+use sim_core::mob::{MobContent, MobDef, MOB_LOOT_ROWS, MOB_PIG, MOB_WOLF};
 use sim_core::oven::{CookContent, CookRow};
 use sim_core::research::{ResearchContent, ResearchRow};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
@@ -1084,6 +1084,7 @@ impl Content {
         for m in &self.mobs {
             let which = match m.id.as_str() {
                 "mob.pig" => MOB_PIG as usize,
+                "mob.wolf" => MOB_WOLF as usize,
                 other => {
                     return Err(format!(
                         "bake: mobs names species `{other}`, which the sim has no roster kind for"

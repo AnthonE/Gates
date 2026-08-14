@@ -449,7 +449,7 @@ pub fn place(feed: Res<super::feed::Feed>, world: Res<super::WorldId>, mut sound
 /// is deterministic (no OS randomness) and not a metronome. The snout
 /// height puts the emitter at the head rather than under the hooves.
 pub fn pigs(
-    herd: Query<(&super::mobs::Pig, &Transform)>,
+    herd: Query<(&super::mobs::Animal, &Transform)>,
     time: Res<Time>,
     mut sound: ResMut<Sound>,
 ) {

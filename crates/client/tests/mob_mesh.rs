@@ -25,8 +25,10 @@
 
 use bevy::prelude::*;
 use client::render::mobs::{
-    leg_swing_rad, pig_body_mesh, pig_leg_mesh, pig_mesh, Gait, LEG_ANCHORS, PIG_H_M,
-    PIG_LEG_CYCLE_M, PIG_LEG_FULL_MPS, PIG_LEG_SWING_RAD, PIG_LEN_M,
+    full_mps_of, leg_swing_rad, pig_body_mesh, pig_leg_mesh, pig_mesh, wolf_body_mesh,
+    wolf_leg_mesh, wolf_mesh, Gait, HerdAssets, SpeciesAssets, LEG_ANCHORS, PIG_H_M,
+    PIG_LEG_CYCLE_M, PIG_LEG_FULL_MPS, PIG_LEG_SWING_RAD, PIG_LEN_M, WOLF_H_M, WOLF_LEG_ANCHORS,
+    WOLF_LEG_FULL_MPS, WOLF_LEN_M,
 };
 
 /// Every position in the mesh, as an axis-aligned box.
@@ -246,11 +248,11 @@ fn the_swing_rests_scales_and_never_cartwheels() {
     use std::f32::consts::FRAC_PI_2;
     // A standing animal's legs are vertical wherever its phase stopped.
     for i in 0..12 {
-        assert_eq!(leg_swing_rad(i as f32, 0.0, 0.0), 0.0);
+        assert_eq!(leg_swing_rad(i as f32, 0.0, 0.0, PIG_LEG_FULL_MPS), 0.0);
     }
     // Amplitude grows with speed and clamps at the flight gait: a spooked
     // pig at full flee and one hit by a speed spike swing identically.
-    let at = |v: f32| leg_swing_rad(FRAC_PI_2, 0.0, v); // sin = 1: the peak
+    let at = |v: f32| leg_swing_rad(FRAC_PI_2, 0.0, v, PIG_LEG_FULL_MPS); // sin = 1: the peak
     assert!(
         at(1.0) > 0.0 && at(2.0) > at(1.0),
         "the swing ignores speed"
@@ -258,8 +260,8 @@ fn the_swing_rests_scales_and_never_cartwheels() {
     assert!((at(PIG_LEG_FULL_MPS) - PIG_LEG_SWING_RAD).abs() < 1e-6);
     assert_eq!(at(PIG_LEG_FULL_MPS), at(50.0), "the amplitude must clamp");
     // Diagonal pairs mirror their opposed pairs exactly.
-    let fore = leg_swing_rad(1.234, 0.0, 3.0);
-    let aft = leg_swing_rad(1.234, std::f32::consts::PI, 3.0);
+    let fore = leg_swing_rad(1.234, 0.0, 3.0, PIG_LEG_FULL_MPS);
+    let aft = leg_swing_rad(1.234, std::f32::consts::PI, 3.0, PIG_LEG_FULL_MPS);
     assert!(
         (fore + aft).abs() < 1e-5,
         "the π-offset legs do not mirror: {fore} vs {aft}"
@@ -327,4 +329,234 @@ fn two_pigs_do_not_march_in_step() {
     // And deterministic: the same slot always starts its stride at the
     // same place, which is what keeps two clients' herds in agreement.
     assert_eq!(Gait::new(3).phase, Gait::new(3).phase);
+}
+
+// ── The wolf (predator v0) ─────────────────────────────────────────────────
+
+/// The wolf's massing carries every structural property the pig's gates
+/// pin, because a second species drawn by the same builder can fail every
+/// one of them independently.
+///
+/// **The four are one test on purpose.** Split, each would restate the same
+/// `aabb` and each would read as a wolf-specific rule; together they are
+/// what they actually are — the pig's contract, applied to the animal that
+/// arrived after it. If a third species lands, this is the test to make
+/// generic rather than to copy a third time.
+#[test]
+fn the_wolf_is_a_second_animal_and_not_a_second_pig() {
+    let (lo, hi) = aabb(&wolf_mesh());
+
+    // 1. Feet on the origin, the wire's `qy` convention.
+    assert!(
+        lo.y.abs() < 1e-4,
+        "the wolf's lowest vertex is {:.4} m, not 0 — it floats or sinks",
+        lo.y
+    );
+    assert!(hi.y > 0.0);
+
+    // 2. The size it claims, on the pig's 5 cm tolerance.
+    let (len, height, width) = (hi.z - lo.z, hi.y - lo.y, hi.x - lo.x);
+    assert!(
+        (len - WOLF_LEN_M).abs() < 0.05,
+        "nose to tail measures {len:.3} m against a declared {WOLF_LEN_M} m"
+    );
+    assert!(
+        (height - WOLF_H_M).abs() < 0.05,
+        "shoulder measures {height:.3} m against a declared {WOLF_H_M} m"
+    );
+    // A predator at eye level reads as a person, which is worse here than
+    // it would be for the pig: this is the animal that runs at you.
+    assert!(
+        height < client::render::EYE_HEIGHT,
+        "a {height:.2} m wolf stands at the player's eye"
+    );
+    assert!(len > width && width < height, "not a quadruped's box");
+
+    // 3. Facing +Z, with a muzzle rather than a barrel at the front.
+    assert!(hi.z > -lo.z, "the wolf's mass runs backwards");
+    let assembled = wolf_mesh();
+    let Some(bevy::mesh::VertexAttributeValues::Float32x3(p)) =
+        assembled.attribute(Mesh::ATTRIBUTE_POSITION)
+    else {
+        panic!("no positions")
+    };
+    let front = hi.z - len / 5.0;
+    let snout = p
+        .iter()
+        .filter(|v| v[2] > front)
+        .fold(0.0f32, |m, v| m.max(v[0].abs()));
+    let barrel = p
+        .iter()
+        .filter(|v| (-0.1..0.1).contains(&v[2]))
+        .fold(0.0f32, |m, v| m.max(v[0].abs()));
+    assert!(
+        snout < barrel,
+        "the front fifth is {snout:.3} m wide against a {barrel:.3} m body — \
+         that is a barrel with eyes, not a muzzle"
+    );
+
+    // 4. Its own albedo, not a mean-1 `tint1` field — the defect that
+    //    shipped a white pig, which a second species can reintroduce by
+    //    itself since it authors its own hexes.
+    let mesh = wolf_mesh();
+    let Some(bevy::mesh::VertexAttributeValues::Float32x4(c)) =
+        mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+    else {
+        panic!("the wolf has no vertex colours at all");
+    };
+    let mean: f32 = c.iter().map(|v| (v[0] + v[1] + v[2]) / 3.0).sum::<f32>() / c.len() as f32;
+    assert!(
+        mean < 0.5,
+        "the wolf's mean vertex colour is {mean:.3} — a mean-1 tint wearing \
+         no texture, which draws a white animal"
+    );
+    assert!(
+        c.iter().all(|v| v[0] > v[2]),
+        "some of the wolf is cooler than it is warm — a grey-brown coat still \
+         reads red over blue, and a blue-grey one reads as stone"
+    );
+}
+
+/// The wolf's legs hang from their own hips, and its stance is its own.
+#[test]
+fn the_wolf_stands_on_its_own_legs() {
+    let (lo, hi) = aabb(&wolf_leg_mesh());
+    assert!(hi.y.abs() < 1e-4, "the wolf's leg pivot is not at its hip");
+    let len = -lo.y;
+    assert!(len > 0.0);
+    assert_eq!(WOLF_LEG_ANCHORS.len(), 4);
+    for (anchor, _) in WOLF_LEG_ANCHORS {
+        assert!(
+            (anchor[1] - len).abs() < 1e-4,
+            "a hip at {:.3} m over a {len:.3} m leg puts the foot off the ground",
+            anchor[1]
+        );
+    }
+    // The body alone has shed its legs, and adding them back changes only
+    // the bottom of the box.
+    let (blo, bhi) = aabb(&wolf_body_mesh());
+    let (alo, ahi) = aabb(&wolf_mesh());
+    assert!(blo.y > 1e-3, "the wolf's body still carries its legs");
+    assert!(alo.y.abs() < 1e-4);
+    assert!((ahi - bhi).length() < 1e-4);
+
+    // Diagonal pairs in phase — a trot, the pig's own rule. A pace reads as
+    // a camel on any quadruped.
+    for (a, ap) in WOLF_LEG_ANCHORS {
+        for (b, bp) in WOLF_LEG_ANCHORS {
+            if a == b {
+                continue;
+            }
+            let diagonal = a[0] * b[0] < 0.0 && a[2] * b[2] < 0.0;
+            let gap = (ap - bp).abs();
+            if diagonal {
+                assert!(gap < 1e-6, "diagonal partners must swing together");
+            } else {
+                assert!(
+                    (gap - std::f32::consts::PI).abs() < 1e-6,
+                    "non-diagonal legs must be half a cycle apart"
+                );
+            }
+        }
+    }
+
+    // And it is a leaner animal than the pig, which is the silhouette doing
+    // the work at the distance you first see one: narrower across, longer
+    // between the hips, taller at the shoulder.
+    let pig_stance = LEG_ANCHORS[0].0[2] - LEG_ANCHORS[2].0[2];
+    let wolf_stance = WOLF_LEG_ANCHORS[0].0[2] - WOLF_LEG_ANCHORS[2].0[2];
+    assert!(
+        wolf_stance > pig_stance,
+        "a {wolf_stance:.2} m wolf stance against a {pig_stance:.2} m pig's — \
+         the two silhouettes are the same animal at two scales"
+    );
+    assert!(WOLF_LEG_ANCHORS[0].0[0].abs() < LEG_ANCHORS[0].0[0].abs());
+    // Compile-time, the file's own convention for a claim about two
+    // constants: a wolf is the taller and longer animal, and the massing
+    // that says otherwise never builds.
+    const { assert!(WOLF_H_M > PIG_H_M && WOLF_LEN_M > PIG_LEN_M) };
+}
+
+/// **The stride's full-speed point follows the slot's species.**
+///
+/// `Gait::new(slot)` reads `mob::kind_of`, the same pure function the sim
+/// built the roster with and the renderer picks the mesh with — so a wolf's
+/// legs reach full swing at its own 4.675 m/s flight gait and a pig's at
+/// 3.85. Without this the faster animal goose-steps: at a wolf's real
+/// running speed the pig's constant is long past clamped.
+#[test]
+fn each_species_swings_to_its_own_flight_gait() {
+    let wolf = (0..sim_core::limits::MAX_MOBS)
+        .find(|&s| sim_core::mob::kind_of(s) == sim_core::mob::MOB_WOLF)
+        .expect("the roster holds a predator");
+    let pig = (0..sim_core::limits::MAX_MOBS)
+        .find(|&s| sim_core::mob::kind_of(s) == sim_core::mob::MOB_PIG)
+        .expect("the roster holds prey");
+    assert_eq!(full_mps_of(wolf), WOLF_LEG_FULL_MPS);
+    assert_eq!(full_mps_of(pig), PIG_LEG_FULL_MPS);
+    // The predator is the faster animal and its content row says so —
+    // compile-time, since both sides are constants.
+    const { assert!(WOLF_LEG_FULL_MPS > PIG_LEG_FULL_MPS) };
+    // The component carries it, because `trot` walks children and has no
+    // slot in hand by then.
+    assert_eq!(Gait::new(wolf).full_mps, WOLF_LEG_FULL_MPS);
+    assert_eq!(Gait::new(pig).full_mps, PIG_LEG_FULL_MPS);
+    // And it changes the picture: at the wolf's own gait its swing is at
+    // full amplitude, while the pig's constant would have clamped long
+    // before — the same number meaning two different things.
+    let at_wolf_speed = leg_swing_rad(
+        std::f32::consts::FRAC_PI_2,
+        0.0,
+        WOLF_LEG_FULL_MPS,
+        WOLF_LEG_FULL_MPS,
+    );
+    assert!((at_wolf_speed - PIG_LEG_SWING_RAD).abs() < 1e-6);
+}
+
+/// **The draw path picks the mesh off the slot**, and this gate exists
+/// because the first version of it did not have one.
+///
+/// `stream` spawns from `HerdAssets::of(slot)`, deep inside a Bevy system
+/// no headless test runs, so a `of()` that handed back the pig for every
+/// slot compiled clean and passed every other test in this file — a wolf
+/// hunting you wearing a pig, which is the exact lie predator v0 was
+/// supposed to end. The routing is data, so it can be checked without an
+/// `App`: the anchor table each species carries is the fingerprint.
+#[test]
+fn the_draw_path_picks_the_mesh_off_the_slot() {
+    let herd = HerdAssets {
+        pig: SpeciesAssets {
+            body: Handle::default(),
+            leg: Handle::default(),
+            anchors: LEG_ANCHORS,
+        },
+        wolf: SpeciesAssets {
+            body: Handle::default(),
+            leg: Handle::default(),
+            anchors: WOLF_LEG_ANCHORS,
+        },
+        material: Handle::default(),
+    };
+    let mut seen_wolf = 0;
+    let mut seen_pig = 0;
+    for slot in 0..sim_core::limits::MAX_MOBS {
+        let want_wolf = sim_core::mob::kind_of(slot) == sim_core::mob::MOB_WOLF;
+        let got = herd.of(slot).anchors;
+        assert_eq!(
+            got == WOLF_LEG_ANCHORS,
+            want_wolf,
+            "slot {slot} is kind {} and the draw path handed back the other \
+             animal's legs",
+            sim_core::mob::kind_of(slot)
+        );
+        if want_wolf {
+            seen_wolf += 1
+        } else {
+            seen_pig += 1
+        }
+    }
+    // Both arms are exercised, so this cannot pass by the roster being
+    // uniform — the failure mode the assertion above is blind to.
+    assert!(seen_wolf > 0 && seen_pig > 0, "the roster is one species");
+    assert_eq!(seen_wolf, sim_core::limits::MAX_MOBS / 4);
 }
