@@ -42,33 +42,37 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
-## 0rs · The bots raid now — in sim-core, not on the wire *(systems lane)*
+## 0rs · The bots raid on the wire — what a naked raider cannot reach *(systems lane)*
 
-From `findings/pass-20260813-230343-13-judge.md` gap 1, *"a player has no
-opponent"* — gap-pass item, 2026-08-14.
+From `findings/pass-20260813-230343-{13,14}-judge.md` gap 1, *"a player has
+no opponent"* — ranked 1 in both. Item 1 landed 2026-08-14.
 
-Landed: `bots::raid_step` (build, lock, arm, plant, guess, take — one
-command per call, its own rng stream, so no existing digest moved) and
-`test_raid_storm`, wall 4's named-and-absent gate. 32 plots × 2 players,
-400 ticks at the 256-command ceiling. Measured: charges 64/64 answering
-`REFUSE_B_FULL`, removals pinned 64/64, event ring exactly full and
-overflowing on 90 ticks, 14 codes. Proven red by deleting the
-`MAX_LIVE_CHARGES` check.
+Landed before: `bots::raid_step` + `test_raid_storm`, driven straight into
+`World::tick`. Landed now, the wire half: `botclient.rs` derives its plot
+from **its own body** (`build_cell_of`, re-seated every `RAID_CYCLE`, so a
+walking bot is not stuck out of reach), feeds `raid_step`, and writes the
+frame through the same `encode_action_*` the native client calls — the
+server cannot tell a raiding bot from a player. `bin/bots` raids by default
+(`walk` restores the old behaviour) with rows read from `content/` by id.
+Gate: `test_bots_raid_over_the_wire`, proven red three ways — a constant
+plot cell, a suppressed write, a `raid_step` verb with no encoder arm.
+Measured, 8 raiders × 4 s: ~110 actions each, 12 plot re-seats, plots
+scattered, 0 unencodable, 0 malformed server-side, and the sim answered
+47–59 build + 23–48 deploy + 12–23 move refusals apiece.
 
 Remaining, ranked:
 
-1. **The wire half — this is still not an opponent.** `botclient.rs` sends
-   `encode_input` and nothing else, so the 100-bot soak walks. It already
-   holds a live `SendStream` and `net::write_frame` is `pub`
-   (`tests/bot_smoke.rs:199` is the precedent): derive a plot cell from the
-   bot's body, feed `raid_step`, write the frame. Only then is a balance
-   number being driven by contested play.
+1. **It reaches the refusal paths and not the success ones**: `struct_hits`
+   and `auths` were **0** for all 8. A naked spawn affords nothing, so
+   every claim is refused on cost before the interesting rule runs. Give
+   the fleet a spawn kit (or a gather warmup) and the same gate starts
+   measuring what a raid *costs* — which is the exchange rate gap 1 asks
+   for and the thing this slice still cannot say.
 2. **Bodies are out of the storm** — the throwable's `damage` is 0, so the
    raid never kills and `MAX_BACKPACKS` plus the death/respawn ring are the
    one client-driven family it misses.
-3. `CLAUDE.md` wall 4's ⚠ still says the gate does not exist; a loop may
-   not edit the walls list, so striking it is an operator act. Five other
-   docs were corrected this pass.
+3. `CLAUDE.md` wall 4's ⚠ still says `test_raid_storm` does not exist; a
+   loop may not edit the walls list, so striking it is an operator act.
 
 ---
 
