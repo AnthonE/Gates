@@ -209,6 +209,25 @@ pub fn full_mps_of(slot: usize) -> f32 {
     }
 }
 
+/// How high above a slot's feet its voice comes from, metres.
+///
+/// The head, near enough — 0.6 of standing height for both species, which is
+/// where a snout is on a four-legged animal carrying its skull forward. It
+/// matters at all because the cue is positional: an emitter at the hooves of
+/// an animal on a rise is metres from the one the player is looking at, and
+/// the panner hears the difference before the eye forgives it.
+///
+/// Beside [`full_mps_of`] and reading the same `mob::kind_of`, so the three
+/// per-species facts the render half needs — meshes, stride, voice height —
+/// are one lookup pattern rather than three conventions.
+pub fn voice_h_of(slot: usize) -> f32 {
+    let stand = match mob::kind_of(slot) {
+        mob::MOB_WOLF => WOLF_H_M,
+        _ => PIG_H_M,
+    };
+    stand * 0.6
+}
+
 /// The whole animal at rest — body plus all four legs at their anchors,
 /// assembled from the SAME tables the draw path spawns from, so the gate
 /// measures the shipped geometry rather than a copy of it. At rest the swing
@@ -404,7 +423,7 @@ pub fn stream(
 
 /// One drawn animal, carrying its wire id — the roster slot inside it
 /// (`mob::slot_of_id`) is what keys the voice's per-animal cadence
-/// (`sound::pig`), so the identity has to ride the entity rather than be
+/// (`sound::voice`), so the identity has to ride the entity rather than be
 /// re-derived from a position.
 ///
 /// Named for what it is rather than for the one species that used to be in
@@ -442,13 +461,13 @@ pub struct Gait {
 
 impl Gait {
     /// The phase origin is hashed from the roster slot — the snort's own
-    /// convention (`sound::pig::hash01`), and for its reason: deterministic
+    /// convention (`sound::voice::hash01`), and for its reason: deterministic
     /// per animal with no OS randomness, so a herd walked into is four
     /// strides in four places rather than a chorus line.
     pub fn new(slot: usize) -> Self {
         Self {
             speed: 0.0,
-            phase: crate::sound::pig::hash01(slot as u32, 0) * std::f32::consts::TAU,
+            phase: crate::sound::voice::hash01(slot as u32, 0) * std::f32::consts::TAU,
             full_mps: full_mps_of(slot),
             last: None,
         }

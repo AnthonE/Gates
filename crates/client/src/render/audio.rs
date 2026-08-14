@@ -41,8 +41,8 @@ use bevy::prelude::*;
 use crate::sound::birds::{self, Birds};
 use crate::sound::mixer::{Mixer, Request, Start};
 use crate::sound::music::{self, Director};
-use crate::sound::pig::Snorts;
 use crate::sound::steps::Steps;
+use crate::sound::voice::Voices;
 use crate::sound::water::Waterline;
 use crate::sound::{
     synth, Cue, Mix, Snapshot, SnapshotDef, Snapshots, CUE_COUNT, MAX_AUDIBLE_M, VOICE_CAP,
@@ -101,9 +101,9 @@ pub struct Sound {
     pub steps: Steps,
     /// The waterline, as a thing the local body crosses.
     pub waterline: Waterline,
-    /// Each roster slot's snort clock (`sound::pig` — pure; [`pigs`] is
+    /// Each roster slot's voice clock (`sound::voice` — pure; [`voices`] is
     /// the producer that reads it against the drawn herd).
-    pub snorts: Snorts,
+    pub voices: Voices,
     /// When a song plays and which piece it is (`sound::music`). Lives on
     /// the resource rather than on a world entity because it runs on the
     /// menus too, where there is no world.
@@ -245,9 +245,9 @@ pub fn setup(mut commands: Commands, bank: Res<Bank>, cam: Query<Entity, With<Ey
 pub fn teardown(mut sound: ResMut<Sound>, mut last_hp: ResMut<LastHp>) {
     sound.steps.reset();
     // The herd's clocks too: a countdown carried into the next island would
-    // voice its pigs on this island's schedule. The forest layer's clock is
-    // the same rule and the same reason.
-    sound.snorts.reset();
+    // voice its animals on this island's schedule. The forest layer's clock
+    // is the same rule and the same reason.
+    sound.voices.reset();
     sound.birds.reset();
     sound.bed_gain = [0.0; BEDS.len()];
     sound.bed_target = [0.0; BEDS.len()];
@@ -436,36 +436,51 @@ pub fn place(feed: Res<super::feed::Feed>, world: Res<super::WorldId>, mut sound
     }
 }
 
-/// The pig's voice, off the drawn herd's interpolated positions.
+/// The herd's voices, off the drawn animals' interpolated positions.
 ///
-/// Dormancy-respecting by construction: a `Pig` entity exists only for a
+/// Dormancy-respecting by construction: an `Animal` entity exists only for a
 /// mob inside AOI (208 m), and every mob a client can see is awake —
 /// `MOB_WAKE_CM` (240 m) deliberately encloses AOI (`limits.rs`), so a
-/// voiced pig is always a simmed pig. "Only nearby" is then the mixer's own
-/// falloff at the cue's 40 m radius — the falling-tree pattern: push with a
+/// voiced animal is always a simmed animal. "Only nearby" is then the mixer's
+/// own falloff at the cue's radius — the falling-tree pattern: push with a
 /// position, let the one distance law cull.
 ///
-/// The cadence is `sound::pig`'s — hashed per roster slot and cycle, so it
-/// is deterministic (no OS randomness) and not a metronome. The snout
-/// height puts the emitter at the head rather than under the hooves.
-pub fn pigs(
+/// The cadence is `sound::voice`'s — hashed per roster slot and cycle, so it
+/// is deterministic (no OS randomness) and not a metronome. The head height
+/// puts the emitter at the snout rather than under the feet.
+///
+/// **This system does not know what a pig or a wolf is, and that is the fix
+/// it carries.** Until 2026-08-14 it was `pigs`, it played [`Cue::Snort`]
+/// unconditionally, and so every wolf on the island snorted. It now asks
+/// `voice::Voices::due` — which reads the species off the roster slot itself
+/// (`mob::kind_of`) — and plays whatever cue it is handed. Adding a third
+/// species is then a change to `sound::voice` and to nothing here.
+///
+/// The one thing this system decides is the **register**, because it is the
+/// only half that knows where the listener is: `near` is measured to the
+/// emitter point, the same point the mixer will then cull against, so the
+/// distance the register turns on and the distance the cue is audible to
+/// are the same arithmetic on the same two positions.
+pub fn voices(
     herd: Query<(&super::mobs::Animal, &Transform)>,
+    eye: Res<Eye>,
     time: Res<Time>,
     mut sound: ResMut<Sound>,
 ) {
     let dt = time.delta_secs();
-    for (pig, t) in herd.iter() {
-        let Some(slot) = sim_core::mob::slot_of_id(pig.0) else {
+    let switch = crate::sound::voice::switch_m();
+    for (animal, t) in herd.iter() {
+        let Some(slot) = sim_core::mob::slot_of_id(animal.0) else {
             continue;
         };
-        if !sound.snorts.due(slot, dt) {
-            continue;
-        }
         let p = t.translation;
-        sound.play(Request::at(
-            Cue::Snort,
-            [p.x, p.y + super::mobs::PIG_H_M * 0.6, p.z],
-        ));
+        let at = [p.x, p.y + super::mobs::voice_h_of(slot), p.z];
+        let d = [at[0] - eye.pos.x, at[1] - eye.pos.y, at[2] - eye.pos.z];
+        let near = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= switch * switch;
+        let Some(cue) = sound.voices.due(slot, near, dt) else {
+            continue;
+        };
+        sound.play(Request::at(cue, at));
     }
 }
 

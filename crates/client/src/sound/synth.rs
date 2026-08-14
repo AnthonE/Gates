@@ -297,6 +297,8 @@ fn render(cue: Cue) -> Vec<f32> {
 
         // ---- the animals ------------------------------------------------
         Cue::Snort => snort(&mut r),
+        Cue::Howl => howl(&mut r),
+        Cue::Growl => growl(&mut r),
 
         // ---- remote footsteps -------------------------------------------
         // The same ground under someone else's boot: BYTE-IDENTICAL to the
@@ -384,6 +386,47 @@ impl Lp {
     fn run(&mut self, x: f32) -> f32 {
         self.y += self.a * (x - self.y);
         self.y
+    }
+}
+
+/// A two-pole resonator — one formant.
+///
+/// The second filter in this module, and it earns its place where `Lp` cannot:
+/// a formant is a *peak*, and no arrangement of one-poles makes a peak. Added
+/// with the wolf, whose growl is a pulse train that only reads as a throat
+/// once four of these are across it (`WOLF_FORMANTS`).
+///
+/// `y[n] = b0·x[n] + a1·y[n−1] + a2·y[n−2]` with the poles at radius
+/// `r = e^(−πB/fs)` and angle `2πF/fs` — the textbook resonator. `r < 1`
+/// always, so it is unconditionally stable and cannot ring away on us.
+struct Res {
+    b0: f32,
+    a1: f32,
+    a2: f32,
+    y1: f32,
+    y2: f32,
+}
+
+impl Res {
+    fn new(hz: f32, bw: f32) -> Self {
+        let sr = SAMPLE_RATE as f32;
+        let r = (-std::f32::consts::PI * bw / sr).exp();
+        let theta = std::f32::consts::TAU * hz / sr;
+        Self {
+            // Normalized so the peak is about unity rather than about `1/B`,
+            // which would make a narrow formant the loud one.
+            b0: 1.0 - r * r,
+            a1: 2.0 * r * theta.cos(),
+            a2: -r * r,
+            y1: 0.0,
+            y2: 0.0,
+        }
+    }
+    fn run(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.a1 * self.y1 + self.a2 * self.y2;
+        self.y2 = self.y1;
+        self.y1 = y;
+        y
     }
 }
 
@@ -866,6 +909,239 @@ fn snort(r: &mut Rng) -> Vec<f32> {
     out
 }
 
+/// The wolf's vocal tract, as four formants: `(centre Hz, bandwidth Hz)`.
+///
+/// **Derived rather than picked.** Measured formant *dispersion* in large-dog
+/// growls is 671 ± 253 Hz (Faragó et al. 2010); for a uniform tube
+/// `dF = c / 2L`, so 671 Hz is a 26 cm tract — the 50 kg end of Riede &
+/// Fitch's radiographed range, which is where a wolf sits. Taking
+/// `dF = 680 Hz`, the formants are the odd multiples of `dF/2`: 340, 1020,
+/// 1700, 2380. The fifth (3060) is dropped — it is above where the energy is
+/// and it costs a filter.
+///
+/// The bandwidths are the one engineering choice here (no canid measurements
+/// are published) at Q ≈ 6–10.
+///
+/// Two consequences worth stating, because both are easy to get wrong:
+///
+/// - **Formants are fixed per animal and do not glide with F0.** They are a
+///   property of the throat, not of the note. `howl` moves its fundamental
+///   through a contour and leaves this table alone.
+/// - **This is what `Cue::pitch_var` is really varying.** A playback rate
+///   moves F0 *and* the formants together, which is exactly a differently
+///   sized animal — dogs judge body size off formant dispersion, so the
+///   ±12 % on a howl is not a detune, it is a bigger or smaller wolf.
+const WOLF_FORMANTS: [(f32, f32); 4] = [
+    (340.0, 60.0),
+    (1_020.0, 110.0),
+    (1_700.0, 180.0),
+    (2_380.0, 250.0),
+];
+
+/// How many harmonics a howl is built from. A wolf's howl carries harmonics
+/// up to the eighteenth, but the energy sits in the first eight once
+/// [`WOLF_FORMANTS`] has shaped it — past that the terms are below the breath
+/// noise and cost samples for nothing.
+const HOWL_HARMONICS: usize = 8;
+
+/// The vocal tract's response at one frequency, as an amplitude weight.
+///
+/// The source–filter model, evaluated analytically instead of run as a filter:
+/// a howl is built as a sum of harmonics at known frequencies, so the tract
+/// can be applied as a gain per harmonic rather than as four resonators over
+/// the whole buffer. Same model, no state, no chance of a filter ringing.
+///
+/// Each formant is a Lorentzian peak; the `1/f` term is the net spectral tilt
+/// of the textbook chain — −12 dB/oct at the glottis, +6 dB/oct from radiation
+/// at the mouth, so −6 dB/oct out.
+fn formant_gain(f: f32) -> f32 {
+    let mut g = 0.0;
+    for (centre, bw) in WOLF_FORMANTS {
+        let d = (f - centre) / bw;
+        g += 1.0 / (1.0 + d * d);
+    }
+    g * (WOLF_FORMANTS[0].0 / f.max(60.0))
+}
+
+/// The wolf's far voice: a swell that rises fast, wavers on a plateau, and
+/// falls away under where it started.
+///
+/// **The only sustained pitched cue in the bank**, and that is what makes it
+/// hard rather than easy. `bird` already found the trap one register up — a
+/// swept sine with no wobble reads as a kettle, not an animal — and a howl
+/// holds its note for three seconds where a chirp is gone in eighty
+/// milliseconds, so it has three seconds to sound like a test tone.
+///
+/// Every shape below is measured rather than chosen (Iberian-wolf and
+/// Indian-wolf howl corpora; Tooze/Harrington/Fentress 1990):
+///
+/// - **The contour is asymmetric, and that is the finding.** Maximum F0 falls
+///   in the first quarter of 79 % of howls and minimum F0 in the last quarter
+///   of 78 %, so it is a fast rise onto the note and a long terminal fall —
+///   not an arc. Roughly 260 Hz → 470 Hz by 18 % → drift → ~280 Hz.
+/// - **The waver is slow.** 1–15 inflexion points across a call of several
+///   seconds is 0.5–3 Hz, an order of magnitude under a singer's vibrato, at
+///   ±2–4 % of F0. A 5 Hz wobble is a theremin.
+/// - **The breaks are the highest-value detail.** Real howls carry 1–8
+///   *frequency discontinuities* — instantaneous steps of ±8–15 %, part of the
+///   nonlinear phenomena documented in canid howling. They are what stop the
+///   pitch reading as an envelope generator, because no LFO does that.
+/// - **Amplitude peaks early** (first half in 83 % of calls) and decays.
+///
+/// The harmonics are phase-integrated off the fundamental (see `sweep` — the
+/// one arithmetic trap in this file) rather than computed from an
+/// instantaneous frequency, so a moving pitch does not tear, and each one is
+/// weighted by [`formant_gain`] rather than by a `1/h` rule: the throat
+/// decides which harmonics are loud, and it is the same throat as the growl's.
+fn howl(r: &mut Rng) -> Vec<f32> {
+    let dur = 3.0f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    // The plateau pitch. 400–470 Hz brackets the Indian-wolf mean of
+    // 422 ± 126 Hz. Each wolf is its own animal before `Cue::pitch_var` ever
+    // gets to it: the bank holds one howl, so the spread that stops a chorus
+    // being a unison starts here and the playback rate widens it.
+    let root = 400.0 + r.unit() * 70.0;
+    // Three breaks, at drawn points in the plateau, each a step that persists
+    // until the next one — a discontinuity, not a bump.
+    let breaks: [(f32, f32); 3] = [
+        (0.30 + r.unit() * 0.08, 1.0 + (r.unit() - 0.5) * 0.24),
+        (0.46 + r.unit() * 0.08, 1.0 + (r.unit() - 0.5) * 0.24),
+        (0.60 + r.unit() * 0.06, 1.0 + (r.unit() - 0.5) * 0.24),
+    ];
+    let mut phase = [0.0f32; HOWL_HARMONICS];
+    let mut breath_lp = Lp::new(2_600.0);
+    let mut breath_hp = Lp::new(900.0);
+    for (i, v) in out.iter_mut().enumerate() {
+        let t = i as f32 / sr;
+        let u = t / dur;
+        // Rise over the first 18 %, hold to 72 %, then the terminal fall to
+        // 0.60 of the plateau — which ends *below* where the rise began, the
+        // shape that reads as a call ending rather than a note switched off.
+        let (shape, held) = if u < 0.18 {
+            (0.55 + 0.45 * smooth(u / 0.18), 0.0)
+        } else if u < 0.72 {
+            (1.0, 1.0)
+        } else {
+            (1.0 - 0.40 * smooth((u - 0.72) / 0.28), 0.0)
+        };
+        let waver = 1.0 + 0.03 * held * (std::f32::consts::TAU * 1.6 * t).sin();
+        let mut step = 1.0f32;
+        for (at, mult) in breaks {
+            if u >= at {
+                step = mult;
+            }
+        }
+        let f0 = root * shape * waver * step;
+        // Peaks at ~28 % and decays from there — never symmetric.
+        let env = attack(t, 0.22) * (1.0 - 0.75 * smooth(((u - 0.28) / 0.72).clamp(0.0, 1.0)));
+        let mut tone = 0.0f32;
+        for (h, ph) in phase.iter_mut().enumerate() {
+            let mult = h as f32 + 1.0;
+            let f = f0 * mult;
+            *ph += std::f32::consts::TAU * f / sr;
+            tone += ph.sin() * formant_gain(f);
+        }
+        // Breath under the tone: inaudible as noise, and the difference
+        // between an oscillator and a mouth. Under 5 %, per the corpus.
+        let x = r.noise();
+        let breath = {
+            let l = breath_lp.run(x);
+            l - breath_hp.run(l)
+        };
+        *v = (tone * 0.55 + breath * 0.045) * env * edges(i, n);
+    }
+    out
+}
+
+/// The wolf's near voice: low, rough and continuous.
+///
+/// Where the howl is a tone, this is a **texture** — but not a noise, and
+/// that is the correction the research forced. A growl is tonal-with-noise:
+/// dogs read body size off the *formant spacing* in a growl, which is
+/// impossible unless the source is periodic enough to excite resolvable
+/// formants (Faragó et al. 2010). So it is a pulse train through the same
+/// [`WOLF_FORMANTS`] the howl uses, with noise as a 15–30 % aperiodic layer
+/// over it — not filtered hiss with a hum underneath.
+///
+/// Three source facts, all measured:
+///
+/// - **F0 70–110 Hz.** Slow enough that the ear resolves individual glottal
+///   pulses, which is what "rough" is here. The rattle *is* the fundamental;
+///   there is no separate tremolo doing that job.
+/// - **Period doubling is the character.** Real growls drop intermittently
+///   into a regime where alternate pulses differ in amplitude, putting a
+///   subharmonic at F0/2 (35–55 Hz). It runs across the middle of the call
+///   and stops, because a growl that does it throughout is a synthesizer
+///   patch.
+/// - **The envelope is near-square**, with a shallow 4–8 Hz breath ripple.
+///   A growl does not swell like a howl; it is already happening when you
+///   hear it.
+///
+/// It must also be tellable from the howl with your back turned, which the
+/// shared formant bank does not do on its own — what separates them is that
+/// this source is an octave and a half lower and never moves.
+fn growl(r: &mut Rng) -> Vec<f32> {
+    let dur = 1.15f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    // The tract, as four parallel resonators. Weighted by the same −6 dB/oct
+    // tilt `formant_gain` applies analytically for the howl — one model, two
+    // sources, which is the whole reason to build it this way.
+    let mut tract: Vec<(Res, f32)> = WOLF_FORMANTS
+        .iter()
+        .map(|&(centre, bw)| (Res::new(centre, bw), WOLF_FORMANTS[0].0 / centre))
+        .collect();
+    let mut air_lp = Lp::new(3_200.0);
+    let mut air_hp = Lp::new(1_000.0);
+    // The glottal pulse. `ph` walks in seconds and the period is redrawn each
+    // time it wraps, so no two cycles are the same length — 0.3–0.7 % jitter
+    // is what a real fold does and a fixed period is what a sawtooth does.
+    let mut ph = 0.0f32;
+    let mut period = 1.0 / 92.0;
+    let mut alternate = false;
+    for (i, v) in out.iter_mut().enumerate() {
+        let t = i as f32 / sr;
+        let u = t / dur;
+        // The doubled regime, across the middle 45 % of the call.
+        let doubling = (0.28..0.73).contains(&u);
+        ph += 1.0 / sr;
+        if ph >= period {
+            ph -= period;
+            period = 1.0 / (74.0 + r.unit() * 36.0);
+            alternate = !alternate;
+        }
+        // A narrow falling pulse rather than a full-width saw — 60 % duty,
+        // which is the buzzier source a growl needs. Amplitude alternates
+        // inside the doubled regime and does not outside it.
+        let frac = ph / period;
+        let pulse = if frac < 0.6 {
+            1.0 - frac / 0.6 * 2.0
+        } else {
+            -1.0
+        };
+        let level = if doubling && alternate { 0.6 } else { 1.0 };
+        let src = pulse * level;
+        let mut voiced = 0.0f32;
+        for (res, w) in tract.iter_mut() {
+            voiced += res.run(src) * *w;
+        }
+        let x = r.noise();
+        let air = {
+            let l = air_lp.run(x);
+            l - air_hp.run(l)
+        };
+        // ±3 dB at 6 Hz — breath across a held sound, not a tremolo.
+        let ripple = 0.85 + 0.15 * (std::f32::consts::TAU * 6.0 * t).sin();
+        // Near-square: 40 ms on, 80 ms off, sustained in between.
+        let env = attack(t, 0.040) * (1.0 - smooth(((u - 0.93) / 0.07).clamp(0.0, 1.0)));
+        *v = (voiced * 0.9 + air * 0.20) * ripple * env * edges(i, n);
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Shaping and containers.
 // ---------------------------------------------------------------------------
@@ -1201,6 +1477,18 @@ fn attack(time: f32, attack_s: f32) -> f32 {
     } else {
         (time / attack_s).clamp(0.0, 1.0)
     }
+}
+
+/// Smoothstep on [0, 1] — `3x² − 2x³`, flat at both ends.
+///
+/// Used where a shape has to *arrive* rather than change direction: a howl's
+/// rise onto its note and its fall off it are both this, and a linear ramp
+/// there is audible as a corner in the pitch. `attack` is deliberately linear
+/// and stays so — an amplitude ramp of a few milliseconds has no corner to
+/// hear, and this is for the ones that last a third of a second.
+fn smooth(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }
 
 /// Short fades at both ends of a buffer: 0.5 ms in, 4 ms out.

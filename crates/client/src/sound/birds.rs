@@ -11,7 +11,7 @@
 //!
 //! Two rules, both inherited rather than invented:
 //!
-//! - **Cadence like `pig.rs`, position like the falling tree.** The interval
+//! - **Cadence like `voice.rs`, position like the falling tree.** The interval
 //!   is drawn from a hash of the cycle number so the layer is not a metronome
 //!   and needs no OS randomness; the call is pushed with a world position and
 //!   the mixer's one falloff law culls it. Nothing here knows what "nearby"
@@ -34,14 +34,14 @@
 //! are a later slice which arrives with a cull budget. This is one voice with
 //! one clock and nothing to leak.
 
-use super::pig::hash01;
+use super::voice::hash01;
 
 /// Mean seconds between calls in full cover (`DECISIONS.md` §open,
 /// "ambience layers v0"). Not measured against anything.
 pub const CALL_PERIOD_S: f32 = 11.0;
 
 /// How far an interval may wander from the mean, as a fraction — the same
-/// shape and the same default as `pig::SNORT_JITTER`, because it is the same
+/// shape and the same default as `voice::VOICE_JITTER`, because it is the same
 /// problem: a fixed period is the tell that gives away a generated voice.
 pub const CALL_JITTER: f32 = 0.6;
 
@@ -84,7 +84,7 @@ impl Birds {
     /// Advance by `dt_s` under `cover` (0..1, the same score the wind bed
     /// reads). Returns `true` on the frame a call lands.
     ///
-    /// **Assign on fire, never accumulate** — `pig::Snorts`'s rule: a frame
+    /// **Assign on fire, never accumulate** — `voice::Voices`'s rule: a frame
     /// hitch that swallowed two intervals produces one call and a fresh
     /// countdown, not a banked burst.
     pub fn due(&mut self, cover: f32, dt_s: f32) -> bool {
@@ -116,7 +116,7 @@ impl Birds {
         (hash01(self.cycle, 0x5EED) * n as f32) as usize % n
     }
 
-    /// Forget the clock — leaving a world, for `pig::Snorts`'s reason
+    /// Forget the clock — leaving a world, for `voice::Voices`'s reason
     /// exactly: a countdown carried into the next island would voice it on
     /// the last one's schedule.
     pub fn reset(&mut self) {

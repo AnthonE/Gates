@@ -898,8 +898,9 @@ impl Plugin for GatesRenderPlugin {
                 // just moved — positional, culled by the mixer's falloff.
                 audio::remote_steps,
                 audio::fell,
-                // The pig's voice, off the herd `mobs::stream` just moved.
-                audio::pigs,
+                // The herd's voices, off the animals `mobs::stream` just
+                // moved — a snort, a howl or a growl, by species and range.
+                audio::voices,
                 audio::bed,
                 audio::pump,
             )
