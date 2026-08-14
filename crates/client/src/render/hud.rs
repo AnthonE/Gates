@@ -1787,10 +1787,18 @@ mod tests {
         for i in 0..TOAST_LINES + 1 {
             t.say(format!("+1 × WOOD {i}"));
         }
-        assert_eq!(t.overflow(), "   …+2 more", "two notes went, and it says so");
+        assert_eq!(
+            t.overflow(),
+            "   …+2 more",
+            "two notes went, and it says so"
+        );
 
         let (say, extra) = t.row_parts(TOAST_LINES - 1).expect("the last live row");
-        assert_eq!(say.text(), "you do not have the parts", "nothing is covered");
+        assert_eq!(
+            say.text(),
+            "you do not have the parts",
+            "nothing is covered"
+        );
         assert_eq!(extra, "   …+2 more", "the marker rides the last live row");
 
         for row in 0..TOAST_LINES - 1 {
