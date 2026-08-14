@@ -51,30 +51,29 @@ the phase-locked-bite bug the stride exposed. (Trimmed to the bound
 2026-08-14; the landing story is in that row, not here.)
 
 **Item 3 landed 2026-08-14 — pointing the other way.** The sim reads the
-clock now: `world::is_night` is the door, `MobDef::spook_at` the selector,
-`night_spook_m` the content field, `mob::think`'s notice test the one line
-through it. But the wolf hunts **worse** after dusk: the reference cut its
-predator's night sight in 2024, and no game in the survey publishes a night
-sense ratio above 1×. 30 m → 15 m, pig unchanged and gated so. 7 new tests,
-3 extended, all 10 proven red under their own mutation. Sources and the one
-number that is ours (the 0.5×) are in §open "nocturnal senses".
+clock: the wolf hunts **worse** after dusk (30 m → 15 m), because no game in
+the survey publishes a night sense ratio above 1×. §open "nocturnal senses".
+
+**Item 1 landed 2026-08-14.** `sound/pig.rs` is `sound/voice.rs` and reads the
+species off the roster slot, so a wolf howls (88 m) and growls (14 m) instead
+of snorting. The register switch is not a knob — it is `CUES[Growl].radius_m`
+read back out. §open "wolf voice v0" has the sources, the four places the
+research changed the design, and the three follow-ons it names.
 
 Owed, in rank order:
 
-1. **Every animal still sounds like a pig.** `sound/pig.rs`'s snort plays
-   for a wolf (`render/audio.rs::pigs`). A howl and an aggro cue are the
-   audio half of an encounter, and `NOW.md` §0m item 2 already wanted them.
-2. **A wolf pays no hide and no bone** — refused here because two new items
-   drag recipes and `ui::icons::STEMS` into a roster slice.
-3. **Night still costs the player nothing.** Nocturnal senses made the hour
-   a *tactic*; it did not make the dark dangerous, and nothing else in the
-   sim reads the clock. The sourced follow-on is the genre's own answer and
-   it is **not** more tuning of `night_spook_m`: a night-only roster
-   variant (Minecraft and Valheim both gate *spawns* on darkness; the one
-   published 2× detection is a variant, not a clock). The judge's gap 1
+1. **Nobody has heard any of it.** Every claim is arithmetic — ZCR, sustain
+   ratio, cadence bands. `bin/soundbank.rs` dumps the bank to WAV; ears are
+   the gate that has not run, and the knobs to listen for are the two
+   cadences (75 s, 2.5 s), the 0.5× night sense, and **16 predators** — all
+   four are arithmetic nobody has playtested.
+2. **A wolf pays no hide and no bone** — refused in the roster slice because
+   it drags recipes and `ui::icons::STEMS` in with it.
+3. **Night still costs the player nothing.** Nocturnal senses made the hour a
+   *tactic*; it did not make the dark dangerous. The sourced follow-on is
+   **not** more tuning of `night_spook_m` — it is a night-only roster variant
+   (Minecraft and Valheim both gate *spawns* on darkness). The judge's gap 1
    wanted a warmth stat, which is the bigger version of the same hole.
-4. **16 predators is arithmetic, not a playtest** — the one number here a
-   person answers, alongside the 0.5×.
 
 ## 0sp · The tick has been profiled — where it goes *(server lane)*
 
