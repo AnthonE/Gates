@@ -1977,6 +1977,7 @@ dependencies = [
  "bevy_procedural_tree",
  "client-core",
  "fastrand",
+ "image",
  "protocol",
  "serde",
  "serde_json",
