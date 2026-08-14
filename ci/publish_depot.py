@@ -231,6 +231,35 @@ def confirm_live(api: str, build: str, platform: str) -> str | None:
     sys.exit(f"publish: the live manifest has no {platform} row")
 
 
+def _cast_send(digest: str, label: str, memo: str) -> str:
+    """The remote one-liner. Everything secret stays inside this shell.
+
+    ⚠ **`SCRY_RH_RPC_POOL` is a COMMA-SEPARATED LIST, not a url**, and passing
+    it whole to `--rpc-url` fails as `HTTP 401 UNAUTHORIZED` — which reads like
+    a bad key and is really a malformed url, because the first endpoint's
+    credential arrives with the rest of the list glued to it. Measured
+    2026-08-14 while writing this. The pool exists so that a dead provider is
+    not a dead chain (`meter/rpc_pool.py` §2), so we try each in turn and use
+    the first that answers rather than trusting position 0.
+
+    The keyed urls are never printed: the credential is in the url PATH, and
+    this origin publishes its RPC url from ten surfaces — which is the whole
+    reason `SCRY_RH_RPC` (public, keyless) and `SCRY_RH_RPC_POOL` (keyed,
+    private) are two different knobs.
+    """
+    return (
+        "set -a; . /data/apps/secrets/keys.env; set +a; "
+        'RPC=""; '
+        'for u in $(printf %s "$SCRY_RH_RPC_POOL" | tr "," " "); do '
+        '  if ~/.foundry/bin/cast chain-id --rpc-url "$u" >/dev/null 2>&1; then RPC="$u"; break; fi; '
+        "done; "
+        'if [ -z "$RPC" ]; then echo "no reachable endpoint in SCRY_RH_RPC_POOL" >&2; exit 1; fi; '
+        f"~/.foundry/bin/cast send {NOTARY} "
+        f"'notarize(bytes32,string,string)' {digest} {shlex.quote(label)} {shlex.quote(memo)} "
+        '--rpc-url "$RPC" --private-key "$PRIVATE_KEY" --json'
+    )
+
+
 def notarize(host: str, depots: str, build: str, digest: str, label: str,
              memo: str, dry: bool) -> None:
     """Seal the digest on chain 4663, with the key that never leaves the origin.
@@ -246,13 +275,7 @@ def notarize(host: str, depots: str, build: str, digest: str, label: str,
     if dry:
         print("   (dry-run: no transaction sent)")
         return
-    cmd = (
-        "set -a; . /data/apps/secrets/keys.env; set +a; "
-        f"~/.foundry/bin/cast send {NOTARY} "
-        f"'notarize(bytes32,string,string)' {digest} {shlex.quote(label)} {shlex.quote(memo)} "
-        '--rpc-url "$SCRY_RH_RPC_POOL" --private-key "$PRIVATE_KEY" --json'
-    )
-    out = ssh(host, cmd)
+    out = ssh(host, _cast_send(digest, label, memo))
     try:
         r = json.loads(out.splitlines()[-1])
         print(f"   tx {r.get('transactionHash')}  block {int(r.get('blockNumber','0x0'),16)}"
