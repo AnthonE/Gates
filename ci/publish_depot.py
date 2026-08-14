@@ -172,11 +172,18 @@ def package(platform: str, do_build: bool) -> Path:
 
 def upload(stage: Path, host: str, depots: str, build: str, platform: str,
            dry: bool) -> None:
-    dest = f"{host}:{depots}/{SLUG}/{build}/{platform}/"
+    remote = f"{depots}/{SLUG}/{build}/{platform}"
+    dest = f"{host}:{remote}/"
     print(f"== upload · {stage} → {dest}")
     if dry:
         print("   (dry-run: nothing sent)")
         return
+    # rsync creates the LAST path component and no more, so the platform
+    # directory under a build that has never been published is two levels of
+    # missing parent and the transfer dies with a bare ENOENT. `--mkpath` would
+    # also do it and is rsync 3.2.3+; mkdir over the same ssh works everywhere
+    # and fails with a message that names the path.
+    ssh(host, f"mkdir -p {shlex.quote(remote)}")
     run(["rsync", "-a", "--info=stats1", f"{stage}/", dest])
 
 
