@@ -51,7 +51,7 @@ one yet." Landed 2026-08-14: `CONT_WORLD` is a fourth container kind, the
 open re-derives the cell through `terrain::scatter`, the refill is lazy
 inside `open` so the store costs the tick nothing, and the crate rides the
 existing move/refusal/sync path (`DECISIONS.md` §open "world containers
-v0"; wire v37; save format 5; `tests/worldcont.rs`, 15 checks).
+v0"; wire v37; save format 5; `tests/worldcont.rs`, 17 checks).
 
 Owed, in rank order:
 
@@ -65,10 +65,23 @@ Owed, in rank order:
    normal case once a shard is populated. Wants either a visible lid
    state on the mesh or the refill window shortened; the mesh is
    `render/props.rs`, the knob is in §open.
-3. **The prize is still unguarded** — the judge's gap 2, untouched. The
-   roster is two species deep and `SiteFootprint`/`site_sweep` places a
-   site today; what it needs is a leash exemption and a loot tier. That
-   is its own pass and it is the one that makes the walk cost something.
+3. ~~The prize is still unguarded~~ — **landed 2026-08-14** (site guards
+   v0, `DECISIONS.md` §open; `sim-core/tests/guard.rs`, 13 checks). A guard
+   is a wolf slot whose home is inside a site and whose leash is that
+   site's `SiteFootprint::scatter_m` instead of its species' `roam_cm` —
+   both pure in the slot ordinal, so no wire field and no client change.
+   Two per site, 6 of the 16 wolves.
+   Owed off it: **the guard has no loot tier of its own** — it drops a
+   wolf's meat and fat, so the reason to fight it is the crates behind it.
+   The tier wants a third *species* (its own `drops`), and that is a client
+   change, not a content row: every species match in the client is a `_ =>`
+   fall-through, so a third kind would draw and sound as a pig until five
+   arms are written (`render/mobs.rs`, `sound/voice.rs`, `ui/death.rs`).
+   Forcing it through `loot.toml` instead does not work — `validate`
+   requires `hits > 0` ("swings to open"), which a mob has no meaning for.
+4. **Nobody has fought a guard in the running game.** Same standing as
+   item 1 and now more of the pad's story: the wolf that hatches at the
+   crates has never been seen, heard or fought with the client attached.
 
 ## 0pr · The wolf hunts — what predator v0 left *(systems lane)*
 
@@ -1252,8 +1265,10 @@ crate-wide, but its *contiguity* claim is file-local.
   `content.rs::every_consumable_the_content_ships_is_reachable` gates the
   general form (every consumable producible by a live verb chain). Still
   owed, and both are code: a standalone forest-floor pickup archetype and a
-  farming lane; plus the cache/crate open verb before loot-only food could
-  sit at a destination — the gate deliberately counts barrel rows alone.
+  farming lane. The open verb landed 2026-08-14, so the third clause here is
+  spent — but `validate` still counts barrel rows alone and its stated reason
+  ("no verb opens a container") is now false. Widening the reachable set to
+  the tables a verb opens is a `validate.rs` change nobody has made.
 - ~~Day/night does not exist~~ — **landed 2026-08-11** (day/night v0,
   `DECISIONS.md` §open): 45-minute cycle, 70 % day, derived from the tick
   with **no wire field**, driven through the rig's coupled-set owner.
@@ -1274,11 +1289,11 @@ crate-wide, but its *contiguity* claim is file-local.
   a blueprint ITEM (learning is instant and personal, so there is nothing
   to trade) and the wipe schedule `DESIGN.md` §8 promises blueprints will
   outlive, which is unbuilt because no wipe is.
-- **No verb opens a world container.** `loot.crate` and `loot.cache` are
-  parsed, content-hashed, placed and openable by nothing — barrels are
-  smashed, and `Occupant::{CrateSlot, CacheSlot}` appear only in terrain
-  placement and collision radii. With the recycler landed this is the
-  other half of the same walk: the thing you carry salvage home *from*.
+- ~~No verb opens a world container~~ — **landed 2026-08-14** (world
+  containers v0). This bullet denied a verb the same commit shipped and
+  stood for a whole pass; it is the merge-gate judge's ranked fix 1
+  (`findings/pass-20260813-230343-05-judge.md`, check 9). Residue is
+  §0wc's list, not this one.
 
 ---
 

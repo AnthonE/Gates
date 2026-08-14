@@ -55,8 +55,19 @@ fn every_home_is_on_walkable_inland_ground() {
             "seed {seed}: only {homed}/{MAX_MOBS} roster slots found a home — \
              24 draws against a continent should not miss this often"
         );
-        for m in w.mobs.m.iter() {
+        for (slot, m) in w.mobs.m.iter().enumerate() {
             if !m.homed {
+                continue;
+            }
+            // A site guard is the deliberate exception to every rule below
+            // and `tests/guard.rs` asserts all four of them in their guard
+            // form: it stands ON an authored site (the exclusion here), and
+            // its floor is the land line rather than the beach band,
+            // because a pad scored for low relief near the coast road lands
+            // inside that band on real seeds — seed 1's centre is 1.28 m
+            // against 2.0. Narrowed rather than dropped; nothing here got
+            // easier for the free roster, which is what this test is about.
+            if mob::guard_site_of(slot).is_some() {
                 continue;
             }
             let x = m.home_qx as f32 * POS_XZ_Q;

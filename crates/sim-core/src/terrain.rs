@@ -511,9 +511,9 @@ pub fn in_bay(seed: u64, x: f32, z: f32) -> bool {
 // own rate, so the loop paid what standing still paid). It also gives
 // `content/loot.toml`'s `loot.crate` its first spawn site — that table was
 // parsed, validated and hashed with nothing in the world able to produce
-// its container. What it does NOT do is open one: no verb opens a container
-// yet (`crates/content/src/validate.rs`), so the table is reachable content
-// rather than reachable loot, and that half is the systems lane's.
+// its container. Opening one was the systems lane's half and it landed
+// (world containers v0, 2026-08-14, `worldcont.rs`), so `loot.crate` is
+// reachable loot now and not merely reachable content.
 
 /// Pad radius in meters: inside this, scatter places nothing. Sized to read
 /// as a clearing rather than a gap — 32 m across clears ~12 scatter cells
