@@ -23,7 +23,7 @@ use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::INV_SLOTS;
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::terrain::{self, Occupant, ScatterTable, CELL_SIZE};
-use sim_core::world::{Command, EventQueue, World, EV_BAG_DROPPED};
+use sim_core::world::{Command, EventQueue, World, EV_BAG_DROPPED, EV_GATHER};
 
 /// The gather suite's seed, deliberately: the node this file swings at is
 /// the node `tests/gather.rs` already proves pays its hand row, so a
@@ -336,6 +336,86 @@ fn the_spill_replays_bit_identically() {
     assert_eq!(bags_a, 1, "the run actually spilled something");
     assert_eq!(bags_a, bags_b);
     assert_eq!(a, b, "the spill must replay bit-identically");
+}
+
+/// **The spill's announcement, and why the zero had to be made unique.**
+///
+/// A spill was silent (`NOW.md` §0sp2) and the question the item posed was
+/// whether the client could read it off facts already on the wire. It can,
+/// on one field, but only once `added == 0` has exactly one cause.
+///
+/// It had two. The cumulative pay schedule legitimately pays nothing on
+/// some swings — `pool` need not divide the hit budget — and those swings
+/// pushed an `EV_GATHER` saying "0 units entered your inventory", which is
+/// the same sentence a full pack produces. The client could not separate a
+/// swing that earned nothing from a swing whose whole yield hit the floor,
+/// so it showed neither.
+///
+/// Both halves are asserted here, on the same node, because the guard is
+/// only worth anything if the paying case still announces itself.
+#[test]
+fn only_a_full_pack_makes_the_gather_event_say_zero() {
+    let (pos, yaw) = find_isolated(SEED, Occupant::Tree);
+
+    // Half one: a swing owed nothing, and room to take it if it were.
+    // The node is reshaped to be worth 4 over 4 hits while withholding
+    // half for the finisher, so `pool` is 2 and the first swing is owed
+    // `floor(2 × 1 / 4) − 0` = nothing. Silence, not a zero.
+    let mut w = Box::new(World::new(SEED));
+    w.gather = GatherContent::probe_fixture();
+    w.backpack = BackpackContent::probe_fixture();
+    for n in w.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+    }
+    w.gather.nodes[0].hand_yield = 1;
+    w.gather.nodes[0].hits = 4;
+    w.gather.nodes[0].finish_pct = 50;
+    w.dev_spawn = Some(pos);
+    w.tick(&[Command::Join { id: 1 }]);
+    let thin = w.gather.nodes[0];
+    w.tick(&[hold_primary(yaw, 0)]);
+
+    assert_eq!(
+        inv_count(&w.players[0].inv, thin.output),
+        0,
+        "the reshaped node no longer pays zero on its first swing"
+    );
+    assert_eq!(w.backpacks.len(), 0, "nothing was owed, so nothing spilled");
+    assert!(
+        !w.events.entries().iter().any(|e| e.code == EV_GATHER),
+        "a swing that earned nothing announced a gather, which is the \
+         zero a full pack has to own"
+    );
+
+    // Half two: the stock node, whose first swing IS owed its hand row,
+    // against a full pack. The event lands and its zero is the spill —
+    // so the guard above suppressed the unowed swing and nothing else.
+    let mut w = full_pack_world(pos);
+    let tree = w.gather.nodes[0];
+    w.tick(&[hold_primary(yaw, 0)]);
+
+    let gathers: Vec<_> = w
+        .events
+        .entries()
+        .iter()
+        .filter(|e| e.code == EV_GATHER)
+        .collect();
+    assert_eq!(gathers.len(), 1, "the paying swing must still announce");
+    assert_eq!(
+        gathers[0].b & 0xFFFF,
+        0,
+        "the units that reached the hands are the client's spill signal"
+    );
+    assert_eq!(
+        gathers[0].b >> 16,
+        tree.output as u32,
+        "and it names the item that hit the floor"
+    );
+    assert_eq!(
+        w.backpacks.len(),
+        1,
+        "which is on the ground, not destroyed"
+    );
 }
 
 // ── The four give-backs (`NOW.md` §0sp2) ─────────────────────────────────

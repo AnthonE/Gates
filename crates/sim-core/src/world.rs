@@ -71,11 +71,21 @@ pub const SPAWN_CLEAR_M: f32 = 4.5;
 
 /// Integer event codes (CLAUDE.md wall 3) — the sim's outbound facts, one
 /// ring per tick, drained by the server after `tick` returns.
-/// EV_GATHER: a = player id, b = item index << 16 | units actually added.
+/// EV_GATHER: a = player id, b = item index << 16 | units actually added
+/// (0 = the pack was full and every unit went to the ground; the loss is
+/// announced, never silent — `EV_CRAFT_DONE` has said this since it
+/// landed and this one now says it too).
 /// Read it as "these units entered your inventory", not as "a node paid":
 /// looting a backpack (backpack.rs) announces its take the same way, and
 /// deliberately — the client's `+N Item` toast is the right feedback for
 /// both, and loot pays in the currency gathering already pays in.
+///
+/// **Every producer owes the zero its meaning.** All three only push when
+/// something was actually owed — `gather::swing` guards on `pay > 0` and
+/// on `sec_pay > 0`, `backpack`'s loot walk skips a slot it took nothing
+/// from — so a zero here is never "nothing happened". A fourth producer
+/// that pushes an unowed zero silently turns the client's "pack full" line
+/// into a lie, which is why the guards are stated rather than assumed.
 pub const EV_GATHER: u8 = 1;
 /// EV_SLOT_HARVESTED: a = cell key (cx << 16 | cz), b = terrain occupant
 /// ordinal (`terrain::Occupant as u32`) — *what* stopped standing there,
