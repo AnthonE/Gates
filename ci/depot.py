@@ -370,15 +370,48 @@ def stage_build(out: Path, *, platform: str, do_build: bool,
     # They land at `assets/` inside the build directory, which is where the
     # client looks: the launcher runs a build with cwd set to that directory,
     # and `gates.rs` resolves its asset root against the cwd.
+    # ⚠ **Only what git TRACKS, and never a filesystem walk.** This was
+    # `shutil.copytree(src_assets, staged_assets)` until 2026-08-14, and that
+    # walk staged `assets/textures/candidates/` — the 1.3 GB sourcing queue
+    # that commit 36776f4 deliberately keeps out of the tree ("its 1.3 GB does
+    # not"), 190 files of raw CC0/CC-BY archives fetched to this box. The
+    # depot went 124 MB → 1.6 GB, 122 files → 317, and **nothing failed**:
+    # `ci/gates.sh` was green, `--self-test` was green, the document validated.
+    # An untracked file is invisible to every gate in this repo, so no gate
+    # could have caught it — which is why the rule has to be structural rather
+    # than a check. `.gitignore` is already the single author of what is not
+    # ours to ship; reading it here means the packager cannot disagree with it.
+    # scry's `deploy/publish_scryward.py` makes the same choice for the same
+    # reason, and states it as the trap it has paid for seven times.
+    #
+    # It also has teeth beyond size: the candidates are *unvetted* licence
+    # material (`CANDIDATES.md` carries CC-BY rows with draft notices), and the
+    # rail in `assets/models/MANIFEST.md` governs what SHIPS. A filesystem walk
+    # routes around that rail without anyone deciding to.
     src_assets = ROOT / "assets"
     if not src_assets.is_dir():
         sys.exit(f"depot: {src_assets} is missing — the client would ship untextured")
     staged_assets = stage / "assets"
-    shutil.copytree(src_assets, staged_assets)
+    rels = [r for r in sh("git", "ls-files", "-z", "--", "assets").split("\0") if r]
+    if not rels:
+        sys.exit(
+            "depot: `git ls-files assets` listed nothing. Refusing to fall back "
+            "to a filesystem walk — that is the 1.6 GB defect this refusal "
+            "exists to prevent. Package from a git checkout."
+        )
+    for rel in rels:
+        src = ROOT / rel
+        if not src.is_file():
+            sys.exit(f"depot: {rel} is tracked but not on disk — the tree is incomplete")
+        dst = stage / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
     n_assets = sum(1 for p in staged_assets.rglob("*") if p.is_file())
     if n_assets == 0:
         sys.exit(f"depot: {src_assets} holds no files — the client would ship untextured")
-    print(f"   staged {n_assets} asset file(s) from {src_assets}")
+    skipped = sum(1 for p in src_assets.rglob("*") if p.is_file()) - n_assets
+    print(f"   staged {n_assets} tracked asset file(s) from {src_assets}"
+          + (f" ({skipped} untracked file(s) left behind)" if skipped else ""))
 
     # **The licence rides along too, and this one is a legal condition rather
     # than a rendering one.** MIT requires its notice to accompany "all copies

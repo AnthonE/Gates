@@ -344,6 +344,27 @@ do not rediscover)
   parses and lies about the commit. Until the origin keys by (build, platform),
   the workaround is what 2026-08-13 did — **package each platform from a
   different commit**, which is why the two live depots name adjacent shas.
+- **A packager that walks the filesystem ships whatever is lying on the build
+  box, and no gate in this repo can see it.** `ci/depot.py` staged assets with
+  `shutil.copytree(ROOT/"assets", …)` until 2026-08-14, when a routine
+  republish produced a **1.6 GB depot** where the live one is 124 MB — 317
+  files against 122. It had swept in `assets/textures/candidates/`, the 1.3 GB
+  sourcing queue that 36776f4 deliberately keeps *out* of the tree, 190 raw
+  CC0/CC-BY archives. **Every gate was green**: `ci/gates.sh`, `depot.py
+  --self-test`'s 51 checks, the document validation. None of them could have
+  failed, because an untracked file is invisible to all of them — the defect
+  is not a wrong value anywhere, it is a *set* being wider than anyone
+  declared. Two things it would have cost: a 13× install for every player, and
+  a route around the licence rail (`assets/models/MANIFEST.md`), since the
+  candidates are unvetted by construction — `CANDIDATES.md` carries CC-BY rows
+  with draft notices. The fix is structural rather than a check: stage from
+  `git ls-files` and refuse to fall back, so `.gitignore` stays the single
+  author of what is not ours to ship and the packager cannot disagree with it.
+  scry's `deploy/publish_scryward.py` chose `git archive` over a walk for this
+  exact reason and says it has paid for it seven times; we now have our own.
+  **The general shape: a build step that enumerates by walking is only as
+  correct as the tidiness of the box it runs on, which is not a property
+  anything asserts.**
 - **`x86_64-pc-windows-gnu` needs mingw's POSIX threading, and half a switch
   is worse than none.** Ubuntu's default alternative is `13-win32`, whose
   `libgcc.a(gthr-win32.o)` has no `__mingwthr_key_dtor` — the client fails at
