@@ -51,20 +51,28 @@ exist on the ground"*. Measurements in
 
 Landed 2026-08-14: `GROUND_ALBEDO` re-placed against §3 — litter was the most
 saturated surface on the island and warm, so it took the hue of every mix, and
-it is 37.6% of the land. Ground mean linear luma held at 0.09390 (±0.01%) on
-purpose: brightness is gap 2's owner (`rig.rs`), not this item's. Gate
-`crates/client/tests/ground_identity.rs`, 5 tests, 4 red on the old constants.
-58.1% of land now resolves into the grass band, p10 38.0° / p90 68.5°.
+it is 37.6% of the land. Brightness is gap 2's owner (`rig.rs`), so the ground
+mean was held rather than moved — **0.0495% under Rec.601, 1.20% under
+Rec.709**, and the "±0.01%" this line used to claim was neither. The repo uses
+both estimators (`ground_identity.rs:139` 601, `terrain_mesh.rs:209` and
+`water.rs:714` 709) and they disagree by 24×; the constraint is also the one of
+four with no gate. Gate `crates/client/tests/ground_identity.rs`, 5 tests, 4 red
+on the old constants. 58.1% of land in the grass band, p10 38.0° / p90 68.5°.
 
 Remaining, in order:
 
-1. **Granite is authored and never drawn** — `sim-core`. Both routes are closed
-   by the terrain's own range: `SPLAT_ALPINE_BAND` opens at 44 m against a
-   p99.9 of 43.63 m, and `SPLAT_CLIFF_BAND` opens at 0.952 against a max slope
-   of **0.890**, so the cliff mask has never fired once. Max rock weight
-   anywhere is 15/255. Moving either band moves `test_terrain_golden` and the
-   scatter distribution (`scatter_row` blends by the same weights) — that is
-   the pass, not a knob.
+1. ~~Granite is authored and never drawn~~ — **struck 2026-08-14, and do not
+   re-run it.** The measurements were right and the conclusion was wrong: they
+   were taken on one seed. Across 40 seeds the median island tops out at 93.89 m
+   / slope 2.203 and paints rock on **6.11% of its land**; seed 20260731 is the
+   **minimum of the forty on all three axes**. Granite reaches the ground on 38
+   of 40 islands. The bands are ramps centred on `CLIFF_SLOPE_RATIO` and
+   `biome()`'s Highland edge (`DECISIONS.md` §open materials v0, `TERRAIN.md`
+   §7.1) — moving one decouples the surface from the law it ramps, and
+   `crates/sim-core/tests/relief.rs` is now red under exactly that edit. The
+   live question is which island we photograph and ship: `DECISIONS.md` §open
+   "capture and shard seed v0". Note
+   `findings/note-20260814-granite-and-the-flattest-island.md`.
 2. **Something between `vertex_color` and the pixel eats the green.** The OLD
    constants already held two hue populations (31.1° and 84.0°) while the judge
    measured 29–35° with nothing above it. Untested: the granite photograph's
@@ -988,8 +996,7 @@ the captures show:
 4. **The far mesh speckles.** Grazing-angle aliasing on the 8 m LOD; the
    candidate is anisotropy, registered at 4 for a browser reason that does not
    survive the port (`ART.md` §7), so it is a proposal not an edit.
-5. **The viewmodel is two untextured boxes**, and it is in a third of the frame.
-6. **Roughness maps are still unread** — all nine of them. Blocked on an ORM
+5. **Roughness maps are still unread** — all nine of them. Blocked on an ORM
    packing step, not on a slot: `metallic_roughness_texture` is glTF-packed and
    its B channel is metallic, so a greyscale rough jpg would make every surface
    a half-metal.
