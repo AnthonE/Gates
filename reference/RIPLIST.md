@@ -196,6 +196,18 @@ rule — the shell proxy 403s CONNECT outright, and only the search layer
 and `raw.githubusercontent.com` work. The re-verify this section owes
 still needs a box (or a human) that can open a page.
 
+**Re-verified 2026-08-14, and the debt is paid: every checkable cell is
+EXACT at the page.** A box with open egress read `rusthelp.com/items/
+<slug>` for all 42 items this section and §1e touch — every cost row
+taken, every hp row, the five matched rows, the code lock, and the rock's
+10 stone — and **not one cell differed from the table below.** The
+satchel's refused component chain (4 beancan + 1 small stash + 1 rope)
+and the cupboard's ~100 hp are page-confirmed too. So the tier-4 source
+scored 34/34 on every cell it could be checked on — §6.3's rung-1 test at
+full sample rather than five rows — and this section's numbers now carry
+**page provenance**; the ⚠ above stands as the history of how they first
+landed, not as their current tier.
+
 **I disputed two of its claims and was wrong about one of them, which is
 the third check on this source and the least comfortable.** I refused
 `rock` at "10 stone → 1, craftable" on the grounds that the rock is the
@@ -284,7 +296,8 @@ The one cell where we now differ from them **deliberately**, and it is an
 operator call rather than a research gap: *"make cupboard stronger rather
 than weak. plus i think most people blow the locks off."*
 
-Their tool cupboard is fragile — one summary put it at 100 hp — and it
+Their tool cupboard is fragile — **hp 100, page-confirmed 2026-08-14**
+(what "one summary put at 100" when this was written) — and it
 survives by being buried behind everything else, which their own raid
 meta bears out: the entry point is what gets blown, not the cupboard.
 Ours goes the other way. **`item.hearth` hp 500 → 1,000**, the top of the
@@ -381,6 +394,34 @@ A browser answers this in five minutes; the rows are cited open in
   hunting-bow page, against the HV arrow's stated ×64. The staleness trap
   §4.2 names, seen in a stack column; discarded.
 
+### 1e-b · Closed 2026-08-14 — the page read, and the open cells taken
+
+The box that paid §1c's re-verify (see there) read every open cell of
+this section at `rusthelp.com/items/<slug>`. All five taken cells
+confirmed EXACT at the page — pistol ammo 128, the arrow class 64,
+bandage 3, gunpowder 1000, and the APPROX tags are retired. The open
+cells, closed and (where they differed) taken in `items.toml` the same
+commit, §6.1's default:
+
+| row | ours was | theirs, at the page | outcome |
+|---|---|---|---|
+| animal fat | 500 | **1000** | taken |
+| gears | 50 | **20** | taken |
+| tarp | 50 | **20** | taken |
+| rope | 50 | **50** | matched — confirmed |
+| berries | 50 | **20** (Blue Berry) | taken |
+| mushrooms | 50 | **10** | taken |
+| corn | 50 | **20** | taken |
+| raw / cooked / burnt meat | 20 | **20** (pork pages; Burnt Pork exists there too) | matched — confirmed |
+| charcoal · sulfur | 1000 | **1000** | matched — confirmed |
+
+No kit or loot grant exceeded a new cap, so nothing forced a second edit
+the way the bandage forced the spawn kit — the tightest fit is the
+mushroom, whose cap now *equals* the largest single grant (a whole
+tree's 10), noted at the row. The medkit refusal stands (no equivalent
+item). **Row 1e's stack column is done**: every cell is either theirs or
+a confirmed match, and none is open.
+
 ## 2 · Outstanding — the queue
 
 Ranked by what a returning player notices, which is `BALANCE.md` §5's
@@ -411,13 +452,14 @@ it is for: when you take a row, look for the column beside it.
 | 1b | ~~**building block costs**~~ | ✅ **TAKEN 2026-08-10** | **This row never existed until the number was already taken, and that is the entry worth reading.** Our `cost` column in `building.toml` — 350 wood / 350 stone / 200 frags for every shape — was written in the M1 build slice off our own `farm_per_min` and **never compared to theirs**. The 2026-08-08 balance pass took the hp ladder and the satchel out of that very file and left `cost` alone; this list opened no row, so nothing was tracking it as outstanding and nothing read as wrong. Row 1's node take is what exposed it: once a tree paid *their* 810 wood, a wall priced at *ours* cost **1.75× theirs in trees**. Taken whole — grade base twig 50 / wood 200 / stone 300 / metal 200, `BUILDING.md` §7b.3's shape ratios off it — so the 24 cells are theirs. One band re-spoken (`wood_wall_minutes` [5, 9] → [3, 5], value 4.0) under §6.2/§7. **The lesson for the rows below**: taking one half of a ratio is worse than taking neither, and a row that is not on this list is not thereby fine — it may simply never have been looked at. |
 | 1c | ~~**the `recipes.toml` cost column**~~ | ✅ **TAKEN 2026-08-10** — 23 of 39 rows moved, 5 already matched, 8 have no equivalent | Struck — §1c below has the row-by-row table, the provenance caveat, and the eight refusals. Headline: the **tool cupboard 300 wood + 100 stone → 1,000 wood**, the wooden door 200 → 300, the sheet metal door 200 → 150 frags, the building plan 50 → 20, the hammer 75 → 100. **Every band held with no re-speak.** |
 | 1d | ~~**`deployables.toml` hp**~~ | ✅ **TAKEN 2026-08-10**, in the same commit as 1c by design | 7 of 12 moved, 2 already matched, 3 refused. The one that matters: **sheet metal door 800 → 250 hp**, which is what makes the door the breach point their design intends rather than a second wall. Wooden door 200 and small box 150 were already theirs. Not taken: the code lock (their lock has no standalone hp — it is not independently destructible, which is a mechanism difference from `lock.rs`), the recycler (no equivalent — theirs is a monument fixture, ours is craftable by design, `DECISIONS.md` "recycler v0"), and the **tool cupboard's own hp**, where the source declined to answer and one earlier search summary said 100 against our 500. That last one is the largest open cell on this list. |
-| 1e | **the files with no coverage at all** — ~~`items.toml` stack sizes~~ ✅ **TAKEN 2026-08-11** (§1e) | `READY` (research not started on the rest) | `armor.toml` · `cooking.toml` · `loot.toml` · `research.toml` (scrap costs) still have zero coverage. Named here because row 1b proved that **absence from this list has been mistaken for a decision**. `armor.toml` has a real §4.1 reason (per-damage-type vs our flat %) and still deserves a row saying so; the other three have no reason recorded anywhere, which is not the same as having one. The stack-size half is struck: §1e took 5 cells at tier 3, confirmed 9 matches, and left 12 cells **explicitly open with the reason named** — those opens are part of this row's remaining work. |
+| 1e | **the files with no coverage at all** — ~~`items.toml` stack sizes~~ ✅ **TAKEN 2026-08-11** (§1e) | `READY` (research not started on the rest) | `armor.toml` · `cooking.toml` · `loot.toml` · `research.toml` (scrap costs) still have zero coverage. Named here because row 1b proved that **absence from this list has been mistaken for a decision**. `armor.toml` has a real §4.1 reason (per-damage-type vs our flat %) and still deserves a row saying so; the other three have no reason recorded anywhere, which is not the same as having one. The stack-size half is **done** (§1e-b, 2026-08-14): the 12 open cells were read at the page — six taken, the rest confirmed matches — so what remains of this row is exactly the four uncovered files. |
 | 2 | **per-material damage resistance** | `READY` (mechanism build, not a lookup) | The biggest *model* gap, and `BALANCE.md` §4.1 calls it a build: a schema column plus a sim multiply. Their stone wall takes 4 satchels and their sheet metal 23; ours takes 8 because one `structure` column serves every material. Until this exists, their raid numbers above stone cannot be taken at all — the ladder has nowhere to go. |
 | 3 | **smelt rates** ✅ · **craft-time rebate** | smelt: ✅ **TAKEN 2026-08-10** · rebate: `NEEDS-MECHANISM` | Smelt landed via §6.3's ladder — rung 3 picked metal 2.5 / sulfur 2.5 over metal 3.3 / sulfur 1.7, and **the shape was the real win**: theirs smelt alike where ours had sulfur at half of metal, so sulfur went 1 → 2. Both rows sit at 2 because `seconds` is integer (row 3a). The mechanism half already matched — their furnace is parallel per slot and `oven::sweep` is too. **The rebate (50% one tier up, 75% two) is blocked on a ladder we do not have**: every crafted row in `recipes.toml` is `none` or `workbench1`, so there is no second tier for a rebate to key off. Build the tier ladder, then this is a lookup. |
 | 3a | **sub-second smelt/craft precision** | `NEEDS-MECHANISM` (schema) | Their 2.5 s is not expressible: `Recipe::seconds` is a `u32` baked as `seconds × TICK_HZ`, so content can only say 2 or 3 while the sim happily runs 75 ticks. Widen the content field (tenths, or ticks outright) and the smelt rows can carry their real number. Small, self-contained, and it unblocks every future time that is not a whole second. |
 | 4 | **the animal roster** | chicken/stag: `READY` · wolf/bear: `NEEDS-MECHANISM` (row 6) | Research is **closed**, not blocked — §4.6 has hp and drops for all five: chicken 25, boar 80 (taken), stag ~80, wolf 100, bear 400. The cost is one line of code per species, not a lookup: `mob.rs` holds `MOB_KINDS = 1` and a species ordinal, and its own comment says the array "is what makes a second a content row" — so add the ordinal, then the numbers are content. **Chicken and stag are landable today** (they flee, which is all our AI does). Wolf and bear are not worth adding until row 6 lands, because an animal that exists to threaten and cannot hurt you is scenery. |
 | 5 | **logistics friction** — carry limits, node density, deposit trips | `NEEDS-MECHANISM` | **The largest single term in the reference's economy (~10–30×) and the one we charge almost none of** (§0: ours measures 1.40×). Not one number but a set: how far apart nodes sit (`terrain::scatter` density), whether a full pocket forces a trip home, and whether nodes are scarce enough to walk for. Nothing here is blocked on research — it is blocked on nobody having decided the island should be harder to farm. Until it moves, every yield we take from them lands in a world that charges a fraction of what theirs does. |
 | 6 | **mob→player damage** | `NEEDS-MECHANISM` | Not a number. Ranked below logistics on the *magnitude* evidence (~2–5× against ~10–30×), which is the opposite of where this list first put it — but it is the half the operator asked for and the one a player feels, since a threat that cannot hurt you is scenery. Costs a new death cause on a 2-bit field saturated since wire v24, so it is a wire widening (wall 6: version bump + regenerated goldens in one commit). §5's warning applies: model it as trip shape and load loss, never as a flat rate multiplier. |
+| 7 | **the research ladder** — workbench 2/3, the tier column, the tech tree + its UI | `NEEDS-MECHANISM` (spoken 2026-08-14 — `DECISIONS.md`; `NOW.md` §0tt is the queue item) | Sourced at page tier 2026-08-14, and **the era is the finding**. Their CURRENT ladder is fragment-gated: WB2 = 500 frags + 20 HQM + **5 basic blueprint fragments** (hp 500), WB3 = 1,000 frags + 100 HQM + **5 advanced** (hp 750), scrap removed from benches (Meta Shift, Oct 2025), research costs the post-Pivot-or-Die **15/30/60/120** — explosives 120 and mixing table 30 confirm the cut at the page, and the tech tree still charges scrap per node (explosives path total 600, mixing table 90; **item pages carry the path totals**, so the whole tree is walkable without the JS viewer). Their PRE-Oct-2025 ladder was ~1,800 scrap through the benches — the era every community wiki still describes. §0's threat frame decides which is takeable: fragments are priced against monument contest we do not have, so **the scrap-era ladder is the coherent take until events exist**, and that is a decision to speak, not a default. Unconfirmed, single-summary: the mixing table's "gunpowder 33% cheaper in charcoal". Raw survey and its stale cells: `reference/dumps/20260814-techtree-benchladder.md`. |
 
 ---
 
@@ -515,6 +557,14 @@ of how many marks the player hits. The 2017 table in §4.2 is not merely
 old, it measures a quantity the game no longer holds fixed. **Do not go
 looking for a modern hit-count table; it does not exist because it cannot.**
 
+**Re-read 2026-08-14, a different box and day, identical cell for cell**
+(`rusthelp.com/world/{stone,metal,sulfur}-node`): all 21 ore cells and
+both HQM zeroes reproduced exactly, the hotspot confirmed as speed-only
+by the pages' own structure (a "Duration (Hotspots)" column beside an
+unchanging yield), and sulfur's **300** re-confirmed against the 200
+camp — 200 was never the proper-tool total; a rock takes 100. The same
+sweep found no 2024–26 rework of either minigame (`SOURCES.md` §2).
+
 ### 4.1b · Species and size variance (Tier-1 question 5, answered)
 
 Wood total is set by species and size, where ore total is set by tool:
@@ -542,7 +592,9 @@ moment, spoken in `DECISIONS.md`, in the same commit as the numbers.
 per node, it is fixed per node *and tool*. Stone pickaxe takes 794 of a
 1000 stone node and 485 of a 600 metal node: **~0.8 of best**, and the two
 independent measurements agreeing to within 0.014 is the most trustworthy
-number in this whole document. A rock takes ~⅓.
+number in this whole document. A rock takes ~⅓. *(Third point, 2026-08-14:
+sulfur 257/300 = **0.857** — so the stone pickaxe's share is a 0.79–0.86
+band that widens on the scarcer ore, not one constant.)*
 
 Our `gatherables.toml` already produces this shape by another route
 (fixed `hits`, per-tool `yield_per_hit`), so the *model* needs no change —
@@ -825,31 +877,70 @@ figure, a **contested-vs-uncontested throughput ratio**, or **offline-raid
 prevalence** — the four numbers that would settle the threat term
 properly.
 
-**The `oezp.at` paper is identified but still unread, and the reason
-changed** (2026-08-09). It is Jan Byczkowski, *"The Potential for Survival
+**The `oezp.at` paper is READ — 2026-08-14, at primary tier, from this
+box.** Jan Byczkowski / Ömer Furkan Alp, *"The Potential for Survival
 Games as a Research Medium in Political Science: Investigating the
 Hobbesian and Lockean State of Nature in Rust"*, **Austrian Journal of
-Political Science vol. 54 no. 2 (2025)**,
-`oezp.at/OEZP/en/article/view/4231` (PDF galley `/download/4231/3257`).
-It is **not** blocked by policy — every article URL on that OJS instance
-exceeds 10 redirects, and `academia.edu` 403s. So it is a broken fetch,
-not a denial, and a browser would very likely just open it.
-
-Confirmed from the abstract, three independent search summaries agreeing:
-in the game's anarchic environment — *which in certain aspects encourages
-violence by lowering the stakes* — **players nonetheless favour
-non-violent behaviour and defensive violence over offensive violence.**
-
-**What is still missing is every number in it**: encounter count, sample
-size, and the violent/non-violent and offensive/defensive percentages.
-The direction of the finding is established and it cuts against a large
-threat term; the magnitude is not. **Do not price a threat term off the
-abstract** — the headline is qualitative and §5.2 already warns that
-threat acts on trip shape rather than rate.
+Political Science (OZP) vol. 54 no. 2 (2025)**. The 2026-08-09 redirect
+loop did not reproduce on the `de` download route —
+`oezp.at/OEZP/de/article/download/4231/3257/10571` served the whole PDF
+on the first try (`SOURCES.md` §header, the 2026-08-14 probe). §5.6
+below is the record; every number in it is the paper's own (Tables 1–3).
 
 **r/playrust remains unavailable and is now known to be unavailable at the
 tool layer**, not the network: fetches are refused before egress, so no
 amount of open proxy fixes it. Vanilla-1× throughput, "how long to T3" and
 solo-vs-group session shape are still entirely unsourced. A human with a
-browser is the only route to both this and the paper — `SOURCES.md` §0
-Tier 4 is where they belong, and both rows stand.
+browser is the only route — `SOURCES.md` §0 Tier 4 item 15 is where it
+belongs and that row stands; the paper's row closed 2026-08-14 (§5.6).
+
+### 5.6 · The violence study, read (2026-08-14) — PRIMARY, and it settles shape, not magnitude
+
+Method, from the paper: 146 usable players out of 404 Twitch users / 640
+VODs collected in three batches; 30 observed minutes each (73
+player-hours), the window starting after the stream's 30th minute (or at
+actual gameplay); excluded: under 30 min of regular vanilla play and
+stream-sniping victims; breaks and modded segments paused the clock.
+Interactions were coded per 10-second interval from the streamer's
+perspective — non-violent {ignore, avoid/escape, communication,
+cooperation, alliance}, defence {warning shots/cover fire, threat,
+defence fight, base defence}, offence {pre-emptive/distrust, attack,
+base attack} — and an encounter that changed category was split into
+separate events.
+
+**The mix** (Table 1, per-player average shares): **35% non-violent + 17%
+defensive = 52% non-offensive, vs 48% offensive**. Absolute counts (Table
+3): **359 / 140 / 416 of 915 events** — offensive is 45.5% of events.
+**76% of players (111/146) committed at least one offensive act**; 10%
+(15) never interacted; 24% (35) were never offensive.
+
+**The tail is the finding** (Table 3): the 20 purely-offensive players
+(14%) averaged **2.45** offensive acts — *below* the 2.84 population
+mean, and removing them **raises** the remainder's mean to 2.91. The
+concentration sits in the **5% most violent (7 players): 94 offensive
+acts, 13.42 each**; removing them drops the mean 2.84 → 2.31 (−19%) and
+the offensive share 48% → 46%. So aggression is near-universal at low
+intensity and hyper-concentrated at the top — heavy-tailed, not a
+bimodal killers-vs-farmers split.
+
+**A rate, derived by us** (not the paper's framing, APPROX): 915 events /
+73 h ≈ 12.5 interactions per player-hour, ~5.7 of them offensive —
+early-session vanilla, under the persona caveat below.
+
+**Stated limitations**: 30 min is a small slice of a session; the VODs
+have since expired (Twitch keeps them 7–60 days), so the dataset cannot
+be re-checked; category calls needed researcher judgement; and streamers
+plausibly perform violence for viewers — the authors raise it themselves
+and answer that veterans' on-stream personas are settled habits.
+
+**What it settles and what it does not.** It settles the *shape* of the
+threat term: §5.2's trip-shape model, said by a measurement — danger is
+concentrated in actors (and plausibly places), most interactions are
+non-offensive, and the right model is hotspots, risky routes and
+occasional catastrophic loss, never a uniform farm-rate tax. It prices
+nothing: no farming trips, no carried value, no interruption rate, no
+deaths/hour — §5.5's four missing session numbers are all still missing,
+and `SOURCES.md`'s old framing of this row as "the missing magnitude" is
+corrected there. The magnitude question moves to the LOGISTICS row
+(`SOURCES.md` §3b): whether the 10–30× term is a constant or an
+early-wipe phenomenon is now the highest-value open question.
