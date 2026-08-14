@@ -57,20 +57,29 @@ length. Also read and cleared this pass: the wire encoder's `EV_STRUCT_HIT`
 arm, and any early sweep of a live charge — the only writes to
 `World::charges` are `place`, `tick_fuses` and the save restore.
 
-**Half the mystery is now arithmetic.** `bot_smoke.rs`'s raid `WINDOW` is
-4 s = 120 ticks against a 300-tick fuse, so that gate could never have seen
-a detonation; its comment claiming an unexplained mechanism is corrected.
+**The arrangement is cleared too (2026-08-14).** The instrumented run this
+item asked for is `crates/server/tests/raid_shape.rs` — the wire's seating,
+walk, one-action-per-tick cadence and one-frame hotbar selection, replayed
+into `World::tick` for 905 ticks with no socket. **It raids: 21 plants, 12
+`EV_STRUCT_HIT`, first breach tick 355.** So both things this item suspected
+are wrong. *Attacker and owner never share a plot* is true — measured as an
+integer for the first time, `peak_shared_plot == 1` — and does not stop the
+raid, because an attacker plants on the foundation it laid four steps earlier
+and a blast is area-not-address. And the plants do not cluster late: first at
+tick 55, 17 of 21 due inside. (The shared-plot gap is still real as *design* —
+judge -17 §B.3 — but it is not the explanation, and the two were one thing.)
 
-**What remains.** The 30 s run (905 ticks, 27 plants, still 0 hits) is
-unexplained. It is in the bot arrangement, not the verb: over the wire each
-bot seats its plan from *its own* cell and re-seats every 10 steps while
-walking (`botclient.rs:370-380`), so attacker and owner never share a plot —
-unlike `raid_storm.rs`, and unlike `bots.rs:111`'s doc claim. Next
-measurement is an instrumented 30 s run recording per plant the tick planted
-and the tick due; the live suspicion is the plants cluster in the final 300
-ticks. Do **not** lengthen a wire gate to reach a detonation — that is a gate
-waiting on a clock. Chain:
-`findings/note-20260814-raid-completes-in-the-sim.md`.
+**What remains, ranked.** All wire-only, since the harness is the optimistic
+case and still raids.
+1. **Nobody checked the window held the ticks assumed.** 905 was `30 s ×
+   TICK_HZ`, not a reading; under 355 ticks sees zero by construction.
+   `bot_smoke.rs` now diffs `ShardStats::ticks`. Cheapest next step: run
+   `bin/bots` 30 s and read it.
+2. **Dropped actions skip, not retry** — `core::wants_action` takes one per
+   client per tick; a lost step 4 leaves step 5 throwing at nothing.
+3. The jitter buffer's held-item timing. Cannot be the whole story: 27
+   charges did arm. Chain:
+   `findings/note-20260814-the-arrangement-raids.md`.
 
 ---
 
