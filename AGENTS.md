@@ -102,7 +102,11 @@ lands clean, and they are judged one at a time.
    this wall's stated gate does not exist** — there is no soak and so no
    tick-jitter assert anywhere in the repo. `DESIGN.md` §12 marks it.
 4. Bounded everything; every client-driven `push` checks a cap from
-   `limits.rs`. Gate: review + `test_raid_storm`.
+   `limits.rs`. Gate: review + per-site cap tests + `test_raid_storm`
+   (`crates/sim-core/tests/raid_storm.rs`, landed 2026-08-14: 64 players
+   raiding at the tick's command ceiling, every store's cap asserted per
+   tick). `NETCODE.md` §11's same-named *wire* storm is a different gate
+   and is still unbuilt.
 5. Determinism: same build + seed + WAL → same hashes. Gate: `test_replay`,
    `test_terrain_golden`.
 6. The wire never drifts by accident — layout change = version bump +

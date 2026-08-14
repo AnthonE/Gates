@@ -459,7 +459,7 @@ and `ci/`:
 |---|---|
 | `test_chunk_epoch` | absent |
 | `test_class_transitions` | absent |
-| `test_raid_storm` | absent (also flagged in `CLAUDE.md` wall 4) |
+| `test_raid_storm` | absent — **the wire storm below is; the name is now taken.** `crates/sim-core/tests/raid_storm.rs` (2026-08-14) is wall 4's caps gate under the same name and answers a different question: no socket, no subscribers, nothing timed |
 | `test_stream_in` | absent |
 | `netem profiles` | absent |
 | `test_sleeper_soak` | absent |

@@ -494,6 +494,16 @@ where the sim says.
 >
 > Two of them are also named as enforcement elsewhere and marked there:
 > `test_raid_storm` in `CLAUDE.md` wall 4 and `DESIGN.md` §12.
+>
+> ⚠ **`test_raid_storm` now exists — and it is not the one below.** As of
+> 2026-08-14 `crates/sim-core/tests/raid_storm.rs` carries that name for
+> wall 4's meaning: 64 synthetic players raiding each other in `sim-core`,
+> asserting every store's cap per tick. It speaks to no socket, subscribes
+> nobody, and times nothing. **The gate specified below is the wire half
+> and is still unbuilt** — coalescing caps, tick p99 and byte counts under
+> 20 subscribers are all outside what a `World` can see. So this list is
+> six unbuilt, not seven, and the one that landed answers a different
+> question. Read the name with its crate attached.
 
 - `test_chunk_epoch`: fuzz subscribe/unsubscribe/re-subscribe against a
   mutating chunk; client-reconstructed state must equal server state at
