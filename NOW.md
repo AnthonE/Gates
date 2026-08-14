@@ -61,24 +61,28 @@ on the old constants. 58.1% of land in the grass band, p10 38.0° / p90 68.5°.
 
 Remaining, in order:
 
-1. ~~Granite is authored and never drawn~~ — **struck 2026-08-14, and do not
-   re-run it.** The measurements were right and the conclusion was wrong: they
-   were taken on one seed. Across 40 seeds the median island tops out at 93.89 m
-   / slope 2.203 and paints rock on **6.11% of its land**; seed 20260731 is the
-   **minimum of the forty on all three axes**. Granite reaches the ground on 38
-   of 40 islands. The bands are ramps centred on `CLIFF_SLOPE_RATIO` and
-   `biome()`'s Highland edge (`DECISIONS.md` §open materials v0, `TERRAIN.md`
-   §7.1) — moving one decouples the surface from the law it ramps, and
-   `crates/sim-core/tests/relief.rs` is now red under exactly that edit. The
-   live question is which island we photograph and ship: `DECISIONS.md` §open
-   "capture and shard seed v0". Note
-   `findings/note-20260814-granite-and-the-flattest-island.md`.
-2. **Something between `vertex_color` and the pixel eats the green.** The OLD
+1. ~~Granite is authored and never drawn~~ — **struck, and the reason it was
+   struck is itself retracted (2026-08-14, both the same day).** It is not that
+   the shipped island is a flat 1-in-40: that came from sweeping `-1024..1024`
+   on a world centred at (1024, 1024) — **one quadrant**, and not the one the
+   camera stands in. Over the whole square seed 20260731 reaches 106.00 m,
+   slope 2.665 and granite on **10.0%** of its land (44-island median 7.2%),
+   and **8.9% within 300 m of the capture spawn**, where the median island
+   paints 0%. Granite is authored, reachable and near the camera. No seed
+   moved. The bands still may not: they are ramps centred on
+   `CLIFF_SLOPE_RATIO` and `biome()`'s Highland edge, and
+   `crates/sim-core/tests/relief.rs` is red under that edit and now also under
+   the quadrant window's return.
+2. **So the missing green is the renderer's, and item 3 is the live one.**
+   Nothing about the world explains a frame with no granite in it — the rock is
+   there, in view distance of the spawn. Whatever eats it sits between
+   `splat`/`vertex_color` and the pixel.
+3. **Something between `vertex_color` and the pixel eats the green.** The OLD
    constants already held two hue populations (31.1° and 84.0°) while the judge
    measured 29–35° with nothing above it. Untested: the granite photograph's
    chroma through `base_color_texture`, the lighting, the tonemap, or a near
    band that is mostly clutter and props rather than ground.
-3. **The judge read real geometry as paint.** `render/clutter.rs` ships 721
+4. **The judge read real geometry as paint.** `render/clutter.rs` ships 721
    elements a tile and is drawn; what it lacks is a shadow (`NotShadowCaster`,
    deliberately) and any contact darkening (no SSAO anywhere). `ART.md` rule 2.
 

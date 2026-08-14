@@ -33,6 +33,20 @@ nonzero — it does not quietly score against nothing. Frames are cited below by
 filename (`generichighview2.jpg`) because a filename is a *reference to* an
 image, not a copy of one.
 
+**The island under the camera is seed 20260731**, and this file did not contain
+the word "seed" until 2026-08-14 — which is worth a line, because on that day a
+pass concluded the frames were flat *because the island was*, and the operator
+was one command from wiping the public shard for it. The measurement was a
+quarter of the island (an origin-centred sweep window on a world centred at
+1024, 1024). Over the whole square this seed reaches 106.00 m, slope 2.665 and
+granite on 10.0% of its land — upper third of 44 — and within 300 m of the
+camera's own spawn it paints 8.9%, where the median island paints 0%. **So a
+frame with no granite in it is the renderer's to answer for, not the seed's.**
+The seed is still an instrument setting like a vantage bearing: changing it
+makes frames incomparable across the change, so it is named here rather than
+left to whichever `shard.toml` the probe happened to dial
+(`sim-core/tests/relief.rs`, `examples/seed_scan`).
+
 The IP rail (`DECISIONS.md`) is unchanged and narrow: no proper nouns, no
 traced assets. Statistics of light and colour are nobody's property — and that
 is precisely the line the removal draws, because a screenshot is not a

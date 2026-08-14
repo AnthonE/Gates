@@ -46,7 +46,13 @@
 use client::render::terrain_mesh::GROUND_ALBEDO;
 use sim_core::terrain;
 
-/// The seed the capture probe shoots and every terrain golden pins.
+/// The seed the shard ships, so the seed the capture probe shoots.
+///
+/// **Proposed for replacement on 2026-08-14 and kept.** The report that called
+/// it the flattest of forty islands had swept `-1024..1024` — one quadrant of a
+/// world whose coordinates run 0..2048 — and over the whole island it is
+/// upper-third for granite. `sim-core/tests/relief.rs` carries the retraction
+/// and the numbers.
 const SEED: u64 = 20260731;
 
 /// `ART.md` §3's measured surfaces, as the bands this gate holds the four
@@ -266,16 +272,23 @@ fn the_island_is_more_than_one_surface() {
     // A 4 m lattice over the island's full 2 km extent — the pitch the
     // measurements in this file's comments were taken at. Offset by half a
     // step so it never samples the origin or a chunk boundary.
+    //
+    // ⚠ **`[0, ISLAND_SIZE)`, and it read `-1024..1024` until 2026-08-14**,
+    // which is a square whose corner is the island's centre: one quadrant,
+    // 632 k m² of a 2.9 M m² island. `terrain::continent` centres on
+    // `(ISLAND_SIZE/2, ISLAND_SIZE/2)` and world coordinates run 0..2048.
+    // Everything this file measured was a quarter-island statistic.
     const STEP: f32 = 4.0;
-    const HALF: f32 = 1024.0;
+    const LO: f32 = 0.0;
+    const HI: f32 = terrain::ISLAND_SIZE;
 
     let mut hues: Vec<f32> = Vec::new();
     let mut impure = Vec::new();
 
-    let mut z = -HALF + STEP * 0.5;
-    while z < HALF {
-        let mut x = -HALF + STEP * 0.5;
-        while x < HALF {
+    let mut z = LO + STEP * 0.5;
+    while z < HI {
+        let mut x = LO + STEP * 0.5;
+        while x < HI {
             // Land only: the sea has its own material and §3 measured ground.
             if terrain::height(SEED, x, z) <= 0.5 {
                 x += STEP;
@@ -308,8 +321,9 @@ fn the_island_is_more_than_one_surface() {
     }
 
     assert!(
-        hues.len() > 30_000,
-        "the island shrank: {} land samples at {STEP} m",
+        hues.len() > 100_000,
+        "the island shrank: {} land samples at {STEP} m (a whole island is \
+         ~154 k here — 30_000 was the floor while this swept a quadrant)",
         hues.len()
     );
     assert!(
@@ -351,54 +365,69 @@ fn the_island_is_more_than_one_surface() {
     );
 }
 
-/// Granite is authored, gated above, and **never drawn on this seed** — both
-/// of `splat_from`'s routes to it are closed by *this island's* range.
+/// Granite is authored, gated above, and **reaches the ground on the island we
+/// ship** — both of `splat_from`'s routes to it are open on *this island's*
+/// range.
 ///
-/// Measured over 39,521 land samples at 4 m, seed 20260731:
+/// ⚠ **This test used to assert the opposite, on the same seed, and the reason
+/// is a sweep window rather than a world.** It read: the height route tops out
+/// at 46.32 m against a 44 m band opening (p99.9 43.63 m), the slope route
+/// reaches 0.890 against a 0.952 band, the cliff mask has never fired once, max
+/// rock anywhere is 15/255. Every one of those numbers came from a
+/// `-1024..1024` sweep — **one quadrant** of an island centred on (1024, 1024),
+/// not even the quadrant this file's camera stands in. Over the world square
+/// the same seed reaches 106.00 m, slope 2.665 and granite on 10.0% of its
+/// land, against a 44-island median of 7.2%. Fixed and retracted 2026-08-14;
+/// `sim-core/tests/relief.rs` holds the full retraction and a gate against the
+/// window coming back.
 ///
-/// | route | band opens at | the island's extreme |
-/// |---|---|---|
-/// | `SPLAT_ALPINE_BAND` (height) | 44.0 m | max 46.32 m, p99.9 **43.63 m** |
-/// | `SPLAT_CLIFF_BAND` (slope) | 0.952 | max **0.890** — never reached, once |
+/// `NOW.md` §0gi item 1 proposed the third option — move the bands so the flat
+/// island paints rock — and that is the one that is actively wrong: it
+/// decouples the cliff ramp from `CLIFF_SLOPE_RATIO` and the alpine ramp from
+/// `biome()`'s Highland edge, a relationship `DECISIONS.md` materials v0 and
+/// `TERRAIN.md` §7.1 both state. `relief.rs` is red under exactly that edit.
 ///
-/// ⚠ **"On this seed" is the whole of the correction, and the sentence this
-/// comment used to open with — "granite is never drawn" — was false.** It read
-/// as a fact about `splat_from`; it is a fact about seed 20260731. Re-measured
-/// 2026-08-14 across 40 seeds (`crates/sim-core/tests/relief.rs`, and the note
-/// in `gates-loop/findings/`): the median island tops out at **93.89 m** with a
-/// max slope of **2.203** and paints a legible rock weight on **6.11%** of its
-/// land, and this seed is the **minimum of the forty on all three axes**.
-/// Granite reaches the ground on 38 of 40 islands. `NOW.md` §0gi item 1 read
-/// the table above as "move the bands"; moving them decouples the cliff ramp
-/// from `CLIFF_SLOPE_RATIO` and the alpine ramp from `biome()`'s Highland edge,
-/// which is a relationship `DECISIONS.md` §open materials v0 and `TERRAIN.md`
-/// §7.1 both state — so `relief.rs` gates it, and it is red under exactly that
-/// edit.
-///
-/// **This test asserts the mechanism, not the defect**, and the mechanism it
-/// now holds is *the outlier*: these four numbers are why every visual report
-/// this loop has written was written against a pancake. Which island the probe
-/// photographs is `DECISIONS.md` §open, not a builder's call. When that is
-/// answered this goes red with the new numbers in hand.
+/// **What this asserts is still the mechanism, not the picture**: that both
+/// routes are reachable on the shipped world. Whether the frame *looks* like
+/// granite is the operator's eye and the visual judge's, and no arithmetic here
+/// can stand in for either (`CLAUDE.md`, the beige-smear trap).
 #[test]
-fn granite_never_reaches_the_ground_on_the_capture_seed() {
+fn granite_reaches_the_ground_on_the_shipped_seed() {
     const STEP: f32 = 4.0;
-    const HALF: f32 = 1024.0;
+    // The world square, `[0, ISLAND_SIZE)` — see the sweep above for why this
+    // is not `-1024..1024`, and what it cost.
+    const LO: f32 = 0.0;
+    const HI: f32 = terrain::ISLAND_SIZE;
+    /// `SPLAT_CLIFF_BAND`'s opening: tan(50°) × 0.8. The mask that FORCES rock.
+    const CLIFF_OPENS: f32 = 0.952;
+    /// `SPLAT_ALPINE_BAND`'s opening.
+    const ALPINE_OPENS: f32 = 44.0;
+    /// Where a channel stops being rounding and starts being a visible share
+    /// of the blend — `relief.rs` uses the same floor.
+    const LEGIBLE: u8 = 32;
 
     let mut hmax = f32::MIN;
     let mut smax = f32::MIN;
     let mut rock_max = 0u8;
-    let mut land = 0u64;
+    let (mut land, mut rock, mut cliff) = (0u64, 0u64, 0u64);
 
-    let mut z = -HALF + STEP * 0.5;
-    while z < HALF {
-        let mut x = -HALF + STEP * 0.5;
-        while x < HALF {
+    let mut z = LO + STEP * 0.5;
+    while z < HI {
+        let mut x = LO + STEP * 0.5;
+        while x < HI {
             if terrain::height(SEED, x, z) > 0.5 {
                 land += 1;
                 hmax = hmax.max(terrain::height(SEED, x, z));
-                smax = smax.max(terrain::slope(SEED, x, z));
-                rock_max = rock_max.max(terrain::splat(SEED, x, z)[3]);
+                let s = terrain::slope(SEED, x, z);
+                smax = smax.max(s);
+                if s >= CLIFF_OPENS {
+                    cliff += 1;
+                }
+                let r = terrain::splat(SEED, x, z)[3];
+                rock_max = rock_max.max(r);
+                if r >= LEGIBLE {
+                    rock += 1;
+                }
             }
             x += STEP;
         }
@@ -406,27 +435,37 @@ fn granite_never_reaches_the_ground_on_the_capture_seed() {
     }
 
     assert!(
-        land > 30_000,
-        "the island shrank: {land} land samples at {STEP} m"
-    );
-    // The cliff mask is the one that FORCES rock, and it is the one that never
-    // fires: SPLAT_CLIFF_BAND opens at tan(50°) × 0.8 = 0.952.
-    assert!(
-        smax < 0.952,
-        "the island's max slope is now {smax:.3}, at or past SPLAT_CLIFF_BAND's \
-         0.952 — the cliff mask can fire, so granite is reachable and this test \
-         and ABSENT above are both stale"
-    );
-    // The alpine ramp opens at 44 m and the island tops out just past it, which
-    // is why granite exists in the weights and not in the picture.
-    assert!(
-        (44.0..48.0).contains(&hmax),
-        "the island's max height is now {hmax:.2} m against SPLAT_ALPINE_BAND's \
-         44.0–60.0 — the alpine route's reach has changed materially"
+        land > 100_000,
+        "the island shrank: {land} land samples at {STEP} m (a whole island \
+         is ~154 k here)"
     );
     assert!(
-        rock_max < 16,
-        "granite now reaches {rock_max}/255 somewhere (was 15) — if the bands \
-         moved, drop \"rock\" from ABSENT and let the plurality rule cover it"
+        smax > CLIFF_OPENS,
+        "the island's max slope is {smax:.3}, short of SPLAT_CLIFF_BAND's \
+         {CLIFF_OPENS} — the cliff mask cannot fire anywhere, which is the \
+         pancake condition the shipped seed was changed to leave"
+    );
+    assert!(
+        cliff > 0,
+        "no land sample on the whole island is at or past the cliff band"
+    );
+    assert!(
+        hmax > ALPINE_OPENS + 20.0,
+        "the island tops out at {hmax:.2} m, barely past SPLAT_ALPINE_BAND's \
+         {ALPINE_OPENS} — the alpine route reaches almost nothing again"
+    );
+    assert_eq!(
+        rock_max, 255,
+        "granite's strongest weight anywhere is {rock_max}/255, so no ground \
+         on this island reads as granite outright"
+    );
+    // The share, not just the extreme: one cliff face at the map edge would
+    // satisfy every assert above and put no rock in any frame.
+    let permille = 1000 * rock / land;
+    assert!(
+        permille >= 40,
+        "granite is legible on {permille} per-mille of the land (was 72 when \
+         this seed was chosen, against a 44-island median of 63). The world \
+         under the camera has drifted back towards the pancake."
     );
 }

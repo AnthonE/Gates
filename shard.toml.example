@@ -4,6 +4,20 @@
 # crates/server/src/config.rs.
 
 bind = "127.0.0.1:4433"
+
+# The island. **Examined and KEPT on 2026-08-14**, after a pass reported it as
+# the flattest of forty and the re-measurement found the opposite: over the
+# whole world square it tops out at 106.00 m with a max slope of 2.665 and
+# paints granite on **100‰ of its land** against a 44-island median of 72‰ —
+# upper third, not an outlier. The "pancake" numbers came from a sweep window
+# of `-1024..1024`, whose corner is the island's centre (`terrain::continent`
+# centres on 1024,1024), so it measured ONE QUADRANT — and, at x 1155, not even
+# the quadrant the capture camera stands in.
+#
+# `cargo run -p sim-core --release --example seed_scan` reproduces the ranking,
+# and `--at x,z,r` restricts it to what a camera at one point can see.
+# `crates/sim-core/tests/relief.rs` re-measures whatever seed ships here
+# against the set every run and goes red if it becomes an outlier.
 seed = 20260731
 
 # Dev only — never on a public shard. Fixed spawn "x,z" in meters: every

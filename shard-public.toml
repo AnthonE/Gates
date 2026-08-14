@@ -33,6 +33,14 @@
 #   domain    must match the host players dial — it is in what they sign.
 
 bind = "0.0.0.0:61234"
+
+# ⚠ **CHANGING THIS SEED IS A WIPE** — the island is regenerated, so every base
+# standing on it is gone (the player store is keyed by identity and survives;
+# `world_file` no longer describes the same island). Never changed. It was
+# proposed on 2026-08-14 and **withdrawn on the re-measurement**: the report
+# that called this island the flattest of forty had swept a quarter of it, and
+# over the whole square it is upper-third for relief and granite.
+# `shard.toml.example` carries the numbers.
 seed = 20260731
 cert_pem = "/home/master/gates-certs/fullchain.pem"
 key_pem = "/home/master/gates-certs/privkey.pem"

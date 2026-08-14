@@ -678,6 +678,17 @@ in the ~106 s code tier. Use `bevy/dynamic_linking` for local iteration.
 
 - Fresh process per shot. Fixed seed, fixed dev spawn, one shard per vantage,
   **one live renderer at a time** (two was the browser tier's whole problem).
+  **The fixed seed is 20260731**, and this line names it because for four
+  passes nothing did: the probe has no seed of its own — it photographs
+  whatever the shard it dialled sends in the welcome (`bin/gates.rs`), so the
+  shard configs *were* the instrument setting, silently, and
+  `gates-loop/art/capture-native.sh` carries a second copy of the value as its
+  own default. Both say 20260731. It nearly moved on 2026-08-14 on a
+  measurement that turned out to sweep a quarter of the island
+  (`sim-core/tests/relief.rs` header); if it ever does move, **frames are not
+  comparable across the change**, exactly as re-aiming a vantage makes them
+  incomparable — say so in the report rather than letting the next reader
+  compare them.
 - Settle on observable state — welcome received, `snapshots > n`, chunk queue
   drained — and never on elapsed time. Budget in **frames**, not milliseconds.
 - Render off-screen and read back (Bevy's headless renderer path). No Xvfb, no
