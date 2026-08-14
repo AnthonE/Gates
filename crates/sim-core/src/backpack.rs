@@ -36,12 +36,19 @@
 //!
 //! **Ground drops from a full inventory landed 2026-08-14** and were the
 //! last line of that list: `spill_at` catches what `inv_add` used to
-//! destroy. It is armed on the two paths that *pay* a player — a node's
-//! yield and a finished craft — and not yet on the paths that *give one
-//! back*: a demolish refund (`build.rs`), a deployable pick-up and a lock
-//! removal (`deploy.rs`, `lock.rs`) and a craft cancel's refund
-//! (`craft.rs`) all still discard their leftover. `NOW.md` §0sp2 carries
-//! the rest of the sweep.
+//! destroy. It went in on the two paths that *pay* a player — a node's
+//! yield and a finished craft — and the four that *give one back* took the
+//! same lane later the same day: a demolish refund (`build.rs`), a
+//! deployable pick-up and a lock removal (`deploy.rs`, `lock.rs`) and a
+//! craft cancel's refund (`craft.rs`). **Six producers, one drain**
+//! (`World::drain_spill`), and nothing else may call `spill_at` — the
+//! owner is named in code because that is what `CLAUDE.md`'s clean-merge
+//! trap costs when it is named in a comment instead.
+//!
+//! So no path in the sim destroys an item because a pack was full. The
+//! two things still open are both about *telling* the player: a spill is
+//! silent (`EV_GATHER` honestly reports the zero that reached the hands)
+//! and the merge ignores ownership. `NOW.md` §0sp2 carries both.
 
 use crate::gather::{inv_add, GatherContent, ItemStack};
 use crate::limits::{INV_SLOTS, MAX_BACKPACKS, MAX_ITEM_DEFS};
@@ -335,6 +342,17 @@ impl Backpacks {
     /// whatever nothing took. Returns the bag that ended up with the last
     /// of it, or `None` when nothing was caught.
     ///
+    /// **`items` is cleared on the mint path too**, and that is a fix
+    /// rather than a detail (merge-gate judge, pass -08, ranked fix 2).
+    /// The sentence above was true of the merge and false of the mint:
+    /// `stand_up` takes `&[ItemStack; INV_SLOTS]` and copies `*items`
+    /// wholesale, so the buffer came back holding exactly what the new bag
+    /// had just taken. Harmless while one caller owned one fresh buffer
+    /// per player per tick — and this pass is the second caller, which is
+    /// the arrangement that turns it into items duplicated into the world.
+    /// A drain that runs twice, or a buffer reused across two verbs in one
+    /// tick, is now safe by the contract instead of by luck.
+    ///
     /// **The merge is what makes this bounded**, and it is the whole
     /// reason this is not just `stand_up`. A player swinging at a full
     /// pack pays a swing every `SWING_INTERVAL_TICKS` — roughly 47 a
@@ -413,7 +431,15 @@ impl Backpacks {
                 return Some(self.entries[i].id);
             }
         }
-        self.stand_up(bc, qx, qy, qz, owner, items, tick, events)
+        let stood = self.stand_up(bc, qx, qy, qz, owner, items, tick, events);
+        if stood.is_some() {
+            // The new bag holds a copy of every stack in the buffer, so
+            // the buffer is now a duplicate and not a remainder. `None`
+            // deliberately leaves it alone: an inert ladder took nothing
+            // and the caller destroying it is the pre-backpack world.
+            *items = [ItemStack::default(); INV_SLOTS];
+        }
+        stood
     }
 
     /// Retire every bag whose timer ran out. One pass over the live

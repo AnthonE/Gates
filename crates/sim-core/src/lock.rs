@@ -79,7 +79,7 @@ use crate::deploy::{
     ACCESS_OP_ENTER, ACCESS_OP_LOCK, ACCESS_OP_MAX, ACCESS_OP_SET_CODE, ACCESS_OP_SET_GUEST,
     ACCESS_OP_TAKE, ACCESS_OP_UNLOCK,
 };
-use crate::gather::{inv_add, ItemStack};
+use crate::gather::{inv_add_spilling, ItemStack};
 use crate::limits::{INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP, MAX_LOCKS};
 use crate::roster::{Added, Roster};
 
@@ -521,12 +521,19 @@ pub fn shock(hp: &mut u16, amount: u16) -> u16 {
 /// Give the lock item back to a hand that took its lock off. Returns what
 /// **fit** — 1 or 0 — which is `inv_add`'s contract; this line said
 /// "returns what would not fit, which the caller drops on the floor" and
-/// was wrong twice over (inverted, and nothing drops anything). Both call
-/// sites discard it, so a full pack still destroys the lock: this is a
-/// give-back path and `NOW.md` §0sp2 owes it the spill lane that a node's
-/// yield and a finished craft now take.
-pub fn give_back(inv: &mut [ItemStack; INV_SLOTS], item: u16, stack_max: u16) -> u16 {
-    inv_add(inv, item, 1, stack_max)
+/// was wrong twice over (inverted, and nothing drops anything).
+///
+/// It takes the spill now (`NOW.md` §0sp2, 2026-08-14), so a full pack no
+/// longer destroys the lock — the 1 that did not fit falls at the feet of
+/// the hand that unbolted it. Both call sites are in `deploy.rs` and both
+/// pass the buffer their command's dispatch drains.
+pub fn give_back(
+    inv: &mut [ItemStack; INV_SLOTS],
+    spill: &mut [ItemStack; INV_SLOTS],
+    item: u16,
+    stack_max: u16,
+) -> u16 {
+    inv_add_spilling(inv, spill, item, 1, stack_max)
 }
 
 /// Whether a hand is holding at least one of `item` — the placement cost

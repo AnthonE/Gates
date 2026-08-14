@@ -712,7 +712,7 @@ fn aimed_at_rec(
 mod tests {
     use super::*;
     use crate::gather::ItemStack;
-    use crate::limits::MAX_REMOVALS_PER_TICK;
+    use crate::limits::{INV_SLOTS, MAX_REMOVALS_PER_TICK};
 
     /// One tick's structural removal budget, as `World::tick` hands it
     /// out — these fixtures never approach it (build.rs owns the tests
@@ -1068,6 +1068,7 @@ mod tests {
             1234,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert!(deploys.entries()[0].locked, "and it is locked");
         assert_ne!(

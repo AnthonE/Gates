@@ -1995,6 +1995,59 @@ impl World {
         self.slot_of(id).map(|s| PlayerSave::of(&self.players[s]))
     }
 
+    /// **The one drain.** Hand whatever a verb could not fit into the
+    /// player in `slot` to the ground under that body, merging into a bag
+    /// already in reach before minting one. `spill` comes back empty; an
+    /// all-empty buffer costs a scan of `INV_SLOTS` and nothing else.
+    ///
+    /// This is a function rather than two copies of nine lines because the
+    /// number of producers went from two to six this pass (a node's yield,
+    /// a finished craft, and the four give-backs of `NOW.md` §0sp2), and
+    /// **a container with a single-consumer contract needs an owner named
+    /// in code** — `CLAUDE.md`'s clean-merge trap, which cost this repo a
+    /// silent audio outage when two lanes each added a reader to a ring
+    /// that hands each fact over once. The producers write; this drains;
+    /// nothing else calls `spill_at`.
+    ///
+    /// The fall-point is always the body, never the object given back.
+    /// `build::demolish`'s doc carries the argument in full: every one of
+    /// the six producers refuses beyond `BUILD_REACH_M`, and
+    /// `backpack::LOOT_REACH_M` *is* `BUILD_REACH_M`, so the object's own
+    /// address is inside the merge reach of the feet by construction and
+    /// choosing between them cannot change what a player finds.
+    ///
+    /// `self.tick` and `World::tick`'s local `tick` are the same value —
+    /// the local is bound after the command loop and nothing advances the
+    /// field mid-tick — so this reads identically from `apply` and from the
+    /// player loop. A bag's expiry would otherwise depend on which caller
+    /// stood it up, which the state hash would see.
+    fn drain_spill(&mut self, slot: usize, spill: &mut [ItemStack; INV_SLOTS]) {
+        if spill.iter().all(|s| s.count == 0) {
+            return;
+        }
+        let (owner, sx, sy, sz) = {
+            let p = &self.players[slot];
+            (
+                p.id,
+                p.body.qx,
+                p.body.qy + crate::backpack::BAG_Y_OFFSET_Q,
+                p.body.qz,
+            )
+        };
+        let tick = self.tick;
+        self.backpacks.spill_at(
+            &self.backpack,
+            &self.gather,
+            sx,
+            sy,
+            sz,
+            owner,
+            spill,
+            tick,
+            &mut self.events,
+        );
+    }
+
     fn apply(&mut self, cmd: &Command, removals: &mut usize) {
         match *cmd {
             Command::Join { id } => self.seat(id, None),
@@ -2095,13 +2148,16 @@ impl World {
             }
             Command::CraftCancel { id, index } => {
                 if let Some(slot) = self.live_slot_of(id) {
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
                     craft::cancel(
                         &self.craft,
                         &self.gather,
                         self.tick,
                         &mut self.players[slot],
                         index,
+                        &mut spill,
                     );
+                    self.drain_spill(slot, &mut spill);
                 }
             }
             Command::Place {
@@ -2216,6 +2272,7 @@ impl World {
                 loc,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
                     if deploy {
                         deploy::pick_up(
                             &self.deploy,
@@ -2228,6 +2285,7 @@ impl World {
                             level,
                             loc,
                             &mut self.events,
+                            &mut spill,
                         );
                     } else {
                         build::demolish(
@@ -2244,8 +2302,12 @@ impl World {
                             loc,
                             removals,
                             &mut self.events,
+                            &mut spill,
                         );
                     }
+                    // One buffer for both arms: they are two verbs behind
+                    // one command and exactly one of them ran.
+                    self.drain_spill(slot, &mut spill);
                 }
             }
             Command::Access {
@@ -2274,6 +2336,7 @@ impl World {
                             &mut self.events,
                         );
                     } else {
+                        let mut spill = [ItemStack::default(); INV_SLOTS];
                         deploy::lock_op(
                             &self.deploy,
                             &self.gather,
@@ -2287,7 +2350,9 @@ impl World {
                             code,
                             self.tick,
                             &mut self.events,
+                            &mut spill,
                         );
+                        self.drain_spill(slot, &mut spill);
                     }
                 }
             }
@@ -2655,28 +2720,7 @@ impl World {
             // smashed barrel's bag stands at arm's length, so a spill in
             // the same tick merges into it instead of minting a second
             // container a step away.
-            if spill.iter().any(|s| s.count > 0) {
-                let (owner, sx, sy, sz) = {
-                    let p = &self.players[i];
-                    (
-                        p.id,
-                        p.body.qx,
-                        p.body.qy + crate::backpack::BAG_Y_OFFSET_Q,
-                        p.body.qz,
-                    )
-                };
-                self.backpacks.spill_at(
-                    &self.backpack,
-                    &self.gather,
-                    sx,
-                    sy,
-                    sz,
-                    owner,
-                    &mut spill,
-                    tick,
-                    &mut self.events,
-                );
-            }
+            self.drain_spill(i, &mut spill);
             if swung == Swing::Free {
                 // node → player → structure: the arm passes on only what
                 // nothing nearer absorbed.

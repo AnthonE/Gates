@@ -42,32 +42,32 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
-## 0sp2 · A full pack stops eating what it is paid — the give-backs are left *(systems lane)*
+## 0sp2 · Nothing destroys an item at a full pack now — the spill is silent *(systems lane)*
 
-Gap-pass item, from the merge-gate judge's ranked gap 2
-(`findings/pass-20260813-230343-07-judge.md`): *"`gather::inv_add` still
-loses overflow, so a full pack quietly eats the pickup."* Landed
-2026-08-14: `gather::swing` and `craft::step` write what will not fit into
-a caller-owned tick buffer and `world.rs` drains it into a bag at the
-player's feet, merging into the nearest bag within `LOOT_REACH_M` first so
-farming at a full pack costs one bag and not one per swing. No new
-archetype, no wire change, no knob (`DECISIONS.md` §open "ground drops
-v0"). Six tests in `sim-core/tests/spill.rs`, each proven red under its own
-revert. Left:
+Landed 2026-08-14, both halves. The two paths that *pay* (`gather::swing`,
+`craft::step`) went first; the four that *give back* — a demolish refund, a
+deployable pick-up, a lock removal, a craft cancel — took the same buffer
+the same day. Six producers, one drain (`World::drain_spill`), no wire
+change and no knob (`DECISIONS.md` §open "ground drops v0"). 13 tests in
+`sim-core/tests/spill.rs`, each proven red under its own revert.
 
-- **The four give-back paths still discard their leftover** — a demolish
-  refund (`build.rs:1152`), a deployable pick-up (`deploy.rs:1915`), a lock
-  removal (`lock.rs:525`, whose doc claimed otherwise until this pass) and
-  a craft cancel's refund (`craft.rs:314`). Same helper, same drain point;
-  the reason it is not done here is that each has its own address question
-  (a demolished wall's refund falls where the wall was, not where you are).
+The address question this item held the give-backs for is answered: all six
+verbs refuse beyond `BUILD_REACH_M`, `LOOT_REACH_M` *is* `BUILD_REACH_M`,
+and that is the merge radius — so the object's address is inside merge
+reach of the feet by construction and the feet win on cost. Two latent
+defects went with it (judge fix 2, pass -08: `spill_at` left the caller's
+buffer holding what a minted bag took; and `craft::cancel`'s chunk loop
+broke early, losing most of a large refund). Left:
+
 - **A spill is silent.** `EV_GATHER` correctly reports what reached the
   hands — zero — so the toast reads `+0`, and the only signal a player gets
   is a bag appearing underfoot. A "pack full" line is a client-side read of
   facts already on the wire, or a new event if it is not. Operator: whether
   it is worth a wire field.
+- **The merge ignores ownership** — a spill lands in whatever bag is
+  nearest, including someone else's death bag. §open carries it.
 - **Nobody has seen one.** Gap 1 of the same report stands: this is proven
-  by headless tests only.
+  by headless tests only, and that now covers six verbs rather than two.
 
 ## 0wc · The crate opens — what world containers v0 left *(systems lane)*
 
