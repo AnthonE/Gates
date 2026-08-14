@@ -785,6 +785,30 @@ What is left, in order:
 
 ---
 
+## 0tt · The bench ladder and the tech tree — spoken, and two eras to choose from *(systems lane)*
+
+Spoken 2026-08-14 (*"we should copy the tech tree ui thing too"* —
+`DECISIONS.md` has the row): their two-system model — research what you
+loot at the table, tech-tree the gaps at the bench — plus the workbench
+tech-tree UI. What exists: `research.rs` + `research.toml` (powder era
+only, deliberately), `item.workbench` (tier 1), OBOL-is-scrap. What is
+missing is the whole ladder: no workbench 2/3, nothing above
+`workbench1` in `recipes.toml`'s station column, no tree, no UI — and
+`RIPLIST.md` §2 row 3's craft rebate is blocked on exactly this ladder.
+
+**The numbers are sourced and the ERA is the decision** (§2 row 7, page
+tier 2026-08-14): their CURRENT ladder is fragment-gated — WB2 = 500
+frags + 20 HQM + 5 basic blueprint fragments, WB3 = 1,000 + 100 HQM + 5
+advanced, fragments spawn only in monument puzzle rooms / crates, scrap
+removed from benches (Meta Shift) — and research costs are the post-cut
+15/30/60/120. Their PRE-Oct-2025 ladder was scrap accumulation (~1,800
+through the benches). We have no monuments-with-loot, no events, no
+crates, so their current gate has nothing here to hang on: **the
+scrap-era ladder is the coherent take until events exist**, and that
+choice is a knob to speak, not a default. UI reference for the viewer
+half: `rusthelp.com/tools/techtree`; every item page carries its
+tech-tree path total, so agents can walk the tree page by page.
+
 ## 0ac · The catalogue — what twig and the cost grammar left *(systems lane)*
 
 Landed 2026-08-10 (operator: *"we need to work on building more"*).
