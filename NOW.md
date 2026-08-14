@@ -55,12 +55,19 @@ full pack says two spill lines and the single slot showed the mushrooms and
 ate the wood. Five hud tests, each proven red under its own revert. Also
 that report's ranked fix 2 (a positive control in `spill.rs`, so half one's
 three negatives cannot go green on a swing that missed) and fix 3b (the
-word "measured" in `DECISIONS.md`). Left:
+word "measured" in `DECISIONS.md`).
 
-- **A frame with more than four facts still drops the oldest of them**, and
-  the oldest is the refusal — `feedback`'s write order puts refusals first
-  and spills last. `Toast::dropped` counts it and nothing reads the counter;
-  a HUD that could say "+2 more" would need the sink to know it was full.
+Landed 2026-08-14 (second slice, judge ranked fix 3 of pass -11): eviction
+reads a `Rank` instead of a position. A line is an `Alarm` when the fact
+dies with it — a refusal, a spill, a charge going live — and the cap eats
+every recoverable `Note` before it touches one; only an all-alarm stack
+falls back to oldest-outright, and a push is never refused. Drawing order
+is still recency, so a frame under the cap is unchanged. 29 sites moved to
+`warn`. `dropped` has a reader too: `unseen` counts the burst, clears when
+the stack empties, and rides the last live row as a suffix (`…+2 more`) —
+a suffix because the bottom row is where a rescued alarm now sits. Four
+tests, each observed red under its own revert. Left:
+
 - **Nobody has seen it.** Same as §0sp2's last bullet, and the same judge
   gap 1: no frame in this repo has ever shown one line, let alone four.
   Row pitch, the per-row dim and the readout's new home are all unlooked-at
@@ -1339,9 +1346,10 @@ crate-wide, but its *contiguity* claim is file-local.
   intersection.
 - **The revolver still cannot fire.** Hitscan wants M2's rewound raycast, so
   `bake_combat` drops firearm rows deliberately, not by omission.
-- **Dropped loot should land somewhere you can find, not inside the floor**
-  — and `gather::inv_add` still loses overflow, a documented policy
-  (`DECISIONS.md` §open) pointing at exactly this slice.
+- ~~**Dropped loot should land somewhere you can find, not inside the
+  floor**~~ — **landed 2026-08-14.** Six producers call `inv_add_spilling`
+  (`gather`, `craft`, `build`, `deploy`, `lock`) and `World::drain_spill`
+  stands a bag up at your feet; the client says so. §0sp2 has what remains.
 - **Mushrooms and corn drop now** (2026-08-09, content rows only): the
   tree's secondary pays 1 mushroom a swing — the forest floor through the
   tree that shades it — and the coast-road barrel rolls a 2–4 corn ration.

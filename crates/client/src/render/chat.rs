@@ -197,11 +197,11 @@ fn send(chat: &mut Chat, net: &Net, toast: &mut Toast) {
             // and never sent it at all, which is a client telling a player
             // their message went out when it did not.
             Ok(()) => {}
-            Err(e) => toast.say(e.to_string()),
+            Err(e) => toast.warn(e.to_string()),
         },
         // `sanitize` already passed inside `outgoing`, so this is a client
         // bug rather than a player one — reported, never swallowed.
-        Err(e) => toast.say(format!("that line would not encode ({e:?})")),
+        Err(e) => toast.warn(format!("that line would not encode ({e:?})")),
     }
 }
 

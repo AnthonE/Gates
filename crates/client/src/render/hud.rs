@@ -65,11 +65,41 @@ pub const HITMARK_SECS: f32 = 0.25;
 pub const VITAL_BAR_W: f32 = 118.0;
 pub const VITAL_BAR_H: f32 = 19.0;
 
+/// What a line is worth when the sink is full.
+///
+/// **Not importance in the abstract — recoverability.** A line is an
+/// [`Rank::Alarm`] when the fact it carries exists nowhere else the moment
+/// the line is gone: a refusal (the sim said no, and nothing but this
+/// sentence records that it did), a spill (your loot is on the floor and the
+/// only other clue is a bag you have to notice underfoot), a charge going
+/// live (a clock somebody else started). A [`Rank::Note`] is recoverable by
+/// looking — a gather and a craft are in the pack, the hearth's stock is in
+/// its panel, a kill is somebody else's news.
+///
+/// **Why the sink needs this at all.** Until now the only ordering the
+/// overflow policy had was *insertion*, and insertion order was set by which
+/// system happened to run first: `feedback` wrote refusals before payouts,
+/// so drop-oldest ate the refusal and kept the mushrooms. That made the
+/// write order load-bearing without saying so anywhere — the next
+/// `toast.say` added at the top of a system would silently re-rank
+/// everything below it, and there are 35 of them across five files. Rank is
+/// the same decision written down where the eviction can read it.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Rank {
+    /// Recoverable by looking. Eaten first when the cap bites.
+    #[default]
+    Note,
+    /// Gone with the line. Survives a flood of notes.
+    Alarm,
+}
+
 /// One announce line, with its own clock.
 #[derive(Default)]
 pub struct Say {
     /// The line as drawn, repeat suffix and all.
     text: String,
+    /// What the cap does to this line when it has to eat one.
+    rank: Rank,
     /// Bytes of `text` that are the sentence itself. The repeat suffix is
     /// rewritten from here, so the fifth swing at a tree costs no allocation
     /// — a `String` grown once and truncated back, never a new one. The
@@ -94,6 +124,12 @@ impl Say {
 
     pub fn reps(&self) -> u16 {
         self.reps
+    }
+
+    /// What the cap would do to this line. Read by the tests; the eviction
+    /// reads the field directly.
+    pub fn rank(&self) -> Rank {
+        self.rank
     }
 }
 
@@ -124,6 +160,23 @@ pub struct Toast {
     /// Lines the cap ate, ever. Wall 4 wants an overflow policy *and* a way
     /// to see it fire; a drop nobody counts is a drop nobody can find.
     dropped: u32,
+    /// Lines the cap ate that the player never saw, in the current burst —
+    /// reset when the stack next empties, because that is when the burst is
+    /// over and there is nothing left on screen for a count to qualify.
+    ///
+    /// `dropped` is the lifetime counter and stays one: it is evidence for a
+    /// test. This is the one the HUD draws, and the two are different
+    /// questions ("has the cap ever bitten" vs "how much am I not being
+    /// told right now").
+    unseen: u16,
+    /// [`Self::unseen`] as drawn, rewritten only when the count moves.
+    ///
+    /// The draw loop runs every frame and the count changes on an overflow,
+    /// so formatting it at the draw site would be a per-frame `format!` on
+    /// the client's hot path (`CLAUDE.md`: no per-frame allocations). Same
+    /// trick as `Say::base` one level out — a `String` grown once and
+    /// rewritten in place.
+    overflow: String,
     /// Seconds left on the hitmarker, counted down beside the text because
     /// the two are the same kind of thing: a brief confirmation the player
     /// reads without looking away from the crosshair.
@@ -138,6 +191,8 @@ impl Default for Toast {
             lines: std::array::from_fn(|_| Say::default()),
             len: 0,
             dropped: 0,
+            unseen: 0,
+            overflow: String::new(),
             hit_left: 0.0,
             hit_damage: 0,
         }
@@ -145,12 +200,35 @@ impl Default for Toast {
 }
 
 impl Toast {
+    /// Add a recoverable line ([`Rank::Note`]) — a gather, a craft, a kill.
+    pub fn say(&mut self, what: impl Into<String>) {
+        self.push(Rank::Note, what.into());
+    }
+
+    /// Add a line whose fact dies with it ([`Rank::Alarm`]) — a refusal, a
+    /// spill, a charge going live. The cap eats every note on the stack
+    /// before it touches one of these.
+    pub fn warn(&mut self, what: impl Into<String>) {
+        self.push(Rank::Alarm, what.into());
+    }
+
     /// Add a line. A repeat of the newest live line refreshes it and counts
     /// instead of spending a slot: ten swings at a tree must not push a
     /// refusal off the stack, and "+1 × WOOD ×10" is more honest than ten
     /// identical rows anyway.
-    pub fn say(&mut self, what: impl Into<String>) {
-        let what = what.into();
+    ///
+    /// **Overflow is drop-oldest-note, then drop-oldest** (wall 4 wants the
+    /// policy stated): the victim is the oldest [`Rank::Note`] on the stack,
+    /// and only when every live line is an [`Rank::Alarm`] does it fall back
+    /// to the oldest line outright. A push is never refused — the newest
+    /// fact is the one being reacted to, so a queue that dropped the newest
+    /// would hide the thing that just happened.
+    ///
+    /// Note that this is the only ordering rank has any say in. **Drawing
+    /// order stays recency**: rank picks what leaves, never where a survivor
+    /// sits, so a frame that does not overflow looks exactly as it did
+    /// before rank existed.
+    fn push(&mut self, rank: Rank, what: String) {
         if self.len > 0 {
             let top = &mut self.lines[self.len - 1];
             if top.text[..top.base] == what {
@@ -163,19 +241,37 @@ impl Toast {
             }
         }
         if self.len == TOAST_LINES {
-            // Drop-oldest: shift the whole window down one and reuse the
-            // slot that falls off the front.
-            self.lines.rotate_left(1);
+            // The oldest note, or the oldest line if the whole stack is
+            // alarms. Rotating from the victim rather than from 0 shifts
+            // only what is above it and parks the freed slot at the end,
+            // which is where the push below expects to find one.
+            let victim = (0..self.len)
+                .find(|&i| self.lines[i].rank == Rank::Note)
+                .unwrap_or(0);
+            self.lines[victim..].rotate_left(1);
             self.len -= 1;
             self.dropped = self.dropped.saturating_add(1);
+            self.unseen = self.unseen.saturating_add(1);
+            self.write_overflow();
         }
         let slot = &mut self.lines[self.len];
         slot.text.clear();
         slot.text.push_str(&what);
         slot.base = slot.text.len();
+        slot.rank = rank;
         slot.left = TOAST_SECS;
         slot.reps = 1;
         self.len += 1;
+    }
+
+    /// Rewrite the drawn overflow marker. Called on the two edges `unseen`
+    /// moves on — an eviction and the stack emptying — never per frame.
+    fn write_overflow(&mut self) {
+        self.overflow.clear();
+        if self.unseen > 0 {
+            use std::fmt::Write as _;
+            let _ = write!(self.overflow, "   …+{} more", self.unseen);
+        }
     }
 
     /// Count every line's clock down and retire the ones that ran out.
@@ -199,6 +295,13 @@ impl Toast {
             slot.reps = 0;
         }
         self.len = keep;
+        if self.len == 0 && self.unseen > 0 {
+            // The burst is over: nothing is on screen for "+N more" to
+            // qualify, so the count goes with the lines it was counting.
+            // `dropped` does not — that one is evidence, not a readout.
+            self.unseen = 0;
+            self.write_overflow();
+        }
         if self.hit_left > 0.0 {
             self.hit_left = (self.hit_left - dt).max(0.0);
         }
@@ -220,6 +323,30 @@ impl Toast {
 
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+
+    /// What row `row` draws: the line, and the overflow marker if this is
+    /// where it rides.
+    ///
+    /// **The marker is appended to the last live row, never drawn over it.**
+    /// The cheap alternative — replace the bottom row's sentence with
+    /// "…+N more" — costs a fact to report that facts were lost, and after
+    /// the rank change it would cost the *wrong* one: eviction keeps an
+    /// alarm by making it the oldest survivor, so the bottom row is exactly
+    /// where a rescued refusal ends up. A suffix hides nothing, needs no
+    /// fifth row (there is none — the readout sits at
+    /// `TOAST_TOP_PCT + TOAST_LINES * TOAST_PITCH_PCT`), and does not move
+    /// anything the eye is already on.
+    pub fn row_parts(&self, row: usize) -> Option<(&Say, &str)> {
+        let say = self.row(row)?;
+        let last = row + 1 == self.len;
+        Some((say, if last { self.overflow.as_str() } else { "" }))
+    }
+
+    /// The overflow marker as drawn — `"   …+2 more"`, or empty when the cap
+    /// has not bitten in this burst.
+    pub fn overflow(&self) -> &str {
+        &self.overflow
     }
 
     /// How many lines the cap has eaten. Never reset — it is a counter, not
@@ -942,7 +1069,7 @@ pub fn feedback(
     // integers by wall 3 — turning one into a sentence is the client's job
     // and `refusal_text` is where the whole mapping lives.
     for (which, code) in feed.refusals() {
-        toast.say(match which {
+        toast.warn(match which {
             super::feed::Refused::Craft => crate::ui::refusals::craft(code),
             super::feed::Refused::Build => crate::ui::refusals::build(code),
             super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
@@ -984,7 +1111,7 @@ pub fn feedback(
     if feed.applied2 & client_core::core::APPLIED2_CHARGE != 0 {
         let (_, _, _, _, _, fuse) = core.charge_placed;
         if let Some(line) = charge_line(fuse) {
-            toast.say(line);
+            toast.warn(line);
         }
     }
 
@@ -1038,12 +1165,17 @@ pub fn feedback(
     // it printed one spill and swallowed the other, which is worse, because
     // a wrong sentence is read as the whole truth.
     //
+    // `warn`, not `say`: the bag underfoot is the only other record of this,
+    // so the line is the fact. The write order above no longer decides that
+    // — `Rank` does — and this loop stays last for where it draws, not for
+    // what survives.
+    //
     // No amount, because the wire has none to give — see `Feed::spills`.
     // "at your feet" is where `world.rs`'s `drain_spill` stands the bag up;
     // a merge into a bag already standing puts it within the same reach.
     for &item in feed.spills() {
         let label = crate::ui::craft::item_label(&core.catalog, item);
-        toast.say(format!("pack full — {label} dropped at your feet"));
+        toast.warn(format!("pack full — {label} dropped at your feet"));
     }
 
     // ---- the timers -----------------------------------------------------
@@ -1066,16 +1198,25 @@ pub fn feedback(
         // ran out reads as spent and not as a flicker. Each row dims a step
         // further than the one above so the stack reads newest-first, and an
         // empty row is blanked rather than left holding stale news.
-        let (want, alpha) = match toast.row(row.0) {
-            Some(say) => (
+        let (want, extra, alpha) = match toast.row_parts(row.0) {
+            Some((say, extra)) => (
                 say.text(),
+                extra,
                 say.left().min(1.0) * (1.0 - TOAST_ROW_DIM * row.0 as f32).max(0.0),
             ),
-            None => ("", 0.0),
+            None => ("", "", 0.0),
         };
-        if text.0 != want {
+        // Compared against the two halves rather than a composed `String`:
+        // this runs every frame for every row and the equal case is the
+        // common one, so building the answer to ask the question would be a
+        // per-frame allocation on the client's hot path.
+        let same = text.0.len() == want.len() + extra.len()
+            && text.0.starts_with(want)
+            && text.0.ends_with(extra);
+        if !same {
             text.0.clear();
             text.0.push_str(want);
+            text.0.push_str(extra);
         }
         color.0 = color.0.with_alpha(alpha);
     }
@@ -1565,6 +1706,139 @@ mod tests {
             "the oldest two went, in order"
         );
         assert_eq!(t.row(TOAST_LINES).map(Say::text), None);
+    }
+
+    /// **The refusal is the line the cap used to eat first.** `feedback`
+    /// wrote refusals before payouts, so on a frame with more facts than
+    /// rows the sentence the player asked for by pressing a key was the
+    /// oldest and went first, while four gathers it could read off its own
+    /// pack stayed. That was not a policy anybody chose — it was insertion
+    /// order standing in for importance.
+    ///
+    /// Red before rank: with drop-oldest the refusal is gone and `row(3)` is
+    /// `line 1`.
+    #[test]
+    fn a_flood_of_notes_cannot_push_the_refusal_off() {
+        let mut t = Toast::default();
+        t.warn("you do not have the parts");
+        for i in 0..TOAST_LINES + 1 {
+            t.say(format!("+1 × WOOD {i}"));
+        }
+        assert_eq!(t.len(), TOAST_LINES, "the cap still holds");
+        assert_eq!(
+            t.row(TOAST_LINES - 1).map(Say::text),
+            Some("you do not have the parts"),
+            "the alarm survives every note, and stays the oldest"
+        );
+        assert_eq!(
+            t.row(TOAST_LINES - 1).map(Say::rank),
+            Some(Rank::Alarm),
+            "and it is an alarm that kept it, not luck"
+        );
+        assert_eq!(t.dropped(), 2, "the two notes it ate are counted");
+        assert_eq!(
+            t.row(0).map(Say::text),
+            Some(format!("+1 × WOOD {}", TOAST_LINES).as_str()),
+            "drawing order is still recency — the newest note is on top"
+        );
+    }
+
+    /// Rank picks the victim; it does not refuse the push. A stack that is
+    /// all alarms falls back to drop-oldest, because the newest fact is the
+    /// one being reacted to and a sink that rejected it would hide the thing
+    /// that just happened.
+    ///
+    /// Red if the fallback refused instead: `row(0)` would be the fourth
+    /// alarm, not the fifth.
+    #[test]
+    fn an_all_alarm_stack_still_drops_the_oldest() {
+        let mut t = Toast::default();
+        for i in 0..TOAST_LINES + 1 {
+            t.warn(format!("refused {i}"));
+        }
+        assert_eq!(t.len(), TOAST_LINES, "the cap is the cap for alarms too");
+        assert_eq!(t.dropped(), 1);
+        assert_eq!(
+            t.row(0).map(Say::text),
+            Some(format!("refused {}", TOAST_LINES).as_str()),
+            "the newest alarm landed"
+        );
+        assert_eq!(
+            t.row(TOAST_LINES - 1).map(Say::text),
+            Some("refused 1"),
+            "and the oldest one went"
+        );
+    }
+
+    /// **The sink says how much it is not telling you.** `dropped` was
+    /// written by the cap and read by nothing but a test, so a frame that
+    /// lost two facts looked exactly like a frame that lost none. The marker
+    /// rides the last live row as a suffix rather than replacing a sentence:
+    /// after the rank change the bottom row is precisely where a rescued
+    /// alarm sits, so drawing over it would eat the line the policy above
+    /// exists to keep.
+    ///
+    /// Red before the marker: `overflow()` is `""` and `row_parts` does not
+    /// exist.
+    #[test]
+    fn the_sink_says_how_many_it_ate_and_covers_nothing() {
+        let mut t = Toast::default();
+        t.warn("you do not have the parts");
+        for i in 0..TOAST_LINES + 1 {
+            t.say(format!("+1 × WOOD {i}"));
+        }
+        assert_eq!(
+            t.overflow(),
+            "   …+2 more",
+            "two notes went, and it says so"
+        );
+
+        let (say, extra) = t.row_parts(TOAST_LINES - 1).expect("the last live row");
+        assert_eq!(
+            say.text(),
+            "you do not have the parts",
+            "nothing is covered"
+        );
+        assert_eq!(extra, "   …+2 more", "the marker rides the last live row");
+
+        for row in 0..TOAST_LINES - 1 {
+            assert_eq!(
+                t.row_parts(row).map(|(_, e)| e),
+                Some(""),
+                "and only that row"
+            );
+        }
+        assert!(
+            t.row_parts(TOAST_LINES).is_none(),
+            "past the live end, nothing"
+        );
+    }
+
+    /// The marker is a state and the counter is evidence, so they clear on
+    /// different schedules: `unseen` goes when the stack empties — the burst
+    /// is over and there is nothing left for a count to qualify — and
+    /// `dropped` never does.
+    ///
+    /// Red if the reset were dropped, or if it reset `dropped` with it.
+    #[test]
+    fn the_marker_clears_when_the_stack_does_and_the_counter_does_not() {
+        let mut t = Toast::default();
+        for i in 0..TOAST_LINES + 2 {
+            t.say(format!("line {i}"));
+        }
+        assert_eq!(t.overflow(), "   …+2 more");
+
+        t.tick(TOAST_SECS + 0.1);
+        assert_eq!(t.len(), 0, "every line ran out");
+        assert_eq!(t.overflow(), "", "so the marker has nothing to qualify");
+        assert_eq!(t.dropped(), 2, "but the cap did bite, and that is evidence");
+
+        t.say("+1 × WOOD");
+        assert_eq!(
+            t.row_parts(0).map(|(_, e)| e),
+            Some(""),
+            "a fresh burst starts unmarked"
+        );
     }
 
     /// A repeat refreshes and counts rather than spending a slot. Ten swings

@@ -309,13 +309,13 @@ pub fn place_key(
             Ok(()) => {
                 if let Verdict::No(why) = ghost.verdict {
                     if !why.is_empty() {
-                        toast.say(why);
+                        toast.warn(why);
                     }
                 }
             }
-            Err(e) => toast.say(e.to_string()),
+            Err(e) => toast.warn(e.to_string()),
         },
-        Err(e) => toast.say(format!("that placement would not encode ({e:?})")),
+        Err(e) => toast.warn(format!("that placement would not encode ({e:?})")),
     }
 }
 
@@ -510,13 +510,13 @@ pub fn deploy_key(
             Ok(()) => {
                 if let DeployVerdict::No(why) = ghost.deploy_verdict {
                     if !why.is_empty() {
-                        toast.say(why);
+                        toast.warn(why);
                     }
                 }
             }
-            Err(e) => toast.say(e.to_string()),
+            Err(e) => toast.warn(e.to_string()),
         },
-        Err(e) => toast.say(format!("that deployable would not encode ({e:?})")),
+        Err(e) => toast.warn(format!("that deployable would not encode ({e:?})")),
     }
 }
 
