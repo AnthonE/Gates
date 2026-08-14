@@ -42,6 +42,38 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0gi · The island reads as one surface — two causes, one landed *(client+sim lane)*
+
+From the visual judge's ranked gap 1, pass `20260814-142610-01`: *"the whole
+island is hue 29–35°, and zero pixels of `ART.md` §3's grass band (63–74°)
+exist on the ground"*. Measurements in
+`gates-loop/findings/note-20260814-the-island-has-one-hue.md`.
+
+Landed 2026-08-14: `GROUND_ALBEDO` re-placed against §3 — litter was the most
+saturated surface on the island and warm, so it took the hue of every mix, and
+it is 37.6% of the land. Ground mean linear luma held at 0.09390 (±0.01%) on
+purpose: brightness is gap 2's owner (`rig.rs`), not this item's. Gate
+`crates/client/tests/ground_identity.rs`, 5 tests, 4 red on the old constants.
+58.1% of land now resolves into the grass band, p10 38.0° / p90 68.5°.
+
+Remaining, in order:
+
+1. **Granite is authored and never drawn** — `sim-core`. Both routes are closed
+   by the terrain's own range: `SPLAT_ALPINE_BAND` opens at 44 m against a
+   p99.9 of 43.63 m, and `SPLAT_CLIFF_BAND` opens at 0.952 against a max slope
+   of **0.890**, so the cliff mask has never fired once. Max rock weight
+   anywhere is 15/255. Moving either band moves `test_terrain_golden` and the
+   scatter distribution (`scatter_row` blends by the same weights) — that is
+   the pass, not a knob.
+2. **Something between `vertex_color` and the pixel eats the green.** The OLD
+   constants already held two hue populations (31.1° and 84.0°) while the judge
+   measured 29–35° with nothing above it. Untested: the granite photograph's
+   chroma through `base_color_texture`, the lighting, the tonemap, or a near
+   band that is mostly clutter and props rather than ground.
+3. **The judge read real geometry as paint.** `render/clutter.rs` ships 721
+   elements a tile and is drawn; what it lacks is a shadow (`NotShadowCaster`,
+   deliberately) and any contact darkening (no SSAO anywhere). `ART.md` rule 2.
+
 ## 0pop · The shard has inhabitants — what they cannot yet do *(server lane)*
 
 From `findings/pass-20260813-230343-18-judge.md` §B.1, ranked first by three
