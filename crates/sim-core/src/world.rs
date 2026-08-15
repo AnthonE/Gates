@@ -805,6 +805,15 @@ pub enum Command {
         id: u32,
         slot: u8,
     },
+    /// Learn recipe row `recipe` through the tech tree (tech tree v0):
+    /// at a workbench of the node's tier, along the `requires` graph,
+    /// paying the row's coin — no sample needed (research.rs says why
+    /// the two verbs stay asymmetric). The recipe index is the sender's
+    /// claim and the sim is the verdict, as `Research`'s slot is.
+    Unlock {
+        id: u32,
+        recipe: u16,
+    },
     /// Cancel the queue job at `index`, refunding its remaining inputs.
     CraftCancel {
         id: u32,
@@ -2152,6 +2161,19 @@ impl World {
                         &self.deploys,
                         &mut self.players[s],
                         slot,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::Unlock { id, recipe } => {
+                if let Some(s) = self.live_slot_of(id) {
+                    crate::research::unlock(
+                        &self.research,
+                        &self.craft,
+                        &self.deploy,
+                        &self.deploys,
+                        &mut self.players[s],
+                        recipe,
                         &mut self.events,
                     );
                 }

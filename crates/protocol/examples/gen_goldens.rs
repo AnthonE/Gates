@@ -392,4 +392,29 @@ fn main() {
         let len = encode_event_cont_sync(kind, cont, reset, &slots, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[85], &buf[..len]);
     }
+
+    // The bench ladder + tech tree (v38): the unlock action, the
+    // research-rows drip, and the three research-lane events pinned for
+    // the first time.
+    {
+        let len = protocol::encode_action_unlock(goldens::action_unlock(), &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[86], &buf[..len]);
+
+        let rc = goldens::event_research_rows();
+        let (len, took) = protocol::encode_event_research_rows(&rc, 0, &mut buf).unwrap();
+        assert_eq!(took, protocol::RESEARCH_BATCH);
+        write_fixture(goldens::FIXTURES[87], &buf[..len]);
+
+        let (recipe, cost) = goldens::event_research();
+        let len = protocol::encode_event_research(recipe, cost, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[88], &buf[..len]);
+
+        let len =
+            protocol::encode_event_research_refused(goldens::event_research_refused(), &mut buf)
+                .unwrap();
+        write_fixture(goldens::FIXTURES[89], &buf[..len]);
+
+        let len = protocol::encode_event_known(goldens::event_known(), &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[90], &buf[..len]);
+    }
 }

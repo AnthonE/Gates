@@ -91,3 +91,4 @@ pub mod refusals;
 pub mod servers;
 pub mod slots;
 pub mod structure;
+pub mod techtree;

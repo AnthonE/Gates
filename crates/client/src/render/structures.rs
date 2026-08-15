@@ -41,7 +41,7 @@ use sim_core::build::{
 use sim_core::collide::{DOOR_POST_W_M, PIECE_LIFT_M, WALL_THICKNESS_M};
 use sim_core::deploy::{
     DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH, ARCH_RECYCLER,
-    ARCH_RESEARCH, ARCH_WORKBENCH,
+    ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
 };
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain;
@@ -100,7 +100,7 @@ pub fn deploy_size(arch: usize) -> Vec3 {
 // so these transfer 1:1 with no scale conversion. Nothing in the sim reads
 // this table — `deploy_size` has two callers, the build ghost and its test —
 // so a row is a render fact and moving one costs no wire byte and no replay.
-const DEPLOY: [([f32; 3], Color, f32, f32); 10] = [
+const DEPLOY: [([f32; 3], Color, f32, f32); 12] = [
     // 0 · sleeping bag. A human-length bedroll laid flat: it must be longer
     // than a player is tall or it reads as a floor mat. 1.2 was shorter than
     // the body that spawns on it. The 0.32 thickness is the pillow end, not
@@ -175,6 +175,23 @@ const DEPLOY: [([f32; 3], Color, f32, f32); 10] = [
         0.72,
         0.15,
     ), // research table
+    // 10/11 · the bench ladder's upper rungs (bench ladder v0). The rungs
+    // rank by silhouette AND material — each taller and deeper than the
+    // one below, wood giving way to metal up the ladder — because three
+    // benches stand in one base and which is which has to read across a
+    // room, greybox or not.
+    (
+        [1.6, 1.0, 0.8],
+        Color::srgb(0.502, 0.443, 0.337),
+        0.72,
+        0.25,
+    ), // workbench 2 — wood frame, metal fittings
+    (
+        [1.8, 1.1, 0.8],
+        Color::srgb(0.361, 0.384, 0.404),
+        0.55,
+        0.55,
+    ), // workbench 3 — the machine bench, metal through
 ];
 
 /// A locked door wears banded iron: the one bit of door state a passer-by
@@ -481,6 +498,8 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     None, // 7 lock — never drawn
     None, // 8 recycler — greybox
     None, // 9 research table — greybox
+    None, // 10 workbench 2 — greybox
+    None, // 11 workbench 3 — greybox
 ];
 
 fn build_kit(
@@ -850,7 +869,7 @@ pub fn is_converter(arch: u8) -> bool {
 pub fn is_station(arch: u8) -> bool {
     matches!(
         arch,
-        ARCH_WORKBENCH | ARCH_FURNACE | ARCH_FIRE | ARCH_HEARTH
+        ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 | ARCH_FURNACE | ARCH_FIRE | ARCH_HEARTH
     )
 }
 

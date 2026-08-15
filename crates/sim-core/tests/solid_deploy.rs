@@ -552,7 +552,7 @@ fn walking_into_the_shelter_stands_on_the_plinth() {
 /// without deciding.
 #[test]
 fn the_volume_table_covers_every_archetype() {
-    assert_eq!(DEPLOY_VOL.len(), 10, "a new archetype needs a volume row");
+    assert_eq!(DEPLOY_VOL.len(), 12, "a new archetype needs a volume row");
     for (arch, [w, h, d]) in DEPLOY_VOL.iter().enumerate() {
         let solid = solid_vol(arch as u8).is_some();
         assert_eq!(
