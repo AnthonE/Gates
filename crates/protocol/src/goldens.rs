@@ -27,7 +27,7 @@ use sim_core::limits::{
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 86] = [
+pub const FIXTURES: [&str; 90] = [
     "v37_input_acks_only.bin",
     "v37_input_full.bin",
     "v37_snapshot_keyframe.bin",
@@ -123,6 +123,13 @@ pub const FIXTURES: [&str; 86] = [
     "v37_action_container_world.bin",
     "v37_action_move_world.bin",
     "v37_event_cont_sync_world.bin",
+    // Research (v32), pinned five versions late — see the constructors at
+    // the foot of this file. Appended, like everything above: the list is
+    // positional and `gen_goldens` indexes it.
+    "v37_action_research.bin",
+    "v37_event_research.bin",
+    "v37_event_research_refused.bin",
+    "v37_event_known.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -1209,4 +1216,62 @@ pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
             },
         ],
     )
+}
+
+// ---------------------------------------------------------------------
+// Research (wire v32), pinned at v37 — five versions late.
+//
+// `ACT_RESEARCH`, `SUB_RESEARCH`, `SUB_RESEARCH_REFUSED` and `SUB_KNOWN`
+// all landed in v32 and crossed v33–v37 with **no fixture**, so the only
+// thing asserting their bytes was the absence of a complaint. That is the
+// same shape `action_move_box`'s doc records for the third container kind
+// and the same shape twice more in the research lane itself (a bake with
+// no caller, then three encoders with no `decode_event` arm) — a verb
+// proven correct in the sim and unchecked on the wire. Pinning them does
+// not move a byte, so no `PROTO_VER` bump is owed: these are the bytes
+// v32 through v37 already sent. `every_encoder_has_a_golden` is the gate
+// that makes the next one impossible to forget.
+
+/// Learning at a table: the inventory slot holding the sample.
+///
+/// `23` rather than a small index — it is `0b10111`, so it fills all five
+/// of `ACTION_SLOT_BITS` and a field narrowed to four would truncate it to
+/// `7` instead of staying plausible. Under `INV_SLOTS` (30) and clear of
+/// both ends.
+pub fn action_research() -> u8 {
+    23
+}
+
+/// A blueprint learned: `(recipe, cost)`.
+///
+/// Two 16-bit integers side by side, which is `event_shot`'s transposition
+/// hazard exactly — except this pair can do better than merely differing.
+/// `cost` is deliberately **75** (the shipped satchel-charge price), past
+/// `MAX_RECIPES`, so an encoder that wrote the pair the other way round
+/// fails its own `recipe >= MAX_RECIPES` range check and returns `Err`
+/// rather than producing blessable bytes. The swap is unrepresentable, not
+/// just visible.
+pub fn event_research() -> (u16, u16) {
+    (41, 75)
+}
+
+/// A research refusal: the reason code.
+///
+/// `REFUSE_R_LOCKED` (5), the highest live code and the newest — `0b101`
+/// needs every one of `RESEARCH_REFUSE_BITS`, so a width shrunk to two
+/// truncates it to `1` (`REFUSE_R_SLOT`, a different sentence) rather than
+/// failing loudly. The domain gate pins the width; this pins the bytes.
+pub fn event_research_refused() -> u8 {
+    5
+}
+
+/// The whole known mask, as the two halves the encoder splits it into.
+///
+/// The halves are chosen so **low-first** is provable from the bytes: they
+/// differ, neither is symmetric, and the high half carries bit 31 — recipe
+/// 63, the top of `KNOWN_MASK_BITS`. A swapped or single-half write moves
+/// that bit to recipe 31 or drops it, and either reads as a player who
+/// learned something else.
+pub fn event_known() -> u64 {
+    0x8000_0002_0000_0041
 }

@@ -8,16 +8,17 @@ use protocol::goldens::{
     action_access, action_access_crew, action_cancel, action_consume, action_container,
     action_container_close, action_container_world, action_craft, action_demolish, action_deploy,
     action_feed, action_move, action_move_box, action_move_world, action_place,
-    action_repair_deploy, action_repair_piece, action_respawn, action_throw_deploy,
-    action_throw_piece, action_upgrade, action_use, auth, challenge, chat, event_auth,
-    event_bag_dropped, event_bag_removed, event_bag_sync, event_build_refused, event_catalog,
-    event_charge_placed_deploy, event_charge_placed_piece, event_chat, event_consume_refused,
-    event_consumed, event_cont_close, event_cont_sync, event_cont_sync_world, event_craft_done,
-    event_craft_q, event_craft_refused, event_death, event_deploy_defs, event_deploy_placed,
-    event_deploy_refused, event_deploy_sync, event_door, event_drank, event_gather, event_health,
-    event_hit, event_inv, event_knock, event_move_refused, event_moved, event_oven_lit,
-    event_oven_out, event_piece_defs, event_piece_placed, event_piece_repaired_deploy,
-    event_piece_repaired_piece, event_piece_sync, event_recipes, event_removed, event_respawn,
+    action_repair_deploy, action_repair_piece, action_research, action_respawn,
+    action_throw_deploy, action_throw_piece, action_upgrade, action_use, auth, challenge, chat,
+    event_auth, event_bag_dropped, event_bag_removed, event_bag_sync, event_build_refused,
+    event_catalog, event_charge_placed_deploy, event_charge_placed_piece, event_chat,
+    event_consume_refused, event_consumed, event_cont_close, event_cont_sync,
+    event_cont_sync_world, event_craft_done, event_craft_q, event_craft_refused, event_death,
+    event_deploy_defs, event_deploy_placed, event_deploy_refused, event_deploy_sync, event_door,
+    event_drank, event_gather, event_health, event_hit, event_inv, event_knock, event_known,
+    event_move_refused, event_moved, event_oven_lit, event_oven_out, event_piece_defs,
+    event_piece_placed, event_piece_repaired_deploy, event_piece_repaired_piece, event_piece_sync,
+    event_recipes, event_removed, event_research, event_research_refused, event_respawn,
     event_shot, event_slot_change, event_slot_sync, event_stock, event_struct_hit_deploy,
     event_struct_hit_piece, event_vitals, event_weak_mark, hello, input_acks_only, input_full,
     refuse_full, snapshot_cap, snapshot_delta, snapshot_keyframe, welcome, SnapshotCase, FIXTURES,
@@ -28,18 +29,19 @@ use protocol::{
     encode_action_cancel, encode_action_consume, encode_action_container, encode_action_craft,
     encode_action_demolish, encode_action_deploy, encode_action_drink, encode_action_feed,
     encode_action_loot, encode_action_move, encode_action_place, encode_action_repair,
-    encode_action_respawn, encode_action_throw, encode_action_upgrade, encode_action_use,
-    encode_auth, encode_challenge, encode_chat, encode_event_auth, encode_event_bag_dropped,
-    encode_event_bag_removed, encode_event_bag_sync, encode_event_build_refused,
-    encode_event_catalog, encode_event_charge_placed, encode_event_chat,
-    encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
+    encode_action_research, encode_action_respawn, encode_action_throw, encode_action_upgrade,
+    encode_action_use, encode_auth, encode_challenge, encode_chat, encode_event_auth,
+    encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
+    encode_event_build_refused, encode_event_catalog, encode_event_charge_placed,
+    encode_event_chat, encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
     encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
     encode_event_health, encode_event_hit, encode_event_inv, encode_event_knock,
-    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
-    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
-    encode_event_recipes, encode_event_removed, encode_event_respawn, encode_event_shot,
+    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_research,
+    encode_event_research_refused, encode_event_respawn, encode_event_shot,
     encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
     encode_event_vitals, encode_event_weak_mark, encode_hello, encode_input, encode_refuse,
     encode_snapshot, encode_welcome, peek_kind, ActionMsg, ChatMsg, EventMsg, InputDatagram,
@@ -52,7 +54,7 @@ use sim_core::input::InputFrame;
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 use sim_core::rng::Pcg32;
 
-const GOLDEN: [&[u8]; 86] = [
+const GOLDEN: [&[u8]; 90] = [
     include_bytes!("golden/v37_input_acks_only.bin"),
     include_bytes!("golden/v37_input_full.bin"),
     include_bytes!("golden/v37_snapshot_keyframe.bin"),
@@ -139,6 +141,10 @@ const GOLDEN: [&[u8]; 86] = [
     include_bytes!("golden/v37_action_container_world.bin"),
     include_bytes!("golden/v37_action_move_world.bin"),
     include_bytes!("golden/v37_event_cont_sync_world.bin"),
+    include_bytes!("golden/v37_action_research.bin"),
+    include_bytes!("golden/v37_event_research.bin"),
+    include_bytes!("golden/v37_event_research_refused.bin"),
+    include_bytes!("golden/v37_event_known.bin"),
 ];
 
 fn encode_case(case: &SnapshotCase) -> ([u8; DATAGRAM_BUDGET_BYTES], usize) {
@@ -262,8 +268,14 @@ fn test_protocol_golden() {
     // are hand-written, so a fixture added to `FIXTURES` and forgotten
     // here would be a golden nobody checks. This is the count that makes
     // that impossible to miss quietly.
+    // Research (v32), pinned at v37. Five versions of an unchecked verb
+    // lane, closed here and kept closed by `every_encoder_has_a_golden`.
+    golden_action(GOLDEN[86], FIXTURES[86]);
+    golden_event(GOLDEN[87], FIXTURES[87]);
+    golden_event(GOLDEN[88], FIXTURES[88]);
+    golden_event(GOLDEN[89], FIXTURES[89]);
     assert_eq!(GOLDEN.len(), FIXTURES.len());
-    assert_eq!(GOLDEN.len(), 86, "a new fixture must be dispatched above");
+    assert_eq!(GOLDEN.len(), 90, "a new fixture must be dispatched above");
 }
 
 /// S→C challenge: byte-stable, kind-peekable, decode-exact.
@@ -562,6 +574,16 @@ fn golden_action(fixture: &[u8], name: &str) {
                 "{name}: decode mismatch"
             );
             encode_action_container(kind, cont, &mut buf).unwrap()
+        }
+        // Research (v32), pinned at v37.
+        "v37_action_research.bin" => {
+            let slot = action_research();
+            assert_eq!(
+                decode_action(fixture).unwrap(),
+                ActionMsg::Research { slot },
+                "{name}: decode mismatch"
+            );
+            encode_action_research(slot, &mut buf).unwrap()
         }
         other => panic!("unknown action fixture {other}"),
     };
@@ -1249,6 +1271,35 @@ fn golden_event(fixture: &[u8], name: &str) {
             );
             encode_event_shot(shooter, yaw, pitch, speed_mmpt, drop_mmpt2, &mut buf).unwrap()
         }
+        // Research (v32), pinned at v37 — all three of the lane's event
+        // subtypes, which had encoders, handlers and no fixture.
+        "v37_event_research.bin" => {
+            let (recipe, cost) = event_research();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Research { recipe, cost },
+                "{name}: decode mismatch"
+            );
+            encode_event_research(recipe, cost, &mut buf).unwrap()
+        }
+        "v37_event_research_refused.bin" => {
+            let reason = event_research_refused();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::ResearchRefused { reason },
+                "{name}: decode mismatch"
+            );
+            encode_event_research_refused(reason, &mut buf).unwrap()
+        }
+        "v37_event_known.bin" => {
+            let mask = event_known();
+            assert_eq!(
+                decode_event(fixture).unwrap(),
+                EventMsg::Known { mask },
+                "{name}: decode mismatch"
+            );
+            encode_event_known(mask, &mut buf).unwrap()
+        }
         other => panic!("unknown event fixture {other}"),
     };
     assert_eq!(&buf[..len], fixture, "{name}: bytes drifted");
@@ -1593,5 +1644,108 @@ fn test_module_header_states_the_real_kind_width() {
         !SRC.contains("3-bit kind space"),
         "lib.rs still claims a 3-bit kind space in the present tense; \
          KIND_CHALLENGE = 8 does not fit in three bits"
+    );
+}
+
+/// **Every encoder this crate exports has a byte pin.**
+///
+/// The gate that was missing, found by asking a question nobody had asked:
+/// `ACT_RESEARCH`, `SUB_RESEARCH`, `SUB_RESEARCH_REFUSED` and `SUB_KNOWN`
+/// landed at v32 and crossed **five versions** — v33, v34, v35, v36, v37 —
+/// with no fixture. `test_protocol_golden` was green the whole way, because
+/// it checks the fixtures that exist and had no opinion about the ones that
+/// do not. `FIXTURES` is a hand-written manifest and a hand-written manifest
+/// is only as complete as the last person to remember it.
+///
+/// That is the third time this exact shape has been found in the research
+/// lane alone: `bake_research` had no caller (so a live shard installed an
+/// empty table), the three event subtypes had no `decode_event` arm (so
+/// every frame decoded `Malformed`), and now the whole lane had no golden.
+/// Each time the sim was correct and gated, and each time the thing that
+/// was wrong was a *seam nothing enumerated*. So this gate does not check a
+/// value — it checks a **set**, which is the class of defect that keeps
+/// getting through (`CLAUDE.md`: a build step that enumerates by walking is
+/// only as correct as the tidiness of the box it runs on).
+///
+/// Deliberately no exemption list. Every one of the 64 encoders is pinned
+/// as of this commit, so an exemption would only ever be a place to hide
+/// the next one.
+#[test]
+fn every_encoder_has_a_golden() {
+    const EVENT_SRC: &str = include_str!("../src/event.rs");
+    const LIB_SRC: &str = include_str!("../src/lib.rs");
+    const GEN_SRC: &str = include_str!("../examples/gen_goldens.rs");
+
+    let mut encoders: Vec<&str> = Vec::new();
+    for (src, prefix) in [
+        (EVENT_SRC, "pub fn encode_event_"),
+        (LIB_SRC, "pub fn encode_action_"),
+    ] {
+        for line in src.lines() {
+            let line = line.trim();
+            if line.starts_with("//") {
+                continue;
+            }
+            let Some(rest) = line.strip_prefix(prefix) else {
+                continue;
+            };
+            let Some((tail, _)) = rest.split_once('(') else {
+                continue;
+            };
+            if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                // `prefix` minus the `pub fn `, plus the name's tail.
+                let full = &line["pub fn ".len()..line.find('(').unwrap()];
+                if !encoders.contains(&full) {
+                    encoders.push(full);
+                }
+            }
+        }
+    }
+
+    assert!(
+        encoders.len() > 50,
+        "the encoder scan found only {} — the `pub fn encode_…` shape \
+         changed and this gate is now checking nothing",
+        encoders.len()
+    );
+
+    /// Does `src` contain a **call** to `name` — the name followed
+    /// immediately by `(`?
+    ///
+    /// The call site, not the `use` list: `gen_goldens` imports by bare
+    /// name, so matching the name alone would count an import as a pin. The
+    /// paren is also what separates `encode_event_research` from
+    /// `encode_event_research_refused`, which is a real pair here. Written
+    /// as a scan rather than `contains(&format!(…))` because `format!` is
+    /// clippy-walled in this workspace and one allocation is not worth an
+    /// `#[allow]`.
+    fn calls(src: &str, name: &str) -> bool {
+        let mut from = 0;
+        while let Some(i) = src[from..].find(name) {
+            let at = from + i;
+            if src[at + name.len()..].starts_with('(') {
+                return true;
+            }
+            from = at + name.len();
+        }
+        false
+    }
+
+    let mut unpinned: Vec<&str> = Vec::new();
+    for name in &encoders {
+        if !calls(GEN_SRC, name) {
+            unpinned.push(name);
+        }
+    }
+
+    assert!(
+        unpinned.is_empty(),
+        "{} encoder(s) produce bytes that no golden fixture pins, so their \
+         layout can drift with `test_protocol_golden` green: {:?}. Add a \
+         constructor to `goldens.rs`, a name to `FIXTURES`, a writer to \
+         `gen_goldens.rs` and a dispatch line to this file — the research \
+         lane crossed five versions unpinned because nothing asked.",
+        unpinned.len(),
+        unpinned
     );
 }

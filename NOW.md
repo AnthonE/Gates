@@ -80,11 +80,22 @@ What remains, in order:
    real starvation death, and `seat`'s restore arm now names every field so
    the **compiler** refuses the next omission. All proven red.
 
-   Two things it leaves. **Nobody has seen the research panel work** — the
-   client half is unverified past `decode_event`, and this pass could not
-   capture. And the same question is unasked elsewhere: the pairing gate
-   covers `event.rs` only, so `lib.rs`'s action encoders have nothing
-   equivalent. That is the next cheap sweep, not this item.
+   One thing it leaves. **Nobody has seen the research panel work** — the
+   client half is unverified past `decode_event`, and no pass since has
+   been able to capture.
+
+5. ~~The lane had no byte pin, and no gate could notice~~ — done
+   2026-08-15, and it was the **third** instance of this item's own defect
+   class. `ACT_RESEARCH`/`SUB_RESEARCH`/`SUB_RESEARCH_REFUSED`/`SUB_KNOWN`
+   landed at v32 and reached v37 with no golden fixture; `FIXTURES` is a
+   hand-written manifest, so `test_protocol_golden` was green over four
+   unchecked encoders. Two gates that check a **set** rather than a value:
+   `every_encoder_has_a_golden` (all 64 encoders must be written by
+   `gen_goldens`, no exemption list) and `every_action_encoder_has_a_decoder`
+   (`event.rs`'s pairing gate in the direction nobody asked — green on
+   arrival, 18 codes/18 arms). Plus the four fixtures. All proven red; no
+   `PROTO_VER` bump owed or taken, and none of the 86 existing fixtures
+   moved a byte.
 
 ## 0gm · The ground albedos are pinned to a mean that was a quadrant *(client lane)*
 

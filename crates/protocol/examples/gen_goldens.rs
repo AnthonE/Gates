@@ -24,8 +24,9 @@ use protocol::{
 };
 use protocol::{
     encode_action_consume, encode_action_container, encode_action_drink, encode_action_move,
-    encode_action_respawn, encode_action_throw, encode_event_charge_placed, encode_event_cont_sync,
-    encode_event_drank, encode_event_move_refused, encode_event_moved, encode_event_oven,
+    encode_action_research, encode_action_respawn, encode_action_throw, encode_event_charge_placed,
+    encode_event_cont_sync, encode_event_drank, encode_event_known, encode_event_move_refused,
+    encode_event_moved, encode_event_oven, encode_event_research, encode_event_research_refused,
     encode_event_respawn, encode_event_shot,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
@@ -391,5 +392,25 @@ fn main() {
         let (kind, cont, reset, slots) = goldens::event_cont_sync_world();
         let len = encode_event_cont_sync(kind, cont, reset, &slots, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[85], &buf[..len]);
+    }
+
+    // Research (v32), pinned at v37 — the whole lane at once, because the
+    // gap was the whole lane at once.
+    {
+        let slot = goldens::action_research();
+        let len = encode_action_research(slot, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[86], &buf[..len]);
+
+        let (recipe, cost) = goldens::event_research();
+        let len = encode_event_research(recipe, cost, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[87], &buf[..len]);
+
+        let reason = goldens::event_research_refused();
+        let len = encode_event_research_refused(reason, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[88], &buf[..len]);
+
+        let mask = goldens::event_known();
+        let len = encode_event_known(mask, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[89], &buf[..len]);
     }
 }
