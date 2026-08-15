@@ -338,7 +338,18 @@ impl Plugin for GatesRenderPlugin {
         // Copied out so the `run_if` closures below capture a `bool` rather
         // than borrowing `self`, which does not outlive `build`.
         let plate = self.start.no_hud;
-        app.init_resource::<Eye>()
+        // **The probe's hour is pinned; a player's is the server's.** Same
+        // rule as the windowed pin two fields down — a capture run takes the
+        // defaults wholesale except where the box would otherwise decide what
+        // the frame looks like, and until this landed the sun's height was a
+        // function of how long the build took (`rig::DayPin`).
+        let day_pin = if self.capture.is_some() {
+            rig::DayPin::capture()
+        } else {
+            rig::DayPin::default()
+        };
+        app.insert_resource(day_pin)
+            .init_resource::<Eye>()
             .init_resource::<input::Look>()
             .init_resource::<terrain_mesh::Ring>()
             .init_resource::<props::PropRing>()
