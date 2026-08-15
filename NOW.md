@@ -42,6 +42,47 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0gj · The compass is mirrored — east is `-X`, not `+X` *(client lane)*
+
+From the visual judge's ranked gap 2a, pass `20260814-223652-01`, whose
+diagnosis ("the scene is lit from the opposite hemisphere to the sun it
+draws") did not survive the code: Bevy fills `dir_to_light` once from
+`transform.back()` and the atmosphere's disc reads that same field, so the
+shaded sun and the drawn sun are one vector. What the judge measured is real
+and is this instead. Landed 2026-08-15: the sun's one owner (`rig::to_sun`,
+`sky::deck_march_dir`) and `crates/client/tests/sun.rs`, 9 tests, 3 red-proofs.
+Note: `findings/note-20260815-the-compass-is-mirrored-not-the-sun.md`.
+
+Measured: facing the direction `bearing_deg` calls north, the body's right
+reads **270°**; a mouse push right takes the bearing **28.1° → 15.5°**. All
+four cardinals are 180° off — a reflection, not an offset. Cause: the world is
+right-handed, so facing `+Z` the right is `-X`, and `bearing_deg = atan2(fx,
+fz)` labels `-X` west.
+
+**Blocked on the operator, and that is the finding rather than an excuse.**
+`DECISIONS.md` §open `compass v0` is a registered knob whose stated rationale
+argues *against* the fix: it chose `+X = East` so "the bearing and the wire yaw
+are the SAME NUMBER", and under `east = -X` the bearing becomes
+`(360 − yaw°) mod 360` — precisely the offset constant that row rejected. Its
+*"East = +X everywhere, undisputed"* is now measured false, so the row is
+amended with both halves and the choice is posed there. A loop does not
+re-spend a knob.
+
+**What the fix costs when it is spoken** (measured, not estimated). Two
+independent `atan2`s, not one: `look.rs:88` **and `hud.rs:1712`** — the raid
+readout does not go through `bearing_deg`, so fixing only `look.rs` leaves it
+mirrored. Then the same commit must carry `ui::map`'s x term, `grid_label`'s
+column index, `paint`'s write index and `LIGHT[0]`, because a north-up map has
+east on the right only if east is `-X`. 7 assertions flip; ~20 doc sentences.
+Two traps: `(-fx).atan2(fz)` is `-0.0` at yaw 0 and `rem_euclid` keeps the
+sign, so due north prints **`-00°`** at both `{:03.0}` sites — write it as
+`(360.0 - fx.atan2(fz).to_degrees()).rem_euclid(360.0)`. And
+`map.rs:422`'s `px_west < px_east` is a monotonicity claim wearing directional
+names: it stays green under both branches. Open sub-question: `capture.rs`'s
+`VANTAGES` are named "east"/"west" and those become the capture filenames every
+`-visual.md` cites, so renaming breaks continuity and not renaming mislabels
+every future frame.
+
 ## 0gi · The island reads as one surface — two causes, one landed *(client+sim lane)*
 
 From the visual judge's ranked gap 1, pass `20260814-142610-01`: *"the whole
@@ -73,18 +114,42 @@ Remaining, in order:
    `CLIFF_SLOPE_RATIO` and `biome()`'s Highland edge, and
    `crates/sim-core/tests/relief.rs` is red under that edit and now also under
    the quadrant window's return.
-2. **So the missing green is the renderer's, and item 3 is the live one.**
-   Nothing about the world explains a frame with no granite in it — the rock is
-   there, in view distance of the spawn. Whatever eats it sits between
-   `splat`/`vertex_color` and the pixel.
-3. **Something between `vertex_color` and the pixel eats the green.** The OLD
-   constants already held two hue populations (31.1° and 84.0°) while the judge
-   measured 29–35° with nothing above it. Untested: the granite photograph's
-   chroma through `base_color_texture`, the lighting, the tonemap, or a near
-   band that is mostly clutter and props rather than ground.
+2. ~~The missing green is the renderer's~~ — **struck 2026-08-14. Nothing eats
+   it.** Gate `crates/client/tests/ground_where_the_green_goes.rs`, 5 tests,
+   red under two inversions; measurements in
+   `gates-loop/findings/note-20260814-where-the-green-goes.md`. The material
+   side is exactly hue-preserving (worst 0.000061° over 39,300 samples, in
+   LINEAR space — the encoded space reads 0.262° and that is the sRGB curve,
+   not a tint), and `ground_detail.jpg` is neutral at every percentile. The
+   island is a **mosaic**: `SPLAT_MOIST_BAND` is 0.08 wide across a moisture
+   field spanning ~0.9, so 48.8% of land reads as grass alone, 34.7% as litter
+   alone, only 7.0% blends — and the two are 30.5° apart in hue.
+3. ~~The capture probe's ground colour is a draw~~ — **struck 2026-08-15, both
+   halves pinned.** The *place* was already pinned outside this repo:
+   `gates-loop/art/capture-native.sh:44` writes `dev_spawn = 1155,140`, so the
+   frames stopped riding `spawn_pos`'s per-id bearing draw before this item was
+   read. The *hour* was not, and it landed here: `rig::DayPin` pins a
+   `--capture` run's tick to noon — the one fraction where `sun_elevation`
+   returns `RIG_SUN_ELEVATION` exactly. It pins the **tick**, not the sun,
+   because `render/audio.rs` reads the same clock through `is_night`.
+   Measured: a capture shard boots at tick 0 and the probe fired after the
+   build, so the sun was **24.5° at tick 0, 27.3° typical, 30.4°** on a slow
+   box — a 5.9° swing, at or below `ART.md` §1's 30–40° band, rising with build
+   time. Gate `tests/daynight.rs` +5 (8 total), 4 red unpinned and 3 red on a
+   wrong pin. Knob: `DECISIONS.md` §open "capture clock v0".
+
+   **What the next pass must know: the tonal baseline moved.** Every `-visual.md`
+   before this one was shot at 24–27°, so its luma, sky and shadow numbers are
+   not comparable to the next report's — the first frames at the authored
+   register are the ones the runner captures after this merges, and nobody has
+   looked at them yet. Do not read a brightness delta in the next report as the
+   effect of a render change.
 4. **The judge read real geometry as paint.** `render/clutter.rs` ships 721
    elements a tile and is drawn; what it lacks is a shadow (`NotShadowCaster`,
    deliberately) and any contact darkening (no SSAO anywhere). `ART.md` rule 2.
+5. **The mosaic is not itself a defect, but litter wins every mix.** Grass is
+   the darkest identity and litter 3.2× brighter, so grass needs **≥82.1%** of
+   a blend to still read green. That is why the boundary never reads as grass.
 
 ## 0pop · The shard has inhabitants — what they cannot yet do *(server lane)*
 

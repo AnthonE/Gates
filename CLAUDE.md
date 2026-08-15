@@ -341,9 +341,20 @@ do not rediscover)
   id**: scry's `meter/gamerepo.py::version_of` strips `-g[0-9a-f]+…$` anchored
   at `$`, so `0.2.0-g<sha>-win-x86_64` stops parsing back to `0.2.0` and the
   store row's declared-vs-published gap goes permanently red; a fake-hex sha
-  parses and lies about the commit. Until the origin keys by (build, platform),
-  the workaround is what 2026-08-13 did — **package each platform from a
-  different commit**, which is why the two live depots name adjacent shas.
+  parses and lies about the commit.
+  ✅ **FIXED 2026-08-14 — the origin keys by (build, platform) now**
+  (`scry-forge` c5eb47c7, `meter/launcher.py`). A depot lives at
+  `<slug>/<build>/<platform>/`, `ci/depot.py` bakes `{platform}` into `root`,
+  and both platforms of one commit are published routinely — `0.2.0-gbed9e02d6`
+  is live for linux and win as two depots with two digests. The workaround
+  (adjacent shas) is retired; the entry stays because two things outlive it.
+  **First: the old layout is permanent, not migrated.** `root` is inside the
+  digest and the digest is sealed in `ScryNotary`, so a published depot's
+  location is part of what was notarized and moving one would orphan the number
+  on chain — the origin serves both shapes forever, and `publish_depot.py`
+  refuses to write a keyed directory beside a legacy one. **Second: the suffix
+  is still not the fix**, for the `version_of` reason above, and that is the
+  part someone will re-propose.
 - **A packager that walks the filesystem ships whatever is lying on the build
   box, and no gate in this repo can see it.** `ci/depot.py` staged assets with
   `shutil.copytree(ROOT/"assets", …)` until 2026-08-14, when a routine

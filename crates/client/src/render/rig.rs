@@ -248,16 +248,39 @@ fn sun_rotation() -> Quat {
     sun_rotation_at(RIG_SUN_ELEVATION)
 }
 
-/// The same rotation at an arbitrary elevation, azimuth fixed
-/// (`RIG_SUN_AZIMUTH` — the sun climbs and sinks on one bearing at v0; a
-/// sweeping azimuth would drag every shadow through a half-turn a cycle
-/// for no legibility gain).
-fn sun_rotation_at(elevation: f32) -> Quat {
+/// **Where the sun is** — the unit vector from the world origin toward it,
+/// at an arbitrary elevation, azimuth fixed (`RIG_SUN_AZIMUTH` — the sun
+/// climbs and sinks on one bearing at v0; a sweeping azimuth would drag
+/// every shadow through a half-turn a cycle for no legibility gain).
+///
+/// **The one owner, and the reason it is `pub`.** Two consumers need this
+/// vector and they must not each re-derive it: the `Sun` light's rotation
+/// below, and `sky.rs`'s cloud-deck light march, which re-wrote these same
+/// three lines by hand until 2026-08-15. They agreed — but by coincidence
+/// of two identical edits, not by construction, and the visual judge
+/// (`pass-20260814-223652-01-visual.md`, ranked gap 2a) asked for exactly
+/// this seam to be closed before the next lighting measurement is taken on
+/// top of it.
+///
+/// **`to_sun`, not "the light direction", and the name is the trap.** Bevy
+/// hands the GPU `direction_to_light = transform.back()` for BOTH the `N·L`
+/// term and the atmosphere's sun disc (`bevy_pbr` `light.rs`, "direction is
+/// negated to be ready for N.L"), while `Transform::forward()` is the
+/// direction the light *travels*. So the law is `direction_to_light ==
+/// -forward() == to_sun`, and [`sun_rotation_at`] is the only place that
+/// negation is written. `crates/client/tests/sun.rs` gates it.
+pub fn to_sun(elevation: f32) -> Vec3 {
     let (se, ce) = (elevation.sin(), elevation.cos());
     let (sa, ca) = (RIG_SUN_AZIMUTH.sin(), RIG_SUN_AZIMUTH.cos());
-    // Where the sun sits, as a unit vector from the world origin.
-    let to_sun = Vec3::new(sa * ce, se, ca * ce);
-    Transform::default().looking_at(-to_sun, Vec3::Y).rotation
+    Vec3::new(sa * ce, se, ca * ce)
+}
+
+/// The sun's rotation at an arbitrary elevation: a light whose forward is
+/// the direction sunlight travels, i.e. `-to_sun`.
+pub fn sun_rotation_at(elevation: f32) -> Quat {
+    Transform::default()
+        .looking_at(-to_sun(elevation), Vec3::Y)
+        .rotation
 }
 
 // ── Day and night (day/night v0 — DECISIONS.md §open) ────────────────────
@@ -300,15 +323,74 @@ pub fn daylight(frac: f32) -> f32 {
     (sun_elevation(frac).sin() / RIG_SUN_ELEVATION.sin()).clamp(0.0, 1.0)
 }
 
+// ── The capture probe's clock (capture clock v0 — DECISIONS.md §open) ────
+
+/// The tick whose [`sim_core::world::day_frac`] is `want` — the inverse of
+/// the sim's forward map, and the only one in the tree. Written here rather
+/// than in the test that used to carry a private copy: an inverse nothing
+/// checks against the forward function is a second clock model, and
+/// `tests/daynight.rs` now round-trips this one through `day_frac` instead
+/// of agreeing with itself.
+pub fn tick_at_frac(want: f32) -> u64 {
+    use sim_core::limits::{DAY_PHASE_TICKS, DAY_TICKS};
+    ((want * DAY_TICKS as f32) as u64 + DAY_TICKS - DAY_PHASE_TICKS) % DAY_TICKS
+}
+
+/// The hour a `--capture` run draws: the sine arch's peak. This is the ONE
+/// fraction at which [`sun_elevation`] returns [`RIG_SUN_ELEVATION`] and
+/// [`daylight`] returns 1.0 exactly — so it is derived from the register the
+/// rig is authored against, not a number chosen for a picture.
+pub const CAPTURE_DAY_FRAC: f32 = sim_core::limits::DAY_PORTION * 0.5;
+
+/// **Which tick the renderer reads the hour from.** `None` in play — the
+/// server's smoothed estimate, so two clients at one campfire see one sky.
+/// `Some` on a `--capture` run, where the hour is pinned.
+///
+/// **Why a probe pins its clock at all**, and it is the fullscreen rule one
+/// field further (`DECISIONS.md` §Spoken 2026-08-13: a `--capture` run takes
+/// the defaults wholesale *except* what would let the box decide the frame).
+/// A capture shard boots at tick 0 and the probe fires whenever the client
+/// finished building and settling — so the sun's height was a function of
+/// how long `cargo` took. Measured on this tree: tick 0 is **24.5°**, the
+/// ~2 200 ticks a build costs put it at **27.3°**, and a slower box reaches
+/// **30.4°** — a ~6° swing, all of it below or at the edge of `ART.md` §1's
+/// 30–40° band, and monotonically rising, so a slower box scored a brighter
+/// frame. No frame any visual judge has scored was taken at the register
+/// this rig is tuned for.
+///
+/// **It pins the TICK, not the sun**, because the sun is not the only reader:
+/// `render/audio.rs` gates the bird layer on `world::is_night` off the same
+/// estimate. Pinning a sun elevation would leave the birds at the box's hour
+/// and the light at the pinned one — the seam `to_sun` was just closed for,
+/// re-opened one level up. One tick in, every consumer derives from it
+/// through the sim's own `day_frac`/`is_night`, so there is still exactly
+/// one model of what a tick means.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DayPin(pub Option<u64>);
+
+impl DayPin {
+    /// The pin a `--capture` run gets: noon, the rig's authored register.
+    pub fn capture() -> Self {
+        Self(Some(tick_at_frac(CAPTURE_DAY_FRAC)))
+    }
+
+    /// The tick to read the hour from. Every clock consumer in the renderer
+    /// goes through here.
+    pub fn tick(&self, server_tick_est: f64) -> u64 {
+        self.0.unwrap_or_else(|| server_tick_est.max(0.0) as u64)
+    }
+}
+
 /// Drive the rig from the server's clock. Runs every frame; the queries
 /// are empty until `setup` has spawned the rig, which makes the system a
 /// no-op on every screen that is not the world.
 pub fn day_night(
     feed: Res<super::feed::Feed>,
+    pin: Res<DayPin>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight), With<Sun>>,
     mut cam: Query<(&mut AmbientLight, Option<&mut Skybox>), With<EyeCam>>,
 ) {
-    let frac = sim_core::world::day_frac(feed.server_tick_est.max(0.0) as u64);
+    let frac = sim_core::world::day_frac(pin.tick(feed.server_tick_est));
     let elev = sun_elevation(frac);
     let light = daylight(frac);
     if let Ok((mut t, mut d)) = sun.single_mut() {

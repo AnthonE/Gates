@@ -149,7 +149,12 @@ async fn join(
 ) -> Result<client::Session, String> {
     tokio::time::timeout(
         Duration::from_secs(10),
-        client::Session::connect(endpoint, endpoint_addr, protocol::Address::GUEST, |_| None),
+        client::Session::connect(
+            endpoint,
+            endpoint_addr,
+            protocol::Address::GUEST,
+            |_, _, _| None,
+        ),
     )
     .await
     .map_err(|_| "the connect never resolved".to_string())?

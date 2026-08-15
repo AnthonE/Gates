@@ -544,6 +544,7 @@ pub fn bed(
     time: Res<Time>,
     settings: Res<super::Settings>,
     feed: Res<super::feed::Feed>,
+    pin: Res<super::rig::DayPin>,
     mut sinks: Query<(&Bed, &mut AudioSink)>,
 ) {
     // How much cover is within earshot, 0..1. `COVER_FULL` scatter slots
@@ -601,7 +602,11 @@ pub fn bed(
     // notice radius is the hour's), and two hand-written thresholds against
     // one constant is how the birds and the wolves come to disagree about
     // when dusk was.
-    let is_day = !sim_core::world::is_night(feed.server_tick_est.max(0.0) as u64);
+    //
+    // The tick comes through `DayPin` for the same reason one level up: on a
+    // `--capture` run the hour is pinned, and reading the raw estimate here
+    // would roost the birds at the box's hour while the sun stood at noon.
+    let is_day = !sim_core::world::is_night(pin.tick(feed.server_tick_est));
     if is_day && sound.birds.due(cover, time.delta_secs()) && near > 0 {
         let want = sound.birds.perch(near);
         if let Some(p) = props

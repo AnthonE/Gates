@@ -501,6 +501,16 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// research-refused, known — the seat the v37 notes called out as empty).
 pub const PROTO_VER: u16 = 38;
 
+/// This game's slug in the scry catalog.
+///
+/// It lives here rather than only in the client because it reaches the
+/// **signed bytes**: the launcher takes the name from the SDK's `hello` and
+/// writes it into the SIWE statement, so the shard has to spell it the same
+/// way to recompute what it verifies. Two constants would be two chances to
+/// disagree, and the symptom of disagreeing is every login failing while both
+/// sides look right. `client::scry::SLUG` re-exports this one.
+pub const SLUG: &str = "gates";
+
 /// Datagram kind field width.
 ///
 /// **Widened 3 → 4 at v27**, which moved every message on the wire by one
