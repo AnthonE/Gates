@@ -86,6 +86,13 @@ SHAPES = {
     "shape_floor": "delapouite/floor-hatch",
     "shape_stairs": "delapouite/3d-stairs",
     "shape_roof": "delapouite/great-pyramid",
+    # Triangles v0. Picked for silhouette at 38 px against their square
+    # siblings: the corner flag plants a triangle at ground level, the
+    # sail is a bare right triangle, the tipi is a peaked shelter that
+    # does not share great-pyramid's stepped-mass drawing.
+    "shape_tri_foundation": "delapouite/corner-flag",
+    "shape_tri_floor": "delapouite/sail",
+    "shape_tri_roof": "delapouite/tipi",
 }
 
 # The four verbs on the hammer's wheel, keyed as `ui::hammer::verb_icon`

@@ -423,8 +423,14 @@ fn segments_increase_clockwise() {
         left > n / 2,
         "90 deg left should be late in the ring: {left}"
     );
-    // Straight down is the segment opposite 0.
-    assert_eq!(build::segment(0.0, -1.0, n), n / 2);
+    // Straight down is opposite 0. An even ring has one opposite segment;
+    // an odd ring (11 since triangles v0) has two straddling it, and
+    // either is the correct answer — what would be wrong is anything else.
+    let down = build::segment(0.0, -1.0, n);
+    assert!(
+        down == n / 2 || down == n.div_ceil(2),
+        "straight down gave {down} in a ring of {n}"
+    );
 }
 
 #[test]

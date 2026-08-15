@@ -13,12 +13,13 @@
 
 use crate::bits::{BitReader, BitWriter, WireError};
 use crate::chat::{read_text, write_text, ChatText};
+use crate::loc_max;
 use crate::{
     expect_zero_padding, BUILD_CELL_BITS, BUILD_LEVEL_BITS, BUILD_LOC_BITS, DEPLOY_ROW_BITS,
     KIND_BITS, KIND_EVENT, PIECE_ROW_BITS, POS_XZ_BITS, POS_Y_BIAS, POS_Y_BITS,
 };
 use sim_core::backpack::BackpackRec;
-use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_N, MAT_METAL, SHAPE_FRAME};
+use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_N, MAT_METAL, SHAPE_TRI_ROOF};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_FURNACE};
 use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_RESEARCH, PLACE_DOOR};
 use sim_core::gather::ItemStack;
@@ -297,7 +298,11 @@ const N_INPUTS_BITS: u32 = 3;
 const PIECE_SYNC_COUNT_BITS: u32 = 6;
 const PIECE_DEFS_TOTAL_BITS: u32 = 6;
 const PIECE_DEFS_COUNT_BITS: u32 = 3;
-const SHAPE_BITS: u32 = 3;
+/// Widened 3 → 4 in wire v40 (triangles v0): catalogue v1 had saturated
+/// the 3-bit field — its own domain pin said the triangles could not
+/// land without this line. Five of the sixteen values are forgeable now,
+/// so both ends range-check against `SHAPE_TRI_ROOF`.
+const SHAPE_BITS: u32 = 4;
 const MATERIAL_BITS: u32 = 2;
 const N_COSTS_BITS: u32 = 2;
 /// A deployable's repair-cost row count. Wider than `N_COSTS_BITS` because
@@ -1046,7 +1051,7 @@ fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
         || rec.level as usize >= MAX_BUILD_LEVELS
-        || rec.loc > LOC_EDGE_N
+        || rec.loc > loc_max(false)
         || rec.row as usize >= MAX_PIECE_DEFS
         || rec.facing > 1
     {
@@ -1074,8 +1079,9 @@ fn read_piece_rec(r: &mut BitReader) -> Result<PieceRec, WireError> {
         facing: r.read_bit()? as u8,
         ..rec
     };
-    // Coord/level/loc/facing widths are exact; only the row can be forged.
-    if rec.row as usize >= MAX_PIECE_DEFS {
+    // Coord/level/facing widths are exact; the row — and, since v40's
+    // widening, the loc — can be forged.
+    if rec.row as usize >= MAX_PIECE_DEFS || rec.loc > loc_max(false) {
         return Err(WireError::Malformed);
     }
     Ok(rec)
@@ -1148,7 +1154,7 @@ pub fn encode_event_piece_repaired(
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
         || level as usize >= MAX_BUILD_LEVELS
-        || loc > LOC_EDGE_N
+        || loc > loc_max(deploy)
         || (row as u32) >= (1 << row_bits)
         || healed == 0
         || hp == 0
@@ -1195,7 +1201,7 @@ pub fn encode_event_charge_placed(
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
         || level as usize >= MAX_BUILD_LEVELS
-        || loc > LOC_EDGE_N
+        || loc > loc_max(deploy)
         || (row as u32) >= (1 << row_bits)
         || fuse == 0
     {
@@ -1230,9 +1236,8 @@ pub fn encode_event_piece_defs(
     w.write(first as u32, PIECE_DEFS_TOTAL_BITS)?;
     w.write(count as u32, PIECE_DEFS_COUNT_BITS)?;
     for def in bc.pieces[first..first + count].iter() {
-        // `SHAPE_FRAME` is the top code (window and frame filled the
-        // 3-bit field's last two values in v38 — catalogue v1).
-        if def.shape > SHAPE_FRAME
+        // `SHAPE_TRI_ROOF` is the top code (the triangles, wire v40).
+        if def.shape > SHAPE_TRI_ROOF
             || def.material > MAT_METAL
             || def.hp == 0
             || def.n_costs == 0
@@ -1265,6 +1270,8 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
         || rec.level as usize >= MAX_BUILD_LEVELS
+        // Still the straight-edge bound: a deployable never sits on a
+        // triangle or a diagonal (v40 widened the FIELD, not this store).
         || rec.loc > LOC_EDGE_N
         || rec.row as usize >= MAX_DEPLOY_DEFS
     {
@@ -1282,7 +1289,7 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
 }
 
 fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
-    Ok(DeployRec {
+    let rec = DeployRec {
         cx: r.read(BUILD_CELL_BITS)? as u16,
         cz: r.read(BUILD_CELL_BITS)? as u16,
         level: r.read(BUILD_LEVEL_BITS)? as u8,
@@ -1292,7 +1299,13 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
         locked: r.read_bit()?,
         has_lock: r.read_bit()?,
         ..DeployRec::default()
-    })
+    };
+    // The loc became forgeable when the field widened for the piece
+    // store's triangles (v40); this store never grew.
+    if rec.loc > loc_max(true) {
+        return Err(WireError::Malformed);
+    }
+    Ok(rec)
 }
 
 pub fn encode_event_deploy_placed(rec: &DeployRec, buf: &mut [u8]) -> Result<usize, WireError> {
@@ -1389,7 +1402,7 @@ pub fn encode_event_struct_hit(
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
         || level as usize >= MAX_BUILD_LEVELS
-        || loc > LOC_EDGE_N
+        || loc > loc_max(deploy)
         || (row as u32) >= (1 << row_bits)
         || left == 0
     {
@@ -1421,7 +1434,7 @@ pub fn encode_event_removed(
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
         || level as usize >= MAX_BUILD_LEVELS
-        || loc > LOC_EDGE_N
+        || loc > loc_max(!piece)
     {
         return Err(WireError::Range);
     }
@@ -2175,13 +2188,13 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             })? as u8;
             let healed = r.read(16)? as u16;
             let hp = r.read(16)? as u16;
-            // The encoder's own refusals, restated: two bits hold four
-            // `loc` values and all four are live, but a zero heal, a zero
+            // The encoder's own refusals, restated: the loc is bounded by
+            // the STORE the bit named (v40), and a zero heal, a zero
             // ceiling, or a heal past the ceiling are all forgeable and
             // all would corrupt an hp mirror. `row` needs no bound — the
             // width the bit selected is exactly its domain, which is why
             // the field is read at that width rather than masked after.
-            if loc > LOC_EDGE_N || healed == 0 || hp == 0 || healed > hp {
+            if loc > loc_max(deploy) || healed == 0 || hp == 0 || healed > hp {
                 return Err(WireError::Malformed);
             }
             EventMsg::PieceRepaired {
@@ -2210,7 +2223,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             // The encoder's refusals, restated — `PieceRepaired`'s arm
             // exactly, minus the pair it does not carry. `row` needs no
             // bound: the width the store bit selected is its domain.
-            if loc > LOC_EDGE_N || fuse == 0 {
+            if loc > loc_max(deploy) || fuse == 0 {
                 return Err(WireError::Malformed);
             }
             EventMsg::ChargePlaced {
@@ -2240,7 +2253,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let material = r.read(MATERIAL_BITS)? as u8;
                 let hp = r.read(16)? as u16;
                 let n_costs = r.read(N_COSTS_BITS)? as u8;
-                if shape > SHAPE_FRAME
+                if shape > SHAPE_TRI_ROOF
                     || material > MAT_METAL
                     || hp == 0
                     || n_costs == 0
@@ -2347,7 +2360,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             })?;
             let damage = r.read(16)? as u16;
             let left = r.read(16)? as u16;
-            if loc > LOC_EDGE_N || left == 0 {
+            if loc > loc_max(deploy) || left == 0 {
                 return Err(WireError::Malformed);
             }
             EventMsg::StructHit {
@@ -2365,6 +2378,11 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let cz = r.read(BUILD_CELL_BITS)? as u16;
             let level = r.read(BUILD_LEVEL_BITS)? as u8;
             let loc = r.read(BUILD_LOC_BITS)? as u8;
+            // The subtype IS the store bit here, and the store bounds the
+            // loc (v40).
+            if loc > loc_max(sub == SUB_DEPLOY_REMOVED) {
+                return Err(WireError::Malformed);
+            }
             if sub == SUB_PIECE_REMOVED {
                 EventMsg::PieceRemoved { cx, cz, level, loc }
             } else {
@@ -2392,15 +2410,22 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
         }
         // Address + state, every width exact — nothing to forge.
-        SUB_DOOR => EventMsg::Door {
-            cx: r.read(BUILD_CELL_BITS)? as u16,
-            cz: r.read(BUILD_CELL_BITS)? as u16,
-            level: r.read(BUILD_LEVEL_BITS)? as u8,
-            loc: r.read(BUILD_LOC_BITS)? as u8,
-            open: r.read_bit()?,
-            locked: r.read_bit()?,
-            has_lock: r.read_bit()?,
-        },
+        SUB_DOOR => {
+            let m = EventMsg::Door {
+                cx: r.read(BUILD_CELL_BITS)? as u16,
+                cz: r.read(BUILD_CELL_BITS)? as u16,
+                level: r.read(BUILD_LEVEL_BITS)? as u8,
+                loc: r.read(BUILD_LOC_BITS)? as u8,
+                open: r.read_bit()?,
+                locked: r.read_bit()?,
+                has_lock: r.read_bit()?,
+            };
+            // A door hangs on a straight edge and nowhere else (v40).
+            if matches!(m, EventMsg::Door { loc, .. } if loc > loc_max(true)) {
+                return Err(WireError::Malformed);
+            }
+            m
+        }
         SUB_SHOT => {
             let m = EventMsg::Shot {
                 shooter: r.read(32)?,
@@ -2424,13 +2449,20 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             lit: r.read_bit()?,
             by: r.read(32)?,
         },
-        SUB_KNOCK => EventMsg::Knock {
-            cx: r.read(BUILD_CELL_BITS)? as u16,
-            cz: r.read(BUILD_CELL_BITS)? as u16,
-            level: r.read(BUILD_LEVEL_BITS)? as u8,
-            loc: r.read(BUILD_LOC_BITS)? as u8,
-            by: r.read(32)?,
-        },
+        SUB_KNOCK => {
+            let m = EventMsg::Knock {
+                cx: r.read(BUILD_CELL_BITS)? as u16,
+                cz: r.read(BUILD_CELL_BITS)? as u16,
+                level: r.read(BUILD_LEVEL_BITS)? as u8,
+                loc: r.read(BUILD_LOC_BITS)? as u8,
+                by: r.read(32)?,
+            };
+            // A knock lands on a door's address — the deploy bound (v40).
+            if matches!(m, EventMsg::Knock { loc, .. } if loc > loc_max(true)) {
+                return Err(WireError::Malformed);
+            }
+            m
+        }
         // The grant is two bits holding three values, so the fourth is
         // forgeable and refused rather than clamped — a client told it
         // holds rights the sim never granted would draw an open door it
@@ -3271,10 +3303,38 @@ mod tests {
             Err(WireError::Range),
             "level past the grid"
         );
+        // The loc bound is the STORE's since v40: the piece side reaches
+        // the diagonals, the deploy side still ends at the straight edges
+        // — a deploy hit on a triangle address is a forged address.
         assert_eq!(
-            encode_event_struct_hit(false, 0, 0, 0, LOC_EDGE_N + 1, 0, 1, 1, &mut buf),
+            encode_event_struct_hit(
+                false,
+                0,
+                0,
+                0,
+                sim_core::build::LOC_DIAG_B + 1,
+                0,
+                1,
+                1,
+                &mut buf
+            ),
             Err(WireError::Range),
-            "loc past the four"
+            "loc past the piece store's ten"
+        );
+        assert_eq!(
+            encode_event_struct_hit(
+                true,
+                0,
+                0,
+                0,
+                sim_core::build::LOC_TRI_NW,
+                0,
+                1,
+                1,
+                &mut buf
+            ),
+            Err(WireError::Range),
+            "a deploy hit never lands on a triangle"
         );
         assert_eq!(
             encode_event_struct_hit(true, 0, 0, 0, 0, 16, 1, 1, &mut buf),
@@ -3879,15 +3939,14 @@ mod wire_domains {
             prefix: "pub const SHAPE_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 8,
+            min_members: 11,
             bits: SHAPE_BITS,
-            // Moved 5 -> 7 at wire v38 (catalogue v1): the window and the
-            // wall frame spend the 3-bit field's last two codes. The
-            // domain is now **saturated** like container kind above —
-            // the triangle shapes `reference/BUILDING.md` §9.14 wants
-            // cannot land without widening `SHAPE_BITS`, and the fit
-            // assert is what will say so.
-            live_max: 7,
+            // Moved 5 -> 7 at wire v38 (catalogue v1), saturating the
+            // 3-bit field exactly as this pin then warned; v40 is the
+            // widening it priced — `SHAPE_BITS` 3 -> 4 for the three
+            // triangle shapes (`reference/BUILDING.md` §9.14). 11 of 16
+            // values live; the decoder range-checks the tail.
+            live_max: 10,
         },
         Domain {
             what: "piece material",

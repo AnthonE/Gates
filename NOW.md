@@ -834,12 +834,14 @@ order:
    for the soft face (a texture or tint — the label is the only tell
    today), floor sides (needs a vertical attack direction), and the
    pairing with `RIPLIST.md` §2's per-material resistance.
-3. **Triangles** (§9.14). Half the reason their bases look like that, and
-   the only item here that is a **grid change**: our cell holds one plane,
-   one riser and two canonical edges, all square. Cost it as one; do not
-   smuggle it in behind items 1 and 2. ⚠ Wire first: catalogue v1
-   saturated `SHAPE_BITS` (3 bits, 8 of 8 codes live), so a triangle
-   shape widens the field — a `PROTO_VER` bump before the first row.
+3. ~~Triangles~~ **Landed 2026-08-15** (§open "triangles v0", wire v40):
+   the grid change, costed as one — four half-cell locs, two diagonal
+   wall slots, three shapes at §7b.3's exact ratios, the half-cell right
+   triangle deliberately instead of their unaddressable equilateral
+   (the §open row carries the full case). What remains of §9.14: a
+   **capture pass** to look at a diagonal base in the booted game (the
+   person is the visual gate), the wall-on-diagonal price question
+   (§open), and hard/soft's visual identity extended to tri halves.
 
 ---
 

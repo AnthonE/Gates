@@ -661,6 +661,12 @@ pub fn raid(
                 (LOC_RISER, m.stairs),
                 (LOC_EDGE_W, m.walls_w | m.doors_w | m.wins_w | m.frames_w),
                 (LOC_EDGE_N, m.walls_n | m.doors_n | m.wins_n | m.frames_n),
+                (crate::build::LOC_TRI_NW, m.tri_nw),
+                (crate::build::LOC_TRI_NE, m.tri_ne),
+                (crate::build::LOC_TRI_SW, m.tri_sw),
+                (crate::build::LOC_TRI_SE, m.tri_se),
+                (crate::build::LOC_DIAG_A, m.diag_a),
+                (crate::build::LOC_DIAG_B, m.diag_b),
             ] {
                 if mask == 0 {
                     continue;

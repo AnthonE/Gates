@@ -95,6 +95,12 @@ fn built(pieces: &Pieces, cx: u16, cz: u16) -> bool {
         | m.wins_n
         | m.frames_w
         | m.frames_n
+        | m.tri_nw
+        | m.tri_ne
+        | m.tri_sw
+        | m.tri_se
+        | m.diag_a
+        | m.diag_b
         != 0
 }
 

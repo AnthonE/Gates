@@ -35,8 +35,10 @@
 //! DECISIONS.md §open ("piece collision v0" row).
 
 use crate::build::{
-    BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, SHAPE_DOORWAY, SHAPE_FLOOR, SHAPE_FOUNDATION,
-    SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL, SHAPE_WINDOW,
+    BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_N, LOC_EDGE_W, LOC_TRI_NE,
+    LOC_TRI_NW, LOC_TRI_SE, LOC_TRI_SW, SHAPE_DOORWAY, SHAPE_FLOOR, SHAPE_FOUNDATION, SHAPE_FRAME,
+    SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL,
+    SHAPE_WINDOW,
 };
 use crate::fmath::fabs;
 use crate::limits::{COL_INDEX_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS};
@@ -114,6 +116,18 @@ pub struct ColMasks {
     /// blocks on it.
     pub frames_w: u8,
     pub frames_n: u8,
+    /// Triangle half-planes (triangles v0): standable ground over their
+    /// own half of the cell, nothing over the other (`piece_ground`'s
+    /// half tests). Named by the corner the right angle sits in —
+    /// `build::LOC_TRI_*`'s map.
+    pub tri_nw: u8,
+    pub tri_ne: u8,
+    pub tri_sw: u8,
+    pub tri_se: u8,
+    /// Diagonal walls: full-span blocks along their own line, to bodies
+    /// and shots alike, wholly inside the cell.
+    pub diag_a: u8,
+    pub diag_b: u8,
     /// Closed-door bits: set ⇒ the doorway at this level/edge holds a
     /// closed door deployable and blocks its full span (deploy.rs keeps
     /// these in lockstep with the door records).
@@ -146,6 +160,12 @@ impl ColMasks {
         wins_n: 0,
         frames_w: 0,
         frames_n: 0,
+        tri_nw: 0,
+        tri_ne: 0,
+        tri_sw: 0,
+        tri_se: 0,
+        diag_a: 0,
+        diag_b: 0,
         shut_w: 0,
         shut_n: 0,
         solid: SOLID_NONE,
@@ -162,6 +182,12 @@ impl ColMasks {
             | self.wins_n
             | self.frames_w
             | self.frames_n
+            | self.tri_nw
+            | self.tri_ne
+            | self.tri_sw
+            | self.tri_se
+            | self.diag_a
+            | self.diag_b
             | self.shut_w
             | self.shut_n)
             == 0
@@ -183,12 +209,21 @@ impl ColMasks {
             SHAPE_STAIRS => Some(&mut self.stairs),
             SHAPE_WALL if loc == LOC_EDGE_W => Some(&mut self.walls_w),
             SHAPE_WALL if loc == LOC_EDGE_N => Some(&mut self.walls_n),
+            SHAPE_WALL if loc == LOC_DIAG_A => Some(&mut self.diag_a),
+            SHAPE_WALL if loc == LOC_DIAG_B => Some(&mut self.diag_b),
             SHAPE_DOORWAY if loc == LOC_EDGE_W => Some(&mut self.doors_w),
             SHAPE_DOORWAY if loc == LOC_EDGE_N => Some(&mut self.doors_n),
             SHAPE_WINDOW if loc == LOC_EDGE_W => Some(&mut self.wins_w),
             SHAPE_WINDOW if loc == LOC_EDGE_N => Some(&mut self.wins_n),
             SHAPE_FRAME if loc == LOC_EDGE_W => Some(&mut self.frames_w),
             SHAPE_FRAME if loc == LOC_EDGE_N => Some(&mut self.frames_n),
+            SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF => match loc {
+                LOC_TRI_NW => Some(&mut self.tri_nw),
+                LOC_TRI_NE => Some(&mut self.tri_ne),
+                LOC_TRI_SW => Some(&mut self.tri_sw),
+                LOC_TRI_SE => Some(&mut self.tri_se),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -483,12 +518,26 @@ pub fn piece_ground(seed: u64, cols: &ColIndex, x: f32, z: f32, feet_y: f32) -> 
         return NO_SURFACE;
     }
     let m = cols.get(bx as u16, bz as u16);
-    if m.planes == 0 && m.stairs == 0 && m.solid == SOLID_NONE {
+    let tris = m.tri_nw | m.tri_ne | m.tri_sw | m.tri_se;
+    if m.planes == 0 && m.stairs == 0 && tris == 0 && m.solid == SOLID_NONE {
         return NO_SURFACE;
     }
     let base = col_base_y(seed, bx as u16, bz as u16);
     let lid = feet_y + STEP_UP;
     let mut best = NO_SURFACE;
+    // A triangle plane is ground over its own half of the cell and air
+    // over the other (triangles v0). The half tests are the address
+    // definitions themselves (`build::LOC_TRI_*`): boundary-inclusive on
+    // both sides of a diagonal, so a body on the seam of a NW+SE pair
+    // reads the same floor from either.
+    let dx = x - bx as f32 * BUILD_CELL_M;
+    let dz = z - bz as f32 * BUILD_CELL_M;
+    let in_half = |loc: u8| match loc {
+        LOC_TRI_NW => dx + dz <= BUILD_CELL_M,
+        LOC_TRI_SE => dx + dz >= BUILD_CELL_M,
+        LOC_TRI_NE => dz <= dx,
+        _ => dz >= dx,
+    };
     // Solid-deploy tops are standable ground (deploy collision v0): the
     // reference's box-stair. The footprint is the volume's own — not
     // inflated by the capsule — so a body stands on a furnace only with
@@ -504,6 +553,15 @@ pub fn piece_ground(seed: u64, cols: &ColIndex, x: f32, z: f32, feet_y: f32) -> 
         let floor = base + level as f32 * LEVEL_H_M;
         if m.planes & bit != 0 && floor <= lid && floor > best {
             best = floor;
+        }
+        if tris & bit != 0 && floor <= lid && floor > best {
+            let on = (m.tri_nw & bit != 0 && in_half(LOC_TRI_NW))
+                || (m.tri_ne & bit != 0 && in_half(LOC_TRI_NE))
+                || (m.tri_sw & bit != 0 && in_half(LOC_TRI_SW))
+                || (m.tri_se & bit != 0 && in_half(LOC_TRI_SE));
+            if on {
+                best = floor;
+            }
         }
         if m.stairs & bit != 0 {
             // The ramp rises toward +Z through the storey (scene.js).
@@ -721,10 +779,111 @@ fn cell_edges_block(
     false
 }
 
-/// Whether a wall or doorway post stops the horizontal move
-/// (x,z)→(nx,nz) at `feet_y`. Movement steps are ≤ 0.19 m, so testing
-/// the endpoint's z against the edge span (instead of the exact crossing
-/// point) cuts at most a fingertip off a post corner.
+/// 1/√2 and the diagonal's length — the two constants the rotated-frame
+/// arithmetic below needs, written as literals because wall 1 has no
+/// sqrt-at-runtime to spend on a compile-time number.
+const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;
+const DIAG_LEN_M: f32 = BUILD_CELL_M * std::f32::consts::SQRT_2;
+
+/// Where the move `a`→`b` meets one diagonal of cell (bx, bz), if it
+/// does: the along-diagonal metre of the meeting in `0..DIAG_LEN_M`.
+/// [`edge_meet`]'s exact algebra in a frame turned 45° — the signed
+/// distance to the line and the coordinate along it are one rotation,
+/// all multiplies (triangles v0).
+#[allow(clippy::too_many_arguments)]
+fn diag_meet(
+    bx: i32,
+    bz: i32,
+    diag_b: bool,
+    x: f32,
+    z: f32,
+    nx: f32,
+    nz: f32,
+    r_extra: f32,
+) -> Option<f32> {
+    let x0 = bx as f32 * BUILD_CELL_M;
+    let z0 = bz as f32 * BUILD_CELL_M;
+    let (d0, d1, along) = if diag_b {
+        // Line dx + dz = cell: distance grows toward SE.
+        let d = |px: f32, pz: f32| ((px - x0) + (pz - z0) - BUILD_CELL_M) * INV_SQRT2;
+        let s = ((nx - x0) - (nz - z0) + BUILD_CELL_M) * INV_SQRT2;
+        (d(x, z), d(nx, nz), s)
+    } else {
+        // Line dz = dx: distance grows toward SW.
+        let d = |px: f32, pz: f32| ((pz - z0) - (px - x0)) * INV_SQRT2;
+        let s = ((nx - x0) + (nz - z0)) * INV_SQRT2;
+        (d(x, z), d(nx, nz), s)
+    };
+    let r = WALL_THICKNESS_M * 0.5 + r_extra;
+    let crosses = (d0 < 0.0 && d1 > 0.0) || (d0 > 0.0 && d1 < 0.0);
+    let pushes_in = fabs(d1) < r && fabs(d1) < fabs(d0);
+    if !crosses && !pushes_in {
+        return None;
+    }
+    Some(along)
+}
+
+/// The diagonal walls of one cell against a mover — the interior twin of
+/// the boundary walks, called for both endpoint cells by [`blocked`] and
+/// [`shot_blocked`]. The vertical test matches each caller's own: a
+/// capsule OVERLAPS a storey (`point` false, `lo_y..hi_y` the body), a
+/// shot is CONTAINED in one (`point` true, both bounds the altitude).
+#[allow(clippy::too_many_arguments)]
+fn cell_diags_block(
+    seed: u64,
+    cols: &ColIndex,
+    bx: i32,
+    bz: i32,
+    x: f32,
+    z: f32,
+    nx: f32,
+    nz: f32,
+    lo_y: f32,
+    hi_y: f32,
+    point: bool,
+    r_extra: f32,
+) -> bool {
+    if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
+        return false;
+    }
+    let m = cols.get(bx as u16, bz as u16);
+    if m.diag_a | m.diag_b == 0 {
+        return false;
+    }
+    let base = col_base_y(seed, bx as u16, bz as u16);
+    for level in 0..MAX_BUILD_LEVELS {
+        let bit = 1u8 << level;
+        if (m.diag_a | m.diag_b) & bit == 0 {
+            continue;
+        }
+        let bottom = base + level as f32 * LEVEL_H_M;
+        let outside = if point {
+            lo_y < bottom || lo_y >= bottom + LEVEL_H_M
+        } else {
+            lo_y >= bottom + LEVEL_H_M || hi_y <= bottom
+        };
+        if outside {
+            continue;
+        }
+        for (mask, diag_b) in [(m.diag_a, false), (m.diag_b, true)] {
+            if mask & bit == 0 {
+                continue;
+            }
+            if let Some(t) = diag_meet(bx, bz, diag_b, x, z, nx, nz, r_extra) {
+                if (0.0..=DIAG_LEN_M).contains(&t) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Whether a wall, doorway post, window, frame rim or diagonal wall stops
+/// the horizontal move (x,z)→(nx,nz) at `feet_y`. Movement steps are
+/// ≤ 0.19 m, so testing the endpoint's z against the edge span (instead
+/// of the exact crossing point) cuts at most a fingertip off a post
+/// corner.
 pub fn blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, nx: f32, nz: f32, feet_y: f32) -> bool {
     let (bx0, bz0) = (
         crate::build::build_cell_of(x),
@@ -738,6 +897,41 @@ pub fn blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, nx: f32, nz: f32, fee
         return true;
     }
     if (bx0 != bx1 || bz0 != bz1) && cell_edges_block(seed, cols, bx0, bz0, x, z, nx, nz, feet_y) {
+        return true;
+    }
+    let (lo, hi) = (feet_y, feet_y + CAPSULE_HEIGHT_M);
+    if cell_diags_block(
+        seed,
+        cols,
+        bx1,
+        bz1,
+        x,
+        z,
+        nx,
+        nz,
+        lo,
+        hi,
+        false,
+        CAPSULE_RADIUS_M,
+    ) {
+        return true;
+    }
+    if (bx0 != bx1 || bz0 != bz1)
+        && cell_diags_block(
+            seed,
+            cols,
+            bx0,
+            bz0,
+            x,
+            z,
+            nx,
+            nz,
+            lo,
+            hi,
+            false,
+            CAPSULE_RADIUS_M,
+        )
+    {
         return true;
     }
     false
@@ -781,6 +975,16 @@ pub fn shot_blocked(
         return true;
     }
     if (bx0 != bx1 || bz0 != bz1) && cell_edges_stop_shot(seed, cols, bx0, bz0, x, z, nx, nz, y, r)
+    {
+        return true;
+    }
+    // The diagonals, with the point's own band: containment of `y`, not a
+    // capsule's overlap.
+    if cell_diags_block(seed, cols, bx1, bz1, x, z, nx, nz, y, y, true, r) {
+        return true;
+    }
+    if (bx0 != bx1 || bz0 != bz1)
+        && cell_diags_block(seed, cols, bx0, bz0, x, z, nx, nz, y, y, true, r)
     {
         return true;
     }
@@ -903,6 +1107,7 @@ mod tests {
             SHAPE_STAIRS,
             SHAPE_WINDOW,
             SHAPE_FRAME,
+            SHAPE_TRI_FOUNDATION,
         ];
         let mut b = BuildContent::EMPTY;
         b.piece_count = shapes.len() as u16;
@@ -1336,6 +1541,94 @@ mod tests {
                 0.05
             ),
             "the doorway lintel stops a shot"
+        );
+    }
+
+    /// Triangles v0's collision contract: a tri foundation is ground over
+    /// its own half and terrain over the other, and a diagonal wall stops
+    /// a walk and a shot across its line while the open half-cell passes.
+    #[test]
+    fn tri_ground_holds_its_half_and_the_diagonal_blocks_the_cross() {
+        let mut occ = crate::occupy::Scratch::barren();
+        let bc = free_table();
+        let mut pieces = Pieces::new();
+        // The NW half (dx + dz <= 3) and its hypotenuse wall on B.
+        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_TRI_NW, 7);
+        let base = col_base_y(SEED, CX, CZ);
+        let x0 = CX as f32 * BUILD_CELL_M;
+        let z0 = CZ as f32 * BUILD_CELL_M;
+
+        // Ground on the NW side of the split; terrain on the SE side.
+        let on = piece_ground(SEED, pieces.cols(), x0 + 0.7, z0 + 0.7, base + 0.05);
+        assert!(
+            fabs(on - base) < 1e-4,
+            "the half's own ground reads the slab: {on} vs {base}"
+        );
+        let off = piece_ground(SEED, pieces.cols(), x0 + 2.5, z0 + 2.5, base + 0.05);
+        assert_eq!(off, NO_SURFACE, "the other half is not this piece");
+
+        // The diagonal wall across B: a walk from the NW half toward SE
+        // stops at the line; with no wall it passes.
+        let mut b = body_at(x0 + 1.0, z0 + 1.0);
+        for _ in 0..160 {
+            movement::step(
+                SEED,
+                pieces.cols(),
+                &mut occ.occupants(),
+                &mut b,
+                &walk(90, 90),
+            );
+        }
+        assert!(
+            pos(&b).0 > x0 + 2.5 && pos(&b).2 > z0 + 2.5,
+            "with no diagonal wall the cross passes: ({}, {})",
+            pos(&b).0,
+            pos(&b).2
+        );
+        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_DIAG_B, 1);
+        let mut b = body_at(x0 + 1.0, z0 + 1.0);
+        for _ in 0..160 {
+            movement::step(
+                SEED,
+                pieces.cols(),
+                &mut occ.occupants(),
+                &mut b,
+                &walk(90, 90),
+            );
+        }
+        let (bx, _, bz) = pos(&b);
+        assert!(
+            (bx - x0) + (bz - z0) < BUILD_CELL_M,
+            "the diagonal wall must hold the walker on its own side: ({bx}, {bz})"
+        );
+
+        // The shot walk agrees: across the line stops, along the open
+        // half passes.
+        assert!(
+            shot_blocked(
+                SEED,
+                pieces.cols(),
+                x0 + 1.0,
+                z0 + 1.0,
+                x0 + 2.2,
+                z0 + 2.2,
+                base + 1.5,
+                0.05
+            ),
+            "an arrow across the diagonal stops"
+        );
+        assert!(
+            !shot_blocked(
+                SEED,
+                pieces.cols(),
+                x0 + 0.3,
+                z0 + 1.0,
+                x0 + 1.0,
+                z0 + 0.3,
+                base + 1.5,
+                0.05
+            ),
+            "an arrow inside the NW half never meets the line"
         );
     }
 

@@ -66,6 +66,9 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `shape_foundation.png` | `delapouite/flat-platform` |
 | `shape_roof.png` | `delapouite/great-pyramid` |
 | `shape_stairs.png` | `delapouite/3d-stairs` |
+| `shape_tri_floor.png` | `delapouite/sail` |
+| `shape_tri_foundation.png` | `delapouite/corner-flag` |
+| `shape_tri_roof.png` | `delapouite/tipi` |
 | `shape_wall.png` | `delapouite/brick-wall` |
 | `shape_wall_frame.png` | `delapouite/gate` |
 | `shape_window.png` | `delapouite/window` |
