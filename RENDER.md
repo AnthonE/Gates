@@ -458,15 +458,39 @@ tuft had one lit blade and one black one. Blades are also `NotShadowCaster`:
 two triangles a few centimetres wide against a cascade sized for 200 m is not
 a shadow, it is acne, and the first capture was full of it.
 
-### R4 · Materials — the photograph, on the surface — **LANDED (single-map)**
+### R4 · Materials — the photograph, on the surface — **LANDED (4-way splat, 2026-08-15)**
 
 The CC0 set in `assets/textures/` already exists, is manifested, and its
 *selection* was already measured (gain span, albedo sd, anisotropy). None of
 that work is lost; it moves to WGSL.
 
+**The first WGSL in the tree is `assets/shaders/ground_splat.wgsl`**, bound by
+`render/ground_splat.rs` as an `ExtendedMaterial<StandardMaterial, GroundSplat>`
+whose extension deliberately does not declare `#[bindless]` — which is what
+forces the whole material non-bindless and retires the blocker `terrain_mesh.rs`
+had recorded against exactly this slice. Four albedo and four normal maps, one
+shared sampler, per-identity roughness. Landed with `tests/ground_splat.rs`.
+
+Three things it settled that are worth not re-deriving:
+
+  · **The weights ride `ATTRIBUTE_COLOR`, not a packed `UV_1`.** Packing two
+    `u8` per `f32` was scouted and is wrong — the rasterizer interpolates the
+    packed value and `floor(p/256)` mixes the low byte into the high one. Exact
+    at both vertices, 50% wrong mid-triangle, i.e. at identity boundaries.
+    `UV_1` carries the two scalar modifiers (break-up, waterline) instead.
+  · **Each map contributes LUMINANCE, never colour**, which is the §7 deviation
+    rule satisfied by construction rather than by a correction: a mean-1
+    luminance field has gain span 1.000, where only `rock` clears the rule as
+    colour (grass 2.454, sand 2.073, litter 3.586).
+  · **The height blend is a tie-breaker and measured as a no-op.**
+    `splat_from` is near-binary (92.2% of samples over 0.8) so the contested
+    band is a sliver. Kept as insurance, not as a live setting.
+
 - Terrain: 4-way splat blend from the vertex weights, biplanar projection with
   §2's two rules, per-identity tint bounded by the deviation rule, macro
-  break-up at 0.5–1 m and near-field grain under 5 cm (rule 1).
+  break-up at 0.5–1 m and near-field grain under 5 cm (rule 1). **The blend and
+  the grain landed; the projection is still planar XZ, not biplanar** — a
+  vertical face still stretches, and that is what R4 has left.
 - AO maps become `indirectDiffuse *= ao` — indirect only, medium scale — and
   `min(bakedAO, ssAO)` where SSAO also runs, never a sum or a product. Micro
   occlusion stays baked in albedo and *does* apply to direct light. Specular
