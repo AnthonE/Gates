@@ -125,10 +125,21 @@ fn the_zenith_fill_is_the_uniform_term_it_replaced() {
 }
 
 /// The earth half is the island's own albedo and not a picked colour: the mix
-/// is a partition (it sums to one), and the result lies inside the convex hull
-/// of the identities it mixes. A bounce brighter than the brightest ground
-/// identity, or darker than the darkest, would mean the weights had stopped
-/// being a mix.
+/// is a partition (it sums to one), the bounce IS the weighted sum of the four
+/// identities, and the result therefore lies inside their convex hull.
+///
+/// ⚠ **The hull bound alone got looser for free on 2026-08-15, with no edit to
+/// it, and that is why the weighted sum is pinned directly now.** The hull is
+/// taken over identities with `w > 0.0`. Granite's weight was 0.0 under the
+/// retracted quadrant mix, so the *brightest* of the four identities was
+/// excluded from the hull and the admissible band was narrow by accident;
+/// correcting `GROUND_MIX` put granite back in and widened it. Nothing here
+/// asserted less than it had, but it proved less than it reads as proving —
+/// the same shape as a gate that goes green because its case was deleted.
+/// Measured 2026-08-15: truncating `bounce_albedo()`'s fold to three
+/// identities (the exact "granite is free" bug this pass corrected) leaves the
+/// hull assert **green**, at bounce 0.0973 against a hull that still admits it.
+/// The hull is a real property and stays. It is simply not the binding one.
 #[test]
 fn the_bounce_is_the_islands_own_albedo() {
     let sum: f32 = GROUND_MIX.iter().sum();
@@ -137,6 +148,38 @@ fn the_bounce_is_the_islands_own_albedo() {
         "the ground mix is not a partition: {sum}"
     );
     let a = bounce_albedo();
+
+    // The weighted sum written out term for term rather than folded — a second
+    // expression of the same arithmetic, not a re-invocation. `bounce_albedo()`
+    // is a nested `enumerate` over two arrays, so a dropped identity, a
+    // truncated iterator or a transposed index is a live way for it to return a
+    // plausible colour that no bound above can see. Red at 0.0973 vs 0.1163
+    // under the `.take(3)` mutation.
+    for c in 0..3 {
+        let want = GROUND_ALBEDO[0][c] * GROUND_MIX[0]
+            + GROUND_ALBEDO[1][c] * GROUND_MIX[1]
+            + GROUND_ALBEDO[2][c] * GROUND_MIX[2]
+            + GROUND_ALBEDO[3][c] * GROUND_MIX[3];
+        assert!(
+            (a[c] - want).abs() < 1e-6,
+            "channel {c}: bounce albedo {:.6} is not the area-weighted sum {want:.6}",
+            a[c]
+        );
+    }
+
+    // Every identity is actually carried. A zero weight is not hypothetical —
+    // it is precisely what the retracted quadrant window reported for granite,
+    // and it is what made the hull bound below vacuous for the brightest
+    // surface on the island. A mix that has dropped a ground surface is no
+    // longer the island's albedo whatever it sums to, so this is checked
+    // separately from the partition (a renormalised three-way mix sums to 1.0).
+    for (i, w) in GROUND_MIX.iter().enumerate() {
+        assert!(
+            *w > 1e-4,
+            "identity {i} carries weight {w} — the mix has dropped a ground surface"
+        );
+    }
+
     for c in 0..3 {
         let lo = GROUND_ALBEDO
             .iter()

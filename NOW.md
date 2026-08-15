@@ -72,6 +72,11 @@ Two things the next pass should know:
   cover — no tuft for `clutter_kind_at` to roll. The fix it argues for is a
   second identity and a ground cover for *litter*, not grass geometry. The spawn
   is pinned outside this repo (`art/capture-native.sh:44`) and is the operator's.
+- **That measurement pass was FAILED at the merge gate and repaired 2026-08-15**
+  (`pass-20260815-042118-05-judge.md`): the §open row had narrated the corrected
+  mix as a bare array, which dropped `GROUND_MIX` out of `ci/knob_registry.mjs`'s
+  declaration scan — 284 pins to 283, a wall going green because its case was
+  deleted. Declaration restored; the gate is red again under a real drift.
 
 ## 0fill · The darks, second half: the transfer *(client lane)*
 

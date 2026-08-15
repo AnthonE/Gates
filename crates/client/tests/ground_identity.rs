@@ -16,8 +16,17 @@
 //!
 //! **Every test here was run red before it was run green**, against the
 //! constants this pass replaced: 4 of 5 failed on the old `GROUND_ALBEDO` and
-//! the fifth (`granite_never_reaches_the_ground_on_the_capture_seed`) is
-//! independent of it. A gate nobody has seen fail is not evidence.
+//! the fifth (`granite_reaches_the_ground_on_the_shipped_seed`) is independent
+//! of it. A gate nobody has seen fail is not evidence.
+//!
+//! ⚠ That fifth name is not the one this line carried until 2026-08-15, and the
+//! rename is the point rather than a typo. It was
+//! `granite_never_reaches_the_ground_on_the_capture_seed` — a test asserting the
+//! *opposite* fact — and it was renamed and inverted on 2026-08-14 when the
+//! quadrant sweep behind it was retracted (`CLAUDE.md`'s trap list; the sweep
+//! read `-1024..1024` on a world centred at 1024). The module doc kept naming
+//! the retracted test for a day, which is the doc-reads-as-covered failure the
+//! paragraph above it describes, one level in.
 //!
 //! **Why albedo may be compared to a lit measurement at all**, which is the
 //! one thing that could make this gate bogus. It may for hue and for HSV
