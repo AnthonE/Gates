@@ -771,6 +771,34 @@ which is already a flag-day, or with the next touch of the wtransport pin
 (§2.2 marks that seam owed anyway). Wants the operator's word on timing —
 publishing and floor raises are operator acts.
 
+## 0tx · The transport's config of record describes three things that do not exist *(server lane)*
+
+Found 2026-08-15 by grepping `NETCODE.md` §2.2 row by row instead of reading
+it. Four rows check out (`datagram_send_buffer_size`, `max_idle_timeout`,
+`keep_alive_interval`, the `max_datagram_size` clamp) and the MTU row is
+honest that it takes quinn's defaults. **Three do not, and only one carried a
+⚠.** A table headed *config of record* is the dead-citation class one level
+worse than a doc comment: it reads as measured.
+
+1. **QUIC-level admission is absent** — the row promised `Incoming::retry()`
+   past ~2× cap and `refuse()` at the hard cap. Every refusal we have
+   (`refused_version|build|auth|ticket|full`, `net.rs:913–1080`) fires
+   **after** a completed handshake, so an unvalidated address gets the full
+   crypto cost before we decline. This is the DoS-shaped one and it is live
+   on a public shard. Blocked-ish on §0wt: our accept starts at
+   `IncomingSession`, already past the hook, and whether the WebTransport
+   wrapper can expose quinn's `Incoming` is **unchecked** — check that first,
+   because a "no" makes it a second reason to drop the layer.
+2. **No congestion-control selection** — no `--cc`, no `BbrConfig`, nothing.
+   We ship quinn's CUBIC and there is no A/B path, so §2.1's "measure before
+   trusting" has never been runnable. Cheap: a flag and a shard.toml key.
+3. **No connection telemetry at all** — no `stats()`, no rtt, no cwnd, no
+   loss counter anywhere in `crates/`. §2.1 already says client-side loss/RTT
+   has no native source; the 100-bot soak's first named gap was *real bytes,
+   nothing counts them*. quinn hands all of it over for free — **no wire
+   change, no `PROTO_VER`, no golden** — which makes this the cheapest of the
+   three and the one that makes the other two measurable. Do it first.
+
 ## 0n1 · The class-S join walk has no interest filter *(server lane)*
 
 `reference/NETWORK.md` §9.2.1, measured 2026-08-10. `pump_events` drips the
