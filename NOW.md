@@ -42,6 +42,140 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+> **Playtest items, 2026-08-15 — the operator played the shard and these five
+> came out of it** (`DECISIONS.md` 2026-08-15). They lead the file because
+> they are what a player hit in one session rather than what a rubric scored;
+> `0eat` is the smallest and is an outright dead button. The research for
+> `0dur` is `reference/DURABILITY.md`, written the same day.
+
+## 0kit · A naked spawn should hold a rock and a torch *(content lane)*
+
+**Operator, 2026-08-15:** *"we should be starting with a rock and a torch"*
+and *"you cant smash trees with ur hans lol u need a rock"*. Both match the
+reference exactly — bare hands gather nothing there and the rock is the
+bootstrap tool (`reference/DURABILITY.md` §4).
+
+What ships today (`content/balance.toml:230`) is nine entries — plan, hammer,
+stone hatchet, stone pickaxe, torch, 3 bandages, **900 wood, 500 stone, 100
+metal frags** — and **no rock**. Its own comment calls it *"testing
+scaffolding, and an operator call to empty"*: it exists because a naked spawn
+made the build wheel read `350 Wood (0)` and left the building verb
+unreachable to anyone testing it.
+
+`content/gatherables.toml:44` already admits the other half — *"`hand` has no
+reference row on any node — bare hands gather nothing there"* — and then pays
+`hand = 25` wood a swing, half a rock. `BALANCE.md` §6 wants a **mechanism**
+case to differ and there is none: the rock *is* the mechanism.
+
+The slice: kit → rock + torch; every `hand` row → 0 (check `gather.rs`
+announces a zero-yield swing rather than paying nothing in silence);
+**re-grant the kit on every respawn**, which is safe once it is worth 10
+stone and is the whole fix for §0die's third mechanism. Keep the fat kit
+reachable behind a shard flag in `dev_spawn`'s shape — the build verb still
+has to be exercisable. Content-only but for the re-grant (`world.rs:1831`,
+fresh-arm only today) and the flag. Wall 7 holds; no wire.
+
+## 0eat · The eat verb is a dead button *(client lane)*
+
+**A refused eat and a landed one are both silent.** The operator crafted a
+bandage and could not tell that anything happened.
+
+The verb exists twice — `G` on the selected hotbar slot
+(`render/verbs.rs:274`) and right-click in the inventory panel
+(`render/panels/inv.rs:455`) — and the sim answers both, `EV_CONSUMED` or
+`EV_CONSUME_REFUSED` with one of three reasons (`survival.rs:440`).
+`client-core` decodes both into `last_eat` / `last_eat_refused`
+(`core.rs:820`) and **nothing anywhere reads either field**;
+`APPLIED_CONSUME` has no reader outside `core.rs`. `ui/refusals.rs` carries
+sentence tables for craft, build, deploy, research and connect — **there is
+no consume table at all**.
+
+So the only evidence a bandage worked is the hp bar moving over four
+seconds, and the only evidence one was refused is nothing. Same shape as the
+gap §0tq just closed, one level earlier: that one dropped facts *inside* the
+toast queue, this one never reaches it.
+
+The slice: `refusals::consume(code)` for the three `REFUSE_C_*` codes,
+`Refused::Consume` on `feed.rs`'s enum, and a said line on the landed side
+too (the event names the item). Client-only — no wire, no sim change. Gate
+it as a call-site grep in `tests/sound.rs`'s shape: the defect is a missing
+reader, not a wrong value.
+
+## 0die · Death is a one-way door *(systems lane)*
+
+**Three designs that are each correct and compound.** The operator died once
+and the session never recovered.
+
+1. The inventory drops into one bag where you fell (`world.rs::die`), and
+   `map.rs:128` even marks standing bags.
+2. That bag despawns on **5 min × the rarity multiplier of the rarest item
+   inside** (`balance.toml` `[backpack]`). Every kit item is
+   `rarity = "common"` → ×1 → **five minutes**.
+3. The spawn kit is **fresh-arm only** (`world.rs:1831`: re-granting *"would
+   be an item printer"*), so you wake naked and stay that way for good.
+
+Nothing there is a bug. Together: you respawn far from a bag you cannot see
+(outside interest range → not in `core.bags` → not on the map), it is gone
+in five minutes, and no kit ever comes back.
+
+§0kit's re-grant retires mechanism 3 outright. What is left is two spoken
+questions, not defects (`DECISIONS.md` §open already carries "death backpack
+v0"): whether five minutes is the intended floor for a common-only bag, and
+whether the death screen should keep the last-known bag position —
+`ALPHA.md` §1 says *"no map position"* on purpose, so that is **a call to
+re-take, not a hole to patch**.
+
+## 0dur · Items have no condition *(systems lane)*
+
+**Operator, 2026-08-15:** *"we need durability on items"*. Research landed
+the same day: `reference/DURABILITY.md` — the first `reference/*.md` whose
+numbers come off the pages rather than search summaries, and its §0 corrects
+`SOURCES.md`'s map twice. We have none of the system:
+`grep -rni condition crates/sim-core/src/` returns building repair only.
+
+Settled: condition loss is keyed **per (tool, resource)**, a sibling table to
+`yield_per_hit` so the wrong-tool penalty costs no code (§9.1); the starting
+items carry none, so a spawn can always bootstrap (§4); every repair costs
+20% of *maximum* condition permanently. **Not** settled: the maximum
+condition of anything (§5) — 0.3 is a rate with no denominator, ours to speak
+— and the repair price, primary 20% against every guide's 50% (§3, DISPUTED,
+keep it out of `content/`).
+
+The cost is one struct: `ItemStack { item: u16, count: u16 }`
+(`gather.rs:350`) has no room, so this is a **wall-6 slice** — `PROTO_VER`
+bump plus regenerated goldens in one commit, `persist.rs`, `worldsave.rs`,
+`state_hash`, every container. §9.2 argues the field on the stack over a side
+table, on the strength of our own move-verb trap.
+
+v0 is condition on tools, loss on gather, **no bench** (§9.4) — the
+reference's own rock is an unrepairable tool you re-craft, so it is complete
+alone. Needs one spoken number first.
+
+## 0sun · The sun climbs and sinks on one bearing *(client lane)*
+
+**Operator, 2026-08-15:** *"the sun donest move"*. It does — but only up and
+down, which is not what the word means to a player.
+
+The cycle is real and gated: `DAY_TICKS = 81_000` = 45 min, 70% day / 30%
+night, driven off the server tick through `world::day_frac`
+(`tests/daynight.rs`). What is fixed is the **bearing** —
+`RIG_SUN_AZIMUTH = 2.35`, read as a constant by `to_sun` (`render/rig.rs:288`:
+*"the sun climbs and sinks on one bearing at v0; a sweeping azimuth would
+drag every shadow through a half-turn a cycle for no legibility gain"*). So
+it rises and sets in the same place, every shadow changes length all day and
+never direction, and it peaks at 35° (`RIG_SUN_ELEVATION = 0.61`). That v0
+argument was made for legibility; the operator has now scored it from the
+other side.
+
+Also measured 2026-08-15: the reference runs **~45 min day + ~15 min night =
+60 min**, so our night is about right and our day is ~30% short.
+
+**Not a drive-by.** `CLAUDE.md`'s trap list makes tonemap/sky/exposure/fog
+**one owner**, and `ART.md` §1's shadow-length band plus `DayPin`'s capture
+register are calibrated on the current rig — a sweeping azimuth moves every
+shadow in every frame a judge has ever scored, on purpose. One pass, single
+owner. Knobs to speak: the sweep's arc and the day length.
+
 ## 0gp · The four ground identities are three paints *(client lane)*
 
 **GAP PASS item — `pass-20260815-042118-10-visual.md` ranked gap 1** ("the
