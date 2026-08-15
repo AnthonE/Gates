@@ -72,9 +72,27 @@ were fetched, manifested and then read by nothing for four days: a
 `StandardMaterial` has one base-colour slot and **no procedural mesh in the
 client carried a UV**, so no prop could sample a map however many shipped. The
 UV half is solved on the CPU (`props::Soup` box-projects per triangle, which a
-triangle soup makes free), and those four are bound now. `gravel` is the one
-role still unbundled — it is a slope/scree identity for the GROUND, which is
-still single-map and still waiting on the splat material.
+triangle soup makes free), and those four are bound now.
+
+⚠ **`gravel` is still the one unbundled role, and the reason recorded here was
+wrong.** This said it was "waiting on the splat material". The splat material
+landed 2026-08-15 (`render/ground_splat.rs`) and gravel is no closer, because
+what it actually waits on is a **classifier slot**: `terrain::splat` resolves
+exactly four identities — sand · grass · litter · rock — and gravel is not one
+of them. Binding it is a `sim-core` change (a fifth weight on the wire the mesh
+carries, and a fifth band in `splat_from`), not a client one. The single-map
+limitation it was blamed on is gone and gravel did not move, which is the
+evidence that the diagnosis was wrong.
+
+**What the splat material DID change here:** the four ground identities each
+sample their own albedo and normal now, instead of all four sharing
+`ground_detail.jpg` and `grass`'s normal map. So `sand`, `litter` and `rock`
+went from *bundled but only as a colour* to bundled as surfaces. Measured at a
+pinned spawn with the mix stated (litter 611‰, rock 329‰): near-ground
+neighbour contrast **6.43 → 8.53, +32.8%**. `ground_detail.jpg` is the
+casualty — it is grass's baked luminance field, the shader computes the same
+thing from `grass_albedo.jpg`, and **nothing loads it now**; it still ships and
+is still gated as a file.
 
 | role | source | ao | bundled | note |
 |---|---|---|---|---|

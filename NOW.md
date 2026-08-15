@@ -212,21 +212,44 @@ brightness-neutral to −0.024% so the coupled owner keeps brightness. New gate
 `ground_mix.rs`'s debt test is now a pin on the held mean. Knobs:
 `DECISIONS.md` §open "ground identity separation v0".
 
-**What remains, and it is the larger half.** Granite has stone's *value* now
-and not stone's *surface*: all four identities still share one greyscale detail
-map and one `perceptual_roughness`. `render/textures.rs` already loads all four
-`MapSet`s and only `detail` + `grass.normal` are ever bound — `RENDER.md` R4 is
-the spec, and it needs the first WGSL in the tree. Three things scouted this
-pass and worth not re-deriving: an `ExtendedMaterial` extension that does *not*
-declare `#[bindless]` forces the whole material non-bindless, which retires the
-blocker `terrain_mesh.rs`'s comment states; the four weights can reach the
-fragment with **no custom vertex shader** by packing two `u8` per `f32` into
-`ATTRIBUTE_UV_1` (exact under a 24-bit mantissa), leaving `ATTRIBUTE_COLOR` and
-every gate on it untouched; and the skills say blend by *height* not linearly
-(depth 0.2), sum normals as surface gradients, and **leave the classifier soft**
-— sharpening it makes bubble regions. Also open: `ui/map.rs` carries an
-independent minimap palette that nothing holds against `GROUND_ALBEDO`, and it
-did not move with this edit.
+**The larger half landed 2026-08-15 — the splat material.** Each identity
+carries its own photograph now: `assets/shaders/ground_splat.wgsl` (the first
+WGSL in the tree) + `render/ground_splat.rs`, four albedo and four normal maps
+on one shared sampler, per-identity roughness where one shared 0.92 stood.
+Measured at a pinned `dev_spawn` with the mix stated — 1500,600, litter 611‰,
+rock 329‰ — **near-ground neighbour contrast 6.43 → 8.53, +32.8%**, every frame
+improved. `tests/ground_splat.rs` is the gate.
+
+**Two of the three things scouted here were right and one was wrong**, which is
+worth keeping because the wrong one looks cheaper and someone will re-propose
+it. The `#[bindless]` route is right and is what shipped. Height blending is
+right *and measured as a no-op* (+0.1%) — `splat_from` is near-binary, so the
+band it arbitrates is a sliver; it is kept as insurance. **The packed-`UV_1`
+route is broken**: the rasterizer interpolates the packed value, so
+`floor(p/256)` mixes the low byte into the high one — exact at both vertices,
+50% wrong mid-triangle, i.e. at identity boundaries. The weights ride
+`ATTRIBUTE_COLOR` and the two scalar modifiers ride `UV_1` instead, which also
+made the identity mix per-pixel.
+
+What is still open here, in rank order:
+
+1. ⚠ **It costs 8.0% mean luma and that is not this material's to spend.**
+   Granite having granite's relief means more self-shadow; the number belongs to
+   the coupled tonemap/sky/exposure/fog owner (`CLAUDE.md` traps), so it is a
+   debt against §0fill rather than something to correct here.
+2. **The projection is still planar XZ, not biplanar** — a vertical face still
+   stretches. `RENDER.md` R4's remaining half.
+3. **The roughness maps are still unread, and the ORM reason no longer
+   applies.** `NOW.md` §0w item 5 blamed the glTF-packed `metallic_roughness`
+   slot; a custom shader samples `*_rough.jpg` directly and needs no packing
+   step. Four more texture bindings, and 8 → 12 is where the 16-sampled-texture
+   downlevel limit starts to matter alongside `StandardMaterial`'s own.
+4. **`ground_detail.jpg` is now loaded by nothing** — it is grass's baked
+   luminance field and the shader computes the same thing from `grass_albedo`.
+   It still ships and is still gated as a file; deleting it is a separate call,
+   because a pre-baked field is what a cheaper LOD would want.
+5. `ui/map.rs` carries an independent minimap palette that nothing holds against
+   `GROUND_ALBEDO`, and it did not move with either edit.
 
 ## 0tree · The research ladder exists — what it is still one edge short of *(systems lane)*
 
