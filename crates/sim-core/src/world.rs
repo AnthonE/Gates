@@ -346,6 +346,33 @@ pub const EV_RESEARCH_REFUSED: u8 = 34;
 /// a forged one changes nothing but what its author sees.
 pub const EV_SHOT: u8 = 35;
 
+/// EV_KNOWN: a = the player who holds it, b = the blueprint mask's low 32
+/// bits, c = its high 32 bits. **Own-fact** — a blueprint is personal, so
+/// only the hand that holds it hears this.
+///
+/// The whole mask, never a delta, and the reason is the one `SUB_KNOWN`
+/// was already written for: a dropped increment would grey a recipe the
+/// player has paid OBOL for, with no later event able to correct it. A
+/// full statement of the fact is self-healing — the next one repairs
+/// every loss before it.
+///
+/// **It fires at the doors, not only at the purchase, and that is the
+/// whole point of the code existing.** `Player::known` is sim state that
+/// survives a death and a restore, but nothing on the wire ever said so:
+/// the server synthesised `SUB_KNOWN` from `EV_RESEARCH` alone, so a
+/// player who researched on Monday, logged out and came back on Tuesday
+/// was told nothing, and their craft panel greyed six recipes they owned
+/// until they bought a seventh. Three doors emit it — `seat`, `take_over`
+/// and `wake` — because those are the three places a body starts being
+/// driven, and a fact stated at only two of them is a fact that depends
+/// on how you arrived.
+///
+/// Two `u32`s for one `u64` because an event field is a `u32` and
+/// `KNOWN_MASK_BITS` is 64. Low first: `b` is `mask as u32` and `c` is
+/// `(mask >> 32) as u32`, which is the order `encode_event_known` puts
+/// them back together in.
+pub const EV_KNOWN: u8 = 36;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -353,7 +380,7 @@ pub const EV_SHOT: u8 = 35;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_SHOT;
+pub const EV_MAX: u8 = EV_KNOWN;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1626,6 +1653,19 @@ impl World {
             // cost the raider a fight and pay them nothing.
             sleeping: body.sleeping,
             slept_at: body.slept_at,
+            // Carried for a different reason, and it is the one this
+            // spread had already got wrong once. The backpack takes the
+            // inventory, so a corpse holding nothing is correct — but a
+            // blueprint is not carried, it is *known*, and `..default()`
+            // cleared it here at the instant of death, one door before
+            // `wake` could have carried it. Fixing only `wake` would have
+            // looked right and shipped a zero.
+            //
+            // Found 2026-08-15 by `event_roles.rs`'s `known_names_the_
+            // holder…`, which starves a body for real rather than setting
+            // `dead` by hand — the hand-set version of the same test
+            // passed, because it never came through this function.
+            known: body.known,
             ..Player::default()
         };
     }
@@ -1688,6 +1728,24 @@ impl World {
             None => self.spawn_pos_n(id, deaths as u32),
         };
         let hp = self.combat.player_hp;
+        // `known` is the fifth thing a body carries through a death, and
+        // it is carried for the same reason `deaths` is: both are ledgers
+        // of what the player *did*, not of what they were holding when
+        // they fell. A blueprint is bought with OBOL, and OBOL is the
+        // scarcest thing on the shard.
+        //
+        // **It was not carried until 2026-08-15, so dying deleted every
+        // blueprint you had paid for.** The mask landed at research v0
+        // into `Player`, `Default`, `PlayerSave`, `state_hash` and
+        // `worldsave.rs`, and the `..Player::default()` below answered
+        // "no, a body does not keep that" without anybody deciding it —
+        // the spread's silence is the whole defect. Death is the most
+        // common event in the game, so this was the OBOL sink emptying
+        // itself on a timer. `research.rs`'s `a_blueprint_survives_a_death`
+        // and `combat.rs`'s `a_real_death_does_not_erase_a_blueprint` are
+        // the gates; `persist.rs`'s `every_player_field_is_classified_
+        // across_a_death` is why the next field cannot land here silently.
+        let known = body.known;
         self.players[slot] = Player {
             id,
             active: true,
@@ -1696,6 +1754,7 @@ impl World {
             hp,
             hp_max: hp,
             deaths,
+            known,
             ..Player::default()
         };
         // A player who starved does not respawn already starving.
@@ -1703,6 +1762,7 @@ impl World {
         self.events.push(EV_RESPAWN, id, bag.is_some() as u32, 0);
         self.events.push(EV_HEALTH, id, hp as u32, hp as u32);
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
+        self.announce_known(slot);
     }
 
     /// **The one door into the world for a player**, and there are two
@@ -1762,12 +1822,37 @@ impl World {
                 inventory::grant_kit(&self.spawn_kit, &mut self.players[slot]);
             }
             Some(s) => {
+                // Every field named, and no `..Player::default()` — this
+                // is `worldsave.rs`'s discipline, moved here because this
+                // door had the bug that one was written to prevent.
+                //
+                // `known` was missing from this list. `PlayerSave` carried
+                // the blueprint mask correctly, the codec round-tripped it,
+                // and the spread then quietly answered `known: 0` — so a
+                // keyed player reconnecting after a restart lost every
+                // blueprint they had paid OBOL for, with `test_replay`
+                // blind to it (its stream has no `JoinAs`) and
+                // `a_blueprint_survives_a_save_and_a_load` blind to it too
+                // (it exercises the codec and never seats a world).
+                //
+                // Named rather than spread, so **a field added to
+                // `PlayerSave` stops compiling here** and whoever adds it
+                // has to decide whether a returning body remembers it. The
+                // default silently answered "no" once already.
+                //
+                // The fields the save does not carry are still
+                // `Player::default()`'s, and deliberately: the input frame,
+                // the swing cooldown, the weak-spot chase, the craft timer
+                // (re-armed below), the death record and the sleep flags.
+                // They are written out here rather than spread so that the
+                // list is a decision instead of an omission.
                 self.players[slot] = Player {
                     id,
                     active: true,
                     body: s.body,
                     inv: s.inv,
                     jobs: s.jobs,
+                    known: s.known,
                     hp: s.hp,
                     hp_max: s.hp_max,
                     deaths: s.deaths,
@@ -1780,7 +1865,26 @@ impl World {
                     heal_total: s.heal_total,
                     heal_span: s.heal_span,
                     heal_acc: s.heal_acc,
-                    ..Player::default()
+                    // Not from the save, by design (`persist.rs` says
+                    // which and why). `dead` is read below rather than
+                    // stored: a body that logged off dead wakes on a
+                    // beach, so `wake` owns that record, not this one.
+                    dead: false,
+                    frame: InputFrame::default(),
+                    next_swing: 0,
+                    // `NO_CELL`, not zero: the weak-spot chase names a
+                    // cell and cell 0 is a real one, so a `0` here would
+                    // restore a player already half-way through chasing
+                    // the weak spot on whatever stands at the origin.
+                    ws_cell: NO_CELL,
+                    ws_hits: 0,
+                    craft_done_at: 0,
+                    death_by: 0,
+                    death_cause: 0,
+                    death_item: NO_ITEM,
+                    death_range_cm: 0,
+                    sleeping: false,
+                    slept_at: 0,
                 };
                 craft::rearm(&self.craft, self.tick, &mut self.players[slot]);
                 if s.dead {
@@ -1804,6 +1908,25 @@ impl World {
             self.events.push(EV_HEALTH, id, hp as u32, hp_max as u32);
         }
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
+        self.announce_known(slot);
+    }
+
+    /// State the blueprint mask, whole. The third thing said at a door,
+    /// for the same reason as the first two: `known` is only ever
+    /// announced when it changes, so without this a returning player has
+    /// no blueprints until they buy one — and that is the one moment a
+    /// greyed-out recipe they already own is worst.
+    ///
+    /// **Unconditional, unlike `EV_HEALTH` above.** An empty mask is a
+    /// fact too, and the interesting case is a client-core reused across
+    /// two characters: a stale mask left standing would offer recipes the
+    /// new body has not earned, and the craft gate would then refuse them
+    /// at the sim. Saying `0` out loud costs one event per door and makes
+    /// the client's copy a statement rather than a residue.
+    fn announce_known(&mut self, slot: usize) {
+        let (id, mask) = (self.players[slot].id, self.players[slot].known);
+        self.events
+            .push(EV_KNOWN, id, mask as u32, (mask >> 32) as u32);
     }
 
     /// The slot holding the sleeping body `id`, or `None` — the sleeper
@@ -1889,6 +2012,12 @@ impl World {
             self.events.push(EV_HEALTH, id, hp as u32, hp_max as u32);
         }
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
+        // The body kept its mask — a takeover never rebuilt the record,
+        // which is why this door was the one that did not lose it. The
+        // announcement is owed anyway: the *connection* is new even when
+        // the body is not, so the client arriving through it knows
+        // nothing until told.
+        self.announce_known(slot);
     }
 
     /// The world-side half of two-phase eviction: remove the sleeping body
