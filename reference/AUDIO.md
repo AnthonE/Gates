@@ -264,5 +264,18 @@ look the way they do.
    where ours is the swing) and a projectile near-miss. The second arrives
    with `reference/PROJECTILES.md`'s work, not before it.
 9. **What the reference does that we should NOT copy yet**: reverb zones,
-   surround-speaker configuration, voice chat, and per-weapon foley
-   consistency — all of them are polish on systems we do not have.
+   surround-speaker configuration and per-weapon foley consistency — all of
+   them polish on systems we do not have.
+
+   **Voice chat was in that list and has been lifted out of it, because the
+   reason was wrong on both halves** (`reference/VOICE.md`, 2026-08-15). It
+   is not polish — it is a disclosure mechanic, and in this genre it is the
+   one that makes strangers into content. And it is not a system we lack:
+   the routing is a distance compare against the AOI set the server already
+   builds each tick, on the datagram lane we already run. It stays deferred
+   on **scope** — `ALPHA.md` §5 cuts it from alpha and `NOW.md` leads with a
+   playtest — and `VOICE.md` §9.5 has the build order for when it is not.
+   Note that it is barely this file's business anyway: only the last step
+   (decode → a positional voice in the mixer) is `crate::sound`'s, and
+   `VOICE.md` §9.1 — the server culls, the client never filters a broadcast
+   — is a wire decision that has to be right before any of it.

@@ -760,6 +760,77 @@ storm before threading `&mut self` through the picker.
 
 ---
 
+## 0wt · WebTransport outlived its only user *(server lane)*
+
+**Operator, 2026-08-15:** *"have we not moved on to just like a real
+transport? we dont do web now"* — correct, and `NETCODE.md` §2 had a browser
+support matrix in it until that question was asked (fixed there).
+
+We are not missing real QUIC: `wtransport` is quinn, we enable its `quinn`
+feature, and `net.rs` already uses quinn's own `QuicTransportConfig` and
+`IpBindConfig`. What is vestigial is the **HTTP/3 session layer** on top —
+extended-CONNECT (`endpoint.accept()` → `IncomingSession` →
+`request.accept()`), the `https://{addr}` URL shape, a session-id prefix on
+every datagram against the 1 100-byte budget.
+
+⚠ **One of §0wt's reasons died on 2026-08-15**: §0tx checked whether the
+wrapper hides quinn's `Incoming`, and it does not — `IncomingSession` *is*
+`quinn::Incoming` and re-exports `retry()`/`refuse()`. QUIC-level admission
+is built and needed no flag-day. The reasons below stand.
+
+The case to drop it is not speed. It is that **our one remote-panic trap
+lives in that layer** (#317, two bytes on the CONNECT stream), which is why
+we depend on a git rev of an unreleased third party instead of a published
+crate — and §2.2's ⚠ says nothing records or gates that the pin even
+contains the fix. Removing the layer retires the pin, the trap and the
+browser-shaped cert rules (P-256, 14-day) in one move.
+
+The seam is thin — client `connect`, server `accept`, a handful of config
+types, `tls_posture.rs`, `botclient.rs`, `Shard::url`. **The cost is not the
+code, it is the flag-day**: the handshake itself changes, so nothing
+negotiates and an old client just fails. Two depots and a public shard are
+live, and `scry-shardlist-v1` publishes the url shape.
+
+So: **not its own pass.** Bundle it with the next `min_client` floor raise,
+which is already a flag-day, or with the next touch of the wtransport pin
+(§2.2 marks that seam owed anyway). Wants the operator's word on timing —
+publishing and floor raises are operator acts.
+
+## 0tx · The transport tells the truth now — LANDED 2026-08-15, three residuals *(server lane)*
+
+`NETCODE.md` §2.2 is headed *config of record* and three of its rows
+described code that did not exist. Found by grepping the table row by row
+instead of reading it. All three are built, plus the telemetry that makes
+them measurable — no wire change, no `PROTO_VER`, no golden.
+
+**Landed:** socket buffers asked at 8 MiB **and read back** (the readback is
+the feature — `setsockopt` clamps to `rmem_max` and returns success, so
+`net_rcvbuf_asked` sits beside `net_rcvbuf_bytes` and they disagree out
+loud); a QUIC-level admission gate (Retry for unvalidated addresses past 2×
+`MAX_PLAYERS`, refuse past 4×, ordering asserted at **compile time**);
+`shard.toml` `cc = "cubic" | "bbr"` with an unknown value refused at boot;
+and `writer_task` sampling quinn's `ConnectionStats` as deltas.
+Gates: `crates/server/tests/transport.rs` (boots a shard, dials it, proves
+the numbers move) plus three unit tests. `DECISIONS.md` §open "transport
+truth v0" has the five knobs.
+
+**The §0wt question is answered and the answer is no:** `IncomingSession`
+*is* `quinn::Incoming` and re-exports `retry()`/`refuse()`/
+`remote_address_validated()`, so admission was never a reason to drop
+WebTransport. §0wt keeps its other reasons.
+
+**Residuals, in rank order:**
+1. **Nobody has run the A/B.** `cc = "bbr"` is now selectable and untested
+   against CUBIC on a real path. `net_congestion_events` is the reading.
+   Wants a shard with real players, not loopback.
+2. **The sysctl half of the socket buffer is still ops and still owed.** The
+   code asks; `net.core.rmem_max` on the public shard's box decides. The
+   readback pair now says which, so this is finally checkable rather than
+   assumed — check it before tuning anything else.
+3. **No client-side telemetry.** All of the above is server-side. The HUD
+   still has no loss/RTT source, and `client/src/lib.rs` holds a
+   `Connection` it never asks anything — the same gap, other end.
+
 ## 0n1 · The class-S join walk has no interest filter *(server lane)*
 
 `reference/NETWORK.md` §9.2.1, measured 2026-08-10. `pump_events` drips the

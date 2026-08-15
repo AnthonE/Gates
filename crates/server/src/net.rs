@@ -58,6 +58,110 @@ const MAX_TICK_BACKLOG: u32 = 8;
 /// finishing. A shutdown that takes a second is a shutdown; one that hangs
 /// forever is a deploy that never completes.
 const SHUTDOWN_DRAIN_TRIES: u32 = 200;
+
+/// UDP socket buffer we ask the OS for, both directions
+/// (`NETCODE.md` §2.2). quinn's README is explicit that its one socket
+/// serves every connection and that the usual OS defaults (~208 KiB) are
+/// too small for that; this is the row that had been an intention in a
+/// table headed *config of record* since it was written.
+///
+/// **Asking is not getting**, which is why `bind_udp` reads the value back
+/// and `ShardStats` carries both numbers. Linux silently clamps the request
+/// to `net.core.rmem_max`/`wmem_max`, so on an un-tuned box this call
+/// succeeds and changes nothing — the failure mode is a shard that believes
+/// it has 8 MiB of headroom and has 208 KiB.
+const UDP_BUF_BYTES: usize = 8 * 1024 * 1024;
+
+/// In-flight handshakes past which an **unvalidated** address is answered
+/// with a QUIC Retry instead of a handshake (`NETCODE.md` §2.2's "~2× cap").
+/// Arithmetic over `MAX_PLAYERS`, not a knob of its own.
+///
+/// Under this, joining costs one round trip as before. Over it, a source
+/// that cannot receive at the address it claims — every spoofed packet in a
+/// reflection flood — is answered with a token and never seen again, while a
+/// real joiner pays one extra round trip during a rush and nothing at all
+/// the rest of the time.
+const ADMIT_RETRY_AT: usize = 2 * MAX_PLAYERS;
+
+/// In-flight handshakes past which a connection attempt is refused outright,
+/// before any crypto (`NETCODE.md` §2.2's "hard cap").
+///
+/// Deliberately **not** the polite refusal: `REFUSE_FULL` travels to a
+/// client that completed a handshake and tells it why, which is the right
+/// answer to a full shard and the wrong one to a flood. Four times the
+/// player cap means a shard can be entirely full, with a queue of the same
+/// size again waiting, before anybody is turned away silently.
+const ADMIT_REFUSE_AT: usize = 4 * MAX_PLAYERS;
+
+/// Writer polls between transport-telemetry samples. `WRITER_POLL` is 2 ms,
+/// so this is ~1 Hz per connection — cheap enough to leave on in production
+/// and often enough to catch a congestion episode that lasts a second.
+const NET_SAMPLE_EVERY: u32 = 500;
+
+// These three are **compile-time** rather than tests, which is the stronger
+// form and is available because every term is a constant: get one wrong and
+// the shard does not build, so there is no version of the tree where the
+// admission gate is inverted and a suite is merely red.
+//
+// 1. Retry must come before refuse. Inverted, a flood is refused before it
+//    is ever asked to validate its address and the Retry path — the only
+//    thing that separates a spoofed source from a busy one — is unreachable.
+// 2. Both must sit past a full shard, or an ordinary rush to join a popular
+//    server is answered as an attack.
+// 3. `writer_task` counts down from `NET_SAMPLE_EVERY`; at zero it
+//    underflows a `u32` on the first poll, which is a panic in every
+//    connection's writer.
+const _: () = assert!(ADMIT_RETRY_AT < ADMIT_REFUSE_AT);
+const _: () = assert!(ADMIT_RETRY_AT > MAX_PLAYERS);
+const _: () = assert!(NET_SAMPLE_EVERY > 0);
+
+/// Binds the shard's UDP socket with the buffer sizes §2.2 asks for, then
+/// **reads back what the OS actually granted** and records both.
+///
+/// The readback is the point. `setsockopt(SO_RCVBUF)` does not fail when the
+/// kernel decides you may not have that much — it clamps to `rmem_max` and
+/// returns success — so the only way to know what a shard is running on is
+/// to ask it afterwards. (Linux also reports back roughly double what it
+/// granted, its own bookkeeping overhead included; the number recorded here
+/// is what the OS reports, unadjusted, because inventing a halving would be
+/// a second guess layered on the first.)
+///
+/// A failure to set a buffer is **not** a boot failure: a shard that runs
+/// with a small socket is a shard that runs. A failure to *bind* is.
+fn bind_udp(addr: SocketAddr, stats: &ShardStats) -> std::io::Result<std::net::UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let domain = if addr.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
+    let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+    // Dual-stack when bound to `[::]`, matching what `with_bind_address`
+    // did before this function existed — otherwise a v6 bind would stop
+    // accepting the v4 clients it used to.
+    if addr.is_ipv6() && addr.ip().is_unspecified() {
+        let _ = sock.set_only_v6(false);
+    }
+    // Before `bind`, which is where the kernel sizes the buffers.
+    let _ = sock.set_recv_buffer_size(UDP_BUF_BYTES);
+    let _ = sock.set_send_buffer_size(UDP_BUF_BYTES);
+    sock.bind(&addr.into())?;
+    sock.set_nonblocking(true)?;
+
+    stats
+        .net_rcvbuf_asked
+        .store(UDP_BUF_BYTES as u64, Ordering::Relaxed);
+    stats
+        .net_sndbuf_asked
+        .store(UDP_BUF_BYTES as u64, Ordering::Relaxed);
+    if let Ok(got) = sock.recv_buffer_size() {
+        stats.net_rcvbuf_bytes.store(got as u64, Ordering::Relaxed);
+    }
+    if let Ok(got) = sock.send_buffer_size() {
+        stats.net_sndbuf_bytes.store(got as u64, Ordering::Relaxed);
+    }
+    Ok(sock.into())
+}
 const SHUTDOWN_DRAIN_POLL: Duration = Duration::from_millis(5);
 
 /// Chat rate limit (ALPHA.md §1: "rate-limited server-side"), a token
@@ -238,12 +342,29 @@ pub async fn spawn_shard(
         .hash()
         .fmt(Sha256DigestFmt::DottedHex);
 
+    // Built before the endpoint, because the socket bind below records what
+    // the OS granted and needs somewhere to put it.
+    let stats = Arc::new(ShardStats::default());
+
     let mut transport = wtransport::config::QuicTransportConfig::default();
     // NETCODE.md §2.2: bound worst-case queued staleness; snapshots
     // replace, never accumulate.
     transport.datagram_send_buffer_size(64 * 1024);
+    // Congestion control, selectable because §2.1 names it as the real risk
+    // and §2.2 promised an A/B path that had never been built. CUBIC halves
+    // cwnd on loss and a collapsed window at 100 ms RTT can fall under our
+    // 30 Hz send rate; BBR is loss-insensitive and is labelled experimental
+    // in quinn, which is exactly why this is a shard flag and not a default.
+    // `net_congestion_events` is the reading that makes the A/B mean
+    // something.
+    if cfg.congestion == crate::config::Congestion::Bbr {
+        transport.congestion_controller_factory(Arc::new(
+            wtransport::quinn::congestion::BbrConfig::default(),
+        ));
+    }
+    let socket = bind_udp(cfg.bind, &stats).map_err(|e| format!("bind {}: {e}", cfg.bind))?;
     let server_config = ServerConfig::builder()
-        .with_bind_address(cfg.bind)
+        .with_bind_socket(socket)
         .with_custom_transport(identity, transport)
         .max_idle_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| format!("idle timeout: {e}"))?
@@ -255,8 +376,6 @@ pub async fn spawn_shard(
     let local_addr = endpoint
         .local_addr()
         .map_err(|e| format!("local_addr: {e}"))?;
-
-    let stats = Arc::new(ShardStats::default());
     let shutdown = Arc::new(AtomicBool::new(false));
     let slots = Arc::new(SlotTable::new(MAX_PLAYERS));
 
@@ -489,14 +608,46 @@ async fn accept_loop(
     // shard that stops taking players while scry is slow. `in_flight` is the
     // no-stacking rule — one round at a time, whatever the origin does, the
     // same refusal `status.rs`'s poller makes.
+    // Handshakes started and not yet finished. The admission gate's only
+    // input, and the reason it is a count rather than a rate: a rate needs a
+    // clock and a window, and what actually protects the shard is "how much
+    // unfinished crypto am I holding right now".
+    let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (kick_tx, mut kick_rx) = tokio::sync::mpsc::channel::<Vec<(usize, u32)>>(1);
     let mut entitle_sweep = tokio::time::interval(facts.entitle.sweep);
     let mut sweep_in_flight = false;
     loop {
         tokio::select! {
             incoming = endpoint.accept() => {
+                // Admission, before any crypto (NETCODE.md §2.2). Every
+                // refusal we had before this fired *after* a completed
+                // handshake — QUIC, TLS, CONNECT, SIWE, and an entitlement
+                // round trip to scry — so a full shard was an amplifier and
+                // a spoofed source cost us more than it cost the attacker.
+                //
+                // Order matters: refuse is the harder answer and is checked
+                // first, so a flood past the hard cap is not merely retried
+                // forever.
+                let busy = in_flight.load(Ordering::Relaxed);
+                if busy >= ADMIT_REFUSE_AT {
+                    ShardStats::bump(&stats.admit_refused);
+                    incoming.refuse();
+                    continue;
+                }
+                // `retry()` PANICS if the address is already validated —
+                // wtransport's own doc comment says so, and it is the reason
+                // this reads as a guard rather than an optimisation. A
+                // validated address has already proved it can receive at the
+                // address it claims, which is the entire thing a Retry buys.
+                if busy >= ADMIT_RETRY_AT && !incoming.remote_address_validated() {
+                    ShardStats::bump(&stats.admit_retried);
+                    incoming.retry();
+                    continue;
+                }
+                in_flight.fetch_add(1, Ordering::Relaxed);
                 let stats = stats.clone();
                 let done_tx = done_tx.clone();
+                let in_flight = in_flight.clone();
                 tokio::spawn(handshake_task(
                     incoming,
                     done_tx,
@@ -505,6 +656,7 @@ async fn accept_loop(
                     facts.domain.clone(),
                     facts.entitle.clone(),
                     facts.min_client,
+                    in_flight,
                 ));
             }
             Some(done) = done_rx.recv() => {
@@ -887,6 +1039,7 @@ fn store_thread(
 /// Session + hello, off the accept loop so a slow client can't
 /// head-of-line-block accepts. Version gate lives here; the cap gate needs
 /// the slot table and lives in `install`.
+#[allow(clippy::too_many_arguments)]
 async fn handshake_task(
     incoming: IncomingSession,
     done_tx: tokio::sync::mpsc::Sender<Handshaken>,
@@ -895,7 +1048,21 @@ async fn handshake_task(
     facts_domain: String,
     entitle: crate::entitle::Config,
     min_client: u32,
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
 ) {
+    // Decremented however this task leaves — the timeout arm, any of the
+    // refusal arms, or success. A guard rather than a line at the end,
+    // because `handshake_task` has more than one exit and a leaked count
+    // would ratchet the admission gate shut permanently: the shard would
+    // start refusing everyone and no counter would explain why.
+    struct InFlight(Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for InFlight {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    let _guard = InFlight(in_flight);
+
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let request = incoming.await.map_err(|_| ())?;
         let connection = request.accept().await.map_err(|_| ())?;
@@ -1362,11 +1529,62 @@ async fn writer_task(
 ) {
     let mut poll = tokio::time::interval(WRITER_POLL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Per-connection previous readings, so what reaches `ShardStats` is a
+    // delta. Local to the task on purpose: a shared table keyed by
+    // connection would be a map with a lifetime problem and a lock, to hold
+    // two numbers that only this task ever reads.
+    // **One, not `NET_SAMPLE_EVERY`**: the first poll samples. Starting a
+    // full period out would mean a connection that lives under a second
+    // contributes nothing at all — and a shard being hammered by clients
+    // that connect and die is exactly when the loss counters matter most.
+    // The first sample's `prev_*` are zero, so it correctly reports
+    // everything since the connection opened.
+    let mut sample_in = 1u32;
+    let (mut prev_lost, mut prev_sent, mut prev_cong, mut prev_holes) = (0u64, 0u64, 0u64, 0u64);
     loop {
         poll.tick().await;
         let word = slots.load(slot);
         if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
             return; // slot moved on; sim (or reader) already knows
+        }
+        // Transport telemetry (NETCODE.md §2.2). Reads quinn's own counters
+        // through wtransport's passthrough — no wire field, no PROTO_VER,
+        // no golden: the numbers already exist and nothing was asking for
+        // them.
+        sample_in -= 1;
+        if sample_in == 0 {
+            sample_in = NET_SAMPLE_EVERY;
+            let s = connection.quic_connection().stats();
+            let p = s.path;
+            // `saturating_sub` rather than `-`: these are monotonic per
+            // connection, but a reset path or a stat that goes backwards
+            // under us must not underflow a u64 into billions.
+            ShardStats::add(
+                &stats.net_lost_packets,
+                p.lost_packets.saturating_sub(prev_lost),
+            );
+            ShardStats::add(
+                &stats.net_sent_packets,
+                p.sent_packets.saturating_sub(prev_sent),
+            );
+            ShardStats::add(
+                &stats.net_congestion_events,
+                p.congestion_events.saturating_sub(prev_cong),
+            );
+            ShardStats::add(
+                &stats.net_black_holes,
+                p.black_holes_detected.saturating_sub(prev_holes),
+            );
+            prev_lost = p.lost_packets;
+            prev_sent = p.sent_packets;
+            prev_cong = p.congestion_events;
+            prev_holes = p.black_holes_detected;
+            stats
+                .net_rtt_us_max
+                .fetch_max(p.rtt.as_micros() as u64, Ordering::Relaxed);
+            stats
+                .net_mtu_last
+                .store(p.current_mtu as u64, Ordering::Relaxed);
         }
         // Drain to the newest — snapshots replace, never accumulate.
         let mut newest: Option<SnapMsg> = None;
@@ -1960,6 +2178,46 @@ fn sim_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The admission-gate ordering and the sample period are asserted at
+    // COMPILE time beside their constants (`const _: () = assert!(…)`), not
+    // here. They were tests until clippy pointed out that an assertion over
+    // constants is one the compiler can make — which is the better gate:
+    // a wrong constant fails the build rather than a suite.
+
+    /// **The readback is the feature, so the gate is on the readback.**
+    ///
+    /// It deliberately does NOT assert we got 8 MiB: on an un-tuned box
+    /// (this one, and CI) `net.core.rmem_max` clamps the request to ~208 KiB
+    /// and that is the honest answer. What must hold is that both numbers
+    /// are recorded, so an operator can see the gap rather than trusting
+    /// that a `setsockopt` which cannot fail did something. A test that
+    /// demanded 8 MiB would fail on every box that has not run the sysctl,
+    /// which is the "a wall that cannot run is not a wall" trap in reverse:
+    /// a wall that only passes on a tuned box teaches people to skip it.
+    #[test]
+    fn the_socket_buffer_records_what_it_got_not_what_it_asked() {
+        let stats = ShardStats::default();
+        let addr: SocketAddr = "127.0.0.1:0".parse().expect("static addr");
+        let sock = bind_udp(addr, &stats).expect("bind loopback");
+        assert!(sock.local_addr().is_ok(), "socket must be bound");
+
+        let asked = ShardStats::get(&stats.net_rcvbuf_asked);
+        let got = ShardStats::get(&stats.net_rcvbuf_bytes);
+        assert_eq!(
+            asked, UDP_BUF_BYTES as u64,
+            "asked-for size must be recorded"
+        );
+        assert!(
+            got > 0,
+            "granted receive buffer must be read back, got {got}"
+        );
+        assert!(
+            ShardStats::get(&stats.net_sndbuf_asked) == UDP_BUF_BYTES as u64
+                && ShardStats::get(&stats.net_sndbuf_bytes) > 0,
+            "the send side records both numbers too"
+        );
+    }
 
     /// The chat limiter is the only wall between one client and everyone
     /// else's screen, so its shape is pinned: a burst of `CHAT_BURST`

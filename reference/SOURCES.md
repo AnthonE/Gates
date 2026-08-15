@@ -51,6 +51,18 @@ in both directions and both rewrites were honest measurements:
   `content/items.toml`'s header claim that "every page fetch is
   egress-blocked" was true for the box that wrote it and is not true here.
 
+- 2026-08-15, **same day, different box** (the voice pass, a remote
+  session) found **every host refused**: `rust.facepunch.com`,
+  `wiki.facepunch.com`, `partner.steamgames.com` and
+  `support.facepunchstudios.com` all returned `EGRESS_BLOCKED`.
+  `wiki.facepunch.com` is the pointed one — the bullet directly above
+  fetched five of its pages whole **on this date**, and it is shut here.
+  **WebSearch worked**; `reference/VOICE.md` tiers 2–4 are summaries and
+  its §0 says so. Two lessons, and the second is the one worth carrying:
+  the container is the variable, *and a dated entry in this log is not a
+  claim about today* — two entries can carry the same date and disagree,
+  because they are measurements of different boxes. Probe.
+
 Neither answer generalises. What does: a doc may record *what a probe
 found, when, and on which pass* — it may not record "reachable" as a
 standing fact, and a reader may not skip probing because a table below says

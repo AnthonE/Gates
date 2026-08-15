@@ -221,6 +221,31 @@ pub struct ShardConfig {
     /// so at least one seat is always a person's. Refused outright when
     /// `require_auth` is set, because an inhabitant handshakes as a guest.
     pub population: usize,
+    /// Which congestion controller quinn runs (`cc = "cubic" | "bbr"`).
+    ///
+    /// **CUBIC is the default and stays the default.** `NETCODE.md` §2.1
+    /// names the reason this is worth a key at all: CUBIC halves cwnd on
+    /// loss, and a collapsed window at 100 ms RTT can fall below our 30 Hz
+    /// send rate — so the controller is one of the few transport choices
+    /// that can change how the game feels. BBR is loss-insensitive and is
+    /// labelled experimental in quinn, which is exactly why it is an
+    /// operator's A/B rather than a new default.
+    ///
+    /// §2.2 promised this as a `--cc` flag from the day it was written and
+    /// it did not exist until 2026-08-15, which meant "measure before
+    /// trusting" had never been runnable. `net_congestion_events` is the
+    /// measurement it unblocks.
+    pub congestion: Congestion,
+}
+
+/// Congestion controller selection (`shard.toml` `cc`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Congestion {
+    /// quinn's default. Ours too, until somebody measures otherwise.
+    #[default]
+    Cubic,
+    /// Loss-insensitive; experimental in quinn.
+    Bbr,
 }
 
 impl ShardConfig {
@@ -228,6 +253,7 @@ impl ShardConfig {
     pub fn ephemeral(seed: u64) -> Self {
         Self {
             bind: "127.0.0.1:0".parse().expect("static addr"),
+            congestion: Congestion::Cubic,
             seed,
             dev_spawn: None,
             dev_spawn_kit: None,
@@ -304,6 +330,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut admins: Option<crate::admin::Admins> = None;
     let mut anomaly_file: Option<String> = None;
     let mut population: Option<usize> = None;
+    let mut congestion: Option<Congestion> = None;
     let mut entitle_timeout_secs: Option<u64> = None;
     let mut entitle_sweep_secs: Option<u64> = None;
     for (n, line) in text.lines().enumerate() {
@@ -581,6 +608,22 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 }
                 population = Some(v);
             }
+            // Refused rather than defaulted on an unknown value: an
+            // operator who typed `cc = "bbr2"` wanted something other than
+            // CUBIC, and silently giving them CUBIC is the A/B reporting a
+            // result for a controller it never ran.
+            "cc" => match value {
+                "cubic" => congestion = Some(Congestion::Cubic),
+                "bbr" => congestion = Some(Congestion::Bbr),
+                other => {
+                    return Err(format!(
+                        "shard.toml line {}: cc must be \"cubic\" or \"bbr\", got \
+                         `{other}` (cubic is the default; bbr is experimental in \
+                         quinn and is an A/B, not a recommendation)",
+                        n + 1
+                    ))
+                }
+            },
             other => return Err(format!("shard.toml line {}: unknown key `{other}`", n + 1)),
         }
     }
@@ -629,6 +672,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         );
     }
     Ok(ShardConfig {
+        congestion: congestion.unwrap_or_default(),
         bind: bind.ok_or("shard.toml: missing `bind`")?,
         seed: seed.ok_or("shard.toml: missing `seed`")?,
         dev_spawn,
@@ -737,6 +781,34 @@ pub fn dev_spawn_kit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A congestion controller an operator did not choose is an A/B that
+    /// reports a result for the wrong arm. So: the two names parse, the
+    /// default is CUBIC (unwritten and written), and **anything else is a
+    /// boot failure rather than a silent fallback** — the failure mode this
+    /// refuses is a `shard.toml` reading `cc = "bbr2"` while the shard runs
+    /// CUBIC and the operator reads the measurement as BBR's.
+    #[test]
+    fn the_congestion_knob_parses_or_refuses_but_never_guesses() {
+        let base = "bind = \"127.0.0.1:0\"\nseed = 1\n";
+        let of = |s: &str| parse_shard_toml(s).map(|c| c.congestion);
+
+        assert_eq!(of(base).unwrap(), Congestion::Cubic, "default is cubic");
+        assert_eq!(
+            of(&format!("{base}cc = \"cubic\"\n")).unwrap(),
+            Congestion::Cubic
+        );
+        assert_eq!(
+            of(&format!("{base}cc = \"bbr\"\n")).unwrap(),
+            Congestion::Bbr
+        );
+
+        let err = of(&format!("{base}cc = \"bbr2\"\n")).unwrap_err();
+        assert!(
+            err.contains("cc must be"),
+            "an unknown controller must name itself in the error, got: {err}"
+        );
+    }
 
     /// The floor an operator types has to mean what it looks like, and the
     /// packing is the one place a typo turns into a shard admitting builds it

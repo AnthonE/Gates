@@ -65,14 +65,38 @@ megabase streaming in never head-of-line-blocks a door event or a chat
 line, and a lost snapshot datagram is simply dead (never retransmitted;
 the next one supersedes it).
 
-**Browser support, re-decided**: Safari 26.4 (2026-03) shipped WebTransport
-— streams *and* datagrams — so it is Baseline now: Chrome 97+, Edge 98+,
-Firefox 114+, Safari/iOS 26.4+, ~88% global. The alpha targets **all four
-majors**; the honest cut is iOS below 26.4, which has nothing (the
-WebSocket fallback lane stays a knob, not a blocker). Dev-cert note:
-Firefox's `serverCertificateHashes` was broken before Firefox 125 —
-require ≥ 125 for the dev flow. [webkit.org/blog/17862 ·
-caniuse.com/webtransport · bugzilla.mozilla.org/1873263]
+⚠ **This section carried a browser-support matrix until 2026-08-15** — a
+Baseline claim across four engines, a WebSocket fallback lane held open as a
+knob, and a minimum Firefox version for the dev-cert flow. **All of it was
+dead**: the browser client was cut 2026-08-06 and there is no second client.
+§2.2 had already been swept for this (its keep-alive and migration rows both
+say "retired with the browser" in as many words); this half had not, which is
+the sweep-one-file-and-not-its-neighbour shape `CLAUDE.md` warns about.
+
+**What is actually true, and it is a smaller claim than "we run
+WebTransport."** `wtransport` is built on **quinn** and we enable its `quinn`
+feature in both crates, so the QUIC underneath is ordinary QUIC and we
+already reach past the wrapper for it — `QuicTransportConfig` and
+`IpBindConfig` in `net.rs` are quinn's own types. What WebTransport still
+adds is the **HTTP/3 session layer**: an extended-CONNECT handshake
+(`endpoint.accept()` → `IncomingSession` → `request.accept()`), a
+`https://{addr}` URL shape that `scry-shardlist-v1` bakes into every
+published row, and a per-datagram session-id prefix against the 1 100-byte
+budget.
+
+**That layer now has no user, and it is not free.** The one remotely
+triggerable panic this project has ever pinned around lives *in* it — two
+bytes on the CONNECT stream (#317) — which is why we are on a git rev of an
+unreleased third party rather than a published crate, and §2.2's own ⚠ says
+nothing records or gates that the pin contains the fix. The self-signed cert
+rules we enforce (P-256, 14-day validity) are WebTransport-spec rules written
+for browsers.
+
+**Not changed here, because it is a flag-day, not a refactor.** The handshake
+is the thing that would change, so there is no version to negotiate — an old
+client would simply fail to connect, and two platform depots plus a public
+shard are live. `NOW.md` §0wt carries it, with the window: bundle it with the
+next `min_client` floor raise, which is already a flag-day.
 
 ### 2.1 · The "real UDP" fine print — congestion control, measured
 
@@ -123,12 +147,12 @@ controller says so, no opt-out. What that means for us, concretely:
 | knob | value | why |
 |---|---|---|
 | wtransport version | **git-pin ≥ commit `0f7609a`** (or 0.7.2 once cut). ⚠ The tree pins `rev = a11e6a8e…` (`server/Cargo.toml:26`, `client/Cargo.toml:185`), resolving to `0.7.1` from git. **Nothing in the repo records whether `a11e6a8` descends from `0f7609a`, and nothing gates it** — write the ancestry down next to the pin when this seam is next touched | 0.7.1 has a remotely triggerable panic — two bytes on the CONNECT stream kill a worker (#317); fixed on main 2026-07-25, unreleased as of this writing |
-| congestion control | CUBIC (default); `--cc bbr` server flag for A/B | BBR is labeled experimental in quinn; measure before trusting |
+| congestion control | CUBIC, and **selectable since 2026-08-15**: `shard.toml` `cc = "cubic" \| "bbr"` (`config::Congestion` → `QuicTransportConfig::congestion_controller_factory`). An unknown value is a **boot failure**, not a fallback — an A/B that silently runs CUBIC while the operator reads the result as BBR's is worse than no A/B. This row claimed a `--cc` flag from the day it was written and nothing implemented it until then, so "measure before trusting" had never once been runnable | BBR is labeled experimental in quinn; measure before trusting. §2.1 names the reason to care: CUBIC halves cwnd on loss and a collapsed window at 100 ms RTT can fall below a 30 Hz send rate. `net_congestion_events` is the reading that decides it — **and nobody has run the A/B yet** |
 | datagram send buffer | 64 KiB (down from quinn's 1 MiB default) | bounds worst-case queued staleness at our rate; snapshots replace, never accumulate |
 | MTU | initial/min 1200, DPLPMTUD on, ceiling 1452 (defaults) | free server→client headroom; design number stays 1,100 |
 | idle timeout / keep-alive | 30 s / **server-side keep-alive 10 s** | both shipped in `net.rs`. The old reason — "the JS API cannot send keep-alives" — is retired with the browser; quinn can keep-alive from either end. Server-side stays because the effective idle timeout is the min of both peers, so the end that must not time out is the one that should send |
-| UDP socket | sysctl `rmem_max`/`wmem_max` ≥ 8 MiB, SO_RCVBUF/SNDBUF 8 MiB, passed via `with_bind_socket`. ⚠ **UNBUILT, found 2026-08-11 standing the public shard up** — `grep -rn 'with_bind_socket\|SO_RCVBUF' crates/` returns nothing, and this box's `net.core.rmem_max`/`wmem_max` are at the distro default **212992 (~208 KiB)**, which is the exact number the "why" column calls too small. So this row describes an intention, in the present tense, in a table headed *config of record*; it is the dead-citation class `CLAUDE.md` warns about, one level up from a doc comment. **Both halves are owed and they are separate**: a sysctl drop-in is ops and buys nothing alone, because nothing in the tree ASKS for a bigger buffer — raising a ceiling under a process that never calls `setsockopt` changes no byte. The code half comes first | quinn is one socket for all connections and its README warns the OS defaults (~208 KiB) are too small |
-| admission | quinn defaults + `Incoming::retry()` for unvalidated addresses past ~2× cap, `refuse()` at hard cap | rides QUIC's built-in 3× anti-amplification + retry tokens |
+| UDP socket | SO_RCVBUF/SNDBUF **asked** at 8 MiB via `with_bind_socket` (`net::bind_udp`, `UDP_BUF_BYTES`), **and read back**, since 2026-08-15. The readback is the row's real content: `setsockopt` does not fail when the kernel refuses — it clamps to `net.core.rmem_max` and returns success — so `ShardStats` carries `net_rcvbuf_asked` beside `net_rcvbuf_bytes` (and the send pair) and the two contradict each other out loud when the sysctl is low. **The sysctl half is still ops and still owed**; what changed is that nothing now *believes* it was granted. Measured 2026-08-15 on the dev container: `rmem_max` 4 MiB, so the 8 MiB request is clamped and the pair says so. The 2026-08-11 box that found this row unbuilt was at the distro default 212992 (~208 KiB) — the exact number the why column calls too small. Gated by `net.rs`'s `the_socket_buffer_records_what_it_got_not_what_it_asked`, which asserts the **pair** and deliberately not the size: a wall that only passes on a tuned box teaches people to skip it | quinn is one socket for all connections and its README warns the OS defaults (~208 KiB) are too small |
+| admission | quinn defaults **plus a policy, since 2026-08-15**: past `ADMIT_RETRY_AT` (2× `MAX_PLAYERS`) in-flight handshakes an *unvalidated* address is answered with a QUIC Retry; past `ADMIT_REFUSE_AT` (4×) the attempt is refused before any crypto. Counted as `admit_retried` / `admit_refused`. Until then every refusal we had — `refused_version|build|auth|ticket|full` — fired **after** a completed handshake (QUIC, TLS, CONNECT, SIWE, and an entitlement round trip), so a full shard was an amplifier. **The question this row asked is answered: the wrapper does not hide the hook.** `IncomingSession` *is* `quinn::Incoming` and re-exports `retry()`, `refuse()`, `ignore()` and `remote_address_validated()` — so admission was never a reason to drop WebTransport (§0wt keeps its other reasons). ⚠ `retry()` **panics** if the address is already validated, which is why the call site is a guard and not an optimisation | rides QUIC's built-in 3× anti-amplification + retry tokens, which are in the protocol and were always ours; what was missing was the *policy* on top. Deliberately **not** the polite refusal — `REFUSE_FULL` carries a reason to a client that completed a handshake, which is the right answer to a full shard and the wrong one to a flood |
 | certs, dev | `Identity::self_signed`; the server computes the SHA-256 and `shard` prints it; the client pins it with `--cert-hash` | **The printed hash stopped being vestigial on 2026-08-10.** This row used to say the P-256 / 14-day / short-validity rules "were Chrome's" and that "nothing enforces them now" — **wrong on the facts**: the pinned wtransport enforces all three CLIENT-side in `ServerHashVerification` (`SELF_MAX_VALIDITY = 14 days`, `OID_EC_P256`, current time inside the window), and `Identity::self_signed` already builds exactly such a certificate. So the dev path needed no new machinery: `--cert-hash` feeds the printed digest to `with_server_certificate_hashes` and that shard, alone, is trusted. Note the pin does **not** consult a name, which is why a dev shard's SANs (`localhost`, `127.0.0.1`, `::1`) do not have to follow it onto a LAN address |
 | certs, prod | ordinary ACME cert on the game's own subdomain, no hashes | unchanged, and load-bearing. **The client validates as of 2026-08-10** (operator; `DECISIONS.md` that date): the platform root store for every non-loopback address with no pin, `with_server_certificate_hashes` when `--cert-hash` names one, and `with_no_cert_validation` on loopback only. The warning that used to sit here — that publishing was blocked on this — is discharged. Why it mattered more than a checklist item: **SIWE has no channel binding**, so an on-path relay that terminates the player's QUIC and opens its own to the shard is admitted *as the victim* with the key never leaving the wallet. Gated by `crates/server/tests/tls_posture.rs`, which raises a self-signed shard on a NON-loopback address and asserts the refusal, the pin, a wrong pin, and the carve-out |
 | migration | server tolerates NAT rebinding (default on); **client treats network change as death** | the behaviour is unchanged; the reason is not. It read "Chrome ships no client-side QUIC migration", and there is no Chrome — quinn *can* migrate. Fast-reconnect stays an app feature (§6.3, §10) because it has to handle the cases migration cannot (a dead server, a new address that must re-prove SIWE), not because the client is incapable |
