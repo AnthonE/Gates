@@ -3115,6 +3115,10 @@ impl World {
             buf[6] = r.row;
             buf[7..9].copy_from_slice(&r.hp.to_le_bytes());
             buf[9..11].copy_from_slice(&r.uh.to_le_bytes());
+            // The soft-side facing (hard/soft v0) in the buffer's one
+            // spare byte: it prices a swing, so two shards disagreeing
+            // about it disagree about a raid.
+            buf[11] = r.facing;
             h.update(&buf);
         }
         // Arrows in the air, and deliberately on the **player** idiom

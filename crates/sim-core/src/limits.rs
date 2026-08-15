@@ -299,10 +299,12 @@ pub const MAX_SLOT_LIVES: usize = 16_384;
 /// Proposed default, DECISIONS.md §open (occupant collision v0 row).
 pub const SLOT_CACHE_SLOTS: usize = 1_024;
 
-/// Building-piece definitions the sim preallocates for (the alpha set is
-/// 18 rows — 6 shapes × 3 materials, content/building.toml). The content
-/// bake refuses a set past this. Structural cap like `MAX_ITEM_DEFS`.
-pub const MAX_PIECE_DEFS: usize = 32;
+/// Building-piece definitions the sim preallocates for (the shipped set
+/// is 44 rows — 11 shapes × 4 materials, content/building.toml, since
+/// triangles v0). The content bake refuses a set past this. Structural
+/// cap like `MAX_ITEM_DEFS`; 48 keeps headroom without widening the
+/// wire's `PIECE_DEFS_TOTAL_BITS` (6 bits, 63).
+pub const MAX_PIECE_DEFS: usize = 48;
 
 /// Cost rows one building piece may carry (alpha data uses 1). The bake
 /// refuses past it. Structural cap, not a knob.

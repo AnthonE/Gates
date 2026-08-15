@@ -35,10 +35,13 @@
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::build::{
-    BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, SHAPE_DOORWAY, SHAPE_ROOF, SHAPE_STAIRS,
-    SHAPE_WALL,
+    BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_N, LOC_EDGE_W, LOC_TRI_NE,
+    LOC_TRI_NW, LOC_TRI_SE, LOC_TRI_SW, SHAPE_DOORWAY, SHAPE_FRAME, SHAPE_STAIRS, SHAPE_TRI_FLOOR,
+    SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
-use sim_core::collide::{DOOR_POST_W_M, PIECE_LIFT_M, WALL_THICKNESS_M};
+use sim_core::collide::{
+    DOOR_POST_W_M, FRAME_RIM_M, PIECE_LIFT_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
+};
 use sim_core::deploy::{
     DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH, ARCH_RECYCLER,
     ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
@@ -339,6 +342,22 @@ pub struct Part {
     /// Rotation about the part's local X axis, radians — the stairs' ramp
     /// pitch. Zero for every other shape.
     pub x_rot: f32,
+    /// What fills the extents: a cuboid, or the NW-cornered half-cell
+    /// prism (triangles v0). Orientation is NOT here — the four halves
+    /// and both diagonals are one drawn object under the quarter- and
+    /// eighth-turns [`base_transform`] hangs on the ROOT, exactly as a
+    /// north edge has always been the west edge turned.
+    pub kind: PartKind,
+}
+
+/// [`Part::kind`]'s two fillings.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PartKind {
+    Box,
+    /// A right triangular prism over the NW half of the unit cell —
+    /// hypotenuse from (+x, −z) to (−x, +z) in part-local space — scaled
+    /// by `size`. [`tri_prism_unit`] is the one mesh.
+    Tri,
 }
 
 impl Part {
@@ -349,13 +368,14 @@ impl Part {
     }
 }
 
-/// The most parts any shape emits — the doorway's two posts and lintel.
-pub const MAX_PARTS: usize = 3;
+/// The most parts any shape emits — the window's sill, header and two
+/// jambs (the doorway held this at 3 until catalogue v1).
+pub const MAX_PARTS: usize = 4;
 
 /// How many shapes the parts table covers: the sim's own last shape, plus
 /// one. A shape past it is drawn as the fallback slab, same as one the
 /// table has no arm for.
-pub const N_SHAPES: usize = SHAPE_ROOF as usize + 1;
+pub const N_SHAPES: usize = SHAPE_TRI_ROOF as usize + 1;
 
 /// Which parts a shape has and where they go — **the one table** both the
 /// standing piece ([`spawn_piece`]) and the build ghost (`ghost::track`)
@@ -379,6 +399,7 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
         size: Vec3::ZERO,
         offset: Vec3::ZERO,
         x_rot: 0.0,
+        kind: PartKind::Box,
     };
     match shape {
         SHAPE_WALL => (
@@ -387,7 +408,9 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                     size: Vec3::new(WALL_THICKNESS_M, LEVEL_H_M, span),
                     offset: Vec3::new(0.0, LEVEL_H_M * 0.5, 0.0),
                     x_rot: 0.0,
+                    kind: PartKind::Box,
                 },
+                none,
                 none,
                 none,
             ],
@@ -401,6 +424,7 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                 size: Vec3::new(WALL_THICKNESS_M, LEVEL_H_M, DOOR_POST_W_M),
                 offset: Vec3::new(0.0, LEVEL_H_M * 0.5, z),
                 x_rot: 0.0,
+                kind: PartKind::Box,
             };
             (
                 [
@@ -414,7 +438,9 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                         size: Vec3::new(WALL_THICKNESS_M, LINTEL_H_M, door_opening_w()),
                         offset: Vec3::new(0.0, LEVEL_H_M - LINTEL_DROP_M, 0.0),
                         x_rot: 0.0,
+                        kind: PartKind::Box,
                     },
+                    none,
                 ],
                 3,
             )
@@ -428,7 +454,92 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                     size: Vec3::new(span, SLAB_T, STAIRS_RUN_M),
                     offset: Vec3::new(0.0, LEVEL_H_M * 0.5, 0.0),
                     x_rot: -std::f32::consts::FRAC_PI_4,
+                    kind: PartKind::Box,
                 },
+                none,
+                none,
+                none,
+            ],
+            1,
+        ),
+        SHAPE_WINDOW => {
+            // Sill, header, and two jambs around the aperture the sim's
+            // shot walk passes — every extent is the collision constant
+            // itself (`collide::window_solid_at`), so the drawn hole IS
+            // the hole an arrow threads. The jambs reuse the doorway's
+            // post width and gap on purpose: one opening family, one set
+            // of numbers.
+            let gap = door_post_gap();
+            let jamb_h = WINDOW_HEAD_M - WINDOW_SILL_M;
+            (
+                [
+                    Part {
+                        size: Vec3::new(WALL_THICKNESS_M, WINDOW_SILL_M, span),
+                        offset: Vec3::new(0.0, WINDOW_SILL_M * 0.5, 0.0),
+                        x_rot: 0.0,
+                        kind: PartKind::Box,
+                    },
+                    Part {
+                        size: Vec3::new(WALL_THICKNESS_M, LEVEL_H_M - WINDOW_HEAD_M, span),
+                        offset: Vec3::new(0.0, (LEVEL_H_M + WINDOW_HEAD_M) * 0.5, 0.0),
+                        x_rot: 0.0,
+                        kind: PartKind::Box,
+                    },
+                    Part {
+                        size: Vec3::new(WALL_THICKNESS_M, jamb_h, DOOR_POST_W_M),
+                        offset: Vec3::new(0.0, (WINDOW_SILL_M + WINDOW_HEAD_M) * 0.5, -gap),
+                        x_rot: 0.0,
+                        kind: PartKind::Box,
+                    },
+                    Part {
+                        size: Vec3::new(WALL_THICKNESS_M, jamb_h, DOOR_POST_W_M),
+                        offset: Vec3::new(0.0, (WINDOW_SILL_M + WINDOW_HEAD_M) * 0.5, gap),
+                        x_rot: 0.0,
+                        kind: PartKind::Box,
+                    },
+                ],
+                4,
+            )
+        }
+        SHAPE_FRAME => {
+            // The rim and nothing else — two thin jambs and the top beam,
+            // each `FRAME_RIM_M` thick, which is exactly the solid
+            // `collide::frame_solid_at` answers for. The opening is the
+            // piece.
+            let jamb_off = (span - FRAME_RIM_M) * 0.5;
+            let jamb = |z: f32| Part {
+                size: Vec3::new(WALL_THICKNESS_M, LEVEL_H_M - FRAME_RIM_M, FRAME_RIM_M),
+                offset: Vec3::new(0.0, (LEVEL_H_M - FRAME_RIM_M) * 0.5, z),
+                x_rot: 0.0,
+                kind: PartKind::Box,
+            };
+            (
+                [
+                    jamb(-jamb_off),
+                    jamb(jamb_off),
+                    Part {
+                        size: Vec3::new(WALL_THICKNESS_M, FRAME_RIM_M, span),
+                        offset: Vec3::new(0.0, LEVEL_H_M - FRAME_RIM_M * 0.5, 0.0),
+                        x_rot: 0.0,
+                        kind: PartKind::Box,
+                    },
+                    none,
+                ],
+                3,
+            )
+        }
+        SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF => (
+            [
+                // One NW prism; the other three halves are this part under
+                // the root's quarter-turns (`base_transform`), the way the
+                // north edge is the west edge turned.
+                Part {
+                    size: Vec3::new(span, SLAB_T, span),
+                    offset: Vec3::new(0.0, -SLAB_T * 0.5, 0.0),
+                    x_rot: 0.0,
+                    kind: PartKind::Tri,
+                },
+                none,
                 none,
                 none,
             ],
@@ -443,7 +554,9 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                     size: Vec3::new(span, SLAB_T, span),
                     offset: Vec3::new(0.0, -SLAB_T * 0.5, 0.0),
                     x_rot: 0.0,
+                    kind: PartKind::Box,
                 },
+                none,
                 none,
                 none,
             ],
@@ -452,23 +565,122 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
     }
 }
 
+/// The mesh a [`Part`] fills its extents with: the cuboid, or the NW
+/// half-cell prism scaled to size. One function for the kit's cache and
+/// the ghost's rebuild, so the preview and the piece cannot disagree
+/// about what a triangle looks like.
+pub fn part_mesh(part: &Part) -> Mesh {
+    match part.kind {
+        PartKind::Box => Cuboid::new(part.size.x, part.size.y, part.size.z).into(),
+        PartKind::Tri => tri_prism_unit().scaled_by(part.size),
+    }
+}
+
+/// The unit NW half-cell prism: the triangle {u + w ≤ 0} over x, z ∈
+/// [−½, ½], extruded y ∈ [−½, ½] — corners at (−½,−½), (½,−½), (−½,½),
+/// hypotenuse facing +x+z. Flat normals per face (the pieces are
+/// flat-shaded greybox like the cuboids); positions/normals/uv0 only,
+/// the same vertex layout every other piece mesh has, so no new pipeline
+/// specializes for it (`RENDER.md` §2's prewarm trap).
+fn tri_prism_unit() -> Mesh {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    let h = 0.5f32;
+    // The three cross-section corners, CCW seen from +y (bevy's up).
+    let a = [-h, 0.0, -h]; // right angle (NW corner)
+    let b = [h, 0.0, -h]; // N-E corner
+    let c = [-h, 0.0, h]; // S-W corner
+    let mut pos: Vec<[f32; 3]> = Vec::with_capacity(24);
+    let mut nor: Vec<[f32; 3]> = Vec::with_capacity(24);
+    let mut uv: Vec<[f32; 2]> = Vec::with_capacity(24);
+    let mut idx: Vec<u32> = Vec::with_capacity(24);
+    // Top face (+y), CCW from above.
+    pos.extend([[a[0], h, a[2]], [b[0], h, b[2]], [c[0], h, c[2]]]);
+    nor.extend([[0.0, 1.0, 0.0]; 3]);
+    uv.extend([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
+    idx.extend([0, 2, 1]);
+    // Bottom face (−y), wound the other way.
+    let base = pos.len() as u32;
+    pos.extend([[a[0], -h, a[2]], [b[0], -h, b[2]], [c[0], -h, c[2]]]);
+    nor.extend([[0.0, -1.0, 0.0]; 3]);
+    uv.extend([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
+    idx.extend([base, base + 1, base + 2]);
+    // The two square sides and the hypotenuse. Outward normals: the N
+    // side faces −z, the W side −x, the hypotenuse +x+z (normalised).
+    let s = std::f32::consts::FRAC_1_SQRT_2;
+    for (p0, p1, n) in [
+        (a, b, [0.0, 0.0, -1.0]),
+        (c, a, [-1.0, 0.0, 0.0]),
+        (b, c, [s, 0.0, s]),
+    ] {
+        // A side wall of the prism: p0→p1 along the top, dropped to −h.
+        let base = pos.len() as u32;
+        pos.extend([
+            [p0[0], h, p0[2]],
+            [p1[0], h, p1[2]],
+            [p1[0], -h, p1[2]],
+            [p0[0], -h, p0[2]],
+        ]);
+        nor.extend([n; 4]);
+        uv.extend([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    let mut m = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nor);
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    m.insert_indices(Indices::U32(idx));
+    m
+}
+
 /// The world transform of an address's base point: the canonical anchor
 /// [`shape_parts`]' offsets are relative to, plus the quarter-turn a north
 /// edge carries. Shared with the build ghost for the reason the parts are:
 /// the ghost and the piece it becomes must be the same object in the same
 /// pose, and edge canonicalisation written twice is how they stop being.
 pub fn base_transform(seed: u64, (cx, cz, level, loc): Addr) -> Transform {
+    use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, SQRT_2};
     let base_y = level_base_y(seed, cx, cz, level);
     let (cxm, czm) = cell_center(cx, cz);
-    let (pos, yaw) = match loc {
-        LOC_EDGE_W => (Vec3::new(cx as f32 * BUILD_CELL_M, base_y, czm), 0.0),
+    // Triangles and diagonals are one drawn object each under a turn of
+    // the root (triangles v0): the four halves are the NW prism at 0,
+    // ∓90° and 180°, and the two diagonal walls are the straight wall
+    // slab turned ±45° and stretched √2 along its length. The scale is
+    // the one non-rigid root this function hands out, and it is exactly
+    // the diagonal's own arithmetic — the slab thickness axis stays 1.
+    let (pos, yaw, scale) = match loc {
+        LOC_EDGE_W => (
+            Vec3::new(cx as f32 * BUILD_CELL_M, base_y, czm),
+            0.0,
+            Vec3::ONE,
+        ),
         LOC_EDGE_N => (
             Vec3::new(cxm, base_y, cz as f32 * BUILD_CELL_M),
-            std::f32::consts::FRAC_PI_2,
+            FRAC_PI_2,
+            Vec3::ONE,
         ),
-        _ => (Vec3::new(cxm, base_y, czm), 0.0),
+        LOC_TRI_NW => (Vec3::new(cxm, base_y, czm), 0.0, Vec3::ONE),
+        LOC_TRI_NE => (Vec3::new(cxm, base_y, czm), -FRAC_PI_2, Vec3::ONE),
+        LOC_TRI_SW => (Vec3::new(cxm, base_y, czm), FRAC_PI_2, Vec3::ONE),
+        LOC_TRI_SE => (Vec3::new(cxm, base_y, czm), PI, Vec3::ONE),
+        LOC_DIAG_A => (
+            Vec3::new(cxm, base_y, czm),
+            FRAC_PI_4,
+            Vec3::new(1.0, 1.0, SQRT_2),
+        ),
+        LOC_DIAG_B => (
+            Vec3::new(cxm, base_y, czm),
+            -FRAC_PI_4,
+            Vec3::new(1.0, 1.0, SQRT_2),
+        ),
+        _ => (Vec3::new(cxm, base_y, czm), 0.0, Vec3::ONE),
     };
-    Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw))
+    Transform::from_translation(pos)
+        .with_rotation(Quat::from_rotation_y(yaw))
+        .with_scale(scale)
 }
 
 /// The generated mesh for an archetype, or `None` where the greybox cuboid is
@@ -555,24 +767,28 @@ fn build_kit(
         }
     });
     // The piece meshes, from the shared table and nowhere else. Dedup is by
-    // exact size — the sizes that repeat are the same expressions evaluated
-    // twice, so `==` is the right comparison and a near-miss SHOULD build a
-    // second mesh, because a near-miss is two parts claiming to differ.
+    // exact (kind, size) — the sizes that repeat are the same expressions
+    // evaluated twice, so `==` is the right comparison and a near-miss
+    // SHOULD build a second mesh, because a near-miss is two parts claiming
+    // to differ.
     const NO_MESH: Option<Handle<Mesh>> = None;
     // The outer repeat can't be `[[NO_MESH; MAX_PARTS]; N_SHAPES]`: only the
     // inner repeat's operand is a const item — the outer would Copy a built
     // non-Copy row (E0277). `from_fn` evaluates the const repeat per row.
     let mut shape_mesh: [[Option<Handle<Mesh>>; MAX_PARTS]; N_SHAPES] =
         std::array::from_fn(|_| [NO_MESH; MAX_PARTS]);
-    let mut sized: Vec<(Vec3, Handle<Mesh>)> = Vec::new();
+    let mut sized: Vec<(PartKind, Vec3, Handle<Mesh>)> = Vec::new();
     for (shape, row) in shape_mesh.iter_mut().enumerate() {
         let (parts, n) = shape_parts(shape as u8);
         for (slot, part) in row.iter_mut().zip(&parts[..n]) {
-            let handle = match sized.iter().find(|(size, _)| *size == part.size) {
-                Some((_, h)) => h.clone(),
+            let handle = match sized
+                .iter()
+                .find(|(kind, size, _)| *kind == part.kind && *size == part.size)
+            {
+                Some((_, _, h)) => h.clone(),
                 None => {
-                    let h = meshes.add(Cuboid::new(part.size.x, part.size.y, part.size.z));
-                    sized.push((part.size, h.clone()));
+                    let h = meshes.add(part_mesh(part));
+                    sized.push((part.kind, part.size, h.clone()));
                     h
                 }
             };

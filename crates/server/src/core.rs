@@ -1401,13 +1401,33 @@ impl ShardCore {
                     }
                 }
                 EV_PIECE_PLACED => {
-                    let rec = PieceRec {
-                        cx: (ev.a >> 16) as u16,
-                        cz: ev.a as u16,
-                        level: (ev.b >> 16) as u8,
-                        loc: (ev.b >> 8) as u8,
-                        row: ev.b as u8,
-                        ..PieceRec::default()
+                    // The address comes off the event; the RECORD comes off
+                    // the store. Rebuilding it from the payload alone was
+                    // fine while the payload was the whole record — the
+                    // facing bit (hard/soft v0) made it not be, and a
+                    // broadcast that defaulted it would disagree with the
+                    // piece-sync walk about which side of a wall is soft:
+                    // the exact two-lanes drift the trap list warns about,
+                    // caught here because the store is the single source.
+                    let addr = (
+                        (ev.a >> 16) as u16,
+                        ev.a as u16,
+                        (ev.b >> 16) as u8,
+                        (ev.b >> 8) as u8,
+                    );
+                    let rec = match self.world.pieces.find(addr.0, addr.1, addr.2, addr.3) {
+                        Some(r) => *r,
+                        // Placed and removed in one tick (a collapse can):
+                        // announce what the event said; the removal event
+                        // follows in this same drain.
+                        None => PieceRec {
+                            cx: addr.0,
+                            cz: addr.1,
+                            level: addr.2,
+                            loc: addr.3,
+                            row: ev.b as u8,
+                            ..PieceRec::default()
+                        },
                     };
                     match encode_event_piece_placed(&rec, &mut self.ev_buf) {
                         Ok(len) => {

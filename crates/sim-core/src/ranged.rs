@@ -38,11 +38,16 @@
 //! part of a body is worth more than another), no damage falloff (the schema
 //! has no curve to read), and no structure damage
 //! — an arrow that reaches a wall stops dead rather than chipping it.
-//! `collide::blocked` also inflates every query by `CAPSULE_RADIUS_M`
-//! because that constant is baked into it, so an arrow goes exactly where a
-//! body could go and no further: it will not thread a gap a player could not
-//! walk through. Stated, not hidden; the honest fix is a radius parameter on
-//! `collide`, and it is on `NOW.md`.
+//!
+//! **An arrow flies at its own size now** (catalogue v1). Pieces stop it
+//! through `collide::shot_blocked` — a point at the arrow's altitude,
+//! inflated by `ARROW_R_M` — where it used to ride `collide::blocked` and
+//! be a 1.7 m capsule that could not thread a gap a body could not walk.
+//! That was stated here as a debt ("the honest fix is a radius parameter
+//! on `collide`"), and the window is what called it in: a shape whose
+//! whole contract is *blocks a body and not a shot* is unbuildable while
+//! every shot is shaped like a body. Trees and bodies still stop arrows
+//! exactly as before; only the piece query changed profile.
 
 use crate::collide::{self, ColIndex, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M};
 use crate::combat::{held_item, CombatContent};
@@ -352,7 +357,7 @@ pub fn step(
             let pz = (oz + sz * t) / MM_PER_M;
             let hit = py <= terrain::height(seed, px, pz)
                 || occ.blocks_volume(seed, px, pz, py, ARROW_R_M, ARROW_R_M)
-                || collide::blocked(seed, cols, prev.0, prev.1, px, pz, py);
+                || collide::shot_blocked(seed, cols, prev.0, prev.1, px, pz, py, ARROW_R_M);
             if hit {
                 stop_t = t;
                 stopped = true;

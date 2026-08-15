@@ -173,6 +173,18 @@ pub enum Shape {
     Floor,
     Stairs,
     Roof,
+    /// The two socket shapes (catalogue v1, `reference/BUILDING.md`
+    /// §9.13): openings priced by what they deny net of the insert you
+    /// still owe — window 0.7 of the wall, frame 0.5 (§7b.3).
+    Window,
+    WallFrame,
+    /// The triangle footprint (triangles v0, §9.14): the half-cell along
+    /// a diagonal, at §7b.3's own ratios — tri foundation and tri roof
+    /// 0.5 of the wall, tri floor 0.25. The diagonal WALL that closes a
+    /// hypotenuse is not a shape: it is the wall, on a diagonal slot.
+    TriFoundation,
+    TriFloor,
+    TriRoof,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]

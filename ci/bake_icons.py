@@ -76,9 +76,23 @@ SHAPES = {
     "shape_foundation": "delapouite/flat-platform",
     "shape_wall": "delapouite/brick-wall",
     "shape_doorway": "delapouite/door",
+    # Catalogue v1's two openings. The window is the obvious pick; the
+    # wall frame is a GATE on purpose — a big opening something else will
+    # fill — and not `broken-wall`, for the rule the hammer verbs already
+    # follow: it shares `brick-wall`'s drawing family and a shape that
+    # looks like another shape is the positional trap wearing a menu.
+    "shape_window": "delapouite/window",
+    "shape_wall_frame": "delapouite/gate",
     "shape_floor": "delapouite/floor-hatch",
     "shape_stairs": "delapouite/3d-stairs",
     "shape_roof": "delapouite/great-pyramid",
+    # Triangles v0. Picked for silhouette at 38 px against their square
+    # siblings: the corner flag plants a triangle at ground level, the
+    # sail is a bare right triangle, the tipi is a peaked shelter that
+    # does not share great-pyramid's stepped-mass drawing.
+    "shape_tri_foundation": "delapouite/corner-flag",
+    "shape_tri_floor": "delapouite/sail",
+    "shape_tri_roof": "delapouite/tipi",
 }
 
 # The four verbs on the hammer's wheel, keyed as `ui::hammer::verb_icon`
