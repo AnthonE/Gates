@@ -72,6 +72,10 @@ The remaining half is the **transfer**, and it needs eyes on a frame:
   passes 60→66, one sequential owner → 26), and the last time this rig moved
   toward "too dark" the correction overshot the other way. One owner, one
   iteration, with the frame open.
+- **Passed over 2026-08-15** (the §0gk pass), for the line above and no other
+  reason: that runner took frame capture out of the builder's hands, so the
+  pass could not open one. It stays top. It is blocked on a *capability*, not
+  on priority — a pass that can capture should take it before anything below.
 
 ## 0gi · The island reads as one surface — two causes, one landed *(client+sim lane)*
 
