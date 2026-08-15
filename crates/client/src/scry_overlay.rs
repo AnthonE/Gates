@@ -729,12 +729,48 @@ impl Overlay {
     /// a game cannot smuggle a sentence into an unprompted signature. `sign` —
     /// where the game writes the text — still asks the player.
     pub fn prove(&mut self, server: &str, nonce: &str) -> Result<Proof, SignError> {
-        let req = json::object(&[
+        self.prove_at(server, nonce, None)
+    }
+
+    /// [`prove`](Self::prove), with the `Issued At` second you chose.
+    ///
+    /// **For a server whose challenge already carries a timestamp.** The
+    /// paragraph above says you cannot rebuild the message because `Issued At`
+    /// comes off the launcher's clock — this is the door out of that, and it
+    /// exists because the alternative was worse. A shard that stamps its own
+    /// challenge could not use [`prove`] at all: it can recompute the domain,
+    /// the address, the game and the nonce, and then has to guess a string the
+    /// launcher wrote. Guessing is not verification, so those servers reached
+    /// for `sign` instead and handed the launcher a message it will not sign.
+    ///
+    /// Pass the same UNIX second your challenge carries and the launcher
+    /// formats it with the formatter it would have used anyway, so the bytes
+    /// you recompute are the bytes that were signed. It must be within fifteen
+    /// minutes of the player's clock — skew between two machines is ordinary,
+    /// a message dated last year is a replay, and one dated next year outlives
+    /// the player's expectation of it.
+    ///
+    /// `None` keeps the launcher's clock, which is what [`prove`] does.
+    pub fn prove_at(
+        &mut self,
+        server: &str,
+        nonce: &str,
+        issued_at: Option<i64>,
+    ) -> Result<Proof, SignError> {
+        let mut fields = vec![
             ("op", Field::S("prove")),
             ("nonce", Field::S(nonce)),
             ("server", Field::S(server)),
-        ]);
-        let reply = self.call(&req).map_err(SignError::NoLauncher)?;
+        ];
+        // Omitted rather than sent as null: an older launcher that does not
+        // know the field ignores it either way, but a game reading this back
+        // should see the request it actually made.
+        if let Some(secs) = issued_at {
+            fields.push(("issued_at", Field::I(secs)));
+        }
+        let reply = self
+            .call(&json::object(&fields))
+            .map_err(SignError::NoLauncher)?;
         if reply.as_bool_key("ok") {
             return Ok(Proof {
                 signature: reply.str_or_empty("signature"),
