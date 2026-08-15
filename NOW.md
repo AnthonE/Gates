@@ -42,6 +42,33 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0tree · The research ladder exists — what it is still one edge short of *(systems lane)*
+
+From `pass-20260815-042118-07-judge.md` ranked gap 1 ("a session has no
+ladder"). **Landed 2026-08-15, and the cause was deeper than the gap.**
+`bake_research` had no caller: a live shard ran `ResearchContent::EMPTY`,
+every `Command::Research` refused `REFUSE_R_ITEM`, and the six
+`blueprint = true` recipes were uncraftable by anyone — with every gate
+green, because no gate booted a shard and asked what it installed. Wired,
+plus the ladder the gap asked for: `requires` on `[[research]]`, resolved
+at bake into a `Player::known` mask, `REFUSE_R_LOCKED` checked before the
+price. Gates: `crates/server/tests/boot_tables.rs` (4, all proven red on
+the original defect), `content.rs` +5, `sim-core/tests/research.rs` +2.
+
+What remains, in order:
+
+1. **The tree is one edge deep**, and honestly so — only the satchel's
+   dependency on gunpowder is implied by `recipes.toml`. Revolver-behind-
+   gunpowder is a pacing call nobody spoke (`DECISIONS.md` §open, "research
+   ladder v0"); the bench tier that would carry the rest is §0tt, where the
+   era is also unspoken. **Do not invent either.**
+2. **No blueprint ITEM**, so learning stays instant and personal and there
+   is nothing to trade — the judge named this as the half that makes another
+   player's progress interesting. Unbuilt, and it is a wire change.
+3. **Twelve other tables were threaded positionally and are now
+   `net::SimTables`.** Nothing else was found missing; the grep half of
+   `boot_tables.rs` is what would say otherwise next time.
+
 ## 0gm · The ground albedos are pinned to a mean that was a quadrant *(client lane)*
 
 From `pass-20260815-042118-04-visual.md` ranked gap 1 ("the ground is a bare
@@ -929,7 +956,9 @@ Spoken 2026-08-14 (*"we should copy the tech tree ui thing too"* —
 `DECISIONS.md` has the row): their two-system model — research what you
 loot at the table, tech-tree the gaps at the bench — plus the workbench
 tech-tree UI. What exists: `research.rs` + `research.toml` (powder era
-only, deliberately), `item.workbench` (tier 1), OBOL-is-scrap. What is
+only, deliberately), `item.workbench` (tier 1), OBOL-is-scrap, and since
+2026-08-15 the dependency EDGE (`requires`, §0tree) — so what this item
+still owns is the BENCH half. What is
 missing is the whole ladder: no workbench 2/3, nothing above
 `workbench1` in `recipes.toml`'s station column, no tree, no UI — and
 `RIPLIST.md` §2 row 3's craft rebate is blocked on exactly this ladder.
@@ -1722,6 +1751,11 @@ crate-wide, but its *contiguity* claim is file-local.
   a blueprint ITEM (learning is instant and personal, so there is nothing
   to trade) and the wipe schedule `DESIGN.md` §8 promises blueprints will
   outlive, which is unbuilt because no wipe is.
+  ⚠ **Half struck 2026-08-15 (§0tree).** The `requires` column and the
+  `validate` reachability check are built, and the reason the verb felt
+  absent was worse than shallow: `bake_research` had no caller, so research
+  did not work at all on a live shard. Still true above: the blueprint ITEM,
+  the wipe, and that the tree is one edge deep.
 - ~~No verb opens a world container~~ — **landed 2026-08-14** (world
   containers v0). This bullet denied a verb the same commit shipped and
   stood for a whole pass; it is the merge-gate judge's ranked fix 1

@@ -1035,6 +1035,94 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 r.item
             ));
         }
+        // --- the ladder's edges, per row ---
+        let mut req_seen = BTreeSet::new();
+        for req in &r.requires {
+            if req == &r.item {
+                return Err(format!("research: `{}` requires itself", r.item));
+            }
+            if !c.items.iter().any(|i| &i.id == req) {
+                return Err(format!(
+                    "research: `{}` requires `{req}`, which is not an item",
+                    r.item
+                ));
+            }
+            if !c.research.iter().any(|o| &o.item == req) {
+                return Err(format!(
+                    "research: `{}` requires `{req}`, which is not researchable — \
+                     a prerequisite nobody can learn locks the row forever",
+                    r.item
+                ));
+            }
+            if !req_seen.insert(req.clone()) {
+                return Err(format!("research: `{}` requires `{req}` twice", r.item));
+            }
+        }
+    }
+
+    // --- the ladder's edges, against the craft graph ---
+    //
+    // The floor. If a blueprint-gated recipe consumes an item that is
+    // ITSELF blueprint-gated, then the dependency is already a fact of the
+    // data — you cannot craft the output without first learning the input —
+    // and the research row has to say so, or the tree and the recipes
+    // disagree about the same edge. Authoring MORE edges than this is a
+    // design call and stays legal; authoring fewer is a drift.
+    for r in &c.research {
+        let Some(k) = c.recipes.iter().find(|k| k.output == r.item) else {
+            continue; // already refused above
+        };
+        for input in &k.inputs {
+            let gated = c
+                .recipes
+                .iter()
+                .any(|o| o.output == input.item && o.blueprint);
+            if gated && !r.requires.iter().any(|q| q == &input.item) {
+                return Err(format!(
+                    "research: `{}` is crafted from `{}`, which is itself \
+                     blueprint-gated, so the row must require it",
+                    r.item, input.item
+                ));
+            }
+        }
+    }
+
+    // --- the ladder is walkable ---
+    //
+    // One fixpoint from the empty known-set, which catches BOTH ways a
+    // dependency graph goes wrong: a cycle never becomes reachable, and
+    // neither does a row behind one. Same shape as the consumable
+    // reachability walk in the content gate, and the reason it is one
+    // check rather than two is that "unreachable" is the thing a player
+    // actually experiences — a cycle is only one cause of it.
+    let mut learned: BTreeSet<&str> = BTreeSet::new();
+    loop {
+        let before = learned.len();
+        for r in &c.research {
+            if learned.contains(r.item.as_str()) {
+                continue;
+            }
+            if r.requires.iter().all(|q| learned.contains(q.as_str())) {
+                learned.insert(r.item.as_str());
+            }
+        }
+        if learned.len() == before {
+            break;
+        }
+    }
+    if learned.len() != c.research.len() {
+        let stuck: Vec<&str> = c
+            .research
+            .iter()
+            .map(|r| r.item.as_str())
+            .filter(|i| !learned.contains(i))
+            .collect();
+        return Err(format!(
+            "research: {} row(s) can never be learned — a prerequisite cycle \
+             or a row behind one: {}",
+            stuck.len(),
+            stuck.join(", ")
+        ));
     }
     // Every gate must have a key, and this is the half a content editor
     // actually gets wrong: a recipe marked `blueprint` with no research row

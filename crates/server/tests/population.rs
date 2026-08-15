@@ -158,38 +158,14 @@ fn seating_more_than_the_cap_is_refused_by_the_spawner_too() {
 /// exactly what `content/` hands a fresh body and nothing else.
 struct Baked {
     content: content::Content,
-    gather: sim_core::gather::GatherContent,
-    craft: sim_core::craft::CraftContent,
-    build: sim_core::build::BuildContent,
-    deploy: sim_core::deploy::DeployContent,
-    combat: sim_core::combat::CombatContent,
-    backpack: sim_core::backpack::BackpackContent,
-    survival: sim_core::survival::SurvivalContent,
-    cook: sim_core::oven::CookContent,
-    kit: sim_core::inventory::SpawnKit,
-    loot: sim_core::loot::LootContent,
-    mobs: sim_core::mob::MobContent,
-    catalog: protocol::ItemCatalog,
+    tables: server::net::SimTables,
 }
 
 fn baked() -> Baked {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let content = content::Content::load_dir(&dir).expect("shipped content loads");
-    Baked {
-        gather: content.bake_gather().expect("gather bakes"),
-        craft: content.bake_craft().expect("recipes bake"),
-        build: content.bake_building().expect("building set bakes"),
-        deploy: content.bake_deployables().expect("deployables bake"),
-        combat: content.bake_combat().expect("weapons bake"),
-        backpack: content.bake_backpack().expect("despawn ladder bakes"),
-        survival: content.bake_survival().expect("survival clock bakes"),
-        cook: content.bake_cooking().expect("oven table bakes"),
-        kit: content.bake_spawn_kit().expect("spawn kit bakes"),
-        loot: content.bake_loot().expect("loot tables bake"),
-        mobs: content.bake_mobs().expect("animals bake"),
-        catalog: server::net::bake_catalog(&content).expect("catalog bakes"),
-        content,
-    }
+    let tables = server::net::bake_all(&content).expect("shipped content bakes");
+    Baked { content, tables }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -199,18 +175,7 @@ async fn the_shard_seats_its_own_inhabitants_over_its_own_wire() {
     cfg.population = SEATED;
     let handle = spawn_shard(
         cfg.clone(),
-        b.gather,
-        b.craft,
-        b.build,
-        b.deploy,
-        b.combat,
-        b.backpack,
-        b.survival,
-        b.cook,
-        b.kit,
-        b.loot,
-        b.mobs,
-        b.catalog,
+        b.tables,
         Saves::off(),
         server::worldfile::WorldBoot::off(),
     )

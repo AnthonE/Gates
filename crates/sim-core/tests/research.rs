@@ -23,8 +23,8 @@ use sim_core::deploy::DeployContent;
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::persist::PlayerSave;
 use sim_core::research::{
-    knows, ResearchContent, REFUSE_R_COST, REFUSE_R_ITEM, REFUSE_R_KNOWN, REFUSE_R_SLOT,
-    REFUSE_R_TABLE,
+    knows, ResearchContent, REFUSE_R_COST, REFUSE_R_ITEM, REFUSE_R_KNOWN, REFUSE_R_LOCKED,
+    REFUSE_R_SLOT, REFUSE_R_TABLE,
 };
 use sim_core::world::{Command, World, EV_CRAFT_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED};
 
@@ -332,5 +332,78 @@ fn a_blueprint_survives_a_save_and_a_load() {
     assert!(
         knows(back.known, GATED_RECIPE),
         "and it is still the bit that was paid for"
+    );
+}
+
+/// (7) **The ladder.** A row whose prerequisite is unheld refuses, refuses
+/// for the *right* reason, and costs nothing; learning the prerequisite
+/// opens it. Landed 2026-08-15 with `ResearchRow::requires`.
+///
+/// The order of the two checks is the assertion that matters. A locked row
+/// is refused BEFORE the price, so a player who cannot reach a blueprint is
+/// never told they are poor — and, more concretely, is never billed for
+/// finding out. That is why the fixture below is deliberately *rich*: the
+/// coin is there, and the refusal still has to be `LOCKED`.
+#[test]
+fn a_row_behind_a_prerequisite_refuses_until_the_prerequisite_is_held() {
+    let (mut w, _, _) = table_world();
+    // Put the fixture's one row behind a recipe nobody knows yet. `OPEN_RECIPE`
+    // is the craft fixture's ungated row, so this is a prerequisite that is
+    // real, reachable and simply not held.
+    w.research.rows[0].requires = 1u64 << OPEN_RECIPE;
+
+    let coin_before = have(&w, COIN);
+    let sample_before = have(&w, SAMPLE);
+    ask(&mut w, 0);
+    assert_eq!(
+        refusal(&w, EV_RESEARCH_REFUSED),
+        Some(REFUSE_R_LOCKED),
+        "an unmet prerequisite is its own refusal, not `COST` and not `ITEM`"
+    );
+    assert!(
+        !knows(w.players[0].known, GATED_RECIPE),
+        "and it taught nothing"
+    );
+    assert_eq!(
+        have(&w, COIN),
+        coin_before,
+        "a locked row is refused before the price, so it bills nothing"
+    );
+    assert_eq!(have(&w, SAMPLE), sample_before, "and consumes no sample");
+
+    // Hold the prerequisite; the same request now goes through.
+    w.players[0].known |= 1u64 << OPEN_RECIPE;
+    ask(&mut w, 0);
+    assert!(
+        knows(w.players[0].known, GATED_RECIPE),
+        "with the prerequisite held the row is buyable"
+    );
+    assert_eq!(
+        have(&w, COIN),
+        coin_before - COST as u32,
+        "and now, and only now, it charges"
+    );
+}
+
+/// The mask is an AND over ALL prerequisites, not any-of: two edges means
+/// both. Cheap to state and the exact thing a `!=` vs `&` slip would break.
+#[test]
+fn every_prerequisite_is_required_not_merely_one_of_them() {
+    let (mut w, _, _) = table_world();
+    w.research.rows[0].requires = (1u64 << OPEN_RECIPE) | (1u64 << 0);
+
+    w.players[0].known |= 1u64 << OPEN_RECIPE;
+    ask(&mut w, 0);
+    assert_eq!(
+        refusal(&w, EV_RESEARCH_REFUSED),
+        Some(REFUSE_R_LOCKED),
+        "one of two prerequisites is not enough"
+    );
+
+    w.players[0].known |= 1u64 << 0;
+    ask(&mut w, 0);
+    assert!(
+        knows(w.players[0].known, GATED_RECIPE),
+        "both held, and it opens"
     );
 }

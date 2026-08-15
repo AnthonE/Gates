@@ -28,34 +28,15 @@ use server::botclient::bot_endpoint;
 /// The shipped content, baked. A copy of `bot_smoke`'s helper rather than a
 /// shared module: two integration test binaries cannot share a `mod` without
 /// a file that belongs to neither, and this is nine lines.
-fn baked_content() -> (
-    sim_core::gather::GatherContent,
-    sim_core::craft::CraftContent,
-    sim_core::build::BuildContent,
-    sim_core::deploy::DeployContent,
-    sim_core::combat::CombatContent,
-    sim_core::backpack::BackpackContent,
-    sim_core::survival::SurvivalContent,
-    sim_core::oven::CookContent,
-    sim_core::loot::LootContent,
-    sim_core::mob::MobContent,
-    protocol::ItemCatalog,
-) {
+fn baked_content() -> server::net::SimTables {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let c = content::Content::load_dir(&dir).expect("shipped content loads");
-    (
-        c.bake_gather().expect("gather"),
-        c.bake_craft().expect("craft"),
-        c.bake_building().expect("building"),
-        c.bake_deployables().expect("deployables"),
-        c.bake_combat().expect("combat"),
-        c.bake_backpack().expect("backpack"),
-        c.bake_survival().expect("survival"),
-        c.bake_cooking().expect("cooking"),
-        c.bake_loot().expect("loot"),
-        c.bake_mobs().expect("mobs"),
-        server::net::bake_catalog(&c).expect("catalog"),
-    )
+    let mut tables = server::net::bake_all(&c).expect("shipped content bakes");
+    // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
+    // for a human looking at the game, and a suite that asserted on a
+    // fresh inventory would be asserting on content instead of on code.
+    tables.spawn_kit = sim_core::inventory::SpawnKit::EMPTY;
+    tables
 }
 
 const DOMAIN: &str = "127.0.0.1";
@@ -100,28 +81,13 @@ fn key(byte: u8) -> SigningKey {
 }
 
 async fn shard(require_auth: bool) -> server::net::ShardHandle {
-    let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, mobs, catalog) =
-        baked_content();
+    let tables = baked_content();
     let mut cfg = ShardConfig::ephemeral(20_260_807);
     cfg.require_auth = require_auth;
     cfg.domain = DOMAIN.into();
     spawn_shard(
         cfg,
-        gather,
-        craft,
-        build,
-        deploy,
-        combat,
-        backpack,
-        survival,
-        cook,
-        // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
-        // for a human looking at the game, and a suite that asserted on a
-        // fresh inventory would be asserting on content instead of on code.
-        sim_core::inventory::SpawnKit::EMPTY,
-        loot,
-        mobs,
-        catalog,
+        tables,
         Saves::off(),
         server::worldfile::WorldBoot::off(),
     )

@@ -115,85 +115,11 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let gather = match content.bake_gather() {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!("shard: content bake refused: {e}");
-            std::process::exit(1);
-        }
-    };
-    let craft = match content.bake_craft() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("shard: content bake refused: {e}");
-            std::process::exit(1);
-        }
-    };
-    let deploy = match content.bake_deployables() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("shard: content bake refused: {e}");
-            std::process::exit(1);
-        }
-    };
-    let build = match content.bake_building() {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("shard: content bake refused: {e}");
-            std::process::exit(1);
-        }
-    };
-    let combat = match content.bake_combat() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("shard: content bake refused: {e}");
-            std::process::exit(1);
-        }
-    };
-    let backpack = match content.bake_backpack() {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("shard: content bake refused: {e}");
-            std::process::exit(1);
-        }
-    };
-    let survival = match content.bake_survival() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("shard: content bake refused: {e}");
-            std::process::exit(1);
-        }
-    };
-    let cook = match content.bake_cooking() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("shard: content bake refused: {e}");
-            std::process::exit(1);
-        }
-    };
-    let spawn_kit = match content.bake_spawn_kit() {
-        Ok(k) => k,
-        Err(e) => {
-            eprintln!("shard: content bake refused: {e}");
-            std::process::exit(1);
-        }
-    };
-    let loot = match content.bake_loot() {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("shard: content bake refused: {e}");
-            std::process::exit(1);
-        }
-    };
-    let mobs = match content.bake_mobs() {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("shard: content bake refused: {e}");
-            std::process::exit(1);
-        }
-    };
-    let catalog = match server::net::bake_catalog(&content) {
-        Ok(c) => c,
+    // Every table in one call, refusing the boot on the first that fails.
+    // It was twelve separate `match` arms here and one of them was simply
+    // never written — see `net::SimTables`.
+    let tables = match server::net::bake_all(&content) {
+        Ok(t) => t,
         Err(e) => {
             eprintln!("shard: content bake refused: {e}");
             std::process::exit(1);
@@ -329,15 +255,15 @@ async fn main() {
         }
         Some(path) => {
             let mut trial = sim_core::world::World::new(cfg.seed);
-            trial.gather = gather;
-            trial.craft = craft;
-            trial.build = build;
-            trial.deploy = deploy;
-            trial.combat = combat;
-            trial.backpack = backpack;
-            trial.survival = survival;
-            trial.cook = cook;
-            trial.loot = loot;
+            trial.gather = tables.gather;
+            trial.craft = tables.craft;
+            trial.build = tables.build;
+            trial.deploy = tables.deploy;
+            trial.combat = tables.combat;
+            trial.backpack = tables.backpack;
+            trial.survival = tables.survival;
+            trial.cook = tables.cook;
+            trial.loot = tables.loot;
             // The island's own digest, computed once here and carried into
             // every header this process writes. It is the number
             // `test_terrain_golden` pins, so a build whose worldgen moved
@@ -409,12 +335,7 @@ async fn main() {
     // until that call returns. One clone at boot, never in a loop.
     let boot_cfg = cfg.clone();
     let population = cfg.population;
-    let handle = match spawn_shard(
-        cfg, gather, craft, build, deploy, combat, backpack, survival, cook, spawn_kit, loot, mobs,
-        catalog, saves, world_boot,
-    )
-    .await
-    {
+    let handle = match spawn_shard(cfg, tables, saves, world_boot).await {
         Ok(h) => h,
         Err(e) => {
             eprintln!("shard: {e}");

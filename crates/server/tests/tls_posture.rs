@@ -37,34 +37,14 @@ use std::time::Duration;
 /// The shipped content, baked. A copy of `siwe_wire`'s helper rather than a
 /// shared module, for the same reason it gives: two integration test binaries
 /// cannot share a `mod` without a file that belongs to neither.
-fn baked_content() -> (
-    sim_core::gather::GatherContent,
-    sim_core::craft::CraftContent,
-    sim_core::build::BuildContent,
-    sim_core::deploy::DeployContent,
-    sim_core::combat::CombatContent,
-    sim_core::backpack::BackpackContent,
-    sim_core::survival::SurvivalContent,
-    sim_core::oven::CookContent,
-    sim_core::loot::LootContent,
-    sim_core::mob::MobContent,
-    protocol::ItemCatalog,
-) {
+fn baked_content() -> server::net::SimTables {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let c = content::Content::load_dir(&dir).expect("shipped content loads");
-    (
-        c.bake_gather().expect("gather"),
-        c.bake_craft().expect("craft"),
-        c.bake_building().expect("building"),
-        c.bake_deployables().expect("deployables"),
-        c.bake_combat().expect("combat"),
-        c.bake_backpack().expect("backpack"),
-        c.bake_survival().expect("survival"),
-        c.bake_cooking().expect("cooking"),
-        c.bake_loot().expect("loot"),
-        c.bake_mobs().expect("mobs"),
-        server::net::bake_catalog(&c).expect("catalog"),
-    )
+    let mut tables = server::net::bake_all(&c).expect("shipped content bakes");
+    // Naked, like every other wire suite: a fresh inventory is content, and
+    // this file is asserting on transport.
+    tables.spawn_kit = sim_core::inventory::SpawnKit::EMPTY;
+    tables
 }
 
 /// **This box's own non-loopback IPv4 address, measured rather than
@@ -114,26 +94,12 @@ fn non_loopback_v4() -> Ipv4Addr {
 /// is correct — a dev certificate has no business claiming an address the
 /// operator happened to run it on, and the pin below does not consult a name.
 async fn shard(ip: IpAddr) -> ShardHandle {
-    let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, mobs, catalog) =
-        baked_content();
+    let tables = baked_content();
     let mut cfg = ShardConfig::ephemeral(20_260_810);
     cfg.bind = SocketAddr::new(ip, 0);
     spawn_shard(
         cfg,
-        gather,
-        craft,
-        build,
-        deploy,
-        combat,
-        backpack,
-        survival,
-        cook,
-        // Naked, like every other wire suite: a fresh inventory is content,
-        // and this file is asserting on transport.
-        sim_core::inventory::SpawnKit::EMPTY,
-        loot,
-        mobs,
-        catalog,
+        tables,
         Saves::off(),
         server::worldfile::WorldBoot::off(),
     )

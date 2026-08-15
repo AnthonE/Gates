@@ -15,64 +15,24 @@ const BOTS: usize = 50;
 
 /// The shipped content set, baked — the smoke runs the same boot path the
 /// shard binary does, so gather and the catalog are live under the herd.
-fn baked_content() -> (
-    sim_core::gather::GatherContent,
-    sim_core::craft::CraftContent,
-    sim_core::build::BuildContent,
-    sim_core::deploy::DeployContent,
-    sim_core::combat::CombatContent,
-    sim_core::backpack::BackpackContent,
-    sim_core::survival::SurvivalContent,
-    sim_core::oven::CookContent,
-    sim_core::loot::LootContent,
-    sim_core::mob::MobContent,
-    protocol::ItemCatalog,
-) {
+fn baked_content() -> server::net::SimTables {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let content = content::Content::load_dir(&dir).expect("shipped content loads");
-    let gather = content.bake_gather().expect("shipped content bakes");
-    let craft = content.bake_craft().expect("shipped recipes bake");
-    let build = content.bake_building().expect("shipped building set bakes");
-    let deploy = content
-        .bake_deployables()
-        .expect("shipped deployables bake");
-    let combat = content.bake_combat().expect("shipped weapons bake");
-    let backpack = content
-        .bake_backpack()
-        .expect("shipped despawn ladder bakes");
-    let survival = content
-        .bake_survival()
-        .expect("shipped survival clock bakes");
-    let cook = content.bake_cooking().expect("shipped oven table bakes");
-    let loot = content.bake_loot().expect("shipped loot tables bake");
-    let mobs = content.bake_mobs().expect("shipped animals bake");
-    let catalog = server::net::bake_catalog(&content).expect("shipped catalog bakes");
-    (
-        gather, craft, build, deploy, combat, backpack, survival, cook, loot, mobs, catalog,
-    )
+    let mut tables = server::net::bake_all(&content).expect("shipped content bakes");
+    // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
+    // for a human looking at the game, and a suite that asserted on a
+    // fresh inventory would be asserting on content instead of on code.
+    // Overridden here rather than at six call sites, which is what it was.
+    tables.spawn_kit = sim_core::inventory::SpawnKit::EMPTY;
+    tables
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_bot_smoke_50() {
-    let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, mobs, catalog) =
-        baked_content();
+    let tables = baked_content();
     let handle = spawn_shard(
         ShardConfig::ephemeral(0xC0FFEE),
-        gather,
-        craft,
-        build,
-        deploy,
-        combat,
-        backpack,
-        survival,
-        cook,
-        // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
-        // for a human looking at the game, and a suite that asserted on a
-        // fresh inventory would be asserting on content instead of on code.
-        sim_core::inventory::SpawnKit::EMPTY,
-        loot,
-        mobs,
-        catalog,
+        tables,
         // Persistence off: these shards write no file, so the suite stays
         // hermetic and every join is a fresh character (`store::Saves::off`).
         Saves::off(),
@@ -298,8 +258,10 @@ async fn test_bots_raid_over_the_wire() {
         code: 4242,
     };
 
-    let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, mobs, catalog) =
-        baked_content();
+    let mut tables = baked_content();
+    // Read out of the same value the shard is about to run on, so the
+    // fixture and the sim can never be priced from two different bakes.
+    let (gather, build, combat) = (tables.gather, tables.build, tables.combat);
 
     // ---- what a raider can afford ---------------------------------------
     //
@@ -378,30 +340,17 @@ async fn test_bots_raid_over_the_wire() {
         .fuse_ticks as u64;
     const WINDOW: Duration = Duration::from_secs(4);
 
+    // Not the shipped `[[spawn_kit]]`, and not `EMPTY` either: the alpha kit
+    // is scaffolding for a human looking at the game and asserting on it
+    // would be asserting on content, while `EMPTY` is why the two counters
+    // that say a raid *connected* both read 0. The fixture kit above is
+    // composed from shipped indices for the same reason `RaidRows` is — the
+    // shard stays priced by `content/`, and what a raider carries stays a
+    // property of this suite rather than a balance decision nobody spoke.
+    tables.spawn_kit = kit;
     let handle = spawn_shard(
         ShardConfig::ephemeral(0x5A1D),
-        gather,
-        craft,
-        build,
-        deploy,
-        combat,
-        backpack,
-        survival,
-        cook,
-        // Not the shipped `[[spawn_kit]]`, and not `EMPTY` either. The alpha
-        // kit is scaffolding for a human looking at the game and asserting
-        // on it would be asserting on content; `EMPTY` is what this gate
-        // started with, and it is why the two counters that say a raid
-        // *connected* both read 0. The fixture kit above is composed here
-        // from shipped indices for the same reason `RaidRows` is: the shard
-        // stays priced by `content/`, and what a raider carries stays a
-        // property of this suite rather than a balance decision nobody
-        // spoke. A satchel in a real player's spawn is exactly that, so it
-        // does not go in `content/balance.toml`.
-        kit,
-        loot,
-        mobs,
-        catalog,
+        tables,
         // Persistence off: these shards write no file, so the suite stays
         // hermetic and every join is a fresh character (`store::Saves::off`).
         Saves::off(),
@@ -583,25 +532,10 @@ async fn test_action_lane_over_socket() {
         .recipe_index("recipe.hatchet_stone")
         .expect("shipped recipe");
 
-    let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, mobs, catalog) =
-        baked_content();
+    let tables = baked_content();
     let handle = spawn_shard(
         ShardConfig::ephemeral(11),
-        gather,
-        craft,
-        build,
-        deploy,
-        combat,
-        backpack,
-        survival,
-        cook,
-        // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
-        // for a human looking at the game, and a suite that asserted on a
-        // fresh inventory would be asserting on content instead of on code.
-        sim_core::inventory::SpawnKit::EMPTY,
-        loot,
-        mobs,
-        catalog,
+        tables,
         // Persistence off: these shards write no file, so the suite stays
         // hermetic and every join is a fresh character (`store::Saves::off`).
         Saves::off(),
@@ -682,25 +616,10 @@ async fn test_version_gate_refuses() {
     use protocol::{encode_hello, Hello, MAX_STREAM_MSG_BYTES};
     use server::net::{read_frame, write_frame};
 
-    let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, mobs, catalog) =
-        baked_content();
+    let tables = baked_content();
     let handle = spawn_shard(
         ShardConfig::ephemeral(7),
-        gather,
-        craft,
-        build,
-        deploy,
-        combat,
-        backpack,
-        survival,
-        cook,
-        // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
-        // for a human looking at the game, and a suite that asserted on a
-        // fresh inventory would be asserting on content instead of on code.
-        sim_core::inventory::SpawnKit::EMPTY,
-        loot,
-        mobs,
-        catalog,
+        tables,
         // Persistence off: these shards write no file, so the suite stays
         // hermetic and every join is a fresh character (`store::Saves::off`).
         Saves::off(),
@@ -766,24 +685,14 @@ async fn test_min_client_refuses_below_and_admits_above() {
         (floor, None),                                          // exactly the floor: admitted
         (protocol::version::pack(fma, fmi + 2, fpa), None),     // above it: admitted
     ] {
-        let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, mobs, catalog) =
-            baked_content();
+        let tables = baked_content();
         let mut cfg = ShardConfig::ephemeral(11);
         cfg.min_client = floor;
         let handle = spawn_shard(
             cfg,
-            gather,
-            craft,
-            build,
-            deploy,
-            combat,
-            backpack,
-            survival,
-            cook,
-            sim_core::inventory::SpawnKit::EMPTY,
-            loot,
-            mobs,
-            catalog,
+            tables,
+            // Persistence off: these shards write no file, so the suite stays
+            // hermetic and every join is a fresh character (`store::Saves::off`).
             Saves::off(),
             server::worldfile::WorldBoot::off(),
         )
@@ -867,27 +776,14 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
 
     // Same shard, same everything, one config key apart.
     for (dev_spawn, want) in [(None, false), (Some((1024.0, 1024.0)), true)] {
-        let (gather, craft, build, deploy, combat, backpack, survival, cook, loot, mobs, catalog) =
-            baked_content();
+        let tables = baked_content();
         let mut cfg = ShardConfig::ephemeral(13);
         cfg.dev_spawn = dev_spawn;
         let handle = spawn_shard(
             cfg,
-            gather,
-            craft,
-            build,
-            deploy,
-            combat,
-            backpack,
-            survival,
-            cook,
-            // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
-            // for a human looking at the game, and a suite that asserted on a
-            // fresh inventory would be asserting on content instead of on code.
-            sim_core::inventory::SpawnKit::EMPTY,
-            loot,
-            mobs,
-            catalog,
+            tables,
+            // Persistence off: these shards write no file, so the suite stays
+            // hermetic and every join is a fresh character (`store::Saves::off`).
             Saves::off(),
             server::worldfile::WorldBoot::off(),
         )

@@ -136,6 +136,18 @@ pub struct Research {
     /// Units of the coin burned. Zero is legal (a free unlock is a
     /// tutorial, not a mistake).
     pub cost: u32,
+    /// The blueprints that must already be held before this one may be
+    /// bought — item ids, each of which must itself carry a research row.
+    /// Empty is a root of the tree and is the default, so every row that
+    /// predates the ladder keeps meaning exactly what it meant.
+    ///
+    /// Authored, but not free-form: `validate::structural` refuses a row
+    /// that omits an edge the craft graph already implies (a
+    /// blueprint-gated recipe whose inputs include another blueprint-gated
+    /// item). So the implied set is a FLOOR and this column may only add
+    /// to it — which is what stops the tree and the recipes drifting.
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 /// The head of `content/research.toml`: what research is paid in.
