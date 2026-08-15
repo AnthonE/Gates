@@ -38,6 +38,12 @@ pub mod manifest;
 pub mod deeplink;
 pub mod scry;
 pub mod shardlist;
+// Where a player's screenshot goes and what it is called. Unconditional for
+// `config`'s reason exactly: a path rule and a filename rule are pure, they
+// are the part that can be wrong on a box nobody here owns (three platforms,
+// two Linux conventions), and a test behind `--features render` runs in the
+// renderer tier where nobody looks at it. `render/shot.rs` is the Bevy half.
+pub mod shot;
 // The audio model — which sound, how loud, how many at once, and the
 // generated bank itself. NOT feature-gated, for `ui`'s reason exactly: it is
 // pure, a mixer is where "Bevy plays, it does not decide" is easiest to break,

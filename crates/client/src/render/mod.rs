@@ -74,6 +74,10 @@ pub mod pause;
 pub mod props;
 pub mod rig;
 pub mod settings;
+// The screenshot key. Distinct from `capture`, which is the probe harness:
+// this is a player pressing F12 at a moment they chose, so it settles
+// nothing and never touches the view. `crate::shot` is the arithmetic half.
+pub mod shot;
 pub mod sky;
 // What players built. Distinct from `props`, which is the world the seed
 // makes: this is the world other players made, and it arrives on the wire.
@@ -934,6 +938,18 @@ impl Plugin for GatesRenderPlugin {
         if self.capture.is_none() {
             panels::register(app);
             chat::register(app);
+            // ---- the screenshot key ----------------------------------
+            // **Not on a capture run either**, and for the same reason one
+            // line up: the probe harness spawns its own `Screenshot`
+            // entities on a fixed schedule, and a second writer of the same
+            // frame is a gate whose frames depend on which key was pressed.
+            //
+            // No state gate, unlike almost everything else here. The menu,
+            // the map and the death screen are all worth photographing, and
+            // a key that works on four screens out of nine is a key a player
+            // has to remember the rules for.
+            app.init_resource::<shot::Shots>()
+                .add_systems(Update, shot::take);
         }
 
         if let Some(dir) = &self.capture {
