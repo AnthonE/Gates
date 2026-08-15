@@ -1700,16 +1700,22 @@ fn struct_hit_line(left: u16, max: u16) -> Option<String> {
 
 /// Where a build cell stands relative to the player: an eight-point
 /// bearing and a rounded distance, e.g. `NE 23M`. Planar, like every
-/// reach test on the sim side. The convention is [`crate::look::bearing_deg`]'s
-/// — north is `+Z`, degrees clockwise, `atan2(east, north)` — so this and
-/// the compass strip cannot disagree about which way NE is. Trig is fine
-/// here: this is the client, not sim-core.
+/// reach test on the sim side.
+///
+/// **It CALLS [`crate::look::bearing_of`] rather than sharing its
+/// convention**, and that is the 2026-08-15 row's whole argument made
+/// structural. This function used to run its own `atan2` and say in a
+/// comment that it agreed with the compass strip; when the compass was
+/// found to be mirrored, the tree therefore had two sites to flip and
+/// fixing one would have left the other reflected — half a switch, which
+/// `CLAUDE.md`'s mingw entry says is worse than none. One conversion now,
+/// so there is nothing left to keep in step.
 fn whereabouts(px: f32, pz: f32, cx: u16, cz: u16) -> String {
     const POINTS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
     let half = sim_core::build::BUILD_CELL_M * 0.5;
     let dx = cx as f32 * sim_core::build::BUILD_CELL_M + half - px;
     let dz = cz as f32 * sim_core::build::BUILD_CELL_M + half - pz;
-    let deg = dx.atan2(dz).to_degrees().rem_euclid(360.0);
+    let deg = crate::look::bearing_of(dx, dz);
     let idx = (((deg / 45.0) + 0.5) as usize) % 8;
     let dist = (dx * dx + dz * dz).sqrt();
     format!("{} {:.0}M", POINTS[idx], dist)
@@ -2225,24 +2231,25 @@ mod tests {
         assert_eq!(swing_prompt(Occupant::Rock as u8), "");
     }
 
-    /// The readout's WHERE. North is `+Z` (compass axes v0), a build cell
-    /// is 3 m, and the distance is measured to the cell's centre — the
-    /// same point every reach test on the sim side measures to.
+    /// The readout's WHERE. North is `+Z` and east is `-X`
+    /// (`DECISIONS.md` 2026-08-15), a build cell is 3 m, and the distance is
+    /// measured to the cell's centre — the same point every reach test on the
+    /// sim side measures to.
     #[test]
     fn the_readout_names_where_the_wall_stands() {
         let half = sim_core::build::BUILD_CELL_M * 0.5;
-        // Standing on cell (0,0)'s centre: cell (3,0) is 9 m due east
+        // Standing on cell (0,0)'s centre: cell (3,0) is 9 m due WEST
         // (+X), cell (0,3) is 9 m due north (+Z).
-        assert_eq!(whereabouts(half, half, 3, 0), "E 9M");
+        assert_eq!(whereabouts(half, half, 3, 0), "W 9M");
         assert_eq!(whereabouts(half, half, 0, 3), "N 9M");
-        assert_eq!(whereabouts(half, half, 3, 3), "NE 13M");
+        assert_eq!(whereabouts(half, half, 3, 3), "NW 13M");
         // From the far side the bearing flips.
         let (px, pz) = (
             6.0 * sim_core::build::BUILD_CELL_M + half,
             6.0 * sim_core::build::BUILD_CELL_M + half,
         );
         assert_eq!(whereabouts(px, pz, 6, 3), "S 9M");
-        assert_eq!(whereabouts(px, pz, 3, 6), "W 9M");
+        assert_eq!(whereabouts(px, pz, 3, 6), "E 9M");
         // Underfoot must not panic or NaN; it reads as zero metres.
         assert!(whereabouts(half, half, 0, 0).ends_with("0M"));
     }
@@ -2280,13 +2287,17 @@ mod tests {
 
     #[test]
     fn the_compass_walks_the_sims_bearing() {
-        // Yaw 0 is +Z is north; a quarter turn toward +X is east.
+        // Yaw 0 is +Z is north. Yaw turns the view LEFT (`look.rs`'s header),
+        // and east is `-X`, so a quarter turn lands on WEST.
         assert!(compass_strip(0.0).starts_with('N'));
-        assert!(compass_strip(std::f32::consts::FRAC_PI_2).starts_with('E'));
+        assert!(compass_strip(std::f32::consts::FRAC_PI_2).starts_with('W'));
         assert!(compass_strip(std::f32::consts::PI).starts_with('S'));
-        assert!(compass_strip(3.0 * std::f32::consts::FRAC_PI_2).starts_with('W'));
+        assert!(compass_strip(3.0 * std::f32::consts::FRAC_PI_2).starts_with('E'));
         // And it wraps rather than reading 360.
         assert!(compass_strip(std::f32::consts::TAU - 0.001).starts_with('N'));
+        // Due north prints `000`, not `-00` — `look::bearing_of`'s signed-zero
+        // trap, gated at the `{:03.0}` site that would have shown it.
+        assert_eq!(compass_strip(0.0), "N   000°");
     }
 
     // ---- the announce stack's geometry ----------------------------------

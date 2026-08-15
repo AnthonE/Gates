@@ -11,6 +11,12 @@
 //! repo owns.** It would survive a whole capture set, which is exactly what a
 //! wall is for.
 //!
+//! ✅ **The mirrored compass named below is FIXED** (2026-08-15, `DECISIONS.md`
+//! — east is `-X`). The paragraph stays because the *diagnosis* is what this
+//! file is evidence for, and because the fix does not change a line here: this
+//! gate was written convention-free on purpose and that is still the right
+//! shape. `crates/client/tests/compass.rs` is the gate the other half got.
+//!
 //! ⚠ **The report's diagnosis did not survive the code, and the correction is
 //! the point rather than a footnote.** There is no hemisphere disagreement to
 //! find: `bevy_pbr`'s `light.rs` fills `dir_to_light: light.transform.back()`
@@ -22,9 +28,11 @@
 //! bug: it read a shadow running screen-right in a frame whose compass said
 //! `N 000°` and called that "due east", because **the compass is mirrored** —
 //! facing the direction `look::bearing_deg` calls north, the body's right is
-//! the direction it calls west. That is `NOW.md` §0gj and it is not this
-//! file's business. `CLAUDE.md`'s trap list: a judge names the symptom, and the
-//! cause is diagnosed before it is acted on.
+//! the direction it calls west. That was `NOW.md` §0gj, landed 2026-08-15, and
+//! it was never this file's business. `CLAUDE.md`'s trap list: a judge names
+//! the symptom, and the cause is diagnosed before it is acted on — this is the
+//! entry's own example now, since acting on the report's literal sentence would
+//! have put a second sun vector in the tree to cancel a compass error.
 //!
 //! So the seam that WAS real is the one the report named second and the tree
 //! carried in silence: `sky.rs` re-derived `to_sun` from the two constants by
@@ -34,11 +42,13 @@
 //! `rig::to_sun` is the one owner now, and §`the_cloud_deck_and_the_shadows_…`
 //! below is what makes that structural rather than a comment.
 //!
-//! **Convention-free on purpose.** Every assertion here is a sign, a
-//! collinearity, a ratio or a monotonic sweep. Nothing asserts "the sun is in
-//! the south-east", because *which compass point `+X` is* is the open question
-//! one file over (§0gj), and a test that hardcoded today's answer would go
-//! green on the bug the moment the answer changed. There is exactly one
+//! **Convention-free on purpose, and it stays that way now the convention is
+//! settled.** Every assertion here is a sign, a collinearity, a ratio or a
+//! monotonic sweep. Nothing asserts "the sun is in the south-east": *which
+//! compass point `+X` is* has one owner (`look::bearing_of`) and one gate
+//! (`tests/compass.rs`), and a copy of today's answer here would be a second
+//! place to keep in step — which is the exact defect the compass pass was
+//! spent on. There is exactly one
 //! literal-number anchor, hand-checkable on paper, and it deliberately avoids
 //! 35° and 45°: at 45° `tan == cot == 1` and an inverted shadow-length formula
 //! is invisible.

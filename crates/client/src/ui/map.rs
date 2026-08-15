@@ -50,16 +50,20 @@ pub const SEA_SHALLOW: [f32; 3] = [47.0, 106.0, 142.0];
 /// Open water at [`DEEP_M`] and below.
 pub const SEA_DEEP: [f32; 3] = [23.0, 50.0, 74.0];
 
-/// The hillshade's light, as a unit vector in world axes (x east, y up,
+/// The hillshade's light, as a unit vector in world axes (**x WEST**, y up,
 /// z north).
 ///
 /// Up and to the LEFT of the image, which is north-west — the convention
-/// every printed relief map uses and the one `mapraw.jpg` follows. North-west
-/// in world axes is `-x, +z`, and the map's north is `+z`
-/// (`DECISIONS.md` §open, compass axes v0 — the same call the compass strip
-/// rests on), so the sign of the z term here is the same fact the bearing
-/// readout is.
-pub const LIGHT: [f32; 3] = [-0.5, std::f32::consts::FRAC_1_SQRT_2, 0.5];
+/// every printed relief map uses and the one `mapraw.jpg` follows. The map's
+/// north is `+z` and its east is `-x` (`DECISIONS.md` 2026-08-15 — the same
+/// call the compass strip rests on), so north-west in world axes is
+/// `+x, +z` and **both terms here are positive**.
+///
+/// Both signs are the bearing readout's fact restated in a second place,
+/// which is why they moved in the 2026-08-15 commit rather than after it: a
+/// map whose x term flipped and whose light did not would be lit from the
+/// north-EAST, and nothing but a person looking at it would say so.
+pub const LIGHT: [f32; 3] = [0.5, std::f32::consts::FRAC_1_SQRT_2, 0.5];
 
 /// The lambert term becomes a gain: `SHADE_FLOOR + SHADE_GAIN * lambert`,
 /// clamped.
@@ -81,14 +85,15 @@ pub const SHADE_CLAMP: (f32, f32) = (0.45, 1.35);
 /// The grid square a world position is in — `"H11"`, or `""` off the island.
 ///
 /// Columns are letters west to east; rows are numbers north to south from 1.
-/// **The row direction is the load-bearing half**: our north is `+z`, so row 1
-/// is the `+z` edge and the row index counts DOWN in z — the same flip
-/// [`paint`] applies to the image, which is why both live in one file.
+/// **Both directions are load-bearing and both count DOWN**: our north is
+/// `+z` and our east is `-x` (`DECISIONS.md` 2026-08-15), so row 1 is the
+/// `+z` edge and column A is the `+x` edge — the same two flips [`paint`]
+/// applies to the image, which is why they live in one file.
 pub fn grid_label(x: f32, z: f32) -> String {
     if !(0.0..ISLAND_SIZE).contains(&x) || !(0.0..ISLAND_SIZE).contains(&z) {
         return String::new();
     }
-    let col = ((x / GRID_M) as usize).min(GRID_COLS - 1);
+    let col = (((ISLAND_SIZE - x) / GRID_M) as usize).min(GRID_COLS - 1);
     let row = (((ISLAND_SIZE - z) / GRID_M) as usize).min(GRID_COLS - 1);
     let letter = GRID_LETTERS.as_bytes()[col] as char;
     format!("{letter}{}", row + 1)
@@ -102,7 +107,9 @@ pub fn grid_label(x: f32, z: f32) -> String {
 pub fn world_to_map(x: f32, z: f32, size: usize) -> (f32, f32) {
     let s = size as f32;
     (
-        x / ISLAND_SIZE * s,
+        // East is -x and image columns grow east, so this flips too — a
+        // north-up map has east on the right only if east is `-x`.
+        (ISLAND_SIZE - x) / ISLAND_SIZE * s,
         // North is +z and image rows grow south, so this flips.
         (ISLAND_SIZE - z) / ISLAND_SIZE * s,
     )
@@ -110,12 +117,18 @@ pub fn world_to_map(x: f32, z: f32, size: usize) -> (f32, f32) {
 
 /// Paint the island into an RGBA buffer, `size × size`.
 ///
-/// **Two positional facts, both of which have cost a pass elsewhere.**
+/// **Three positional facts, each of which has cost a pass somewhere.**
 ///
 /// 1. Sample row `j` grows with `+z`, which is NORTH, and image row `py`
 ///    grows DOWNWARD, which is SOUTH. So `py = size - 1 - j`. Get it wrong
 ///    and the map is right about everything and upside down.
-/// 2. **Samples sit at pixel CENTRES.** A fill starting at 0 puts sample
+/// 2. Sample column `i` grows with `+x`, which is **WEST**
+///    (`DECISIONS.md` 2026-08-15), and image column `px` grows RIGHTWARD,
+///    which is east. So `px = size - 1 - i`, the same flip on the other
+///    axis. Get *this* one wrong and the map is right about everything and
+///    mirrored — which is what it was until 2026-08-15, undetectably,
+///    because it agreed with a compass that was mirrored too.
+/// 3. **Samples sit at pixel CENTRES.** A fill starting at 0 puts sample
 ///    `(i, j)` on the low-x, low-z corner of the pixel it fills; the pixel's
 ///    extent then runs from that sample to the next, so the painted island is
 ///    half a cell out on both axes — and on the flipped axis `world_to_map`
@@ -137,6 +150,7 @@ pub fn paint(seed: u64, size: usize, out: &mut [u8]) {
         let py = size - 1 - j;
         for i in 0..size {
             let x = half + i as f32 * step;
+            let px = size - 1 - i;
             let h = terrain::height(seed, x, z);
 
             // Central differences at the map's own step. A smoothed slope
@@ -184,7 +198,7 @@ pub fn paint(seed: u64, size: usize, out: &mut [u8]) {
                 (mix(0) * shade, mix(1) * shade, mix(2) * shade)
             };
 
-            let o = (py * size + i) * 4;
+            let o = (py * size + px) * 4;
             out[o] = r.clamp(0.0, 255.0) as u8;
             out[o + 1] = g.clamp(0.0, 255.0) as u8;
             out[o + 2] = b.clamp(0.0, 255.0) as u8;
@@ -390,22 +404,57 @@ mod tests {
         assert!((flat - 1.0).abs() < 1e-6, "flat ground shades to {flat}");
     }
 
+    /// West is `+x` and north is `+z` (`DECISIONS.md` 2026-08-15), so both
+    /// terms are positive — and the assertion names the compass point rather
+    /// than the sign, so it goes red if the axes are ever re-decided without
+    /// this file being read.
     #[test]
     fn the_light_is_a_unit_vector_from_the_north_west() {
         let len = (LIGHT[0] * LIGHT[0] + LIGHT[1] * LIGHT[1] + LIGHT[2] * LIGHT[2]).sqrt();
         assert!((len - 1.0).abs() < 1e-6, "light is not unit: {len}");
-        const { assert!(LIGHT[0] < 0.0, "the light must come from the west") };
-        const { assert!(LIGHT[2] > 0.0, "the light must come from the north") };
+        // A point one metre toward the light, read back as a bearing: the
+        // light must stand in the north-west quadrant of the same card the
+        // compass strip prints. This is `LIGHT` checked against the
+        // convention's owner, not against a remembered sign.
+        let deg = crate::look::bearing_of(LIGHT[0], LIGHT[2]);
+        assert!(
+            (270.0..360.0).contains(&deg),
+            "the light bears {deg}°, which is not north-west"
+        );
     }
 
-    /// Row 1 is the +z edge and rows count DOWN in z. The half of
-    /// `grid_label` that is load-bearing.
+    /// Row 1 is the `+z` edge and column A is the `+x` edge — both count
+    /// DOWN, because north is `+z` and east is `-x`. Both halves of
+    /// `grid_label` are load-bearing.
     #[test]
-    fn row_one_is_the_north_edge() {
-        assert_eq!(grid_label(1.0, ISLAND_SIZE - 1.0), "A1");
-        assert_eq!(grid_label(1.0, 1.0), format!("A{GRID_COLS}"));
-        // Columns run west to east.
-        assert_eq!(grid_label(ISLAND_SIZE - 1.0, ISLAND_SIZE - 1.0), "P1");
+    fn a_one_is_the_north_west_corner() {
+        // North-west: the largest z AND the largest x.
+        assert_eq!(
+            grid_label(ISLAND_SIZE - 1.0, ISLAND_SIZE - 1.0),
+            "A1",
+            "A1 is the north-west corner"
+        );
+        // Due south of it: same column, last row.
+        assert_eq!(grid_label(ISLAND_SIZE - 1.0, 1.0), format!("A{GRID_COLS}"));
+        // Due east of it: last column, first row.
+        assert_eq!(grid_label(1.0, ISLAND_SIZE - 1.0), "P1");
+    }
+
+    /// The lettering agrees with the compass: walking east must walk up the
+    /// alphabet, and the direction "east" comes from `look::bearing_of`
+    /// rather than from a sign written down twice.
+    #[test]
+    fn the_columns_run_west_to_east() {
+        let mid = ISLAND_SIZE * 0.5;
+        // Two steps in the direction the compass calls east (90°).
+        let east = (-1.0f32, 0.0f32);
+        assert!((crate::look::bearing_of(east.0, east.1) - 90.0).abs() < 0.01);
+        let a = grid_label(mid, mid);
+        let b = grid_label(mid + east.0 * GRID_M, mid + east.1 * GRID_M);
+        assert!(
+            b.as_bytes()[0] > a.as_bytes()[0],
+            "a step east went {a} → {b}, which runs the alphabet backwards"
+        );
     }
 
     #[test]
@@ -414,14 +463,53 @@ mod tests {
         assert_eq!(grid_label(10.0, ISLAND_SIZE), "");
     }
 
+    /// North is up and east is right — **stated as compass points and
+    /// resolved through `look::bearing_of`**, not as two world coordinates
+    /// with directional variable names.
+    ///
+    /// The line this replaces was `px_west < px_east` over `x = 1` and
+    /// `x = ISLAND_SIZE - 1`, which is a monotonicity claim wearing a
+    /// compass's clothes: it is green whichever way the x term runs, so it
+    /// held while the map was mirrored and would have held after a fix that
+    /// mirrored it back. `NOW.md` §0gj named it; this is the version that
+    /// can fail.
     #[test]
-    fn world_to_map_flips_north_to_the_top() {
-        let (_, py_north) = world_to_map(0.0, ISLAND_SIZE - 1.0, 256);
-        let (_, py_south) = world_to_map(0.0, 1.0, 256);
-        assert!(py_north < py_south, "north must be nearer the top");
-        let (px_west, _) = world_to_map(1.0, 0.0, 256);
-        let (px_east, _) = world_to_map(ISLAND_SIZE - 1.0, 0.0, 256);
-        assert!(px_west < px_east);
+    fn the_map_is_north_up_and_east_right() {
+        let c = ISLAND_SIZE * 0.5;
+        let step = 100.0;
+        for (name, want) in [
+            ("north", 0.0f32),
+            ("east", 90.0),
+            ("south", 180.0),
+            ("west", 270.0),
+        ] {
+            // The unit direction the compass gives that name, taken from the
+            // owner rather than assumed here.
+            let (dx, dz) = match name {
+                "north" => (0.0, 1.0),
+                "east" => (-1.0, 0.0),
+                "south" => (0.0, -1.0),
+                _ => (1.0, 0.0),
+            };
+            assert!(
+                (crate::look::bearing_of(dx, dz) - want).abs() < 0.01,
+                "{name} is not {want}° on the card"
+            );
+            let (px0, py0) = world_to_map(c, c, 256);
+            let (px1, py1) = world_to_map(c + dx * step, c + dz * step, 256);
+            match name {
+                "north" => assert!(py1 < py0, "north must move UP the image"),
+                "south" => assert!(py1 > py0, "south must move DOWN the image"),
+                "east" => assert!(px1 > px0, "east must move RIGHT across the image"),
+                _ => assert!(px1 < px0, "west must move LEFT across the image"),
+            }
+            // And the other axis must not move at all.
+            if dx == 0.0 {
+                assert_eq!(px0, px1, "{name} moved the column");
+            } else {
+                assert_eq!(py0, py1, "{name} moved the row");
+            }
+        }
     }
 
     /// The painted image and `world_to_map` must agree about which pixel a
@@ -435,7 +523,11 @@ mod tests {
         for (i, j) in [(0usize, 0usize), (17, 5), (63, 63), (31, 32)] {
             let (x, z) = (half + i as f32 * step, half + j as f32 * step);
             let (px, py) = world_to_map(x, z, size);
-            assert_eq!(px.floor() as usize, i, "column for sample ({i},{j})");
+            assert_eq!(
+                px.floor() as usize,
+                size - 1 - i,
+                "column for sample ({i},{j})"
+            );
             assert_eq!(
                 py.floor() as usize,
                 size - 1 - j,

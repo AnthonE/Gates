@@ -58,11 +58,23 @@ pub const FRAMES_PER_SHOT: u32 = 6;
 pub const TAIL_FRAMES: u32 = 20;
 
 /// `(label, yaw radians, pitch radians)`.
+///
+/// ⚠ **`1` and `3` SWAPPED LABELS on 2026-08-15 and kept their yaws**
+/// (`DECISIONS.md`). Both were mislabelled: yaw `+π/2` turns the view left
+/// and east is `-X`, so the camera called `east` was looking west and the one
+/// called `west` was looking east. Swapping the labels rather than the yaws is
+/// deliberate — the index is what a past `-visual.md` cites, so every frame
+/// ever shot from vantage 1 is still the same camera, while every future one
+/// is labelled truthfully. The whole cost of that bug was a wrong label;
+/// keeping a known-wrong one to protect citations is the wrong trade.
+///
+/// The rule the harness rests on stands: **add a vantage, never silently
+/// re-point one** (`gates-loop/GOAL.md`). No yaw or pitch moved here.
 pub const VANTAGES: [(&str, f32, f32); 6] = [
     ("design", 0.0, -0.15),
-    ("east", std::f32::consts::FRAC_PI_2, -0.15),
+    ("west", std::f32::consts::FRAC_PI_2, -0.15),
     ("south", std::f32::consts::PI, -0.15),
-    ("west", -std::f32::consts::FRAC_PI_2, -0.15),
+    ("east", -std::f32::consts::FRAC_PI_2, -0.15),
     ("near", 0.7, -0.85),
     ("sky", 2.35, 0.35),
 ];
