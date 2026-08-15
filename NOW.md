@@ -77,6 +77,33 @@ The remaining half is the **transfer**, and it needs eyes on a frame:
   pass could not open one. It stays top. It is blocked on a *capability*, not
   on priority — a pass that can capture should take it before anything below.
 
+## 0gc · A blade is shaded exactly like the dirt it stands in *(client lane)*
+
+From `pass-20260815-042118-03-visual.md` ranked gap 2 ("nothing grows on the
+ground and nothing is grounded"). **The chip half landed 2026-08-15** —
+`CHIP_VOLUME_BLEND` and `CHIP_SINK` in `clutter.rs`, gate
+`crates/client/tests/contact.rs` (4 tests, both constants proven red at 0.0).
+
+**What is left is the blades, and the cause is now known.** `blade()` blends
+every normal fully to +Y. That is the GROUND's normal, so a blade takes the
+same sun cosine and the same `fill_at` sample as the dirt under it, and albedo
+is the only thing separating grass from ground — "reads as paint" as
+arithmetic. The quad's own facet is `lean/√(1+lean²)` off horizontal, i.e.
+0.215–0.489 vertical over the drawn range, so the forced blend discards the
+dominant component.
+
+**The reason the code gave for it is false** and `tests/contact.rs` §winding
+computes that: the two triangles do *not* wind opposite ways (dot > 0.99 over
+a 128-case sweep). The real blackener is the tile material's `double_sided`
+flip — Bevy negates the shading normal on a back-facing fragment, and seven
+blades at seven yaws put half of them there.
+
+So the fix is **not** a blend constant: it is a per-vertex ramp, ground normal
+at the root to the blade's own facing at the tip, which needs `Soup::tri` to
+take a blend *function* rather than one `f32`. **Do not land it blind** — it
+is a shading change and this pass could not open a frame. Knobs:
+`DECISIONS.md` §open "clutter contact v0".
+
 ## 0gi · The island reads as one surface — two causes, one landed *(client+sim lane)*
 
 From the visual judge's ranked gap 1, pass `20260814-142610-01`: *"the whole
@@ -138,9 +165,14 @@ Remaining, in order:
    register are the ones the runner captures after this merges, and nobody has
    looked at them yet. Do not read a brightness delta in the next report as the
    effect of a render change.
-4. **The judge read real geometry as paint.** `render/clutter.rs` ships 721
-   elements a tile and is drawn; what it lacks is a shadow (`NotShadowCaster`,
-   deliberately) and any contact darkening (no SSAO anywhere). `ART.md` rule 2.
+4. **The judge read real geometry as paint** — *cause found 2026-08-15, and
+   this line was wrong about it.* "No SSAO anywhere" is false: `rig.rs:223`
+   carries `ScreenSpaceAmbientOcclusion` at Medium, Bevy 0.18 auto-requires
+   its two prepasses via `#[require]`, and Bevy seeds `required_limits` from
+   `adapter.limits()` rather than wgpu's default 4, so it clears the `< 5`
+   storage-texture refusal and loads. The paint read is `clutter.rs`'s
+   NORMALS, not a missing AO pass — §0gc. What is genuinely missing is an
+   occluder at blade scale (`NotShadowCaster`); `ART.md` rule 2.
 5. **The mosaic is not itself a defect, but litter wins every mix.** Grass is
    the darkest identity and litter 3.2× brighter, so grass needs **≥82.1%** of
    a blend to still read green. That is why the boundary never reads as grass.
