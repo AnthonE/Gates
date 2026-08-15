@@ -298,20 +298,31 @@ fn the_capture_spawn_stands_on_one_identity() {
     );
 }
 
-/// **What the corrected mix costs**, stated as arithmetic so the next pass does
-/// not have to re-derive it.
+/// **The mean is held against the island, and this is what holds it.**
 ///
-/// `GROUND_ALBEDO`'s doc pins "the area-weighted mean linear luma at the
-/// shipped 0.09390" as the constraint the four albedos were re-placed under.
-/// That mean was taken against the quadrant's weights. Against the island's, the
-/// same albedos average **0.1075** — 14.4% brighter — because granite is the
-/// brightest identity (3.76× grass) and it was weighted zero.
+/// ⚠ **This test used to assert a debt; it asserts the payment now** (2026-08-15).
+/// It read `the_held_mean_luma_was_taken_against_the_quadrant` and checked that
+/// the shipped albedos reproduced the doc's 0.09390 under the *quadrant's*
+/// weights — a true statement about constants that were placed against the
+/// wrong window, and a deliberate placeholder for the re-place that has now
+/// happened. Keeping it would have meant keeping four albedos pinned to a
+/// quadrant.
 ///
-/// This asserts the gap exists and is large; it deliberately does not assert a
-/// target, because moving the albedos to restore a mean is the brightness
-/// owner's call and `ART.md` §3's hue/saturation bands bind that edit too.
+/// The successor is strictly stronger, because the old form pinned nothing that
+/// could go wrong in the future — a gap being "large" stays large under almost
+/// any edit. This pins the number itself: **the island-weighted mean linear
+/// luma is 0.10746**, the value the pre-re-place constants actually delivered,
+/// so the 2026-08-15 identity re-place is provably brightness-neutral and any
+/// later albedo edit that moves the island's overall brightness goes red here
+/// rather than arriving as a surprise in a frame. Brightness is the coupled
+/// owner's (`CLAUDE.md` traps); this is the gate that keeps an identity edit
+/// from taking it by accident.
+///
+/// The second assert is the retraction's own point, kept: the two windows
+/// disagree, and by more than they used to (1.145× → 1.271×), because granite
+/// carries more value now and the quadrant still weights it at zero.
 #[test]
-fn the_held_mean_luma_was_taken_against_the_quadrant() {
+fn the_mean_luma_is_held_against_the_island_not_the_quadrant() {
     // Rec.601, the estimator `ground_identity.rs` uses and the one the 0.09390
     // figure reproduces under. The repo carries both and they disagree; the
     // point here is the delta between two WEIGHTINGS under one estimator.
@@ -337,8 +348,11 @@ fn the_held_mean_luma_was_taken_against_the_quadrant() {
     );
 
     assert!(
-        (was - 0.0939).abs() < 5e-4,
-        "the quadrant weighting no longer reproduces the doc's 0.09390: {was:.5}"
+        (now - 0.107_46).abs() < 1e-4,
+        "the island-weighted mean linear luma is no longer the 0.10746 the \
+         identity re-place was held to: {now:.5}. An albedo edit moved the \
+         island's overall brightness — that is the coupled lighting owner's \
+         call (`CLAUDE.md` traps), not an identity pass's."
     );
     assert!(
         now > was * 1.10,

@@ -42,6 +42,40 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0gp · The four ground identities are three paints *(client lane)*
+
+**GAP PASS item — `pass-20260815-042118-10-visual.md` ranked gap 1** ("the
+island is one tan material with no edges"). **The albedo half landed 2026-08-15.**
+
+The judge's mechanism was right and its cause was not where it looked. A probe
+over 34,806 land samples at the capture spawn: `splat_from` is *not* mushy
+(max weight p50 = 1.000, 92.2% above 0.8) and reproduces `ART.md` §0's granite
+share to the digit (8.89%). The island was tan because **forest litter and
+granite were 1.059× apart in value and 1.0° in hue while owning 89.4% of the
+land inside 300 m** — four identities, three paints. Re-placed onto §3's own
+luma column (sand 117.0, turf 64.5, granite 147.0; litter 102.8 absorbs the
+mean): granite:turf 1.91× → **2.28×**, granite:litter 1.059× → **1.429×**,
+brightness-neutral to −0.024% so the coupled owner keeps brightness. New gate
+`granite_stands_clear_of_the_ground_it_shares`, red on the old constants;
+`ground_mix.rs`'s debt test is now a pin on the held mean. Knobs:
+`DECISIONS.md` §open "ground identity separation v0".
+
+**What remains, and it is the larger half.** Granite has stone's *value* now
+and not stone's *surface*: all four identities still share one greyscale detail
+map and one `perceptual_roughness`. `render/textures.rs` already loads all four
+`MapSet`s and only `detail` + `grass.normal` are ever bound — `RENDER.md` R4 is
+the spec, and it needs the first WGSL in the tree. Three things scouted this
+pass and worth not re-deriving: an `ExtendedMaterial` extension that does *not*
+declare `#[bindless]` forces the whole material non-bindless, which retires the
+blocker `terrain_mesh.rs`'s comment states; the four weights can reach the
+fragment with **no custom vertex shader** by packing two `u8` per `f32` into
+`ATTRIBUTE_UV_1` (exact under a 24-bit mantissa), leaving `ATTRIBUTE_COLOR` and
+every gate on it untouched; and the skills say blend by *height* not linearly
+(depth 0.2), sum normals as surface gradients, and **leave the classifier soft**
+— sharpening it makes bubble regions. Also open: `ui/map.rs` carries an
+independent minimap palette that nothing holds against `GROUND_ALBEDO`, and it
+did not move with this edit.
+
 ## 0tree · The research ladder exists — what it is still one edge short of *(systems lane)*
 
 From `pass-20260815-042118-07-judge.md` ranked gap 1 ("a session has no
@@ -96,53 +130,6 @@ What remains, in order:
    arrival, 18 codes/18 arms). Plus the four fixtures. All proven red; no
    `PROTO_VER` bump owed or taken, and none of the 86 existing fixtures
    moved a byte.
-
-## 0gm · The ground albedos are pinned to a mean that was a quadrant *(client lane)*
-
-From `pass-20260815-042118-04-visual.md` ranked gap 1 ("the ground is a bare
-dirt plane with one material on it"). **The measurement half landed 2026-08-15**
-— `fill::GROUND_MIX` was `[0.008, 0.619, 0.373, 0.0]`, derived over
-`-1024..1024` on a world that runs `0..2048`: the quadrant `CLAUDE.md`'s trap
-list retracted for the relief sweep, still live on the client side. Whole-island
-it is `[0.011284, 0.518242, 0.378859, 0.091615]`. Gate
-`crates/client/tests/ground_mix.rs` (5 tests, 4 red on the old constant); note
-`gates-loop/findings/note-20260815-the-ground-mix-was-a-quadrant.md`.
-
-**What is left is the albedos, and it is a brightness iteration.** `GROUND_ALBEDO`
-was re-placed under a held area-weighted mean linear luma of 0.09390 — taken
-against the quadrant's weights, with granite treated as a free parameter because
-its weight read zero. Granite is 9.2% of the island and the brightest identity
-(3.76× grass), so the true mean is **0.10746**, 14.4% higher. The four values did
-not move here: they are coupled, `ART.md` §3's hue and saturation bands bind the
-edit, and `CLAUDE.md`'s 60→66 datum says one sequential owner with a frame open.
-
-Two things the next pass should know:
-
-- The fill's earth half moved with the mix (7,036 → 8,028 lux, ratio 1.661 →
-  1.456). `peak_lux()` did not, so up-facing surfaces are untouched — but this
-  points *against* visual gap 2's "put the darks back", and gap 2's owner should
-  read it as a starting offset rather than a surprise.
-- ~~The capture camera stands on 93% litter, so four of six frames measure
-  0.00% green cover and the fix is a ground cover for *litter*~~ — **the cover
-  half landed 2026-08-15.** The mismatch was sharper than "no tuft to roll":
-  `clutter_richness_at` counts channels 1 AND 2 as the ones that *grow things*
-  and thickens litter on that basis, while the client drew every element it
-  thickened with `chip()` at 16 × 2.2 × 3 cm — the flattest mesh in the file,
-  the builder sand and rock get. A litter element is a clump now (the fallen
-  stick, unchanged, plus `FRONDS_PER_CLUMP` standing stalks), its root colour
-  taken from `GROUND_ALBEDO[2]` rather than a new hex, since `ART.md` §3 has no
-  litter row to author one against. Gate `crates/client/tests/cover.rs`, 5
-  tests, 4 red on the flat chip and 2 refusing at compile time; `tests/
-  contact.rs` measures the chip inside the clump and is red on 3 more if the
-  stick is deleted. Knobs: `DECISIONS.md` §open "standing litter v0" — and its
-  last line is the follow-on, that the other three kinds still author a colour
-  beside the ground instead of from it, one row per kind. **Nobody has seen any
-  of it**; the spawn is pinned outside this repo (`art/capture-native.sh:44`).
-- **That measurement pass was FAILED at the merge gate and repaired 2026-08-15**
-  (`pass-20260815-042118-05-judge.md`): the §open row had narrated the corrected
-  mix as a bare array, which dropped `GROUND_MIX` out of `ci/knob_registry.mjs`'s
-  declaration scan — 284 pins to 283, a wall going green because its case was
-  deleted. Declaration restored; the gate is red again under a real drift.
 
 ## 0fill · The darks, second half: the transfer *(client lane)*
 

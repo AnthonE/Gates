@@ -47,7 +47,7 @@ pub const TUFT_H: f32 = 0.34;
 /// population on both. The client then drew every one of those extra elements
 /// with `chip` at 16 × 2.2 × 3 cm, an aspect ratio of 7.3 and the flattest
 /// thing this file makes. So the sim said *understory* and the mesh said
-/// *gravel*, and the capture camera stands on 93 % litter (`NOW.md` §0gm),
+/// *gravel*, and the capture camera stands on 93 % litter (`NOW.md` §0gp),
 /// which is why the visual judge read "flat twig decals and not one 3D clutter
 /// mesh" on the near vantage.
 ///
