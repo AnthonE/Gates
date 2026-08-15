@@ -169,10 +169,22 @@ fn stand_at(w: &mut World, x: f32, z: f32) {
 /// sliced `entries()[mark..]` against a `mark` taken before the action —
 /// but `World::tick` clears the ring at its start, so the index was into a
 /// ring that no longer existed. It gave the right answer only while every
-/// `mark` happened to read 0, and the moment a door started announcing one
-/// more fact at the join (`EV_KNOWN`, 2026-08-15) three of these tests
-/// began skipping the very event they assert on and reading `[]` as a
-/// pass — a green gate over a refusal that never fired.
+/// `mark` happened to read 0, and a door announcing one more fact at the
+/// join (`EV_KNOWN`, 2026-08-15) moved every mark off 0.
+///
+/// **What that cost is smaller than this comment first claimed, and the
+/// difference is the point** (corrected 2026-08-15). A stale cursor makes
+/// `answers()` return `[]`. Two of the three affected tests —
+/// `a_take_out_of_reach_refuses_and_says_so` and
+/// `a_take_from_an_unopened_cell_refuses_and_mints_nothing` — compare it
+/// with `assert_eq!` against a non-empty list, so they would have gone
+/// loudly red rather than quietly green. Only the negative assertion in
+/// `a_slot_past_the_container_refuses` (`!answers(&w).contains(…)`) reads
+/// `[]` as a pass — and it did so **before** `EV_KNOWN` too, because a
+/// negative assertion cannot tell "the event is absent" from "the ring is
+/// empty" no matter what the mark reads. So `EV_KNOWN` was the trigger for
+/// the cursor bug and never the cause of the blind assertion; the blind
+/// shape is a property of asserting on an absence.
 ///
 /// The ring is per-tick, so "since the mark" and "this tick" are the same
 /// set, and the honest spelling of that is no mark at all. Every assertion

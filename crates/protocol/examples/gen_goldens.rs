@@ -24,10 +24,10 @@ use protocol::{
 };
 use protocol::{
     encode_action_consume, encode_action_container, encode_action_drink, encode_action_move,
-    encode_action_research, encode_action_respawn, encode_action_throw,
-    encode_event_charge_placed, encode_event_cont_sync, encode_event_drank, encode_event_known,
-    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_research,
-    encode_event_research_refused, encode_event_respawn, encode_event_shot,
+    encode_action_research, encode_action_respawn, encode_action_throw, encode_event_charge_placed,
+    encode_event_cont_sync, encode_event_drank, encode_event_known, encode_event_move_refused,
+    encode_event_moved, encode_event_oven, encode_event_research, encode_event_research_refused,
+    encode_event_respawn, encode_event_shot,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 

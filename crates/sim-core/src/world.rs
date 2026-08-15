@@ -1741,10 +1741,19 @@ impl World {
         // "no, a body does not keep that" without anybody deciding it —
         // the spread's silence is the whole defect. Death is the most
         // common event in the game, so this was the OBOL sink emptying
-        // itself on a timer. `research.rs`'s `a_blueprint_survives_a_death`
-        // and `combat.rs`'s `a_real_death_does_not_erase_a_blueprint` are
-        // the gates; `persist.rs`'s `every_player_field_is_classified_
-        // across_a_death` is why the next field cannot land here silently.
+        // itself on a timer. The gates are `research.rs`'s
+        // `a_blueprint_survives_a_death`, `persist.rs`'s
+        // `the_carried_decisions_survive_a_real_death`, and
+        // `event_roles.rs`'s
+        // `known_names_the_holder_then_the_mask_low_half_first`;
+        // `persist.rs`'s `every_player_field_is_classified_across_a_death`
+        // is why the next field cannot land here silently.
+        //
+        // (This comment named a `combat.rs` test that has never existed —
+        // corrected 2026-08-15. A citation is a claim that something is
+        // enforced, so an invented one reads as covered while nothing
+        // checks it, which is `CLAUDE.md`'s dead-citation ⚠ exactly. The
+        // check when you write one is `ls`, or a grep for the `fn`.)
         let known = body.known;
         self.players[slot] = Player {
             id,
