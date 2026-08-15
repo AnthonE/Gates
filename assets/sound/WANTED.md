@@ -25,12 +25,16 @@ frame the replacement work:
   depot). Applies per FILE, read off the page it ships from, never off a
   pack's reputation.
 
-⚠ **Every audio host is blocked from this box** — probed 2026-08-15:
-kenney.nl, sonniss.com, freesound.org, opengameart.org, pixabay.com all 403
-at the proxy, the same egress posture 2026-08-07's row measured for mesh
-hosts. So the licences in §3 are named from knowledge, not fetched pages:
-**downloading is an operator act from a machine that can reach them**, and
-the licence box on the actual page is what decides, not this file.
+⚠ **The audio hosts are blocked from this box in both fetch pipes — but
+search is not.** Probed 2026-08-15: kenney.nl, sonniss.com, freesound.org,
+opengameart.org, pixabay.com all 403 at the egress proxy, for direct
+downloads and page fetches alike (the posture 2026-08-07's row measured for
+mesh hosts), while web *search* reaches out. So §3 is verified at **search
+tier** — `DOORS.md`'s exact caveat, named rather than hidden — and the
+licence box on the actual page still decides at download time.
+**Downloading binaries is an operator act from a machine that can reach the
+hosts**, or from a session whose environment network policy allows them (a
+per-environment setting on the remote box).
 
 ---
 
@@ -156,9 +160,10 @@ Technique first (all of it follows from §0):
 
 - **Paid plan only**, and record plan + date + full prompt per take you keep
   (2026-08-11 is the authority; rights attach at generation time).
-- The SFX endpoint takes a **duration** (floor is ~0.5 s as of this writing
-  — check current docs) and a **prompt influence**; some plans expose a
-  **loop** option for the beds. Generate **4+ takes per prompt**, audition
+- The SFX endpoint takes a **duration of 0.5–30 s** (unset = it guesses
+  from the prompt) and a **prompt influence**; **`loop` exists and is the
+  beds' tool** — on the `eleven_text_to_sound_v2` model (verified against
+  their docs 2026-08-15). Generate **4+ takes per prompt**, audition
   against the soundbank dump, keep one.
 - Ticks shorter than the floor (`12_Hit`, `18_UiClick`) come out of a 0.5 s
   take trimmed to the transient — or honestly, keep the synth (✋).
@@ -206,12 +211,28 @@ before it ships. CC-BY additionally writes the author into the NOTICE.
 
 | source | licence class | good for | notes |
 |---|---|---|---|
-| **kenney.nl** (Impact Sounds, Interface Sounds, UI Audio, RPG Audio packs) | CC0, the whole site's standing policy | `06/07/08_Impact*`, `15_Place`, the four ✋ interface symbols; RPG Audio carries a small footstep set | first stop — zero notice cost, game-ready one-shots, already the icon rail's licence tier |
-| **freesound.org** with the licence filter set to **CC0** (CC-BY acceptable with the notice) | per-file: CC0 / CC-BY / **NC variants — refuse those** | the organic set: per-surface footsteps, `16_Splash`, `22_Snort` (search boar/pig grunt), `38_Howl` / `39_Growl` (field recordings exist in CC0; many animal uploads are NC — filter first), all three beds (wind loop / shore waves loop / underwater loop) | record URL + author + licence per file; prefer recordists' own uploads over compilation accounts (provenance) |
-| **opengameart.org**, licence filter CC0/CC-BY | per-asset | footstep packs (e.g. the long-standing grass/sand/stone sets), UI packs | same drill: the page's licence box decides |
-| **Sonniss GDC bundles** | **not CC** — Sonniss's own royalty-free commercial licence, no attribution | pro-grade everything, tens of GB | **operator call before use**: the rail names CC0/CC-BY only. The 2026-08-11 row already added a fourth basis (vendor contract) for generated assets, so the shape of the call exists — but this contract has not been read here |
+| **kenney.nl** — *Impact Sounds* (×130), *Interface Sounds* (×100), *UI Audio*, *RPG Audio* (×50: footsteps, creaks, coins, knives) | CC0, the whole site's standing policy (counts verified 2026-08-15, search tier) | `06/07/08_Impact*`, `15_Place`, the four ✋ interface symbols, footstep spares | first stop — zero notice cost, game-ready one-shots, already the icon rail's licence tier |
+| **freesound.org** with the licence filter set to **CC0** (CC-BY acceptable with the notice) | per-file — the site's set is CC0 / CC-BY / **CC-BY-NC, and NC is the one the filter is FOR** | the organic set: per-surface footsteps, `16_Splash`, `22_Snort` (search boar/pig grunt — close-perspective grunt sets exist), `38_Howl` / `39_Growl` (§3.1 pins one), all three beds (wind loop / shore waves loop / underwater loop) | record URL + author + licence per file; prefer recordists' own uploads over compilation accounts (provenance) |
+| **opengameart.org**, licence filter CC0/CC-BY | per-asset | **Fantozzi's Footsteps (Grass/Sand & Stone)** — CC0, 12 single steps, 16-bit 44.1 kHz FLAC/OGG, three of our five surfaces; other footstep and UI packs | same drill: the page's licence box decides |
+| **Sonniss GDC bundles** | **not CC** — Sonniss's own licence: worldwide, non-exclusive, royalty-free, unlimited projects, **no attribution**, no reselling sounds individually, media production only (search tier, 2026-08-15) | pro-grade everything, tens of GB | **operator call before use**: the rail names CC0/CC-BY only. The 2026-08-11 row already added a fourth basis (vendor contract) for generated assets, so the shape of the call exists — but someone must read this contract whole first |
 | **pixabay.com** sound effects | **not CC** — Pixabay Content License | broad coverage | same class as Sonniss: permissive but off-rail, operator call |
 | refused | — | — | reference-game rips in any wrapper; xeno-canto (NC/SA); BBC SFX archive (NC); SeedThree / Eanpa-Sky bird files (the documented trap) |
+
+### 3.1 · Pinned candidates (search tier, 2026-08-15 — confirm on the page before the manifest row)
+
+| for | candidate | licence as reported |
+|---|---|---|
+| `00–03_Step*` | *Fantozzi's Footsteps (Grass/Sand & Stone)*, opengameart.org — 12 single steps | CC0 (itself cut from freesound CC0 sources) |
+| `06/07/08_Impact*`, `15_Place` | Kenney *Impact Sounds* — kenney.nl/assets/impact-sounds | CC0 |
+| the four ✋ symbols | Kenney *Interface Sounds* + *UI Audio* | CC0 |
+| `38_Howl` | freesound.org/s/398430/ — "Wolf howl" by NaturesTemper, ~8 s | CC0 |
+| `39_Growl` | freesound.org/people/newagesoup/sounds/338674/ — "wolf-growl.wav" by newagesoup | **unconfirmed** — the summary notes a sub-bass enhancement; read the page |
+| avoid | freesound 267179, "Scary Ghost Wolf Howling" | CC0, but a *pitch-shifted human scream* — wrong register for a contact call, and an animal voice with human provenance is a question nobody needs |
+
+The boar, the tree fall and the three beds pinned nothing at search tier —
+plentiful behind freesound's CC0 filter, but no specific file could be
+licence-read from here. ElevenLabs stays the likelier winner for the tree
+fall and the growl either way (§2).
 
 ---
 
