@@ -2951,9 +2951,12 @@ impl World {
             // the same tick merges into it instead of minting a second
             // container a step away.
             self.drain_spill(i, &mut spill);
-            if swung == Swing::Free {
+            if swung == Swing::Free || swung == Swing::Refused {
                 // node → player → structure: the arm passes on only what
-                // nothing nearer absorbed.
+                // nothing nearer absorbed. A `Refused` swing carries this
+                // far too — a node must not become cover — and stops at
+                // the animal: it was aimed at a gather node, so the wall
+                // behind that node is not a target (`Swing::Refused`).
                 match combat::strike(&self.combat, i, &mut self.players, &mut self.events) {
                     combat::Strike::Killed {
                         victim,
@@ -2980,7 +2983,7 @@ impl World {
                             &mut self.backpacks,
                             &mut self.events,
                         );
-                        if !took {
+                        if !took && swung == Swing::Free {
                             combat::raid(
                                 &self.combat,
                                 &self.build,

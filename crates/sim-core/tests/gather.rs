@@ -864,3 +864,263 @@ fn a_refused_gather_swing_leaves_the_arm_free() {
          cover, and the arm never reached the body standing at it"
     );
 }
+
+/// The refusal is a whiff for flesh and a **stop for structure**: a swing
+/// aimed at a node the held item cannot gather must not fall through
+/// `combat::raid` into the wall standing in the same cone. `raid` takes no
+/// owner or privilege filter (`combat.rs` says so in its own doc), so
+/// before `Swing::Refused` a stone hatchet aimed at a stone node inside
+/// your own base took structure off your own wall, silently, every swing
+/// (`NOW.md` §0kit item 1 — proven by fixture: hp fell at
+/// `hand_yield = 0`, not at 25).
+///
+/// Gated both ways, in one arrangement so the control proves the wall is
+/// genuinely reachable by the raid arm:
+///
+/// - **refused-node swing** — player at the tree's stand point, wall in
+///   the same aim cone, wrong tool in hand: piece hp does NOT fall;
+/// - **deliberate swing at the wall with no node in the way** — same
+///   wall, stood where the tree is out of gather reach: piece hp DOES
+///   fall.
+///
+/// Proven red against the un-fixed fall-through: with the gather guard
+/// returning `Swing::Free` (the pre-2026-08-15 shape restored) the first
+/// half fails — the wall takes `EV_STRUCT_HIT` damage from the refused
+/// swings.
+#[test]
+fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
+    use sim_core::build::{anchor, build_cell_of, LOC_EDGE_XLO, LOC_PLANE};
+    use sim_core::world::EV_STRUCT_HIT;
+
+    let table = ScatterTable::alpha_default();
+    let haven = terrain::haven(SEED);
+    // The held item: melee-armed (25 body / 9 structure / 2 m reach,
+    // `CombatContent::probe_fixture`) and NOT the tree's tool, so the
+    // gather guard refuses it while the raid arm has a live weapon row.
+    const WRONG_TOOL: u16 = 2;
+    const REACH: f32 = 2.0;
+
+    'candidates: for cz in 40..216i32 {
+        for cx in 40..216i32 {
+            let s = terrain::scatter(SEED, &table, &haven, cx, cz);
+            if s.occupant != Occupant::Tree {
+                continue;
+            }
+            // The tree's own build cell must take a foundation, or there
+            // is no wall to protect.
+            let bcx = build_cell_of(s.x);
+            let bcz = build_cell_of(s.z);
+            if !(0..1024).contains(&bcx) || !(0..1024).contains(&bcz) {
+                continue;
+            }
+            let (bx, bz) = (bcx as u16, bcz as u16);
+            let (fx_c, fz_c) = (
+                (bcx as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
+                (bcz as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
+            );
+            if !sim_core::build::foundation_terrain_ok(SEED, fx_c, fz_c) {
+                continue;
+            }
+            // Stand point: 1.2 m west of the tree, on ground near its own
+            // height (the `find_isolated` filter).
+            let (px, pz) = (s.x - 1.2, s.z);
+            let py = terrain::height(SEED, px, pz);
+            if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
+                continue;
+            }
+            // The wall goes on the west edge of the tree's cell. Its
+            // anchor must sit inside the same aim cone as the tree, within
+            // the weapon's reach, so the raid arm WOULD hit it if handed
+            // the swing.
+            let (ax, az) = anchor(bx, bz, LOC_EDGE_XLO);
+            let (dax, daz) = (ax - px, az - pz);
+            let d2a = dax * dax + daz * daz;
+            if d2a > (REACH - 0.1) * (REACH - 0.1) {
+                continue;
+            }
+            // Best LUT heading toward the tree, and the anchor must be
+            // inside its cone with margin.
+            let (dx, dz) = (s.x - px, s.z - pz);
+            let mut yaw = 0u16;
+            let mut best = f32::MIN;
+            for hi in 0..=255u16 {
+                let (fx, fz) = yaw_dir(hi << 8);
+                let dot = fx * dx + fz * dz;
+                if dot > best {
+                    best = dot;
+                    yaw = hi << 8;
+                }
+            }
+            let (fx, fz) = yaw_dir(yaw);
+            if dax * fx + daz * fz <= 0.9 * d2a.sqrt() {
+                continue; // anchor too far off-axis — cone margin
+            }
+            // No OTHER swingable near either stand point: rivals eat the
+            // swing and turn both halves into tests of nothing. Barrels
+            // count — `target_index` aims at them even though
+            // `node_index` does not.
+            let (ctl_x, ctl_z) = (ax - 1.6, az);
+            let mut rivals = 0;
+            for &(sx, sz) in &[(px, pz), (ctl_x, ctl_z)] {
+                let pcx = (sx / CELL_SIZE) as i32;
+                let pcz = (sz / CELL_SIZE) as i32;
+                for ddz in -1..=1i32 {
+                    for ddx in -1..=1i32 {
+                        let n = terrain::scatter(SEED, &table, &haven, pcx + ddx, pcz + ddz);
+                        let aims = sim_core::gather::node_index(n.occupant).is_some()
+                            || n.occupant == Occupant::BarrelSlot;
+                        if aims && (n.x != s.x || n.z != s.z) {
+                            let d2 = (n.x - sx) * (n.x - sx) + (n.z - sz) * (n.z - sz);
+                            if d2 <= 6.25 {
+                                rivals += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            if rivals > 0 {
+                continue;
+            }
+            // The control point must have the tree OUT of gather reach, or
+            // the "no node in the way" half is a lie.
+            let dt2 = (s.x - ctl_x) * (s.x - ctl_x) + (s.z - ctl_z) * (s.z - ctl_z);
+            if dt2 <= (REACH + 0.3) * (REACH + 0.3) {
+                continue;
+            }
+
+            // ---- the arrangement ----
+            let mut w = Box::new(World::new(SEED));
+            w.gather = GatherContent::probe_fixture();
+            w.combat = sim_core::combat::CombatContent::probe_fixture();
+            w.build = sim_core::build::BuildContent::probe_fixture();
+            for n in w.gather.nodes.iter_mut() {
+                n.weak_pct = 0;
+            }
+            w.gather.nodes[0].hand_yield = 0;
+            assert_ne!(
+                w.gather.nodes[0].tools[0].0, WRONG_TOOL,
+                "fixture rot: item {WRONG_TOOL} became the tree's tool, so \
+                 the refusal below would never fire"
+            );
+            w.dev_spawn = Some((px, pz));
+            w.tick(&[Command::Join { id: 1 }]);
+            w.players[0].inv[0] = ItemStack {
+                item: WRONG_TOOL,
+                count: 1,
+            };
+            w.players[0].inv[1] = ItemStack {
+                item: 0,
+                count: 200,
+            };
+            w.players[0].inv[2] = ItemStack {
+                item: 1,
+                count: 200,
+            };
+            // Foundation, then the wall on its west edge. A refusal here is
+            // this candidate's terrain, not the mechanic — try the next.
+            w.tick(&[Command::Place {
+                id: 1,
+                row: 0,
+                cx: bx,
+                cz: bz,
+                level: 0,
+                loc: LOC_PLANE,
+            }]);
+            if w.pieces.len() != 1 {
+                continue 'candidates;
+            }
+            w.tick(&[Command::Place {
+                id: 1,
+                row: 1,
+                cx: bx,
+                cz: bz,
+                level: 0,
+                loc: LOC_EDGE_XLO,
+            }]);
+            if w.pieces.len() != 2 {
+                continue 'candidates;
+            }
+            let hp0 = w
+                .pieces
+                .find(bx, bz, 0, LOC_EDGE_XLO)
+                .expect("the wall stands")
+                .hp;
+
+            // ---- refused-node swings: the wall must not move ----
+            let mut seq = 0u16;
+            let mut hit_while_refused = 0u32;
+            for _ in 0..SWING_INTERVAL_TICKS * 4 {
+                w.tick(&[hold_primary(yaw, seq)]);
+                seq = seq.wrapping_add(1);
+                for e in w.events.entries() {
+                    if e.code == EV_STRUCT_HIT {
+                        hit_while_refused += 1;
+                    }
+                }
+            }
+            let hp_after_refused = w
+                .pieces
+                .find(bx, bz, 0, LOC_EDGE_XLO)
+                .expect("the wall still stands")
+                .hp;
+
+            // ---- the control: same wall, no node in the way ----
+            w.players[0].body = sim_core::movement::Body::at(SEED, ctl_x, ctl_z);
+            let (cdx, cdz) = (ax - ctl_x, az - ctl_z);
+            let mut cyaw = 0u16;
+            let mut cbest = f32::MIN;
+            for hi in 0..=255u16 {
+                let (fx, fz) = yaw_dir(hi << 8);
+                let dot = fx * cdx + fz * cdz;
+                if dot > cbest {
+                    cbest = dot;
+                    cyaw = hi << 8;
+                }
+            }
+            let mut control_hit = false;
+            for _ in 0..SWING_INTERVAL_TICKS * 4 {
+                w.tick(&[hold_primary(cyaw, seq)]);
+                seq = seq.wrapping_add(1);
+                for e in w.events.entries() {
+                    if e.code == EV_STRUCT_HIT {
+                        control_hit = true;
+                    }
+                }
+            }
+            if !control_hit {
+                // The raid arm cannot reach this wall even deliberately —
+                // the arrangement (storey, terrain) is unusable here and
+                // proves nothing either way. Next candidate.
+                continue 'candidates;
+            }
+            let hp_after_control = w
+                .pieces
+                .find(bx, bz, 0, LOC_EDGE_XLO)
+                .expect("the wall survives the control chips")
+                .hp;
+
+            // The control proved the wall reachable, so the first half is
+            // now evidence: a refused swing that chipped it fell through.
+            assert_eq!(
+                hit_while_refused, 0,
+                "a swing the node refused fell through to combat::raid — \
+                 the wall behind the node took EV_STRUCT_HIT"
+            );
+            assert_eq!(
+                hp_after_refused, hp0,
+                "a refused gather swing took hp off the wall standing in \
+                 the same cone"
+            );
+            assert!(
+                hp_after_control < hp_after_refused,
+                "the deliberate control swing did not chip the wall — \
+                 raid should still work with no node in the way"
+            );
+            return;
+        }
+    }
+    panic!(
+        "seed {SEED:#x} offered no tree beside a buildable cell for this \
+         arrangement — the generator changed under this gate"
+    );
+}

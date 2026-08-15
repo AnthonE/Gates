@@ -330,6 +330,19 @@ pub enum Swing {
     /// A swing was taken and nothing absorbed it — the cadence is paid and
     /// the arm is still moving, so the caller hands it to `combat::strike`.
     Free,
+    /// A swing was taken, it was aimed at a gather node, and the node
+    /// refused it (a tool it pays nothing for — which since Q4 includes a
+    /// dead one). The cadence is paid and the arm is still free **for
+    /// flesh**: the caller hands it to `combat::strike` and `mob::strike`
+    /// exactly as `Free`, because a node must not become cover
+    /// (`tests/gather.rs` `a_refused_gather_swing_leaves_the_arm_free`).
+    /// What the caller must NOT do is pass it to `combat::raid` — the
+    /// swing was aimed at the node, and `raid` has no owner or privilege
+    /// filter, so a stone hatchet aimed at a stone node inside your own
+    /// base was chipping your own wall silently (`NOW.md` §0kit item 1;
+    /// the fall-through was proven by fixture: piece hp fell at
+    /// `hand_yield = 0` and not at 25).
+    Refused,
     /// A barrel came apart. The swing is spent; what falls out is the
     /// caller's to roll, because it owns the container store and gather
     /// deliberately does not. Address is the smashed slot's own quantized
@@ -716,7 +729,9 @@ pub fn swing(
     // encoding is already spoken for as the spill signal (see the payout
     // comment below), so it would make one wire fact mean two things.
     if def.yield_for(held) == 0 {
-        return Swing::Free; // wrong tool — the arm is free, the node is untouched
+        // Refused, not Free: the arm carries on to flesh and never to
+        // structure — `Swing::Refused` says why in full.
+        return Swing::Refused;
     }
     let Some(life) = lives.find_or_insert(cx, cz) else {
         return Swing::Free; // store exhausted by harvested entries — refuse the hit
