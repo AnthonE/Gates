@@ -29,8 +29,14 @@
   the UI is allowed to be plain — clarity over chrome at alpha.
 - **Chat**: global text + 20 m local **(knob: local on/off)**, profanity
   untouched (survival chat is survival chat), rate-limited server-side,
-  on the bidi lane. No voice at alpha — a rabbit hole with its own
-  transport; revisit post-alpha **(knob)**.
+  on the bidi lane. No voice at alpha — **scope, and no longer "a rabbit
+  hole with its own transport"**, which is what this line said until
+  `reference/VOICE.md` was written: that rabbit hole is only reachable from
+  a P2P start, the reference fell into it and was forced out of it under
+  attack (Devblog 189), and we have no P2P anything. A voice radius sits
+  inside `AOI_ENTER_CM`, so the routing is one compare against a set the AOI
+  scan already produced (§9.2). Revisit post-alpha **(knob)**; §9.1 is the
+  one decision that is expensive later.
 - **Nametags**: crew-less alpha — names render only within 8 m and only
   when aimed at **(knob)**. Identity ambiguity is content in this genre.
 - **Day/night**: 45-min cycle **(knob)**, server clock in the G channel;
