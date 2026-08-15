@@ -242,6 +242,70 @@ pub struct ShardStats {
     /// persist keeps running, exactly as it does for a player record —
     /// dropping everyone because a disk filled is worse than forgetting.
     pub world_save_errors: AtomicU64,
+    // ── Transport telemetry (NETCODE.md §2.2) ───────────────────────────
+    //
+    // Read off quinn's own `ConnectionStats` in `writer_task`, one sample
+    // every `NET_SAMPLE_EVERY` polls. **Deltas, not gauges**, for the four
+    // counters below: each sample adds what changed since that connection's
+    // previous sample, so the shard total keeps meaning something as
+    // connections come and go. A gauge would read whatever the last player
+    // to be sampled happened to have.
+    //
+    // Why this exists at all: until 2026-08-15 nothing in `crates/` called
+    // `stats()`, `rtt()` or any other transport reading, so every congestion
+    // claim in `NETCODE.md` was unfalsifiable and the 100-bot soak's
+    // headline (16.5 kB/s/client) was a ceiling somebody computed rather
+    // than a number anybody measured.
+    /// Packets quinn's loss detection declared lost, summed over every
+    /// connection. The first number to look at when players report rubber-
+    /// banding: `snap_send_errors` says *we* refused to send, this says the
+    /// path ate it.
+    pub net_lost_packets: AtomicU64,
+    /// Packets sent, same summing. Only useful beside `net_lost_packets` —
+    /// a loss *rate* is the reading, and neither half means much alone.
+    pub net_sent_packets: AtomicU64,
+    /// Times the congestion controller reacted to loss. §2.1 names this as
+    /// the real risk: CUBIC halves cwnd here, and a collapsed window at
+    /// 100 ms RTT can fall below our 30 Hz send rate. Climbing steadily is
+    /// the signal to A/B `cc = "bbr"`.
+    pub net_congestion_events: AtomicU64,
+    /// Times a path black hole was detected (MTU dropped to the floor).
+    /// Rare and load-bearing when nonzero — it means somebody's path is
+    /// silently eating full-size datagrams.
+    pub net_black_holes: AtomicU64,
+    /// Worst round-trip seen since boot, in microseconds — `fetch_max`, so
+    /// a high-water mark rather than a current reading. A gauge of "now"
+    /// across 100 connections has no single value; the worst does.
+    pub net_rtt_us_max: AtomicU64,
+    /// Path MTU from the most recent sample, in bytes. A plain last-writer-
+    /// wins gauge and deliberately not a min: what it answers is "did
+    /// DPLPMTUD get above the 1 200 floor", and any recent connection
+    /// answers that.
+    pub net_mtu_last: AtomicU64,
+    /// **What the OS actually granted for the UDP receive buffer**, read
+    /// back after the bind rather than assumed from what we asked for
+    /// (`net::bind_udp`). This is the whole point of the readback: Linux
+    /// caps the request at `net.core.rmem_max` *silently*, so a shard can
+    /// ask for 8 MiB, get ~208 KiB, and nothing anywhere would say so.
+    /// Compare against `net_rcvbuf_asked`.
+    pub net_rcvbuf_bytes: AtomicU64,
+    /// What we asked for. Present so the pair can disagree out loud.
+    pub net_rcvbuf_asked: AtomicU64,
+    /// Granted UDP send buffer, same readback and the same reason.
+    pub net_sndbuf_bytes: AtomicU64,
+    /// Asked-for UDP send buffer.
+    pub net_sndbuf_asked: AtomicU64,
+    /// Connection attempts answered with a QUIC Retry — the address had not
+    /// proved it can receive, and the shard was busy enough to make it
+    /// prove that before spending a handshake. Costs a legitimate joiner one
+    /// extra round trip and costs a spoofed source everything.
+    pub admit_retried: AtomicU64,
+    /// Connection attempts refused before any handshake, because in-flight
+    /// handshakes were past the hard cap. Distinct from `refused_full`,
+    /// which is a *polite* refusal carrying a reason to a client that
+    /// completed a handshake; this one is a flood defence and says nothing.
+    pub admit_refused: AtomicU64,
+
     /// **The storage thread has written everything and stopped.** The one
     /// flag here, and it is not a statistic — it is how `bin/shard.rs`
     /// knows a graceful shutdown has actually reached the disk before it

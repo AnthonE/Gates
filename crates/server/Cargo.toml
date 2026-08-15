@@ -29,6 +29,11 @@ wtransport = { git = "https://github.com/BiagioFesta/wtransport", rev = "a11e6a8
     "quinn",
 ] }
 rtrb = "0.3"
+# The UDP socket buffers NETCODE.md §2.2 asks for, and the readback that says
+# what the OS actually granted. std::net::UdpSocket exposes no setsockopt;
+# quinn already depends on this crate, so it is a direct edge on something
+# already in the tree rather than a new one.
+socket2 = "0.6"
 # The entitlement check (`entitle.rs`): does this player own a copy? One GET
 # at join and one POST per roster sweep, against scry's ticket routes.
 #

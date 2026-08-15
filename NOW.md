@@ -753,6 +753,11 @@ extended-CONNECT (`endpoint.accept()` → `IncomingSession` →
 `request.accept()`), the `https://{addr}` URL shape, a session-id prefix on
 every datagram against the 1 100-byte budget.
 
+⚠ **One of §0wt's reasons died on 2026-08-15**: §0tx checked whether the
+wrapper hides quinn's `Incoming`, and it does not — `IncomingSession` *is*
+`quinn::Incoming` and re-exports `retry()`/`refuse()`. QUIC-level admission
+is built and needed no flag-day. The reasons below stand.
+
 The case to drop it is not speed. It is that **our one remote-panic trap
 lives in that layer** (#317, two bytes on the CONNECT stream), which is why
 we depend on a git rev of an unreleased third party instead of a published
@@ -771,33 +776,40 @@ which is already a flag-day, or with the next touch of the wtransport pin
 (§2.2 marks that seam owed anyway). Wants the operator's word on timing —
 publishing and floor raises are operator acts.
 
-## 0tx · The transport's config of record describes three things that do not exist *(server lane)*
+## 0tx · The transport tells the truth now — LANDED 2026-08-15, three residuals *(server lane)*
 
-Found 2026-08-15 by grepping `NETCODE.md` §2.2 row by row instead of reading
-it. Four rows check out (`datagram_send_buffer_size`, `max_idle_timeout`,
-`keep_alive_interval`, the `max_datagram_size` clamp) and the MTU row is
-honest that it takes quinn's defaults. **Three do not, and only one carried a
-⚠.** A table headed *config of record* is the dead-citation class one level
-worse than a doc comment: it reads as measured.
+`NETCODE.md` §2.2 is headed *config of record* and three of its rows
+described code that did not exist. Found by grepping the table row by row
+instead of reading it. All three are built, plus the telemetry that makes
+them measurable — no wire change, no `PROTO_VER`, no golden.
 
-1. **QUIC-level admission is absent** — the row promised `Incoming::retry()`
-   past ~2× cap and `refuse()` at the hard cap. Every refusal we have
-   (`refused_version|build|auth|ticket|full`, `net.rs:913–1080`) fires
-   **after** a completed handshake, so an unvalidated address gets the full
-   crypto cost before we decline. This is the DoS-shaped one and it is live
-   on a public shard. Blocked-ish on §0wt: our accept starts at
-   `IncomingSession`, already past the hook, and whether the WebTransport
-   wrapper can expose quinn's `Incoming` is **unchecked** — check that first,
-   because a "no" makes it a second reason to drop the layer.
-2. **No congestion-control selection** — no `--cc`, no `BbrConfig`, nothing.
-   We ship quinn's CUBIC and there is no A/B path, so §2.1's "measure before
-   trusting" has never been runnable. Cheap: a flag and a shard.toml key.
-3. **No connection telemetry at all** — no `stats()`, no rtt, no cwnd, no
-   loss counter anywhere in `crates/`. §2.1 already says client-side loss/RTT
-   has no native source; the 100-bot soak's first named gap was *real bytes,
-   nothing counts them*. quinn hands all of it over for free — **no wire
-   change, no `PROTO_VER`, no golden** — which makes this the cheapest of the
-   three and the one that makes the other two measurable. Do it first.
+**Landed:** socket buffers asked at 8 MiB **and read back** (the readback is
+the feature — `setsockopt` clamps to `rmem_max` and returns success, so
+`net_rcvbuf_asked` sits beside `net_rcvbuf_bytes` and they disagree out
+loud); a QUIC-level admission gate (Retry for unvalidated addresses past 2×
+`MAX_PLAYERS`, refuse past 4×, ordering asserted at **compile time**);
+`shard.toml` `cc = "cubic" | "bbr"` with an unknown value refused at boot;
+and `writer_task` sampling quinn's `ConnectionStats` as deltas.
+Gates: `crates/server/tests/transport.rs` (boots a shard, dials it, proves
+the numbers move) plus three unit tests. `DECISIONS.md` §open "transport
+truth v0" has the five knobs.
+
+**The §0wt question is answered and the answer is no:** `IncomingSession`
+*is* `quinn::Incoming` and re-exports `retry()`/`refuse()`/
+`remote_address_validated()`, so admission was never a reason to drop
+WebTransport. §0wt keeps its other reasons.
+
+**Residuals, in rank order:**
+1. **Nobody has run the A/B.** `cc = "bbr"` is now selectable and untested
+   against CUBIC on a real path. `net_congestion_events` is the reading.
+   Wants a shard with real players, not loopback.
+2. **The sysctl half of the socket buffer is still ops and still owed.** The
+   code asks; `net.core.rmem_max` on the public shard's box decides. The
+   readback pair now says which, so this is finally checkable rather than
+   assumed — check it before tuning anything else.
+3. **No client-side telemetry.** All of the above is server-side. The HUD
+   still has no loss/RTT source, and `client/src/lib.rs` holds a
+   `Connection` it never asks anything — the same gap, other end.
 
 ## 0n1 · The class-S join walk has no interest filter *(server lane)*
 
