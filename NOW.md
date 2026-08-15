@@ -42,6 +42,47 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0gj · The compass is mirrored — east is `-X`, not `+X` *(client lane)*
+
+From the visual judge's ranked gap 2a, pass `20260814-223652-01`, whose
+diagnosis ("the scene is lit from the opposite hemisphere to the sun it
+draws") did not survive the code: Bevy fills `dir_to_light` once from
+`transform.back()` and the atmosphere's disc reads that same field, so the
+shaded sun and the drawn sun are one vector. What the judge measured is real
+and is this instead. Landed 2026-08-15: the sun's one owner (`rig::to_sun`,
+`sky::deck_march_dir`) and `crates/client/tests/sun.rs`, 9 tests, 3 red-proofs.
+Note: `findings/note-20260815-the-compass-is-mirrored-not-the-sun.md`.
+
+Measured: facing the direction `bearing_deg` calls north, the body's right
+reads **270°**; a mouse push right takes the bearing **28.1° → 15.5°**. All
+four cardinals are 180° off — a reflection, not an offset. Cause: the world is
+right-handed, so facing `+Z` the right is `-X`, and `bearing_deg = atan2(fx,
+fz)` labels `-X` west.
+
+**Blocked on the operator, and that is the finding rather than an excuse.**
+`DECISIONS.md` §open `compass v0` is a registered knob whose stated rationale
+argues *against* the fix: it chose `+X = East` so "the bearing and the wire yaw
+are the SAME NUMBER", and under `east = -X` the bearing becomes
+`(360 − yaw°) mod 360` — precisely the offset constant that row rejected. Its
+*"East = +X everywhere, undisputed"* is now measured false, so the row is
+amended with both halves and the choice is posed there. A loop does not
+re-spend a knob.
+
+**What the fix costs when it is spoken** (measured, not estimated). Two
+independent `atan2`s, not one: `look.rs:88` **and `hud.rs:1712`** — the raid
+readout does not go through `bearing_deg`, so fixing only `look.rs` leaves it
+mirrored. Then the same commit must carry `ui::map`'s x term, `grid_label`'s
+column index, `paint`'s write index and `LIGHT[0]`, because a north-up map has
+east on the right only if east is `-X`. 7 assertions flip; ~20 doc sentences.
+Two traps: `(-fx).atan2(fz)` is `-0.0` at yaw 0 and `rem_euclid` keeps the
+sign, so due north prints **`-00°`** at both `{:03.0}` sites — write it as
+`(360.0 - fx.atan2(fz).to_degrees()).rem_euclid(360.0)`. And
+`map.rs:422`'s `px_west < px_east` is a monotonicity claim wearing directional
+names: it stays green under both branches. Open sub-question: `capture.rs`'s
+`VANTAGES` are named "east"/"west" and those become the capture filenames every
+`-visual.md` cites, so renaming breaks continuity and not renaming mislabels
+every future frame.
+
 ## 0gi · The island reads as one surface — two causes, one landed *(client+sim lane)*
 
 From the visual judge's ranked gap 1, pass `20260814-142610-01`: *"the whole

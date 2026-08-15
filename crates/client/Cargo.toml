@@ -107,6 +107,16 @@ name = "daynight"
 path = "tests/daynight.rs"
 required-features = ["render"]
 
+# The sun: that the vector Bevy uploads for the `N·L` term IS the vector its
+# atmosphere draws the disc from, that a caster's shadow falls away from it,
+# and that `sky.rs`'s cloud deck marches along the same one. Convention-free —
+# signs, ratios and a monotonic sweep — because which compass point `+X` is is
+# an open question one file over (`NOW.md` §0gj). Pure arithmetic, no GPU.
+[[test]]
+name = "sun"
+path = "tests/sun.rs"
+required-features = ["render"]
+
 # Where the green goes: the material-side chain's hue invariance, the detail
 # map's neutrality, and the moisture-band mosaic that explains why three
 # visual reports called the island one painted material. Pure arithmetic plus
