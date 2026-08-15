@@ -26,6 +26,7 @@ use sim_core::terrain::{
 };
 
 use super::props::{hash01, linear, Soup};
+use super::terrain_mesh::GROUND_ALBEDO;
 use super::{Eye, WorldId};
 
 /// Tiles either side of the player's own — a 5×5 ring, 40 m to an edge.
@@ -36,6 +37,42 @@ pub const CLUTTER_FILLS_PER_FRAME: usize = 1;
 /// A tuft's blade height at scale 1, metres — the browser's, unchanged, and
 /// inside `ART.md` §1's measured 20–40 cm band.
 pub const TUFT_H: f32 = 0.34;
+
+/// A standing litter stalk's height at scale 1, metres.
+///
+/// **Why the litter channel stands up at all.** `sim-core`'s own density law
+/// says it must: `clutter_richness_at` counts channels 1 and 2 together —
+/// *"Grass (channel 1) and forest litter (channel 2) are the ground identities
+/// that grow things; sand and rock do not thicken"* — and thickens the
+/// population on both. The client then drew every one of those extra elements
+/// with `chip` at 16 × 2.2 × 3 cm, an aspect ratio of 7.3 and the flattest
+/// thing this file makes. So the sim said *understory* and the mesh said
+/// *gravel*, and the capture camera stands on 93 % litter (`NOW.md` §0gm),
+/// which is why the visual judge read "flat twig decals and not one 3D clutter
+/// mesh" on the near vantage.
+///
+/// Shorter than `TUFT_H` on purpose: this is standing debris under a canopy —
+/// dead stalks, bracken, a fern frond — not turf. `ART.md` §1's measured
+/// 20–40 cm band is quoted about GRASS and is not evidence about litter, so
+/// this number is not derived from it and is registered as an open knob
+/// instead.
+pub const FROND_H: f32 = 0.19;
+
+/// Standing stalks per litter clump. Fewer than `BLADES_PER_TUFT` for the same
+/// reason the height is lower — a litter floor is sparser standing matter than
+/// turf, and the fallen half of the clump is already carrying its coverage.
+pub const FRONDS_PER_CLUMP: u32 = 3;
+
+/// How much brighter a standing litter stalk's tip is than its root.
+///
+/// The root colour is not authored here: it is `GROUND_ALBEDO[2]`, the island's
+/// own forest-litter identity, so a stalk is the same colour as the ground it
+/// grew out of and the two cannot drift. That seam was open — every other
+/// clutter colour in this file is a hex authored beside the ground rather than
+/// from it, and nothing measured the gap — and `ART.md` §3 has no litter row to
+/// author one against anyway (its "dirt path" sample pins that identity's hue
+/// and saturation, which `GROUND_ALBEDO` already carries).
+pub const FROND_TIP_GAIN: f32 = 1.45;
 
 /// Authored colour per kind, sRGB. Grass is the darkest thing on the island
 /// and its shadowed side goes COOL (`ART.md` §3), which the blade ramp does
@@ -71,8 +108,32 @@ impl ClutterRing {
 #[derive(Component)]
 pub struct Tile(pub i32, pub i32);
 
+/// A standing quad's root-to-tip colour ramp, linear. The base sits in its own
+/// shade and the tip catches a rim of sun; a quad that is one value is rule 1's
+/// flat surface at blade scale.
+#[derive(Clone, Copy)]
+struct Ramp {
+    lo: [f32; 3],
+    hi: [f32; 3],
+}
+
+/// One standing quad's parameters. A struct rather than six arguments because
+/// `blade` is now called for two different populations and clippy caps an
+/// argument list at seven.
+#[derive(Clone, Copy)]
+struct Stalk {
+    base: Vec3,
+    dir: Vec2,
+    h: f32,
+    lean: f32,
+    ramp: Ramp,
+}
+
 /// A blade: a tapered quad leaning off vertical, two triangles.
-fn blade(s: &mut Soup, base: Vec3, dir: Vec2, h: f32, lean: f32, seed: u32, i: u32) {
+///
+/// `v` is the per-quad value jitter — rule 7's "no two identical instances".
+fn blade(s: &mut Soup, k: Stalk, v: f32) {
+    let (base, dir, h, lean) = (k.base, k.dir, k.h, k.lean);
     // Wider than the first cut's 0.022/0.004. At 2.4 elements per square
     // metre a narrow blade reads as a dark spike standing in mown lawn — the
     // first native capture's exact defect — because the eye is being shown
@@ -87,11 +148,7 @@ fn blade(s: &mut Soup, base: Vec3, dir: Vec2, h: f32, lean: f32, seed: u32, i: u
     let t0 = tip - side * half_tip;
     let t1 = tip + side * half_tip;
 
-    // The tip catches a rim of sun; the base sits in its own shade. A blade
-    // that is one value is rule 1's flat surface at blade scale.
-    let lo = linear(TUFT_LO);
-    let hi = linear(TUFT_HI);
-    let v = 0.85 + 0.3 * hash01(seed, i);
+    let (lo, hi) = (k.ramp.lo, k.ramp.hi);
     let col = move |p: Vec3| {
         let t = ((p.y - base.y) / h).clamp(0.0, 1.0);
         [
@@ -140,23 +197,30 @@ fn blade(s: &mut Soup, base: Vec3, dir: Vec2, h: f32, lean: f32, seed: u32, i: u
 /// one baked mesh.
 const BLADES_PER_TUFT: u32 = 7;
 
-/// A tuft: a spray of blades out of one root.
-fn tuft(s: &mut Soup, at: Vec3, yaw: f32, scale: f32, seed: u32) {
-    let h = TUFT_H * scale;
-    for i in 0..BLADES_PER_TUFT {
+/// A spray of standing quads out of one root — the ONE builder for every
+/// standing thing the near-ground population draws, so a tuft of grass and a
+/// clump of standing litter cannot diverge in shape, lean or normal handling.
+///
+/// That last one is the reason this is a single function rather than two
+/// similar ones: `blade` forces its normals fully vertical, which `NOW.md`
+/// §0gc owns as a defect and will replace with a root-to-tip ramp. Sharing the
+/// builder means that fix lands on both populations at once instead of on
+/// whichever one its author happened to be looking at.
+fn stand(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, n: u32, h: f32, ramp: Ramp) {
+    for i in 0..n {
         let a = yaw + i as f32 * 0.897 + hash01(seed, i + 17) * 0.9;
         let dir = Vec2::new(a.sin(), a.cos());
-        let lean = 0.22 + 0.34 * hash01(seed, i + 31);
         let spread = 0.03 + 0.05 * hash01(seed, i + 61);
-        let root = at + Vec3::new(dir.x * spread, 0.0, dir.y * spread);
         blade(
             s,
-            root,
-            dir,
-            h * (0.55 + 0.7 * hash01(seed, i + 47)),
-            lean,
-            seed,
-            i,
+            Stalk {
+                base: at + Vec3::new(dir.x * spread, 0.0, dir.y * spread),
+                dir,
+                h: h * (0.55 + 0.7 * hash01(seed, i + 47)),
+                lean: 0.22 + 0.34 * hash01(seed, i + 31),
+                ramp,
+            },
+            0.85 + 0.3 * hash01(seed, i),
         );
     }
 }
@@ -226,6 +290,50 @@ fn chip(s: &mut Soup, at: Vec3, yaw: f32, size: Vec3, hex: u32, seed: u32) {
     }
 }
 
+/// A litter clump: the fallen stick this kind has always been, plus the
+/// standing stalks the growing channel was owed.
+///
+/// **The chip stays, and it is emitted first.** `Clutter::Twig`'s own
+/// definition in `sim-core` is "fallen needles, sticks, cones", and that read
+/// is correct — a forest floor is mostly fallen matter. What it was missing is
+/// that a forest floor also has things standing IN the fallen matter, and one
+/// element covers 0.4 m² at the shipped density, so a clump is the honest unit.
+/// It is the same relationship a tuft already has to one grass element: seven
+/// blades from one placement, not one blade.
+///
+/// Emitting the chip first is load-bearing for the gate rather than for the
+/// picture: `tests/contact.rs` measures the chip's four triangles on all three
+/// chip-bearing kinds, and it finds them at a fixed offset.
+fn litter(s: &mut Soup, at: Vec3, yaw: f32, scale: f32, seed: u32) {
+    chip(
+        s,
+        at,
+        yaw,
+        Vec3::new(0.16, 0.022, 0.03) * scale,
+        TWIG_C,
+        seed,
+    );
+    let root = GROUND_ALBEDO[2];
+    // The seed is offset so the stalks' yaws do not correlate with the corner
+    // jitter of the stick they stand in — rule 7, at clump scale.
+    stand(
+        s,
+        at,
+        yaw,
+        seed ^ 0x9e37_79b9,
+        FRONDS_PER_CLUMP,
+        FROND_H * scale,
+        Ramp {
+            lo: root,
+            hi: [
+                root[0] * FROND_TIP_GAIN,
+                root[1] * FROND_TIP_GAIN,
+                root[2] * FROND_TIP_GAIN,
+            ],
+        },
+    );
+}
+
 /// One element's geometry, alone, as a mesh — the same builder `stream` bakes
 /// a whole tile through.
 ///
@@ -249,7 +357,18 @@ fn element(s: &mut Soup, e: &ClutterElem) {
     let seed = ((e.x * 64.0) as i32 as u32) ^ ((e.z * 64.0) as i32 as u32).rotate_left(13);
     match e.kind {
         Clutter::None => {}
-        Clutter::Tuft => tuft(s, at, yaw, e.scale, seed),
+        Clutter::Tuft => stand(
+            s,
+            at,
+            yaw,
+            seed,
+            BLADES_PER_TUFT,
+            TUFT_H * e.scale,
+            Ramp {
+                lo: linear(TUFT_LO),
+                hi: linear(TUFT_HI),
+            },
+        ),
         Clutter::Pebble => chip(
             s,
             at,
@@ -258,14 +377,7 @@ fn element(s: &mut Soup, e: &ClutterElem) {
             PEBBLE_C,
             seed,
         ),
-        Clutter::Twig => chip(
-            s,
-            at,
-            yaw,
-            Vec3::new(0.16, 0.022, 0.03) * e.scale,
-            TWIG_C,
-            seed,
-        ),
+        Clutter::Twig => litter(s, at, yaw, e.scale, seed),
         Clutter::Shard => chip(
             s,
             at,

@@ -30,12 +30,48 @@
 
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
-use client::render::clutter::{element_mesh, CHIP_SINK, CHIP_VOLUME_BLEND, TUFT_H};
+use client::render::clutter::{
+    element_mesh, CHIP_SINK, CHIP_VOLUME_BLEND, FRONDS_PER_CLUMP, TUFT_H,
+};
 use sim_core::terrain::{Clutter, ClutterElem};
 
-/// The three chip kinds. Tufts are the fourth `Clutter` variant and are built
-/// by a different function (`blade`), which the last test covers.
+/// The three chip-bearing kinds. Tufts are the fourth `Clutter` variant and
+/// carry no chip; the last test covers the quad they are built from instead.
 const CHIPS: [Clutter; 3] = [Clutter::Pebble, Clutter::Twig, Clutter::Shard];
+
+/// Vertices one chip contributes: four triangles.
+const CHIP_VERTS: usize = 12;
+
+/// Vertices a whole element mesh holds, per kind.
+///
+/// A litter clump is its fallen chip PLUS standing stalks (2026-08-15,
+/// `NOW.md` §0gm — the growing channel was drawn with the flattest mesh in the
+/// file); pebble and shard are the chip alone. This is asserted rather than
+/// assumed so that BOTH halves of a clump are gated: deleting the stalks and
+/// deleting the chip they stand in are each red here.
+fn verts(kind: Clutter) -> usize {
+    match kind {
+        Clutter::Twig => CHIP_VERTS + FRONDS_PER_CLUMP as usize * 6,
+        _ => CHIP_VERTS,
+    }
+}
+
+/// The chip's own twelve vertices out of an element mesh.
+///
+/// Every assertion in this file that names a chip runs through here, so a kind
+/// that grew a second population around its chip is still measured on the chip
+/// at full strength — the four tests below check the same twelve vertices of a
+/// litter clump's stick that they checked when the stick was the whole mesh.
+/// `clutter.rs::litter` emits the chip first and says that this is why.
+fn chip_span(m: &Mesh, kind: Clutter) -> (Vec<Vec3>, Vec<Vec3>) {
+    let (p, n) = (positions(m), normals(m));
+    assert_eq!(
+        p.len(),
+        verts(kind),
+        "{kind:?}: element mesh is not the population it is supposed to be"
+    );
+    (p[..CHIP_VERTS].to_vec(), n[..CHIP_VERTS].to_vec())
+}
 
 fn elem(kind: Clutter, yaw: u8, scale: f32) -> ClutterElem {
     ClutterElem {
@@ -78,8 +114,7 @@ fn positions(m: &Mesh) -> Vec<Vec3> {
 fn a_chip_is_a_volume_and_not_four_flat_facets() {
     for kind in CHIPS {
         let m = element_mesh(&elem(kind, 40, 1.0));
-        let n = normals(&m);
-        assert_eq!(n.len(), 12, "{kind:?}: four triangles, twelve vertices");
+        let (_, n) = chip_span(&m, kind);
 
         // Distinct directions, at 1° resolution. Anything that still reads as
         // a facet pair lands in the same bucket.
@@ -117,7 +152,7 @@ fn the_chip_keeps_most_of_its_own_facing() {
     // vertex normal and its own triangle's facet must be real but bounded.
     for kind in CHIPS {
         let m = element_mesh(&elem(kind, 200, 1.0));
-        let (p, n) = (positions(&m), normals(&m));
+        let (p, n) = chip_span(&m, kind);
         let mut worst: f32 = 0.0;
         for t in 0..4 {
             let (a, b, c) = (p[t * 3], p[t * 3 + 1], p[t * 3 + 2]);
@@ -155,7 +190,10 @@ fn a_chip_sinks_into_the_ground_rather_than_standing_on_it() {
         for scale in [0.75_f32, 1.0, 1.25] {
             let e = elem(kind, 91, scale);
             let m = element_mesh(&e);
-            let p = positions(&m);
+            // The CHIP's extent, not the element's: a litter clump's stalks
+            // stand well above its stick, and this test is about where the
+            // stick meets the ground.
+            let (p, _) = chip_span(&m, kind);
             let lo = p.iter().fold(f32::INFINITY, |a, v| a.min(v.y));
             let hi = p.iter().fold(f32::NEG_INFINITY, |a, v| a.max(v.y));
             assert!(
