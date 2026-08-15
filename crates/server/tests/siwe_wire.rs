@@ -32,9 +32,15 @@ fn baked_content() -> server::net::SimTables {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let c = content::Content::load_dir(&dir).expect("shipped content loads");
     let mut tables = server::net::bake_all(&c).expect("shipped content bakes");
-    // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
-    // for a human looking at the game, and a suite that asserted on a
-    // fresh inventory would be asserting on content instead of on code.
+    // A test shard spawns naked: a suite that asserted on a fresh
+    // inventory would be asserting on content instead of on code.
+    //
+    // The reason used to be that the shipped `[[spawn_kit]]` was testing
+    // scaffolding. Since 2026-08-15 it is a rock and a torch and is the
+    // game (DECISIONS.md), so the scaffolding half of that argument is
+    // gone — the OTHER half is what this line always rested on and it is
+    // unchanged: these suites count snapshot bytes and handshake
+    // outcomes, and a kit edit must not move either.
     tables.spawn_kit = sim_core::inventory::SpawnKit::EMPTY;
     tables
 }

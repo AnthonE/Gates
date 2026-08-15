@@ -19,9 +19,15 @@ fn baked_content() -> server::net::SimTables {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let content = content::Content::load_dir(&dir).expect("shipped content loads");
     let mut tables = server::net::bake_all(&content).expect("shipped content bakes");
-    // A test shard spawns naked: the alpha `[[spawn_kit]]` is scaffolding
-    // for a human looking at the game, and a suite that asserted on a
-    // fresh inventory would be asserting on content instead of on code.
+    // A test shard spawns naked: a suite that asserted on a fresh
+    // inventory would be asserting on content instead of on code.
+    //
+    // The reason used to be that the shipped `[[spawn_kit]]` was testing
+    // scaffolding. Since 2026-08-15 it is a rock and a torch and is the
+    // game (DECISIONS.md), so the scaffolding half of that argument is
+    // gone — the OTHER half is what this line always rested on and it is
+    // unchanged: these suites count snapshot bytes and handshake
+    // outcomes, and a kit edit must not move either.
     // Overridden here rather than at six call sites, which is what it was.
     tables.spawn_kit = sim_core::inventory::SpawnKit::EMPTY;
     tables
@@ -340,10 +346,10 @@ async fn test_bots_raid_over_the_wire() {
         .fuse_ticks as u64;
     const WINDOW: Duration = Duration::from_secs(4);
 
-    // Not the shipped `[[spawn_kit]]`, and not `EMPTY` either: the alpha kit
-    // is scaffolding for a human looking at the game and asserting on it
-    // would be asserting on content, while `EMPTY` is why the two counters
-    // that say a raid *connected* both read 0. The fixture kit above is
+    // Not the shipped `[[spawn_kit]]`, and not `EMPTY` either: asserting on
+    // the shipped kit would be asserting on content (a rock and a torch
+    // since 2026-08-15, and a raider needs neither), while `EMPTY` is why
+    // the two counters that say a raid *connected* both read 0. The fixture kit above is
     // composed from shipped indices for the same reason `RaidRows` is — the
     // shard stays priced by `content/`, and what a raider carries stays a
     // property of this suite rather than a balance decision nobody spoke.

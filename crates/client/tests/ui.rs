@@ -2802,3 +2802,245 @@ mod techtree_layout {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// §H · the consume verbs are not dead buttons (`NOW.md` §0eat)
+//
+// The eat (`G`) and the drink (`H`) were both dead buttons and the defect was
+// not a wrong value anywhere: `ClientCore` decoded `EventMsg::Consumed`,
+// `ConsumeRefused` and `Drank` into `last_eat`, `last_eat_refused` and
+// `last_drink`, raised `APPLIED_CONSUME` / `APPLIED_DRANK`, and **nothing in
+// the client read any of it**. A refused eat was silent and a landed one was
+// four seconds of hp bar. Every gate in the repo was green, because a field
+// written and never read is not a wrong number — it is a missing call site,
+// and only a grep can see one (`tests/sound.rs`'s feed-drain gate says the
+// same thing about the same class).
+//
+// Two rules, and a reason each is a grep and runs HERE:
+//
+//   1. **Every `Refused` variant reaches a sentence.** `Refused` is declared
+//      in `render/feed.rs` and its one exhaustive `match` is in
+//      `render/hud.rs` — both behind `--features render`. So a variant with
+//      no arm is green on `cargo test --workspace`, twice, and red only at
+//      the Bevy gate, which is `CLAUDE.md`'s feature-line trap exactly. Read
+//      as text, the rule holds in the code tier where it costs seconds. The
+//      converse half is checked too: a variant nothing ever *pushes* is a
+//      sentence for a fact that cannot happen.
+//
+//   2. **The latched consume readouts have a reader.** These three fields are
+//      not rings, so nothing drains them and nothing notices their absence.
+//
+// Both predicates are factored out of their tests so the tests below them can
+// prove them RED against a doctored copy of the tree, on every run. A gate
+// nobody has seen fail is not a gate, and a grep is the easiest kind to write
+// so that it can never fail.
+
+/// The variants `render/feed.rs` declares on `Refused`.
+fn refusal_variants(feed_src: &str) -> Vec<String> {
+    let start = feed_src
+        .find("pub enum Refused {")
+        .expect("render/feed.rs must declare `pub enum Refused`");
+    let body = &feed_src[start..];
+    let end = body.find("\n}").expect("the enum must be closed");
+    let mut out = Vec::new();
+    for line in body[..end].lines().skip(1) {
+        let t = line.trim();
+        // Doc lines, ordinary comments and `#[default]` are not variants.
+        if t.is_empty() || t.starts_with("//") || t.starts_with('#') {
+            continue;
+        }
+        // A trailing `// …` on the variant's own line is idiomatic and
+        // rustfmt keeps it verbatim, so it must be stripped BEFORE the shape
+        // test below. Until 2026-08-15 it was not: `Loot, // the container
+        // verb` failed the all-alphanumeric test, was skipped in silence, and
+        // the floor had exactly one slot of slack — so the dropped variant
+        // was always the newest one, which is the only variant this gate is
+        // ever really about. Proved both ways: `Loot,` reddens the gate,
+        // `Loot, // …` did not.
+        let name = match t.find("//") {
+            Some(i) => t[..i].trim_end(),
+            None => t,
+        }
+        .trim_end_matches(',');
+        if name.is_empty() {
+            continue;
+        }
+        // **And anything else is a loud failure, not a skip.** A slack floor
+        // cannot see one dropped line; refusing to classify can. A tuple
+        // variant (`Foo(u8)`) lands here on purpose — it means the enum grew
+        // a shape this parser does not read, and the gate must say so rather
+        // than quietly check one variant fewer.
+        assert!(
+            name.starts_with(|c: char| c.is_ascii_uppercase())
+                && name.chars().all(|c| c.is_ascii_alphanumeric()),
+            "cannot classify `{t}` inside `pub enum Refused` - the parser has lost \
+             the shape of the enum and would silently check one variant fewer"
+        );
+        out.push(name.to_string());
+    }
+    assert!(
+        out.len() >= 4,
+        "only parsed {out:?} out of `enum Refused` - the parser has lost the shape \
+         of the enum and this gate would pass by checking nothing"
+    );
+    out
+}
+
+/// Which declared `Refused` variants are unwired, and how.
+fn unwired_refusals(feed_src: &str, hud_src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for v in refusal_variants(feed_src) {
+        if !hud_src.contains(&format!("Refused::{v} =>")) {
+            out.push(format!(
+                "Refused::{v} has no arm in render/hud.rs - nothing turns it into a sentence"
+            ));
+        }
+        if !feed_src.contains(&format!("push_refusal(Refused::{v}")) {
+            out.push(format!(
+                "Refused::{v} is never pushed in render/feed.rs - nothing ever fills it"
+            ));
+        }
+    }
+    out
+}
+
+/// `(feed.rs, hud.rs)` as text.
+fn feed_and_hud() -> (String, String) {
+    let read = |p: &str| std::fs::read_to_string(p).unwrap_or_else(|e| panic!("{p}: {e}"));
+    (read("src/render/feed.rs"), read("src/render/hud.rs"))
+}
+
+/// Every refusal the feed can carry becomes a sentence a player reads.
+#[test]
+fn every_refusal_verb_reaches_a_sentence() {
+    let (feed, hud) = feed_and_hud();
+    let bad = unwired_refusals(&feed, &hud);
+    assert!(
+        bad.is_empty(),
+        "a refusal with no sentence is the dead-button defect §0eat found, and \
+         the compiler only says so behind --features render:\n  {}",
+        bad.join("\n  ")
+    );
+}
+
+/// The gate above, proven red on the defect it defends — every run.
+#[test]
+fn the_wiring_gate_can_see_an_unwired_variant() {
+    let (feed, hud) = feed_and_hud();
+
+    // Delete the arm: the exact shape of the bug, since `Refused::Consume`
+    // had no arm because it had no existence.
+    let no_arm = hud.replace("Refused::Consume =>", "Refused::Gone =>");
+    assert_ne!(
+        no_arm, hud,
+        "nothing in hud.rs matches `Refused::Consume =>` - this proof is \
+         scanning for text that is not there, so it proves nothing"
+    );
+    assert!(
+        !unwired_refusals(&feed, &no_arm).is_empty(),
+        "the wiring gate cannot see a deleted match arm, so it is not a gate"
+    );
+
+    // And the other half: a variant nothing fills.
+    let no_push = feed.replace(
+        "push_refusal(Refused::Consume",
+        "push_refusal(Refused::Gone",
+    );
+    assert_ne!(
+        no_push, feed,
+        "nothing in feed.rs pushes `Refused::Consume` - this proof is scanning \
+         for text that is not there"
+    );
+    assert!(
+        !unwired_refusals(&no_push, &hud).is_empty(),
+        "the wiring gate cannot see a variant nothing pushes, so it is not a gate"
+    );
+}
+
+/// Does `code` name `field` as a whole word, rather than as a prefix?
+///
+/// `last_eat` is a prefix of `last_eat_refused`, so a plain `contains` would
+/// report the eat readout as read by the line that reads the refusal — the
+/// false green this gate exists to refuse.
+fn names_field(code: &str, field: &str) -> bool {
+    let mut from = 0;
+    while let Some(i) = code[from..].find(field) {
+        let at = from + i;
+        let after = code[at + field.len()..].chars().next();
+        if !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return true;
+        }
+        from = at + field.len();
+    }
+    false
+}
+
+/// The consume readouts `client-core` latches, and what each is worth saying.
+const CONSUME_READOUTS: [(&str, &str); 3] = [
+    (
+        "last_eat_refused",
+        "which reason the sim refused an eat or a drink for",
+    ),
+    ("last_eat", "which item the consume actually spent"),
+    (
+        "last_drink",
+        "how much water the drink restored and what it cost in hp",
+    ),
+];
+
+/// Which of those nothing under `src/render` reads. Comment lines are
+/// skipped: naming a field in prose is not reading it, and this gate exists
+/// because the four `client-core` doc lines that named a reader for these
+/// were pointing at a bridge that had been deleted.
+fn unread_consume_readouts(sources: &[(String, String)]) -> Vec<&'static str> {
+    CONSUME_READOUTS
+        .iter()
+        .filter(|(field, _)| {
+            !sources.iter().any(|(_, text)| {
+                text.lines().any(|l| {
+                    let code = l.trim_start();
+                    !code.starts_with("//") && !code.starts_with('*') && names_field(code, field)
+                })
+            })
+        })
+        .map(|(field, _)| *field)
+        .collect()
+}
+
+/// Every latched consume readout has a reader in the render path.
+#[test]
+fn the_consume_readouts_are_read() {
+    let missing = unread_consume_readouts(&render_sources());
+    assert!(
+        missing.is_empty(),
+        "these are written by client-core every time you press G or H and read \
+         by nobody, which is the whole of §0eat - {}",
+        missing
+            .iter()
+            .map(|f| {
+                let (_, why) = CONSUME_READOUTS.iter().find(|(n, _)| n == f).unwrap();
+                format!("`{f}` ({why})")
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}
+
+/// The gate above, proven red per field — every run.
+#[test]
+fn the_readout_gate_can_see_a_reader_go_away() {
+    let sources = render_sources();
+    for (field, _) in CONSUME_READOUTS {
+        // Rename the field everywhere it is named: `last_eat` becomes
+        // `last_eat_gone`, which `names_field` refuses as a prefix match.
+        let doctored: Vec<(String, String)> = sources
+            .iter()
+            .map(|(p, t)| (p.clone(), t.replace(field, &format!("{field}_gone"))))
+            .collect();
+        assert!(
+            unread_consume_readouts(&doctored).contains(&field),
+            "the readout gate cannot see `{field}` lose its last reader, so it is \
+             not a gate for it"
+        );
+    }
+}

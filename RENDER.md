@@ -711,7 +711,11 @@ in the ~106 s code tier. Use `bevy/dynamic_linking` for local iteration.
 - **Fixed hour, and it is pinned in the client rather than the harness** (2026-08-15,
   `DECISIONS.md` §open "capture clock v0"). `rig::DayPin` puts a `--capture` run's
   tick at `CAPTURE_DAY_FRAC = DAY_PORTION * 0.5` — the arch's peak, the one
-  fraction where `sun_elevation` returns `RIG_SUN_ELEVATION` exactly. Until then
+  fraction where `sun_elevation` returns `RIG_SUN_ELEVATION` exactly. **Since
+  the bearing started sweeping (2026-08-15) it is also the one fraction where
+  `sun_azimuth` returns `RIG_SUN_AZIMUTH` exactly**, which is why the sweep
+  cost no scored frame its comparability: naming the hour now fixes both
+  coordinates, where naming an elevation would fix only one. Until then
   the hour was *whatever tick the shard had reached* when the probe fired, i.e. a
   function of how long the build took: **24.47° at tick 0, 27.33° typical, 30.36°**
   on a slow box, rising monotonically, so a slower box scored a brighter frame and

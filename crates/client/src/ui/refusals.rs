@@ -1,7 +1,12 @@
 //! Every "no" the server can send, as the sentence a player reads.
 //!
-//! Four tables, one shape: the array INDEX is the sim's own refusal code and
-//! the string is what that code says out loud.
+//! One shape per table: the array INDEX is the sim's own refusal code and
+//! the string is what that code says out loud. (The count is deliberately
+//! not written here — it drifted from "four" the first time a fifth landed,
+//! and the tests below are the thing that actually counts.)
+//!
+//! [`CONSUME`] is the one table whose codes start at 1 rather than 0, and
+//! the one serving two verbs at once; its doc says why in full.
 //!
 //! ## Why this is gated the way it is
 //!
@@ -115,6 +120,34 @@ pub const DEPLOY: [&str; 20] = [
     "empty it first",
 ];
 
+/// `sim_core::survival`'s `REFUSE_C_*: u32` — a consume that did nothing.
+///
+/// **Two things make this table unlike the four above it.**
+///
+/// First, its codes start at **1**, not 0. Zero is not a refusal on this
+/// wire: `EventMsg::ConsumeRefused` never carries it and `ClientCore` uses
+/// `last_eat_refused == 0` to mean *the consume landed*. Index 0 is filled
+/// anyway so the array INDEX stays the sim's own code — shifting the table
+/// by one would import the exact off-by-one class this whole file exists to
+/// refuse — and its string is worded so that a reader who ever sees it on
+/// screen knows a guard broke rather than reading it as a game rule.
+///
+/// Second, **one table serves two verbs.** `survival::consume` (eat, `G`)
+/// emits `REFUSE_C_NOT_FOOD` and `REFUSE_C_FULL`; `survival::drink`
+/// (`H`) emits `REFUSE_C_NO_WATER` and `REFUSE_C_FULL`, on the *same*
+/// `EV_CONSUME_REFUSED`. So the sentences are worded to be true of
+/// whichever verb was pressed: only code 1 may name food, only code 3 may
+/// name water, and code 2 — the one both verbs reach — names neither.
+pub const CONSUME: [&str; 4] = [
+    // Code 0 = "no refusal". Unreachable through `render::feed::drain`,
+    // which only pushes a non-zero code, and unreachable through
+    // `hud::feedback`, which reads the landed half off `last_eat` instead.
+    "nothing was refused",
+    "that is not something you can eat",
+    "already full — that would be wasted",
+    "no water within reach",
+];
+
 /// The sentence, or the bare code when the sim is ahead of the client.
 ///
 /// The fallback keeps a wire ahead of us honest rather than mislabelled: an
@@ -161,6 +194,15 @@ pub fn deploy(code: u8) -> String {
     text(&DEPLOY, code as u32)
 }
 
+/// Why the eat or the drink did nothing.
+///
+/// Never called with 0 — that code means the consume landed, and the landed
+/// sentence is `hud::feedback`'s, because it names the item off `last_eat`
+/// rather than a reason off this table.
+pub fn consume(code: u8) -> String {
+    text(&CONSUME, code as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,41 +233,73 @@ mod tests {
 
     /// The half a hand-written table cannot self-check: has the sim grown a
     /// reason we have no sentence for?
+    ///
+    /// The fifth column is how many leading indices are **not** refusal
+    /// codes. It is 0 for every table whose codes start at zero and 1 for
+    /// [`CONSUME`], whose code 0 means "it landed" — see that table's doc
+    /// for why the slot is filled rather than the array shifted.
     #[test]
     fn every_reason_the_sim_declares_has_a_sentence() {
-        for (file, prefix, len, name) in [
+        for (file, prefix, len, name, reserved) in [
             (
                 "crates/sim-core/src/craft.rs",
                 "REFUSE_",
                 CRAFT.len(),
                 "CRAFT",
+                0,
             ),
             (
                 "crates/sim-core/src/research.rs",
                 "REFUSE_R_",
                 RESEARCH.len(),
                 "RESEARCH",
+                0,
             ),
             (
                 "crates/sim-core/src/build.rs",
                 "REFUSE_B_",
                 BUILD.len(),
                 "BUILD",
+                0,
             ),
             (
                 "crates/sim-core/src/deploy.rs",
                 "REFUSE_D_",
                 DEPLOY.len(),
                 "DEPLOY",
+                0,
+            ),
+            (
+                "crates/sim-core/src/survival.rs",
+                "REFUSE_C_",
+                CONSUME.len(),
+                "CONSUME",
+                1,
             ),
         ] {
             let declared = sim_code_count(file, prefix);
             assert_eq!(
-                declared, len,
-                "{name}: {file} declares {declared} {prefix}* codes and this table has {len}. \
+                declared,
+                len - reserved,
+                "{name}: {file} declares {declared} {prefix}* codes and this table has \
+                 {len} entries of which {reserved} are not codes. \
                  A code with no sentence reaches the player as `code N`."
             );
         }
+
+        // The same claim off a SECOND source, which is the habit `CLAUDE.md`
+        // wants after the relief sweep: the scrape above reads the file as
+        // text and would agree with itself if a code were declared and the
+        // ledger's top left behind, so the table's length is also bound to
+        // the ledger constant the wire's four-bit field is checked against.
+        assert_eq!(
+            CONSUME.len(),
+            sim_core::survival::REFUSE_C_MAX as usize + 1,
+            "CONSUME must cover 0..=REFUSE_C_MAX exactly — the sim refuses any \
+             reason above that constant at the encode boundary, so a table \
+             shorter than it has a hole and a longer one has a sentence no \
+             shard can ever send"
+        );
     }
 
     /// Bound to the CONSTANT, not to the index, so a transposition in the
@@ -276,6 +350,22 @@ mod tests {
         assert_eq!(build(REFUSE_B_WINDOW as u8), "too late to take that down");
         assert_eq!(build(REFUSE_B_EMPTY as u8), "nothing there");
 
+        // Paths rather than a glob: `survival` exports a great deal more
+        // than its refusal ledger and a glob here would be three names of
+        // borrowed scope for three assertions.
+        assert_eq!(
+            consume(sim_core::survival::REFUSE_C_NOT_FOOD as u8),
+            "that is not something you can eat"
+        );
+        assert_eq!(
+            consume(sim_core::survival::REFUSE_C_FULL as u8),
+            "already full — that would be wasted"
+        );
+        assert_eq!(
+            consume(sim_core::survival::REFUSE_C_NO_WATER as u8),
+            "no water within reach"
+        );
+
         use sim_core::craft::*;
         assert_eq!(craft(REFUSE_RECIPE as u8), "no such recipe");
         assert_eq!(craft(REFUSE_COUNT as u8), "bad count");
@@ -310,6 +400,13 @@ mod tests {
             (&CRAFT[..], "CRAFT"),
             (&BUILD[..], "BUILD"),
             (&DEPLOY[..], "DEPLOY"),
+            // RESEARCH was missing from this list for no reason anyone
+            // wrote down, and CONSUME needs it more than any table here:
+            // its three codes are shared between two verbs, so two of them
+            // reading the same would leave a player unable to tell a dry
+            // shoreline from a full stomach.
+            (&RESEARCH[..], "RESEARCH"),
+            (&CONSUME[..], "CONSUME"),
         ] {
             for (i, a) in table.iter().enumerate() {
                 assert!(!a.is_empty(), "{name}[{i}] is empty");
@@ -326,5 +423,13 @@ mod tests {
     fn an_unknown_code_prints_as_itself() {
         assert_eq!(build(BUILD.len() as u8), format!("code {}", BUILD.len()));
         assert_eq!(deploy(200), "code 200");
+        // The wire's `reason` is four bits, so 4..=15 is forgeable width the
+        // server refuses at the encode boundary — but a shard NEWER than
+        // this client can legitimately send a fifth reason, and that is the
+        // case this fallback is for.
+        assert_eq!(
+            consume(CONSUME.len() as u8),
+            format!("code {}", CONSUME.len())
+        );
     }
 }

@@ -40,9 +40,15 @@ use super::Net;
 /// a full drain always fits.
 pub const FEED_CAP: usize = TOAST_RING;
 
-/// Which verb a refusal answers. The three refusal queues are separate on the
+/// Which verb a refusal answers. The refusal queues are separate on the
 /// wire and stay separate here, because the HUD turns each into a different
 /// sentence (`ui::refusals`) — the audio side is the one that does not care.
+///
+/// **Adding a variant is green on `cargo test --workspace` and red at the
+/// Bevy gate**, because the one exhaustive `match` over this type lives in
+/// `render/hud.rs`, on the same side of `--features render` as the enum
+/// (`CLAUDE.md`'s feature-line trap). `tests/ui.rs` §H moves that failure
+/// into the code tier by reading both files as text.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Refused {
     // The default only exists so `Feed` can derive one for its fixed array;
@@ -52,6 +58,14 @@ pub enum Refused {
     Build,
     Deploy,
     Research,
+    /// An eat (`G`) or a drink (`H`) that did nothing —
+    /// `sim_core::survival`'s `REFUSE_C_*`.
+    ///
+    /// **One variant for two verbs**, because the sim answers both on one
+    /// `EV_CONSUME_REFUSED` and one of its three codes belongs to the drink
+    /// alone. `ui::refusals::CONSUME` words all three so neither verb reads
+    /// as the other.
+    Consume,
 }
 
 /// One frame of own-facts. Cleared and refilled by [`drain`]; read-only to
@@ -256,6 +270,47 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     }
     while let Some(code) = core.pop_deploy_refusal() {
         feed.push_refusal(Refused::Deploy, code);
+    }
+    // The consume verbs are the one refusal here that is **not a ring**.
+    // `ClientCore` latches `last_eat_refused` and raises `APPLIED_CONSUME`,
+    // so the fact is a field plus a freshness bit — the shape [`Feed::applied`]
+    // exists for, and the same shape `stock` and `struct_hit` take.
+    //
+    // It joins the queue anyway rather than being read straight off the core
+    // by the HUD, and that is the whole point: a refusal in this queue is a
+    // refusal to every reader, so `render::audio` plays the refusal cue for a
+    // dry shoreline without knowing the verb exists. A latched fact read
+    // privately by the HUD would have been silent.
+    //
+    // **What the latch costs, stated rather than hidden.** A field holds the
+    // LAST answer, so two consume answers landing inside one drain window
+    // collapse to one: `Consumed` zeroes the reason and `ConsumeRefused`
+    // overwrites it, so refuse-then-land loses the refusal and land-then-refuse
+    // loses the landing.
+    //
+    // ⚠ **This is reachable from the keyboard, and a comment here said it was
+    // not until 2026-08-15.** The claim was that `verbs.rs` reads
+    // `just_pressed` so a frame sends at most one consume — true, and beside
+    // the point: `KeyG` and `KeyH` are two independent presses in one system,
+    // so ONE frame sends an eat *and* a drink, the sim runs both inside one
+    // `World::tick`, and both answers land in one drain window. At
+    // `TICK_HZ = 30` a G and an H pressed 33 ms apart do it too. The ugly
+    // ordering is drink-refused-after-eat-landed: the player is told "no water
+    // within reach" and hears the refusal cue while the bandage is gone and
+    // its heal ramp is running — the client denying a thing it just did, which
+    // is worse than the silence this slice was landed to fix. The reverse
+    // order loses the drink refusal outright, which is §0eat's own symptom
+    // still live on `H`.
+    //
+    // The honest fix is a ring on `ClientCore` beside the four popped above,
+    // which is `client-core`'s file (`NOW.md` §0eat).
+    if feed.applied & client_core::core::APPLIED_CONSUME != 0 {
+        // Zero is the landed case and not a reason — `hud::feedback` answers
+        // that half by naming the item off `last_eat`.
+        let code = core.last_eat_refused;
+        if code != 0 {
+            feed.push_refusal(Refused::Consume, code);
+        }
     }
     while let Some(k) = core.pop_knock() {
         if feed.n_knocks >= FEED_CAP {

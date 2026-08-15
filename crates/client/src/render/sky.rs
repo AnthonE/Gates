@@ -52,7 +52,7 @@ use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
 };
 
-use super::rig::{EyeCam, RIG_SUN_ELEVATION};
+use super::rig::{EyeCam, CAPTURE_DAY_FRAC};
 use super::WorldId;
 
 /// Cube face size in texels. 6 × 256² = 393k texels, 1.5 MB of RGBA8, built
@@ -178,11 +178,52 @@ pub fn cube_dir(face: usize, x: u32, y: u32, n: u32) -> Vec3 {
 /// deck, which is the "a test that calls `sun_dir()` twice proves nothing"
 /// trap named in `threejs-visual-validation`.
 ///
-/// The deck is baked at NOON — `RIG_SUN_ELEVATION`, not the cycle's current
-/// elevation — which `rig::day_night` already says out loud.
+/// The deck is baked at NOON — [`CAPTURE_DAY_FRAC`], the one hour at which
+/// `rig::sun_elevation` returns `RIG_SUN_ELEVATION` and `rig::sun_azimuth`
+/// returns `RIG_SUN_AZIMUTH` — which `rig::day_night` already says out loud.
+/// It named the elevation constant directly until the bearing started
+/// sweeping (2026-08-15); naming the *hour* is now the only spelling that
+/// cannot pick a height from one time of day and a bearing from another.
 pub fn deck_march_dir() -> Vec2 {
-    let s = super::rig::to_sun(RIG_SUN_ELEVATION);
+    let s = super::rig::to_sun(CAPTURE_DAY_FRAC);
     Vec2::new(s.x, s.z).normalize_or_zero()
+}
+
+/// The rotation the baked deck is DRAWN under, so its lit faces keep facing
+/// the sun as the sun's bearing sweeps.
+///
+/// **Why the deck rotates instead of the lit term following the sun.** The
+/// lit/base split is baked into the texels ([`cloud_cubemap`] compares the
+/// coverage field against a sample one step along [`deck_march_dir`]), so
+/// there is no runtime term to steer — the only ways to keep the deck
+/// coherent with a swept sun are to rebake it or to move it. A rebake is
+/// 6 × 256² texels of four-octave fBm: a boot cost, not a frame cost, and it
+/// allocates, which the trap list forbids on a client frame.
+///
+/// **Moving it is exact, not an approximation.** The deck is a flat plane at
+/// `CLOUD_ALT_M` sampled through `1/d.y`, and both that projection and the
+/// horizon fade depend only on `d.y`, which a rotation about `Y` preserves.
+/// So the rotated cubemap is precisely the deck a rebake at that bearing
+/// would have produced, with the noise field carried round with it. The
+/// visible cost is honest and worth naming: the cloud pattern turns with the
+/// light, one revolution per cycle — `RIG_SUN_ARC` of it across the daylit
+/// half (≈5.7°/min at the default arc) and the rest at a `brightness` of
+/// zero.
+///
+/// **The direction of the rotation, derived rather than tried.** `Skybox`
+/// uploads `transform = rotation.inverse()` and the shader computes
+/// `sample_dir = transform * ray_dir`, so a texel authored at world direction
+/// `w` is *displayed* at `rotation * w`. `Quat::from_rotation_y(θ)` carries
+/// the yaw-convention horizontal `(sin a, cos a)` to `(sin(a+θ), cos(a+θ))`,
+/// i.e. it ADDS `θ` to a bearing. The deck's lit side is authored at
+/// `RIG_SUN_AZIMUTH`, so `θ` is the current bearing minus that. A sign error
+/// here drags the clouds the wrong way through the sky while the sun is
+/// perfectly correct, which is the kind of half-right that reads as a
+/// rendering bug rather than a lighting one —
+/// `tests/sun.rs` §`the_cloud_deck_follows_the_sun_all_day` gates it against
+/// the shadows at 65 hours of the day rather than at noon alone.
+pub fn deck_rotation(frac: f32) -> Quat {
+    Quat::from_rotation_y(super::rig::sun_azimuth(frac) - super::rig::RIG_SUN_AZIMUTH)
 }
 
 /// Build the cloud cubemap for a seed.

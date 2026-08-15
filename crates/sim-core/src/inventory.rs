@@ -349,9 +349,18 @@ impl Default for SpawnKit {
 /// `INV_SLOTS` is dropped rather than wrapped; `validate` already refuses a
 /// kit that long, so reaching that branch means the bake was bypassed.
 ///
-/// Called only on the fresh-spawn arm of `World::seat`, beside
-/// `survival::grant` and for the same reason: a restored character keeps
-/// what they had, and re-granting on every login would be an item printer.
+/// **Called on every fresh BODY, never on every login** — the fresh-spawn
+/// arm of `World::seat` and `World::wake`, both beside `survival::grant`
+/// and for its reason: each restores the floor a body needs to be playable
+/// and neither restores anything the player earned. A restored character
+/// keeps what they saved, so the restore arm grants nothing.
+///
+/// The `wake` call landed 2026-08-15 (DECISIONS.md; `NOW.md` §0die). This
+/// doc said "the fresh-spawn arm of `World::seat`" and only that, because
+/// re-granting "would be an item printer" — true of the nine-entry kit
+/// that shipped then (900 wood, 500 stone, 100 metal frags) and false of
+/// the rock and torch that replaced it. The number is what changed; the
+/// rule did not.
 pub fn grant_kit(kit: &SpawnKit, p: &mut crate::world::Player) {
     let n = (kit.count as usize).min(MAX_SPAWN_KIT).min(INV_SLOTS);
     for i in 0..n {

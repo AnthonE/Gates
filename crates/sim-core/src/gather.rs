@@ -685,6 +685,39 @@ pub fn swing(
     if def.output == NO_ITEM || def.output as usize >= MAX_ITEM_DEFS {
         return Swing::Free; // inert content (or a table the bake would have refused)
     }
+    // What is in hand decides whether this node answers at all, so it is
+    // read here rather than beside the payout below.
+    let held = if p.inv[p.frame.sel as usize].count > 0 {
+        p.inv[p.frame.sel as usize].item
+    } else {
+        NO_ITEM
+    };
+    // **A tool this node pays nothing for does not get to destroy it.**
+    // Content with no `hand` row bakes `hand_yield: 0` and `yield_for`
+    // falls back to it for anything not in the tool table, so from
+    // 2026-08-15 a bare fist — or a torch, or a hammer — reads 0 on every
+    // swung node (content/gatherables.toml; operator: *"you cant smash
+    // trees with ur hans lol u need a rock"*).
+    //
+    // The refusal has to be HERE, above `find_or_insert`, because the
+    // budget spend below is unconditional: without it ten bare-hand swings
+    // would exhaust a tree, pay nothing, and put it on a 20–45 min
+    // respawn — a griefing hole, and a self-grief hole for anyone who lost
+    // their rock. It also keeps the swing out of `SlotLives`, which is a
+    // bounded store a free verb must not be able to fill.
+    //
+    // ⚠ **This is silent, and it is owed an announcement.** The player
+    // gets no event and no refusal, which is the dead-button shape
+    // `NOW.md` §0eat is about. Saying it needs a new `EV_*` and a new
+    // event subtype — `EV_MAX` and `SUB_MAX` are both saturated by design
+    // — and that is a `PROTO_VER` bump with regenerated goldens (wall 6),
+    // which the pass that landed this was not authorised to take.
+    // Re-using `EV_GATHER` with `added = 0` is NOT the cheap way out: that
+    // encoding is already spoken for as the spill signal (see the payout
+    // comment below), so it would make one wire fact mean two things.
+    if def.yield_for(held) == 0 {
+        return Swing::Free; // wrong tool — the arm is free, the node is untouched
+    }
     let Some(life) = lives.find_or_insert(cx, cz) else {
         return Swing::Free; // store exhausted by harvested entries — refuse the hit
     };
@@ -725,11 +758,6 @@ pub fn swing(
         life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
     }
 
-    let held = if p.inv[p.frame.sel as usize].count > 0 {
-        p.inv[p.frame.sel as usize].item
-    } else {
-        NO_ITEM
-    };
     // Pay pro rata for the budget spent, less the share this node holds
     // back for whoever finishes it.
     //

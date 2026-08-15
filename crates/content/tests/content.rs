@@ -621,15 +621,30 @@ fn bake_carries_the_shipped_numbers() {
     assert_eq!(gc.item_count as usize, c.items.len());
     assert_eq!(gc.stack_max[wood as usize], 1000, "items.toml wood stack");
 
-    // gatherables.toml gather.tree: output wood, 10 hits, hand 25,
-    // stone hatchet 81, weak-spot +50% — read back from the baked table.
-    // The two yields are the reference's large-tree totals over our own
-    // 10 hits (810 ÷ 10 at the stone hatchet); they moved 2026-08-10 with
-    // the rest of the node take and are re-pinned here in the same commit.
+    // gatherables.toml gather.tree: output wood, 10 hits, **no hand row**,
+    // rock 50, stone hatchet 81, weak-spot +50% — read back from the baked
+    // table. The tool yields are the reference's large-tree totals over our
+    // own 10 hits (810 ÷ 10 at the stone hatchet); they moved 2026-08-10
+    // with the rest of the node take.
+    //
+    // **The hand yield was 25 and is now 0** (DECISIONS.md 2026-08-15:
+    // bare hands gather nothing). It is pinned by VALUE rather than left
+    // unasserted because the zero is the whole decision and because it is
+    // expressed by an ABSENT row: `bake.rs` initialises `hand_yield: 0`,
+    // so a `hand` line silently re-added to gatherables.toml reddens here
+    // and nowhere else. `yield_for` falls back to the hand yield for any
+    // item not in the tool table, so this also pins what a torch or a
+    // hammer draws off a tree, which `gather::swing` now refuses on.
     let tree = &gc.nodes[0];
+    let rock = c.item_index("item.rock").unwrap();
     assert_eq!(tree.output, wood);
     assert_eq!(tree.hits, 10);
-    assert_eq!(tree.yield_for(sim_core::gather::NO_ITEM), 25);
+    assert_eq!(
+        tree.yield_for(sim_core::gather::NO_ITEM),
+        0,
+        "bare hands pay something on a tree — the `hand` row is back"
+    );
+    assert_eq!(tree.yield_for(rock), 50, "the bootstrap tool pays nothing");
     assert_eq!(tree.yield_for(hatchet), 81);
     assert_eq!(tree.weak_pct, 50, "gatherables.toml weak_spot_bonus_pct");
     assert_eq!(gc.nodes[4].weak_pct, 0, "the bush carries no mark");
@@ -1893,42 +1908,97 @@ fn one_bow_carries_several_rounds_each_with_its_own_ballistics() {
 // ---------------------------------------------------------------------------
 // The spawn kit
 //
-// It is testing scaffolding that ships in content, which makes it exactly the
-// kind of thing that rots quietly: it is not on any player's critical path,
-// so a kit that silently granted nothing, or granted an item the tables do
-// not have, would be found by somebody wondering why their hands were empty.
+// **It is on every player's critical path now**, which is a change of kind and
+// not of degree. Until 2026-08-15 it was testing scaffolding — nine entries
+// whose own comment called them that — and this block existed so a kit that
+// silently granted nothing would be found by a gate rather than by somebody
+// wondering why their hands were empty. It is now the reference's naked spawn
+// (a rock and a torch, DECISIONS.md 2026-08-15), it is granted again on every
+// respawn (`World::wake`), and with bare hands paying nothing on any swung
+// node it is the ONLY thing standing between a fresh body and a world it
+// cannot touch. So the assertions below pin the decision, not the plumbing.
 
-/// The alpha kit is real, reaches the sim, and lands where it says it does.
+/// The kit is exactly the rock and the torch, on the belt, and the rock is a
+/// live tool on every node the game is farmed from.
+///
+/// Three claims, each of which was true of the old kit for a different reason
+/// and would be a different bug if it broke:
+///
+/// - **Exactly two entries, in order.** The spoken kit is "a rock and a
+///   torch"; a third entry is content nobody spoke.
+/// - **Both on the belt.** `grant_kit` writes slots in order, so this is
+///   free today — but it is the property that makes the kit usable without a
+///   trip to the inventory, and it was load-bearing when the kit was nine
+///   deep and could push a tool past `HOTBAR_SLOTS`.
+/// - **Every entry is a single hand item, never a stack of material.** This
+///   is what makes the kit safe to re-grant on death: the old kit could not
+///   be, because 900 wood on every respawn is an item printer, and that
+///   arithmetic is the whole of `world.rs::wake`'s argument. A material row
+///   added back here re-opens it silently — nothing in `sim-core` can see
+///   the difference between a tool and a stack of wood.
 #[test]
 fn the_spawn_kit_bakes_and_seats() {
     let c = build(&sources()).expect("content builds");
     let kit = c.bake_spawn_kit().expect("the kit bakes");
-    assert!(kit.count > 0, "the alpha kit grants nothing");
 
-    // The order is load-bearing: `grant_kit` writes slots in order, so the
-    // first HOTBAR_SLOTS entries are the belt. A kit whose plan and hammer
-    // were not on the belt would need a trip to the inventory before the
-    // player could build at all, which defeats the reason it exists.
-    let plan = c
-        .item_index("item.building_plan")
-        .expect("the plan is an item");
-    let hammer = c.item_index("item.hammer").expect("the hammer is an item");
-    let belt: Vec<u16> = kit.stacks[..(kit.count as usize).min(sim_core::limits::HOTBAR_SLOTS)]
+    let rock = c.item_index("item.rock").expect("the rock is an item");
+    let torch = c.item_index("item.torch").expect("the torch is an item");
+    let granted: Vec<(u16, u16)> = kit.stacks[..kit.count as usize]
         .iter()
-        .map(|s| s.item)
+        .map(|s| (s.item, s.count))
         .collect();
-    assert!(belt.contains(&plan), "the building plan is not on the belt");
-    assert!(belt.contains(&hammer), "the hammer is not on the belt");
+    assert_eq!(
+        granted,
+        vec![(rock, 1), (torch, 1)],
+        "the naked spawn is a rock and a torch, in that order \
+         (DECISIONS.md 2026-08-15) — this kit is something else"
+    );
+    assert!(
+        kit.count as usize <= sim_core::limits::HOTBAR_SLOTS,
+        "the kit runs past the belt: {} entries",
+        kit.count
+    );
 
-    // And it pays for something. A kit with tools and no materials cannot
-    // place a piece, which is the verb it exists to unblock.
-    let wood = c.item_index("item.wood").expect("wood is an item");
-    let carried: u32 = kit.stacks[..kit.count as usize]
-        .iter()
-        .filter(|s| s.item == wood)
-        .map(|s| s.count as u32)
-        .sum();
-    assert!(carried > 0, "the kit carries no wood to build with");
+    // Tools, not materials — the re-grant safety property, read off the
+    // shipped item rows rather than off the two ids above.
+    for e in &c.balance.spawn_kit {
+        let item = c.item(&e.item).expect("kit names a shipped item");
+        assert_eq!(
+            item.slot,
+            content::schema::EquipSlot::Hand,
+            "`{}` is not a hand item — a kit of materials cannot be \
+             re-granted on death (world.rs::wake)",
+            e.item
+        );
+        assert_eq!(
+            e.count, 1,
+            "`{}` grants {} — a kit entry above 1 is a stack of goods, \
+             which is the item printer `wake` is priced against",
+            e.item, e.count
+        );
+    }
+
+    // And the rock actually works: with no `hand` row on any swung node,
+    // a kit whose tool paid nothing would be a naked spawn wearing a kit.
+    let gc = c.bake_gather().expect("gather bakes");
+    let mut swung = 0;
+    for node in gc.nodes.iter() {
+        if node.output == sim_core::gather::NO_ITEM || node.hits < 2 {
+            continue; // the bush is a one-hit pickup, not a swung node
+        }
+        swung += 1;
+        assert!(
+            node.yield_for(rock) > 0,
+            "a swung node pays the spawn kit's rock nothing — the loop \
+             cannot start from the beach"
+        );
+        assert_eq!(
+            node.yield_for(sim_core::gather::NO_ITEM),
+            0,
+            "a swung node still pays bare hands — DECISIONS.md 2026-08-15"
+        );
+    }
+    assert!(swung >= 4, "only {swung} swung nodes — this gate got thin");
 }
 
 /// Absent is legal, and it means naked.
@@ -1950,35 +2020,39 @@ fn no_spawn_kit_is_a_naked_spawn() {
     assert_eq!(kit.count, 0, "an absent kit granted something");
 }
 
+/// The four refusals, re-anchored on the rock when the kit became a rock
+/// and a torch (2026-08-15). They read the same because the rules did not
+/// move — only the row they are spelled against.
 #[test]
 fn spawn_kit_refusals() {
     // An item the tables do not have.
     refuses(
         "balance.toml",
-        "[[spawn_kit]]\nitem = \"item.hammer\"",
+        "[[spawn_kit]]\nitem = \"item.rock\"",
         "[[spawn_kit]]\nitem = \"item.jetpack\"",
         "no such item",
     );
     // A count of zero — a slot that would draw empty.
     refuses(
         "balance.toml",
-        "item = \"item.hammer\"\ncount = 1",
-        "item = \"item.hammer\"\ncount = 0",
+        "item = \"item.rock\"\ncount = 1",
+        "item = \"item.rock\"\ncount = 0",
         "grants 0",
     );
-    // Past the item's own stack size.
+    // Past the item's own stack size, which for the rock is 1 — so this
+    // case is now tighter than it was against the hammer, not looser.
     refuses(
         "balance.toml",
-        "item = \"item.hammer\"\ncount = 1",
-        "item = \"item.hammer\"\ncount = 99",
+        "item = \"item.rock\"\ncount = 1",
+        "item = \"item.rock\"\ncount = 99",
         "past its own stack size",
     );
     // The same item twice — `grant_kit` writes slots and never merges, so
     // this is a typo that halves what the author meant.
     refuses(
         "balance.toml",
-        "[[spawn_kit]]\nitem = \"item.hammer\"\ncount = 1",
-        "[[spawn_kit]]\nitem = \"item.hammer\"\ncount = 1\n\n[[spawn_kit]]\nitem = \"item.hammer\"\ncount = 1",
+        "[[spawn_kit]]\nitem = \"item.rock\"\ncount = 1",
+        "[[spawn_kit]]\nitem = \"item.rock\"\ncount = 1\n\n[[spawn_kit]]\nitem = \"item.rock\"\ncount = 1",
         "granted twice",
     );
 }
