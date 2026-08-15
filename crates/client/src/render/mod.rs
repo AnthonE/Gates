@@ -357,6 +357,12 @@ impl Plugin for GatesRenderPlugin {
         } else {
             rig::DayPin::default()
         };
+        // The ground's splat material. An `ExtendedMaterial` is a distinct
+        // asset type from its base, so it needs its own `MaterialPlugin` —
+        // without this the ground silently draws with no material at all
+        // rather than failing to compile.
+        app.add_plugins(MaterialPlugin::<terrain_mesh::GroundMaterial>::default());
+
         app.insert_resource(day_pin)
             .init_resource::<Eye>()
             .init_resource::<input::Look>()

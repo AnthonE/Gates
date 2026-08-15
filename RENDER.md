@@ -458,7 +458,15 @@ tuft had one lit blade and one black one. Blades are also `NotShadowCaster`:
 two triangles a few centimetres wide against a cascade sized for 200 m is not
 a shadow, it is acne, and the first capture was full of it.
 
-### R4 · Materials — the photograph, on the surface — **LANDED (single-map)**
+### R4 · Materials — the photograph, on the surface — **LANDED (4-way albedo)**
+
+⚠ **Updated 2026-08-15: the "single-map" this section described is retired.**
+`assets/shaders/ground_splat.wgsl` — the first WGSL in the tree — samples all
+four ground sources and blends them by the splat weights the mesh carries on
+`ATTRIBUTE_UV_1`, each contributing its own mean-1 luminance field. The four
+bullets below still stand as the spec; the first is now half-built (albedo
+yes, normals and roughness no) and the biplanar projection is not built at all.
+`NOW.md` §0gp carries the remainder.
 
 The CC0 set in `assets/textures/` already exists, is manifested, and its
 *selection* was already measured (gain span, albedo sd, anisotropy). None of

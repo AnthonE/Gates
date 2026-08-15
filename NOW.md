@@ -212,21 +212,50 @@ brightness-neutral to −0.024% so the coupled owner keeps brightness. New gate
 `ground_mix.rs`'s debt test is now a pin on the held mean. Knobs:
 `DECISIONS.md` §open "ground identity separation v0".
 
-**What remains, and it is the larger half.** Granite has stone's *value* now
-and not stone's *surface*: all four identities still share one greyscale detail
-map and one `perceptual_roughness`. `render/textures.rs` already loads all four
-`MapSet`s and only `detail` + `grass.normal` are ever bound — `RENDER.md` R4 is
-the spec, and it needs the first WGSL in the tree. Three things scouted this
-pass and worth not re-deriving: an `ExtendedMaterial` extension that does *not*
-declare `#[bindless]` forces the whole material non-bindless, which retires the
-blocker `terrain_mesh.rs`'s comment states; the four weights can reach the
-fragment with **no custom vertex shader** by packing two `u8` per `f32` into
-`ATTRIBUTE_UV_1` (exact under a 24-bit mantissa), leaving `ATTRIBUTE_COLOR` and
-every gate on it untouched; and the skills say blend by *height* not linearly
-(depth 0.2), sum normals as surface gradients, and **leave the classifier soft**
-— sharpening it makes bubble regions. Also open: `ui/map.rs` carries an
-independent minimap palette that nothing holds against `GROUND_ALBEDO`, and it
-did not move with this edit.
+**The albedo half of the surface landed 2026-08-15** — the first WGSL in the
+tree (`assets/shaders/ground_splat.wgsl`). Each identity now contributes its
+own source's **mean-1 luminance field** (`GROUND_MAP_GAIN`, four measured
+reciprocals cross-checked to 0.3% against `GROUND_ALBEDO`'s own per-channel
+table), height-blended by the splat weights, which ride `ATTRIBUTE_UV_1` packed
+two `u8` per `f32` — so `ATTRIBUTE_COLOR` and its three gates are untouched.
+Luminance and not chroma because `ART.md` §7's ×1 deviation rule fails for three
+of the four sources; the colour stays the vertex's. Gates: `ground_maps.rs` (2),
+`ground_splat.rs` (5, §E is the role check — a permutation type-checks, round
+-trips and sums to 255). Both mutation-proven red. Knob: `DECISIONS.md` §open
+"ground splat material v0".
+
+**What remains.** (1) **Normals** — all four still share grass's; overriding
+`pbr_input.N` per identity means re-deriving the tangent-space transform the
+shader currently gets free from `pbr_input_from_standard_material`. (2)
+**Roughness** — still one `perceptual_roughness`, still blocked on ORM packing
+(an asset step, not a slot). (3) `ui/map.rs`'s independent minimap palette,
+which nothing holds against `GROUND_ALBEDO`. (4) **Nobody has compared a before
+/after frame** — see §0cap, which is why.
+
+## 0cap · A wolf decides what the capture harness photographs *(client lane)*
+
+Found 2026-08-15 trying to get a before/after frame for §0gp, and it is why
+that item has none. **The capture probe is a live player in a world with
+predators, and it loses.** Six runs on seed 20260731: every baseline run
+survived, three of four splat-material runs died — `a wolf ran you down` — and
+in the last one the probe was already dead at vantage 0, so the whole run
+photographed the death screen. That screen dims the scene, so a dead run's
+frames are darker and flatter than a live one's *for a reason that has nothing
+to do with the diff*.
+
+**The bias is the bad part, not the noise.** The kill correlates with build
+cost — the heavier build renders slower under lavapipe, so its settle phase
+gives the wolf more wall-clock to close. The harness therefore punishes the
+build that draws more, which is the direction every renderer slice moves, and a
+frame darker because the probe died is indistinguishable to a judge from one
+darker because the material regressed. `CLAUDE.md`'s "a gate that waits on a
+clock is not a gate on this box", wearing a different coat.
+
+Three fixes, cheapest first, none taken: a `dev_peace` shard key suppressing mob
+spawns for a capture; an undamageable probe while capturing; or `dev_spawn` on a
+beach — mob homes are inland above `BEACH_MAX_H`, and **`dev_spawn =
+"1024,1024"` is the island centre, the worst possible choice and the one this
+pass tried first.**
 
 ## 0tree · The research ladder exists — what it is still one edge short of *(systems lane)*
 

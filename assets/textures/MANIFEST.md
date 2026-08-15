@@ -73,8 +73,17 @@ were fetched, manifested and then read by nothing for four days: a
 client carried a UV**, so no prop could sample a map however many shipped. The
 UV half is solved on the CPU (`props::Soup` box-projects per triangle, which a
 triangle soup makes free), and those four are bound now. `gravel` is the one
-role still unbundled — it is a slope/scree identity for the GROUND, which is
-still single-map and still waiting on the splat material.
+role still unbundled — it is a slope/scree identity for the GROUND, which had
+no fifth slot to put it in.
+
+⚠ **The clause that used to end that sentence — "which is still single-map and
+still waiting on the splat material" — is retired (2026-08-15).** The ground
+samples all four of its albedos now (`assets/shaders/ground_splat.wgsl`), each
+as a mean-1 luminance field blended by the splat weights. What `gravel` waits
+on is not the material but a **fifth identity in `terrain::splat`**, which is a
+sim change and not a render one. The ground's `normal` and `rough` are still
+one-for-all — it binds `grass.normal` for all four — so the "bundled" column
+below means the albedo is sampled, not the set.
 
 | role | source | ao | bundled | note |
 |---|---|---|---|---|
