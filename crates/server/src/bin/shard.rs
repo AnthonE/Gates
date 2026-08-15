@@ -118,13 +118,38 @@ async fn main() {
     // Every table in one call, refusing the boot on the first that fails.
     // It was twelve separate `match` arms here and one of them was simply
     // never written — see `net::SimTables`.
-    let tables = match server::net::bake_all(&content) {
+    let mut tables = match server::net::bake_all(&content) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("shard: content bake refused: {e}");
             std::process::exit(1);
         }
     };
+    // The dev spawn-kit override, `dev_spawn`'s shape and `dev_spawn`'s
+    // caveats (`config.rs` states them in full). Unset — the shipping
+    // default and the only path a public shard takes — this is a no-op and
+    // the kit stays the content's rock and torch.
+    //
+    // Loud on stdout when it fires, because a shard silently handing every
+    // joiner a different kit than `content/` declares is the exact shape of
+    // "the doc reads as covered while nothing checks it": the next person to
+    // wonder why their spawn is fat should find the answer in the boot log,
+    // not in a diff.
+    match server::config::dev_spawn_kit(cfg.dev_spawn_kit.as_deref(), &content) {
+        Ok(None) => {}
+        Ok(Some(kit)) => {
+            println!(
+                "⚠ dev_spawn_kit: {} stacks replace content's [[spawn_kit]] — \
+                 a DEV shard, never a public one",
+                kit.count
+            );
+            tables.spawn_kit = kit;
+        }
+        Err(e) => {
+            eprintln!("shard: {e}");
+            std::process::exit(1);
+        }
+    }
     // What this shard IS, before what it loaded. Three numbers and they are
     // three different questions (`protocol::version`): the build is what to
     // quote in a bug report, `proto` is the exact wire gate, and the floor is

@@ -1,7 +1,16 @@
 # Gates · content/gatherables.toml — node/tree archetypes → per-tool yield
 # (CONTENT.md §1). Archetypes name sim-core scatter occupants (terrain.rs).
-# `hand` is the bare-hand row — a naked spawn bootstraps by punching stone
-# for a rock.
+# `hand` is the bare-hand row, and **no swung node carries one any more**
+# (DECISIONS.md 2026-08-15): bare hands gather nothing, exactly as they do
+# in the reference. A spawn bootstraps off the rock the kit grants, and
+# re-makes one for 10 stone if it loses it (balance.toml `[[spawn_kit]]`,
+# recipes.toml `recipe.rock`).
+#
+# An ABSENT `hand` row is how that is said, not `hand = 0`: `validate.rs`
+# refuses a zero yield for any tool including this one, and `bake.rs`
+# initialises `hand_yield: 0`, so deleting the line is the content-only
+# move and writing the zero is a code change. The bush keeps its row on
+# purpose — see its own comment below.
 #
 # **A node's whole payout is `hits × yield_per_hit[tool]`, and the two
 # percentages below move WHEN it arrives, never how much** (operator,
@@ -39,9 +48,13 @@
 #   agreeing to within 0.014. Ours already had that shape by another
 #   route; what changes here is the scale and the ratio.
 #
-# `hand` has no reference row on any node — bare hands gather nothing
-# there — so every hand row keeps our own relation to the rock (half of
-# it on wood and stone, 0.6 on the ores) rather than inventing a source.
+# `hand` has no reference row on any swung node — bare hands gather
+# nothing there — and since 2026-08-15 ours have none either. The rows
+# that used to sit here (wood 25, stone 19, metal 15, sulfur 6) were our
+# own relation to the rock, kept because deleting them left a naked spawn
+# with no loop at all; the kit's rock closes that hole, so the difference
+# `BALANCE.md` §6 would have wanted a mechanism case for is retired
+# rather than argued.
 
 [[gatherable]]
 id = "gather.tree"
@@ -62,7 +75,6 @@ finish_bonus_pct = 50
 # Note the wood ladder is much flatter than the ore ladder: 810 → 867 is
 # 0.93, where a stone pickaxe draws 0.79 of a metal one.
 [gatherable.yield_per_hit]
-hand = 25
 "item.rock" = 50
 "item.hatchet_stone" = 81
 "item.hatchet_metal" = 87
@@ -96,7 +108,6 @@ finish_bonus_pct = 20
 # generosity: their 1000 is priced for a world where you are shot off the
 # node, and ours is not.
 [gatherable.yield_per_hit]
-hand = 19
 "item.rock" = 38
 "item.pickaxe_stone" = 79
 "item.pickaxe_metal" = 100
@@ -117,7 +128,6 @@ finish_bonus_pct = 20
 # to gate, so that half is not taken (§4.3b names it as the place HQM
 # belongs if a tier ever lands).
 [gatherable.yield_per_hit]
-hand = 15
 "item.rock" = 25
 "item.pickaxe_stone" = 49
 "item.pickaxe_metal" = 60
@@ -140,7 +150,6 @@ finish_bonus_pct = 20
 # page claiming 200 also calls stone 750 and metal 500, both wrong against
 # EXACT figures. What changes here is only the ladder below the best tool.
 [gatherable.yield_per_hit]
-hand = 6
 "item.rock" = 10
 "item.pickaxe_stone" = 26
 "item.pickaxe_metal" = 30
@@ -150,6 +159,14 @@ hand = 6
 # refuses content whose survival clock has nothing that pays a consumable
 # (DECISIONS.md §open, "food you can get"). The berries are a `secondary`:
 # flat, no tool row and no weak-spot bonus, because picking is not chopping.
+#
+# **This is the one `hand` row that survived 2026-08-15, and it is exempt
+# for the same reason it has no tool row at all**: you pick a bush, you do
+# not smash it, and the reference hand-picks its own forage too. Deleting
+# it would also be a refused boot rather than a naked bush — `hand = 10` is
+# this node's ONLY yield row, and `validate.rs` refuses an empty yield
+# table. So the exemption is both correct and forced, and a future pass
+# that "finishes the sweep" here breaks the food loop and the boot at once.
 
 [[gatherable]]
 id = "gather.bush"

@@ -157,11 +157,41 @@ a guess.
 
 ## 5 · What could not be sourced, and what it blocks
 
-- **The maximum condition of any item.** Not on the Facepunch item pages,
-  not on `rusthelp.com`'s, and `wiki.rustclash.com` 403s. So `0.3` is a rate
-  with **no denominator**: hits-per-life = `max ÷ loss` is unknown, and it
-  is the only number that decides whether durability is felt once an hour or
-  once a week. Everything in §9.4 is staged around not having it.
+⚠ **Its first bullet was wrong and is struck. Read the strike before the
+rest of this section, because the mistake is repeatable and the numbers are
+not the interesting part.**
+
+- ~~**The maximum condition of any item.**~~ **FOUND 2026-08-15.** This said
+  the number was not on the Facepunch item pages, not on `rusthelp.com`'s,
+  and that `wiki.rustclash.com` 403s. All three are true, and none of them
+  is evidence the number is unpublished. It is a per-item field in a game
+  with a large data-mining community, and it was reached the same day by
+  **two independent routes** — the operator's, and a research pass here —
+  both off extracted item-definition data: a Dec-2018 table fetched whole, a
+  181-file 2026 dump, and a mirror synced to Rust's 2026-08-06 release.
+  Facepunch's own wiki independently confirms the 0.3 loss on rock and stone
+  hatchet, so the two halves of the fraction come from different places.
+
+  **rock 100 · torch 50 · stone hatchet 100 · stone pickaxe 100 · metal
+  hatchet 400 · metal pickaxe 400.** Maximum is **per item**, never one
+  constant — the 4× stone→metal step *is* the tool ladder. So `0.3` has its
+  denominator: 333 hits out of a 100-point stone hatchet.
+
+  It also settles §4's contradiction structurally rather than by preference.
+  `ItemDefinition.condition` carries `.enabled`, `.max`, `.repairable` and
+  `.foundCondition` as **four separate fields**, so `repairable = false` says
+  nothing about whether an item wears. Conflating those two is what made §4
+  readable both ways, and it means **the rock wears** — 100, unrepairable,
+  re-crafted rather than mended.
+
+  **The failure mode is worth more than the numbers.** Three doors that did
+  not open were written up as "could not be sourced", and downstream readers
+  took that as *the choice is ours* — `NOW.md` §0dur said so outright, and a
+  pass acting on it offered the operator a menu of invented values. A list of
+  doors that did not open is not a proof the room is empty. Name the doors
+  tried and stop there. §0's own lesson applies twice over: reachability is a
+  property of the container, and both successful fetches ran from a different
+  one than this bullet did.
 - Whether a **weapon** loses condition per shot, and at what rate.
 - Whether **armour** loses condition when hit.
 - Whether the bench's price scales with damage taken (§3's open reading).

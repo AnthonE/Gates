@@ -1363,21 +1363,7 @@ fn only_the_feed_drain_pops_the_core() {
         files.len()
     );
 
-    // The destructive verbs. `pop_chat` is deliberately NOT here: chat is a
-    // single-reader surface by nature (one composer) and `render/chat.rs` owns
-    // it — if a second reader ever wants it, it joins the feed and joins this
-    // list in the same commit.
-    const DESTRUCTIVE: [&str; 9] = [
-        "pop_hit(",
-        "pop_death(",
-        "pop_toast(",
-        "pop_craft_toast(",
-        "pop_spill(",
-        "pop_craft_refusal(",
-        "pop_build_refusal(",
-        "pop_deploy_refusal(",
-        "pop_placed(",
-    ];
+    let destructive = destructive_verbs();
 
     let mut offenders = Vec::new();
     for (path, text) in &files {
@@ -1391,7 +1377,7 @@ fn only_the_feed_drain_pops_the_core() {
             if code.starts_with("//") {
                 continue;
             }
-            for verb in DESTRUCTIVE {
+            for verb in &destructive {
                 if code.contains(verb) {
                     offenders.push(format!("{path}:{}: {}", n + 1, code.trim()));
                 }
@@ -1406,18 +1392,79 @@ fn only_the_feed_drain_pops_the_core() {
     );
 
     // And the drain must actually still be there, or this test passes by
-    // asserting that nobody reads the events at all.
+    // asserting that nobody reads the events at all. Derived, so this half
+    // is also the check that a NEW ring on `ClientCore` joined the one
+    // drain: a `pop_*` nothing here calls is either a fact with no reader
+    // (`NOW.md` §0eat's defect, which shipped) or a fact with a private one
+    // (this test's own defect, which also shipped).
     let drain = files
         .iter()
         .find(|(p, _)| p.ends_with("feed.rs"))
         .map(|(_, t)| t)
         .expect("render/feed.rs must exist");
-    for verb in DESTRUCTIVE {
+    for verb in &destructive {
         assert!(
             drain.contains(verb),
             "render/feed.rs no longer calls {verb} - the drain has stopped draining"
         );
     }
+}
+
+/// The destructive verbs, **read off `ClientCore` rather than remembered**.
+///
+/// This was a `[&str; 9]` literal, and by 2026-08-15 it had drifted: the
+/// core carries fifteen `pop_*` and the list named nine, so `pop_toast`'s
+/// rule was enforced and `pop_knock`, `pop_auth`, `pop_shot`,
+/// `pop_research_toast` and `pop_research_refusal` — the five newest, which
+/// are exactly the ones a second reader is most likely to want next — were
+/// unwatched. That is the same failure `ui::refusals`'s header records
+/// happening twice on the other side of the wire, and it has the same fix:
+/// a hand-kept mirror of another crate's surface goes stale, so read the
+/// surface.
+///
+/// The needle is `pop_x(` with the paren, so a doc line naming `pop_hit`
+/// in prose is not a call and the offender scan above stays about call
+/// sites.
+///
+/// **`pop_chat` is the one exemption and it is exempt BY NAME**, which is
+/// the point of a named list over a forgotten one: chat is a single-reader
+/// surface by nature (one composer) and `render/chat.rs` owns it. If a
+/// second reader ever wants it, it joins the feed and leaves this list in
+/// the same commit.
+fn destructive_verbs() -> Vec<String> {
+    const EXEMPT: [&str; 1] = ["pop_chat"];
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../client-core/src/core.rs");
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("pub fn pop_") else {
+            // A ring declared any other way — `pub(crate) fn pop_x`,
+            // `pub(super) fn pop_x` — would be skipped in silence, and the
+            // floor below has a slot of slack, so the dropped ring would
+            // always be the newest one. Refuse to classify instead: this is
+            // the same slack-floor hole `tests/ui.rs`'s variant parser had.
+            assert!(
+                !line.trim_start().contains("fn pop_"),
+                "`{}` declares a pop_* this scrape cannot read - the one-drain rule \
+                 would be enforced on one ring fewer",
+                line.trim()
+            );
+            continue;
+        };
+        let Some(end) = rest.find('(') else { continue };
+        let name = format!("pop_{}", &rest[..end]);
+        if !EXEMPT.contains(&name.as_str()) {
+            out.push(format!("{name}("));
+        }
+    }
+    assert!(
+        out.len() >= 13,
+        "only found {} pop_* on ClientCore - the scrape has lost the shape of the source \
+         and this gate would be enforcing the one-drain rule on nothing: {out:?}",
+        out.len()
+    );
+    out
 }
 
 // ---------------------------------------------------------------------------

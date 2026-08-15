@@ -790,17 +790,39 @@ pub const MOB_THINK_TICKS: u64 = 15;
 /// constant. What the choice costs is a set-time admin verb: with no
 /// offset field anywhere, shifting the clock means shifting the tick,
 /// which nothing may do. That is a wire field away if ever wanted.
-pub const DAY_TICKS: u64 = 81_000;
+pub const DAY_TICKS: u64 = 144_000;
 
 /// Phase offset into the cycle at tick zero, so a fresh world — and every
 /// capture probe — boots mid-morning with the sun well up, not at the
-/// dawn terminator. ~17% of the cycle before noon (noon is 35% in).
-pub const DAY_PHASE_TICKS: u64 = 14_000;
+/// dawn terminator. Exactly halfway from dawn to noon: noon is
+/// `DAY_PORTION * 0.5` = 43.75% in, so this is 21.875% of the cycle.
+/// **Derived from the two constants around it, not chosen** — it moved with
+/// them on 2026-08-15 and would be wrong if it had not.
+pub const DAY_PHASE_TICKS: u64 = 31_500;
 
-/// The daylight fraction of the cycle: the first 70% is day (~31.5 min),
-/// the rest night (~13.5 min) — the reference's proportions, where night
-/// is short enough to be weathered and long enough to matter.
-pub const DAY_PORTION: f32 = 0.70;
+/// The daylight fraction of the cycle: the first 87.5% is day (70 min),
+/// the rest night (10 min).
+///
+/// **Operator, 2026-08-15, on their own research: the reference's current
+/// cycle is ~70 min day + ~10 min night = 80 min.** This is the second value
+/// spoken that day and it supersedes the first (60 min as 45 + 15) by the
+/// operator's own better source: March 2026's Shipshape update added roughly
+/// 20 minutes of daylight and left the ~10-minute night alone. Three
+/// generations are now named — 45/15 is the oldest, 50/10 was the 60-minute
+/// era, 70/10 is current.
+///
+/// What moved before this: `NOW.md` §0sun carried "~45 min day + ~15 min
+/// night = 60 min" as *measured 2026-08-15* with **no source, no URL and no
+/// tier**, and the commit that added it (b59d85e) cited none either. It read
+/// as a measurement and was not one. Corrected here rather than only there,
+/// because this is the file a builder reads.
+///
+/// ⚠ **The night SHORTENS.** Read as "a longer day" this looks additive, and
+/// it is not: 13.5 min of night becomes 10. Anything tuned against the old
+/// night — mob wake windows, `render/audio.rs`'s night threshold, the barrel
+/// and bag respawn windows a player waits out in the dark — got a third of
+/// its darkness taken away, and none of that was re-derived here.
+pub const DAY_PORTION: f32 = 0.875;
 
 /// The most bites one tick can land across the whole roster (mob.rs
 /// `Bites`). Derived, generously: only a *thinking* animal can bite, so

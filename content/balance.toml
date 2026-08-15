@@ -204,66 +204,46 @@ item = "item.box_small"
 count = 1
 
 # What a fresh character spawns holding (`sim_core::inventory::SpawnKit`;
-# DECISIONS.md §open "spawn kit v0"). **Testing scaffolding, and an
-# operator call to empty** — a public shard almost certainly wants a naked
-# beach spawn, which is what an absent `[[spawn_kit]]` gives: the table is
-# `#[serde(default)]` and no kit is not an error.
+# DECISIONS.md 2026-08-15). **A rock and a torch** — the reference's own
+# naked spawn, spoken after the operator played the shard: *"we should be
+# starting with a rock and a torch"*, *"you cant smash trees with ur hans
+# lol u need a rock"*.
 #
-# It exists because the build and hammer verbs could not be exercised at
-# all. A fresh spawn had nothing, so the build wheel read `350 Wood (0)`,
-# nothing could be placed, and nothing could be upgraded or repaired —
-# which meant the whole building interaction was unreachable by anyone
-# testing it, human or agent.
+# This is no longer scaffolding. It replaces nine entries — plan, hammer,
+# stone hatchet, stone pickaxe, torch, 3 bandages, 900 wood, 500 stone,
+# 100 metal frags, and no rock — whose own comment called itself *"testing
+# scaffolding, and an operator call to empty"*. That kit existed because a
+# naked spawn made the build wheel read `350 Wood (0)`, and it survived by
+# being the only way anybody could reach the building verb. It is not the
+# only way any more: `shard.toml`'s `dev_spawn_kit` re-grants a fat kit on
+# a dev shard, and never on a public one (`crates/server/src/config.rs`).
 #
-# The order is the order it lands in: the first six entries are the
-# hotbar, so the plan and the hammer are on 1 and 2 the moment you open
-# your eyes. Materials are enough for a small base plus an upgrade or two,
-# priced off `[globals] farm_per_min` at roughly twenty minutes of farm.
+# **The rock is the mechanism, which is what `BALANCE.md` §6 asks for.**
+# Bare hands pay nothing on any swung node (gatherables.toml), so the rock
+# is what makes the loop start. It costs 10 stone (recipes.toml) and
+# carries no condition, so a player WITH stone can always re-make one.
 #
-# ⚠ **That "twenty minutes" is the declared rate's opinion, and since
-# 2026-08-10 it is no longer what the kit feels like.** The node take gave
-# a tree 810 wood at the stone hatchet this kit carries, so 900 wood is
-# now about **one tree** where it used to be four and a half. Nothing is
-# broken — `farm_per_min` did not move, so every anchor still prices the
-# kit the same — but the two readings have visibly parted, and which one
-# is right is the open knob, not this comment (`reference/RIPLIST.md` §1a).
+# ⚠ **A player with no stone and no rock is stranded until they die**, and
+# that is a property of the shipped tables rather than a guess: stone comes
+# off `gather.stone_node`, whose only yield rows are the rock and the two
+# pickaxes, and no loot table or mob drop pays `item.stone` or `item.rock`
+# (`grep 'item.stone' content/loot.toml content/mobs.toml` — empty). So the
+# re-grant below is not only a convenience, it is the ONLY route back. The
+# reference has the same shape, which is why it hands you a rock on every
+# spawn, so this is probably right — but it is a consequence nobody spoke,
+# and the operator's options if it is not (a stone row on a barrel table, a
+# rock that cannot be moved out of the belt) are content, not code.
+#
+# **Cheap enough to re-grant on every respawn**, which is the half that
+# fixes death: `World::wake` grants this beside `survival::grant`, where
+# the old kit could not go because 900 wood on every death is an item
+# printer and 10 stone of tools is not. `NOW.md` §0die mechanism 3.
+#
+# The order is the order it lands in: rock on hotbar slot 1, torch on 2.
 [[spawn_kit]]
-item = "item.building_plan"
-count = 1
-
-[[spawn_kit]]
-item = "item.hammer"
-count = 1
-
-[[spawn_kit]]
-item = "item.hatchet_stone"
-count = 1
-
-[[spawn_kit]]
-item = "item.pickaxe_stone"
+item = "item.rock"
 count = 1
 
 [[spawn_kit]]
 item = "item.torch"
 count = 1
-
-# 3, not 5: the bandage's stack is theirs now (items.toml, RIPLIST §1e)
-# and a kit entry may neither exceed the item's stack nor repeat.
-[[spawn_kit]]
-item = "item.bandage"
-count = 3
-
-# Under the 1000 ceiling on purpose: a grant that sits exactly at an item's
-# stack size is one balance edit away from being refused, and `test_content`
-# lowers every stack to prove the hash moves.
-[[spawn_kit]]
-item = "item.wood"
-count = 900
-
-[[spawn_kit]]
-item = "item.stone"
-count = 500
-
-[[spawn_kit]]
-item = "item.metal_frags"
-count = 100
