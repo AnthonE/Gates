@@ -2409,3 +2409,153 @@ fn mob_refusals() {
     let err = c.bake_mobs().expect_err("an unknown species must not bake");
     assert!(err.contains("no roster kind"), "got: {err}");
 }
+
+// ---------------------------------------------------------------------------
+// The research ladder (`content/research.toml` §requires, `validate::structural`,
+// `bake_research`). Added 2026-08-15 with the ladder itself; before that day
+// the whole table reached the sim as `ResearchContent::EMPTY`, because
+// `bake_research` had no caller — so these tests exist as much to prove the
+// *edges* work as to prove the table is installed at all, which is
+// `crates/server/tests/boot_tables.rs`.
+// ---------------------------------------------------------------------------
+
+/// The shipped tree is a tree: it bakes, its one authored edge survives into
+/// the sim's own bit space, and the row it points at is a root.
+#[test]
+fn the_shipped_research_tree_bakes_with_its_edge_intact() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content loads");
+    let rc = c.bake_research().expect("shipped research bakes");
+
+    assert_eq!(
+        rc.row_count as usize,
+        c.research.len(),
+        "every authored row reaches the sim"
+    );
+    assert!(rc.row_count > 0, "an empty table is the pre-2026-08-15 bug");
+
+    let idx = |id: &str| c.item_index(id).unwrap_or_else(|| panic!("shipped {id}"));
+    let powder_recipe = c
+        .recipe_index("recipe.gunpowder")
+        .expect("shipped recipe.gunpowder");
+
+    let satchel = rc
+        .row_for(idx("item.satchel_charge"))
+        .expect("satchel is researchable");
+    assert_eq!(
+        satchel.requires,
+        1u64 << powder_recipe,
+        "the satchel's prerequisite is gunpowder's RECIPE bit — the same bit \
+         `Player::known` sets, or the sim's AND means nothing"
+    );
+
+    let powder = rc
+        .row_for(idx("item.gunpowder"))
+        .expect("gunpowder is researchable");
+    assert_eq!(powder.requires, 0, "gunpowder is a root of the tree");
+}
+
+/// The floor: an edge the craft graph already implies may not be dropped
+/// from the tree. This is the drift that makes a tech tree lie — the recipe
+/// says you need gunpowder, the tree says you do not, and a player buys a
+/// blueprint for a thing they cannot make.
+#[test]
+fn a_prerequisite_the_recipe_already_implies_cannot_be_dropped() {
+    refuses(
+        "research.toml",
+        "requires = [\"item.gunpowder\"]",
+        "requires = []",
+        "must require it",
+    );
+}
+
+/// Every other way an edge can be wrong.
+#[test]
+fn research_edge_refusals() {
+    // A row that requires itself is a cycle of length one.
+    refuses(
+        "research.toml",
+        "requires = [\"item.gunpowder\"]",
+        "requires = [\"item.satchel_charge\"]",
+        "requires itself",
+    );
+    // A prerequisite that names no item at all.
+    refuses(
+        "research.toml",
+        "requires = [\"item.gunpowder\"]",
+        "requires = [\"item.gunpowder\", \"item.nonesuch\"]",
+        "is not an item",
+    );
+    // A prerequisite that is a real item but is not researchable: nobody can
+    // ever learn it, so the row behind it is locked forever.
+    refuses(
+        "research.toml",
+        "requires = [\"item.gunpowder\"]",
+        "requires = [\"item.gunpowder\", \"item.rock\"]",
+        "is not researchable",
+    );
+    // The same edge twice.
+    refuses(
+        "research.toml",
+        "requires = [\"item.gunpowder\"]",
+        "requires = [\"item.gunpowder\", \"item.gunpowder\"]",
+        "twice",
+    );
+}
+
+/// A cycle, and the row stranded behind it, are one refusal — because
+/// "can never be learned" is what a player experiences and a cycle is only
+/// one cause of it. Gunpowder is made to depend on the satchel that depends
+/// on gunpowder; the medkit is untouched and must stay reachable, which is
+/// what proves the walk reports the stuck rows rather than giving up.
+#[test]
+fn a_prerequisite_cycle_is_refused() {
+    let mut srcs = sources();
+    let entry = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "research.toml")
+        .expect("research.toml");
+    entry.1 = entry.1.replace(
+        "[[research]]\nitem = \"item.gunpowder\"\ncost = 40",
+        "[[research]]\nitem = \"item.gunpowder\"\ncost = 40\nrequires = [\"item.satchel_charge\"]",
+    );
+    let err = build(&srcs).expect_err("a research cycle was accepted");
+    assert!(
+        err.contains("can never be learned"),
+        "expected the reachability walk to refuse, got: {err}"
+    );
+    assert!(
+        err.contains("item.gunpowder") && err.contains("item.satchel_charge"),
+        "the refusal must name the stuck rows, got: {err}"
+    );
+    assert!(
+        !err.contains("item.medkit"),
+        "a root outside the cycle is still reachable and must not be named: {err}"
+    );
+}
+
+/// The ladder is part of what a content set MEANS, so it digests. Two sets
+/// whose tree is wired differently must not canonicalise identically — the
+/// exact hole `canon.rs` documents for three other columns.
+#[test]
+fn the_hash_moves_with_the_ladder() {
+    let base = Content::load_dir(&content_dir()).expect("shipped content loads");
+
+    let mut srcs = sources();
+    let entry = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "research.toml")
+        .expect("research.toml");
+    // A legal edge that changes the tree: the revolver behind gunpowder.
+    // Legal because the floor is a minimum and authoring MORE is a design
+    // call — which is exactly why the hash has to be able to see it.
+    entry.1 = entry.1.replace(
+        "[[research]]\nitem = \"item.revolver\"\ncost = 75",
+        "[[research]]\nitem = \"item.revolver\"\ncost = 75\nrequires = [\"item.gunpowder\"]",
+    );
+    let moved = build(&srcs).expect("an added edge is legal content");
+    assert_ne!(
+        base.hash(),
+        moved.hash(),
+        "two contents whose tech tree differs canonicalise identically"
+    );
+}

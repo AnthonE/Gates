@@ -29,10 +29,10 @@ use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
 use sim_core::inventory::SpawnKit;
 use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
-    ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
-    MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS, MAX_LOOT_TABLES,
-    MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS,
-    MAX_WEAPON_AMMO, TICK_HZ,
+    ARROW_STEP_MM, HEARTH_STOCK_ROWS, KNOWN_MASK_BITS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS,
+    MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
+    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
+    MAX_RESEARCH_ROWS, MAX_WEAPON_AMMO, TICK_HZ,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
@@ -941,7 +941,41 @@ impl Content {
             let recipe = self.recipe_index(&recipe_id.id).expect("own id resolves");
             let cost = u16::try_from(r.cost)
                 .map_err(|_| format!("bake: research `{}` costs {}, past a u16", r.item, r.cost))?;
-            rc.rows[i] = ResearchRow { item, recipe, cost };
+            // The ladder, resolved into `Player::known`'s own bit space so
+            // the sim's check is one AND. Every edge is an item id for
+            // `recipe`'s reason; `validate::structural` has already refused
+            // an edge that names no research row, so a miss here is a bake
+            // error rather than a silently dropped prerequisite.
+            let mut requires = 0u64;
+            for req in &r.requires {
+                let req_recipe = self
+                    .recipes
+                    .iter()
+                    .find(|c| &c.output == req)
+                    .and_then(|c| self.recipe_index(&c.id))
+                    .ok_or_else(|| {
+                        format!(
+                            "bake: research `{}` requires `{req}`, which no recipe outputs",
+                            r.item
+                        )
+                    })?;
+                // A shift past the mask's width is the one arithmetic here
+                // that would silently mean nothing, so it refuses instead.
+                if (req_recipe as usize) >= KNOWN_MASK_BITS {
+                    return Err(format!(
+                        "bake: research `{}` requires recipe {req_recipe}, past the \
+                         {KNOWN_MASK_BITS}-bit known mask",
+                        r.item
+                    ));
+                }
+                requires |= 1u64 << req_recipe;
+            }
+            rc.rows[i] = ResearchRow {
+                item,
+                recipe,
+                cost,
+                requires,
+            };
         }
         rc.row_count = self.research.len() as u16;
         Ok(rc)

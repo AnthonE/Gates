@@ -27,11 +27,19 @@
 //!   learns that the coin is special, which is the same posture the
 //!   recycler takes from the other end — one pays it, one charges it, and
 //!   neither knows what it is.
-//! - **Not a tech tree.** A row unlocks one recipe and depends on nothing;
-//!   there is no ladder, no tier, no "unlocks the next". The reference has
-//!   both a research table and a tech tree and they are separate systems;
-//!   this is the first, and the second is a content graph on top of these
-//!   bits rather than a change to them.
+//! - **A tree, as of 2026-08-15, and a shallow one.** A row unlocks one
+//!   recipe and may name prerequisites (`ResearchRow::requires`, a mask in
+//!   `Player::known`'s own bit space). This line said "not a tech tree …
+//!   depends on nothing" until the ladder landed, which was true when it
+//!   was written. What is still true is the split: the reference has both a
+//!   research table and a tech tree as separate systems, and this is the
+//!   first with a dependency edge on it, not the second. The BENCH tier —
+//!   workbench 2/3 and the tree UI — is unbuilt and is a spoken knob
+//!   (`NOW.md` §0tt, `DECISIONS.md` §open).
+//! - **The edges are not free-form.** `validate::structural` refuses a row
+//!   that omits a prerequisite the craft graph already implies, so the
+//!   authored tree can add to the recipes' own dependencies but never
+//!   contradict them.
 //!
 //! Not in this slice, documented rather than forgotten: no blueprint
 //! *item* (learning is instant and personal, so there is nothing to trade
@@ -57,9 +65,13 @@ pub const REFUSE_R_SLOT: u32 = 1;
 pub const REFUSE_R_ITEM: u32 = 2;
 pub const REFUSE_R_KNOWN: u32 = 3;
 pub const REFUSE_R_COST: u32 = 4;
+/// A prerequisite blueprint is not held yet (`ResearchRow::requires`).
+/// Ordered before the price on purpose: a row you cannot reach must not
+/// bill you for finding that out.
+pub const REFUSE_R_LOCKED: u32 = 5;
 /// The highest live reason, named rather than counted — the domain gate
 /// reads this and the wire's field width is bounded against it.
-pub const REFUSE_R_MAX: u32 = REFUSE_R_COST;
+pub const REFUSE_R_MAX: u32 = REFUSE_R_LOCKED;
 
 /// One baked research row. `cost == 0` **is** a live row (a thing you may
 /// learn for free), so emptiness is `recipe == NO_RECIPE` rather than a
@@ -75,6 +87,15 @@ pub struct ResearchRow {
     pub recipe: u16,
     /// Units of `ResearchContent::coin` the unlock burns.
     pub cost: u16,
+    /// The recipes that must already be known before this row may be
+    /// bought — a mask in `Player::known`'s own space, so the check is one
+    /// AND and the two can never disagree about what a bit means.
+    ///
+    /// Zero is the whole table's shape before 2026-08-15 and stays the
+    /// default: a root of the tree depends on nothing. The edges are
+    /// resolved at bake from item ids, for `recipe`'s reason — the file
+    /// names things a player recognises and never an index.
+    pub requires: u64,
 }
 
 /// The empty row's recipe. Past `MAX_RECIPES` by construction, so an
@@ -86,6 +107,7 @@ impl ResearchRow {
         item: 0,
         recipe: NO_RECIPE,
         cost: 0,
+        requires: 0,
     };
 
     pub fn is_live(&self) -> bool {
@@ -128,6 +150,7 @@ impl ResearchContent {
             item: 4,
             recipe: 2,
             cost: 5,
+            requires: 0,
         };
         c
     }
@@ -194,6 +217,14 @@ pub fn research(
     // because the item may itself be the coin: a content set that priced
     // researching a coin in coins would otherwise charge a different
     // number depending on which half ran first.
+    // The ladder, and it is checked before the price: a row whose
+    // prerequisites are unmet is not a thing you failed to afford, and
+    // billing the refusal in that order would read as "you are poor" for a
+    // door that is closed for another reason entirely.
+    if p.known & row.requires != row.requires {
+        events.push(EV_RESEARCH_REFUSED, p.id, REFUSE_R_LOCKED, 0);
+        return;
+    }
     if inv_count(&p.inv, rc.coin) < row.cost as u32 {
         events.push(EV_RESEARCH_REFUSED, p.id, REFUSE_R_COST, 0);
         return;

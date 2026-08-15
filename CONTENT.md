@@ -83,7 +83,17 @@ properly. The short version:
   `blueprint = true` is the other half; the two are checked against each
   other both ways — a gated recipe with no row is uncraftable forever, a
   row for an item nothing crafts is a coin sink that unlocks nothing, and
-  `validate::structural` refuses both.
+  `validate::structural` refuses both. **`requires` (2026-08-15) is the
+  ladder**: item ids that must already be known, resolved at bake into a
+  mask in `Player::known`'s own bit space. It is authored but not
+  free-form — a blueprint-gated recipe whose *inputs* include another
+  blueprint-gated item implies that edge, and a row that omits one is
+  refused, so the tree can add to the recipes' dependencies and never
+  contradict them. One fixpoint walk from the empty known-set refuses a
+  cycle and a row stranded behind one as the same thing, because
+  "unreachable" is what a player experiences and a cycle is one cause.
+  ⚠ The BENCH tier (workbench 2/3, the tree UI) is a different system and
+  is unbuilt — `NOW.md` §0tt, and the era is a spoken knob.
 - **loot_table**: container archetype → weighted entries + count range
 - **skin**: id, covers (item id), price (SCRY or MYRRH — one coin per
   row, bare tickers), season — the catalog is content too (dark until A3)

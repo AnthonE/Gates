@@ -3892,9 +3892,9 @@ mod wire_domains {
             prefix: "pub const REFUSE_R_",
             ty: ": u32 = ",
             exempt: &["MAX"],
-            min_members: 5,
+            min_members: 6,
             bits: RESEARCH_REFUSE_BITS,
-            live_max: 4,
+            live_max: 5,
         },
         Domain {
             what: "deploy archetype",

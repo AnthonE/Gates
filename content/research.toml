@@ -23,6 +23,17 @@ item = "item.obol"
 # same error from the other end and `validate::structural` refuses it:
 # that combination is a recipe nobody could ever craft.
 #
+# **`requires` is the ladder, and it is a floor rather than a free hand**
+# (2026-08-15). A row may name blueprints that must already be held; the
+# ids resolve at bake into `Player::known`'s own bits. What may NOT happen
+# is the tree disagreeing with the recipes: if a blueprint-gated recipe
+# consumes another blueprint-gated item, that edge is already a fact of the
+# data and `validate::structural` refuses a row that omits it. Authoring
+# MORE edges than the recipes imply is a design call and stays legal — the
+# revolver behind gunpowder is the obvious candidate and is deliberately
+# NOT written here, because it is a knob nobody has spoken
+# (`DECISIONS.md` §open, "research ladder v0").
+#
 # **Which rows are gated is the whole design decision, and it is small on
 # purpose.** Only the powder era — the things a player would go raiding
 # for — is behind research; the whole T0 and workbench ladder stays open,
@@ -69,3 +80,10 @@ cost = 75
 [[research]]
 item = "item.satchel_charge"
 cost = 75
+# The one edge the data already implied and nothing enforced: a satchel is
+# 240 gunpowder, and gunpowder is itself blueprint-gated, so a player who
+# bought this row first owned a recipe they could not run. `requires` is
+# now that dependency written down, and `validate::structural` refuses any
+# blueprint-gated recipe whose blueprint-gated inputs are not declared —
+# so the tree cannot drift from the recipes again.
+requires = ["item.gunpowder"]

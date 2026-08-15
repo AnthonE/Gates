@@ -141,11 +141,63 @@ pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
     Ok(cat)
 }
 
+/// Every content table a shard runs on, in one value.
+///
+/// **This is a struct because it was thirteen positional arguments and one
+/// of them went missing for the whole life of the feature.** `bake_research`
+/// was written, validated, tested and never called: `sim_thread` installed
+/// eleven tables, `World::research` stayed `ResearchContent::EMPTY`, every
+/// `Command::Research` refused `REFUSE_R_ITEM`, and the six
+/// `blueprint = true` recipes were uncraftable by anyone on a live shard —
+/// with every gate in the tree green, because no gate boots a shard and
+/// asks what it installed. A twelfth positional argument threaded through
+/// two signatures and ten call sites is not a fix, it is the same
+/// conditions with one more chance to miss.
+///
+/// So: one struct, one constructor, and adding a table is a field the
+/// compiler makes every caller acknowledge. `tests/boot_tables.rs` holds
+/// the other half — that every `bake_*` the content crate exposes has a
+/// home here at all.
+pub struct SimTables {
+    pub gather: sim_core::gather::GatherContent,
+    pub craft: sim_core::craft::CraftContent,
+    pub build: sim_core::build::BuildContent,
+    pub deploy: sim_core::deploy::DeployContent,
+    pub combat: sim_core::combat::CombatContent,
+    pub backpack: sim_core::backpack::BackpackContent,
+    pub survival: sim_core::survival::SurvivalContent,
+    pub cook: sim_core::oven::CookContent,
+    pub spawn_kit: sim_core::inventory::SpawnKit,
+    pub loot: sim_core::loot::LootContent,
+    pub mobs: sim_core::mob::MobContent,
+    pub research: sim_core::research::ResearchContent,
+    pub catalog: ItemCatalog,
+}
+
+/// Bake every table a shard needs, or refuse the boot naming the one that
+/// failed. The single place the list of tables is written down.
+pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
+    Ok(SimTables {
+        gather: content.bake_gather()?,
+        craft: content.bake_craft()?,
+        build: content.bake_building()?,
+        deploy: content.bake_deployables()?,
+        combat: content.bake_combat()?,
+        backpack: content.bake_backpack()?,
+        survival: content.bake_survival()?,
+        cook: content.bake_cooking()?,
+        spawn_kit: content.bake_spawn_kit()?,
+        loot: content.bake_loot()?,
+        mobs: content.bake_mobs()?,
+        research: content.bake_research()?,
+        catalog: bake_catalog(content)?,
+    })
+}
+
 /// Boot a shard: bind, spawn the sim thread and the accept loop, return.
 /// The caller owns process lifetime; `shutdown` stops the sim thread.
-/// `gather`, `craft`, `build`, `deploy`, `combat`, and `catalog` are the
-/// content bake (CLAUDE.md wall 7) — data the world runs on, handed over
-/// before the first tick like the seed.
+/// `tables` is the content bake (CLAUDE.md wall 7) — data the world runs
+/// on, handed over before the first tick like the seed.
 ///
 /// `saves` is the player store, already opened and validated against this
 /// seed and content (`store::open`) — or `Saves::off()`, which is a shard
@@ -154,21 +206,9 @@ pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
 /// needs the *content hash*, which this function is never handed: the
 /// binary bakes content and therefore the binary opens the file, and a
 /// refusal lands before a port is bound.
-#[allow(clippy::too_many_arguments)]
 pub async fn spawn_shard(
     cfg: ShardConfig,
-    gather: sim_core::gather::GatherContent,
-    craft: sim_core::craft::CraftContent,
-    build: sim_core::build::BuildContent,
-    deploy: sim_core::deploy::DeployContent,
-    combat: sim_core::combat::CombatContent,
-    backpack: sim_core::backpack::BackpackContent,
-    survival: sim_core::survival::SurvivalContent,
-    cook: sim_core::oven::CookContent,
-    spawn_kit: sim_core::inventory::SpawnKit,
-    loot: sim_core::loot::LootContent,
-    mobs: sim_core::mob::MobContent,
-    catalog: ItemCatalog,
+    tables: SimTables,
     saves: Saves,
     world_boot: crate::worldfile::WorldBoot,
 ) -> Result<ShardHandle, String> {
@@ -278,18 +318,7 @@ pub async fn spawn_shard(
                 sim_thread(
                     seed,
                     dev_spawn,
-                    gather,
-                    craft,
-                    build,
-                    deploy,
-                    combat,
-                    backpack,
-                    survival,
-                    cook,
-                    spawn_kit,
-                    loot,
-                    mobs,
-                    catalog,
+                    tables,
                     world_blob,
                     world_idents,
                     world_interval,
@@ -1595,18 +1624,7 @@ pub async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), ()
 fn sim_thread(
     seed: u64,
     dev_spawn: Option<(f32, f32)>,
-    gather: sim_core::gather::GatherContent,
-    craft: sim_core::craft::CraftContent,
-    build: sim_core::build::BuildContent,
-    deploy: sim_core::deploy::DeployContent,
-    combat: sim_core::combat::CombatContent,
-    backpack: sim_core::backpack::BackpackContent,
-    survival: sim_core::survival::SurvivalContent,
-    cook: sim_core::oven::CookContent,
-    spawn_kit: sim_core::inventory::SpawnKit,
-    loot: sim_core::loot::LootContent,
-    mobs: sim_core::mob::MobContent,
-    catalog: ItemCatalog,
+    tables: SimTables,
     world_blob: Vec<u8>,
     world_idents: crate::worldfile::Identities,
     world_interval: u64,
@@ -1624,6 +1642,24 @@ fn sim_thread(
 ) {
     let mut core = ShardCore::new(seed);
     core.world.dev_spawn = dev_spawn;
+    // Destructured rather than field-by-field off `tables`, so that adding a
+    // table and forgetting to install it is a compile error naming the field
+    // — which is the whole reason this is a struct (`SimTables`).
+    let SimTables {
+        gather,
+        craft,
+        build,
+        deploy,
+        combat,
+        backpack,
+        survival,
+        cook,
+        spawn_kit,
+        loot,
+        mobs,
+        research,
+        catalog,
+    } = tables;
     core.world.gather = gather;
     core.world.craft = craft;
     core.world.build = build;
@@ -1635,6 +1671,7 @@ fn sim_thread(
     core.world.spawn_kit = spawn_kit;
     core.world.loot = loot;
     core.world.mob = mobs;
+    core.world.research = research;
     core.catalog = catalog;
     core.install_admins(admins);
     // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
