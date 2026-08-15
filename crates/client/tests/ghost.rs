@@ -319,12 +319,7 @@ fn the_tables_window_is_the_sims_window() {
 /// top beam solid, the rest of the edge open — to bodies and arrows both.
 #[test]
 fn the_tables_frame_is_the_sims_frame() {
-    let t_seams = [
-        0.0,
-        FRAME_RIM_M,
-        BUILD_CELL_M - FRAME_RIM_M,
-        BUILD_CELL_M,
-    ];
+    let t_seams = [0.0, FRAME_RIM_M, BUILD_CELL_M - FRAME_RIM_M, BUILD_CELL_M];
     let mut checked = 0;
     for i in 0..=150 {
         let t = BUILD_CELL_M * (i as f32 / 150.0);

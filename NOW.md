@@ -826,11 +826,14 @@ order:
    doorway's lintel stops arrows. What remains of §9.13 is the
    **inserts** — bars, glass, shutters, the garage door — each a
    deployable pass of its own (§7b.4's second purchase), none started.
-2. **Hard and soft sides** (§9.15, §7b.5). One rule that turns placement
-   *orientation* into skill, and the reason a base can be weaker than its
-   bill of materials. Needs a facing on every piece and an attack
-   direction on every swing — its own pass, and it pairs with
-   `RIPLIST.md` §2's per-material resistance rather than competing.
+2. ~~Hard and soft sides~~ **Landed 2026-08-15** (§open "hard/soft v0",
+   wire v39, save format 6): soft faces the placer, the hard face of any
+   edge piece takes 1 structure a swing whatever the tool, the HUD's
+   prompt labels the side you stand on off the same `build::soft_side`
+   the swing is priced with. Still owed from §9.15: a **visual** identity
+   for the soft face (a texture or tint — the label is the only tell
+   today), floor sides (needs a vertical attack direction), and the
+   pairing with `RIPLIST.md` §2's per-material resistance.
 3. **Triangles** (§9.14). Half the reason their bases look like that, and
    the only item here that is a **grid change**: our cell holds one plane,
    one riser and two canonical edges, all square. Cost it as one; do not

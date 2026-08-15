@@ -305,6 +305,15 @@ pub struct PieceRec {
     pub loc: u8,
     /// Baked piece row this address holds.
     pub row: u8,
+    /// Which way the piece's SOFT side faces (hard/soft v0,
+    /// `reference/BUILDING.md` §7b.5): 1 ⇒ soft toward **+axis** (+x for
+    /// a west edge, +z for a north edge), 0 ⇒ soft toward −axis. Set once
+    /// at placement — soft faces the placer, because you build from
+    /// inside — and never moved (no rotate verb yet: inside the demolish
+    /// window a wrong facing is a free re-place). Meaningful on edge
+    /// shapes only; 0 elsewhere. On the wire (a client says which side
+    /// you are on) and in `state_hash` (a swing's damage reads it).
+    pub facing: u8,
     /// Current hp (decay drains it; piece damage lands in M2).
     pub hp: u16,
     /// Last upkeep period processed (`tick / UPKEEP_PERIOD_TICKS`).
@@ -455,6 +464,7 @@ impl Pieces {
             level,
             loc,
             row,
+            facing: 0,
             hp: bc.pieces[row as usize].hp,
             uh: 0,
         };
@@ -602,6 +612,45 @@ pub fn anchor(cx: u16, cz: u16, loc: u8) -> (f32, f32) {
 #[inline]
 pub fn build_cell_of(v: f32) -> i32 {
     floor_i32(v / BUILD_CELL_M)
+}
+
+/// Whether an edge shape occupies this address's facing at all — planes
+/// and risers have no sides.
+#[inline]
+pub fn shape_has_facing(shape: u8) -> bool {
+    matches!(
+        shape,
+        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
+    )
+}
+
+/// The facing a placement gets: 1 when the placer stands on the edge's
+/// **+axis** side, 0 otherwise — soft toward the builder, because a base
+/// is built from inside (`PieceRec::facing`'s doc). Exactly on the plane
+/// counts as −axis; the tie is impossible to stand on and the arm has to
+/// pick something deterministic.
+///
+/// `pub` because the client needs the same answer twice: the ghost says
+/// which side the soft face will land on before the key is pressed, and
+/// the structure readout says which side you are looking at. A second
+/// copy of this comparison is the positional-payload trap with a sign bit.
+#[inline]
+pub fn facing_of(loc: u8, cx: u16, cz: u16, px: f32, pz: f32) -> u8 {
+    let plus = if loc == LOC_EDGE_W {
+        px > cx as f32 * BUILD_CELL_M
+    } else {
+        pz > cz as f32 * BUILD_CELL_M
+    };
+    plus as u8
+}
+
+/// Is a toucher standing at (`px`, `pz`) on the piece's SOFT side? The
+/// one comparison `combat::raid` prices a swing with and the client's
+/// readout labels a wall with — the same function, so the label can
+/// never disagree with the bill.
+#[inline]
+pub fn soft_side(rec: &PieceRec, px: f32, pz: f32) -> bool {
+    facing_of(rec.loc, rec.cx, rec.cz, px, pz) == rec.facing
 }
 
 /// Will this ground hold a foundation? One definition — `place` refuses on
@@ -942,6 +991,14 @@ pub fn place(
         level,
         loc,
         row: row as u8,
+        // Soft toward the builder (hard/soft v0). Planes and risers have
+        // no sides and carry 0, so two replays cannot disagree about a
+        // bit that means nothing.
+        facing: if shape_has_facing(def.shape) {
+            facing_of(loc, cx, cz, px, pz)
+        } else {
+            0
+        },
         hp: def.hp,
         uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
     };
@@ -1653,20 +1710,67 @@ mod tests {
         let mut p = player_at_cell_center(&[(0, 40), (1, 10)]);
 
         place(
-            SEED, &bc, &nod, &mut pieces, &mut p, 0, 0, CX, CZ, 0, LOC_PLANE, &mut ev,
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
         );
         // A window on a plane loc is a spot refusal, not a support one.
         place(
-            SEED, &bc, &nod, &mut pieces, &mut p, 0, 7, CX, CZ, 0, LOC_PLANE, &mut ev,
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            7,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
         );
-        assert_eq!(last(&ev), (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT));
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
+        );
         // On the edge beside the foundation, both place.
         place(
-            SEED, &bc, &nod, &mut pieces, &mut p, 0, 7, CX, CZ, 0, LOC_EDGE_W, &mut ev,
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            7,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
         place(
-            SEED, &bc, &nod, &mut pieces, &mut p, 0, 8, CX, CZ, 0, LOC_EDGE_N, &mut ev,
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            8,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_N,
+            &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
         assert_eq!(pieces.cols().get(CX, CZ).wins_w, 1, "window in the index");
@@ -1675,15 +1779,109 @@ mod tests {
         // The hammer climbs the window to stone; the frame has no rung
         // above twig in this table and refuses by name.
         upgrade(
-            &bc, &nod, &mut pieces, &mut p, CX, CZ, 0, LOC_EDGE_W, MAT_STONE, &mut ev,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            MAT_STONE,
+            &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
         let w = pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
         assert_eq!(w.row, 9, "the window re-rowed to its stone rung");
         upgrade(
-            &bc, &nod, &mut pieces, &mut p, CX, CZ, 0, LOC_EDGE_N, MAT_STONE, &mut ev,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_N,
+            MAT_STONE,
+            &mut ev,
         );
-        assert_eq!(last(&ev), (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_TIER));
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_TIER)
+        );
+    }
+
+    /// Hard/soft v0: a placement's soft side faces the builder, on both
+    /// edge axes; planes carry no facing; and `soft_side` answers the
+    /// builder's own stance as soft — the label `combat::raid` prices by.
+    #[test]
+    fn facing_is_set_toward_the_builder_and_only_on_edges() {
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        // The builder stands at the cell centre: east of the west edge,
+        // south of the north edge.
+        let mut p = player_at_cell_center(&[(0, 50), (1, 10)]);
+
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_W,
+            &mut ev,
+        );
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_N,
+            &mut ev,
+        );
+
+        let plane = pieces.find(CX, CZ, 0, LOC_PLANE).unwrap();
+        assert_eq!(plane.facing, 0, "a plane has no sides");
+        let w = *pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        assert_eq!(w.facing, 1, "west edge: builder east => soft east");
+        let n = *pieces.find(CX, CZ, 0, LOC_EDGE_N).unwrap();
+        assert_eq!(n.facing, 1, "north edge: builder south => soft south");
+
+        // The builder's own stance is the soft side of both walls; a
+        // stranger across the edge is on the hard one.
+        let px = (CX as f32 + 0.5) * BUILD_CELL_M;
+        let pz = (CZ as f32 + 0.5) * BUILD_CELL_M;
+        assert!(soft_side(&w, px, pz));
+        assert!(soft_side(&n, px, pz));
+        assert!(!soft_side(&w, px - BUILD_CELL_M, pz), "west of the wall");
+        assert!(!soft_side(&n, px, pz - BUILD_CELL_M), "north of the wall");
     }
 
     #[test]
@@ -1725,6 +1923,7 @@ mod tests {
                     level: 0,
                     loc: LOC_PLANE,
                     row: 0,
+                    facing: 0,
                     hp: 1,
                     uh: 0,
                 },
@@ -2857,6 +3056,7 @@ mod tests {
                 level,
                 loc,
                 row: shape,
+                facing: 0,
                 hp: 100,
                 uh: 0,
             },

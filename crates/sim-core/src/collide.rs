@@ -758,6 +758,7 @@ pub fn blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, nx: f32, nz: f32, fee
 ///   open **doorway** stops a shot at its posts *and* its lintel
 ///   ([`DOOR_HEAD_M`]), where a body only ever met the posts; and a
 ///   **shut door** seals its doorway on both walks.
+#[allow(clippy::too_many_arguments)]
 pub fn shot_blocked(
     seed: u64,
     cols: &ColIndex,
@@ -1213,7 +1214,16 @@ mod tests {
             "an arrow through the aperture must pass"
         );
         assert!(
-            shot_blocked(SEED, pieces.cols(), x0, z_open, x1, z_open, base + 0.5, 0.05),
+            shot_blocked(
+                SEED,
+                pieces.cols(),
+                x0,
+                z_open,
+                x1,
+                z_open,
+                base + 0.5,
+                0.05
+            ),
             "the sill under the aperture must stop it"
         );
         assert!(
@@ -1264,7 +1274,16 @@ mod tests {
             pos(&b).0
         );
         assert!(
-            !shot_blocked(SEED, framed.cols(), x0, z_jamb, x1, z_jamb, base + 0.5, 0.05),
+            !shot_blocked(
+                SEED,
+                framed.cols(),
+                x0,
+                z_jamb,
+                x1,
+                z_jamb,
+                base + 0.5,
+                0.05
+            ),
             "an empty frame must pass a shot through its opening"
         );
         let z_rim = CZ as f32 * BUILD_CELL_M + 0.05;
@@ -1293,7 +1312,16 @@ mod tests {
         put(&bc, &mut doored, CX, CZ, 0, LOC_PLANE, 0);
         put(&bc, &mut doored, CX, CZ, 0, crate::build::LOC_EDGE_W, 2);
         assert!(
-            !shot_blocked(SEED, doored.cols(), x0, z_open, x1, z_open, base + 1.5, 0.05),
+            !shot_blocked(
+                SEED,
+                doored.cols(),
+                x0,
+                z_open,
+                x1,
+                z_open,
+                base + 1.5,
+                0.05
+            ),
             "the doorway opening passes a shot"
         );
         assert!(

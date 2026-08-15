@@ -111,7 +111,12 @@ use crate::worldcont::WorldContRec;
 /// *count*, so a satchel's 125 against a dozen rows was "an impossible
 /// structure". No live world ever hit it (a ten-second fuse rarely meets
 /// a save), which is exactly why it survived to be found by reading.
-pub const WORLD_SAVE_FORMAT: u16 = 5;
+///
+/// **6 — a piece carries its facing** (hard/soft v0): one byte between
+/// `row` and `hp`, the soft side's direction, validated ≤ 1. It is in
+/// `state_hash` — a swing's price reads it — so a save without it would
+/// resume a shard whose walls forgot which way they were built.
+pub const WORLD_SAVE_FORMAT: u16 = 6;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
 /// the next bag id, and the ten section counts.
@@ -421,6 +426,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u8(p.level);
         o.u8(p.loc);
         o.u8(p.row);
+        o.u8(p.facing);
         o.u16(p.hp);
         o.u16(p.uh);
         o.u64(*placed);
@@ -786,6 +792,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let level = r.u8()?;
         let loc = r.u8()?;
         let row = r.u8()?;
+        let facing = r.u8()?;
         let hp = r.u16()?;
         let uh = r.u16()?;
         placed[i] = r.u64()?;
@@ -798,12 +805,18 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         if row as usize >= piece_rows {
             return Err(WorldSaveError::BadContentRow);
         }
+        // A facing is one bit wearing a byte; anything else is a
+        // hand-edited file, and it would flow into `state_hash`.
+        if facing > 1 {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
         *p = PieceRec {
             cx,
             cz,
             level,
             loc,
             row,
+            facing,
             hp,
             uh,
         };

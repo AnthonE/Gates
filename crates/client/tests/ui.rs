@@ -1710,14 +1710,18 @@ fn target(store: Store, row: u8, hp: u16, hp_max: u16) -> Target {
         row,
         hp,
         hp_max,
+        side: None,
     }
 }
 
 #[test]
 fn the_ring_is_four_distinct_verbs_and_rotate_is_not_one() {
     // Four segments, each verb exactly once. Rotate has no segment and no
-    // variant to give one to — a placed piece has no facing, so a rotate
-    // wedge would teach a verb the game does not have (§0p2 item 0).
+    // variant to give one to — a wedge would teach a verb the game does
+    // not have (§0p2 item 0). Since hard/soft v0 a piece DOES carry a
+    // facing, and rotate stays out on the §open row's stated ground: a
+    // wrong facing inside the grace window is a free re-place, and one
+    // outside it would re-aim a base mid-raid.
     assert_eq!(hammer::VERBS.len(), 4);
     for v in [
         HVerb::Upgrade,

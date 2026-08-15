@@ -582,11 +582,12 @@ fn forged_lock_bits_load_cleared_never_trusted() {
     blob.truncate(n);
 
     // Walk to the deploy section the way the corruption test above does:
-    // head + counts, players at `PLAYER_BYTES` each, pieces at 19 (11 + the
-    // placement tick), then 25 per deploy record (17 + bag_ready) with
-    // `locked` at offset 16 of each.
+    // head + counts, players at `PLAYER_BYTES` each, pieces at 20 (12 —
+    // the facing byte joined at format 6 — plus the placement tick), then
+    // 25 per deploy record (17 + bag_ready) with `locked` at offset 16 of
+    // each.
     let players = w.players.iter().filter(|p| p.active).count();
-    let deploy0 = HEAD_BYTES + players * PLAYER_BYTES + w.pieces.len() * 19;
+    let deploy0 = HEAD_BYTES + players * PLAYER_BYTES + w.pieces.len() * 20;
     let mut saw = (false, false);
     for (i, rec) in w.deploys.entries().iter().enumerate() {
         let at = deploy0 + i * 25;

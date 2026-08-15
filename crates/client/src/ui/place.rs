@@ -536,6 +536,7 @@ mod tests {
             level: 0,
             loc: LOC_EDGE_W,
             row: 0,
+            facing: 0,
             hp: 10,
             uh: 0,
         }];

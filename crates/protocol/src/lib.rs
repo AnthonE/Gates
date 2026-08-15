@@ -498,7 +498,16 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// 3, for that fixture's own stated reason.
 ///
 /// Fixtures are keyed `v38_*` — 86 still.
-pub const PROTO_VER: u16 = 38;
+///
+/// **v39 — the piece record grows a facing bit** (hard/soft v0,
+/// `PieceRec::facing`). One bit after the row on `SUB_PIECE_PLACED` and
+/// `SUB_PIECE_SYNC` — the first *layout* change since v36, so unlike the
+/// two value-set bumps before it, the piece fixtures' bytes actually
+/// move. The client needs it to label the side a player is looking at
+/// (soft or hard), which is how the damage rule is learnable at all.
+///
+/// Fixtures are keyed `v39_*` — 86 still.
+pub const PROTO_VER: u16 = 39;
 
 /// Datagram kind field width.
 ///

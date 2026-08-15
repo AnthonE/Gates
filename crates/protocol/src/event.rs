@@ -1036,15 +1036,19 @@ pub fn encode_event_recipes(
     Ok((w.finish(), count))
 }
 
-/// One placed-piece record on the wire: 33 bits, shared by the placed
+/// One placed-piece record on the wire: 34 bits, shared by the placed
 /// broadcast and the sync batches. Refuses an address outside the grid or
 /// a row outside the def table — this encoder only ever sees sim records.
+/// The trailing bit is the soft side's facing (hard/soft v0, wire v39):
+/// the client labels the side a player is looking at, so the bit rides
+/// every record the way a door's open bit does.
 fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
         || rec.level as usize >= MAX_BUILD_LEVELS
         || rec.loc > LOC_EDGE_N
         || rec.row as usize >= MAX_PIECE_DEFS
+        || rec.facing > 1
     {
         return Err(WireError::Range);
     }
@@ -1053,6 +1057,7 @@ fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
     w.write(rec.level as u32, BUILD_LEVEL_BITS)?;
     w.write(rec.loc as u32, BUILD_LOC_BITS)?;
     w.write(rec.row as u32, PIECE_ROW_BITS)?;
+    w.write_bit(rec.facing != 0)?;
     Ok(())
 }
 
@@ -1065,7 +1070,11 @@ fn read_piece_rec(r: &mut BitReader) -> Result<PieceRec, WireError> {
         row: r.read(PIECE_ROW_BITS)? as u8,
         ..PieceRec::default()
     };
-    // Coord/level/loc widths are exact; only the row can be forged.
+    let rec = PieceRec {
+        facing: r.read_bit()? as u8,
+        ..rec
+    };
+    // Coord/level/loc/facing widths are exact; only the row can be forged.
     if rec.row as usize >= MAX_PIECE_DEFS {
         return Err(WireError::Malformed);
     }
