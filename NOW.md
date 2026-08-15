@@ -42,6 +42,42 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0gm · The ground albedos are pinned to a mean that was a quadrant *(client lane)*
+
+From `pass-20260815-042118-04-visual.md` ranked gap 1 ("the ground is a bare
+dirt plane with one material on it"). **The measurement half landed 2026-08-15**
+— `fill::GROUND_MIX` was `[0.008, 0.619, 0.373, 0.0]`, derived over
+`-1024..1024` on a world that runs `0..2048`: the quadrant `CLAUDE.md`'s trap
+list retracted for the relief sweep, still live on the client side. Whole-island
+it is `[0.011284, 0.518242, 0.378859, 0.091615]`. Gate
+`crates/client/tests/ground_mix.rs` (5 tests, 4 red on the old constant); note
+`gates-loop/findings/note-20260815-the-ground-mix-was-a-quadrant.md`.
+
+**What is left is the albedos, and it is a brightness iteration.** `GROUND_ALBEDO`
+was re-placed under a held area-weighted mean linear luma of 0.09390 — taken
+against the quadrant's weights, with granite treated as a free parameter because
+its weight read zero. Granite is 9.2% of the island and the brightest identity
+(3.76× grass), so the true mean is **0.10746**, 14.4% higher. The four values did
+not move here: they are coupled, `ART.md` §3's hue and saturation bands bind the
+edit, and `CLAUDE.md`'s 60→66 datum says one sequential owner with a frame open.
+
+Two things the next pass should know:
+
+- The fill's earth half moved with the mix (7,036 → 8,028 lux, ratio 1.661 →
+  1.456). `peak_lux()` did not, so up-facing surfaces are untouched — but this
+  points *against* visual gap 2's "put the darks back", and gap 2's owner should
+  read it as a starting offset rather than a surprise.
+- **The capture camera stands on 93% litter / 7% sand with grass and granite at
+  exactly zero within 60 m.** That is why four of six frames measure 0.00% green
+  cover — no tuft for `clutter_kind_at` to roll. The fix it argues for is a
+  second identity and a ground cover for *litter*, not grass geometry. The spawn
+  is pinned outside this repo (`art/capture-native.sh:44`) and is the operator's.
+- **That measurement pass was FAILED at the merge gate and repaired 2026-08-15**
+  (`pass-20260815-042118-05-judge.md`): the §open row had narrated the corrected
+  mix as a bare array, which dropped `GROUND_MIX` out of `ci/knob_registry.mjs`'s
+  declaration scan — 284 pins to 283, a wall going green because its case was
+  deleted. Declaration restored; the gate is red again under a real drift.
+
 ## 0fill · The darks, second half: the transfer *(client lane)*
 
 From `pass-20260815-042118-01-visual.md` ranked gap 2 ("put the darks back and

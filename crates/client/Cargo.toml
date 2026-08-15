@@ -139,6 +139,19 @@ name = "ground_where_the_green_goes"
 path = "tests/ground_where_the_green_goes.rs"
 required-features = ["render"]
 
+# The ground mix's WINDOW. `fill::GROUND_MIX` and `GROUND_ALBEDO`'s granite
+# paragraph were both derived over `-1024..1024` on a world that runs `0..2048`
+# — the quadrant `CLAUDE.md`'s trap list retracted for the relief sweep, still
+# live on the client side. This walks the whole world square, reproduces the
+# retracted window's own numbers so the retraction is checked rather than
+# remembered, and pins what the capture spawn's near field is actually made of.
+# Pure arithmetic over `sim_core::terrain`, no GPU — but it imports
+# `render::fill`, so it carries the feature.
+[[test]]
+name = "ground_mix"
+path = "tests/ground_mix.rs"
+required-features = ["render"]
+
 # `image` is a dev-dep and NOT a dependency, deliberately. The client never
 # decodes an image itself — `bevy_image` does that behind the asset server —
 # and the one place we need a decoder is a gate that opens a shipped .jpg to

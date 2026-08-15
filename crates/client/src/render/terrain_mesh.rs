@@ -83,11 +83,26 @@ pub const CHUNK_BUILDS_PER_FRAME: usize = 1;
 /// 2.28× is not reachable while the mean is pinned, and "roughly 2×" is what
 /// the document claims.
 ///
-/// The weights are measured, not assumed: over 39,521 land samples at seed
-/// 20260731 the mean splat is sand 0.008, grass 0.619, litter 0.373, rock
-/// 0.0000. **Granite's value is therefore free** — it is pinned to §3's ratio
-/// against litter and costs the mean nothing, because granite never reaches
-/// the ground at all (`ground_identity.rs`'s last test, and `NOW.md` §0gi).
+/// ⚠ **The weights this was placed under were a quadrant, and granite's value
+/// was therefore NOT free. Corrected 2026-08-15.** This paragraph read: "over
+/// 39,521 land samples at seed 20260731 the mean splat is sand 0.008, grass
+/// 0.619, litter 0.373, rock 0.0000. **Granite's value is therefore free** —
+/// it is pinned to §3's ratio against litter and costs the mean nothing,
+/// because granite never reaches the ground at all." The 39,521 is what
+/// `-1024..1024` returns on a world that runs `0..2048`; see
+/// [`super::fill::GROUND_MIX`] for the full retraction and
+/// `crates/client/tests/ground_mix.rs` for the gate.
+///
+/// Whole-island the mix is sand 0.0113, grass 0.5182, litter 0.3789, **rock
+/// 0.0916**. Granite is the third identity by area and it is the brightest of
+/// the four (3.76× grass), so **the held mean is wrong by 14.4%**: these four
+/// albedos average 0.1075 over the island against the 0.09390 they were placed
+/// to hold. Nothing here moved — the four values below are exactly as shipped —
+/// because brightness is the coupled owner's and re-placing them under the
+/// corrected weights is an iteration with `ART.md` §3's hue and saturation
+/// bands binding it too (`NOW.md` carries it). What changed is that the
+/// constraint is now written down truthfully instead of resting on an absent
+/// identity.
 pub const GROUND_ALBEDO: [[f32; 3]; 4] = [
     // beach sand — hue 42.0°, sat 10.0% (§3 "beach sand — 117 luma, 42°, 10%")
     [0.1196, 0.1122, 0.0960],

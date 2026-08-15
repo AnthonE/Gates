@@ -99,21 +99,48 @@ pub const SKY_FILL_SRGB: [f32; 3] = [0.80, 0.85, 0.95];
 /// darks come back on down-facing faces and nowhere else.
 pub const SKY_FILL_LUX: f32 = lux::AMBIENT_DAYLIGHT * 1.7;
 
-/// The island's ground mix — **measured, not assumed**, and lifted from the
-/// note already written above [`GROUND_ALBEDO`]: "over 39,521 land samples at
-/// seed 20260731 the mean splat is sand 0.008, grass 0.619, litter 0.373,
-/// rock 0.0000".
+/// The island's ground mix — **measured over the whole world square, which is
+/// the half this constant used to get wrong**.
 ///
 /// This is what makes the earth half a derivation rather than a knob. §4 asks
 /// for "earth half warm"; it does not say how warm or how bright, and inventing
 /// those two numbers would be exactly the invention `CLAUDE.md` forbids. The
 /// island's own albedo under the island's own irradiance answers both, and it
-/// answers them *warm* on its own — the mix is 62% grass and 37% litter, and
-/// litter is hue 38°.
+/// answers them warm on its own — litter is 38% of the land and hue 38°.
 ///
-/// Granite's 0.0000 is not a rounding of a small number: `ground_identity.rs`
-/// establishes that granite never reaches the ground at this seed at all.
-pub const GROUND_MIX: [f32; 4] = [0.008, 0.619, 0.373, 0.0];
+/// ⚠ **Corrected 2026-08-15. It said `[0.008, 0.619, 0.373, 0.0]` and "granite
+/// never reaches the ground at this seed at all", and both came from the
+/// quadrant.** The old value cited "39,521 land samples at seed 20260731", and
+/// that number is exactly reproducible: it is what `-1024..1024` on both axes
+/// returns at a 4 m step. `terrain::continent` centres the island on
+/// `(ISLAND_SIZE/2, ISLAND_SIZE/2)`, so world coordinates run `0..2048` and
+/// that window's *corner* is the island's centre — `0..1024` alone returns the
+/// identical 39,521, because the negative half is open sea. It is the same
+/// window `CLAUDE.md`'s trap list retracted for the relief sweep on
+/// 2026-08-14; the client's two copies were not re-measured then, and this is
+/// that.
+///
+/// Whole-island, 157,198 land samples at the same step: sand 0.0113, grass
+/// 0.5182, litter 0.3789, **rock 0.0916** — granite is the third identity by
+/// area, eight times sand's share, and `sim-core/tests/relief.rs` (10.0% of
+/// land carries a legible rock weight) and `examples/seed_scan.rs` (8.9%
+/// within 300 m of the capture spawn) have both said so since the retraction.
+/// Three sources that already knew where the world is, against one that did
+/// not. Gated by `crates/client/tests/ground_mix.rs`, which reproduces the
+/// retracted window's own numbers so the correction cannot quietly revert.
+///
+/// The values are the measurement normalised to a partition: the raw means sum
+/// to 0.999999, because a splat row is four bytes that sum to 254 or 255 rather
+/// than exactly 255, and `tests/fill.rs` requires a partition. The 1e-6 goes
+/// into grass, the largest channel.
+///
+/// **What this costs, stated because it is not free.** `GROUND_ALBEDO`'s
+/// granite was authored as a free parameter *because* this said its weight was
+/// zero. It is not free now, and the area-weighted mean linear luma that whole
+/// re-placement was pinned to (0.09390) is 14.4% low against the island's own
+/// 0.1075. Re-placing four coupled albedos is the brightness owner's iteration
+/// and not this one's — `NOW.md` carries it.
+pub const GROUND_MIX: [f32; 4] = [0.011_284, 0.518_242, 0.378_859, 0.091_615];
 
 /// sRGB → linear, the exact piecewise transfer (not the 2.2 approximation).
 pub fn srgb_to_linear(v: f32) -> f32 {
