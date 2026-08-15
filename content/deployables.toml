@@ -52,6 +52,24 @@ archetype = "workbench"
 placement = "foundation"
 hp = 500
 
+# The ladder's upper rungs (bench ladder v0). hp rises 500 → 750 → 1000
+# — proposed defaults, DECISIONS.md §open "bench ladder v0": the current
+# reference page says 500/750 for its fragment-era benches and no
+# pre-Oct-2025 hp survives in the sources, so the rise is ours, priced so
+# a raid that costs a base its top bench costs more swings than its
+# first.
+[[deployable]]
+id = "item.workbench2"
+archetype = "workbench2"
+placement = "foundation"
+hp = 750
+
+[[deployable]]
+id = "item.workbench3"
+archetype = "workbench3"
+placement = "foundation"
+hp = 1000
+
 # The recycler (recycler v0): a container that converts without burning.
 # `placement = "any"` and hp 300 are the furnace's, because it is the
 # furnace's shape of object — a workbench-era converter you put down once

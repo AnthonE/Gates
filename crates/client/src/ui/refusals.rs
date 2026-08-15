@@ -51,13 +51,17 @@ pub const CRAFT: [&str; 6] = [
     "not researched — take one to a research table",
 ];
 
-/// `sim_core::research`'s `REFUSE_R_*: u32`.
-pub const RESEARCH: [&str; 5] = [
+/// `sim_core::research`'s `REFUSE_R_*: u32`. The last two are the tree
+/// verb's (tech tree v0), and each names the act that fixes it —
+/// `CRAFT`'s blueprint sentence sets the bar.
+pub const RESEARCH: [&str; 7] = [
     "no research table in reach",
     "nothing in that slot",
     "that cannot be researched",
     "already known",
     "not enough obol",
+    "unlock the node before it first",
+    "no workbench of that level in reach",
 ];
 
 /// `sim_core::build`'s `REFUSE_B_*: u32` — a build, an upgrade or a repair

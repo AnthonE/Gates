@@ -131,6 +131,17 @@ pub const ARCH_RECYCLER: u8 = 8;
 /// recycler one commit earlier and holds sixteen. That is what the
 /// recycler's price bought.
 pub const ARCH_RESEARCH: u8 = 9;
+/// Workbench level 2 — the bench ladder's second rung (bench ladder v0,
+/// the pre-Oct-2025 scrap-era shape, operator 2026-08-15). Its own
+/// archetype rather than a tier field on the def, for the same reason the
+/// recycler is not a furnace with a flag: the archetype is what the wire
+/// carries, what the client draws a silhouette from, and what
+/// `bench_near` scans — one ledger, three readers. A higher bench
+/// satisfies a lower recipe (`bench_tier`), so placing this retires
+/// nothing.
+pub const ARCH_WORKBENCH2: u8 = 10;
+/// Workbench level 3 — the top rung, the gate a raid kit stands behind.
+pub const ARCH_WORKBENCH3: u8 = 11;
 
 /// The blocked volume of each archetype, `[w, h, d]` full extents in
 /// metres, centred on the deploy's cell centre with its base at the
@@ -153,7 +164,7 @@ pub const ARCH_RESEARCH: u8 = 9;
 /// the comparison that item said could not exist while the sim had no
 /// table. Sim truth now: a row here is a collision change (wall 5 —
 /// `test_replay` moves with it, deliberately).
-pub const DEPLOY_VOL: [[f32; 3]; 10] = [
+pub const DEPLOY_VOL: [[f32; 3]; 12] = [
     [0.0, 0.0, 0.0],   // 0 bag — walk-over
     [1.2, 1.0, 0.6],   // 1 hearth
     [1.2, 0.65, 0.7],  // 2 box
@@ -164,6 +175,8 @@ pub const DEPLOY_VOL: [[f32; 3]; 10] = [
     [0.0, 0.0, 0.0],   // 7 lock — never a record
     [1.3, 1.15, 0.9],  // 8 recycler
     [1.5, 0.8, 0.8],   // 9 research table
+    [1.6, 1.0, 0.8],   // 10 workbench 2 — taller and deeper than 5
+    [1.8, 1.1, 0.8],   // 11 workbench 3 — the widest bench
 ];
 
 /// The blocked volume of `arch` as `(half_w, h, half_d)`, or `None` for
@@ -182,7 +195,7 @@ const _: () = {
     // Every archetype code must fit the collision index's 4-bit nibble
     // (`collide::ColMasks::solid`), with 0xF left over as its empty
     // sentinel.
-    assert!(ARCH_RESEARCH < 0xF);
+    assert!(ARCH_WORKBENCH3 < 0xF);
     // A solid deploy stands at its cell centre, so the movement query
     // tests only the candidate's own build cell. That is complete iff no
     // volume, inflated by the capsule, can reach past the half-cell:
@@ -251,6 +264,22 @@ pub fn op_is_crew(op: u8) -> bool {
 /// the wire and none in the sim.
 pub fn holds_items(arch: u8) -> bool {
     arch == ARCH_BOX || arch == ARCH_FIRE || arch == ARCH_FURNACE || arch == ARCH_RECYCLER
+}
+
+/// A workbench archetype's rung on the bench ladder, `0` for anything
+/// that is not a bench. The one place the arch→tier mapping is written,
+/// so the craft gate (`craft::enqueue`), the tree gate
+/// (`research::unlock`) and the scan above cannot disagree about what a
+/// bench is worth. The tier deliberately equals the `STATION_WORKBENCH*`
+/// code it satisfies (`craft.rs` asserts the two ladders line up).
+#[inline]
+pub const fn bench_tier(arch: u8) -> u8 {
+    match arch {
+        ARCH_WORKBENCH => 1,
+        ARCH_WORKBENCH2 => 2,
+        ARCH_WORKBENCH3 => 3,
+        _ => 0,
+    }
 }
 
 /// What a code lock may bolt onto: a door's leaf or a storage box's lid
@@ -1221,6 +1250,23 @@ impl Deploys {
         let r2 = radius_m * radius_m;
         self.entries[..self.len].iter().any(|d| {
             if dc.defs[d.row as usize].arch != arch {
+                return false;
+            }
+            let (ax, az) = cell_center(d.cx, d.cz);
+            let (dx, dz) = (ax - x, az - z);
+            dx * dx + dz * dz <= r2
+        })
+    }
+
+    /// Whether any placed workbench of tier ≥ `tier` sits within
+    /// `radius_m` (planar) of the point — the tiered station check
+    /// (bench ladder v0). One scan rather than one `arch_near` per rung,
+    /// and the ≥ is the reference's own rule: a level-3 bench crafts a
+    /// level-1 recipe, so upgrading a bench never costs a verb.
+    pub fn bench_near(&self, dc: &DeployContent, tier: u8, x: f32, z: f32, radius_m: f32) -> bool {
+        let r2 = radius_m * radius_m;
+        self.entries[..self.len].iter().any(|d| {
+            if bench_tier(dc.defs[d.row as usize].arch) < tier {
                 return false;
             }
             let (ax, az) = cell_center(d.cx, d.cz);

@@ -425,7 +425,10 @@ impl Session {
         endpoint: &Endpoint<Client>,
         server: &str,
         address: protocol::Address,
-        sign: impl FnOnce(&str) -> Option<protocol::Signature>,
+        // `(domain, nonce hex, issued_at)` — the three inert values the
+        // launcher needs, never a message this process composed. See the
+        // `prove` block below for why that inversion is the whole fix.
+        sign: impl FnOnce(&str, &str, u64) -> Option<protocol::Signature>,
     ) -> Result<Self, String> {
         let url = format!("https://{server}");
         let connection = endpoint
@@ -479,17 +482,28 @@ impl Session {
         let auth = if address.is_guest() {
             protocol::Auth::default()
         } else {
-            let mut text = [0u8; protocol::SIWE_MESSAGE_MAX];
-            let n = protocol::siwe_message(
-                domain,
-                &address,
-                &challenge.nonce,
-                challenge.issued_at,
-                &mut text,
-            );
-            let text = core::str::from_utf8(&text[..n.min(protocol::SIWE_MESSAGE_MAX)])
-                .map_err(|_| "the challenge message is not utf-8".to_string())?;
-            match sign(text) {
+            // **This process no longer composes the message, and that is the
+            // fix.** It used to build the SIWE text here and hand it to the
+            // launcher's `sign`, which refused every one: `sign` classifies a
+            // message by its first line (`scry <family>`) and EIP-4361 begins
+            // with a domain. The refusal became `None`, `None` means "connect
+            // as a guest", and a `require_auth` shard answered REFUSE_AUTH —
+            // so every login failed as if the signature were wrong, when the
+            // message was one the launcher would never sign.
+            //
+            // `prove` is the verb: the LAUNCHER writes every word, which is
+            // what stops a game smuggling a sentence into a signature, and it
+            // needs no consent prompt for the same reason. We hand over three
+            // inert values and the shard rebuilds the text from the ones it
+            // already knows (`protocol::siwe_message`).
+            let mut hex = [0u8; protocol::NONCE_BYTES * 2];
+            for (i, b) in challenge.nonce.iter().enumerate() {
+                const H: &[u8; 16] = b"0123456789abcdef";
+                hex[i * 2] = H[(b >> 4) as usize];
+                hex[i * 2 + 1] = H[(b & 0xf) as usize];
+            }
+            let nonce = core::str::from_utf8(&hex).map_err(|_| "nonce hex".to_string())?;
+            match sign(domain, nonce, challenge.issued_at) {
                 Some(signature) => protocol::Auth { address, signature },
                 None => protocol::Auth::default(),
             }

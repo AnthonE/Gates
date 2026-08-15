@@ -172,6 +172,8 @@ pub fn structural(c: &Content) -> Result<(), String> {
         let station_item = match r.station {
             Station::None => None,
             Station::Workbench1 => Some("item.workbench1"),
+            Station::Workbench2 => Some("item.workbench2"),
+            Station::Workbench3 => Some("item.workbench3"),
             Station::Furnace => Some("item.furnace"),
         };
         if let Some(id) = station_item {
@@ -1036,6 +1038,51 @@ pub fn structural(c: &Content) -> Result<(), String> {
             ));
         }
     }
+    // The tech tree's graph (tech tree v0): every `requires` names
+    // another research row, no row requires itself, and the graph is
+    // acyclic. A cycle would not dead-end the content — the research
+    // table ignores parents, so a looted sample still unlocks a cycled
+    // node — but it would draw a tree panel with nodes no path reaches,
+    // which is a lie about a price. The walk is a parent-chase with a
+    // step budget of the row count: any chain longer than the table has
+    // revisited something.
+    for r in &c.research {
+        let Some(req) = &r.requires else { continue };
+        if req == &r.item {
+            return Err(format!("research: `{}` requires itself", r.item));
+        }
+        if !c.research.iter().any(|p| &p.item == req) {
+            return Err(format!(
+                "research: `{}` requires `{req}`, which no research row \
+                 teaches — the tree cannot reach it",
+                r.item
+            ));
+        }
+        let mut at = req;
+        let mut steps = 0usize;
+        loop {
+            let parent = c.research.iter().find(|p| &p.item == at);
+            let Some(parent) = parent else { break };
+            let Some(next) = &parent.requires else { break };
+            if next == &r.item {
+                return Err(format!(
+                    "research: `{}` and `{next}` require each other around a \
+                     cycle — no tree path reaches either",
+                    r.item
+                ));
+            }
+            steps += 1;
+            if steps > c.research.len() {
+                return Err(format!(
+                    "research: the `requires` chain above `{}` never ends — \
+                     a cycle with no path to a root",
+                    r.item
+                ));
+            }
+            at = next;
+        }
+    }
+
     // Every gate must have a key, and this is the half a content editor
     // actually gets wrong: a recipe marked `blueprint` with no research row
     // is a recipe **nobody can ever craft**, and it fails silently — the

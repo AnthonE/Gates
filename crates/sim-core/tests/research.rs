@@ -23,8 +23,8 @@ use sim_core::deploy::DeployContent;
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::persist::PlayerSave;
 use sim_core::research::{
-    knows, ResearchContent, REFUSE_R_COST, REFUSE_R_ITEM, REFUSE_R_KNOWN, REFUSE_R_SLOT,
-    REFUSE_R_TABLE,
+    knows, ResearchContent, REFUSE_R_BENCH, REFUSE_R_COST, REFUSE_R_ITEM, REFUSE_R_KNOWN,
+    REFUSE_R_PARENT, REFUSE_R_SLOT, REFUSE_R_TABLE,
 };
 use sim_core::world::{Command, World, EV_CRAFT_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED};
 
@@ -312,6 +312,136 @@ fn an_ungated_recipe_never_asks_about_a_blueprint() {
         refusal(&w, EV_CRAFT_REFUSED),
         Some(REFUSE_BLUEPRINT),
         "an open recipe is craftable by someone who has learned nothing"
+    );
+}
+
+// ---------------------------------------------------------------------
+// The tech tree (tech tree v0): the second verb over the same mask.
+// `ResearchContent::probe_fixture` row 1 is the tree probe — recipe 1,
+// cost 4, requiring recipe 2 — and both fixture recipes are node-tier 1,
+// so the fixture workbench (deploy row 2 below is the DOOR; the bench is
+// row 1) is the only station the suite needs.
+
+/// Deploy fixture row 1 is the tier-1 workbench; placing it costs
+/// holding item 3.
+const BENCH_ROW: u16 = 1;
+const BENCH_ITEM: u16 = 3;
+const NODE_RECIPE: u16 = 1;
+const NODE_COST: u16 = 4;
+
+/// `table_world`, plus a workbench on the neighbouring cell — the tree's
+/// own station, since a research table is not a bench.
+fn bench_world() -> World {
+    let (mut w, cx, cz) = table_world();
+    w.players[0].inv[2] = ItemStack {
+        item: BENCH_ITEM,
+        count: 1,
+    };
+    w.tick(&[Command::PlaceDeploy {
+        id: PLAYER,
+        row: BENCH_ROW,
+        cx: cx + 1,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(w.deploys.len(), 2, "the suite needs its bench placed");
+    // The bench's carrier item is the fixture's COIN (item 3), so any
+    // unspent unit would inflate every coin count below — clear it and
+    // restock to the suite's known 20.
+    w.players[0].inv[2] = ItemStack::default();
+    stock(&mut w);
+    w
+}
+
+fn ask_unlock(w: &mut World, recipe: u16) {
+    w.tick(&[Command::Unlock { id: PLAYER, recipe }]);
+}
+
+/// The tree's whole point, in order: out-of-order refuses on the parent
+/// and costs nothing; the root unlocks with no sample; the child then
+/// unlocks along the edge — and the coin is all either of them takes.
+#[test]
+fn the_tree_unlocks_along_its_edges_and_refuses_out_of_order() {
+    let mut w = bench_world();
+
+    // The child first: refused on the parent, coin intact.
+    ask_unlock(&mut w, NODE_RECIPE);
+    assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_PARENT));
+    assert_eq!(have(&w, COIN), 20, "an out-of-order ask costs nothing");
+    assert!(!knows(w.players[0].known, NODE_RECIPE));
+
+    // The root: no sample in hand — the tree never asks for one.
+    ask_unlock(&mut w, GATED_RECIPE);
+    assert!(knows(w.players[0].known, GATED_RECIPE));
+    assert_eq!(have(&w, COIN), 20 - COST as u32);
+    assert_eq!(
+        have(&w, SAMPLE),
+        2,
+        "the tree took the price and never the sample"
+    );
+
+    // The child, now in order.
+    ask_unlock(&mut w, NODE_RECIPE);
+    assert!(knows(w.players[0].known, NODE_RECIPE));
+    assert_eq!(have(&w, COIN), 20 - (COST + NODE_COST) as u32);
+}
+
+/// The tree's refusal ladder, each with its own reason and nothing
+/// taken: not a node, already known, no bench, short on coin.
+#[test]
+fn the_tree_refuses_with_reasons_and_takes_nothing() {
+    let mut w = bench_world();
+
+    // Recipe 0 exists and no research row teaches it.
+    ask_unlock(&mut w, 0);
+    assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_ITEM));
+
+    // Already known.
+    ask_unlock(&mut w, GATED_RECIPE);
+    let coin_after = have(&w, COIN);
+    ask_unlock(&mut w, GATED_RECIPE);
+    assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_KNOWN));
+    assert_eq!(have(&w, COIN), coin_after, "a second ask is free");
+
+    // Short on coin: the child costs 4 and the pocket holds 3.
+    w.players[0].inv[1] = ItemStack {
+        item: COIN,
+        count: 3,
+    };
+    ask_unlock(&mut w, NODE_RECIPE);
+    assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_COST));
+    assert_eq!(have(&w, COIN), 3, "and the 3 are still there");
+    assert!(!knows(w.players[0].known, NODE_RECIPE));
+}
+
+/// No bench in reach is its own sentence — `REFUSE_R_BENCH`, not the
+/// table's `REFUSE_R_TABLE` — because "walk to your workbench" and "walk
+/// to a research table" send a player to different buildings. The world
+/// here has ONLY the table placed, which is exactly the confusion the
+/// two codes exist to keep apart.
+#[test]
+fn the_tree_needs_a_bench_and_says_so() {
+    let (mut w, _, _) = table_world();
+    ask_unlock(&mut w, GATED_RECIPE);
+    assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_BENCH));
+    assert_eq!(have(&w, COIN), 20, "and asking cost nothing");
+}
+
+/// The table ignores the tree: a looted sample researches a node whose
+/// parent was never learned. Research-what-you-loot bypassing the graph
+/// is the reference's own two-system split, and it is what keeps a lucky
+/// find worth the walk.
+#[test]
+fn the_table_researches_a_sample_with_no_questions_about_parents() {
+    let (mut w, _, _) = table_world();
+    // Row 1's sample (item 5) in hand, parent (recipe 2) unknown.
+    w.players[0].inv[0] = ItemStack { item: 5, count: 1 };
+    assert!(!knows(w.players[0].known, GATED_RECIPE));
+    ask(&mut w, 0);
+    assert!(
+        knows(w.players[0].known, NODE_RECIPE),
+        "the table taught the child with the parent unlearned"
     );
 }
 

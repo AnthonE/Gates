@@ -52,7 +52,7 @@ use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
 };
 
-use super::rig::{EyeCam, RIG_SUN_AZIMUTH, RIG_SUN_ELEVATION};
+use super::rig::{EyeCam, RIG_SUN_ELEVATION};
 use super::WorldId;
 
 /// Cube face size in texels. 6 × 256² = 393k texels, 1.5 MB of RGBA8, built
@@ -149,14 +149,33 @@ fn cube_dir(face: usize, x: u32, y: u32, n: u32) -> Vec3 {
     Vec3::new(d.x, d.y, -d.z).normalize()
 }
 
+/// The horizontal direction the deck's light march steps toward, i.e. toward
+/// the sun.
+///
+/// **A function rather than three lines inside the bake loop, because a gate
+/// cannot see into a loop body.** The rig owns the sun vector; this file
+/// re-derived it from `RIG_SUN_AZIMUTH`/`RIG_SUN_ELEVATION` by hand until
+/// 2026-08-15, three lines identical to `rig.rs`'s, so the deck and the
+/// shadows agreed only by coincidence of two matching edits. Naming the
+/// derivation is what lets `crates/client/tests/sun.rs` assert on the value
+/// this file actually marches along — the first cut of that gate re-derived
+/// `to_sun` on its own side and stayed green under a deliberately flipped
+/// deck, which is the "a test that calls `sun_dir()` twice proves nothing"
+/// trap named in `threejs-visual-validation`.
+///
+/// The deck is baked at NOON — `RIG_SUN_ELEVATION`, not the cycle's current
+/// elevation — which `rig::day_night` already says out loud.
+pub fn deck_march_dir() -> Vec2 {
+    let s = super::rig::to_sun(RIG_SUN_ELEVATION);
+    Vec2::new(s.x, s.z).normalize_or_zero()
+}
+
 /// Build the cloud cubemap for a seed.
 pub fn cloud_cubemap(seed: u64) -> Image {
     let n = SKY_FACE;
     let mut data = vec![0u8; (n * n * 6 * 4) as usize];
 
-    let (se, ce) = (RIG_SUN_ELEVATION.sin(), RIG_SUN_ELEVATION.cos());
-    let (sa, ca) = (RIG_SUN_AZIMUTH.sin(), RIG_SUN_AZIMUTH.cos());
-    let to_sun = Vec3::new(sa * ce, se, ca * ce);
+    let toward = deck_march_dir();
 
     for face in 0..6usize {
         for y in 0..n {
@@ -196,7 +215,6 @@ pub fn cloud_cubemap(seed: u64) -> Image {
                 // toward the sun stands in for a light march: a texel whose
                 // sunward neighbour is thinner is on a lit face.
                 let e = 0.35;
-                let toward = Vec2::new(to_sun.x, to_sun.z).normalize_or_zero();
                 let f_sun = fbm(seed, px + toward.x * e, pz + toward.y * e);
                 let lit = ((f - f_sun) * 6.0 + 0.5).clamp(0.0, 1.0);
 

@@ -395,6 +395,24 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 open_panel(ui);
             }
         }
+        // The bench's `E` opens the tree and sends nothing (tech tree
+        // v0): the panel is drawn from tables already dripped, and the
+        // wire is only touched when a node is actually bought
+        // (`panels::tech::clicks`). No `open_panel` — that helper opens
+        // the INVENTORY, and this is the one verb that opens something
+        // else.
+        Verb::TechTree => {
+            if let Some(ui) = ui {
+                if ui.panel == Panel::None {
+                    ui.panel = Panel::Tech;
+                    // The header's LEVEL badge is the bench actually under
+                    // the crosshair — display only; the sim re-derives the
+                    // demanded rung per node.
+                    ui.tech_tier = sim_core::deploy::bench_tier(pick.arch).max(1);
+                    ui.dirty = true;
+                }
+            }
+        }
         // The honest answer, and the one a chain of `if`s could not give: the
         // browser's old dispatch reported "no hearth in reach" on an empty
         // island because the hearth happened to be the last link tried.

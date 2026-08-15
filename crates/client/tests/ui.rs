@@ -2612,3 +2612,193 @@ fn the_swing_path_reads_the_island_through_the_memo() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// §M · the tech tree model (tech tree v0) — `ui::techtree`, headless
+//
+// The panel's arithmetic: node states off the mask and the pockets, tier
+// grouping off the same `node_tier` the sim gates with, and the path total
+// the reference prints on an item page. The fixture pair is the sim's own —
+// `ResearchContent::probe_fixture` (row 0 a root, row 1 requiring it) over
+// `CraftContent::probe_fixture` — so the model is tested against exactly
+// the tables the gates run.
+
+mod techtree_model {
+    use client::ui::techtree::{path_total, rows, state_label, tier_label, NodeState};
+    use sim_core::craft::CraftContent;
+    use sim_core::gather::ItemStack;
+    use sim_core::limits::INV_SLOTS;
+    use sim_core::research::{ResearchContent, NO_RECIPE};
+
+    fn inv_with_coin(count: u16) -> [ItemStack; INV_SLOTS] {
+        let mut inv = [ItemStack::default(); INV_SLOTS];
+        // The fixture's coin is item 3.
+        inv[0] = ItemStack { item: 3, count };
+        inv
+    }
+
+    fn fixture() -> (ResearchContent, CraftContent) {
+        (
+            ResearchContent::probe_fixture(),
+            CraftContent::probe_fixture(),
+        )
+    }
+
+    /// Every live row is drawn once, tiers ascend, and the four states
+    /// come out of (mask, pockets) exactly as the sim would rule them.
+    #[test]
+    fn states_follow_the_mask_and_the_pockets() {
+        let (rc, cc) = fixture();
+        let mut out = Vec::new();
+
+        // Broke and knowing nothing: the root is Short, the child Blocked.
+        rows(&rc, &cc, &inv_with_coin(0), 0, &mut out);
+        assert_eq!(out.len(), 2, "both fixture rows draw");
+        let root = out.iter().find(|n| n.recipe == 2).unwrap();
+        let child = out.iter().find(|n| n.recipe == 1).unwrap();
+        assert_eq!(root.state, NodeState::Short);
+        assert_eq!(child.state, NodeState::Blocked, "parent outranks coin");
+        assert_eq!(root.requires, NO_RECIPE);
+        assert_eq!(child.requires, 2);
+
+        // Funded: the root is Ready, the child still Blocked.
+        rows(&rc, &cc, &inv_with_coin(20), 0, &mut out);
+        assert_eq!(
+            out.iter().find(|n| n.recipe == 2).unwrap().state,
+            NodeState::Ready
+        );
+        assert_eq!(
+            out.iter().find(|n| n.recipe == 1).unwrap().state,
+            NodeState::Blocked
+        );
+
+        // Parent learned: the child opens; the parent reads Known.
+        rows(&rc, &cc, &inv_with_coin(20), 1 << 2, &mut out);
+        assert_eq!(
+            out.iter().find(|n| n.recipe == 2).unwrap().state,
+            NodeState::Known
+        );
+        assert_eq!(
+            out.iter().find(|n| n.recipe == 1).unwrap().state,
+            NodeState::Ready
+        );
+
+        // And ordering: tiers never descend down the list.
+        let mut last = 0u8;
+        for n in &out {
+            assert!(n.tier >= last, "tiers ascend");
+            last = n.tier;
+        }
+    }
+
+    /// The path total is the unlearned chain's sum, shrinking as the
+    /// mask grows — the number an item page prints, and 0 once known.
+    #[test]
+    fn the_path_total_charges_only_the_unlearned() {
+        let (rc, _cc) = fixture();
+        // Nothing known: the child costs its parent (5) plus itself (4).
+        assert_eq!(path_total(&rc, 0, 1), 9);
+        assert_eq!(path_total(&rc, 0, 2), 5);
+        // Parent learned: only the child remains.
+        assert_eq!(path_total(&rc, 1 << 2, 1), 4);
+        // Both learned: nothing left to pay.
+        assert_eq!(path_total(&rc, (1 << 2) | (1 << 1), 1), 0);
+        // Not a node at all: nothing to charge.
+        assert_eq!(path_total(&rc, 0, 0), 0);
+    }
+
+    /// The words the panel draws — pinned so the badge and the craft
+    /// panel's phrasing stay one voice.
+    #[test]
+    fn the_labels_speak_the_craft_panels_language() {
+        assert_eq!(tier_label(1), "WORKBENCH LEVEL 1");
+        assert_eq!(tier_label(3), "WORKBENCH LEVEL 3");
+        assert_eq!(state_label(NodeState::Blocked), "LOCKED");
+        assert_eq!(state_label(NodeState::Ready), "UNLOCK");
+    }
+}
+
+/// The tidy-tree layout (tech tree v0's board): children sit exactly one
+/// row under their parent in distinct columns, subtree blocks never
+/// overlap, and every edge names a real parent-child pair — the
+/// invariants that keep the drawn graph a picture of the table.
+mod techtree_layout {
+    use client::ui::techtree::layout;
+    use sim_core::craft::CraftContent;
+    use sim_core::gather::ItemStack;
+    use sim_core::limits::INV_SLOTS;
+    use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
+
+    fn table() -> ResearchContent {
+        // Two trees: recipe 2 -> 1, and recipe 3 -> {4, 5}.
+        let mut rc = ResearchContent::EMPTY;
+        rc.coin = 3;
+        rc.row_count = 5;
+        let rows = [
+            (10, 2, 5, NO_RECIPE),
+            (11, 1, 4, 2),
+            (12, 3, 6, NO_RECIPE),
+            (13, 4, 7, 3),
+            (14, 5, 8, 3),
+        ];
+        for (i, &(item, recipe, cost, requires)) in rows.iter().enumerate() {
+            rc.rows[i] = ResearchRow {
+                item,
+                recipe,
+                cost,
+                requires,
+            };
+        }
+        rc
+    }
+
+    #[test]
+    fn the_grid_is_a_picture_of_the_table() {
+        let rc = table();
+        let cc = CraftContent::probe_fixture();
+        let inv = [ItemStack::default(); INV_SLOTS];
+        let (mut placed, mut edges) = (Vec::new(), Vec::new());
+        layout(&rc, &cc, &inv, 0, &mut placed, &mut edges);
+
+        assert_eq!(placed.len(), 5, "every live row is placed");
+        assert_eq!(edges.len(), 3, "every requires is an edge");
+
+        // No two nodes share a cell.
+        for a in 0..placed.len() {
+            for b in a + 1..placed.len() {
+                assert!(
+                    (placed[a].col, placed[a].row) != (placed[b].col, placed[b].row),
+                    "two nodes on one cell"
+                );
+            }
+        }
+        // A child is exactly one row under its parent.
+        for e in &edges {
+            assert_eq!(
+                placed[e.child].row,
+                placed[e.parent].row + 1,
+                "an edge spans exactly one row"
+            );
+            assert_eq!(
+                placed[e.child].node.requires, placed[e.parent].node.recipe,
+                "an edge follows requires"
+            );
+        }
+        // The two-child parent's children get distinct columns and the
+        // parent sits inside their span.
+        let by_recipe = |r: u16| placed.iter().find(|p| p.node.recipe == r).unwrap();
+        let (p, c1, c2) = (by_recipe(3), by_recipe(4), by_recipe(5));
+        assert_ne!(c1.col, c2.col, "siblings spread");
+        let (lo, hi) = (c1.col.min(c2.col), c1.col.max(c2.col));
+        assert!(
+            (lo..=hi).contains(&p.col),
+            "a parent stands over its children's span"
+        );
+        // And the two trees do not interleave columns.
+        let (a1, a2) = (by_recipe(2), by_recipe(1));
+        assert!(
+            a1.col.max(a2.col) < lo || a1.col.min(a2.col) > hi,
+            "subtree blocks stay whole"
+        );
+    }
+}

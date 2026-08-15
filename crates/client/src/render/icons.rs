@@ -81,6 +81,13 @@ impl Icons {
     pub fn verb(&self, key: &str) -> Option<Handle<Image>> {
         self.by_name.get(key).cloned()
     }
+
+    /// A UI glyph borrowed from the item set by literal stem — the tech
+    /// tree's padlock is `code_lock` worn as an overlay (tech tree v0).
+    /// [`Self::shape`]'s lookup, its own name for its own grep.
+    pub fn glyph(&self, key: &str) -> Option<Handle<Image>> {
+        self.by_name.get(key).cloned()
+    }
 }
 
 /// Kick every icon off at `Startup`, beside the terrain textures and for the

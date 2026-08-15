@@ -146,6 +146,11 @@ ITEMS = {
     "box_small": "delapouite/wooden-crate",
     "fire_pit": "lorc/campfire",
     "workbench1": "lorc/hammer-nails",
+    # The bench ladder (bench ladder v0): the glyphs climb with the rungs
+    # — hammer-and-nails, the struck anvil, the gear-hammer — so the
+    # three read as one tool family at a glance and still rank.
+    "workbench2": "lorc/anvil-impact",
+    "workbench3": "lorc/gear-hammer",
     "hearth": "delapouite/fireplace",
     "hatchet_metal": "delapouite/sharp-axe",
     "pickaxe_metal": "delapouite/mining-helmet",

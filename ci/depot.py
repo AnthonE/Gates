@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
-"""Package the Linux desktop build as a scry depot.
+"""Package a desktop build as a scry depot.
 
     ./ci/depot.py                       build + stage + write the depot index
+    ./ci/depot.py --platform win-x86_64 the Windows depot (x86_64-pc-windows-gnu)
     ./ci/depot.py --root https://...    bake a different download root
     ./ci/depot.py --no-build            package whatever is already compiled
     ./ci/depot.py --self-test           the gate: no compiler, no network
+
+⚠ This line read *"Package the Linux desktop build"* until 2026-08-14, and it
+was quoted as evidence that the depot was Linux-only — while `TARGETS` had
+held `win-x86_64` for as long as anyone remembers, four of `--self-test`'s
+checks assert the Windows spec and the `.exe` launch contract, and Windows
+depots have been published and notarized repeatedly. **A first line is what
+everyone reads and nobody re-checks; this one was wrong in the direction that
+hides a shipped capability.** The finding is `fix/us-east-shard`'s (2026-08-12)
+and sat unmerged on a branch, which is its own version of the same lesson.
 
 A **depot** is one build of one game: a flat list of files each with a sha256,
 plus the single command that starts it. The scry launcher installs it by
@@ -98,7 +108,20 @@ TARGETS = {
 # by the origin, because the digest is taken over the whole document including
 # this field — a server that edited it would change the number a player
 # recomputes and looks up on chain.
-DEFAULT_ROOT = "https://scry.moreright.xyz/api/launcher/depot/{slug}/{build}/files"
+#
+# ⚠ **`{platform}` is in the path, and that is the fix for a real collision.**
+# A build id carries no platform, so the origin's old `<slug>/<build>/` was one
+# directory for two platforms: the second publish overwrote the first and a
+# linux player was handed the windows build. scry keys by (build, platform)
+# since 2026-08-14 and this is the packager's half of it.
+#
+# Because `root` is inside the digest, changing this line changes the number
+# notarized for every build packaged after it — which is correct and is why
+# depots published BEFORE it keep the old two-segment url forever. The origin
+# still serves that shape; a published depot's location is part of what was
+# sealed on chain, so it can never be moved.
+DEFAULT_ROOT = ("https://scry.moreright.xyz/api/launcher/depot"
+                "/{slug}/{build}/{platform}/files")
 
 # The launcher fills these. `{server}` is the shard to join, `{wallet}` the
 # address the player asked their launcher to watch, `{servers}` the url of the
@@ -301,7 +324,7 @@ def build_depot_doc(stage: Path, build: str, root: str, *,
         "slug": SLUG,
         "build": build,
         "platform": platform,
-        "root": root.format(slug=SLUG, build=build),
+        "root": root.format(slug=SLUG, build=build, platform=platform),
         "files": files,
         "launch": {
             "exec": exec_name,
@@ -521,6 +544,12 @@ def self_test() -> int:
     ok("{build}" not in doc["root"] and doc["root"].startswith("https://"),
        "the root is filled in and https")
     ok("0.1.0-gdeadbeef" in doc["root"], "and it points at THIS build")
+    # The platform belongs in the PATH, not just in the document's `platform`
+    # field: the origin keys by (build, platform), and a root without it sends
+    # both platforms of one commit to one directory — which is the collision
+    # that hands a linux player the windows build.
+    ok("{platform}" not in doc["root"] and f"/{doc['platform']}/" in doc["root"],
+       "and at THIS platform — the pair is the origin's key")
 
     # The placeholders must be ones the launcher knows. An unknown one is a
     # refusal at launch, not a passthrough, so a typo here would ship a build
@@ -663,9 +692,9 @@ def self_test() -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", default=DEFAULT_ROOT,
-                    help="where the bytes will be fetched from; {slug} and {build} "
-                         "are filled in. BAKED INTO THE DIGEST — changing it changes "
-                         "the number that gets notarized")
+                    help="where the bytes will be fetched from; {slug}, {build} "
+                         "and {platform} are filled in. BAKED INTO THE DIGEST — "
+                         "changing it changes the number that gets notarized")
     ap.add_argument("--out", default=str(ROOT / "target" / "depot"),
                     help="where the staged build tree is written")
     ap.add_argument("--platform", default=PLATFORM, choices=sorted(TARGETS),
@@ -727,7 +756,8 @@ def main() -> int:
               "in the launcher.")
 
     print("\n== to publish (OPERATOR ACT — read the tree first)")
-    print(f"   rsync -a {stage}/ <origin>:/data/apps/scry-data/depots/{SLUG}/{build}/")
+    print(f"   rsync -a {stage}/ "
+          f"<origin>:/data/apps/scry-data/depots/{SLUG}/{build}/{a.platform}/")
     # **A MERGE, not an overwrite.** `published.json` holds one row per
     # platform, so the obvious `echo '{...}' >` publishes this build and
     # silently UNPUBLISHES every other platform — the linux row disappears the

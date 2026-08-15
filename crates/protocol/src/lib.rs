@@ -60,12 +60,12 @@ pub use event::{
     encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
     encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
     encode_event_recipes, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_respawn, encode_event_shot,
-    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
-    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
-    BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
-    SLOT_SYNC_BATCH,
+    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
+    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
+    encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot,
+    ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
+    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH,
+    PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -486,41 +486,37 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// third kind landed, only its open was pinned, and the bytes meaning
 /// "take it out" went a whole version unchecked.
 ///
-/// **v38 — the shape field spends its last two values** (catalogue v1,
-/// `sim_core::build::{SHAPE_WINDOW, SHAPE_FRAME}`). `SHAPE_BITS` has been
-/// 3 since the build slice and codes 6 and 7 decoded as `Malformed`; they
-/// are now the window and the wall frame (`reference/BUILDING.md` §9.13 —
-/// the openings-are-sockets pair). v37's shape exactly: **not one field
-/// moved**, the accepted value set widened on one message
-/// (`SUB_PIECE_DEFS`), and that is a break in one direction — a v38
-/// table with a window in it is `Malformed` to a v37 client. The
-/// piece-defs fixture now pins shape 7 the way it already pinned material
-/// 3, for that fixture's own stated reason.
+/// **⚠ 38, 39 and 40 were claimed by two branches at once, and none of
+/// the three means one thing.** Two lanes bumped in parallel on
+/// 2026-08-15: the trunk spent **38** on the bench ladder + tech tree
+/// (`STATION_BITS` 2 → 3 — every recipe row in `SUB_RECIPES` moved — the
+/// furnace re-coded 2 → 4, deploy archetypes 10/11 went live,
+/// `ACT_UNLOCK` and `SUB_RESEARCH_ROWS` landed, and five fixtures joined:
+/// the unlock, the research-rows drip, and the three research-lane events
+/// unpinned since v32). The building branch spent **38, 39 and 40** on
+/// catalogue v1 (shape codes 6/7 legalised), hard/soft v0 (the facing
+/// bit on both piece records — a layout change), and triangles v0
+/// (`SHAPE_BITS` 3 → 4, `BUILD_LOC_BITS` 2 → 4, every loc read
+/// range-checked by the store it addresses via `loc_max`). Two different
+/// layouts both called 38 is `worldsave.rs`'s format-3 collision exactly,
+/// and it takes the same cure:
 ///
-/// Fixtures are keyed `v38_*` — 86 still.
+/// **v41 is the merge** — both branches' layouts in one wire, under the
+/// next number neither claimed. No fixture keyed v38–v40 was ever
+/// authoritative on this trunk.
 ///
-/// **v39 — the piece record grows a facing bit** (hard/soft v0,
-/// `PieceRec::facing`). One bit after the row on `SUB_PIECE_PLACED` and
-/// `SUB_PIECE_SYNC` — the first *layout* change since v36, so unlike the
-/// two value-set bumps before it, the piece fixtures' bytes actually
-/// move. The client needs it to label the side a player is looking at
-/// (soft or hard), which is how the damage rule is learnable at all.
+/// Fixtures are keyed `v41_*` — **91**.
+pub const PROTO_VER: u16 = 41;
+
+/// This game's slug in the scry catalog.
 ///
-/// Fixtures are keyed `v39_*` — 86 still.
-///
-/// **v40 — the grid gains its triangles, and two fields widen for them**
-/// (triangles v0, `reference/BUILDING.md` §9.14). `SHAPE_BITS` 3 → 4
-/// (three triangle shapes; catalogue v1 had saturated the field and its
-/// domain pin priced this bump in advance) and `BUILD_LOC_BITS` 2 → 4
-/// (four half-cell locs and two diagonals; ten live values where four
-/// filled the old width). Every message carrying a loc moved by two
-/// bits, so this is a layout change everywhere an address rides — and
-/// the widths now hold forgeable tails, so every loc read gained a
-/// range check bounded by the STORE the message names (`loc_max`):
-/// pieces reach the diagonals, deployables never do.
-///
-/// Fixtures are keyed `v40_*` — 86 still.
-pub const PROTO_VER: u16 = 40;
+/// It lives here rather than only in the client because it reaches the
+/// **signed bytes**: the launcher takes the name from the SDK's `hello` and
+/// writes it into the SIWE statement, so the shard has to spell it the same
+/// way to recompute what it verifies. Two constants would be two chances to
+/// disagree, and the symptom of disagreeing is every login failing while both
+/// sides look right. `client::scry::SLUG` re-exports this one.
+pub const SLUG: &str = "gates";
 
 /// Datagram kind field width.
 ///
@@ -952,6 +948,14 @@ const ACT_DEMOLISH: u32 = 16;
 /// workbench is (`research.rs`), so there is no address to aim and nothing
 /// for the client to guess about which table it meant.
 const ACT_RESEARCH: u32 = 17;
+/// Learn a recipe through the tech tree at a workbench (wire v38, tech
+/// tree v0). The nineteenth action; the lane holds thirty-two, so it
+/// cost a subtype and no layout. Payload is the recipe index alone —
+/// the bench is found by proximity exactly as `ACT_RESEARCH` finds the
+/// table, and the parent, the tier and the price are the sim's verdict
+/// (`research::unlock`), so the only thing the client may claim is
+/// *which node it is pointing at*.
+const ACT_UNLOCK: u32 = 18;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -961,7 +965,7 @@ const ACT_RESEARCH: u32 = 17;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_RESEARCH;
+const ACT_MAX: u32 = ACT_UNLOCK;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -1195,6 +1199,11 @@ pub enum ActionMsg {
     /// sender's claim and the sim is the verdict, so a forged index is a
     /// refusal rather than a disconnect.
     Research { slot: u8 },
+    /// Learn recipe row `recipe` through the tech tree, at a workbench
+    /// (tech tree v0). The recipe index is the sender's claim and the
+    /// sim is the verdict — an ungated recipe, an unlearned parent and a
+    /// forged index all land as announced refusals.
+    Unlock { recipe: u16 },
     /// Drink from the water at your feet (survival.rs). **Payload-free
     /// for `Loot`'s reason, and a stronger one**: the only thing a drink
     /// acts on is the heightfield, which is a pure function of the seed
@@ -1353,6 +1362,19 @@ pub fn encode_action_research(slot: u8, buf: &mut [u8]) -> Result<usize, WireErr
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_RESEARCH, ACTION_SUB_BITS)?;
     w.write(slot as u32, ACTION_SLOT_BITS)?;
+    Ok(w.finish())
+}
+
+/// The tree verb. `recipe` rides the craft verb's own 8-bit recipe
+/// width, bounded the same way against `MAX_RECIPES`.
+pub fn encode_action_unlock(recipe: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if recipe as usize >= sim_core::limits::MAX_RECIPES {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_UNLOCK, ACTION_SUB_BITS)?;
+    w.write(recipe as u32, 8)?;
     Ok(w.finish())
 }
 
@@ -1869,6 +1891,13 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             ActionMsg::Research { slot }
+        }
+        ACT_UNLOCK => {
+            let recipe = r.read(8)? as u16;
+            if recipe as usize >= sim_core::limits::MAX_RECIPES {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Unlock { recipe }
         }
         ACT_DRINK => ActionMsg::Drink,
         ACT_RESPAWN => ActionMsg::Respawn {
@@ -2894,10 +2923,10 @@ mod tests {
     /// not slip in against a stale one.
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
-        assert_eq!(ACT_MAX, ACT_RESEARCH);
+        assert_eq!(ACT_MAX, ACT_UNLOCK);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            14,
+            13,
             "the spare action codes moved — say so where the count is written"
         );
     }

@@ -691,6 +691,17 @@ in the ~106 s code tier. Use `bevy/dynamic_linking` for local iteration.
   compare them.
 - Settle on observable state — welcome received, `snapshots > n`, chunk queue
   drained — and never on elapsed time. Budget in **frames**, not milliseconds.
+- **Fixed hour, and it is pinned in the client rather than the harness** (2026-08-15,
+  `DECISIONS.md` §open "capture clock v0"). `rig::DayPin` puts a `--capture` run's
+  tick at `CAPTURE_DAY_FRAC = DAY_PORTION * 0.5` — the arch's peak, the one
+  fraction where `sun_elevation` returns `RIG_SUN_ELEVATION` exactly. Until then
+  the hour was *whatever tick the shard had reached* when the probe fired, i.e. a
+  function of how long the build took: **24.47° at tick 0, 27.33° typical, 30.36°**
+  on a slow box, rising monotonically, so a slower box scored a brighter frame and
+  no scored frame was ever taken at the authored register. It pins the tick and not
+  the sun, because `render/audio.rs` reads the same clock through `is_night`.
+  Same consequence as the seed clause above: **frames either side of 2026-08-15 are
+  not tonally comparable.**
 - Render off-screen and read back (Bevy's headless renderer path). No Xvfb, no
   `xwd`, no window server dependency.
 - A missing Vulkan ICD is a **loud failure**, not a skip: this container has

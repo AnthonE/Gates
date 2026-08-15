@@ -33,12 +33,27 @@ item = "item.obol"
 # medkit, pistol ammo and metal arrows), which is what makes the verb a
 # reason to walk to the haven rather than a tax on crafting.
 #
-# **The prices are ours** (`reference/RIPLIST.md` has no research row; what
-# theirs charges per blueprint is unresearched). The anchor is the recycler:
-# a component pays 1–2 obol, a barrel rolls 1–2 components, so 20 is a
+# **The prices are ours** (`reference/RIPLIST.md` §2 row 7 sourced theirs
+# at page tier 2026-08-14: pre-Oct-2025 was 75/125/250/500, post-cut is
+# 15/30/60/120 — both priced against a ~10-scrap barrel where ours pays
+# ~0.85 obol, so neither lands raw). The anchor is the recycler: a
+# component pays 1–2 obol, a barrel rolls 1–2 components, so 20 is a
 # handful of barrels and 75 is a deliberate trip. The ladder is 20 / 40 /
 # 75 — reachable, a session, a project — and it moves with the faucet
 # counts or the ratio breaks (DECISIONS.md §open, "OBOL faucet v0").
+#
+# **`requires` is the tech tree** (tech tree v0 — spoken 2026-08-14, the
+# pre-Oct-2025 era 2026-08-15). Two verbs read this table: the research
+# TABLE takes a looted sample plus the cost and ignores `requires`
+# entirely — research what you loot — and the tree verb at a workbench
+# takes the cost alone, along these edges, at a bench of the recipe's
+# tier. One cost column serves both, the reference's own pre-Oct-2025
+# arrangement; the tree "costs more" only as the path total (a satchel
+# via the tree is gunpowder's 40 + its own 75 = 115, against 75 with a
+# sample in hand — and there IS no satchel sample, which is the point:
+# the tree is how the two rows nothing drops became learnable at all).
+# Three roots, two paths: powder (gunpowder → revolver / satchel) and
+# field kit (medkit → roadsign plate); metal arrows stand alone.
 
 # 20 — a handful of barrels. The first thing most players will research,
 # and cheap because it is the one that teaches what the verb IS.
@@ -58,6 +73,7 @@ cost = 40
 [[research]]
 item = "item.armor_roadsign_body"
 cost = 40
+requires = "item.medkit"
 
 # 75 — a project, and both of these are what a raid is made of. The
 # revolver is also a rare barrel drop (`loot.toml`), so the fastest route
@@ -65,7 +81,9 @@ cost = 40
 [[research]]
 item = "item.revolver"
 cost = 75
+requires = "item.gunpowder"
 
 [[research]]
 item = "item.satchel_charge"
 cost = 75
+requires = "item.gunpowder"

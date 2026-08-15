@@ -208,6 +208,25 @@ fn hash_moves_with_values() {
         build(&srcs).unwrap().hash(),
         "the night notice radius must move the content hash"
     );
+
+    // The tree edge (tech tree v0): `requires` reaches the sim through
+    // `bake_research`, and two contents that disagree about a parent
+    // charge different path totals for the same node — the same "plays
+    // differently, canonicalises the same" defect, priced in coin.
+    let mut srcs = sources();
+    let r = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "research.toml")
+        .unwrap();
+    r.1 = r.1.replace(
+        "requires = \"item.gunpowder\"",
+        "requires = \"item.medkit\"",
+    );
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "the tree edge must move the content hash"
+    );
 }
 
 /// The raid tool reaches the sim, and the raid ratio is arithmetic a
@@ -2256,6 +2275,8 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
             let station_ok = match r.station {
                 content::schema::Station::None => true,
                 content::schema::Station::Workbench1 => have.contains("item.workbench1"),
+                content::schema::Station::Workbench2 => have.contains("item.workbench2"),
+                content::schema::Station::Workbench3 => have.contains("item.workbench3"),
                 content::schema::Station::Furnace => have.contains("item.furnace"),
             };
             if station_ok && r.inputs.iter().all(|i| have.contains(i.item.as_str())) {

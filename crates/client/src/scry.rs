@@ -112,18 +112,23 @@
 #[path = "scry_overlay.rs"]
 pub mod overlay;
 
-pub use overlay::{play_message, Overlay, SignError, Signature};
+pub use overlay::{play_message, Overlay, Proof, SignError, Signature};
 
 /// This game's slug in the scry catalog — the key its manifest, its depot and
 /// its shard list are all filed under.
-pub const SLUG: &str = "gates";
+///
+/// Re-exported from `protocol` rather than declared here: it also reaches the
+/// signed bytes of a login (the launcher writes it into the SIWE statement),
+/// so the shard needs the same spelling and two constants would be two
+/// chances to disagree.
+pub use protocol::SLUG;
 
 /// sha256 of the vendored `scry_overlay.rs`, byte-for-byte as it ships in
 /// `AnthonE/scry-forge` (the source — **not** the `AnthonE/scryward` mirror,
 /// which lags). Regenerate ONLY when re-vendoring an upstream change:
 /// `sha256sum crates/client/src/scry_overlay.rs`.
 pub const VENDORED_SHA256: &str =
-    "3df3d41a51885759f27e66f526962f46eedb21f19576805c18ad7cec9818a656";
+    "4b97954b04c2378bff16e0e4d8b55cdf6981c9d698f8442bdc7ccc71bac97dec";
 
 /// Who is playing, and how we came to believe it. The variants are kept
 /// distinct because they carry different weight and a single `Option<String>`
@@ -224,6 +229,30 @@ impl Scry {
     pub fn sign(&mut self, text: &str, why: &str) -> Result<Signature, SignError> {
         match self.overlay.as_mut() {
             Some(ov) => ov.sign(text, why),
+            None => Err(SignError::NoLauncher("no scry launcher is running".into())),
+        }
+    }
+
+    /// Ask the launcher to prove who is playing, to one server, over one
+    /// nonce, at one instant.
+    ///
+    /// The verb [`sign`](Self::sign) cannot do: the launcher composes the
+    /// whole SIWE message, so **no consent prompt fires** and a game cannot
+    /// put words in it. `issued_at` is the shard's own second, passed through
+    /// so the shard can rebuild the exact bytes it must verify — without it
+    /// the launcher stamps its own clock and no server can recompute the
+    /// message at all.
+    ///
+    /// ⚠ Still not for a frame system: it is a blocking round trip over a
+    /// local socket.
+    pub fn prove_at(
+        &mut self,
+        server: &str,
+        nonce: &str,
+        issued_at: Option<i64>,
+    ) -> Result<Proof, SignError> {
+        match self.overlay.as_mut() {
+            Some(ov) => ov.prove_at(server, nonce, issued_at),
             None => Err(SignError::NoLauncher("no scry launcher is running".into())),
         }
     }
@@ -415,10 +444,16 @@ mod tests {
 /// r ‖ s ‖ v. A short or long one is refused rather than padded, because a
 /// padded signature recovers a *different* address, and the failure would
 /// present as "the shard says I am somebody else".
-pub fn sign_siwe(text: &str) -> Option<protocol::Signature> {
+pub fn sign_siwe(domain: &str, nonce: &str, issued_at: u64) -> Option<protocol::Signature> {
     let mut scry = Scry::discover(None, env!("CARGO_PKG_VERSION"));
-    let sig = scry.sign(text, "sign in to this Gates shard").ok()?;
-    parse_signature(&sig.signature)
+    let proof = scry
+        .prove_at(domain, nonce, i64::try_from(issued_at).ok())
+        .ok()?;
+    // The echoed `message` is deliberately ignored. The SDK says it is for
+    // logging and that a verifier must recompute — and here the verifier is
+    // the shard, which does exactly that. Reading it would be trusting the
+    // thing we are checking.
+    parse_signature(&proof.signature)
 }
 
 /// `0x…` hex → 65 bytes. Refuses anything else.
