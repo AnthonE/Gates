@@ -48,20 +48,25 @@ const BEARINGS: [&str; 8] = [
     "southward",
 ];
 
-/// Whole-word bearing search over a lowercased span, ASCII word bounds.
-fn names_a_bearing(text: &str) -> Option<String> {
-    let lower = text.to_ascii_lowercase();
+/// Whole-word, case-insensitive bearing search — byte-wise, because wall 3
+/// keeps `String` out of this crate and `to_ascii_lowercase` allocates one.
+fn names_a_bearing(text: &str) -> Option<&'static str> {
+    let b = text.as_bytes();
     for w in BEARINGS {
-        let mut from = 0;
-        while let Some(i) = lower[from..].find(w) {
-            let at = from + i;
-            let end = at + w.len();
-            let before_ok = at == 0 || !is_word_byte(lower.as_bytes()[at - 1]);
-            let after_ok = end == lower.len() || !is_word_byte(lower.as_bytes()[end]);
-            if before_ok && after_ok {
-                return Some(w.to_string());
+        let wb = w.as_bytes();
+        if wb.len() > b.len() {
+            continue;
+        }
+        for i in 0..=(b.len() - wb.len()) {
+            if (0..wb.len()).any(|k| b[i + k].to_ascii_lowercase() != wb[k]) {
+                continue;
             }
-            from = end;
+            let end = i + wb.len();
+            let before_ok = i == 0 || !is_word_byte(b[i - 1]);
+            let after_ok = end == b.len() || !is_word_byte(b[end]);
+            if before_ok && after_ok {
+                return Some(w);
+            }
         }
     }
     None
@@ -71,30 +76,47 @@ fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+/// Within a tenth of a millimetre, written without `f32::abs`.
+///
+/// Wall 1 restricts sim-core's floats to `+ − × ÷ sqrt min max clamp
+/// floor-by-cast` and `clippy.toml` disallows `abs` by name — in the tests
+/// too, which is correct: a test is the crate. `max` of the two differences
+/// is the same predicate out of the allowed set.
+fn near(a: f32, b: f32) -> bool {
+    (a - b).max(b - a) < 1e-4
+}
+
 /// The contiguous run of `///` lines immediately above the line containing
 /// `needle` — the doc block that defines it. Derive attributes sit between
 /// the two (`ColMasks` carries four), so they are stepped over rather than
-/// treated as the end of the block.
-fn doc_block_above(src: &str, needle: &str) -> String {
-    let lines: Vec<&str> = src.lines().collect();
+/// treated as the end of the block. Returns a slice of `src`: wall 3 keeps
+/// `String` out of the crate, and a borrow is what this wants anyway.
+fn doc_block_above<'a>(src: &'a str, needle: &str) -> &'a str {
+    let mut lines: Vec<(usize, &str)> = Vec::new();
+    let mut off = 0usize;
+    for l in src.lines() {
+        lines.push((off, l));
+        off += l.len() + 1;
+    }
     let at = lines
         .iter()
-        .position(|l| l.contains(needle))
+        .position(|(_, l)| l.contains(needle))
         .unwrap_or_else(|| panic!("`{needle}` is not in the source any more"));
+
     let mut end = at;
-    while end > 0 && lines[end - 1].trim_start().starts_with("#[") {
+    while end > 0 && lines[end - 1].1.trim_start().starts_with("#[") {
         end -= 1;
     }
     let mut start = end;
     while start > 0 {
-        let prev = lines[start - 1].trim_start();
+        let prev = lines[start - 1].1.trim_start();
         if prev.starts_with("///") || prev.starts_with("//!") {
             start -= 1;
         } else {
             break;
         }
     }
-    lines[start..end].join("\n")
+    &src[lines[start].0..lines[end].0]
 }
 
 // ---------------------------------------------------------------- §A names
@@ -197,7 +219,7 @@ fn neither_doc_block_defines_an_edge_in_bearings() {
             "{what}'s doc block is empty — the sentence that defines the \
              convention is what this gate exists to hold"
         );
-        if let Some(word) = names_a_bearing(&doc) {
+        if let Some(word) = names_a_bearing(doc) {
             panic!(
                 "{what}'s doc block explains the edges with the bearing \
                  \"{word}\". The constants are axes; the sentence that \
@@ -225,21 +247,21 @@ fn each_edge_constant_sits_on_the_plane_its_name_claims() {
 
     let (ax, az) = anchor(cx, cz, LOC_EDGE_XLO);
     assert!(
-        (ax - x0).abs() < 1e-4,
+        near(ax, x0),
         "LOC_EDGE_XLO anchored at x={ax}, not the low-x plane x={x0}"
     );
     assert!(
-        (az - (z0 + half)).abs() < 1e-4,
+        near(az, z0 + half),
         "LOC_EDGE_XLO is not centred along its edge in z"
     );
 
     let (bx, bz) = anchor(cx, cz, LOC_EDGE_ZLO);
     assert!(
-        (bz - z0).abs() < 1e-4,
+        near(bz, z0),
         "LOC_EDGE_ZLO anchored at z={bz}, not the low-z plane z={z0}"
     );
     assert!(
-        (bx - (x0 + half)).abs() < 1e-4,
+        near(bx, x0 + half),
         "LOC_EDGE_ZLO is not centred along its edge in x"
     );
 
@@ -248,7 +270,7 @@ fn each_edge_constant_sits_on_the_plane_its_name_claims() {
     for loc in [LOC_PLANE, LOC_RISER] {
         let (px, pz) = anchor(cx, cz, loc);
         assert!(
-            (px - (x0 + half)).abs() < 1e-4 && (pz - (z0 + half)).abs() < 1e-4,
+            near(px, x0 + half) && near(pz, z0 + half),
             "loc {loc} left the cell body"
         );
     }
@@ -268,12 +290,12 @@ fn the_next_cells_low_edge_is_this_cells_high_boundary() {
     let here = anchor(cx, cz, LOC_EDGE_XLO).0;
     let next = anchor(cx + 1, cz, LOC_EDGE_XLO).0;
     assert!(
-        (next - here - BUILD_CELL_M).abs() < 1e-4,
+        near(next - here, BUILD_CELL_M),
         "x edges are {} apart, not one cell",
         next - here
     );
     assert!(
-        (next - ((cx + 1) as f32 * BUILD_CELL_M)).abs() < 1e-4,
+        near(next, (cx + 1) as f32 * BUILD_CELL_M),
         "cell {cx}'s high-x boundary is not cell {}'s low-x edge",
         cx + 1
     );
@@ -281,7 +303,7 @@ fn the_next_cells_low_edge_is_this_cells_high_boundary() {
     let here = anchor(cx, cz, LOC_EDGE_ZLO).1;
     let next = anchor(cx, cz + 1, LOC_EDGE_ZLO).1;
     assert!(
-        (next - here - BUILD_CELL_M).abs() < 1e-4,
+        near(next - here, BUILD_CELL_M),
         "z edges are {} apart, not one cell",
         next - here
     );
