@@ -42,37 +42,22 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
-## 0gj · The compass is mirrored — build the relabel *(client lane)*
+## 0gk · The grid-edge constants still say west *(systems lane)*
 
-**Spoken 2026-08-15: east is `-X`, north stays `+Z`, and `bearing == wire yaw`
-is retired** (`DECISIONS.md`). Unblocked — build it.
+Left over from §0gj (landed 2026-08-15, `DECISIONS.md`) — that row scoped it
+out by name rather than forgetting it. `sim-core/src/build.rs:80` names the
+low-x and low-z cell boundaries `LOC_EDGE_W`/`LOC_EDGE_N` after compass
+points, and the compass moved: `LOC_EDGE_W` is now the **east** edge. Nothing
+is mirrored — the values are 2 and 3, the sim's addressing is unchanged and
+`ui/place.rs` re-addresses edge pieces correctly either way. It is a name that
+lies, which is what the 2026-08-15 pass cost a day to a mirrored compass over.
 
-Measured: the world is right-handed, so facing `+Z` the body's right is `-X`,
-which `bearing_deg = atan2(fx, fz)` labels west. All four cardinals are 180°
-off — a reflection, not an offset — so a player turning right watches the
-number fall (22.5° → 9.8° → 357.2° over three 100 px pushes right).
-
-**It lands as one commit or not at all** (half a switch is worse than none):
-
-1. Both `atan2`s — `look.rs:88` **and `hud.rs:1712`**, the raid readout, which
-   does not go through `bearing_deg`. Fixing one leaves the other mirrored.
-2. `ui::map`'s x term, `grid_label`'s column, `paint`'s write index and
-   `LIGHT[0]` — a north-up map has east on the right only if east is `-X`.
-3. `capture.rs`'s `VANTAGES`: `1-east` ↔ `3-west` swap labels, keep indices.
-4. 7 assertions flip; ~20 doc sentences.
-
-Two traps, both measured. `(-fx).atan2(fz)` is `-0.0` at yaw 0 and
-`rem_euclid`'s guard is `r < 0.0`, so due north prints **`-00°`** at both
-`{:03.0}` sites — write `(360.0 - fx.atan2(fz).to_degrees()).rem_euclid(360.0)`.
-And `map.rs:422`'s `px_west < px_east` is a monotonicity claim wearing
-directional names: green under both branches, so it proves nothing here.
-
-**The sun is not the bug and never was.** The disc lands at pixel 640 of 1280
-in a frame shot at `RIG_SUN_AZIMUTH`; the visual judge's "azimuth consumed
-twice" is `269 ≈ 2 × 134.6` coincidence against the real `360 − 134.6`. Do not
-re-derive a second sun vector. Notes:
-`findings/note-20260815-the-compass-is-mirrored-not-the-sun.md`,
-`findings/note-20260815-the-sun-is-where-the-constant-says.md`.
+Rename to `LOC_EDGE_XLO`/`LOC_EDGE_ZLO` — an axis is what they always meant,
+and an axis cannot be re-decided out from under them. Touches `build.rs`,
+`protocol/src/goldens.rs` (8 uses, names not bytes) and `ui/place.rs` (incl.
+`an_east_edge_is_addressed_as_the_next_cells_west_edge`, whose *name* is the
+defect). No value moves, so `test_protocol_golden` must stay green untouched;
+if it reddens, the rename was not a rename.
 
 ## 0gi · The island reads as one surface — two causes, one landed *(client+sim lane)*
 

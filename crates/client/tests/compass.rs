@@ -147,15 +147,15 @@ fn the_grid_squares_run_the_way_the_card_says() {
                 letter(&there) > letter(&here),
                 "east went {here} → {there} — the alphabet runs backwards"
             ),
-            "west" => assert!(
-                letter(&there) < letter(&here),
-                "west went {here} → {there}"
-            ),
+            "west" => assert!(letter(&there) < letter(&here), "west went {here} → {there}"),
             "north" => assert!(
                 number(&there) < number(&here),
                 "north went {here} → {there} — row 1 is the north edge"
             ),
-            _ => assert!(number(&there) > number(&here), "south went {here} → {there}"),
+            _ => assert!(
+                number(&there) > number(&here),
+                "south went {here} → {there}"
+            ),
         }
     }
 }
@@ -169,6 +169,16 @@ fn the_grid_squares_run_the_way_the_card_says() {
 /// slopes that run left–right in the IMAGE and are near flat up–down, so the
 /// two axes cannot cover for each other: the face whose uphill side is toward
 /// the image's lower-right catches the light and must come out brighter.
+///
+/// **The margin is measured, not chosen.** Seed 20260731 at 192², lit vs
+/// unlit mean luma: **121.8 / 109.5 (+12.3)** correct; **105.4 / 127.6
+/// (−22.2)** with `LIGHT[0]` alone reverted — fully inverted; **116.3 /
+/// 112.5 (+3.8)** with the write index alone reverted, where the light is
+/// right and the pixels it lands on are mirrored, so neighbouring columns
+/// leave a residue of the true correlation. The threshold sits between the
+/// weakest defect and the true signal. That third case is why this is worth
+/// its runtime: it is the half-a-switch state, and it is the one no
+/// constant-checking assertion in `ui/map.rs` can see.
 #[test]
 fn the_painted_island_is_lit_from_the_upper_left() {
     let seed = 20260731u64;
@@ -198,7 +208,8 @@ fn the_painted_island_is_lit_from_the_upper_left() {
                 continue;
             }
             let o = ((size - 1 - j) * size + (size - 1 - i)) * 4;
-            let luma = 0.2126 * buf[o] as f64 + 0.7152 * buf[o + 1] as f64 + 0.0722 * buf[o + 2] as f64;
+            let luma =
+                0.2126 * buf[o] as f64 + 0.7152 * buf[o + 1] as f64 + 0.0722 * buf[o + 2] as f64;
             // Uphill toward the image's lower-right = the face turned toward
             // a light in the upper-left.
             if rise_right > 0.0 {

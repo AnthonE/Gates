@@ -122,13 +122,13 @@ pub fn world_to_map(x: f32, z: f32, size: usize) -> (f32, f32) {
 /// 1. Sample row `j` grows with `+z`, which is NORTH, and image row `py`
 ///    grows DOWNWARD, which is SOUTH. So `py = size - 1 - j`. Get it wrong
 ///    and the map is right about everything and upside down.
-/// 1b. Sample column `i` grows with `+x`, which is **WEST**
+/// 2. Sample column `i` grows with `+x`, which is **WEST**
 ///    (`DECISIONS.md` 2026-08-15), and image column `px` grows RIGHTWARD,
 ///    which is east. So `px = size - 1 - i`, the same flip on the other
 ///    axis. Get *this* one wrong and the map is right about everything and
 ///    mirrored — which is what it was until 2026-08-15, undetectably,
 ///    because it agreed with a compass that was mirrored too.
-/// 2. **Samples sit at pixel CENTRES.** A fill starting at 0 puts sample
+/// 3. **Samples sit at pixel CENTRES.** A fill starting at 0 puts sample
 ///    `(i, j)` on the low-x, low-z corner of the pixel it fills; the pixel's
 ///    extent then runs from that sample to the next, so the painted island is
 ///    half a cell out on both axes — and on the flipped axis `world_to_map`
@@ -477,7 +477,12 @@ mod tests {
     fn the_map_is_north_up_and_east_right() {
         let c = ISLAND_SIZE * 0.5;
         let step = 100.0;
-        for (name, want) in [("north", 0.0f32), ("east", 90.0), ("south", 180.0), ("west", 270.0)] {
+        for (name, want) in [
+            ("north", 0.0f32),
+            ("east", 90.0),
+            ("south", 180.0),
+            ("west", 270.0),
+        ] {
             // The unit direction the compass gives that name, taken from the
             // owner rather than assumed here.
             let (dx, dz) = match name {

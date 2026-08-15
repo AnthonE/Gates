@@ -347,7 +347,10 @@ mod tests {
     #[test]
     fn due_north_prints_without_a_sign() {
         let d = bearing_deg(0.0);
-        assert!(d.is_sign_positive(), "north came back as {d} (a signed zero)");
+        assert!(
+            d.is_sign_positive(),
+            "north came back as {d} (a signed zero)"
+        );
         assert_eq!(format!("{d:03.0}"), "000");
     }
 
