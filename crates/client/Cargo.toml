@@ -80,6 +80,17 @@ name = "water"
 path = "tests/water.rs"
 required-features = ["render"]
 
+# The sky fill's arithmetic: that it is a hemisphere rather than the
+# direction-free term Bevy's `AmbientLight` is, that its earth half is the
+# island's own measured albedo, and that the baked cubemap's FACES agree with
+# the model. No GPU and no window — but it imports `render::fill` and links
+# Bevy for `Image` and `Vec3`, so it carries the feature and runs in the
+# renderer tier.
+[[test]]
+name = "fill"
+path = "tests/fill.rs"
+required-features = ["render"]
+
 # The handedness gate. Pure arithmetic and no GPU, but it checks the client's
 # right-vector against BEVY's `Transform` basis rather than against a restated
 # identity, so it links Bevy and carries the feature — `crate::look`'s own unit

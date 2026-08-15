@@ -25,7 +25,7 @@ use bevy::anti_alias::smaa::Smaa;
 use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::core_pipeline::Skybox;
-use bevy::light::{light_consts::lux, CascadeShadowConfigBuilder, SunDisk};
+use bevy::light::{light_consts::lux, CascadeShadowConfigBuilder, EnvironmentMapLight, SunDisk};
 use bevy::pbr::{Atmosphere, AtmosphereSettings, ScatteringMedium, ScreenSpaceAmbientOcclusion};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
@@ -95,7 +95,17 @@ pub struct EyeCam;
 #[derive(Component)]
 pub struct Sun;
 
-pub fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>) {
+pub fn setup(
+    mut commands: Commands,
+    mut media: ResMut<Assets<ScatteringMedium>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    // The hemisphere sky fill (`fill.rs`). Built here rather than in its own
+    // setup system because the fill is a member of the coupled set and rule 5
+    // means one owner — the same reason the sun, the exposure and the tone
+    // mapper are all in this function.
+    let fill_map = images.add(super::fill::cubemap(super::fill::FILL_FACE));
+
     // The atmosphere needs a medium asset; the earthlike default is Rayleigh
     // + Mie + ozone, which is the model `ART.md` §1's "distant hills lighten,
     // desaturate and go blue" describes the output of.
@@ -143,27 +153,53 @@ pub fn setup(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>
         // Neutral, whose `x - 6.25x²` toe under 0.08 squared the shadows and
         // delivered a face arriving at linear 0.02 as 8/255.
         Tonemapping::TonyMcMapface,
-        // The sky fill, and `ART.md` rule 3's 0.30 floor lives here: no lit
-        // surface's shaded face may fall below 0.30 of its lit face, and
-        // outdoors that floor is the sky filling every upward face. Bevy's
-        // ambient is a per-camera COMPONENT since 0.17 and a uniform term
-        // rather than the browser's hemisphere, so it cannot be split
-        // sky-half/ground-half — the down-facing-prop-face half of that split
-        // is owed to a later slice and `RENDER.md` records it.
+        // **The sky fill, and it is a HEMISPHERE now** (`fill.rs`) — `ART.md`
+        // §4 asks for one in those words ("sky half cool blue, earth half
+        // warm"), and the line below used to say why we could not have it:
+        // Bevy's `AmbientLight` is a uniform term, so the sky-half/earth-half
+        // split was "owed to a later slice". This is that slice, and the debt
+        // is paid without a custom material — `environment_map.wgsl` samples
+        // its diffuse cubemap BY THE WORLD NORMAL, so a cubemap holding
+        // `fill_at(n)` is a hemisphere light exactly.
+        //
+        // The magnitude is unchanged where it can be seen: `fill_at(+Y)` is
+        // the same irradiance the uniform term delivered, so open ground
+        // facing the sky does not move. What moves is down-facing faces, which
+        // now receive the ground's own warm bounce instead of a blue sky they
+        // are not looking at — the mechanism behind the visual judge's "the
+        // tree base measures flat within ±5% right up to the trunk", which is
+        // `ART.md` rule 2's decal edge stated as a number.
+        //
+        // Indirect-only and occlusion-weighted for free: `pbr_functions.wgsl`
+        // accumulates `environment_light.diffuse * diffuse_occlusion`, and the
+        // SSAO below is folded into `diffuse_occlusion` by `min()`. That is
+        // §4's occlusion law — both halves of it — without a line of WGSL.
+        EnvironmentMapLight {
+            diffuse_map: fill_map.clone(),
+            // The same map. A hemisphere IS the low-frequency environment a
+            // rough surface reflects, and every ground material here is
+            // 0.92 perceptual roughness, so the specular lookup wants exactly
+            // this and nothing sharper. One mip, so `smallest_specular_mip_
+            // level = mip_level_count - 1 = 0` and the roughness-to-mip term
+            // resolves to level 0 rather than reading past the end.
+            specular_map: fill_map,
+            intensity: super::fill::peak_lux(),
+            rotation: Quat::IDENTITY,
+            affects_lightmapped_mesh_diffuse: false,
+        },
+        // What is LEFT of the uniform term: the night floor, and nothing else.
+        // `day_night` drives this to zero across dawn as the hemisphere above
+        // takes over, so the two never both carry the day — which would double
+        // the fill. At night it is the whole fill, unchanged from what this
+        // shipped: `NIGHT_AMBIENT_LUX` at the sky's own chroma.
+        //
+        // Zero at noon is not a hole in `ART.md` rule 3's "no pure black":
+        // the hemisphere's earth half is a much better floor than a uniform
+        // term ever was, because it is nonzero in every direction and warm
+        // where the ground is.
         AmbientLight {
-            // Cool, not blue. The first capture's boulder had a NAVY shaded
-            // face — 0.62/0.72/0.92 at a third of daylight is a saturated
-            // blue doing all the work on every unlit surface, and the frame
-            // measured 42% near-band saturation against the reference's 33%.
             color: Color::srgb(0.80, 0.85, 0.95),
-            // **The floor is arithmetic, and the first cut missed it by 10×.**
-            // `ART.md` rule 3: no lit surface's shaded face may fall below
-            // 0.30 of its lit face. A 35° sun at 100,000 lux delivers
-            // 100000·sin(35°) ≈ 57,000 lux to flat ground, so the fill that
-            // reaches 0.30 of that is ~17,000 — not the 3,500 this shipped
-            // with. Outdoors that is not a fudge: the sky really is a
-            // 17,000-lux hemisphere and every upward face is looking at it.
-            brightness: lux::AMBIENT_DAYLIGHT * 1.7,
+            brightness: 0.0,
             affects_lightmapped_meshes: false,
         },
         // ── The three post terms, and they belong to this owner too ──────
@@ -388,7 +424,14 @@ pub fn day_night(
     feed: Res<super::feed::Feed>,
     pin: Res<DayPin>,
     mut sun: Query<(&mut Transform, &mut DirectionalLight), With<Sun>>,
-    mut cam: Query<(&mut AmbientLight, Option<&mut Skybox>), With<EyeCam>>,
+    mut cam: Query<
+        (
+            &mut AmbientLight,
+            &mut EnvironmentMapLight,
+            Option<&mut Skybox>,
+        ),
+        With<EyeCam>,
+    >,
 ) {
     let frac = sim_core::world::day_frac(pin.tick(feed.server_tick_est));
     let elev = sun_elevation(frac);
@@ -401,9 +444,21 @@ pub fn day_night(
         // a sun that is under the ground anyway.
         d.shadows_enabled = light > 0.0;
     }
-    if let Ok((mut amb, sky)) = cam.single_mut() {
-        amb.brightness =
-            NIGHT_AMBIENT_LUX + (lux::AMBIENT_DAYLIGHT * 1.7 - NIGHT_AMBIENT_LUX) * light;
+    if let Ok((mut amb, mut env, sky)) = cam.single_mut() {
+        // **The handover, and the two terms are complements by construction.**
+        // The hemisphere carries the day and the uniform term carries the
+        // night, and each is scaled by the same `light` so their sum is
+        // continuous across dawn and neither can double-count the other. At
+        // `light == 1` the fill is exactly `fill_at(n)`; at `light == 0` it is
+        // exactly `NIGHT_AMBIENT_LUX`, which is what this shipped before the
+        // hemisphere existed. Both endpoints are gated (`tests/fill.rs`).
+        //
+        // Driving the env map by `intensity` rather than rebaking the cubemap
+        // is the whole reason the map is stored normalized: the shape of the
+        // hemisphere does not change with the hour, only its scale, so a
+        // per-frame multiply replaces a per-frame 24 KB bake.
+        amb.brightness = NIGHT_AMBIENT_LUX * (1.0 - light);
+        env.intensity = super::fill::peak_lux() * light;
         if let Some(mut sky) = sky {
             // The deck was baked lit from the noon sun (`sky.rs`); at any
             // other hour its lighting is wrong in a way only brightness
