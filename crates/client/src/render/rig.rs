@@ -248,16 +248,39 @@ fn sun_rotation() -> Quat {
     sun_rotation_at(RIG_SUN_ELEVATION)
 }
 
-/// The same rotation at an arbitrary elevation, azimuth fixed
-/// (`RIG_SUN_AZIMUTH` — the sun climbs and sinks on one bearing at v0; a
-/// sweeping azimuth would drag every shadow through a half-turn a cycle
-/// for no legibility gain).
-fn sun_rotation_at(elevation: f32) -> Quat {
+/// **Where the sun is** — the unit vector from the world origin toward it,
+/// at an arbitrary elevation, azimuth fixed (`RIG_SUN_AZIMUTH` — the sun
+/// climbs and sinks on one bearing at v0; a sweeping azimuth would drag
+/// every shadow through a half-turn a cycle for no legibility gain).
+///
+/// **The one owner, and the reason it is `pub`.** Two consumers need this
+/// vector and they must not each re-derive it: the `Sun` light's rotation
+/// below, and `sky.rs`'s cloud-deck light march, which re-wrote these same
+/// three lines by hand until 2026-08-15. They agreed — but by coincidence
+/// of two identical edits, not by construction, and the visual judge
+/// (`pass-20260814-223652-01-visual.md`, ranked gap 2a) asked for exactly
+/// this seam to be closed before the next lighting measurement is taken on
+/// top of it.
+///
+/// **`to_sun`, not "the light direction", and the name is the trap.** Bevy
+/// hands the GPU `direction_to_light = transform.back()` for BOTH the `N·L`
+/// term and the atmosphere's sun disc (`bevy_pbr` `light.rs`, "direction is
+/// negated to be ready for N.L"), while `Transform::forward()` is the
+/// direction the light *travels*. So the law is `direction_to_light ==
+/// -forward() == to_sun`, and [`sun_rotation_at`] is the only place that
+/// negation is written. `crates/client/tests/sun.rs` gates it.
+pub fn to_sun(elevation: f32) -> Vec3 {
     let (se, ce) = (elevation.sin(), elevation.cos());
     let (sa, ca) = (RIG_SUN_AZIMUTH.sin(), RIG_SUN_AZIMUTH.cos());
-    // Where the sun sits, as a unit vector from the world origin.
-    let to_sun = Vec3::new(sa * ce, se, ca * ce);
-    Transform::default().looking_at(-to_sun, Vec3::Y).rotation
+    Vec3::new(sa * ce, se, ca * ce)
+}
+
+/// The sun's rotation at an arbitrary elevation: a light whose forward is
+/// the direction sunlight travels, i.e. `-to_sun`.
+pub fn sun_rotation_at(elevation: f32) -> Quat {
+    Transform::default()
+        .looking_at(-to_sun(elevation), Vec3::Y)
+        .rotation
 }
 
 // ── Day and night (day/night v0 — DECISIONS.md §open) ────────────────────
