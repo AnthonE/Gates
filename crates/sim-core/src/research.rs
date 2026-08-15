@@ -51,7 +51,7 @@ use crate::craft::{inv_count, inv_take};
 use crate::deploy::{DeployContent, Deploys, ARCH_RESEARCH};
 use crate::gather::ItemStack;
 use crate::limits::{INV_SLOTS, MAX_RECIPES, MAX_RESEARCH_ROWS};
-use crate::world::{EventQueue, Player, EV_RESEARCH, EV_RESEARCH_REFUSED};
+use crate::world::{EventQueue, Player, EV_KNOWN, EV_RESEARCH, EV_RESEARCH_REFUSED};
 
 /// How close a placed table must stand, planar metres. The workbench's
 /// number and deliberately the same one: two stations with two reaches
@@ -238,6 +238,14 @@ pub fn research(
     inv_take(&mut p.inv, rc.coin, row.cost as u32);
     p.known |= 1u64 << row.recipe;
     events.push(EV_RESEARCH, p.id, row.recipe as u32, row.cost as u32);
+    // And the mask itself, whole, right behind the success. The server
+    // used to synthesise this by reaching back into `world.players` when
+    // it saw `EV_RESEARCH` go past — which worked, and meant the mask was
+    // a fact only the purchase could state. It is a door fact too now
+    // (`EV_KNOWN` says why), so it is pushed where every other fact is
+    // pushed: by the sim, at the moment it became true. The server's job
+    // shrinks to encoding it.
+    events.push(EV_KNOWN, p.id, p.known as u32, (p.known >> 32) as u32);
 }
 
 #[cfg(test)]

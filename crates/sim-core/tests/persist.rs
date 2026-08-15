@@ -515,3 +515,248 @@ fn every_inventory_slot_survives_the_trip() {
         "the walk did not cover the inventory"
     );
 }
+
+// ---------------------------------------------------------------------
+// What a body carries through a death — stated, not inferred.
+// ---------------------------------------------------------------------
+
+/// `world.rs` builds a `Player` from scratch in four places — `seat`'s two
+/// arms, `die` and `wake` — and three of them end in `..Player::default()`.
+/// That spread is a **silent answer**: a field added to `Player` is
+/// defaulted at each of those doors without anybody deciding it should be,
+/// and the code reads correct because it compiles and produces a legal
+/// `Player`.
+///
+/// It has cost the tree once already. `known` — the blueprint mask, bought
+/// with the scarcest currency on the shard — landed at research v0 into
+/// `Player`, `Default`, `PlayerSave`, `state_hash` and `worldsave.rs`, and
+/// four doors quietly answered "no, a body does not keep that". Dying
+/// deleted every blueprint you owned; so did reconnecting after a restart.
+/// Every gate was green: `test_replay`'s stream contains no `JoinAs`,
+/// `state_hash` agreed with itself because both sides zeroed the same
+/// field, and the codec's own round-trip test never seated a world.
+///
+/// So this is the ledger for it. Every field of `Player` is classified
+/// **carried** or **re-derived**, the classification is checked against the
+/// struct as `world.rs` actually declares it, and each carried field must
+/// be named in both `die`'s and `wake`'s literal. A new field on `Player`
+/// therefore cannot land without someone writing down what a death does to
+/// it — which is the decision the spread was making on its own.
+///
+/// `worldsave.rs` solved the same problem the other way, by naming every
+/// field so the compiler refuses the omission, and `seat`'s restore arm
+/// does now too. `die` and `wake` cannot: both deliberately reset most of
+/// the record, so the spread is the right shape there and a ledger is what
+/// is left.
+mod carried_through_death {
+    /// Named in `die`'s literal **and** `wake`'s, because both rebuild the
+    /// record and a field carried by only one is lost anyway.
+    ///
+    /// `id`, `active` and `body`/`frame` are here as mechanics — a body
+    /// keeps its identity through a death. The two that are *decisions*:
+    /// `deaths` is the spawn-ring cursor, so a respawn must not send
+    /// everyone back to the same beach; `known` is the blueprint mask, and
+    /// it is here because a blueprint is a thing the player *did*, not a
+    /// thing they were holding when they fell. The corpse's inventory is
+    /// the backpack's business and is correctly on the other list.
+    pub const CARRIED: [&str; 5] = ["id", "active", "frame", "deaths", "known"];
+
+    /// Re-derived, dropped, or owned by the death itself. Anything here is
+    /// a field a death is *allowed* to erase — the inventory (the backpack
+    /// takes it), the meters and health (a respawn is a whole body), the
+    /// craft queue, the weak-spot chase, and the death record itself.
+    pub const RE_DERIVED: [&str; 25] = [
+        "body",
+        "inv",
+        "next_swing",
+        "ws_cell",
+        "ws_hits",
+        "jobs",
+        "craft_done_at",
+        "hp",
+        "hp_max",
+        "food",
+        "water",
+        "food_acc",
+        "water_acc",
+        "hurt_acc",
+        "heal_rem",
+        "heal_total",
+        "heal_span",
+        "heal_acc",
+        "dead",
+        "death_by",
+        "death_cause",
+        "death_item",
+        "death_range_cm",
+        "sleeping",
+        "slept_at",
+    ];
+}
+
+const WORLD_SRC: &str = include_str!("../src/world.rs");
+
+/// Every field name declared by `pub struct Player`, in order.
+///
+/// Parsed from source rather than imported for `event_roles.rs`'s reason:
+/// the fact under assertion is *what the struct contains*, and no import
+/// can see a field the importer was never told about — which is precisely
+/// the field this ledger exists to catch.
+fn player_fields() -> Vec<&'static str> {
+    let start = WORLD_SRC
+        .find("pub struct Player {")
+        .expect("world.rs no longer declares `pub struct Player`");
+    let body = &WORLD_SRC[start..];
+    let end = body
+        .find("\n}\n")
+        .expect("the `Player` declaration is unterminated");
+    let mut out = Vec::new();
+    for line in body[..end].lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("pub ") else {
+            continue; // a doc comment, a blank, or an attribute
+        };
+        let Some((name, _)) = rest.split_once(':') else {
+            continue;
+        };
+        if name.contains(' ') || name.is_empty() {
+            continue;
+        }
+        out.push(name);
+    }
+    out
+}
+
+/// The body of a `fn <name>(&mut self…` in `world.rs`, to its four-space
+/// closing brace.
+fn fn_body(name: &str) -> &'static str {
+    let needle_owned = ["    fn ", name, "(&mut self"].concat();
+    let start = WORLD_SRC
+        .find(&needle_owned)
+        .unwrap_or_else(|| panic!("world.rs no longer declares `fn {name}(&mut self…`"));
+    let body = &WORLD_SRC[start..];
+    let end = body
+        .find("\n    }\n")
+        .unwrap_or_else(|| panic!("`fn {name}` is unterminated"));
+    &body[..end]
+}
+
+/// Whether `src` names `field` in a struct literal — `field: expr` or the
+/// `field` shorthand. Deliberately not a substring test: `known` occurs
+/// inside `unknown`, and `hp` inside `hp_max`.
+fn names_field(src: &str, field: &str) -> bool {
+    for line in src.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix(field) else {
+            continue;
+        };
+        if rest.starts_with(':') || rest == "," {
+            return true;
+        }
+    }
+    false
+}
+
+/// The ledger adds up, matches the struct, and every carried field is
+/// actually named at both doors.
+#[test]
+fn every_player_field_is_classified_across_a_death() {
+    use carried_through_death::{CARRIED, RE_DERIVED};
+
+    let declared = player_fields();
+    assert!(
+        declared.len() > 20,
+        "the `Player` field parser found only {} fields — the struct's \
+         shape changed and this ledger is now scanning nothing",
+        declared.len()
+    );
+    assert_eq!(
+        CARRIED.len() + RE_DERIVED.len(),
+        declared.len(),
+        "the ledger classifies {} fields but `Player` declares {} — a \
+         field landed without anyone deciding what a death does to it. \
+         Declared: {declared:?}",
+        CARRIED.len() + RE_DERIVED.len(),
+        declared.len()
+    );
+
+    for field in &declared {
+        let n = CARRIED.iter().filter(|f| f == &field).count()
+            + RE_DERIVED.iter().filter(|f| f == &field).count();
+        assert_eq!(
+            n, 1,
+            "`Player::{field}` is classified {n} times — it is either new \
+             and unclassified, or listed as both carried and re-derived"
+        );
+    }
+    for field in CARRIED.iter().chain(RE_DERIVED.iter()) {
+        assert!(
+            declared.contains(field),
+            "the ledger classifies `{field}`, which `Player` does not \
+             declare — a field was renamed or removed and the ledger \
+             stayed behind, so it is now guarding nothing"
+        );
+    }
+
+    // The claim is earned at both doors, or it is arithmetic.
+    let die = fn_body("die");
+    let wake = fn_body("wake");
+    for field in CARRIED.iter() {
+        assert!(
+            names_field(die, field),
+            "`{field}` is on the carried list but `World::die` does not \
+             name it, so `..Player::default()` clears it at the instant of \
+             death — which is exactly how `known` was lost"
+        );
+        assert!(
+            names_field(wake, field),
+            "`{field}` is on the carried list but `World::wake` does not \
+             name it, so a respawn hands back a default"
+        );
+    }
+}
+
+/// And the ledger is not merely a spelling check: the two fields that are
+/// *decisions* rather than mechanics survive a real death and a real
+/// respawn, driven through `die` and `wake` themselves.
+#[test]
+fn the_carried_decisions_survive_a_real_death() {
+    const MASK: u64 = 1 << 3 | 1 << 40;
+    let mut w = armed();
+    w.tick(&[Command::Join { id: ID }]);
+    w.players[0].known = MASK;
+    let deaths_before = w.players[0].deaths;
+
+    // A real death: hp to zero through the same door combat uses.
+    w.players[0].food = 0;
+    w.players[0].water = 0;
+    let mut died = false;
+    for _ in 0..120 * sim_core::limits::TICK_HZ {
+        w.tick(&[]);
+        if w.players[0].deaths > deaths_before {
+            died = true;
+            break;
+        }
+    }
+    assert!(died, "the clock never killed the body");
+    assert_eq!(
+        w.players[0].known, MASK,
+        "`die` erased the blueprint mask at the instant of death"
+    );
+
+    w.tick(&[Command::Respawn {
+        id: ID,
+        on_bag: false,
+    }]);
+    assert!(!w.players[0].dead, "the respawn did not stand the body up");
+    assert_eq!(
+        w.players[0].known, MASK,
+        "`wake` erased the blueprint mask at the respawn"
+    );
+    assert_eq!(
+        w.players[0].deaths,
+        deaths_before + 1,
+        "the spawn-ring cursor did not survive either, so every death \
+         sends the body back to the same beach"
+    );
+}

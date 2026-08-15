@@ -65,9 +65,26 @@ What remains, in order:
 2. **No blueprint ITEM**, so learning stays instant and personal and there
    is nothing to trade — the judge named this as the half that makes another
    player's progress interesting. Unbuilt, and it is a wire change.
-3. **Twelve other tables were threaded positionally and are now
-   `net::SimTables`.** Nothing else was found missing; the grep half of
-   `boot_tables.rs` is what would say otherwise next time.
+3. ~~Twelve other tables threaded positionally~~ — done, `net::SimTables`.
+4. ~~The mask was lost at four doors and unreadable at the fifth~~ — done
+   2026-08-15. `die`/`wake`/`seat` cleared `known` via `..Player::default()`
+   (dying and reconnecting each deleted every blueprint bought with OBOL),
+   and `SUB_RESEARCH`/`SUB_RESEARCH_REFUSED`/`SUB_KNOWN` had encoders,
+   `EventMsg` variants and `ClientCore` handlers but **no `decode_event`
+   arms** — every research frame the server ever sent decoded `Malformed`.
+   So the verb was dead wire on top of a sim that was correct and tested,
+   which is `boot_tables.rs`'s defect one layer out: nothing asked whether
+   a frame we send can be read. Gates: `every_encoder_has_a_decoder`
+   (protocol, found two of the five), `every_player_field_is_classified_
+   across_a_death` (persist), the `EV_KNOWN` role check driven through a
+   real starvation death, and `seat`'s restore arm now names every field so
+   the **compiler** refuses the next omission. All proven red.
+
+   Two things it leaves. **Nobody has seen the research panel work** — the
+   client half is unverified past `decode_event`, and this pass could not
+   capture. And the same question is unasked elsewhere: the pairing gate
+   covers `event.rs` only, so `lib.rs`'s action encoders have nothing
+   equivalent. That is the next cheap sweep, not this item.
 
 ## 0gm · The ground albedos are pinned to a mean that was a quadrant *(client lane)*
 

@@ -2390,6 +2390,55 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             locked: r.read_bit()?,
             has_lock: r.read_bit()?,
         },
+        // The research lane, all three subtypes. **None of them had an arm
+        // until 2026-08-15**, so the whole verb was dead wire: the server
+        // encoded a success, a refusal and the mask, and every frame came
+        // back `Malformed` at the client. `refusals.rs`'s six research
+        // strings were unreachable, the craft panel's blueprint mask was
+        // never set, and a player at a table saw a button that did nothing
+        // — while the sim behind it was correct, tested and green.
+        //
+        // The bake had the same shape and was fixed the day before
+        // (`server/tests/boot_tables.rs`, "research was never wired"). This
+        // is the other half of the same hole: nothing in the tree asked
+        // whether a frame the server sends can be read. `every_encoder_
+        // has_a_decoder` asks now, and it is what found these two.
+        SUB_RESEARCH => EventMsg::Research {
+            recipe: r.read(16)? as u16,
+            cost: r.read(16)? as u16,
+        },
+        // The domain is closed at both ends, matching the encoder's own
+        // `REFUSE_R_MAX` refusal: a reason nobody can emit is a forged
+        // frame, not a refusal to render generically.
+        SUB_RESEARCH_REFUSED => {
+            let reason = r.read(RESEARCH_REFUSE_BITS)?;
+            if reason > sim_core::research::REFUSE_R_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::ResearchRefused {
+                reason: reason as u8,
+            }
+        }
+        // The blueprint mask, low half first — `encode_event_known` writes
+        // it that way and this is the only place that puts it back
+        // together.
+        //
+        // **This arm did not exist until 2026-08-15, and its absence made
+        // the whole `SUB_KNOWN` path dead wire.** The encoder shipped at
+        // research v0, the server called it on every purchase,
+        // `EventMsg::Known` was declared here and `ClientCore` had a
+        // handler for it — and `decode_event` had no case, so every one of
+        // those frames came back `Malformed` and the client's mask was
+        // never set by anything. `test_protocol_golden` was green
+        // throughout: it pins what the *encoder* produces, and an encoder
+        // with no reader is byte-perfect. Nothing else could see it either,
+        // because no test decoded a frame the server only sent after a
+        // research. `known_decodes_to_the_mask_that_was_encoded` is the
+        // gate now, and `every_encoder_has_a_decoder` is the one that
+        // refuses the next half-built subtype.
+        SUB_KNOWN => EventMsg::Known {
+            mask: r.read(32)? as u64 | (r.read(32)? as u64) << 32,
+        },
         SUB_SHOT => {
             let m = EventMsg::Shot {
                 shooter: r.read(32)?,
@@ -4334,6 +4383,108 @@ mod wire_domains {
                 Err(WireError::Range),
                 "cause {forged} is not a live death and the encoder let it \
                  through — the domain is no longer closed"
+            );
+        }
+    }
+
+    /// **Every encoder must have a decoder**, checked against this file's
+    /// own source rather than against a list somebody maintains.
+    ///
+    /// `SUB_KNOWN` shipped at research v0 with `encode_event_known`, a
+    /// `EventMsg::Known` variant, a server that called it on every
+    /// purchase and a `ClientCore` handler waiting for it — and no arm in
+    /// `decode_event`. Every one of those frames came back `Malformed`, so
+    /// the client's blueprint mask was never set by anything, for the whole
+    /// life of the feature. Nothing caught it. `test_protocol_golden` pins
+    /// what the encoder emits and an encoder with no reader is byte-perfect;
+    /// the round-trip tests above cover the subtypes somebody remembered to
+    /// write a round trip for, which is exactly the set that was never the
+    /// problem.
+    ///
+    /// So the check is structural. Every `begin(buf, SUB_X)` in this file
+    /// names a subtype the encoder can produce; every `SUB_X =>` names one
+    /// the decoder can read. The first set must be a subset of the second,
+    /// and a half-built subtype is red the moment its encoder lands.
+    /// A bare Rust identifier — letters, digits and underscores, nothing
+    /// else. What separates a real `SUB_*` constant from a fragment of a
+    /// string literal or a grouped match pattern.
+    fn is_ident(s: &str) -> bool {
+        !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
+    #[test]
+    fn every_encoder_has_a_decoder() {
+        const SRC: &str = include_str!("event.rs");
+
+        let mut encoded: Vec<&str> = Vec::new();
+        let mut decoded: Vec<&str> = Vec::new();
+        for line in SRC.lines() {
+            let line = line.trim();
+            // Comments are not code, and this gate's own prose names both
+            // shapes it scans for — it found itself on the first run.
+            if line.starts_with("//") {
+                continue;
+            }
+            // The encoder side: `let mut w = begin(buf, SUB_X)?;`
+            if let Some(i) = line.find("begin(buf, SUB_") {
+                let rest = &line[i + "begin(buf, ".len()..];
+                if let Some((name, _)) = rest.split_once(')') {
+                    // An identifier only. This gate's own source contains
+                    // the string literal it scans for, so the second thing
+                    // it found was a fragment of itself — `SUB_"`.
+                    if is_ident(name) {
+                        encoded.push(name);
+                    }
+                }
+            }
+            // The decoder side: `SUB_X => …`, the match arms.
+            if line.starts_with("SUB_") {
+                if let Some((name, _)) = line.split_once(" =>") {
+                    if is_ident(name) {
+                        decoded.push(name);
+                    }
+                }
+            }
+        }
+
+        assert!(
+            encoded.len() > 20,
+            "the encoder scan found only {} subtypes — the `begin(buf, …)` \
+             shape changed and this gate is now checking nothing",
+            encoded.len()
+        );
+        assert!(
+            decoded.len() > 20,
+            "the decoder scan found only {} arms — the match's shape \
+             changed and this gate is now checking nothing",
+            decoded.len()
+        );
+
+        for name in &encoded {
+            assert!(
+                decoded.contains(name),
+                "{name} has an encoder and no arm in `decode_event`, so \
+                 every frame it produces decodes as `Malformed` and the \
+                 fact it carries never reaches a client. This is exactly \
+                 how SUB_KNOWN shipped dead. Add the arm in the same \
+                 commit as the encoder."
+            );
+        }
+    }
+
+    /// And the mask itself round-trips, both halves, through the real
+    /// encoder and the real decoder — the check whose absence let the
+    /// missing arm hide. A mask with only low bits set would pass with the
+    /// two halves swapped.
+    #[test]
+    fn known_decodes_to_the_mask_that_was_encoded() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        for mask in [0u64, 1, 1 << 3 | 1 << 40, 1 << 63, u64::MAX] {
+            let len = encode_event_known(mask, &mut buf).unwrap();
+            assert_eq!(
+                decode_event(&buf[..len]).unwrap(),
+                EventMsg::Known { mask },
+                "the blueprint mask {mask:#x} did not survive the wire"
             );
         }
     }

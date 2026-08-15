@@ -43,7 +43,7 @@ use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
+    EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
     EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED,
     EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS,
     EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
@@ -1335,12 +1335,38 @@ impl ShardCore {
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
                     }
                 }
+                // The blueprint mask, whole, wherever it was stated —
+                // a purchase or a door (`EV_KNOWN` in `world.rs` has the
+                // three). Own-fact: a blueprint is personal, so only the
+                // hand that holds it hears this.
+                //
+                // This arm used to live inside the `EV_RESEARCH` one
+                // below, reading `world.players[…].known` back out at
+                // encode time with an `unwrap_or(0)` if the researcher
+                // had left. That is gone: the sim states the mask in the
+                // event, so there is nothing to look up and no way for
+                // the encoder to disagree with the tick that caused it.
+                EV_KNOWN => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // the holder left this tick
+                    };
+                    let mask = ev.b as u64 | (ev.c as u64) << 32;
+                    match encode_event_known(mask, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
                 // Research (research v0). Own-fact, both halves: a
                 // blueprint is personal, so only the hand that pressed
-                // hears anything. The success sends the mask too — the
-                // whole mask, not a delta, because a dropped `Research`
-                // would otherwise grey a recipe the player has paid for
-                // with no event left to correct it (`SUB_KNOWN`).
+                // hears anything. The mask that follows a success is
+                // `EV_KNOWN`'s arm above, not this one's business.
                 EV_RESEARCH | EV_RESEARCH_REFUSED => {
                     let Some(slot) = self.client_slot_of(ev.a) else {
                         continue; // the researcher left this tick
@@ -1360,24 +1386,6 @@ impl ShardCore {
                             }
                         }
                         Err(_) => ShardStats::bump(&stats.encode_range_errors),
-                    }
-                    if ev.code == EV_RESEARCH {
-                        let mask = self
-                            .world
-                            .live_slot_of(ev.a)
-                            .map(|p| self.world.players[p].known)
-                            .unwrap_or(0);
-                        match encode_event_known(mask, &mut self.ev_buf) {
-                            Ok(len) => {
-                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                                    ShardStats::bump(&stats.ev_sent);
-                                } else {
-                                    self.clients[slot].ev_resync();
-                                    ShardStats::bump(&stats.ev_resyncs);
-                                }
-                            }
-                            Err(_) => ShardStats::bump(&stats.encode_range_errors),
-                        }
                     }
                 }
                 EV_BUILD_REFUSED => {

@@ -95,10 +95,10 @@ use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_MAX, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
-    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED,
-    EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS,
-    EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED,
+    EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESEARCH,
+    EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
+    EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
 
@@ -3086,7 +3086,7 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 35] = [
+    const COVERED: [(&str, u8); 36] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
         ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
@@ -3122,6 +3122,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_RESEARCH", EV_RESEARCH),
         ("EV_RESEARCH_REFUSED", EV_RESEARCH_REFUSED),
         ("EV_SHOT", EV_SHOT),
+        ("EV_KNOWN", EV_KNOWN),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next
@@ -3447,5 +3448,70 @@ fn research_refused_names_the_player_then_why() {
     assert_ne!(
         ev.a, ev.b,
         "and they differ, so a swap shows here rather than passing"
+    );
+}
+
+/// `EV_KNOWN: a = the player who holds it, b = the mask's low 32 bits,
+/// c = its high 32 bits`.
+///
+/// A `u64` through two `u32` fields, which is this file's packed-field
+/// exposure at its widest: a check made with a small mask is blind to `b`
+/// and `c` being swapped, because the high half would be 0 either way and
+/// zero survives any permutation with itself. The fixture sets bit 3 and
+/// bit 40, so the halves are 8 and 256 — different from each other and
+/// from the player id, which is what makes the three assertions below able
+/// to fail.
+///
+/// **The cause is a real death, not a hand-set flag**, and that is the
+/// second thing this checks. `wake` rebuilds the record from
+/// `Player::default()` and names what a body carries through; until
+/// 2026-08-15 `known` was not on that list, so every death deleted every
+/// blueprint the player had bought with OBOL. The clock kills the body
+/// here — `starve` is the same real cause `respawn_names_the_player…`
+/// uses — and the mask has to come back out the other side intact.
+#[test]
+fn known_names_the_holder_then_the_mask_low_half_first() {
+    const HOLDER: u32 = 6;
+    // Bit 3 and bit 40: `KNOWN_MASK_BITS` is 64, so the high half is
+    // reachable, and these two put 8 in `b` and 256 in `c`.
+    const WIDE: u64 = 1 << 3 | 1 << 40;
+
+    let mut w = World::new(SEED);
+    w.combat = CombatContent::probe_fixture();
+    w.survival = SurvivalContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.tick(&[Command::Join { id: HOLDER }]);
+    // The join stated an empty mask, which is a fact and is checked in
+    // `research.rs`. Set the blueprints the body is about to die holding.
+    w.players[0].known = WIDE;
+
+    starve(&mut w);
+    w.tick(&[Command::Respawn {
+        id: HOLDER,
+        on_bag: false,
+    }]);
+
+    let ev = only(&w, EV_KNOWN);
+    distinct3(ev, "EV_KNOWN");
+    assert_eq!(ev.a, HOLDER, "EV_KNOWN.a is who holds the blueprints");
+    assert_eq!(
+        ev.b, WIDE as u32,
+        "EV_KNOWN.b is the LOW 32 bits — `encode_event_known` reassembles \
+         `b | c << 32`, so the halves reversed here would hand the client \
+         a mask naming recipes nobody bought"
+    );
+    assert_eq!(ev.c, (WIDE >> 32) as u32, "EV_KNOWN.c is the high 32 bits");
+    assert_eq!(
+        ev.b as u64 | (ev.c as u64) << 32,
+        WIDE,
+        "the two halves do not reassemble into the mask the body held"
+    );
+
+    // And the sim agrees with what it just announced: a death that dropped
+    // the mask but announced the old one would satisfy every check above.
+    assert_eq!(
+        w.players[0].known, WIDE,
+        "a real death erased blueprints bought with OBOL — `wake` is not \
+         carrying `known` across"
     );
 }
