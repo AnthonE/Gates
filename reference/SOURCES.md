@@ -36,6 +36,21 @@ in both directions and both rewrites were honest measurements:
   open). `wiki.facepunch.com` answered 404 on a guessed path — not
   probed conclusively. The lesson unchanged: this box ≠ the next box.
 
+- 2026-08-15 (the durability pass, the game box) found
+  `wiki.facepunch.com` **open and serving its stat tables** — five
+  `/rust/item/<slug>` pages fetched whole on the first try, and
+  `reference/DURABILITY.md` §2/§3 are read off the pages rather than off
+  summaries. ⚠ **This corrects the map below, not just the state:** the
+  table says this host "carries **no** yield tables — the numbers are not
+  there to take", and that is false for `/rust/item/<slug>`, which carries
+  a **Gather Rates** table (gather damage · bonus · **condition loss**, per
+  resource) plus Craft and Repair cost tables. `RIPLIST.md` §4.1a took
+  per-tool yields off `rusthelp.com` believing this host had none. Still
+  closed, re-probed the same hour: `wiki.rustclash.com` **403** (bot wall,
+  unchanged since 2026-08-09). Also stale as a result:
+  `content/items.toml`'s header claim that "every page fetch is
+  egress-blocked" was true for the box that wrote it and is not true here.
+
 Neither answer generalises. What does: a doc may record *what a probe
 found, when, and on which pass* — it may not record "reachable" as a
 standing fact, and a reader may not skip probing because a table below says
@@ -55,7 +70,7 @@ not hold on 2026-08-10 (see above)*. Probe the row you need:
 | host | state | note |
 |---|---|---|
 | `rust.facepunch.com/news` | **OPEN** | devblogs served verbatim; note 170 is `/news/devblog170`, no hyphen, while 166/186/187 take the hyphen |
-| `wiki.facepunch.com` | **OPEN** | serves prose, but carries **no** yield tables — the numbers are not there to take |
+| `wiki.facepunch.com` | **OPEN** | ⚠ this note read "carries **no** yield tables — the numbers are not there to take" until 2026-08-15, and it was wrong about `/rust/item/<slug>`: those pages carry **Gather Rates** (damage · bonus · **condition loss**, per resource) plus Craft and Repair cost tables. The prose pages are what carry no numbers |
 | `rusthelp.com` | **OPEN** | the per-tool yield tables; `/world/<node>` and `/items/<item>` |
 | `corrosionhour.com`, `rustly.com`, `xgamingserver.com` | OPEN | SEO tier — usable only cross-checked, and `rustly` is measurably wrong (§4.1) |
 | `wiki.rustclash.com` (ex-`rustlabs.com`) | **403** | bot protection, not policy; `rustlabs.com` 301s here |
