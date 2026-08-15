@@ -85,6 +85,8 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `wooden_door.png` | `delapouite/door` |
 | `wooden_spear.png` | `lorc/spears` |
 | `workbench.png` | `lorc/hammer-nails` |
+| `workbench_2.png` | `lorc/anvil-impact` |
+| `workbench_3.png` | `lorc/gear-hammer` |
 
 ## Not from game-icons.net
 

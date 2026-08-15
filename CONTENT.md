@@ -42,7 +42,7 @@ properly. The short version:
   and **both percentages move when it arrives, never how much**: the
   weak spot spends budget faster (skill buys speed), the finish share is
   withheld for whoever lands the last swing
-- **recipe**: output, station (`none|workbench1|furnace`), inputs, seconds,
+- **recipe**: output, station (`none|workbench1|workbench2|workbench3|furnace`), inputs, seconds,
   and `blueprint` — locked until researched (see **research** below)
 - **building_piece**: shape (foundation/wall/doorway/floor/stairs/roof/
   door), per-material hp + upgrade cost (wood→stone→metal). One `cost` row

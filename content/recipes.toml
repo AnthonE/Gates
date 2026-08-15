@@ -1,5 +1,6 @@
 # Gates · content/recipes.toml — the craft ladder (CONTENT.md §1/§2).
-# station: none | workbench1 | furnace. `count` is the output quantity per
+# station: none | workbench1 | workbench2 | workbench3 | furnace (the bench
+# ladder, bench ladder v0). `count` is the output quantity per
 # craft. Components (gears/rope/tarp) and fat have no recipe: barrel-only,
 # priced for the balance math by balance.toml `component_minutes`.
 
@@ -120,6 +121,38 @@ seconds = 60
 inputs = [
     { item = "item.wood", count = 500 },
     { item = "item.metal_frags", count = 100 },
+]
+
+# The bench ladder (bench ladder v0): each rung is crafted AT the rung
+# below, which is the reference's own shape and the whole progression —
+# the satchel is not gated by its own price so much as by the two benches
+# standing in front of it. Costs are the pre-Oct-2025 scrap-era ratios
+# scaled onto our faucet (~0.85 obol/barrel against their ~10 scrap):
+# their WB2 was 6.7× a T1 research and WB3 16.7×, ours are 125 and 300
+# against the 20-obol T1 row. Their 20/100 HQM line has no equivalent
+# here (no HQM tier — `reference/RIPLIST.md` §3) and is refused, not
+# substituted; the frags line carries their frags line as written.
+# DECISIONS.md §open "bench ladder v0" is the knob row.
+[[recipe]]
+id = "recipe.workbench2"
+output = "item.workbench2"
+count = 1
+station = "workbench1"
+seconds = 60
+inputs = [
+    { item = "item.metal_frags", count = 500 },
+    { item = "item.obol", count = 125 },
+]
+
+[[recipe]]
+id = "recipe.workbench3"
+output = "item.workbench3"
+count = 1
+station = "workbench2"
+seconds = 60
+inputs = [
+    { item = "item.metal_frags", count = 1000 },
+    { item = "item.obol", count = 300 },
 ]
 
 [[recipe]]
@@ -343,14 +376,17 @@ station = "furnace"
 seconds = 1
 inputs = [{ item = "item.wood", count = 1 }]
 
-# --- T2, the powder chain (workbench1 — alpha has one bench tier) -------
+# --- T2, the powder chain (workbench2 since bench ladder v0 — the
+# second rung IS the powder gate: guns, ammunition and the plate that
+# stops them all stand behind one bench, and the raid tool behind the
+# one after it) -------------------------------------------------------
 
 [[recipe]]
 id = "recipe.gunpowder"
 output = "item.gunpowder"
 blueprint = true
 count = 10
-station = "workbench1"
+station = "workbench2"
 seconds = 5
 inputs = [
     { item = "item.charcoal", count = 30 },
@@ -362,7 +398,7 @@ id = "recipe.revolver"
 output = "item.revolver"
 blueprint = true
 count = 1
-station = "workbench1"
+station = "workbench2"
 seconds = 60
 inputs = [
     { item = "item.metal_frags", count = 125 },
@@ -374,7 +410,7 @@ inputs = [
 id = "recipe.pistol_ammo"
 output = "item.pistol_ammo"
 count = 4
-station = "workbench1"
+station = "workbench2"
 seconds = 10
 inputs = [
     { item = "item.metal_frags", count = 10 },
@@ -386,7 +422,7 @@ id = "recipe.satchel_charge"
 output = "item.satchel_charge"
 blueprint = true
 count = 1
-station = "workbench1"
+station = "workbench3"
 seconds = 30
 inputs = [
     { item = "item.gunpowder", count = 240 },
@@ -419,7 +455,7 @@ id = "recipe.armor_roadsign_body"
 output = "item.armor_roadsign_body"
 blueprint = true
 count = 1
-station = "workbench1"
+station = "workbench2"
 seconds = 30
 inputs = [
     { item = "item.metal_frags", count = 40 },

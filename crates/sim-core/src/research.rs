@@ -27,11 +27,21 @@
 //!   learns that the coin is special, which is the same posture the
 //!   recycler takes from the other end — one pays it, one charges it, and
 //!   neither knows what it is.
-//! - **Not a tech tree.** A row unlocks one recipe and depends on nothing;
-//!   there is no ladder, no tier, no "unlocks the next". The reference has
-//!   both a research table and a tech tree and they are separate systems;
-//!   this is the first, and the second is a content graph on top of these
-//!   bits rather than a change to them.
+//! - **Two verbs over one mask** (tech tree v0, spoken 2026-08-14, the
+//!   pre-Oct-2025 era 2026-08-15). [`research`] is the table: sample in
+//!   hand, coin, no prerequisites — research what you loot. [`unlock`] is
+//!   the tree: no sample, coin alone, at a bench whose tier covers the
+//!   recipe, and only along the graph `ResearchRow::requires` draws —
+//!   tech-tree the gaps. The asymmetry is the reference's own and it is
+//!   load-bearing: the table bypassing the tree is what keeps a lucky
+//!   find worth the walk, and the tree needing no sample is what makes
+//!   an item nothing drops reachable at all (the satchel charge was
+//!   unlearnable dead content until this verb existed — blueprint-gated,
+//!   in no loot table).
+//!   The prediction the first version of this header made — "the second
+//!   is a content graph on top of these bits rather than a change to
+//!   them" — held: `Player::known` did not move, the wire's `Known` mask
+//!   did not move, and the tree is `requires` plus one function.
 //!
 //! Not in this slice, documented rather than forgotten: no blueprint
 //! *item* (learning is instant and personal, so there is nothing to trade
@@ -57,9 +67,18 @@ pub const REFUSE_R_SLOT: u32 = 1;
 pub const REFUSE_R_ITEM: u32 = 2;
 pub const REFUSE_R_KNOWN: u32 = 3;
 pub const REFUSE_R_COST: u32 = 4;
+/// The tree verb's prerequisite: the row's `requires` parent is not yet
+/// learned (tech tree v0). Its own reason rather than `REFUSE_R_ITEM`
+/// because the two send a player opposite ways — one says *this cannot
+/// be researched*, this says *unlock the node before it first*.
+pub const REFUSE_R_PARENT: u32 = 5;
+/// The tree verb's station: no workbench of the recipe's tier in reach.
+/// The tree's own `REFUSE_R_TABLE` — a different building, so a
+/// different sentence.
+pub const REFUSE_R_BENCH: u32 = 6;
 /// The highest live reason, named rather than counted — the domain gate
 /// reads this and the wire's field width is bounded against it.
-pub const REFUSE_R_MAX: u32 = REFUSE_R_COST;
+pub const REFUSE_R_MAX: u32 = REFUSE_R_BENCH;
 
 /// One baked research row. `cost == 0` **is** a live row (a thing you may
 /// learn for free), so emptiness is `recipe == NO_RECIPE` rather than a
@@ -75,6 +94,13 @@ pub struct ResearchRow {
     pub recipe: u16,
     /// Units of `ResearchContent::coin` the unlock burns.
     pub cost: u16,
+    /// The tree edge (tech tree v0): the **recipe index** of the parent
+    /// node, or [`NO_RECIPE`] for a root. Resolved at bake from the
+    /// parent row's item id, so content writes "requires gunpowder" and
+    /// the sim checks one bit of `Player::known`. Only [`unlock`] reads
+    /// it — the table verb researches a looted sample with no questions
+    /// asked, which is the two-system split the reference runs.
+    pub requires: u16,
 }
 
 /// The empty row's recipe. Past `MAX_RECIPES` by construction, so an
@@ -86,6 +112,7 @@ impl ResearchRow {
         item: 0,
         recipe: NO_RECIPE,
         cost: 0,
+        requires: NO_RECIPE,
     };
 
     pub fn is_live(&self) -> bool {
@@ -119,15 +146,24 @@ impl ResearchContent {
     /// probe fixture's items. Item 4 unlocks recipe 2 — which is the
     /// craft fixture's station-gated row, so the blueprint refusal and the
     /// station refusal are both reachable on one recipe — and it is paid
-    /// in item 3.
+    /// in item 3. Row 1 is the tree's probe (tech tree v0): item 5
+    /// unlocks recipe 1 **only after recipe 2**, so the parent refusal
+    /// and the parent-satisfied unlock are both inside the gates too.
     pub fn probe_fixture() -> Self {
         let mut c = Self::EMPTY;
         c.coin = 3;
-        c.row_count = 1;
+        c.row_count = 2;
         c.rows[0] = ResearchRow {
             item: 4,
             recipe: 2,
             cost: 5,
+            requires: NO_RECIPE,
+        };
+        c.rows[1] = ResearchRow {
+            item: 5,
+            recipe: 1,
+            cost: 4,
+            requires: 2,
         };
         c
     }
@@ -137,6 +173,14 @@ impl ResearchContent {
         self.rows[..self.row_count as usize]
             .iter()
             .find(|r| r.is_live() && r.item == item)
+    }
+
+    /// The row that unlocks `recipe`, if any — the tree verb's lookup,
+    /// where the request names the node rather than a held sample.
+    pub fn row_for_recipe(&self, recipe: u16) -> Option<&ResearchRow> {
+        self.rows[..self.row_count as usize]
+            .iter()
+            .find(|r| r.is_live() && r.recipe == recipe)
     }
 }
 
@@ -209,6 +253,76 @@ pub fn research(
     events.push(EV_RESEARCH, p.id, row.recipe as u32, row.cost as u32);
 }
 
+/// The bench tier [`unlock`] demands for a node: the recipe's own
+/// station code where that code is a bench rung, and tier 1 otherwise —
+/// a hand-craftable or furnace-cooked blueprint still unlocks at a
+/// bench, because the tree is a thing you walk at a workbench and a node
+/// with no bench at all would be a verb with no address. The one place
+/// the mapping is written; the client's tree panel groups by the same
+/// call so the drawn rung and the demanded rung cannot drift.
+#[inline]
+pub fn node_tier(station: u8) -> u8 {
+    use crate::craft::{STATION_WORKBENCH1, STATION_WORKBENCH3};
+    if (STATION_WORKBENCH1..=STATION_WORKBENCH3).contains(&station) {
+        station
+    } else {
+        STATION_WORKBENCH1
+    }
+}
+
+/// Apply one tech-tree unlock (`Command::Unlock`, tech tree v0): learn
+/// `recipe` at a workbench, paying the row's coin, no sample needed —
+/// the second of the two systems, for the things you never looted.
+///
+/// Refusal order mirrors `craft::enqueue`'s blueprint-before-station
+/// call, one level up: the **parent** is reported before the **bench**,
+/// because a missing parent is the permanent fact (go unlock something
+/// else first) and a missing bench is transient and self-evident (walk
+/// to it). The cost comes last, matching [`research`] — and as there,
+/// every refusal lands before anything is taken.
+pub fn unlock(
+    rc: &ResearchContent,
+    cc: &crate::craft::CraftContent,
+    dc: &DeployContent,
+    deploys: &Deploys,
+    p: &mut Player,
+    recipe: u16,
+    events: &mut EventQueue,
+) {
+    let Some(row) = rc.row_for_recipe(recipe).copied() else {
+        // Not a node: the recipe exists but the tree does not teach it
+        // (or the recipe does not exist at all — one answer, because a
+        // forged index and an ungated recipe deserve the same silence
+        // about which they were).
+        events.push(EV_RESEARCH_REFUSED, p.id, REFUSE_R_ITEM, 0);
+        return;
+    };
+    if knows(p.known, row.recipe) {
+        events.push(EV_RESEARCH_REFUSED, p.id, REFUSE_R_KNOWN, 0);
+        return;
+    }
+    if row.requires != NO_RECIPE && !knows(p.known, row.requires) {
+        events.push(EV_RESEARCH_REFUSED, p.id, REFUSE_R_PARENT, 0);
+        return;
+    }
+    let tier = node_tier(cc.recipes[row.recipe as usize].station);
+    let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+    let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+    if !deploys.bench_near(dc, tier, px, pz, TABLE_RADIUS_M) {
+        events.push(EV_RESEARCH_REFUSED, p.id, REFUSE_R_BENCH, 0);
+        return;
+    }
+    if inv_count(&p.inv, rc.coin) < row.cost as u32 {
+        events.push(EV_RESEARCH_REFUSED, p.id, REFUSE_R_COST, 0);
+        return;
+    }
+
+    // Past here nothing can fail. The tree takes only the price.
+    inv_take(&mut p.inv, rc.coin, row.cost as u32);
+    p.known |= 1u64 << row.recipe;
+    events.push(EV_RESEARCH, p.id, row.recipe as u32, row.cost as u32);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,10 +346,26 @@ mod tests {
     }
 
     #[test]
-    fn the_fixture_names_one_row_and_finds_it_by_item() {
+    fn the_fixture_finds_its_rows_by_item_and_by_recipe() {
         let rc = ResearchContent::probe_fixture();
         let row = rc.row_for(4).expect("the fixture researches item 4");
-        assert_eq!((row.recipe, row.cost), (2, 5));
+        assert_eq!((row.recipe, row.cost, row.requires), (2, 5, NO_RECIPE));
+        let node = rc.row_for_recipe(1).expect("recipe 1 is the tree probe");
+        assert_eq!((node.item, node.requires), (5, 2));
         assert!(rc.row_for(0).is_none(), "and nothing else");
+        assert!(rc.row_for_recipe(0).is_none());
+    }
+
+    #[test]
+    fn a_node_tier_is_the_bench_rung_or_the_first_one() {
+        use crate::craft::{
+            STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2,
+            STATION_WORKBENCH3,
+        };
+        assert_eq!(node_tier(STATION_NONE), STATION_WORKBENCH1);
+        assert_eq!(node_tier(STATION_FURNACE), STATION_WORKBENCH1);
+        assert_eq!(node_tier(STATION_WORKBENCH1), STATION_WORKBENCH1);
+        assert_eq!(node_tier(STATION_WORKBENCH2), STATION_WORKBENCH2);
+        assert_eq!(node_tier(STATION_WORKBENCH3), STATION_WORKBENCH3);
     }
 }

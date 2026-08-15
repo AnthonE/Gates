@@ -19,15 +19,16 @@ use crate::{
 };
 use sim_core::backpack::BackpackRec;
 use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_N, MAT_METAL, SHAPE_ROOF};
-use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_FURNACE};
-use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_RESEARCH, PLACE_DOOR};
+use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
+use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_WORKBENCH3, PLACE_DOOR};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOY_COSTS,
     MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
-    MAX_RECIPE_INPUTS,
+    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS,
 };
+use sim_core::research::{ResearchRow, NO_RECIPE};
 
 /// Longest event-lane message. Sized by the worst subtype (a full catalog
 /// batch ≈ 264 B, a full slot-sync batch ≈ 258 B) with headroom; the
@@ -45,6 +46,11 @@ pub const CATALOG_BATCH: usize = 8;
 /// Recipe rows one recipes message carries (a full row is ~22 B; four
 /// keep the drip well under the message cap).
 pub const RECIPE_BATCH: usize = 4;
+
+/// Research rows one research-rows message carries (tech tree v0). A row
+/// is 6 B flat, so four ride far under the cap; the batch matches
+/// `RECIPE_BATCH` because the two tables drip side by side on join.
+pub const RESEARCH_BATCH: usize = 4;
 
 /// Placed-piece records one sync message carries (a record is 33 bits;
 /// 32 keep the batch ≈ 134 B, well under the message cap). The join walk
@@ -210,7 +216,13 @@ const SUB_KNOWN: u32 = 46;
 /// integrates the same integers the sim did rather than approximating
 /// them. See `world.rs`'s `EV_SHOT` for the full argument.
 const SUB_SHOT: u32 = 47;
-const SUB_MAX: u32 = SUB_SHOT;
+/// Research rows `first..first+count`, dripped like the recipe table
+/// (wire v38, tech tree v0) — the tree panel's data: what each node
+/// costs, which recipe it unlocks, and the `requires` edge the graph is
+/// drawn from. The coin item rides every batch header rather than its
+/// own message: three spare bytes against a subtype nobody else needs.
+const SUB_RESEARCH_ROWS: u32 = 48;
+const SUB_MAX: u32 = SUB_RESEARCH_ROWS;
 /// And the field must hold it. A subtype declared past `SUB_BITS` would
 /// truncate on the way out and decode as a *different, live* code — the
 /// worst shape of wire drift there is, since both ends would agree on
@@ -282,17 +294,25 @@ const CATALOG_TOTAL_BITS: u32 = 7;
 const CATALOG_COUNT_BITS: u32 = 4;
 const NAME_LEN_BITS: u32 = 5;
 const CRAFT_Q_COUNT_BITS: u32 = 3;
-/// A `research::REFUSE_R_*` reason: five values today, and the decoder
-/// range-checks rather than trusting the width — the `BAG_GONE_BITS`
-/// posture.
+/// A `research::REFUSE_R_*` reason: seven values since v38 (the tree
+/// verb's parent and bench), and the decoder range-checks rather than
+/// trusting the width — the `BAG_GONE_BITS` posture.
 const RESEARCH_REFUSE_BITS: u32 = 3;
 const RECIPE_TOTAL_BITS: u32 = 7;
 const RECIPE_COUNT_BITS: u32 = 3;
+/// The research drip's header widths — the recipe drip's, because
+/// `MAX_RESEARCH_ROWS == MAX_RECIPES` (`limits.rs` ties them).
+const RESEARCH_TOTAL_BITS: u32 = 7;
+const RESEARCH_COUNT_BITS: u32 = 3;
 /// Craft time crosses as raw ticks (the value the sim runs), not seconds
 /// — no cadence coupling; 24 bits cover the bake's ceiling (65535 s ×
 /// TICK_HZ ≈ 2 M ticks) with headroom.
 const RECIPE_TICKS_BITS: u32 = 24;
-const STATION_BITS: u32 = 2;
+/// Widened 2 → 3 at v38: the bench ladder made five stations
+/// (`none | workbench1..3 | furnace`) and two bits held four. This is
+/// the width that turned `PROTO_VER`, and it moves every recipe row in
+/// `SUB_RECIPES` — the goldens moved with it in the same commit.
+const STATION_BITS: u32 = 3;
 const N_INPUTS_BITS: u32 = 3;
 const PIECE_SYNC_COUNT_BITS: u32 = 6;
 const PIECE_DEFS_TOTAL_BITS: u32 = 6;
@@ -453,6 +473,18 @@ pub enum EventMsg {
         first: u8,
         count: u8,
         rows: [RecipeDef; RECIPE_BATCH],
+    },
+    /// Research rows `first..first+count` of a `total`-row table — the
+    /// tech tree panel's data, dripped like the recipe table. Rows decode
+    /// to the same `ResearchRow` the sim runs, and `coin` is
+    /// `ResearchContent::coin`, so the panel can price a node against
+    /// the player's own stacks.
+    ResearchRows {
+        total: u8,
+        first: u8,
+        count: u8,
+        coin: u16,
+        rows: [ResearchRow; RESEARCH_BATCH],
     },
     /// A building piece landed (broadcast — pieces are world facts like
     /// slot changes). The record is the sim's own `PieceRec`.
@@ -1012,7 +1044,7 @@ pub fn encode_event_recipes(
             || def.ticks >= (1 << RECIPE_TICKS_BITS)
             || def.out_count == 0
             || def.out_count > u8::MAX as u16
-            || def.station > STATION_FURNACE
+            || def.station > STATION_MAX
             || def.n_inputs == 0
             || def.n_inputs as usize > MAX_RECIPE_INPUTS
         {
@@ -1032,6 +1064,44 @@ pub fn encode_event_recipes(
             w.write(item as u32, 16)?;
             w.write(per as u32, 16)?;
         }
+    }
+    Ok((w.finish(), count))
+}
+
+/// Encode up to `RESEARCH_BATCH` baked research rows starting at
+/// `first` (tech tree v0) — `encode_event_recipes`' shape on the
+/// research table. A recipe index rides 8 bits (`MAX_RECIPES` is 64);
+/// `requires` rides the same width with `0xFF` as the wire's spelling of
+/// [`sim_core::research::NO_RECIPE`], which no live recipe can reach.
+pub fn encode_event_research_rows(
+    rc: &sim_core::research::ResearchContent,
+    first: usize,
+    buf: &mut [u8],
+) -> Result<(usize, usize), WireError> {
+    let total = rc.row_count as usize;
+    if total > MAX_RESEARCH_ROWS || first >= total {
+        return Err(WireError::Range);
+    }
+    let count = RESEARCH_BATCH.min(total - first);
+    let mut w = begin(buf, SUB_RESEARCH_ROWS)?;
+    w.write(total as u32, RESEARCH_TOTAL_BITS)?;
+    w.write(first as u32, RESEARCH_TOTAL_BITS)?;
+    w.write(count as u32, RESEARCH_COUNT_BITS)?;
+    w.write(rc.coin as u32, 16)?;
+    for row in rc.rows[first..first + count].iter() {
+        let requires_ok = row.requires == NO_RECIPE || (row.requires as usize) < MAX_RECIPES;
+        if (row.recipe as usize) >= MAX_RECIPES || !requires_ok {
+            return Err(WireError::Range);
+        }
+        w.write(row.item as u32, 16)?;
+        w.write(row.recipe as u32, 8)?;
+        w.write(row.cost as u32, 16)?;
+        let req = if row.requires == NO_RECIPE {
+            0xFF
+        } else {
+            row.requires as u32
+        };
+        w.write(req, 8)?;
     }
     Ok((w.finish(), count))
 }
@@ -1333,7 +1403,7 @@ pub fn encode_event_deploy_defs(
     w.write(first as u32, DEPLOY_DEFS_TOTAL_BITS)?;
     w.write(count as u32, DEPLOY_DEFS_COUNT_BITS)?;
     for def in dc.defs[first..first + count].iter() {
-        if def.arch > ARCH_RESEARCH || def.placement > PLACE_DOOR || def.hp == 0 {
+        if def.arch > ARCH_WORKBENCH3 || def.placement > PLACE_DOOR || def.hp == 0 {
             return Err(WireError::Range);
         }
         if def.n_costs as usize > MAX_DEPLOY_COSTS {
@@ -2102,7 +2172,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let n_inputs = r.read(N_INPUTS_BITS)? as u8;
                 if out_count == 0
                     || ticks == 0
-                    || station > STATION_FURNACE
+                    || station > STATION_MAX
                     || n_inputs == 0
                     || n_inputs as usize > MAX_RECIPE_INPUTS
                 {
@@ -2126,6 +2196,78 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 total: total as u8,
                 first: first as u8,
                 count: count as u8,
+                rows,
+            }
+        }
+        // The research lane's three S→C arms. They did not exist from v32
+        // through v37: the encoders landed with research v0 and the
+        // decoder's `_ => Malformed` ate every one of them, so a client
+        // never saw a research toast, a refusal sentence or a `Known`
+        // restate — and nothing said so, because no golden pinned these
+        // bytes and the role gate checks payloads at the sim, not the
+        // codec. Found by the v38 fixtures the moment they existed, which
+        // is the argument for pinning a lane in the same commit that
+        // opens it.
+        SUB_RESEARCH => {
+            let recipe = r.read(16)? as u16;
+            let cost = r.read(16)? as u16;
+            if recipe as usize >= MAX_RECIPES {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Research { recipe, cost }
+        }
+        SUB_RESEARCH_REFUSED => {
+            let reason = r.read(RESEARCH_REFUSE_BITS)? as u8;
+            if reason as u32 > sim_core::research::REFUSE_R_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::ResearchRefused { reason }
+        }
+        SUB_KNOWN => {
+            let lo = r.read(32)?;
+            let hi = r.read(32)?;
+            EventMsg::Known {
+                mask: (hi as u64) << 32 | lo as u64,
+            }
+        }
+        SUB_RESEARCH_ROWS => {
+            let total = r.read(RESEARCH_TOTAL_BITS)? as usize;
+            let first = r.read(RESEARCH_TOTAL_BITS)? as usize;
+            let count = r.read(RESEARCH_COUNT_BITS)? as usize;
+            if total > MAX_RESEARCH_ROWS
+                || count == 0
+                || count > RESEARCH_BATCH
+                || first + count > total
+            {
+                return Err(WireError::Malformed);
+            }
+            let coin = r.read(16)? as u16;
+            let mut rows = [ResearchRow::INERT; RESEARCH_BATCH];
+            for row in rows.iter_mut().take(count) {
+                let item = r.read(16)? as u16;
+                let recipe = r.read(8)? as u16;
+                let cost = r.read(16)? as u16;
+                let req = r.read(8)? as u16;
+                // 0xFF is the wire's NO_RECIPE; anything else must name a
+                // live recipe index or the row is forged.
+                let requires = if req == 0xFF { NO_RECIPE } else { req };
+                if recipe as usize >= MAX_RECIPES
+                    || (requires != NO_RECIPE && requires as usize >= MAX_RECIPES)
+                {
+                    return Err(WireError::Malformed);
+                }
+                *row = ResearchRow {
+                    item,
+                    recipe,
+                    cost,
+                    requires,
+                };
+            }
+            EventMsg::ResearchRows {
+                total: total as u8,
+                first: first as u8,
+                count: count as u8,
+                coin,
                 rows,
             }
         }
@@ -2296,7 +2438,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let hp = r.read(16)? as u16;
                 let item = r.read(16)? as u16;
                 let n_costs = r.read(DEPLOY_COSTS_BITS)? as u8;
-                if arch > ARCH_RESEARCH
+                if arch > ARCH_WORKBENCH3
                     || placement > PLACE_DOOR
                     || hp == 0
                     || n_costs as usize > MAX_DEPLOY_COSTS
@@ -2881,7 +3023,7 @@ mod tests {
                 output: u16::MAX,
                 out_count: 255,
                 ticks: 65_535 * sim_core::limits::TICK_HZ,
-                station: STATION_FURNACE,
+                station: STATION_MAX,
                 // Set, because this is the worst-shape batch test and the
                 // bit is one more bit per row: a fixture that left it
                 // false would size the batch against a packet the game can
@@ -3892,9 +4034,9 @@ mod wire_domains {
             prefix: "pub const REFUSE_R_",
             ty: ": u32 = ",
             exempt: &["MAX"],
-            min_members: 5,
+            min_members: 7,
             bits: RESEARCH_REFUSE_BITS,
-            live_max: 4,
+            live_max: 6,
         },
         Domain {
             what: "deploy archetype",
@@ -3904,9 +4046,9 @@ mod wire_domains {
             prefix: "pub const ARCH_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 10,
+            min_members: 12,
             bits: ARCH_BITS,
-            live_max: 9,
+            live_max: 11,
         },
         Domain {
             what: "deploy placement",
@@ -3927,10 +4069,10 @@ mod wire_domains {
             home: "craft.rs",
             prefix: "pub const STATION_",
             ty: ": u8 = ",
-            exempt: &[],
-            min_members: 3,
+            exempt: &["MAX"],
+            min_members: 5,
             bits: STATION_BITS,
-            live_max: 2,
+            live_max: 4,
         },
         Domain {
             what: "lock grant",
@@ -4213,6 +4355,8 @@ mod wire_domains {
             "CRAFT_Q_COUNT_BITS",
             "RECIPE_TOTAL_BITS",
             "RECIPE_COUNT_BITS",
+            "RESEARCH_TOTAL_BITS",
+            "RESEARCH_COUNT_BITS",
             "RECIPE_TICKS_BITS",
             "N_INPUTS_BITS",
             "PIECE_SYNC_COUNT_BITS",

@@ -18,11 +18,14 @@ use sim_core::build::{
     SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
 };
 use sim_core::combat::{AmmoDef, CombatContent, MeleeDef, RangedDef, ThrowDef};
-use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
+use sim_core::craft::{
+    CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2,
+    STATION_WORKBENCH3,
+};
 use sim_core::deploy::{
     DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
-    ARCH_LOCK, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY,
-    PLACE_FOUNDATION, PLACE_GROUND,
+    ARCH_LOCK, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
+    PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_GROUND,
 };
 use sim_core::gather::ItemStack;
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
@@ -39,7 +42,7 @@ use sim_core::loot::{
 };
 use sim_core::mob::{MobContent, MobDef, MOB_LOOT_ROWS, MOB_PIG, MOB_WOLF};
 use sim_core::oven::{CookContent, CookRow};
-use sim_core::research::{ResearchContent, ResearchRow};
+use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
 
 /// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
@@ -197,6 +200,8 @@ impl Content {
                 station: match r.station {
                     Station::None => STATION_NONE,
                     Station::Workbench1 => STATION_WORKBENCH1,
+                    Station::Workbench2 => STATION_WORKBENCH2,
+                    Station::Workbench3 => STATION_WORKBENCH3,
                     Station::Furnace => STATION_FURNACE,
                 },
                 n_inputs: r.inputs.len() as u8,
@@ -389,6 +394,8 @@ impl Content {
                     DeployArchetype::Lock => ARCH_LOCK,
                     DeployArchetype::Recycler => ARCH_RECYCLER,
                     DeployArchetype::Research => ARCH_RESEARCH,
+                    DeployArchetype::Workbench2 => ARCH_WORKBENCH2,
+                    DeployArchetype::Workbench3 => ARCH_WORKBENCH3,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -941,7 +948,34 @@ impl Content {
             let recipe = self.recipe_index(&recipe_id.id).expect("own id resolves");
             let cost = u16::try_from(r.cost)
                 .map_err(|_| format!("bake: research `{}` costs {}, past a u16", r.item, r.cost))?;
-            rc.rows[i] = ResearchRow { item, recipe, cost };
+            // The tree edge: the parent is named by ITEM and stored as the
+            // parent row's RECIPE index, because the mask the sim checks
+            // is over recipes (tech tree v0). Validate has already walked
+            // the graph — this resolve can only fail on a bug there, so
+            // it errors rather than defaulting.
+            let requires = match &r.requires {
+                None => NO_RECIPE,
+                Some(parent_item) => {
+                    let parent = self
+                        .recipes
+                        .iter()
+                        .find(|c| &c.output == parent_item)
+                        .ok_or_else(|| {
+                            format!(
+                                "bake: research row `{}` requires `{parent_item}`, \
+                                 which no recipe outputs",
+                                r.item
+                            )
+                        })?;
+                    self.recipe_index(&parent.id).expect("own id resolves")
+                }
+            };
+            rc.rows[i] = ResearchRow {
+                item,
+                recipe,
+                cost,
+                requires,
+            };
         }
         rc.row_count = self.research.len() as u16;
         Ok(rc)

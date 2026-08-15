@@ -47,6 +47,7 @@ use crate::ui::slots::Drag;
 pub mod craft;
 pub mod inv;
 pub mod ring;
+pub mod tech;
 pub mod wheel;
 
 /// Which menu is up. One at a time: the wheel is a hold and the inventory
@@ -66,6 +67,10 @@ pub enum Panel {
     /// Latches nothing: releasing **fires** the hovered verb (`keys`),
     /// which is the two wheels' one deliberate difference.
     Hammer,
+    /// The tech tree, opened by `E` at a workbench (tech tree v0). A
+    /// toggle like the inventory, closed by Escape; Tab swaps to the
+    /// inventory rather than stacking on it.
+    Tech,
 }
 
 impl Panel {
@@ -141,6 +146,12 @@ pub(crate) struct Seen {
     pub jobs_count: u8,
     pub recipes_have: u16,
     pub pieces_have: u16,
+    /// The blueprint mask (tech tree v0). Without it a node clicked to
+    /// `Known` only redraws because the obol left `inv` — and a FREE
+    /// node, which content permits, would not redraw at all.
+    pub known: u64,
+    /// The research drip's watermark, `recipes_have`'s reason exactly.
+    pub research_have: u16,
 }
 
 impl Default for Ui {
@@ -278,6 +289,8 @@ pub fn register(app: &mut App) {
                 inv::drag_pointer,
                 craft::clicks,
                 craft::scroll,
+                tech::clicks,
+                tech::scroll,
                 wheel::track,
                 sync_refusals,
                 rebuild,
@@ -390,10 +403,10 @@ pub fn keys(
         super::verbs::close_container(&net, &mut toast);
     }
 
-    // The wheel wins over nothing and loses to the inventory screen: a
-    // player with the inventory open who brushes the button is not asking
-    // for a wheel on top of it.
-    if ui.panel != Panel::Inventory {
+    // The wheel wins over nothing and loses to the two toggle screens: a
+    // player with the inventory (or the tree) open who brushes the button
+    // is not asking for a wheel on top of it.
+    if !matches!(ui.panel, Panel::Inventory | Panel::Tech) {
         let want = if holding_wheel {
             // One wheel per item (`crate::ui::hold`'s table). Opening the
             // OTHER item's wheel would place with the wrong verb, which is
@@ -522,6 +535,8 @@ pub fn rebuild(
             || core.jobs_count != ui.seen.jobs_count
             || core.recipes_have != ui.seen.recipes_have
             || core.piece_defs_have != ui.seen.pieces_have
+            || core.known() != ui.seen.known
+            || core.research_have != ui.seen.research_have
         {
             // The def tables drip in over the first seconds of a session, so
             // the derived category facts are rebuilt with them.
@@ -536,6 +551,8 @@ pub fn rebuild(
             ui.seen.jobs_count = core.jobs_count;
             ui.seen.recipes_have = core.recipes_have;
             ui.seen.pieces_have = core.piece_defs_have;
+            ui.seen.known = core.known();
+            ui.seen.research_have = core.research_have;
             ui.dirty = true;
         }
     }
@@ -568,6 +585,11 @@ pub fn rebuild(
             let fallback = super::icons::Icons::default();
             let icons = icons.as_deref().unwrap_or(&fallback);
             wheel::build_hammer_screen(&mut commands, &ui, icons)
+        }
+        Panel::Tech => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            tech::build_screen(&mut commands, &ui, core, icons)
         }
     }
 }

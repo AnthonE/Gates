@@ -36,7 +36,7 @@ use protocol::event::WireBag;
 use sim_core::build::BUILD_CELL_M;
 use sim_core::deploy::{
     box_key, DeployContent, DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
-    ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH,
+    ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
 };
 
 pub use sim_core::build::BUILD_REACH_M as REACH_M;
@@ -90,6 +90,14 @@ pub enum Verb {
     /// their occupant selects, and the prompt names a KIND. What the
     /// player is told apart is what is inside.
     Crate,
+    /// A workbench, any rung (tech tree v0). One verb for three
+    /// archetypes, `Fire`'s argument again: the prompt names a KIND, and
+    /// which level you are standing at is the sim's business — the tree
+    /// panel `E` opens shows every node and the server refuses a rung
+    /// you have not built. Before this verb a workbench was pure
+    /// proximity token: the first deployable a player could place and
+    /// not press.
+    TechTree,
 }
 
 impl Verb {
@@ -126,6 +134,7 @@ impl Verb {
             // deploy scan came back `None`. The rung exists so the order
             // stays total.
             Verb::Crate => 8,
+            Verb::TechTree => 9,
         }
     }
 
@@ -142,6 +151,7 @@ impl Verb {
             Verb::Recycler => "RECYCLER",
             Verb::Research => "RESEARCH TABLE",
             Verb::Crate => "CRATE",
+            Verb::TechTree => "WORKBENCH",
         }
     }
 }
@@ -253,6 +263,10 @@ impl Pick {
             // promised a panel would be teaching the wrong gesture. What
             // `E` does here is spend the held item, so the prompt says so.
             Verb::Research => "[E] RESEARCH HELD ITEM".to_string(),
+            // "TECH TREE", not "OPEN WORKBENCH": the bench holds nothing
+            // and opens nothing — what `E` does here is show the tree
+            // (tech tree v0), so the prompt names the thing you get.
+            Verb::TechTree => "[E] TECH TREE".to_string(),
             v => format!("[E] OPEN {}", v.label()),
         }
     }
@@ -381,6 +395,7 @@ pub fn resolve(
             ARCH_FIRE | ARCH_FURNACE => Verb::Fire,
             ARCH_RECYCLER => Verb::Recycler,
             ARCH_RESEARCH => Verb::Research,
+            ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 => Verb::TechTree,
             _ => continue,
         };
         // A box is addressed by its packed cell. `box_key(0, 0, 0)` is 0 and

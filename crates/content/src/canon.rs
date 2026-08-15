@@ -326,6 +326,12 @@ pub fn hash(c: &Content) -> u64 {
     for r in research {
         h.s(&r.item);
         h.u(r.cost);
+        // The tree edge (tech tree v0). An absent parent hashes as the
+        // empty string rather than being skipped: skipping would make
+        // `requires = "x"` on the LAST row and no requires at all
+        // canonicalise identically-prefixed streams, and the empty
+        // string is a value no item id can be.
+        h.s(r.requires.as_deref().unwrap_or(""));
     }
 
     let sv = &c.balance.survival;

@@ -785,29 +785,27 @@ What is left, in order:
 
 ---
 
-## 0tt · The bench ladder and the tech tree — spoken, and two eras to choose from *(systems lane)*
+## 0tt · The bench ladder and the tech tree — LANDED 2026-08-15, three residuals *(systems lane)*
 
-Spoken 2026-08-14 (*"we should copy the tech tree ui thing too"* —
-`DECISIONS.md` has the row): their two-system model — research what you
-loot at the table, tech-tree the gaps at the bench — plus the workbench
-tech-tree UI. What exists: `research.rs` + `research.toml` (powder era
-only, deliberately), `item.workbench` (tier 1), OBOL-is-scrap. What is
-missing is the whole ladder: no workbench 2/3, nothing above
-`workbench1` in `recipes.toml`'s station column, no tree, no UI — and
-`RIPLIST.md` §2 row 3's craft rebate is blocked on exactly this ladder.
+The era was spoken (*"YES do it pre 2025 please"* — `DECISIONS.md`
+2026-08-15, and §open "bench ladder v0" carries the derived numbers) and
+the whole slice landed in one pass: workbench 2/3, the tiered station
+gate (`bench_near`'s ≥), the tech tree as a `requires` column over
+`Player::known` (`research::unlock` — no sample, which un-deadends the
+satchel and roadsign, blueprint-gated items in NO loot table), the bench's
+`E` opening a tree panel, wire v38. Landing it found a live wire defect:
+the three research events had **no decoder arms since v32** — every
+research toast and `Known` restate was decode-refused client-side, caught
+by the first goldens ever to pin that lane (91 fixtures now).
 
-**The numbers are sourced and the ERA is the decision** (§2 row 7, page
-tier 2026-08-14): their CURRENT ladder is fragment-gated — WB2 = 500
-frags + 20 HQM + 5 basic blueprint fragments, WB3 = 1,000 + 100 HQM + 5
-advanced, fragments spawn only in monument puzzle rooms / crates, scrap
-removed from benches (Meta Shift) — and research costs are the post-cut
-15/30/60/120. Their PRE-Oct-2025 ladder was scrap accumulation (~1,800
-through the benches). We have no monuments-with-loot, no events, no
-crates, so their current gate has nothing here to hang on: **the
-scrap-era ladder is the coherent take until events exist**, and that
-choice is a knob to speak, not a default. UI reference for the viewer
-half: `rusthelp.com/tools/techtree`; every item page carries its
-tech-tree path total, so agents can walk the tree page by page.
+Remains, each small and none blocking:
+1. **The craft rebate** (§2 row 3) is unblocked now — 50% faster one
+   bench up, 75% two up — a `craft.rs` lookup once someone takes it.
+2. **The panel draws indents, not edges**: a line renderer between
+   parent and child is cosmetic and waits for a real look at the screen.
+3. **The operator has not seen it** — the tree panel, the two greybox
+   benches, the tier badges. The visual gate is a person (`CLAUDE.md`);
+   boot the game, stand at a bench, press `E`.
 
 ## 0ac · The catalogue — what twig and the cost grammar left *(systems lane)*
 
