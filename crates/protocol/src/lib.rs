@@ -2506,6 +2506,13 @@ mod tests {
     use super::*;
     use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
+    /// The tail of an `ACT_*` name, for `every_action_encoder_has_a_decoder`.
+    /// Anything with punctuation in it is an expression that merely mentions
+    /// a code, not a declaration of one.
+    fn is_action_ident(s: &str) -> bool {
+        !s.is_empty() && s.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+    }
+
     fn ent(id: u32) -> EntityState {
         EntityState {
             id,
@@ -2808,6 +2815,85 @@ mod tests {
             14,
             "the spare action codes moved — say so where the count is written"
         );
+    }
+
+    /// **Every action this crate can encode, it can also decode.**
+    ///
+    /// `event.rs`'s `every_encoder_has_a_decoder` in the other direction,
+    /// and it exists because that one was written *late*: `SUB_RESEARCH`,
+    /// `SUB_RESEARCH_REFUSED` and `SUB_KNOWN` shipped at v32 with
+    /// encoders, `EventMsg` variants and `ClientCore` handlers, and **no
+    /// `decode_event` arm**, so every research frame the server ever sent
+    /// came back `Malformed`. The sim was right, the handler was right,
+    /// and the verb was dead. Nothing asked the same question of the
+    /// action lane, which is the one the *player* pushes on.
+    ///
+    /// This side is green the day it lands — 18 codes encoded, 18 arms —
+    /// so it is a wall rather than a bug report. That is the point: the
+    /// event lane got its gate only after two verbs had already crossed
+    /// dead, and the cheapest moment to write the symmetric one is before
+    /// the nineteenth action rather than after it.
+    ///
+    /// Scans its own source, because a list of codes typed twice is what
+    /// is being prevented. Encoder shape is `w.write(ACT_X,
+    /// ACTION_SUB_BITS)?` — matched on the `w.write(ACT_` prefix
+    /// specifically, so the `ACT_MAX < (1 << ACTION_SUB_BITS)` fit assert
+    /// is not mistaken for an encode. Decoder shape is a match arm whose
+    /// trimmed line opens `ACT_X =>`. Codes are deduped: two functions
+    /// legitimately write `ACT_CONTAINER` (open and close).
+    #[test]
+    fn every_action_encoder_has_a_decoder() {
+        const SRC: &str = include_str!("lib.rs");
+
+        let mut encoded: Vec<&str> = Vec::new();
+        let mut decoded: Vec<&str> = Vec::new();
+        for line in SRC.lines() {
+            let line = line.trim();
+            // Comments are not code — this gate's own prose names both
+            // shapes it scans for, which is how the sibling gate in
+            // `event.rs` found itself on its first run.
+            if line.starts_with("//") {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("w.write(ACT_") {
+                if let Some((name, _)) = rest.split_once(',') {
+                    if is_action_ident(name) && !encoded.contains(&name) {
+                        encoded.push(name);
+                    }
+                }
+            }
+            if let Some(rest) = line.strip_prefix("ACT_") {
+                if let Some((name, _)) = rest.split_once(" =>") {
+                    if is_action_ident(name) && !decoded.contains(&name) {
+                        decoded.push(name);
+                    }
+                }
+            }
+        }
+
+        assert!(
+            encoded.len() > 15,
+            "the encoder scan found only {} action codes — the \
+             `w.write(ACT_..., ACTION_SUB_BITS)` shape changed and this gate \
+             is now checking nothing",
+            encoded.len()
+        );
+        assert!(
+            decoded.len() > 15,
+            "the decoder scan found only {} arms — `decode_action`'s match \
+             shape changed and this gate is now checking nothing",
+            decoded.len()
+        );
+
+        for name in &encoded {
+            assert!(
+                decoded.contains(name),
+                "ACT_{name} has an encoder and no arm in `decode_action`, so \
+                 every frame the client sends for it decodes as `Malformed` \
+                 and the verb is dead on arrival — the shape `SUB_RESEARCH` \
+                 shipped in on the event lane at v32"
+            );
+        }
     }
 
     /// **Every `REFUSE_*` code this crate declares has a real sentence.**
