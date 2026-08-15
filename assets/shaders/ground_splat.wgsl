@@ -1,181 +1,203 @@
-// The ground's four identities, each with its own relief.
+// The ground's four identities, each with its own photograph.
 //
-// The first WGSL in this tree. It exists because `StandardMaterial` has one
-// base-colour slot and `terrain::splat` resolves four identities, so until now
-// sand, turf, forest litter and granite all shared ONE greyscale detail map:
-// granite had stone's value and not stone's surface (`NOW.md` §0gp).
+// **What this replaces.** Until now every identity shared ONE greyscale detail
+// map and ONE `perceptual_roughness`, so granite had stone's *value* and not
+// stone's *surface* (`terrain_mesh.rs`'s own note, and `NOW.md` §0gm). A
+// `StandardMaterial` has one base-colour slot, which is the limitation this
+// file exists to remove.
 //
-// ── What this shader may and may not do ───────────────────────────────────
+// **Why the maps contribute LUMINANCE and never colour.** `ART.md` §7 bounds a
+// mean-placing correction: a sourced map's colour deviation may not be
+// stretched by more than ×1. Measured over the four ground sources the gain
+// spans are grass 2.454, sand 2.073, litter 3.586, rock 1.054 — only rock
+// clears it. So each map is reduced to its own mean-1 luminance field (span
+// 1.000 by construction, because every channel becomes the same channel) and
+// the colour stays entirely the authored splat's. The photograph contributes
+// exactly the thing a noise field cannot encode: measured high-frequency
+// relief. That is not a workaround for the rule; it is what the rule asks for.
 //
-// It computes a base colour and nothing else. `pbr_input_from_standard_material`
-// builds the whole PBR input, this replaces one field of it, and Bevy's own
-// `apply_pbr_lighting` and `main_pass_post_lighting_processing` do the rest —
-// so lighting, shadows, fog and the tonemap are untouched. That is deliberate
-// twice over: it is `CLAUDE.md`'s "Bevy draws, it does not decide" at the
-// render layer, and it keeps this shader OUT of the coupled set (tonemap, sky,
-// exposure, fog are one owner, and splitting them across passes has measurably
-// made things worse). A splat material that also nudged exposure would be a
-// second brightness owner with no gate to notice.
-//
-// ── Luminance, never chroma ───────────────────────────────────────────────
-//
-// Each identity contributes its source's LUMINANCE divided by that source's
-// own mean, and the colour stays the vertex's. `ART.md` §7: a modifier that
-// must set a colour multiplies a mean-1 luminance field, not its chroma — and
-// a per-channel gain placing a source's mean may not stretch that source's
-// colour deviation by more than x1, which three of these four sources fail
-// (grass 2.454, sand 2.073, litter 3.586; only rock's 1.054 clears it). A
-// luminance field has span 1.000 by construction. So the photograph
-// contributes exactly what a vertex hash cannot — measured high-frequency
-// relief, four different reliefs where there was one — and every colour
-// decision `tests/ground_identity.rs` gates stays where it was.
-//
-// ── The approximation, stated ─────────────────────────────────────────────
-//
-// The vertex colour already carries the weighted identity mix `Σ wᵢ Cᵢ`, and
-// this shader multiplies it by one scalar — the height-blended relief `B`. So
-// the delivered colour is `(Σ wᵢ Cᵢ) · B(w, raw, field)`, where the exact form
-// would be `Σ wᵢ Cᵢ Lᵢ`: every identity's colour carrying its OWN relief
-// rather than all four sharing the blend's.
-//
-// The two are IDENTICAL wherever one weight is 1 — B collapses to that
-// identity's own field — and the probe behind §0gp measured max weight
-// p50 = 1.000 with 92.2% of land samples above 0.8, so they agree on the
-// overwhelming majority of the island. Where they differ, the error is a
-// cross-term whose factors are mean-1 fields, so it has zero mean over the
-// texture: it reads as slightly reduced grain contrast in a transition band,
-// never as a colour shift.
-//
-// Taking the exact form would mean moving the authored colour out of
-// `ATTRIBUTE_COLOR` and into a uniform, which retires the three gates that
-// read it (`ground_identity.rs`, `ground_mix.rs`,
-// `ground_where_the_green_goes.rs`). Not worth a correction with zero mean on
-// under 8% of the ground.
+// **The weights arrive in `COLOR`, not packed into `UV_1`.** Packing two `u8`
+// per `f32` was scouted and is wrong: the rasterizer interpolates the PACKED
+// value, and `floor(p / 256)` then mixes the low byte into the high one. It is
+// exact at both vertices and up to 50% wrong in the middle of the triangle —
+// i.e. precisely at identity boundaries, where it shows. `COLOR` carries four
+// independently-interpolated weights instead, which also moves the identity mix
+// from per-vertex to per-pixel.
 
 #import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_fragment::pbr_input_from_standard_material,
-    pbr_functions::{alpha_discard, apply_pbr_lighting, main_pass_post_lighting_processing},
+    pbr_functions::{
+        apply_pbr_lighting,
+        main_pass_post_lighting_processing,
+        calculate_tbn_mikktspace,
+    },
 }
 
-// The Rust twin is `GroundSplatParams` in `render/terrain_mesh.rs`.
-//
-// `gain` is each identity's `1 / mean linear luma`, in `terrain::splat`'s
-// order — sand · grass · forest litter · rock — measured off the shipped files
-// and gated by `tests/ground_maps.rs`.
-//
-// `blend_depth` is `GROUND_BLEND_DEPTH`. It is declared in Rust rather than as
-// a `const` here because `ci/knob_registry.mjs` resolves `DECISIONS.md`
-// declarations against `.rs`/`.js`/`.mjs` and cannot read a `.wgsl` — a knob
-// that lived only in this file would be invisible to the gate that exists to
-// catch invented numbers.
-struct GroundSplatParams {
+struct GroundSplat {
+    // Per identity, in `terrain::splat`'s order — sand · grass · litter · rock:
+    // `xyz` the authored LINEAR albedo (`terrain_mesh::GROUND_ALBEDO`), `w` its
+    // perceptual roughness.
+    identity: array<vec4<f32>, 4>,
+    // Per identity, `1 / linear-luma mean` of its albedo map, so each map
+    // delivers a mean of 1 and multiplies the authored colour without moving it.
     gain: vec4<f32>,
-    blend_depth: f32,
-}
-@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> ground: GroundSplatParams;
-
-@group(#{MATERIAL_BIND_GROUP}) @binding(101) var sand_tex: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(102) var ground_samp: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(103) var grass_tex: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(104) var litter_tex: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(105) var rock_tex: texture_2d<f32>;
-
-// `ATTRIBUTE_UV_1` carries the four splat weights packed two `u8` to an `f32`.
-//
-// **This is the Rust `unpack_splat` in `render/terrain_mesh.rs`, line for
-// line, and it has to stay that way** — a divergence between the two does not
-// crash and fails no gate, it draws the wrong identity or a seam between two
-// chunks. `tests/ground_splat.rs` §D pins the radix on both sides so a change
-// to one is a change to a value the other reads.
-//
-// The decode is exact rather than nearly so: every value written is an integer
-// below 65,536, an f32 holds every integer below 2^24, and the divisor is a
-// power of two so the division only shifts the exponent — `floor` cannot land
-// a ulp on the wrong side of an integer.
-fn unpack_splat(uv_b: vec2<f32>) -> vec4<f32> {
-    let hi = floor(uv_b / 256.0);
-    let lo = uv_b - hi * 256.0;
-    return vec4<f32>(hi.x, lo.x, hi.y, lo.y) / 255.0;
+    // x = WET_VALUE, y = WET_SATURATION, z = ALBEDO_LUMA_FLOOR, w = blend depth.
+    tune: vec4<f32>,
+    // x = HEIGHT_INFLUENCE, y = NORMAL_Z_FLOOR, zw reserved. Passed in rather
+    // than declared here: a knob that lives only in a shader is one the knob
+    // registry cannot see, and `ci/gates.sh` refuses its `DECISIONS.md` row.
+    blend: vec4<f32>,
 }
 
-// One identity's RAW linear luminance, in [0, 1]. Rec.709, matching every
-// other luma in this client (`fill.rs`, `props.rs`, `terrain_mesh.rs`,
-// `tree.rs`).
-//
-// The sample is already linear: the four albedos load with `is_srgb = true`,
-// so the hardware has undone the transfer function before this runs — which is
-// the same reason the gains were measured in linear.
-//
-// **Raw here, gained at the call site, and the split is load-bearing.** This
-// value plays two roles that need two ranges. As the thing being BLENDED it
-// wants the mean-1 field (raw x gain), so each identity delivers the authored
-// colour on average. As the HEIGHT deciding which identity wins a texel it
-// must be commensurate with the splat weights, which are [0, 1] — and the
-// gained field is not: the gains are 3.7 to 9.7, so a bright litter texel
-// reaches h ~ 3.9 while no weight can exceed 1.
-//
-// That was this shader's first form and it was wrong. `hw = h + w` with h in
-// [0, 4] and w in [0, 1] is `hw ~ h`: the winner is whichever PHOTOGRAPH is
-// brightest at that texel, and the classifier the whole slice exists to
-// express barely participates. It is invisible in a frame — all four fields
-// are mean-1, so the result still looks like ground — which is exactly why it
-// is written down here.
-fn luma(tex: texture_2d<f32>, uv: vec2<f32>) -> f32 {
-    let c = textureSample(tex, ground_samp, uv).rgb;
-    return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+@group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
+@group(#{MATERIAL_BIND_GROUP}) @binding(101) var albedo_sand: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(102) var albedo_grass: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(103) var albedo_litter: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(104) var albedo_rock: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(105) var normal_sand: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(106) var normal_grass: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(107) var normal_litter: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(108) var normal_rock: texture_2d<f32>;
+// **One sampler for all eight.** Every map wants the same tiling/anisotropy
+// descriptor, and a sampler each would put this material at 16 samplers in the
+// fragment stage on top of `StandardMaterial`'s own — over the 16 the downlevel
+// limit guarantees.
+@group(#{MATERIAL_BIND_GROUP}) @binding(109) var ground_sampler: sampler;
+
+const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+
+// `terrain_mesh::wetted`, ported verbatim — darker, and more saturated about its
+// own luma. The Rust side stays the reference and `tests/ground_splat.rs` holds
+// the two together over a sweep; if you change one, change both.
+fn wetted(c: vec3<f32>, wet: f32) -> vec3<f32> {
+    if wet <= 0.0 {
+        return c;
+    }
+    let luma = dot(c, LUMA);
+    // The soak, floored: a surface already at or under the band's dark end does
+    // not get darker, and one above it may not be taken through.
+    var value = 1.0;
+    if luma > splat.tune.z {
+        value = max(1.0 - wet * (1.0 - splat.tune.x), splat.tune.z / luma);
+    }
+    let chroma = 1.0 + wet * splat.tune.y;
+    return max((vec3(luma) + (c - vec3(luma)) * chroma) * value, vec3(0.0));
+}
+
+// A tangent-space normal as a surface gradient. Summing GRADIENTS is what makes
+// a blend of normals mean anything: averaging the vectors themselves pulls every
+// mix toward the flat +Z and quietly flattens exactly the relief this material
+// was built to deliver.
+fn to_gradient(n: vec3<f32>) -> vec2<f32> {
+    return n.xy / max(n.z, splat.blend.y);
+}
+
+fn unpack_normal(t: vec4<f32>) -> vec3<f32> {
+    // Two-channel reconstruction would need the material flag; these are plain
+    // three-channel tangent-space maps, so the decode is the whole of it.
+    return normalize(t.xyz * 2.0 - 1.0);
 }
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+    // Everything the standard path sets up — view vector, flags, the lot. Its
+    // `base_color` is left holding the vertex `COLOR`, which here is the weight
+    // vector rather than a colour; every write below is an assignment, so none
+    // of it survives into the frame.
     var pbr_input = pbr_input_from_standard_material(in, is_front);
 
-    let w = unpack_splat(in.uv_b);
+    let uv = in.uv;
+    let a0 = textureSample(albedo_sand, ground_sampler, uv);
+    let a1 = textureSample(albedo_grass, ground_sampler, uv);
+    let a2 = textureSample(albedo_litter, ground_sampler, uv);
+    let a3 = textureSample(albedo_rock, ground_sampler, uv);
 
-    // Raw, in [0, 1] — the HEIGHT, commensurate with the weights.
-    let raw = vec4<f32>(
-        luma(sand_tex, in.uv),
-        luma(grass_tex, in.uv),
-        luma(litter_tex, in.uv),
-        luma(rock_tex, in.uv),
+    // Each map's raw linear luminance, in [0, 1]. This is the HEIGHT.
+    let luma = vec4<f32>(
+        dot(a0.rgb, LUMA),
+        dot(a1.rgb, LUMA),
+        dot(a2.rgb, LUMA),
+        dot(a3.rgb, LUMA),
     );
-    // Mean-1 — the VALUE, so each identity delivers its authored colour on
-    // average. Same four samples, second role.
-    let field = raw * ground.gain;
-
-    // Height blend (Mishkinis). The winner is whichever identity stands
-    // highest once its splat weight is added to its own relief; anything
-    // within `blend_depth` of it still contributes, everything below is cut.
-    // Normalising by the surviving weight is what keeps the result mean-1 —
-    // without it a texel where only one identity survives would be dimmer than
-    // one where two do.
+    // The same field with its mean placed at 1. This is the GRAIN — what
+    // multiplies the authored colour.
     //
-    // Both terms are [0, 1] here, which is the formulation's own assumption:
-    // the weight decides WHICH identity and the height decides where the seam
-    // between two comparable ones falls. A bright identity can still take a
-    // texel from a darker neighbour at a boundary — that is the effect, not a
-    // defect — but it can no longer take one where its weight is zero.
+    // **These two must not be the same vector.** The gains run 3.7 to 9.7, so a
+    // bright litter texel reaches a grain of ~4 while a weight can only ever
+    // reach 1: feed the grain to the height blend below and it resolves
+    // whichever texture happens to be brightest at that texel, ignoring the
+    // classifier entirely and painting a four-way random mosaic. That is an
+    // arithmetic argument and it is the whole of the reason — the first
+    // before/after capture run for it compared two different parts of the
+    // island (the shard hashes a spawn per player id unless `dev_spawn` pins
+    // it), so it measured a place and not a change.
+    let grain = luma * splat.gain;
+
+    // **Height blend, and the classifier stays soft.** A linear blend of four
+    // weights reads as a wash where two identities meet; a height blend lets the
+    // louder surface's own relief win the contested band, which is what a real
+    // boundary between turf and scree looks like. The map's luminance is the
+    // height proxy — displacement is deliberately not sourced
+    // (`assets/textures/MANIFEST.md`) — and `depth` is deliberately generous:
+    // sharpening this produces bubble-shaped regions along every seam.
+    // **The height only breaks ties; it never outvotes the classifier.**
+    // `splat_from` delivers near-pure identities (max weight p50 = 1.000, 92.2%
+    // of samples above 0.8), so the weights already decide almost everywhere
+    // and the only place a height belongs is the narrow contested band where
+    // two of them are close. Centring the height on 0 and scaling it by
+    // `HEIGHT_INFLUENCE` is what bounds it to that band: at ±0.15 it cannot
+    // overturn a weight gap wider than 0.3.
+    // **The height is the GRAIN centred on zero, not the raw luma.** Every
+    // grain field has a mean of 1 by construction, so `grain − 1` is each map's
+    // own relief about its own mean and no identity carries a systematic
+    // advantage. Raw luma does: rock's mean (0.269) is 2.6× litter's (0.103),
+    // so it wins contested bands on brightness alone. Clamped because a gain of
+    // 9.7 lets one litter texel reach a grain of ~4, and an outlier texel may
+    // sharpen a seam without being allowed to move it.
     //
-    // ⚠ Albedo luminance is a PROXY for height, not a height. The honest
-    // signal is a displacement map, deliberately not sourced
-    // (`assets/textures/MANIFEST.md`), or the `*_ao.jpg` set, which ships and
-    // is read by nothing. Either would be a better height than "how bright is
-    // this texel".
-    let hw = raw + w;
-    let cut = max(max(hw.x, hw.y), max(hw.z, hw.w)) - ground.blend_depth;
-    let k = max(hw - vec4<f32>(cut), vec4<f32>(0.0));
-    // `sum` cannot be zero: the cut is `max(hw) - blend_depth`, so the winning
-    // component is always exactly `blend_depth` above it. The guard is for a
-    // NaN arriving from a corrupt texture, not for the arithmetic.
-    let sum = k.x + k.y + k.z + k.w;
-    let relief = select(1.0, dot(k, field) / sum, sum > 0.0);
+    // **Measured as a no-op, and kept anyway.** Swapping raw luma for this
+    // moved a six-frame capture by +0.1% contrast and 0.05 luma — nothing. The
+    // reason is the line above: `splat_from` is near-binary (92.2% of samples
+    // over 0.8), so the contested band this arbitrates is a sliver of the
+    // island. It stays because "no identity wins by being brighter" is a
+    // property worth having when the classifier eventually softens, not because
+    // it bought a frame anything today.
+    let w = clamp(in.color, vec4(0.0), vec4(1.0));
+    let relief = clamp(grain - vec4(1.0), vec4(-1.0), vec4(1.0));
+    let h = w + relief * splat.blend.x;
+    let peak = max(max(h.x, h.y), max(h.z, h.w)) - splat.tune.w;
+    let b = max(h - vec4(peak), vec4(0.0));
+    let bw = b / max(b.x + b.y + b.z + b.w, 1e-4);
 
-    pbr_input.material.base_color = vec4<f32>(
-        pbr_input.material.base_color.rgb * relief,
-        pbr_input.material.base_color.a,
-    );
+    // The authored colour, per pixel rather than per vertex.
+    var base = vec3(0.0);
+    var rough = 0.0;
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        base = base + splat.identity[i].xyz * bw[i];
+        rough = rough + splat.identity[i].w * bw[i];
+    }
+    // The macro break-up, then the waterline — in that order, so a wet vertex
+    // keeps its own grain instead of having it multiplied back in at full dry
+    // strength. `terrain_mesh::vertex_color` states why.
+    base = base * in.uv_b.x;
+    base = wetted(base, in.uv_b.y);
 
-    pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);
+    // The photograph, last: a scalar field with a mean of 1, so it contributes
+    // relief and not colour.
+    let lit = dot(bw, grain);
+    pbr_input.material.base_color = vec4(base * lit, 1.0);
+    pbr_input.material.perceptual_roughness = rough;
+
+    // The relief, blended as gradients and applied on the mesh's own written
+    // tangent frame.
+    let g = to_gradient(unpack_normal(textureSample(normal_sand, ground_sampler, uv))) * bw.x
+        + to_gradient(unpack_normal(textureSample(normal_grass, ground_sampler, uv))) * bw.y
+        + to_gradient(unpack_normal(textureSample(normal_litter, ground_sampler, uv))) * bw.z
+        + to_gradient(unpack_normal(textureSample(normal_rock, ground_sampler, uv))) * bw.w;
+    let nt = normalize(vec3(g, 1.0));
+    let tbn = calculate_tbn_mikktspace(pbr_input.world_normal, in.world_tangent);
+    pbr_input.N = normalize(tbn * nt);
 
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);

@@ -22,13 +22,12 @@
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
-use bevy::pbr::{ExtendedMaterial, MaterialExtension};
+use bevy::pbr::ExtendedMaterial;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, ShaderType};
-use bevy::shader::ShaderRef;
 use sim_core::terrain::{self, SEA_LEVEL};
 
+use super::ground_splat::{GroundMaterial, GroundSplat};
 use super::textures::GroundMaps;
 use super::{Eye, WorldEntity, WorldId};
 
@@ -342,21 +341,24 @@ impl Ring {
 /// one draw per pipeline; the identity variation rides the vertices and the
 /// near-field grain rides the photograph.
 ///
-/// **One map set, not four, and WHICH one was a measurement rather than a
-/// taste.** A `StandardMaterial` has one base-colour slot, so the four
-/// identities `terrain::splat` resolves cannot each carry their own
-/// photograph here. The first cut picked `grass` because `MANIFEST.md`
-/// records it owning ~99% of the near ring — and the capture measured
-/// near-band saturation falling 32.5% → 15.0% against a reference of 33.2%,
-/// because `base_color_texture` MULTIPLIES the authored colour by the
-/// photograph's own colour, which is `ART.md` §7's named failure: a modifier
-/// that must set a colour multiplies the surface's mean-1 LUMINANCE field, not
-/// its chroma.
+/// **Four map sets now, one per identity** — landed 2026-08-15, and the
+/// paragraph that stood here explaining why there could only be one is kept
+/// below because it is still the reason the maps contribute LUMINANCE.
 ///
-/// The fix §7 prescribes is a per-channel gain that places the source's mean,
-/// bounded by the rule that **a sourced map's colour deviation may not be
-/// stretched by more than ×1 by that correction**. Measured over the four
-/// ground sources (linear means, gain = 1/mean, span = max gain / min gain):
+/// The old text: "A `StandardMaterial` has one base-colour slot, so the four
+/// identities `terrain::splat` resolves cannot each carry their own photograph
+/// here. The first cut picked `grass` because `MANIFEST.md` records it owning
+/// ~99% of the near ring — and the capture measured near-band saturation
+/// falling 32.5% → 15.0% against a reference of 33.2%, because
+/// `base_color_texture` MULTIPLIES the authored colour by the photograph's own
+/// colour, which is `ART.md` §7's named failure: a modifier that must set a
+/// colour multiplies the surface's mean-1 LUMINANCE field, not its chroma."
+///
+/// **The slot limit is gone and the §7 rule is not.** `super::ground_splat`
+/// binds four albedo and four normal maps through an `ExtendedMaterial`, so the
+/// one-slot constraint is retired; but the deviation rule still binds, and the
+/// spans measured over the four ground sources are why every map still arrives
+/// as a luminance field rather than as colour:
 ///
 /// | source | linear mean rgb | gain span | albedo sd |
 /// |---|---|---|---|
@@ -365,152 +367,43 @@ impl Ring {
 /// | litter | 0.139 0.099 0.039 | **3.586** | 0.0527 |
 /// | rock | 0.273 0.269 0.259 | **1.054** | 0.0924 |
 ///
-/// Only `rock` clears the rule, and it is also the source carrying the most
-/// detail. That is not a coincidence: `MANIFEST.md` records `rock` being
-/// chosen by scoring 74 CC0 candidates on exactly gain span and albedo sd.
-/// So the ground's grain is granite's, mean-corrected, and its colour is
-/// entirely the authored splat's — which is the construction §7 asks for.
+/// Only `rock` clears the rule. Reducing each source to its own mean-1
+/// luminance field gives every one of them a span of 1.000 by construction, so
+/// all four may now ship their relief where before only granite's could — which
+/// is the whole of what this slice buys. The colour stays entirely the authored
+/// splat's, exactly as §7 asks.
 ///
-/// **All four maps now, and the paragraph above is history rather than law.**
-/// The single-map construction it describes was correct for a
-/// `StandardMaterial` and is retired by [`GroundSplat`], which samples all
-/// four sources and blends them by the splat weights the mesh carries on
-/// `ATTRIBUTE_UV_1`. What did NOT change is the reason the map may only be a
-/// luminance field — the gain-span table above still holds, and
-/// `textures::GROUND_MAP_GAIN` is that same reciprocal once per identity. The
-/// blocker this comment used to state (0.18's `StandardMaterial` is
-/// `#[bindless(index_table(range(0..31)))]`) is real and is sidestepped rather
-/// than solved: see [`GroundSplat`].
-pub type GroundMaterial = ExtendedMaterial<StandardMaterial, GroundSplat>;
-
-/// How far below the winning surface a second identity may still show through,
-/// in units of the mean-1 luminance field.
-///
-/// Mishkinis, *Advanced Terrain Texture Splatting* (2013): blending on a
-/// per-texel height rather than linearly is what stops a transition reading as
-/// a cross-fade of two photographs, because the higher surface's own relief
-/// cuts the boundary instead of a straight ramp doing it. 0.2 is the value the
-/// graphics skills carry and `NOW.md` §0gp scouted.
-///
-/// **It lives in Rust rather than in the WGSL that uses it, and that is the
-/// point.** `ci/knob_registry.mjs` resolves a `DECISIONS.md` declaration
-/// against `.rs`, `.js` and `.mjs` sources — it cannot see a `.wgsl`. A
-/// tunable declared only in a shader is invisible to the one gate that exists
-/// to check that tunables are spoken rather than invented, which is the drift
-/// `CLAUDE.md` warns about in every other form. So it is declared here and
-/// travels to the shader in the uniform.
-///
-/// Applied to the MATERIAL, never to the classifier: `terrain::splat_from`
-/// stays soft, because sharpening the classifier makes bubble regions.
-pub const GROUND_BLEND_DEPTH: f32 = 0.2;
-
-/// The splat extension's uniform block. One struct rather than two bindings
-/// because a bare `f32` in the uniform address space has to be padded to a
-/// 16-byte stride anyway, and a struct says what the padding is for.
-#[derive(Clone, Copy, Debug, Reflect, ShaderType)]
-pub struct GroundSplatParams {
-    /// `textures::GROUND_MAP_GAIN`, in `terrain::splat`'s order:
-    /// sand · grass · litter · rock. That is the binding order of the four
-    /// textures below and the order of the weights in [`pack_splat`]; all
-    /// three are the same order and **none of them is checked against the
-    /// others by the compiler** — `tests/ground_splat.rs` §E is what checks it.
-    pub gain: Vec4,
-    /// [`GROUND_BLEND_DEPTH`].
-    pub blend_depth: f32,
-}
-
-/// The ground's splat extension: four albedo sources and their four gains.
-///
-/// **Not `#[bindless]`, deliberately.** An `ExtendedMaterial` whose extension
-/// does not declare it passes `force_no_bindless`, which drags the base
-/// `StandardMaterial` out of bindless too — the cost is that ground draws stop
-/// sharing a bindless slab with other `StandardMaterial` draws. That cost is
-/// close to zero HERE and would not be elsewhere: the ground is **one material
-/// shared by every chunk** (`Ring::ground` is built once and cloned), so there
-/// is no set of distinct materials for a slab to amortise. Bindless earns its
-/// keep across many materials, and this is one. Upstream's
-/// `examples/shader/extended_material_bindless.rs` is the recipe if that ever
-/// stops being true.
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
-pub struct GroundSplat {
-    #[uniform(100)]
-    pub params: GroundSplatParams,
-    #[texture(101)]
-    #[sampler(102)]
-    pub sand: Handle<Image>,
-    #[texture(103)]
-    pub grass: Handle<Image>,
-    #[texture(104)]
-    pub litter: Handle<Image>,
-    #[texture(105)]
-    pub rock: Handle<Image>,
-}
-
-impl MaterialExtension for GroundSplat {
-    fn fragment_shader() -> ShaderRef {
-        GROUND_SPLAT_SHADER.into()
-    }
-}
-
-/// The shader's asset path. Named here rather than inline so
-/// `tests/ground_splat.rs` §D can read the same file the material loads.
-pub const GROUND_SPLAT_SHADER: &str = "shaders/ground_splat.wgsl";
-
+/// **What the old note said was blocking it, and what actually was.** It read:
+/// "Four maps blended by the splat weights needs a custom material, and in 0.18
+/// `StandardMaterial` is `#[bindless(index_table(range(0..31)))]`". True, and
+/// the way through is an extension that does *not* declare `#[bindless]`, which
+/// forces the whole `ExtendedMaterial` non-bindless — see `ground_splat.rs`.
 fn ground_material(
     materials: &mut Assets<GroundMaterial>,
     maps: &GroundMaps,
 ) -> Handle<GroundMaterial> {
-    let g = super::textures::GROUND_MAP_GAIN;
-    materials.add(GroundMaterial {
+    materials.add(ExtendedMaterial {
         base: StandardMaterial {
-            // White, because the albedo IS the vertex colour times the map. A
-            // base colour here would multiply every identity by one tint and
-            // flatten the splat.
-            //
-            // **It was `GROUND_DETAIL_GAIN` and is now 1.0**, because the gain
-            // moved: one scalar placing one shared field's mean became four
-            // scalars placing four, and they are applied per-identity in the
-            // shader where the weights are. Leaving it here would apply the
-            // grass field's correction to all four a second time.
+            // **Every texture slot here is deliberately empty and the base
+            // colour is white.** The extension's fragment shader assigns
+            // `base_color`, `perceptual_roughness` and `N` outright, so anything
+            // set here would be computed and then thrown away — and a reader
+            // would reasonably believe it was in the frame.
             base_color: Color::WHITE,
-            // **Deliberately unbound.** `pbr_input_from_standard_material`
-            // would multiply this in on top of the shader's own blend, so the
-            // ground would carry the old single field AND the new four. The
-            // detail map still ships and `GROUND_DETAIL_GAIN` still describes
-            // it — `ground_where_the_green_goes.rs` gates both — it is simply
-            // not what the ground samples any more.
-            base_color_texture: None,
-            normal_map_texture: Some(maps.grass.normal.clone()),
-            // **The roughness map is deliberately NOT wired**, and this slice
-            // does not change it. `metallic_roughness_texture` is a
-            // glTF-packed ORM slot — G is roughness and **B is metallic** —
-            // and these sources are GREYSCALE roughness jpgs, so B would carry
-            // the roughness value into the metallic channel and make the
-            // ground a half-metal. Wiring it needs the maps packed into one
-            // ORM texture (an asset step), not a slot assignment. That is a
-            // reason from the format, not a measurement: when this was first
-            // blamed for a measured saturation crash the real cause was
-            // elsewhere and the log said so.
-            //
-            // Same for the normal: all four identities still share grass's.
-            // Overriding `pbr_input.N` per identity means re-deriving the
-            // tangent-space transform this shader currently gets for free from
-            // `pbr_input_from_standard_material`, which is its own slice.
-            perceptual_roughness: 0.92,
+            // The roughness maps are still unread, and the reason recorded here
+            // for four days — that `metallic_roughness_texture` is a glTF-packed
+            // ORM slot whose B channel is metallic — **stops applying the moment
+            // a custom shader samples them directly.** It is a constraint of
+            // that slot, not of the files. Sampling `*_rough.jpg` in
+            // `ground_splat.wgsl` needs no ORM packing step at all; it needs
+            // four more texture bindings, which is the next slice.
+            // `IDENTITY_ROUGH` carries per-identity scalars until then, where
+            // one shared 0.92 stood before.
             metallic: 0.0,
             reflectance: 0.18,
             ..default()
         },
-        extension: GroundSplat {
-            params: GroundSplatParams {
-                gain: Vec4::new(g[0], g[1], g[2], g[3]),
-                blend_depth: GROUND_BLEND_DEPTH,
-            },
-            sand: maps.sand.albedo.clone(),
-            grass: maps.grass.albedo.clone(),
-            litter: maps.litter.albedo.clone(),
-            rock: maps.rock.albedo.clone(),
-        },
+        extension: GroundSplat::new(maps),
     })
 }
 
@@ -523,76 +416,55 @@ fn ground_material(
 /// *which points were sampled*, and this is the part that is the same either
 /// way.
 pub fn vertex_color(y: f32, w: [u8; 4], x: f32, z: f32, grad: f32) -> [f32; 4] {
-    // The identity mix, from the same `splat` the browser's material was fed
-    // by — four weights summing to ~255.
-    let inv = 1.0 / 255.0;
+    let s = vertex_splat(w);
+    let m = vertex_mods(y, x, z, grad);
+    // The identity mix, from the same `splat` the browser's material was fed by.
     let mut c = [0.0f32; 3];
-    for (k, wk) in w.iter().enumerate() {
-        let f = *wk as f32 * inv;
+    for (k, f) in s.iter().enumerate() {
         for ch in 0..3 {
             c[ch] += GROUND_ALBEDO[k][ch] * f;
         }
     }
-    // Rule 1: no surface may be one flat value. This is the MACRO break-up
-    // (0.5–1 m) — the near ring's vertices are 1 m apart, so one hash per
-    // vertex is exactly that scale. The near-field grain under 5 cm is a
-    // texture's job and belongs to the materials slice; this is the half
-    // geometry can carry.
-    let v = 0.88 + 0.24 * super::props::hash01(x.to_bits(), z.to_bits());
-    // The waterline, last: wetness is a modifier on whatever identity the
-    // splat resolved, not a fifth identity. It runs after the macro break-up
-    // so a wet vertex keeps its own grain instead of having it multiplied back
-    // in at full dry strength.
-    let c = wetted([c[0] * v, c[1] * v, c[2] * v], wet_factor(y, grad));
+    // The break-up, then the waterline — the order is the whole of what it buys.
+    let c = wetted([c[0] * m[0], c[1] * m[0], c[2] * m[0]], m[1]);
     [c[0], c[1], c[2], 1.0]
 }
 
-/// The four splat weights, packed into the two floats of `ATTRIBUTE_UV_1`.
+/// The four splat weights as floats, in `terrain::splat`'s order — sand ·
+/// grass · litter · rock.
 ///
-/// **Why this attribute and not a fifth colour.** The four identities have to
-/// reach the FRAGMENT stage for a splat material to blend four map sets there,
-/// and `ATTRIBUTE_COLOR` is already carrying the resolved albedo that
-/// [`vertex_color`] mixes — with `tests/ground_identity.rs`,
-/// `tests/ground_mix.rs` and `tests/ground_where_the_green_goes.rs` all gating
-/// its value. Overloading it would put those gates and the material in each
-/// other's way. `Mesh::ATTRIBUTE_UV_1` is free here: Bevy guards it as
-/// `VERTEX_UVS_B` at `@location(3)` of both `Vertex` and `VertexOutput`, so it
-/// reaches the fragment with **no custom vertex shader**, and its only other
-/// consumer in `StandardMaterial` is the lightmap — which this client does not
-/// use (`rig.rs` sets `affects_lightmapped_meshes: false` and no mesh carries
-/// a `Lightmap`).
-///
-/// **Two `u8` per `f32`, and the packing is exact rather than nearly so.** The
-/// largest value written is `255 × 256 + 255 = 65_535`; an `f32` represents
-/// every integer below `2^24 = 16_777_216` exactly, so the encode loses
-/// nothing. The decode is exact for the same reason plus one more: the divisor
-/// is a power of two, so `x / 256.0` only shifts the exponent and
-/// `floor(x / 256.0)` cannot land a ulp on the wrong side of an integer. That
-/// is what makes this safe to do in a shader where a rounding disagreement
-/// would show up as a seam between two chunks rather than as an error.
-///
-/// The inverse is [`unpack_splat`], and `tests/ground_splat.rs` round-trips all
-/// 2^32 corners of the `u8` space that matter — every weight at 0, 1, 254 and
-/// 255 — plus the whole of one chunk's real weights.
-pub fn pack_splat(w: [u8; 4]) -> [f32; 2] {
+/// **`/ 255`, not normalised to sum 1.** `splat_from` returns four `u8`
+/// summing to *approximately* 255, and dividing is what [`vertex_color`] has
+/// always done; re-normalising here would change the delivered colour on every
+/// vertex whose weights sum to 254 or 256, which is a silent balance edit
+/// wearing a refactor's clothes.
+pub fn vertex_splat(w: [u8; 4]) -> [f32; 4] {
+    let inv = 1.0 / 255.0;
     [
-        f32::from(w[0]) * 256.0 + f32::from(w[1]),
-        f32::from(w[2]) * 256.0 + f32::from(w[3]),
+        w[0] as f32 * inv,
+        w[1] as f32 * inv,
+        w[2] as f32 * inv,
+        w[3] as f32 * inv,
     ]
 }
 
-/// [`pack_splat`]'s inverse, and the Rust twin of the WGSL `unpack_splat` in
-/// `assets/shaders/ground_splat.wgsl`. Kept here so the gate can check the
-/// round-trip on the CPU: the shader's copy is four lines of the same
-/// arithmetic and a divergence between them is a seam, not a crash.
-pub fn unpack_splat(uv1: [f32; 2]) -> [u8; 4] {
-    let a0 = (uv1[0] / 256.0).floor();
-    let a1 = (uv1[1] / 256.0).floor();
+/// The two per-vertex scalar modifiers the splat material needs at the
+/// fragment: the macro break-up, and the waterline.
+///
+/// **Why these two travel as scalars and the colour does not.** Both are
+/// modifiers on whatever identity the splat resolves rather than identities
+/// themselves, so each is one number per vertex — which is exactly what fits in
+/// `ATTRIBUTE_UV_1`'s two floats, and what lets the four weights have
+/// `ATTRIBUTE_COLOR` to themselves.
+///
+/// Rule 1: no surface may be one flat value. `[0]` is the MACRO break-up
+/// (0.5–1 m) — the near ring's vertices are 1 m apart, so one hash per vertex
+/// is exactly that scale. The near-field grain under 5 cm is the photograph's
+/// job and the splat material is where it finally lands.
+pub fn vertex_mods(y: f32, x: f32, z: f32, grad: f32) -> [f32; 2] {
     [
-        a0 as u8,
-        (uv1[0] - a0 * 256.0) as u8,
-        a1 as u8,
-        (uv1[1] - a1 * 256.0) as u8,
+        0.88 + 0.24 * super::props::hash01(x.to_bits(), z.to_bits()),
+        wet_factor(y, grad),
     ]
 }
 
@@ -639,11 +511,8 @@ pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) 
     let mut normals = Vec::with_capacity(count);
     let mut colors = Vec::with_capacity(count);
     let mut uvs = Vec::with_capacity(count);
+    let mut mods = Vec::with_capacity(count);
     let mut tangents = Vec::with_capacity(count);
-    // The splat weights the fragment stage blends four map sets by. Same
-    // `splat_from` call `vertex_color` is fed from — resolved once per vertex
-    // and used twice, so the material cannot disagree with the colour.
-    let mut splats = Vec::with_capacity(count);
 
     // The central-difference arm. Half a step keeps the gradient local to the
     // quad it shades without sampling inside its own vertex.
@@ -779,8 +648,13 @@ pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) 
             // waterline band is a horizontal distance and this is what converts
             // it. Free: `hx` and `hz` are already in hand.
             let grad = ((hx * hx + hz * hz).sqrt()) / (2.0 * d);
-            colors.push(vertex_color(y, w, x, z, grad));
-            splats.push(pack_splat(w));
+            // **`COLOR` carries the four weights, not the resolved colour.**
+            // The colour is resolved per-PIXEL now (`ground_splat.wgsl`), which
+            // is what lets each identity carry its own photograph;
+            // `vertex_color` stays as the reference arithmetic the gate holds
+            // the shader against.
+            colors.push(vertex_splat(w));
+            mods.push(vertex_mods(y, x, z, grad));
             uvs.push([x * 0.25, z * 0.25]);
         }
 
@@ -812,12 +686,11 @@ pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) 
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-    // The splat weights, for the material that blends four map sets. Inserted
-    // unconditionally rather than behind a flag: a mesh whose vertex layout
-    // depends on which material happens to be bound is a specialization the
-    // renderer has to re-derive per chunk, and the attribute is 8 bytes a
-    // vertex against the 48 already here.
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, splats);
+    // The two scalar modifiers. `UV_1` because it is the one remaining
+    // interpolated slot Bevy's standard vertex stage already forwards to the
+    // fragment (`forward_io::VertexOutput::uv_b`) — no custom vertex shader,
+    // and `ATTRIBUTE_TANGENT` and the normal path stay exactly as they were.
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, mods);
     mesh.insert_indices(Indices::U32(indices));
     // Tangents, because a normal map without them is not a normal map: Bevy's
     // PBR shader needs `ATTRIBUTE_TANGENT` to build the tangent frame, and

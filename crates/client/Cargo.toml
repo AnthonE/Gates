@@ -138,25 +138,6 @@ name = "sun"
 path = "tests/sun.rs"
 required-features = ["render"]
 
-# The four ground map sets, measured off the files that ship. `GROUND_MAP_GAIN`
-# is applied to every ground pixel of the island, and its claim is about four
-# binaries — the shape a diff cannot review. Four JPEG decodes, no GPU.
-[[test]]
-name = "ground_maps"
-path = "tests/ground_maps.rs"
-required-features = ["render"]
-
-# The splat weights' ride to the fragment stage: the `ATTRIBUTE_UV_1` packing
-# that carries four `u8` in two `f32`. Exhaustive over both lanes' whole input
-# space, plus a real chunk on the shipped seed checked against `splat_from`'s
-# own sum-to-255 contract. The WGSL half of the same arithmetic cannot be run
-# from here; §D pins the radix both sides divide by. No GPU and no window, but
-# it imports `render::terrain_mesh`, so it carries the feature.
-[[test]]
-name = "ground_splat"
-path = "tests/ground_splat.rs"
-required-features = ["render"]
-
 # Where the green goes: the material-side chain's hue invariance, the detail
 # map's neutrality, and the moisture-band mosaic that explains why three
 # visual reports called the island one painted material. Pure arithmetic plus

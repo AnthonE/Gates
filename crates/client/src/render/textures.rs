@@ -94,79 +94,32 @@ impl MapSet {
 ///
 /// Derived, not edited: the source file stays pristine and swappable, and
 /// `assets/textures/MANIFEST.md` carries the row.
+///
+/// ⚠ **Superseded 2026-08-15 and no longer loaded.** The splat material samples
+/// each identity's own albedo and takes ITS luminance
+/// (`render/ground_splat.rs`), so grass's pre-baked luminance field is now one
+/// of four computed in the shader rather than the one field all four shared.
+/// The constants stay because they are the cross-check that says the two
+/// constructions agree — `GRAIN_GAIN[1]` measures 4.0292 off `grass_albedo.jpg`
+/// against this 4.0579 off the baked file, and those have to be close or one of
+/// them is wrong. The file still ships and `ground_where_the_green_goes.rs`
+/// still gates it; nothing samples it. Deleting it is a separate call, because
+/// a pre-baked luminance field is exactly what a cheaper LOD would want.
 pub const GROUND_DETAIL: &str = "textures/ground_detail.jpg";
 /// `1 / linear mean` of that field (0.2464), so the delivered mean is the
 /// authored colour. Scalar, not per-channel — which is what makes the span 1.
 pub const GROUND_DETAIL_GAIN: f32 = 4.0579;
 
-/// Each ground identity's own `1 / mean linear luma`, in `terrain::splat`'s
-/// order: sand · grass · forest litter · rock.
-///
-/// **This is [`GROUND_DETAIL_GAIN`]'s construction, once per identity, and it
-/// is the whole reason the splat material does not reintroduce the failure
-/// `ART.md` §7 names.** The obvious way to give granite stone's surface is to
-/// sample `rock_albedo.jpg` into the base colour — and that multiplies the
-/// authored splat colour by the photograph's OWN chroma, which is exactly the
-/// "modifier that must set a colour multiplies a mean-1 luminance field, not
-/// its chroma" rule. §7 bounds the alternative (a per-channel gain placing the
-/// source's mean) at a ×1 stretch of the source's colour deviation, and
-/// measured over these four sources only `rock` clears it — grass 2.454, sand
-/// 2.073, litter 3.586 against rock's 1.054. Three of the four are inadmissible
-/// as colour.
-///
-/// So each identity contributes its **luminance only**, divided by its own
-/// mean, multiplied by that identity's authored [`GROUND_ALBEDO`] row. Span is
-/// 1.000 per identity by construction, because every channel is the same
-/// channel. What the four maps buy is what a vertex hash cannot encode —
-/// measured high-frequency relief, four DIFFERENT reliefs where there was one
-/// — and what stays authored is every colour decision
-/// `ground_identity.rs` gates.
-///
-/// [`GROUND_ALBEDO`]: super::terrain_mesh::GROUND_ALBEDO
-///
-/// Measured off the shipped files by `tests/ground_maps.rs`, which fails if a
-/// re-encode moves a mean without moving the constant:
-///
-/// | identity | mean linear luma | gain |
-/// |---|---|---|
-/// | sand | 0.18048 | 5.5407 |
-/// | grass | 0.24790 | 4.0339 |
-/// | forest litter | 0.10300 | 9.7088 |
-/// | rock | 0.26934 | 3.7128 |
-///
-/// **Cross-checked against a second source rather than trusted**, which is the
-/// discipline `CLAUDE.md`'s sweep-window trap asks for: the per-CHANNEL linear
-/// means recorded independently in [`GROUND_ALBEDO`]'s own gain-span table
-/// reduce to Rec.709 luma of 0.18085 · 0.24855 · 0.10317 · 0.26913 — every one
-/// within 0.3% of the column above, measured by different code on a different
-/// day for a different purpose. A third agreement falls out for free: grass's
-/// 0.24790 against [`GROUND_DETAIL_GAIN`]'s field mean of 0.2464, which is
-/// 0.6% and should be close, because `ground_detail.jpg` was derived from
-/// `grass_albedo.jpg`.
-pub const GROUND_MAP_GAIN: [f32; 4] = [5.5407, 4.0339, 9.7088, 3.7128];
-
 /// The four ground identities' maps, in `terrain::splat`'s own order:
-/// sand · grass · forest litter · rock.
-///
-/// **All four albedos are sampled since 2026-08-15** — `terrain_mesh::
-/// GroundSplat` blends them by the splat weights, each as its own mean-1
-/// luminance field. This doc used to say only one of them could be, which was
-/// true of a `StandardMaterial` and is the limitation the splat material
-/// exists to remove.
-///
-/// The `normal` and `rough` halves are still one-for-all: the material binds
-/// `grass.normal` for every identity and a single `perceptual_roughness`.
-/// `NOW.md` §0gp carries both.
+/// sand · grass · forest litter · rock. Only one of them can be sampled by a
+/// `StandardMaterial` (it has one base-colour slot), which is exactly the
+/// limitation a splat material exists to remove — see `RENDER.md`.
 #[derive(Resource)]
 pub struct GroundMaps {
     pub sand: MapSet,
     pub grass: MapSet,
     pub litter: MapSet,
     pub rock: MapSet,
-    /// The single luminance field the ground sampled before the splat material.
-    /// **Still shipped and still gated** (`ground_where_the_green_goes.rs`), and
-    /// no longer bound by anything — see `terrain_mesh::ground_material`.
-    pub detail: Handle<Image>,
 }
 
 /// The prop identities' maps — the five sets that were fetched, manifested and
@@ -212,7 +165,6 @@ pub fn load(mut commands: Commands, assets: Res<AssetServer>) {
         grass: MapSet::load(&assets, "grass"),
         litter: MapSet::load(&assets, "litter"),
         rock: MapSet::load(&assets, "rock"),
-        detail: assets.load_with_settings(GROUND_DETAIL, tiling(true)),
     });
     // Same paths as the ground's `rock`, and therefore the same handle: the
     // asset server keys on path plus settings, so naming it twice costs one

@@ -84,6 +84,9 @@ pub mod sky;
 pub mod structures;
 pub mod terrain_mesh;
 pub mod textures;
+// The ground's four identities, each with its own photograph. The first WGSL
+// in the tree (`RENDER.md` R4).
+pub mod ground_splat;
 pub mod tree;
 pub mod ui;
 // The sea: a graded volume with a swell on it. `reference/WATER.md` is the
@@ -357,12 +360,11 @@ impl Plugin for GatesRenderPlugin {
         } else {
             rig::DayPin::default()
         };
-        // The ground's splat material. An `ExtendedMaterial` is a distinct
-        // asset type from its base, so it needs its own `MaterialPlugin` —
-        // without this the ground silently draws with no material at all
-        // rather than failing to compile.
-        app.add_plugins(MaterialPlugin::<terrain_mesh::GroundMaterial>::default());
-
+        // The ground's splat material. `MaterialPlugin` is what registers the
+        // pipeline and the asset type; without it the ground draws with no
+        // material at all, which — as the asset-root trap in `bin/gates.rs`
+        // records — is not an error the image shows you.
+        app.add_plugins(MaterialPlugin::<ground_splat::GroundMaterial>::default());
         app.insert_resource(day_pin)
             .init_resource::<Eye>()
             .init_resource::<input::Look>()

@@ -212,50 +212,44 @@ brightness-neutral to −0.024% so the coupled owner keeps brightness. New gate
 `ground_mix.rs`'s debt test is now a pin on the held mean. Knobs:
 `DECISIONS.md` §open "ground identity separation v0".
 
-**The albedo half of the surface landed 2026-08-15** — the first WGSL in the
-tree (`assets/shaders/ground_splat.wgsl`). Each identity now contributes its
-own source's **mean-1 luminance field** (`GROUND_MAP_GAIN`, four measured
-reciprocals cross-checked to 0.3% against `GROUND_ALBEDO`'s own per-channel
-table), height-blended by the splat weights, which ride `ATTRIBUTE_UV_1` packed
-two `u8` per `f32` — so `ATTRIBUTE_COLOR` and its three gates are untouched.
-Luminance and not chroma because `ART.md` §7's ×1 deviation rule fails for three
-of the four sources; the colour stays the vertex's. Gates: `ground_maps.rs` (2),
-`ground_splat.rs` (5, §E is the role check — a permutation type-checks, round
--trips and sums to 255). Both mutation-proven red. Knob: `DECISIONS.md` §open
-"ground splat material v0".
+**The larger half landed 2026-08-15 — the splat material.** Each identity
+carries its own photograph now: `assets/shaders/ground_splat.wgsl` (the first
+WGSL in the tree) + `render/ground_splat.rs`, four albedo and four normal maps
+on one shared sampler, per-identity roughness where one shared 0.92 stood.
+Measured at a pinned `dev_spawn` with the mix stated — 1500,600, litter 611‰,
+rock 329‰ — **near-ground neighbour contrast 6.43 → 8.53, +32.8%**, every frame
+improved. `tests/ground_splat.rs` is the gate.
 
-**What remains.** (1) **Normals** — all four still share grass's; overriding
-`pbr_input.N` per identity means re-deriving the tangent-space transform the
-shader currently gets free from `pbr_input_from_standard_material`. (2)
-**Roughness** — still one `perceptual_roughness`, still blocked on ORM packing
-(an asset step, not a slot). (3) `ui/map.rs`'s independent minimap palette,
-which nothing holds against `GROUND_ALBEDO`. (4) **Nobody has compared a before
-/after frame** — see §0cap, which is why.
+**Two of the three things scouted here were right and one was wrong**, which is
+worth keeping because the wrong one looks cheaper and someone will re-propose
+it. The `#[bindless]` route is right and is what shipped. Height blending is
+right *and measured as a no-op* (+0.1%) — `splat_from` is near-binary, so the
+band it arbitrates is a sliver; it is kept as insurance. **The packed-`UV_1`
+route is broken**: the rasterizer interpolates the packed value, so
+`floor(p/256)` mixes the low byte into the high one — exact at both vertices,
+50% wrong mid-triangle, i.e. at identity boundaries. The weights ride
+`ATTRIBUTE_COLOR` and the two scalar modifiers ride `UV_1` instead, which also
+made the identity mix per-pixel.
 
-## 0cap · A wolf decides what the capture harness photographs *(client lane)*
+What is still open here, in rank order:
 
-Found 2026-08-15 trying to get a before/after frame for §0gp, and it is why
-that item has none. **The capture probe is a live player in a world with
-predators, and it loses.** Six runs on seed 20260731: every baseline run
-survived, three of four splat-material runs died — `a wolf ran you down` — and
-in the last one the probe was already dead at vantage 0, so the whole run
-photographed the death screen. That screen dims the scene, so a dead run's
-frames are darker and flatter than a live one's *for a reason that has nothing
-to do with the diff*.
-
-**The bias is the bad part, not the noise.** The kill correlates with build
-cost — the heavier build renders slower under lavapipe, so its settle phase
-gives the wolf more wall-clock to close. The harness therefore punishes the
-build that draws more, which is the direction every renderer slice moves, and a
-frame darker because the probe died is indistinguishable to a judge from one
-darker because the material regressed. `CLAUDE.md`'s "a gate that waits on a
-clock is not a gate on this box", wearing a different coat.
-
-Three fixes, cheapest first, none taken: a `dev_peace` shard key suppressing mob
-spawns for a capture; an undamageable probe while capturing; or `dev_spawn` on a
-beach — mob homes are inland above `BEACH_MAX_H`, and **`dev_spawn =
-"1024,1024"` is the island centre, the worst possible choice and the one this
-pass tried first.**
+1. ⚠ **It costs 8.0% mean luma and that is not this material's to spend.**
+   Granite having granite's relief means more self-shadow; the number belongs to
+   the coupled tonemap/sky/exposure/fog owner (`CLAUDE.md` traps), so it is a
+   debt against §0fill rather than something to correct here.
+2. **The projection is still planar XZ, not biplanar** — a vertical face still
+   stretches. `RENDER.md` R4's remaining half.
+3. **The roughness maps are still unread, and the ORM reason no longer
+   applies.** `NOW.md` §0w item 5 blamed the glTF-packed `metallic_roughness`
+   slot; a custom shader samples `*_rough.jpg` directly and needs no packing
+   step. Four more texture bindings, and 8 → 12 is where the 16-sampled-texture
+   downlevel limit starts to matter alongside `StandardMaterial`'s own.
+4. **`ground_detail.jpg` is now loaded by nothing** — it is grass's baked
+   luminance field and the shader computes the same thing from `grass_albedo`.
+   It still ships and is still gated as a file; deleting it is a separate call,
+   because a pre-baked field is what a cheaper LOD would want.
+5. `ui/map.rs` carries an independent minimap palette that nothing holds against
+   `GROUND_ALBEDO`, and it did not move with either edit.
 
 ## 0tree · The research ladder exists — what it is still one edge short of *(systems lane)*
 
