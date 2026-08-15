@@ -1524,11 +1524,14 @@ footsteps, the place cue. Research `reference/AUDIO.md`; every number is
 1. **Nothing scores it, because `ART.md` has no audio section at all** — and
    **nobody has heard it** (this box has no audio device), so it is honest
    programmer art until someone plays it. `cargo run -p client --bin
-   soundbank -- <dir>` writes all 38 WAVs. Looking already paid twice (the
-   flat wind bed, then its fix overshooting); neither was reachable from a
-   statistic that only asked "does it have energy". **The score raises the
-   stakes on this item rather than answering it**: nine of those WAVs are
-   music, and music is the thing a listener judges fastest.
+   soundbank -- <dir>` writes every cue to WAV. Looking already paid twice
+   (the flat wind bed, then its fix overshooting); neither was reachable
+   from a statistic that only asked "does it have energy". **The score
+   raises the stakes on this item rather than answering it**: nine of those
+   WAVs are music, and music is the thing a listener judges fastest. The
+   sourcing queue for replacing cues — inventory, delivery spec, the
+   ElevenLabs sheet (`DECISIONS.md` 2026-08-11), CC0/CC-BY candidates — is
+   `assets/sound/WANTED.md`.
 2. **The score is built and unheard** (2026-08-11). `reference/AUDIO.md`
    §8's whole design is `sound/music.rs`: gap timer, a theme of sectioned
    pieces, tiers picked at section boundaries off bumps we already had.
