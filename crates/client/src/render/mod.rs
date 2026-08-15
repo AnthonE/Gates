@@ -33,6 +33,11 @@ pub mod icons;
 // frames depend on whether a composer is open is not a gate.
 pub mod chat;
 pub mod clutter;
+// The hemisphere sky fill. `rig.rs` owns the light; this owns the arithmetic
+// of what a sky-facing face and a ground-facing face each receive, because
+// Bevy's `AmbientLight` cannot tell them apart and `ART.md` §4 requires that
+// it can.
+pub mod fill;
 // This frame's own-facts, drained from the core ONCE. Every `pop_*` call in
 // the client lives in there — see its header for the merge that made that a
 // rule rather than a preference.

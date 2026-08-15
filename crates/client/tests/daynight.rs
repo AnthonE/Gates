@@ -10,8 +10,10 @@
 #![cfg(feature = "render")]
 
 use bevy::light::light_consts::lux;
+use bevy::light::EnvironmentMapLight;
 use bevy::prelude::*;
 use client::render::feed::Feed;
+use client::render::fill::peak_lux;
 use client::render::rig::{
     self, day_night, sun_elevation, tick_at_frac as tick_at, DayPin, EyeCam, Sun, CAPTURE_DAY_FRAC,
     NIGHT_AMBIENT_LUX, RIG_SUN_ELEVATION,
@@ -80,12 +82,28 @@ fn app_pinned(pin: DayPin) -> App {
         },
         Transform::default(),
     ));
+    // **Two fill terms since 2026-08-15, and the pair is the point.** The rig
+    // spawns a hemisphere (`EnvironmentMapLight`, `render/fill.rs`) that carries
+    // the day and a uniform `AmbientLight` that carries only the night floor.
+    // This fixture must hold BOTH or `day_night`'s query does not match and the
+    // camera half of the system silently does nothing — which is how this file
+    // failed when the hemisphere landed: the ambient kept its stale spawn value
+    // and the test reported it as a wrong number rather than as a missing
+    // component. The assertions below now check both terms at both ends, so a
+    // future drift of this shape fails loudly instead of no-opping.
     app.world_mut().spawn((
         EyeCam,
         AmbientLight {
             color: Color::srgb(0.80, 0.85, 0.95),
-            brightness: lux::AMBIENT_DAYLIGHT * 1.7,
+            brightness: 0.0,
             affects_lightmapped_meshes: false,
+        },
+        EnvironmentMapLight {
+            diffuse_map: Handle::default(),
+            specular_map: Handle::default(),
+            intensity: peak_lux(),
+            rotation: Quat::IDENTITY,
+            affects_lightmapped_mesh_diffuse: false,
         },
     ));
     app
@@ -116,13 +134,22 @@ fn noon_and_midnight_reach_the_entities() {
         // The light points down-ish at noon: its forward has a negative y.
         let fwd = t.rotation * Vec3::NEG_Z;
         assert!(fwd.y < -0.4, "the noon sun points down, fwd {fwd:?}");
-        let amb = world
-            .query_filtered::<&AmbientLight, With<EyeCam>>()
+        // At noon the hemisphere carries the whole fill and the uniform term
+        // carries none of it. Both halves are asserted: a regression that let
+        // the uniform term keep contributing at midday would DOUBLE the fill,
+        // and checking only the hemisphere would not see it.
+        let (amb, env) = world
+            .query_filtered::<(&AmbientLight, &EnvironmentMapLight), With<EyeCam>>()
             .single(world)
             .unwrap();
+        assert_eq!(
+            amb.brightness, 0.0,
+            "the uniform term still carries fill at noon — the two would sum"
+        );
         assert!(
-            (amb.brightness - lux::AMBIENT_DAYLIGHT * 1.7).abs() < 1.0,
-            "noon ambient is the rig's authored fill"
+            (env.intensity - peak_lux()).abs() < 1.0,
+            "noon fill is the hemisphere at full scale, got {}",
+            env.intensity
         );
     }
 
@@ -137,14 +164,23 @@ fn noon_and_midnight_reach_the_entities() {
         assert!(!d.shadows_enabled, "no shadows from a sun under the ground");
         let fwd = t.rotation * Vec3::NEG_Z;
         assert!(fwd.y > 0.0, "the midnight sun shines up from below");
-        let amb = world
-            .query_filtered::<&AmbientLight, With<EyeCam>>()
+        // And at midnight the handover is complete the other way: the night
+        // floor is the whole fill and the hemisphere is dark. Unchanged from
+        // what this shipped before the hemisphere existed — which is the
+        // property that matters, since night was not what this slice moved.
+        let (amb, env) = world
+            .query_filtered::<(&AmbientLight, &EnvironmentMapLight), With<EyeCam>>()
             .single(world)
             .unwrap();
         assert!(
             (amb.brightness - NIGHT_AMBIENT_LUX).abs() < 1.0,
             "midnight ambient is the night floor, got {}",
             amb.brightness
+        );
+        assert_eq!(
+            env.intensity, 0.0,
+            "the hemisphere still carries fill at midnight, got {}",
+            env.intensity
         );
     }
 }

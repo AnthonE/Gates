@@ -135,7 +135,22 @@ fn fbm(seed: u64, x: f32, y: f32) -> f32 {
 /// **Cube space is world space with z flipped**: `skybox.wgsl` samples with
 /// `ray_direction * vec3(1.0, 1.0, -1.0)`. Author in world space and flip
 /// here, or every cloud sits on the wrong side of the sky.
-fn cube_dir(face: usize, x: u32, y: u32, n: u32) -> Vec3 {
+/// **The one cubemap face convention in this crate**, and it is `pub` for the
+/// same reason [`super::rig::to_sun`] is: two bakers need it and they must not
+/// each re-derive it. `sky.rs` bakes the cloud deck through this and
+/// `fill.rs` bakes the hemisphere sky fill through it, and a face order that
+/// disagreed between them would put the sky on the underside of every prop
+/// while both files read as correct alone — the exact shape of the seam the
+/// visual judge asked to be closed before the next lighting measurement is
+/// taken on top of it.
+///
+/// The trailing `-d.z` is the left-handed cubemap convention, and it is
+/// carried HERE rather than at each call site: `bevy_pbr`'s
+/// `environment_map.wgsl` negates z on the sample direction
+/// (`irradiance_sample_dir.z = -irradiance_sample_dir.z`), so a texel written
+/// at `cube_dir(f, x, y, n)` is the one a shader sampling that WORLD direction
+/// reads back. Callers work in world space and never see the flip.
+pub fn cube_dir(face: usize, x: u32, y: u32, n: u32) -> Vec3 {
     let uc = 2.0 * (x as f32 + 0.5) / n as f32 - 1.0;
     let vc = 2.0 * (y as f32 + 0.5) / n as f32 - 1.0;
     let d = match face {

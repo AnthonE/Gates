@@ -42,6 +42,37 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0fill · The darks, second half: the transfer *(client lane)*
+
+From `pass-20260815-042118-01-visual.md` ranked gap 2 ("put the darks back and
+ground every object — one owner, one pass"). **Its first half landed
+2026-08-15**: the fill is a hemisphere now (`render/fill.rs`,
+`tests/fill.rs`), so down-facing faces get the ground's own warm bounce at
+0.60 of the sky half instead of a blue sky they are not looking at.
+
+**What that half deliberately did NOT do, and why the gap stays open.** The
+sky half was carried across unchanged — that is what made it safe to land
+blind, since up-facing ground could not move — so the measured p10 (79.9
+against `ART.md` §3's 49) is untouched. Cast shadow on *open* ground is an
+up-facing surface; no hemisphere darkens it.
+
+The remaining half is the **transfer**, and it needs eyes on a frame:
+
+- The rig's floor arithmetic is written in the wrong space. `rig.rs` set
+  `fill = 0.30 × sun_on_flat` to satisfy rule 3's "shaded ≥ 0.30 of lit", but
+  the delivered *linear* ratio is `fill/(sun+fill)` = 0.229 — under the floor
+  it was aiming at — while the judge measures 0.725 in *display* luma. Rule 3
+  is a pixel ratio; the constant was derived as an illuminance one. Both
+  readings cannot be acted on at once and they point opposite ways.
+- So the lever is the tone curve, not the fill: TonyMcMapface's gentle
+  roll-off plus the 0.8-stop exposure lift is what puts a 0.229 linear ratio
+  at 0.725 display and leaves 0.00–0.12% of pixels under luma 30 against a
+  reference median of 4.14%.
+- **Do not do this blind.** It is the coupled set (`CLAUDE.md`: three parallel
+  passes 60→66, one sequential owner → 26), and the last time this rig moved
+  toward "too dark" the correction overshot the other way. One owner, one
+  iteration, with the frame open.
+
 ## 0gk · The grid-edge constants still say west *(systems lane)*
 
 Left over from §0gj (landed 2026-08-15, `DECISIONS.md`) — that row scoped it

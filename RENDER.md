@@ -75,8 +75,20 @@ Two gaps remain, both named by the table:
   frame lost its accidental darks and what is left is the fill's true shape: a
   uniform ambient term buys rule 3's 0.30 floor at the price of the bottom of
   the range. A hemisphere (sky half cool, earth half warm) is what gets both.
-  Bevy's `AmbientLight` is uniform, so that is a second light or a shader —
-  and this is now the top-ranked visual gap rather than the second.
+  ✅ **LANDED 2026-08-15 — `crates/client/src/render/fill.rs`**, and the
+  sentence that used to end this bullet ("Bevy's `AmbientLight` is uniform, so
+  that is a second light or a shader") was **true about `AmbientLight` and
+  wrong about the conclusion**, which is worth keeping because it is the kind
+  of error that costs a whole slice. `pbr_ambient.wgsl` really does ignore its
+  `world_normal` argument — but `environment_map.wgsl` samples its diffuse
+  cubemap **by the world normal**, so an `EnvironmentMapLight` holding
+  `fill_at(n)` is a hemisphere exactly, with no second light, no
+  `AsBindGroup` and no WGSL. Gated by `crates/client/tests/fill.rs`.
+  **What is NOT claimed: that this moved the p10.** The sky half is carried
+  across unchanged so up-facing ground does not move, which is what made the
+  change safe to land without a frame in front of anyone; the darks it
+  restores are on down-facing faces. The p10 gap is still open and its
+  remaining half is the transfer, not the fill.
 
 ## 1 · The rule the path hangs on: Bevy draws, it does not decide
 
@@ -371,7 +383,12 @@ lane.** (§2, first bullet — this is the rule that was measured, not a style.)
 - Ambient is not one number: a hemisphere lands `mix(ground, sky, 0.5+0.5·N·y)`,
   so the **sky half lights up-facing ground in shadow** and the **ground half
   lights every down-facing prop face**. Moving them together is the mistake
-  that cost a pass; they are two knobs.
+  that cost a pass; they are two knobs. ✅ **Landed 2026-08-15** as `fill.rs`,
+  in that exact form — and the two halves went in at different standings, which
+  is the "two knobs" rule being obeyed rather than sidestepped: the sky half is
+  the shipped uniform term carried across untouched, the ground half is the
+  island's own measured albedo under its own irradiance. Only the *split* is
+  new, so exactly one thing moved.
 - **Probe (R-G2)**: `ART.md` rule 3 as an assertion (shaded/lit ratio ≥ 0.30 on
   a probe object), plus sky-brighter-than-ground, plus the far third lighter,
   bluer and less saturated than the near third.
@@ -911,8 +928,9 @@ missing it survivable.
 3. **R4, the near-field grain.** Contrast 2.44 → 5.40 needs the photograph on
    the ground, which is the CC0 set already in `assets/textures/` plus the
    biplanar rules §2 carries.
-4. **A hemisphere fill.** Rule 3's floor and the p10 both, instead of one at
-   the other's expense (§0).
+4. ~~**A hemisphere fill.**~~ Landed 2026-08-15 (`render/fill.rs`). It bought
+   the *direction*, not the p10 — see §0. What is left of this row is the
+   transfer half, which is item 6.
 5. **Per-instance tint.** `ART.md` rule 7 — the forest is four meshes at many
    yaws and scales, which is variation but not colour variation.
 
@@ -973,8 +991,15 @@ missing it survivable.
   bought for a feature already ruled out.
 - **The unused Bevy capability that actually points at a ranked gap is
   custom materials.** There is not one `AsBindGroup` or line of WGSL in the
-  tree, and both remaining gaps in §0 — the hemisphere fill (`AmbientLight`
-  is uniform, so rule 3's floor and the p10 fight each other) and per-instance
-  tint (`ART.md` rule 7) — are `ExtendedMaterial<StandardMaterial, _>` work.
-  It is not scheduled here because it is inside the coupled lighting set §2
-  reserves for one owner and one iteration.
+  tree, and per-instance tint (`ART.md` rule 7) is
+  `ExtendedMaterial<StandardMaterial, _>` work. It is not scheduled here
+  because it is inside the coupled lighting set §2 reserves for one owner and
+  one iteration.
+  ⚠ **This bullet listed the hemisphere fill as the second such gap and that
+  was wrong** — it landed 2026-08-15 with no custom material at all, because
+  `EnvironmentMapLight`'s diffuse cubemap is sampled by the world normal and
+  therefore already *is* a per-normal term. The general lesson, since this doc
+  is where a future pass sizes its slice: **"`StandardMaterial` cannot express
+  this" is a claim about `StandardMaterial`, not about Bevy.** Check the
+  built-in light and probe components for the quantity before concluding a
+  shader is owed; the wrong answer here would have cost a slice.
