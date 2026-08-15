@@ -60,12 +60,12 @@ pub use event::{
     encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
     encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
     encode_event_recipes, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_respawn, encode_event_shot,
-    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
-    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
-    BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
-    SLOT_SYNC_BATCH,
+    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
+    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
+    encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot,
+    ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
+    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH,
+    PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -485,7 +485,28 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// the reason `goldens::action_move_box` records in its own doc: when the
 /// third kind landed, only its open was pinned, and the bytes meaning
 /// "take it out" went a whole version unchecked.
-pub const PROTO_VER: u16 = 37;
+///
+/// **⚠ 38, 39 and 40 were claimed by two branches at once, and none of
+/// the three means one thing.** Two lanes bumped in parallel on
+/// 2026-08-15: the trunk spent **38** on the bench ladder + tech tree
+/// (`STATION_BITS` 2 → 3 — every recipe row in `SUB_RECIPES` moved — the
+/// furnace re-coded 2 → 4, deploy archetypes 10/11 went live,
+/// `ACT_UNLOCK` and `SUB_RESEARCH_ROWS` landed, and five fixtures joined:
+/// the unlock, the research-rows drip, and the three research-lane events
+/// unpinned since v32). The building branch spent **38, 39 and 40** on
+/// catalogue v1 (shape codes 6/7 legalised), hard/soft v0 (the facing
+/// bit on both piece records — a layout change), and triangles v0
+/// (`SHAPE_BITS` 3 → 4, `BUILD_LOC_BITS` 2 → 4, every loc read
+/// range-checked by the store it addresses via `loc_max`). Two different
+/// layouts both called 38 is `worldsave.rs`'s format-3 collision exactly,
+/// and it takes the same cure:
+///
+/// **v41 is the merge** — both branches' layouts in one wire, under the
+/// next number neither claimed. No fixture keyed v38–v40 was ever
+/// authoritative on this trunk.
+///
+/// Fixtures are keyed `v41_*` — **91**.
+pub const PROTO_VER: u16 = 41;
 
 /// This game's slug in the scry catalog.
 ///
@@ -927,6 +948,14 @@ const ACT_DEMOLISH: u32 = 16;
 /// workbench is (`research.rs`), so there is no address to aim and nothing
 /// for the client to guess about which table it meant.
 const ACT_RESEARCH: u32 = 17;
+/// Learn a recipe through the tech tree at a workbench (wire v38, tech
+/// tree v0). The nineteenth action; the lane holds thirty-two, so it
+/// cost a subtype and no layout. Payload is the recipe index alone —
+/// the bench is found by proximity exactly as `ACT_RESEARCH` finds the
+/// table, and the parent, the tier and the price are the sim's verdict
+/// (`research::unlock`), so the only thing the client may claim is
+/// *which node it is pointing at*.
+const ACT_UNLOCK: u32 = 18;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -936,7 +965,7 @@ const ACT_RESEARCH: u32 = 17;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_RESEARCH;
+const ACT_MAX: u32 = ACT_UNLOCK;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -985,7 +1014,26 @@ const CANCEL_INDEX_BITS: u32 = 3;
 /// decode. Shared with the event lane's piece records (`event.rs`).
 pub(crate) const BUILD_CELL_BITS: u32 = 10;
 pub(crate) const BUILD_LEVEL_BITS: u32 = 3;
-pub(crate) const BUILD_LOC_BITS: u32 = 2;
+/// Widened 2 → 4 in wire v40 (triangles v0): the piece grid gained four
+/// triangle halves and two diagonals, ten locs where four filled the old
+/// width exactly. Six of the sixteen values are now forgeable — and the
+/// DEPLOY store never widened at all — so every read site range-checks
+/// against [`loc_max`] where none used to have anything to check.
+pub(crate) const BUILD_LOC_BITS: u32 = 4;
+
+/// The widest loc each store can address (triangles v0): pieces gained
+/// the halves and diagonals; deployables still live on the plane and the
+/// straight edges. One function rather than ten scattered comparisons,
+/// because a store-bit message bounds its loc BY the bit and a site that
+/// picked the wrong constant would admit a forged address into the other
+/// store's range.
+pub(crate) fn loc_max(deploy: bool) -> u8 {
+    if deploy {
+        sim_core::build::LOC_EDGE_ZLO
+    } else {
+        sim_core::build::LOC_DIAG_B
+    }
+}
 pub(crate) const PIECE_ROW_BITS: u32 = 8;
 /// Deployable rows cross in 4 bits — exactly `MAX_DEPLOY_DEFS`, so the
 /// width itself is the range check.
@@ -1151,6 +1199,11 @@ pub enum ActionMsg {
     /// sender's claim and the sim is the verdict, so a forged index is a
     /// refusal rather than a disconnect.
     Research { slot: u8 },
+    /// Learn recipe row `recipe` through the tech tree, at a workbench
+    /// (tech tree v0). The recipe index is the sender's claim and the
+    /// sim is the verdict — an ungated recipe, an unlearned parent and a
+    /// forged index all land as announced refusals.
+    Unlock { recipe: u16 },
     /// Drink from the water at your feet (survival.rs). **Payload-free
     /// for `Loot`'s reason, and a stronger one**: the only thing a drink
     /// acts on is the heightfield, which is a pure function of the seed
@@ -1312,6 +1365,19 @@ pub fn encode_action_research(slot: u8, buf: &mut [u8]) -> Result<usize, WireErr
     Ok(w.finish())
 }
 
+/// The tree verb. `recipe` rides the craft verb's own 8-bit recipe
+/// width, bounded the same way against `MAX_RECIPES`.
+pub fn encode_action_unlock(recipe: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if recipe as usize >= sim_core::limits::MAX_RECIPES {
+        return Err(WireError::Range);
+    }
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_UNLOCK, ACTION_SUB_BITS)?;
+    w.write(recipe as u32, 8)?;
+    Ok(w.finish())
+}
+
 pub fn encode_action_consume(slot: u8, buf: &mut [u8]) -> Result<usize, WireError> {
     if slot as usize >= sim_core::limits::INV_SLOTS {
         return Err(WireError::Range);
@@ -1368,7 +1434,7 @@ pub fn encode_action_place(
         || cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
-        || loc > sim_core::build::LOC_EDGE_ZLO
+        || loc > loc_max(false)
     {
         return Err(WireError::Range);
     }
@@ -1461,7 +1527,7 @@ pub fn encode_action_repair(
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
-        || loc > sim_core::build::LOC_EDGE_ZLO
+        || loc > loc_max(deploy)
     {
         return Err(WireError::Range);
     }
@@ -1495,7 +1561,7 @@ pub fn encode_action_throw(
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
-        || loc > sim_core::build::LOC_EDGE_ZLO
+        || loc > loc_max(deploy)
     {
         return Err(WireError::Range);
     }
@@ -1579,7 +1645,7 @@ pub fn encode_action_demolish(
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
-        || loc > sim_core::build::LOC_EDGE_ZLO
+        || loc > loc_max(deploy)
     {
         return Err(WireError::Range);
     }
@@ -1605,7 +1671,7 @@ pub fn encode_action_upgrade(
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
-        || loc > sim_core::build::LOC_EDGE_ZLO
+        || loc > loc_max(false)
         || material > sim_core::build::MAT_METAL
     {
         return Err(WireError::Range);
@@ -1653,8 +1719,10 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             let cz = r.read(BUILD_CELL_BITS)? as u16;
             let level = r.read(BUILD_LEVEL_BITS)? as u8;
             let loc = r.read(BUILD_LOC_BITS)? as u8;
-            // Coord/level/loc widths are exact; only the row can be forged.
-            if row as usize >= sim_core::limits::MAX_PIECE_DEFS {
+            // Coord/level widths are exact; the row and — since the loc
+            // field widened past its ten live values (v40) — the loc can
+            // both be forged.
+            if row as usize >= sim_core::limits::MAX_PIECE_DEFS || loc > loc_max(false) {
                 return Err(WireError::Malformed);
             }
             ActionMsg::Place {
@@ -1666,14 +1734,23 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             }
         }
         ACT_DEPLOY => {
-            // Every field width is exact (deploy rows are 4 bits =
-            // MAX_DEPLOY_DEFS): nothing here can be forged out of range.
+            let row = r.read(DEPLOY_ROW_BITS)? as u16;
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            // Deploy rows are width-exact (4 bits = MAX_DEPLOY_DEFS); the
+            // loc stopped being so at v40, and a deployable never sits on
+            // a triangle or a diagonal.
+            if loc > loc_max(true) {
+                return Err(WireError::Malformed);
+            }
             ActionMsg::Deploy {
-                row: r.read(DEPLOY_ROW_BITS)? as u16,
-                cx: r.read(BUILD_CELL_BITS)? as u16,
-                cz: r.read(BUILD_CELL_BITS)? as u16,
-                level: r.read(BUILD_LEVEL_BITS)? as u8,
-                loc: r.read(BUILD_LOC_BITS)? as u8,
+                row,
+                cx,
+                cz,
+                level,
+                loc,
             }
         }
         ACT_FEED => ActionMsg::Feed {
@@ -1681,40 +1758,63 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             cz: r.read(BUILD_CELL_BITS)? as u16,
             level: r.read(BUILD_LEVEL_BITS)? as u8,
         },
-        // Address only, every width exact: nothing here can be forged
-        // out of range, and the sim refuses an address holding no door.
-        ACT_USE => ActionMsg::Use {
-            cx: r.read(BUILD_CELL_BITS)? as u16,
-            cz: r.read(BUILD_CELL_BITS)? as u16,
-            level: r.read(BUILD_LEVEL_BITS)? as u8,
-            loc: r.read(BUILD_LOC_BITS)? as u8,
-        },
-        // Address + one bit, every width exact — and deliberately no
-        // amount: how much hp is missing and what that costs are the
-        // server's facts, so there is no number here for a client to
-        // choose. The bit picks the store, and both its values are live,
-        // so there is nothing here to bound either.
-        ACT_REPAIR => ActionMsg::Repair {
-            deploy: r.read_bit()?,
-            cx: r.read(BUILD_CELL_BITS)? as u16,
-            cz: r.read(BUILD_CELL_BITS)? as u16,
-            level: r.read(BUILD_LEVEL_BITS)? as u8,
-            loc: r.read(BUILD_LOC_BITS)? as u8,
-        },
-        // The repair arm's twin, bound for bound. Every field is read at
-        // exactly its domain's width, so — as there — there is nothing
-        // here left to range-check: `BUILD_LOC_BITS` holds four values and
-        // all four are live, and both values of the store bit are live.
-        // The verb's refusals are all facts about the world (is there a
-        // wall there, is it in reach, is a charge in your hand), and those
-        // are the sim's to state, not the decoder's to guess.
-        ACT_THROW => ActionMsg::Throw {
-            deploy: r.read_bit()?,
-            cx: r.read(BUILD_CELL_BITS)? as u16,
-            cz: r.read(BUILD_CELL_BITS)? as u16,
-            level: r.read(BUILD_LEVEL_BITS)? as u8,
-            loc: r.read(BUILD_LOC_BITS)? as u8,
-        },
+        // Address only; the sim refuses an address holding no door. The
+        // loc is bounded to the deploy store's range — a door never hangs
+        // on a diagonal (v40).
+        ACT_USE => {
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            if loc > loc_max(true) {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Use { cx, cz, level, loc }
+        }
+        // Address + one bit — and deliberately no amount: how much hp is
+        // missing and what that costs are the server's facts, so there is
+        // no number here for a client to choose. The bit picks the store,
+        // and the STORE bounds the loc (v40): a deploy repair past the
+        // straight edges is a forged address.
+        ACT_REPAIR => {
+            let deploy = r.read_bit()?;
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            if loc > loc_max(deploy) {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Repair {
+                deploy,
+                cx,
+                cz,
+                level,
+                loc,
+            }
+        }
+        // The repair arm's twin, bound for bound — including the loc's
+        // store-picked bound (v40). The verb's other refusals stay facts
+        // about the world (is there a wall there, is it in reach, is a
+        // charge in your hand), and those are the sim's to state, not the
+        // decoder's to guess.
+        ACT_THROW => {
+            let deploy = r.read_bit()?;
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            if loc > loc_max(deploy) {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Throw {
+                deploy,
+                cx,
+                cz,
+                level,
+                loc,
+            }
+        }
         // Address + op + code. The two payload fields are the only ones
         // on the C→S lane whose bit width holds values the sim has no
         // meaning for, so both are refused here rather than clamped —
@@ -1726,7 +1826,10 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             let loc = r.read(BUILD_LOC_BITS)? as u8;
             let op = r.read(ACCESS_OP_BITS)? as u8;
             let raw = r.read(LOCK_CODE_BITS)?;
-            let (Some(code), true) = (sim_code(raw), op <= sim_core::deploy::ACCESS_OP_MAX) else {
+            let (Some(code), true) = (
+                sim_code(raw),
+                op <= sim_core::deploy::ACCESS_OP_MAX && loc <= loc_max(true),
+            ) else {
                 return Err(WireError::Malformed);
             };
             ActionMsg::Access {
@@ -1744,8 +1847,9 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             let level = r.read(BUILD_LEVEL_BITS)? as u8;
             let loc = r.read(BUILD_LOC_BITS)? as u8;
             let material = r.read(BUILD_MAT_BITS)? as u8;
-            // Two bits hold three materials, so the fourth is forgeable.
-            if material > sim_core::build::MAT_METAL {
+            // The material's fourth value and the loc's tail (v40) are
+            // both forgeable.
+            if material > sim_core::build::MAT_METAL || loc > loc_max(false) {
                 return Err(WireError::Malformed);
             }
             ActionMsg::Upgrade {
@@ -1756,13 +1860,23 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 material,
             }
         }
-        ACT_DEMOLISH => ActionMsg::Demolish {
-            deploy: r.read_bit()?,
-            cx: r.read(BUILD_CELL_BITS)? as u16,
-            cz: r.read(BUILD_CELL_BITS)? as u16,
-            level: r.read(BUILD_LEVEL_BITS)? as u8,
-            loc: r.read(BUILD_LOC_BITS)? as u8,
-        },
+        ACT_DEMOLISH => {
+            let deploy = r.read_bit()?;
+            let cx = r.read(BUILD_CELL_BITS)? as u16;
+            let cz = r.read(BUILD_CELL_BITS)? as u16;
+            let level = r.read(BUILD_LEVEL_BITS)? as u8;
+            let loc = r.read(BUILD_LOC_BITS)? as u8;
+            if loc > loc_max(deploy) {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Demolish {
+                deploy,
+                cx,
+                cz,
+                level,
+                loc,
+            }
+        }
         ACT_LOOT => ActionMsg::Loot,
         ACT_CONSUME => {
             let slot = r.read(ACTION_SLOT_BITS)? as u8;
@@ -1777,6 +1891,13 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             ActionMsg::Research { slot }
+        }
+        ACT_UNLOCK => {
+            let recipe = r.read(8)? as u16;
+            if recipe as usize >= sim_core::limits::MAX_RECIPES {
+                return Err(WireError::Malformed);
+            }
+            ActionMsg::Unlock { recipe }
         }
         ACT_DRINK => ActionMsg::Drink,
         ACT_RESPAWN => ActionMsg::Respawn {
@@ -2809,10 +2930,10 @@ mod tests {
     /// not slip in against a stale one.
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
-        assert_eq!(ACT_MAX, ACT_RESEARCH);
+        assert_eq!(ACT_MAX, ACT_UNLOCK);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            14,
+            13,
             "the spare action codes moved — say so where the count is written"
         );
     }

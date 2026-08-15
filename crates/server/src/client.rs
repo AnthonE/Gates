@@ -130,6 +130,8 @@ pub struct ClientNetState {
     pub catalog_cursor: usize,
     /// Next recipe row the recipe drip sends.
     pub recipes_cursor: usize,
+    /// Next research row the tech-tree drip sends (tech tree v0).
+    pub research_cursor: usize,
     /// Next piece-def row the build-menu drip sends.
     pub piece_defs_cursor: usize,
     /// Placed-piece walk: entries **still owed**, not the next index to
@@ -232,6 +234,7 @@ impl ClientNetState {
             sync_reset: true,
             catalog_cursor: 0,
             recipes_cursor: 0,
+            research_cursor: 0,
             piece_defs_cursor: 0,
             piece_sync_cursor: 0,
             piece_sync_reset: true,
@@ -262,6 +265,7 @@ impl ClientNetState {
         self.sync_reset = true;
         self.catalog_cursor = 0;
         self.recipes_cursor = 0;
+        self.research_cursor = 0;
         self.piece_defs_cursor = 0;
         self.piece_sync_cursor = 0;
         self.piece_sync_reset = true;

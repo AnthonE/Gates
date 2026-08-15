@@ -326,17 +326,12 @@ pub fn hash(c: &Content) -> u64 {
     for r in research {
         h.s(&r.item);
         h.u(r.cost);
-        // The ladder is part of what a content set MEANS — two sets whose
-        // tree is wired differently play differently — so it digests with
-        // the price. Declared order, not sorted, for the `ammo` list's
-        // reason one file over: sorting here would be a second opinion
-        // about a list the file already ordered, and the cost of hashing
-        // an order that does not matter is a false RED, which is the safe
-        // direction.
-        h.u(r.requires.len() as u32);
-        for req in &r.requires {
-            h.s(req);
-        }
+        // The tree edge (tech tree v0). An absent parent hashes as the
+        // empty string rather than being skipped: skipping would make
+        // `requires = "x"` on the LAST row and no requires at all
+        // canonicalise identically-prefixed streams, and the empty
+        // string is a value no item id can be.
+        h.s(r.requires.as_deref().unwrap_or(""));
     }
 
     let sv = &c.balance.survival;

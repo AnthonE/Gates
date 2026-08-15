@@ -31,7 +31,7 @@ use crate::ui::place::{self, DeploySite, DeployVerdict, Site, Target, Verdict};
 use super::hud::Toast;
 use super::input::Look;
 use super::panels::Ui;
-use super::structures::{base_transform, deploy_transform, shape_parts};
+use super::structures::{self, base_transform, deploy_transform, shape_parts};
 use super::{Net, WorldId};
 
 /// The ghost's translucency, and its two verdicts. Cosmetics
@@ -77,6 +77,10 @@ pub struct Ghost {
     ok_mat: Option<Handle<StandardMaterial>>,
     no_mat: Option<Handle<StandardMaterial>>,
     mesh: Option<Handle<Mesh>>,
+    /// The unit half-cell prism beside the unit cube (triangles v0) —
+    /// `structures::part_mesh` builds both, so the preview's triangle is
+    /// the piece's.
+    tri_mesh: Option<Handle<Mesh>>,
     /// The working level the `R`/`F` steppers move. Client-side latch, like
     /// the wheel's own shape and material.
     pub level: u8,
@@ -136,11 +140,18 @@ pub fn track(
 ) {
     let ghost = &mut *ghost;
     if ghost.mesh.is_none() {
-        // ONE unit cube, scaled per shape. A mesh per shape would be five
-        // more pipeline specializations for a thing that is drawn
-        // translucent and never inspected — and a pipeline created after the
-        // world is up is the prewarm trap (`CLAUDE.md`, `RENDER.md` §2).
+        // ONE unit cube, scaled per shape — plus the one unit prism the
+        // triangle shapes need (triangles v0). Two meshes, not one per
+        // shape: both carry the standard vertex layout, so the second is
+        // the same pipeline, not a new specialization — the prewarm trap
+        // (`CLAUDE.md`, `RENDER.md` §2) is about pipelines, not meshes.
         ghost.mesh = Some(meshes.add(Cuboid::new(1.0, 1.0, 1.0)));
+        ghost.tri_mesh = Some(meshes.add(structures::part_mesh(&structures::Part {
+            size: Vec3::ONE,
+            offset: Vec3::ZERO,
+            x_rot: 0.0,
+            kind: structures::PartKind::Tri,
+        })));
         ghost.ok_mat = Some(materials.add(translucent(GHOST_OK)));
         ghost.no_mat = Some(materials.add(translucent(GHOST_NO)));
     }
@@ -228,14 +239,20 @@ pub fn track(
         ghost.built_shape = Some(shape);
         commands.entity(root).despawn_related::<Children>();
         let mesh = ghost.mesh.clone().expect("built above");
-        // The shared table (`structures::shape_parts`): one unit cube scaled
-        // per part, where the piece will use a real-size mesh per part —
-        // same sizes, same offsets, same pitch, one emit site.
+        let tri = ghost.tri_mesh.clone().expect("built above");
+        // The shared table (`structures::shape_parts`): one unit mesh —
+        // the cube, or the prism for a Tri part — scaled per part, where
+        // the piece will use a real-size mesh per part. Same sizes, same
+        // offsets, same pitch, one emit site.
         let (parts, n) = shape_parts(shape);
         commands.entity(root).with_children(|c| {
             for part in &parts[..n] {
+                let unit = match part.kind {
+                    structures::PartKind::Box => mesh.clone(),
+                    structures::PartKind::Tri => tri.clone(),
+                };
                 c.spawn((
-                    Mesh3d(mesh.clone()),
+                    Mesh3d(unit),
                     MeshMaterial3d(mat.clone()),
                     // **The header has always claimed "no shadow" and the code
                     // never said so.** A translucent mesh still casts one in

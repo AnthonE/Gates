@@ -543,6 +543,13 @@ pub fn strike(
 /// itself, not this radius, is what decides.
 const RAID_CELL_RING: i32 = 1;
 
+/// What a melee swing lands on the HARD side of an edge piece, whatever
+/// the tool (hard/soft v0). One, flat — the reference's rule as players
+/// meet it: the hard face is not a farm, and the number is small enough
+/// that "wrong side" reads instantly off the hit numbers. Proposed
+/// default, DECISIONS.md §open ("hard/soft v0"). Explosives ignore it.
+pub const HARD_SIDE_STRUCTURE: u16 = 1;
+
 /// Which store a raid swing found, and where.
 #[derive(Clone, Copy)]
 enum Target {
@@ -652,8 +659,20 @@ pub fn raid(
             for (loc, mask) in [
                 (LOC_PLANE, m.planes),
                 (LOC_RISER, m.stairs),
-                (LOC_EDGE_XLO, m.walls_xlo | m.doors_xlo),
-                (LOC_EDGE_ZLO, m.walls_zlo | m.doors_zlo),
+                (
+                    LOC_EDGE_XLO,
+                    m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo,
+                ),
+                (
+                    LOC_EDGE_ZLO,
+                    m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo,
+                ),
+                (crate::build::LOC_TRI_XLO_ZLO, m.tri_xlo_zlo),
+                (crate::build::LOC_TRI_XHI_ZLO, m.tri_xhi_zlo),
+                (crate::build::LOC_TRI_XLO_ZHI, m.tri_xlo_zhi),
+                (crate::build::LOC_TRI_XHI_ZHI, m.tri_xhi_zhi),
+                (crate::build::LOC_DIAG_A, m.diag_a),
+                (crate::build::LOC_DIAG_B, m.diag_b),
             ] {
                 if mask == 0 {
                     continue;
@@ -691,7 +710,21 @@ pub fn raid(
             // by type and refusing beats indexing on a promise.
             match pieces.find_index(cx, cz, level, loc) {
                 Some(i) => {
-                    damage_piece(dc, bc, pieces, deploys, i, def.structure, budget, events);
+                    // Hard side and soft side (hard/soft v0,
+                    // `reference/BUILDING.md` §7b.5): a melee swing on an
+                    // edge piece's HARD face lands `HARD_SIDE_STRUCTURE`,
+                    // whatever the tool — the reference's own rule as a
+                    // raider meets it. Planes and risers have no sides;
+                    // the satchel does not care either (`charge.rs` — a
+                    // blast is a point, not a stance).
+                    let rec = pieces.entries()[i];
+                    let sided = crate::build::shape_has_facing(bc.pieces[rec.row as usize].shape);
+                    let amount = if sided && !crate::build::soft_side(&rec, px, pz) {
+                        HARD_SIDE_STRUCTURE
+                    } else {
+                        def.structure
+                    };
+                    damage_piece(dc, bc, pieces, deploys, i, amount, budget, events);
                     true
                 }
                 None => false,
@@ -735,6 +768,7 @@ mod tests {
     /// Wire yaw facing +X — LUT index 64 of 256 (yaw_lut.rs: index 0 is
     /// +Z, increasing index rotates toward +X).
     const YAW_PLUS_X: u16 = 64 << 8;
+    const YAW_MINUS_X: u16 = 192 << 8;
 
     fn cc() -> CombatContent {
         CombatContent::probe_fixture()
@@ -875,6 +909,93 @@ mod tests {
             &mut ev
         ));
         assert!(ev.is_empty());
+    }
+
+    /// Hard/soft v0 (`reference/BUILDING.md` §7b.5): the same tool, the
+    /// same wall, two stances — full structure damage from the soft side,
+    /// `HARD_SIDE_STRUCTURE` from the hard one. The wall was placed from
+    /// inside the cell, so its soft face is the +x side the builder stood
+    /// on; the foundation (a plane) stays sideless and keeps taking full
+    /// damage from anywhere, which the base rig's own tests already pin.
+    #[test]
+    fn the_soft_side_pays_full_and_the_hard_side_pays_one() {
+        let (cc, bc, dc, mut pieces, mut deploys, _) = rig();
+        // The wall on the cell's west edge, placed by a builder standing
+        // at the cell centre — east of the edge, so soft faces east.
+        let mut builder = raider(CX, CZ);
+        builder.inv[0] = ItemStack { item: 0, count: 99 };
+        let mut ev = EventQueue::default();
+        crate::build::place(
+            SEED,
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut builder,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            crate::build::LOC_EDGE_XLO,
+            &mut ev,
+        );
+        let wall = pieces.find(CX, CZ, 0, crate::build::LOC_EDGE_XLO).unwrap();
+        assert_eq!(wall.facing, 1, "soft faces the builder's side (+x)");
+        let wall_hp = wall.hp;
+
+        let x0 = CX as f32 * BUILD_CELL_M;
+        let z0 = CZ as f32 * BUILD_CELL_M;
+        // Both attackers face +Z (default yaw) at the wall's anchor,
+        // 0.3 m to either side of the edge plane.
+        let mut soft = raider(CX, CZ);
+        soft.body = Body::at(SEED, x0 + 0.3, z0 + 0.5);
+        let mut hard = raider(CX, CZ);
+        hard.body = Body::at(SEED, x0 - 0.3, z0 + 0.5);
+
+        ev.clear();
+        assert!(raid(
+            &cc,
+            &bc,
+            &dc,
+            SEED,
+            &soft,
+            &mut pieces,
+            &mut deploys,
+            &mut tick_budget(),
+            &mut ev
+        ));
+        let e = ev.entries()[0];
+        assert_eq!(e.code, EV_STRUCT_HIT);
+        assert_eq!(
+            e.c >> 16,
+            34,
+            "the soft side takes the tool's whole structure damage"
+        );
+
+        ev.clear();
+        assert!(raid(
+            &cc,
+            &bc,
+            &dc,
+            SEED,
+            &hard,
+            &mut pieces,
+            &mut deploys,
+            &mut tick_budget(),
+            &mut ev
+        ));
+        let e = ev.entries()[0];
+        assert_eq!(e.code, EV_STRUCT_HIT);
+        assert_eq!(
+            e.c >> 16,
+            HARD_SIDE_STRUCTURE as u32,
+            "the hard side takes one, whatever the tool"
+        );
+        assert_eq!(
+            e.c & 0xFFFF,
+            (wall_hp - 34 - HARD_SIDE_STRUCTURE) as u32,
+            "both swings landed on the one wall"
+        );
     }
 
     #[test]
@@ -1145,6 +1266,20 @@ mod tests {
         assert_eq!(pieces.len(), 2, "the frame it hung in still stands");
 
         // The frame next, and it must not cascade a door that is gone.
+        // The raider walks IN through the edge the fallen door opened
+        // first: the doorway's soft face is the builder's side (hard/soft
+        // v0), and from the street its hard face pays `HARD_SIDE_STRUCTURE`
+        // a swing — the melee raid the rule exists to slow. Standing
+        // inside, aimed back out at the frame, the swings land whole.
+        // Just inside the edge, not the cell centre: the centre is the
+        // foundation's own anchor, and the nearest pick would hand the
+        // swings to the slab underfoot.
+        foe.body = Body::at(
+            SEED,
+            CX as f32 * BUILD_CELL_M + 0.4,
+            (CZ as f32 + 0.5) * BUILD_CELL_M,
+        );
+        foe.frame.yaw = YAW_MINUS_X;
         ev.clear();
         for _ in 0..3 {
             raid(

@@ -10,10 +10,19 @@
 # needed to take one). Their grade base — the full wall — is twig 50 /
 # wood 200 / stone 300 / metal 200, and their four shape ratios run off it:
 #
-#   1.0  foundation · wall · stairs      0.7  doorway
-#   0.5  floor · roof
+#   1.0  foundation · wall · stairs      0.7  doorway · window
+#   0.5  floor · roof · wall_frame · tri_foundation · tri_roof
+#   0.25 tri_floor
 #
-# So these 24 cells ARE their 24 cells for the six shapes we have.
+# So these 44 cells ARE their 44 cells for the eleven shapes we have.
+# Window and wall_frame joined 2026-08-15 (catalogue v1, §9.13): their
+# ratios were already decided by §7b.3 — an opening is 0.7, a mostly-hole
+# frame is 0.5 — so the window's column is the doorway's and the frame's
+# is the floor's, digit for digit. The three triangles joined the same
+# day (triangles v0, §9.14) at §7b.3's own rows: a triangle is half its
+# square at the same tier, composing with the family price — and the one
+# rounding in the table is theirs too (twig 50 × 0.25 = 12.5 -> 13, the
+# way their HQM column rounds at small integers).
 #
 # hp is a property of the MATERIAL alone and never of the shape, which is
 # what those ratios are for. A stone floor and a stone wall are both 500,
@@ -77,6 +86,20 @@ hp = 10
 cost = [{ item = "item.wood", count = 25 }]
 
 [[piece]]
+id = "build.window_twig"
+shape = "window"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 35 }]
+
+[[piece]]
+id = "build.wall_frame_twig"
+shape = "wall_frame"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 25 }]
+
+[[piece]]
 id = "build.stairs_twig"
 shape = "stairs"
 material = "twig"
@@ -86,6 +109,27 @@ cost = [{ item = "item.wood", count = 50 }]
 [[piece]]
 id = "build.roof_twig"
 shape = "roof"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 25 }]
+
+[[piece]]
+id = "build.tri_foundation_twig"
+shape = "tri_foundation"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 25 }]
+
+[[piece]]
+id = "build.tri_floor_twig"
+shape = "tri_floor"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 13 }]
+
+[[piece]]
+id = "build.tri_roof_twig"
+shape = "tri_roof"
 material = "twig"
 hp = 10
 cost = [{ item = "item.wood", count = 25 }]
@@ -159,6 +203,55 @@ material = "metal"
 hp = 1000
 cost = [{ item = "item.metal_frags", count = 140 }]
 
+# --- window · 0.7, the doorway's ratio — an opening you still owe an
+# insert for (bars, glass, shutters — none built yet; §7b.4's socket
+# separation). Blocks a body, passes an arrow through its aperture.
+
+[[piece]]
+id = "build.window_wood"
+shape = "window"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 140 }]
+
+[[piece]]
+id = "build.window_stone"
+shape = "window"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 210 }]
+
+[[piece]]
+id = "build.window_metal"
+shape = "window"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 140 }]
+
+# --- wall frame · 0.5 — mostly hole, priced like the floor. Blocks
+# nothing until its insert exists (garage door, shopfront — not built).
+
+[[piece]]
+id = "build.wall_frame_wood"
+shape = "wall_frame"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 100 }]
+
+[[piece]]
+id = "build.wall_frame_stone"
+shape = "wall_frame"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 150 }]
+
+[[piece]]
+id = "build.wall_frame_metal"
+shape = "wall_frame"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 100 }]
+
 # --- floor --------------------------------------------------------------
 
 [[piece]]
@@ -224,6 +317,79 @@ cost = [{ item = "item.stone", count = 150 }]
 [[piece]]
 id = "build.roof_metal"
 shape = "roof"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 100 }]
+
+# --- tri foundation · 0.5 — a triangle is half its square (§7b.3's
+# footprint axis; ours IS half by area, where theirs is 0.43).
+
+[[piece]]
+id = "build.tri_foundation_wood"
+shape = "tri_foundation"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 100 }]
+
+[[piece]]
+id = "build.tri_foundation_stone"
+shape = "tri_foundation"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 150 }]
+
+[[piece]]
+id = "build.tri_foundation_metal"
+shape = "tri_foundation"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 100 }]
+
+# --- tri floor · 0.25 — the two axes compose: half a floor's 0.5. The
+# cheapest hp per resource in the table, which is §7b.3's own economic
+# engine (honeycomb is what the pricing pays for).
+
+[[piece]]
+id = "build.tri_floor_wood"
+shape = "tri_floor"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 50 }]
+
+[[piece]]
+id = "build.tri_floor_stone"
+shape = "tri_floor"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 75 }]
+
+[[piece]]
+id = "build.tri_floor_metal"
+shape = "tri_floor"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 50 }]
+
+# --- tri roof · 0.5 — NOT 0.25: §7b.3 prices the triangle roof at the
+# square roof's own ratio, and theirs is the table we take.
+
+[[piece]]
+id = "build.tri_roof_wood"
+shape = "tri_roof"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 100 }]
+
+[[piece]]
+id = "build.tri_roof_stone"
+shape = "tri_roof"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 150 }]
+
+[[piece]]
+id = "build.tri_roof_metal"
+shape = "tri_roof"
 material = "metal"
 hp = 1000
 cost = [{ item = "item.metal_frags", count = 100 }]

@@ -51,19 +51,17 @@ pub const CRAFT: [&str; 6] = [
     "not researched — take one to a research table",
 ];
 
-/// `sim_core::research`'s `REFUSE_R_*: u32`.
-pub const RESEARCH: [&str; 6] = [
+/// `sim_core::research`'s `REFUSE_R_*: u32`. The last two are the tree
+/// verb's (tech tree v0), and each names the act that fixes it —
+/// `CRAFT`'s blueprint sentence sets the bar.
+pub const RESEARCH: [&str; 7] = [
     "no research table in reach",
     "nothing in that slot",
     "that cannot be researched",
     "already known",
     "not enough obol",
-    // The ladder (`ResearchRow::requires`, 2026-08-15). It does not name
-    // WHICH blueprint is missing, because the refusal carries a reason and
-    // not a payload — telling a player what to go learn is the tech-tree
-    // UI's job (`NOW.md` §0tt), and inventing a second payload field for a
-    // screen that does not exist is how the wire drifts.
-    "a blueprint it builds on is not known yet",
+    "unlock the node before it first",
+    "no workbench of that level in reach",
 ];
 
 /// `sim_core::build`'s `REFUSE_B_*: u32` — a build, an upgrade or a repair

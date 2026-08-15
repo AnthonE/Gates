@@ -17,6 +17,7 @@ use crate::{
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::craft::{
     CraftContent, CraftJob, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
+    STATION_WORKBENCH2, STATION_WORKBENCH3,
 };
 use sim_core::deploy::{DeployContent, DeployRec};
 use sim_core::gather::ItemStack;
@@ -24,112 +25,121 @@ use sim_core::input::InputFrame;
 use sim_core::limits::{
     INV_SLOTS, MAX_INPUT_FRAMES, MAX_PIECE_COSTS, MAX_RECIPE_INPUTS, MAX_SNAPSHOT_ENTITIES,
 };
+use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 90] = [
-    "v37_input_acks_only.bin",
-    "v37_input_full.bin",
-    "v37_snapshot_keyframe.bin",
-    "v37_snapshot_delta.bin",
-    "v37_snapshot_cap.bin",
-    "v37_hello.bin",
-    "v37_welcome.bin",
-    "v37_refuse_full.bin",
-    "v37_event_gather.bin",
-    "v37_event_inv.bin",
-    "v37_event_slot_harvested.bin",
-    "v37_event_slot_respawned.bin",
-    "v37_event_slot_sync.bin",
-    "v37_event_catalog.bin",
-    "v37_event_weak_mark.bin",
-    "v37_event_craft_q.bin",
-    "v37_event_craft_done.bin",
-    "v37_event_craft_refused.bin",
-    "v37_event_recipes.bin",
-    "v37_action_craft.bin",
-    "v37_action_cancel.bin",
-    "v37_action_place.bin",
-    "v37_event_piece_placed.bin",
-    "v37_event_piece_sync.bin",
-    "v37_event_build_refused.bin",
-    "v37_event_piece_defs.bin",
-    "v37_action_deploy.bin",
-    "v37_action_feed.bin",
-    "v37_event_deploy_placed.bin",
-    "v37_event_deploy_sync.bin",
-    "v37_event_deploy_refused.bin",
-    "v37_event_deploy_defs.bin",
-    "v37_event_piece_removed.bin",
-    "v37_event_deploy_removed.bin",
-    "v37_event_stock.bin",
-    "v37_action_use.bin",
-    "v37_action_access.bin",
-    "v37_event_door.bin",
-    "v37_action_upgrade.bin",
-    "v37_chat.bin",
-    "v37_event_chat.bin",
-    "v37_event_hit.bin",
-    "v37_event_health.bin",
-    "v37_event_death.bin",
-    "v37_action_loot.bin",
-    "v37_event_bag_dropped.bin",
-    "v37_event_bag_sync.bin",
-    "v37_event_bag_removed.bin",
-    "v37_event_struct_hit_piece.bin",
-    "v37_event_struct_hit_deploy.bin",
-    "v37_event_vitals.bin",
-    "v37_event_consumed.bin",
-    "v37_event_consume_refused.bin",
-    "v37_action_consume.bin",
-    "v37_event_drank.bin",
-    "v37_action_drink.bin",
-    "v37_event_respawn.bin",
-    "v37_action_respawn.bin",
-    "v37_action_move.bin",
-    "v37_event_moved.bin",
-    "v37_event_move_refused.bin",
-    "v37_action_move_box.bin",
-    "v37_action_container.bin",
-    "v37_action_container_close.bin",
-    "v37_event_cont_sync.bin",
-    "v37_event_cont_close.bin",
-    "v37_action_repair_piece.bin",
-    "v37_action_repair_deploy.bin",
-    "v37_event_piece_repaired_piece.bin",
-    "v37_event_piece_repaired_deploy.bin",
-    "v37_action_throw_piece.bin",
-    "v37_action_throw_deploy.bin",
-    "v37_event_charge_placed_piece.bin",
-    "v37_event_charge_placed_deploy.bin",
-    "v37_challenge.bin",
-    "v37_auth.bin",
-    "v37_event_oven_lit.bin",
-    "v37_event_oven_out.bin",
+pub const FIXTURES: [&str; 92] = [
+    "v41_input_acks_only.bin",
+    "v41_input_full.bin",
+    "v41_snapshot_keyframe.bin",
+    "v41_snapshot_delta.bin",
+    "v41_snapshot_cap.bin",
+    "v41_hello.bin",
+    "v41_welcome.bin",
+    "v41_refuse_full.bin",
+    "v41_event_gather.bin",
+    "v41_event_inv.bin",
+    "v41_event_slot_harvested.bin",
+    "v41_event_slot_respawned.bin",
+    "v41_event_slot_sync.bin",
+    "v41_event_catalog.bin",
+    "v41_event_weak_mark.bin",
+    "v41_event_craft_q.bin",
+    "v41_event_craft_done.bin",
+    "v41_event_craft_refused.bin",
+    "v41_event_recipes.bin",
+    "v41_action_craft.bin",
+    "v41_action_cancel.bin",
+    "v41_action_place.bin",
+    "v41_event_piece_placed.bin",
+    "v41_event_piece_sync.bin",
+    "v41_event_build_refused.bin",
+    "v41_event_piece_defs.bin",
+    "v41_action_deploy.bin",
+    "v41_action_feed.bin",
+    "v41_event_deploy_placed.bin",
+    "v41_event_deploy_sync.bin",
+    "v41_event_deploy_refused.bin",
+    "v41_event_deploy_defs.bin",
+    "v41_event_piece_removed.bin",
+    "v41_event_deploy_removed.bin",
+    "v41_event_stock.bin",
+    "v41_action_use.bin",
+    "v41_action_access.bin",
+    "v41_event_door.bin",
+    "v41_action_upgrade.bin",
+    "v41_chat.bin",
+    "v41_event_chat.bin",
+    "v41_event_hit.bin",
+    "v41_event_health.bin",
+    "v41_event_death.bin",
+    "v41_action_loot.bin",
+    "v41_event_bag_dropped.bin",
+    "v41_event_bag_sync.bin",
+    "v41_event_bag_removed.bin",
+    "v41_event_struct_hit_piece.bin",
+    "v41_event_struct_hit_deploy.bin",
+    "v41_event_vitals.bin",
+    "v41_event_consumed.bin",
+    "v41_event_consume_refused.bin",
+    "v41_action_consume.bin",
+    "v41_event_drank.bin",
+    "v41_action_drink.bin",
+    "v41_event_respawn.bin",
+    "v41_action_respawn.bin",
+    "v41_action_move.bin",
+    "v41_event_moved.bin",
+    "v41_event_move_refused.bin",
+    "v41_action_move_box.bin",
+    "v41_action_container.bin",
+    "v41_action_container_close.bin",
+    "v41_event_cont_sync.bin",
+    "v41_event_cont_close.bin",
+    "v41_action_repair_piece.bin",
+    "v41_action_repair_deploy.bin",
+    "v41_event_piece_repaired_piece.bin",
+    "v41_event_piece_repaired_deploy.bin",
+    "v41_action_throw_piece.bin",
+    "v41_action_throw_deploy.bin",
+    "v41_event_charge_placed_piece.bin",
+    "v41_event_charge_placed_deploy.bin",
+    "v41_challenge.bin",
+    "v41_auth.bin",
+    "v41_event_oven_lit.bin",
+    "v41_event_oven_out.bin",
     // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
-    "v37_event_knock.bin",
-    "v37_event_auth.bin",
-    "v37_action_access_crew.bin",
-    "v37_action_demolish.bin",
-    "v37_event_shot.bin",
+    "v41_event_knock.bin",
+    "v41_event_auth.bin",
+    "v41_action_access_crew.bin",
+    "v41_action_demolish.bin",
+    "v41_event_shot.bin",
     // World containers v0 (v37): the fourth container kind. Three
     // fixtures and not one, because `action_move_box`'s own doc records
     // what happens otherwise — the third kind crossed the wire for a
     // whole version with only the *open* pinned, so the bytes that mean
     // "take it out of the box" were checked by nothing. Kind 3 gets its
     // open, its move and its sync in the commit that legalises it.
-    "v37_action_container_world.bin",
-    "v37_action_move_world.bin",
-    "v37_event_cont_sync_world.bin",
-    // Research (v32), pinned five versions late — see the constructors at
-    // the foot of this file. Appended, like everything above: the list is
-    // positional and `gen_goldens` indexes it.
-    "v37_action_research.bin",
-    "v37_event_research.bin",
-    "v37_event_research_refused.bin",
-    "v37_event_known.bin",
+    "v41_action_container_world.bin",
+    "v41_action_move_world.bin",
+    "v41_event_cont_sync_world.bin",
+    // The bench ladder + tech tree (v38): the unlock action and the
+    // research-rows drip, plus the three research-lane events that had
+    // ridden unpinned since v32 — the role gate checked their payloads
+    // and nothing checked their bytes, which is the exact seat the v37
+    // world-container note called out as empty.
+    "v41_action_unlock.bin",
+    "v41_event_research_rows.bin",
+    "v41_event_research.bin",
+    "v41_event_research_refused.bin",
+    "v41_event_known.bin",
+    // The table verb's own action, pinned by the local branch and kept
+    // through the 2026-08-15 integration: `encode_action_research` is
+    // still live (the client's `verbs.rs` calls it), so
+    // `every_encoder_has_a_golden` requires these bytes.
+    "v41_action_research.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -594,16 +604,19 @@ pub fn event_recipes() -> CraftContent {
     let rows: [Row; 6] = [
         (4, 1, 15 * 30, STATION_NONE, &[(0, 100), (1, 50)]),
         (9, 3, 5 * 30, STATION_NONE, &[(0, 25), (1, 10)]),
-        (20, 10, 5 * 30, STATION_WORKBENCH1, &[(6, 20), (8, 10)]),
+        // The two ladder rungs v38 minted, in the first batch so the
+        // widened station field is pinned at values a v37 decoder never
+        // accepted (bench ladder v0).
+        (20, 10, 5 * 30, STATION_WORKBENCH2, &[(6, 20), (8, 10)]),
         (
             31,
             1,
             30 * 30,
-            STATION_WORKBENCH1,
+            STATION_WORKBENCH3,
             &[(20, 240), (12, 2), (13, 1), (5, 4)],
         ),
         (7, 1, 2 * 30, STATION_FURNACE, &[(2, 1)]),
-        (63, 255, 65_535 * 30, STATION_NONE, &[(62, 65_535)]),
+        (63, 255, 65_535 * 30, STATION_WORKBENCH1, &[(62, 65_535)]),
     ];
     for (i, &(output, out_count, ticks, station, inputs)) in rows.iter().enumerate() {
         let mut def = RecipeDef {
@@ -629,6 +642,58 @@ pub fn action_craft() -> (u16, u16) {
     (33, 5)
 }
 
+/// A tech-tree unlock request naming recipe 21 (tech tree v0) — a value
+/// sharing no byte with `action_craft`'s, so a transposed encoder cannot
+/// pass both.
+pub fn action_unlock() -> u16 {
+    21
+}
+
+/// A five-row research table whose first batch is exactly
+/// `RESEARCH_BATCH` rows: a free root, a priced root, and two chained
+/// nodes — so the wire's `0xFF`-means-no-parent spelling is pinned in
+/// both positions, exactly as the recipes fixture alternates its
+/// blueprint bit.
+pub fn event_research_rows() -> ResearchContent {
+    let mut rc = ResearchContent::EMPTY;
+    rc.coin = 9;
+    rc.row_count = 5;
+    let rows: [(u16, u16, u16, u16); 5] = [
+        (11, 3, 0, NO_RECIPE),
+        (23, 21, 20, NO_RECIPE),
+        (31, 33, 40, 21),
+        (47, 55, 120, 33),
+        (60, 63, 65_535, 55),
+    ];
+    for (i, &(item, recipe, cost, requires)) in rows.iter().enumerate() {
+        rc.rows[i] = ResearchRow {
+            item,
+            recipe,
+            cost,
+            requires,
+        };
+    }
+    rc
+}
+
+/// A blueprint learned: (recipe, cost burned).
+pub fn event_research() -> (u16, u16) {
+    (33, 40)
+}
+
+/// A research refusal carrying `REFUSE_R_PARENT` — a reason v38 minted,
+/// so the fixture pins a byte no earlier version could produce.
+pub fn event_research_refused() -> u8 {
+    sim_core::research::REFUSE_R_PARENT as u8
+}
+
+/// A known-mask restate. Bits 0, 4, 21, 33 and 63: both ends of the
+/// field and the two recipes the fixtures above unlock, so a halved or
+/// byte-swapped mask cannot reproduce it.
+pub fn event_known() -> u64 {
+    (1 << 0) | (1 << 4) | (1 << 21) | (1 << 33) | (1 << 63)
+}
+
 /// A cancel of queue job 2.
 pub fn action_cancel() -> u16 {
     2
@@ -648,6 +713,10 @@ pub fn event_piece_placed() -> PieceRec {
         level: 1,
         loc: sim_core::build::LOC_EDGE_ZLO,
         row: 13,
+        // Set, not defaulted: the fixture pins the facing bit's live value
+        // (wire v39) the way the defs fixture pins shape 7 — a bit that
+        // never carries a 1 is a bit nothing gates.
+        facing: 1,
         ..PieceRec::default()
     }
 }
@@ -660,8 +729,11 @@ pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
         cx: rng.next_bounded(1024) as u16,
         cz: rng.next_bounded(1024) as u16,
         level: rng.next_bounded(8) as u8,
-        loc: rng.next_bounded(4) as u8,
+        // All ten live locs since v40, so the batch pins triangle and
+        // diagonal addresses in golden bytes, not just the square four.
+        loc: rng.next_bounded(10) as u8,
         row: rng.next_bounded(32) as u8,
+        facing: rng.next_bounded(2) as u8,
         ..PieceRec::default()
     });
     (true, recs)
@@ -683,8 +755,15 @@ pub fn event_piece_defs() -> BuildContent {
         (sim_core::build::SHAPE_FOUNDATION, 0, 750, &[(0, 350)]),
         (sim_core::build::SHAPE_WALL, 1, 1750, &[(1, 350)]),
         (sim_core::build::SHAPE_DOORWAY, 2, 3000, &[(7, 160)]),
-        (sim_core::build::SHAPE_FLOOR, 0, 750, &[(0, 350), (4, 10)]),
-        (sim_core::build::SHAPE_STAIRS, 1, 1750, &[(1, 200)]),
+        // The window keeps this row's two costs: the 2-bit n_costs field
+        // stays pinned at its top by the same row that now pins a
+        // catalogue-v1 shape code.
+        (sim_core::build::SHAPE_WINDOW, 0, 750, &[(0, 350), (4, 10)]),
+        // The tri roof is 10 — the TOP live code of the 4-bit shape field
+        // since v40 (the frame held this seat while the field was 3 bits),
+        // pinned here the way the roof row pins material's top: a width
+        // that never carries its widest value is a width nothing gates.
+        (sim_core::build::SHAPE_TRI_ROOF, 1, 1750, &[(1, 200)]),
         // The max-everything row, and the one that pins the TOP of the
         // 2-bit material field: metal is 3 since twig v0, and a fixture
         // that never wrote a 3 would leave the widest rung ungated.
@@ -1242,36 +1321,10 @@ pub fn action_research() -> u8 {
     23
 }
 
-/// A blueprint learned: `(recipe, cost)`.
-///
-/// Two 16-bit integers side by side, which is `event_shot`'s transposition
-/// hazard exactly — except this pair can do better than merely differing.
-/// `cost` is deliberately **75** (the shipped satchel-charge price), past
-/// `MAX_RECIPES`, so an encoder that wrote the pair the other way round
-/// fails its own `recipe >= MAX_RECIPES` range check and returns `Err`
-/// rather than producing blessable bytes. The swap is unrepresentable, not
-/// just visible.
-pub fn event_research() -> (u16, u16) {
-    (41, 75)
-}
-
-/// A research refusal: the reason code.
-///
-/// `REFUSE_R_LOCKED` (5), the highest live code and the newest — `0b101`
-/// needs every one of `RESEARCH_REFUSE_BITS`, so a width shrunk to two
-/// truncates it to `1` (`REFUSE_R_SLOT`, a different sentence) rather than
-/// failing loudly. The domain gate pins the width; this pins the bytes.
-pub fn event_research_refused() -> u8 {
-    5
-}
-
-/// The whole known mask, as the two halves the encoder splits it into.
-///
-/// The halves are chosen so **low-first** is provable from the bytes: they
-/// differ, neither is symmetric, and the high half carries bit 31 — recipe
-/// 63, the top of `KNOWN_MASK_BITS`. A swapped or single-half write moves
-/// that bit to recipe 31 or drops it, and either reads as a player who
-/// learned something else.
-pub fn event_known() -> u64 {
-    0x8000_0002_0000_0041
-}
+// `event_research`, `event_research_refused` and `event_known` were
+// declared a second time here by the local branch that pinned this lane on
+// 2026-08-15. The integrated branch declares all three above (with the same
+// intent and its own reasoning), so the duplicates are gone and the
+// survivors are the ones `FIXTURES` names. `action_research` above has no
+// counterpart there and stays: it is the fifth encoder of this lane, and
+// `every_encoder_has_a_golden` is why it may not quietly lose its bytes.

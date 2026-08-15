@@ -1323,16 +1323,24 @@ fn place_deploy(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
     );
 }
 
-/// Move the builder one cell at −x of the target column and face it, then
-/// swing until `code` lands. The raid posture: the target scan wants an
-/// anchor it is aimed at, and a body standing *inside* its own cell is not
-/// aiming at that cell's edges.
-fn raid_until(w: &mut World, cx: u16, cz: u16, code: u8) {
+/// The raid stance: one cell west of the target column. Split out of
+/// [`raid_until`] so a fixture can also PLACE from it — a wall's soft side
+/// faces its placer (hard/soft v0), and a payload test that wants full
+/// damage landing must build the wall from where it will swing.
+fn stand_at_raid_stance(w: &mut World, cx: u16, cz: u16) {
     let (x, z) = (
         (cx as f32 + 0.5 - RAID_OFFSET_CELLS) * BUILD_CELL_M,
         (cz as f32 + 0.5) * BUILD_CELL_M,
     );
     w.players[0].body = Body::at(SEED, x, z);
+}
+
+/// Move the builder one cell west of the target column and face it, then
+/// swing until `code` lands. The raid posture: the target scan wants an
+/// anchor it is aimed at, and a body standing *inside* its own cell is not
+/// aiming at that cell's edges.
+fn raid_until(w: &mut World, cx: u16, cz: u16, code: u8) {
+    stand_at_raid_stance(w, cx, cz);
     let mut seq = 0u16;
     for _ in 0..MAX_STEPS {
         w.tick(&[Command::Input {
@@ -1834,6 +1842,11 @@ fn struct_hit_names_the_cell_then_the_address_then_damage_over_hp_left() {
     let mut w = World::new(SEED);
     let (cx, cz) = builder_world(&mut w);
     place_piece(&mut w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    // Place the wall FROM the raid stance (hard/soft v0): a placement's
+    // soft side faces the placer, and this fixture's whole point is the
+    // full `STRUCT_DAMAGE` landing — the hard side pays 1 and would make
+    // the c-half assertion a test of the side rule instead of the payload.
+    stand_at_raid_stance(&mut w, cx, cz);
     place_piece(&mut w, PIECE_WALL, cx, cz, GROUND, PIECE_EDGE);
     raid_until(&mut w, cx, cz, EV_STRUCT_HIT);
 
@@ -2148,6 +2161,10 @@ fn piece_removed_names_the_cell_then_the_address_it_was_hit_at() {
     let mut w = World::new(SEED);
     let (cx, cz) = builder_world(&mut w);
     place_piece(&mut w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    // From the raid stance, so the swings meet the SOFT side and the wall
+    // actually falls inside the step budget (hard/soft v0 — the hard side
+    // pays 1 a swing, and this test is about the removal payload).
+    stand_at_raid_stance(&mut w, cx, cz);
     place_piece(&mut w, PIECE_WALL, cx, cz, GROUND, PIECE_EDGE);
     raid_until(&mut w, cx, cz, EV_STRUCT_HIT);
     let hit = only(&w, EV_STRUCT_HIT);

@@ -25,9 +25,8 @@ use protocol::{
 use protocol::{
     encode_action_consume, encode_action_container, encode_action_drink, encode_action_move,
     encode_action_research, encode_action_respawn, encode_action_throw, encode_event_charge_placed,
-    encode_event_cont_sync, encode_event_drank, encode_event_known, encode_event_move_refused,
-    encode_event_moved, encode_event_oven, encode_event_research, encode_event_research_refused,
-    encode_event_respawn, encode_event_shot,
+    encode_event_cont_sync, encode_event_drank, encode_event_move_refused, encode_event_moved,
+    encode_event_oven, encode_event_respawn, encode_event_shot,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -394,23 +393,36 @@ fn main() {
         write_fixture(goldens::FIXTURES[85], &buf[..len]);
     }
 
-    // Research (v32), pinned at v37 — the whole lane at once, because the
-    // gap was the whole lane at once.
+    // The bench ladder + tech tree (v38): the unlock action, the
+    // research-rows drip, and the three research-lane events pinned for
+    // the first time.
     {
-        let slot = goldens::action_research();
-        let len = encode_action_research(slot, &mut buf).unwrap();
+        let len = protocol::encode_action_unlock(goldens::action_unlock(), &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[86], &buf[..len]);
 
-        let (recipe, cost) = goldens::event_research();
-        let len = encode_event_research(recipe, cost, &mut buf).unwrap();
+        let rc = goldens::event_research_rows();
+        let (len, took) = protocol::encode_event_research_rows(&rc, 0, &mut buf).unwrap();
+        assert_eq!(took, protocol::RESEARCH_BATCH);
         write_fixture(goldens::FIXTURES[87], &buf[..len]);
 
-        let reason = goldens::event_research_refused();
-        let len = encode_event_research_refused(reason, &mut buf).unwrap();
+        let (recipe, cost) = goldens::event_research();
+        let len = protocol::encode_event_research(recipe, cost, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[88], &buf[..len]);
 
-        let mask = goldens::event_known();
-        let len = encode_event_known(mask, &mut buf).unwrap();
+        let len =
+            protocol::encode_event_research_refused(goldens::event_research_refused(), &mut buf)
+                .unwrap();
         write_fixture(goldens::FIXTURES[89], &buf[..len]);
+
+        let len = protocol::encode_event_known(goldens::event_known(), &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[90], &buf[..len]);
+
+        // The table verb's action, carried through the 2026-08-15
+        // integration. The tree verb replaced this lane's other four
+        // fixtures and not this one, and `encode_action_research` is still
+        // called by the client — an encoder whose bytes nothing pins is
+        // what `every_encoder_has_a_golden` exists to refuse.
+        let len = encode_action_research(goldens::action_research(), &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[91], &buf[..len]);
     }
 }

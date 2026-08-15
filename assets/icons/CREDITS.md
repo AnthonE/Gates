@@ -66,7 +66,12 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `shape_foundation.png` | `delapouite/flat-platform` |
 | `shape_roof.png` | `delapouite/great-pyramid` |
 | `shape_stairs.png` | `delapouite/3d-stairs` |
+| `shape_tri_floor.png` | `delapouite/sail` |
+| `shape_tri_foundation.png` | `delapouite/corner-flag` |
+| `shape_tri_roof.png` | `delapouite/tipi` |
 | `shape_wall.png` | `delapouite/brick-wall` |
+| `shape_wall_frame.png` | `delapouite/gate` |
+| `shape_window.png` | `delapouite/window` |
 | `sleeping_bag.png` | `delapouite/sleeping-bag` |
 | `small_box.png` | `delapouite/wooden-crate` |
 | `stone.png` | `delapouite/stone-pile` |
@@ -85,6 +90,8 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `wooden_door.png` | `delapouite/door` |
 | `wooden_spear.png` | `lorc/spears` |
 | `workbench.png` | `lorc/hammer-nails` |
+| `workbench_2.png` | `lorc/anvil-impact` |
+| `workbench_3.png` | `lorc/gear-hammer` |
 
 ## Not from game-icons.net
 

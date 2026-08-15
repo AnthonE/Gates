@@ -1443,10 +1443,14 @@ pub fn readout(
 }
 
 /// The centre prompt and the compass.
+// Eight sources and each is a distinct input: the two picks, the swing,
+// the near structure, the look, the pad, and the two text nodes.
+#[allow(clippy::too_many_arguments)]
 pub fn prompt(
     aimed: Res<Aimed>,
     swung: Res<super::verbs::Swung>,
     in_weak: Res<super::verbs::InWeak>,
+    near: Res<super::verbs::Near>,
     look: Res<super::input::Look>,
     pad: Res<super::verbs::Pad>,
     mut prompts: Query<&mut Text, (With<PromptLine>, Without<Compass>)>,
@@ -1465,12 +1469,17 @@ pub fn prompt(
         // would name the wrong verb (lock v1, `crate::ui::keypad`). The
         // pad itself is [`pad_overlay`]'s panel now, so this line goes
         // quiet rather than saying the same thing twice.
+        // The side line is last: it names no key, so anything that does
+        // outranks it.
         let want = if pad.0.is_open() {
             String::new()
         } else {
             match aimed.0.prompt() {
                 s if !s.is_empty() => s,
-                _ => swing_prompt_weak(swung.0.occupant, in_weak.0),
+                _ => match swing_prompt_weak(swung.0.occupant, in_weak.0) {
+                    s if !s.is_empty() => s,
+                    _ => side_line(&near.0),
+                },
             }
         };
         if text.0 != want {
@@ -1627,6 +1636,19 @@ fn swing_prompt_weak(occupant: u8, in_weak: bool) -> String {
         return base;
     }
     format!("{base}  ·  WEAK SPOT")
+}
+
+/// Which face of the nearest sided piece the player stands on (hard/soft
+/// v0) — the damage rule's one line of legibility. `side` was computed by
+/// `sim_core::build::soft_side`, the same comparison `combat::raid`
+/// prices the swing with, so this label cannot disagree with the bill;
+/// shapes with no sides (and deployables) carry `None` and stay silent.
+fn side_line(near: &Option<crate::ui::structure::Target>) -> String {
+    match near.as_ref().and_then(|t| t.side) {
+        Some(true) => "SOFT SIDE".to_string(),
+        Some(false) => "HARD SIDE".to_string(),
+        None => String::new(),
+    }
 }
 
 /// What a fed hearth is holding, or `None` when it is holding nothing.
@@ -2182,6 +2204,31 @@ mod tests {
             struct_hit_line(9999, 1750),
             Some("1750/1750  ·  100%".to_string())
         );
+    }
+
+    /// The side label (hard/soft v0): says which face you are on for a
+    /// sided piece, and nothing at all otherwise — a sideless shape must
+    /// not read as "HARD" when the truth is "has no sides".
+    #[test]
+    fn the_side_line_names_the_face_or_stays_quiet() {
+        use crate::ui::structure::{Store, Target};
+        let t = |side| {
+            Some(Target {
+                store: Store::Piece,
+                cx: 0,
+                cz: 0,
+                level: 0,
+                loc: 2,
+                row: 0,
+                hp: 10,
+                hp_max: 10,
+                side,
+            })
+        };
+        assert_eq!(side_line(&t(Some(true))), "SOFT SIDE");
+        assert_eq!(side_line(&t(Some(false))), "HARD SIDE");
+        assert_eq!(side_line(&t(None)), "");
+        assert_eq!(side_line(&None), "");
     }
 
     /// The kill-feed line, as a pure function of the pair the ring carries.

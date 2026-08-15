@@ -1099,7 +1099,7 @@ What is left, in order:
 
 ---
 
-## 0tt · The bench ladder and the tech tree — spoken, and two eras to choose from *(systems lane)*
+## 0tt · The bench ladder and the tech tree — LANDED 2026-08-15, three residuals *(systems lane)*
 
 Spoken 2026-08-14 (*"we should copy the tech tree ui thing too"* —
 `DECISIONS.md` has the row): their two-system model — research what you
@@ -1111,47 +1111,59 @@ still owns is the BENCH half. What is
 missing is the whole ladder: no workbench 2/3, nothing above
 `workbench1` in `recipes.toml`'s station column, no tree, no UI — and
 `RIPLIST.md` §2 row 3's craft rebate is blocked on exactly this ladder.
+The era was spoken (*"YES do it pre 2025 please"* — `DECISIONS.md`
+2026-08-15, and §open "bench ladder v0" carries the derived numbers) and
+the whole slice landed in one pass: workbench 2/3, the tiered station
+gate (`bench_near`'s ≥), the tech tree as a `requires` column over
+`Player::known` (`research::unlock` — no sample, which un-deadends the
+satchel and roadsign, blueprint-gated items in NO loot table), the bench's
+`E` opening a tree panel, wire v38. Landing it found a live wire defect:
+the three research events had **no decoder arms since v32** — every
+research toast and `Known` restate was decode-refused client-side, caught
+by the first goldens ever to pin that lane (91 fixtures now).
 
-**The numbers are sourced and the ERA is the decision** (§2 row 7, page
-tier 2026-08-14): their CURRENT ladder is fragment-gated — WB2 = 500
-frags + 20 HQM + 5 basic blueprint fragments, WB3 = 1,000 + 100 HQM + 5
-advanced, fragments spawn only in monument puzzle rooms / crates, scrap
-removed from benches (Meta Shift) — and research costs are the post-cut
-15/30/60/120. Their PRE-Oct-2025 ladder was scrap accumulation (~1,800
-through the benches). We have no monuments-with-loot, no events, no
-crates, so their current gate has nothing here to hang on: **the
-scrap-era ladder is the coherent take until events exist**, and that
-choice is a knob to speak, not a default. UI reference for the viewer
-half: `rusthelp.com/tools/techtree`; every item page carries its
-tech-tree path total, so agents can walk the tree page by page.
+Remains, each small and none blocking:
+1. **The craft rebate** (§2 row 3) is unblocked now — 50% faster one
+   bench up, 75% two up — a `craft.rs` lookup once someone takes it.
+2. **The panel draws indents, not edges**: a line renderer between
+   parent and child is cosmetic and waits for a real look at the screen.
+3. **The operator has not seen it** — the tree panel, the two greybox
+   benches, the tier badges. The visual gate is a person (`CLAUDE.md`);
+   boot the game, stand at a bench, press `E`.
 
 ## 0ac · The catalogue — what twig and the cost grammar left *(systems lane)*
 
 Landed 2026-08-10 (operator: *"we need to work on building more"*).
 `reference/BUILDING.md` §7b is the research, `DECISIONS.md` §open "twig
 v0" the slice: placement is twig-only and the hammer commits it, twig is
-never upkept, and **the whole cost column is theirs** — 24 cells, their
-grade base and their shape ratios (`RIPLIST.md` row 1b, which did not
-exist until it was taken: our costs had never been compared to theirs, and
-the node take is what exposed it). §9 items 11 and 12 are done; 13, 14 and
-15 are not, in cost order:
+never upkept, and **the whole cost column is theirs** (`RIPLIST.md` row
+1b). §9 items 11, 12 and **13** are done; 14 and 15 are not, in cost
+order:
 
-1. **The window and the wall frame** (§9.13). Openings are already sockets
-   here — a doorway takes a door with its own hp and its own lock — and
-   these are the same idea with the insert unbuilt. `SHAPE_BITS` is 3 and
-   6 of its 8 codes are used, so **two shapes fit with no wire widening**,
-   and §7b.3 has already decided their prices (0.7 and 0.5). The window
-   wants a collision answer first: it blocks a body and not a bullet,
-   which no shape here does yet.
-2. **Hard and soft sides** (§9.15, §7b.5). One rule that turns placement
-   *orientation* into skill, and the reason a base can be weaker than its
-   bill of materials. Needs a facing on every piece and an attack
-   direction on every swing — its own pass, and it pairs with
-   `RIPLIST.md` §2's per-material resistance rather than competing.
-3. **Triangles** (§9.14). Half the reason their bases look like that, and
-   the only item here that is a **grid change**: our cell holds one plane,
-   one riser and two canonical edges, all square. Cost it as one; do not
-   smuggle it in behind items 1 and 2.
+1. ~~The window and the wall frame~~ **Landed 2026-08-15** (§open
+   "catalogue v1", wire v38): 32 cells at §7b.3's ratios, the window
+   blocks a body and passes an arrow through its 1.2 × 1.2 aperture
+   (`collide::shot_blocked` — arrows fly at their own radius now, the
+   fix `ranged.rs` owed), the frame blocks only its drawn rim, and the
+   doorway's lintel stops arrows. What remains of §9.13 is the
+   **inserts** — bars, glass, shutters, the garage door — each a
+   deployable pass of its own (§7b.4's second purchase), none started.
+2. ~~Hard and soft sides~~ **Landed 2026-08-15** (§open "hard/soft v0",
+   wire v39, save format 6): soft faces the placer, the hard face of any
+   edge piece takes 1 structure a swing whatever the tool, the HUD's
+   prompt labels the side you stand on off the same `build::soft_side`
+   the swing is priced with. Still owed from §9.15: a **visual** identity
+   for the soft face (a texture or tint — the label is the only tell
+   today), floor sides (needs a vertical attack direction), and the
+   pairing with `RIPLIST.md` §2's per-material resistance.
+3. ~~Triangles~~ **Landed 2026-08-15** (§open "triangles v0", wire v40):
+   the grid change, costed as one — four half-cell locs, two diagonal
+   wall slots, three shapes at §7b.3's exact ratios, the half-cell right
+   triangle deliberately instead of their unaddressable equilateral
+   (the §open row carries the full case). What remains of §9.14: a
+   **capture pass** to look at a diagonal base in the booted game (the
+   person is the visual gate), the wall-on-diagonal price question
+   (§open), and hard/soft's visual identity extended to tri halves.
 
 ---
 

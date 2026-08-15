@@ -18,11 +18,12 @@ use protocol::{
     encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
     encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
     encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_respawn, encode_event_shot,
-    encode_event_slot_change, encode_event_slot_sync, encode_event_stock, encode_event_struct_hit,
-    encode_event_vitals, encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram,
-    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
+    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
+    encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark, ActionMsg, ChatMsg,
+    EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag,
+    WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
+    PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{PieceRec, LOC_PLANE};
@@ -924,6 +925,7 @@ impl ShardCore {
                     ActionMsg::Loot => Command::Loot { id: c.id },
                     ActionMsg::Consume { slot } => Command::Consume { id: c.id, slot },
                     ActionMsg::Research { slot } => Command::Research { id: c.id, slot },
+                    ActionMsg::Unlock { recipe } => Command::Unlock { id: c.id, recipe },
                     ActionMsg::Drink => Command::Drink { id: c.id },
                     ActionMsg::Respawn { on_bag } => Command::Respawn { id: c.id, on_bag },
                     ActionMsg::Move {
@@ -1407,13 +1409,33 @@ impl ShardCore {
                     }
                 }
                 EV_PIECE_PLACED => {
-                    let rec = PieceRec {
-                        cx: (ev.a >> 16) as u16,
-                        cz: ev.a as u16,
-                        level: (ev.b >> 16) as u8,
-                        loc: (ev.b >> 8) as u8,
-                        row: ev.b as u8,
-                        ..PieceRec::default()
+                    // The address comes off the event; the RECORD comes off
+                    // the store. Rebuilding it from the payload alone was
+                    // fine while the payload was the whole record — the
+                    // facing bit (hard/soft v0) made it not be, and a
+                    // broadcast that defaulted it would disagree with the
+                    // piece-sync walk about which side of a wall is soft:
+                    // the exact two-lanes drift the trap list warns about,
+                    // caught here because the store is the single source.
+                    let addr = (
+                        (ev.a >> 16) as u16,
+                        ev.a as u16,
+                        (ev.b >> 16) as u8,
+                        (ev.b >> 8) as u8,
+                    );
+                    let rec = match self.world.pieces.find(addr.0, addr.1, addr.2, addr.3) {
+                        Some(r) => *r,
+                        // Placed and removed in one tick (a collapse can):
+                        // announce what the event said; the removal event
+                        // follows in this same drain.
+                        None => PieceRec {
+                            cx: addr.0,
+                            cz: addr.1,
+                            level: addr.2,
+                            loc: addr.3,
+                            row: ev.b as u8,
+                            ..PieceRec::default()
+                        },
                     };
                     match encode_event_piece_placed(&rec, &mut self.ev_buf) {
                         Ok(len) => {
@@ -2185,6 +2207,23 @@ impl ShardCore {
                     if send(Lane::Event, slot, &self.ev_buf[..len]) {
                         ShardStats::bump(&stats.ev_sent);
                         self.clients[slot].recipes_cursor += took;
+                    } else {
+                        return;
+                    }
+                }
+                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+            }
+        }
+
+        // Research rows, same drip shape (the tech tree panel's data).
+        let c = &self.clients[slot];
+        let rc = &self.world.research;
+        if rc.row_count > 0 && c.research_cursor < rc.row_count as usize {
+            match encode_event_research_rows(rc, c.research_cursor, &mut self.ev_buf) {
+                Ok((len, took)) => {
+                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                        ShardStats::bump(&stats.ev_sent);
+                        self.clients[slot].research_cursor += took;
                     } else {
                         return;
                     }

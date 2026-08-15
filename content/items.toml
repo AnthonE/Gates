@@ -268,6 +268,26 @@ tier = 1
 rarity = "uncommon"
 slot = "hand"
 
+# The bench ladder's upper rungs (bench ladder v0, the pre-Oct-2025
+# scrap-era shape — operator 2026-08-15, DECISIONS.md). Both tier 2: each
+# is the door INTO an era rather than a thing of its era, and the door to
+# powder is priced in powder-era terms.
+[[item]]
+id = "item.workbench2"
+name = "Workbench-2"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+
+[[item]]
+id = "item.workbench3"
+name = "Workbench-3"
+stack = 1
+tier = 2
+rarity = "rare"
+slot = "hand"
+
 [[item]]
 id = "item.hearth"
 name = "Hearth"

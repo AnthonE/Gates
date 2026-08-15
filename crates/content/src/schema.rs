@@ -96,6 +96,12 @@ pub struct Gatherable {
 pub enum Station {
     None,
     Workbench1,
+    /// The bench ladder's second and third rungs (bench ladder v0, the
+    /// pre-Oct-2025 scrap-era shape, operator 2026-08-15). Declared
+    /// between `Workbench1` and `Furnace` so the enum's order stays the
+    /// baked code's order — the furnace moved 2 → 4 with them.
+    Workbench2,
+    Workbench3,
     Furnace,
 }
 
@@ -136,18 +142,15 @@ pub struct Research {
     /// Units of the coin burned. Zero is legal (a free unlock is a
     /// tutorial, not a mistake).
     pub cost: u32,
-    /// The blueprints that must already be held before this one may be
-    /// bought — item ids, each of which must itself carry a research row.
-    /// Empty is a root of the tree and is the default, so every row that
-    /// predates the ladder keeps meaning exactly what it meant.
-    ///
-    /// Authored, but not free-form: `validate::structural` refuses a row
-    /// that omits an edge the craft graph already implies (a
-    /// blueprint-gated recipe whose inputs include another blueprint-gated
-    /// item). So the implied set is a FLOOR and this column may only add
-    /// to it — which is what stops the tree and the recipes drifting.
+    /// The tech tree's edge (tech tree v0): the **item** of another
+    /// research row that must be learned before this node may be bought
+    /// at a bench. Absent means a root. Written as an item rather than a
+    /// recipe id for the same reason `item` is — the file speaks in
+    /// things a player recognises, and the bake resolves the graph.
+    /// Only the tree verb reads it; the research table takes a looted
+    /// sample with no questions asked.
     #[serde(default)]
-    pub requires: Vec<String>,
+    pub requires: Option<String>,
 }
 
 /// The head of `content/research.toml`: what research is paid in.
@@ -170,6 +173,18 @@ pub enum Shape {
     Floor,
     Stairs,
     Roof,
+    /// The two socket shapes (catalogue v1, `reference/BUILDING.md`
+    /// §9.13): openings priced by what they deny net of the insert you
+    /// still owe — window 0.7 of the wall, frame 0.5 (§7b.3).
+    Window,
+    WallFrame,
+    /// The triangle footprint (triangles v0, §9.14): the half-cell along
+    /// a diagonal, at §7b.3's own ratios — tri foundation and tri roof
+    /// 0.5 of the wall, tri floor 0.25. The diagonal WALL that closes a
+    /// hypotenuse is not a shape: it is the wall, on a diagonal slot.
+    TriFoundation,
+    TriFloor,
+    TriRoof,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
@@ -338,6 +353,13 @@ pub enum DeployArchetype {
     /// container — checked by proximity like the workbench, holding
     /// nothing (`sim-core/research.rs` says why) — and the coin's sink.
     Research,
+    /// The bench ladder's upper rungs (bench ladder v0): stations like
+    /// `Workbench`, one tier each. Their own archetypes rather than a
+    /// tier field, because the archetype is what the wire carries, the
+    /// client silhouettes and `bench_near` scans — `sim-core/deploy.rs`
+    /// `bench_tier` is the one place the rung order is written.
+    Workbench2,
+    Workbench3,
 }
 
 #[derive(Debug, Clone, Deserialize)]

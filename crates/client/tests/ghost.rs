@@ -22,7 +22,10 @@ use client::render::structures::{
     SEAM_M,
 };
 use sim_core::build::{BUILD_CELL_M, LEVEL_H_M};
-use sim_core::collide::{doorway_solid_at, DOOR_POST_W_M};
+use sim_core::collide::{
+    doorway_solid_at, frame_solid_at, window_solid_at, DOOR_POST_W_M, FRAME_RIM_M, WINDOW_HEAD_M,
+    WINDOW_SILL_M,
+};
 
 /// Where the two drawn posts span, as `t` along the edge.
 fn drawn_posts() -> [(f32, f32); 2] {
@@ -256,6 +259,89 @@ fn the_tables_lintel_caps_the_opening() {
         lintel.size.z,
         door_opening_w()
     );
+}
+
+/// Drawn solidity of an edge shape's emitted parts at `(t, y)` — `t` metres
+/// along the edge, `y` metres above the storey base. The window and frame
+/// gates sample this against the sim's own `*_solid_at`, which is the
+/// doorway pair's discipline extended to the axis those two shapes
+/// actually vary on: height.
+fn table_solid_at(shape: u8, t: f32, y: f32) -> bool {
+    let (parts, n) = shape_parts(shape);
+    let mid = BUILD_CELL_M * 0.5;
+    parts[..n].iter().any(|p| {
+        let c = mid + p.offset.z;
+        t >= c - p.size.z * 0.5
+            && t <= c + p.size.z * 0.5
+            && y >= p.offset.y - p.size.y * 0.5
+            && y <= p.offset.y + p.size.y * 0.5
+    })
+}
+
+/// The emitted window agrees with `collide::window_solid_at` everywhere
+/// but the seam bands: sill solid, header solid, jambs solid, aperture
+/// open. This is the gate `collide.rs` promises in `window_solid_at`'s
+/// own doc — the drawn hole IS the hole an arrow threads.
+#[test]
+fn the_tables_window_is_the_sims_window() {
+    let t_seams = [
+        0.0,
+        DOOR_POST_W_M,
+        BUILD_CELL_M - DOOR_POST_W_M,
+        BUILD_CELL_M,
+    ];
+    let y_seams = [WINDOW_SILL_M, WINDOW_HEAD_M];
+    let mut checked = 0;
+    for i in 0..=150 {
+        let t = BUILD_CELL_M * (i as f32 / 150.0);
+        if t_seams.iter().any(|s| (t - s).abs() <= SEAM_M) {
+            continue;
+        }
+        for j in 0..150 {
+            let y = LEVEL_H_M * (j as f32 + 0.5) / 150.0;
+            if y_seams.iter().any(|s| (y - s).abs() <= SEAM_M) {
+                continue;
+            }
+            assert_eq!(
+                table_solid_at(sim_core::build::SHAPE_WINDOW, t, y),
+                window_solid_at(t, y),
+                "at (t={t}, y={y}): drawn-solid={} but sim-solid={}",
+                table_solid_at(sim_core::build::SHAPE_WINDOW, t, y),
+                window_solid_at(t, y)
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 15_000, "only {checked} samples were compared");
+}
+
+/// The emitted frame agrees with `collide::frame_solid_at`: rim jambs and
+/// top beam solid, the rest of the edge open — to bodies and arrows both.
+#[test]
+fn the_tables_frame_is_the_sims_frame() {
+    let t_seams = [0.0, FRAME_RIM_M, BUILD_CELL_M - FRAME_RIM_M, BUILD_CELL_M];
+    let mut checked = 0;
+    for i in 0..=150 {
+        let t = BUILD_CELL_M * (i as f32 / 150.0);
+        if t_seams.iter().any(|s| (t - s).abs() <= SEAM_M) {
+            continue;
+        }
+        for j in 0..150 {
+            let y = LEVEL_H_M * (j as f32 + 0.5) / 150.0;
+            if (y - (LEVEL_H_M - FRAME_RIM_M)).abs() <= SEAM_M {
+                continue;
+            }
+            assert_eq!(
+                table_solid_at(sim_core::build::SHAPE_FRAME, t, y),
+                frame_solid_at(t, y),
+                "at (t={t}, y={y}): drawn-solid={} but sim-solid={}",
+                table_solid_at(sim_core::build::SHAPE_FRAME, t, y),
+                frame_solid_at(t, y)
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 15_000, "only {checked} samples were compared");
 }
 
 /// Every shape the wire can name emits something drawable: at least one part,

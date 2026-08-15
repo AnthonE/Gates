@@ -25,8 +25,8 @@ use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::limits::TICK_HZ;
 use sim_core::persist::PlayerSave;
 use sim_core::research::{
-    knows, ResearchContent, REFUSE_R_COST, REFUSE_R_ITEM, REFUSE_R_KNOWN, REFUSE_R_LOCKED,
-    REFUSE_R_SLOT, REFUSE_R_TABLE,
+    knows, ResearchContent, REFUSE_R_BENCH, REFUSE_R_COST, REFUSE_R_ITEM, REFUSE_R_KNOWN,
+    REFUSE_R_PARENT, REFUSE_R_SLOT, REFUSE_R_TABLE,
 };
 use sim_core::survival::SurvivalContent;
 use sim_core::world::{
@@ -356,6 +356,203 @@ fn an_ungated_recipe_never_asks_about_a_blueprint() {
     );
 }
 
+// ---------------------------------------------------------------------
+// The tech tree (tech tree v0): the second verb over the same mask.
+// `ResearchContent::probe_fixture` row 1 is the tree probe — recipe 1,
+// cost 4, requiring recipe 2 — and both fixture recipes are node-tier 1,
+// so the fixture workbench (deploy row 2 below is the DOOR; the bench is
+// row 1) is the only station the suite needs.
+
+/// Deploy fixture row 1 is the tier-1 workbench; placing it costs
+/// holding item 3.
+const BENCH_ROW: u16 = 1;
+const BENCH_ITEM: u16 = 3;
+const NODE_RECIPE: u16 = 1;
+const NODE_COST: u16 = 4;
+
+/// `table_world`, plus a workbench on the neighbouring cell — the tree's
+/// own station, since a research table is not a bench.
+fn bench_world() -> World {
+    let (mut w, cx, cz) = table_world();
+    w.players[0].inv[2] = ItemStack {
+        item: BENCH_ITEM,
+        count: 1,
+    };
+    w.tick(&[Command::PlaceDeploy {
+        id: PLAYER,
+        row: BENCH_ROW,
+        cx: cx + 1,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(w.deploys.len(), 2, "the suite needs its bench placed");
+    // The bench's carrier item is the fixture's COIN (item 3), so any
+    // unspent unit would inflate every coin count below — clear it and
+    // restock to the suite's known 20.
+    w.players[0].inv[2] = ItemStack::default();
+    stock(&mut w);
+    w
+}
+
+fn ask_unlock(w: &mut World, recipe: u16) {
+    w.tick(&[Command::Unlock { id: PLAYER, recipe }]);
+}
+
+/// The tree's whole point, in order: out-of-order refuses on the parent
+/// and costs nothing; the root unlocks with no sample; the child then
+/// unlocks along the edge — and the coin is all either of them takes.
+#[test]
+fn the_tree_unlocks_along_its_edges_and_refuses_out_of_order() {
+    let mut w = bench_world();
+
+    // The child first: refused on the parent, coin intact.
+    ask_unlock(&mut w, NODE_RECIPE);
+    assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_PARENT));
+    assert_eq!(have(&w, COIN), 20, "an out-of-order ask costs nothing");
+    assert!(!knows(w.players[0].known, NODE_RECIPE));
+
+    // The root: no sample in hand — the tree never asks for one.
+    ask_unlock(&mut w, GATED_RECIPE);
+    assert!(knows(w.players[0].known, GATED_RECIPE));
+    assert_eq!(have(&w, COIN), 20 - COST as u32);
+    assert_eq!(
+        have(&w, SAMPLE),
+        2,
+        "the tree took the price and never the sample"
+    );
+
+    // The child, now in order.
+    ask_unlock(&mut w, NODE_RECIPE);
+    assert!(knows(w.players[0].known, NODE_RECIPE));
+    assert_eq!(have(&w, COIN), 20 - (COST + NODE_COST) as u32);
+}
+
+/// The tree's refusal ladder, each with its own reason and nothing
+/// taken: not a node, already known, no bench, short on coin.
+#[test]
+fn the_tree_refuses_with_reasons_and_takes_nothing() {
+    let mut w = bench_world();
+
+    // Recipe 0 exists and no research row teaches it.
+    ask_unlock(&mut w, 0);
+    assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_ITEM));
+
+    // Already known.
+    ask_unlock(&mut w, GATED_RECIPE);
+    let coin_after = have(&w, COIN);
+    ask_unlock(&mut w, GATED_RECIPE);
+    assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_KNOWN));
+    assert_eq!(have(&w, COIN), coin_after, "a second ask is free");
+
+    // Short on coin: the child costs 4 and the pocket holds 3.
+    w.players[0].inv[1] = ItemStack {
+        item: COIN,
+        count: 3,
+    };
+    ask_unlock(&mut w, NODE_RECIPE);
+    assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_COST));
+    assert_eq!(have(&w, COIN), 3, "and the 3 are still there");
+    assert!(!knows(w.players[0].known, NODE_RECIPE));
+}
+
+/// No bench in reach is its own sentence — `REFUSE_R_BENCH`, not the
+/// table's `REFUSE_R_TABLE` — because "walk to your workbench" and "walk
+/// to a research table" send a player to different buildings. The world
+/// here has ONLY the table placed, which is exactly the confusion the
+/// two codes exist to keep apart.
+#[test]
+fn the_tree_needs_a_bench_and_says_so() {
+    let (mut w, _, _) = table_world();
+    ask_unlock(&mut w, GATED_RECIPE);
+    assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_BENCH));
+    assert_eq!(have(&w, COIN), 20, "and asking cost nothing");
+}
+
+/// The table ignores the tree: a looted sample researches a node whose
+/// parent was never learned. Research-what-you-loot bypassing the graph
+/// is the reference's own two-system split, and it is what keeps a lucky
+/// find worth the walk.
+#[test]
+fn the_table_researches_a_sample_with_no_questions_about_parents() {
+    let (mut w, _, _) = table_world();
+    // Row 1's sample (item 5) in hand, parent (recipe 2) unknown.
+    w.players[0].inv[0] = ItemStack { item: 5, count: 1 };
+    assert!(!knows(w.players[0].known, GATED_RECIPE));
+    ask(&mut w, 0);
+    assert!(
+        knows(w.players[0].known, NODE_RECIPE),
+        "the table taught the child with the parent unlearned"
+    );
+}
+
+/// (4) It survives a logout. The mask rides `PlayerSave`, so this is the
+/// codec's round trip on the one field that a player paid for.
+#[test]
+fn a_blueprint_survives_a_save_and_a_load() {
+    let (mut w, _, _) = table_world();
+    ask(&mut w, 0);
+    let mask = w.players[0].known;
+    assert!(mask != 0, "there is something to save");
+
+    let save = PlayerSave::of(&w.players[0]);
+    let mut bytes = [0u8; sim_core::persist::PLAYER_SAVE_BYTES];
+    save.write_le(&mut bytes);
+    let back = PlayerSave::read_le(&bytes).expect("a record we just wrote");
+    assert_eq!(back.known, mask, "the mask round-trips whole");
+    assert!(
+        knows(back.known, GATED_RECIPE),
+        "and it is still the bit that was paid for"
+    );
+}
+
+// Tests (7) and (8) stood here and are DELETED by the 2026-08-15
+// integration rather than skipped. They asserted `REFUSE_R_LOCKED` and a
+// `requires` MASK on the TABLE verb — the design the merge retired in
+// favour of the tree verb's single-parent edge, so the feature they
+// covered no longer exists. `unlock`'s own tests assert the same
+// property through `REFUSE_R_PARENT`. Deleting a test whose feature is
+// gone is honest; keeping it green by weakening it would not be.
+
+// ---------------------------------------------------------------------------
+// The five doors the blueprint mask crosses (`known` at death, respawn, save,
+// restore and the fresh join). Rescued into the 2026-08-15 integration by
+// hand: the FIX these cover merged cleanly into `world.rs` and `persist.rs`,
+// but the tests sat inside a `research.rs` conflict hunk resolved the other
+// way and would have gone silently. A fix whose test is gone is a fix waiting
+// to regress — `known` was cleared at four of these five doors once already.
+// ---------------------------------------------------------------------------
+
+/// The mask these doors are tested with, and the reason it is not a small
+/// number: **both halves are populated**. A door that sent only the low 32
+/// bits, or packed the two backwards, passes any check made with a small
+/// value — `EV_KNOWN` is `u64` state carried through two `u32` fields,
+/// which is exactly the packed-field blindness `event_roles.rs` §2 refuses.
+const WIDE: u64 = 1 << 3 | 1 << 40;
+
+/// The mask, as the door states it: `(low, high)` reassembled from the
+/// one `EV_KNOWN` on the last tick, or `None` if the door said nothing.
+fn announced(w: &World) -> Option<u64> {
+    w.events
+        .entries()
+        .iter()
+        .find(|e| e.code == EV_KNOWN)
+        .map(|e| e.b as u64 | (e.c as u64) << 32)
+}
+
+/// Whether the gated recipe is still refused *for the blueprint*, asked of
+/// whichever body id is driving — the consequence half of "the mask
+/// survived", and the only one a player can feel. A test that checks the
+/// bit and stops is checking a `u64`; this checks that the recipe opened.
+fn blueprint_blocks(w: &mut World, id: u32) -> bool {
+    w.tick(&[Command::Craft {
+        id,
+        recipe: GATED_RECIPE,
+        count: 1,
+    }]);
+    refusal(w, EV_CRAFT_REFUSED) == Some(REFUSE_BLUEPRINT)
+}
+
 /// The content fixtures, without a table and without a player — the far
 /// side of a reconnect, where a save arrives at a world that has never
 /// seen its owner. `table_world` is this plus a body and the table it
@@ -374,27 +571,30 @@ fn content_world() -> Box<World> {
     w
 }
 
-/// Whether the gated recipe is still refused *for the blueprint*, asked of
-/// whichever body id is driving — the consequence half of "the mask
-/// survived", and the only one a player can feel. A test that checks the
-/// bit and stops is checking a `u64`; this checks that the recipe opened.
-fn blueprint_blocks(w: &mut World, id: u32) -> bool {
-    w.tick(&[Command::Craft {
-        id,
-        recipe: GATED_RECIPE,
-        count: 1,
-    }]);
-    refusal(w, EV_CRAFT_REFUSED) == Some(REFUSE_BLUEPRINT)
+#[test]
+fn a_purchase_states_the_whole_mask_it_produced() {
+    let (mut buy, _, _) = table_world();
+    ask(&mut buy, 0);
+    assert_eq!(
+        announced(&buy),
+        Some(buy.players[0].known),
+        "a purchase must state the whole mask it produced"
+    );
 }
 
-/// The mask, as the door states it: `(low, high)` reassembled from the
-/// one `EV_KNOWN` on the last tick, or `None` if the door said nothing.
-fn announced(w: &World) -> Option<u64> {
-    w.events
-        .entries()
-        .iter()
-        .find(|e| e.code == EV_KNOWN)
-        .map(|e| e.b as u64 | (e.c as u64) << 32)
+#[test]
+fn the_fresh_door_states_an_empty_mask_out_loud() {
+    // Zero is a fact. A client-core reused across two characters would
+    // otherwise keep the first one's recipes on offer, and the craft gate
+    // would refuse them at the sim — a menu that lies rather than a menu
+    // that is empty.
+    let mut fresh = content_world();
+    fresh.tick(&[Command::Join { id: PLAYER }]);
+    assert_eq!(
+        announced(&fresh),
+        Some(0),
+        "the fresh door said nothing at all"
+    );
 }
 
 /// (4a) **It survives a death**, which is the door that was losing it.
@@ -482,56 +682,6 @@ fn a_blueprint_survives_a_restore() {
     );
 }
 
-/// (4c) **Every door states the mask**, because a fact stated at two doors
-/// out of three is a fact that depends on how you arrived.
-///
-/// `SUB_KNOWN` existed and only a purchase ever sent it, so a player who
-/// researched on Monday and logged in on Tuesday was told nothing and
-/// watched six recipes they owned stay grey until they bought a seventh.
-/// The doors are `seat` (fresh and restored) and `wake` (a respawn); the
-/// purchase is checked too, because it is the same event now and the
-/// server has one thing to encode instead of two.
-///
-/// One test per door rather than one test for all of them: each frame then
-/// holds at most two worlds, which is the stack ceiling `persist.rs`
-/// documents, and a failure names the door.
-///
-/// The mask under test has **both halves populated** wherever the door can
-/// carry one. A door that sent only the low 32 bits, or packed the two
-/// backwards, passes any check made with a small number — `EV_KNOWN` is
-/// `u64` state through two `u32` fields, which is exactly the packed-field
-/// blindness `event_roles.rs` §2 refuses to allow.
-const WIDE: u64 = 1 << 3 | 1 << 40;
-
-#[test]
-fn the_fresh_door_states_an_empty_mask_out_loud() {
-    // Zero is a fact. A client-core reused across two characters would
-    // otherwise keep the first one's recipes on offer, and the craft gate
-    // would refuse them at the sim — a menu that lies rather than a menu
-    // that is empty.
-    let mut fresh = content_world();
-    fresh.tick(&[Command::Join { id: PLAYER }]);
-    assert_eq!(
-        announced(&fresh),
-        Some(0),
-        "the fresh door said nothing at all"
-    );
-}
-
-#[test]
-fn the_restored_door_states_the_whole_mask() {
-    let (mut w, _, _) = table_world();
-    w.players[0].known = WIDE;
-    let save = w.save_of(PLAYER).expect("the player is in the world");
-    let mut restored = content_world();
-    restored.tick(&[Command::JoinAs { id: REJOIN, save }]);
-    assert_eq!(
-        announced(&restored),
-        Some(WIDE),
-        "the restored door either said nothing or lost half the mask"
-    );
-}
-
 #[test]
 fn the_respawn_door_states_the_whole_mask() {
     let (mut dead, _, _) = table_world();
@@ -550,105 +700,15 @@ fn the_respawn_door_states_the_whole_mask() {
 }
 
 #[test]
-fn a_purchase_states_the_whole_mask_it_produced() {
-    let (mut buy, _, _) = table_world();
-    ask(&mut buy, 0);
-    assert_eq!(
-        announced(&buy),
-        Some(buy.players[0].known),
-        "a purchase must state the whole mask it produced"
-    );
-}
-
-/// (4) It survives a logout. The mask rides `PlayerSave`, so this is the
-/// codec's round trip on the one field that a player paid for.
-#[test]
-fn a_blueprint_survives_a_save_and_a_load() {
+fn the_restored_door_states_the_whole_mask() {
     let (mut w, _, _) = table_world();
-    ask(&mut w, 0);
-    let mask = w.players[0].known;
-    assert!(mask != 0, "there is something to save");
-
-    let save = PlayerSave::of(&w.players[0]);
-    let mut bytes = [0u8; sim_core::persist::PLAYER_SAVE_BYTES];
-    save.write_le(&mut bytes);
-    let back = PlayerSave::read_le(&bytes).expect("a record we just wrote");
-    assert_eq!(back.known, mask, "the mask round-trips whole");
-    assert!(
-        knows(back.known, GATED_RECIPE),
-        "and it is still the bit that was paid for"
-    );
-}
-
-/// (7) **The ladder.** A row whose prerequisite is unheld refuses, refuses
-/// for the *right* reason, and costs nothing; learning the prerequisite
-/// opens it. Landed 2026-08-15 with `ResearchRow::requires`.
-///
-/// The order of the two checks is the assertion that matters. A locked row
-/// is refused BEFORE the price, so a player who cannot reach a blueprint is
-/// never told they are poor — and, more concretely, is never billed for
-/// finding out. That is why the fixture below is deliberately *rich*: the
-/// coin is there, and the refusal still has to be `LOCKED`.
-#[test]
-fn a_row_behind_a_prerequisite_refuses_until_the_prerequisite_is_held() {
-    let (mut w, _, _) = table_world();
-    // Put the fixture's one row behind a recipe nobody knows yet. `OPEN_RECIPE`
-    // is the craft fixture's ungated row, so this is a prerequisite that is
-    // real, reachable and simply not held.
-    w.research.rows[0].requires = 1u64 << OPEN_RECIPE;
-
-    let coin_before = have(&w, COIN);
-    let sample_before = have(&w, SAMPLE);
-    ask(&mut w, 0);
+    w.players[0].known = WIDE;
+    let save = w.save_of(PLAYER).expect("the player is in the world");
+    let mut restored = content_world();
+    restored.tick(&[Command::JoinAs { id: REJOIN, save }]);
     assert_eq!(
-        refusal(&w, EV_RESEARCH_REFUSED),
-        Some(REFUSE_R_LOCKED),
-        "an unmet prerequisite is its own refusal, not `COST` and not `ITEM`"
-    );
-    assert!(
-        !knows(w.players[0].known, GATED_RECIPE),
-        "and it taught nothing"
-    );
-    assert_eq!(
-        have(&w, COIN),
-        coin_before,
-        "a locked row is refused before the price, so it bills nothing"
-    );
-    assert_eq!(have(&w, SAMPLE), sample_before, "and consumes no sample");
-
-    // Hold the prerequisite; the same request now goes through.
-    w.players[0].known |= 1u64 << OPEN_RECIPE;
-    ask(&mut w, 0);
-    assert!(
-        knows(w.players[0].known, GATED_RECIPE),
-        "with the prerequisite held the row is buyable"
-    );
-    assert_eq!(
-        have(&w, COIN),
-        coin_before - COST as u32,
-        "and now, and only now, it charges"
-    );
-}
-
-/// The mask is an AND over ALL prerequisites, not any-of: two edges means
-/// both. Cheap to state and the exact thing a `!=` vs `&` slip would break.
-#[test]
-fn every_prerequisite_is_required_not_merely_one_of_them() {
-    let (mut w, _, _) = table_world();
-    w.research.rows[0].requires = (1u64 << OPEN_RECIPE) | (1u64 << 0);
-
-    w.players[0].known |= 1u64 << OPEN_RECIPE;
-    ask(&mut w, 0);
-    assert_eq!(
-        refusal(&w, EV_RESEARCH_REFUSED),
-        Some(REFUSE_R_LOCKED),
-        "one of two prerequisites is not enough"
-    );
-
-    w.players[0].known |= 1u64 << 0;
-    ask(&mut w, 0);
-    assert!(
-        knows(w.players[0].known, GATED_RECIPE),
-        "both held, and it opens"
+        announced(&restored),
+        Some(WIDE),
+        "the restored door either said nothing or lost half the mask"
     );
 }

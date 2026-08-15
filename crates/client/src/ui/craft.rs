@@ -33,6 +33,7 @@
 use protocol::event::ItemCatalog;
 use sim_core::craft::{
     inv_count, CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
+    STATION_WORKBENCH2, STATION_WORKBENCH3,
 };
 use sim_core::deploy::DeployContent;
 use sim_core::gather::ItemStack;
@@ -171,7 +172,11 @@ pub fn in_category(cat: Cat, recipe: u16, def: &RecipeDef, facts: &Facts, favs: 
         Cat::Favourite => favs.contains(&recipe),
         Cat::All => true,
         Cat::ByHand => def.station == STATION_NONE,
-        Cat::Workbench => def.station == STATION_WORKBENCH1,
+        // Any rung: the bucket answers "do I need a bench", and which
+        // level is the badge's job (bench ladder v0). An equality against
+        // rung 1 here is how a tier-2 recipe silently vanishes from every
+        // station bucket.
+        Cat::Workbench => (STATION_WORKBENCH1..=STATION_WORKBENCH3).contains(&def.station),
         Cat::Furnace => def.station == STATION_FURNACE,
         Cat::Deployable => facts.is_deployable(def.output),
         Cat::Component => facts.is_component(def.output),
@@ -344,6 +349,8 @@ pub fn station_label(station: u8) -> Option<&'static str> {
     match station {
         STATION_NONE => None,
         STATION_WORKBENCH1 => Some("WORKBENCH LEVEL 1 REQUIRED"),
+        STATION_WORKBENCH2 => Some("WORKBENCH LEVEL 2 REQUIRED"),
+        STATION_WORKBENCH3 => Some("WORKBENCH LEVEL 3 REQUIRED"),
         STATION_FURNACE => Some("FURNACE REQUIRED"),
         _ => Some("STATION REQUIRED"),
     }

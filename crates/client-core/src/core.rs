@@ -772,6 +772,12 @@ pub struct ClientCore {
     /// Rows received so far; the table is complete when this reaches
     /// `recipes.recipe_count` (batches arrive in order).
     pub recipes_have: u16,
+    /// The research table as dripped so far (tech tree v0) — the tree
+    /// panel's data: each node's cost and its `requires` edge, in the
+    /// same rows the sim runs.
+    pub research: sim_core::research::ResearchContent,
+    /// Rows received so far, `recipes_have`'s shape.
+    pub research_have: u16,
     /// Authoritative own craft queue as last announced: (recipe,
     /// remaining) live jobs, head first, and the head unit's remaining
     /// ticks at announce time.
@@ -1023,6 +1029,8 @@ impl ClientCore {
             mark_weak_hit: false,
             recipes: CraftContent::EMPTY,
             recipes_have: 0,
+            research: sim_core::research::ResearchContent::EMPTY,
+            research_have: 0,
             jobs: [(0, 0); CRAFT_QUEUE],
             jobs_count: 0,
             craft_eta_ticks: 0,
@@ -1295,6 +1303,25 @@ impl ClientCore {
                     self.recipes.recipes[first as usize + i] = *row;
                 }
                 self.recipes_have = self.recipes_have.max(first as u16 + count as u16);
+                flags |= APPLIED_RECIPES;
+            }
+            EventMsg::ResearchRows {
+                total,
+                first,
+                count,
+                coin,
+                rows,
+            } => {
+                self.research.row_count = total as u16;
+                self.research.coin = coin;
+                for (i, row) in rows.iter().enumerate().take(count as usize) {
+                    self.research.rows[first as usize + i] = *row;
+                }
+                self.research_have = self.research_have.max(first as u16 + count as u16);
+                // The recipes flag, deliberately: every reader of one
+                // table reads the other (the craft panel greys, the tree
+                // panel prices), so a second bit would be a second way to
+                // spell the same redraw.
                 flags |= APPLIED_RECIPES;
             }
             EventMsg::PiecePlaced { rec } => {

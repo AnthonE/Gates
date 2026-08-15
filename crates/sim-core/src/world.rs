@@ -832,6 +832,15 @@ pub enum Command {
         id: u32,
         slot: u8,
     },
+    /// Learn recipe row `recipe` through the tech tree (tech tree v0):
+    /// at a workbench of the node's tier, along the `requires` graph,
+    /// paying the row's coin — no sample needed (research.rs says why
+    /// the two verbs stay asymmetric). The recipe index is the sender's
+    /// claim and the sim is the verdict, as `Research`'s slot is.
+    Unlock {
+        id: u32,
+        recipe: u16,
+    },
     /// Cancel the queue job at `index`, refunding its remaining inputs.
     CraftCancel {
         id: u32,
@@ -2294,6 +2303,19 @@ impl World {
                     );
                 }
             }
+            Command::Unlock { id, recipe } => {
+                if let Some(s) = self.live_slot_of(id) {
+                    crate::research::unlock(
+                        &self.research,
+                        &self.craft,
+                        &self.deploy,
+                        &self.deploys,
+                        &mut self.players[s],
+                        recipe,
+                        &mut self.events,
+                    );
+                }
+            }
             Command::CraftCancel { id, index } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     let mut spill = [ItemStack::default(); INV_SLOTS];
@@ -3231,6 +3253,10 @@ impl World {
             buf[6] = r.row;
             buf[7..9].copy_from_slice(&r.hp.to_le_bytes());
             buf[9..11].copy_from_slice(&r.uh.to_le_bytes());
+            // The soft-side facing (hard/soft v0) in the buffer's one
+            // spare byte: it prices a swing, so two shards disagreeing
+            // about it disagree about a raid.
+            buf[11] = r.facing;
             h.update(&buf);
         }
         // Arrows in the air, and deliberately on the **player** idiom

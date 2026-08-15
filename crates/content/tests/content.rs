@@ -208,6 +208,28 @@ fn hash_moves_with_values() {
         build(&srcs).unwrap().hash(),
         "the night notice radius must move the content hash"
     );
+
+    // The tree edge (tech tree v0): `requires` reaches the sim through
+    // `bake_research`, and two contents that disagree about a parent
+    // charge different path totals for the same node — the same "plays
+    // differently, canonicalises the same" defect, priced in coin.
+    let mut srcs = sources();
+    let r = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "research.toml")
+        .unwrap();
+    // Anchored on the revolver's whole block: two rows require gunpowder,
+    // and a bare `replace` moved both — which strips the satchel's
+    // craft-graph floor edge and fails validation for an unrelated reason.
+    r.1 = r.1.replace(
+        "item = \"item.revolver\"\ncost = 75\nrequires = \"item.gunpowder\"",
+        "item = \"item.revolver\"\ncost = 75\nrequires = \"item.medkit\"",
+    );
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "the tree edge must move the content hash"
+    );
 }
 
 /// The raid tool reaches the sim, and the raid ratio is arithmetic a
@@ -2256,6 +2278,8 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
             let station_ok = match r.station {
                 content::schema::Station::None => true,
                 content::schema::Station::Workbench1 => have.contains("item.workbench1"),
+                content::schema::Station::Workbench2 => have.contains("item.workbench2"),
+                content::schema::Station::Workbench3 => have.contains("item.workbench3"),
                 content::schema::Station::Furnace => have.contains("item.furnace"),
             };
             if station_ok && r.inputs.iter().all(|i| have.contains(i.item.as_str())) {
@@ -2442,16 +2466,19 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
         .row_for(idx("item.satchel_charge"))
         .expect("satchel is researchable");
     assert_eq!(
-        satchel.requires,
-        1u64 << powder_recipe,
-        "the satchel's prerequisite is gunpowder's RECIPE bit — the same bit \
-         `Player::known` sets, or the sim's AND means nothing"
+        satchel.requires, powder_recipe,
+        "the satchel's prerequisite is gunpowder's RECIPE INDEX — what the \
+         tree verb looks up in `Player::known`, or the check means nothing"
     );
 
     let powder = rc
         .row_for(idx("item.gunpowder"))
         .expect("gunpowder is researchable");
-    assert_eq!(powder.requires, 0, "gunpowder is a root of the tree");
+    assert_eq!(
+        powder.requires,
+        sim_core::research::NO_RECIPE,
+        "gunpowder is a root of the tree"
+    );
 }
 
 /// The floor: an edge the craft graph already implies may not be dropped
@@ -2462,8 +2489,8 @@ fn the_shipped_research_tree_bakes_with_its_edge_intact() {
 fn a_prerequisite_the_recipe_already_implies_cannot_be_dropped() {
     refuses(
         "research.toml",
-        "requires = [\"item.gunpowder\"]",
-        "requires = []",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
+        "item = \"item.satchel_charge\"\ncost = 75",
         "must require it",
     );
 }
@@ -2474,32 +2501,29 @@ fn research_edge_refusals() {
     // A row that requires itself is a cycle of length one.
     refuses(
         "research.toml",
-        "requires = [\"item.gunpowder\"]",
-        "requires = [\"item.satchel_charge\"]",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.satchel_charge\"",
         "requires itself",
     );
     // A prerequisite that names no item at all.
     refuses(
         "research.toml",
-        "requires = [\"item.gunpowder\"]",
-        "requires = [\"item.gunpowder\", \"item.nonesuch\"]",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.nonesuch\"",
         "is not an item",
     );
     // A prerequisite that is a real item but is not researchable: nobody can
     // ever learn it, so the row behind it is locked forever.
     refuses(
         "research.toml",
-        "requires = [\"item.gunpowder\"]",
-        "requires = [\"item.gunpowder\", \"item.rock\"]",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.rock\"",
         "is not researchable",
     );
-    // The same edge twice.
-    refuses(
-        "research.toml",
-        "requires = [\"item.gunpowder\"]",
-        "requires = [\"item.gunpowder\", \"item.gunpowder\"]",
-        "twice",
-    );
+    // The "same edge twice" case that stood here is DELETED by the
+    // 2026-08-15 integration rather than skipped: `requires` is one parent
+    // now, not a list, so a repeat is unrepresentable and the validator
+    // check it exercised is gone with it.
 }
 
 /// A cycle, and the row stranded behind it, are one refusal — because
@@ -2516,7 +2540,7 @@ fn a_prerequisite_cycle_is_refused() {
         .expect("research.toml");
     entry.1 = entry.1.replace(
         "[[research]]\nitem = \"item.gunpowder\"\ncost = 40",
-        "[[research]]\nitem = \"item.gunpowder\"\ncost = 40\nrequires = [\"item.satchel_charge\"]",
+        "[[research]]\nitem = \"item.gunpowder\"\ncost = 40\nrequires = \"item.satchel_charge\"",
     );
     let err = build(&srcs).expect_err("a research cycle was accepted");
     assert!(
@@ -2549,8 +2573,8 @@ fn the_hash_moves_with_the_ladder() {
     // Legal because the floor is a minimum and authoring MORE is a design
     // call — which is exactly why the hash has to be able to see it.
     entry.1 = entry.1.replace(
-        "[[research]]\nitem = \"item.revolver\"\ncost = 75",
-        "[[research]]\nitem = \"item.revolver\"\ncost = 75\nrequires = [\"item.gunpowder\"]",
+        "[[research]]\nitem = \"item.arrow_metal\"\ncost = 20",
+        "[[research]]\nitem = \"item.arrow_metal\"\ncost = 20\nrequires = \"item.gunpowder\"",
     );
     let moved = build(&srcs).expect("an added edge is legal content");
     assert_ne!(

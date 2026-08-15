@@ -56,6 +56,31 @@ pub const SHAPE_DOORWAY: u8 = 2;
 pub const SHAPE_FLOOR: u8 = 3;
 pub const SHAPE_STAIRS: u8 = 4;
 pub const SHAPE_ROOF: u8 = 5;
+/// The two socket shapes (`reference/BUILDING.md` §9.13, catalogue v1):
+/// openings that will one day hold an insert the way a doorway holds a
+/// door. Until the inserts exist they are holes with rules — the window
+/// **blocks a body and not an arrow** (its aperture is `collide.rs`'s
+/// `WINDOW_SILL_M..WINDOW_HEAD_M` band), the frame blocks neither. Edge
+/// pieces like the wall; they filled the 3-bit shape field's last two
+/// codes, which is what forced the field to 4 bits when triangles landed.
+pub const SHAPE_WINDOW: u8 = 6;
+pub const SHAPE_FRAME: u8 = 7;
+/// The triangle footprint (triangles v0, `reference/BUILDING.md` §9.14 —
+/// the one item the research priced as a **grid change**). Ours is the
+/// square grid's own triangle: a **half-cell along a diagonal**, not the
+/// reference's equilateral — an equilateral cannot address into a square
+/// lattice at all (their catalogue runs on a free socket graph), and the
+/// half-cell keeps every wall this crate is built on: cell addressing,
+/// O(1) occupancy, bounded flood fills, the claim BFS. What it buys is
+/// what their triangle buys — diagonal enclosure, half-price corners,
+/// octagonal towers where they build round ones — and the area ratio is
+/// *exactly* the ½ their prices charge, where their equilateral is 0.43
+/// of its square. §7b.3's ratios apply unchanged: tri foundation and tri
+/// roof 0.5, tri floor 0.25. A triangle occupies one `LOC_TRI_*` slot;
+/// the wall that closes its hypotenuse occupies the matching `LOC_DIAG_*`.
+pub const SHAPE_TRI_FOUNDATION: u8 = 8;
+pub const SHAPE_TRI_FLOOR: u8 = 9;
+pub const SHAPE_TRI_ROOF: u8 = 10;
 
 /// Material codes (schema order: twig → wood → stone → metal). The order
 /// is the ladder: `upgrade` climbs it by comparing these numbers, so a
@@ -77,7 +102,7 @@ pub const MAT_METAL: u8 = 3;
 /// addressable twice.
 ///
 /// **The names are axes on purpose, and a gate holds them that way.**
-/// They read `LOC_EDGE_W`/`LOC_EDGE_N` until 2026-08-15, when the compass
+/// They read `LOC_EDGE_XLO`/`LOC_EDGE_ZLO` until 2026-08-15, when the compass
 /// was re-pinned (`DECISIONS.md` 2026-08-15) and both suffixes came to
 /// name the bearing opposite the one they meant — the constant and the
 /// sentence defining it went false together. No value moved then and none
@@ -94,6 +119,37 @@ pub const LOC_PLANE: u8 = 0;
 pub const LOC_RISER: u8 = 1;
 pub const LOC_EDGE_XLO: u8 = 2;
 pub const LOC_EDGE_ZLO: u8 = 3;
+/// The triangle half-cells (triangles v0): four addresses named by the
+/// corner their right angle sits in, on the grid's own compass — north
+/// is the **low-z** boundary, exactly as [`LOC_EDGE_ZLO`] says. In
+/// cell-local metres (dx, dz ∈ 0..3):
+///
+/// - `NW` = {dx + dz ≤ 3}, right angle at (0, 0); sides on the W and N
+///   edges, hypotenuse on [`LOC_DIAG_B`];
+/// - `SE` = {dx + dz ≥ 3}, right angle at (3, 3); sides on the E and S
+///   edges (the neighbours' canonical W/N), hypotenuse on `LOC_DIAG_B`;
+/// - `NE` = {dz ≤ dx}, right angle at (3, 0); sides N and E, hypotenuse
+///   [`LOC_DIAG_A`];
+/// - `SW` = {dz ≥ dx}, right angle at (0, 3); sides W and S, hypotenuse
+///   `LOC_DIAG_A`.
+///
+/// Two may coexist only across one diagonal — NW+SE, or NE+SW; any other
+/// pair overlaps, and a triangle beside a full plane overlaps too:
+/// [`cell_body_conflict`] is the one place that says so and `place`
+/// refuses on it. Unlike edges these are wholly inside their cell —
+/// nothing is shared with a neighbour.
+pub const LOC_TRI_XLO_ZLO: u8 = 4;
+pub const LOC_TRI_XHI_ZLO: u8 = 5;
+pub const LOC_TRI_XLO_ZHI: u8 = 6;
+pub const LOC_TRI_XHI_ZHI: u8 = 7;
+/// The two diagonal edge slots: A runs corner (0,0)→(3,3) — NE and SW's
+/// shared hypotenuse — and B runs (3,0)→(0,3), NW and SE's. They cross
+/// at the cell centre, so one refuses while the other stands, and either
+/// refuses through a triangle it would bisect ([`cell_body_conflict`]).
+/// Only [`SHAPE_WALL`] fits them: a diagonal doorway/window wants its
+/// own pass and its own inserts — stated in §open, not smuggled.
+pub const LOC_DIAG_A: u8 = 8;
+pub const LOC_DIAG_B: u8 = 9;
 
 /// Integer refusal reasons (CLAUDE.md wall 3), carried by
 /// EV_BUILD_REFUSED / the build-refused wire subtype.
@@ -311,6 +367,15 @@ pub struct PieceRec {
     pub loc: u8,
     /// Baked piece row this address holds.
     pub row: u8,
+    /// Which way the piece's SOFT side faces (hard/soft v0,
+    /// `reference/BUILDING.md` §7b.5): 1 ⇒ soft toward **+axis** (+x for
+    /// a west edge, +z for a north edge), 0 ⇒ soft toward −axis. Set once
+    /// at placement — soft faces the placer, because you build from
+    /// inside — and never moved (no rotate verb yet: inside the demolish
+    /// window a wrong facing is a free re-place). Meaningful on edge
+    /// shapes only; 0 elsewhere. On the wire (a client says which side
+    /// you are on) and in `state_hash` (a swing's damage reads it).
+    pub facing: u8,
     /// Current hp (decay drains it; piece damage lands in M2).
     pub hp: u16,
     /// Last upkeep period processed (`tick / UPKEEP_PERIOD_TICKS`).
@@ -461,6 +526,7 @@ impl Pieces {
             level,
             loc,
             row,
+            facing: 0,
             hp: bc.pieces[row as usize].hp,
             uh: 0,
         };
@@ -570,8 +636,59 @@ fn edge_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     pieces.find(cx, cz, level, loc).is_some()
 }
 
-/// The two cells an edge piece adjoins: the canonical cell and its −x or
-/// −z neighbor (None past the grid's low border).
+/// Does the cell body at (bx, bz, level) bear the canonical edge `loc`
+/// from this side — a full plane, or a triangle whose SIDE lies on that
+/// edge? `canonical` distinguishes the edge's own cell from its low
+/// neighbour, because each side has its own pair of touching halves
+/// (triangles v0; the `LOC_TRI_*` doc draws the map).
+fn bears_edge(pieces: &Pieces, bx: u16, bz: u16, level: u8, loc: u8, canonical: bool) -> bool {
+    if plane_at(pieces, bx, bz, level) {
+        return true;
+    }
+    let (t1, t2) = match (loc, canonical) {
+        (LOC_EDGE_XLO, true) => (LOC_TRI_XLO_ZLO, LOC_TRI_XLO_ZHI),
+        (LOC_EDGE_XLO, false) => (LOC_TRI_XHI_ZLO, LOC_TRI_XHI_ZHI),
+        (LOC_EDGE_ZLO, true) => (LOC_TRI_XLO_ZLO, LOC_TRI_XHI_ZLO),
+        _ => (LOC_TRI_XLO_ZHI, LOC_TRI_XHI_ZHI),
+    };
+    pieces.find(bx, bz, level, t1).is_some() || pieces.find(bx, bz, level, t2).is_some()
+}
+
+/// A triangle's two side-edge addresses and its hypotenuse loc — the
+/// three things that can hold it up one level down (`LOC_TRI_*`'s map).
+type EdgeAddr = (u16, u16, u8);
+fn tri_bearings(cx: u16, cz: u16, loc: u8) -> (EdgeAddr, EdgeAddr, u8) {
+    match loc {
+        LOC_TRI_XLO_ZLO => ((cx, cz, LOC_EDGE_XLO), (cx, cz, LOC_EDGE_ZLO), LOC_DIAG_B),
+        LOC_TRI_XHI_ZLO => (
+            (cx, cz, LOC_EDGE_ZLO),
+            (cx.saturating_add(1), cz, LOC_EDGE_XLO),
+            LOC_DIAG_A,
+        ),
+        LOC_TRI_XLO_ZHI => (
+            (cx, cz, LOC_EDGE_XLO),
+            (cx, cz.saturating_add(1), LOC_EDGE_ZLO),
+            LOC_DIAG_A,
+        ),
+        _ => (
+            (cx.saturating_add(1), cz, LOC_EDGE_XLO),
+            (cx, cz.saturating_add(1), LOC_EDGE_ZLO),
+            LOC_DIAG_B,
+        ),
+    }
+}
+
+/// The two triangle halves a diagonal is the hypotenuse of.
+fn diag_pair(loc: u8) -> (u8, u8) {
+    if loc == LOC_DIAG_A {
+        (LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI)
+    } else {
+        (LOC_TRI_XLO_ZLO, LOC_TRI_XHI_ZHI)
+    }
+}
+
+/// The two cells an edge piece adjoins: the canonical cell and its west or
+/// north neighbor (None past the grid's low border).
 fn edge_neighbors(cx: u16, cz: u16, loc: u8) -> ((u16, u16), Option<(u16, u16)>) {
     if loc == LOC_EDGE_XLO {
         ((cx, cz), cx.checked_sub(1).map(|x| (x, cz)))
@@ -597,9 +714,18 @@ pub fn anchor(cx: u16, cz: u16, loc: u8) -> (f32, f32) {
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
     let half = BUILD_CELL_M * 0.5;
+    // A triangle's anchor is its centroid — thirds, exactly, so reach and
+    // raid measure to a point inside the half rather than a corner two
+    // halves share. The diagonals anchor at the cell centre, where they
+    // cross.
+    let third = BUILD_CELL_M / 3.0;
     match loc {
         LOC_EDGE_XLO => (x0, z0 + half),
         LOC_EDGE_ZLO => (x0 + half, z0),
+        LOC_TRI_XLO_ZLO => (x0 + third, z0 + third),
+        LOC_TRI_XHI_ZLO => (x0 + 2.0 * third, z0 + third),
+        LOC_TRI_XLO_ZHI => (x0 + third, z0 + 2.0 * third),
+        LOC_TRI_XHI_ZHI => (x0 + 2.0 * third, z0 + 2.0 * third),
         _ => (x0 + half, z0 + half),
     }
 }
@@ -608,6 +734,52 @@ pub fn anchor(cx: u16, cz: u16, loc: u8) -> (f32, f32) {
 #[inline]
 pub fn build_cell_of(v: f32) -> i32 {
     floor_i32(v / BUILD_CELL_M)
+}
+
+/// Whether an edge shape occupies this address's facing at all — planes
+/// and risers have no sides.
+#[inline]
+pub fn shape_has_facing(shape: u8) -> bool {
+    matches!(
+        shape,
+        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
+    )
+}
+
+/// The facing a placement gets: 1 when the placer stands on the edge's
+/// **+axis** side, 0 otherwise — soft toward the builder, because a base
+/// is built from inside (`PieceRec::facing`'s doc). Exactly on the plane
+/// counts as −axis; the tie is impossible to stand on and the arm has to
+/// pick something deterministic.
+///
+/// `pub` because the client needs the same answer twice: the ghost says
+/// which side the soft face will land on before the key is pressed, and
+/// the structure readout says which side you are looking at. A second
+/// copy of this comparison is the positional-payload trap with a sign bit.
+#[inline]
+pub fn facing_of(loc: u8, cx: u16, cz: u16, px: f32, pz: f32) -> u8 {
+    let x0 = cx as f32 * BUILD_CELL_M;
+    let z0 = cz as f32 * BUILD_CELL_M;
+    let plus = match loc {
+        LOC_EDGE_XLO => px > x0,
+        LOC_EDGE_ZLO => pz > z0,
+        // A diagonal's sides are its two halves: +side is SW of A
+        // ({dz > dx}) and SE of B ({dx + dz > cell}) — arbitrary but
+        // fixed, like the straight edges' +axis.
+        LOC_DIAG_A => (pz - z0) > (px - x0),
+        LOC_DIAG_B => (px - x0) + (pz - z0) > BUILD_CELL_M,
+        _ => false,
+    };
+    plus as u8
+}
+
+/// Is a toucher standing at (`px`, `pz`) on the piece's SOFT side? The
+/// one comparison `combat::raid` prices a swing with and the client's
+/// readout labels a wall with — the same function, so the label can
+/// never disagree with the bill.
+#[inline]
+pub fn soft_side(rec: &PieceRec, px: f32, pz: f32) -> bool {
+    facing_of(rec.loc, rec.cx, rec.cz, px, pz) == rec.facing
 }
 
 /// Will this ground hold a foundation? One definition — `place` refuses on
@@ -623,34 +795,128 @@ fn loc_fits_shape(shape: u8, loc: u8) -> bool {
     match shape {
         SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF => loc == LOC_PLANE,
         SHAPE_STAIRS => loc == LOC_RISER,
-        SHAPE_WALL | SHAPE_DOORWAY => loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO,
+        // The wall alone also fits the diagonals (their doc says why the
+        // openings do not).
+        SHAPE_WALL => {
+            loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO || loc == LOC_DIAG_A || loc == LOC_DIAG_B
+        }
+        SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME => loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO,
+        SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF => {
+            (LOC_TRI_XLO_ZLO..=LOC_TRI_XHI_ZHI).contains(&loc)
+        }
         _ => false,
     }
 }
 
+/// Whether an occupant of `loc` overlaps an occupant of `other` in the
+/// same cell body (triangles v0). The full plane overlaps every
+/// triangle; triangles overlap each other except across their own
+/// diagonal (NW+SE, NE+SW); a diagonal wall overlaps the two triangles
+/// it would bisect and the diagonal it crosses. Straight edges and the
+/// riser overlap nothing here — the riser's "needs a full plane" is a
+/// SUPPORT rule and stays one.
+fn body_overlaps(loc: u8, other: u8) -> bool {
+    matches!(
+        (loc.min(other), loc.max(other)),
+        (LOC_PLANE, LOC_TRI_XLO_ZLO..=LOC_TRI_XHI_ZHI)
+            | (LOC_TRI_XLO_ZLO, LOC_TRI_XHI_ZLO)
+            | (LOC_TRI_XLO_ZLO, LOC_TRI_XLO_ZHI)
+            | (LOC_TRI_XHI_ZLO, LOC_TRI_XHI_ZHI)
+            | (LOC_TRI_XLO_ZHI, LOC_TRI_XHI_ZHI)
+            | (LOC_TRI_XLO_ZLO, LOC_DIAG_A)
+            | (LOC_TRI_XHI_ZHI, LOC_DIAG_A)
+            | (LOC_TRI_XHI_ZLO, LOC_DIAG_B)
+            | (LOC_TRI_XLO_ZHI, LOC_DIAG_B)
+            | (LOC_DIAG_A, LOC_DIAG_B)
+    )
+}
+
+/// The cell-body locs `loc` must find EMPTY for a placement to be legal —
+/// [`body_overlaps`] read as a candidate list. Returns how many of `out`
+/// are live.
+fn body_conflicts(loc: u8, out: &mut [u8; 5]) -> usize {
+    let mut n = 0;
+    for other in [
+        LOC_PLANE,
+        LOC_TRI_XLO_ZLO,
+        LOC_TRI_XHI_ZLO,
+        LOC_TRI_XLO_ZHI,
+        LOC_TRI_XHI_ZHI,
+        LOC_DIAG_A,
+        LOC_DIAG_B,
+    ] {
+        if other != loc && body_overlaps(loc, other) {
+            out[n] = other;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Does anything stand in the cell body where `loc`'s occupant would
+/// overlap it? The `place` refusal triangles v0 added — a spot check
+/// like "the address is taken", not a support rule.
+pub(crate) fn cell_body_conflict(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+    let mut c = [0u8; 5];
+    let n = body_conflicts(loc, &mut c);
+    c.iter()
+        .take(n)
+        .any(|&other| occupied_at(pieces, cx, cz, level, other))
+}
+
 /// Support rule v0 for a piece of `shape` at the address. Foundations
-/// carry no support requirement (terrain is their check).
+/// carry no support requirement (terrain is their check), and the
+/// triangle foundation is a foundation.
 fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     match shape {
-        SHAPE_FOUNDATION => true,
+        SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION => true,
         SHAPE_FLOOR | SHAPE_ROOF => {
-            // An edge piece under any of the cell's four sides.
+            // An edge piece under any of the cell's four sides. A diagonal
+            // wall below deliberately does NOT bear a full plane — its
+            // span crosses the middle, not a side.
             level >= 1
                 && (edge_at(pieces, cx, cz, level - 1, LOC_EDGE_XLO)
                     || edge_at(pieces, cx + 1, cz, level - 1, LOC_EDGE_XLO)
                     || edge_at(pieces, cx, cz, level - 1, LOC_EDGE_ZLO)
                     || edge_at(pieces, cx, cz + 1, level - 1, LOC_EDGE_ZLO))
         }
+        SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF => {
+            // One of its two sides, or the diagonal wall under its own
+            // hypotenuse (triangles v0).
+            if level == 0 {
+                return false;
+            }
+            let below = level - 1;
+            let ((e1x, e1z, e1l), (e2x, e2z, e2l), hyp) = tri_bearings(cx, cz, loc);
+            edge_at(pieces, e1x, e1z, below, e1l)
+                || edge_at(pieces, e2x, e2z, below, e2l)
+                || pieces.find(cx, cz, below, hyp).is_some()
+        }
         SHAPE_STAIRS => plane_at(pieces, cx, cz, level),
-        SHAPE_WALL | SHAPE_DOORWAY => {
+        // The diagonal wall: the cell body it stands across — a full
+        // plane or one of its own pair — or the diagonal below it.
+        SHAPE_WALL if loc == LOC_DIAG_A || loc == LOC_DIAG_B => {
+            let (t1, t2) = diag_pair(loc);
+            let body_at = |lvl: u8| {
+                plane_at(pieces, cx, cz, lvl)
+                    || pieces.find(cx, cz, lvl, t1).is_some()
+                    || pieces.find(cx, cz, lvl, t2).is_some()
+            };
+            if level == 0 {
+                body_at(0)
+            } else {
+                pieces.find(cx, cz, level - 1, loc).is_some() || body_at(level)
+            }
+        }
+        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME => {
             let ((ax, az), other) = edge_neighbors(cx, cz, loc);
             if level == 0 {
-                plane_at(pieces, ax, az, 0)
-                    || other.is_some_and(|(bx, bz)| plane_at(pieces, bx, bz, 0))
+                bears_edge(pieces, ax, az, 0, loc, true)
+                    || other.is_some_and(|(bx, bz)| bears_edge(pieces, bx, bz, 0, loc, false))
             } else {
                 edge_at(pieces, cx, cz, level - 1, loc)
-                    || plane_at(pieces, ax, az, level)
-                    || other.is_some_and(|(bx, bz)| plane_at(pieces, bx, bz, level))
+                    || bears_edge(pieces, ax, az, level, loc, true)
+                    || other.is_some_and(|(bx, bz)| bears_edge(pieces, bx, bz, level, loc, false))
             }
         }
         _ => false,
@@ -660,8 +926,11 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
 /// A grid address: (cx, cz, level, loc). What the collapse front carries.
 type Addr = (u16, u16, u8, u8);
 
-/// The most addresses `dependents` can name — a plane's five.
-const MAX_DEPENDENTS: usize = 5;
+/// The most addresses `dependents` can name — a plane's seven since
+/// triangles v0 (the four edges, the riser, and the two diagonals), tied
+/// by an edge's seven (two planes and one edge above, and the four
+/// triangle halves whose side it is).
+const MAX_DEPENDENTS: usize = 7;
 
 /// The inverse of `supported()`: every address whose support test **reads**
 /// `(cx, cz, level, loc)`. Change one of the two and you must change the
@@ -669,14 +938,19 @@ const MAX_DEPENDENTS: usize = 5;
 /// and it is the whole reason the pair sits in one place.
 ///
 /// Read straight off `supported()` above, clause by clause:
-/// - the stairs branch probes `plane_at(cx, cz, level)`, and both wall
-///   branches probe `plane_at(.., level)` in the two cells the edge
-///   adjoins — so a **plane** is read by the riser in its own cell and by
-///   the four edges of its own cell, all at its own level;
-/// - the floor/roof branch probes four edges at `level - 1`, and the wall
-///   branch probes `edge_at(cx, cz, level - 1, loc)` — so an **edge** is
-///   read by the planes one level up in the two cells it adjoins and by
-///   the edge directly above it;
+/// - the stairs branch probes `plane_at(cx, cz, level)`, both straight
+///   edge branches probe the cell bodies beside them at their own level
+///   (`bears_edge`), and the diagonal branch probes the body it stands
+///   across — so a **plane** is read by the riser, the four edges of its
+///   own cell and the two diagonals, all at its own level;
+/// - the floor/roof branch probes four edges at `level - 1`, the tri
+///   floor/roof branch probes its two sides and its hypotenuse there,
+///   and the edge branches probe the piece below — so an **edge** is
+///   read by the planes and touching triangle halves one level up in the
+///   two cells it adjoins and by the edge directly above it, and a
+///   **diagonal** by its own pair and the diagonal above;
+/// - a **triangle half** is read by its two side edges and its
+///   hypotenuse at its own level (`bears_edge` / the diag body probe);
 /// - nothing anywhere probes `LOC_RISER`, so a **riser** is read by
 ///   nothing: take the stairs out and the floor above still stands.
 ///
@@ -690,7 +964,18 @@ fn dependents(cx: u16, cz: u16, level: u8, loc: u8, out: &mut [Addr; MAX_DEPENDE
             out[2] = (cx.saturating_add(1), cz, level, LOC_EDGE_XLO);
             out[3] = (cx, cz, level, LOC_EDGE_ZLO);
             out[4] = (cx, cz.saturating_add(1), level, LOC_EDGE_ZLO);
-            5
+            out[5] = (cx, cz, level, LOC_DIAG_A);
+            out[6] = (cx, cz, level, LOC_DIAG_B);
+            7
+        }
+        LOC_TRI_XLO_ZLO | LOC_TRI_XHI_ZLO | LOC_TRI_XLO_ZHI | LOC_TRI_XHI_ZHI => {
+            // Its two side edges (their bears_edge clause reads this half
+            // at the same level) and its hypotenuse (the diag body probe).
+            let ((e1x, e1z, e1l), (e2x, e2z, e2l), hyp) = tri_bearings(cx, cz, loc);
+            out[0] = (e1x, e1z, level, e1l);
+            out[1] = (e2x, e2z, level, e2l);
+            out[2] = (cx, cz, level, hyp);
+            3
         }
         LOC_EDGE_XLO | LOC_EDGE_ZLO => {
             let up = level.saturating_add(1);
@@ -699,6 +984,26 @@ fn dependents(cx: u16, cz: u16, level: u8, loc: u8, out: &mut [Addr; MAX_DEPENDE
             }
             out[0] = (cx, cz, up, LOC_PLANE);
             out[1] = (cx, cz, up, loc);
+            // The triangle halves one level up whose SIDE this edge is —
+            // the canonical cell's pair, then the low neighbour's
+            // (`bears_edge`'s two maps, inverted).
+            let (c1, c2, n1, n2) = if loc == LOC_EDGE_XLO {
+                (
+                    LOC_TRI_XLO_ZLO,
+                    LOC_TRI_XLO_ZHI,
+                    LOC_TRI_XHI_ZLO,
+                    LOC_TRI_XHI_ZHI,
+                )
+            } else {
+                (
+                    LOC_TRI_XLO_ZLO,
+                    LOC_TRI_XHI_ZLO,
+                    LOC_TRI_XLO_ZHI,
+                    LOC_TRI_XHI_ZHI,
+                )
+            };
+            out[2] = (cx, cz, up, c1);
+            out[3] = (cx, cz, up, c2);
             let other = if loc == LOC_EDGE_XLO {
                 cx.checked_sub(1).map(|x| (x, cz))
             } else {
@@ -706,11 +1011,24 @@ fn dependents(cx: u16, cz: u16, level: u8, loc: u8, out: &mut [Addr; MAX_DEPENDE
             };
             match other {
                 Some((bx, bz)) => {
-                    out[2] = (bx, bz, up, LOC_PLANE);
-                    3
+                    out[4] = (bx, bz, up, LOC_PLANE);
+                    out[5] = (bx, bz, up, n1);
+                    out[6] = (bx, bz, up, n2);
+                    7
                 }
-                None => 2, // the grid's low border: the edge adjoins one cell
+                None => 4, // the grid's low border: the edge adjoins one cell
             }
+        }
+        LOC_DIAG_A | LOC_DIAG_B => {
+            let up = level.saturating_add(1);
+            if up >= MAX_BUILD_LEVELS as u8 {
+                return 0;
+            }
+            let (t1, t2) = diag_pair(loc);
+            out[0] = (cx, cz, up, loc);
+            out[1] = (cx, cz, up, t1);
+            out[2] = (cx, cz, up, t2);
+            3
         }
         _ => 0,
     }
@@ -729,8 +1047,14 @@ fn occupied_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     let field = match loc {
         LOC_PLANE => m.planes,
         LOC_RISER => m.stairs,
-        LOC_EDGE_XLO => m.walls_xlo | m.doors_xlo,
-        _ => m.walls_zlo | m.doors_zlo,
+        LOC_EDGE_XLO => m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo,
+        LOC_EDGE_ZLO => m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo,
+        LOC_TRI_XLO_ZLO => m.tri_xlo_zlo,
+        LOC_TRI_XHI_ZLO => m.tri_xhi_zlo,
+        LOC_TRI_XLO_ZHI => m.tri_xlo_zhi,
+        LOC_TRI_XHI_ZHI => m.tri_xhi_zhi,
+        LOC_DIAG_A => m.diag_a,
+        _ => m.diag_b,
     };
     field & (1u8 << level) != 0
 }
@@ -903,13 +1227,21 @@ pub fn place(
         return;
     }
     let level_ok = (level as usize) < MAX_BUILD_LEVELS
-        && (def.shape != SHAPE_FOUNDATION || level == 0)
-        && (!matches!(def.shape, SHAPE_FLOOR | SHAPE_ROOF) || level >= 1);
+        && (!matches!(def.shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION) || level == 0)
+        && (!matches!(
+            def.shape,
+            SHAPE_FLOOR | SHAPE_ROOF | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF
+        ) || level >= 1);
     if (cx as usize) >= MAX_BUILD_COORD
         || (cz as usize) >= MAX_BUILD_COORD
         || !level_ok
         || !loc_fits_shape(def.shape, loc)
         || pieces.find(cx, cz, level, loc).is_some()
+        // The cell-body overlap set (triangles v0): a full plane over a
+        // half, two crossed halves, a diagonal through either — the same
+        // "spot taken" refusal the address check gives, because to a
+        // player they are one fact.
+        || cell_body_conflict(pieces, cx, cz, level, loc)
     {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
         return;
@@ -926,7 +1258,12 @@ pub fn place(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
         return;
     }
-    if def.shape == SHAPE_FOUNDATION && !foundation_terrain_ok(seed, ax, az) {
+    if matches!(def.shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION)
+        && !foundation_terrain_ok(seed, ax, az)
+    {
+        // The anchor is the shape's own: the cell centre for a square,
+        // the half's centroid for a triangle — the ground actually under
+        // the piece.
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TERRAIN, 0);
         return;
     }
@@ -946,6 +1283,14 @@ pub fn place(
         level,
         loc,
         row: row as u8,
+        // Soft toward the builder (hard/soft v0). Planes and risers have
+        // no sides and carry 0, so two replays cannot disagree about a
+        // bit that means nothing.
+        facing: if shape_has_facing(def.shape) {
+            facing_of(loc, cx, cz, px, pz)
+        } else {
+            0
+        },
         hp: def.hp,
         uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
     };
@@ -1621,6 +1966,450 @@ mod tests {
         assert_eq!(pieces.len(), 1, "refusals inserted nothing");
     }
 
+    /// Catalogue v1's two shapes hold the wall's slots and the wall's
+    /// rules: an edge loc, wall support, a refusal on a plane loc — and
+    /// the upgrade verb climbs them like any other shape.
+    #[test]
+    fn window_and_frame_place_as_edges_and_climb_the_ladder() {
+        let mut bc = BuildContent::probe_fixture();
+        // Rows 7..10: twig window, twig frame, stone window — the probe
+        // fixture's shape, extended rather than replaced.
+        bc.piece_count = 10;
+        bc.pieces[7] = PieceDef {
+            shape: SHAPE_WINDOW,
+            material: MAT_TWIG,
+            hp: 100,
+            n_costs: 1,
+            costs: [(0, 3), (0, 0)],
+        };
+        bc.pieces[8] = PieceDef {
+            shape: SHAPE_FRAME,
+            material: MAT_TWIG,
+            hp: 100,
+            n_costs: 1,
+            costs: [(0, 3), (0, 0)],
+        };
+        bc.pieces[9] = PieceDef {
+            shape: SHAPE_WINDOW,
+            material: MAT_STONE,
+            hp: 200,
+            n_costs: 1,
+            costs: [(1, 4), (0, 0)],
+        };
+        let mut pieces = Pieces::new();
+        let nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell_center(&[(0, 40), (1, 10)]);
+
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        // A window on a plane loc is a spot refusal, not a support one.
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            7,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
+        );
+        // On the edge beside the foundation, both place.
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            7,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            8,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_ZLO,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        assert_eq!(pieces.cols().get(CX, CZ).wins_xlo, 1, "window in the index");
+        assert_eq!(
+            pieces.cols().get(CX, CZ).frames_zlo,
+            1,
+            "frame in the index"
+        );
+
+        // The hammer climbs the window to stone; the frame has no rung
+        // above twig in this table and refuses by name.
+        upgrade(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        let w = pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
+        assert_eq!(w.row, 9, "the window re-rowed to its stone rung");
+        upgrade(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_ZLO,
+            MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_TIER)
+        );
+    }
+
+    /// Hard/soft v0: a placement's soft side faces the builder, on both
+    /// edge axes; planes carry no facing; and `soft_side` answers the
+    /// builder's own stance as soft — the label `combat::raid` prices by.
+    #[test]
+    fn facing_is_set_toward_the_builder_and_only_on_edges() {
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        // The builder stands at the cell centre: east of the west edge,
+        // south of the north edge.
+        let mut p = player_at_cell_center(&[(0, 50), (1, 10)]);
+
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            &mut ev,
+        );
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_ZLO,
+            &mut ev,
+        );
+
+        let plane = pieces.find(CX, CZ, 0, LOC_PLANE).unwrap();
+        assert_eq!(plane.facing, 0, "a plane has no sides");
+        let w = *pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
+        assert_eq!(w.facing, 1, "west edge: builder east => soft east");
+        let n = *pieces.find(CX, CZ, 0, LOC_EDGE_ZLO).unwrap();
+        assert_eq!(n.facing, 1, "north edge: builder south => soft south");
+
+        // The builder's own stance is the soft side of both walls; a
+        // stranger across the edge is on the hard one.
+        let px = (CX as f32 + 0.5) * BUILD_CELL_M;
+        let pz = (CZ as f32 + 0.5) * BUILD_CELL_M;
+        assert!(soft_side(&w, px, pz));
+        assert!(soft_side(&n, px, pz));
+        assert!(!soft_side(&w, px - BUILD_CELL_M, pz), "west of the wall");
+        assert!(!soft_side(&n, px, pz - BUILD_CELL_M), "north of the wall");
+    }
+
+    /// Triangles v0: the placement matrix. Two halves coexist across
+    /// their own diagonal and refuse everything else they overlap; the
+    /// diagonal wall stands on its pair and refuses through the crossed
+    /// pair; a tri floor stands on a side edge OR its hypotenuse's wall;
+    /// and the whole family upgrades like any shape.
+    #[test]
+    fn triangles_pair_across_their_diagonal_and_refuse_the_rest() {
+        let mut bc = BuildContent::probe_fixture();
+        // Rows 7..10: twig tri foundation, twig tri floor, twig wall
+        // stand-ins for the fixture (the probe fixture's shape, extended).
+        bc.piece_count = 10;
+        bc.pieces[7] = PieceDef {
+            shape: SHAPE_TRI_FOUNDATION,
+            material: MAT_TWIG,
+            hp: 100,
+            n_costs: 1,
+            costs: [(0, 2), (0, 0)],
+        };
+        bc.pieces[8] = PieceDef {
+            shape: SHAPE_TRI_FLOOR,
+            material: MAT_TWIG,
+            hp: 100,
+            n_costs: 1,
+            costs: [(0, 2), (0, 0)],
+        };
+        bc.pieces[9] = PieceDef {
+            shape: SHAPE_TRI_ROOF,
+            material: MAT_TWIG,
+            hp: 100,
+            n_costs: 1,
+            costs: [(0, 2), (0, 0)],
+        };
+        let mut pieces = Pieces::new();
+        let nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell_center(&[(0, 200), (1, 50)]);
+
+        // NW and SE pair across diagonal B.
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            7,
+            CX,
+            CZ,
+            0,
+            LOC_TRI_XLO_ZLO,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            7,
+            CX,
+            CZ,
+            0,
+            LOC_TRI_XHI_ZHI,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        // NE overlaps both standing halves: refused as a spot.
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            7,
+            CX,
+            CZ,
+            0,
+            LOC_TRI_XHI_ZLO,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
+        );
+        // A full foundation over the pair: same refusal.
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
+        );
+        // Diagonal A would bisect both halves: refused. Diagonal B is
+        // their shared hypotenuse: it stands.
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_DIAG_A,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
+        );
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_DIAG_B,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        assert_eq!(pieces.cols().get(CX, CZ).diag_b, 1, "diag in the index");
+
+        // A tri floor one storey up, on the hypotenuse wall alone: the NW
+        // half's own hyp is B, which is exactly what stands below.
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            8,
+            CX,
+            CZ,
+            1,
+            LOC_TRI_XLO_ZLO,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev).0,
+            crate::world::EV_PIECE_PLACED,
+            "the diagonal wall bears the tri floor above it"
+        );
+        // A crossed sibling in THIS cell is a spot conflict with the
+        // standing NW floor; the honest support case is next door, where
+        // a tri floor has neither a side edge nor a hypotenuse below.
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            8,
+            CX,
+            CZ,
+            1,
+            LOC_TRI_XHI_ZLO,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
+        );
+        place(
+            SEED,
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            8,
+            CX + 1,
+            CZ,
+            1,
+            LOC_TRI_XLO_ZLO,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SUPPORT)
+        );
+
+        // Knock the diagonal out: the tri floor above falls with it.
+        let di = pieces.find_index(CX, CZ, 0, LOC_DIAG_B).unwrap();
+        let mut budget = 8;
+        crate::deploy::drop_piece(
+            &crate::deploy::DeployContent::probe_fixture(),
+            &mut pieces,
+            &mut Deploys::new(),
+            di,
+            SHAPE_WALL,
+            &mut ev,
+        );
+        collapse_from(
+            &crate::deploy::DeployContent::probe_fixture(),
+            &bc,
+            &mut pieces,
+            &mut Deploys::new(),
+            (CX, CZ, 0, LOC_DIAG_B),
+            &mut budget,
+            &mut ev,
+        );
+        assert!(
+            pieces.find(CX, CZ, 1, LOC_TRI_XLO_ZLO).is_none(),
+            "the tri floor lost its hypotenuse and fell"
+        );
+    }
+
     #[test]
     fn terrain_refuses_the_sea() {
         let bc = BuildContent::probe_fixture();
@@ -1660,6 +2449,7 @@ mod tests {
                     level: 0,
                     loc: LOC_PLANE,
                     row: 0,
+                    facing: 0,
                     hp: 1,
                     uh: 0,
                 },
@@ -2781,6 +3571,7 @@ mod tests {
         if !loc_fits_shape(shape, loc)
             || level >= MAX_BUILD_LEVELS as u8
             || pieces.find(cx, cz, level, loc).is_some()
+            || cell_body_conflict(pieces, cx, cz, level, loc)
             || !supported(pieces, shape, cx, cz, level, loc)
         {
             return false;
@@ -2792,6 +3583,7 @@ mod tests {
                 level,
                 loc,
                 row: shape,
+                facing: 0,
                 hp: 100,
                 uh: 0,
             },
@@ -2830,10 +3622,17 @@ mod tests {
                             } else {
                                 (SHAPE_DOORWAY, SHAPE_WALL)
                             };
+                            // The diagonals ride the same pass (triangles
+                            // v0): B is attempted after A and the body
+                            // conflict refuses the cross, so the fixture
+                            // holds diagonal walls without ever holding an
+                            // impossible pair.
                             for &(loc, shape) in &[
                                 (LOC_RISER, SHAPE_STAIRS),
                                 (LOC_EDGE_XLO, xe),
                                 (LOC_EDGE_ZLO, ze),
+                                (LOC_DIAG_A, SHAPE_WALL),
+                                (LOC_DIAG_B, SHAPE_WALL),
                             ] {
                                 if pieces.len() >= target {
                                     return;
@@ -2841,13 +3640,28 @@ mod tests {
                                 try_put(pieces, x, z, level, loc, shape);
                             }
                         } else if level < top {
-                            // Then the planes those edges now carry.
-                            let shape = if level + 1 == top {
-                                SHAPE_ROOF
+                            // Then the planes those edges now carry — and
+                            // where a full plane cannot stand (or already
+                            // does), the triangle halves try the same
+                            // storey, so the fixed point walks tri floors
+                            // and their diagonal bearers too.
+                            let (shape, tri) = if level + 1 == top {
+                                (SHAPE_ROOF, SHAPE_TRI_ROOF)
                             } else {
-                                SHAPE_FLOOR
+                                (SHAPE_FLOOR, SHAPE_TRI_FLOOR)
                             };
                             try_put(pieces, x, z, level + 1, LOC_PLANE, shape);
+                            for tloc in [
+                                LOC_TRI_XLO_ZLO,
+                                LOC_TRI_XHI_ZLO,
+                                LOC_TRI_XLO_ZHI,
+                                LOC_TRI_XHI_ZHI,
+                            ] {
+                                if pieces.len() >= target {
+                                    return;
+                                }
+                                try_put(pieces, x, z, level + 1, tloc, tri);
+                            }
                         }
                     }
                 }

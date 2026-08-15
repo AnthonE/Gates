@@ -21,7 +21,9 @@
 //! So [`Target`] carries [`Store`] as a typed enum rather than a `bool`, and
 //! the call site converts once, at the encoder, where the argument is named.
 
-use sim_core::build::{anchor, BuildContent, PieceRec, BUILD_REACH_M, MAT_METAL};
+use sim_core::build::{
+    anchor, shape_has_facing, soft_side, BuildContent, PieceRec, BUILD_REACH_M, MAT_METAL,
+};
 use sim_core::deploy::{DeployContent, DeployRec};
 
 /// Which store an address names — `encode_action_repair`'s leading argument
@@ -53,6 +55,12 @@ pub struct Target {
     /// to buy. `max` is 0 when the def table has not dripped that row.
     pub hp: u16,
     pub hp_max: u16,
+    /// Which face of a sided piece the player stands on — `Some(true)` is
+    /// the SOFT side, `Some(false)` the hard one, `None` a shape with no
+    /// sides (or the other store). Computed by `sim_core::build::soft_side`,
+    /// the same comparison `combat::raid` prices the swing with, so the
+    /// label can never disagree with the bill (hard/soft v0).
+    pub side: Option<bool>,
 }
 
 impl Target {
@@ -96,6 +104,8 @@ pub fn nearest(
             continue;
         }
         best_d2 = d2;
+        let sided = (rec.row as u16) < piece_have
+            && shape_has_facing(piece_defs.pieces[rec.row as usize].shape);
         best = Some(Target {
             store: Store::Piece,
             cx: rec.cx,
@@ -109,6 +119,7 @@ pub fn nearest(
             } else {
                 0
             },
+            side: sided.then(|| soft_side(rec, at.0, at.1)),
         });
     }
 
@@ -134,6 +145,7 @@ pub fn nearest(
             } else {
                 0
             },
+            side: None,
         });
     }
 
@@ -213,6 +225,7 @@ mod tests {
             level: 0,
             loc,
             row: 0,
+            facing: 0,
             hp,
             uh: 0,
         }

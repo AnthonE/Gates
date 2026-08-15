@@ -27,9 +27,11 @@
 //! avoid, so every check here is one the sim runs the same way.
 
 use sim_core::build::{
-    anchor, build_cell_of, foundation_terrain_ok, BuildContent, PieceRec, BUILD_REACH_M,
-    LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER, SHAPE_DOORWAY, SHAPE_FOUNDATION,
-    SHAPE_STAIRS, SHAPE_WALL,
+    anchor, build_cell_of, foundation_terrain_ok, BuildContent, PieceRec, BUILD_CELL_M,
+    BUILD_REACH_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER,
+    LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, SHAPE_DOORWAY,
+    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
+    SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::craft::inv_count;
 use sim_core::deploy::{
@@ -78,10 +80,18 @@ pub fn target(x: f32, z: f32, fx: f32, fz: f32, shape: u8, level: u8) -> Target 
     let mut cz = build_cell_of(az).clamp(0, max);
 
     let mut loc = LOC_PLANE;
-    if shape == SHAPE_WALL || shape == SHAPE_DOORWAY {
-        // Which boundary of this cell the aim point is nearest.
-        let fxc = ax / sim_core::build::BUILD_CELL_M - cx as f32;
-        let fzc = az / sim_core::build::BUILD_CELL_M - cz as f32;
+    if matches!(
+        shape,
+        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
+    ) {
+        // Which boundary of this cell the aim point is nearest — and for
+        // the WALL alone, the two diagonals compete on the same terms
+        // (triangles v0): their perpendicular distances, in the same
+        // cell-fraction units, so aiming at the middle of a cell reaches
+        // for a diagonal and aiming at a boundary reaches for it exactly
+        // as before. The √2 is the projection, precomputed.
+        let fxc = ax / BUILD_CELL_M - cx as f32;
+        let fzc = az / BUILD_CELL_M - cz as f32;
         let m = fxc.min(1.0 - fxc).min(fzc).min(1.0 - fzc);
         if m == fxc {
             loc = LOC_EDGE_XLO;
@@ -93,6 +103,41 @@ pub fn target(x: f32, z: f32, fx: f32, fz: f32, shape: u8, level: u8) -> Target 
         } else {
             cz = (cz + 1).min(max);
             loc = LOC_EDGE_ZLO;
+        }
+        if shape == SHAPE_WALL {
+            const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;
+            let da = (fzc - fxc).abs() * INV_SQRT2;
+            let db = (fxc + fzc - 1.0).abs() * INV_SQRT2;
+            if da < m && da <= db {
+                loc = LOC_DIAG_A;
+                cx = build_cell_of(ax).clamp(0, max);
+                cz = build_cell_of(az).clamp(0, max);
+            } else if db < m {
+                loc = LOC_DIAG_B;
+                cx = build_cell_of(ax).clamp(0, max);
+                cz = build_cell_of(az).clamp(0, max);
+            }
+        }
+    } else if matches!(
+        shape,
+        SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF
+    ) {
+        // The half whose centroid is nearest the aim point — the anchors
+        // are the sim's own (`build::anchor` at thirds), so the ghost's
+        // pick and the reach the server measures agree by construction.
+        let mut best = f32::MAX;
+        for cand in [
+            LOC_TRI_XLO_ZLO,
+            LOC_TRI_XHI_ZLO,
+            LOC_TRI_XLO_ZHI,
+            LOC_TRI_XHI_ZHI,
+        ] {
+            let (tx, tz) = anchor(cx as u16, cz as u16, cand);
+            let d2 = (ax - tx) * (ax - tx) + (az - tz) * (az - tz);
+            if d2 < best {
+                best = d2;
+                loc = cand;
+            }
         }
     } else if shape == SHAPE_STAIRS {
         loc = LOC_RISER;
@@ -469,16 +514,55 @@ mod tests {
     }
 
     #[test]
-    fn a_wall_always_lands_on_a_canonical_edge() {
-        // Sweep the circle; every wall address must be a low-x or low-z edge.
+    fn a_wall_always_lands_on_a_canonical_edge_or_a_diagonal() {
+        // Sweep the circle; every wall address must be canonical — a west
+        // or north edge, or (triangles v0) one of the cell's own two
+        // diagonals, which are unshared by construction. What must never
+        // appear is an east/south alias of a neighbour's edge.
         for i in 0..64 {
             let a = i as f32 * std::f32::consts::TAU / 64.0;
             let t = target(40.0, 40.0, a.sin(), a.cos(), SHAPE_WALL, 2);
             assert!(
-                t.loc == LOC_EDGE_XLO || t.loc == LOC_EDGE_ZLO,
+                matches!(t.loc, LOC_EDGE_XLO | LOC_EDGE_ZLO | LOC_DIAG_A | LOC_DIAG_B),
                 "bearing {i} gave loc {}",
                 t.loc
             );
+        }
+        // Aimed at a cell's middle, the wall reaches for a diagonal —
+        // the aim point (10.5, 10.4) sits a hair off cell (3, 3)'s centre,
+        // far from every boundary and nearly on diagonal A's line.
+        let t = target(10.5 - AIM_AHEAD_M, 10.4, 1.0, 0.0, SHAPE_WALL, 0);
+        assert!(
+            t.loc == LOC_DIAG_A || t.loc == LOC_DIAG_B,
+            "mid-cell aim gave loc {}",
+            t.loc
+        );
+        // Aimed at a boundary, the straight edge still wins.
+        let t = target(9.05 - AIM_AHEAD_M, 10.5, 1.0, 0.0, SHAPE_WALL, 0);
+        assert_eq!(
+            t.loc, LOC_EDGE_XLO,
+            "boundary aim must stay a straight edge"
+        );
+    }
+
+    #[test]
+    fn a_triangle_lands_on_the_half_the_aim_is_inside() {
+        // Aim near each quarter of cell (3, 3) (metres 9..12): the pick is
+        // the half whose centroid is nearest, which contains the aim.
+        let cases = [
+            ((10.0, 10.0), LOC_TRI_XLO_ZLO),
+            ((11.0, 10.0), LOC_TRI_XHI_ZLO),
+            ((10.0, 11.0), LOC_TRI_XLO_ZHI),
+            ((11.0, 11.0), LOC_TRI_XHI_ZHI),
+        ];
+        for ((ax, az), want) in cases {
+            let t = target(ax - AIM_AHEAD_M, az, 1.0, 0.0, SHAPE_TRI_FOUNDATION, 0);
+            assert_eq!(
+                t.loc, want,
+                "aim ({ax}, {az}) picked loc {} not {want}",
+                t.loc
+            );
+            assert_eq!((t.cx, t.cz), (3, 3));
         }
     }
 
@@ -533,6 +617,7 @@ mod tests {
             level: 0,
             loc: LOC_EDGE_XLO,
             row: 0,
+            facing: 0,
             hp: 10,
             uh: 0,
         }];
