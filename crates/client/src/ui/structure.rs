@@ -176,7 +176,7 @@ pub fn next_material(piece_defs: &BuildContent, have: u16, row: u8) -> Option<u8
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sim_core::build::{PieceDef, LOC_EDGE_W, LOC_PLANE, MAT_STONE, MAT_WOOD};
+    use sim_core::build::{PieceDef, LOC_EDGE_XLO, LOC_PLANE, MAT_STONE, MAT_WOOD};
     use sim_core::deploy::{DeployDef, ARCH_DOOR};
     use sim_core::limits::MAX_PIECE_COSTS;
 
@@ -248,7 +248,7 @@ mod tests {
     fn a_door_and_its_doorway_share_an_address_and_the_door_wins() {
         let (pd, ph) = piece_table(&[MAT_WOOD]);
         let (dd, dh) = deploy_table();
-        let addr = (5u16, 5u16, LOC_EDGE_W);
+        let addr = (5u16, 5u16, LOC_EDGE_XLO);
         let pieces = [piece(addr.0, addr.1, addr.2, 100)];
         let deploys = [door(addr.0, addr.1, addr.2, 100)];
         let (ax, az) = anchor(addr.0, addr.1, addr.2);
@@ -278,13 +278,13 @@ mod tests {
         assert_eq!((t.hp, t.hp_max), (250, 500));
         assert!(t.damaged());
 
-        let (ax, az) = anchor(6, 6, LOC_EDGE_W);
+        let (ax, az) = anchor(6, 6, LOC_EDGE_XLO);
         let t = nearest(
             (ax, az),
             &[],
             &pd,
             ph,
-            &[door(6, 6, LOC_EDGE_W, 200)],
+            &[door(6, 6, LOC_EDGE_XLO, 200)],
             &dd,
             dh,
         )
@@ -319,8 +319,8 @@ mod tests {
     fn reach_is_the_sims_reach_measured_to_the_anchor() {
         let (pd, ph) = piece_table(&[MAT_WOOD]);
         let (dd, dh) = deploy_table();
-        let pieces = [piece(9, 9, LOC_EDGE_W, 10)];
-        let (ax, az) = anchor(9, 9, LOC_EDGE_W);
+        let pieces = [piece(9, 9, LOC_EDGE_XLO, 10)];
+        let (ax, az) = anchor(9, 9, LOC_EDGE_XLO);
         assert!(nearest(
             (ax, az - BUILD_REACH_M + 0.2),
             &pieces,

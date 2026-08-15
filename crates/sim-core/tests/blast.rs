@@ -11,7 +11,7 @@
 
 #![allow(clippy::disallowed_macros)]
 
-use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_W, LOC_PLANE};
+use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_XLO, LOC_PLANE};
 use sim_core::combat::CombatContent;
 use sim_core::deploy::DeployContent;
 use sim_core::gather::{GatherContent, ItemStack};
@@ -55,7 +55,7 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
     panic!("no buildable cell");
 }
 
-/// A world with a foundation, a west wall, a raider holding one satchel
+/// A world with a foundation, a low-x wall, a raider holding one satchel
 /// (475 body / 125 structure / 3 m blast / 2 s fuse — the shipped row's
 /// shape at a test-sized fuse), and a bystander. Returns (world, cx, cz).
 fn raid_world() -> (World, u16, u16) {
@@ -106,7 +106,7 @@ fn raid_world() -> (World, u16, u16) {
         cx,
         cz,
         level: 0,
-        loc: LOC_EDGE_W,
+        loc: LOC_EDGE_XLO,
     }]);
     assert_eq!(w.pieces.len(), 2, "foundation + wall");
     (w, cx, cz)
@@ -158,15 +158,15 @@ fn wait_out(w: &mut World) {
 #[test]
 fn the_planted_wall_takes_full_structure_and_the_floor_a_share() {
     let (mut w, cx, cz) = raid_world();
-    let wall_before = piece_hp(&w, cx, cz, 0, LOC_EDGE_W).unwrap();
+    let wall_before = piece_hp(&w, cx, cz, 0, LOC_EDGE_XLO).unwrap();
     let floor_before = piece_hp(&w, cx, cz, 0, LOC_PLANE).unwrap();
-    plant(&mut w, cx, cz, LOC_EDGE_W);
+    plant(&mut w, cx, cz, LOC_EDGE_XLO);
     // The raider steps away during the fuse, so the body numbers stay out
     // of this test — which is also the verb working as designed.
     w.players[0].body = Body::at(SEED, cell_center(cx, cz).0 + 20.0, cell_center(cx, cz).1);
     wait_out(&mut w);
 
-    let wall_after = piece_hp(&w, cx, cz, 0, LOC_EDGE_W).unwrap();
+    let wall_after = piece_hp(&w, cx, cz, 0, LOC_EDGE_XLO).unwrap();
     let floor_after = piece_hp(&w, cx, cz, 0, LOC_PLANE).unwrap();
     assert_eq!(
         wall_before - wall_after,
@@ -191,7 +191,7 @@ fn the_blast_kills_at_the_epicentre_and_spares_nobody() {
     // close enough to die too (both inside the lethal ~2.4 m of a
     // 475-damage 3 m blast).
     w.players[1].body = Body::at(SEED, x - 1.4, z);
-    plant(&mut w, cx, cz, LOC_EDGE_W);
+    plant(&mut w, cx, cz, LOC_EDGE_XLO);
     w.players[0].body = Body::at(SEED, x - 1.0, z + 0.5);
     wait_out(&mut w);
 
@@ -223,7 +223,7 @@ fn the_edge_of_the_blast_scratches() {
     // 2.9 m from the wall's anchor (the edge's midpoint), planar.
     w.players[1].body = Body::at(SEED, wall_x + 2.9, z);
     let full = w.players[1].hp;
-    plant(&mut w, cx, cz, LOC_EDGE_W);
+    plant(&mut w, cx, cz, LOC_EDGE_XLO);
     w.players[0].body = Body::at(SEED, x + 20.0, z);
     wait_out(&mut w);
     assert!(
@@ -260,7 +260,7 @@ fn a_fuse_survives_a_save_and_still_blasts() {
         cx,
         cz,
         level: 0,
-        loc: LOC_EDGE_W,
+        loc: LOC_EDGE_XLO,
     }]);
     assert_eq!(w.charges.len(), 1);
     let rec = w.charges.entries()[0];
@@ -281,11 +281,11 @@ fn a_fuse_survives_a_save_and_still_blasts() {
         (rec.damage, rec.blast_cm, rec.fires_at),
         "format 4 carries the blast whole"
     );
-    let wall_before = piece_hp(&w2, cx, cz, 0, LOC_EDGE_W).unwrap();
+    let wall_before = piece_hp(&w2, cx, cz, 0, LOC_EDGE_XLO).unwrap();
     for _ in 0..70 {
         w2.tick(&[]);
     }
-    let wall_after = piece_hp(&w2, cx, cz, 0, LOC_EDGE_W).unwrap();
+    let wall_after = piece_hp(&w2, cx, cz, 0, LOC_EDGE_XLO).unwrap();
     assert_eq!(
         wall_before - wall_after,
         125,

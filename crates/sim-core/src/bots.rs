@@ -9,7 +9,7 @@
 //! build, bolt, arm, plant, guess, take — and spends its own stream on
 //! its own `Pcg32`, so nothing here moves a digest that existed before it.
 
-use crate::build::{LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE};
+use crate::build::{LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE};
 use crate::deploy::{box_key, ACCESS_OP_ENTER, ACCESS_OP_SET_CODE, ACCESS_OP_TAKE};
 use crate::input::{InputFrame, BTN_JUMP, BTN_PRIMARY, BTN_SPRINT};
 use crate::inventory::{CONT_BOX, CONT_SELF};
@@ -168,9 +168,9 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
     // One draw per call whichever branch runs, so the two sides of a plot
     // spend the stream at the same rate.
     let edge = if rng.next_bounded(2) == 0 {
-        LOC_EDGE_W
+        LOC_EDGE_XLO
     } else {
-        LOC_EDGE_N
+        LOC_EDGE_ZLO
     };
     if plan.attacker {
         match step {
@@ -275,7 +275,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                 cx,
                 cz,
                 level: 0,
-                loc: LOC_EDGE_W,
+                loc: LOC_EDGE_XLO,
             },
             2 => Command::Place {
                 id,
@@ -283,7 +283,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                 cx,
                 cz,
                 level: 0,
-                loc: LOC_EDGE_N,
+                loc: LOC_EDGE_ZLO,
             },
             3 => Command::PlaceDeploy {
                 id,

@@ -58,7 +58,7 @@
 //! allowance and both land through `deploy::damage_piece`.
 
 use crate::build::{
-    anchor, BuildContent, Pieces, BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE,
+    anchor, BuildContent, Pieces, BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
     LOC_RISER,
 };
 use crate::collide::{col_base_y, CAPSULE_HEIGHT_M};
@@ -652,8 +652,8 @@ pub fn raid(
             for (loc, mask) in [
                 (LOC_PLANE, m.planes),
                 (LOC_RISER, m.stairs),
-                (LOC_EDGE_W, m.walls_w | m.doors_w),
-                (LOC_EDGE_N, m.walls_n | m.doors_n),
+                (LOC_EDGE_XLO, m.walls_xlo | m.doors_xlo),
+                (LOC_EDGE_ZLO, m.walls_zlo | m.doors_zlo),
             ] {
                 if mask == 0 {
                     continue;
@@ -896,8 +896,8 @@ mod tests {
             &mut ev
         ));
 
-        // In reach but aimed away: one cell east (3 m; the anchor is 3 m
-        // west of them) facing +x, so the foundation is behind.
+        // In reach but aimed away: one cell at +x (3 m; the anchor is 3 m
+        // at −x of them) facing +x, so the foundation is behind.
         let mut turned = raider(CX + 1, CZ);
         turned.frame.yaw = 0;
         assert!(!raid(
@@ -1023,7 +1023,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(pieces.len(), 2, "foundation + doorway");
@@ -1039,7 +1039,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(deploys.len(), 1, "the door hangs in the doorway");
@@ -1057,7 +1057,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         crate::deploy::lock_op(
@@ -1068,7 +1068,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             crate::deploy::ACCESS_OP_SET_CODE,
             1234,
             0,
@@ -1077,12 +1077,12 @@ mod tests {
         );
         assert!(deploys.entries()[0].locked, "and it is locked");
         assert_ne!(
-            pieces.cols().get(CX, CZ).shut_w,
+            pieces.cols().get(CX, CZ).shut_xlo,
             0,
             "a shut door seals its edge"
         );
 
-        // A stranger outside, one cell west, facing the door: the lock
+        // A stranger outside, one cell at −x, facing the door: the lock
         // refuses the use verb…
         let mut foe = raider(CX - 1, CZ);
         foe.id = 9;
@@ -1096,7 +1096,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -1104,7 +1104,7 @@ mod tests {
             crate::deploy::REFUSE_D_OWNER,
             "the lock still holds against the use verb"
         );
-        assert_ne!(pieces.cols().get(CX, CZ).shut_w, 0, "still sealed");
+        assert_ne!(pieces.cols().get(CX, CZ).shut_xlo, 0, "still sealed");
 
         // …and the swing does not care. 60 hp, 34 a swing: two.
         ev.clear();
@@ -1138,7 +1138,7 @@ mod tests {
         ));
         assert!(deploys.is_empty(), "the door fell to force");
         assert_eq!(
-            pieces.cols().get(CX, CZ).shut_w,
+            pieces.cols().get(CX, CZ).shut_xlo,
             0,
             "and the edge is open — the raider can walk in"
         );

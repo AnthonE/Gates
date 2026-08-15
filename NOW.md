@@ -72,23 +72,10 @@ The remaining half is the **transfer**, and it needs eyes on a frame:
   passes 60→66, one sequential owner → 26), and the last time this rig moved
   toward "too dark" the correction overshot the other way. One owner, one
   iteration, with the frame open.
-
-## 0gk · The grid-edge constants still say west *(systems lane)*
-
-Left over from §0gj (landed 2026-08-15, `DECISIONS.md`) — that row scoped it
-out by name rather than forgetting it. `sim-core/src/build.rs:80` names the
-low-x and low-z cell boundaries `LOC_EDGE_W`/`LOC_EDGE_N` after compass
-points, and the compass moved: `LOC_EDGE_W` is now the **east** edge. Nothing
-is mirrored — the values are 2 and 3, the sim's addressing is unchanged and
-`ui/place.rs` re-addresses edge pieces correctly either way. It is a name that
-lies, which is what the 2026-08-15 pass cost a day to a mirrored compass over.
-
-Rename to `LOC_EDGE_XLO`/`LOC_EDGE_ZLO` — an axis is what they always meant,
-and an axis cannot be re-decided out from under them. Touches `build.rs`,
-`protocol/src/goldens.rs` (8 uses, names not bytes) and `ui/place.rs` (incl.
-`an_east_edge_is_addressed_as_the_next_cells_west_edge`, whose *name* is the
-defect). No value moves, so `test_protocol_golden` must stay green untouched;
-if it reddens, the rename was not a rename.
+- **Passed over 2026-08-15** (the §0gk pass), for the line above and no other
+  reason: that runner took frame capture out of the builder's hands, so the
+  pass could not open one. It stays top. It is blocked on a *capability*, not
+  on priority — a pass that can capture should take it before anything below.
 
 ## 0gi · The island reads as one surface — two causes, one landed *(client+sim lane)*
 

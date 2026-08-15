@@ -28,8 +28,8 @@
 //! DECISIONS.md §open ("piece collision v0" row).
 
 use crate::build::{
-    BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, SHAPE_DOORWAY, SHAPE_FLOOR, SHAPE_FOUNDATION,
-    SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
+    BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, SHAPE_DOORWAY, SHAPE_FLOOR,
+    SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
 };
 use crate::fmath::fabs;
 use crate::limits::{COL_INDEX_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS};
@@ -61,21 +61,24 @@ pub const NO_SURFACE: f32 = -1.0e9;
 pub const SOLID_NONE: u32 = u32::MAX;
 
 /// Per-column occupancy, one bit per level (MAX_BUILD_LEVELS = 8 fits u8
-/// exactly). Edge masks live in their canonical column (build.rs: west/
-/// north), so a cell's east edge is its +x neighbor's `*_w`.
+/// exactly). Edge masks live in their canonical column (build.rs: low-x/
+/// low-z), so a cell's +x boundary is its +x neighbor's `*_xlo`.
+///
+/// The suffixes were `_w`/`_n` until 2026-08-15 and named bearings that had
+/// since moved (`build.rs`'s `LOC_EDGE_XLO` doc). Axes, now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ColMasks {
     pub planes: u8,
     pub stairs: u8,
-    pub walls_w: u8,
-    pub walls_n: u8,
-    pub doors_w: u8,
-    pub doors_n: u8,
+    pub walls_xlo: u8,
+    pub walls_zlo: u8,
+    pub doors_xlo: u8,
+    pub doors_zlo: u8,
     /// Closed-door bits: set ⇒ the doorway at this level/edge holds a
     /// closed door deployable and blocks its full span (deploy.rs keeps
     /// these in lockstep with the door records).
-    pub shut_w: u8,
-    pub shut_n: u8,
+    pub shut_xlo: u8,
+    pub shut_zlo: u8,
     /// The solid deployable standing on each level's plane, one nibble
     /// per level: the archetype code, or `0xF` for none (deploy collision
     /// v0 — deploy.rs keeps these in lockstep with the deploy records,
@@ -95,24 +98,24 @@ impl ColMasks {
     pub const EMPTY: Self = Self {
         planes: 0,
         stairs: 0,
-        walls_w: 0,
-        walls_n: 0,
-        doors_w: 0,
-        doors_n: 0,
-        shut_w: 0,
-        shut_n: 0,
+        walls_xlo: 0,
+        walls_zlo: 0,
+        doors_xlo: 0,
+        doors_zlo: 0,
+        shut_xlo: 0,
+        shut_zlo: 0,
         solid: SOLID_NONE,
     };
 
     fn is_empty(&self) -> bool {
         (self.planes
             | self.stairs
-            | self.walls_w
-            | self.walls_n
-            | self.doors_w
-            | self.doors_n
-            | self.shut_w
-            | self.shut_n)
+            | self.walls_xlo
+            | self.walls_zlo
+            | self.doors_xlo
+            | self.doors_zlo
+            | self.shut_xlo
+            | self.shut_zlo)
             == 0
             && self.solid == SOLID_NONE
     }
@@ -130,10 +133,10 @@ impl ColMasks {
         match shape {
             SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF => Some(&mut self.planes),
             SHAPE_STAIRS => Some(&mut self.stairs),
-            SHAPE_WALL if loc == LOC_EDGE_W => Some(&mut self.walls_w),
-            SHAPE_WALL if loc == LOC_EDGE_N => Some(&mut self.walls_n),
-            SHAPE_DOORWAY if loc == LOC_EDGE_W => Some(&mut self.doors_w),
-            SHAPE_DOORWAY if loc == LOC_EDGE_N => Some(&mut self.doors_n),
+            SHAPE_WALL if loc == LOC_EDGE_XLO => Some(&mut self.walls_xlo),
+            SHAPE_WALL if loc == LOC_EDGE_ZLO => Some(&mut self.walls_zlo),
+            SHAPE_DOORWAY if loc == LOC_EDGE_XLO => Some(&mut self.doors_xlo),
+            SHAPE_DOORWAY if loc == LOC_EDGE_ZLO => Some(&mut self.doors_zlo),
             _ => None,
         }
     }
@@ -260,7 +263,7 @@ impl ColIndex {
     /// no-op — the caller validated the address holds a door. Clearing
     /// an emptied column drops its slot like `del`.
     pub fn set_door(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shut: bool) {
-        if loc != LOC_EDGE_W && loc != LOC_EDGE_N {
+        if loc != LOC_EDGE_XLO && loc != LOC_EDGE_ZLO {
             return;
         }
         if !shut {
@@ -278,10 +281,10 @@ impl ColIndex {
                 i = (i + 1) & (COL_INDEX_SLOTS - 1);
             }
             let m = &mut self.masks[i];
-            if loc == LOC_EDGE_W {
-                m.shut_w &= !(1 << level);
+            if loc == LOC_EDGE_XLO {
+                m.shut_xlo &= !(1 << level);
             } else {
-                m.shut_n &= !(1 << level);
+                m.shut_zlo &= !(1 << level);
             }
             if self.masks[i].is_empty() {
                 self.remove_slot(i);
@@ -306,10 +309,10 @@ impl ColIndex {
             i = (i + 1) & (COL_INDEX_SLOTS - 1);
         }
         let m = &mut self.masks[i];
-        if loc == LOC_EDGE_W {
-            m.shut_w |= 1 << level;
+        if loc == LOC_EDGE_XLO {
+            m.shut_xlo |= 1 << level;
         } else {
-            m.shut_n |= 1 << level;
+            m.shut_zlo |= 1 << level;
         }
     }
 
@@ -510,8 +513,8 @@ pub fn deploy_blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, feet_y: f32) -
 
 /// One edge's block test: does the move (x,z)→(nx,nz) cross or push into
 /// the inflated edge slab, at a z the edge actually occupies? `posts`
-/// selects doorway geometry (only the posts block). `axis_w` says the
-/// edge is an x-plane (west) rather than a z-plane (north); coordinates
+/// selects doorway geometry (only the posts block). The caller decides
+/// whether the edge is an x-plane (low-x) or a z-plane (low-z); coordinates
 /// are pre-swapped by the caller so the math is written once.
 fn edge_hit(px: f32, s0: f32, a0: f32, a1: f32, along: f32, posts: bool) -> bool {
     let r = WALL_THICKNESS_M * 0.5 + CAPSULE_RADIUS_M;
@@ -548,7 +551,7 @@ pub fn doorway_solid_at(t: f32) -> bool {
 }
 
 /// All blocking edges of one cell against the move. The four edges are
-/// the cell's canonical west/north plus the neighbors' (build.rs edge
+/// the cell's canonical low-x/low-z plus the neighbors' (build.rs edge
 /// canonicalization); each tests only if its storey overlaps the capsule.
 #[allow(clippy::too_many_arguments)]
 fn cell_edges_block(
@@ -562,22 +565,22 @@ fn cell_edges_block(
     nz: f32,
     feet_y: f32,
 ) -> bool {
-    // (column cx, cz, west-edge?) — the four boundaries of cell (bx, bz).
+    // (column cx, cz, x-plane?) — the four boundaries of cell (bx, bz).
     let edges = [
         (bx, bz, true),
         (bx + 1, bz, true),
         (bx, bz, false),
         (bx, bz + 1, false),
     ];
-    for (ecx, ecz, west) in edges {
+    for (ecx, ecz, x_plane) in edges {
         if ecx < 0 || ecz < 0 || ecx >= MAX_BUILD_COORD as i32 || ecz >= MAX_BUILD_COORD as i32 {
             continue;
         }
         let m = cols.get(ecx as u16, ecz as u16);
-        let (walls, doors, shuts) = if west {
-            (m.walls_w, m.doors_w, m.shut_w)
+        let (walls, doors, shuts) = if x_plane {
+            (m.walls_xlo, m.doors_xlo, m.shut_xlo)
         } else {
-            (m.walls_n, m.doors_n, m.shut_n)
+            (m.walls_zlo, m.doors_zlo, m.shut_zlo)
         };
         if walls | doors == 0 {
             continue;
@@ -596,7 +599,7 @@ fn cell_edges_block(
             if feet_y >= bottom + LEVEL_H_M || feet_y + CAPSULE_HEIGHT_M <= bottom {
                 continue; // that storey is above the head or below the feet
             }
-            let hit = if west {
+            let hit = if x_plane {
                 // x-plane at ecx·3, spanning z from ecz·3.
                 let px = ecx as f32 * BUILD_CELL_M;
                 let s0 = ecz as f32 * BUILD_CELL_M;
@@ -739,12 +742,12 @@ mod tests {
         // walks is not (occupy::Barren).
         let mut occ = crate::occupy::Scratch::barren();
         let bc = free_table();
-        let wall_x = CX as f32 * BUILD_CELL_M; // 1023: the west edge plane
+        let wall_x = CX as f32 * BUILD_CELL_M; // 1023: the low-x edge plane
 
-        // A wall on the west edge stops a westward walk at the slab.
+        // A wall on the low-x edge stops a −x walk at the slab.
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
-        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_W, 1);
+        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_XLO, 1);
         let mut b = body_at(1024.5, 1024.5);
         for _ in 0..120 {
             movement::step(
@@ -766,7 +769,7 @@ mod tests {
         // Same walk, doorway instead: the centered opening passes.
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
-        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_W, 2);
+        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_XLO, 2);
         let mut b = body_at(1024.5, 1024.5);
         for _ in 0..120 {
             movement::step(
@@ -783,7 +786,7 @@ mod tests {
             pos(&b).0
         );
 
-        // Aimed at a post (z inside the south post span): blocked.
+        // Aimed at a post (z inside the low-z post span): blocked.
         let mut b = body_at(1024.5, CZ as f32 * BUILD_CELL_M + 0.45);
         for _ in 0..120 {
             movement::step(
@@ -801,14 +804,14 @@ mod tests {
         );
 
         // A wall one storey up over an open edge is above the head:
-        // foundation + north wall carry a level-1 floor, which supports a
-        // level-1 west wall over a bare level-0 west edge — walking out
-        // west at ground level passes under it.
+        // foundation + low-z wall carry a level-1 floor, which supports a
+        // level-1 low-x wall over a bare level-0 low-x edge — walking out
+        // along −x at ground level passes under it.
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
-        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_N, 1);
+        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_ZLO, 1);
         put(&bc, &mut pieces, CX, CZ, 1, LOC_PLANE, 3);
-        put(&bc, &mut pieces, CX, CZ, 1, crate::build::LOC_EDGE_W, 1);
+        put(&bc, &mut pieces, CX, CZ, 1, crate::build::LOC_EDGE_XLO, 1);
         let mut b = body_at(1024.5, 1024.5);
         for _ in 0..120 {
             movement::step(
@@ -852,8 +855,8 @@ mod tests {
         );
 
         // …a floor two storeys up is a ceiling, not a teleport.
-        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_W, 1);
-        put(&bc, &mut pieces, CX, CZ, 1, crate::build::LOC_EDGE_W, 1);
+        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_XLO, 1);
+        put(&bc, &mut pieces, CX, CZ, 1, crate::build::LOC_EDGE_XLO, 1);
         put(&bc, &mut pieces, CX, CZ, 2, LOC_PLANE, 3);
         movement::step(
             SEED,
@@ -868,7 +871,7 @@ mod tests {
             "feet {y} teleported toward the level-2 floor"
         );
 
-        // Walking east off the slab falls back to terrain.
+        // Walking +x off the slab falls back to terrain.
         let mut b = body_at(1024.5, 1024.5);
         for _ in 0..240 {
             movement::step(
@@ -1006,16 +1009,16 @@ mod tests {
         let bc = free_table();
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
-        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_W, 1);
-        assert_eq!(pieces.cols().get(CX, CZ).walls_w, 1);
+        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_XLO, 1);
+        assert_eq!(pieces.cols().get(CX, CZ).walls_xlo, 1);
         // The sweep's removal path: drop the wall by store index.
         let wi = pieces
             .entries()
             .iter()
-            .position(|r| r.loc == crate::build::LOC_EDGE_W)
+            .position(|r| r.loc == crate::build::LOC_EDGE_XLO)
             .unwrap();
         pieces.remove_at(wi, SHAPE_WALL);
-        assert_eq!(pieces.cols().get(CX, CZ).walls_w, 0);
+        assert_eq!(pieces.cols().get(CX, CZ).walls_xlo, 0);
         assert_eq!(pieces.cols().get(CX, CZ).planes, 1, "the slab stays");
         let mut b = body_at(1024.5, 1024.5);
         for _ in 0..120 {

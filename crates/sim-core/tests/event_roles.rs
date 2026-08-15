@@ -76,7 +76,7 @@
 
 use sim_core::backpack::{BackpackContent, BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
 use sim_core::build::{
-    foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE,
+    foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
     REFUSE_B_COST, REFUSE_B_PIECE,
 };
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
@@ -224,22 +224,22 @@ const NO_SUCH_ROW: u16 = 9999;
 /// `EV_PIECE_PLACED` and `EV_DEPLOY_PLACED` both pack `level << 16 | loc
 /// << 8 | row`, and a check is blind to any pair of those three being
 /// swapped when two of them hold the same number. The doorway *piece* is
-/// row 3, so it goes on the west edge (`LOC_EDGE_W` = 2) to read 0/2/3;
-/// the door *deployable* is row 2, so it goes on the north edge
-/// (`LOC_EDGE_N` = 3) to read 0/3/2. Same discipline as `distinct_halves`,
+/// row 3, so it goes on the low-x edge (`LOC_EDGE_XLO` = 2) to read 0/2/3;
+/// the door *deployable* is row 2, so it goes on the low-z edge
+/// (`LOC_EDGE_ZLO` = 3) to read 0/3/2. Same discipline as `distinct_halves`,
 /// one field wider — and it is why there are two doorways here rather
 /// than one.
 ///
 /// With the arrangement standing a storey (`UPPER`) the two triples read
 /// 1/2/3 and 1/3/2: three different numbers each, and no longer a level
 /// that is only ever its own zero.
-const PIECE_EDGE: u8 = LOC_EDGE_W;
-const DOOR_EDGE: u8 = LOC_EDGE_N;
+const PIECE_EDGE: u8 = LOC_EDGE_XLO;
+const DOOR_EDGE: u8 = LOC_EDGE_ZLO;
 
 /// Where a raider stands to swing at the arrangement, and which way it
-/// faces. One build cell west of the target column, looking back east —
+/// faces. One build cell at −x of the target column, looking back +x —
 /// `combat.rs`'s own raid rig in the same posture, because the target scan
-/// picks the nearest anchor it is aimed at, and the west edge of the cell
+/// picks the nearest anchor it is aimed at, and the low-x edge of the cell
 /// is what that resolves to from here. Yaw 64/256 of a turn is +x over the
 /// 256-entry LUT.
 const RAID_YAW: u16 = 64 << 8;
@@ -1250,7 +1250,7 @@ fn builder_world(w: &mut World) -> (u16, u16) {
 }
 
 /// The storey the addressed checks read: a foundation on the ground, a wall
-/// on its west edge, and a floor on top of the wall — so `UPPER` is a real,
+/// on its low-x edge, and a floor on top of the wall — so `UPPER` is a real,
 /// supported level rather than a number the test asserts about an empty
 /// column. The wall is not decoration: `build.rs`'s support rule v0 carries
 /// a floor on *an edge piece under one of the cell's four sides*, so a
@@ -1259,7 +1259,7 @@ fn builder_world(w: &mut World) -> (u16, u16) {
 /// landed.
 fn stand_a_storey(w: &mut World, cx: u16, cz: u16) {
     place_piece(w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
-    place_piece(w, PIECE_WALL, cx, cz, GROUND, LOC_EDGE_W);
+    place_piece(w, PIECE_WALL, cx, cz, GROUND, LOC_EDGE_XLO);
     place_piece(w, PIECE_FLOOR, cx, cz, UPPER, LOC_PLANE);
 }
 
@@ -1323,7 +1323,7 @@ fn place_deploy(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
     );
 }
 
-/// Move the builder one cell west of the target column and face it, then
+/// Move the builder one cell at −x of the target column and face it, then
 /// swing until `code` lands. The raid posture: the target scan wants an
 /// anchor it is aimed at, and a body standing *inside* its own cell is not
 /// aiming at that cell's edges.
@@ -1826,7 +1826,7 @@ fn the_placement_and_the_feed_disagree_about_field_a_on_purpose() {
 /// draws a wall gaining health as it is beaten, and the fixture keeps the
 /// halves apart (34 dealt, 66 left) so this check can see it.
 ///
-/// The target is a wood wall on the *west edge* of the ground storey, which
+/// The target is a wood wall on the *low-x edge* of the ground storey, which
 /// is what makes `b` readable: a foundation would address 0/0/0 and a check
 /// against three zeroes is blind to every permutation of them.
 #[test]

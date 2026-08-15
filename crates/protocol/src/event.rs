@@ -18,7 +18,7 @@ use crate::{
     KIND_BITS, KIND_EVENT, PIECE_ROW_BITS, POS_XZ_BITS, POS_Y_BIAS, POS_Y_BITS,
 };
 use sim_core::backpack::BackpackRec;
-use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_N, MAT_METAL, SHAPE_ROOF};
+use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_ZLO, MAT_METAL, SHAPE_ROOF};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_FURNACE};
 use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_RESEARCH, PLACE_DOOR};
 use sim_core::gather::ItemStack;
@@ -1043,7 +1043,7 @@ fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
         || rec.level as usize >= MAX_BUILD_LEVELS
-        || rec.loc > LOC_EDGE_N
+        || rec.loc > LOC_EDGE_ZLO
         || rec.row as usize >= MAX_PIECE_DEFS
     {
         return Err(WireError::Range);
@@ -1139,7 +1139,7 @@ pub fn encode_event_piece_repaired(
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
         || level as usize >= MAX_BUILD_LEVELS
-        || loc > LOC_EDGE_N
+        || loc > LOC_EDGE_ZLO
         || (row as u32) >= (1 << row_bits)
         || healed == 0
         || hp == 0
@@ -1186,7 +1186,7 @@ pub fn encode_event_charge_placed(
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
         || level as usize >= MAX_BUILD_LEVELS
-        || loc > LOC_EDGE_N
+        || loc > LOC_EDGE_ZLO
         || (row as u32) >= (1 << row_bits)
         || fuse == 0
     {
@@ -1254,7 +1254,7 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     if rec.cx as usize >= MAX_BUILD_COORD
         || rec.cz as usize >= MAX_BUILD_COORD
         || rec.level as usize >= MAX_BUILD_LEVELS
-        || rec.loc > LOC_EDGE_N
+        || rec.loc > LOC_EDGE_ZLO
         || rec.row as usize >= MAX_DEPLOY_DEFS
     {
         return Err(WireError::Range);
@@ -1378,7 +1378,7 @@ pub fn encode_event_struct_hit(
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
         || level as usize >= MAX_BUILD_LEVELS
-        || loc > LOC_EDGE_N
+        || loc > LOC_EDGE_ZLO
         || (row as u32) >= (1 << row_bits)
         || left == 0
     {
@@ -1410,7 +1410,7 @@ pub fn encode_event_removed(
     if cx as usize >= MAX_BUILD_COORD
         || cz as usize >= MAX_BUILD_COORD
         || level as usize >= MAX_BUILD_LEVELS
-        || loc > LOC_EDGE_N
+        || loc > LOC_EDGE_ZLO
     {
         return Err(WireError::Range);
     }
@@ -1494,7 +1494,7 @@ fn door_addr_ok(cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     (cx as usize) < MAX_BUILD_COORD
         && (cz as usize) < MAX_BUILD_COORD
         && (level as usize) < MAX_BUILD_LEVELS
-        && loc <= LOC_EDGE_N
+        && loc <= LOC_EDGE_ZLO
 }
 
 /// Somebody knocked on the door at the address (broadcast, lock v1).
@@ -2170,7 +2170,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             // all would corrupt an hp mirror. `row` needs no bound — the
             // width the bit selected is exactly its domain, which is why
             // the field is read at that width rather than masked after.
-            if loc > LOC_EDGE_N || healed == 0 || hp == 0 || healed > hp {
+            if loc > LOC_EDGE_ZLO || healed == 0 || hp == 0 || healed > hp {
                 return Err(WireError::Malformed);
             }
             EventMsg::PieceRepaired {
@@ -2199,7 +2199,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             // The encoder's refusals, restated — `PieceRepaired`'s arm
             // exactly, minus the pair it does not carry. `row` needs no
             // bound: the width the store bit selected is its domain.
-            if loc > LOC_EDGE_N || fuse == 0 {
+            if loc > LOC_EDGE_ZLO || fuse == 0 {
                 return Err(WireError::Malformed);
             }
             EventMsg::ChargePlaced {
@@ -2336,7 +2336,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             })?;
             let damage = r.read(16)? as u16;
             let left = r.read(16)? as u16;
-            if loc > LOC_EDGE_N || left == 0 {
+            if loc > LOC_EDGE_ZLO || left == 0 {
                 return Err(WireError::Malformed);
             }
             EventMsg::StructHit {
@@ -2906,7 +2906,7 @@ mod tests {
             cx: 341,
             cz: 682,
             level: 3,
-            loc: LOC_EDGE_N,
+            loc: LOC_EDGE_ZLO,
             row: 17,
             ..PieceRec::default()
         };
@@ -3207,20 +3207,20 @@ mod tests {
     fn removals_and_stock_round_trip() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         for piece in [true, false] {
-            let len = encode_event_removed(piece, 341, 682, 2, LOC_EDGE_N, &mut buf).unwrap();
+            let len = encode_event_removed(piece, 341, 682, 2, LOC_EDGE_ZLO, &mut buf).unwrap();
             let want = if piece {
                 EventMsg::PieceRemoved {
                     cx: 341,
                     cz: 682,
                     level: 2,
-                    loc: LOC_EDGE_N,
+                    loc: LOC_EDGE_ZLO,
                 }
             } else {
                 EventMsg::DeployRemoved {
                     cx: 341,
                     cz: 682,
                     level: 2,
-                    loc: LOC_EDGE_N,
+                    loc: LOC_EDGE_ZLO,
                 }
             };
             assert_eq!(decode_event(&buf[..len]).unwrap(), want);
@@ -3235,7 +3235,7 @@ mod tests {
         for deploy in [false, true] {
             let row = if deploy { 15 } else { 31 };
             let len =
-                encode_event_struct_hit(deploy, 341, 682, 2, LOC_EDGE_N, row, 40, 710, &mut buf)
+                encode_event_struct_hit(deploy, 341, 682, 2, LOC_EDGE_ZLO, row, 40, 710, &mut buf)
                     .unwrap();
             assert_eq!(
                 decode_event(&buf[..len]).unwrap(),
@@ -3244,7 +3244,7 @@ mod tests {
                     cx: 341,
                     cz: 682,
                     level: 2,
-                    loc: LOC_EDGE_N,
+                    loc: LOC_EDGE_ZLO,
                     damage: 40,
                     left: 710,
                 }
@@ -3261,7 +3261,7 @@ mod tests {
             "level past the grid"
         );
         assert_eq!(
-            encode_event_struct_hit(false, 0, 0, 0, LOC_EDGE_N + 1, 0, 1, 1, &mut buf),
+            encode_event_struct_hit(false, 0, 0, 0, LOC_EDGE_ZLO + 1, 0, 1, 1, &mut buf),
             Err(WireError::Range),
             "loc past the four"
         );

@@ -324,7 +324,7 @@ fn only_the_stairs_carry_a_pitch_and_they_do_carry_one() {
 
 use client::render::structures::{deploy_size, deploy_transform, level_base_y};
 use client::ui::place::{deploy_verdict, DeploySite, DeployVerdict, Target};
-use sim_core::build::{BuildContent, Pieces, LOC_EDGE_W, LOC_PLANE};
+use sim_core::build::{BuildContent, Pieces, LOC_EDGE_XLO, LOC_PLANE};
 use sim_core::deploy::{
     place_deploy, DeployContent, DeployDef, Deploys, ARCH_BOX, ARCH_DOOR, BAG_CAP, PLACE_GROUND,
     REFUSE_D_BAG_CAP, REFUSE_D_CLAIM, REFUSE_D_COST, REFUSE_D_HAS_LOCK, REFUSE_D_KIND,
@@ -559,18 +559,18 @@ fn needs_support_is_red_on_both_sides() {
     rig.agree_no(
         &mut p,
         ROW_DOOR,
-        at(CX, CZ, 0, LOC_EDGE_W),
+        at(CX, CZ, 0, LOC_EDGE_XLO),
         REFUSE_D_SUPPORT,
         "needs support",
     );
     // A wall is not a doorway — the shape check runs against the piece-def
     // table on both sides.
     rig.founded(&mut p, CX, CZ);
-    rig.piece(&mut p, 1, CX, CZ, LOC_EDGE_W); // row 1 = wood wall
+    rig.piece(&mut p, 1, CX, CZ, LOC_EDGE_XLO); // row 1 = wood wall
     rig.agree_no(
         &mut p,
         ROW_DOOR,
-        at(CX, CZ, 0, LOC_EDGE_W),
+        at(CX, CZ, 0, LOC_EDGE_XLO),
         REFUSE_D_SUPPORT,
         "needs support",
     );
@@ -633,13 +633,13 @@ fn an_empty_pocket_is_red_on_both_sides() {
     // The lock's cost arm is its own path in the sim; same agreement.
     let mut rich_hand = rich(CX, CZ);
     rig.founded(&mut rich_hand, CX, CZ);
-    rig.piece(&mut rich_hand, 3, CX, CZ, LOC_EDGE_W); // row 3 = doorway
-    rig.agree_ok(&mut rich_hand, ROW_DOOR, at(CX, CZ, 0, LOC_EDGE_W));
+    rig.piece(&mut rich_hand, 3, CX, CZ, LOC_EDGE_XLO); // row 3 = doorway
+    rig.agree_ok(&mut rich_hand, ROW_DOOR, at(CX, CZ, 0, LOC_EDGE_XLO));
     let mut no_lock = player_at_cell(CX, CZ, &[(0, 9)]);
     rig.agree_no(
         &mut no_lock,
         ROW_LOCK,
-        at(CX, CZ, 0, LOC_EDGE_W),
+        at(CX, CZ, 0, LOC_EDGE_XLO),
         REFUSE_D_COST,
         "item not in inventory",
     );
@@ -683,16 +683,16 @@ fn a_second_lock_is_red_on_both_sides() {
     let mut rig = Rig::new();
     let mut p = rich(CX, CZ);
     rig.founded(&mut p, CX, CZ);
-    rig.piece(&mut p, 3, CX, CZ, LOC_EDGE_W); // doorway
-    rig.agree_ok(&mut p, ROW_DOOR, at(CX, CZ, 0, LOC_EDGE_W));
+    rig.piece(&mut p, 3, CX, CZ, LOC_EDGE_XLO); // doorway
+    rig.agree_ok(&mut p, ROW_DOOR, at(CX, CZ, 0, LOC_EDGE_XLO));
     // The first lock bolts on (its success is EV_DOOR, not a placed ack).
-    rig.agree_ok(&mut p, ROW_LOCK, at(CX, CZ, 0, LOC_EDGE_W));
+    rig.agree_ok(&mut p, ROW_LOCK, at(CX, CZ, 0, LOC_EDGE_XLO));
     // The second is refused by the lock store — mirrored client-side as the
     // `has_lock` bit the wire keeps in lockstep with it.
     rig.agree_no(
         &mut p,
         ROW_LOCK,
-        at(CX, CZ, 0, LOC_EDGE_W),
+        at(CX, CZ, 0, LOC_EDGE_XLO),
         REFUSE_D_HAS_LOCK,
         "that door already has a lock",
     );
@@ -772,36 +772,36 @@ fn the_door_ghost_stands_in_the_doorway_edge() {
     let size = deploy_size(ARCH_DOOR as usize);
     let base = level_base_y(SEED, CX, CZ, 0);
 
-    let west = deploy_transform(SEED, (CX, CZ, 0, LOC_EDGE_W), ARCH_DOOR, false);
+    let xlo = deploy_transform(SEED, (CX, CZ, 0, LOC_EDGE_XLO), ARCH_DOOR, false);
     assert!(
-        (west.translation.x - CX as f32 * BUILD_CELL_M).abs() < 1e-4,
-        "a west door's centre is not on the west boundary"
+        (xlo.translation.x - CX as f32 * BUILD_CELL_M).abs() < 1e-4,
+        "a low-x door's centre is not on the low-x boundary"
     );
     assert!(
-        (west.translation.z - (CZ as f32 + 0.5) * BUILD_CELL_M).abs() < 1e-4,
-        "a west door is not centred along its edge"
+        (xlo.translation.z - (CZ as f32 + 0.5) * BUILD_CELL_M).abs() < 1e-4,
+        "a low-x door is not centred along its edge"
     );
     assert!(
-        (west.translation.y - (base + size.y * 0.5)).abs() < 1e-4,
+        (xlo.translation.y - (base + size.y * 0.5)).abs() < 1e-4,
         "the door does not stand on the level base"
     );
 
-    // The north edge is the same door under the quarter-turn — the edge
+    // The low-z edge is the same door under the quarter-turn — the edge
     // canonicalisation the grid uses everywhere else.
-    let north = deploy_transform(
+    let zlo = deploy_transform(
         SEED,
-        (CX, CZ, 0, sim_core::build::LOC_EDGE_N),
+        (CX, CZ, 0, sim_core::build::LOC_EDGE_ZLO),
         ARCH_DOOR,
         false,
     );
     assert!(
-        (north.translation.z - CZ as f32 * BUILD_CELL_M).abs() < 1e-4,
-        "a north door's centre is not on the north boundary"
+        (zlo.translation.z - CZ as f32 * BUILD_CELL_M).abs() < 1e-4,
+        "a low-z door's centre is not on the low-z boundary"
     );
-    let turned = north.rotation * bevy::math::Vec3::X;
+    let turned = zlo.rotation * bevy::math::Vec3::X;
     assert!(
         (turned.z + 1.0).abs() < 1e-4,
-        "a north door does not carry the quarter-turn"
+        "a low-z door does not carry the quarter-turn"
     );
 
     // A body deployable keeps the cell body: the split is the door's alone.
@@ -813,9 +813,9 @@ fn the_door_ghost_stands_in_the_doorway_edge() {
 
     // And an open door is drawn elsewhere than a closed one — the leaf
     // swings, exactly as the sim's collision reads it.
-    let open = deploy_transform(SEED, (CX, CZ, 0, LOC_EDGE_W), ARCH_DOOR, true);
+    let open = deploy_transform(SEED, (CX, CZ, 0, LOC_EDGE_XLO), ARCH_DOOR, true);
     assert!(
-        (open.translation - west.translation).length() > 0.1,
+        (open.translation - xlo.translation).length() > 0.1,
         "an open door is drawn shut"
     );
 }

@@ -28,8 +28,8 @@
 
 use sim_core::build::{
     anchor, build_cell_of, foundation_terrain_ok, BuildContent, PieceRec, BUILD_REACH_M,
-    LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, LOC_RISER, SHAPE_DOORWAY, SHAPE_FOUNDATION, SHAPE_STAIRS,
-    SHAPE_WALL,
+    LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER, SHAPE_DOORWAY, SHAPE_FOUNDATION,
+    SHAPE_STAIRS, SHAPE_WALL,
 };
 use sim_core::craft::inv_count;
 use sim_core::deploy::{
@@ -62,9 +62,9 @@ pub struct Target {
 /// Which cell, level and location a shape would occupy, aimed from the feet.
 ///
 /// The `loc` rule is the grid's, not a preference: **edge pieces are
-/// canonical to a cell's west or north boundary** (`build.rs`), so the same
-/// physical edge is never addressable twice. Aiming at the east edge of cell
-/// N means the west edge of cell N+1, which is what the `cx += 1` arm below
+/// canonical to a cell's low-x or low-z boundary** (`build.rs`), so the same
+/// physical edge is never addressable twice. Aiming at the +x edge of cell
+/// N means the low-x edge of cell N+1, which is what the `cx += 1` arm below
 /// is doing — it is a re-address, not an off-by-one.
 ///
 /// A foundation is pinned to level 0 whatever the working level says: it is
@@ -84,15 +84,15 @@ pub fn target(x: f32, z: f32, fx: f32, fz: f32, shape: u8, level: u8) -> Target 
         let fzc = az / sim_core::build::BUILD_CELL_M - cz as f32;
         let m = fxc.min(1.0 - fxc).min(fzc).min(1.0 - fzc);
         if m == fxc {
-            loc = LOC_EDGE_W;
+            loc = LOC_EDGE_XLO;
         } else if m == 1.0 - fxc {
             cx = (cx + 1).min(max);
-            loc = LOC_EDGE_W;
+            loc = LOC_EDGE_XLO;
         } else if m == fzc {
-            loc = LOC_EDGE_N;
+            loc = LOC_EDGE_ZLO;
         } else {
             cz = (cz + 1).min(max);
-            loc = LOC_EDGE_N;
+            loc = LOC_EDGE_ZLO;
         }
     } else if shape == SHAPE_STAIRS {
         loc = LOC_RISER;
@@ -451,16 +451,16 @@ mod tests {
         assert_eq!(t.cz, ((1.5 + AIM_AHEAD_M) / BUILD_CELL_M) as u16);
     }
 
-    /// The re-address, and the reason the grid has it: the east edge of one
-    /// cell IS the west edge of the next, and only one of the two names it.
+    /// The re-address, and the reason the grid has it: the +x edge of one
+    /// cell IS the low-x edge of the next, and only one of the two names it.
     #[test]
-    fn an_east_edge_is_addressed_as_the_next_cells_west_edge() {
-        // Stand just west of a cell boundary and aim east across it.
-        let boundary = 6.0f32; // cell 2's west edge
+    fn a_plus_x_edge_is_addressed_as_the_next_cells_low_x_edge() {
+        // Stand just below a cell boundary in x and aim +x across it.
+        let boundary = 6.0f32; // cell 2's low-x edge
         let t = target(boundary - AIM_AHEAD_M + 0.1, 1.5, 1.0, 0.0, SHAPE_WALL, 0);
-        assert_eq!(t.loc, LOC_EDGE_W);
+        assert_eq!(t.loc, LOC_EDGE_XLO);
         // Whatever cell it picked, the anchor must sit on a cell boundary in
-        // x — which is what LOC_EDGE_W means.
+        // x — which is what LOC_EDGE_XLO means.
         let (ax, _) = anchor(t.cx, t.cz, t.loc);
         assert!(
             (ax / BUILD_CELL_M).fract().abs() < 1e-4,
@@ -470,12 +470,12 @@ mod tests {
 
     #[test]
     fn a_wall_always_lands_on_a_canonical_edge() {
-        // Sweep the circle; every wall address must be a west or north edge.
+        // Sweep the circle; every wall address must be a low-x or low-z edge.
         for i in 0..64 {
             let a = i as f32 * std::f32::consts::TAU / 64.0;
             let t = target(40.0, 40.0, a.sin(), a.cos(), SHAPE_WALL, 2);
             assert!(
-                t.loc == LOC_EDGE_W || t.loc == LOC_EDGE_N,
+                t.loc == LOC_EDGE_XLO || t.loc == LOC_EDGE_ZLO,
                 "bearing {i} gave loc {}",
                 t.loc
             );
@@ -525,13 +525,13 @@ mod tests {
             cx: 3,
             cz: 3,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
         };
         let taken = [PieceRec {
             cx: 3,
             cz: 3,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
             row: 0,
             hp: 10,
             uh: 0,
@@ -558,7 +558,7 @@ mod tests {
             cx: 10,
             cz: 10,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
         };
         let (ax, az) = anchor(t.cx, t.cz, t.loc);
         let site_near = Site {
@@ -637,7 +637,7 @@ mod tests {
             let a = i as f32 * std::f32::consts::TAU / 16.0;
             let door = deploy_target(40.0, 40.0, a.sin(), a.cos(), PLACE_DOORWAY, 1);
             assert!(
-                door.loc == LOC_EDGE_W || door.loc == LOC_EDGE_N,
+                door.loc == LOC_EDGE_XLO || door.loc == LOC_EDGE_ZLO,
                 "bearing {i}: a door resolved loc {}",
                 door.loc
             );

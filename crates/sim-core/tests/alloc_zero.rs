@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use sim_core::backpack::{BackpackContent, BAG_GONE_EMPTIED};
 use sim_core::bots::bot_frame;
 use sim_core::build::{
-    BuildContent, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, MAT_METAL, MAT_STONE, MAT_WOOD,
+    BuildContent, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, MAT_METAL, MAT_STONE, MAT_WOOD,
 };
 use sim_core::combat::CombatContent;
 use sim_core::craft::CraftContent;
@@ -32,7 +32,7 @@ use sim_core::world::{
 /// so the place and upgrade requests are always inside the 5 m reach and
 /// the write paths — the store insert, the cost payment, the re-row — are
 /// what gets counted, not a reach refusal. The place cycles an 8-tick
-/// figure: a foundation, a wall on its west edge, a doorway on its north,
+/// figure: a foundation, a wall on its low-x edge, a doorway on its low-z,
 /// a floor above, then four requests shaped to be refused (a row past the
 /// table, a foundation off the ground, a wall in a plane slot, a floor at
 /// ground level). The upgrade rides the wall's address with the material
@@ -91,8 +91,8 @@ fn tick_cmds(
         } else if i == MAX_PLAYERS + 2 {
             let (row, level, loc) = match t % 8 {
                 0 => (0, 0, LOC_PLANE),
-                1 => (1, 0, LOC_EDGE_W),
-                2 => (3, 0, LOC_EDGE_N),
+                1 => (1, 0, LOC_EDGE_XLO),
+                2 => (3, 0, LOC_EDGE_ZLO),
                 3 => (2, 1, LOC_PLANE),
                 4 => (5, 0, LOC_PLANE), // past the table
                 5 => (0, 1, LOC_PLANE), // a foundation off the ground
@@ -113,7 +113,7 @@ fn tick_cmds(
                 cx: cell.0,
                 cz: cell.1,
                 level: 0,
-                loc: LOC_EDGE_W,
+                loc: LOC_EDGE_XLO,
                 material: match t % 3 {
                     0 => MAT_WOOD,
                     1 => MAT_STONE,
@@ -133,7 +133,7 @@ fn tick_cmds(
                 cx: cell.0,
                 cz: cell.1,
                 level: 0,
-                loc: LOC_EDGE_W,
+                loc: LOC_EDGE_XLO,
             }
         } else if i == MAX_PLAYERS + 5 {
             // The raid verb, on the address the repair arm walks. Two
@@ -149,7 +149,7 @@ fn tick_cmds(
                 cx: cell.0,
                 cz: cell.1,
                 level: 0,
-                loc: LOC_EDGE_W,
+                loc: LOC_EDGE_XLO,
             }
         } else {
             Command::Consume {

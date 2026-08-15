@@ -2689,13 +2689,13 @@ mod tests {
             encode_event_door, encode_event_piece_defs, encode_event_piece_placed,
             encode_event_removed,
         };
-        use sim_core::build::{BuildContent, PieceRec, LOC_EDGE_W, SHAPE_DOORWAY};
+        use sim_core::build::{BuildContent, PieceRec, LOC_EDGE_XLO, SHAPE_DOORWAY};
         use sim_core::deploy::DeployContent;
 
         let mut c = core();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (cx, cz, level) = (341u16, 682u16, 0u8);
-        let shut = |c: &ClientCore| c.pieces.cols().get(cx, cz).shut_w & 1 != 0;
+        let shut = |c: &ClientCore| c.pieces.cols().get(cx, cz).shut_xlo & 1 != 0;
 
         // The doorway piece and the def tables the client needs to read
         // "row 2 is a door" (probe fixtures: piece row 3 is the doorway,
@@ -2710,7 +2710,7 @@ mod tests {
             cx,
             cz,
             level,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
             row: 3,
             ..PieceRec::default()
         };
@@ -2724,7 +2724,7 @@ mod tests {
             cx,
             cz,
             level,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
             row: 2,
             ..DeployRec::default()
         };
@@ -2734,7 +2734,8 @@ mod tests {
 
         // Opened, then closed again — the announcement is absolute, and
         // it carries the lock bit beside the leaf (lock v0, wire v8).
-        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, true, true, true, &mut buf).unwrap();
+        let len =
+            encode_event_door(cx, cz, level, LOC_EDGE_XLO, true, true, true, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_DEPLOYS);
         assert!(!shut(&c), "an open door passes");
         assert!(c.deploy_changes()[0].open, "the renderer hears the state");
@@ -2743,7 +2744,7 @@ mod tests {
             "the renderer hears the lock too"
         );
         let len =
-            encode_event_door(cx, cz, level, LOC_EDGE_W, false, false, true, &mut buf).unwrap();
+            encode_event_door(cx, cz, level, LOC_EDGE_XLO, false, false, true, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(shut(&c), "a reclosed door seals again");
         assert!(
@@ -2760,18 +2761,19 @@ mod tests {
         // Your own door swings on input, not on the reply (NETCODE.md
         // §6.1): the predictor unseals immediately, and only one
         // prediction is outstanding at a time.
-        assert_eq!(c.predict_door(cx, cz, level, LOC_EDGE_W), Some(true));
+        assert_eq!(c.predict_door(cx, cz, level, LOC_EDGE_XLO), Some(true));
         assert!(!shut(&c), "the predicted open door still blocks the body");
         assert_eq!(
-            c.predict_door(cx, cz, level, LOC_EDGE_W),
+            c.predict_door(cx, cz, level, LOC_EDGE_XLO),
             None,
             "a second toggle must wait for the first to resolve"
         );
         // The announcement confirms it and frees the next prediction.
-        let len = encode_event_door(cx, cz, level, LOC_EDGE_W, true, true, true, &mut buf).unwrap();
+        let len =
+            encode_event_door(cx, cz, level, LOC_EDGE_XLO, true, true, true, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(!shut(&c));
-        assert_eq!(c.predict_door(cx, cz, level, LOC_EDGE_W), Some(false));
+        assert_eq!(c.predict_door(cx, cz, level, LOC_EDGE_XLO), Some(false));
         assert!(shut(&c), "the predicted close seals for the predictor");
 
         // A refusal instead rolls the prediction back to server truth —
@@ -2801,18 +2803,18 @@ mod tests {
             "the mirror kept the state the sim never left"
         );
         // Nothing is outstanding now, so the next press predicts again.
-        assert_eq!(c.predict_door(cx, cz, level, LOC_EDGE_W), Some(false));
+        assert_eq!(c.predict_door(cx, cz, level, LOC_EDGE_XLO), Some(false));
         assert!(
             c.deploys.entries()[0].locked,
             "predicting the leaf must not touch the lock"
         );
         let len =
-            encode_event_door(cx, cz, level, LOC_EDGE_W, false, true, true, &mut buf).unwrap();
+            encode_event_door(cx, cz, level, LOC_EDGE_XLO, false, true, true, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(shut(&c));
 
         // And the door going away unseals the doorway it was holding.
-        let len = encode_event_removed(false, cx, cz, level, LOC_EDGE_W, &mut buf).unwrap();
+        let len = encode_event_removed(false, cx, cz, level, LOC_EDGE_XLO, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(!shut(&c), "a removed door leaves nothing sealed");
     }

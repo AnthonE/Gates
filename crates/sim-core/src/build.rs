@@ -11,7 +11,7 @@
 //! world-axis-aligned 3 m cells × 3 m levels. Each (cell, level) holds one
 //! **plane** piece (foundation at level 0, floor/roof above) and one
 //! **riser** (stairs); each cell boundary holds one **edge** piece (wall/
-//! doorway) per level, canonicalized to the cell's west/north side. Pieces
+//! doorway) per level, canonicalized to the cell's low-x/low-z side. Pieces
 //! are movement collision (collide.rs): the store keeps a derived column
 //! index in lockstep so the tick's collision queries are O(1), and the
 //! client's mirror keeps its own copy for the predictor.
@@ -72,13 +72,28 @@ pub const MAT_STONE: u8 = 2;
 pub const MAT_METAL: u8 = 3;
 
 /// Grid locations within a cell. Planes and risers occupy the cell body;
-/// edge pieces are canonical to the cell's west (x = cx·3 m) or north
-/// (z = cz·3 m) boundary — the same physical edge is never addressable
-/// twice.
+/// edge pieces are canonical to the cell's **low-x** (x = cx·3 m) or
+/// **low-z** (z = cz·3 m) boundary — the same physical edge is never
+/// addressable twice.
+///
+/// **The names are axes on purpose, and a gate holds them that way.**
+/// They read `LOC_EDGE_W`/`LOC_EDGE_N` until 2026-08-15, when the compass
+/// was re-pinned (`DECISIONS.md` 2026-08-15) and both suffixes came to
+/// name the bearing opposite the one they meant — the constant and the
+/// sentence defining it went false together. No value moved then and none
+/// moves now (2 and 3; `test_protocol_golden` stayed green untouched, which
+/// is what proves it was a rename). An axis is what these always meant, and
+/// unlike a bearing it cannot be re-decided out from under them.
+///
+/// The defect was a *name*, so no value gate could see it: hence
+/// `tests/edge_names.rs`, which reads this doc block and `collide.rs`'s
+/// `ColMasks` — the masks carried the same lie one crate over — and fails
+/// if either grows a bearing-named edge again, or if `anchor` stops putting
+/// these two on the planes they claim.
 pub const LOC_PLANE: u8 = 0;
 pub const LOC_RISER: u8 = 1;
-pub const LOC_EDGE_W: u8 = 2;
-pub const LOC_EDGE_N: u8 = 3;
+pub const LOC_EDGE_XLO: u8 = 2;
+pub const LOC_EDGE_ZLO: u8 = 3;
 
 /// Integer refusal reasons (CLAUDE.md wall 3), carried by
 /// EV_BUILD_REFUSED / the build-refused wire subtype.
@@ -555,10 +570,10 @@ fn edge_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     pieces.find(cx, cz, level, loc).is_some()
 }
 
-/// The two cells an edge piece adjoins: the canonical cell and its west or
-/// north neighbor (None past the grid's low border).
+/// The two cells an edge piece adjoins: the canonical cell and its −x or
+/// −z neighbor (None past the grid's low border).
 fn edge_neighbors(cx: u16, cz: u16, loc: u8) -> ((u16, u16), Option<(u16, u16)>) {
-    if loc == LOC_EDGE_W {
+    if loc == LOC_EDGE_XLO {
         ((cx, cz), cx.checked_sub(1).map(|x| (x, cz)))
     } else {
         ((cx, cz), cz.checked_sub(1).map(|z| (cx, z)))
@@ -583,8 +598,8 @@ pub fn anchor(cx: u16, cz: u16, loc: u8) -> (f32, f32) {
     let z0 = cz as f32 * BUILD_CELL_M;
     let half = BUILD_CELL_M * 0.5;
     match loc {
-        LOC_EDGE_W => (x0, z0 + half),
-        LOC_EDGE_N => (x0 + half, z0),
+        LOC_EDGE_XLO => (x0, z0 + half),
+        LOC_EDGE_ZLO => (x0 + half, z0),
         _ => (x0 + half, z0 + half),
     }
 }
@@ -608,7 +623,7 @@ fn loc_fits_shape(shape: u8, loc: u8) -> bool {
     match shape {
         SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF => loc == LOC_PLANE,
         SHAPE_STAIRS => loc == LOC_RISER,
-        SHAPE_WALL | SHAPE_DOORWAY => loc == LOC_EDGE_W || loc == LOC_EDGE_N,
+        SHAPE_WALL | SHAPE_DOORWAY => loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO,
         _ => false,
     }
 }
@@ -621,10 +636,10 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
         SHAPE_FLOOR | SHAPE_ROOF => {
             // An edge piece under any of the cell's four sides.
             level >= 1
-                && (edge_at(pieces, cx, cz, level - 1, LOC_EDGE_W)
-                    || edge_at(pieces, cx + 1, cz, level - 1, LOC_EDGE_W)
-                    || edge_at(pieces, cx, cz, level - 1, LOC_EDGE_N)
-                    || edge_at(pieces, cx, cz + 1, level - 1, LOC_EDGE_N))
+                && (edge_at(pieces, cx, cz, level - 1, LOC_EDGE_XLO)
+                    || edge_at(pieces, cx + 1, cz, level - 1, LOC_EDGE_XLO)
+                    || edge_at(pieces, cx, cz, level - 1, LOC_EDGE_ZLO)
+                    || edge_at(pieces, cx, cz + 1, level - 1, LOC_EDGE_ZLO))
         }
         SHAPE_STAIRS => plane_at(pieces, cx, cz, level),
         SHAPE_WALL | SHAPE_DOORWAY => {
@@ -671,20 +686,20 @@ fn dependents(cx: u16, cz: u16, level: u8, loc: u8, out: &mut [Addr; MAX_DEPENDE
     match loc {
         LOC_PLANE => {
             out[0] = (cx, cz, level, LOC_RISER);
-            out[1] = (cx, cz, level, LOC_EDGE_W);
-            out[2] = (cx.saturating_add(1), cz, level, LOC_EDGE_W);
-            out[3] = (cx, cz, level, LOC_EDGE_N);
-            out[4] = (cx, cz.saturating_add(1), level, LOC_EDGE_N);
+            out[1] = (cx, cz, level, LOC_EDGE_XLO);
+            out[2] = (cx.saturating_add(1), cz, level, LOC_EDGE_XLO);
+            out[3] = (cx, cz, level, LOC_EDGE_ZLO);
+            out[4] = (cx, cz.saturating_add(1), level, LOC_EDGE_ZLO);
             5
         }
-        LOC_EDGE_W | LOC_EDGE_N => {
+        LOC_EDGE_XLO | LOC_EDGE_ZLO => {
             let up = level.saturating_add(1);
             if up >= MAX_BUILD_LEVELS as u8 {
                 return 0; // nothing can be addressed above the top storey
             }
             out[0] = (cx, cz, up, LOC_PLANE);
             out[1] = (cx, cz, up, loc);
-            let other = if loc == LOC_EDGE_W {
+            let other = if loc == LOC_EDGE_XLO {
                 cx.checked_sub(1).map(|x| (x, cz))
             } else {
                 cz.checked_sub(1).map(|z| (cx, z))
@@ -714,8 +729,8 @@ fn occupied_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     let field = match loc {
         LOC_PLANE => m.planes,
         LOC_RISER => m.stairs,
-        LOC_EDGE_W => m.walls_w | m.doors_w,
-        _ => m.walls_n | m.doors_n,
+        LOC_EDGE_XLO => m.walls_xlo | m.doors_xlo,
+        _ => m.walls_zlo | m.doors_zlo,
     };
     field & (1u8 << level) != 0
 }
@@ -1427,7 +1442,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -1464,7 +1479,7 @@ mod tests {
             CX,
             CZ,
             1,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -1481,7 +1496,7 @@ mod tests {
         // Bad row; wrong loc for the shape; foundation above ground.
         let cases: [(u16, u8, u8, u32); 4] = [
             (9, 0, LOC_PLANE, REFUSE_B_PIECE),
-            (0, 0, LOC_EDGE_W, REFUSE_B_SPOT),
+            (0, 0, LOC_EDGE_XLO, REFUSE_B_SPOT),
             (0, 1, LOC_PLANE, REFUSE_B_SPOT),
             (2, 0, LOC_PLANE, REFUSE_B_SPOT), // floor at level 0
         ];
@@ -1533,7 +1548,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_SUPPORT);
@@ -1676,7 +1691,7 @@ mod tests {
         assert_eq!(inv_count(&p.inv, 0), 100, "nothing paid on a full store");
     }
 
-    /// Stand a wood wall at the smoke cell's west edge and hand back the
+    /// Stand a wood wall at the smoke cell's low-x edge and hand back the
     /// player who built it (foundation + wall paid from `items`).
     fn walled(items: &[(u16, u16)]) -> (BuildContent, Pieces, Deploys, EventQueue, Player) {
         let bc = BuildContent::probe_fixture();
@@ -1684,7 +1699,7 @@ mod tests {
         let nod = Deploys::new();
         let mut ev = EventQueue::default();
         let mut p = player_at_cell_center(items);
-        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_W)] {
+        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_XLO)] {
             place(
                 SEED,
                 &bc,
@@ -1733,7 +1748,7 @@ mod tests {
         }
 
         let half = BUILD_CELL_M * 0.5;
-        for loc in [LOC_EDGE_W, LOC_EDGE_N] {
+        for loc in [LOC_EDGE_XLO, LOC_EDGE_ZLO] {
             let (ax, az) = anchor(CX, CZ, loc);
             let (dx, dz) = (ax - centre.0, az - centre.1);
             assert_eq!(
@@ -1751,7 +1766,7 @@ mod tests {
         // the anchor is offset away from. Placement is exactly in range;
         // repair is half a cell out of it. Both verbs compare planar squared
         // distance against BUILD_REACH_M, so this is their arithmetic.
-        let (ax, az) = anchor(CX, CZ, LOC_EDGE_W);
+        let (ax, az) = anchor(CX, CZ, LOC_EDGE_XLO);
         let (px, pz) = (centre.0 + BUILD_REACH_M, centre.1);
         let place_d2 = (px - centre.0) * (px - centre.0) + (pz - centre.1) * (pz - centre.1);
         let repair_d2 = (px - ax) * (px - ax) + (pz - az) * (pz - az);
@@ -1784,7 +1799,7 @@ mod tests {
         let full = BuildContent::probe_fixture().pieces[1].hp;
         for standing in [1u16, 40, full - 1] {
             let (bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 100)]);
-            let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+            let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
             pieces.set_upkeep(i, standing, 3);
             repair(
                 &bc,
@@ -1796,10 +1811,10 @@ mod tests {
                 CX,
                 CZ,
                 0,
-                LOC_EDGE_W,
+                LOC_EDGE_XLO,
                 &mut ev,
             );
-            let rec = *pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
+            let rec = *pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
             assert_eq!(
                 rec.hp, full,
                 "a wall repaired from {standing} stands at its baked hp, \
@@ -1823,7 +1838,7 @@ mod tests {
                 CX,
                 CZ,
                 0,
-                LOC_EDGE_W,
+                LOC_EDGE_XLO,
                 &mut ev,
             );
             assert_eq!(
@@ -1834,7 +1849,7 @@ mod tests {
         }
 
         let (bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 100)]);
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         pieces.set_hp(i, full + 50);
         let before = inv_count(&p.inv, 0);
         repair(
@@ -1847,7 +1862,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -1855,7 +1870,7 @@ mod tests {
             (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_INTACT)
         );
         assert_eq!(
-            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp,
+            pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().hp,
             full + 50,
             "an over-hp record is left alone, not trimmed to the row"
         );
@@ -1874,7 +1889,7 @@ mod tests {
     fn repair_is_priced_pro_rata_rounded_up_and_never_free() {
         // 100 wood in, 5 for the foundation and 3 for the wall: 92 left.
         let (bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 100)]);
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         pieces.set_hp(i, 40);
         repair(
             &bc,
@@ -1886,7 +1901,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -1906,7 +1921,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -1918,7 +1933,7 @@ mod tests {
 
         // Exactly enough wood to build, and none to mend with.
         let (bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 8)]);
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         pieces.set_hp(i, 40);
         repair(
             &bc,
@@ -1930,7 +1945,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -1938,7 +1953,7 @@ mod tests {
             (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_COST)
         );
         assert_eq!(
-            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp,
+            pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().hp,
             40,
             "a refused repair heals nothing"
         );
@@ -1956,7 +1971,7 @@ mod tests {
     #[test]
     fn an_unpriced_table_refuses_the_repair_rather_than_giving_it_away() {
         let (mut bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 100)]);
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         pieces.set_hp(i, 40);
         bc.repair_pct = 0;
         let before = inv_count(&p.inv, 0);
@@ -1970,14 +1985,14 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
             last(&ev),
             (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_INTACT)
         );
-        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp, 40);
+        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().hp, 40);
         assert_eq!(inv_count(&p.inv, 0), before);
     }
 
@@ -2234,7 +2249,7 @@ mod tests {
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
         let mut owner = player_at_cell_center(&[(0, 100), (1, 100), (2, 100), (3, 100)]);
-        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_W)] {
+        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_XLO)] {
             place(
                 SEED,
                 &bc,
@@ -2270,7 +2285,7 @@ mod tests {
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED, "hearth stands");
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         pieces.set_hp(i, 40);
 
         let mut stranger = player_at_cell_center(&[(0, 100)]);
@@ -2285,7 +2300,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -2293,7 +2308,7 @@ mod tests {
             (crate::world::EV_BUILD_REFUSED, 9, REFUSE_B_CLAIM)
         );
         assert_eq!(
-            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp,
+            pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().hp,
             40,
             "a stranger inside someone's claim cannot mend their wall"
         );
@@ -2309,11 +2324,11 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
-            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp,
+            pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().hp,
             bc.pieces[1].hp,
             "the hearth's owner mends their own wall"
         );
@@ -2322,7 +2337,7 @@ mod tests {
     #[test]
     fn upgrade_pays_re_rows_in_place_and_carries_damage() {
         let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 20), (1, 10)]);
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         // Standing damage: half the wall's life is gone (the decay sweep
         // is what does this in the live sim).
         pieces.set_upkeep(i, 50, 0);
@@ -2336,7 +2351,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2345,14 +2360,14 @@ mod tests {
             (
                 crate::world::EV_PIECE_PLACED,
                 crate::gather::cell_key(CX, CZ),
-                ((LOC_EDGE_W as u32) << 8) | 4
+                ((LOC_EDGE_XLO as u32) << 8) | 4
             ),
             "the upgrade announces the address's new row"
         );
         assert_eq!(inv_count(&p.inv, 1), 6, "the stone rung's whole cost paid");
         assert_eq!(inv_count(&p.inv, 0), 12, "the wood cost was not re-paid");
         assert_eq!(pieces.len(), before, "an upgrade is not a placement");
-        let rec = *pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let rec = *pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         assert_eq!(rec.row, 4, "the address holds the stone row now");
         assert_eq!(rec.hp, 100, "half a 100 hp wall is half a 200 hp wall");
         assert_eq!(rec.uh, 0, "the upkeep clock is not reset by an upgrade");
@@ -2383,7 +2398,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
             &mut ev,
         );
         assert_eq!(
@@ -2411,7 +2426,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2431,7 +2446,7 @@ mod tests {
                 CX,
                 CZ,
                 0,
-                LOC_EDGE_W,
+                LOC_EDGE_XLO,
                 mat,
                 &mut ev,
             );
@@ -2456,7 +2471,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2468,7 +2483,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2482,7 +2497,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2495,13 +2510,13 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_WOOD,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_TIER);
         assert_eq!(
-            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row,
+            pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().row,
             4,
             "a refused downgrade left the stone standing"
         );
@@ -2510,7 +2525,7 @@ mod tests {
     #[test]
     fn upgrade_refuses_empty_air_distance_and_an_empty_purse() {
         let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100), (1, 2)]);
-        // Nothing at the north edge.
+        // Nothing at the low-z edge.
         upgrade(
             &bc,
             &nod,
@@ -2519,7 +2534,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2534,13 +2549,13 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_COST);
         assert_eq!(inv_count(&p.inv, 1), 2, "a refusal charged nothing");
-        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row, 1);
+        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().row, 1);
 
         // Rich, but standing 20 m off.
         let mut far = player_at_cell_center(&[(1, 100)]);
@@ -2557,7 +2572,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2580,11 +2595,11 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
-        pieces.set_door(CX, CZ, 0, LOC_EDGE_N, true);
+        pieces.set_door(CX, CZ, 0, LOC_EDGE_ZLO, true);
         let before = pieces.cols().get(CX, CZ);
 
         upgrade(
@@ -2595,7 +2610,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2615,7 +2630,7 @@ mod tests {
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
         let mut owner = player_at_cell_center(&[(0, 100), (1, 100), (2, 100), (3, 100)]);
-        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_W)] {
+        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_XLO)] {
             place(
                 SEED,
                 &bc,
@@ -2663,7 +2678,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2671,7 +2686,7 @@ mod tests {
             last(&ev),
             (crate::world::EV_BUILD_REFUSED, 9, REFUSE_B_CLAIM)
         );
-        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row, 1);
+        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().row, 1);
 
         // The hearth's owner may still climb their own wall's ladder.
         upgrade(
@@ -2682,7 +2697,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2696,8 +2711,8 @@ mod tests {
         let nod = Deploys::new();
         let mut ev = EventQueue::default();
         let mut p = player_at_cell_center(&[(0, 100)]);
-        // Foundation in the cell EAST of the wall's canonical cell: the
-        // wall at (CX+1, W) adjoins cells CX and CX+1 — support must come
+        // Foundation in the cell at +x from the wall's canonical cell: the
+        // wall at (CX+1, XLO) adjoins cells CX and CX+1 — support must come
         // from either side.
         place(
             SEED,
@@ -2724,7 +2739,7 @@ mod tests {
             CX + 1,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2808,17 +2823,17 @@ mod tests {
                             // `supported()` treats the two alike but the
                             // column index files them in different masks,
                             // and a fixture that only ever puts doorways on
-                            // north edges never probes the west one.
+                            // low-z edges never probes the low-x one.
                             let alt = (x as u32 + z as u32 + level as u32).is_multiple_of(2);
-                            let (we, ne) = if alt {
+                            let (xe, ze) = if alt {
                                 (SHAPE_WALL, SHAPE_DOORWAY)
                             } else {
                                 (SHAPE_DOORWAY, SHAPE_WALL)
                             };
                             for &(loc, shape) in &[
                                 (LOC_RISER, SHAPE_STAIRS),
-                                (LOC_EDGE_W, we),
-                                (LOC_EDGE_N, ne),
+                                (LOC_EDGE_XLO, xe),
+                                (LOC_EDGE_ZLO, ze),
                             ] {
                                 if pieces.len() >= target {
                                     return;
@@ -2852,17 +2867,17 @@ mod tests {
         assert!(try_put(pieces, CX, CZ, 0, LOC_RISER, SHAPE_STAIRS));
         for level in 0..MAX_BUILD_LEVELS as u8 {
             // Both roles on both edge locs — all four edge masks live.
-            assert!(try_put(pieces, CX, CZ, level, LOC_EDGE_W, SHAPE_WALL));
-            assert!(try_put(pieces, CX, CZ, level, LOC_EDGE_N, SHAPE_DOORWAY));
+            assert!(try_put(pieces, CX, CZ, level, LOC_EDGE_XLO, SHAPE_WALL));
+            assert!(try_put(pieces, CX, CZ, level, LOC_EDGE_ZLO, SHAPE_DOORWAY));
             assert!(try_put(
                 pieces,
                 CX + 1,
                 CZ,
                 level,
-                LOC_EDGE_W,
+                LOC_EDGE_XLO,
                 SHAPE_DOORWAY
             ));
-            assert!(try_put(pieces, CX, CZ + 1, level, LOC_EDGE_N, SHAPE_WALL));
+            assert!(try_put(pieces, CX, CZ + 1, level, LOC_EDGE_ZLO, SHAPE_WALL));
         }
     }
 
@@ -3105,9 +3120,16 @@ mod tests {
             SHAPE_FOUNDATION
         ));
         // Adjoins only the foundation that is about to go.
-        assert!(try_put(&mut pieces, CX, CZ, 0, LOC_EDGE_W, SHAPE_WALL));
+        assert!(try_put(&mut pieces, CX, CZ, 0, LOC_EDGE_XLO, SHAPE_WALL));
         // The shared boundary: adjoins both cells, so it keeps a leg.
-        assert!(try_put(&mut pieces, CX + 1, CZ, 0, LOC_EDGE_W, SHAPE_WALL));
+        assert!(try_put(
+            &mut pieces,
+            CX + 1,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            SHAPE_WALL
+        ));
         assert!(try_put(&mut pieces, CX + 1, CZ, 0, LOC_RISER, SHAPE_STAIRS));
         assert!(try_put(&mut pieces, CX + 1, CZ, 1, LOC_PLANE, SHAPE_FLOOR));
 
@@ -3124,8 +3146,8 @@ mod tests {
         );
 
         assert_eq!(fell, 1, "only the wall standing on one leg should fall");
-        assert!(pieces.find(CX, CZ, 0, LOC_EDGE_W).is_none());
-        assert!(pieces.find(CX + 1, CZ, 0, LOC_EDGE_W).is_some());
+        assert!(pieces.find(CX, CZ, 0, LOC_EDGE_XLO).is_none());
+        assert!(pieces.find(CX + 1, CZ, 0, LOC_EDGE_XLO).is_some());
         assert!(pieces.find(CX + 1, CZ, 1, LOC_PLANE).is_some());
         assert!(pieces.find(CX + 1, CZ, 0, LOC_RISER).is_some());
     }
@@ -3472,13 +3494,13 @@ mod tests {
         let mut ev = EventQueue::default();
 
         assert!(try_put(&mut pieces, CX, CZ, 0, LOC_PLANE, SHAPE_FOUNDATION));
-        assert!(try_put(&mut pieces, CX, CZ, 0, LOC_EDGE_W, SHAPE_WALL));
+        assert!(try_put(&mut pieces, CX, CZ, 0, LOC_EDGE_XLO, SHAPE_WALL));
         assert!(try_put(&mut pieces, CX, CZ, 1, LOC_PLANE, SHAPE_FLOOR));
-        assert!(try_put(&mut pieces, CX, CZ, 1, LOC_EDGE_W, SHAPE_WALL));
+        assert!(try_put(&mut pieces, CX, CZ, 1, LOC_EDGE_XLO, SHAPE_WALL));
         assert!(try_put(&mut pieces, CX, CZ, 2, LOC_PLANE, SHAPE_FLOOR));
         assert_eq!(pieces.len(), 5);
 
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         let died = crate::deploy::damage_piece(
             &dc,
             &bc,

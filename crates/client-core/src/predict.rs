@@ -281,7 +281,7 @@ mod tests {
     /// pins both at the slab with zero mispredictions.
     #[test]
     fn prediction_collides_bit_exact_through_the_mirror() {
-        use sim_core::build::{BuildContent, LOC_EDGE_W, LOC_PLANE};
+        use sim_core::build::{BuildContent, LOC_EDGE_XLO, LOC_PLANE};
         use sim_core::gather::ItemStack;
         use sim_core::world::Command;
 
@@ -307,7 +307,7 @@ mod tests {
                 cx: 341,
                 cz: 341,
                 level: 0,
-                loc: LOC_EDGE_W,
+                loc: LOC_EDGE_XLO,
             },
         ]);
         assert_eq!(world.pieces.len(), 2, "fixture placements must land");
@@ -324,7 +324,7 @@ mod tests {
         let mut p = Predictor::new(seed);
         p.reconcile(&own_state(&world, 7), 0, &cols, &mut occ.occupants());
         for seq in 1..=150u16 {
-            // Strafe -x into the west wall, forever.
+            // Strafe -x into the low-x wall, forever.
             let f = InputFrame {
                 seq,
                 move_x: -127,

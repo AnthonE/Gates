@@ -78,7 +78,7 @@
 //! itself gave up on (§9.7).
 
 use crate::build::{
-    BuildContent, Pieces, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, SHAPE_DOORWAY,
+    BuildContent, Pieces, LEVEL_H_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, SHAPE_DOORWAY,
 };
 use crate::craft::{inv_count, inv_take};
 use crate::gather::{GatherContent, ItemStack};
@@ -1333,12 +1333,12 @@ fn player_xz(p: &Player) -> (f32, f32) {
 /// exists to close.
 pub fn loc_fits_placement(placement: u8, loc: u8) -> bool {
     match placement {
-        PLACE_DOORWAY => loc == LOC_EDGE_W || loc == LOC_EDGE_N,
+        PLACE_DOORWAY => loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO,
         // A lock goes where its target lives: a door on a doorway's edge,
         // a box on the plane (locks on boxes, `DOORS.md` §9.8). The
         // support arm below still requires a lockable deployable at the
         // exact address, so this widening admits no empty cell.
-        PLACE_DOOR => loc == LOC_EDGE_W || loc == LOC_EDGE_N || loc == LOC_PLANE,
+        PLACE_DOOR => loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO || loc == LOC_PLANE,
         PLACE_GROUND | PLACE_FOUNDATION | PLACE_ANY => loc == LOC_PLANE,
         _ => false,
     }
@@ -2652,7 +2652,7 @@ mod tests {
             CX + 1,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_D_SUPPORT);
@@ -2667,7 +2667,7 @@ mod tests {
             CX + 1,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2683,7 +2683,7 @@ mod tests {
             CX + 1,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_D_SUPPORT, "a wall is not a doorway");
@@ -2717,7 +2717,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_D_SPOT);
@@ -3221,11 +3221,11 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
-            bc.pieces[pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row as usize].material,
+            bc.pieces[pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().row as usize].material,
             crate::build::MAT_TWIG
         );
         place_deploy(
@@ -3251,7 +3251,7 @@ mod tests {
         sweep_once(&dc, &bc, &mut pieces, &mut deploys, UPKEEP_PERIOD_TICKS + 1);
 
         assert!(
-            pieces.find(CX, CZ, 0, LOC_EDGE_W).is_none(),
+            pieces.find(CX, CZ, 0, LOC_EDGE_XLO).is_none(),
             "the twig wall survived a period — a scaffold is not a base"
         );
         assert_eq!(
@@ -3558,9 +3558,9 @@ mod tests {
         );
     }
 
-    /// A westward strafe at yaw 0 (forward +Z, right +X — the collide.rs
+    /// A −x strafe at yaw 0 (forward +Z, right +X — the collide.rs
     /// test convention).
-    fn walk_west() -> crate::input::InputFrame {
+    fn walk_minus_x() -> crate::input::InputFrame {
         crate::input::InputFrame {
             seq: 1,
             move_x: -127,
@@ -3569,7 +3569,7 @@ mod tests {
     }
 
     /// Foundation + doorway (build row 3) + door (deploy row 2) on the
-    /// west edge of (CX, CZ); returns the acting player.
+    /// low-x edge of (CX, CZ); returns the acting player.
     fn doored(
         bc: &BuildContent,
         dc: &DeployContent,
@@ -3580,24 +3580,47 @@ mod tests {
         let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (4, 2), (7, 2)]);
         founded(bc, pieces, &mut p, CX, CZ);
         crate::build::place(
-            SEED, bc, deploys, pieces, &mut p, 0, 3, CX, CZ, 0, LOC_EDGE_W, ev,
+            SEED,
+            bc,
+            deploys,
+            pieces,
+            &mut p,
+            0,
+            3,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            ev,
         );
         assert_eq!(last(ev).0, crate::world::EV_PIECE_PLACED, "doorway lands");
         place_deploy(
-            SEED, dc, bc, pieces, deploys, &mut p, 0, 2, CX, CZ, 0, LOC_EDGE_W, ev,
+            SEED,
+            dc,
+            bc,
+            pieces,
+            deploys,
+            &mut p,
+            0,
+            2,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            ev,
         );
         assert_eq!(last(ev).0, crate::world::EV_DEPLOY_PLACED, "door lands");
         p
     }
 
-    /// Walk a fresh body west through the doorway; the x it pins at.
+    /// Walk a fresh body −x through the doorway; the x it pins at.
     fn walk_x_after(pieces: &Pieces) -> f32 {
         let mut b = crate::movement::Body::at(
             SEED,
             CX as f32 * crate::build::BUILD_CELL_M + 1.5,
             CZ as f32 * crate::build::BUILD_CELL_M + 1.5,
         );
-        let f = walk_west();
+        let f = walk_minus_x();
         // The door is what this fixture is about; a pine standing where it
         // walks is not (occupy::Barren).
         let mut occ = crate::occupy::Scratch::barren();
@@ -3626,9 +3649,11 @@ mod tests {
         let mut ev = EventQueue::default();
         let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
 
-        let di = deploys.find_index(CX, CZ, 0, LOC_EDGE_W).expect("the door");
+        let di = deploys
+            .find_index(CX, CZ, 0, LOC_EDGE_XLO)
+            .expect("the door");
         let pi = pieces
-            .find_index(CX, CZ, 0, LOC_EDGE_W)
+            .find_index(CX, CZ, 0, LOC_EDGE_XLO)
             .expect("the doorway");
         deploys.set_hp(di, 30);
         pieces.set_hp(pi, 50);
@@ -3645,7 +3670,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -3676,7 +3701,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -3716,11 +3741,13 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED, "the wall lands");
-        let pi = pieces.find_index(CX, CZ, 0, LOC_EDGE_N).expect("the wall");
+        let pi = pieces
+            .find_index(CX, CZ, 0, LOC_EDGE_ZLO)
+            .expect("the wall");
         pieces.set_hp(pi, 40);
         let wood = crate::craft::inv_count(&p.inv, 0);
 
@@ -3734,7 +3761,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
             &mut ev,
         );
         assert_eq!(
@@ -3762,7 +3789,9 @@ mod tests {
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
         let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
-        let di = deploys.find_index(CX, CZ, 0, LOC_EDGE_W).expect("the door");
+        let di = deploys
+            .find_index(CX, CZ, 0, LOC_EDGE_XLO)
+            .expect("the door");
         deploys.set_hp(di, 30);
         let wood = crate::craft::inv_count(&p.inv, 0);
 
@@ -3779,7 +3808,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -3807,13 +3836,13 @@ mod tests {
         let wall_x = CX as f32 * crate::build::BUILD_CELL_M;
 
         // Placed closed: sim state, the shut bit, and the walk agree.
-        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
+        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open);
         assert!(
-            !deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().has_lock
-                && !deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked,
+            !deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().has_lock
+                && !deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().locked,
             "a door places BARE (lock v1) — the security is what costs"
         );
-        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1);
+        assert_eq!(pieces.cols().get(CX, CZ).shut_xlo, 1);
         assert!(
             walk_x_after(&pieces) >= wall_x,
             "a closed door must block the doorway opening"
@@ -3828,7 +3857,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -3838,12 +3867,12 @@ mod tests {
                 crate::gather::cell_key(CX, CZ),
                 // open, no lock — the announcement is the whole door,
                 // absolute (lock v1: has_lock << 2 | locked << 1 | open).
-                (LOC_EDGE_W as u32) << 8 | 1,
+                (LOC_EDGE_XLO as u32) << 8 | 1,
                 7
             )
         );
-        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
-        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 0);
+        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open);
+        assert_eq!(pieces.cols().get(CX, CZ).shut_xlo, 0);
         assert!(
             walk_x_after(&pieces) < wall_x - 0.5,
             "an open door must pass like an empty doorway"
@@ -3858,11 +3887,11 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(last(&ev).2 & 1, 0, "EV_DOOR carries open = 0");
-        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1);
+        assert_eq!(pieces.cols().get(CX, CZ).shut_xlo, 1);
         assert!(
             walk_x_after(&pieces) >= wall_x,
             "reclosed door blocks again"
@@ -3891,7 +3920,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             crate::deploy::ACCESS_OP_SET_CODE,
             code,
             0,
@@ -3924,7 +3953,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -3932,7 +3961,7 @@ mod tests {
             crate::world::EV_DOOR,
             "a bare door is anyone's"
         );
-        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
+        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open);
 
         // Bolt one on. Placing the lock mints no deploy record — it is a
         // record *about* one — and the door announces its new bit.
@@ -3949,12 +3978,12 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(deploys.len(), before, "a lock is not a deployable record");
         assert_eq!(deploys.locks().len(), 1, "it is a lock record");
-        let d = deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let d = deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         assert!(d.has_lock && !d.locked, "bolted on, not yet armed");
         assert_eq!(
             last(&ev).2 & 7,
@@ -3963,12 +3992,12 @@ mod tests {
         );
 
         // Unarmed, it still lets everyone through: arming is set_code.
-        assert!(deploys.lock_passes(CX, CZ, 0, LOC_EDGE_W, stranger.id));
+        assert!(deploys.lock_passes(CX, CZ, 0, LOC_EDGE_XLO, stranger.id));
 
         // Arm it. Now the stranger bounces — and knocks.
         locked_door(&dc, &mut deploys, &mut p, 1234, &mut ev);
-        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked);
-        let open_before = deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open;
+        assert!(deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().locked);
+        let open_before = deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open;
         use_door(
             &dc,
             &mut pieces,
@@ -3977,7 +4006,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -3991,14 +4020,14 @@ mod tests {
             "and the refusal KNOCKS — the one channel a locked-out player has"
         );
         assert_eq!(
-            deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open,
+            deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open,
             open_before,
             "the leaf did not move"
         );
 
         // The code is the mechanic: entering it authorizes, it does not
         // open. The door does not move on this press.
-        let open_at_entry = deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open;
+        let open_at_entry = deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open;
         lock_op(
             &dc,
             &gc,
@@ -4007,7 +4036,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             crate::deploy::ACCESS_OP_ENTER,
             1234,
             0,
@@ -4024,7 +4053,7 @@ mod tests {
             "a correct code announces the grant, to its sender only"
         );
         assert_eq!(
-            deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open,
+            deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open,
             open_at_entry,
             "entering a code is not opening a door"
         );
@@ -4036,7 +4065,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -4068,7 +4097,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         locked_door(&dc, &mut deploys, &mut p, 1234, &mut ev);
@@ -4086,7 +4115,7 @@ mod tests {
                 CX,
                 CZ,
                 0,
-                LOC_EDGE_W,
+                LOC_EDGE_XLO,
                 crate::deploy::ACCESS_OP_ENTER,
                 4321,
                 0,
@@ -4117,7 +4146,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             crate::deploy::ACCESS_OP_ENTER,
             1234,
             0,
@@ -4125,7 +4154,7 @@ mod tests {
             &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(last(&ev).2, REFUSE_D_LOCKOUT);
-        assert!(!deploys.lock_passes(CX, CZ, 0, LOC_EDGE_W, raider.id));
+        assert!(!deploys.lock_passes(CX, CZ, 0, LOC_EDGE_XLO, raider.id));
 
         // The floor: a body cannot be finished by a keypad.
         raider.hp = 1;
@@ -4156,7 +4185,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             crate::deploy::ACCESS_OP_UNLOCK,
             0,
             0,
@@ -4177,7 +4206,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         // One lock per door.
@@ -4193,7 +4222,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_D_HAS_LOCK);
@@ -4217,7 +4246,7 @@ mod tests {
                 CX,
                 CZ,
                 0,
-                LOC_EDGE_W,
+                LOC_EDGE_XLO,
                 op,
                 1111,
                 0,
@@ -4254,7 +4283,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             crate::deploy::ACCESS_OP_UNLOCK,
             0,
             0,
@@ -4263,7 +4292,7 @@ mod tests {
         );
         assert_eq!(last(&ev).2, REFUSE_D_REACH, "a lock has the build reach");
         assert!(
-            deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().locked,
+            deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().locked,
             "a refused op leaves the bit where it was"
         );
 
@@ -4277,7 +4306,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             crate::deploy::ACCESS_OP_TAKE,
             0,
             0,
@@ -4290,9 +4319,9 @@ mod tests {
             held + 1,
             "the item comes back"
         );
-        let d = deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let d = deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         assert!(!d.has_lock && !d.locked, "and both mirror bits cleared");
-        assert!(deploys.lock_passes(CX, CZ, 0, LOC_EDGE_W, stranger.id));
+        assert!(deploys.lock_passes(CX, CZ, 0, LOC_EDGE_XLO, stranger.id));
     }
 
     /// Pickup v1: a deployable comes back up any time you may build
@@ -4434,7 +4463,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         locked_door(&dc, &mut deploys, &mut p, 1234, &mut ev);
@@ -4450,7 +4479,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
             &mut [ItemStack::default(); INV_SLOTS],
         );
@@ -4475,7 +4504,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
             &mut [ItemStack::default(); INV_SLOTS],
         );
@@ -4843,7 +4872,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         locked_door(&dc, &mut deploys, &mut p, 1234, &mut ev);
@@ -4855,7 +4884,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             crate::deploy::ACCESS_OP_SET_GUEST,
             4321,
             0,
@@ -4873,7 +4902,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             crate::deploy::ACCESS_OP_ENTER,
             4321,
             1,
@@ -4897,7 +4926,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -4906,7 +4935,7 @@ mod tests {
             "a GUEST code opens the locked door — the tier's whole verb"
         );
         assert!(
-            deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open,
+            deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open,
             "and the leaf actually swung"
         );
         use_door(
@@ -4917,7 +4946,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -4925,7 +4954,7 @@ mod tests {
             (crate::world::EV_DOOR, 0),
             "and closes it again — open and close alike"
         );
-        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
+        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open);
 
         pick_up(
             &dc,
@@ -4936,7 +4965,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
             &mut [ItemStack::default(); INV_SLOTS],
         );
@@ -4963,7 +4992,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             crate::deploy::ACCESS_OP_ENTER,
             1234,
             2,
@@ -4979,7 +5008,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
             &mut [ItemStack::default(); INV_SLOTS],
         );
@@ -5157,7 +5186,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         crate::build::place(
@@ -5181,7 +5210,7 @@ mod tests {
         // and since twig v0 it cannot be told with scaffold on either
         // side: twig is never charged, so it would rot under any stock at
         // all and prove nothing about the per-row rule.
-        for (level, loc) in [(0u8, LOC_EDGE_W), (1u8, LOC_PLANE)] {
+        for (level, loc) in [(0u8, LOC_EDGE_XLO), (1u8, LOC_PLANE)] {
             crate::build::upgrade(
                 &bc,
                 &deploys,
@@ -5526,7 +5555,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
             &mut ev,
         );
         assert_eq!(
@@ -5547,7 +5576,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
             &mut ev,
         );
         assert_eq!(
@@ -5625,13 +5654,15 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         locked_door(&dc, &mut deploys, &mut p, 1234, &mut ev);
         assert_eq!(deploys.locks().len(), 1);
 
-        let di = deploys.find_index(CX, CZ, 0, LOC_EDGE_W).expect("the door");
+        let di = deploys
+            .find_index(CX, CZ, 0, LOC_EDGE_XLO)
+            .expect("the door");
         drop_deploy(&dc, &mut pieces, &mut deploys, di, &mut ev);
         assert_eq!(
             deploys.locks().len(),
@@ -5658,7 +5689,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_D_DOOR);
@@ -5706,7 +5737,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         place_deploy(
@@ -5721,7 +5752,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED);
@@ -5734,12 +5765,12 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_D_REACH);
-        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_W).unwrap().open);
-        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1);
+        assert!(!deploys.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().open);
+        assert_eq!(pieces.cols().get(CX, CZ).shut_xlo, 1);
     }
 
     #[test]
@@ -5750,7 +5781,7 @@ mod tests {
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
         doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
-        assert_eq!(pieces.cols().get(CX, CZ).shut_w, 1);
+        assert_eq!(pieces.cols().get(CX, CZ).shut_xlo, 1);
 
         // No hearth anywhere: everything decays away within 20 periods.
         let mut pc = 0u32;
@@ -5778,7 +5809,7 @@ mod tests {
         );
         let m = pieces.cols().get(CX, CZ);
         assert_eq!(
-            (m.doors_w, m.shut_w),
+            (m.doors_xlo, m.shut_xlo),
             (0, 0),
             "a decayed doorway leaves no door collision behind"
         );
