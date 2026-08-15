@@ -45,7 +45,7 @@ const CHIP_VERTS: usize = 12;
 /// Vertices a whole element mesh holds, per kind.
 ///
 /// A litter clump is its fallen chip PLUS standing stalks (2026-08-15,
-/// `NOW.md` §0gm — the growing channel was drawn with the flattest mesh in the
+/// `NOW.md` §0gp — the growing channel was drawn with the flattest mesh in the
 /// file); pebble and shard are the chip alone. This is asserted rather than
 /// assumed so that BOTH halves of a clump are gated: deleting the stalks and
 /// deleting the chip they stand in are each red here.

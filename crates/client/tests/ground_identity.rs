@@ -52,6 +52,7 @@
 
 #![cfg(feature = "render")]
 
+use client::render::fill::GROUND_MIX;
 use client::render::terrain_mesh::GROUND_ALBEDO;
 use sim_core::terrain;
 
@@ -215,6 +216,103 @@ fn granite_stands_clear_of_turf_in_value() {
         "ART.md §3: granite is 'much brighter than turf — a value separation of \
          roughly 2×'. Measured {ratio:.2}× (granite {rock:.1}, turf {grass:.1}). \
          Luma-identical ground is what makes the whole island read as one surface."
+    );
+}
+
+/// **No two identities that actually share the island may be the same paint.**
+///
+/// This is the gate that was missing on 2026-08-15, and the defect it now holds
+/// is the one the visual judge measured without being able to name:
+/// `pass-20260815-042118-10-visual.md` gap 1 read the ground as hue 33–37° and
+/// luma 96–113 at *every* sample of six frames, with ~0.4% of pixels reading as
+/// granite where `ART.md` §0 records 8.9% of the land within 300 m of the
+/// capture spawn carrying it. Granite was not missing. **Forest litter and
+/// granite were 1.0° apart in hue, 0.5 points in saturation and 1.059× in
+/// value**, and those two identities own 89.4% of the land inside that radius,
+/// so an island with four identities was painted with three.
+///
+/// Every per-identity check in this file passed throughout, and so did
+/// [`the_island_is_more_than_one_surface`] — the island's hue spread is fine,
+/// because grass is genuinely far from the warm three. The defect is *local*:
+/// two identities that are individually in band and are indistinguishable from
+/// each other. Nothing here could see a pair.
+///
+/// **Two numbers, neither of them §3's, both in `DECISIONS.md` §open.**
+///
+///  * **Which pairs are tested** — those where *both* members cover at least 5%
+///    of the island's land, by `fill::GROUND_MIX`. Not the combined share: that
+///    is dominated by the larger member and would drag beach sand into a rule
+///    about the forest floor. The cut is deliberately insensitive — the four
+///    shares are 1.1%, 51.8%, 37.9% and 9.2%, so **any threshold between 1.1%
+///    and 9.2% selects the same three identities**, which is the strongest
+///    thing that can be said about a number nobody measured. Sand is excluded
+///    on its own share and because `wetted` darkens the band it lives in.
+///  * **How far apart is far enough** — 1.25× in Rec.601 luma. §3 states no
+///    such ratio; what it states is a *table*, and the tightest pair in it that
+///    the document names as two different substances is beach sand (117) and
+///    granite (147), at 1.256×. Anything a reader of `spawnedrock.jpg` can tell
+///    apart clears that. §3's own dirt-path/granite pair is 1.058× and is
+///    deliberately not the anchor: a path is a ribbon, and the identity that
+///    borrowed its row is a third of the world.
+///
+/// Red on the constants this replaced (litter:granite 1.059×), green now at
+/// 1.429× — 44.2 luma of separation where there were 6.7.
+#[test]
+fn granite_stands_clear_of_the_ground_it_shares() {
+    /// Both members of a pair must cover at least this much land for the pair
+    /// to be one a player sees adjacent. `DECISIONS.md` §open.
+    const SHARE_MIN: f32 = 0.05;
+    /// §3's tightest named pair of distinct substances, sand:granite.
+    /// `DECISIONS.md` §open.
+    const TWIN_RATIO_MIN: f32 = 1.25;
+
+    let mut same_paint = Vec::new();
+    let mut tested = 0;
+    for i in 0..4 {
+        for j in (i + 1)..4 {
+            if GROUND_MIX[i] < SHARE_MIN || GROUND_MIX[j] < SHARE_MIN {
+                continue;
+            }
+            tested += 1;
+            let (a, b) = (luma(encoded(i)), luma(encoded(j)));
+            let ratio = a.max(b) / a.min(b);
+            println!(
+                "{:>6} ({:.1}%) vs {:>6} ({:.1}%): {ratio:.3}×, {:.1} luma apart",
+                BANDS[i].name,
+                GROUND_MIX[i] * 100.0,
+                BANDS[j].name,
+                GROUND_MIX[j] * 100.0,
+                (a - b).abs()
+            );
+            if ratio < TWIN_RATIO_MIN {
+                same_paint.push(format!(
+                    "{} ({:.1} luma, {:.1}% of the land) and {} ({:.1} luma, \
+                     {:.1}% of the land) are {ratio:.3}× apart — the same paint. \
+                     `ART.md` §8: materials must read as distinct substances at \
+                     a glance, separated by value.",
+                    BANDS[i].name,
+                    a,
+                    GROUND_MIX[i] * 100.0,
+                    BANDS[j].name,
+                    b,
+                    GROUND_MIX[j] * 100.0
+                ));
+            }
+        }
+    }
+    // The rule is worthless if the share cut selects nothing — that is how a
+    // wall goes green by deleting its own cases (`CLAUDE.md`, and this repo has
+    // done it once already this month).
+    assert_eq!(
+        tested, 3,
+        "the 5% share cut should select grass, litter and granite — three \
+         pairs. It selected {tested}, so either GROUND_MIX moved or the cut is \
+         no longer insensitive, and the rule is not testing what it says."
+    );
+    assert!(
+        same_paint.is_empty(),
+        "two identities that share the island are indistinguishable:\n  {}",
+        same_paint.join("\n  ")
     );
 }
 

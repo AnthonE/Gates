@@ -13,7 +13,7 @@
 //! `render/clutter.rs` — the same builder sand and rock get. One side of the
 //! seam said *understory*; the other said *gravel*.
 //!
-//! It is not an abstract mismatch. `NOW.md` §0gm measured the capture camera
+//! It is not an abstract mismatch. `NOW.md` §0gp measured the capture camera
 //! standing on **93 % litter / 7 % sand, with grass and granite at exactly
 //! zero within 60 m**, so on the frames the visual judge actually scores,
 //! essentially every clutter element was a 2.2 cm sliver. The judge read it

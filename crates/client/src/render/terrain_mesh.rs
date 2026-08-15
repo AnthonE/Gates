@@ -72,19 +72,65 @@ pub const CHUNK_BUILDS_PER_FRAME: usize = 1;
 /// Re-placed against §3 under four constraints, three of them from documents:
 /// §3's hue and saturation exactly (both scale-invariant under a white light,
 /// which is what lets an albedo be compared to a lit measurement at all);
-/// §5's `[0.05, 0.55]` linear floor, which grass sits exactly on because §3
-/// says turf is the darkest thing on the island and §5 says nothing may go
-/// under 0.05; and — the fourth, which is discipline rather than a document —
-/// **the area-weighted mean linear luma is held at the shipped 0.09390 to
-/// within 0.01%.** Brightness is the coupled-lighting owner's (`CLAUDE.md`
-/// traps: tonemap, sky, exposure and fog are one owner, and splitting them
-/// across passes has measurably made things worse). This pass changes what the
-/// ground IS, not how bright it is. The separation lands at 1.91× — §3's own
-/// 2.28× is not reachable while the mean is pinned, and "roughly 2×" is what
-/// the document claims.
+/// §5's `[0.05, 0.55]` linear floor; and — the fourth, which is discipline
+/// rather than a document — **the area-weighted mean linear luma is held.**
+/// Brightness is the coupled-lighting owner's (`CLAUDE.md` traps: tonemap,
+/// sky, exposure and fog are one owner, and splitting them across passes has
+/// measurably made things worse). This pass changes what the ground IS, not
+/// how bright it is.
 ///
-/// ⚠ **The weights this was placed under were a quadrant, and granite's value
-/// was therefore NOT free. Corrected 2026-08-15.** This paragraph read: "over
+/// ⚠ **Two of those three sentences were re-stated on 2026-08-15 and one was
+/// wrong.** The mean was held at 0.09390 "to within 0.01%" — a quadrant's
+/// number — and grass was placed on §5's floor rather than in §3's band, which
+/// is what capped the granite:turf separation at 1.91×. Both are corrected
+/// below.
+///
+/// ⚠ **Re-placed 2026-08-15 under the corrected weights, because two of the
+/// four identities were the same paint.** The visual judge
+/// (`pass-20260815-042118-10-visual.md` gap 1) measured the delivered ground at
+/// hue 33–37°, saturation 23–24% and luma 96–113 at *every* sample of six
+/// frames — one tan island — with ~0.4% of pixels reading as granite where
+/// `ART.md` §0 records 8.9% of the land within 300 m of the capture spawn
+/// carrying it. A probe over 34,806 land samples at that spawn found the cause
+/// is **not** the classifier: `terrain::splat_from` delivers near-pure
+/// identities (max weight p50 = 1.000, 92.2% of samples above 0.8) and
+/// reproduces §0's granite share to the digit (8.89%). The cause was this
+/// table. **Forest litter and granite were 1.0° apart in hue, 0.5 points in
+/// saturation and 1.059× in value — 6.7 luma out of 255 — and those two
+/// identities own 89.4% of the land inside that 300 m.** Granite was not
+/// missing from the frame; it was painted as litter.
+///
+/// The re-place moves three of the four onto §3's own **luma** column, which
+/// this table had previously read only for chroma:
+///
+/// | identity | was | now | §3 |
+/// |---|---|---|---|
+/// | beach sand | 94.2 | **117.0** | 117 |
+/// | grass | 62.8 | **64.5** | 59–70 |
+/// | forest litter | 113.3 | **102.8** | *no row* — absorbs the mean |
+/// | granite | 120.0 | **147.0** | 127–167 |
+///
+/// Anchoring turf at its band's centre rather than at §5's floor is what makes
+/// the other two land on §3's numbers verbatim: sand is §3's 117 and granite
+/// §3's 147 *because* 117/64.5 and 147/64.5 are the document's own ratios.
+/// Granite:turf therefore reaches **2.28×** — §3's own separation, which the
+/// paragraph below correctly said was unreachable while the mean was pinned to
+/// a quadrant's — and granite:litter goes 1.059× → **1.429×**, a gap of 6.7 →
+/// 44.2 luma. Gated by `granite_stands_clear_of_the_ground_it_shares`.
+///
+/// **It is brightness-neutral by construction and that is the point.** The
+/// area-weighted mean linear luma is held at the island's own **0.10746** —
+/// the value these constants actually deliver, not the 0.09390 they were
+/// pinned to, which was that same quadrant — so it moves by −0.024% and
+/// `fill::bounce_albedo` by under 0.3%. Brightness is still the coupled
+/// owner's (`CLAUDE.md` traps) and nothing here takes it: what changed is the
+/// distribution across the four identities, not the total. What this pass does
+/// NOT buy is *structure* — all four identities still share one greyscale
+/// detail map and one `perceptual_roughness`, so granite has stone's value now
+/// and not stone's surface. `NOW.md` carries that as the splat material.
+///
+/// The retracted paragraph, kept because the mistake is the lesson. This read:
+/// "over
 /// 39,521 land samples at seed 20260731 the mean splat is sand 0.008, grass
 /// 0.619, litter 0.373, rock 0.0000. **Granite's value is therefore free** —
 /// it is pinned to §3's ratio against litter and costs the mean nothing,
@@ -94,34 +140,32 @@ pub const CHUNK_BUILDS_PER_FRAME: usize = 1;
 /// `crates/client/tests/ground_mix.rs` for the gate.
 ///
 /// Whole-island the mix is sand 0.0113, grass 0.5182, litter 0.3789, **rock
-/// 0.0916**. Granite is the third identity by area and it is the brightest of
-/// the four (3.76× grass), so **the held mean is wrong by 14.4%**: these four
-/// albedos average 0.1075 over the island against the 0.09390 they were placed
-/// to hold. Nothing here moved — the four values below are exactly as shipped —
-/// because brightness is the coupled owner's and re-placing them under the
-/// corrected weights is an iteration with `ART.md` §3's hue and saturation
-/// bands binding it too (`NOW.md` carries it). What changed is that the
-/// constraint is now written down truthfully instead of resting on an absent
-/// identity.
+/// 0.0916**. Granite is the third identity by area and the brightest of the
+/// four, so its value was never free and the mean it was pinned to was 14.4%
+/// low. **That is the constraint the table above is placed under**, and the
+/// reason litter is the one identity whose value is derived rather than read:
+/// granite's share is what it has to absorb.
 pub const GROUND_ALBEDO: [[f32; 3]; 4] = [
-    // beach sand — hue 42.0°, sat 10.0% (§3 "beach sand — 117 luma, 42°, 10%")
-    [0.1196, 0.1122, 0.0960],
-    // grass — hue 68.5°, sat 31.0%, the centres of §3's 63–74° and 29–33%.
-    // The darkest identity, and it sits ON `ALBEDO_LUMA_BAND`'s floor rather
-    // than near it: §3 says turf is the darkest thing on the island, §5 says
-    // 0.05 linear is as dark as an authored albedo goes, so the two together
-    // name this number. It was 84.0° — green with too little red, which is
-    // the opposite of the correction the old comment here described.
-    [0.0499, 0.0545, 0.0268],
+    // beach sand — hue 42.0°, sat 10.0%, **luma 117.0** (§3 "beach sand — 117
+    // luma, 42°, 10%", now read whole rather than for its chroma alone).
+    [0.1895, 0.1775, 0.1513],
+    // grass — hue 68.5°, sat 31.0% and **luma 64.5**: the centres of §3's
+    // 63–74°, 29–33% and 59–70. Still the darkest identity, but it no longer
+    // sits on `ALBEDO_LUMA_BAND`'s floor — it sits at its own band's centre,
+    // 0.0526 linear, and clears §5's 0.05 with room. The old value read 62.8,
+    // which is 0.04997 linear: marginally UNDER the floor the comment here
+    // claimed it sat exactly on, and the reason it sat there was the old
+    // mean rather than anything §3 says.
+    [0.0526, 0.0574, 0.0281],
     // forest litter — hue 38.0°, sat 15.0% (§3 "dirt path — 139 luma, 38°,
     // 15%"). §3 sampled a bare compacted path, not needles under canopy, so
     // it pins this identity's hue and saturation and NOT its value; the value
-    // is what absorbs the held-mean constraint. Its old 29.6% saturation made
-    // it the most chromatic surface on the island and is why the island had
-    // one hue.
-    [0.1850, 0.1639, 0.1309],
-    // granite — hue 39.0°, sat 14.5%, the centres of §3's 35–43° and 10–19%.
-    [0.2079, 0.1858, 0.1486],
+    // is what absorbs the held-mean constraint, and it is the only one of the
+    // four that is not §3's own number.
+    [0.1505, 0.1335, 0.1069],
+    // granite — hue 39.0°, sat 14.5%, **luma 147.0**, the centres of §3's
+    // 35–43°, 10–19% and 127–167.
+    [0.3238, 0.2888, 0.2299],
 ];
 
 /// How far the damp band reaches **along the ground**, metres.
@@ -175,20 +219,21 @@ pub const WET_SATURATION: f32 = 0.35;
 /// [`wetted`] is the one modifier in the client that can drive a surface
 /// through it.
 ///
-/// **It binds, and the gate found the case.** The darkest identity is now
-/// grass at 0.0515 Rec.709 luma (it was forest litter at 0.072, before the
-/// identities were re-placed against `ART.md` §3 — see [`GROUND_ALBEDO`]);
-/// [`WET_VALUE`] would take it to 0.028, under a floor that exists because no
-/// real material is a black hole. Clamping here rather than weakening
-/// [`WET_VALUE`] keeps the soak honest on sand — the identity that is actually
-/// at a waterline, which lands at 0.113 and soaks its full 0.55 — while
-/// refusing to author a black surface anywhere.
+/// **It binds, and the gate found the case.** The darkest identity is grass at
+/// 0.0543 Rec.709 luma (it was forest litter at 0.072, before the identities
+/// were re-placed against `ART.md` §3 — see [`GROUND_ALBEDO`]); [`WET_VALUE`]
+/// would take it to 0.030, under a floor that exists because no real material
+/// is a black hole. Clamping here rather than weakening [`WET_VALUE`] keeps the
+/// soak honest on sand — the identity that is actually at a waterline, which
+/// lands at 0.178 and soaks its full 0.55 — while refusing to author a black
+/// surface anywhere.
 ///
-/// The clamp binds *harder* than it used to and the reason is worth writing
-/// down: grass now sits on the floor by construction, so wet turf keeps its
-/// value and gets only the chroma stretch. That is the floor doing its job on
-/// the identity §3 says is the darkest thing on the island, not a regression
-/// in the waterline — sand, litter and granite all still soak in full.
+/// Grass no longer sits *on* the floor: the 2026-08-15 re-place moved it to
+/// §3's own band centre (0.0526 linear, Rec.601), clear of §5's 0.05 rather
+/// than a thousandth under it as the previous placement was. The clamp still
+/// binds on wet turf, because 0.55 of 0.054 is under the floor either way —
+/// what changed is that it is the *soak* that reaches the floor and not the
+/// authored albedo. Sand, litter and granite all still soak in full.
 pub const ALBEDO_LUMA_FLOOR: f32 = 0.05;
 
 /// How wet the ground is here: 1 at or below sea level, 0 outside the band,
