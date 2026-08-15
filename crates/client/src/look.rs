@@ -68,6 +68,34 @@ pub fn pitch_u8(pitch: f32) -> u8 {
     v.clamp(0.0, 255.0) as u8
 }
 
+/// Degrees clockwise from north for a world-XZ direction — **the one place
+/// that answers which compass point a world axis is.**
+///
+/// **North is `+Z` and east is `-X`** (`DECISIONS.md` 2026-08-15). That is
+/// not a taste call, it is forced by the header above: the world is
+/// right-handed and Y-up, so a body facing `+Z` has its right at `-X`, and a
+/// compass card's east is the right hand of a body facing north. The tree
+/// used to compute `atan2(fx, fz)` and call the result a bearing, which
+/// labels `+X` east — a REFLECTION of the truth, not an offset, so all four
+/// cardinals sat 180° off and **a player turning right watched the number
+/// fall** (probed: 22.5° → 9.8° → 357.2° over three 100 px pushes right).
+///
+/// What this spends is the old convention's one property, `bearing == wire
+/// yaw`. The row above says why that was the right side to spend: the
+/// identity was *already* false in the tree, because the raid readout
+/// computed its own `atan2` and never came through here. It cannot be false
+/// again — that readout is a caller of this function now, so there is one
+/// conversion rather than two that must agree.
+///
+/// **The `-0.0` trap, paid for once.** The obvious spelling `(-dx).atan2(dz)`
+/// yields `-0.0` due north, and `f32::rem_euclid`'s guard is `r < 0.0`, which
+/// `-0.0` does not satisfy — so north printed **`-00°`** at both `{:03.0}`
+/// sites. Subtracting from 360 first cannot produce it.
+pub fn bearing_of(dx: f32, dz: f32) -> f32 {
+    // Trig is fine here: this is the client, not `sim-core`.
+    (360.0 - dx.atan2(dz).to_degrees()).rem_euclid(360.0)
+}
+
 /// The compass bearing this client reports, degrees clockwise from north.
 ///
 /// **One sample, one fact.** The compass strip and the map both print a
@@ -79,13 +107,11 @@ pub fn pitch_u8(pitch: f32) -> u8 {
 ///
 /// Quantized through the sim's own LUT first, so the number on screen is a
 /// bearing the server can actually face rather than the free-running float
-/// between two of them. North is `+Z` (`DECISIONS.md` §open, compass axes v0),
-/// which is also the direction `ui::map`'s hillshade and row numbering rest on.
+/// between two of them. The axes are [`bearing_of`]'s, which is also what
+/// `ui::map`'s hillshade, column lettering and x term rest on.
 pub fn bearing_deg(yaw: f32) -> f32 {
     let (fx, fz) = yaw_dir(yaw_u16(yaw));
-    // `atan2(east, north)` — clockwise from north, which is what a compass
-    // card reads. Trig is fine here: this is the client, not `sim-core`.
-    fx.atan2(fz).to_degrees().rem_euclid(360.0)
+    bearing_of(fx, fz)
 }
 
 /// The body's right, in world XZ, for a wire yaw. `r × up = −f`.
@@ -257,13 +283,72 @@ mod tests {
         }
     }
 
-    /// North is `+Z` and the card runs clockwise: `+X` is east.
+    /// North is `+Z` and the card runs clockwise, so **east is `-X`** — the
+    /// body's right when it faces north, which is what a compass card means
+    /// by east (`DECISIONS.md` 2026-08-15).
     #[test]
     fn the_bearing_reads_clockwise_from_north() {
-        assert!(bearing_deg(0.0) < 1.0 || bearing_deg(0.0) > 359.0);
-        assert!((bearing_deg(std::f32::consts::FRAC_PI_2) - 90.0).abs() < 1.5);
-        assert!((bearing_deg(std::f32::consts::PI) - 180.0).abs() < 1.5);
-        assert!((bearing_deg(3.0 * std::f32::consts::FRAC_PI_2) - 270.0).abs() < 1.5);
+        // Straight down each world axis, stated as a direction rather than a
+        // yaw, so this reads as the convention and not as arithmetic. North
+        // is exact — see `due_north_prints_without_a_sign` for why that
+        // matters; the rest carry `to_degrees`' rounding.
+        assert_eq!(bearing_of(0.0, 1.0), 0.0, "+Z is north");
+        for (dx, dz, want, name) in [
+            (-1.0, 0.0, 90.0, "-X is east"),
+            (0.0, -1.0, 180.0, "-Z is south"),
+            (1.0, 0.0, 270.0, "+X is west"),
+        ] {
+            let got = bearing_of(dx, dz);
+            assert!((got - want).abs() < 0.01, "{name}: got {got}");
+        }
+    }
+
+    /// Yaw turns the view LEFT (the module header's second defect, kept as a
+    /// basis fact), so the bearing a yaw reports runs the other way: it is
+    /// `(360 − yaw°) mod 360`, which is the whole of what the 2026-08-15 row
+    /// spent to get the card right.
+    #[test]
+    fn the_bearing_is_the_yaw_reflected() {
+        for i in 0..64 {
+            let yaw = i as f32 * 0.1;
+            let want = (360.0 - yaw.to_degrees()).rem_euclid(360.0);
+            let got = bearing_deg(yaw);
+            // Quantized through the LUT — 256 steps, 1.40625° each — so a
+            // step's worth of slack and no more.
+            let d = (got - want).abs().min(360.0 - (got - want).abs());
+            assert!(d < 2.0, "yaw {yaw}: bearing {got}, wanted {want}");
+        }
+    }
+
+    /// **The operator's own probe, as a gate.** The reported defect was
+    /// physical rather than numeric: *a player turning right watches the
+    /// number fall.* A mouse pushed right must raise the bearing, all the way
+    /// round, including across the wrap.
+    #[test]
+    fn a_mouse_pushed_right_raises_the_bearing() {
+        for i in 0..48 {
+            let yaw = -std::f32::consts::PI + i as f32 * 0.13;
+            let before = bearing_deg(yaw);
+            // 100 px right, the probe's own push — comfortably past one LUT
+            // step, so the quantized number has to move.
+            let after = bearing_deg(yaw_after(yaw, 100.0, MOUSE_RAD_PER_PX));
+            let step = (after - before).rem_euclid(360.0);
+            assert!(
+                (1.0..180.0).contains(&step),
+                "yaw {yaw}: {before}° → {after}° — the card ran backwards"
+            );
+        }
+    }
+
+    /// Due north prints `000`, never `-00`: `(-dx).atan2(dz)` is `-0.0` at
+    /// yaw 0 and `rem_euclid`'s guard is `r < 0.0`, which `-0.0` slips past.
+    /// Both `{:03.0}` sites (the compass strip and the map's heading) would
+    /// have shown it, so it is gated on the value they both read.
+    #[test]
+    fn due_north_prints_without_a_sign() {
+        let d = bearing_deg(0.0);
+        assert!(d.is_sign_positive(), "north came back as {d} (a signed zero)");
+        assert_eq!(format!("{d:03.0}"), "000");
     }
 
     /// It never returns 360, which would print as `360°` beside a card that
