@@ -19,7 +19,6 @@
 
 use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_PLANE};
 use sim_core::combat::CombatContent;
-use sim_core::survival::SurvivalContent;
 use sim_core::craft::{CraftContent, REFUSE_BLUEPRINT};
 use sim_core::deploy::DeployContent;
 use sim_core::gather::{GatherContent, ItemStack};
@@ -29,6 +28,7 @@ use sim_core::research::{
     knows, ResearchContent, REFUSE_R_COST, REFUSE_R_ITEM, REFUSE_R_KNOWN, REFUSE_R_LOCKED,
     REFUSE_R_SLOT, REFUSE_R_TABLE,
 };
+use sim_core::survival::SurvivalContent;
 use sim_core::world::{
     Command, World, EV_CRAFT_REFUSED, EV_KNOWN, EV_RESEARCH, EV_RESEARCH_REFUSED,
 };
@@ -470,10 +470,7 @@ fn a_blueprint_survives_a_restore() {
 
     // A world that has never met this player, which is what a restart is.
     let mut w2 = content_world();
-    w2.tick(&[Command::JoinAs {
-        id: REJOIN,
-        save,
-    }]);
+    w2.tick(&[Command::JoinAs { id: REJOIN, save }]);
     assert!(w2.players[0].active, "a restore must seat a body");
     assert_eq!(
         w2.players[0].known, mask,

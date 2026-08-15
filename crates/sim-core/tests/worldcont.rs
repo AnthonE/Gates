@@ -163,17 +163,27 @@ fn stand_at(w: &mut World, x: f32, z: f32) {
     w.players[0].body.qz = quant_xz(z);
 }
 
-/// Events pushed since `mark`, filtered to the move verb's two answers.
-fn since(w: &World, mark: usize) -> Vec<(u8, u32)> {
-    w.events.entries()[mark..]
+/// The move verb's answers on the tick just run.
+///
+/// **There is no cursor here, and there used to be one.** `since(&w, mark)`
+/// sliced `entries()[mark..]` against a `mark` taken before the action —
+/// but `World::tick` clears the ring at its start, so the index was into a
+/// ring that no longer existed. It gave the right answer only while every
+/// `mark` happened to read 0, and the moment a door started announcing one
+/// more fact at the join (`EV_KNOWN`, 2026-08-15) three of these tests
+/// began skipping the very event they assert on and reading `[]` as a
+/// pass — a green gate over a refusal that never fired.
+///
+/// The ring is per-tick, so "since the mark" and "this tick" are the same
+/// set, and the honest spelling of that is no mark at all. Every assertion
+/// below is unchanged; what changed is that they can now fail.
+fn answers(w: &World) -> Vec<(u8, u32)> {
+    w.events
+        .entries()
         .iter()
         .filter(|e| e.code == EV_MOVED || e.code == EV_MOVE_REFUSED)
         .map(|e| (e.code, e.b))
         .collect()
-}
-
-fn mark(w: &World) -> usize {
-    w.events.entries().len()
 }
 
 /// Run empty ticks until `w.tick >= to`. The refill window is tens of
@@ -374,7 +384,6 @@ fn the_move_verb_empties_a_crate_into_a_player() {
     let held = w.world_conts.entries()[0].items[0];
     assert!(held.count > 0, "the crate rolled something into slot 0");
 
-    let m = mark(&w);
     take(&mut w, cx, cz, 0, 0, held.count);
 
     assert_eq!(w.players[0].inv[0], held, "the stack arrived intact");
@@ -383,7 +392,7 @@ fn the_move_verb_empties_a_crate_into_a_player() {
         0,
         "and left the crate"
     );
-    let answered = since(&w, m);
+    let answered = answers(&w);
     assert_eq!(answered.len(), 1, "a move answers exactly once");
     assert_eq!(
         answered[0].0, EV_MOVED,
@@ -404,7 +413,6 @@ fn a_take_out_of_reach_refuses_and_says_so() {
     let before = w.world_conts.entries()[0].items;
 
     stand_at(&mut w, x + 40.0, z);
-    let m = mark(&w);
     take(&mut w, cx, cz, 0, 0, 1);
 
     assert_eq!(
@@ -413,7 +421,7 @@ fn a_take_out_of_reach_refuses_and_says_so() {
         "nothing moved out of a container out of reach"
     );
     assert_eq!(
-        since(&w, m),
+        answers(&w),
         vec![(EV_MOVE_REFUSED, REFUSE_M_REACH)],
         "a container out of reach refuses, once, by reason"
     );
@@ -429,12 +437,11 @@ fn a_take_from_an_unopened_cell_refuses_and_mints_nothing() {
     let (cx, cz, x, z) = find_slot(&w, Occupant::CrateSlot);
     join_at(&mut w, x, z);
 
-    let m = mark(&w);
     take(&mut w, cx, cz, 0, 0, 1);
 
     assert_eq!(w.world_conts.len(), 0, "the move verb mints no containers");
     assert_eq!(
-        since(&w, m),
+        answers(&w),
         vec![(EV_MOVE_REFUSED, REFUSE_M_NO_CONTAINER)],
         "an unopened cell refuses as 'no container'"
     );
@@ -451,10 +458,9 @@ fn a_slot_past_the_container_refuses() {
     join_at(&mut w, x, z);
     open(&mut w, cx, cz);
 
-    let m = mark(&w);
     take(&mut w, cx, cz, INV_SLOTS as u8, 0, 1);
     assert_eq!(
-        since(&w, m),
+        answers(&w),
         vec![(EV_MOVE_REFUSED, REFUSE_M_SLOT)],
         "slot 30 is past every container"
     );
@@ -463,10 +469,9 @@ fn a_slot_past_the_container_refuses() {
     // everything passes the half above and is not the bound we want. It
     // refuses as EMPTY, which is a fact about the contents and proves the
     // address itself resolved.
-    let m = mark(&w);
     take(&mut w, cx, cz, INV_SLOTS as u8 - 1, 5, 1);
     assert!(
-        !since(&w, m)
+        !answers(&w)
             .iter()
             .any(|&(c, b)| c == EV_MOVE_REFUSED && b == REFUSE_M_SLOT),
         "slot 29 is inside a world container, so the refusal must not be \
