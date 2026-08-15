@@ -26,6 +26,28 @@ seed = 20260731
 # DECISIONS.md §open "dev spawn override".
 # dev_spawn = "1024,1024"
 
+# Dev only — never on a public shard. Replaces content/balance.toml's
+# [[spawn_kit]] wholesale for this shard, on fresh spawns AND on respawns.
+#
+# The shipped kit is a rock and a torch (DECISIONS.md 2026-08-15), which is
+# the game. This key is what is left of the nine-entry kit that used to ship
+# in content and called itself testing scaffolding: with a naked spawn the
+# build wheel reads `350 Wood (0)`, so the build, hammer and upgrade verbs
+# are unreachable to anyone testing them. Set it for that session, delete it
+# after. The line below is exactly the kit that used to ship, so a build
+# pass gets what it always had:
+#
+# dev_spawn_kit = "item.building_plan:1, item.hammer:1, item.hatchet_stone:1, item.pickaxe_stone:1, item.torch:1, item.bandage:3, item.wood:900, item.stone:500, item.metal_frags:100"
+#
+# Ids and counts are checked against the loaded content at boot — an unknown
+# id, a zero, a count past the item's stack, or a repeated id refuses the
+# boot rather than granting nothing. The first entries land on the hotbar in
+# the order written.
+#
+# ⚠ It is `dev_spawn`'s shape and carries `dev_spawn`'s caveat: nothing
+# records it, so a shard run with this set is not reproducible from its seed
+# and content hash alone.
+
 # Require a proven identity to join. Default false = this shard takes
 # guests, which is what every test and the local dev flow need.
 #

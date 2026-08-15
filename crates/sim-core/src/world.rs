@@ -1777,6 +1777,50 @@ impl World {
         };
         // A player who starved does not respawn already starving.
         survival::grant(&self.survival, &mut self.players[slot]);
+        // **And a player who died does not respawn unable to play**
+        // (DECISIONS.md 2026-08-15; `NOW.md` §0die mechanism 3).
+        //
+        // The kit was fresh-arm-only until here, and `inventory.rs` gave
+        // the reason: re-granting "would be an item printer". That was
+        // correct arithmetic against a kit worth 900 wood, 500 stone and
+        // 100 metal frags, and it is void against one worth a rock and a
+        // torch — 10 stone of craftable tools, which is less than one
+        // swing of the node the rock opens. What the old reasoning bought
+        // instead was the compound §0die names: the inventory drops into a
+        // bag where you fell, the bag despawns on its rarity timer, and no
+        // kit ever comes back — so one death ended a session for good.
+        //
+        // **`wake` is where a new body is built**, and this sits beside
+        // `survival::grant` for exactly its reason: both restore the floor
+        // a body needs to be playable, and neither restores anything the
+        // player earned. So the rule is *once per BODY*, not once per
+        // character and not once per login.
+        //
+        // ⚠ **`Command::Respawn` is not the only caller, and a comment
+        // here said it was until 2026-08-15.** `grep -n '\.wake(' ` on this
+        // file returns three: the respawn command, `seat`'s restore arm
+        // when the save is `dead` (logged off on the death screen), and the
+        // sleeper takeover when the body it takes over is dead. All three
+        // rebuild the body from `..Player::default()`, so all three are new
+        // bodies and all three are meant to be paid — but only the first
+        // has a gate (`tests/bag_respawn.rs`, `server/tests/spawn_kit.rs`
+        // both drive `Command::Respawn`). A later pass that early-returns
+        // either of the other two before reaching here leaves a player who
+        // logged off dead waking naked, with every suite green, and with no
+        // `hand` row on any swung node there is no route back to a rock
+        // except dying again. That gate is owed (`NOW.md` §0kit).
+        //
+        // A returning login whose save is ALIVE is the different door and
+        // still grants nothing, because a saved character keeps what it
+        // saved.
+        //
+        // It writes slots in order and does not merge, so a bag-spawn
+        // respawn that already looted itself gets its slot-0 and slot-1
+        // overwritten. That is `grant_kit`'s documented shape rather than
+        // an oversight here; the alternative — merging — would make the
+        // grant depend on what you were carrying, which is the item
+        // printer this comment is about.
+        inventory::grant_kit(&self.spawn_kit, &mut self.players[slot]);
         self.events.push(EV_RESPAWN, id, bag.is_some() as u32, 0);
         self.events.push(EV_HEALTH, id, hp as u32, hp as u32);
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
@@ -1833,10 +1877,26 @@ impl World {
                     ..Player::default()
                 };
                 survival::grant(&self.survival, &mut self.players[slot]);
-                // The spawn kit, on the FRESH arm only. A restore keeps what
-                // it saved; re-granting on every login would be an item
-                // printer, which is the same reason `survival::grant` is
-                // here and not below the match.
+                // The spawn kit, on the FRESH arm only — of this door. A
+                // restore keeps what it saved; re-granting on every LOGIN
+                // would be an item printer, which is the same reason
+                // `survival::grant` is here and not below the match.
+                //
+                // ⚠ **A respawn is not a login and grants it too** since
+                // 2026-08-15 (`wake`, above). Read the two together before
+                // moving either: the rule is not "once per character", it
+                // is "once per body" — a fresh body gets the floor it needs
+                // to play, and a body that already exists gets nothing.
+                // Death makes a new body; a login does not.
+                //
+                // ⚠ **"a restore gets nothing" is true of a LIVE restore
+                // only**, which the arm below is not alone in being. A save
+                // marked `dead` falls through `Some(s)` and then calls
+                // `wake` (~60 lines down), so it takes the kit — correctly,
+                // because declining the death screen is choosing the beach
+                // and that is a new body. Stated because the sentence above
+                // read as covering every restore until 2026-08-15, and the
+                // counterexample sits inside the same `match`.
                 inventory::grant_kit(&self.spawn_kit, &mut self.players[slot]);
             }
             Some(s) => {

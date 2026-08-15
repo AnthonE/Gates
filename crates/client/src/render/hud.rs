@@ -1210,6 +1210,49 @@ pub fn feedback(
             super::feed::Refused::Build => crate::ui::refusals::build(code),
             super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
             super::feed::Refused::Research => crate::ui::refusals::research(code),
+            super::feed::Refused::Consume => crate::ui::refusals::consume(code),
+        });
+    }
+
+    // The consume verbs' LANDED half (`NOW.md` §0eat). The refused half is in
+    // the loop above and rides the queue, so the mixer's refusal cue answers
+    // a dry shoreline for free; this half has no ring to ride.
+    //
+    // **Latch on the bit, never on the field.** `last_eat` and `last_drink`
+    // hold the last of their kind forever, so "is this frame's" is only
+    // answerable from `Feed::applied` — the same rule `APPLIED_STOCK` below
+    // follows, and the reason all three of these fields were written by
+    // `client-core` and read by nobody until this landed.
+    //
+    // Why say anything: a bandage that worked and a bandage that was refused
+    // looked identical from the chair. The only evidence of the first was the
+    // hp bar creeping for four seconds and the only evidence of the second was
+    // nothing at all.
+    if feed.applied & client_core::core::APPLIED_CONSUME != 0 && core.last_eat_refused == 0 {
+        // `item << 16 | slot`. The slot was the sender's own claim and tells a
+        // player nothing they did not just click, so only the item is named.
+        let item = (core.last_eat >> 16) as u16;
+        let label = crate::ui::craft::item_label(&core.catalog, item);
+        // "used", not "ate": the same verb spends a bandage, and a bandage is
+        // what the session that found this was holding.
+        //
+        // `say`, not `warn`: by `Rank`'s own rule this is recoverable by
+        // looking — the item left the pack and the meters moved — which puts
+        // it beside the gather and craft lines rather than beside a refusal.
+        toast.say(format!("used {label}"));
+    }
+    if feed.applied & client_core::core::APPLIED_DRANK != 0 {
+        // `water restored << 16 | hp it cost`. The cost is the sea being salt
+        // (`survival::drink`), and naming it is the difference between a
+        // mechanic and a bug report — a body that drank its last points of
+        // health away otherwise just dies. Nought is the fresh-water case and
+        // says nothing about hp rather than saying `-0`.
+        let water = core.last_drink >> 16;
+        let cost = core.last_drink & 0xffff;
+        toast.say(if cost > 0 {
+            format!("drank: +{water} water, -{cost} hp")
+        } else {
+            format!("drank: +{water} water")
         });
     }
     // Knocks and grants (lock v1). A knock is broadcast, so this fires

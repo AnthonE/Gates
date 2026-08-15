@@ -364,9 +364,15 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
     for _ in feed.crafted() {
         sound.play(Request::own(Cue::CraftDone));
     }
-    // Three refusal kinds, one sound. A player does not need to hear the
+    // Every refusal kind, one sound. A player does not need to hear the
     // difference between a refused craft and a refused placement — the toast
     // already says which — they need to hear that the button did nothing.
+    //
+    // Deliberately not a count: this line said "three" while `Refused` held
+    // four, and then five when the consume verbs joined (2026-08-15). The
+    // predicate below is variant-agnostic, so a new refusal kind gets this
+    // cue for free the moment `feed.rs` pushes it — which is the property
+    // worth writing down, and a number here only ever goes stale against it.
     if feed.refusals().next().is_some() {
         sound.play(Request::own(Cue::Refused));
     }

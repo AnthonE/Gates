@@ -27,6 +27,36 @@ pub struct ShardConfig {
     /// "dev spawn override"). Unset is the shipping default; never set it
     /// on a public shard — every joiner lands on the same point.
     pub dev_spawn: Option<(f32, f32)>,
+    /// Dev-only spawn kit override: `"item.id:count, item.id:count, …"`,
+    /// **replacing** `content/balance.toml`'s `[[spawn_kit]]` wholesale for
+    /// this shard's fresh spawns and respawns. Unset is the shipping
+    /// default, which is the content's own kit — a rock and a torch
+    /// (DECISIONS.md 2026-08-15).
+    ///
+    /// **Why this exists at all.** The nine-entry kit it replaces (900
+    /// wood, 500 stone, 100 metal frags, a plan and a hammer) was never
+    /// balance: its own comment in `balance.toml` called it *"testing
+    /// scaffolding"*, and it shipped because a naked spawn made the build
+    /// wheel read `350 Wood (0)` and left the whole building interaction
+    /// unreachable to anyone testing it. Deleting it from content without
+    /// replacing the capability would have made every future build/hammer
+    /// pass start by hand-editing `content/`, which is worse than a flag:
+    /// an edited content tree is a set nobody declared, and `CLAUDE.md`'s
+    /// packager entry is what that costs.
+    ///
+    /// **It is `dev_spawn`'s shape on purpose**, and it inherits that key's
+    /// caveats exactly. Both are shard-local perturbations of the sim's
+    /// inputs that no header records, so a shard run with either is not
+    /// reproducible from its seed and content hash alone — set it on a dev
+    /// box and never on a public shard. It is deliberately NOT a boolean
+    /// naming a second kit baked into the binary: the counts live here,
+    /// where an operator typed them for one session, rather than in
+    /// `crates/`, which is what wall 7 is about.
+    ///
+    /// Ids and counts are validated against the loaded content at boot
+    /// (`dev_spawn_kit`), so a typo refuses the boot rather than quietly
+    /// granting nothing.
+    pub dev_spawn_kit: Option<Vec<(String, u32)>>,
     /// TLS identity for a PUBLIC shard: paths to a real certificate chain
     /// and its private key. Both or neither — set, the shard serves that
     /// identity and browsers trust it outright (no `serverCertificateHashes`,
@@ -200,6 +230,7 @@ impl ShardConfig {
             bind: "127.0.0.1:0".parse().expect("static addr"),
             seed,
             dev_spawn: None,
+            dev_spawn_kit: None,
             cert_pem: None,
             key_pem: None,
             require_auth: false,
@@ -257,6 +288,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut bind: Option<SocketAddr> = None;
     let mut seed: Option<u64> = None;
     let mut dev_spawn: Option<(f32, f32)> = None;
+    let mut dev_spawn_kit: Option<Vec<(String, u32)>> = None;
     let mut min_client: Option<u32> = None;
     let mut content_dir: Option<String> = None;
     let mut require_auth: Option<bool> = None;
@@ -323,6 +355,51 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                     ));
                 }
                 dev_spawn = Some((x, z));
+            }
+            // `"item.id:count, item.id:count, …"`. Shape only here — that
+            // an id exists and that a count fits its stack are questions
+            // for the loaded content, and this function has none
+            // (`dev_spawn_kit`, below, is where the boot asks them).
+            "dev_spawn_kit" => {
+                let mut stacks = Vec::new();
+                for part in value.split(',') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    let (id, count) = part.split_once(':').ok_or_else(|| {
+                        format!(
+                            "shard.toml line {}: dev_spawn_kit wants \
+                             \"item.id:count, …\", got `{part}`",
+                            n + 1
+                        )
+                    })?;
+                    let count: u32 = count.trim().parse().map_err(|e| {
+                        format!(
+                            "shard.toml line {}: bad dev_spawn_kit count for `{id}`: {e}",
+                            n + 1
+                        )
+                    })?;
+                    stacks.push((id.trim().to_string(), count));
+                }
+                if stacks.is_empty() {
+                    return Err(format!(
+                        "shard.toml line {}: dev_spawn_kit is empty — delete the \
+                         key to use the content's own kit, or write \
+                         `dev_spawn_kit = \"\"` nowhere at all",
+                        n + 1
+                    ));
+                }
+                if stacks.len() > sim_core::limits::MAX_SPAWN_KIT {
+                    return Err(format!(
+                        "shard.toml line {}: dev_spawn_kit has {} stacks, past the \
+                         sim's {}-slot kit",
+                        n + 1,
+                        stacks.len(),
+                        sim_core::limits::MAX_SPAWN_KIT
+                    ));
+                }
+                dev_spawn_kit = Some(stacks);
             }
             "cert_pem" | "key_pem" => {
                 if value.is_empty() {
@@ -555,6 +632,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         bind: bind.ok_or("shard.toml: missing `bind`")?,
         seed: seed.ok_or("shard.toml: missing `seed`")?,
         dev_spawn,
+        dev_spawn_kit,
         cert_pem,
         key_pem,
         require_auth: require_auth.unwrap_or(false),
@@ -578,6 +656,82 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         // Unset ⇒ 0, a shard that seats nobody but the players who dial it.
         population: population.unwrap_or(0),
     })
+}
+
+/// Resolve `dev_spawn_kit` against the content this shard actually loaded,
+/// or say which entry is wrong.
+///
+/// `None` in, `None` out — the shard then runs `content.bake_spawn_kit()`,
+/// which is the shipping path and the only one a public shard ever takes.
+///
+/// **Every refusal `bake_spawn_kit` makes, this makes too**, and by asking
+/// the same questions of the same tables rather than by trusting the key:
+/// an unknown id, a zero count, a count past the item's own stack size, and
+/// a repeat (`grant_kit` writes slots and never merges, so a repeated id is
+/// a typo that silently halves what the operator meant). A dev shard that
+/// boots is therefore a dev shard whose kit the sim can actually represent
+/// — the alternative is a flag that grants nothing and reads as a defect in
+/// whatever verb the session was there to test.
+///
+/// It does NOT re-ask the content's own balance questions, because it is not
+/// balance: this kit never reaches a player who did not type it.
+///
+/// ⚠ **That sentence is about who sees the kit, not about how often.** Since
+/// 2026-08-15 `World::wake` grants the kit on every respawn, so whatever is
+/// typed here is minted per DEATH, not once per character — the documented
+/// example in `shard.toml.example` re-mints 900 wood, 500 stone and 100
+/// metal frags every time a tester dies. That is the exact arithmetic
+/// `world.rs`'s grant comment cites as the reason the old shipped kit could
+/// not be re-granted, re-opened on the dev path alone and deliberately: the
+/// key exists so a build/hammer session is not blocked, and a tester who
+/// dies five times wanting materials is not a balance failure. It IS a
+/// reason not to reach for this key on anything a stranger can join.
+pub fn dev_spawn_kit(
+    spec: Option<&[(String, u32)]>,
+    content: &content::Content,
+) -> Result<Option<sim_core::inventory::SpawnKit>, String> {
+    let Some(spec) = spec else {
+        return Ok(None);
+    };
+    let mut kit = sim_core::inventory::SpawnKit::EMPTY;
+    for (i, (id, count)) in spec.iter().enumerate() {
+        let item = content
+            .item(id)
+            .ok_or_else(|| format!("dev_spawn_kit: no such item `{id}`"))?;
+        if *count == 0 {
+            return Err(format!(
+                "dev_spawn_kit: `{id}` grants 0, which is a slot that draws empty"
+            ));
+        }
+        if *count as u64 > item.stack as u64 {
+            return Err(format!(
+                "dev_spawn_kit: `{id}` grants {count} past its own stack size {}",
+                item.stack
+            ));
+        }
+        if spec[..i].iter().any(|(prev, _)| prev == id) {
+            return Err(format!(
+                "dev_spawn_kit: `{id}` granted twice — the kit writes slots and \
+                 never merges, so the second entry overwrites nothing and the \
+                 first is what you get"
+            ));
+        }
+        let idx = content
+            .item_index(id)
+            .ok_or_else(|| format!("dev_spawn_kit: `{id}` vanished between two lookups"))?;
+        let stack = sim_core::gather::ItemStack {
+            item: idx,
+            count: u16::try_from(*count)
+                .map_err(|_| format!("dev_spawn_kit: `{id}` count {count} overflows u16"))?,
+        };
+        if !kit.set(i, stack) {
+            return Err(format!(
+                "dev_spawn_kit: `{id}` did not fit the sim's {}-slot kit",
+                sim_core::limits::MAX_SPAWN_KIT
+            ));
+        }
+    }
+    Ok(Some(kit))
 }
 
 #[cfg(test)]
@@ -695,6 +849,64 @@ mod tests {
                 "accepted dev_spawn = {bad}"
             );
         }
+    }
+
+    /// The dev kit override parses its own shape and refuses the rest.
+    ///
+    /// Unset is the shipping default and means "the content's kit", which is
+    /// the assertion that matters most: a public shard that never writes this
+    /// key must be indistinguishable from one built before the key existed.
+    ///
+    /// Proven red by deleting the `stacks.is_empty()` refusal (the `""` case
+    /// then parses to an empty kit, which seats a naked spawn on a shard whose
+    /// operator asked for a fat one) and by deleting the `split_once(':')`
+    /// error (`"item.wood"` with no count then panics on unwrap rather than
+    /// naming the line).
+    #[test]
+    fn dev_spawn_kit_parses_and_refuses() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 1\n";
+        assert_eq!(
+            parse_shard_toml(base).unwrap().dev_spawn_kit,
+            None,
+            "an unset key must mean the content's own kit"
+        );
+
+        let ok = parse_shard_toml(&format!(
+            "{base}dev_spawn_kit = \"item.wood:900, item.stone:500\"\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            ok.dev_spawn_kit,
+            Some(vec![
+                ("item.wood".to_string(), 900),
+                ("item.stone".to_string(), 500)
+            ]),
+            "order is load-bearing — the first entries land on the hotbar"
+        );
+
+        for bad in [
+            "\"\"",                     // empty: delete the key instead
+            "\"item.wood\"",            // no count
+            "\"item.wood:\"",           // no count
+            "\"item.wood:lots\"",       // not a number
+            "\"item.wood:-1\"",         // not a count
+            "\"item.wood:4294967296\"", // past u32
+        ] {
+            assert!(
+                parse_shard_toml(&format!("{base}dev_spawn_kit = {bad}\n")).is_err(),
+                "accepted dev_spawn_kit = {bad}"
+            );
+        }
+
+        // Past the sim's kit width, refused here rather than truncated into a
+        // kit the operator did not write.
+        let long: Vec<String> = (0..sim_core::limits::MAX_SPAWN_KIT + 1)
+            .map(|i| format!("item.x{i}:1"))
+            .collect();
+        assert!(
+            parse_shard_toml(&format!("{base}dev_spawn_kit = \"{}\"\n", long.join(", "))).is_err(),
+            "a kit past MAX_SPAWN_KIT was accepted"
+        );
     }
 }
 

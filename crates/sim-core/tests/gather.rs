@@ -699,3 +699,168 @@ fn the_finish_share_moves_when_yield_arrives_not_how_much() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The wrong tool (DECISIONS.md 2026-08-15: bare hands gather nothing)
+//
+// Shipped content carries no `hand` row on any swung node, so `bake.rs`'s
+// `hand_yield: 0` is what a tree pays a fist. `NodeDef::yield_for` falls back
+// to that row for anything not in the tool table, so a torch, a hammer and an
+// empty hand all read 0 — and the refusal below is about the pair (node,
+// held), never about hands specifically.
+//
+// The fixture keeps its hand rows, because most of this file is *about* the
+// hand row; these two tests zero one node's row for the duration.
+
+/// A swing the node pays nothing for is refused, and **the node does not pay
+/// for the refusal.**
+///
+/// This is the half that is a correctness bug rather than a balance change.
+/// `gather::swing` spends the node's budget before it computes a yield, so
+/// with the guard removed a bare fist walks the whole `hits × HIT_UNIT`
+/// budget down, pays nothing, announces nothing, and arms the 20–45 minute
+/// respawn — a griefing hole against any node on the island, and a self-grief
+/// hole for the player who lost their rock.
+///
+/// Proven red by deleting the `def.yield_for(held) == 0` guard: four
+/// bare-hand swings then exhaust the fixture tree and the `EV_SLOT_HARVESTED`
+/// assertion inside the loop fires.
+#[test]
+fn a_swing_the_node_pays_nothing_for_is_refused_and_costs_the_node_nothing() {
+    let (pos, yaw, (cx, cz)) = find_isolated(SEED, Occupant::Tree);
+    let mut w = world_at(pos);
+    // The mark buys speed, so leaving it armed would make the swing count
+    // (and therefore this test's loop bound) a function of where the body
+    // happens to stand. Every other base-pay test in this file does the same.
+    for n in w.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+    }
+    // Content with no `hand` row — what `bake.rs` produces for the shipped
+    // gatherables since 2026-08-15.
+    w.gather.nodes[0].hand_yield = 0;
+    let tree = w.gather.nodes[0];
+    let (tool, per_hit) = tree.tools[0];
+    assert!(
+        tool != sim_core::gather::NO_ITEM && per_hit > 0,
+        "fixture rot: the tree has no tool row, so this test cannot tell a \
+         refusal from an empty node"
+    );
+
+    // Swing bare-handed for longer than the node could survive if the
+    // budget were being spent.
+    let mut seq = 0u16;
+    for _ in 0..SWING_INTERVAL_TICKS * (tree.hits as u64 + 2) {
+        w.tick(&[hold_primary(yaw, seq)]);
+        seq = seq.wrapping_add(1);
+        for e in w.events.entries() {
+            assert_ne!(
+                e.code, EV_GATHER,
+                "a bare-hand swing paid — the `hand` row is back, or the \
+                 refusal reads the wrong item"
+            );
+            assert_ne!(
+                e.code, EV_SLOT_HARVESTED,
+                "bare hands felled the tree without being paid for it — the \
+                 swing is spending the node's budget before the yield check"
+            );
+        }
+    }
+    assert!(
+        !w.slot_lives.is_harvested(cx as u16, cz as u16),
+        "the node is harvested after a bare-hand beating"
+    );
+    assert!(
+        w.players[0].inv.iter().all(|s| s.count == 0),
+        "bare hands filled a pocket"
+    );
+
+    // **The node is whole, not merely standing.** A guard that refused the
+    // pay and still charged the budget would pass everything above and fail
+    // here: the tool would collect a remainder instead of the full total.
+    w.players[0].inv[0] = ItemStack {
+        item: tool,
+        count: 1,
+    };
+    let mut paid = 0u32;
+    let mut harvested = 0u32;
+    for _ in 0..SWING_INTERVAL_TICKS * (tree.hits as u64 + 2) {
+        w.tick(&[hold_primary(yaw, seq)]);
+        seq = seq.wrapping_add(1);
+        for e in w.events.entries() {
+            match e.code {
+                EV_GATHER => paid += e.b & 0xFFFF,
+                EV_SLOT_HARVESTED => harvested += 1,
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(harvested, 1, "the node never exhausted for the right tool");
+    assert_eq!(
+        paid,
+        tree.hits as u32 * per_hit as u32,
+        "the tool drew a partial node — the bare-hand swings spent budget"
+    );
+}
+
+/// The refusal is a **whiff, not an absorb**: the arm stays free, so the
+/// swing carries on to `combat::strike` exactly as a swing into empty air
+/// does (`world.rs`: node → player → structure).
+///
+/// This is what keeps the wrong tool a *weapon* while it is not a tool. It
+/// is not a hypothetical — the shipped rock is both, and a spear is neither
+/// a tree's tool nor a harmless thing to be swung at somebody standing in
+/// front of one. A guard that absorbed the swing would make a node into
+/// cover: stand behind a tree and the fight stops.
+///
+/// The fixture holds item 2, which `CombatContent::probe_fixture` arms as
+/// melee and which is **not** in the tree's tool row (that is item 1) — so
+/// `yield_for` falls through to the zeroed hand row and the guard fires,
+/// while the strike behind it has a live weapon to resolve.
+///
+/// Proven red twice, and the pair is the point:
+///
+/// - return `Swing::Absorbed` from the guard and the victim's hp never
+///   moves — the node ate a swing it was paid nothing for;
+/// - delete the guard entirely and the node absorbs the swing itself, which
+///   is the behaviour before 2026-08-15, and the victim's hp never moves
+///   either.
+#[test]
+fn a_refused_gather_swing_leaves_the_arm_free() {
+    let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
+    let mut w = Box::new(World::new(SEED));
+    w.gather = GatherContent::probe_fixture();
+    w.combat = sim_core::combat::CombatContent::probe_fixture();
+    for n in w.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+    }
+    w.gather.nodes[0].hand_yield = 0;
+    assert_ne!(
+        w.gather.nodes[0].tools[0].0, 2,
+        "fixture rot: item 2 became the tree's tool, so the swing below \
+         would be absorbed by the node and prove nothing"
+    );
+    // Both bodies on the same point: `dev_spawn` pins every join, so the
+    // victim is inside the weapon's reach without a walk.
+    w.dev_spawn = Some(pos);
+    w.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
+    let victim = w
+        .players
+        .iter()
+        .position(|p| p.active && p.id == 2)
+        .expect("the second body seated");
+    let hp_before = w.players[victim].hp;
+    assert!(hp_before > 0, "the combat fixture granted the victim no hp");
+
+    // A melee-armed item the tree pays nothing for.
+    w.players[0].inv[0] = ItemStack { item: 2, count: 1 };
+    let mut seq = 0u16;
+    for _ in 0..SWING_INTERVAL_TICKS * 3 {
+        w.tick(&[hold_primary(yaw, seq)]);
+        seq = seq.wrapping_add(1);
+    }
+    assert!(
+        w.players[victim].hp < hp_before,
+        "a swing the node refused was absorbed by it anyway — a tree is \
+         cover, and the arm never reached the body standing at it"
+    );
+}

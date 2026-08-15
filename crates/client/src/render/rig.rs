@@ -33,11 +33,55 @@ use bevy::render::view::Msaa;
 
 use super::{Eye, EYE_HEIGHT};
 
-/// Compass bearing of the sun, radians (0 = +Z, increasing toward +X — the
-/// sim's yaw convention, so this reads the same as every other bearing in the
-/// tree). Carried over from the browser rig, which is the one constant of its
-/// set that was never in dispute.
+/// Compass bearing of the sun **at solar noon**, radians (0 = +Z, increasing
+/// toward +X — the sim's yaw convention, so this reads the same as every
+/// other bearing in the tree). Carried over from the browser rig, which is
+/// the one constant of its set that was never in dispute.
+///
+/// **It is the sweep's ANCHOR since 2026-08-15, not the whole answer.** This
+/// used to be the sun's bearing at every hour, and the operator scored that
+/// from the player's side: *"the sun donest move"*. [`sun_azimuth`] now sweeps
+/// [`RIG_SUN_ARC`] of bearing across the cycle and passes through this value
+/// **exactly** at [`CAPTURE_DAY_FRAC`].
+///
+/// **Anchoring on noon rather than on dawn is the whole reason nothing else
+/// in the rig moved.** The capture register is noon ([`DayPin::capture`]),
+/// `ART.md` §1's shadow-length band is measured at noon, `sky.rs` bakes its
+/// deck at noon, and every frame a visual judge has ever scored was shot
+/// there. A sweep anchored anywhere else would have moved all of them for a
+/// reason nobody asked for; anchored here it changes only the hours nobody
+/// has measured. `crates/client/tests/sun.rs` pins that.
 pub const RIG_SUN_AZIMUTH: f32 = 2.35;
+
+/// How much compass bearing the sun sweeps between sunrise and sunset,
+/// radians.
+///
+/// ⚠ **PROPOSED — this number awaits the operator's word.** It is a tunable
+/// no doc has spoken, so per `CLAUDE.md` it ships carrying its derivation
+/// rather than being quietly picked, and it belongs in `DECISIONS.md` §open
+/// ("sun arc v0") the day it is spoken.
+///
+/// **Derived, not chosen.** [`sun_elevation`] puts the sun on the horizon at
+/// dawn, at [`RIG_SUN_ELEVATION`] at noon and back on the horizon at dusk,
+/// symmetric about noon. A real sun whose path starts and ends exactly on the
+/// horizon and is symmetric about noon is the **equinoctial** one, and at the
+/// equinox the sun rises due east and sets due west at *every* latitude — a
+/// bearing sweep of exactly π. The same curve's 35° peak fixes the matching
+/// latitude at 90° − 35° = 55°, which is the band `ART.md` §1's temperate
+/// pine-and-granite island already implies. So the two halves of the sun's
+/// path agree about where this island is, which is the property that makes
+/// this a derivation and not a preference.
+///
+/// **What a smaller value would buy, because that is the operator's actual
+/// choice.** The v0 argument for a fixed bearing was legibility — `to_sun`'s
+/// own doc said a sweep "would drag every shadow through a half-turn a cycle
+/// for no legibility gain". π *is* that half-turn, spread over the 31.5 min
+/// daylit half: 5.7° of shadow rotation per minute. A smaller arc holds a
+/// shadow's direction more nearly constant and crowds sunrise and sunset
+/// toward the noon bearing; below ~1.58 rad (91°) they both fall on the same
+/// side of the noon bearing's meridian and the sun reads as wobbling rather
+/// than crossing the sky.
+pub const RIG_SUN_ARC: f32 = std::f32::consts::PI;
 
 /// Sun elevation above the horizon, radians. 0.61 rad = 35°, the middle of
 /// `ART.md` §1's measured band: shadows in `generichighview2.jpg` run 1.5–2×
@@ -278,16 +322,29 @@ pub fn setup(
 }
 
 /// The sun's rotation: a light pointing along the direction sunlight travels.
-/// The spawn pose — noon-ish; `day_night` rewrites it every frame from the
+/// The spawn pose — noon; `day_night` rewrites it every frame from the
 /// server's clock, so this is only what a frame with no snapshot yet shows.
+///
+/// [`CAPTURE_DAY_FRAC`] rather than a bare elevation since the sweep landed:
+/// noon is now two numbers (a height *and* a bearing) and naming the hour is
+/// the only spelling that cannot pair one with the other's.
 fn sun_rotation() -> Quat {
-    sun_rotation_at(RIG_SUN_ELEVATION)
+    sun_rotation_at(CAPTURE_DAY_FRAC)
 }
 
-/// **Where the sun is** — the unit vector from the world origin toward it,
-/// at an arbitrary elevation, azimuth fixed (`RIG_SUN_AZIMUTH` — the sun
-/// climbs and sinks on one bearing at v0; a sweeping azimuth would drag
-/// every shadow through a half-turn a cycle for no legibility gain).
+/// **Where the sun is** — the unit vector from the world origin toward it, at
+/// a point in the day/night cycle.
+///
+/// **It takes the HOUR, not an elevation, and that is the single-owner
+/// property rather than a convenience.** Until 2026-08-15 the sun climbed and
+/// sank on one fixed bearing, so an elevation was a complete answer and this
+/// function read [`RIG_SUN_AZIMUTH`] as a constant; its own doc argued the
+/// case ("a sweeping azimuth would drag every shadow through a half-turn a
+/// cycle for no legibility gain"). The operator scored that from the other
+/// side — *"the sun donest move"* — so the sun now has two coordinates that
+/// both move, and a caller holding only one of them can pair this morning's
+/// height with this afternoon's bearing while every gate stays green. One
+/// argument in, both derived here, no such pairing exists.
 ///
 /// **The one owner, and the reason it is `pub`.** Two consumers need this
 /// vector and they must not each re-derive it: the `Sun` light's rotation
@@ -305,17 +362,30 @@ fn sun_rotation() -> Quat {
 /// direction the light *travels*. So the law is `direction_to_light ==
 /// -forward() == to_sun`, and [`sun_rotation_at`] is the only place that
 /// negation is written. `crates/client/tests/sun.rs` gates it.
-pub fn to_sun(elevation: f32) -> Vec3 {
+pub fn to_sun(frac: f32) -> Vec3 {
+    to_sun_at(sun_elevation(frac), sun_azimuth(frac))
+}
+
+/// The spherical construction on its own: a unit vector at an arbitrary
+/// height and bearing, in the sim's yaw convention.
+///
+/// `pub` for one reason — a gate that wants to check the *geometry* at an
+/// elevation the cycle never reaches (`tests/sun.rs` hand-checks a shadow
+/// length at 80° and at 5°) must be able to ask for one without inventing an
+/// hour that would produce it. Nothing in the renderer calls this; every
+/// shipped path goes through [`to_sun`], which is what keeps the height and
+/// the bearing from being sourced separately.
+pub fn to_sun_at(elevation: f32, azimuth: f32) -> Vec3 {
     let (se, ce) = (elevation.sin(), elevation.cos());
-    let (sa, ca) = (RIG_SUN_AZIMUTH.sin(), RIG_SUN_AZIMUTH.cos());
+    let (sa, ca) = (azimuth.sin(), azimuth.cos());
     Vec3::new(sa * ce, se, ca * ce)
 }
 
-/// The sun's rotation at an arbitrary elevation: a light whose forward is
+/// The sun's rotation at a point in the cycle: a light whose forward is
 /// the direction sunlight travels, i.e. `-to_sun`.
-pub fn sun_rotation_at(elevation: f32) -> Quat {
+pub fn sun_rotation_at(frac: f32) -> Quat {
     Transform::default()
-        .looking_at(-to_sun(elevation), Vec3::Y)
+        .looking_at(-to_sun(frac), Vec3::Y)
         .rotation
 }
 
@@ -348,6 +418,48 @@ pub fn sun_elevation(frac: f32) -> f32 {
         (PI * frac / day).sin() * RIG_SUN_ELEVATION
     } else {
         -((PI * (frac - day) / (1.0 - day)).sin()) * NIGHT_DIP
+    }
+}
+
+/// The sun's bearing at a point in the cycle, radians in the same convention
+/// as [`RIG_SUN_AZIMUTH`] — and **unwrapped**, so it falls monotonically
+/// across the whole cycle and lands one full turn below its dawn value at the
+/// next dawn. Nothing that reads it has to think about a seam at zero;
+/// [`to_sun`] takes a sine and a cosine of it and `sky.rs` takes a
+/// difference, and both are blind to the turn.
+///
+/// **The bearing FALLS, and the sign is the one thing here that a picture
+/// cannot be wrong about quietly.** East is `-X` (`DECISIONS.md` 2026-08-15,
+/// `tests/compass.rs`) while this angle is the sim's yaw convention (0 = +Z,
+/// increasing toward +X), so the two run opposite ways: `look::bearing_of` is
+/// `360° − yaw`. A sun that travels east → west is therefore one whose yaw
+/// angle decreases. Backwards, it rises in the west — which is invisible to
+/// `test_protocol_golden`, to `test_replay`, to clippy and to every pixel
+/// statistic this repo owns, exactly like the mirrored compass was. The gate
+/// is `tests/sun.rs` §`the_sun_travels_the_way_the_compass_calls_east_to_west`,
+/// and it asks the compass's own owner rather than restating the convention.
+///
+/// **Day:** [`RIG_SUN_ARC`] of sweep, linear in the fraction and symmetric
+/// about noon. Linear rather than a true solar azimuth curve on purpose —
+/// the elevation arch next door is already a stylised sine, and precision on
+/// one axis of a two-axis path buys nothing but the illusion of rigour.
+///
+/// **Night:** the sun keeps going the *same way* around, under the world,
+/// covering the remaining `2π − RIG_SUN_ARC` so the next dawn starts exactly
+/// where the last one did. That is not bookkeeping — it is why the twilight
+/// band sits where the sun *set* for the first hour of night and swings round
+/// to where it will *rise* before dawn, which is what the atmosphere draws off
+/// the light's transform with no help from us.
+pub fn sun_azimuth(frac: f32) -> f32 {
+    use std::f32::consts::TAU;
+    let day = sim_core::limits::DAY_PORTION;
+    if frac < day {
+        // Exactly `RIG_SUN_AZIMUTH` at `frac == day * 0.5`: `(day*0.5)/day` is
+        // 0.5 to the bit (IEEE division of a value by twice itself), so noon
+        // is bit-identical to what this rig shipped before the sweep.
+        RIG_SUN_AZIMUTH + RIG_SUN_ARC * (0.5 - frac / day)
+    } else {
+        RIG_SUN_AZIMUTH - RIG_SUN_ARC * 0.5 - (TAU - RIG_SUN_ARC) * ((frac - day) / (1.0 - day))
     }
 }
 
@@ -434,10 +546,9 @@ pub fn day_night(
     >,
 ) {
     let frac = sim_core::world::day_frac(pin.tick(feed.server_tick_est));
-    let elev = sun_elevation(frac);
     let light = daylight(frac);
     if let Ok((mut t, mut d)) = sun.single_mut() {
-        t.rotation = sun_rotation_at(elev);
+        t.rotation = sun_rotation_at(frac);
         d.illuminance = lux::DIRECT_SUNLIGHT * light;
         // A light at zero illuminance still schedules its cascades;
         // shadows off at night saves the passes and no shadow is cast by
@@ -460,10 +571,27 @@ pub fn day_night(
         amb.brightness = NIGHT_AMBIENT_LUX * (1.0 - light);
         env.intensity = super::fill::peak_lux() * light;
         if let Some(mut sky) = sky {
-            // The deck was baked lit from the noon sun (`sky.rs`); at any
-            // other hour its lighting is wrong in a way only brightness
-            // can hide, and at night clouds are dark from below anyway.
+            // At night clouds are dark from below anyway.
             sky.brightness = super::sky::CLOUD_NITS * light;
+            // **The half of the sweep that is not the sun.** The deck is baked
+            // ONCE, with its lit faces pointing at the noon sun (`sky.rs`).
+            // Under a fixed bearing that was correct at every hour for free —
+            // only the sun's *height* moved and the deck's march ignores
+            // height. A swept bearing breaks it: by dusk the lit side of every
+            // cloud would face 90° away from the sun that is lighting the
+            // ground, which is `ART.md` rule 5's coupled set disagreeing with
+            // itself, and the visual judge has ranked exactly that seam before
+            // (`pass-20260814-223652-01-visual.md`, gap 2a).
+            //
+            // Rotating the deck about `Y` by the bearing's own offset from
+            // noon fixes it *exactly* rather than approximately: the deck is a
+            // flat plane projected through `1/d.y`, which is invariant under a
+            // yaw rotation, so the rotated cubemap is bit-for-bit the deck a
+            // rebake at that bearing would produce — and a rebake is 393 k
+            // texels of four-octave fBm, which is a boot cost, not a frame
+            // one. The shapes drift with the light, one turn per cycle, most
+            // of it under a `brightness` of zero.
+            sky.rotation = super::sky::deck_rotation(frac);
         }
     }
 }

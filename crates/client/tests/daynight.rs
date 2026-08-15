@@ -35,16 +35,26 @@ fn the_curve_is_the_day_it_claims() {
         sun_elevation(DAY_PORTION - 1e-4).abs() < 0.01,
         "dusk returns to the horizon"
     );
-    // Night: below the horizon the whole way through.
-    for f in [0.75, 0.85, 0.95] {
+    // Night: below the horizon the whole way through. **Sampled as a
+    // fraction OF THE NIGHT, never as literals of the cycle.** It was
+    // `[0.75, 0.85, 0.95]` until 2026-08-15, which were night while
+    // `DAY_PORTION` was 0.70 and are broad daylight at 0.875 — the operator
+    // lengthened the day and this gate went red asserting the sun was
+    // underground at teatime. A literal here is a second, silent copy of
+    // `DAY_PORTION`; deriving is what makes the gate follow the knob.
+    for k in [0.1, 0.5, 0.9] {
+        let f = DAY_PORTION + (1.0 - DAY_PORTION) * k;
         assert!(
             sun_elevation(f) < 0.0,
-            "the night sun must be under the ground at {f}"
+            "the night sun must be under the ground at {f} ({k} of the way through the night)"
         );
     }
-    // Daylight scalar: full at noon, zero all night.
+    // Daylight scalar: full at noon, zero all night. Midnight derived for
+    // the same reason as the loop above — `0.85` was night at 0.70 and is
+    // afternoon at 0.875, and this line read `daylight` as 0.095 rather
+    // than 0.
     assert!((rig::daylight(DAY_PORTION * 0.5) - 1.0).abs() < 1e-6);
-    assert_eq!(rig::daylight(0.85), 0.0);
+    assert_eq!(rig::daylight(DAY_PORTION + (1.0 - DAY_PORTION) * 0.5), 0.0);
 }
 
 #[test]
@@ -153,7 +163,11 @@ fn noon_and_midnight_reach_the_entities() {
         );
     }
 
-    set_tick(&mut app, tick_at(0.85));
+    // Midnight is the MIDPOINT OF THE NIGHT, derived — `0.85` until
+    // 2026-08-15, which was midnight at `DAY_PORTION = 0.70` and is
+    // mid-afternoon at 0.875. See the same correction in
+    // `the_curve_is_the_day_it_claims`.
+    set_tick(&mut app, tick_at(DAY_PORTION + (1.0 - DAY_PORTION) * 0.5));
     {
         let world = app.world_mut();
         let (t, d) = world
@@ -267,9 +281,16 @@ fn the_unpinned_probe_shot_below_the_band_and_that_is_the_defect() {
     // Measured on this tree, and the reason the pin exists. A capture shard
     // starts at tick 0; the probe fires after the build and the settle.
     let at = |tick: u64| sun_elevation(day_frac(tick));
-    let boot = at(0); // 24.5°
-    let typical = at(2_200); // 27.3° — what the visual judge measured
-    let slow = at(5_000); // 30.4° — a slower box
+    // Measured under the 80-minute cycle spoken 2026-08-15. The figures in
+    // the right margin were 24.5 / 27.3 / 30.4 under the 45-minute one, and
+    // **boot barely moved** — `DAY_PHASE_TICKS` was re-derived with
+    // `DAY_TICKS` rather than left behind, so tick zero still lands at the
+    // same hour. What shrank is the SPREAD: a fixed build window is a
+    // smaller slice of a longer cycle, so the sun climbs less while cargo
+    // works.
+    let boot = at(0); // 24.7°
+    let typical = at(2_200); // 26.0° — what the visual judge measured, then
+    let slow = at(5_000); // 27.6° — a slower box
     for (name, e) in [("boot", boot), ("typical", typical)] {
         assert!(
             e < BAND_LO,
@@ -280,10 +301,19 @@ fn the_unpinned_probe_shot_below_the_band_and_that_is_the_defect() {
     // Monotonically rising across the window, so a slower box scored a
     // brighter frame — the frame was a function of the box.
     assert!(boot < typical && typical < slow);
+    // **The threshold is scaled, not re-picked.** The defect this gate holds
+    // is that the frame was a function of how long the box took, and that is
+    // the ORDERING above; the magnitude is a property of the cycle length and
+    // moves whenever the operator speaks it. 5° at `DAY_TICKS = 81_000`
+    // becomes 5 × 81_000/144_000 = 2.81° at 80 minutes, and the measurement
+    // is 2.88°. Written as the scaling so the next cycle change moves it
+    // arithmetically instead of reddening a gate about something else.
+    let floor = 5.0_f32.to_radians() * 81_000.0 / DAY_TICKS as f32;
     assert!(
-        slow - boot > 5.0 * std::f32::consts::PI / 180.0,
-        "the unpinned swing was {}°",
-        (slow - boot).to_degrees()
+        slow - boot > floor,
+        "the unpinned swing was {}°, floor {}°",
+        (slow - boot).to_degrees(),
+        floor.to_degrees()
     );
     // The pin answers all of it.
     let pinned = sun_elevation(day_frac(DayPin::capture().tick(0.0)));

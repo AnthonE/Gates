@@ -116,12 +116,15 @@ engineering clothes, and it cost context on every pass that never touched
 money. It lives in `BUSINESS.md` now: read that when you are working on the
 store, and not otherwise.
 
-⚠ **Two enforcements named below were aspirational and are marked so
-(re-checked 2026-08-09): there is no soak, and `test_raid_storm` does not
-exist.** Both walls still hold on their other half — clippy for 3, per-site
-cap tests for 4 — so neither is ungated, but the list overstated itself and
-that is the exact failure the header warns about. Grep before citing a gate;
-`DESIGN.md` §12 marks the same two.
+⚠ **One enforcement named below is still aspirational and is marked so:
+there is no soak.** Wall 3 holds on clippy alone, so it is not ungated, but
+the list overstated itself and that is the exact failure the header warns
+about. Grep before citing a gate. **Wall 4's half is no longer missing —
+`crates/sim-core/tests/raid_storm.rs` landed 2026-08-14** and this paragraph
+said it did not exist until 2026-08-15; `DESIGN.md` §12 had already been
+corrected, so the two docs disagreed and the pessimistic one was the stale
+one. That direction of error is the cheaper one and it is still an error:
+`ls` the file, do not trust either doc's memory of it.
 
 1. **sim-core is pure.** No I/O, no clock, no threads, no `HashMap`/
    `HashSet` iteration, no libm/trig, floats restricted to
@@ -144,9 +147,11 @@ that is the exact failure the header warns about. Grep before citing a gate;
    per-site cap tests across ~40 suites (`the_queue_is_bounded_and_says_so`,
    `event_ring_overflow_heals_by_resync`, `the_bag_cap_stays_neutral`,
    `the_autosave_sweep_is_bounded_and_skips_the_unchanged`,
-   `the_voice_cap_refuses_rather_than_steals`). ⚠ **`test_raid_storm` does
-   not exist** — the caps are gated one site at a time and nothing drives
-   them all at once.
+   `the_voice_cap_refuses_rather_than_steals`), **plus `test_raid_storm`
+   (`crates/sim-core/tests/raid_storm.rs`, landed 2026-08-14)**, which is
+   the one that drives them all at once: 64 synthetic players through
+   build/lock/plant/guess/move/loot at the tick's command ceiling. This line
+   said that gate did not exist for a day after it did.
 5. **Determinism is a gate, not a vibe.** Same build + seed + WAL →
    same state hashes. → `test_replay`, `test_terrain_golden`.
 6. **The wire never drifts by accident.** Packet layouts change only with
@@ -213,6 +218,16 @@ do not rediscover)
   are open, a queue with a single-consumer contract needs an owner named in
   code, not in a comment, and the gate for it is a grep for the call site
   (`tests/sound.rs`), because the defect is a call site and not a value.
+  ⚠ **That grep's verb list was HAND-KEPT and had drifted** — nine names
+  against fourteen destructive rings when it was checked 2026-08-15, with the
+  five newest (`pop_knock`, `pop_auth`, `pop_shot`, `pop_research_toast`,
+  `pop_research_refusal`) unwatched, so the rule was enforced on the rings
+  nobody was about to add a second reader to and silent on the ones they
+  were. It is derived from `client-core/src/core.rs` now, `pop_chat` exempt
+  by name, and a ring the scrape cannot classify is a loud failure rather
+  than a skip. Same shape as the `grep -rn 'props\.js'` line at the top of
+  this file: **a hand-kept mirror of another crate's surface goes stale, so
+  read the surface — the command is the claim, not the number.**
 - **A type shared across the feature line has its exhaustive matches on
   only one side of it.** `ui::interact::Verb` compiles in both builds;
   every `match` that must cover it lives in `render/verbs.rs`, which
