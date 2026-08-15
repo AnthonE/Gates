@@ -67,11 +67,22 @@ Two things the next pass should know:
   1.456). `peak_lux()` did not, so up-facing surfaces are untouched — but this
   points *against* visual gap 2's "put the darks back", and gap 2's owner should
   read it as a starting offset rather than a surprise.
-- **The capture camera stands on 93% litter / 7% sand with grass and granite at
-  exactly zero within 60 m.** That is why four of six frames measure 0.00% green
-  cover — no tuft for `clutter_kind_at` to roll. The fix it argues for is a
-  second identity and a ground cover for *litter*, not grass geometry. The spawn
-  is pinned outside this repo (`art/capture-native.sh:44`) and is the operator's.
+- ~~The capture camera stands on 93% litter, so four of six frames measure
+  0.00% green cover and the fix is a ground cover for *litter*~~ — **the cover
+  half landed 2026-08-15.** The mismatch was sharper than "no tuft to roll":
+  `clutter_richness_at` counts channels 1 AND 2 as the ones that *grow things*
+  and thickens litter on that basis, while the client drew every element it
+  thickened with `chip()` at 16 × 2.2 × 3 cm — the flattest mesh in the file,
+  the builder sand and rock get. A litter element is a clump now (the fallen
+  stick, unchanged, plus `FRONDS_PER_CLUMP` standing stalks), its root colour
+  taken from `GROUND_ALBEDO[2]` rather than a new hex, since `ART.md` §3 has no
+  litter row to author one against. Gate `crates/client/tests/cover.rs`, 5
+  tests, 4 red on the flat chip and 2 refusing at compile time; `tests/
+  contact.rs` measures the chip inside the clump and is red on 3 more if the
+  stick is deleted. Knobs: `DECISIONS.md` §open "standing litter v0" — and its
+  last line is the follow-on, that the other three kinds still author a colour
+  beside the ground instead of from it, one row per kind. **Nobody has seen any
+  of it**; the spawn is pinned outside this repo (`art/capture-native.sh:44`).
 - **That measurement pass was FAILED at the merge gate and repaired 2026-08-15**
   (`pass-20260815-042118-05-judge.md`): the §open row had narrated the corrected
   mix as a bare array, which dropped `GROUND_MIX` out of `ci/knob_registry.mjs`'s
