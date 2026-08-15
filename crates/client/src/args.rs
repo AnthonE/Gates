@@ -74,6 +74,13 @@ gates — the Gates desktop client
   --no-launcher        do not look for a scry launcher, even if one is running
   --help               this
 
+F12 takes a screenshot, on any screen, and the game reads its own frame to do
+it — so it works where a desktop screenshot key does not (a Wayland session
+with no portal, a bare WM, a fullscreen surface a compositor hands back black).
+They land in ~/Pictures/gates (%USERPROFILE%\\Pictures\\gates on Windows,
+$XDG_PICTURES_DIR/gates where the session sets one); GATES_SHOTS_DIR overrides
+that verbatim. The name is gates-YYYYMMDD-HHMMSS.png, UTC, so it sorts by time.
+
 The scry launcher fills --server and --identity from a depot's launch block;
 running without one is a normal, supported state. A player who joined from the
 launcher's own Servers window arrives with --server already chosen, which is
