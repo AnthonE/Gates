@@ -56,6 +56,15 @@ pub const SHAPE_DOORWAY: u8 = 2;
 pub const SHAPE_FLOOR: u8 = 3;
 pub const SHAPE_STAIRS: u8 = 4;
 pub const SHAPE_ROOF: u8 = 5;
+/// The two socket shapes (`reference/BUILDING.md` §9.13, catalogue v1):
+/// openings that will one day hold an insert the way a doorway holds a
+/// door. Until the inserts exist they are holes with rules — the window
+/// **blocks a body and not an arrow** (its aperture is `collide.rs`'s
+/// `WINDOW_SILL_M..WINDOW_HEAD_M` band), the frame blocks neither. Edge
+/// pieces like the wall, and they fill `SHAPE_BITS`' last two codes, which
+/// is why they cost no wire widening.
+pub const SHAPE_WINDOW: u8 = 6;
+pub const SHAPE_FRAME: u8 = 7;
 
 /// Material codes (schema order: twig → wood → stone → metal). The order
 /// is the ladder: `upgrade` climbs it by comparing these numbers, so a
@@ -608,7 +617,9 @@ fn loc_fits_shape(shape: u8, loc: u8) -> bool {
     match shape {
         SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF => loc == LOC_PLANE,
         SHAPE_STAIRS => loc == LOC_RISER,
-        SHAPE_WALL | SHAPE_DOORWAY => loc == LOC_EDGE_W || loc == LOC_EDGE_N,
+        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME => {
+            loc == LOC_EDGE_W || loc == LOC_EDGE_N
+        }
         _ => false,
     }
 }
@@ -627,7 +638,7 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
                     || edge_at(pieces, cx, cz + 1, level - 1, LOC_EDGE_N))
         }
         SHAPE_STAIRS => plane_at(pieces, cx, cz, level),
-        SHAPE_WALL | SHAPE_DOORWAY => {
+        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME => {
             let ((ax, az), other) = edge_neighbors(cx, cz, loc);
             if level == 0 {
                 plane_at(pieces, ax, az, 0)
@@ -714,8 +725,8 @@ fn occupied_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     let field = match loc {
         LOC_PLANE => m.planes,
         LOC_RISER => m.stairs,
-        LOC_EDGE_W => m.walls_w | m.doors_w,
-        _ => m.walls_n | m.doors_n,
+        LOC_EDGE_W => m.walls_w | m.doors_w | m.wins_w | m.frames_w,
+        _ => m.walls_n | m.doors_n | m.wins_n | m.frames_n,
     };
     field & (1u8 << level) != 0
 }
@@ -1604,6 +1615,75 @@ mod tests {
         );
         assert_eq!(last(&ev).2, REFUSE_B_SPOT);
         assert_eq!(pieces.len(), 1, "refusals inserted nothing");
+    }
+
+    /// Catalogue v1's two shapes hold the wall's slots and the wall's
+    /// rules: an edge loc, wall support, a refusal on a plane loc — and
+    /// the upgrade verb climbs them like any other shape.
+    #[test]
+    fn window_and_frame_place_as_edges_and_climb_the_ladder() {
+        let mut bc = BuildContent::probe_fixture();
+        // Rows 7..10: twig window, twig frame, stone window — the probe
+        // fixture's shape, extended rather than replaced.
+        bc.piece_count = 10;
+        bc.pieces[7] = PieceDef {
+            shape: SHAPE_WINDOW,
+            material: MAT_TWIG,
+            hp: 100,
+            n_costs: 1,
+            costs: [(0, 3), (0, 0)],
+        };
+        bc.pieces[8] = PieceDef {
+            shape: SHAPE_FRAME,
+            material: MAT_TWIG,
+            hp: 100,
+            n_costs: 1,
+            costs: [(0, 3), (0, 0)],
+        };
+        bc.pieces[9] = PieceDef {
+            shape: SHAPE_WINDOW,
+            material: MAT_STONE,
+            hp: 200,
+            n_costs: 1,
+            costs: [(1, 4), (0, 0)],
+        };
+        let mut pieces = Pieces::new();
+        let nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell_center(&[(0, 40), (1, 10)]);
+
+        place(
+            SEED, &bc, &nod, &mut pieces, &mut p, 0, 0, CX, CZ, 0, LOC_PLANE, &mut ev,
+        );
+        // A window on a plane loc is a spot refusal, not a support one.
+        place(
+            SEED, &bc, &nod, &mut pieces, &mut p, 0, 7, CX, CZ, 0, LOC_PLANE, &mut ev,
+        );
+        assert_eq!(last(&ev), (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT));
+        // On the edge beside the foundation, both place.
+        place(
+            SEED, &bc, &nod, &mut pieces, &mut p, 0, 7, CX, CZ, 0, LOC_EDGE_W, &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        place(
+            SEED, &bc, &nod, &mut pieces, &mut p, 0, 8, CX, CZ, 0, LOC_EDGE_N, &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        assert_eq!(pieces.cols().get(CX, CZ).wins_w, 1, "window in the index");
+        assert_eq!(pieces.cols().get(CX, CZ).frames_n, 1, "frame in the index");
+
+        // The hammer climbs the window to stone; the frame has no rung
+        // above twig in this table and refuses by name.
+        upgrade(
+            &bc, &nod, &mut pieces, &mut p, CX, CZ, 0, LOC_EDGE_W, MAT_STONE, &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        let w = pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        assert_eq!(w.row, 9, "the window re-rowed to its stone rung");
+        upgrade(
+            &bc, &nod, &mut pieces, &mut p, CX, CZ, 0, LOC_EDGE_N, MAT_STONE, &mut ev,
+        );
+        assert_eq!(last(&ev), (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_TIER));
     }
 
     #[test]

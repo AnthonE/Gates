@@ -17,6 +17,13 @@
 //! edge), maintained by deploy.rs in lockstep with the door records —
 //! derived state like the rest of the index.
 //!
+//! **Two movers since catalogue v1, one algorithm.** [`blocked`] walks a
+//! capsule; [`shot_blocked`] walks a point at its own altitude and radius.
+//! The window is why the split exists — solid wall to a body, aperture to
+//! an arrow ([`window_solid_at`]) — and the frame (rim only,
+//! [`frame_solid_at`]) and the doorway's lintel ([`DOOR_HEAD_M`], shots
+//! only) ride the same distinction.
+//!
 //! The store side is `ColIndex`: an open-addressed, linear-probed map
 //! from build column (cx, cz) to per-level occupancy bitmasks, sized so
 //! the movement hot path costs O(1) lookups instead of an O(MAX_PIECES)
@@ -29,7 +36,7 @@
 
 use crate::build::{
     BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, SHAPE_DOORWAY, SHAPE_FLOOR, SHAPE_FOUNDATION,
-    SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
+    SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL, SHAPE_WINDOW,
 };
 use crate::fmath::fabs;
 use crate::limits::{COL_INDEX_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS};
@@ -49,6 +56,31 @@ pub const WALL_THICKNESS_M: f32 = 0.24;
 /// Doorway post width from each end of the edge; the opening between is
 /// `BUILD_CELL_M − 2·posts` = 1.2 m (scene.js posts, now sim truth).
 pub const DOOR_POST_W_M: f32 = 0.9;
+/// The window's aperture band, metres above the storey base: sill below
+/// it, header above it, jambs [`DOOR_POST_W_M`] in from each end — the
+/// doorway's posts reused rather than a second width, so the two openings
+/// stay one family. 1.2 m tall × 1.2 m wide: an arrow threads it, a
+/// 1.7 m capsule never does, which is the window's whole collision
+/// contract — **it blocks a body and not a shot** (`NOW.md` §0ac's stated
+/// answer; proposed defaults, DECISIONS.md §open "window v0").
+pub const WINDOW_SILL_M: f32 = 1.0;
+pub const WINDOW_HEAD_M: f32 = 2.2;
+/// The wall frame's rim, metres in from each end of its edge (and down
+/// from its top): the only solid the frame has until an insert fills it.
+/// Thin enough that the opening reads as the whole edge, thick enough to
+/// be drawn — and it is drawn, which is why it must block: the doorway's
+/// law is that the frame may not lie about where a player can walk
+/// (`RENDER.md` §8), and a painted jamb a body ghosts through is that lie.
+/// Proposed default, DECISIONS.md §open ("wall frame v0").
+pub const FRAME_RIM_M: f32 = 0.15;
+/// The doorway opening's height, metres above the storey base — the
+/// lintel's underside. The client has always drawn the lintel at
+/// 2.1..3.0 (`render/structures.rs` derives it from `LINTEL_H_M`); the
+/// sim never modelled it because a 1.7 m capsule cannot reach it without
+/// a jump, and that is still true for bodies. The **shot** walk is what
+/// finally reads it: an arrow is not a capsule, and an arrow through the
+/// drawn lintel was the frame lying to the other sense.
+pub const DOOR_HEAD_M: f32 = 2.1;
 
 /// "No built surface here" sentinel — far below any terrain, so
 /// `max(terrain, piece_ground)` needs no branch.
@@ -71,6 +103,17 @@ pub struct ColMasks {
     pub walls_n: u8,
     pub doors_w: u8,
     pub doors_n: u8,
+    /// Window edges (catalogue v1): a body-block the movement walk treats
+    /// as a wall and the shot walk treats as a wall with an aperture
+    /// (`WINDOW_SILL_M..WINDOW_HEAD_M`, jambs at the doorway's posts).
+    pub wins_w: u8,
+    pub wins_n: u8,
+    /// Wall-frame edges: no collision at all until an insert exists — the
+    /// bits are here so occupancy (`build::occupied_at`, the collapse
+    /// cascade, the claim probe) can see the piece, not so anything
+    /// blocks on it.
+    pub frames_w: u8,
+    pub frames_n: u8,
     /// Closed-door bits: set ⇒ the doorway at this level/edge holds a
     /// closed door deployable and blocks its full span (deploy.rs keeps
     /// these in lockstep with the door records).
@@ -99,6 +142,10 @@ impl ColMasks {
         walls_n: 0,
         doors_w: 0,
         doors_n: 0,
+        wins_w: 0,
+        wins_n: 0,
+        frames_w: 0,
+        frames_n: 0,
         shut_w: 0,
         shut_n: 0,
         solid: SOLID_NONE,
@@ -111,6 +158,10 @@ impl ColMasks {
             | self.walls_n
             | self.doors_w
             | self.doors_n
+            | self.wins_w
+            | self.wins_n
+            | self.frames_w
+            | self.frames_n
             | self.shut_w
             | self.shut_n)
             == 0
@@ -134,6 +185,10 @@ impl ColMasks {
             SHAPE_WALL if loc == LOC_EDGE_N => Some(&mut self.walls_n),
             SHAPE_DOORWAY if loc == LOC_EDGE_W => Some(&mut self.doors_w),
             SHAPE_DOORWAY if loc == LOC_EDGE_N => Some(&mut self.doors_n),
+            SHAPE_WINDOW if loc == LOC_EDGE_W => Some(&mut self.wins_w),
+            SHAPE_WINDOW if loc == LOC_EDGE_N => Some(&mut self.wins_n),
+            SHAPE_FRAME if loc == LOC_EDGE_W => Some(&mut self.frames_w),
+            SHAPE_FRAME if loc == LOC_EDGE_N => Some(&mut self.frames_n),
             _ => None,
         }
     }
@@ -143,9 +198,16 @@ impl ColMasks {
 /// no tombstones, so a shard that builds and decays for months never
 /// degrades. Fixed capacity (limits.rs `COL_INDEX_SLOTS` = 2 × the piece
 /// cap), keys packed `1<<31 | cx<<10 | cz` so 0 means empty.
+///
+/// The two arrays are boxed (`crate::boxed_array`) — CLAUDE.md's
+/// stack-frame trap, met a fourth time: they lived inline and
+/// `ColIndex::new()` materialised them in a frame, which fit while a mask
+/// row was 12 bytes and blew a test thread's 2 MiB stack the day
+/// catalogue v1 made it 16. Fill on the heap and the constructor's frame
+/// is two pointers, whatever the masks grow to next.
 pub struct ColIndex {
-    keys: [u32; COL_INDEX_SLOTS],
-    masks: [ColMasks; COL_INDEX_SLOTS],
+    keys: Box<[u32; COL_INDEX_SLOTS]>,
+    masks: Box<[ColMasks; COL_INDEX_SLOTS]>,
     len: u32,
 }
 
@@ -154,8 +216,8 @@ const OCCUPIED: u32 = 1 << 31;
 impl ColIndex {
     pub fn new() -> Self {
         Self {
-            keys: [0; COL_INDEX_SLOTS],
-            masks: [ColMasks::EMPTY; COL_INDEX_SLOTS],
+            keys: crate::boxed_array(0),
+            masks: crate::boxed_array(ColMasks::EMPTY),
             len: 0,
         }
     }
@@ -169,8 +231,11 @@ impl ColIndex {
     }
 
     pub fn clear(&mut self) {
-        self.keys = [0; COL_INDEX_SLOTS];
-        self.masks = [ColMasks::EMPTY; COL_INDEX_SLOTS];
+        // `fill`, not array assignment: `*self.keys = [0; N]` builds the
+        // replacement array in this frame first, which is the exact trap
+        // the boxes exist to close.
+        self.keys.fill(0);
+        self.masks.fill(ColMasks::EMPTY);
         self.len = 0;
     }
 
@@ -508,26 +573,24 @@ pub fn deploy_blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, feet_y: f32) -
     false
 }
 
-/// One edge's block test: does the move (x,z)→(nx,nz) cross or push into
-/// the inflated edge slab, at a z the edge actually occupies? `posts`
-/// selects doorway geometry (only the posts block). `axis_w` says the
-/// edge is an x-plane (west) rather than a z-plane (north); coordinates
-/// are pre-swapped by the caller so the math is written once.
-fn edge_hit(px: f32, s0: f32, a0: f32, a1: f32, along: f32, posts: bool) -> bool {
-    let r = WALL_THICKNESS_M * 0.5 + CAPSULE_RADIUS_M;
+/// Where the move `a0`→`a1` meets the edge plane at `px`, if it does: the
+/// along-edge metre of the meeting, measured from `s0`. Coordinates are
+/// pre-swapped by the caller so the math is written once for both edge
+/// axes. `r_extra` inflates the slab by the mover's own radius — the
+/// capsule's for a body ([`cell_edges_block`]), the arrowhead's for a shot
+/// ([`shot_blocked`]), which is the radius parameter `ranged.rs`'s module
+/// doc spent a paragraph owing. What is solid at the returned metre is the
+/// caller's per-shape question ([`doorway_solid_at`] and family).
+fn edge_meet(px: f32, s0: f32, a0: f32, a1: f32, along: f32, r_extra: f32) -> Option<f32> {
+    let r = WALL_THICKNESS_M * 0.5 + r_extra;
     let d0 = a0 - px;
     let d1 = a1 - px;
     let crosses = (d0 < 0.0 && d1 > 0.0) || (d0 > 0.0 && d1 < 0.0);
     let pushes_in = fabs(d1) < r && fabs(d1) < fabs(d0);
     if !crosses && !pushes_in {
-        return false;
+        return None;
     }
-    let t = along - s0;
-    if posts {
-        doorway_solid_at(t)
-    } else {
-        (0.0..=BUILD_CELL_M).contains(&t)
-    }
+    Some(along - s0)
 }
 
 /// Is a doorway SOLID at `t` metres along its edge? The two posts block; the
@@ -537,14 +600,37 @@ fn edge_hit(px: f32, s0: f32, a0: f32, a1: f32, along: f32, posts: bool) -> bool
 /// copy of it.** `render/ghost.rs` and `render/structures.rs` both draw this
 /// doorway, and `crates/client/tests/ghost.rs` asserts the drawn posts land
 /// exactly where this returns true. `RENDER.md` §8 states the stake: the
-/// opening is what `edge_hit` refuses to block, and "draw it elsewhere and the
-/// frame lies about where a player can walk". A test that restated this band
-/// instead of calling it would go green while the two drifted, which is the
+/// opening is what `cell_edges_block` refuses to block, and "draw it elsewhere
+/// and the frame lies about where a player can walk". A test that restated this
+/// band instead of calling it would go green while the two drifted, which is the
 /// byte-golden hole `CLAUDE.md`'s trap list names.
 ///
 /// Pure, allocation-free, comparison-only — wall 1 is untouched.
 pub fn doorway_solid_at(t: f32) -> bool {
     (0.0..=DOOR_POST_W_M).contains(&t) || (BUILD_CELL_M - DOOR_POST_W_M..=BUILD_CELL_M).contains(&t)
+}
+
+/// Is a window SOLID at `t` metres along its edge and `y` metres above its
+/// storey base? Everything but the aperture: jambs outside the doorway's
+/// post span, sill below [`WINDOW_SILL_M`], header above [`WINDOW_HEAD_M`].
+///
+/// `pub` for [`doorway_solid_at`]'s exact reason: the renderer draws this
+/// window (`render/structures.rs`) and the drawn solids are gated against
+/// this function rather than against a copy of its arithmetic
+/// (`crates/client/tests/ghost.rs`). Only the **shot** walk consults it —
+/// to a body the whole edge is solid (`cell_edges_block`).
+pub fn window_solid_at(t: f32, y: f32) -> bool {
+    doorway_solid_at(t) || !(WINDOW_SILL_M..=WINDOW_HEAD_M).contains(&y)
+}
+
+/// Is a wall frame SOLID at `t` metres along its edge and `y` metres above
+/// its storey base? Only its rim: [`FRAME_RIM_M`] in from each end, and the
+/// top beam [`FRAME_RIM_M`] down from the storey ceiling. `pub` for the
+/// same render gate the other two carry.
+pub fn frame_solid_at(t: f32, y: f32) -> bool {
+    (0.0..=FRAME_RIM_M).contains(&t)
+        || (BUILD_CELL_M - FRAME_RIM_M..=BUILD_CELL_M).contains(&t)
+        || y >= LEVEL_H_M - FRAME_RIM_M
 }
 
 /// All blocking edges of one cell against the move. The four edges are
@@ -574,12 +660,18 @@ fn cell_edges_block(
             continue;
         }
         let m = cols.get(ecx as u16, ecz as u16);
-        let (walls, doors, shuts) = if west {
-            (m.walls_w, m.doors_w, m.shut_w)
+        // Windows ride the wall mask here on purpose: to a moving body a
+        // window IS a wall (the aperture is above a capsule's reach and
+        // under its head — `WINDOW_SILL_M`'s doc). A frame blocks only its
+        // thin rim jambs, and its top beam not at all — the lintel
+        // precedent: nothing at capsule height until a jump exists. The
+        // shot walk (`shot_blocked`) is where the shapes fully diverge.
+        let (walls, doors, frames, shuts) = if west {
+            (m.walls_w | m.wins_w, m.doors_w, m.frames_w, m.shut_w)
         } else {
-            (m.walls_n, m.doors_n, m.shut_n)
+            (m.walls_n | m.wins_n, m.doors_n, m.frames_n, m.shut_n)
         };
-        if walls | doors == 0 {
+        if walls | doors | frames == 0 {
             continue;
         }
         let base = col_base_y(seed, ecx as u16, ecz as u16);
@@ -587,25 +679,39 @@ fn cell_edges_block(
             let bit = 1u8 << level;
             let has_wall = walls & bit != 0;
             let has_door = doors & bit != 0;
-            if !has_wall && !has_door {
+            let has_frame = frames & bit != 0;
+            if !has_wall && !has_door && !has_frame {
                 continue;
             }
-            // A closed door seals the doorway: full span, like a wall.
-            let posts_only = has_door && !has_wall && shuts & bit == 0;
             let bottom = base + level as f32 * LEVEL_H_M;
             if feet_y >= bottom + LEVEL_H_M || feet_y + CAPSULE_HEIGHT_M <= bottom {
                 continue; // that storey is above the head or below the feet
             }
-            let hit = if west {
+            let meet = if west {
                 // x-plane at ecx·3, spanning z from ecz·3.
                 let px = ecx as f32 * BUILD_CELL_M;
                 let s0 = ecz as f32 * BUILD_CELL_M;
-                edge_hit(px, s0, x, nx, nz, posts_only)
+                edge_meet(px, s0, x, nx, nz, CAPSULE_RADIUS_M)
             } else {
                 // z-plane at ecz·3, spanning x from ecx·3.
                 let pz = ecz as f32 * BUILD_CELL_M;
                 let s0 = ecx as f32 * BUILD_CELL_M;
-                edge_hit(pz, s0, z, nz, nx, posts_only)
+                edge_meet(pz, s0, z, nz, nx, CAPSULE_RADIUS_M)
+            };
+            let Some(t) = meet else { continue };
+            let hit = if has_wall {
+                (0.0..=BUILD_CELL_M).contains(&t)
+            } else if has_door {
+                // A closed door seals the doorway: full span, like a wall.
+                if shuts & bit != 0 {
+                    (0.0..=BUILD_CELL_M).contains(&t)
+                } else {
+                    doorway_solid_at(t)
+                }
+            } else {
+                // The frame's jambs, at any capsule height in the storey.
+                (0.0..=FRAME_RIM_M).contains(&t)
+                    || (BUILD_CELL_M - FRAME_RIM_M..=BUILD_CELL_M).contains(&t)
             };
             if hit {
                 return true;
@@ -637,6 +743,131 @@ pub fn blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, nx: f32, nz: f32, fee
     false
 }
 
+/// Whether an edge piece stops a **shot** sample moving (x,z)→(nx,nz) at
+/// altitude `y` with radius `r` — [`blocked`]'s walk with a projectile's
+/// profile instead of a body's. Three differences, each the point:
+///
+/// - the mover is a point at `y`, not a 1.7 m capsule standing on `feet_y`
+///   — an arrow meets the one storey its altitude is inside;
+/// - the slab is inflated by `r` (the arrowhead), not `CAPSULE_RADIUS_M`,
+///   so a shot threads what a body cannot — the honest fix `ranged.rs`'s
+///   module doc owed since ranged v0;
+/// - a **window is solid everywhere but its aperture**
+///   ([`window_solid_at`]), where the body walk treats it as a wall; a
+///   **frame** is solid only at its drawn rim ([`frame_solid_at`]); an
+///   open **doorway** stops a shot at its posts *and* its lintel
+///   ([`DOOR_HEAD_M`]), where a body only ever met the posts; and a
+///   **shut door** seals its doorway on both walks.
+pub fn shot_blocked(
+    seed: u64,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    nx: f32,
+    nz: f32,
+    y: f32,
+    r: f32,
+) -> bool {
+    let (bx0, bz0) = (
+        crate::build::build_cell_of(x),
+        crate::build::build_cell_of(z),
+    );
+    let (bx1, bz1) = (
+        crate::build::build_cell_of(nx),
+        crate::build::build_cell_of(nz),
+    );
+    if cell_edges_stop_shot(seed, cols, bx1, bz1, x, z, nx, nz, y, r) {
+        return true;
+    }
+    if (bx0 != bx1 || bz0 != bz1) && cell_edges_stop_shot(seed, cols, bx0, bz0, x, z, nx, nz, y, r)
+    {
+        return true;
+    }
+    false
+}
+
+/// [`cell_edges_block`] with the shot profile — the four boundaries of one
+/// cell against a point sample. Kept beside its body twin so the two walks
+/// read as one algorithm with two movers, which they are.
+#[allow(clippy::too_many_arguments)]
+fn cell_edges_stop_shot(
+    seed: u64,
+    cols: &ColIndex,
+    bx: i32,
+    bz: i32,
+    x: f32,
+    z: f32,
+    nx: f32,
+    nz: f32,
+    y: f32,
+    r: f32,
+) -> bool {
+    let edges = [
+        (bx, bz, true),
+        (bx + 1, bz, true),
+        (bx, bz, false),
+        (bx, bz + 1, false),
+    ];
+    for (ecx, ecz, west) in edges {
+        if ecx < 0 || ecz < 0 || ecx >= MAX_BUILD_COORD as i32 || ecz >= MAX_BUILD_COORD as i32 {
+            continue;
+        }
+        let m = cols.get(ecx as u16, ecz as u16);
+        let (walls, doors, wins, frames, shuts) = if west {
+            (m.walls_w, m.doors_w, m.wins_w, m.frames_w, m.shut_w)
+        } else {
+            (m.walls_n, m.doors_n, m.wins_n, m.frames_n, m.shut_n)
+        };
+        if walls | doors | wins | frames == 0 {
+            continue;
+        }
+        let base = col_base_y(seed, ecx as u16, ecz as u16);
+        for level in 0..MAX_BUILD_LEVELS {
+            let bit = 1u8 << level;
+            if (walls | doors | wins | frames) & bit == 0 {
+                continue;
+            }
+            let bottom = base + level as f32 * LEVEL_H_M;
+            // A point is inside exactly one storey; half-open so the
+            // boundary altitude resolves the same on both targets.
+            if y < bottom || y >= bottom + LEVEL_H_M {
+                continue;
+            }
+            let meet = if west {
+                let px = ecx as f32 * BUILD_CELL_M;
+                let s0 = ecz as f32 * BUILD_CELL_M;
+                edge_meet(px, s0, x, nx, nz, r)
+            } else {
+                let pz = ecz as f32 * BUILD_CELL_M;
+                let s0 = ecx as f32 * BUILD_CELL_M;
+                edge_meet(pz, s0, z, nz, nx, r)
+            };
+            let Some(t) = meet else { continue };
+            let span = (0.0..=BUILD_CELL_M).contains(&t);
+            let solid = if walls & bit != 0 {
+                span
+            } else if doors & bit != 0 {
+                if shuts & bit != 0 {
+                    span // a closed door seals the doorway for shots too
+                } else {
+                    // Posts, and the lintel a body never had to answer to:
+                    // the drawn 2.1..3.0 band stops an arrow now
+                    // (`DOOR_HEAD_M`'s doc).
+                    span && (doorway_solid_at(t) || y - bottom >= DOOR_HEAD_M)
+                }
+            } else if wins & bit != 0 {
+                span && window_solid_at(t, y - bottom)
+            } else {
+                span && frame_solid_at(t, y - bottom)
+            };
+            if solid {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -657,10 +888,11 @@ mod tests {
     const CZ: u16 = 341;
 
     /// Free pieces (n_costs 0) so tests place without inventories: rows
-    /// foundation, wall, doorway, floor, stairs. **Twig**, because `put`
-    /// goes through the real `place` verb and a placement is twig or it
-    /// is refused (twig v0) — collision is a property of the shape, so
-    /// the rung these carry has never been what these tests are about.
+    /// foundation, wall, doorway, floor, stairs, window, frame. **Twig**,
+    /// because `put` goes through the real `place` verb and a placement is
+    /// twig or it is refused (twig v0) — collision is a property of the
+    /// shape, so the rung these carry has never been what these tests are
+    /// about.
     fn free_table() -> BuildContent {
         let shapes = [
             SHAPE_FOUNDATION,
@@ -668,6 +900,8 @@ mod tests {
             SHAPE_DOORWAY,
             SHAPE_FLOOR,
             SHAPE_STAIRS,
+            SHAPE_WINDOW,
+            SHAPE_FRAME,
         ];
         let mut b = BuildContent::EMPTY;
         b.piece_count = shapes.len() as u16;
@@ -933,6 +1167,150 @@ mod tests {
         );
     }
 
+    /// The catalogue-v1 collision contract, all three clauses: a window
+    /// blocks a body exactly as a wall does, a frame blocks nothing, and
+    /// the shot walk passes the window's aperture while stopping on its
+    /// sill, jambs and the wall beside it.
+    #[test]
+    fn window_blocks_a_body_and_not_a_shot_and_a_frame_blocks_neither() {
+        let mut occ = crate::occupy::Scratch::barren();
+        let bc = free_table();
+        let wall_x = CX as f32 * BUILD_CELL_M;
+        let r = WALL_THICKNESS_M * 0.5 + CAPSULE_RADIUS_M;
+
+        // A window on the west edge stops a westward walk at the slab —
+        // the aimed line passes the aperture's metres, so what stops the
+        // body is the window being a wall to a capsule, not a jamb.
+        let mut pieces = Pieces::new();
+        put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
+        put(&bc, &mut pieces, CX, CZ, 0, crate::build::LOC_EDGE_W, 5);
+        let mut b = body_at(1024.5, 1024.5);
+        for _ in 0..120 {
+            movement::step(
+                SEED,
+                pieces.cols(),
+                &mut occ.occupants(),
+                &mut b,
+                &walk(-127, 0),
+            );
+        }
+        assert!(
+            pos(&b).0 >= wall_x + r - POS_XZ_Q,
+            "window failed to block a body: x {}",
+            pos(&b).0
+        );
+
+        // The same edge, to a shot: the storey base is the column's own.
+        let base = col_base_y(SEED, CX, CZ);
+        let (z_open, z_jamb) = (
+            CZ as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5, // mid-opening
+            CZ as f32 * BUILD_CELL_M + 0.4,                // inside a jamb
+        );
+        let (x0, x1) = (wall_x + 0.5, wall_x - 0.5);
+        let mid_band = base + (WINDOW_SILL_M + WINDOW_HEAD_M) * 0.5;
+        assert!(
+            !shot_blocked(SEED, pieces.cols(), x0, z_open, x1, z_open, mid_band, 0.05),
+            "an arrow through the aperture must pass"
+        );
+        assert!(
+            shot_blocked(SEED, pieces.cols(), x0, z_open, x1, z_open, base + 0.5, 0.05),
+            "the sill under the aperture must stop it"
+        );
+        assert!(
+            shot_blocked(
+                SEED,
+                pieces.cols(),
+                x0,
+                z_open,
+                x1,
+                z_open,
+                base + WINDOW_HEAD_M + 0.3,
+                0.05
+            ),
+            "the header over the aperture must stop it"
+        );
+        assert!(
+            shot_blocked(SEED, pieces.cols(), x0, z_jamb, x1, z_jamb, mid_band, 0.05),
+            "a jamb must stop it at aperture height"
+        );
+
+        // A wall stops the same shot everywhere; sanity beside the window.
+        let mut walled = Pieces::new();
+        put(&bc, &mut walled, CX, CZ, 0, LOC_PLANE, 0);
+        put(&bc, &mut walled, CX, CZ, 0, crate::build::LOC_EDGE_W, 1);
+        assert!(
+            shot_blocked(SEED, walled.cols(), x0, z_open, x1, z_open, mid_band, 0.05),
+            "a wall stops what a window's aperture passes"
+        );
+
+        // A frame passes both movers through its opening — only the thin
+        // drawn rim is solid, to bodies and shots alike.
+        let mut framed = Pieces::new();
+        put(&bc, &mut framed, CX, CZ, 0, LOC_PLANE, 0);
+        put(&bc, &mut framed, CX, CZ, 0, crate::build::LOC_EDGE_W, 6);
+        let mut b = body_at(1024.5, 1024.5);
+        for _ in 0..120 {
+            movement::step(
+                SEED,
+                framed.cols(),
+                &mut occ.occupants(),
+                &mut b,
+                &walk(-127, 0),
+            );
+        }
+        assert!(
+            pos(&b).0 < wall_x - 0.5,
+            "an empty frame must pass a body through its opening: x {}",
+            pos(&b).0
+        );
+        assert!(
+            !shot_blocked(SEED, framed.cols(), x0, z_jamb, x1, z_jamb, base + 0.5, 0.05),
+            "an empty frame must pass a shot through its opening"
+        );
+        let z_rim = CZ as f32 * BUILD_CELL_M + 0.05;
+        assert!(
+            shot_blocked(SEED, framed.cols(), x0, z_rim, x1, z_rim, base + 0.5, 0.05),
+            "the frame's rim jamb must stop a shot"
+        );
+        assert!(
+            shot_blocked(
+                SEED,
+                framed.cols(),
+                x0,
+                z_open,
+                x1,
+                z_open,
+                base + LEVEL_H_M - 0.05,
+                0.05
+            ),
+            "the frame's top beam must stop a shot"
+        );
+
+        // The doorway's lintel finally answers to something: an arrow
+        // through the drawn 2.1..3.0 band stops, one through the opening
+        // does not (`DOOR_HEAD_M`).
+        let mut doored = Pieces::new();
+        put(&bc, &mut doored, CX, CZ, 0, LOC_PLANE, 0);
+        put(&bc, &mut doored, CX, CZ, 0, crate::build::LOC_EDGE_W, 2);
+        assert!(
+            !shot_blocked(SEED, doored.cols(), x0, z_open, x1, z_open, base + 1.5, 0.05),
+            "the doorway opening passes a shot"
+        );
+        assert!(
+            shot_blocked(
+                SEED,
+                doored.cols(),
+                x0,
+                z_open,
+                x1,
+                z_open,
+                base + DOOR_HEAD_M + 0.3,
+                0.05
+            ),
+            "the doorway lintel stops a shot"
+        );
+    }
+
     #[test]
     fn col_index_churn_matches_a_naive_shadow() {
         // Random add/del churn over a small key space, checked against a
@@ -947,14 +1325,18 @@ mod tests {
             SHAPE_DOORWAY,
             SHAPE_FLOOR,
             SHAPE_STAIRS,
+            SHAPE_WINDOW,
+            SHAPE_FRAME,
         ];
         for _ in 0..20_000 {
             let cx = rng.next_bounded(24) as u16;
             let cz = rng.next_bounded(24) as u16;
             let level = rng.next_bounded(8) as u8;
-            let shape = shapes[rng.next_bounded(5) as usize];
+            let shape = shapes[rng.next_bounded(7) as usize];
             let loc = match shape {
-                SHAPE_WALL | SHAPE_DOORWAY => (2 + rng.next_bounded(2)) as u8,
+                SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME => {
+                    (2 + rng.next_bounded(2)) as u8
+                }
                 SHAPE_STAIRS => LOC_RISER,
                 _ => LOC_PLANE,
             };

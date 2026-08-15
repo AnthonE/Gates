@@ -158,6 +158,11 @@ pub enum Shape {
     Floor,
     Stairs,
     Roof,
+    /// The two socket shapes (catalogue v1, `reference/BUILDING.md`
+    /// §9.13): openings priced by what they deny net of the insert you
+    /// still owe — window 0.7 of the wall, frame 0.5 (§7b.3).
+    Window,
+    WallFrame,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]

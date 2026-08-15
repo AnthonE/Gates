@@ -15,7 +15,7 @@ use crate::Content;
 use sim_core::backpack::BackpackContent;
 use sim_core::build::{
     BuildContent, PieceDef, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
-    SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
+    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::combat::{AmmoDef, CombatContent, MeleeDef, RangedDef, ThrowDef};
 use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
@@ -261,6 +261,8 @@ impl Content {
                     Shape::Floor => SHAPE_FLOOR,
                     Shape::Stairs => SHAPE_STAIRS,
                     Shape::Roof => SHAPE_ROOF,
+                    Shape::Window => SHAPE_WINDOW,
+                    Shape::WallFrame => SHAPE_FRAME,
                 },
                 material: match p.material {
                     Material::Twig => MAT_TWIG,

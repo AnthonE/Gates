@@ -76,6 +76,13 @@ SHAPES = {
     "shape_foundation": "delapouite/flat-platform",
     "shape_wall": "delapouite/brick-wall",
     "shape_doorway": "delapouite/door",
+    # Catalogue v1's two openings. The window is the obvious pick; the
+    # wall frame is a GATE on purpose — a big opening something else will
+    # fill — and not `broken-wall`, for the rule the hammer verbs already
+    # follow: it shares `brick-wall`'s drawing family and a shape that
+    # looks like another shape is the positional trap wearing a menu.
+    "shape_window": "delapouite/window",
+    "shape_wall_frame": "delapouite/gate",
     "shape_floor": "delapouite/floor-hatch",
     "shape_stairs": "delapouite/3d-stairs",
     "shape_roof": "delapouite/great-pyramid",

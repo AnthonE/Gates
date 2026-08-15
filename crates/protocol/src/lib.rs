@@ -485,7 +485,20 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// the reason `goldens::action_move_box` records in its own doc: when the
 /// third kind landed, only its open was pinned, and the bytes meaning
 /// "take it out" went a whole version unchecked.
-pub const PROTO_VER: u16 = 37;
+///
+/// **v38 — the shape field spends its last two values** (catalogue v1,
+/// `sim_core::build::{SHAPE_WINDOW, SHAPE_FRAME}`). `SHAPE_BITS` has been
+/// 3 since the build slice and codes 6 and 7 decoded as `Malformed`; they
+/// are now the window and the wall frame (`reference/BUILDING.md` §9.13 —
+/// the openings-are-sockets pair). v37's shape exactly: **not one field
+/// moved**, the accepted value set widened on one message
+/// (`SUB_PIECE_DEFS`), and that is a break in one direction — a v38
+/// table with a window in it is `Malformed` to a v37 client. The
+/// piece-defs fixture now pins shape 7 the way it already pinned material
+/// 3, for that fixture's own stated reason.
+///
+/// Fixtures are keyed `v38_*` — 86 still.
+pub const PROTO_VER: u16 = 38;
 
 /// Datagram kind field width.
 ///

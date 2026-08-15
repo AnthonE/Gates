@@ -57,14 +57,19 @@ const SS: u32 = 3;
 pub const BASE: Handle<Image> = uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e0");
 
 /// One highlight per shape segment, indexed the same way `SHAPES` is,
-/// because the caller has an index and nothing else.
-pub const SHAPE_HI: [Handle<Image>; 6] = [
+/// because the caller has an index and nothing else. Eight since
+/// catalogue v1 — a wheel of 8 indexing a 6-array was a panic waiting on
+/// the window wedge (the two `ec`/`ed` handles are new; the rest are the
+/// original six).
+pub const SHAPE_HI: [Handle<Image>; 8] = [
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e1"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e2"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e3"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e4"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e5"),
     uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5e6"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5ec"),
+    uuid_handle!("7a1c4e20-91b3-4f6a-8c2d-11a0b3c4d5ed"),
 ];
 
 /// The hammer wheel's base ring — same band, four wedges
@@ -169,7 +174,7 @@ fn bake(rings: Rings, segments: usize, pick: Option<usize>, rgb: [u8; 3]) -> Ima
     )
 }
 
-/// Bake all twelve, at plugin-build time.
+/// Bake all fourteen, at plugin-build time.
 pub fn build_rings(app: &mut App) {
     let rings = Rings::default();
     let mut images = app.world_mut().resource_mut::<Assets<Image>>();

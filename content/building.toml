@@ -10,10 +10,14 @@
 # needed to take one). Their grade base — the full wall — is twig 50 /
 # wood 200 / stone 300 / metal 200, and their four shape ratios run off it:
 #
-#   1.0  foundation · wall · stairs      0.7  doorway
-#   0.5  floor · roof
+#   1.0  foundation · wall · stairs      0.7  doorway · window
+#   0.5  floor · roof · wall_frame
 #
-# So these 24 cells ARE their 24 cells for the six shapes we have.
+# So these 32 cells ARE their 32 cells for the eight shapes we have.
+# Window and wall_frame joined 2026-08-15 (catalogue v1, §9.13): their
+# ratios were already decided by §7b.3 — an opening is 0.7, a mostly-hole
+# frame is 0.5 — so the window's column is the doorway's and the frame's
+# is the floor's, digit for digit.
 #
 # hp is a property of the MATERIAL alone and never of the shape, which is
 # what those ratios are for. A stone floor and a stone wall are both 500,
@@ -72,6 +76,20 @@ cost = [{ item = "item.wood", count = 35 }]
 [[piece]]
 id = "build.floor_twig"
 shape = "floor"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 25 }]
+
+[[piece]]
+id = "build.window_twig"
+shape = "window"
+material = "twig"
+hp = 10
+cost = [{ item = "item.wood", count = 35 }]
+
+[[piece]]
+id = "build.wall_frame_twig"
+shape = "wall_frame"
 material = "twig"
 hp = 10
 cost = [{ item = "item.wood", count = 25 }]
@@ -158,6 +176,55 @@ shape = "doorway"
 material = "metal"
 hp = 1000
 cost = [{ item = "item.metal_frags", count = 140 }]
+
+# --- window · 0.7, the doorway's ratio — an opening you still owe an
+# insert for (bars, glass, shutters — none built yet; §7b.4's socket
+# separation). Blocks a body, passes an arrow through its aperture.
+
+[[piece]]
+id = "build.window_wood"
+shape = "window"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 140 }]
+
+[[piece]]
+id = "build.window_stone"
+shape = "window"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 210 }]
+
+[[piece]]
+id = "build.window_metal"
+shape = "window"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 140 }]
+
+# --- wall frame · 0.5 — mostly hole, priced like the floor. Blocks
+# nothing until its insert exists (garage door, shopfront — not built).
+
+[[piece]]
+id = "build.wall_frame_wood"
+shape = "wall_frame"
+material = "wood"
+hp = 250
+cost = [{ item = "item.wood", count = 100 }]
+
+[[piece]]
+id = "build.wall_frame_stone"
+shape = "wall_frame"
+material = "stone"
+hp = 500
+cost = [{ item = "item.stone", count = 150 }]
+
+[[piece]]
+id = "build.wall_frame_metal"
+shape = "wall_frame"
+material = "metal"
+hp = 1000
+cost = [{ item = "item.metal_frags", count = 100 }]
 
 # --- floor --------------------------------------------------------------
 

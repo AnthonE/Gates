@@ -28,8 +28,8 @@
 
 use sim_core::build::{
     anchor, build_cell_of, foundation_terrain_ok, BuildContent, PieceRec, BUILD_REACH_M,
-    LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, LOC_RISER, SHAPE_DOORWAY, SHAPE_FOUNDATION, SHAPE_STAIRS,
-    SHAPE_WALL,
+    LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, LOC_RISER, SHAPE_DOORWAY, SHAPE_FOUNDATION, SHAPE_FRAME,
+    SHAPE_STAIRS, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::craft::inv_count;
 use sim_core::deploy::{
@@ -78,7 +78,10 @@ pub fn target(x: f32, z: f32, fx: f32, fz: f32, shape: u8, level: u8) -> Target 
     let mut cz = build_cell_of(az).clamp(0, max);
 
     let mut loc = LOC_PLANE;
-    if shape == SHAPE_WALL || shape == SHAPE_DOORWAY {
+    if matches!(
+        shape,
+        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
+    ) {
         // Which boundary of this cell the aim point is nearest.
         let fxc = ax / sim_core::build::BUILD_CELL_M - cx as f32;
         let fzc = az / sim_core::build::BUILD_CELL_M - cz as f32;

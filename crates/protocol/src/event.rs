@@ -18,7 +18,7 @@ use crate::{
     KIND_BITS, KIND_EVENT, PIECE_ROW_BITS, POS_XZ_BITS, POS_Y_BIAS, POS_Y_BITS,
 };
 use sim_core::backpack::BackpackRec;
-use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_N, MAT_METAL, SHAPE_ROOF};
+use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_N, MAT_METAL, SHAPE_FRAME};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_FURNACE};
 use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_RESEARCH, PLACE_DOOR};
 use sim_core::gather::ItemStack;
@@ -1221,7 +1221,9 @@ pub fn encode_event_piece_defs(
     w.write(first as u32, PIECE_DEFS_TOTAL_BITS)?;
     w.write(count as u32, PIECE_DEFS_COUNT_BITS)?;
     for def in bc.pieces[first..first + count].iter() {
-        if def.shape > SHAPE_ROOF
+        // `SHAPE_FRAME` is the top code (window and frame filled the
+        // 3-bit field's last two values in v38 — catalogue v1).
+        if def.shape > SHAPE_FRAME
             || def.material > MAT_METAL
             || def.hp == 0
             || def.n_costs == 0
@@ -2229,7 +2231,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 let material = r.read(MATERIAL_BITS)? as u8;
                 let hp = r.read(16)? as u16;
                 let n_costs = r.read(N_COSTS_BITS)? as u8;
-                if shape > SHAPE_ROOF
+                if shape > SHAPE_FRAME
                     || material > MAT_METAL
                     || hp == 0
                     || n_costs == 0
@@ -3868,9 +3870,15 @@ mod wire_domains {
             prefix: "pub const SHAPE_",
             ty: ": u8 = ",
             exempt: &[],
-            min_members: 6,
+            min_members: 8,
             bits: SHAPE_BITS,
-            live_max: 5,
+            // Moved 5 -> 7 at wire v38 (catalogue v1): the window and the
+            // wall frame spend the 3-bit field's last two codes. The
+            // domain is now **saturated** like container kind above —
+            // the triangle shapes `reference/BUILDING.md` §9.14 wants
+            // cannot land without widening `SHAPE_BITS`, and the fit
+            // assert is what will say so.
+            live_max: 7,
         },
         Domain {
             what: "piece material",

@@ -67,6 +67,8 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `shape_roof.png` | `delapouite/great-pyramid` |
 | `shape_stairs.png` | `delapouite/3d-stairs` |
 | `shape_wall.png` | `delapouite/brick-wall` |
+| `shape_wall_frame.png` | `delapouite/gate` |
+| `shape_window.png` | `delapouite/window` |
 | `sleeping_bag.png` | `delapouite/sleeping-bag` |
 | `small_box.png` | `delapouite/wooden-crate` |
 | `stone.png` | `delapouite/stone-pile` |

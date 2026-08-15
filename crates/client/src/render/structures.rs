@@ -35,10 +35,12 @@
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::build::{
-    BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, SHAPE_DOORWAY, SHAPE_ROOF, SHAPE_STAIRS,
-    SHAPE_WALL,
+    BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, SHAPE_DOORWAY, SHAPE_FRAME, SHAPE_STAIRS,
+    SHAPE_WALL, SHAPE_WINDOW,
 };
-use sim_core::collide::{DOOR_POST_W_M, PIECE_LIFT_M, WALL_THICKNESS_M};
+use sim_core::collide::{
+    DOOR_POST_W_M, FRAME_RIM_M, PIECE_LIFT_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
+};
 use sim_core::deploy::{
     DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH, ARCH_RECYCLER,
     ARCH_RESEARCH, ARCH_WORKBENCH,
@@ -332,13 +334,14 @@ impl Part {
     }
 }
 
-/// The most parts any shape emits — the doorway's two posts and lintel.
-pub const MAX_PARTS: usize = 3;
+/// The most parts any shape emits — the window's sill, header and two
+/// jambs (the doorway held this at 3 until catalogue v1).
+pub const MAX_PARTS: usize = 4;
 
 /// How many shapes the parts table covers: the sim's own last shape, plus
 /// one. A shape past it is drawn as the fallback slab, same as one the
 /// table has no arm for.
-pub const N_SHAPES: usize = SHAPE_ROOF as usize + 1;
+pub const N_SHAPES: usize = SHAPE_FRAME as usize + 1;
 
 /// Which parts a shape has and where they go — **the one table** both the
 /// standing piece ([`spawn_piece`]) and the build ghost (`ghost::track`)
@@ -373,6 +376,7 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                 },
                 none,
                 none,
+                none,
             ],
             1,
         ),
@@ -398,6 +402,7 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                         offset: Vec3::new(0.0, LEVEL_H_M - LINTEL_DROP_M, 0.0),
                         x_rot: 0.0,
                     },
+                    none,
                 ],
                 3,
             )
@@ -414,9 +419,70 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                 },
                 none,
                 none,
+                none,
             ],
             1,
         ),
+        SHAPE_WINDOW => {
+            // Sill, header, and two jambs around the aperture the sim's
+            // shot walk passes — every extent is the collision constant
+            // itself (`collide::window_solid_at`), so the drawn hole IS
+            // the hole an arrow threads. The jambs reuse the doorway's
+            // post width and gap on purpose: one opening family, one set
+            // of numbers.
+            let gap = door_post_gap();
+            let jamb_h = WINDOW_HEAD_M - WINDOW_SILL_M;
+            (
+                [
+                    Part {
+                        size: Vec3::new(WALL_THICKNESS_M, WINDOW_SILL_M, span),
+                        offset: Vec3::new(0.0, WINDOW_SILL_M * 0.5, 0.0),
+                        x_rot: 0.0,
+                    },
+                    Part {
+                        size: Vec3::new(WALL_THICKNESS_M, LEVEL_H_M - WINDOW_HEAD_M, span),
+                        offset: Vec3::new(0.0, (LEVEL_H_M + WINDOW_HEAD_M) * 0.5, 0.0),
+                        x_rot: 0.0,
+                    },
+                    Part {
+                        size: Vec3::new(WALL_THICKNESS_M, jamb_h, DOOR_POST_W_M),
+                        offset: Vec3::new(0.0, (WINDOW_SILL_M + WINDOW_HEAD_M) * 0.5, -gap),
+                        x_rot: 0.0,
+                    },
+                    Part {
+                        size: Vec3::new(WALL_THICKNESS_M, jamb_h, DOOR_POST_W_M),
+                        offset: Vec3::new(0.0, (WINDOW_SILL_M + WINDOW_HEAD_M) * 0.5, gap),
+                        x_rot: 0.0,
+                    },
+                ],
+                4,
+            )
+        }
+        SHAPE_FRAME => {
+            // The rim and nothing else — two thin jambs and the top beam,
+            // each `FRAME_RIM_M` thick, which is exactly the solid
+            // `collide::frame_solid_at` answers for. The opening is the
+            // piece.
+            let jamb_off = (span - FRAME_RIM_M) * 0.5;
+            let jamb = |z: f32| Part {
+                size: Vec3::new(WALL_THICKNESS_M, LEVEL_H_M - FRAME_RIM_M, FRAME_RIM_M),
+                offset: Vec3::new(0.0, (LEVEL_H_M - FRAME_RIM_M) * 0.5, z),
+                x_rot: 0.0,
+            };
+            (
+                [
+                    jamb(-jamb_off),
+                    jamb(jamb_off),
+                    Part {
+                        size: Vec3::new(WALL_THICKNESS_M, FRAME_RIM_M, span),
+                        offset: Vec3::new(0.0, LEVEL_H_M - FRAME_RIM_M * 0.5, 0.0),
+                        x_rot: 0.0,
+                    },
+                    none,
+                ],
+                3,
+            )
+        }
         // Foundation / floor / roof — and any shape the defs name that this
         // table does not: the slab whose TOP is the level plane, which is
         // the surface the sim stands players on.
@@ -427,6 +493,7 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                     offset: Vec3::new(0.0, -SLAB_T * 0.5, 0.0),
                     x_rot: 0.0,
                 },
+                none,
                 none,
                 none,
             ],

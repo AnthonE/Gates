@@ -31,7 +31,7 @@
 
 use sim_core::build::{
     BuildContent, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
-    SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
+    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::craft::inv_count;
 use sim_core::gather::ItemStack;
@@ -39,11 +39,15 @@ use sim_core::limits::INV_SLOTS;
 
 /// The outer ring, clockwise from the top. Order is the build order — you
 /// need a foundation before a wall and a wall before a roof — so the wheel
-/// reads as the sequence a base is actually built in.
-pub const SHAPES: [u8; 6] = [
+/// reads as the sequence a base is actually built in; the two openings
+/// (catalogue v1) sit between the doorway and the floor, which is where a
+/// builder reaches for them.
+pub const SHAPES: [u8; 8] = [
     SHAPE_FOUNDATION,
     SHAPE_WALL,
     SHAPE_DOORWAY,
+    SHAPE_WINDOW,
+    SHAPE_FRAME,
     SHAPE_FLOOR,
     SHAPE_STAIRS,
     SHAPE_ROOF,
@@ -60,6 +64,8 @@ pub fn shape_label(shape: u8) -> &'static str {
         SHAPE_FOUNDATION => "Foundation",
         SHAPE_WALL => "Wall",
         SHAPE_DOORWAY => "Doorway",
+        SHAPE_WINDOW => "Window",
+        SHAPE_FRAME => "Wall Frame",
         SHAPE_FLOOR => "Floor",
         SHAPE_STAIRS => "Stairs",
         SHAPE_ROOF => "Roof",
@@ -74,6 +80,8 @@ pub fn shape_blurb(shape: u8) -> &'static str {
         SHAPE_FOUNDATION => "The ground floor. Everything else stands on one.",
         SHAPE_WALL => "Secure your base by enclosing it in walls.",
         SHAPE_DOORWAY => "A wall with a hole for a door. The way in.",
+        SHAPE_WINDOW => "A wall with an eye. Arrows pass; bodies never do.",
+        SHAPE_FRAME => "A wall that is mostly hole, until an insert fills it.",
         SHAPE_FLOOR => "A storey's ceiling and the next one's ground.",
         SHAPE_STAIRS => "Reach the storey above.",
         SHAPE_ROOF => "Cap the top so nothing builds above you.",
@@ -94,6 +102,8 @@ pub fn shape_icon(shape: u8) -> &'static str {
         SHAPE_FOUNDATION => "shape_foundation",
         SHAPE_WALL => "shape_wall",
         SHAPE_DOORWAY => "shape_doorway",
+        SHAPE_WINDOW => "shape_window",
+        SHAPE_FRAME => "shape_wall_frame",
         SHAPE_FLOOR => "shape_floor",
         SHAPE_STAIRS => "shape_stairs",
         _ => "shape_roof",

@@ -652,8 +652,8 @@ pub fn raid(
             for (loc, mask) in [
                 (LOC_PLANE, m.planes),
                 (LOC_RISER, m.stairs),
-                (LOC_EDGE_W, m.walls_w | m.doors_w),
-                (LOC_EDGE_N, m.walls_n | m.doors_n),
+                (LOC_EDGE_W, m.walls_w | m.doors_w | m.wins_w | m.frames_w),
+                (LOC_EDGE_N, m.walls_n | m.doors_n | m.wins_n | m.frames_n),
             ] {
                 if mask == 0 {
                     continue;

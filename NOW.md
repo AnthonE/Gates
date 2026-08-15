@@ -814,19 +814,18 @@ tech-tree path total, so agents can walk the tree page by page.
 Landed 2026-08-10 (operator: *"we need to work on building more"*).
 `reference/BUILDING.md` §7b is the research, `DECISIONS.md` §open "twig
 v0" the slice: placement is twig-only and the hammer commits it, twig is
-never upkept, and **the whole cost column is theirs** — 24 cells, their
-grade base and their shape ratios (`RIPLIST.md` row 1b, which did not
-exist until it was taken: our costs had never been compared to theirs, and
-the node take is what exposed it). §9 items 11 and 12 are done; 13, 14 and
-15 are not, in cost order:
+never upkept, and **the whole cost column is theirs** (`RIPLIST.md` row
+1b). §9 items 11, 12 and **13** are done; 14 and 15 are not, in cost
+order:
 
-1. **The window and the wall frame** (§9.13). Openings are already sockets
-   here — a doorway takes a door with its own hp and its own lock — and
-   these are the same idea with the insert unbuilt. `SHAPE_BITS` is 3 and
-   6 of its 8 codes are used, so **two shapes fit with no wire widening**,
-   and §7b.3 has already decided their prices (0.7 and 0.5). The window
-   wants a collision answer first: it blocks a body and not a bullet,
-   which no shape here does yet.
+1. ~~The window and the wall frame~~ **Landed 2026-08-15** (§open
+   "catalogue v1", wire v38): 32 cells at §7b.3's ratios, the window
+   blocks a body and passes an arrow through its 1.2 × 1.2 aperture
+   (`collide::shot_blocked` — arrows fly at their own radius now, the
+   fix `ranged.rs` owed), the frame blocks only its drawn rim, and the
+   doorway's lintel stops arrows. What remains of §9.13 is the
+   **inserts** — bars, glass, shutters, the garage door — each a
+   deployable pass of its own (§7b.4's second purchase), none started.
 2. **Hard and soft sides** (§9.15, §7b.5). One rule that turns placement
    *orientation* into skill, and the reason a base can be weaker than its
    bill of materials. Needs a facing on every piece and an attack
@@ -835,7 +834,9 @@ the node take is what exposed it). §9 items 11 and 12 are done; 13, 14 and
 3. **Triangles** (§9.14). Half the reason their bases look like that, and
    the only item here that is a **grid change**: our cell holds one plane,
    one riser and two canonical edges, all square. Cost it as one; do not
-   smuggle it in behind items 1 and 2.
+   smuggle it in behind items 1 and 2. ⚠ Wire first: catalogue v1
+   saturated `SHAPE_BITS` (3 bits, 8 of 8 codes live), so a triangle
+   shape widens the field — a `PROTO_VER` bump before the first row.
 
 ---
 
