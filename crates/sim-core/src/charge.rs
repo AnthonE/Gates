@@ -428,7 +428,7 @@ fn detonate(
     kills: &mut BlastKills,
     events: &mut EventQueue,
 ) {
-    use crate::build::{LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, LOC_RISER};
+    use crate::build::{LEVEL_H_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER};
     use crate::limits::{MAX_BUILD_COORD, MAX_BUILD_LEVELS};
 
     let (ax, az) = anchor(c.cx, c.cz, c.loc);
@@ -480,8 +480,8 @@ fn detonate(
                 };
                 consider(LOC_PLANE, m.planes & bit != 0);
                 consider(LOC_RISER, m.stairs & bit != 0);
-                consider(LOC_EDGE_W, (m.walls_w | m.doors_w) & bit != 0);
-                consider(LOC_EDGE_N, (m.walls_n | m.doors_n) & bit != 0);
+                consider(LOC_EDGE_XLO, (m.walls_xlo | m.doors_xlo) & bit != 0);
+                consider(LOC_EDGE_ZLO, (m.walls_zlo | m.doors_zlo) & bit != 0);
             }
         }
         dz += 1;

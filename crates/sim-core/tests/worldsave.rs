@@ -19,7 +19,7 @@
 //! the function movement actually calls.
 
 use sim_core::build::{
-    build_cell_of, foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_W, LOC_PLANE,
+    build_cell_of, foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_XLO, LOC_PLANE,
 };
 use sim_core::combat::CombatContent;
 use sim_core::craft::CraftContent;
@@ -145,7 +145,7 @@ fn a_lived_in_world() -> Box<World> {
         cx,
         cz,
         level: 0,
-        loc: LOC_EDGE_W,
+        loc: LOC_EDGE_XLO,
     }]);
     w.tick(&[Command::PlaceDeploy {
         id: 1,
@@ -161,7 +161,7 @@ fn a_lived_in_world() -> Box<World> {
         cx,
         cz,
         level: 0,
-        loc: LOC_EDGE_W,
+        loc: LOC_EDGE_XLO,
     }]);
     // Feed the hearth so a stock row is nonzero — an all-zero stock would
     // round-trip through a codec that dropped the array entirely.

@@ -35,7 +35,7 @@
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::build::{
-    BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, SHAPE_DOORWAY, SHAPE_ROOF, SHAPE_STAIRS,
+    BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, SHAPE_DOORWAY, SHAPE_ROOF, SHAPE_STAIRS,
     SHAPE_WALL,
 };
 use sim_core::collide::{DOOR_POST_W_M, PIECE_LIFT_M, WALL_THICKNESS_M};
@@ -232,7 +232,7 @@ impl StructRing {
     /// Exists for the hammer's highlight, which needs the thing the player is
     /// looking at rather than a second derivation of where it would be. The
     /// addressing arithmetic in `spawn_piece` is subtle enough — edge pieces
-    /// are canonical to a cell's west or north boundary, so the same physical
+    /// are canonical to a cell's low-x or low-z boundary, so the same physical
     /// edge is never addressable twice — that a highlight computing its own
     /// transform would be a second implementation of it, and the wheel's
     /// oldest rule says what that costs.
@@ -308,9 +308,9 @@ pub fn door_opening_w() -> f32 {
 /// the pitch it carries.
 ///
 /// The offset is relative to the piece's **base point** — the address's
-/// canonical anchor in the west/plane orientation: the west boundary's
+/// canonical anchor in the low-x/plane orientation: the low-x boundary's
 /// midpoint for an edge piece, the cell centre for a body piece, always at
-/// the level's base height (`level_base_y`). A north edge is the same parts
+/// the level's base height (`level_base_y`). A low-z edge is the same parts
 /// under the root's quarter-turn ([`base_transform`]), exactly as the sim
 /// canonicalises the two edges to one shape (`build.rs`).
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -436,7 +436,7 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
 }
 
 /// The world transform of an address's base point: the canonical anchor
-/// [`shape_parts`]' offsets are relative to, plus the quarter-turn a north
+/// [`shape_parts`]' offsets are relative to, plus the quarter-turn a low-z
 /// edge carries. Shared with the build ghost for the reason the parts are:
 /// the ghost and the piece it becomes must be the same object in the same
 /// pose, and edge canonicalisation written twice is how they stop being.
@@ -444,8 +444,8 @@ pub fn base_transform(seed: u64, (cx, cz, level, loc): Addr) -> Transform {
     let base_y = level_base_y(seed, cx, cz, level);
     let (cxm, czm) = cell_center(cx, cz);
     let (pos, yaw) = match loc {
-        LOC_EDGE_W => (Vec3::new(cx as f32 * BUILD_CELL_M, base_y, czm), 0.0),
-        LOC_EDGE_N => (
+        LOC_EDGE_XLO => (Vec3::new(cx as f32 * BUILD_CELL_M, base_y, czm), 0.0),
+        LOC_EDGE_ZLO => (
             Vec3::new(cxm, base_y, cz as f32 * BUILD_CELL_M),
             std::f32::consts::FRAC_PI_2,
         ),
@@ -732,7 +732,7 @@ fn spawn_piece(
     material: u8,
 ) -> Entity {
     let mat = kit.tier[(material as usize).min(2)].clone();
-    // Edge pieces stand on the cell's west (x = cx·3) or north (z = cz·3)
+    // Edge pieces stand on the cell's low-x (x = cx·3) or low-z (z = cz·3)
     // boundary — canonical, so one physical edge is never addressable twice
     // (`build.rs`) — and the parts are the shared table's, so this and the
     // build ghost are the same object in the same pose.
@@ -792,13 +792,13 @@ pub fn deploy_transform(seed: u64, addr: Addr, arch: u8, open: bool) -> Transfor
     let quarter = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
 
     match (loc, open) {
-        (LOC_EDGE_W, false) => Transform::from_xyz(x0, y, czm),
-        (LOC_EDGE_W, true) => {
+        (LOC_EDGE_XLO, false) => Transform::from_xyz(x0, y, czm),
+        (LOC_EDGE_XLO, true) => {
             Transform::from_xyz(x0 + d * 0.5, y, z0 + BUILD_CELL_M * 0.5 - d * 0.5)
                 .with_rotation(quarter)
         }
-        (LOC_EDGE_N, false) => Transform::from_xyz(cxm, y, z0).with_rotation(quarter),
-        (LOC_EDGE_N, true) => {
+        (LOC_EDGE_ZLO, false) => Transform::from_xyz(cxm, y, z0).with_rotation(quarter),
+        (LOC_EDGE_ZLO, true) => {
             Transform::from_xyz(x0 + BUILD_CELL_M * 0.5 - d * 0.5, y, z0 + d * 0.5)
         }
         _ => Transform::from_xyz(cxm, y, czm),

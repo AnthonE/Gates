@@ -15,7 +15,7 @@ use client_core::core::{
 use protocol::{ActionMsg, ItemCatalog, PIECE_SYNC_BATCH};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
-use sim_core::build::{BuildContent, LOC_EDGE_W, LOC_PLANE};
+use sim_core::build::{BuildContent, LOC_EDGE_XLO, LOC_PLANE};
 use sim_core::deploy::{DeployContent, REFUSE_D_CLAIM, UPKEEP_PERIOD_TICKS};
 use sim_core::gather::{GatherContent, ItemStack};
 
@@ -385,7 +385,7 @@ fn doors_toggle_across_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
         },
     ] {
         act(&mut core, 0, a);
@@ -394,7 +394,7 @@ fn doors_toggle_across_the_wire() {
     assert_eq!(core.world.pieces.len(), 2, "foundation + doorway");
     for (_, c) in &clients {
         assert_eq!(
-            c.pieces.cols().get(CX, CZ).shut_w & 1,
+            c.pieces.cols().get(CX, CZ).shut_xlo & 1,
             0,
             "an empty doorway must not be sealed"
         );
@@ -409,7 +409,7 @@ fn doors_toggle_across_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
         },
     );
     let mut seen = Vec::new();
@@ -420,7 +420,9 @@ fn doors_toggle_across_the_wire() {
     let placed: Vec<_> = seen
         .iter()
         .filter_map(|(slot, m)| match m {
-            protocol::EventMsg::DeployPlaced { rec } if rec.loc == LOC_EDGE_W => Some((slot, rec)),
+            protocol::EventMsg::DeployPlaced { rec } if rec.loc == LOC_EDGE_XLO => {
+                Some((slot, rec))
+            }
             _ => None,
         })
         .collect();
@@ -440,12 +442,12 @@ fn doors_toggle_across_the_wire() {
             .deploys
             .entries()
             .iter()
-            .find(|r| r.loc == LOC_EDGE_W)
+            .find(|r| r.loc == LOC_EDGE_XLO)
             .expect("door in the mirror");
         assert!(!rec.open, "doors place closed");
         assert!(!rec.has_lock, "and bare (lock v1), and say so");
         assert_eq!(
-            c.pieces.cols().get(CX, CZ).shut_w & 1,
+            c.pieces.cols().get(CX, CZ).shut_xlo & 1,
             1,
             "a closed door must seal the doorway the predictor walks"
         );
@@ -460,7 +462,7 @@ fn doors_toggle_across_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);
@@ -468,7 +470,7 @@ fn doors_toggle_across_the_wire() {
     assert!(
         core.world
             .deploys
-            .find(CX, CZ, 0, LOC_EDGE_W)
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
             .expect("door in the world")
             .open,
         "a door nobody has secured is anyone's"
@@ -481,7 +483,7 @@ fn doors_toggle_across_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
         },
     );
     pump(&mut core, &stats, &mut clients);
@@ -497,7 +499,7 @@ fn doors_toggle_across_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
         },
     );
     let deploys_before = core.world.deploys.len();
@@ -534,7 +536,7 @@ fn doors_toggle_across_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
             op: sim_core::deploy::ACCESS_OP_SET_CODE,
             code: 1234,
         },
@@ -545,7 +547,7 @@ fn doors_toggle_across_the_wire() {
             .deploys
             .entries()
             .iter()
-            .find(|r| r.loc == LOC_EDGE_W)
+            .find(|r| r.loc == LOC_EDGE_XLO)
             .expect("door in the mirror");
         assert!(rec.locked && rec.has_lock, "the arming never crossed");
     }
@@ -560,7 +562,7 @@ fn doors_toggle_across_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
         },
     );
     seen.clear();
@@ -587,7 +589,7 @@ fn doors_toggle_across_the_wire() {
         !core
             .world
             .deploys
-            .find(CX, CZ, 0, LOC_EDGE_W)
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
             .expect("door in the world")
             .open,
         "a refused use must not swing the door"
@@ -603,7 +605,7 @@ fn doors_toggle_across_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
             op: sim_core::deploy::ACCESS_OP_ENTER,
             code: 1234,
         },
@@ -625,7 +627,7 @@ fn doors_toggle_across_the_wire() {
         !core
             .world
             .deploys
-            .find(CX, CZ, 0, LOC_EDGE_W)
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
             .expect("door in the world")
             .open,
         "entering a code is not opening a door — it is being remembered"
@@ -639,7 +641,7 @@ fn doors_toggle_across_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
         },
     );
     seen.clear();
@@ -665,7 +667,7 @@ fn doors_toggle_across_the_wire() {
     assert!(
         core.world
             .deploys
-            .find(CX, CZ, 0, LOC_EDGE_W)
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
             .expect("door in the world")
             .open
     );
@@ -674,11 +676,11 @@ fn doors_toggle_across_the_wire() {
             .deploys
             .entries()
             .iter()
-            .find(|r| r.loc == LOC_EDGE_W)
+            .find(|r| r.loc == LOC_EDGE_XLO)
             .expect("door in the mirror");
         assert!(rec.open, "the open state never crossed");
         assert_eq!(
-            c.pieces.cols().get(CX, CZ).shut_w & 1,
+            c.pieces.cols().get(CX, CZ).shut_xlo & 1,
             0,
             "an open door must stop sealing the predictor's doorway"
         );
@@ -699,7 +701,7 @@ fn doors_toggle_across_the_wire() {
                 if *slot == 2
                     && recs[..*count as usize]
                         .iter()
-                        .any(|r| r.loc == LOC_EDGE_W && r.open && r.locked && r.has_lock)
+                        .any(|r| r.loc == LOC_EDGE_XLO && r.open && r.locked && r.has_lock)
         )),
         "the sync walk must carry all three of the door's bits"
     );
@@ -708,12 +710,12 @@ fn doors_toggle_across_the_wire() {
         .deploys
         .entries()
         .iter()
-        .find(|r| r.loc == LOC_EDGE_W)
+        .find(|r| r.loc == LOC_EDGE_XLO)
         .expect("late joiner missed the door");
     assert!(rec.open, "the walk carried the door shut");
     assert!(rec.locked, "the walk lost the door's lock bit");
     assert_eq!(
-        late.pieces.cols().get(CX, CZ).shut_w & 1,
+        late.pieces.cols().get(CX, CZ).shut_xlo & 1,
         0,
         "late joiner's predictor sealed a door that stands open"
     );
@@ -726,7 +728,7 @@ fn doors_toggle_across_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
             op: sim_core::deploy::ACCESS_OP_UNLOCK,
             code: 0,
         },
@@ -759,7 +761,7 @@ fn doors_toggle_across_the_wire() {
             .deploys
             .entries()
             .iter()
-            .find(|r| r.loc == LOC_EDGE_W)
+            .find(|r| r.loc == LOC_EDGE_XLO)
             .expect("door in the mirror");
         assert!(!rec.locked, "the unlock never crossed");
         assert!(rec.open, "unlocking must not move the leaf");
@@ -774,7 +776,7 @@ fn doors_toggle_across_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
         },
     );
     pump(&mut core, &stats, &mut clients);
@@ -782,7 +784,7 @@ fn doors_toggle_across_the_wire() {
         !core
             .world
             .deploys
-            .find(CX, CZ, 0, LOC_EDGE_W)
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
             .expect("door in the world")
             .open,
         "an unlocked door takes any hand in reach"

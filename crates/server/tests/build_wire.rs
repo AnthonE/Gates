@@ -11,7 +11,7 @@ use client_core::core::{
 use protocol::{ActionMsg, ItemCatalog};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
-use sim_core::build::{BuildContent, LOC_EDGE_W, LOC_PLANE, REFUSE_B_SPOT, REFUSE_B_TIER};
+use sim_core::build::{BuildContent, LOC_EDGE_XLO, LOC_PLANE, REFUSE_B_SPOT, REFUSE_B_TIER};
 use sim_core::gather::GatherContent;
 
 const SEED: u64 = 20_260_731;
@@ -150,7 +150,7 @@ fn build_rides_the_wire() {
         "foundation cost unpaid"
     );
 
-    // A wall on the foundation's west edge rides the same lane.
+    // A wall on the foundation's low-x edge rides the same lane.
     act(
         &mut core,
         0,
@@ -159,7 +159,7 @@ fn build_rides_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);
@@ -240,7 +240,7 @@ fn upgrade_rides_the_wire() {
     let w0 = world_slot(&core, id_of(0));
     core.world.players[w0].inv[0] = sim_core::gather::ItemStack { item: 0, count: 20 };
     core.world.players[w0].inv[1] = sim_core::gather::ItemStack { item: 1, count: 10 };
-    for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_W)] {
+    for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_XLO)] {
         act(
             &mut core,
             0,
@@ -265,7 +265,7 @@ fn upgrade_rides_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
             material: sim_core::build::MAT_STONE,
         },
     );
@@ -284,7 +284,7 @@ fn upgrade_rides_the_wire() {
     assert_eq!(
         core.world
             .pieces
-            .find(CX, CZ, 0, LOC_EDGE_W)
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
             .expect("wall stands")
             .row,
         4
@@ -300,7 +300,7 @@ fn upgrade_rides_the_wire() {
             .pieces
             .entries()
             .iter()
-            .find(|r| r.loc == LOC_EDGE_W)
+            .find(|r| r.loc == LOC_EDGE_XLO)
             .unwrap_or_else(|| panic!("slot {slot} lost the wall"));
         assert_eq!(rec.row, 4, "slot {slot} still mirrors the wood row");
         assert_eq!(
@@ -319,7 +319,7 @@ fn upgrade_rides_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
             material: sim_core::build::MAT_WOOD,
         },
     );
@@ -336,7 +336,7 @@ fn upgrade_rides_the_wire() {
         "refusal leaked to a bystander"
     );
     assert_eq!(
-        core.world.pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row,
+        core.world.pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().row,
         4
     );
 

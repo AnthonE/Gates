@@ -695,7 +695,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     level: 0,
                     loc: 0,
                 }),
-                // A doorway on the same cell's west edge, a door in it,
+                // A doorway on the same cell's low-x edge, a door in it,
                 // then the door verbs' whole arc — placement seals the
                 // edge locked, its owner's toggles open and reseal it,
                 // and the lock verb rides both ways (a stranger's lock
@@ -708,7 +708,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
                 }),
                 153 => cmds.push(Command::PlaceDeploy {
                     id,
@@ -716,17 +716,17 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
                 }),
                 154 | 157 => cmds.push(Command::Use {
                     id,
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
                 }),
                 // Then the upgrade verb's own arc on a second wall: a
-                // wood wall at the north edge, climbed to the fixture's
+                // wood wall at the low-z edge, climbed to the fixture's
                 // stone rung, then asked back down (the tier refusal),
                 // then asked for by a second bot — which bounces on
                 // **reach**, not on the hearth's claim: the two have
@@ -742,14 +742,14 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_N,
+                    loc: sim_core::build::LOC_EDGE_ZLO,
                 }),
                 160 | 161 => cmds.push(Command::Upgrade {
                     id,
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_N,
+                    loc: sim_core::build::LOC_EDGE_ZLO,
                     material: if t == 160 {
                         sim_core::build::MAT_STONE
                     } else {
@@ -761,7 +761,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_N,
+                    loc: sim_core::build::LOC_EDGE_ZLO,
                     material: sim_core::build::MAT_METAL,
                 }),
                 // Lock v1's whole arc on the replayed surface: bolt the
@@ -776,14 +776,14 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
                 }),
                 156 | 158 => cmds.push(Command::Access {
                     id: if t == 156 { world.players[1].id } else { id },
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
                     op: if t == 156 {
                         sim_core::deploy::ACCESS_OP_ENTER
                     } else {
@@ -793,7 +793,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                 }),
                 // Then the repair verb, on the one address that names two
                 // things: the doorway placed at 152 and the door hung in
-                // it at 153 share `LOC_EDGE_W` exactly, so 163 and 164 are
+                // it at 153 share `LOC_EDGE_XLO` exactly, so 163 and 164 are
                 // the same four coordinates differing only in the bit that
                 // picks the store. The upkeep leaps above have been
                 // draining both by then, so these land as real payments
@@ -813,7 +813,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: if t == 167 {
-                        sim_core::build::LOC_EDGE_N
+                        sim_core::build::LOC_EDGE_ZLO
                     } else {
                         sim_core::build::LOC_PLANE
                     },
@@ -824,7 +824,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
                 }),
                 // The raid verb, on the addresses the repair arm above just
                 // mended. It belongs in *this* gate specifically because a
@@ -839,7 +839,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
                 }),
                 _ => cmds.push(Command::Feed {
                     id,
@@ -863,7 +863,12 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         if t == 160 {
             upgraded_seen = world
                 .pieces
-                .find(hearth_cell.0, hearth_cell.1, 0, sim_core::build::LOC_EDGE_N)
+                .find(
+                    hearth_cell.0,
+                    hearth_cell.1,
+                    0,
+                    sim_core::build::LOC_EDGE_ZLO,
+                )
                 .is_some_and(|p| p.row == 4);
         }
         for e in world.events.entries() {

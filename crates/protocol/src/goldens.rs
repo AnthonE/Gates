@@ -628,9 +628,9 @@ pub fn action_cancel() -> u16 {
 }
 
 /// A place request: (row, cx, cz, level, loc) — a stone wall on a cell's
-/// north edge, one storey up.
+/// low-z edge, one storey up.
 pub fn action_place() -> (u16, u16, u16, u8, u8) {
-    (13, 341, 682, 1, sim_core::build::LOC_EDGE_N)
+    (13, 341, 682, 1, sim_core::build::LOC_EDGE_ZLO)
 }
 
 /// The piece record behind the placed broadcast.
@@ -639,7 +639,7 @@ pub fn event_piece_placed() -> PieceRec {
         cx: 341,
         cz: 682,
         level: 1,
-        loc: sim_core::build::LOC_EDGE_N,
+        loc: sim_core::build::LOC_EDGE_ZLO,
         row: 13,
         ..PieceRec::default()
     }
@@ -699,9 +699,9 @@ pub fn event_piece_defs() -> BuildContent {
 }
 
 /// A deploy-place request: (row, cx, cz, level, loc) — a door into a
-/// doorway on a cell's west edge.
+/// doorway on a cell's low-x edge.
 pub fn action_deploy() -> (u16, u16, u16, u8, u8) {
-    (9, 341, 682, 0, sim_core::build::LOC_EDGE_W)
+    (9, 341, 682, 0, sim_core::build::LOC_EDGE_XLO)
 }
 
 /// A feed of the hearth at (cx, cz, level).
@@ -744,9 +744,9 @@ pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
     (true, recs)
 }
 
-/// A use request: the address of a door on a cell's west edge.
+/// A use request: the address of a door on a cell's low-x edge.
 pub fn action_use() -> (u16, u16, u8, u8) {
-    (341, 682, 0, sim_core::build::LOC_EDGE_W)
+    (341, 682, 0, sim_core::build::LOC_EDGE_XLO)
 }
 
 /// A lock request: the same address, setting a code. Both payload fields
@@ -762,7 +762,7 @@ pub fn action_access() -> (u16, u16, u8, u8, u8, u16) {
         341,
         682,
         0,
-        sim_core::build::LOC_EDGE_W,
+        sim_core::build::LOC_EDGE_XLO,
         sim_core::deploy::ACCESS_OP_SET_CODE,
         4207,
     )
@@ -775,7 +775,7 @@ pub fn action_access() -> (u16, u16, u8, u8, u8, u16) {
 /// half) for `action_lock`'s reason: at 0 the frame is byte-identical to
 /// one whose encoder never wrote the field.
 pub fn action_demolish() -> (bool, u16, u16, u8, u8) {
-    (true, 341, 682, 0, sim_core::build::LOC_EDGE_W)
+    (true, 341, 682, 0, sim_core::build::LOC_EDGE_XLO)
 }
 
 /// A crew op: the same cell, on the **body** rather than an edge, joining
@@ -809,7 +809,7 @@ pub fn action_upgrade() -> (u16, u16, u8, u8, u8) {
         341,
         682,
         0,
-        sim_core::build::LOC_EDGE_W,
+        sim_core::build::LOC_EDGE_XLO,
         sim_core::build::MAT_METAL,
     )
 }
@@ -818,7 +818,7 @@ pub fn action_upgrade() -> (u16, u16, u8, u8, u8) {
 /// still carrying its keypad — the state its owner sees after swinging
 /// their own door. All three bits are **1** for `action_access`'s reason.
 pub fn event_door() -> (u16, u16, u8, u8, bool, bool, bool) {
-    (341, 682, 0, sim_core::build::LOC_EDGE_W, true, true, true)
+    (341, 682, 0, sim_core::build::LOC_EDGE_XLO, true, true, true)
 }
 
 /// A knock: the same door, and player 9 outside it. The knocker is
@@ -827,7 +827,7 @@ pub fn event_door() -> (u16, u16, u8, u8, bool, bool, bool) {
 /// site shows up as a changed golden rather than as a coincidence
 /// (`reference/FINDINGS.md` §1).
 pub fn event_knock() -> (u16, u16, u8, u8, u32) {
-    (341, 682, 0, sim_core::build::LOC_EDGE_W, 9)
+    (341, 682, 0, sim_core::build::LOC_EDGE_XLO, 9)
 }
 
 /// A grant: the same door, at full rights. `GRANT_FULL` is 2, so the
@@ -838,7 +838,7 @@ pub fn event_auth() -> (u16, u16, u8, u8, u8) {
         341,
         682,
         0,
-        sim_core::build::LOC_EDGE_W,
+        sim_core::build::LOC_EDGE_XLO,
         sim_core::lock::GRANT_FULL,
     )
 }
@@ -967,11 +967,20 @@ pub fn event_bag_removed() -> (u32, u8) {
 /// or a repeat anywhere would let a decoder reading the wrong field pass.
 /// `(deploy, cx, cz, level, loc, row, damage, left)`.
 pub fn event_struct_hit_piece() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
-    (false, 341, 347, 3, sim_core::build::LOC_EDGE_N, 7, 4, 1_746)
+    (
+        false,
+        341,
+        347,
+        3,
+        sim_core::build::LOC_EDGE_ZLO,
+        7,
+        4,
+        1_746,
+    )
 }
 
 pub fn event_struct_hit_deploy() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
-    (true, 512, 128, 1, sim_core::build::LOC_EDGE_W, 5, 3, 197)
+    (true, 512, 128, 1, sim_core::build::LOC_EDGE_XLO, 5, 3, 197)
 }
 
 /// A refusal carrying `sim_core::deploy::REFUSE_D_CLAIM`.
@@ -987,7 +996,7 @@ pub fn event_deploy_defs() -> DeployContent {
 
 /// The removed-piece address: (cx, cz, level, loc).
 pub fn event_removed() -> (u16, u16, u8, u8) {
-    (341, 682, 0, sim_core::build::LOC_EDGE_N)
+    (341, 682, 0, sim_core::build::LOC_EDGE_ZLO)
 }
 
 /// A feed ack: hearth address + three stock rows.
@@ -1036,11 +1045,11 @@ pub fn snapshot_cap() -> SnapshotCase {
 /// wrong branch cannot land on the same bytes.
 /// `(deploy, cx, cz, level, loc)`.
 pub fn action_repair_piece() -> (bool, u16, u16, u8, u8) {
-    (false, 341, 682, 2, sim_core::build::LOC_EDGE_N)
+    (false, 341, 682, 2, sim_core::build::LOC_EDGE_ZLO)
 }
 
 pub fn action_repair_deploy() -> (bool, u16, u16, u8, u8) {
-    (true, 512, 128, 1, sim_core::build::LOC_EDGE_W)
+    (true, 512, 128, 1, sim_core::build::LOC_EDGE_XLO)
 }
 
 /// A repair landing: the address, what the payment bought back, and where
@@ -1062,7 +1071,7 @@ pub fn event_piece_repaired_piece() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
         341,
         682,
         2,
-        sim_core::build::LOC_EDGE_N,
+        sim_core::build::LOC_EDGE_ZLO,
         200,
         610,
         1750,
@@ -1070,7 +1079,7 @@ pub fn event_piece_repaired_piece() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
 }
 
 pub fn event_piece_repaired_deploy() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
-    (true, 512, 128, 1, sim_core::build::LOC_EDGE_W, 11, 37, 60)
+    (true, 512, 128, 1, sim_core::build::LOC_EDGE_XLO, 11, 37, 60)
 }
 
 /// The plant request. `action_repair_*`'s layout to the bit, which is

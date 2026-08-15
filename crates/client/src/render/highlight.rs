@@ -9,9 +9,9 @@
 //!
 //! **It reuses the piece's own mesh and transform rather than deriving
 //! them.** `structures::spawn_piece`'s addressing is subtle — edge pieces
-//! are canonical to a cell's west or north boundary, so one physical edge is
-//! never addressable twice, and a wall on a north edge carries a quarter-turn
-//! that a west one does not. A highlight that computed its own placement
+//! are canonical to a cell's low-x or low-z boundary, so one physical edge
+//! is never addressable twice, and a wall on a low-z edge carries a
+//! quarter-turn that a low-x one does not. A highlight that computed its own placement
 //! would be a second implementation of that, and `panels/wheel.rs` states
 //! what a second implementation of "which one is this" costs: the thing you
 //! see and the thing you act on stop being the same thing. So this reads

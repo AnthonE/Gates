@@ -1368,7 +1368,7 @@ pub fn encode_action_place(
         || cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
-        || loc > sim_core::build::LOC_EDGE_N
+        || loc > sim_core::build::LOC_EDGE_ZLO
     {
         return Err(WireError::Range);
     }
@@ -1395,7 +1395,7 @@ pub fn encode_action_deploy(
         || cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
-        || loc > sim_core::build::LOC_EDGE_N
+        || loc > sim_core::build::LOC_EDGE_ZLO
     {
         return Err(WireError::Range);
     }
@@ -1436,7 +1436,7 @@ pub fn encode_action_use(
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
-        || loc > sim_core::build::LOC_EDGE_N
+        || loc > sim_core::build::LOC_EDGE_ZLO
     {
         return Err(WireError::Range);
     }
@@ -1461,7 +1461,7 @@ pub fn encode_action_repair(
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
-        || loc > sim_core::build::LOC_EDGE_N
+        || loc > sim_core::build::LOC_EDGE_ZLO
     {
         return Err(WireError::Range);
     }
@@ -1495,7 +1495,7 @@ pub fn encode_action_throw(
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
-        || loc > sim_core::build::LOC_EDGE_N
+        || loc > sim_core::build::LOC_EDGE_ZLO
     {
         return Err(WireError::Range);
     }
@@ -1550,7 +1550,7 @@ pub fn encode_action_access(
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
-        || loc > sim_core::build::LOC_EDGE_N
+        || loc > sim_core::build::LOC_EDGE_ZLO
         || op > sim_core::deploy::ACCESS_OP_MAX
     {
         return Err(WireError::Range);
@@ -1579,7 +1579,7 @@ pub fn encode_action_demolish(
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
-        || loc > sim_core::build::LOC_EDGE_N
+        || loc > sim_core::build::LOC_EDGE_ZLO
     {
         return Err(WireError::Range);
     }
@@ -1605,7 +1605,7 @@ pub fn encode_action_upgrade(
     if cx as usize >= sim_core::limits::MAX_BUILD_COORD
         || cz as usize >= sim_core::limits::MAX_BUILD_COORD
         || level as usize >= sim_core::limits::MAX_BUILD_LEVELS
-        || loc > sim_core::build::LOC_EDGE_N
+        || loc > sim_core::build::LOC_EDGE_ZLO
         || material > sim_core::build::MAT_METAL
     {
         return Err(WireError::Range);
