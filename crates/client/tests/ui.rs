@@ -2707,3 +2707,88 @@ mod techtree_model {
         assert_eq!(state_label(NodeState::Ready), "UNLOCK");
     }
 }
+
+/// The tidy-tree layout (tech tree v0's board): children sit exactly one
+/// row under their parent in distinct columns, subtree blocks never
+/// overlap, and every edge names a real parent-child pair — the
+/// invariants that keep the drawn graph a picture of the table.
+mod techtree_layout {
+    use client::ui::techtree::layout;
+    use sim_core::craft::CraftContent;
+    use sim_core::gather::ItemStack;
+    use sim_core::limits::INV_SLOTS;
+    use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
+
+    fn table() -> ResearchContent {
+        // Two trees: recipe 2 -> 1, and recipe 3 -> {4, 5}.
+        let mut rc = ResearchContent::EMPTY;
+        rc.coin = 3;
+        rc.row_count = 5;
+        let rows = [
+            (10, 2, 5, NO_RECIPE),
+            (11, 1, 4, 2),
+            (12, 3, 6, NO_RECIPE),
+            (13, 4, 7, 3),
+            (14, 5, 8, 3),
+        ];
+        for (i, &(item, recipe, cost, requires)) in rows.iter().enumerate() {
+            rc.rows[i] = ResearchRow {
+                item,
+                recipe,
+                cost,
+                requires,
+            };
+        }
+        rc
+    }
+
+    #[test]
+    fn the_grid_is_a_picture_of_the_table() {
+        let rc = table();
+        let cc = CraftContent::probe_fixture();
+        let inv = [ItemStack::default(); INV_SLOTS];
+        let (mut placed, mut edges) = (Vec::new(), Vec::new());
+        layout(&rc, &cc, &inv, 0, &mut placed, &mut edges);
+
+        assert_eq!(placed.len(), 5, "every live row is placed");
+        assert_eq!(edges.len(), 3, "every requires is an edge");
+
+        // No two nodes share a cell.
+        for a in 0..placed.len() {
+            for b in a + 1..placed.len() {
+                assert!(
+                    (placed[a].col, placed[a].row) != (placed[b].col, placed[b].row),
+                    "two nodes on one cell"
+                );
+            }
+        }
+        // A child is exactly one row under its parent.
+        for e in &edges {
+            assert_eq!(
+                placed[e.child].row,
+                placed[e.parent].row + 1,
+                "an edge spans exactly one row"
+            );
+            assert_eq!(
+                placed[e.child].node.requires, placed[e.parent].node.recipe,
+                "an edge follows requires"
+            );
+        }
+        // The two-child parent's children get distinct columns and the
+        // parent sits inside their span.
+        let by_recipe = |r: u16| placed.iter().find(|p| p.node.recipe == r).unwrap();
+        let (p, c1, c2) = (by_recipe(3), by_recipe(4), by_recipe(5));
+        assert_ne!(c1.col, c2.col, "siblings spread");
+        let (lo, hi) = (c1.col.min(c2.col), c1.col.max(c2.col));
+        assert!(
+            (lo..=hi).contains(&p.col),
+            "a parent stands over its children's span"
+        );
+        // And the two trees do not interleave columns.
+        let (a1, a2) = (by_recipe(2), by_recipe(1));
+        assert!(
+            a1.col.max(a2.col) < lo || a1.col.min(a2.col) > hi,
+            "subtree blocks stay whole"
+        );
+    }
+}

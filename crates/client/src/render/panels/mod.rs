@@ -125,6 +125,13 @@ pub struct Ui {
     /// what the release fires, which is why `keys` reads it before
     /// `wheel::track` clears it.
     pub hover: Option<usize>,
+    /// The tech tree's selected node — a recipe index, the sidebar's
+    /// subject (tech tree v0).
+    pub tech_sel: Option<u16>,
+    /// The rung of the bench the tree was opened at — the header's LEVEL
+    /// badge. Display only: the sim re-derives the demanded rung per
+    /// node, so a stale badge can mislabel nothing.
+    pub tech_tier: u8,
     /// Rebuild the panel's node tree on the next frame.
     pub dirty: bool,
     /// Change detection against the core. A menu that rebuilt every frame
@@ -168,6 +175,8 @@ impl Default for Ui {
             facts: Facts::default(),
             shape: 0,
             hover: None,
+            tech_sel: None,
+            tech_tier: 1,
             dirty: false,
             seen: Seen::default(),
         }

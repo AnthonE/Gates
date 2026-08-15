@@ -405,6 +405,10 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
             if let Some(ui) = ui {
                 if ui.panel == Panel::None {
                     ui.panel = Panel::Tech;
+                    // The header's LEVEL badge is the bench actually under
+                    // the crosshair — display only; the sim re-derives the
+                    // demanded rung per node.
+                    ui.tech_tier = sim_core::deploy::bench_tier(pick.arch).max(1);
                     ui.dirty = true;
                 }
             }
