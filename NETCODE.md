@@ -65,14 +65,38 @@ megabase streaming in never head-of-line-blocks a door event or a chat
 line, and a lost snapshot datagram is simply dead (never retransmitted;
 the next one supersedes it).
 
-**Browser support, re-decided**: Safari 26.4 (2026-03) shipped WebTransport
-— streams *and* datagrams — so it is Baseline now: Chrome 97+, Edge 98+,
-Firefox 114+, Safari/iOS 26.4+, ~88% global. The alpha targets **all four
-majors**; the honest cut is iOS below 26.4, which has nothing (the
-WebSocket fallback lane stays a knob, not a blocker). Dev-cert note:
-Firefox's `serverCertificateHashes` was broken before Firefox 125 —
-require ≥ 125 for the dev flow. [webkit.org/blog/17862 ·
-caniuse.com/webtransport · bugzilla.mozilla.org/1873263]
+⚠ **This section carried a browser-support matrix until 2026-08-15** — a
+Baseline claim across four engines, a WebSocket fallback lane held open as a
+knob, and a minimum Firefox version for the dev-cert flow. **All of it was
+dead**: the browser client was cut 2026-08-06 and there is no second client.
+§2.2 had already been swept for this (its keep-alive and migration rows both
+say "retired with the browser" in as many words); this half had not, which is
+the sweep-one-file-and-not-its-neighbour shape `CLAUDE.md` warns about.
+
+**What is actually true, and it is a smaller claim than "we run
+WebTransport."** `wtransport` is built on **quinn** and we enable its `quinn`
+feature in both crates, so the QUIC underneath is ordinary QUIC and we
+already reach past the wrapper for it — `QuicTransportConfig` and
+`IpBindConfig` in `net.rs` are quinn's own types. What WebTransport still
+adds is the **HTTP/3 session layer**: an extended-CONNECT handshake
+(`endpoint.accept()` → `IncomingSession` → `request.accept()`), a
+`https://{addr}` URL shape that `scry-shardlist-v1` bakes into every
+published row, and a per-datagram session-id prefix against the 1 100-byte
+budget.
+
+**That layer now has no user, and it is not free.** The one remotely
+triggerable panic this project has ever pinned around lives *in* it — two
+bytes on the CONNECT stream (#317) — which is why we are on a git rev of an
+unreleased third party rather than a published crate, and §2.2's own ⚠ says
+nothing records or gates that the pin contains the fix. The self-signed cert
+rules we enforce (P-256, 14-day validity) are WebTransport-spec rules written
+for browsers.
+
+**Not changed here, because it is a flag-day, not a refactor.** The handshake
+is the thing that would change, so there is no version to negotiate — an old
+client would simply fail to connect, and two platform depots plus a public
+shard are live. `NOW.md` §0wt carries it, with the window: bundle it with the
+next `min_client` floor raise, which is already a flag-day.
 
 ### 2.1 · The "real UDP" fine print — congestion control, measured
 

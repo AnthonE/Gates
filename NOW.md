@@ -740,6 +740,37 @@ storm before threading `&mut self` through the picker.
 
 ---
 
+## 0wt · WebTransport outlived its only user *(server lane)*
+
+**Operator, 2026-08-15:** *"have we not moved on to just like a real
+transport? we dont do web now"* — correct, and `NETCODE.md` §2 had a browser
+support matrix in it until that question was asked (fixed there).
+
+We are not missing real QUIC: `wtransport` is quinn, we enable its `quinn`
+feature, and `net.rs` already uses quinn's own `QuicTransportConfig` and
+`IpBindConfig`. What is vestigial is the **HTTP/3 session layer** on top —
+extended-CONNECT (`endpoint.accept()` → `IncomingSession` →
+`request.accept()`), the `https://{addr}` URL shape, a session-id prefix on
+every datagram against the 1 100-byte budget.
+
+The case to drop it is not speed. It is that **our one remote-panic trap
+lives in that layer** (#317, two bytes on the CONNECT stream), which is why
+we depend on a git rev of an unreleased third party instead of a published
+crate — and §2.2's ⚠ says nothing records or gates that the pin even
+contains the fix. Removing the layer retires the pin, the trap and the
+browser-shaped cert rules (P-256, 14-day) in one move.
+
+The seam is thin — client `connect`, server `accept`, a handful of config
+types, `tls_posture.rs`, `botclient.rs`, `Shard::url`. **The cost is not the
+code, it is the flag-day**: the handshake itself changes, so nothing
+negotiates and an old client just fails. Two depots and a public shard are
+live, and `scry-shardlist-v1` publishes the url shape.
+
+So: **not its own pass.** Bundle it with the next `min_client` floor raise,
+which is already a flag-day, or with the next touch of the wtransport pin
+(§2.2 marks that seam owed anyway). Wants the operator's word on timing —
+publishing and floor raises are operator acts.
+
 ## 0n1 · The class-S join walk has no interest filter *(server lane)*
 
 `reference/NETWORK.md` §9.2.1, measured 2026-08-10. `pump_events` drips the
