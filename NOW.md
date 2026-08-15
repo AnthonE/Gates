@@ -124,15 +124,26 @@ Remaining, in order:
    island is a **mosaic**: `SPLAT_MOIST_BAND` is 0.08 wide across a moisture
    field spanning ~0.9, so 48.8% of land reads as grass alone, 34.7% as litter
    alone, only 7.0% blends — and the two are 30.5° apart in hue.
-3. **The capture probe's ground colour is a draw, and this is the live item.**
-   `VANTAGES` is six yaw/pitch pairs with no translation, so all six frames are
-   shot from the spawn point; `spawn_pos` draws a bearing from the player id.
-   Near-band green-dominant over 16 bearings: **0.0%, 78.6%, 81.2%, 85.2%,
-   85.3%** — bimodal, and the judge drew the litter side three reports running.
-   So consecutive `-visual.md` are not comparable on anything ground colour
-   touches, compounding the unpinned sun (its own defect 17). `dev_spawn`
-   already exists (`world.rs:1223`) and §0p3 has the recipe; the knob is
-   `DECISIONS.md` §open, "the capture probe's spawn".
+3. ~~The capture probe's ground colour is a draw~~ — **struck 2026-08-15, both
+   halves pinned.** The *place* was already pinned outside this repo:
+   `gates-loop/art/capture-native.sh:44` writes `dev_spawn = 1155,140`, so the
+   frames stopped riding `spawn_pos`'s per-id bearing draw before this item was
+   read. The *hour* was not, and it landed here: `rig::DayPin` pins a
+   `--capture` run's tick to noon — the one fraction where `sun_elevation`
+   returns `RIG_SUN_ELEVATION` exactly. It pins the **tick**, not the sun,
+   because `render/audio.rs` reads the same clock through `is_night`.
+   Measured: a capture shard boots at tick 0 and the probe fired after the
+   build, so the sun was **24.5° at tick 0, 27.3° typical, 30.4°** on a slow
+   box — a 5.9° swing, at or below `ART.md` §1's 30–40° band, rising with build
+   time. Gate `tests/daynight.rs` +5 (8 total), 4 red unpinned and 3 red on a
+   wrong pin. Knob: `DECISIONS.md` §open "capture clock v0".
+
+   **What the next pass must know: the tonal baseline moved.** Every `-visual.md`
+   before this one was shot at 24–27°, so its luma, sky and shadow numbers are
+   not comparable to the next report's — the first frames at the authored
+   register are the ones the runner captures after this merges, and nobody has
+   looked at them yet. Do not read a brightness delta in the next report as the
+   effect of a render change.
 4. **The judge read real geometry as paint.** `render/clutter.rs` ships 721
    elements a tile and is drawn; what it lacks is a shadow (`NotShadowCaster`,
    deliberately) and any contact darkening (no SSAO anywhere). `ART.md` rule 2.
