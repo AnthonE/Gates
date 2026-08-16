@@ -36,6 +36,13 @@ pub mod manifest;
 // `shardlist` is: it parses a string a stranger wrote and handed to a friend,
 // which is the input in this client that most needs a test in the code tier.
 pub mod deeplink;
+// Discord rich presence: the local IPC socket, the frames, and the copy.
+// Unconditional for `config`'s reason exactly — the framing is two integers
+// and the payloads are four fixed shapes, all of it pure, and a test behind
+// `--features render` runs in the renderer tier where nobody looks at it.
+// `render/presence.rs` is the Bevy half (the `Screen` mapping and the
+// once-per-change handoff). Dark unless `GATES_DISCORD_APP_ID` is set.
+pub mod discord;
 pub mod scry;
 pub mod shardlist;
 // Where a player's screenshot goes and what it is called. Unconditional for
