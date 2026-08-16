@@ -369,6 +369,55 @@ file predicted best:
   as its own floor plus the pad's blend band. Spoken, because it moves what the
   island scatters near a waystation.
 
+### 9.2b · Two tier-1 claims, finally sourced — and one of them is a number
+
+**Provenance, stated first because §0 is the reason to.** Written 2026-08-16
+after the carve was armed. `rust.facepunch.com`, `wiki.facepunch.com` and
+`rustedit.io` are **all still egress-blocked from this box** — every fetch
+returned `EGRESS_BLOCKED`, so §10's "if the proxy is ever fixed" condition is
+NOT met and its two named claims (the 2022 vertical-grid 0.4 ms, the 2020
+4000→4250 world-size bump) remain unverified. What follows is **tier 2: search
+summaries of Devblog 167 (2017-07-06) and Devblog 54 (2015-04-02)**, which is
+`DOORS.md`'s posture, not `DURABILITY.md`'s. No number here may reach
+`content/`.
+
+**1 · They moved off radial falloff, and we are deliberately where they were.**
+Devblog 167: monuments gained "a detailed terrain blending map instead of a
+basic radial falloff … to avoid unnecessary flattening of the terrain around
+them", and the same post says monuments without one "should no longer look like
+they're placed on a circular plateau" — while conceding that not all monuments
+had maps yet, so "things are still expected to look somewhat circular". §3 said
+this and it is now sourced. **It is not a gap for us to close**: an authored
+per-monument mask needs an authored monument, and we have one greybox per tier.
+Our `SiteFootprint` is the right shape to gain one when there is something to
+author — which is §9.2's whole point about masks over radii.
+
+**2 · Their anchoring picks the altitude that minimises error. Ours takes the
+height at the site's centre. Measured: that is worth ~18%.**
+Devblog 54 describes anchoring that "looks for the perfect placement altitude in
+every attempt"; 167 sharpens it to "the placement height that results in the
+lowest possible error for any given placement position". `Haven::y` /
+`Waystation::y` are `height(seed, x, z)` at the centre (`terrain.rs`), which is
+an arbitrary sample on a sloped site — and since the carve was armed that datum
+is also **the level the floor is cut to**, so it sets how deep the cut has to
+be. Measured over 384 sites on 128 seeds, worst / mean |cut| required:
+
+| datum | worst | mean |
+|---|---|---|
+| height at the centre (ours) | 4.909 m | 1.459 m |
+| mean over the floor | 4.664 m | 1.373 m |
+| **midpoint of min/max** (the minimax optimum) | **4.028 m** | **1.209 m** |
+
+−18% on both, for a datum that is strictly cheaper to compute than the rosette
+`haven_relief` already runs. It buys ramp headroom directly: the worst carved
+gradient is `depth × 1.5 / band`, currently sitting at 0.595 against a 0.596
+budget, so an 18% shallower cut is 18% off the number the clamp is pinned to.
+
+**Not taken here, and the reason is scope rather than doubt** (`BALANCE.md` §6
+would take theirs by default): `Haven::y` is read by `probe.rs`, `mob.rs` and
+the client's map as well as by the carve, and moving it is a second worldgen
+change — another golden, another wipe. `NOW.md` §0n2 carries it.
+
 ### 9.3 · The gap that matters most: our solver is two hand-written tiers
 
 §1 is the half we have; §2's inversion is the half we do not. `haven()` and
