@@ -412,7 +412,6 @@ pub fn resolve_marks(
             rec.cz as f32 * BUILD_CELL_M + half,
         );
     }
-
 }
 
 #[cfg(test)]
@@ -787,9 +786,7 @@ mod tests {
         let haven = terrain::haven(42);
         let (defs, have) = defs_with(&[ARCH_BAG]);
         // Enough beds to fill the cap on their own.
-        let deploys: Vec<DeployRec> = (0..MAP_MARKS_MAX)
-            .map(|i| rec_at(i as u16, 7, 0))
-            .collect();
+        let deploys: Vec<DeployRec> = (0..MAP_MARKS_MAX).map(|i| rec_at(i as u16, 7, 0)).collect();
         // The owner's bag: dropped newest, handed to the resolve last.
         let bags = [WireBag {
             id: 1,
@@ -871,9 +868,7 @@ mod tests {
         let last = bags.last().unwrap();
         let (px, py) = world_to_map(last.qx as f32 * POS_XZ_Q, last.qz as f32 * POS_XZ_Q, 1);
         assert!(
-            !out.a[..out.count]
-                .iter()
-                .any(|m| (m.px, m.py) == (px, py)),
+            !out.a[..out.count].iter().any(|m| (m.px, m.py) == (px, py)),
             "drop-newest means the LAST bag is the one refused"
         );
     }

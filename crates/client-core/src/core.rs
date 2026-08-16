@@ -20,11 +20,11 @@ use sim_core::deploy::{DeployContent, DeployRec, ARCH_DOOR};
 use sim_core::gather::{cell_key, ItemStack, NO_CELL};
 use sim_core::input::InputFrame;
 use sim_core::inventory::CONT_SELF;
-use sim_core::movement::POS_XZ_Q;
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_DEPLOYS,
     MAX_PIECES, MAX_SLOT_LIVES,
 };
+use sim_core::movement::POS_XZ_Q;
 use sim_core::occupy::{Harvested, Occupants, SlotCache};
 use sim_core::terrain::{self, Haven, ScatterTable};
 

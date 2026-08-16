@@ -15,11 +15,11 @@ use bevy::light::EnvironmentMapLight;
 use bevy::prelude::*;
 use client::render::feed::Feed;
 use client::render::fill::peak_lux;
-use client::render::sky;
 use client::render::rig::{
     self, day_night, sun_elevation, tick_at_frac as tick_at, DayPin, EyeCam, Sun, CAPTURE_DAY_FRAC,
     NIGHT_AMBIENT_LUX, RIG_SUN_ELEVATION,
 };
+use client::render::sky;
 use sim_core::limits::{DAY_PORTION, DAY_TICKS};
 use sim_core::world::day_frac;
 
