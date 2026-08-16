@@ -417,6 +417,16 @@ do not rediscover)
   is the half that bites: `gates.exe` imports only `libstdc++-6.dll`, and
   *that* imports `libgcc_s_seh-1.dll` and `libwinpthread-1.dll`, so a direct
   read of the exe ships a third of the runtime and fails identically.
+  The gate that closes it is not another document check — `nightly.yml`'s
+  windows leg **runs the staged build under wine** (`gates.exe --help`, ~7 s
+  from a cold prefix, no window and no GPU), because every check that existed
+  read the depot and the depot was *correct*. Measured both ways: with the
+  runtime staged it exits 0, and with the three DLLs moved aside it dies as
+  `err:module:import_dll ... not found` / `loader_init ... failed, status
+  c0000135`. That is the same failure the player saw with a different code —
+  **absent is `c0000135`, present-but-32-bit is `c000007b`** — so a machine
+  with no copy at all fails identically and the distinction is only about
+  what junk is already on the box.
   ⚠ **The code fixed here is the packager, not the depot on the origin.**
   Republishing is an operator act, so until it happens the live Windows build
   is still the broken one (`NOW.md` §0win). And `0xc000007b` specifically —

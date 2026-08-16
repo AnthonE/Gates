@@ -202,6 +202,48 @@ jobs:
               print(f"windows runtime OK — {len(bundled)} DLL(s) staged and credited")
           PY
           echo "$index" >> "$GITHUB_STEP_SUMMARY"
+      # **The only check here that runs the game rather than reading about it.**
+      # Everything above this line is arithmetic over a document, and a correct
+      # document is exactly what `0.2.0-gbed9e02d6` had: its `requires.libs`
+      # named the DLL it was missing. What no document check can answer is
+      # whether the loader resolves — and that is the whole of this bug class,
+      # because the failure happens in `loader_init` before a byte of our code
+      # runs.
+      #
+      # Wine is a real answer to that. Run from the STAGED directory, so what
+      # is tested is the app-directory DLL search a player's machine performs,
+      # against the files the depot actually carries. Measured both ways on
+      # 2026-08-16: with the runtime staged it prints its help and exits 0; with
+      # the three DLLs moved aside it dies as
+      #   err:module:import_dll Library libstdc++-6.dll ... not found
+      #   err:module:loader_init ... failed, status c0000135
+      # which is the player's Application Error box with a different code
+      # (theirs was c000007b — same cause, plus a 32-bit copy on their PATH).
+      #
+      # `--help` on purpose: no window, no GPU, no shard, ~7 s from a cold
+      # prefix. It is the loader and argument parsing, which is precisely the
+      # stage that breaks. A frame is not what this is for.
+      #
+      # NOT allowed to skip. A missing wine is a check that did not run, and a
+      # pass it did not earn is the worst bug class this repo names.
+      - name: the windows build actually starts
+        if: matrix.platform == 'win-x86_64'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y wine64
+          command -v wine >/dev/null || { echo "::error::wine did not install — this check cannot skip"; exit 1; }
+          dir=$(find target/depot -name gates.exe -printf '%h\n' | head -1)
+          test -n "$dir" || { echo "::error::no staged gates.exe to run"; exit 1; }
+          export WINEPREFIX="$RUNNER_TEMP/wine" WINEDEBUG=-all
+          wineboot -i >/dev/null 2>&1 || true
+          ( cd "$dir" && wine gates.exe --help ) > start.log 2>&1 || {
+            echo "::error::the staged windows build did not start"; sed -n 1,40p start.log; exit 1; }
+          # Exit 0 with nothing on stdout would be a pass this did not earn —
+          # so assert on something only a running client prints.
+          grep -q -- "--no-launcher" start.log || {
+            echo "::error::it exited 0 but printed no help — did it really run?"
+            sed -n 1,40p start.log; exit 1; }
+          echo "the staged windows build starts and parses its arguments"
       - name: upload the depot
         uses: actions/upload-artifact@v4
         with:

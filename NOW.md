@@ -68,7 +68,11 @@ is how this shipped. Its "what was packaged" step carries the assertion
 `0.2.0` needed: bundled must be non-empty, every promised DLL must be in the
 file list, no `libstdc++`/`libgcc`/`libwinpthread` may be left in `libs`,
 and the notice must travel. Proven red against the published `0.2.0`
-document and green against a repackage of it.
+document and green against a repackage of it. Then the check no document
+can make: the leg **runs the staged exe under wine** (`--help`, ~7 s, no
+window), which fails with `loader_init ... c0000135` the moment the runtime
+is not beside it. That is the first thing in this repo that has ever
+verified a Windows build starts.
 
 **What remains is operator-only**, and until it happens every Windows
 player is still handed the broken build: take the nightly's `win-x86_64`
