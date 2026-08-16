@@ -23,7 +23,7 @@ use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::INV_SLOTS;
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::terrain::{self, Occupant, ScatterTable, CELL_SIZE};
-use sim_core::world::{Command, EventQueue, World, EV_BAG_DROPPED, EV_GATHER};
+use sim_core::world::{Command, EventQueue, Player, World, EV_BAG_DROPPED, EV_GATHER};
 
 /// The gather suite's seed, deliberately: the node this file swings at is
 /// the node `tests/gather.rs` already proves pays its hand row, so a
@@ -975,4 +975,118 @@ fn an_inert_ladder_does_not_even_merge_into_a_bag_already_standing() {
         "and the buffer still holds it, for the caller to destroy as the \
          pre-spill world did"
     );
+}
+
+/// The two destructive reads of a bag slot leave it CANONICALLY empty —
+/// all three fields, not two. Format 7's reader refuses
+/// `count == 0 && cond != 0`, and `Backpacks` is a world-saved store, so
+/// a slot emptied by loot that kept its condition was a record the next
+/// boot would refuse: loot a worn tool out of a bag, autosave, restart,
+/// dead shard. Found by the durability slice's own review; red before the
+/// fix (the emptied slot held `cond` 123 behind `item` 0).
+#[test]
+fn a_looted_slot_zeroes_its_condition_with_its_item() {
+    let bc = BackpackContent::probe_fixture();
+    let gc = GatherContent::probe_fixture();
+    let mut bp = Backpacks::new();
+    let mut ev = EventQueue::default();
+
+    // A bag holding a worn tool and one junk.
+    let mut held = [ItemStack::default(); INV_SLOTS];
+    held[0] = ItemStack {
+        item: 0,
+        count: 1,
+        cond: 123,
+    };
+    held[1] = ItemStack {
+        item: JUNK,
+        count: 1,
+        cond: 0,
+    };
+    bp.stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev)
+        .expect("the fixture ladder is armed");
+
+    // A looter who can hold the tool and nothing else: slot 0 open, every
+    // other slot capped on an item the bag does not hold — so the junk
+    // stays behind and the bag survives its own emptied slot.
+    let mut p = Player::default();
+    for s in 1..INV_SLOTS {
+        p.inv[s] = ItemStack {
+            item: 2,
+            count: STACK_MAX,
+            cond: 0,
+        };
+    }
+    bp.loot_nearest(&gc, &mut p, &mut ev)
+        .expect("a bag in reach");
+
+    assert_eq!(
+        p.inv[0],
+        ItemStack {
+            item: 0,
+            count: 1,
+            cond: 123,
+        },
+        "the tool travels worn"
+    );
+    assert_eq!(
+        bp.entries()[0].items[0],
+        ItemStack::default(),
+        "the emptied bag slot is the canonical empty the world save re-reads"
+    );
+}
+
+/// The spill's leftover path is the same defect one function over: a
+/// source stack fully merged into a bag in reach was emptied as
+/// `item = 0` alone, and `stand_up` copies the buffer VERBATIM — so the
+/// minted bag carried a `{count: 0, cond: ..}` slot into the same
+/// world-saved store. The same boot refusal, reached without loot.
+#[test]
+fn a_spilled_slot_that_merged_away_zeroes_its_condition() {
+    let bc = BackpackContent::probe_fixture();
+    let gc = GatherContent::probe_fixture();
+    let mut bp = Backpacks::new();
+    let mut ev = EventQueue::default();
+
+    // A standing bag with exactly one open slot.
+    let mut held = [ItemStack {
+        item: JUNK,
+        count: STACK_MAX,
+        cond: 0,
+    }; INV_SLOTS];
+    held[0] = ItemStack::default();
+    let first = bp
+        .stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev)
+        .expect("the fixture ladder is armed");
+
+    // Spill a worn tool (fits the open slot) beside an item the bag has
+    // no room for, so the leftovers stand a second bag up from the very
+    // buffer the merge already wrote its "empty" into.
+    let mut spill = [ItemStack::default(); INV_SLOTS];
+    spill[0] = ItemStack {
+        item: 0,
+        count: 1,
+        cond: 77,
+    };
+    spill[1] = ItemStack {
+        item: 2,
+        count: 1,
+        cond: 0,
+    };
+    let stood = bp
+        .spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 200, &mut ev)
+        .expect("the leftovers stand a bag up");
+    assert_ne!(stood, first, "the second bag is the leftovers' own");
+
+    let minted = bp
+        .entries()
+        .iter()
+        .find(|e| e.id == stood)
+        .expect("the stood bag is in the store");
+    for (s, slot) in minted.items.iter().enumerate() {
+        assert!(
+            slot.count > 0 || *slot == ItemStack::default(),
+            "slot {s} of the minted bag is a non-canonical empty: {slot:?}"
+        );
+    }
 }

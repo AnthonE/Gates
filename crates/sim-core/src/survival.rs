@@ -463,7 +463,13 @@ pub fn consume(sc: &SurvivalContent, slot: usize, p: &mut Player, events: &mut E
 
     p.inv[slot].count -= 1;
     if p.inv[slot].count == 0 {
-        p.inv[slot].item = NO_ITEM;
+        // The canonical empty, all three fields — NOT `NO_ITEM`, which
+        // `PlayerSave::read_le` refuses twice over (`item >= MAX_ITEM_DEFS`
+        // and the canonical-empty rule): eat your last stack, get swept by
+        // the autosave, and the record could never be read back. Every
+        // reader of an inventory slot keys on `count`, never on the stored
+        // item of an empty slot (`held_item` derives its own `NO_ITEM`).
+        p.inv[slot] = crate::gather::ItemStack::default();
     }
     // Saturating, not wrapping: `min` clamps the *result*, so a plain add
     // would have to be correct before the clamp could help it. The bake

@@ -435,7 +435,10 @@ impl Backpacks {
                 }
                 stack.count -= took;
                 if stack.count == 0 {
-                    stack.item = 0; // canonical empty
+                    // Canonical empty is ALL THREE fields — `stand_up`
+                    // copies this buffer verbatim into a world-saved store,
+                    // and format 7's reader refuses `count == 0 && cond != 0`.
+                    *stack = ItemStack::default();
                 }
             }
             let want = tick + bc.lifetime_ticks(&self.entries[i].items) as u64;
@@ -583,7 +586,10 @@ impl Backpacks {
             }
             self.entries[i].items[s].count -= took;
             if self.entries[i].items[s].count == 0 {
-                self.entries[i].items[s].item = 0; // canonical empty
+                // Canonical empty is ALL THREE fields — a looted-out slot
+                // that kept its condition is a record the world save's
+                // reader refuses at the next boot (`count == 0 && cond != 0`).
+                self.entries[i].items[s] = ItemStack::default();
             }
             events.push(
                 EV_GATHER,

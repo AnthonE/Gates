@@ -20,6 +20,7 @@ use sim_core::deploy::{DeployContent, DeployRec, ARCH_DOOR};
 use sim_core::gather::{cell_key, ItemStack, NO_CELL};
 use sim_core::input::InputFrame;
 use sim_core::inventory::CONT_SELF;
+use sim_core::movement::POS_XZ_Q;
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_DEPLOYS,
     MAX_PIECES, MAX_SLOT_LIVES,
@@ -32,6 +33,13 @@ pub const TOAST_RING: usize = 8;
 
 /// Craft refusal reasons buffered for the HUD (drop-oldest, cosmetic).
 pub const REFUSAL_RING: usize = 4;
+
+/// How far a `BagDropped` may land from the dead predicted body and still
+/// be tagged as this body's own bag (`ClientCore::own_bag`). Covers the
+/// unreconciled prediction lead at death — a sprint's worth of round trip
+/// (~5.5 m/s x 300 ms) with room to spare — while staying far under the
+/// distance at which two simultaneous deaths stop being "the same spot".
+pub const OWN_BAG_NEAR_M: f32 = 4.0;
 
 /// Chat lines buffered for the log (drop-oldest). Deeper than the toast
 /// ring because the pump drains it every event, not every frame, and a
@@ -115,8 +123,9 @@ pub const APPLIED_CONSUME: u32 = 1 << 28;
 pub const APPLIED_DRANK: u32 = 1 << 29;
 /// The death screen opened or closed — `EventMsg::Death` naming *you*, or
 /// the `EventMsg::Respawn` that answers it. One flag for both because the
-/// HUD's response to either is to re-read `client_death_screen`, which
-/// says which it was; the same shape `APPLIED_CONSUME` takes.
+/// response to either is to re-read [`ClientCore::dead`] (`render/death.rs`
+/// is the reader), which says which it was; the same shape
+/// `APPLIED_CONSUME` takes.
 ///
 /// Not `APPLIED_DEATH`'s bit, and the distinction is the whole point of a
 /// separate flag: `Death` is broadcast, so most of them are somebody
@@ -907,6 +916,23 @@ pub struct ClientCore {
     pub own_death_item: u16,
     pub own_death_range_cm: u16,
     pub woke_on_bag: bool,
+    /// The bag that stood where THIS body died — `WireBag::id`, zero for
+    /// none (the store's own "no bag" sentinel). The wire deliberately
+    /// carries no bag owner (`BackpackRec::owner` is sim-side only), so
+    /// this is a client-side join, exact in everything the client knows:
+    /// a `BagDropped` that lands while `dead`, before any other has since
+    /// this death, within [`OWN_BAG_NEAR_M`] of the predicted body — which
+    /// while dead IS the death position, since a dead body neither moves
+    /// nor predicts. A neighbour dying on the same spot inside the same
+    /// window can mis-tag; the cost is one map mark ranked as yours, and
+    /// the alternative is a wire field `ALPHA.md` §1 reserves as an
+    /// operator call. Cleared by the bag's own `BagRemoved`, NOT by
+    /// respawn — walking back to it is the point.
+    pub own_bag: u32,
+    /// Armed by the `Death` naming this body, spent by the first
+    /// qualifying `BagDropped`: the latch that keeps a stranger's later
+    /// bag from re-tagging while the screen is up.
+    own_bag_pending: bool,
     /// The placed-piece mirror (address-keyed; the renderer's truth).
     pub pieces: PieceSet,
     /// Piece records the last `on_stream` call added or replaced.
@@ -1101,6 +1127,8 @@ impl ClientCore {
             own_death_item: sim_core::gather::NO_ITEM,
             own_death_range_cm: 0,
             woke_on_bag: false,
+            own_bag: 0,
+            own_bag_pending: false,
             refusal_head: 0,
             refusal_len: 0,
             pieces: PieceSet::new(),
@@ -1477,6 +1505,18 @@ impl ClientCore {
                 if self.bags.insert(WireBag { id, qx, qy, qz }) {
                     flags |= APPLIED_BAGS;
                 }
+                // The own-bag join (`own_bag`'s field doc): while dead the
+                // predicted body is the death position, and the server
+                // stands the bag at the body it killed, so the first drop
+                // since this death that lands beside it is this body's.
+                if self.own_bag_pending && self.dead {
+                    let dx = (qx - self.predict.body.qx) as f32 * POS_XZ_Q;
+                    let dz = (qz - self.predict.body.qz) as f32 * POS_XZ_Q;
+                    if dx * dx + dz * dz <= OWN_BAG_NEAR_M * OWN_BAG_NEAR_M {
+                        self.own_bag = id;
+                        self.own_bag_pending = false;
+                    }
+                }
             }
             EventMsg::BagSync { reset, recs, count } => {
                 if reset {
@@ -1529,6 +1569,9 @@ impl ClientCore {
                 // not have yet; the set only cares that it is gone.
                 if self.bags.remove(id) {
                     flags |= APPLIED_BAGS;
+                }
+                if self.own_bag == id {
+                    self.own_bag = 0; // looted out, expired or evicted
                 }
             }
             EventMsg::DeployRefused { reason } => {
@@ -1818,6 +1861,7 @@ impl ClientCore {
                 // sentence on it.
                 if victim == self.player_id {
                     self.dead = true;
+                    self.own_bag_pending = true;
                     self.own_death_killer = killer;
                     self.own_death_cause = cause;
                     self.own_death_item = item;
@@ -2725,14 +2769,18 @@ mod tests {
         }
         assert_eq!(c.pop_consume_toast(), None);
 
-        // The refusal ring under the same rule (codes are 1-based: the
-        // encoder refuses 0, which is not a refusal on this wire).
+        // The refusal ring under the same rule. Codes cycle inside the
+        // sim's own ledger (1..=REFUSE_C_MAX): the encoder range-checks
+        // both ends now, so a test that invented codes above the ledger
+        // to tell slots apart would no longer encode at all.
         for i in 0..(REFUSAL_RING + 2) as u8 {
-            let len = protocol::encode_event_consume_refused(i + 1, &mut buf).unwrap();
+            let code = (i % sim_core::survival::REFUSE_C_MAX as u8) + 1;
+            let len = protocol::encode_event_consume_refused(code, &mut buf).unwrap();
             c.on_stream(&buf[..len]).unwrap();
         }
         for i in 2..(REFUSAL_RING + 2) as u8 {
-            assert_eq!(c.pop_consume_refusal(), Some(i + 1));
+            let code = (i % sim_core::survival::REFUSE_C_MAX as u8) + 1;
+            assert_eq!(c.pop_consume_refusal(), Some(code), "oldest-first broke");
         }
         assert_eq!(c.pop_consume_refusal(), None);
     }
@@ -3027,5 +3075,102 @@ mod tests {
         let len = encode_event_removed(false, cx, cz, level, LOC_EDGE_XLO, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(!shut(&c), "a removed door leaves nothing sealed");
+    }
+
+    /// The own-bag join, whole: a `Death` naming this body arms the
+    /// latch, the first `BagDropped` beside the dead predicted body is
+    /// tagged, a stranger's bag farther away is not, a later neighbour
+    /// bag cannot re-tag while the screen is still up, and the bag's own
+    /// `BagRemoved` clears the tag. The wire carries no owner — this is
+    /// the client-side join `own_bag`'s field doc states, gated end to
+    /// end over real encoded events.
+    #[test]
+    fn the_own_bag_is_tagged_by_death_and_distance_and_cleared_by_removal() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+
+        // A stranger's bag before any death: never tagged.
+        let far = protocol::WireBag {
+            id: 9,
+            qx: 90_000,
+            qy: 0,
+            qz: 90_000,
+        };
+        let len = protocol::encode_event_bag_dropped(&far, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 0, "no death, no tag");
+
+        // This body dies. The predicted body sits at the default origin,
+        // so the death position is (0, 0).
+        let len = protocol::encode_event_death(0x107, 5, 0, 0, 100, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(c.dead);
+
+        // A bag beside the body (1 m off, inside OWN_BAG_NEAR_M): tagged.
+        let near_q = (1.0 / POS_XZ_Q) as i32;
+        let mine = protocol::WireBag {
+            id: 11,
+            qx: near_q,
+            qy: 0,
+            qz: 0,
+        };
+        let len = protocol::encode_event_bag_dropped(&mine, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 11, "the first drop beside the dead body is mine");
+
+        // A neighbour dies on the same spot a moment later: the latch is
+        // spent, the tag holds.
+        let theirs = protocol::WireBag {
+            id: 12,
+            qx: 0,
+            qy: 0,
+            qz: near_q,
+        };
+        let len = protocol::encode_event_bag_dropped(&theirs, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 11, "a spent latch cannot re-tag");
+
+        // Respawn does NOT clear it — walking back is the point.
+        let len = protocol::encode_event_respawn(false, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 11, "the tag outlives the death screen");
+
+        // The bag's own removal does.
+        let len = protocol::encode_event_bag_removed(11, 1, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 0, "a removed bag is nobody's mark");
+    }
+
+    /// The distance half alone: a death whose only bag lands beyond
+    /// `OWN_BAG_NEAR_M` tags nothing — a stranger dying across the meadow
+    /// in the same window is not this body's bag, and the latch stays
+    /// armed for the drop that IS.
+    #[test]
+    fn a_far_bag_does_not_spend_the_own_bag_latch() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let len = protocol::encode_event_death(0x107, 5, 0, 0, 100, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+
+        let far_q = (8.0 / POS_XZ_Q) as i32; // 2x the join radius
+        let theirs = protocol::WireBag {
+            id: 21,
+            qx: far_q,
+            qy: 0,
+            qz: 0,
+        };
+        let len = protocol::encode_event_bag_dropped(&theirs, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 0, "eight metres away is somebody else");
+
+        let mine = protocol::WireBag {
+            id: 22,
+            qx: 0,
+            qy: 0,
+            qz: 0,
+        };
+        let len = protocol::encode_event_bag_dropped(&mine, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 22, "the latch waited for the drop at the body");
     }
 }

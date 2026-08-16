@@ -117,8 +117,15 @@ Left: two operator calls, neither a hole (`DECISIONS.md` §open, "death
 backpack v0"). Whether five minutes is the intended floor for a common-only
 bag now the kit guarantees one; and whether the death screen carries the
 last-known bag position — `ALPHA.md` §1 says *"no map position"* on purpose
-and it is a wire add off `Player`. A third needs no wire and no word: rank
-the owner's own bag ahead of the cap in `resolve_marks`.
+and it is a wire add off `Player`. The third — rank the owner's own bag
+ahead of the cap — **landed 2026-08-16**, and it took a fact this item did
+not have: the wire carries no bag owner on purpose (`BackpackRec::owner` is
+sim-side only), so `ClientCore::own_bag` joins the `BagDropped` against the
+dead predicted body instead (death-position join, `OWN_BAG_NEAR_M`), and
+`resolve_marks` pushes the tagged bag directly behind the authored tier.
+Bags as a class also outrank the bed/hearth mirror now, and the map draws
+marks in reverse resolve order so cap rank and draw-on-top rank are one
+rule. Gated both ways (`ui/map.rs`, `client-core`'s two join tests).
 
 ## 0dur · Durability landed; the number is invisible *(client lane)*
 
@@ -142,6 +149,14 @@ proven red. What remains, in rank order:
    lands it is `Station::Workbench1..3` + a blueprint check, never a new
    deployable, and §3's 0.20 ratio stays DISPUTED until someone checks it
    against the in-game price.
+4. **The save readers accept un-mintable condition** (review finding,
+   2026-08-16): both decoders run without the content tables, so a save
+   can smuggle `cond` above the item's ceiling or onto an item whose
+   `condition_max` is 0 — states no command can mint, in the one
+   non-command path into `World`. A post-load clamp where content is in
+   scope (server boot), or a validate pass over the loaded world. The
+   slice's blocker cousin — an emptied slot keeping its `cond` — is fixed
+   and gated (`spill.rs`, `persist.rs`: the canonical-empty trio).
 
 ## 0sun · The sun sweeps; the deck that follows it is ungated *(client lane)*
 
@@ -1772,16 +1787,16 @@ Lifted out of "done this pass" items before pruning (2026-08-05, again
 2026-08-09) — each was written down **only** inside a done item. All of it
 is `crates/`/wire work no single-surface lane may take.
 
-1. **The UDP socket buffer is a `NETCODE.md` row and nothing else** (found
-   2026-08-11 standing the public shard up). §2.2's config-of-record says
-   `SO_RCVBUF/SNDBUF 8 MiB, passed via with_bind_socket`; nothing in
-   `crates/` calls it, and the shard is running on this box's default
-   `rmem_max` of 212992 — the ~208 KiB the row's own "why" column names as
-   too small, quoting quinn's README. Two halves and the order matters: the
-   **code** half asks for the buffer (one `with_bind_socket` at the
-   endpoint), and only then does an ops sysctl raise the ceiling it would
-   otherwise hit. Doing ops first buys nothing measurable, which is why this
-   is a `crates/` item and not a runbook line. The row is marked ⚠ in place.
+1. ~~The UDP socket buffer is a `NETCODE.md` row and nothing else~~ —
+   **landed 2026-08-15 with the transport-truth pass** (`net::bind_udp`,
+   `UDP_BUF_BYTES` 8 MiB asked AND read back into `ShardStats`, gated by
+   `the_socket_buffer_records_what_it_got_not_what_it_asked`; the §2.2 row
+   is rewritten). This item stood a full day after the code landed and a
+   parallel lane rebuilt the feature from a stale base off it — struck
+   2026-08-16, the lane dropped. **The ops half is still owed**: this box
+   grants 4 MiB of the 8 asked (`rmem_max`), and raising the sysctl on the
+   public shard is an operator act. A stale item is not a small cost; it is
+   a whole lane's work spent twice.
 2. **Shore barrels as a second destination class.** The road pays unevenly
    now (the bay slots landed) and the haven pad is the one place worth
    walking to. A second class on the shore would give the ring two ends

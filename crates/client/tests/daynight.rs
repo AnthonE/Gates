@@ -120,8 +120,9 @@ fn app_pinned(pin: DayPin) -> App {
         // The cloud deck. Third component of `day_night`'s camera query, and
         // the one this fixture went WITHOUT until 2026-08-15 — the branch is
         // `Option<&mut Skybox>`, so with no `Skybox` here the deck half of the
-        // system was dead in every suite: deleting the `deck_rotation` call
-        // site (rig.rs:594) left all 28 green, proven. Same silent-no-op shape
+        // system was dead in every suite: deleting the `sky::deck_rotation`
+        // call site in `rig::day_night` left every client suite green,
+        // proven at the time. Same silent-no-op shape
         // as the hemisphere note above, one component later. Sentinel values,
         // both wrong on purpose, so an assertion on them proves a WRITE and
         // not a lucky spawn: no hour's brightness is negative and no hour's

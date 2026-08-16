@@ -336,10 +336,14 @@ impl Marks {
 /// the cap — and a bag is the one mark on a clock, dropped newest, which
 /// made your own bag the first thing the cap ate. `WireBag` carries no owner
 /// (the server's broadcast drops the victim id at `WireBag::of`), so the map
-/// cannot rank YOUR bag above a stranger's; ranking every bag above every
-/// bed is the whole of what is expressible without a wire field, and it is
-/// enough: the own bag now survives unless the shard is standing more bags
-/// than the cap. The cap itself does not move and drop-newest stays stated.
+/// cannot rank a STRANGER'S bag by whose it is — but the client can tag its
+/// OWN (`ClientCore::own_bag`, the death-position join), and `own_bag` here
+/// is that tag: the one bag pushed ahead of every other, directly behind the
+/// authored tier, so it survives any cap the authored marks leave room in —
+/// which is all of them, `AUTHORED + 1 < MAP_MARKS_MAX` by a wide margin.
+/// Stranger bags still pay the cap against each other, newest first among
+/// the marks behind them. The cap itself does not move and drop-newest
+/// stays stated.
 ///
 /// `have` is `ClientCore::deploy_defs_have`, and the guard is load-bearing:
 /// an undripped row reads as `DeployDef::INERT`, whose arch is `ARCH_BAG` —
@@ -352,6 +356,7 @@ pub fn resolve_marks(
     defs: &DeployContent,
     have: u16,
     bags: &[WireBag],
+    own_bag: u32,
 ) {
     out.count = 0;
     out.dropped = 0;
@@ -361,7 +366,21 @@ pub fn resolve_marks(
         out.push(MarkKind::Waystation, w.x, w.z);
     }
 
+    // The own bag first (zero = none, the store's own sentinel), so the cap
+    // can never eat it behind a shard's worth of strangers.
+    if own_bag != 0 {
+        if let Some(bag) = bags.iter().find(|b| b.id == own_bag) {
+            out.push(
+                MarkKind::Backpack,
+                bag.qx as f32 * POS_XZ_Q,
+                bag.qz as f32 * POS_XZ_Q,
+            );
+        }
+    }
     for bag in bags {
+        if own_bag != 0 && bag.id == own_bag {
+            continue; // already pushed, ahead of the cap
+        }
         // A bag carries a quantized world position, not a grid cell — it is
         // dropped where its owner died. y is the one term a map has no axis
         // for.
@@ -639,7 +658,7 @@ mod tests {
         let haven = terrain::haven(42);
         let (defs, have) = defs_with(&[]);
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &[], &defs, have, &[]);
+        resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0);
 
         assert_eq!(out.count, AUTHORED, "haven + {WAYSTATIONS} waystations");
         assert_eq!(out.dropped, 0);
@@ -683,7 +702,7 @@ mod tests {
             qz: 20_000,
         }];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags);
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0);
 
         assert_eq!(out.count, AUTHORED + 3);
         let half = BUILD_CELL_M * 0.5;
@@ -710,7 +729,7 @@ mod tests {
         let (defs, have) = defs_with(&[ARCH_BOX, ARCH_DOOR, ARCH_FIRE]);
         let deploys = [rec_at(10, 10, 0), rec_at(11, 10, 1), rec_at(12, 10, 2)];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[]);
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0);
         assert_eq!(out.count, AUTHORED, "only the authored tier");
     }
 
@@ -724,7 +743,7 @@ mod tests {
         let (defs, _) = defs_with(&[ARCH_BAG]);
         let deploys = [rec_at(10, 10, 0)];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, 0, &[]);
+        resolve_marks(&mut out, &haven, &deploys, &defs, 0, &[], 0);
         assert_eq!(out.count, AUTHORED, "an unknown row must not mark");
     }
 
@@ -744,14 +763,14 @@ mod tests {
             })
             .collect();
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &[], &defs, have, &bags);
+        resolve_marks(&mut out, &haven, &[], &defs, have, &bags, 0);
 
         assert_eq!(out.count, MAP_MARKS_MAX);
         assert_eq!(out.dropped, AUTHORED + over);
         assert_eq!(out.a[0].kind, MarkKind::Haven, "authored is never dropped");
         // A second resolve on the same `Marks` starts clean — the reuse bug
         // the browser gated (an accumulating set draws yesterday's bags).
-        resolve_marks(&mut out, &haven, &[], &defs, have, &[]);
+        resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0);
         assert_eq!(out.count, AUTHORED);
         assert_eq!(out.dropped, 0);
     }
@@ -779,7 +798,7 @@ mod tests {
             qz: 20_000,
         }];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags);
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0);
 
         assert_eq!(out.count, MAP_MARKS_MAX);
         assert_eq!(out.dropped, AUTHORED + 1 + deploys.len() - MAP_MARKS_MAX);
@@ -788,6 +807,41 @@ mod tests {
             .filter(|m| m.kind == MarkKind::Backpack)
             .count();
         assert_eq!(n, 1, "the bag must survive a cap full of beds");
+    }
+
+    /// The whole of §0die's ask, now that the client can tag its own bag:
+    /// a cap-full of STRANGER BAGS — the one flood the bags-above-anchors
+    /// rank cannot beat — and the owner's, dropped newest and handed to
+    /// the resolve last, still survives, because the tagged bag is pushed
+    /// directly behind the authored tier. Red under the untagged ordering
+    /// (own_bag = 0 drops it: the newest bag is the first one eaten).
+    #[test]
+    fn the_owners_own_bag_outranks_a_shard_of_strangers_bags() {
+        let haven = terrain::haven(42);
+        let (defs, _) = defs_with(&[]);
+        let mut bags: Vec<WireBag> = (0..MAP_MARKS_MAX)
+            .map(|i| WireBag {
+                id: 100 + i as u32,
+                qx: 30_000 + i as i32,
+                qy: 0,
+                qz: 30_000,
+            })
+            .collect();
+        bags.push(WireBag {
+            id: 7,
+            qx: 40_000,
+            qy: 0,
+            qz: 20_000,
+        });
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &[], &defs, 0, &bags, 7);
+
+        assert_eq!(out.count, MAP_MARKS_MAX);
+        let (px, py) = world_to_map(40_000.0 * POS_XZ_Q, 20_000.0 * POS_XZ_Q, 1);
+        assert!(
+            out.a[..out.count].iter().any(|m| (m.px, m.py) == (px, py)),
+            "the owner's bag must survive a cap full of strangers' bags"
+        );
     }
 
     /// The rank is not an exemption: bags still pay the cap against each
@@ -807,11 +861,13 @@ mod tests {
             })
             .collect();
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &[], &defs, have, &bags);
+        resolve_marks(&mut out, &haven, &[], &defs, have, &bags, 0);
 
         assert_eq!(out.count, MAP_MARKS_MAX);
         assert_eq!(out.dropped, AUTHORED + 1, "the overflow is counted");
-        // The newest bag is the one the cap ate: its pixel is absent.
+        // Drop-newest with the authored tier pushed first: the last
+        // AUTHORED + 1 bags are all refused; the very last is the cheapest
+        // to name, so the assert names it.
         let last = bags.last().unwrap();
         let (px, py) = world_to_map(last.qx as f32 * POS_XZ_Q, last.qz as f32 * POS_XZ_Q, 1);
         assert!(

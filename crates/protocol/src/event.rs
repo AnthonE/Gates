@@ -2024,9 +2024,11 @@ pub fn encode_event_consumed(item: u16, slot: u8, buf: &mut [u8]) -> Result<usiz
 
 /// The eat refusal (`sim_core::survival::REFUSE_C_*`). Reason zero is not a
 /// reason — a refusal that cannot say why is the silence this event exists
-/// to replace, so it is refused at the encoder.
+/// to replace — and anything past the sim's own ledger is a bug at this
+/// end; both are refused at the encoder, the posture every other refusal
+/// encoder here already takes (`REFUSE_M_MAX`, `REFUSE_G_MAX`).
 pub fn encode_event_consume_refused(reason: u8, buf: &mut [u8]) -> Result<usize, WireError> {
-    if reason == 0 {
+    if reason == 0 || (reason as u32) > sim_core::survival::REFUSE_C_MAX {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_CONSUME_REFUSED)?;

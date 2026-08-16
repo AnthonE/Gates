@@ -26,10 +26,16 @@
 //! ## The bound
 //!
 //! Every array here is [`FEED_CAP`] long, which is `client_core`'s own
-//! `TOAST_RING` — the core cannot hand over more per frame than its rings
-//! hold, so the cap is exact rather than generous. Overflow policy: **drop the
-//! newest and count it** ([`Feed::dropped`]), matching `sound::CUE_QUEUE_CAP`.
-//! A non-zero count means the core grew a ring and this file did not follow.
+//! `TOAST_RING`. For the single-source arrays that cap is exact — the core
+//! cannot hand over more per frame than the one ring holds. The shared
+//! refusal queue is the exception and this line used to deny it: SIX verb
+//! rings drain into it (research, craft, gather, build, deploy, consume),
+//! so a frame can offer more refusals than one array holds with nothing
+//! drifted anywhere. Overflow policy: **drop the newest and count it**
+//! ([`Feed::dropped`]), matching `sound::CUE_QUEUE_CAP` — a seventh
+//! refusal in one frame is noise, not news. A non-zero count on a
+//! single-source array still means the core grew a ring and this file did
+//! not follow.
 
 use bevy::prelude::*;
 use client_core::core::TOAST_RING;

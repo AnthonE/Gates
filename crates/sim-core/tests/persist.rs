@@ -852,3 +852,38 @@ fn a_saved_tool_comes_back_worn() {
         "a saved tool must come back exactly as worn as it left"
     );
 }
+
+/// Eating a stack to zero left `NO_ITEM` (65535) in the slot — a value
+/// `read_le` refuses twice over (`item >= MAX_ITEM_DEFS`, and the
+/// canonical-empty rule) — so the next autosave of that player wrote a
+/// record the next boot could not read back. Pre-existing (the one
+/// `NO_ITEM` writer in the tree; every other emptied slot is
+/// `ItemStack::default()`), found by the durability slice's review.
+#[test]
+fn an_eaten_empty_slot_still_saves_and_loads() {
+    use sim_core::persist::PLAYER_SAVE_BYTES;
+    use sim_core::world::{EventQueue, Player};
+
+    let sc = SurvivalContent::probe_fixture();
+    let mut ev = EventQueue::default();
+    let mut p = Player::default();
+    p.inv[0] = ItemStack {
+        item: 0,
+        count: 1,
+        cond: 0,
+    };
+    assert!(
+        sim_core::survival::consume(&sc, 0, &mut p, &mut ev),
+        "the fixture arms item 0 as food and the default meters are hungry"
+    );
+    assert_eq!(
+        p.inv[0],
+        ItemStack::default(),
+        "eaten-empty is the canonical empty, all three fields"
+    );
+
+    let save = PlayerSave::of(&p);
+    let mut buf = [0u8; PLAYER_SAVE_BYTES];
+    save.write_le(&mut buf);
+    PlayerSave::read_le(&buf).expect("an eaten-empty slot must load back");
+}
