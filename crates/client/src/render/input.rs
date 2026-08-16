@@ -71,10 +71,11 @@ pub struct Look {
 
 pub use crate::look::{pitch_u8, yaw_u16};
 
-// Ten. Every one is a distinct source this frame reads: the session, the free
-// view, the cursor, the settings, two input maps, the accumulated motion, the
-// accumulated scroll, the sound queue, whether a panel has the pointer, and
-// where a swing goes.
+// Ten sources and two `Local`s. Every source is distinct: the session, the
+// free view, the cursor, the settings, two input maps, the accumulated motion,
+// the accumulated scroll, the sound queue, whether a panel has the pointer,
+// and where a swing goes. The two locals are the pointer's edge memory — see
+// the cursor block.
 #[allow(clippy::too_many_arguments)]
 pub fn gather(
     mut net: NonSendMut<Net>,
@@ -93,6 +94,11 @@ pub fn gather(
     // Same shape as `ui`, and the same reason it is optional: a capture run
     // registers neither.
     chat: Option<Res<super::chat::Chat>>,
+    // The pointer's memory across frames. A `Local` holding a pure type from
+    // `ui::` rather than loose booleans, for that module's reason: the defect
+    // it fixes is a SEQUENCE, and a sequence inside a system can only be
+    // checked by a windowed run.
+    mut pointer: Local<crate::ui::pointer::Pointer>,
 ) {
     // An in-game panel owns the pointer while it is up: the cursor comes
     // back, the view stops turning, and the movement axes go to zero. A
@@ -140,14 +146,52 @@ pub fn gather(
     // released pointer with no menu under it was a state the player could not
     // tell from a hang. A panel is the same rule one level down — it releases
     // the pointer because it has something under it to click.
+    //
+    // **And it has to TAKE IT BACK, which is what this block was missing.**
+    // Reported by the operator, 2026-08-16, on the build wheel: *"used the
+    // window to pick pieces and close it my mouse was still up and i couldnt
+    // look around right without clicking"*. The release above had no matching
+    // restore anywhere, so the only route back to mouse-look was the
+    // `just_pressed(Left)` arm at the top — and with a building plan in hand
+    // that click **places a piece**. The workaround for a stuck cursor was to
+    // build something.
+    //
+    // The other two pointer owners already got this right and are the
+    // precedent rather than an invention: `chat::close` re-locks with the
+    // comment *"so getting out of chat does not need a click that would also
+    // swing the axe"*, and `pause` takes it back on resume. Panels were the
+    // one release in the client with no partner.
+    //
+    // **Restored on the edge, and only if the player had it.** A fresh world
+    // is uncaptured until the first click — the contract the settings screen
+    // advertises as *"click to capture the pointer"* — so opening and closing
+    // a panel before ever clicking must not silently capture it.
+    //
+    // The whole decision is `ui::pointer::Pointer::step`, which is pure and
+    // enumerates its transitions in a test. This block does exactly what it
+    // is told and knows nothing about the rule.
+    //
+    // **Stepped before the window is asked for, not inside the `if let`.**
+    // The state machine tracks an edge, so it has to advance on every frame
+    // this system runs — including a frame where the query finds no window.
+    // Stepping inside would stall the edge exactly when it is hardest to
+    // notice, and the pointer would come back stuck on the next real frame.
+    let locked = cursor
+        .single()
+        .map(|c| c.grab_mode == CursorGrabMode::Locked)
+        .unwrap_or(false);
+    let want = pointer.step(locked, panel_open, mouse.just_pressed(MouseButton::Left));
     if let Ok(mut c) = cursor.single_mut() {
-        if mouse.just_pressed(MouseButton::Left) && !panel_open {
-            c.grab_mode = CursorGrabMode::Locked;
-            c.visible = false;
-        }
-        if panel_open {
-            c.grab_mode = CursorGrabMode::None;
-            c.visible = true;
+        match want {
+            crate::ui::pointer::Grab::Lock => {
+                c.grab_mode = CursorGrabMode::Locked;
+                c.visible = false;
+            }
+            crate::ui::pointer::Grab::Release => {
+                c.grab_mode = CursorGrabMode::None;
+                c.visible = true;
+            }
+            crate::ui::pointer::Grab::Leave => {}
         }
         if !look.frozen && !panel_open && c.grab_mode == CursorGrabMode::Locked {
             let d = motion.delta;
@@ -184,7 +228,6 @@ pub fn gather(
             }
         }
     }
-
     if panel_open {
         // The input frame still goes out — the sim needs one every tick and
         // a client that stopped sending would be a client standing still for
