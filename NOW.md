@@ -164,7 +164,33 @@ diff, +2 B per slot, worst case 162 → 206 B against `MAX_EVENT_MSG_BYTES =
 
 §0kit's zero-yield refusal wants the same wire window. Take both.
 
-## 0sun · The sun sweeps; the deck that follows it is ungated *(client lane)*
+## 0bl · Pieces line up on a lattice now — what the stored plate would add *(client+sim lane)*
+
+From the operator's 2026-08-15 screenshots (*"bad news about the building
+system and pieces lining out"*). **Landed 2026-08-15/16** — build base
+lattice v0, `DECISIONS.md` §open has the knobs and the three mechanisms:
+one height implementation (`build::column_floor_y`, 0.5 m vertical lattice,
+flushness bit-equal, two formula copies retired), the terrain-following
+foundation skirt (`structures::foundation_part`, one emit for piece and
+ghost), and the ghost aimed by the LOOK ray (`place::aim_from_look`)
+instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
+`client/tests/ghost.rs` §footing, `place.rs` §aim. Remaining, ranked:
+
+1. **Nobody has looked at it.** Every claim is arithmetic; the screenshots
+   that opened this deserve their counter-shot. Boot, build a row on the
+   same hillside, look.
+2. **The stored plate is the real v1** — the reference's model: first
+   foundation pins a height, neighbours latch to it, too-high/too-low
+   refusals, stilts past one band. Costs a wire field + save bump + mirror
+   change (§open row prices it). Until then a slope steps every `q/slope`
+   metres and the player cannot choose where.
+3. **A band-boundary wall bases on its canonical cell** — it can hang one
+   band over the lower plate (an arrow-sized slit under it). The lower of
+   its two columns is the honest base; needs `collide` + render together.
+4. **The skirt draws and does not block** — walking into it from downhill
+   clips through. Piece side collision is its own slice.
+
+
 
 Landed: `to_sun` takes the **hour** and derives both coordinates, so no
 caller can pair this morning's height with this afternoon's bearing.
