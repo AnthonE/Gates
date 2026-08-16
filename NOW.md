@@ -114,14 +114,28 @@ window), which fails with `loader_init ... c0000135` the moment the runtime
 is not beside it. That is the first thing in this repo that has ever
 verified a Windows build starts.
 
-**What remains is operator-only**, and until it happens every Windows
-player is still handed the broken build: take the nightly's `win-x86_64`
-artifact (or repackage), read the tree, `scry digest`, rsync, **merge** the
-`win-x86_64` row into `published.json`, notarize.
+~~What remains is operator-only~~ — **done 2026-08-16 with v0.4.0**
+(`DECISIONS.md`). The live `win-x86_64` row is `0.4.0-g193a8d2a6`: 140
+files, the three DLLs staged beside `gates.exe`, `LICENSE-MINGW-RUNTIME.txt`
+travelling with them, and no `libstdc++`/`libgcc`/`libwinpthread` left in
+`requires.libs` for the player to find. Verified on the **served** document,
+not the staged one. Notarized `0x4a1ac31e…`.
+
+**What is still not measured is the thing this item is named for**: nobody
+has started it on a real Windows machine. CI's wine leg is the strongest
+evidence there is and it is not that — it is a cold prefix answering
+`--help`, which exercises the loader and nothing after it. The next Windows
+boot is the measurement; if it fails, the failure is past `loader_init` and
+this item is the wrong file for it.
 
 Unmeasured, same class: the GitHub **release** zip is msvc, not mingw, and
 nobody has checked whether it needs the VC++ redist. Its notes list Linux's
 three `-dev` packages and say nothing for Windows.
+
+Also stale and **not ours to fix**: scry's own launcher manifest
+(`/data/apps/scry-forge/data/launcher/gates.manifest.json` on morr) still
+tells a player the Windows row bundles nothing and has never been run. A
+player reads that row.
 
 > **Playtest items, 2026-08-15 — the operator played the shard and five came
 > out of it** (`DECISIONS.md` 2026-08-15). **Four landed the same day**
@@ -1400,9 +1414,11 @@ What remains, in order:
    has to carry that message, which IS a layout change (wall 6: version bump +
    goldens in the same commit). Worth doing for the prompt alone; it is a
    slice, not a line.
-4. **The depot is Linux only.** `ci/depot.py` says so in its first line and
-   scry's platform enum has the other rows. The SDK can now reach a launcher
-   on Windows; nothing packages a Windows build of this game.
+4. ~~**The depot is Linux only.**~~ — **retired 2026-08-14** (the packager
+   takes `--platform` and bakes it into `root`), and both platforms are
+   published from one commit as of v0.4.0. This line survived two days past
+   the change it described, which is the ⚠ at the top of `CLAUDE.md`: `ls`
+   the file, do not trust a doc's memory of it.
 5. **The public shard is up and no one has ever joined it** (2026-08-11).
    Boot, persistence, the SIGTERM flush and the status endpoint are all
    measured; the join is not, and **the tools here cannot measure it**:
