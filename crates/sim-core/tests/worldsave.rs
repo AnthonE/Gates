@@ -65,13 +65,23 @@ fn kit(w: &mut World, slot: usize) {
     w.players[slot].inv[0] = ItemStack {
         item: 0,
         count: 500,
+        cond: 0,
     };
     w.players[slot].inv[1] = ItemStack {
         item: 1,
         count: 500,
+        cond: 0,
     };
-    w.players[slot].inv[2] = ItemStack { item: 2, count: 9 };
-    w.players[slot].inv[3] = ItemStack { item: 4, count: 9 };
+    w.players[slot].inv[2] = ItemStack {
+        item: 2,
+        count: 9,
+        cond: 0,
+    };
+    w.players[slot].inv[3] = ItemStack {
+        item: 4,
+        count: 9,
+        cond: 0,
+    };
 }
 
 /// The **build** cell a body occupies, and the body snapped to its centre.

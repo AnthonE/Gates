@@ -111,6 +111,7 @@ fn a_shard_restart_remembers_a_player() {
         core.world.players[slot].inv[0] = ItemStack {
             item: 3,
             count: 128,
+            cond: 0,
         };
         core.world.players[slot].hp = 37;
         core.tick_bare(&stats, |_, _, _| true);
@@ -256,6 +257,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
     let carried = ItemStack {
         item: 3,
         count: 128,
+        cond: 0,
     };
 
     // Session one: join keyed, carry something, log off. The disconnect's
@@ -584,6 +586,7 @@ fn two_keys_never_share_a_save() {
             save.inv[0] = ItemStack {
                 item: i as u16 + 1,
                 count: (i as u16 + 1) * 10,
+                cond: 0,
             };
             let put = store.put(k, 1_700_000_000, save);
             assert!(!put.evicted);
@@ -595,11 +598,19 @@ fn two_keys_never_share_a_save() {
     assert_eq!(found.live, 2);
     assert_eq!(
         saves.store.find(&a).expect("a").inv[0],
-        ItemStack { item: 1, count: 10 }
+        ItemStack {
+            item: 1,
+            count: 10,
+            cond: 0
+        }
     );
     assert_eq!(
         saves.store.find(&b).expect("b").inv[0],
-        ItemStack { item: 2, count: 20 }
+        ItemStack {
+            item: 2,
+            count: 20,
+            cond: 0
+        }
     );
     sweep(&path);
 }

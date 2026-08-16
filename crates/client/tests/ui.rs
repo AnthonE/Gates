@@ -49,12 +49,21 @@ fn empty() -> [ItemStack; INV_SLOTS] {
 
 fn stocked() -> [ItemStack; INV_SLOTS] {
     let mut inv = empty();
-    inv[0] = ItemStack { item: 7, count: 9 };
+    inv[0] = ItemStack {
+        item: 7,
+        count: 9,
+        cond: 0,
+    };
     inv[1] = ItemStack {
         item: 3,
         count: 100,
+        cond: 0,
     };
-    inv[2] = ItemStack { item: 7, count: 1 };
+    inv[2] = ItemStack {
+        item: 7,
+        count: 1,
+        cond: 0,
+    };
     inv
 }
 
@@ -90,7 +99,11 @@ fn move_marshals_every_field_to_its_own_name() {
 fn a_ground_move_carries_the_handle_and_the_containers_own_count() {
     let inv = empty();
     let mut cont = empty();
-    cont[4] = ItemStack { item: 2, count: 6 };
+    cont[4] = ItemStack {
+        item: 2,
+        count: 6,
+        cond: 0,
+    };
     let m = slots::move_args(HANDLE, CONT_BOX, 4, CONT_SELF, 0, Grab::All, &inv, &cont)
         .expect("box to self");
     assert_eq!(m.bag, HANDLE);
@@ -105,7 +118,11 @@ fn a_ground_move_carries_the_handle_and_the_containers_own_count() {
 fn refusals_in_order() {
     let inv = stocked();
     let mut cont = empty();
-    cont[0] = ItemStack { item: 2, count: 4 };
+    cont[0] = ItemStack {
+        item: 2,
+        count: 4,
+        cond: 0,
+    };
 
     // 1 · a kind past CONT_MAX.
     assert!(slots::move_args(HANDLE, 9, 0, CONT_SELF, 1, Grab::All, &inv, &cont).is_none());
@@ -222,13 +239,25 @@ fn craft_fixture() -> CraftContent {
 fn affordability_is_the_tightest_input() {
     let recipes = craft_fixture();
     let mut inv = empty();
-    inv[0] = ItemStack { item: 0, count: 7 };
+    inv[0] = ItemStack {
+        item: 0,
+        count: 7,
+        cond: 0,
+    };
     // Row 0 costs 3 of item 0, so seven pays for two and leaves one over.
     assert_eq!(craft::affordable(&recipes.recipes[0], &inv), 2);
 
     // Row 1 needs two items and the SCARCER one is the ceiling.
-    inv[1] = ItemStack { item: 1, count: 10 };
-    inv[2] = ItemStack { item: 2, count: 1 };
+    inv[1] = ItemStack {
+        item: 1,
+        count: 10,
+        cond: 0,
+    };
+    inv[2] = ItemStack {
+        item: 2,
+        count: 1,
+        cond: 0,
+    };
     assert_eq!(craft::affordable(&recipes.recipes[1], &inv), 1);
 
     // Nothing in the bag pays for nothing.
@@ -239,7 +268,11 @@ fn affordability_is_the_tightest_input() {
 fn the_ingredient_table_scales_with_the_stepper() {
     let recipes = craft_fixture();
     let mut inv = empty();
-    inv[0] = ItemStack { item: 0, count: 5 };
+    inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
     let (lines, n) = craft::ingredients(&recipes.recipes[0], 3, &inv);
     assert_eq!(n, 1);
     // AMOUNT is per craft and does NOT scale; TOTAL is what three cost.
@@ -547,7 +580,11 @@ fn the_wheel_prices_a_piece_against_the_bag() {
     let content = BuildContent::probe_fixture();
     let row = build::row_for(&content, SHAPE_FOUNDATION, MAT_TWIG).unwrap();
     let mut inv = empty();
-    inv[0] = ItemStack { item: 0, count: 4 };
+    inv[0] = ItemStack {
+        item: 0,
+        count: 4,
+        cond: 0,
+    };
     let (lines, n) = build::costs(&content, row, &inv);
     assert_eq!(n, 1);
     // The fixture's foundation costs 5 of item 0; four is short by one.
@@ -556,7 +593,11 @@ fn the_wheel_prices_a_piece_against_the_bag() {
     assert!(lines[0].short());
     assert!(!build::affordable(&content, row, &inv));
 
-    inv[0] = ItemStack { item: 0, count: 5 };
+    inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
     assert!(build::affordable(&content, row, &inv));
 }
 
@@ -2633,7 +2674,11 @@ mod techtree_model {
     fn inv_with_coin(count: u16) -> [ItemStack; INV_SLOTS] {
         let mut inv = [ItemStack::default(); INV_SLOTS];
         // The fixture's coin is item 3.
-        inv[0] = ItemStack { item: 3, count };
+        inv[0] = ItemStack {
+            item: 3,
+            count,
+            cond: 0,
+        };
         inv
     }
 

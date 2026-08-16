@@ -795,7 +795,11 @@ mod tests {
         let mut pieces = Pieces::new();
         let deploys = Deploys::new();
         let mut builder = raider(CX, CZ);
-        builder.inv[0] = ItemStack { item: 0, count: 99 };
+        builder.inv[0] = ItemStack {
+            item: 0,
+            count: 99,
+            cond: 0,
+        };
         let mut ev = EventQueue::default();
         crate::build::place(
             SEED,
@@ -836,7 +840,11 @@ mod tests {
             ),
             ..Player::default()
         };
-        p.inv[0] = ItemStack { item: 0, count: 1 };
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+        };
         p
     }
 
@@ -923,7 +931,11 @@ mod tests {
         // The wall on the cell's west edge, placed by a builder standing
         // at the cell centre — east of the edge, so soft faces east.
         let mut builder = raider(CX, CZ);
-        builder.inv[0] = ItemStack { item: 0, count: 99 };
+        builder.inv[0] = ItemStack {
+            item: 0,
+            count: 99,
+            cond: 0,
+        };
         let mut ev = EventQueue::default();
         crate::build::place(
             SEED,
@@ -1044,8 +1056,16 @@ mod tests {
         // A hearth (fixture row 0, 100 hp) on the foundation — the same
         // address, so both are equidistant from the swing.
         let mut owner = raider(CX, CZ);
-        owner.inv[0] = ItemStack { item: 0, count: 99 };
-        owner.inv[1] = ItemStack { item: 2, count: 9 }; // the hearth's own item
+        owner.inv[0] = ItemStack {
+            item: 0,
+            count: 99,
+            cond: 0,
+        };
+        owner.inv[1] = ItemStack {
+            item: 2,
+            count: 9,
+            cond: 0,
+        }; // the hearth's own item
         crate::deploy::place_deploy(
             SEED,
             &dc,
@@ -1116,9 +1136,21 @@ mod tests {
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
         let mut owner = raider(CX, CZ);
-        owner.inv[0] = ItemStack { item: 0, count: 99 };
-        owner.inv[4] = ItemStack { item: 4, count: 9 };
-        owner.inv[5] = ItemStack { item: 7, count: 2 };
+        owner.inv[0] = ItemStack {
+            item: 0,
+            count: 99,
+            cond: 0,
+        };
+        owner.inv[4] = ItemStack {
+            item: 4,
+            count: 9,
+            cond: 0,
+        };
+        owner.inv[5] = ItemStack {
+            item: 7,
+            count: 2,
+            cond: 0,
+        };
         crate::build::place(
             SEED,
             &bc,
@@ -1423,7 +1455,11 @@ mod tests {
             p.id = i as u32 + 1;
             p.active = true;
             p.hp = 100;
-            p.inv[0] = ItemStack { item: 0, count: 1 };
+            p.inv[0] = ItemStack {
+                item: 0,
+                count: 1,
+                cond: 0,
+            };
             p.body = Body::at(SEED, 512.0, 512.0);
         }
         let mut ev = EventQueue::default();
@@ -1465,8 +1501,16 @@ mod tests {
     #[test]
     fn held_item_reads_the_selected_slot_only() {
         let mut p = Player::default();
-        p.inv[0] = ItemStack { item: 3, count: 1 };
-        p.inv[2] = ItemStack { item: 7, count: 5 };
+        p.inv[0] = ItemStack {
+            item: 3,
+            count: 1,
+            cond: 0,
+        };
+        p.inv[2] = ItemStack {
+            item: 7,
+            count: 5,
+            cond: 0,
+        };
         assert_eq!(held_item(&p), 3);
         p.frame.sel = 2;
         assert_eq!(held_item(&p), 7);
@@ -1482,7 +1526,11 @@ mod tests {
             p.id = i as u32 + 1;
             p.active = true;
             p.hp = 100;
-            p.inv[0] = ItemStack { item: 0, count: 1 };
+            p.inv[0] = ItemStack {
+                item: 0,
+                count: 1,
+                cond: 0,
+            };
         }
         let mut ev = EventQueue::default();
         assert_eq!(strike(&cc, 0, &mut players, &mut ev), Strike::Missed);

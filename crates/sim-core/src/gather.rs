@@ -20,11 +20,33 @@ use crate::loot::{LootContent, LOOT_BARREL};
 use crate::movement::{quant_xz, quant_y, POS_XZ_Q, POS_Y_Q};
 use crate::rng::{cell_hash, splitmix64};
 use crate::terrain::{self, Occupant, ScatterTable, CELL_SIZE};
-use crate::world::{EventQueue, Player, EV_GATHER, EV_SLOT_HARVESTED, EV_WEAK_MARK};
+use crate::world::{
+    EventQueue, Player, EV_GATHER, EV_GATHER_REFUSED, EV_SLOT_HARVESTED, EV_WEAK_MARK,
+};
 use crate::yaw_lut::yaw_dir;
 
 /// Sentinel: no item. Doubles as the bare-hand "held item".
 pub const NO_ITEM: u16 = u16::MAX;
+
+/// Why a gather swing was refused — the low half of `EV_GATHER_REFUSED.b`.
+/// Zero is reserved as "no reason" (the consume ledger's posture), so the
+/// encoder can refuse it the way `encode_event_consume_refused` refuses a
+/// zero reason.
+///
+/// The node pays nothing for what is in the hand — a torch at a tree, a
+/// spear at a stone node, a bare fist at anything swung. The event's high
+/// half names the held item (`NO_ITEM` = bare hands) so the client can say
+/// *a torch cannot fell a tree* instead of "bare hands" (`NOW.md` §0kit
+/// item 2: hotbar 2 is one key from the rock).
+pub const REFUSE_G_TOOL: u32 = 1;
+/// The held item is a tool for this node and it is **dead** — condition
+/// zero with a nonzero ceiling. It stays in the hand and stops being a
+/// tool (Q4, operator 2026-08-15); the fix the sentence names is a
+/// re-craft, because re-craft is the repair (Q3).
+pub const REFUSE_G_BROKEN: u32 = 2;
+/// The highest live reason, named rather than counted — the ledger the
+/// wire's field width is bounded against (`protocol::event`).
+pub const REFUSE_G_MAX: u32 = REFUSE_G_BROKEN;
 
 /// Sentinel cell key: no weak-spot chase in progress (`Player::ws_cell`).
 pub const NO_CELL: u32 = u32::MAX;
@@ -135,6 +157,15 @@ pub struct NodeDef {
     pub finish_pct: u16,
     /// (item index, units per swing) rows; `(NO_ITEM, 0)` = empty row.
     pub tools: [(u16, u16); MAX_TOOLS_PER_NODE],
+    /// (item index, condition loss per landed hit) rows, hundredths of a
+    /// point; `(NO_ITEM, 0)` = empty row. Keyed per **(tool, node)**
+    /// exactly as `tools` is, because that is the reference's own model
+    /// (`reference/DURABILITY.md` §2: a metal hatchet pays 0.3 on a tree
+    /// and 1.0 on flesh) — **the table IS the wrong-tool predicate, there
+    /// is no predicate to port**. A tool with no row here wears nothing on
+    /// this node; content validation (V4) is what guarantees every tool a
+    /// node pays has one.
+    pub wear: [(u16, u16); MAX_TOOLS_PER_NODE],
     /// A second thing this node pays, flat: `(item index, units per swing)`,
     /// `(NO_ITEM, 0)` for the nodes that pay one thing. Deliberately **not**
     /// tool-scaled and **not** weak-spot bonused — a bush pays its berries
@@ -152,6 +183,7 @@ impl NodeDef {
         weak_pct: 0,
         finish_pct: 0,
         tools: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
+        wear: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
         secondary: (NO_ITEM, 0),
     };
 
@@ -168,6 +200,21 @@ impl NodeDef {
         }
         self.hand_yield
     }
+
+    /// Condition this node takes off one landed hit of `held`, in
+    /// hundredths of a point. Zero for a bare hand and for any tool the
+    /// wear table has no row for — per **(tool, node)**, never per tool,
+    /// which is the whole design (`wear`'s doc).
+    pub fn wear_for(&self, held: u16) -> u16 {
+        if held != NO_ITEM {
+            for &(item, loss) in self.wear.iter() {
+                if item == held {
+                    return loss;
+                }
+            }
+        }
+        0
+    }
 }
 
 /// The whole gather ruleset the sim knows: per-archetype node rules plus
@@ -178,6 +225,15 @@ pub struct GatherContent {
     /// Indexed by `Occupant as usize - 1` (Tree..Bush).
     pub nodes: [NodeDef; GATHERABLE_KINDS],
     pub stack_max: [u16; MAX_ITEM_DEFS],
+    /// Maximum condition per item, hundredths of a point (content
+    /// `condition_max`; item durability v0). **Absent means 0 means never
+    /// wears and can never be repaired** — the schema default IS the rule
+    /// for non-tools, so wood, stone and every consumable sit at 0 and
+    /// nothing ever asks about them. A fresh stack of an item with a
+    /// nonzero row is minted at this value (`inv_add`'s `cond`), and a
+    /// stack of it at `cond == 0` is a **dead tool**: still in the hand,
+    /// no longer a tool (`swing`'s Q4 guard).
+    pub cond_max: [u16; MAX_ITEM_DEFS],
     pub item_count: u16,
 }
 
@@ -196,11 +252,24 @@ impl GatherContent {
         }
     }
 
+    /// The condition ceiling for an item — `stack_max_of`'s shape for
+    /// `cond_max`'s reason: one id arrives from the wire and one from a
+    /// WAL, and an index past the table reads as "carries no condition",
+    /// which is what every caller already does with 0.
+    pub fn cond_max_of(&self, item: u16) -> u16 {
+        if (item as usize) < MAX_ITEM_DEFS {
+            self.cond_max[item as usize]
+        } else {
+            0
+        }
+    }
+
     /// Inert: nothing is gatherable. `World::new` starts here; the boot
     /// path installs the baked table before the first tick.
     pub const EMPTY: Self = Self {
         nodes: [NodeDef::INERT; GATHERABLE_KINDS],
         stack_max: [0; MAX_ITEM_DEFS],
+        cond_max: [0; MAX_ITEM_DEFS],
         item_count: 0,
     };
 
@@ -223,25 +292,37 @@ impl GatherContent {
             c.stack_max[i] = 100;
             i += 1;
         }
-        // (output, hits, hand, weak %, finish %, tool-item, tool-yield).
-        // Finish shares are deliberately varied and deliberately NOT the
-        // shipped content's — a fixture that matches the game hides a
-        // bake that ignores the column.
-        let rows: [(u16, u16, u16, u16, u16, u16, u16); GATHERABLE_KINDS] = [
+        // The two items the nodes below use as tools carry condition, so
+        // wear rides the parity/replay/alloc surfaces the moment a bot
+        // gathers with one — and since gathered stacks are minted at the
+        // item's own ceiling (`inv_add`'s `cond`), the tool-yield path
+        // this fixture exists for keeps working while it wears. Values
+        // distinct from each other and from every stack ceiling, so a
+        // transposed field cannot hide (event_roles' discipline 2).
+        c.cond_max[0] = 400;
+        c.cond_max[1] = 300;
+        // (output, hits, hand, weak %, finish %, tool-item, tool-yield,
+        // wear-per-hit). Finish shares are deliberately varied and
+        // deliberately NOT the shipped content's — a fixture that matches
+        // the game hides a bake that ignores the column. Wear rates vary
+        // per (tool, node) for the same reason: one rate everywhere hides
+        // a `wear_for` that reads the tool and ignores the node.
+        type FixtureRow = (u16, u16, u16, u16, u16, u16, u16, u16);
+        let rows: [FixtureRow; GATHERABLE_KINDS] = [
             // Tree and Bush withhold nothing, so the mark and side-payout
             // gates read pay directly. Stone and Sulfur carry the finish
             // coverage, at different shares and deliberately NOT the
             // shipped content's — a fixture that matches the game hides a
             // bake that ignores the column.
-            (0, 4, 7, 100, 0, 1, 13),     // Tree
-            (1, 5, 6, 50, 40, 0, 11),     // StoneNode
-            (2, 6, 3, 25, 0, 0, 9),       // MetalNode: pays evenly
-            (3, 6, 3, 75, 10, 1, 9),      // SulfurNode
-            (4, 1, 10, 0, 0, NO_ITEM, 0), // Bush: one-hit pickup, no mark
+            (0, 4, 7, 100, 0, 1, 13, 7),     // Tree
+            (1, 5, 6, 50, 40, 0, 11, 5),     // StoneNode
+            (2, 6, 3, 25, 0, 0, 9, 3),       // MetalNode: pays evenly
+            (3, 6, 3, 75, 10, 1, 9, 2),      // SulfurNode
+            (4, 1, 10, 0, 0, NO_ITEM, 0, 0), // Bush: one-hit pickup, no mark
         ];
         let mut k = 0;
         while k < GATHERABLE_KINDS {
-            let (out, hits, hand, weak, finish, tool, per) = rows[k];
+            let (out, hits, hand, weak, finish, tool, per, wear) = rows[k];
             c.nodes[k] = NodeDef {
                 output: out,
                 hits,
@@ -249,10 +330,12 @@ impl GatherContent {
                 weak_pct: weak,
                 finish_pct: finish,
                 tools: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
+                wear: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
                 secondary: (NO_ITEM, 0),
             };
             if tool != NO_ITEM {
                 c.nodes[k].tools[0] = (tool, per);
+                c.nodes[k].wear[0] = (tool, wear);
             }
             k += 1;
         }
@@ -357,12 +440,28 @@ pub enum Swing {
     },
 }
 
-/// One inventory slot. Empty ⇔ `count == 0`; emptied slots zero both
-/// fields so the state hash stays canonical.
+/// One inventory slot. Empty ⇔ `count == 0`; emptied slots zero **all
+/// three** fields so the state hash stays canonical.
+///
+/// `cond` is the stack's condition in **hundredths of a point** (item
+/// durability v0, DECISIONS.md 2026-08-15): 10 000 is the reference's
+/// 100-point stone hatchet, and the wear per landed hit is
+/// `NodeDef::wear_for`'s (tool, node) row. Zero means either "this item
+/// carries no condition" (`GatherContent::cond_max_of` = 0 — wood, stone,
+/// every non-tool) or "this tool is dead" — the two are told apart by the
+/// content table, never by the stack (`gather::swing`'s Q4 guard). Last
+/// field on purpose: `item` and `count` keep their bit positions, so every
+/// codec that moved for this moved loudly (wall 6) and none silently.
+///
+/// A field on the stack rather than a side table, and the reason is the
+/// failure mode: a missed site here is a **build error**, where a missed
+/// site under a side table is a wrong condition with the goldens, replay
+/// and clippy all green (the section-open row's three-green-gates shape).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ItemStack {
     pub item: u16,
     pub count: u16,
+    pub cond: u16,
 }
 
 /// Add `amount` of `item` to an inventory: top up matching stacks in slot
@@ -383,7 +482,22 @@ pub struct ItemStack {
 /// a zero-ceiling item differently would diverge on state a player cannot
 /// see. Three of the nine callers guarded it by hand; the other six did
 /// not, and `deploy.rs`'s pick-up already documented hitting it.
-pub fn inv_add(inv: &mut [ItemStack; INV_SLOTS], item: u16, amount: u16, stack_max: u16) -> u16 {
+///
+/// `cond` is stamped on **fresh** stacks only (the empty-slot pass) — the
+/// condition a mint of this item is born with. A payout, a craft and a
+/// loot roll pass `GatherContent::cond_max_of(item)` so a new tool arrives
+/// whole (Q3: re-craft IS the repair, so a crafted tool at 0 would repair
+/// nothing); a path moving an *existing* stack passes that stack's own
+/// `cond`, or looting would mend it. Top-ups never touch it: an item that
+/// stacks past 1 carries no condition (content rule V7), so there are
+/// never two conditions to reconcile.
+pub fn inv_add(
+    inv: &mut [ItemStack; INV_SLOTS],
+    item: u16,
+    amount: u16,
+    stack_max: u16,
+    cond: u16,
+) -> u16 {
     if stack_max == 0 {
         return 0;
     }
@@ -406,6 +520,7 @@ pub fn inv_add(inv: &mut [ItemStack; INV_SLOTS], item: u16, amount: u16, stack_m
             s.item = item;
             let take = stack_max.min(left);
             s.count = take;
+            s.cond = cond;
             left -= take;
         }
     }
@@ -432,10 +547,11 @@ pub fn inv_add_spilling(
     item: u16,
     amount: u16,
     stack_max: u16,
+    cond: u16,
 ) -> u16 {
-    let added = inv_add(inv, item, amount, stack_max);
+    let added = inv_add(inv, item, amount, stack_max, cond);
     if added < amount {
-        inv_add(spill, item, amount - added, stack_max);
+        inv_add(spill, item, amount - added, stack_max, cond);
     }
     added
 }
@@ -700,11 +816,24 @@ pub fn swing(
     }
     // What is in hand decides whether this node answers at all, so it is
     // read here rather than beside the payout below.
-    let held = if p.inv[p.frame.sel as usize].count > 0 {
+    //
+    // **A dead tool reads as no tool** (Q4, operator 2026-08-15): a stack
+    // at condition zero whose item declares a ceiling stays in the hand
+    // and stops being a tool, so `yield_for` falls back to the hand row —
+    // which on every swung node is 0 since the 2026-08-15 hand-row
+    // deletion, so the swing lands in the refusal below and never on the
+    // wall behind the node (`Swing::Refused`). The ceiling check is what
+    // keeps every non-tool honest: wood is `cond == 0` forever and is
+    // still wood in the hand.
+    let raw_held = if p.inv[p.frame.sel as usize].count > 0 {
         p.inv[p.frame.sel as usize].item
     } else {
         NO_ITEM
     };
+    let held_dead = raw_held != NO_ITEM
+        && p.inv[p.frame.sel as usize].cond == 0
+        && gc.cond_max_of(raw_held) > 0;
+    let held = if held_dead { NO_ITEM } else { raw_held };
     // **A tool this node pays nothing for does not get to destroy it.**
     // Content with no `hand` row bakes `hand_yield: 0` and `yield_for`
     // falls back to it for anything not in the tool table, so from
@@ -719,16 +848,20 @@ pub fn swing(
     // their rock. It also keeps the swing out of `SlotLives`, which is a
     // bounded store a free verb must not be able to fill.
     //
-    // ⚠ **This is silent, and it is owed an announcement.** The player
-    // gets no event and no refusal, which is the dead-button shape
-    // `NOW.md` §0eat is about. Saying it needs a new `EV_*` and a new
-    // event subtype — `EV_MAX` and `SUB_MAX` are both saturated by design
-    // — and that is a `PROTO_VER` bump with regenerated goldens (wall 6),
-    // which the pass that landed this was not authorised to take.
-    // Re-using `EV_GATHER` with `added = 0` is NOT the cheap way out: that
-    // encoding is already spoken for as the spill signal (see the payout
-    // comment below), so it would make one wire fact mean two things.
+    // The refusal is announced (wire v42; it was silent from 2026-08-15
+    // to this bump, the dead-button shape `NOW.md` §0eat is about).
+    // Re-using `EV_GATHER` with `added = 0` was NOT the cheap way out:
+    // that encoding is already spoken for as the spill signal (see the
+    // payout comment below), so it would have made one wire fact mean two
+    // things. Bounded by the swing cadence — one refusal per
+    // `SWING_INTERVAL_TICKS`, never one per tick.
     if def.yield_for(held) == 0 {
+        let why = if held_dead {
+            REFUSE_G_BROKEN
+        } else {
+            REFUSE_G_TOOL
+        };
+        events.push(EV_GATHER_REFUSED, p.id, ((raw_held as u32) << 16) | why, 0);
         // Refused, not Free: the arm carries on to flesh and never to
         // structure — `Swing::Refused` says why in full.
         return Swing::Refused;
@@ -803,13 +936,17 @@ pub fn swing(
     }
     let pay = pay.min(u16::MAX as u64) as u16;
     // A full pack no longer eats the swing: what will not fit goes to the
-    // spill and `world.rs` drops it where the swinger stands.
+    // spill and `world.rs` drops it where the swinger stands. A fresh
+    // stack of the output is minted at the item's own condition ceiling —
+    // 0 for every resource, and whole for the fixture items that double
+    // as tools (`inv_add`'s `cond` doc).
     let added = inv_add_spilling(
         &mut p.inv,
         spill,
         def.output,
         pay,
         gc.stack_max[def.output as usize],
+        gc.cond_max[def.output as usize],
     );
     // **`pay > 0` is what makes `added == 0` mean something.** The cumulative
     // schedule above legitimately pays nothing on some swings — `pool` need
@@ -845,8 +982,24 @@ pub fn swing(
             sec_item,
             sec_pay,
             gc.stack_max[sec_item as usize],
+            gc.cond_max[sec_item as usize],
         );
         events.push(EV_GATHER, p.id, ((sec_item as u32) << 16) | got as u32, 0);
+    }
+    // **Wear, after the payout, on a landed node hit only** — never on a
+    // whiff, a refusal or a smash, because a whiff that wore would put a
+    // `SUB_INV` message on the wire on every swing of every player
+    // forever. By the node's own rate for this tool (`wear_for` — the
+    // (tool, node) table is the wrong-tool predicate), `saturating_sub`
+    // so the last point is spent and never owed. The held slot cannot
+    // have changed since the read above: nothing between there and here
+    // touches `p.inv[p.frame.sel]`'s identity — `inv_add_spilling` tops
+    // up and fills, and V7 (condition ⇒ stack of 1) is what guarantees a
+    // payout can never merge INTO the held tool's slot.
+    let wear = def.wear_for(held);
+    if wear > 0 {
+        let s = &mut p.inv[p.frame.sel as usize];
+        s.cond = s.cond.saturating_sub(wear);
     }
     if exhausted {
         events.push(EV_SLOT_HARVESTED, ck, occupant_of(ni), 0);
@@ -928,32 +1081,42 @@ mod tests {
     #[test]
     fn inv_add_stacks_then_fills_then_loses() {
         let mut inv = [ItemStack::default(); INV_SLOTS];
-        assert_eq!(inv_add(&mut inv, 3, 70, 100), 70);
-        assert_eq!(inv_add(&mut inv, 3, 70, 100), 70);
+        assert_eq!(inv_add(&mut inv, 3, 70, 100, 0), 70);
+        assert_eq!(inv_add(&mut inv, 3, 70, 100, 0), 70);
         assert_eq!(
             inv[0],
             ItemStack {
                 item: 3,
-                count: 100
+                count: 100,
+                cond: 0,
             }
         );
-        assert_eq!(inv[1], ItemStack { item: 3, count: 40 });
+        assert_eq!(
+            inv[1],
+            ItemStack {
+                item: 3,
+                count: 40,
+                cond: 0
+            }
+        );
         // Fill every slot, then overflow is lost.
         for s in inv.iter_mut() {
             *s = ItemStack {
                 item: 3,
                 count: 100,
+                cond: 0,
             };
         }
-        assert_eq!(inv_add(&mut inv, 3, 50, 100), 0);
+        assert_eq!(inv_add(&mut inv, 3, 50, 100, 0), 0);
         // A different item can't ride an existing stack.
         inv[4] = ItemStack::default();
-        assert_eq!(inv_add(&mut inv, 7, 250, 100), 100);
+        assert_eq!(inv_add(&mut inv, 7, 250, 100, 0), 100);
         assert_eq!(
             inv[4],
             ItemStack {
                 item: 7,
-                count: 100
+                count: 100,
+                cond: 0,
             }
         );
     }
@@ -967,7 +1130,11 @@ mod tests {
     #[test]
     fn a_ceiling_of_zero_writes_nothing() {
         let mut inv = [ItemStack::default(); INV_SLOTS];
-        assert_eq!(inv_add(&mut inv, 9, 5, 0), 0, "nothing fits at ceiling 0");
+        assert_eq!(
+            inv_add(&mut inv, 9, 5, 0, 0),
+            0,
+            "nothing fits at ceiling 0"
+        );
         assert!(
             inv.iter().all(|s| *s == ItemStack::default()),
             "a zero ceiling must leave the inventory canonically empty"
@@ -985,15 +1152,16 @@ mod tests {
             *s = ItemStack {
                 item: 3,
                 count: 100,
+                cond: 0,
             };
         }
         inv[7] = ItemStack::default();
-        assert_eq!(inv_add_spilling(&mut inv, &mut spill, 7, 250, 100), 100);
+        assert_eq!(inv_add_spilling(&mut inv, &mut spill, 7, 250, 100, 0), 100);
         assert_eq!(crate::craft::inv_count(&spill, 7), 150, "the rest fell");
         // Nothing spills when it all fits, and the spill is untouched.
         let mut inv2 = [ItemStack::default(); INV_SLOTS];
         let mut spill2 = [ItemStack::default(); INV_SLOTS];
-        assert_eq!(inv_add_spilling(&mut inv2, &mut spill2, 4, 30, 100), 30);
+        assert_eq!(inv_add_spilling(&mut inv2, &mut spill2, 4, 30, 100, 0), 30);
         assert!(spill2.iter().all(|s| s.count == 0));
     }
 

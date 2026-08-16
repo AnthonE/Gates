@@ -223,7 +223,11 @@ impl PlayerSave {
             grounded: false,
         },
         dead: false,
-        inv: [ItemStack { item: 0, count: 0 }; INV_SLOTS],
+        inv: [ItemStack {
+            item: 0,
+            count: 0,
+            cond: 0,
+        }; INV_SLOTS],
         jobs: [CraftJob {
             recipe: 0,
             remaining: 0,
@@ -371,6 +375,7 @@ impl PlayerSave {
             *s = ItemStack {
                 item: u16_at(at),
                 count: u16_at(at + 2),
+                cond: 0,
             };
             // Canonical empty: an emptied slot zeroes both fields, which is
             // what the state hash reads. A record that said "0 of item 7"
@@ -456,12 +461,17 @@ mod tests {
                 *slot = ItemStack {
                     item: (i % MAX_ITEM_DEFS) as u16,
                     count: (i as u16 + 1) * 7,
+                    cond: 0,
                 };
             }
         }
         // Slot 0 would be "0 of item 0" under the rule above; give it a
         // real stack so the fixture is a legal record.
-        s.inv[0] = ItemStack { item: 5, count: 42 };
+        s.inv[0] = ItemStack {
+            item: 5,
+            count: 42,
+            cond: 0,
+        };
         s
     }
 

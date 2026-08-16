@@ -222,9 +222,39 @@ mod tests {
     #[test]
     fn the_two_building_items_are_recognised_by_their_display_name() {
         let c = catalog_with(&["Wood", "Building Plan", "Hammer"]);
-        assert_eq!(held(&c, ItemStack { item: 1, count: 1 }), Held::Plan);
-        assert_eq!(held(&c, ItemStack { item: 2, count: 1 }), Held::Hammer);
-        assert_eq!(held(&c, ItemStack { item: 0, count: 5 }), Held::Other);
+        assert_eq!(
+            held(
+                &c,
+                ItemStack {
+                    item: 1,
+                    count: 1,
+                    cond: 0,
+                }
+            ),
+            Held::Plan
+        );
+        assert_eq!(
+            held(
+                &c,
+                ItemStack {
+                    item: 2,
+                    count: 1,
+                    cond: 0,
+                }
+            ),
+            Held::Hammer
+        );
+        assert_eq!(
+            held(
+                &c,
+                ItemStack {
+                    item: 0,
+                    count: 5,
+                    cond: 0,
+                }
+            ),
+            Held::Other
+        );
     }
 
     #[test]
@@ -232,7 +262,17 @@ mod tests {
         let c = catalog_with(&["Wood", "Building Plan"]);
         // Count zero is an empty slot whatever the item word says — the
         // inventory leaves the id behind when a stack drains.
-        assert_eq!(held(&c, ItemStack { item: 1, count: 0 }), Held::Other);
+        assert_eq!(
+            held(
+                &c,
+                ItemStack {
+                    item: 1,
+                    count: 0,
+                    cond: 0,
+                }
+            ),
+            Held::Other
+        );
     }
 
     #[test]
@@ -241,15 +281,33 @@ mod tests {
         // "not a building item" is the safe answer: the mouse keeps its
         // ordinary meaning until the content arrives.
         let c = catalog_with(&["Building Plan"]);
-        assert_eq!(held(&c, ItemStack { item: 40, count: 1 }), Held::Other);
+        assert_eq!(
+            held(
+                &c,
+                ItemStack {
+                    item: 40,
+                    count: 1,
+                    cond: 0,
+                }
+            ),
+            Held::Other
+        );
     }
 
     #[test]
     fn the_selection_is_clamped_to_the_inventory() {
         let c = catalog_with(&["Wood", "Hammer"]);
         let inv = [
-            ItemStack { item: 1, count: 1 },
-            ItemStack { item: 0, count: 9 },
+            ItemStack {
+                item: 1,
+                count: 1,
+                cond: 0,
+            },
+            ItemStack {
+                item: 0,
+                count: 9,
+                cond: 0,
+            },
         ];
         assert_eq!(held_in_hand(&c, &inv, 0), Held::Hammer);
         // Past the end clamps to the last slot rather than indexing out.
@@ -264,8 +322,28 @@ mod tests {
         // of zero is not "hold a rock", it is hold nothing. `viewmodel::swap`
         // hides both the model and the stand-in on `None`, so a tool must
         // never appear over an empty cell.
-        assert_eq!(held_model(&c, ItemStack { item: 0, count: 0 }), None);
-        assert_eq!(held_model(&c, ItemStack { item: 0, count: 1 }), Some(0));
+        assert_eq!(
+            held_model(
+                &c,
+                ItemStack {
+                    item: 0,
+                    count: 0,
+                    cond: 0,
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            held_model(
+                &c,
+                ItemStack {
+                    item: 0,
+                    count: 1,
+                    cond: 0,
+                }
+            ),
+            Some(0)
+        );
     }
 
     #[test]
@@ -274,7 +352,17 @@ mod tests {
         // `None` here means "wear the generic stand-in", which is a different
         // picture from an empty hand and from a modelled item. Returning
         // `Some(0)` would put a rock in the player's hand instead of a gun.
-        assert_eq!(held_model(&c, ItemStack { item: 0, count: 1 }), None);
+        assert_eq!(
+            held_model(
+                &c,
+                ItemStack {
+                    item: 0,
+                    count: 1,
+                    cond: 0,
+                }
+            ),
+            None
+        );
         // An id past the catalog is the same answer, never a panic: `sel` and
         // the stack both arrive from outside this function.
         assert_eq!(
@@ -282,7 +370,8 @@ mod tests {
                 &c,
                 ItemStack {
                     item: 900,
-                    count: 1
+                    count: 1,
+                    cond: 0,
                 }
             ),
             None
@@ -295,7 +384,14 @@ mod tests {
         // file is `stone_hatchet.glb`, with no id table between them.
         let c = catalog_with(&["Stone Hatchet", "Wooden Spear"]);
         assert_eq!(
-            held_model(&c, ItemStack { item: 0, count: 1 }),
+            held_model(
+                &c,
+                ItemStack {
+                    item: 0,
+                    count: 1,
+                    cond: 0,
+                }
+            ),
             Some(
                 HELD_MODELS
                     .iter()
@@ -304,7 +400,15 @@ mod tests {
             )
         );
         assert_eq!(
-            held_model_in_hand(&c, &[ItemStack { item: 1, count: 1 }], 0),
+            held_model_in_hand(
+                &c,
+                &[ItemStack {
+                    item: 1,
+                    count: 1,
+                    cond: 0,
+                }],
+                0
+            ),
             Some(
                 HELD_MODELS
                     .iter()

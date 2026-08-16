@@ -1204,13 +1204,23 @@ pub fn feedback(
     // Refusals. Each store answers a different verb, and the reason codes are
     // integers by wall 3 — turning one into a sentence is the client's job
     // and `refusal_text` is where the whole mapping lives.
-    for (which, code) in feed.refusals() {
+    for (which, code, item) in feed.refusals() {
         toast.warn(match which {
             super::feed::Refused::Craft => crate::ui::refusals::craft(code),
             super::feed::Refused::Build => crate::ui::refusals::build(code),
             super::feed::Refused::Deploy => crate::ui::refusals::deploy(code),
             super::feed::Refused::Research => crate::ui::refusals::research(code),
             super::feed::Refused::Consume => crate::ui::refusals::consume(code),
+            // The one refusal whose sentence names the held item: "your
+            // Torch cannot harvest this", or bare hands when nothing was.
+            super::feed::Refused::Gather => {
+                let held = if item == sim_core::gather::NO_ITEM {
+                    "bare hands".to_string()
+                } else {
+                    format!("your {}", crate::ui::craft::item_label(&core.catalog, item))
+                };
+                crate::ui::refusals::gather(code, &held)
+            }
         });
     }
 

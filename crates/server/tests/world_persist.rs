@@ -173,10 +173,12 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
         core.world.players[slot].inv[0] = ItemStack {
             item: 0,
             count: 500,
+            cond: 0,
         };
         core.world.players[slot].inv[1] = ItemStack {
             item: 1,
             count: 500,
+            cond: 0,
         };
         // Through the action lane, which is the path a real client takes.
         core.push_action(

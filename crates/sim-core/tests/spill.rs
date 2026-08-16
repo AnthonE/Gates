@@ -131,6 +131,7 @@ fn full_pack_world(pos: (f32, f32)) -> Box<World> {
         *s = ItemStack {
             item: JUNK,
             count: STACK_MAX,
+            cond: 0,
         };
     }
     w
@@ -272,10 +273,15 @@ fn a_merge_never_pulls_a_partly_looted_bag_s_clock_in() {
 
     // A bag holding one rare item (360 ticks) and one junk (90).
     let mut held = [ItemStack::default(); INV_SLOTS];
-    held[0] = ItemStack { item: 0, count: 1 };
+    held[0] = ItemStack {
+        item: 0,
+        count: 1,
+        cond: 0,
+    };
     held[1] = ItemStack {
         item: JUNK,
         count: 1,
+        cond: 0,
     };
     let id = bp
         .stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev)
@@ -293,6 +299,7 @@ fn a_merge_never_pulls_a_partly_looted_bag_s_clock_in() {
     spill[0] = ItemStack {
         item: JUNK,
         count: 5,
+        cond: 0,
     };
     assert_eq!(
         bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut spill, 200, &mut ev),
@@ -326,6 +333,7 @@ fn a_spill_out_of_reach_stands_its_own_bag_up() {
     held[0] = ItemStack {
         item: JUNK,
         count: 1,
+        cond: 0,
     };
     let near = bp.stand_up(&bc, 0, 0, 0, 1, &held, 100, &mut ev).unwrap();
 
@@ -335,6 +343,7 @@ fn a_spill_out_of_reach_stands_its_own_bag_up() {
     spill[0] = ItemStack {
         item: JUNK,
         count: 3,
+        cond: 0,
     };
     let made = bp
         .spill_at(&bc, &gc, far_q, 0, 0, 1, &mut spill, 110, &mut ev)
@@ -593,18 +602,22 @@ fn giveback_world() -> (Box<World>, u16, u16) {
     w.players[0].inv[0] = ItemStack {
         item: 0,
         count: 100,
+        cond: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: FIRE_ITEM,
         count: 1,
+        cond: 0,
     };
     w.players[0].inv[2] = ItemStack {
         item: LOCK_ITEM,
         count: 1,
+        cond: 0,
     };
     w.players[0].inv[3] = ItemStack {
         item: BOX_ITEM,
         count: 1,
+        cond: 0,
     };
     (w, cx, cz)
 }
@@ -616,6 +629,7 @@ fn wall_off(w: &mut World) {
         *s = ItemStack {
             item: BALLAST,
             count: STACK_MAX,
+            cond: 0,
         };
     }
 }
@@ -882,6 +896,7 @@ fn a_minted_bag_leaves_the_caller_s_buffer_empty() {
     buf[0] = ItemStack {
         item: JUNK,
         count: 5,
+        cond: 0,
     };
     let made = bp.spill_at(&bc, &gc, 0, 0, 0, 1, &mut buf, 10, &mut ev);
     assert!(made.is_some(), "nothing stood up — the case did not run");
@@ -926,6 +941,7 @@ fn an_inert_ladder_does_not_even_merge_into_a_bag_already_standing() {
     held[0] = ItemStack {
         item: JUNK,
         count: 1,
+        cond: 0,
     };
     bp.stand_up(&armed, 0, 0, 0, 1, &held, 10, &mut ev)
         .expect("the case needs a bag standing under armed content");
@@ -934,6 +950,7 @@ fn an_inert_ladder_does_not_even_merge_into_a_bag_already_standing() {
     buf[0] = ItemStack {
         item: JUNK,
         count: 5,
+        cond: 0,
     };
     let made = bp.spill_at(
         &BackpackContent::EMPTY,

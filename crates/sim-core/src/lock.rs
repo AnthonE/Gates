@@ -532,8 +532,9 @@ pub fn give_back(
     spill: &mut [ItemStack; INV_SLOTS],
     item: u16,
     stack_max: u16,
+    cond: u16,
 ) -> u16 {
-    inv_add_spilling(inv, spill, item, 1, stack_max)
+    inv_add_spilling(inv, spill, item, 1, stack_max, cond)
 }
 
 /// Whether a hand is holding at least one of `item` — the placement cost

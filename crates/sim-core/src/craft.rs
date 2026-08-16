@@ -364,7 +364,14 @@ pub fn cancel(
             let mut left = refund;
             while left > 0 {
                 let chunk = left.min(u16::MAX as u32) as u16;
-                inv_add_spilling(&mut p.inv, spill, item, chunk, gc.stack_max[item as usize]);
+                inv_add_spilling(
+                    &mut p.inv,
+                    spill,
+                    item,
+                    chunk,
+                    gc.stack_max[item as usize],
+                    gc.cond_max[item as usize],
+                );
                 left -= chunk as u32;
             }
         }
@@ -403,12 +410,16 @@ pub fn step(
         return;
     }
     let def = &cc.recipes[recipe as usize];
+    // A crafted tool arrives whole: re-craft IS the repair (Q3, operator
+    // 2026-08-15), so the mint at the ceiling is the design and not a
+    // convenience — an output minted at 0 would be dead on arrival.
     let added = inv_add_spilling(
         &mut p.inv,
         spill,
         def.output,
         def.out_count,
         gc.stack_max[def.output as usize],
+        gc.cond_max[def.output as usize],
     );
     events.push(
         EV_CRAFT_DONE,
@@ -465,7 +476,11 @@ mod tests {
             ..Player::default()
         };
         for (i, &(item, count)) in inv0.iter().enumerate() {
-            p.inv[i] = ItemStack { item, count };
+            p.inv[i] = ItemStack {
+                item,
+                count,
+                cond: 0,
+            };
         }
         p
     }
@@ -483,7 +498,14 @@ mod tests {
         assert_eq!(inv_count(&p.inv, 0), 7);
         assert_eq!(inv_take(&mut p.inv, 0, 5), 5);
         assert_eq!(p.inv[0], ItemStack::default(), "emptied slot zeroes");
-        assert_eq!(p.inv[2], ItemStack { item: 0, count: 2 });
+        assert_eq!(
+            p.inv[2],
+            ItemStack {
+                item: 0,
+                count: 2,
+                cond: 0
+            }
+        );
         assert_eq!(inv_count(&p.inv, 0), 2);
         assert_eq!(inv_take(&mut p.inv, 0, 9), 2, "partial take reports");
     }
@@ -839,6 +861,7 @@ mod tests {
             *s = ItemStack {
                 item: 2,
                 count: 100,
+                cond: 0,
             };
         }
         let mut ev = EventQueue::default();

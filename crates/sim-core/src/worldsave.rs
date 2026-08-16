@@ -618,7 +618,11 @@ impl<'a> R<'a> {
         if item as usize >= max_item || (count == 0 && item != 0) {
             return Err(WorldSaveError::BadItemStack);
         }
-        Ok(ItemStack { item, count })
+        Ok(ItemStack {
+            item,
+            count,
+            cond: 0,
+        })
     }
 }
 

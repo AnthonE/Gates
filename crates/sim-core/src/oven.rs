@@ -307,7 +307,7 @@ impl OvenState {
 /// `BOX_SLOTS` wide and that function is typed to `INV_SLOTS`. Callers
 /// here refuse to run a conversion that would not fit whole, so the
 /// take-what-fits return is checked and never a silent loss.
-fn slots_add(slots: &mut [ItemStack], item: u16, amount: u16, stack_max: u16) -> u16 {
+fn slots_add(slots: &mut [ItemStack], item: u16, amount: u16, stack_max: u16, cond: u16) -> u16 {
     if stack_max == 0 {
         return 0;
     }
@@ -329,7 +329,11 @@ fn slots_add(slots: &mut [ItemStack], item: u16, amount: u16, stack_max: u16) ->
         }
         if s.count == 0 {
             let put = stack_max.min(left);
-            *s = ItemStack { item, count: put };
+            *s = ItemStack {
+                item,
+                count: put,
+                cond,
+            };
             left -= put;
         }
     }
@@ -477,7 +481,13 @@ pub fn sweep(
                 if units > 0 {
                     let cap = gather.stack_max_of(cc.byproduct);
                     if slots_room(&boxes[i].items, cc.byproduct, units, cap) {
-                        slots_add(&mut boxes[i].items, cc.byproduct, units, cap);
+                        slots_add(
+                            &mut boxes[i].items,
+                            cc.byproduct,
+                            units,
+                            cap,
+                            gather.cond_max_of(cc.byproduct),
+                        );
                         ovens[i].bank -= units * 100;
                     }
                     // No room: the bank keeps counting. Nothing is destroyed
@@ -525,7 +535,18 @@ pub fn sweep(
             let mut fits = true;
             for r in cc.rows_for(arch, stack.item) {
                 let cap = gather.stack_max_of(r.output);
-                if slots_add(&mut scratch, r.output, r.count, cap) < r.count {
+                // A converter's output is a mint, so it arrives at its own
+                // ceiling — inert for every shipped row (nothing an oven
+                // pays carries condition), and the day a recycler pays a
+                // tool back this is what keeps it from arriving dead.
+                if slots_add(
+                    &mut scratch,
+                    r.output,
+                    r.count,
+                    cap,
+                    gather.cond_max_of(r.output),
+                ) < r.count
+                {
                     fits = false;
                     break;
                 }
@@ -569,20 +590,46 @@ mod tests {
     #[test]
     fn slots_add_tops_up_then_fills() {
         let mut s = stacks(3);
-        s[0] = ItemStack { item: 1, count: 8 };
-        assert_eq!(slots_add(&mut s, 1, 5, 10), 5);
-        assert_eq!(s[0], ItemStack { item: 1, count: 10 });
-        assert_eq!(s[1], ItemStack { item: 1, count: 3 });
+        s[0] = ItemStack {
+            item: 1,
+            count: 8,
+            cond: 0,
+        };
+        assert_eq!(slots_add(&mut s, 1, 5, 10, 0), 5);
+        assert_eq!(
+            s[0],
+            ItemStack {
+                item: 1,
+                count: 10,
+                cond: 0
+            }
+        );
+        assert_eq!(
+            s[1],
+            ItemStack {
+                item: 1,
+                count: 3,
+                cond: 0
+            }
+        );
     }
 
     #[test]
     fn slots_room_agrees_with_what_add_takes() {
         let mut s = stacks(2);
-        s[0] = ItemStack { item: 1, count: 9 };
-        s[1] = ItemStack { item: 2, count: 4 };
+        s[0] = ItemStack {
+            item: 1,
+            count: 9,
+            cond: 0,
+        };
+        s[1] = ItemStack {
+            item: 2,
+            count: 4,
+            cond: 0,
+        };
         assert!(slots_room(&s, 1, 1, 10));
         assert!(!slots_room(&s, 1, 2, 10));
-        assert_eq!(slots_add(&mut s, 1, 2, 10), 1);
+        assert_eq!(slots_add(&mut s, 1, 2, 10, 0), 1);
     }
 
     /// A stack cap of zero is an item the content never declared, and
@@ -591,13 +638,17 @@ mod tests {
     fn a_zero_cap_holds_nothing() {
         let mut s = stacks(2);
         assert!(!slots_room(&s, 1, 1, 0));
-        assert_eq!(slots_add(&mut s, 1, 1, 0), 0);
+        assert_eq!(slots_add(&mut s, 1, 1, 0, 0), 0);
     }
 
     #[test]
     fn take_one_empties_the_slot_canonically() {
         let mut s = stacks(2);
-        s[1] = ItemStack { item: 3, count: 1 };
+        s[1] = ItemStack {
+            item: 3,
+            count: 1,
+            cond: 0,
+        };
         assert!(take_one(&mut s, 3));
         assert_eq!(s[1], ItemStack::default());
         assert!(!take_one(&mut s, 3));

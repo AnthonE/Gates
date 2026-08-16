@@ -79,6 +79,20 @@ finish_bonus_pct = 50
 "item.hatchet_stone" = 81
 "item.hatchet_metal" = 87
 
+# Wear (item durability v0): condition_loss is hundredths of a point per
+# landed hit, keyed per (tool, node) exactly as yield_per_hit is -- the
+# table IS the wrong-tool predicate (reference/DURABILITY.md section 2).
+# 30 = the reference's 0.3/hit, wiki-confirmed on both the rock and the
+# stone hatchet; every right-tool gather row on their pages reads 0.3, so
+# every (tool, node) pair below takes it. Wear lands only on a paying hit
+# (a refused swing wears nothing), so V4 requires a row for every
+# condition-carrying tool a node pays and V3 refuses one for any it does
+# not.
+[gatherable.condition_loss]
+"item.rock" = 30
+"item.hatchet_stone" = 30
+"item.hatchet_metal" = 30
+
 # The understory: mushrooms are the forest floor's food (CONTENT §2), and
 # the schema has no forest-floor archetype to scatter them on — a node kind
 # is a sim occupant (`terrain.rs`), which is code and not content. The
@@ -112,6 +126,11 @@ finish_bonus_pct = 20
 "item.pickaxe_stone" = 79
 "item.pickaxe_metal" = 100
 
+[gatherable.condition_loss]
+"item.rock" = 30
+"item.pickaxe_stone" = 30
+"item.pickaxe_metal" = 30
+
 [[gatherable]]
 id = "gather.metal_node"
 archetype = "metal_node"
@@ -131,6 +150,11 @@ finish_bonus_pct = 20
 "item.rock" = 25
 "item.pickaxe_stone" = 49
 "item.pickaxe_metal" = 60
+
+[gatherable.condition_loss]
+"item.rock" = 30
+"item.pickaxe_stone" = 30
+"item.pickaxe_metal" = 30
 
 [[gatherable]]
 id = "gather.sulfur_node"
@@ -152,6 +176,11 @@ finish_bonus_pct = 20
 [gatherable.yield_per_hit]
 "item.rock" = 10
 "item.pickaxe_stone" = 26
+"item.pickaxe_metal" = 30
+
+[gatherable.condition_loss]
+"item.rock" = 30
+"item.pickaxe_stone" = 30
 "item.pickaxe_metal" = 30
 
 # Bush: an instant hand pickup, not a swung node — outside the node band.

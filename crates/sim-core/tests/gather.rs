@@ -169,6 +169,10 @@ fn swing_pays_exhausts_and_replays() {
         ItemStack {
             item: tree.output,
             count: tree.hits * tree.hand_yield,
+            // Minted at the item's own ceiling (durability v0): the
+            // fixture's outputs double as tools, so a gathered stack
+            // arrives whole rather than dead.
+            cond: fixture.cond_max[tree.output as usize],
         },
         "yield stacked into the first slot"
     );
@@ -200,6 +204,9 @@ fn a_bush_pays_its_side_yield_flat_and_says_so() {
     w.players[0].inv[0] = ItemStack {
         item: fixture.nodes[0].tools[0].0,
         count: 1,
+        // Granted whole: a zero-condition tool is a dead tool since
+        // durability v0, and this test needs a LIVE one in hand.
+        cond: fixture.cond_max[fixture.nodes[0].tools[0].0 as usize],
     };
     w.tick(&[hold_primary(yaw, 0)]);
 
@@ -287,9 +294,12 @@ fn tool_in_slot0_outyields_hand() {
     let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
     let mut w = world_at(pos);
     let (tool, per_hit) = w.gather.nodes[0].tools[0];
+    let tool_cond = w.gather.cond_max[tool as usize];
     w.players[0].inv[0] = ItemStack {
         item: tool,
         count: 1,
+        // Whole, or the Q4 guard reads it as no tool at all.
+        cond: tool_cond,
     };
     w.tick(&[hold_primary(yaw, 0)]);
     let out = w.gather.nodes[0].output;
@@ -298,8 +308,15 @@ fn tool_in_slot0_outyields_hand() {
         ItemStack {
             item: out,
             count: per_hit,
+            cond: w.gather.cond_max[out as usize],
         },
         "held tool pays its row, stacked past the occupied slot 0"
+    );
+    // And the landed hit wore it by the tree's own rate for this tool.
+    assert_eq!(
+        w.players[0].inv[0].cond,
+        tool_cond - w.gather.nodes[0].wear_for(tool),
+        "a landed paying hit wears the held tool by the (tool, node) rate"
     );
 }
 
@@ -517,6 +534,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
     w.players[0].inv[3] = ItemStack {
         item: tool,
         count: 1,
+        cond: w.gather.cond_max[tool as usize],
     };
     w.tick(&[hold_sel(3)]);
     assert_eq!(
@@ -524,6 +542,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
         ItemStack {
             item: out,
             count: per_hit,
+            cond: w.gather.cond_max[out as usize],
         },
         "held tool in the selected slot pays its row"
     );
@@ -533,6 +552,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
     w2.players[0].inv[3] = ItemStack {
         item: tool,
         count: 1,
+        cond: w2.gather.cond_max[tool as usize],
     };
     w2.tick(&[hold_sel(7)]);
     assert_eq!(w2.players[0].frame.sel, 0, "invalid selector clamps to 0");
@@ -541,6 +561,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
         ItemStack {
             item: out,
             count: w2.gather.nodes[0].hand_yield,
+            cond: w2.gather.cond_max[out as usize],
         },
         "fallback swings the hand row"
     );
@@ -780,6 +801,9 @@ fn a_swing_the_node_pays_nothing_for_is_refused_and_costs_the_node_nothing() {
     w.players[0].inv[0] = ItemStack {
         item: tool,
         count: 1,
+        // Whole — a dead tool would be refused exactly like the bare hand
+        // and this phase exists to prove the RIGHT tool still collects.
+        cond: w.gather.cond_max[tool as usize],
     };
     let mut paid = 0u32;
     let mut harvested = 0u32;
@@ -852,7 +876,11 @@ fn a_refused_gather_swing_leaves_the_arm_free() {
     assert!(hp_before > 0, "the combat fixture granted the victim no hp");
 
     // A melee-armed item the tree pays nothing for.
-    w.players[0].inv[0] = ItemStack { item: 2, count: 1 };
+    w.players[0].inv[0] = ItemStack {
+        item: 2,
+        count: 1,
+        cond: 0,
+    };
     let mut seq = 0u16;
     for _ in 0..SWING_INTERVAL_TICKS * 3 {
         w.tick(&[hold_primary(yaw, seq)]);
@@ -1007,14 +1035,17 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
             w.players[0].inv[0] = ItemStack {
                 item: WRONG_TOOL,
                 count: 1,
+                cond: 0,
             };
             w.players[0].inv[1] = ItemStack {
                 item: 0,
                 count: 200,
+                cond: 0,
             };
             w.players[0].inv[2] = ItemStack {
                 item: 1,
                 count: 200,
+                cond: 0,
             };
             // Foundation, then the wall on its west edge. A refusal here is
             // this candidate's terrain, not the mechanic — try the next.
@@ -1122,5 +1153,188 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
     panic!(
         "seed {SEED:#x} offered no tree beside a buildable cell for this \
          arrangement — the generator changed under this gate"
+    );
+}
+
+/// **A swing wears by the node's own rate for the tool, and not at all on
+/// a node whose table omits it** (item durability v0, gate 2). The wear
+/// key is **(tool, node)** — the reference's model, where a metal hatchet
+/// pays 0.3 on a tree and 1.0 on flesh — so the table IS the wrong-tool
+/// predicate and there is no predicate to port.
+///
+/// Proven red by making `wear_for` per-tool instead of per-(tool, node)
+/// (return a flat rate for any held tool): the omitted-table half fires,
+/// because a tool the node's table does not name wore anyway.
+#[test]
+fn wear_is_keyed_per_tool_and_node_not_per_tool() {
+    let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
+
+    // Half 1: the tree wears its tool by ITS OWN rate.
+    let mut w = world_at(pos);
+    for n in w.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+    }
+    let (tool, _) = w.gather.nodes[0].tools[0];
+    let rate = w.gather.nodes[0].wear_for(tool);
+    assert!(rate > 0, "fixture rot: the tree wears nothing");
+    let ceiling = w.gather.cond_max[tool as usize];
+    w.players[0].inv[0] = ItemStack {
+        item: tool,
+        count: 1,
+        cond: ceiling,
+    };
+    let mut seq = 0u16;
+    let mut landed = 0u16;
+    for _ in 0..SWING_INTERVAL_TICKS * 3 {
+        w.tick(&[hold_primary(yaw, seq)]);
+        seq = seq.wrapping_add(1);
+        for e in w.events.entries() {
+            if e.code == EV_GATHER {
+                landed += 1;
+            }
+        }
+    }
+    assert!(landed > 0, "no swing landed — the arrangement is broken");
+    assert_eq!(
+        w.players[0].inv[0].cond,
+        ceiling - landed * rate,
+        "the tool wore by something other than the node's own rate × hits"
+    );
+
+    // Half 2: the same tool on the same node with the wear TABLE emptied —
+    // the node still pays and the tool does not wear. This is the half a
+    // per-tool rate cannot pass: a rate keyed on the tool alone has no row
+    // to miss.
+    let mut w2 = world_at(pos);
+    for n in w2.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+    }
+    w2.gather.nodes[0].wear = [(sim_core::gather::NO_ITEM, 0); sim_core::gather::MAX_TOOLS_PER_NODE];
+    w2.players[0].inv[0] = ItemStack {
+        item: tool,
+        count: 1,
+        cond: ceiling,
+    };
+    let mut seq = 0u16;
+    let mut landed2 = 0u16;
+    for _ in 0..SWING_INTERVAL_TICKS * 3 {
+        w2.tick(&[hold_primary(yaw, seq)]);
+        seq = seq.wrapping_add(1);
+        for e in w2.events.entries() {
+            if e.code == EV_GATHER {
+                landed2 += 1;
+            }
+        }
+    }
+    assert!(landed2 > 0, "the payout must land for the half to mean anything");
+    assert_eq!(
+        w2.players[0].inv[0].cond, ceiling,
+        "a node whose wear table omits the tool wore it anyway — the rate \
+         is keyed per tool, not per (tool, node)"
+    );
+}
+
+/// **A tool at zero gathers at the hand rate** (item durability v0, gate
+/// 3 — Q4, operator 2026-08-15: a dead tool stays in the hand and stops
+/// being a tool). The fixture's tree still has a hand row, so the
+/// fallback is visible as a RATE here; on the shipped content the hand
+/// rows are deleted and the same guard lands in the refusal instead
+/// (`a_dead_tool_is_refused_where_hands_are` below).
+///
+/// Proven red by deleting the `cond == 0` guard in `gather::swing`'s held
+/// read: the dead tool pays its tool row.
+#[test]
+fn a_dead_tool_gathers_at_the_hand_rate() {
+    let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
+    let mut w = world_at(pos);
+    for n in w.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+    }
+    let (tool, per_hit) = w.gather.nodes[0].tools[0];
+    let hand = w.gather.nodes[0].hand_yield;
+    assert!(
+        w.gather.cond_max[tool as usize] > 0,
+        "fixture rot: the tool carries no ceiling, so zero is not dead"
+    );
+    assert_ne!(per_hit, hand, "the two rates must differ or this sees nothing");
+    w.players[0].inv[0] = ItemStack {
+        item: tool,
+        count: 1,
+        cond: 0, // dead
+    };
+    w.tick(&[hold_primary(yaw, 0)]);
+    let paid: Vec<u32> = w
+        .events
+        .entries()
+        .iter()
+        .filter(|e| e.code == EV_GATHER)
+        .map(|e| e.b & 0xFFFF)
+        .collect();
+    assert_eq!(
+        paid,
+        vec![hand as u32],
+        "a tool at zero condition must gather at the HAND rate — it stays \
+         in the hand and stops being a tool"
+    );
+    // And it stays in the hand: nothing deleted or moved it.
+    assert_eq!(
+        w.players[0].inv[0],
+        ItemStack {
+            item: tool,
+            count: 1,
+            cond: 0,
+        },
+        "the dead tool must stay in the hand"
+    );
+}
+
+/// The dead tool on the SHIPPED shape — no hand row — is a refusal that
+/// names the broken tool, and the wall behind the node stays whole (the
+/// Q4 half of `Swing::Refused`'s contract: a dead hatchet swung at a node
+/// must not chew the wall behind it, which `world.rs` enforces by
+/// declining the raid arm for every `Refused` swing, dead-tool ones
+/// included).
+#[test]
+fn a_dead_tool_is_refused_where_hands_are() {
+    use sim_core::world::EV_GATHER_REFUSED;
+    let (pos, yaw, (cx, cz)) = find_isolated(SEED, Occupant::Tree);
+    let mut w = world_at(pos);
+    for n in w.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+        n.hand_yield = 0; // the shipped shape since 2026-08-15
+    }
+    let (tool, _) = w.gather.nodes[0].tools[0];
+    w.players[0].inv[0] = ItemStack {
+        item: tool,
+        count: 1,
+        cond: 0,
+    };
+    let mut seq = 0u16;
+    let mut refused = 0u32;
+    for _ in 0..SWING_INTERVAL_TICKS * 2 {
+        w.tick(&[hold_primary(yaw, seq)]);
+        seq = seq.wrapping_add(1);
+        for e in w.events.entries() {
+            assert_ne!(e.code, EV_GATHER, "a dead tool was paid");
+            if e.code == EV_GATHER_REFUSED {
+                assert_eq!(e.a, 1, "the swinger is named");
+                assert_eq!(
+                    e.b >> 16,
+                    tool as u32,
+                    "the refusal names the BROKEN TOOL, not bare hands"
+                );
+                assert_eq!(
+                    e.b & 0xffff,
+                    sim_core::gather::REFUSE_G_BROKEN,
+                    "a dead tool is REFUSE_G_BROKEN, not the wrong-tool reason"
+                );
+                refused += 1;
+            }
+        }
+    }
+    assert!(refused > 0, "the dead tool's swing was never announced");
+    assert!(
+        !w.slot_lives.is_harvested(cx as u16, cz as u16),
+        "a dead tool spent the node's budget"
     );
 }

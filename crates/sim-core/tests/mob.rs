@@ -295,10 +295,12 @@ fn hunt_world() -> (World, usize) {
     def.loot[0] = ItemStack {
         item: MEAT,
         count: 3,
+        cond: 0,
     };
     def.loot[1] = ItemStack {
         item: HIDE,
         count: 15,
+        cond: 0,
     };
     w.dev_spawn = Some(w.spawn_pos(1));
     w.tick(&[Command::Join { id: 1 }]);
@@ -318,6 +320,7 @@ fn kill_the_pig(w: &mut World, slot: usize) {
     w.players[0].inv[0] = ItemStack {
         item: SPEAR,
         count: 1,
+        cond: 0,
     };
     for seq in 0..(SWING_INTERVAL_TICKS as u16 * 8) {
         let frame = InputFrame {

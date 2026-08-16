@@ -43,6 +43,12 @@ pub fn hash(c: &Content) -> u64 {
         h.u(i.tier);
         h.u(i.rarity.canon());
         h.u(i.slot as u32);
+        // The condition ceiling reaches the sim (`bake_gather`'s
+        // `cond_max`), so it walks — a value the sim reads and the digest
+        // cannot see lets two contents whose tools die at different rates
+        // canonicalise identically, and a WAL then replays under a wear
+        // table it was not played under (item durability v0).
+        h.u(i.condition_max);
     }
 
     h.s("gatherables");
@@ -57,6 +63,13 @@ pub fn hash(c: &Content) -> u64 {
         for (tool, per_hit) in &g.yield_per_hit {
             h.s(tool);
             h.u(*per_hit);
+        }
+        // The wear table walks for `condition_max`'s reason: it reaches
+        // `NodeDef::wear` and prices every landed hit.
+        h.u(g.condition_loss.len() as u32);
+        for (tool, loss) in &g.condition_loss {
+            h.s(tool);
+            h.u(*loss);
         }
         // The side payout is hashed like everything else the sim reads. A
         // value that reaches the sim and not the hash lets two contents

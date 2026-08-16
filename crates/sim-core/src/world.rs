@@ -373,6 +373,16 @@ pub const EV_SHOT: u8 = 35;
 /// them back together in.
 pub const EV_KNOWN: u8 = 36;
 
+/// EV_GATHER_REFUSED: a = player id, b = held item index << 16 |
+/// `gather::REFUSE_G_*` reason. Own-fact, `EV_CRAFT_REFUSED`'s posture: a
+/// button that did nothing says so. The high half names the **held item**
+/// (`NO_ITEM` = bare hands) rather than only a reason, because the
+/// sentence the client owes is *a torch cannot fell a tree* — hotbar 2 is
+/// one key from the rock, and a new player pressing `2` at a tree used to
+/// get nothing at all (`NOW.md` §0kit item 2). Bounded by the swing
+/// cadence: at most one per `SWING_INTERVAL_TICKS` per player.
+pub const EV_GATHER_REFUSED: u8 = 37;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -380,7 +390,7 @@ pub const EV_KNOWN: u8 = 36;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_KNOWN;
+pub const EV_MAX: u8 = EV_GATHER_REFUSED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -699,6 +709,14 @@ impl Default for Player {
 /// Every mutation the sim accepts. The WAL is exactly this stream plus the
 /// tick numbers (DESIGN.md §7).
 #[derive(Clone, Copy, Debug)]
+// `JoinAs` carries a `PlayerSave` BY VALUE, and that is `persist.rs`'s own
+// stated contract — "`Copy` and POD like every other record that crosses a
+// boundary here, so it rides a `Command` and an SPSC ring without an
+// allocation." Boxing it to please the variant-size lint would put an
+// allocation on the command path and a deallocation inside the tick that
+// consumes it, which is the exact traffic wall 2's counting allocator
+// exists to refuse. The size is priced, not accidental.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     Join {
         id: u32,
@@ -2315,7 +2333,14 @@ impl World {
                     if (item as usize) < self.gather.stack_max.len() {
                         let cap = self.gather.stack_max[item as usize];
                         if cap > 0 {
-                            crate::gather::inv_add(&mut self.players[slot].inv, item, count, cap);
+                            let cond = self.gather.cond_max[item as usize];
+                            crate::gather::inv_add(
+                                &mut self.players[slot].inv,
+                                item,
+                                count,
+                                cap,
+                                cond,
+                            );
                         }
                     }
                 }
@@ -3267,9 +3292,10 @@ impl World {
             db[11..19].copy_from_slice(&p.slept_at.to_le_bytes());
             h.update(&db);
             for s in p.inv.iter() {
-                let mut sb = [0u8; 4];
+                let mut sb = [0u8; 6];
                 sb[0..2].copy_from_slice(&s.item.to_le_bytes());
                 sb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
                 h.update(&sb);
             }
             let mut cb = [0u8; 16 + CRAFT_QUEUE * 4];
@@ -3516,9 +3542,10 @@ impl World {
             buf[5..9].copy_from_slice(&bx.owner.to_le_bytes());
             h.update(&buf);
             for s in bx.items.iter() {
-                let mut sb = [0u8; 4];
+                let mut sb = [0u8; 6];
                 sb[0..2].copy_from_slice(&s.item.to_le_bytes());
                 sb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
                 h.update(&sb);
             }
         }
@@ -3550,9 +3577,10 @@ impl World {
             buf[20..28].copy_from_slice(&b.expires.to_le_bytes());
             h.update(&buf);
             for s in b.items.iter() {
-                let mut sb = [0u8; 4];
+                let mut sb = [0u8; 6];
                 sb[0..2].copy_from_slice(&s.item.to_le_bytes());
                 sb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
                 h.update(&sb);
             }
         }
@@ -3577,9 +3605,10 @@ impl World {
             buf[13..21].copy_from_slice(&c.refill_at.to_le_bytes());
             h.update(&buf);
             for s in c.items.iter() {
-                let mut sb = [0u8; 4];
+                let mut sb = [0u8; 6];
                 sb[0..2].copy_from_slice(&s.item.to_le_bytes());
                 sb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
                 h.update(&sb);
             }
         }
@@ -3601,6 +3630,133 @@ mod tests {
     /// worldgen change that sinks or steepens the spawn fails here.
     const SMOKE_SEED: u64 = 20260731;
     const SMOKE_SPAWN: (f32, f32) = (1024.0, 1024.0);
+
+    /// **Wear is in `state_hash`, in all four container stores** (item
+    /// durability v0, gate 4): two worlds differing ONLY in one stack's
+    /// condition must hash differently — for the player inventory, a
+    /// ground bag, a deployed box and a world container, each store
+    /// proven alone. Proven red by omitting the `cond` bytes from any of
+    /// the four `[0u8; 6]` loops above: the store whose loop was narrowed
+    /// hashes the two worlds identical and its assert fires.
+    #[test]
+    fn condition_is_hashed_in_every_container_store() {
+        use crate::backpack::BackpackRec;
+        use crate::deploy::BoxRec;
+        use crate::worldcont::WorldContRec;
+
+        let base = || {
+            let mut w = Box::new(World::new(SMOKE_SEED));
+            w.tick(&[Command::Join { id: 7 }]);
+            w
+        };
+        let stack = |cond: u16| ItemStack {
+            item: 3,
+            count: 1,
+            cond,
+        };
+
+        // 1. The player inventory loop.
+        let mut a = base();
+        let mut b = base();
+        a.players[0].inv[4] = stack(100);
+        b.players[0].inv[4] = stack(101);
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "two worlds differing only in a held stack's condition hashed \
+             the same — the inventory loop dropped the cond bytes"
+        );
+
+        // 2. The ground-bag loop.
+        let bag = |cond: u16| {
+            let mut r = BackpackRec {
+                id: 1,
+                qx: 100,
+                qy: 50,
+                qz: 100,
+                owner: 7,
+                expires: 999,
+                items: [ItemStack::default(); INV_SLOTS],
+            };
+            r.items[2] = stack(cond);
+            r
+        };
+        let mut a = base();
+        let mut b = base();
+        a.backpacks.restore(&[bag(100)], 2);
+        b.backpacks.restore(&[bag(101)], 2);
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "two worlds differing only in a bagged stack's condition hashed \
+             the same — the backpack loop dropped the cond bytes"
+        );
+
+        // 3. The deployed-box loop. The deploy store restores empty except
+        // for one box record; the record slices are all index-aligned.
+        let boxed = |cond: u16| {
+            let mut r = BoxRec {
+                cx: 10,
+                cz: 10,
+                level: 0,
+                owner: 7,
+                items: [ItemStack::default(); crate::limits::BOX_SLOTS],
+            };
+            r.items[1] = stack(cond);
+            r
+        };
+        let mut a = base();
+        let mut b = base();
+        a.deploys.restore(
+            &[],
+            &[],
+            &[],
+            &[],
+            &[boxed(100)],
+            &[crate::oven::OvenState::default()],
+            &[],
+        );
+        b.deploys.restore(
+            &[],
+            &[],
+            &[],
+            &[],
+            &[boxed(101)],
+            &[crate::oven::OvenState::default()],
+            &[],
+        );
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "two worlds differing only in a boxed stack's condition hashed \
+             the same — the box loop dropped the cond bytes"
+        );
+
+        // 4. The world-container loop.
+        let cont = |cond: u16| {
+            let mut r = WorldContRec {
+                cx: 20,
+                cz: 20,
+                qx: 5_000,
+                qz: 5_000,
+                table: crate::loot::LOOT_CRATE as u8,
+                refill_at: 0,
+                items: [ItemStack::default(); INV_SLOTS],
+            };
+            r.items[0] = stack(cond);
+            r
+        };
+        let mut a = base();
+        let mut b = base();
+        a.world_conts.restore(&[cont(100)]);
+        b.world_conts.restore(&[cont(101)]);
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "two worlds differing only in a crated stack's condition hashed \
+             the same — the world-container loop dropped the cond bytes"
+        );
+    }
 
     #[test]
     fn dev_spawn_overrides_every_join() {
