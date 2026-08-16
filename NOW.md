@@ -50,18 +50,33 @@ entries on 2026-08-16, none of them `gates` or `gates.exe`** — so that was
 not verified detection. It was the manual "Add it!", which shows the bare
 process name, which is the lowercase `gates` our launch contract ships.
 
-Rich presence needs no database entry and is built: `crates/client/src/
-discord.rs` (framing, payloads, copy — no dependency, 11 code-tier tests) and
-`render/presence.rs` (the `Screen` mapping, not registered on a capture run).
-It is **dark** — `GATES_DISCORD_APP_ID` unset means no thread and no socket.
+**That database is curated and it is NOT the open door** — the two are easy
+to conflate and the difference is the whole reason this was buildable in an
+afternoon. Rich presence takes only an application id, which any developer
+creates in the portal with no review; the detectable list is a separate,
+narrower thing you have to get *onto*. Checked in the data: VS Code, Spotify,
+Photoshop, Figma, Blender, OBS, IntelliJ and Neovim are **all absent** from
+the 22,455, and people see them in Discord statuses constantly — because
+those are rich presence with their own ids, not detection.
+
+Built: `crates/client/src/discord.rs` (framing, payloads, copy — no
+dependency, 11 code-tier tests) and `render/presence.rs` (the `Screen`
+mapping, not registered on a capture run). **Dark** —
+`GATES_DISCORD_APP_ID` unset means no thread and no socket.
 
 **The operator acts, in this order:**
 1. Create the Discord application, set `GATES_DISCORD_APP_ID`. That alone
-   turns it on. Optionally upload art under the key `gates`.
-2. Decide *separately* whether to submit `gates`/`gates.exe` to the
-   detectable database. It is the only thing that helps players who never
-   run rich presence — and the only thing that stops some other program
-   named `gates` matching ours, which a name this generic invites.
+   turns it on. **Name the application `Gates`** — the portal's application
+   name is the word Discord draws after "Playing", so this is what replaces
+   the lowercase `gates`, and it is the whole visible win. Optionally upload
+   art under the key `gates`.
+2. Decide *separately* whether to pursue the detectable list, which would
+   help players who never run rich presence and would stop some other
+   program named `gates` matching ours — a name this generic invites it.
+   ⚠ **Whether that route is even open was NOT confirmed**: Discord's
+   self-serve game selling is deprecated and no current submission form was
+   found, so treat this as a question to ask them rather than a step. Item 1
+   does not depend on it.
 
 **Then the slice, and it is blocked on a question rather than on work:** the
 join button. `deeplink.rs` already speaks `scry://join/<title>/<host:port>`,
