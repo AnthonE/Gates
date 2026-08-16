@@ -337,10 +337,10 @@ player may build on the pad today — whether that is wrong is a design call, no
 a defect, and it is in `DECISIONS.md` §open), `NavMask`, `WaterMask`.
 
 **`HeightStamp` landed 2026-08-16 as `SiteFootprint::stamp_m` + `site_stamp` /
-`terrain::ground`, and it is DARK** — `SITE_STAMP_STRENGTH = 0.0`, so the
-mechanism, every consumer call site and both gates are in the tree while the
-ground has not moved. Two things from this file's own §9.2 argument were
-confirmed by building it, and one was corrected:
+`terrain::ground`, and it is ARMED** — it shipped dark for one pass and the
+operator armed it the same day. Three things from this file's own §9.2 argument
+were confirmed by building it, one was corrected, and the third is the one this
+file predicted best:
 
 - **The mask-not-a-radius shape carried over intact.** `stamp_of` is
   `sweep_of`'s profile read the other way up, so the carve's blend band and the
@@ -355,10 +355,19 @@ confirmed by building it, and one was corrected:
   raw delta into the band. Measured at full strength over 16 seeds: the haven
   shelter improves 1.374 m → 0.063 m and the waystation canopy gets **worse**,
   1.795 m → 1.889 m. `stamp_m` is therefore derived from what the site SEATS.
-- **It also blocks itself, on purpose.** The waystation's floor needs 11.10 m
-  against an 11.0 m mask, so arming is a compile error until
-  `WAYSTATION_RADIUS_M` widens — a spoken knob (`DECISIONS.md` §open, "site
-  carve v0"), because it moves what the island scatters near a waystation.
+- **§3 was right and we had to find out the hard way.** This file says terrain
+  blending is *not* flattening a patch — authored per-monument masks, a profile
+  rather than a circle. The first armed draft still ran its ramp out to the
+  scatter mask, because that is the radius the code already had, and over 128
+  seeds it built a **2.09 rise/run wall** around the waystations against a 1.19
+  cliff threshold. The fix is `SiteFootprint::blend_m`: the ramp runs 12 m past
+  the mask and the vegetation grows over it, which is §3's sentence arrived at
+  by measurement instead of by reading. **The order in §9.5 is what saved it** —
+  the sites resolve first and everything else reads them as an input, so moving
+  the blend radius touched no solver at all.
+- `WAYSTATION_RADIUS_M` widened 11.0 → 15.0102 to fit the carved floor, derived
+  as its own floor plus the pad's blend band. Spoken, because it moves what the
+  island scatters near a waystation.
 
 ### 9.3 · The gap that matters most: our solver is two hand-written tiers
 

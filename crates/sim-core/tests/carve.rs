@@ -1,25 +1,23 @@
 //! The site carve — `TERRAIN.md` §1 stage 8's "carve a flat pad with a smooth
 //! blend radius", and the seam that carries it.
 //!
-//! **This gate exists because the carve ships dark.** `SITE_STAMP_STRENGTH` is
-//! 0.0, so every consumer call site was converted this pass and no ground
-//! moved; that is the whole point — a cross-cutting edit and a behaviour change
-//! are two commits, not one. But a dark constant makes a gate lie by
-//! construction: at strength 0.0 every assertion reachable through `site_stamp`
-//! is satisfied by a function that returns zero, so a gate written only against
-//! the shipped path would prove that zero is zero and the arming pass would be
-//! the first time the arithmetic ever ran. Hence `site_stamp_with`: §B–§E drive
-//! the real code path at full depth, and the shipped path differs from what
-//! they exercise by exactly one constant.
+//! **Armed 2026-08-16.** It shipped dark for one pass — the seam without the
+//! cut, so the cross-cutting edit and the behaviour change were separate
+//! commits — and the tests below were written against `site_stamp_with` so the
+//! arithmetic was exercised at full depth while the shipped constant was still
+//! zero. That shape is kept: the strength is pinned in §A rather than assumed
+//! by the rest, so a future change to it fails one named gate instead of
+//! quietly re-meaning seven.
 //!
 //! What this file holds, in the order the mechanism reads:
-//!   §A the seam is dark, and `ground` is `height`'s own bits while it is
+//!   §A the carve is armed, at the three constants that were measured
 //!   §B the carve flattens the floor it claims to flatten
-//!   §C it never reaches outside the footprint that publishes it
-//!   §D the blend across the band has no edge in it
+//!   §C it never reaches outside the blend that publishes it
+//!   §D the blend has no edge in it
 //!   §E the relief the pad settled for by *finding* goes to zero by *making*
 //!   §F the stamp cannot read the terrain — the circularity is structural
 //!   §G the carve never makes an authored structure's footing WORSE
+//!   §H the carve never builds a wall — the gradient it ADDS stays bounded
 
 use sim_core::fmath::fabs;
 use sim_core::terrain::{
@@ -50,6 +48,17 @@ const SEEDS: [u64; 16] = [
 /// Seeds for the checks that sweep the whole island.
 const SWEEP_SEEDS: [u64; 4] = [1, 42, 20_260_804, 0xDEAD_BEEF];
 
+/// Seeds whose sites land on genuinely rough ground — where the cut clamp
+/// binds. Found by sweeping 256 seeds for the worst gradient the carve adds;
+/// see §H for why the ordinary list cannot stand in for these.
+const ROUGH_SEEDS: [u64; 5] = [
+    5_513_890_487_717_207,
+    659_067_054_832_189,
+    6_576_107_712_789_375,
+    8_125_474_678_997_397,
+    8_888_394_596_499_862,
+];
+
 /// A millimetre. The carve's claims are physical — "this floor is flat" — so
 /// they are asserted at a physical tolerance rather than on bit equality:
 /// `raw + (site_y - raw)` is within an ulp of `site_y` but is not it, and
@@ -69,18 +78,25 @@ fn sites(h: &Haven) -> Vec<(f32, f32, f32, terrain::SiteFootprint)> {
     v
 }
 
-/// The live sites whose footprint actually carves — floor strictly inside mask.
+/// The live sites whose footprint actually carves — floor strictly inside the
+/// blend that has to return it to raw ground.
 ///
-/// Today that is the haven and not the waystations (`stamp_m` 11.10 against an
-/// 11.0 m mask, §F), which is a stated blocked state rather than an oversight:
-/// the const block in `terrain.rs` refuses to compile an armed carve while it
-/// holds. When the operator widens `WAYSTATION_RADIUS_M` this list grows and
-/// every check below starts covering the second tier with no edit here.
+/// Both tiers qualify since `WAYSTATION_RADIUS_M` widened and `blend_m` stopped
+/// being bounded by the scatter mask. The filter stays because it is the
+/// degenerate case `stamp_of` states out loud: a footprint whose floor does not
+/// fit inside its own ramp carves nothing at all, silently, and a gate that
+/// quietly covered zero sites is worse than one that covers one.
 fn carving_sites(h: &Haven) -> Vec<(f32, f32, f32, terrain::SiteFootprint)> {
-    sites(h)
+    let v: Vec<_> = sites(h)
         .into_iter()
-        .filter(|(_, _, _, fp)| fp.stamp_m < fp.scatter_m)
-        .collect()
+        .filter(|(_, _, _, fp)| fp.stamp_m < fp.blend_m)
+        .collect();
+    assert!(
+        v.len() == sites(h).len(),
+        "a site's floor no longer fits inside its blend, so it carves nothing \
+         and every check in this file skips it in silence"
+    );
+    v
 }
 
 /// The carved ground at a named strength — `terrain::ground`'s body with the
@@ -93,54 +109,70 @@ fn carved(strength: f32, seed: u64, h: &Haven, x: f32, z: f32) -> f32 {
 
 // ---------------------------------------------------------------- §A dark
 
-/// The shipped constant is zero, stated here so that arming it is a deliberate
-/// edit to a gate and not a quiet edit to a number.
+/// The carve is **armed**, and the three constants that decide what it does are
+/// pinned here so that changing any of them is a deliberate edit to a gate.
 ///
-/// When this fails because someone armed the carve, that is the arming pass
-/// doing its job: update this assert, regenerate the terrain goldens (the
-/// operator's call, `DECISIONS.md` 2026-08-10, "a worldgen change is a wipe"),
-/// and §E stops being a hypothetical.
+/// It shipped dark for one pass (the seam without the cut, so the cross-cutting
+/// edit and the behaviour change were separate commits) and was armed on
+/// 2026-08-16 by the operator. Arming moved the terrain goldens, which is
+/// expected and is a wipe (`DECISIONS.md` 2026-08-10).
 #[test]
-fn the_carve_ships_dark() {
+fn the_carve_is_armed_at_the_measured_constants() {
     assert_eq!(
-        SITE_STAMP_STRENGTH, 0.0,
-        "SITE_STAMP_STRENGTH is no longer zero — the carve has been armed. \
-         That is a worldgen change: it moves test_terrain_golden and \
-         test_replay, and it is an operator call (DECISIONS.md §open, \
-         'site carve v0'). Update this gate in the same commit."
+        SITE_STAMP_STRENGTH, 1.0,
+        "the carve's strength moved. It is a worldgen change — goldens and a \
+         wipe — and an operator call (DECISIONS.md: site carve v0)."
+    );
+    assert_eq!(
+        terrain::SITE_BLEND_M,
+        12.0,
+        "SITE_BLEND_M is the ramp length and therefore the cut budget \
+         (`max_cut`). It was swept over 128 seeds: 10 m is where every site \
+         flattens completely and 12 is the margin over it. Shortening it \
+         silently returns partly-levelled sites."
+    );
+    assert_eq!(
+        terrain::SITE_CUT_HEADROOM,
+        0.5,
+        "SITE_CUT_HEADROOM is the share of the cliff budget the ramp may spend. \
+         See §H — at 1.0 the worst carved gradient sits on the threshold."
     );
 }
 
-/// While the carve is dark, `ground` returns `height`'s own bits — not a value
-/// that rounds to it, the bits.
+/// Outside every site's blend the ground is untouched — `height`'s own bits.
 ///
-/// This is what makes the seam landable without touching a golden, and it is
-/// asserted **inside the site footprints too**, because that is the only place
-/// a stamp could ever be non-zero and therefore the only place the claim has
-/// any content. `to_bits` rather than `==` so a `-0.0` for a `0.0` is caught:
-/// `ground`'s early return exists precisely so no worldgen height is ever put
+/// This was "the carve is dark, so this holds everywhere" before arming. Armed,
+/// it is the statement that actually matters and it is the one §C bounds: the
+/// carve reshapes a bowl around each destination and **nothing else on the
+/// island**. `to_bits` rather than `==` so a `-0.0` for a `0.0` is caught —
+/// `ground`'s early return exists precisely so no worldgen height is put
 /// through a `+ 0.0` that could re-sign it.
 #[test]
-fn ground_is_height_to_the_bit_while_the_carve_is_dark() {
-    assert_eq!(SITE_STAMP_STRENGTH, 0.0, "see the_carve_ships_dark");
+fn ground_is_height_to_the_bit_outside_every_blend() {
     for seed in SEEDS {
         let h = terrain::haven(seed);
         for (sx, sz, _, fp) in sites(&h) {
-            // A grid across the whole footprint and a margin past it.
-            let r = fp.scatter_m + 4.0;
-            let mut i = -32i32;
-            while i <= 32 {
-                let mut j = -32i32;
-                while j <= 32 {
-                    let x = sx + r * (i as f32 / 32.0);
-                    let z = sz + r * (j as f32 / 32.0);
+            let r = fp.blend_m + 8.0;
+            let mut i = -24i32;
+            while i <= 24 {
+                let mut j = -24i32;
+                while j <= 24 {
+                    let x = sx + r * (i as f32 / 24.0);
+                    let z = sz + r * (j as f32 / 24.0);
+                    // Only outside every blend — inside is §B/§C/§D's business.
+                    if sites(&h).iter().any(|(ox, oz, _, ofp)| {
+                        (x - ox) * (x - ox) + (z - oz) * (z - oz) < ofp.blend_m * ofp.blend_m
+                    }) {
+                        j += 1;
+                        continue;
+                    }
                     let raw = terrain::height(seed, x, z);
                     let g = terrain::ground(seed, &h, x, z);
                     assert_eq!(
                         g.to_bits(),
                         raw.to_bits(),
                         "seed {seed} at ({x}, {z}): ground {g} != height {raw} \
-                         with the carve dark"
+                         outside every blend"
                     );
                     j += 1;
                 }
@@ -220,7 +252,7 @@ fn the_armed_carve_never_reaches_outside_a_footprint() {
                 let x = ix as f32 * (terrain::ISLAND_SIZE / 256.0);
                 let z = iz as f32 * (terrain::ISLAND_SIZE / 256.0);
                 let inside = all.iter().any(|(sx, sz, _, fp)| {
-                    (x - sx) * (x - sx) + (z - sz) * (z - sz) < fp.scatter_m * fp.scatter_m
+                    (x - sx) * (x - sx) + (z - sz) * (z - sz) < fp.blend_m * fp.blend_m
                 });
                 if !inside {
                     let raw = terrain::height(seed, x, z);
@@ -229,7 +261,7 @@ fn the_armed_carve_never_reaches_outside_a_footprint() {
                         g.to_bits(),
                         raw.to_bits(),
                         "seed {seed} at ({x}, {z}): the armed carve moved ground \
-                         outside every footprint"
+                         outside every blend"
                     );
                 }
                 iz += 1;
@@ -271,13 +303,13 @@ fn the_armed_carve_blends_without_an_edge() {
     for seed in SEEDS {
         let h = terrain::haven(seed);
         for (sx, sz, sy, fp) in carving_sites(&h) {
-            let band = fp.scatter_m - fp.stamp_m;
+            let band = fp.blend_m - fp.stamp_m;
             // Four radials, so an asymmetric raw terrain cannot hide a step.
             for (ux, uz) in [(1.0f32, 0.0f32), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)] {
                 let steps = 128i32;
-                let delta = fp.scatter_m / steps as f32;
+                let delta = fp.blend_m / steps as f32;
                 let at = |k: i32| {
-                    let d = fp.scatter_m * (k as f32 / steps as f32);
+                    let d = fp.blend_m * (k as f32 / steps as f32);
                     let (x, z) = (sx + ux * d, sz + uz * d);
                     let raw = terrain::height(seed, x, z);
                     (raw, carved(1.0, seed, &h, x, z))
@@ -308,8 +340,8 @@ fn the_armed_carve_blends_without_an_edge() {
                 assert!(
                     fabs(carved_end - raw_end) < MM,
                     "seed {seed} site ({sx}, {sz}) bearing ({ux}, {uz}): the \
-                     carve is still {} m deep at the scatter mask — the band \
-                     does not close",
+                     carve is still {} m deep at the end of its blend — the \
+                     ramp does not close",
                     fabs(carved_end - raw_end)
                 );
             }
@@ -495,4 +527,94 @@ fn the_armed_carve_never_worsens_a_structures_footing() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------- §H cliff
+
+/// **The carve never builds a wall.** The gradient it ADDS to the island stays
+/// under the share of the cliff budget it is allowed, everywhere it reaches.
+///
+/// This is the gate the arming pass was actually sized against, and the reason
+/// the mechanism has a `max_cut` at all. The first armed draft ran the blend
+/// out to the scatter mask, which gave it ~3.9 m of ramp to absorb whatever
+/// height lay between the made floor and the hill around it — and over 128
+/// seeds that produced a worst carved gradient of **2.09 rise/run at the
+/// waystations**, against `CLIFF_SLOPE_RATIO` = 1.19. The carve was ringing
+/// each destination with a ~64° wall.
+///
+/// ⚠ **It measures the gradient the carve ADDS, not the absolute one, and the
+/// difference is the whole finding.** An earlier draft asserted the absolute
+/// carved gradient against the cliff and read 1.16 at blend lengths from 6 m to
+/// 32 m — flat, and suspiciously so. It was measuring the *island*: the raw
+/// ground inside the window is itself up to 0.72 rise/run, and no amount of
+/// ramp changes that. Subtracting the raw gradient at the same point is what
+/// separates "this site sits on a hillside" (fine, and none of the carve's
+/// business) from "the carve made a step" (the defect).
+///
+/// ⚠ **What this gate can and cannot fail, stated so nobody over-trusts it.**
+/// `max_cut` is derived from the same band the ramp runs over, so the cut and
+/// the slack move together: shortening `SITE_BLEND_M` shortens the ramp AND
+/// shallows the cut, and the worst gradient stays pinned just under budget.
+/// Verified — halving the blend does not fail this test, and neither does
+/// raising `SITE_CUT_HEADROOM`, which lifts the bar along with the cut. So it
+/// is **not** a check that the constants are well chosen; §A pins those. It is
+/// a check that the CLAMP still matches its RAMP, and it fails the moment the
+/// two come apart — proven by deleting the clamp, which puts seed
+/// 5_513_890_487_717_207 at 0.610 against a 0.596 budget.
+#[test]
+fn the_armed_carve_never_builds_a_wall() {
+    let budget = terrain::CLIFF_SLOPE_RATIO * terrain::SITE_CUT_HEADROOM;
+    let mut worst = 0.0f32;
+    // ⚠ **Not `SEEDS`.** The 16-seed suite list does not exercise this at all:
+    // its sites are flat enough that `max_cut` never binds, so the clamp this
+    // gate exists to check is dead code on every one of them — the first draft
+    // of this test passed with the cut budget raised 6x. These five are the
+    // roughest of a 256-seed sweep, the ones where the clamp actually engages,
+    // and on them the carve lands within a thousandth of its budget. Keeping a
+    // narrow list is the point: a property that only shows up on rough ground
+    // needs seeds picked FOR being rough, not the seeds everything else uses.
+    for seed in ROUGH_SEEDS.iter().copied().chain(SEEDS) {
+        let h = terrain::haven(seed);
+        for (sx, sz, _, fp) in carving_sites(&h) {
+            for b in 0..32 {
+                // A fixed radial fan; `yaw_lut` is private to the crate, and a
+                // wall-1 trig ban does not reach a test binary but the habit is
+                // cheap — these are exact eighths and sixteenths of a turn.
+                let t = b as f32 / 32.0;
+                let (ux, uz) = (1.0 - 2.0 * t, {
+                    let v = 1.0 - (1.0 - 2.0 * t) * (1.0 - 2.0 * t);
+                    if b % 2 == 0 {
+                        v.sqrt()
+                    } else {
+                        -v.sqrt()
+                    }
+                });
+                let mut d = fp.stamp_m - 2.0;
+                while d < fp.blend_m + 2.0 {
+                    let p = |r: f32| (sx + ux * r, sz + uz * r);
+                    let (x0, z0) = p(d);
+                    let (x1, z1) = p(d + 1.0);
+                    let raw = terrain::height(seed, x1, z1) - terrain::height(seed, x0, z0);
+                    let cv = terrain::ground(seed, &h, x1, z1) - terrain::ground(seed, &h, x0, z0);
+                    // What the carve put there that the island had not.
+                    let added = fabs(cv) - fabs(raw);
+                    worst = worst.max(added);
+                    assert!(
+                        added <= budget + MM,
+                        "seed {seed} site ({sx}, {sz}) at d={d}: the carve adds \
+                         {added} rise/run where its budget is {budget} \
+                         (CLIFF_SLOPE_RATIO x SITE_CUT_HEADROOM). That is a wall, \
+                         and it means max_cut is letting through a deeper cut \
+                         than SITE_BLEND_M's ramp can carry."
+                    );
+                    d += 0.25;
+                }
+            }
+        }
+    }
+    assert!(
+        worst > 0.05,
+        "the carve adds at most {worst} rise/run anywhere — it is doing nothing, \
+         and every other check in this file is passing vacuously"
+    );
 }

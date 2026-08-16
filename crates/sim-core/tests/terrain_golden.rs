@@ -20,26 +20,28 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// Pinned fingerprint for GOLDEN_SEED. Regenerates only with an intentional
 /// worldgen change, in the same commit (CLAUDE.md walls 5/6 discipline).
 ///
-/// Regenerated here from `0xB48C_A5C2_A979_096A` because the road shoulder's
-/// barrel rate stopped being one number and became two — dense on the coast's
-/// sheltered arcs, sparse on the open shore (`terrain::in_bay`, TERRAIN.md §1
-/// stage 7's "junk piles at bay mouths" line).
+/// Regenerated here from `0xA217_658A_C65D_F3CB` because **the site carve was
+/// armed** (operator, 2026-08-16): `SITE_STAMP_STRENGTH` 0.0 → 1.0, so the pad
+/// and both waystations now MAKE their flat ground instead of standing on
+/// whatever the argmax found. That is the largest-reach worldgen change since
+/// this pin existed and it moves this digest by design.
 ///
-/// Nothing else moved, and the reach is narrow by construction: heights are
-/// untouched (`in_bay` only READS `height`), the ring is untouched, and every
-/// authored slot — pad, crates, waystations, canopies — returns before the
-/// road branch is reached. Only `RoadBand::Shoulder` cells can differ. This
-/// digest sees them at all because `hash_scatter_window` covers the pad and
-/// both waystations, and all three sit ON the ring by construction, so their
-/// windows straddle the shoulder. `tests/road.rs` measures the whole delta:
-/// 239 barrels islandwide under the old flat rate, 236 under the split, over
-/// the same 2,033 shoulder cells.
+/// **The reach is bounded and the bound is asserted elsewhere**, which is worth
+/// stating because "the carve moved the golden" could hide anything. It moves
+/// exactly three discs: `probe_sites` hashes windows over the pad and both
+/// waystations, and all three stand on the road ring, so their windows sit
+/// inside the carve. `tests/carve.rs` §C holds that no ground outside a site's
+/// `blend_m` changes at all, bit for bit, islandwide — so what this digest sees
+/// is the whole of what moved.
 ///
-/// The previous regeneration, kept because it explains the value above: the
-/// scatter pass stopped choosing a biome row and started blending four
+/// A previous regeneration, kept because it explains the value it replaced: the
+/// road shoulder's barrel rate stopped being one number and became two — dense
+/// on the coast's sheltered arcs, sparse on the open shore (`terrain::in_bay`,
+/// TERRAIN.md §1 stage 7's "junk piles at bay mouths" line). And before that,
+/// the scatter pass stopped choosing a biome row and started blending four
 /// (`terrain::scatter_row`), a delta confined to the ~11% of land cells no
 /// single splat channel owns outright.
-const GOLDEN_TERRAIN_HASH: u64 = 0xA217_658A_C65D_F3CB;
+const GOLDEN_TERRAIN_HASH: u64 = 0x97E7_4336_299A_D2FD;
 
 #[test]
 fn test_terrain_golden() {

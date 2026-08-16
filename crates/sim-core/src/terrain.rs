@@ -704,12 +704,44 @@ pub const WAYSTATION_CRATES: i32 = 2;
 ///
 /// The floor is arithmetic: density stays below the pad's iff
 /// `WAYSTATION_CRATES / R² < HAVEN_CRATES / HAVEN_RADIUS_M²`, so
-/// `R > sqrt(2 × 256 / 5) = 10.12 m`. 11.0 clears it with margin, stays well
-/// inside `HAVEN_RADIUS_M` so the lesser tier still reads as a smaller place
-/// on sight, and the const block below asserts the inequality itself rather
-/// than the number — widen the crate count and it is the ASSERT that fails,
-/// not the design (knob, DECISIONS.md §open: waystations v0).
-pub const WAYSTATION_RADIUS_M: f32 = 11.0;
+/// `R > sqrt(2 × 256 / 5) = 10.12 m`, and the const block below asserts the
+/// inequality itself rather than the number — widen the crate count and it is
+/// the ASSERT that fails, not the design.
+///
+/// **11.0 m until 2026-08-16, when arming the carve moved it to the pad's own
+/// mask** (operator: *"widen WAYSTATION_RADIUS_M and arm the carve"*). The
+/// density floor above never bound it; the carve's blend does, and it binds
+/// harder here than at the pad for a reason worth stating, because it is the
+/// second tier's defining property showing up as a number.
+///
+/// A site's carve has to blend from its made floor back to raw ground before
+/// the scatter mask, and this tier's floor already reaches 11.10 m (the canopy
+/// is footed at `WAYSTATION_CANOPY_OFF_M + WAYSTATION_CANOPY_R_M`). What is
+/// left over is the ramp — and **a ramp that is steeper than the island's own
+/// cliff threshold is not a blend, it is a wall**. `WAYSTATIONS` are the
+/// *losers* of the same flatness argmax that picks the pad (`pick_minor` keeps
+/// the runners-up), so the lesser tier stands on measurably rougher ground —
+/// 0.372 rise/run against the pad's 0.209, over the 16 `tests/haven.rs` seeds —
+/// and therefore has more height to blend across a shorter band. Measured at
+/// full strength, worst carved rise/run over those seeds against
+/// `CLIFF_SLOPE_RATIO` = 1.1918:
+///
+/// | mask | band | worst carved slope | |
+/// |---|---|---|---|
+/// | 13.66 (the bare minimum band) | 2.56 | 1.660 | over the cliff |
+/// | 15.01 (the pad's own band width) | 3.91 | 1.246 | over the cliff |
+/// | 15.30 | 4.20 | 1.187 | the floor |
+/// | **16.00** | **4.90** | **1.075** | ships |
+///
+/// So it is `HAVEN_RADIUS_M`: 0.70 m clear of the measured floor, and one
+/// blend distance in the world rather than two. **The cost is real and is the
+/// operator's to have accepted** — a waystation's *clearing* is now the pad's
+/// size, so "the lesser tier reads as a smaller place on sight" no longer rides
+/// on the exclusion zone. It still rides on everything a player actually looks
+/// at: two containers against five, a 6.5 m ring against 10.0, and a 4.1 m
+/// canopy against a 9.2 m tower. `tests/carve.rs` §H holds the cliff claim.
+/// (knob, DECISIONS.md: waystations v0 · site carve v0.)
+pub const WAYSTATION_RADIUS_M: f32 = 15.0102;
 /// Radius of the container ring, meters. Bounded on both sides by arithmetic,
 /// the same way `HAVEN_CRATE_R_M` is. Below `CELL_SIZE`, so an anchor is
 /// never more than one scatter cell from the site center and `scatter`'s
@@ -1659,11 +1691,33 @@ pub struct SiteFootprint {
     /// offset plus that structure's own broad-phase radius — plus one clutter
     /// cell, so the floor covers the arrangement rather than ending under it.
     pub stamp_m: f32,
+    /// Where the CARVE has returned to raw ground — the outer end of the blend
+    /// ramp, and the only radius here that is **not** bounded by `scatter_m`.
+    ///
+    /// **The blend does not have to end where the scatter grid resumes, and
+    /// trapping it there is what made the first armed draft build walls.** The
+    /// ramp has to absorb the whole difference between the made floor and the
+    /// hill around it, and smoothstep's steepest slope is `1.5 / band` — so a
+    /// short band turns a few metres of relief into a cliff. Measured over 128
+    /// seeds with the ramp confined to the scatter mask: worst carved gradient
+    /// **2.09 rise/run at the waystations, 1.28 at the pad**, against
+    /// `CLIFF_SLOPE_RATIO` = 1.19. The carve was ringing each destination with
+    /// a ~64° wall. (Sixteen seeds read 1.07 / 0.80 and showed none of it.)
+    ///
+    /// Nothing ever required the two to be equal. `scatter_m` answers "does the
+    /// grid stand anything here", and the answer past the floor is *yes* — a
+    /// tree on the outer half of a gentle blend is exactly what stops the blend
+    /// being visible, which is `MONUMENTS.md` §3's whole finding: the reference
+    /// game's terrain blending is authored masks, not a flattened circle. So
+    /// the ramp runs long and shallow, out past the vegetation line, and the
+    /// vegetation grows over it.
+    pub blend_m: f32,
 }
 
 /// The pad's masks.
 pub const HAVEN_FOOTPRINT: SiteFootprint = SiteFootprint {
     scatter_m: HAVEN_RADIUS_M,
+    blend_m: HAVEN_RADIUS_M + SITE_BLEND_M,
     swept_m: HAVEN_CRATE_R_M + CLUTTER_CELL_M,
     // The shelter reaches furthest: 6.5 m out, 4.9498 m of corner. 12.09 m,
     // inside the 16 m mask with 3.91 m of band left to blend across.
@@ -1676,6 +1730,7 @@ pub const HAVEN_FOOTPRINT: SiteFootprint = SiteFootprint {
 /// without a second knob being spoken.
 pub const WAYSTATION_FOOTPRINT: SiteFootprint = SiteFootprint {
     scatter_m: WAYSTATION_RADIUS_M,
+    blend_m: WAYSTATION_RADIUS_M + SITE_BLEND_M,
     swept_m: WAYSTATION_CRATE_R_M + CLUTTER_CELL_M,
     // ⚠ 11.10 m, against an 11.0 m mask — this one does NOT fit, and that is
     // the finding rather than a typo. The const block below refuses to compile
@@ -1690,6 +1745,32 @@ const _: () = {
     // cell wide — a one-cell ramp is a hard edge that cost a dither.
     assert!(HAVEN_FOOTPRINT.swept_m + CLUTTER_CELL_M < HAVEN_FOOTPRINT.scatter_m);
     assert!(WAYSTATION_FOOTPRINT.swept_m + CLUTTER_CELL_M < WAYSTATION_FOOTPRINT.scatter_m);
+    // Outside-in, all four now: swept floor, carved floor, scatter mask, and
+    // the blend running past all of them. The carved floor must clear the
+    // scatter mask or the grid stands a tree on made ground; the blend must
+    // clear the carved floor or there is no ramp to blend across.
+    assert!(HAVEN_FOOTPRINT.stamp_m < HAVEN_FOOTPRINT.scatter_m);
+    assert!(WAYSTATION_FOOTPRINT.stamp_m < WAYSTATION_FOOTPRINT.scatter_m);
+    assert!(HAVEN_FOOTPRINT.scatter_m < HAVEN_FOOTPRINT.blend_m);
+    assert!(WAYSTATION_FOOTPRINT.scatter_m < WAYSTATION_FOOTPRINT.blend_m);
+    // `WAYSTATION_RADIUS_M` is a LITERAL that is really a derivation, and this
+    // is what stops the two coming apart. It is written out because
+    // `ci/knob_registry.mjs` pins every knob `DECISIONS.md` declares against
+    // its source value, and that parser reads numbers and ratios rather than
+    // arithmetic over named constants — a knob it cannot read is a hard failure
+    // by design, so the choice is a literal it can pin or a gate that cannot
+    // see this number at all. The derivation: the site's own carved floor, plus
+    // the pad's blend band, so both tiers blend over the same distance.
+    {
+        let derived = (WAYSTATION_CANOPY_OFF_M + WAYSTATION_CANOPY_R_M + CLUTTER_CELL_M)
+            + (HAVEN_RADIUS_M - (HAVEN_SHELTER_R_M + SHELTER_CORNER_R_M + CLUTTER_CELL_M));
+        let d = WAYSTATION_RADIUS_M - derived;
+        assert!(
+            d < 0.001 && d > -0.001,
+            "WAYSTATION_RADIUS_M has drifted from its derivation — it is its own \
+             carved floor plus the pad's blend band, and one of those moved"
+        );
+    }
     // The swept floor covers the arrangement that stands on it: every
     // container, and the structure in the ring's gap.
     assert!(HAVEN_FOOTPRINT.swept_m > HAVEN_CRATE_R_M);
@@ -1769,7 +1850,28 @@ fn sweep_of(fp: &SiteFootprint, sx: f32, sz: f32, x: f32, z: f32) -> f32 {
 /// argmax settled for by *finding* — worst 3.76 m over a 32 m pad across 16
 /// seeds. At strength 1.0 that number is 0 by construction, and `tests/relief.rs`
 /// is where the before/after belongs.
-pub const SITE_STAMP_STRENGTH: f32 = 0.0;
+pub const SITE_STAMP_STRENGTH: f32 = 1.0;
+
+/// Share of the island's cliff budget (`CLIFF_SLOPE_RATIO`) the carve's own
+/// blend ramp may spend, leaving the rest for the raw ground it is blending
+/// into — the two gradients add, and only one of them is knowable from a
+/// footprint. Measured: at 1.0 the worst carved gradient over 128 seeds sits
+/// right on the threshold, which is a bound with no room in it; 0.5 puts the
+/// worst at roughly half the cliff and every site the suites drive still
+/// flattens completely (knob, DECISIONS.md: site carve v0).
+pub const SITE_CUT_HEADROOM: f32 = 0.5;
+
+/// How far past its scatter mask a site's carve keeps blending, metres —
+/// the length of the ramp, and the number that decides how deep a cut is safe.
+///
+/// Sized by measurement rather than picked, because the thing it trades against
+/// is a cliff. `max_cut` is `(blend - stamp) * CLIFF_SLOPE_RATIO * headroom /
+/// 1.5`, so the ramp length IS the cut budget: at the old scatter-mask-bound
+/// band (~3.9 m) the budget was 1.55 m and 40% of sites over 128 seeds came out
+/// only partly levelled, which is a carve that does not carve. Swept over 128
+/// seeds for the smallest value that both flattens every site and keeps the
+/// worst carved gradient clear of the cliff (`DECISIONS.md`: site carve v0).
+pub const SITE_BLEND_M: f32 = 12.0;
 
 /// The carve, as a height delta: how far the authored sites move the ground at
 /// (x, z) away from the raw worldgen underneath it.
@@ -1860,16 +1962,46 @@ fn stamp_of(
     // Saying it out loud is what stops the next reader taking a working
     // waystation for granted: today that site really is uncarved, and the const
     // block above is what will not let it be armed in that state.
-    if fp.stamp_m >= fp.scatter_m {
+    if fp.stamp_m >= fp.blend_m {
         return 0.0;
     }
     let dx = x - sx;
     let dz = z - sz;
     let d2 = dx * dx + dz * dz;
-    if d2 >= fp.scatter_m * fp.scatter_m {
+    if d2 >= fp.blend_m * fp.blend_m {
         return 0.0;
     }
-    (sy - raw) * (1.0 - ramp(fp.stamp_m, fp.scatter_m, d2.sqrt())) * strength
+    // Clamped, because a cut the band cannot carry is a wall.
+    //
+    // The band has to return the made floor to raw ground, and smoothstep's
+    // steepest slope is `1.5 / band` — so a cut of `depth` contributes at most
+    // `depth * 1.5 / band` to the gradient there. Left unbounded that is a
+    // function of how rough the site's surroundings are, and the sites are on
+    // the coast road rather than on ground anybody chose for its skirts:
+    // measured over 128 seeds at full strength and no clamp, the worst carved
+    // gradient was **2.09 rise/run at the waystations and 1.28 at the pad**,
+    // against `CLIFF_SLOPE_RATIO` = 1.19 — i.e. the carve was building a ~64°
+    // wall around the destination it was smoothing. Sixteen seeds did not show
+    // it (1.07 / 0.80, both under), which is why this is clamped rather than
+    // sized: a band picked off the seeds that measured it is exactly the sweep
+    // that agrees with itself.
+    //
+    // So the cut is capped at what the band can carry, and the cap is derived
+    // rather than picked. Under it a site flattens completely, as every seed
+    // the suites drive does; over it the site is *levelled as far as is safe*
+    // and keeps the rest of its slope. `tests/carve.rs` §H holds the cliff.
+    let depth = (sy - raw).clamp(-max_cut(fp), max_cut(fp));
+    depth * (1.0 - ramp(fp.stamp_m, fp.blend_m, d2.sqrt())) * strength
+}
+
+/// The deepest cut a footprint's blend band can carry without the ramp itself
+/// reading as a cliff.
+///
+/// `SITE_CUT_HEADROOM` is the share of the cliff budget the carve may spend;
+/// the rest is left for the raw ground's own gradient, which adds to the
+/// ramp's and is not knowable here.
+pub fn max_cut(fp: &SiteFootprint) -> f32 {
+    (fp.blend_m - fp.stamp_m) * CLIFF_SLOPE_RATIO * SITE_CUT_HEADROOM / 1.5
 }
 
 // Wall 4 at the definition. `site_stamp` sums its sites, which is only equal
@@ -1893,49 +2025,13 @@ const _: () = {
 /// a thinning of tufts.
 pub const SITE_STAMP_MIN_BAND_M: f32 = CLUTTER_CELL_M * 4.0;
 
-// ⚠ **Arming the carve is a COMPILE ERROR until the waystation's mask is
-// widened, and that is deliberate.**
-//
-// The carve's flat floor has to reach past everything the site seats, or the
-// structure's outer footing lands on the blend ramp — which is steeper than
-// the ground it replaced, because the ramp compresses the whole raw delta into
-// the band. Measured at full strength over 16 seeds: the haven shelter's worst
-// footing spread improves 1.374 m → 0.063 m, and the waystation canopy's gets
-// WORSE, 1.795 m → 1.889 m. The canopy needs 11.10 m of floor and
-// `WAYSTATION_RADIUS_M` publishes an 11.0 m mask, so there is no room for the
-// floor, let alone a band to blend across.
-//
-// That is a **spoken knob** and not a thing this seam may quietly change:
-// `WAYSTATION_RADIUS_M` is the scatter exclusion the second tier was priced
-// with (`DECISIONS.md` §open, "waystations v0"), so widening it moves what the
-// island scatters near a waystation, which is a balance question and the
-// operator's. Until it moves, the strength stays 0.0 and everything below is
-// inert — so this assert is written to bind ONLY on an armed carve, which
-// makes the block a door rather than a wall: set `SITE_STAMP_STRENGTH` to
-// anything non-zero and the crate stops compiling with this text.
+// The carve is ARMED (operator, 2026-08-16). What the block below held before
+// arming — that a site's floor must fit inside its scatter mask with a band to
+// spare — is retired, because the band it was protecting no longer lives there:
+// `blend_m` runs the ramp out past the mask, and `max_cut` bounds the cut to
+// what that ramp can carry. Both replacements are asserted above and measured
+// by `tests/carve.rs` §D and §H.
 const _: () = {
-    let armed = SITE_STAMP_STRENGTH != 0.0;
-    assert!(
-        !armed || HAVEN_FOOTPRINT.stamp_m + SITE_STAMP_MIN_BAND_M <= HAVEN_FOOTPRINT.scatter_m,
-        "the carve is armed and the haven's flat floor does not fit inside its \
-         scatter mask with a band to blend across — widen HAVEN_RADIUS_M"
-    );
-    assert!(
-        !armed
-            || WAYSTATION_FOOTPRINT.stamp_m + SITE_STAMP_MIN_BAND_M
-                <= WAYSTATION_FOOTPRINT.scatter_m,
-        "the carve is armed and the WAYSTATION's flat floor does not fit: the \
-         canopy is footed out to WAYSTATION_CANOPY_OFF_M + WAYSTATION_CANOPY_R_M \
-         = 10.46 m and WAYSTATION_RADIUS_M publishes an 11.0 m mask. Carving \
-         this site makes the canopy's footing WORSE (measured 1.795 -> 1.889 m \
-         over 16 seeds). WAYSTATION_RADIUS_M is a spoken knob - see DECISIONS.md \
-         §open 'site carve v0' - so widening it is the operator's call, not this \
-         seam's."
-    );
-    // The floor covers the arrangement, which is the whole point of deriving it
-    // from the structures rather than from the container ring. This one binds
-    // whether or not the carve is armed: it is a statement about the geometry,
-    // not about the strength.
     assert!(HAVEN_FOOTPRINT.stamp_m >= HAVEN_FOOTPRINT.swept_m);
     assert!(WAYSTATION_FOOTPRINT.stamp_m >= WAYSTATION_FOOTPRINT.swept_m);
     assert!(HAVEN_FOOTPRINT.stamp_m >= HAVEN_SHELTER_R_M + SHELTER_CORNER_R_M);

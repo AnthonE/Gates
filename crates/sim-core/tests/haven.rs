@@ -582,10 +582,24 @@ fn the_pad_carries_the_containers_it_placed() {
                      ground the ring cannot support, not that the crate is wrong",
                     s.y
                 );
+                // The CARVED ground, since the carve was armed: a container is
+                // seated on the pad's made floor, and the raw hill it replaced
+                // is no longer where anything stands. On seed 1 the two are
+                // 1.279 m and 1.591 m — the 31 cm the carve took out.
                 assert_eq!(
                     s.y,
-                    terrain::height(seed, s.x, s.z),
-                    "seed {seed}: a crate's y is not the terrain under it"
+                    terrain::ground(seed, &haven, s.x, s.z),
+                    "seed {seed}: a crate's y is not the ground under it"
+                );
+                // And the floor being flat is a claim in its own right, which
+                // the carve is the whole reason we can now make: every anchor
+                // on the ring stands at the site's own reference height.
+                assert!(
+                    sim_core::fmath::fabs(s.y - if on_pad { haven.y } else { s.y }) < 1.0e-3,
+                    "seed {seed}: a pad crate stands at {} where the pad's floor \
+                     is {} — the ring is not on one level",
+                    s.y,
+                    haven.y
                 );
                 // Placed, not drawn: no jitter, no size wobble.
                 assert_eq!(s.scale, 1.0, "seed {seed}: a placed crate was scaled");
@@ -822,7 +836,7 @@ fn the_pad_carries_the_shelter_at_its_center() {
         );
         assert_eq!(
             s.y,
-            terrain::height(seed, s.x, s.z),
+            terrain::ground(seed, &haven, s.x, s.z),
             "seed {seed}: the shelter is not standing on its own ground"
         );
         assert!(

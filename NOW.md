@@ -1071,16 +1071,16 @@ Residue, one line each: arrows still pass through every deployable
 (`ranged.rs` never asks the solid nibbles — same class as its piece gap),
 and whether a sleeper blocks stays unanswered (§0y item 1, untouched).
 
-**The carve's seam landed 2026-08-16 and the cut is dark** (`SITE_STAMP_STRENGTH
-= 0.0`): `terrain::ground` / `ground_slope` beside `height` / `slope`, every
-consumer converted, `tests/carve.rs` + `tests/height_roles.rs` as the gates,
-goldens untouched. Arming is one constant and it is the operator's — but
-**`WAYSTATION_RADIUS_M` must widen first and a compile error says so**: the
-canopy is footed to 10.46 m against an 11.0 m mask, so carving that site makes
-its footing worse (1.795 → 1.889 m; the haven shelter goes 1.374 → 0.063 m).
-`DECISIONS.md` §open "site carve v0" has both numbers and the third finding —
-`Haven::relief` measures the scatter mask, not the floor, so arming does not
-move it.
+**The carve is BUILT AND ARMED** (2026-08-16, operator). Stage 8 makes its flat
+pad now: 128 seeds, every site fully flat, worst floor 8.06 m → 0.000. Two
+mechanisms carry it and both were forced by measurement — `blend_m` (the ramp
+runs 12 m past the scatter mask, because confining it there built a 2.09
+rise/run wall on rough seeds) and `max_cut` (the cut is clamped to what the ramp
+can carry). `WAYSTATION_RADIUS_M` is derived now, 11.0 → 15.01. **`test_terrain_golden`
+moved and is regenerated in the same commit — this is a wipe**; the probe
+hashes windows over all three sites and they stand on the ring, so a golden
+that had held still would have meant the carve missed them. `DECISIONS.md`
+2026-08-16 has the numbers.
 
 §9.3 is the gap and it is not urgent yet: `haven()` + `pick_minor` produce two
 kinds of site, the separation floor is one hand-asserted constant
