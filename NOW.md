@@ -1071,6 +1071,17 @@ Residue, one line each: arrows still pass through every deployable
 (`ranged.rs` never asks the solid nibbles — same class as its piece gap),
 and whether a sleeper blocks stays unanswered (§0y item 1, untouched).
 
+**The carve's seam landed 2026-08-16 and the cut is dark** (`SITE_STAMP_STRENGTH
+= 0.0`): `terrain::ground` / `ground_slope` beside `height` / `slope`, every
+consumer converted, `tests/carve.rs` + `tests/height_roles.rs` as the gates,
+goldens untouched. Arming is one constant and it is the operator's — but
+**`WAYSTATION_RADIUS_M` must widen first and a compile error says so**: the
+canopy is footed to 10.46 m against an 11.0 m mask, so carving that site makes
+its footing worse (1.795 → 1.889 m; the haven shelter goes 1.374 → 0.063 m).
+`DECISIONS.md` §open "site carve v0" has both numbers and the third finding —
+`Haven::relief` measures the scatter mask, not the floor, so arming does not
+move it.
+
 §9.3 is the gap and it is not urgent yet: `haven()` + `pick_minor` produce two
 kinds of site, the separation floor is one hand-asserted constant
 (`WAYSTATION_MIN_SEP_M`), and there is no reservation ledger. That is correct
@@ -2112,18 +2123,23 @@ entry names the landed gate and keeps the mechanism as the lesson.)
   restart must not duplicate it) and to `pick_up` (nobody pockets the
   haven's machine). Systems lane. Bank and vendor stay blocked on an
   operator act.
-- **The waystations want a silhouette, and it must be a *different* one.**
-  Their containers and loot tables differ from the pad's now; the site
-  itself is still two boxes on bare ground, and a second copy of
-  `HAVEN_SHELTER` would make the two tiers look identical.
-- **The pad carve is still unbuilt, and smaller than this file used to
-  say**: `height` has 18 production call sites in 3 crates (not "~80 in
-  four"), and `haven()` measures 12,463 taps mean over 16 seeds. Re-scope
-  against 18 before assuming it cannot be a pass. Whether a tier should
-  carve at all is **open for the operator** (`DECISIONS.md` §open,
-  waystation canopy v0).
-- **Nothing threatens the walk between them.** The pig flees and never
-  fights — §0m item 2 is this gap seen from the other end.
+- ~~**The waystations want a silhouette**~~ **LANDED** — `WAYSTATION_CANOPY_BOXES`,
+  9 rows, deliberately not a shrunk `HAVEN_SHELTER` (4 posts, a knee-high
+  parapet, 4.1 m). `DECISIONS.md` §open "waystation canopy v0" has the
+  derivation; this bullet described the tree before it.
+- **The pad carve's SEAM is built and the cut is dark** (2026-08-16, §0n2).
+  The count in this bullet was wrong too — 65 `height` reads, 31 inside
+  `terrain.rs`, ~18 consumers — and the number was never the hard part: the
+  split is by role, and `tests/height_roles.rs` now holds it. What remains is
+  two spoken numbers, both in `DECISIONS.md` §open "site carve v0".
+- **Nothing threatens the walk between them — the SITES are contested now,
+  the road is not.** Guards v0 landed (wolf slots leashed to a site's
+  `SiteFootprint`, `tests/guard.rs`), so this bullet's original claim is
+  stale; what is still true is that the ground *between* destinations is
+  empty. Note the promotion it causes: `MONUMENTS.md` §9.4 item 4 said nav
+  enters "the moment an NPC defends a monument", and one does — guards route
+  through `movement::step`, so they slide along a shelter wall rather than
+  path around it.
 
 ## 4b · The domain gate reads the crate now — one residual
 

@@ -31,6 +31,35 @@ use sim_core::limits::{BOX_SLOTS, TICK_HZ};
 use sim_core::oven::{CookContent, OVEN_PERIOD_TICKS};
 use sim_core::world::{Command, World, EV_DEPLOY_REFUSED, EV_MOVE_REFUSED, EV_OVEN};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 0x0FEE_0FEE;
 const PLAYER: u32 = 3;
 /// `DeployContent::probe_fixture` row 4 is the fire, and it costs one unit
@@ -61,7 +90,7 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                 let cx = (512 + dx).clamp(0, 1023) as u16;
                 let cz = (512 + dz).clamp(0, 1023) as u16;
                 let (x, z) = cell_center(cx, cz);
-                if foundation_terrain_ok(seed, x, z) {
+                if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);
                 }
             }
@@ -82,7 +111,7 @@ fn fire_world() -> (World, u32, u16, u16) {
     let (x, z) = cell_center(cx, cz);
     w.dev_spawn = Some((x, z));
     w.tick(&[Command::Join { id: PLAYER }]);
-    w.players[0].body = sim_core::movement::Body::at(SEED, x, z);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
     w.players[0].inv[0] = ItemStack {
         item: FIRE_ITEM,
         count: 1,
@@ -632,7 +661,7 @@ fn recycler_world() -> (World, u32, u16, u16) {
     let (x, z) = cell_center(cx, cz);
     w.dev_spawn = Some((x, z));
     w.tick(&[Command::Join { id: PLAYER }]);
-    w.players[0].body = sim_core::movement::Body::at(SEED, x, z);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
     w.players[0].inv[0] = ItemStack {
         item: RECYCLER_ITEM,
         count: 1,

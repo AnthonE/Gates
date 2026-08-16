@@ -86,6 +86,7 @@ pub const AIM_RANGE_M: f32 = BUILD_REACH_M + 3.0;
 /// pure and bevy-free so the whole aim is testable headless.
 pub fn aim_from_look(
     seed: u64,
+    haven: &sim_core::terrain::Haven,
     cols: &sim_core::collide::ColIndex,
     eye: [f32; 3],
     dir: [f32; 3],
@@ -96,8 +97,9 @@ pub fn aim_from_look(
         let px = eye[0] + dir[0] * t;
         let py = eye[1] + dir[1] * t;
         let pz = eye[2] + dir[2] * t;
-        let ground = sim_core::terrain::height(seed, px, pz)
-            .max(sim_core::collide::piece_ground(seed, cols, px, pz, py));
+        let ground = sim_core::terrain::ground(seed, haven, px, pz).max(
+            sim_core::collide::piece_ground(seed, haven, cols, px, pz, py),
+        );
         if py <= ground {
             return clamp_to_reach(feet, (px, pz));
         }
@@ -273,6 +275,12 @@ impl Verdict {
 /// Everything the local pre-check reads.
 pub struct Site<'a> {
     pub seed: u64,
+    /// The solved authored sites, for `terrain::ground`. Beside `seed`
+    /// because the pair is what names an island's *carved* surface, and the
+    /// ghost has to predict against the same surface `build::place` will
+    /// validate on — one of them reading raw terrain is a ghost that says
+    /// yes where the server says no.
+    pub haven: &'a sim_core::terrain::Haven,
     /// The player's feet, world XZ.
     pub at: (f32, f32),
     /// Addresses already holding a piece.
@@ -304,7 +312,7 @@ pub fn verdict(t: Target, row: u16, shape: u8, site: &Site<'_>) -> Verdict {
 
     // Ground, for a foundation only — every other shape stands on structure
     // and the sim asks a different question of it.
-    if shape == SHAPE_FOUNDATION && !foundation_terrain_ok(site.seed, ax, az) {
+    if shape == SHAPE_FOUNDATION && !foundation_terrain_ok(site.seed, site.haven, ax, az) {
         return Verdict::No("bad ground");
     }
 
@@ -389,6 +397,8 @@ pub fn deploy_target_at(ax: f32, az: f32, placement: u8, level: u8) -> Target {
 /// Everything the deploy pre-check reads — the client's mirror, whole.
 pub struct DeploySite<'a> {
     pub seed: u64,
+    /// The solved authored sites — see `Site::haven`, same reason.
+    pub haven: &'a sim_core::terrain::Haven,
     /// The player's feet, world XZ.
     pub at: (f32, f32),
     /// The placed-piece mirror (support lives here).
@@ -480,7 +490,7 @@ pub fn deploy_verdict(t: Target, row: u8, site: &DeploySite<'_>) -> DeployVerdic
     // SUPPORT / TERRAIN, per placement class — the sim's `supported` match,
     // its store lookups answered by the mirror.
     let ground_ok = site.piece_at(t.cx, t.cz, 0, LOC_PLANE).is_none()
-        && foundation_terrain_ok(site.seed, ax, az);
+        && foundation_terrain_ok(site.seed, site.haven, ax, az);
     match def.placement {
         PLACE_GROUND => {
             if t.level != 0 {
@@ -695,6 +705,9 @@ mod tests {
 
     #[test]
     fn a_taken_spot_is_refused_before_anything_else_is_asked() {
+        // seed 1's solved sites: the ghost predicts against the carved
+        // surface, so it needs the same island the sim would build.
+        let haven1 = sim_core::terrain::haven(1);
         let content = free_table(SHAPE_WALL);
         let inv = empty_inv();
         let t = Target {
@@ -716,6 +729,7 @@ mod tests {
         let (ax, az) = anchor(t.cx, t.cz, t.loc);
         let site = Site {
             seed: 1,
+            haven: &haven1,
             at: (ax, az),
             taken: &taken,
             content: &content,
@@ -729,6 +743,9 @@ mod tests {
     /// hand-copied anchor could get silently wrong.
     #[test]
     fn reach_is_measured_to_the_anchor() {
+        // seed 1's solved sites: the ghost predicts against the carved
+        // surface, so it needs the same island the sim would build.
+        let haven1 = sim_core::terrain::haven(1);
         let content = free_table(SHAPE_WALL);
         let inv = empty_inv();
         let t = Target {
@@ -740,6 +757,7 @@ mod tests {
         let (ax, az) = anchor(t.cx, t.cz, t.loc);
         let site_near = Site {
             seed: 1,
+            haven: &haven1,
             at: (ax, az - BUILD_REACH_M + 0.2),
             taken: &[],
             content: &content,
@@ -748,6 +766,7 @@ mod tests {
         assert!(verdict(t, 0, SHAPE_WALL, &site_near).ok());
         let site_far = Site {
             seed: 1,
+            haven: &haven1,
             at: (ax, az - BUILD_REACH_M - 0.2),
             taken: &[],
             content: &content,
@@ -849,11 +868,22 @@ mod tests {
         // cousin (`CLAUDE.md`).
         let cols = Box::new(sim_core::collide::ColIndex::new());
         let seed = 20260731u64;
+        // The carved surface the aim marches against, for this seed. Built
+        // here rather than shared, so the ghost is tested against the same
+        // island `terrain::ground` would give the server.
+        let haven = sim_core::terrain::haven(seed);
         let (fx, fz) = (1024.5f32, 1024.5f32);
-        let eye_y = sim_core::terrain::height(seed, fx, fz) + 1.6;
+        let eye_y = sim_core::terrain::ground(seed, &haven, fx, fz) + 1.6;
 
         // Straight down: the ray meets the ground under the eye.
-        let (ax, az) = aim_from_look(seed, &cols, [fx, eye_y, fz], [0.0, -1.0, 0.0], (fx, fz));
+        let (ax, az) = aim_from_look(
+            seed,
+            &haven,
+            &cols,
+            [fx, eye_y, fz],
+            [0.0, -1.0, 0.0],
+            (fx, fz),
+        );
         assert!(
             (ax - fx).abs() < 1e-3 && (az - fz).abs() < 1e-3,
             "straight down aimed at ({ax}, {az}), not the feet"
@@ -861,7 +891,14 @@ mod tests {
 
         // Steeply up: no ground inside the march (the climb outruns any
         // slope), so the old fixed projection answers.
-        let (ax, az) = aim_from_look(seed, &cols, [fx, eye_y, fz], [0.1, 1.0, 0.0], (fx, fz));
+        let (ax, az) = aim_from_look(
+            seed,
+            &haven,
+            &cols,
+            [fx, eye_y, fz],
+            [0.1, 1.0, 0.0],
+            (fx, fz),
+        );
         assert!(
             (ax - (fx + AIM_AHEAD_M)).abs() < 1e-3 && (az - fz).abs() < 1e-3,
             "skyward aim fell back to ({ax}, {az}), not {AIM_AHEAD_M} ahead"
@@ -873,6 +910,7 @@ mod tests {
             for p in [-1.0f32, -0.5, -0.1, 0.2, 0.8] {
                 let (ax, az) = aim_from_look(
                     seed,
+                    &haven,
                     &cols,
                     [fx, eye_y, fz],
                     [a.cos(), p, a.sin()],

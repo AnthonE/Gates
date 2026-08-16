@@ -649,6 +649,7 @@ impl Bites {
 #[allow(clippy::too_many_arguments)]
 pub fn step(
     seed: u64,
+    haven: &crate::terrain::Haven,
     tick: u64,
     mc: &MobContent,
     cols: &ColIndex,
@@ -670,7 +671,7 @@ pub fn step(
             // came back when somebody was standing there to watch would be
             // a shard whose population depends on who logged in.
             if def.hp > 0 && tick >= mob.respawn_at {
-                hatch(seed, mob, &def);
+                hatch(seed, haven, mob, &def);
             }
             continue;
         }
@@ -694,12 +695,12 @@ pub fn step(
             },
             ..InputFrame::default()
         };
-        movement::step(seed, cols, occ, &mut mob.body, &frame);
+        movement::step(seed, haven, cols, occ, &mut mob.body, &frame);
     }
 }
 
 /// Stand the animal back up at its own home.
-fn hatch(seed: u64, mob: &mut Mob, def: &MobDef) {
+fn hatch(seed: u64, haven: &crate::terrain::Haven, mob: &mut Mob, def: &MobDef) {
     // `Body::at` puts the capsule on the heightfield — the same one the
     // home was chosen against at construction, so this lands standing.
     // Re-quantized from the stored quanta rather than kept as floats:
@@ -707,7 +708,7 @@ fn hatch(seed: u64, mob: &mut Mob, def: &MobDef) {
     // makes a hatch bit-identical to the construction that placed it.
     let x = mob.home_qx as f32 * POS_XZ_Q;
     let z = mob.home_qz as f32 * POS_XZ_Q;
-    mob.body = Body::at(seed, x, z);
+    mob.body = Body::at(seed, haven, x, z);
     mob.hp = def.hp;
     mob.alive = true;
     mob.gait = 0;

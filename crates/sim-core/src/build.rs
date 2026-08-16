@@ -257,10 +257,11 @@ pub const BUILD_BASE_Q_M: f32 = 0.5;
 /// `PIECE_LIFT_M ± q/2` — `tests/base_lattice.rs` holds both ends against
 /// `movement::STEP_UP`.
 #[inline]
-pub fn column_floor_y(seed: u64, cx: u16, cz: u16) -> f32 {
+pub fn column_floor_y(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16) -> f32 {
     let half = BUILD_CELL_M * 0.5;
-    let h = terrain::height(
+    let h = terrain::ground(
         seed,
+        haven,
         cx as f32 * BUILD_CELL_M + half,
         cz as f32 * BUILD_CELL_M + half,
     );
@@ -840,9 +841,9 @@ pub fn soft_side(rec: &PieceRec, px: f32, pz: f32) -> bool {
 /// Will this ground hold a foundation? One definition — `place` refuses on
 /// it, and a fixture that needs buildable ground finds it with it, so the
 /// two can never drift apart.
-pub fn foundation_terrain_ok(seed: u64, ax: f32, az: f32) -> bool {
-    terrain::height(seed, ax, az) >= FOUNDATION_MIN_H_M
-        && terrain::slope(seed, ax, az) < FOUNDATION_MAX_SLOPE
+pub fn foundation_terrain_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32) -> bool {
+    terrain::ground(seed, haven, ax, az) >= FOUNDATION_MIN_H_M
+        && terrain::ground_slope(seed, haven, ax, az) < FOUNDATION_MAX_SLOPE
 }
 
 /// Whether `loc` is the kind of slot `shape` occupies.
@@ -1250,6 +1251,7 @@ pub(crate) fn support_sweep(
 #[allow(clippy::too_many_arguments)]
 pub fn place(
     seed: u64,
+    haven: &terrain::Haven,
     bc: &BuildContent,
     deploys: &Deploys,
     pieces: &mut Pieces,
@@ -1314,7 +1316,7 @@ pub fn place(
         return;
     }
     if matches!(def.shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION)
-        && !foundation_terrain_ok(seed, ax, az)
+        && !foundation_terrain_ok(seed, haven, ax, az)
     {
         // The anchor is the shape's own: the cell centre for a square,
         // the half's centroid for a triangle — the ground actually under
@@ -1780,6 +1782,17 @@ mod tests {
     /// A seed whose island center is buildable (the browser-smoke seed;
     /// `world::tests` guards its walkability natively).
     const SEED: u64 = 20260731;
+
+    /// The solved authored sites for `SEED`, memoized.
+    ///
+    /// `terrain::haven` is a few thousand `height` taps and these cases call
+    /// the carved-ground path from nearly every assertion, so resolving it
+    /// once per suite is the difference between a fast test and a slow one.
+    /// It is a pure function of the seed, so caching it cannot change a result.
+    fn hv() -> &'static crate::terrain::Haven {
+        static HV: std::sync::OnceLock<crate::terrain::Haven> = std::sync::OnceLock::new();
+        HV.get_or_init(|| crate::terrain::haven(SEED))
+    }
     /// The smoke spawn's build cell: (1024 m, 1024 m) / 3 m.
     const CX: u16 = 341;
     const CZ: u16 = 341;
@@ -1790,6 +1803,7 @@ mod tests {
             active: true,
             body: Body::at(
                 SEED,
+                hv(),
                 (CX as f32 + 0.5) * BUILD_CELL_M,
                 (CZ as f32 + 0.5) * BUILD_CELL_M,
             ),
@@ -1820,6 +1834,7 @@ mod tests {
 
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1844,6 +1859,7 @@ mod tests {
 
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1862,6 +1878,7 @@ mod tests {
         // Floor at level 1 stands on the wall below.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1881,6 +1898,7 @@ mod tests {
         // Wall at level 1 stacks on the wall at level 0.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1914,6 +1932,7 @@ mod tests {
         for (row, level, loc, reason) in cases {
             place(
                 SEED,
+                hv(),
                 &bc,
                 &nod,
                 &mut pieces,
@@ -1932,6 +1951,7 @@ mod tests {
         // Reach: a cell 20 m away.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1950,6 +1970,7 @@ mod tests {
         // Support: a wall with no foundation beside it.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1966,6 +1987,7 @@ mod tests {
         // Floor with no wall below it.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1984,6 +2006,7 @@ mod tests {
         let mut poor = player_at_cell_center(&[]);
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2001,6 +2024,7 @@ mod tests {
         // Occupied: place the foundation twice.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2016,6 +2040,7 @@ mod tests {
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2069,6 +2094,7 @@ mod tests {
 
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2084,6 +2110,7 @@ mod tests {
         // A window on a plane loc is a spot refusal, not a support one.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2103,6 +2130,7 @@ mod tests {
         // On the edge beside the foundation, both place.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2118,6 +2146,7 @@ mod tests {
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2188,6 +2217,7 @@ mod tests {
 
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2202,6 +2232,7 @@ mod tests {
         );
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2216,6 +2247,7 @@ mod tests {
         );
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2286,6 +2318,7 @@ mod tests {
         // NW and SE pair across diagonal B.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2301,6 +2334,7 @@ mod tests {
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2317,6 +2351,7 @@ mod tests {
         // NE overlaps both standing halves: refused as a spot.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2336,6 +2371,7 @@ mod tests {
         // A full foundation over the pair: same refusal.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2356,6 +2392,7 @@ mod tests {
         // their shared hypotenuse: it stands.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2374,6 +2411,7 @@ mod tests {
         );
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2393,6 +2431,7 @@ mod tests {
         // half's own hyp is B, which is exactly what stands below.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2415,6 +2454,7 @@ mod tests {
         // a tri floor has neither a side edge nor a hypotenuse below.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2433,6 +2473,7 @@ mod tests {
         );
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2485,9 +2526,10 @@ mod tests {
         // Cell (1,1) is deep sea on every island seed (coast radius starts
         // ~800 m in); stand the player there to isolate the terrain rule.
         let mut p = player_at_cell_center(&[(0, 100)]);
-        p.body = Body::at(SEED, 1.5 * BUILD_CELL_M, 1.5 * BUILD_CELL_M);
+        p.body = Body::at(SEED, hv(), 1.5 * BUILD_CELL_M, 1.5 * BUILD_CELL_M);
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2531,6 +2573,7 @@ mod tests {
         let mut p = player_at_cell_center(&[(0, 100)]);
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2558,6 +2601,7 @@ mod tests {
         for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_XLO)] {
             place(
                 SEED,
+                hv(),
                 &bc,
                 &nod,
                 &mut pieces,
@@ -2876,6 +2920,7 @@ mod tests {
         let before = crate::craft::inv_count(&p.inv, 0);
         place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -2921,6 +2966,7 @@ mod tests {
         // Place another and let the window lapse.
         place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -3014,6 +3060,7 @@ mod tests {
 
         place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -3031,6 +3078,7 @@ mod tests {
             active: true,
             body: Body::at(
                 SEED,
+                hv(),
                 (CX as f32 + 7.5) * BUILD_CELL_M,
                 (CZ as f32 + 0.5) * BUILD_CELL_M,
             ),
@@ -3058,6 +3106,7 @@ mod tests {
         // passer-by undoing a fresh base inside its own window.
         crate::deploy::place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3108,6 +3157,7 @@ mod tests {
         for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_XLO)] {
             place(
                 SEED,
+                hv(),
                 &bc,
                 &deploys,
                 &mut pieces,
@@ -3127,6 +3177,7 @@ mod tests {
             .expect("fixture holds a hearth");
         crate::deploy::place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3245,6 +3296,7 @@ mod tests {
         assert_eq!(bc.pieces[4].material, MAT_STONE);
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -3273,6 +3325,7 @@ mod tests {
         // about the rung and not about the spot.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -3318,6 +3371,7 @@ mod tests {
         // edge and ask it to climb.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -3417,6 +3471,7 @@ mod tests {
         let mut far = player_at_cell_center(&[(1, 100)]);
         far.body = Body::at(
             SEED,
+            hv(),
             (CX as f32 + 7.5) * BUILD_CELL_M,
             (CZ as f32 + 0.5) * BUILD_CELL_M,
         );
@@ -3442,6 +3497,7 @@ mod tests {
         // A doorway beside the wall, sealed the way a placed door seals it.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -3489,6 +3545,7 @@ mod tests {
         for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_XLO)] {
             place(
                 SEED,
+                hv(),
                 &bc,
                 &deploys,
                 &mut pieces,
@@ -3509,6 +3566,7 @@ mod tests {
             .expect("fixture holds a hearth");
         crate::deploy::place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3572,6 +3630,7 @@ mod tests {
         // from either side.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -3586,6 +3645,7 @@ mod tests {
         );
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -4220,7 +4280,7 @@ mod tests {
         let mut p = Player {
             id: 7,
             active: true,
-            body: Body::at(SEED, 0.5 * BUILD_CELL_M, 0.5 * BUILD_CELL_M),
+            body: Body::at(SEED, hv(), 0.5 * BUILD_CELL_M, 0.5 * BUILD_CELL_M),
             ..Player::default()
         };
         p.inv[0] = ItemStack {
@@ -4231,6 +4291,7 @@ mod tests {
 
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -4257,6 +4318,7 @@ mod tests {
         ev.clear();
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,

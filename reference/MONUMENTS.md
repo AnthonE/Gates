@@ -334,9 +334,31 @@ hard circle; the band collapsed to zero width).
 Not built, and each is a row this struct gains when a reader exists:
 `BuildBlockMask` (nothing in `build.rs`/`deploy.rs` mentions a site, so a
 player may build on the pad today — whether that is wrong is a design call, not
-a defect, and it is in `DECISIONS.md` §open), `HeightStamp` (there is no carve
-at all — `TERRAIN.md` §1 stage 8 finds flat ground rather than making it, and
-`NOW.md` §4b prices the change), `NavMask`, `WaterMask`.
+a defect, and it is in `DECISIONS.md` §open), `NavMask`, `WaterMask`.
+
+**`HeightStamp` landed 2026-08-16 as `SiteFootprint::stamp_m` + `site_stamp` /
+`terrain::ground`, and it is DARK** — `SITE_STAMP_STRENGTH = 0.0`, so the
+mechanism, every consumer call site and both gates are in the tree while the
+ground has not moved. Two things from this file's own §9.2 argument were
+confirmed by building it, and one was corrected:
+
+- **The mask-not-a-radius shape carried over intact.** `stamp_of` is
+  `sweep_of`'s profile read the other way up, so the carve's blend band and the
+  clutter population's dither are the same band by construction — §3's lesson
+  about visible circular plateaus, got for free rather than re-argued.
+- **The row is NOT `swept_m`, and assuming it was is a real defect.** A site's
+  swept floor is derived from its *container ring*, and containers are
+  point-like; structures are not. The waystation canopy is footed out to
+  10.46 m while that site's `swept_m` is 7.14, so a carve to the swept radius
+  puts three and a third metres of the structure on the blend ramp — which is
+  *steeper than the hill it replaced*, because the ramp compresses the whole
+  raw delta into the band. Measured at full strength over 16 seeds: the haven
+  shelter improves 1.374 m → 0.063 m and the waystation canopy gets **worse**,
+  1.795 m → 1.889 m. `stamp_m` is therefore derived from what the site SEATS.
+- **It also blocks itself, on purpose.** The waystation's floor needs 11.10 m
+  against an 11.0 m mask, so arming is a compile error until
+  `WAYSTATION_RADIUS_M` widens — a spoken knob (`DECISIONS.md` §open, "site
+  carve v0"), because it moves what the island scatters near a waystation.
 
 ### 9.3 · The gap that matters most: our solver is two hand-written tiers
 

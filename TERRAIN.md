@@ -95,12 +95,34 @@ Stages, in order — each cheap, each deterministic:
    marched seaward to the *first* shoreline crossing and stepped back
    `ROAD_INLAND_M` — the road's own center-line definition inverted, so the
    site is on the ring by construction. Resolved at `World::new`, passed
-   into `scatter` rather than resolved there. **The exclusion zone is
-   built; the carve is not.** A carve writes to `height`, which has ~50
-   call sites in four crates, so it is a cross-lane change and not a
-   detail — v0 therefore *finds* a flat site rather than *making* one, and
-   `Haven::relief` publishes how flat it got (worst 3.76 m over a 32 m pad
-   across 16 seeds).
+   into `scatter` rather than resolved there. **The exclusion zone is built,
+   and as of 2026-08-16 the carve's SEAM is built while the cut itself is
+   not** — `SITE_STAMP_STRENGTH = 0.0`, so the ground has not moved and no
+   golden did either. What changed is that arming it is now one constant
+   instead of a cross-lane change: the split is by ROLE rather than by call
+   site — solvers (`haven`, `road_band`, `spawn_pos`, the determinism probe)
+   keep reading `height`, consumers (`movement`, `terrain_mesh`, `ranged`,
+   `build`/`deploy`, the placement ghost, and the `y` an authored object is
+   seated at) read `terrain::ground`, and `sim-core/tests/height_roles.rs`
+   holds that rule as a scrape. The counts this paragraph used to quote were
+   wrong in both directions and the real shape is smaller than either: 65
+   `height` reads in all, 31 of them inside `terrain.rs`, and only ~18
+   consumers to convert.
+   ⚠ **Two things arming still waits on, one of them found by building it.**
+   The strength is the operator's (a worldgen change is a wipe), and
+   `WAYSTATION_RADIUS_M` **must widen first** — the canopy is footed out to
+   10.46 m against an 11.0 m mask, so carving that site puts most of the
+   structure on the blend ramp and makes its footing *worse* (measured
+   1.795 m → 1.889 m over 16 seeds, against the haven shelter's
+   1.374 m → 0.063 m). `terrain.rs`'s const block turns an armed carve into
+   a compile error while that holds.
+   ⚠ **`Haven::relief` is not the number the carve fixes**, which this file
+   implied for months by quoting the two together. It is a rosette at
+   `HAVEN_RADIUS_M` — exactly `HAVEN_FOOTPRINT.scatter_m`, where the stamp
+   has faded to nothing by construction — so it stays near 3.76 m however
+   deep the cut is. The carve's own measure is the spread over the floor it
+   makes (`SiteFootprint::stamp_m`); `Haven::relief` still publishes how flat
+   the site was *found*, which is what the argmax selected on.
    **The scatter table — the third of the hook — is now built, and it is the
    part the carve does not block.** `HAVEN_CRATES = 5` containers stand on a
    `HAVEN_CRATE_R_M = 10.0` ring, at authored positions rather than drawn
@@ -121,7 +143,8 @@ Stages, in order — each cheap, each deterministic:
    construction, so `HAVEN_PHASE_TRIES = 16` rotations of the ring are tried
    and the site is refused if none is clear). `SPAWN.md` §5's placement-check
    chain, arrived at from the other direction: **refuse the position, never
-   patch the object.** The carve is still not built.
+   patch the object.** The carve's seam is built and the cut is dark; see
+   above and `DECISIONS.md` §open "site carve v0".
    **A greybox now stands on it, and it stands BESIDE the road rather than
    on it.** The clearing stopped being self-evidently made the moment stage 9
    gave the island natural clearings — 2.2–4.1% of forest windows are empty

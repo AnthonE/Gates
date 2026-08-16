@@ -29,6 +29,36 @@ use sim_core::research::{
     REFUSE_R_PARENT, REFUSE_R_SLOT, REFUSE_R_TABLE,
 };
 use sim_core::survival::SurvivalContent;
+
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 use sim_core::world::{
     Command, World, EV_CRAFT_REFUSED, EV_KNOWN, EV_RESEARCH, EV_RESEARCH_REFUSED,
 };
@@ -68,7 +98,7 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                 let cx = (512 + dx).clamp(0, 1023) as u16;
                 let cz = (512 + dz).clamp(0, 1023) as u16;
                 let (x, z) = cell_center(cx, cz);
-                if foundation_terrain_ok(seed, x, z) {
+                if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);
                 }
             }
@@ -91,7 +121,7 @@ fn table_world() -> (World, u16, u16) {
     let (x, z) = cell_center(cx, cz);
     w.dev_spawn = Some((x, z));
     w.tick(&[Command::Join { id: PLAYER }]);
-    w.players[0].body = sim_core::movement::Body::at(SEED, x, z);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
     w.players[0].inv[0] = ItemStack {
         item: TABLE_ITEM,
         count: 1,
@@ -305,7 +335,7 @@ fn every_refusal_names_itself_and_changes_nothing() {
         let (x, z) = cell_center(cx, cz);
         w.dev_spawn = Some((x, z));
         w.tick(&[Command::Join { id: PLAYER }]);
-        w.players[0].body = sim_core::movement::Body::at(SEED, x, z);
+        w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
         stock(&mut w);
         ask(&mut w, 0);
         assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_TABLE));

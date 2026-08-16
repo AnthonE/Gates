@@ -89,8 +89,8 @@ pub struct Body {
 }
 
 impl Body {
-    pub fn at(seed: u64, x: f32, z: f32) -> Self {
-        let y = terrain::height(seed, x, z);
+    pub fn at(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> Self {
+        let y = terrain::ground(seed, haven, x, z);
         Self {
             qx: quant_xz(x),
             qy: quant_y(y),
@@ -116,7 +116,14 @@ fn climbable(from_y: f32, to_ground: f32, run: f32) -> bool {
 /// `occ` is the scattered-world collision bundle (occupy.rs) and is here for
 /// the same reason `cols` is: a wall only one side knows about is a
 /// misprediction every time a player leans on a tree.
-pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, frame: &InputFrame) {
+pub fn step(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    body: &mut Body,
+    frame: &InputFrame,
+) {
     let x = body.qx as f32 * POS_XZ_Q;
     let y = body.qy as f32 * POS_Y_Q;
     let z = body.qz as f32 * POS_XZ_Q;
@@ -142,8 +149,8 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
     // shelter plinth (deploy collision v0 / `slot_ground`). Without the
     // occupant term here, a body standing on one would read the terrain
     // under it as ground and fall inside on the next vertical pass.
-    let ground_here = terrain::height(seed, x, z)
-        .max(collide::piece_ground(seed, cols, x, z, y))
+    let ground_here = terrain::ground(seed, haven, x, z)
+        .max(collide::piece_ground(seed, haven, cols, x, z, y))
         .max(occ.ground(seed, x, z, y));
     let mut speed = if frame.buttons & BTN_SPRINT != 0 {
         SPRINT_SPEED
@@ -200,7 +207,7 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
             if run2 <= 0.0 {
                 continue;
             }
-            if collide::blocked(seed, cols, x, z, cx, cz, y) {
+            if collide::blocked(seed, haven, cols, x, z, cx, cz, y) {
                 continue;
             }
             // Trees, boulders, barrels, crates and the shelter's walls
@@ -225,16 +232,16 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
             // destination test and the same veto-lift, latched apart: a
             // deploy CAN be placed around a standing body, and walking out
             // must stay the escape.
-            if collide::deploy_blocked(seed, cols, cx, cz, y) {
+            if collide::deploy_blocked(seed, haven, cols, cx, cz, y) {
                 if inside_dep.is_none() {
-                    inside_dep = Some(collide::deploy_blocked(seed, cols, x, z, y));
+                    inside_dep = Some(collide::deploy_blocked(seed, haven, cols, x, z, y));
                 }
                 if inside_dep != Some(true) {
                     continue;
                 }
             }
-            let g = terrain::height(seed, cx, cz);
-            let pg = collide::piece_ground(seed, cols, cx, cz, y);
+            let g = terrain::ground(seed, haven, cx, cz);
+            let pg = collide::piece_ground(seed, haven, cols, cx, cz, y);
             let og = occ.ground(seed, cx, cz, y);
             // A built or hard surface accepts on the step rule alone; bare
             // terrain keeps the cliff ratio. Occupant tops count as hard

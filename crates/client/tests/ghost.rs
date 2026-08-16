@@ -420,6 +420,30 @@ use sim_core::gather::ItemStack;
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::world::{EventQueue, Player, EV_DEPLOY_REFUSED, EV_PIECE_PLACED};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is. Memoized: `haven` is a few thousand `height`
+/// taps and it is a pure function of the seed, so caching cannot change a
+/// result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 /// `deploy.rs`'s own fixture seed and cells — buildable ground, proven by
 /// the sim's own tests on the same numbers.
 const SEED: u64 = 20260731;
@@ -456,6 +480,7 @@ impl Rig {
         let mut ev = EventQueue::default();
         place_deploy(
             SEED,
+            hv(SEED),
             &self.dc,
             &self.bc,
             &mut self.pieces,
@@ -482,6 +507,7 @@ impl Rig {
             row as u8,
             &DeploySite {
                 seed: SEED,
+                haven: hv(SEED),
                 at: (p.body.qx as f32 * POS_XZ_Q, p.body.qz as f32 * POS_XZ_Q),
                 pieces: self.pieces.entries(),
                 piece_defs: &self.bc,
@@ -542,6 +568,7 @@ impl Rig {
         let mut ev = EventQueue::default();
         sim_core::build::place(
             SEED,
+            hv(SEED),
             &self.bc,
             &self.deploys,
             &mut self.pieces,
@@ -569,6 +596,7 @@ fn player_at_cell(cx: u16, cz: u16, items: &[(u16, u16)]) -> Player {
         active: true,
         body: Body::at(
             SEED,
+            hv(SEED),
             (cx as f32 + 0.5) * BUILD_CELL_M,
             (cz as f32 + 0.5) * BUILD_CELL_M,
         ),
@@ -695,7 +723,7 @@ fn bad_ground_is_red_on_both_sides() {
         .map(|k| (CX - k, CZ))
         .find(|&(cx, cz)| {
             let (ax, az) = sim_core::deploy::cell_center(cx, cz);
-            !sim_core::build::foundation_terrain_ok(SEED, ax, az)
+            !sim_core::build::foundation_terrain_ok(SEED, hv(SEED), ax, az)
         })
         .expect("an island has an edge");
     let mut swimmer = rich(unbuildable.0, unbuildable.1);
@@ -834,6 +862,7 @@ fn the_bag_cap_stays_neutral() {
     for k in 0..BAG_CAP as u16 {
         p.body = Body::at(
             SEED,
+            hv(SEED),
             (CX + k) as f32 * BUILD_CELL_M + 1.5,
             CZ as f32 * BUILD_CELL_M + 1.5,
         );
@@ -842,6 +871,7 @@ fn the_bag_cap_stays_neutral() {
     let k = BAG_CAP as u16;
     p.body = Body::at(
         SEED,
+        hv(SEED),
         (CX + k) as f32 * BUILD_CELL_M + 1.5,
         CZ as f32 * BUILD_CELL_M + 1.5,
     );
@@ -864,9 +894,9 @@ fn the_bag_cap_stays_neutral() {
 #[test]
 fn the_door_ghost_stands_in_the_doorway_edge() {
     let size = deploy_size(ARCH_DOOR as usize);
-    let base = level_base_y(SEED, CX, CZ, 0);
+    let base = level_base_y(SEED, hv(SEED), CX, CZ, 0);
 
-    let xlo = deploy_transform(SEED, (CX, CZ, 0, LOC_EDGE_XLO), ARCH_DOOR, false);
+    let xlo = deploy_transform(SEED, hv(SEED), (CX, CZ, 0, LOC_EDGE_XLO), ARCH_DOOR, false);
     assert!(
         (xlo.translation.x - CX as f32 * BUILD_CELL_M).abs() < 1e-4,
         "a low-x door's centre is not on the low-x boundary"
@@ -884,6 +914,7 @@ fn the_door_ghost_stands_in_the_doorway_edge() {
     // canonicalisation the grid uses everywhere else.
     let zlo = deploy_transform(
         SEED,
+        hv(SEED),
         (CX, CZ, 0, sim_core::build::LOC_EDGE_ZLO),
         ARCH_DOOR,
         false,
@@ -899,7 +930,7 @@ fn the_door_ghost_stands_in_the_doorway_edge() {
     );
 
     // A body deployable keeps the cell body: the split is the door's alone.
-    let body = deploy_transform(SEED, (CX, CZ, 0, LOC_PLANE), ARCH_BOX, false);
+    let body = deploy_transform(SEED, hv(SEED), (CX, CZ, 0, LOC_PLANE), ARCH_BOX, false);
     assert!(
         (body.translation.x - (CX as f32 + 0.5) * BUILD_CELL_M).abs() < 1e-4,
         "a box left the cell centre"
@@ -907,7 +938,7 @@ fn the_door_ghost_stands_in_the_doorway_edge() {
 
     // And an open door is drawn elsewhere than a closed one — the leaf
     // swings, exactly as the sim's collision reads it.
-    let open = deploy_transform(SEED, (CX, CZ, 0, LOC_EDGE_XLO), ARCH_DOOR, true);
+    let open = deploy_transform(SEED, hv(SEED), (CX, CZ, 0, LOC_EDGE_XLO), ARCH_DOOR, true);
     assert!(
         (open.translation - xlo.translation).length() > 0.1,
         "an open door is drawn shut"
@@ -959,7 +990,7 @@ fn the_footing_keeps_the_floor_and_buries_its_skirt() {
     let mut checked = 0;
     for cx in (CX - 30..CX + 30).step_by(3) {
         for cz in (CZ - 30..CZ + 30).step_by(3) {
-            let part = foundation_part(SEED, cx, cz, false);
+            let part = foundation_part(SEED, hv(SEED), cx, cz, false);
             assert_eq!(part.kind, PartKind::Box);
             // Top at the level plane, exactly: offset is the box centre.
             let top = part.offset.y + part.size.y * 0.5;
@@ -982,7 +1013,7 @@ fn the_footing_keeps_the_floor_and_buries_its_skirt() {
             );
             // The bottom is in the ground under every corner — unless the
             // cap cut it, which only steep ground reaches.
-            let base = level_base_y(SEED, cx, cz, 0);
+            let base = level_base_y(SEED, hv(SEED), cx, cz, 0);
             let bottom = base + part.offset.y - part.size.y * 0.5;
             let x0 = cx as f32 * BUILD_CELL_M;
             let z0 = cz as f32 * BUILD_CELL_M;
@@ -1012,8 +1043,8 @@ fn the_footing_keeps_the_floor_and_buries_its_skirt() {
 #[test]
 fn the_tri_footing_matches_the_square_one() {
     use client::render::structures::{foundation_part, PartKind};
-    let sq = foundation_part(SEED, CX, CZ, false);
-    let tri = foundation_part(SEED, CX, CZ, true);
+    let sq = foundation_part(SEED, hv(SEED), CX, CZ, false);
+    let tri = foundation_part(SEED, hv(SEED), CX, CZ, true);
     assert_eq!(tri.kind, PartKind::Tri);
     assert_eq!(tri.size, sq.size);
     assert_eq!(tri.offset, sq.offset);

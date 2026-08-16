@@ -143,7 +143,7 @@ fn a_naked_spawn_can_kill_another_player_with_the_rock_it_woke_holding() {
         w.players[0].body.qx as f32 * POS_XZ_Q,
         w.players[0].body.qz as f32 * POS_XZ_Q,
     );
-    w.players[1].body = Body::at(w.seed, x + 0.6, z);
+    w.players[1].body = Body::at(w.seed, &w.haven, x + 0.6, z);
 
     let full = w.combat.player_hp;
     assert!(full > 0, "the shipped table disarms combat");
@@ -221,7 +221,7 @@ fn the_rocks_reach_is_a_metre_and_not_the_island() {
     );
     // Four metres: past every melee row in the shipped table (the metal
     // spear's 2 m is the longest) and well past the rock's 1 m.
-    w.players[1].body = Body::at(w.seed, x + 4.0, z);
+    w.players[1].body = Body::at(w.seed, &w.haven, x + 4.0, z);
     let full = w.players[1].hp;
 
     let mut frame = InputFrame {

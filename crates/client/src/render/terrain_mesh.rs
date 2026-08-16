@@ -516,7 +516,16 @@ pub fn vertex_mods(y: f32, x: f32, z: f32, grad: f32) -> [f32; 2] {
 /// Any share whose identity fails falls back to the direct taps, so the
 /// function stays correct for an origin, pitch or size no caller has asked
 /// for yet. `tests/ground.rs` gates the equality against a naive rebuild.
-pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Mesh {
+#[allow(clippy::too_many_arguments)]
+pub fn heightfield(
+    seed: u64,
+    haven: &terrain::Haven,
+    ox: f32,
+    oz: f32,
+    n: usize,
+    step: f32,
+    drop: f32,
+) -> Mesh {
     let count = n * n;
     let mut positions = Vec::with_capacity(count);
     let mut normals = Vec::with_capacity(count);
@@ -573,7 +582,7 @@ pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) 
         for k in 0..stride {
             // The border columns are only ever read on the `grid_slope` path.
             dst.push(if grid_slope || (k > 0 && k < stride - 1) {
-                terrain::height(seed, col_x(k), z)
+                terrain::ground(seed, haven, col_x(k), z)
             } else {
                 0.0
             });
@@ -601,18 +610,18 @@ pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) 
         if share_x {
             for (k, slot) in hxm.iter_mut().enumerate() {
                 let sx = if k == n { vx(n - 1) + d } else { vx(k) - d };
-                *slot = terrain::height(seed, sx, z);
+                *slot = terrain::ground(seed, haven, sx, z);
             }
         }
         if share_z && iz > 0 {
             core::mem::swap(&mut hzm, &mut hzp);
         } else {
             for (ix, slot) in hzm.iter_mut().enumerate() {
-                *slot = terrain::height(seed, vx(ix), z - d);
+                *slot = terrain::ground(seed, haven, vx(ix), z - d);
             }
         }
         for (ix, slot) in hzp.iter_mut().enumerate() {
-            *slot = terrain::height(seed, vx(ix), z + d);
+            *slot = terrain::ground(seed, haven, vx(ix), z + d);
         }
 
         for ix in 0..n {
@@ -624,7 +633,7 @@ pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) 
             let hx = if share_x {
                 hxm[ix + 1] - hxm[ix]
             } else {
-                terrain::height(seed, x + d, z) - terrain::height(seed, x - d, z)
+                terrain::ground(seed, haven, x + d, z) - terrain::ground(seed, haven, x - d, z)
             };
             let hz = hzp[ix] - hzm[ix];
             let n_v = Vec3::new(-hx, 2.0 * d, -hz).normalize();
@@ -642,13 +651,22 @@ pub fn heightfield(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) 
             let t_v = Vec3::new(2.0 * d, hx, 0.0).normalize();
             tangents.push([t_v.x, t_v.y, t_v.z, 1.0]);
 
-            // `terrain::slope`'s own body, over taps already in hand.
+            // `terrain::ground_slope`'s own body, over taps already in hand.
+            //
+            // ⚠ The fallback must be `ground_slope` and NOT `slope`: the taps
+            // in `hcur`/`hnext`/`hprev` are `terrain::ground`'s, so the fast
+            // branch computes a gradient of the CARVED surface, and a raw
+            // `slope` here would make one vertex in a chunk shade against a
+            // different island than its neighbour. The two branches are one
+            // claim — "the gradient of the ground this mesh is drawing" — and
+            // the only difference between them is whether the taps were
+            // already in hand.
             let sl = if grid_slope {
                 let sx = (hcur[ix + 2] - hcur[ix]) * 0.5;
                 let sz = (hnext[ix + 1] - hprev[ix + 1]) * 0.5;
                 (sx * sx + sz * sz).sqrt()
             } else {
-                terrain::slope(seed, x, z)
+                terrain::ground_slope(seed, haven, x, z)
             };
 
             // `splat_from` rather than `splat` because the height and the
@@ -744,7 +762,15 @@ pub fn stream(
     // that keeps the window up and the session pumping while it happens.
     if !ring.far_done {
         ring.far_done = true;
-        let mesh = heightfield(world.seed, 0.0, 0.0, FAR_N, FAR_STEP, FAR_DROP);
+        let mesh = heightfield(
+            world.seed,
+            &world.haven,
+            0.0,
+            0.0,
+            FAR_N,
+            FAR_STEP,
+            FAR_DROP,
+        );
         commands.spawn((
             WorldEntity,
             Static,
@@ -785,7 +811,7 @@ pub fn stream(
             let ox = key.0 as f32 * CHUNK_M;
             let oz = key.1 as f32 * CHUNK_M;
             let step = CHUNK_M / (NEAR_N - 1) as f32;
-            let mesh = heightfield(world.seed, ox, oz, NEAR_N, step, 0.0);
+            let mesh = heightfield(world.seed, &world.haven, ox, oz, NEAR_N, step, 0.0);
             let e = commands
                 .spawn((
                     WorldEntity,

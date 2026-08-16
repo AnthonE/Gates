@@ -38,6 +38,35 @@ use sim_core::inventory::{
 use sim_core::limits::{BOX_SLOTS, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS};
 use sim_core::world::{Command, World, EV_MOVED, EV_MOVE_REFUSED};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 0x6000_00B0;
 const PLAYER: u32 = 3;
 
@@ -80,7 +109,7 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                 let cx = (512 + dx).clamp(0, 1023) as u16;
                 let cz = (512 + dz).clamp(0, 1023) as u16;
                 let (x, z) = cell_center(cx, cz);
-                if foundation_terrain_ok(seed, x, z) {
+                if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);
                 }
             }
@@ -110,7 +139,7 @@ fn box_world() -> (World, u32, u16, u16) {
     let (x, z) = cell_center(cx, cz);
     w.dev_spawn = Some((x, z));
     w.tick(&[Command::Join { id: PLAYER }]);
-    w.players[0].body = sim_core::movement::Body::at(SEED, x, z);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
 
     w.players[0].inv[0] = ItemStack {
         item: 0,
@@ -378,7 +407,7 @@ fn an_absent_or_distant_box_refuses_rather_than_disconnects() {
     // Real box, player walked away. Reach is judged when the move
     // resolves, never when a panel opened.
     let (fx, fz) = cell_center(cx + 7, cz);
-    w.players[0].body = sim_core::movement::Body::at(SEED, fx, fz);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), fx, fz);
     let (code, why, _) = do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 0, 1);
     assert_eq!(code, EV_MOVE_REFUSED);
     assert_eq!(why, REFUSE_M_REACH, "a box 21 m away is out of reach");

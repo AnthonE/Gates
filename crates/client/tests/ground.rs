@@ -29,6 +29,30 @@ use bevy::mesh::{Mesh, VertexAttributeValues};
 use client::render::terrain_mesh::{self, CHUNK_M, FAR_STEP, NEAR_N};
 use sim_core::terrain;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is. Memoized: `haven` is a few thousand `height`
+/// taps and it is a pure function of the seed, so caching cannot change a
+/// result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// One patch's per-vertex output, in the order the comparison walks it:
@@ -106,7 +130,15 @@ fn tangents(mesh: &Mesh) -> Vec<[f32; 4]> {
 }
 
 fn compare(label: &str, ox: f32, oz: f32, n: usize, step: f32, drop: f32) {
-    let (wp, wn, wc, wm) = attrs(&terrain_mesh::heightfield(SEED, ox, oz, n, step, drop));
+    let (wp, wn, wc, wm) = attrs(&terrain_mesh::heightfield(
+        SEED,
+        hv(SEED),
+        ox,
+        oz,
+        n,
+        step,
+        drop,
+    ));
     let (np, nn, nc, nm) = naive(SEED, ox, oz, n, step, drop);
     assert_eq!(wp.len(), np.len(), "{label}: vertex count");
     for i in 0..np.len() {
@@ -168,8 +200,8 @@ fn the_written_tangent_is_the_frame_mikktspace_solved() {
         // is a tripwire on the trade rather than a licence to widen it.
         ("far pitch", 0.0, 0.0, 65, FAR_STEP, 5.0),
     ] {
-        let ours = terrain_mesh::heightfield(SEED, ox, oz, n, pitch, 0.0);
-        let mut theirs = terrain_mesh::heightfield(SEED, ox, oz, n, pitch, 0.0);
+        let ours = terrain_mesh::heightfield(SEED, hv(SEED), ox, oz, n, pitch, 0.0);
+        let mut theirs = terrain_mesh::heightfield(SEED, hv(SEED), ox, oz, n, pitch, 0.0);
         theirs.remove_attribute(Mesh::ATTRIBUTE_TANGENT);
         theirs
             .generate_tangents()

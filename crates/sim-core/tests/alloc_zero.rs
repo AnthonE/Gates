@@ -18,6 +18,36 @@ use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{INV_SLOTS, MAX_PLAYERS};
 use sim_core::rng::Pcg32;
 use sim_core::survival::{SurvivalContent, REFUSE_C_NO_WATER};
+
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 use sim_core::world::{
     Command, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH,
     EV_DRANK, EV_PIECE_REMOVED, EV_RESPAWN, EV_STRUCT_HIT,
@@ -216,7 +246,7 @@ fn buildable_cell(w: &World, seed: u64, cx0: u16, cz0: u16) -> (u16, u16) {
                 let cx = (cx0 as i32 + dx).clamp(0, 1023) as u16;
                 let cz = (cz0 as i32 + dz).clamp(0, 1023) as u16;
                 let (x, z) = cell_center(cx, cz);
-                if sim_core::build::foundation_terrain_ok(seed, x, z)
+                if sim_core::build::foundation_terrain_ok(seed, hv(seed), x, z)
                     && w.pieces.find(cx, cz, 0, LOC_PLANE).is_none()
                 {
                     return (cx, cz);
@@ -370,12 +400,12 @@ fn test_alloc_zero() {
     let bag_cell = buildable_cell(&world, SEED, 341, 341);
     let bag_at = {
         let (x, z) = cell_center(bag_cell.0, bag_cell.1);
-        let b = sim_core::movement::Body::at(SEED, x, z);
+        let b = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
         (b.qx, b.qz)
     };
     world.players[5].body = {
         let (x, z) = cell_center(bag_cell.0, bag_cell.1);
-        sim_core::movement::Body::at(SEED, x, z)
+        sim_core::movement::Body::at(SEED, hv(SEED), x, z)
     };
     world.players[5].inv[10] = ItemStack {
         item: 5,
@@ -432,6 +462,7 @@ fn test_alloc_zero() {
         .expect("the warmup must leave a plane piece for the raider");
     world.players[4].body = sim_core::movement::Body::at(
         SEED,
+        hv(SEED),
         (target.cx as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
         (target.cz as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
     );
@@ -461,7 +492,7 @@ fn test_alloc_zero() {
     // mouthful a 100 hp body drinks itself dead in five: the landed drink,
     // the salt death, the respawn's grant, and — once the ring has put it
     // somewhere inland — the dry refusal all land inside the window.
-    world.players[6].body = sim_core::movement::Body::at(SEED, shore.0, shore.1);
+    world.players[6].body = sim_core::movement::Body::at(SEED, hv(SEED), shore.0, shore.1);
     world.players[6].water = 0;
     // Bot 2's meters are the drain witness: it neither duels, raids,
     // builds nor eats, so nothing but the clock moves them.

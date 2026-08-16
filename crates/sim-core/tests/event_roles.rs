@@ -102,6 +102,35 @@ use sim_core::world::{
 };
 use sim_core::yaw_dir;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 20260802;
 /// The fixture's item 0: 34 damage, 2 m reach — three swings to kill.
 const SPEAR: u16 = 0;
@@ -302,7 +331,7 @@ fn duel_world() -> World {
     let (fx, fz) = yaw_dir(YAW);
     let a = w.players[0].body;
     let (ax, az) = (a.qx as f32 * POS_XZ_Q, a.qz as f32 * POS_XZ_Q);
-    w.players[1].body = Body::at(SEED, ax + fx * REACH_M, az + fz * REACH_M);
+    w.players[1].body = Body::at(SEED, hv(SEED), ax + fx * REACH_M, az + fz * REACH_M);
     w
 }
 
@@ -583,7 +612,7 @@ fn slot_harvested_on_a_barrel_names_the_cell_then_the_occupant() {
     let mut w = duel_world();
     w.loot = LootContent::probe_fixture();
     let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::BarrelSlot);
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     until(&mut w, EV_SLOT_HARVESTED);
     let ev = only(&w, EV_SLOT_HARVESTED);
     assert_ne!(
@@ -614,7 +643,7 @@ fn slot_harvested_on_a_barrel_names_the_cell_then_the_occupant() {
 fn slot_harvested_on_a_node_names_the_occupant_not_the_table_row() {
     let mut w = duel_world();
     let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::Tree);
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     until(&mut w, EV_SLOT_HARVESTED);
     let ev = only(&w, EV_SLOT_HARVESTED);
     assert_eq!(
@@ -894,7 +923,7 @@ fn stand_at_the_shore(w: &mut World) {
                     || terrain::height(SEED, x, z + r) < terrain::SEA_LEVEL
                     || terrain::height(SEED, x, z - r) < terrain::SEA_LEVEL)
             {
-                w.players[0].body = Body::at(SEED, x, z);
+                w.players[0].body = Body::at(SEED, hv(SEED), x, z);
                 return;
             }
             z += 4.0;
@@ -917,7 +946,7 @@ fn stand_inland(w: &mut World) {
                 .into_iter()
                 .all(|(dx, dz)| terrain::height(SEED, x + dx, z + dz) >= terrain::BEACH_MAX_H);
             if dry {
-                w.players[0].body = Body::at(SEED, x, z);
+                w.players[0].body = Body::at(SEED, hv(SEED), x, z);
                 return;
             }
             z += 4.0;
@@ -1345,7 +1374,7 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                     (cx as f32 + 0.5) * BUILD_CELL_M,
                     (cz as f32 + 0.5) * BUILD_CELL_M,
                 );
-                if foundation_terrain_ok(seed, x, z) {
+                if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);
                 }
             }
@@ -1378,7 +1407,7 @@ fn builder_world(w: &mut World) -> (u16, u16) {
         (cx as f32 + 0.5) * BUILD_CELL_M,
         (cz as f32 + 0.5) * BUILD_CELL_M,
     );
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     // The fixture's costs: the wood pieces are paid in item 0, the stone
     // ones (the floor this arrangement's second storey stands on) in item
     // 1, the hearth in item 2, the door in item 4, the code lock in item 7.
@@ -1478,7 +1507,7 @@ fn stand_at_raid_stance(w: &mut World, cx: u16, cz: u16) {
         (cx as f32 + 0.5 - RAID_OFFSET_CELLS) * BUILD_CELL_M,
         (cz as f32 + 0.5) * BUILD_CELL_M,
     );
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
 }
 
 /// Move the builder one cell west of the target column and face it, then
@@ -2739,7 +2768,7 @@ fn weak_mark_names_the_swinger_then_the_cell_then_bit_over_heading() {
     let mut w = duel_world();
     let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::Tree);
     let ck = cell_key(cx, cz);
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     until(&mut w, EV_WEAK_MARK);
     let first = only(&w, EV_WEAK_MARK);
     assert_eq!(first.a, ATTACKER, "EV_WEAK_MARK.a is the SWINGER");
@@ -2764,7 +2793,7 @@ fn weak_mark_names_the_swinger_then_the_cell_then_bit_over_heading() {
     // Stand where that heading points and face back at the node — the
     // sector the sim itself just named — then land the second hit.
     let (mx, mz) = yaw_dir((mark as u16) << 8);
-    w.players[0].body = Body::at(SEED, x + mx * WEAK_STAND_M, z + mz * WEAK_STAND_M);
+    w.players[0].body = Body::at(SEED, hv(SEED), x + mx * WEAK_STAND_M, z + mz * WEAK_STAND_M);
     let back = (((mark as u16) + 128) & 0xff) << 8;
     until_facing(&mut w, back, EV_WEAK_MARK);
     let second = only(&w, EV_WEAK_MARK);
@@ -2802,7 +2831,7 @@ fn slot_respawned_names_the_cell_that_stood_back_up() {
         "the scanned cell packs the same value into both halves of its \
          key, so this check cannot see the key pack reversed"
     );
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     until(&mut w, EV_SLOT_HARVESTED);
     let due = w
         .slot_lives
@@ -3021,7 +3050,7 @@ fn bag_removed_names_the_bag_then_why() {
     let (fx, fz) = yaw_dir(YAW);
     let a = w.players[0].body;
     let (ax, az) = (a.qx as f32 * POS_XZ_Q, a.qz as f32 * POS_XZ_Q);
-    w.players[1].body = Body::at(SEED, ax + fx * REACH_M, az + fz * REACH_M);
+    w.players[1].body = Body::at(SEED, hv(SEED), ax + fx * REACH_M, az + fz * REACH_M);
     arm_victim_with_junk(&mut w);
     until(&mut w, EV_BAG_DROPPED);
     let second_bag = w.backpacks.next_id() - 1;
@@ -3095,7 +3124,7 @@ fn respawn_names_the_player_then_which_anchor_answered() {
         (cx as f32 + 0.5) * BUILD_CELL_M,
         (cz as f32 + 0.5) * BUILD_CELL_M,
     );
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
 
     // Cause one: the beach button. No bag exists yet either, so both
     // reasons the ring can answer agree about what `b` must say.
@@ -3113,7 +3142,7 @@ fn respawn_names_the_player_then_which_anchor_answered() {
     );
     assert_eq!(beach.c, 0, "EV_RESPAWN states no role for c");
     let (rx, rz) = w.spawn_pos_n(SLEEPER, 1);
-    let ring = Body::at(SEED, rx, rz);
+    let ring = Body::at(SEED, hv(SEED), rx, rz);
     assert_eq!(
         (w.players[0].body.qx, w.players[0].body.qz),
         (ring.qx, ring.qz),
@@ -3122,7 +3151,7 @@ fn respawn_names_the_player_then_which_anchor_answered() {
 
     // Cause two: a bag of the body's own, placed through the real verb,
     // asked for by the button that wants one.
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     w.players[0].inv[0] = ItemStack {
         item: BAG_PLACE_ITEM,
         count: 1,
@@ -3159,7 +3188,7 @@ fn respawn_names_the_player_then_which_anchor_answered() {
         "EV_RESPAWN.b is 1 when the body woke on its OWN bag"
     );
     assert_eq!(bagged.c, 0, "EV_RESPAWN states no role for c");
-    let on_bag = Body::at(SEED, x, z);
+    let on_bag = Body::at(SEED, hv(SEED), x, z);
     assert_eq!(
         (w.players[0].body.qx, w.players[0].body.qz),
         (on_bag.qx, on_bag.qz),
@@ -3582,7 +3611,7 @@ fn table_world(w: &mut World) {
         (cx as f32 + 0.5) * BUILD_CELL_M,
         (cz as f32 + 0.5) * BUILD_CELL_M,
     );
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     w.players[0].inv[0] = ItemStack {
         item: 10,
         count: 1,

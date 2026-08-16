@@ -16,6 +16,35 @@ use sim_core::world::{
 };
 use sim_core::yaw_dir;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 /// Arbitrary fixed seed; the tests derive everything else from it.
 const SEED: u64 = 20_260_731;
 
@@ -946,7 +975,7 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
                 (bcx as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
                 (bcz as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
             );
-            if !sim_core::build::foundation_terrain_ok(SEED, fx_c, fz_c) {
+            if !sim_core::build::foundation_terrain_ok(SEED, hv(SEED), fx_c, fz_c) {
                 continue;
             }
             // Stand point: 1.2 m west of the tree, on ground near its own
@@ -1096,7 +1125,7 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
                 .hp;
 
             // ---- the control: same wall, no node in the way ----
-            w.players[0].body = sim_core::movement::Body::at(SEED, ctl_x, ctl_z);
+            w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), ctl_x, ctl_z);
             let (cdx, cdz) = (ax - ctl_x, az - ctl_z);
             let mut cyaw = 0u16;
             let mut cbest = f32::MIN;

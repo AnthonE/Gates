@@ -16,6 +16,35 @@ use sim_core::rng::Pcg32;
 use sim_core::survival::SurvivalContent;
 use sim_core::world::{Command, World};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 0x0047_4154_4553; // "GATES"
 const TICKS: u64 = 900;
 
@@ -419,13 +448,13 @@ fn walk_up_the_beach(world: &mut World, seed: u64, slot: usize) {
         let cz = sim_core::build::build_cell_of(z);
         let ax = (cx as f32 + 0.5) * sim_core::build::BUILD_CELL_M;
         let az = (cz as f32 + 0.5) * sim_core::build::BUILD_CELL_M;
-        if sim_core::build::foundation_terrain_ok(seed, ax, az) {
+        if sim_core::build::foundation_terrain_ok(seed, hv(seed), ax, az) {
             break;
         }
         x += dx * sim_core::build::BUILD_CELL_M;
         z += dz * sim_core::build::BUILD_CELL_M;
     }
-    world.players[slot].body = sim_core::movement::Body::at(seed, x, z);
+    world.players[slot].body = sim_core::movement::Body::at(seed, hv(seed), x, z);
 }
 
 fn run(seed: u64) -> (Vec<u64>, u64) {
@@ -697,7 +726,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         // turn the landed-drink floor below into a coin flip.
         if t == 200 && world.players[20].active {
             let (x, z) = shoreline(seed);
-            world.players[20].body = sim_core::movement::Body::at(seed, x, z);
+            world.players[20].body = sim_core::movement::Body::at(seed, hv(seed), x, z);
         }
         // The smasher. Held on a scanned barrel rather than teleported once,
         // because a barrel wants two landed swings 38 ticks apart and a bot
@@ -709,7 +738,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         // and not just the slot bit.
         if world.players[30].active {
             let (x, z) = barrels[(t as usize / 200) % barrels.len()];
-            world.players[30].body = sim_core::movement::Body::at(seed, x, z);
+            world.players[30].body = sim_core::movement::Body::at(seed, hv(seed), x, z);
         }
         if t == 150 {
             let b = &world.players[0].body;

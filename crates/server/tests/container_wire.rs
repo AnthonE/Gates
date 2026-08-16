@@ -56,6 +56,35 @@ use sim_core::movement::Body;
 use sim_core::terrain::{self, Haven, Occupant, ScatterTable, CELL_SIZE, HAVEN_CRATES};
 use sim_core::world::Command;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 20_260_804;
 /// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests` — the same one `backpack_wire` stands its bodies on.
@@ -382,7 +411,7 @@ fn walking_away_closes_the_panel_rather_than_starving_it() {
     // Walk out of reach. Nothing else changes — the bag is still standing,
     // still in the store, still at the same address.
     let w0 = world_slot(&core, id_of(0));
-    core.world.players[w0].body = Body::at(SEED, SPAWN.0 + 200.0, SPAWN.1 + 200.0);
+    core.world.players[w0].body = Body::at(SEED, hv(SEED), SPAWN.0 + 200.0, SPAWN.1 + 200.0);
     assert_eq!(core.world.backpacks.len(), 1, "the bag did not go anywhere");
 
     let mut after = Vec::new();
@@ -611,7 +640,7 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                 let cx = (512 + dx).clamp(0, 1023) as u16;
                 let cz = (512 + dz).clamp(0, 1023) as u16;
                 let (x, z) = cell_center(cx, cz);
-                if foundation_terrain_ok(seed, x, z) {
+                if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);
                 }
             }
@@ -635,7 +664,7 @@ fn a_box_opens_by_its_packed_address() {
     let mut clients = two_clients(&mut core, &stats);
 
     let w0 = world_slot(&core, id_of(0));
-    core.world.players[w0].body = Body::at(SEED, x, z);
+    core.world.players[w0].body = Body::at(SEED, hv(SEED), x, z);
     core.world.players[w0].inv[0] = ItemStack {
         item: 0,
         count: 5,
@@ -769,7 +798,7 @@ fn a_corpse_is_shown_no_container() {
     // Client 0 stands the box up on its own foundation and is the one who
     // will die on it. Client 1 is the killer.
     let w0 = world_slot(&core, id_of(0));
-    core.world.players[w0].body = Body::at(SEED, x, z);
+    core.world.players[w0].body = Body::at(SEED, hv(SEED), x, z);
     core.world.players[w0].inv[0] = ItemStack {
         item: 0,
         count: 5,
@@ -848,8 +877,8 @@ fn a_corpse_is_shown_no_container() {
     let mut fell = false;
     for _ in 0..(SWING_INTERVAL_TICKS * 8) {
         let (w0, w1) = (world_slot(&core, id_of(0)), world_slot(&core, id_of(1)));
-        core.world.players[w0].body = Body::at(SEED, x, z);
-        core.world.players[w1].body = Body::at(SEED, x, z);
+        core.world.players[w0].body = Body::at(SEED, hv(SEED), x, z);
+        core.world.players[w1].body = Body::at(SEED, hv(SEED), x, z);
         pump(&mut core, &stats, &mut clients, &mut dying);
         if core.world.players[world_slot(&core, id_of(0))].dead {
             clients[1].1.set_input(0, 0, 128, 0, 0, 0);
@@ -991,8 +1020,8 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
     // reach-only view would have paid them.
     let mut clients = two_clients(&mut core, &stats);
     let (w0, w1) = (world_slot(&core, id_of(0)), world_slot(&core, id_of(1)));
-    core.world.players[w0].body = Body::at(SEED, x, z);
-    core.world.players[w1].body = Body::at(SEED, x, z);
+    core.world.players[w0].body = Body::at(SEED, hv(SEED), x, z);
+    core.world.players[w1].body = Body::at(SEED, hv(SEED), x, z);
 
     // Foundation, box, goods inside, lock bolted on and armed — the
     // `lock_box.rs` fixture, driven with the owner's connected id.
@@ -1194,7 +1223,7 @@ fn a_world_crate_is_drawn_from_the_crate_store() {
     // Stand on the crate. `LOOT_REACH_M` is 5 m against an 8 m cell, so
     // the anchor is the only place the open resolves from.
     let w0 = world_slot(&core, id_of(0));
-    core.world.players[w0].body = Body::at(SEED, x, z);
+    core.world.players[w0].body = Body::at(SEED, hv(SEED), x, z);
 
     let key = cell_key(cx, cz);
     let mut seen = Vec::new();

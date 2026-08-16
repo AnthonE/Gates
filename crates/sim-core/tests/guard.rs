@@ -31,6 +31,35 @@ use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::terrain;
 use sim_core::world::{Command, World};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEEDS: [u64; 5] = [1, 7, 42, 99, 2026];
 
 fn home_xz(w: &World, slot: usize) -> (f32, f32) {
@@ -319,7 +348,7 @@ fn a_guard_dragged_off_its_site_walks_back_onto_it() {
     w.tick(&[Command::Join { id: 1 }]);
 
     let (hx, hz) = home_xz(&w, slot);
-    w.mobs.m[slot].body = Body::at(seed, hx - OUT_M, hz);
+    w.mobs.m[slot].body = Body::at(seed, hv(seed), hx - OUT_M, hz);
     let start = {
         let m = &w.mobs.m[slot];
         let dx = (m.body.qx - m.home_qx) as i64 * 3;

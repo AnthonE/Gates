@@ -288,8 +288,8 @@ impl StructRing {
 /// silently drawn every floor off the surface the sim walks players on. It
 /// calls the sim's one implementation now; the storey term is the only
 /// arithmetic left here.
-pub fn level_base_y(seed: u64, cx: u16, cz: u16, level: u8) -> f32 {
-    sim_core::build::column_floor_y(seed, cx, cz) + level as f32 * LEVEL_H_M
+pub fn level_base_y(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, level: u8) -> f32 {
+    sim_core::build::column_floor_y(seed, haven, cx, cz) + level as f32 * LEVEL_H_M
 }
 
 /// The world XZ of a cell's centre.
@@ -609,9 +609,13 @@ pub const SKIRT_MAX_M: f32 = 4.0;
 /// its base and the volume below it blocks nothing (`NOW.md` carries the
 /// residual). The top face is unmoved, so nothing about where a player
 /// stands changed with the skirt's depth.
-pub fn foundation_part(seed: u64, cx: u16, cz: u16, tri: bool) -> Part {
+pub fn foundation_part(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, tri: bool) -> Part {
     let span = BUILD_CELL_M - SEAM_M;
-    let base = sim_core::build::column_floor_y(seed, cx, cz);
+    // Carved, and it must be carved TOGETHER with `lo` below: `depth` is the
+    // difference of the two, so one of them reading raw terrain while the other
+    // reads the carve is a skirt sized from a subtraction across two different
+    // surfaces — a foundation that floats or buries itself on an authored site.
+    let base = sim_core::build::column_floor_y(seed, haven, cx, cz);
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
     // The lowest ground under the cell: four corners and the centre. Five
@@ -625,7 +629,7 @@ pub fn foundation_part(seed: u64, cx: u16, cz: u16, tri: bool) -> Part {
         (x0 + BUILD_CELL_M, z0 + BUILD_CELL_M),
         (x0 + BUILD_CELL_M * 0.5, z0 + BUILD_CELL_M * 0.5),
     ] {
-        lo = lo.min(terrain::height(seed, px, pz));
+        lo = lo.min(terrain::ground(seed, haven, px, pz));
     }
     let depth = (base - lo + SKIRT_SINK_M).clamp(SLAB_T, SKIRT_MAX_M);
     Part {
@@ -712,9 +716,9 @@ fn tri_prism_unit() -> Mesh {
 /// edge carries. Shared with the build ghost for the reason the parts are:
 /// the ghost and the piece it becomes must be the same object in the same
 /// pose, and edge canonicalisation written twice is how they stop being.
-pub fn base_transform(seed: u64, (cx, cz, level, loc): Addr) -> Transform {
+pub fn base_transform(seed: u64, haven: &terrain::Haven, (cx, cz, level, loc): Addr) -> Transform {
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, SQRT_2};
-    let base_y = level_base_y(seed, cx, cz, level);
+    let base_y = level_base_y(seed, haven, cx, cz, level);
     let (cxm, czm) = cell_center(cx, cz);
     // Triangles and diagonals are one drawn object each under a turn of
     // the root (triangles v0): the four halves are the NW prism at 0,
@@ -911,6 +915,10 @@ pub fn stream(
         ring.kit = Some(build_kit(&assets, &mut meshes, &mut materials));
     }
     let kit = ring.kit.as_ref().expect("built above");
+    // The island's solved sites, for the carved ground every piece is footed
+    // on (`terrain::ground`). One binding, so every emit in this system is
+    // placed against the same surface.
+    let haven = &world.haven;
     let core = &net.session.core;
     ring.gen = ring.gen.wrapping_add(1);
     let gen = ring.gen;
@@ -937,7 +945,15 @@ pub fn stream(
             ring.pieces.remove(&key);
         }
         let def = core.piece_defs.pieces[rec.row as usize];
-        let entity = spawn_piece(&mut commands, kit, seed, key, def.shape, def.material);
+        let entity = spawn_piece(
+            &mut commands,
+            kit,
+            seed,
+            haven,
+            key,
+            def.shape,
+            def.material,
+        );
         ring.pieces.insert(
             key,
             Live {
@@ -974,7 +990,7 @@ pub fn stream(
             ring.deploys.remove(&key);
         }
         let arch = core.deploy_defs.defs[rec.row as usize].arch;
-        let entity = spawn_deploy(&mut commands, kit, seed, rec, arch);
+        let entity = spawn_deploy(&mut commands, kit, seed, haven, rec, arch);
         ring.deploys.insert(
             key,
             Live {
@@ -1040,6 +1056,7 @@ fn spawn_piece(
     commands: &mut Commands,
     kit: &Kit,
     seed: u64,
+    haven: &terrain::Haven,
     addr: Addr,
     shape: u8,
     material: u8,
@@ -1049,7 +1066,7 @@ fn spawn_piece(
     // boundary — canonical, so one physical edge is never addressable twice
     // (`build.rs`) — and the parts are the shared table's, so this and the
     // build ghost are the same object in the same pose.
-    let root = base_transform(seed, addr);
+    let root = base_transform(seed, haven, addr);
 
     // A foundation's one part is per-address — the terrain-following skirt
     // ([`foundation_part`], the shared emit the ghost also draws) — so it
@@ -1060,7 +1077,7 @@ fn spawn_piece(
         shape,
         sim_core::build::SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION
     ) {
-        let part = foundation_part(seed, addr.0, addr.1, shape == SHAPE_TRI_FOUNDATION);
+        let part = foundation_part(seed, haven, addr.0, addr.1, shape == SHAPE_TRI_FOUNDATION);
         let unit = match part.kind {
             PartKind::Box => kit.unit_box.clone(),
             PartKind::Tri => kit.unit_tri.clone(),
@@ -1118,11 +1135,17 @@ fn spawn_piece(
 /// swings off the hinge end and lies across the cell — the same read the
 /// sim's collision has, so a player never walks through a leaf that still
 /// looks shut. Everything else stands on the level plane at cell centre.
-pub fn deploy_transform(seed: u64, addr: Addr, arch: u8, open: bool) -> Transform {
+pub fn deploy_transform(
+    seed: u64,
+    haven: &terrain::Haven,
+    addr: Addr,
+    arch: u8,
+    open: bool,
+) -> Transform {
     let idx = (arch as usize).min(DEPLOY.len() - 1);
     let [_, h, d] = DEPLOY[idx].0;
     let (cx, cz, level, loc) = addr;
-    let base_y = level_base_y(seed, cx, cz, level);
+    let base_y = level_base_y(seed, haven, cx, cz, level);
     let (cxm, czm) = cell_center(cx, cz);
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
@@ -1147,11 +1170,18 @@ fn spawn_deploy(
     commands: &mut Commands,
     kit: &Kit,
     seed: u64,
+    haven: &terrain::Haven,
     rec: &DeployRec,
     arch: u8,
 ) -> Entity {
     let idx = (arch as usize).min(DEPLOY.len() - 1);
-    let transform = deploy_transform(seed, (rec.cx, rec.cz, rec.level, rec.loc), arch, rec.open);
+    let transform = deploy_transform(
+        seed,
+        haven,
+        (rec.cx, rec.cz, rec.level, rec.loc),
+        arch,
+        rec.open,
+    );
 
     let mat = if arch == ARCH_DOOR && rec.locked {
         kit.door_locked.clone()

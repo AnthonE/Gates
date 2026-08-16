@@ -23,6 +23,35 @@ use sim_core::limits::TICK_HZ;
 use sim_core::survival::SurvivalContent;
 use sim_core::world::{Command, World, EV_RESPAWN};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 20260803;
 
 /// Row 3 of `DeployContent::probe_fixture` is the ground-class bag, and it
@@ -52,7 +81,7 @@ fn buildable_cell_near(seed: u64, cx0: u16, cz0: u16, skip: usize) -> (u16, u16)
                 let cx = (cx0 as i32 + dx).clamp(0, 1023) as u16;
                 let cz = (cz0 as i32 + dz).clamp(0, 1023) as u16;
                 let (x, z) = cell_center(cx, cz);
-                if foundation_terrain_ok(seed, x, z) {
+                if foundation_terrain_ok(seed, hv(seed), x, z) {
                     if found == skip {
                         return (cx, cz);
                     }
@@ -85,7 +114,7 @@ fn lone_world() -> World {
 
 fn stand(w: &mut World, cx: u16, cz: u16) {
     let (x, z) = cell_center(cx, cz);
-    w.players[0].body = sim_core::movement::Body::at(w.seed, x, z);
+    w.players[0].body = sim_core::movement::Body::at(w.seed, &w.haven, x, z);
 }
 
 /// Stand on the cell and place a bag on it through the real verb — no
@@ -160,7 +189,7 @@ fn die_and_wake(w: &mut World, on_bag: bool) -> (i32, i32) {
 /// respawn must produce, computed the way the respawn computes it.
 fn body_on(w: &World, cx: u16, cz: u16) -> (i32, i32) {
     let (x, z) = cell_center(cx, cz);
-    let b = sim_core::movement::Body::at(w.seed, x, z);
+    let b = sim_core::movement::Body::at(w.seed, &w.haven, x, z);
     (b.qx, b.qz)
 }
 
@@ -216,7 +245,7 @@ fn no_bag_is_still_the_spawn_ring() {
     let mut w = lone_world();
     let woke = die_and_wake(&mut w, true);
     let (x, z) = w.spawn_pos_n(1, 1);
-    let b = sim_core::movement::Body::at(SEED, x, z);
+    let b = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
     assert_eq!(
         woke,
         (b.qx, b.qz),
@@ -253,7 +282,7 @@ fn a_second_death_inside_the_cooldown_falls_back_to_the_ring() {
          this test proves nothing at that speed"
     );
     let (x, z) = w.spawn_pos_n(1, 2);
-    let b = sim_core::movement::Body::at(SEED, x, z);
+    let b = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
     assert_eq!(
         woke,
         (b.qx, b.qz),
@@ -400,7 +429,7 @@ fn the_beach_button_refuses_a_ready_bag() {
     die(&mut w);
     let woke = wake(&mut w, false);
     let (x, z) = w.spawn_pos_n(1, 1);
-    let b = sim_core::movement::Body::at(SEED, x, z);
+    let b = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
     assert_eq!(
         woke,
         (b.qx, b.qz),
@@ -455,7 +484,7 @@ fn asking_for_a_bag_you_have_not_got_is_a_beach() {
     die(&mut w);
     let woke = wake(&mut w, true);
     let (x, z) = w.spawn_pos_n(1, 1);
-    let b = sim_core::movement::Body::at(SEED, x, z);
+    let b = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
     assert_eq!(woke, (b.qx, b.qz), "an unanswerable ask stranded the body");
     assert_eq!(
         respawn_event(&w),

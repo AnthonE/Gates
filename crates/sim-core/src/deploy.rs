@@ -1421,11 +1421,17 @@ impl Default for Deploys {
 /// had already drifted: it sampled raw terrain with no lift and no
 /// lattice, so the bag sat 0.3 m inside the slab it claimed to land on —
 /// the exact hand-kept-mirror failure `column_floor_y` exists to close.
-pub fn box_drop_pos(seed: u64, cx: u16, cz: u16, level: u8) -> (f32, f32, f32) {
+pub fn box_drop_pos(
+    seed: u64,
+    haven: &terrain::Haven,
+    cx: u16,
+    cz: u16,
+    level: u8,
+) -> (f32, f32, f32) {
     let (x, z) = cell_center(cx, cz);
     (
         x,
-        crate::build::column_floor_y(seed, cx, cz) + level as f32 * LEVEL_H_M,
+        crate::build::column_floor_y(seed, haven, cx, cz) + level as f32 * LEVEL_H_M,
         z,
     )
 }
@@ -1474,13 +1480,13 @@ pub fn loc_fits_placement(placement: u8, loc: u8) -> bool {
 
 /// Ground-class terrain rule: same buildable shape as a foundation
 /// (build.rs consts), and the cell body must be piece-free.
-fn ground_ok(seed: u64, pieces: &Pieces, cx: u16, cz: u16) -> bool {
+fn ground_ok(seed: u64, haven: &terrain::Haven, pieces: &Pieces, cx: u16, cz: u16) -> bool {
     if pieces.find(cx, cz, 0, LOC_PLANE).is_some() {
         return false;
     }
     let (x, z) = cell_center(cx, cz);
-    terrain::height(seed, x, z) >= crate::build::FOUNDATION_MIN_H_M
-        && terrain::slope(seed, x, z) < crate::build::FOUNDATION_MAX_SLOPE
+    terrain::ground(seed, haven, x, z) >= crate::build::FOUNDATION_MIN_H_M
+        && terrain::ground_slope(seed, haven, x, z) < crate::build::FOUNDATION_MAX_SLOPE
 }
 
 /// Apply one deploy-place request (`Command::PlaceDeploy`). Refusals are
@@ -1489,6 +1495,7 @@ fn ground_ok(seed: u64, pieces: &Pieces, cx: u16, cz: u16) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub fn place_deploy(
     seed: u64,
+    haven: &terrain::Haven,
     dc: &DeployContent,
     bc: &BuildContent,
     pieces: &mut Pieces,
@@ -1542,11 +1549,11 @@ pub fn place_deploy(
         return;
     }
     let supported = match def.placement {
-        PLACE_GROUND => level == 0 && ground_ok(seed, pieces, cx, cz),
+        PLACE_GROUND => level == 0 && ground_ok(seed, haven, pieces, cx, cz),
         PLACE_FOUNDATION => pieces.find(cx, cz, level, LOC_PLANE).is_some(),
         PLACE_ANY => {
             pieces.find(cx, cz, level, LOC_PLANE).is_some()
-                || (level == 0 && ground_ok(seed, pieces, cx, cz))
+                || (level == 0 && ground_ok(seed, haven, pieces, cx, cz))
         }
         PLACE_DOORWAY => pieces
             .find(cx, cz, level, loc)
@@ -2604,6 +2611,17 @@ mod tests {
     use crate::world::{EventQueue, Player};
 
     const SEED: u64 = 20260731;
+
+    /// The solved authored sites for `SEED`, memoized.
+    ///
+    /// `terrain::haven` is a few thousand `height` taps and these cases call
+    /// the carved-ground path from nearly every assertion, so resolving it
+    /// once per suite is the difference between a fast test and a slow one.
+    /// It is a pure function of the seed, so caching it cannot change a result.
+    fn hv() -> &'static crate::terrain::Haven {
+        static HV: std::sync::OnceLock<crate::terrain::Haven> = std::sync::OnceLock::new();
+        HV.get_or_init(|| crate::terrain::haven(SEED))
+    }
     const CX: u16 = 341;
     const CZ: u16 = 341;
 
@@ -2613,6 +2631,7 @@ mod tests {
             active: true,
             body: Body::at(
                 SEED,
+                hv(),
                 (cx as f32 + 0.5) * crate::build::BUILD_CELL_M,
                 (cz as f32 + 0.5) * crate::build::BUILD_CELL_M,
             ),
@@ -2638,6 +2657,7 @@ mod tests {
         let mut ev = EventQueue::default();
         crate::build::place(
             SEED,
+            hv(),
             bc,
             &Deploys::new(),
             pieces,
@@ -2700,6 +2720,7 @@ mod tests {
         // Hearth (foundation class) on bare terrain refuses.
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2718,6 +2739,7 @@ mod tests {
         // Bag (ground class) on bare terrain places and pays its item.
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2737,6 +2759,7 @@ mod tests {
         // Occupied address refuses.
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2757,6 +2780,7 @@ mod tests {
         founded(&bc, &mut pieces, &mut p, CX + 1, CZ);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2774,6 +2798,7 @@ mod tests {
         assert_eq!(deploys.hearths().len(), 1);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2793,6 +2818,7 @@ mod tests {
         // there is still not a doorway.
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2809,6 +2835,7 @@ mod tests {
         assert_eq!(last(&ev).2, REFUSE_D_SUPPORT);
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -2824,6 +2851,7 @@ mod tests {
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2842,6 +2870,7 @@ mod tests {
         // Bad row, wrong loc, empty pocket.
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2858,6 +2887,7 @@ mod tests {
         assert_eq!(last(&ev).2, REFUSE_D_KIND);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2875,6 +2905,7 @@ mod tests {
         let mut poor = player_at_cell(CX + 2, CZ, &[]);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2902,6 +2933,7 @@ mod tests {
         founded(&bc, &mut pieces, &mut own, CX, CZ);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2923,6 +2955,7 @@ mod tests {
         foe.id = 8;
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -2946,6 +2979,7 @@ mod tests {
         );
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2966,6 +3000,7 @@ mod tests {
         foe_far.id = 8;
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -2983,6 +3018,7 @@ mod tests {
         // The owner may keep building inside their own radius…
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -2999,6 +3035,7 @@ mod tests {
         // …but not stack a second hearth inside the first's radius.
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3028,11 +3065,13 @@ mod tests {
         for k in 0..BAG_CAP as u16 + 1 {
             p.body = Body::at(
                 SEED,
+                hv(),
                 (CX + k) as f32 * crate::build::BUILD_CELL_M + 1.5,
                 CZ as f32 * crate::build::BUILD_CELL_M + 1.5,
             );
             place_deploy(
                 SEED,
+                hv(),
                 &dc,
                 &bc,
                 &mut pieces,
@@ -3093,11 +3132,13 @@ mod tests {
         for k in [0u16, 2, 4] {
             p.body = Body::at(
                 SEED,
+                hv(),
                 (CX + k) as f32 * crate::build::BUILD_CELL_M + 1.5,
                 CZ as f32 * crate::build::BUILD_CELL_M + 1.5,
             );
             place_deploy(
                 SEED,
+                hv(),
                 &dc,
                 &bc,
                 &mut pieces,
@@ -3164,6 +3205,7 @@ mod tests {
         let mut p = player_at_cell(CX, CZ, &[(5, 20)]);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3201,6 +3243,7 @@ mod tests {
         let mut p = player_at_cell(CX, CZ, &[(3, 5)]);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3234,6 +3277,7 @@ mod tests {
         founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3296,6 +3340,7 @@ mod tests {
         // A workbench (any-class) on the foundation.
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3363,6 +3408,7 @@ mod tests {
         founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -3381,6 +3427,7 @@ mod tests {
         );
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3436,6 +3483,7 @@ mod tests {
         founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3453,11 +3501,13 @@ mod tests {
         // A bag inside the radius and one far outside it.
         p.body = Body::at(
             SEED,
+            hv(),
             (CX + 2) as f32 * crate::build::BUILD_CELL_M + 1.5,
             CZ as f32 * crate::build::BUILD_CELL_M + 1.5,
         );
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3475,11 +3525,13 @@ mod tests {
         let far = CX + 40;
         p.body = Body::at(
             SEED,
+            hv(),
             far as f32 * crate::build::BUILD_CELL_M + 1.5,
             CZ as f32 * crate::build::BUILD_CELL_M + 1.5,
         );
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3732,6 +3784,7 @@ mod tests {
         founded(bc, pieces, &mut p, CX, CZ);
         crate::build::place(
             SEED,
+            hv(),
             bc,
             deploys,
             pieces,
@@ -3747,6 +3800,7 @@ mod tests {
         assert_eq!(last(ev).0, crate::world::EV_PIECE_PLACED, "doorway lands");
         place_deploy(
             SEED,
+            hv(),
             dc,
             bc,
             pieces,
@@ -3768,6 +3822,7 @@ mod tests {
     fn walk_x_after(pieces: &Pieces) -> f32 {
         let mut b = crate::movement::Body::at(
             SEED,
+            hv(),
             CX as f32 * crate::build::BUILD_CELL_M + 1.5,
             CZ as f32 * crate::build::BUILD_CELL_M + 1.5,
         );
@@ -3776,7 +3831,7 @@ mod tests {
         // walks is not (occupy::Barren).
         let mut occ = crate::occupy::Scratch::barren();
         for _ in 0..120 {
-            crate::movement::step(SEED, pieces.cols(), &mut occ.occupants(), &mut b, &f);
+            crate::movement::step(SEED, hv(), pieces.cols(), &mut occ.occupants(), &mut b, &f);
         }
         b.qx as f32 * crate::movement::POS_XZ_Q
     }
@@ -3883,6 +3938,7 @@ mod tests {
         founded(&bc, &mut pieces, &mut p, CX, CZ);
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -4119,6 +4175,7 @@ mod tests {
         let before = deploys.len();
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -4238,6 +4295,7 @@ mod tests {
         let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -4347,6 +4405,7 @@ mod tests {
 
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -4363,6 +4422,7 @@ mod tests {
         // One lock per door.
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -4494,6 +4554,7 @@ mod tests {
         // placing at all.
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -4540,6 +4601,7 @@ mod tests {
         // stock with it.
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -4604,6 +4666,7 @@ mod tests {
         let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -4712,7 +4775,20 @@ mod tests {
         let mut p = player_at_cell(CX, CZ, &[(0, 99), (1, 99), (9, 2), (7, 2)]);
         founded(bc, pieces, &mut p, CX, CZ);
         place_deploy(
-            SEED, dc, bc, pieces, deploys, &mut p, 0, 7, CX, CZ, 0, LOC_PLANE, ev,
+            SEED,
+            hv(),
+            dc,
+            bc,
+            pieces,
+            deploys,
+            &mut p,
+            0,
+            7,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            ev,
         );
         assert_eq!(last(ev).0, crate::world::EV_DEPLOY_PLACED, "box lands");
         p
@@ -4736,6 +4812,7 @@ mod tests {
         let before = deploys.len();
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -4861,6 +4938,7 @@ mod tests {
         let mut p = player_at_cell(CX, CZ, &[(6, 2), (7, 2)]);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -4878,6 +4956,7 @@ mod tests {
 
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -4913,6 +4992,7 @@ mod tests {
         let mut p = boxed(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -5013,6 +5093,7 @@ mod tests {
         let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -5183,6 +5264,7 @@ mod tests {
         let mut p = boxed(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -5328,6 +5410,7 @@ mod tests {
         founded_graded(&bc, &mut pieces, &mut p, CX, CZ);
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -5342,6 +5425,7 @@ mod tests {
         );
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -5377,6 +5461,7 @@ mod tests {
         }
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -5485,6 +5570,7 @@ mod tests {
         founded(&bc, &mut pieces, &mut owner, CX, CZ);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -5546,6 +5632,7 @@ mod tests {
         founded(&bc, &mut pieces, &mut owner, CX, CZ);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -5678,6 +5765,7 @@ mod tests {
         founded(&bc, &mut pieces, &mut owner, CX, CZ);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -5697,6 +5785,7 @@ mod tests {
         // Outside the crew: the wall refuses.
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -5718,6 +5807,7 @@ mod tests {
         deploys.hearths_mut()[0].crew.add(friend.id);
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -5743,6 +5833,7 @@ mod tests {
         outsider.id = 11;
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -5764,6 +5855,7 @@ mod tests {
         deploys.hearths_mut()[0].crew.add(outsider.id);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -5795,6 +5887,7 @@ mod tests {
         let mut p = doored(&bc, &dc, &mut pieces, &mut deploys, &mut ev);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -5849,6 +5942,7 @@ mod tests {
         founded(&bc, &mut pieces, &mut p, CX, CZ);
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -5879,6 +5973,7 @@ mod tests {
         // A real door, toggled from 20 m away: reach refusal, state kept.
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -5893,6 +5988,7 @@ mod tests {
         );
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -5999,6 +6095,7 @@ mod tests {
         ev.clear();
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -6031,6 +6128,7 @@ mod tests {
         ev.clear();
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,

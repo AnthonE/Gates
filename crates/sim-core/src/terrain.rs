@@ -1636,12 +1636,38 @@ pub struct SiteFootprint {
     /// nothing else. A site that moves its ring drags its floor with it, the
     /// same way `skirt_base_r` reaches off `occupant_volume`.
     pub swept_m: f32,
+    /// Where the CARVE's flat floor stops — the ground the site's authored
+    /// structures are footed on, before the blend out to `scatter_m` begins.
+    ///
+    /// **Not `swept_m`, and the difference is a measured defect rather than a
+    /// refinement.** `swept_m` is derived from the *container ring*, and it was
+    /// the obvious radius to carve to; the containers are point-like, so it
+    /// covers them. The structures are not. The waystation canopy stands at
+    /// `WAYSTATION_CANOPY_OFF_M` = 6.5 m with `WAYSTATION_CANOPY_R_M` = 3.96 m
+    /// of eave, so its footing spans 2.54 m .. **10.46 m** while that site's
+    /// `swept_m` is 7.14 — three and a third metres of it out on the blend
+    /// ramp, which is *steeper than the hill it replaced* because the ramp
+    /// compresses the whole raw delta into the band. Measured over the 16
+    /// `tests/haven.rs` seeds at full strength: the haven shelter's worst
+    /// footing spread goes **1.374 m → 0.063 m** (the carve doing its job), and
+    /// the waystation canopy's goes **1.795 m → 1.889 m** — *worse*, by the
+    /// mechanism the carve exists to fix. `tests/carve.rs` §G is that
+    /// measurement as a gate.
+    ///
+    /// Derived, not chosen, exactly as `swept_m` is: the furthest edge of
+    /// anything the site seats — its container ring, and its structure's
+    /// offset plus that structure's own broad-phase radius — plus one clutter
+    /// cell, so the floor covers the arrangement rather than ending under it.
+    pub stamp_m: f32,
 }
 
 /// The pad's masks.
 pub const HAVEN_FOOTPRINT: SiteFootprint = SiteFootprint {
     scatter_m: HAVEN_RADIUS_M,
     swept_m: HAVEN_CRATE_R_M + CLUTTER_CELL_M,
+    // The shelter reaches furthest: 6.5 m out, 4.9498 m of corner. 12.09 m,
+    // inside the 16 m mask with 3.91 m of band left to blend across.
+    stamp_m: HAVEN_SHELTER_R_M + SHELTER_CORNER_R_M + CLUTTER_CELL_M,
 };
 
 /// The lesser tier's masks — the same derivation on the smaller site, which is
@@ -1651,6 +1677,10 @@ pub const HAVEN_FOOTPRINT: SiteFootprint = SiteFootprint {
 pub const WAYSTATION_FOOTPRINT: SiteFootprint = SiteFootprint {
     scatter_m: WAYSTATION_RADIUS_M,
     swept_m: WAYSTATION_CRATE_R_M + CLUTTER_CELL_M,
+    // ⚠ 11.10 m, against an 11.0 m mask — this one does NOT fit, and that is
+    // the finding rather than a typo. The const block below refuses to compile
+    // an armed carve because of it; see `DECISIONS.md` §open "site carve v0".
+    stamp_m: WAYSTATION_CANOPY_OFF_M + WAYSTATION_CANOPY_R_M + CLUTTER_CELL_M,
 };
 
 // Wall 4 at the definition, as the haven and waystation blocks do it.
@@ -1715,6 +1745,251 @@ fn sweep_of(fp: &SiteFootprint, sx: f32, sz: f32, x: f32, z: f32) -> f32 {
         return 0.0;
     }
     1.0 - ramp(fp.swept_m, fp.scatter_m, d2.sqrt())
+}
+
+/// How far an authored site's carve pulls the ground toward the site's own
+/// reference height, as a fraction: 0.0 leaves the raw terrain alone, 1.0
+/// makes the swept floor dead flat at `Haven::y` / `Waystation::y`.
+///
+/// **Zero, deliberately, and this is the seam landing before the cut does.**
+/// `TERRAIN.md` §1 stage 8 has asked for "carve a flat pad with a smooth blend
+/// radius" since the file was written, and every pass declined it for the same
+/// reason: a carve is a write to the ground, `height` is read from sixty-odd
+/// places, and a client mesh that sees the pad while a collision path does not
+/// is a player standing in the air. That is a cross-cutting edit and a
+/// behaviour change at once, which is the shape this repo has learned to
+/// refuse — so they are split. This pass converts every consumer to `ground`
+/// and leaves the strength at zero, which makes `ground` return `height`'s own
+/// bits (see `ground`) and leaves `test_terrain_golden`, `test_replay` and
+/// `test_parity_wasm` untouched. Arming it is one constant, and it is the
+/// operator's (`DECISIONS.md` §open, "site carve v0").
+///
+/// The measurement that will price it already exists and is already published:
+/// `Haven::relief` is the max−min over the pad footprint that the stage 8
+/// argmax settled for by *finding* — worst 3.76 m over a 32 m pad across 16
+/// seeds. At strength 1.0 that number is 0 by construction, and `tests/relief.rs`
+/// is where the before/after belongs.
+pub const SITE_STAMP_STRENGTH: f32 = 0.0;
+
+/// The carve, as a height delta: how far the authored sites move the ground at
+/// (x, z) away from the raw worldgen underneath it.
+///
+/// **It takes `raw` and not `seed`, and that is the whole defence against the
+/// circularity this change exists to avoid.** `haven(seed)` is *built out of*
+/// `height` taps — a shoreline march, a bisect, a flatness rosette, a ring
+/// check chain — so a carve applied inside `height` would have the site solver
+/// scoring ground it had already carved. Every other guard against that is a
+/// convention someone has to keep; this one is the type system: with no seed in
+/// scope, this function *cannot* call `height`, so the stamp can never depend
+/// on the terrain it is stamping. `MONUMENTS.md` §9.5's rule — candidates,
+/// score, solve, reserve, *then* everything else — expressed as a signature.
+///
+/// Summed over the live sites rather than maxed, which `site_sweep` cannot do
+/// because a sweep is a 0..1 coverage and two would saturate. A stamp is a
+/// signed delta, and the const block below holds the sites far enough apart
+/// that no point is ever inside two footprints — so the sum has exactly one
+/// non-zero term wherever it has any, and it carries no dependence on the
+/// order the waystations happen to sit in the array.
+///
+/// Cost is `sweep_of`'s: a squared reject per site, one multiply pair and a
+/// compare, with the `sqrt` paid only inside a footprint. That matters because
+/// `ground` stands in front of the mesh builder and the movement step.
+pub fn site_stamp(haven: &Haven, raw: f32, x: f32, z: f32) -> f32 {
+    site_stamp_with(SITE_STAMP_STRENGTH, haven, raw, x, z)
+}
+
+/// `site_stamp` at a strength the caller names, which is how the carve is
+/// tested at full depth while the shipped constant stays at zero.
+///
+/// Without this the mechanism would ship untested: every assertion reachable
+/// through `site_stamp` at strength 0.0 is satisfied by a function that returns
+/// a constant, so the gate would prove only that zero is zero and the arming
+/// pass would be the first time the arithmetic ever ran. `tests/carve.rs`
+/// drives *this* entry point at 1.0 and proves the flatten, the blend profile
+/// and the footprint bound on the real code path; `site_stamp` above then
+/// differs from what the gate exercised by exactly one constant.
+pub fn site_stamp_with(strength: f32, haven: &Haven, raw: f32, x: f32, z: f32) -> f32 {
+    let mut s = stamp_of(
+        strength,
+        &HAVEN_FOOTPRINT,
+        haven.y,
+        haven.x,
+        haven.z,
+        raw,
+        x,
+        z,
+    );
+    let mut w = 0usize;
+    while w < WAYSTATIONS {
+        let ws = &haven.minor[w];
+        w += 1;
+        if !ws.live {
+            continue;
+        }
+        s += stamp_of(strength, &WAYSTATION_FOOTPRINT, ws.y, ws.x, ws.z, raw, x, z);
+    }
+    s
+}
+
+/// One site's contribution to `site_stamp` — `sweep_of`'s profile read the
+/// other way up, so the carve and the swept floor share an edge by
+/// construction rather than by two constants agreeing.
+///
+/// `1.0 - ramp(..)` is 1 on the made floor and 0 at the scatter mask, which is
+/// exactly `sweep_of`'s return; the blend radius `TERRAIN.md` §1 stage 8 asks
+/// for is therefore the band the clutter population is already dithered across,
+/// and a pad cannot grow a visible plateau edge that its own ground cover does
+/// not also fade over. That is `MONUMENTS.md` §3's lesson — the reference game
+/// shipped monuments on visible circular plateaus for years — and getting it
+/// for free is the reason `SiteFootprint` publishes a band and not a radius.
+#[allow(clippy::too_many_arguments)]
+fn stamp_of(
+    strength: f32,
+    fp: &SiteFootprint,
+    sy: f32,
+    sx: f32,
+    sz: f32,
+    raw: f32,
+    x: f32,
+    z: f32,
+) -> f32 {
+    // A footprint whose floor does not fit inside its mask carves NOTHING,
+    // stated rather than emergent. `ramp(lo, hi, ..)` with `hi < lo` divides by
+    // a negative span and saturates to 1 everywhere, so `1 - ramp` is 0 and the
+    // site is silently left alone — the safe answer, arrived at by accident.
+    // Saying it out loud is what stops the next reader taking a working
+    // waystation for granted: today that site really is uncarved, and the const
+    // block above is what will not let it be armed in that state.
+    if fp.stamp_m >= fp.scatter_m {
+        return 0.0;
+    }
+    let dx = x - sx;
+    let dz = z - sz;
+    let d2 = dx * dx + dz * dz;
+    if d2 >= fp.scatter_m * fp.scatter_m {
+        return 0.0;
+    }
+    (sy - raw) * (1.0 - ramp(fp.stamp_m, fp.scatter_m, d2.sqrt())) * strength
+}
+
+// Wall 4 at the definition. `site_stamp` sums its sites, which is only equal
+// to "the site containing this point" while no point can be inside two
+// footprints — so the disjointness is asserted rather than eyeballed off the
+// current numbers. `WAYSTATION_MIN_SEP_M` is the floor `haven`'s second tier
+// is selected against, pad-to-waystation and waystation-to-waystation alike.
+const _: () = {
+    assert!(WAYSTATION_MIN_SEP_M > HAVEN_FOOTPRINT.scatter_m + WAYSTATION_FOOTPRINT.scatter_m);
+    assert!(WAYSTATION_MIN_SEP_M > WAYSTATION_FOOTPRINT.scatter_m * 2.0);
+};
+
+/// The narrowest blend an armed carve may have, metres.
+///
+/// Not a taste number: one clutter cell is the width at which the dithered
+/// population that hides the boundary (`swept_here`) has a single cell to do it
+/// in, which the `SiteFootprint` block above already refuses for `swept_m` in
+/// the same words — "a one-cell ramp is a hard edge that cost a dither".
+/// Four of them is the floor here because the carve's ramp carries metres of
+/// height rather than a 0..1 coverage, so its edge is visible geometry and not
+/// a thinning of tufts.
+pub const SITE_STAMP_MIN_BAND_M: f32 = CLUTTER_CELL_M * 4.0;
+
+// ⚠ **Arming the carve is a COMPILE ERROR until the waystation's mask is
+// widened, and that is deliberate.**
+//
+// The carve's flat floor has to reach past everything the site seats, or the
+// structure's outer footing lands on the blend ramp — which is steeper than
+// the ground it replaced, because the ramp compresses the whole raw delta into
+// the band. Measured at full strength over 16 seeds: the haven shelter's worst
+// footing spread improves 1.374 m → 0.063 m, and the waystation canopy's gets
+// WORSE, 1.795 m → 1.889 m. The canopy needs 11.10 m of floor and
+// `WAYSTATION_RADIUS_M` publishes an 11.0 m mask, so there is no room for the
+// floor, let alone a band to blend across.
+//
+// That is a **spoken knob** and not a thing this seam may quietly change:
+// `WAYSTATION_RADIUS_M` is the scatter exclusion the second tier was priced
+// with (`DECISIONS.md` §open, "waystations v0"), so widening it moves what the
+// island scatters near a waystation, which is a balance question and the
+// operator's. Until it moves, the strength stays 0.0 and everything below is
+// inert — so this assert is written to bind ONLY on an armed carve, which
+// makes the block a door rather than a wall: set `SITE_STAMP_STRENGTH` to
+// anything non-zero and the crate stops compiling with this text.
+const _: () = {
+    let armed = SITE_STAMP_STRENGTH != 0.0;
+    assert!(
+        !armed || HAVEN_FOOTPRINT.stamp_m + SITE_STAMP_MIN_BAND_M <= HAVEN_FOOTPRINT.scatter_m,
+        "the carve is armed and the haven's flat floor does not fit inside its \
+         scatter mask with a band to blend across — widen HAVEN_RADIUS_M"
+    );
+    assert!(
+        !armed
+            || WAYSTATION_FOOTPRINT.stamp_m + SITE_STAMP_MIN_BAND_M
+                <= WAYSTATION_FOOTPRINT.scatter_m,
+        "the carve is armed and the WAYSTATION's flat floor does not fit: the \
+         canopy is footed out to WAYSTATION_CANOPY_OFF_M + WAYSTATION_CANOPY_R_M \
+         = 10.46 m and WAYSTATION_RADIUS_M publishes an 11.0 m mask. Carving \
+         this site makes the canopy's footing WORSE (measured 1.795 -> 1.889 m \
+         over 16 seeds). WAYSTATION_RADIUS_M is a spoken knob - see DECISIONS.md \
+         §open 'site carve v0' - so widening it is the operator's call, not this \
+         seam's."
+    );
+    // The floor covers the arrangement, which is the whole point of deriving it
+    // from the structures rather than from the container ring. This one binds
+    // whether or not the carve is armed: it is a statement about the geometry,
+    // not about the strength.
+    assert!(HAVEN_FOOTPRINT.stamp_m >= HAVEN_FOOTPRINT.swept_m);
+    assert!(WAYSTATION_FOOTPRINT.stamp_m >= WAYSTATION_FOOTPRINT.swept_m);
+    assert!(HAVEN_FOOTPRINT.stamp_m >= HAVEN_SHELTER_R_M + SHELTER_CORNER_R_M);
+    assert!(HAVEN_FOOTPRINT.stamp_m >= HAVEN_CRATE_R_M);
+    assert!(WAYSTATION_FOOTPRINT.stamp_m >= WAYSTATION_CANOPY_OFF_M + WAYSTATION_CANOPY_R_M);
+    assert!(WAYSTATION_FOOTPRINT.stamp_m >= WAYSTATION_CRATE_R_M);
+};
+
+/// The ground everything **stands on**: raw worldgen plus every carve over it.
+///
+/// This is the consumer half of the split named on `site_stamp`. The rule that
+/// decides which of the two a call site wants is a role and not a location:
+///
+/// - **Solvers read [`height`]** — anything that *locates* the world. Where a
+///   site goes (`haven`, `pick_minor`), where the road runs (`road_band`),
+///   where a player spawns (`World::spawn_pos`'s bisect), and the determinism
+///   probe, which must hash worldgen truth rather than what was laid over it.
+/// - **Consumers read `ground`** — anything that *stands on* the world. The
+///   surface under a body (`movement`), the drawn mesh (`terrain_mesh`), a
+///   projectile's ground hit (`ranged`), a foundation's footing (`build`,
+///   `deploy`) and the ghost that predicts it (`ui::place`), and the `y` an
+///   authored crate or shelter is seated at.
+///
+/// `sim-core/tests/height_roles.rs` holds that rule as a gate, because it is
+/// the kind of rule a new call site breaks silently: both functions typecheck
+/// everywhere, and the failure is a floating crate or a player in the air
+/// rather than a red test.
+///
+/// **Returns `height`'s own bits when nothing carves here**, which is not a
+/// micro-optimisation but the property that lets this land dark: off every
+/// footprint the stamp is a literal `0.0` and the raw value is returned
+/// untouched, so no `+ 0.0` ever rounds or re-signs a worldgen height. While
+/// `SITE_STAMP_STRENGTH` is zero that is *every* point on the island, so this
+/// whole seam is provably a no-op at the bit level and the goldens do not move.
+pub fn ground(seed: u64, haven: &Haven, x: f32, z: f32) -> f32 {
+    let raw = height(seed, x, z);
+    let s = site_stamp(haven, raw, x, z);
+    if s == 0.0 {
+        return raw;
+    }
+    raw + s
+}
+
+/// Slope of the carved ground, as `slope` is of the raw.
+///
+/// Split from `slope` for the same reason `ground` is split from `height`: the
+/// stage 8 argmax scores candidate sites on `slope`, so a carved slope inside
+/// the solver would flatten the very term that chose the site. Consumers that
+/// shade or veto against steepness want this one; the site search wants the
+/// other.
+pub fn ground_slope(seed: u64, haven: &Haven, x: f32, z: f32) -> f32 {
+    let sx = (ground(seed, haven, x + 1.0, z) - ground(seed, haven, x - 1.0, z)) * 0.5;
+    let sz = (ground(seed, haven, x, z + 1.0) - ground(seed, haven, x, z - 1.0)) * 0.5;
+    (sx * sx + sz * sz).sqrt()
 }
 
 /// Whether a clutter element drawn at (x, z) with dither byte `d` stands on
@@ -1869,7 +2144,7 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
             return Slot {
                 occupant: Occupant::HavenShelter,
                 x: sx,
-                y: height(seed, sx, sz),
+                y: ground(seed, haven, sx, sz),
                 z: sz,
                 yaw: syaw,
                 scale: 1.0,
@@ -1891,7 +2166,7 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
             return Slot {
                 occupant: Occupant::CrateSlot,
                 x: ax,
-                y: height(seed, ax, az),
+                y: ground(seed, haven, ax, az),
                 z: az,
                 yaw,
                 // Authored, not drawn: a monument's containers are placed,
@@ -1937,7 +2212,7 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
             return Slot {
                 occupant: Occupant::WaystationCanopy,
                 x: kx,
-                y: height(seed, kx, kz),
+                y: ground(seed, haven, kx, kz),
                 z: kz,
                 yaw: kyaw,
                 // Authored, not drawn — a structure is built, and a size
@@ -1961,7 +2236,7 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
                 // — unvetoable, first-anchor-wins, no scale wobble.
                 occupant: Occupant::CacheSlot,
                 x: ax,
-                y: height(seed, ax, az),
+                y: ground(seed, haven, ax, az),
                 z: az,
                 yaw,
                 scale: 1.0,
@@ -1977,14 +2252,17 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
     let x = cell_x as f32 * CELL_SIZE + 4.0 + jx;
     let z = cell_z as f32 * CELL_SIZE + 4.0 + jz;
 
-    let hy = height(seed, x, z);
+    let hy = ground(seed, haven, x, z);
     // Split from the slope veto so `sl` can be bound and reused by the mix
     // below without paying `slope`'s four height taps on water cells — the
     // `||` short-circuit did that for free and the binding must not lose it.
     if hy < LAND_MIN_H {
         return none;
     }
-    let sl = slope(seed, x, z);
+    // Carved, to match `hy` above. One expression, one surface: `hy` is the
+    // seat AND the veto, and a raw slope beside a carved height is a cell
+    // vetoed against one island and seated on another.
+    let sl = ground_slope(seed, haven, x, z);
     if sl > CLIFF_SLOPE_RATIO {
         return none;
     }
@@ -2336,7 +2614,16 @@ pub const CLUTTER_NONE: ClutterElem = ClutterElem {
 /// `swept` is the caller's answer to `swept_here` — the authored-site override,
 /// passed in rather than computed here because each caller owns a different
 /// dither byte and the sites are the caller's `Haven` to know about.
-fn clutter_kind_at(seed: u64, x: f32, z: f32, y: f32, roll_bits: u64, swept: bool) -> Clutter {
+#[allow(clippy::too_many_arguments)]
+fn clutter_kind_at(
+    seed: u64,
+    haven: &Haven,
+    x: f32,
+    z: f32,
+    y: f32,
+    roll_bits: u64,
+    swept: bool,
+) -> Clutter {
     // The carriageway keeps its grit and loses its grass. This is the one
     // place clutter overrides the splat, and it is the same override the
     // scatter grid already makes for the same reason: a road that grows a
@@ -2355,7 +2642,8 @@ fn clutter_kind_at(seed: u64, x: f32, z: f32, y: f32, roll_bits: u64, swept: boo
     if swept {
         return Clutter::Pebble;
     }
-    let w = splat_from(y, moisture(seed, x, z), slope(seed, x, z));
+    // `y` reached here from `ground`, so its slope is `ground_slope`.
+    let w = splat_from(y, moisture(seed, x, z), ground_slope(seed, haven, x, z));
     let mut total: u32 = 0;
     for v in w.iter() {
         total += *v as u32;
@@ -2408,7 +2696,7 @@ pub fn clutter_cell(seed: u64, haven: &Haven, cell_x: i32, cell_z: i32) -> Clutt
     let x = cell_x as f32 * CLUTTER_CELL_M + jx;
     let z = cell_z as f32 * CLUTTER_CELL_M + jz;
 
-    let y = height(seed, x, z);
+    let y = ground(seed, haven, x, z);
     if y < LAND_MIN_H {
         return CLUTTER_NONE;
     }
@@ -2416,7 +2704,15 @@ pub fn clutter_cell(seed: u64, haven: &Haven, cell_x: i32, cell_z: i32) -> Clutt
     // Bits 0..7 are this draw's one unspent slice — every other byte of `h` is
     // already carrying jitter, kind, yaw or scale — so the sweep dither costs
     // no second hash, which is the rule this whole population is built on.
-    let kind = clutter_kind_at(seed, x, z, y, h >> 32, swept_here(haven, x, z, h as u8));
+    let kind = clutter_kind_at(
+        seed,
+        haven,
+        x,
+        z,
+        y,
+        h >> 32,
+        swept_here(haven, x, z, h as u8),
+    );
 
     ClutterElem {
         kind,
@@ -2451,14 +2747,15 @@ const CH_CLUTTER_RICH: u32 = 104;
 ///     this reading as dust (`SPAWN.md` §9.3). `clump` is already squared per
 ///     §9.4, so the tail is soft and a rich edge is ragged rather than a
 ///     contour line of the noise.
-fn clutter_richness_at(seed: u64, x: f32, z: f32, y: f32) -> u32 {
+fn clutter_richness_at(seed: u64, haven: &Haven, x: f32, z: f32, y: f32) -> u32 {
     // The carriageway is grit and stays grit: the road override that
     // `clutter_kind_at` makes for kind, made here for count. A road that
     // grows a thicker lawn than its verge is not a road.
     if road_band(seed, x, z) == RoadBand::Carriageway {
         return 0;
     }
-    let w = splat_from(y, moisture(seed, x, z), slope(seed, x, z));
+    // `y` reached here from `ground`, so its slope is `ground_slope`.
+    let w = splat_from(y, moisture(seed, x, z), ground_slope(seed, haven, x, z));
     let grow = w[1] as u32 + w[2] as u32; // grass + forest litter
     let g = clump(seed, x, z).clamp(0.0, 1.0);
     // `grow` is already 0..=255 (the weights normalize to 255 on land) and `g`
@@ -2512,7 +2809,7 @@ pub fn clutter_rich_cell(seed: u64, haven: &Haven, cell_x: i32, cell_z: i32) -> 
     let x = cell_x as f32 * CLUTTER_CELL_M + jx;
     let z = cell_z as f32 * CLUTTER_CELL_M + jz;
 
-    let y = height(seed, x, z);
+    let y = ground(seed, haven, x, z);
     if y < LAND_MIN_H {
         return CLUTTER_NONE;
     }
@@ -2520,7 +2817,7 @@ pub fn clutter_rich_cell(seed: u64, haven: &Haven, cell_x: i32, cell_z: i32) -> 
     // The acceptance draw. `SPAWN.md` §9.6: the roll is seeded per cell, so
     // the same cell accepts or refuses identically however the tile is
     // reached — a streamed tile and a brute-forced query agree.
-    if ((h >> 8) & 0xFF) as u32 >= clutter_richness_at(seed, x, z, y) {
+    if ((h >> 8) & 0xFF) as u32 >= clutter_richness_at(seed, haven, x, z, y) {
         return CLUTTER_NONE;
     }
 
@@ -2536,7 +2833,7 @@ pub fn clutter_rich_cell(seed: u64, haven: &Haven, cell_x: i32, cell_z: i32) -> 
     }
 
     ClutterElem {
-        kind: clutter_kind_at(seed, x, z, y, h >> 32, false),
+        kind: clutter_kind_at(seed, haven, x, z, y, h >> 32, false),
         x,
         y,
         z,
@@ -2721,7 +3018,7 @@ pub fn skirt_elem(
     let x = slot.x + dx * r;
     let z = slot.z + dz * r;
 
-    let y = height(seed, x, z);
+    let y = ground(seed, haven, x, z);
     if y < LAND_MIN_H {
         // A prop on the waterline skirts only the half of its ring that is on
         // land. Cheaper and truer than vetoing the whole skirt.
@@ -2734,7 +3031,15 @@ pub fn skirt_elem(
     // swept ground, and the site's floor has to be able to say so. Bits 0..7,
     // this draw's unspent slice, exactly as `clutter_cell`'s.
     ClutterElem {
-        kind: clutter_kind_at(seed, x, z, y, h >> 32, swept_here(haven, x, z, h as u8)),
+        kind: clutter_kind_at(
+            seed,
+            haven,
+            x,
+            z,
+            y,
+            h >> 32,
+            swept_here(haven, x, z, h as u8),
+        ),
         x,
         y,
         z,

@@ -97,7 +97,13 @@ impl Predictor {
         self.tail[self.tail_len] = frame;
         self.tail_len += 1;
         if self.started {
-            movement::step(self.seed, cols, occ, &mut self.body, &frame);
+            // The haven comes off `occ` rather than being threaded in
+            // separately, so the ground the predictor steps on is by
+            // construction the same one its collision bundle was built
+            // against — two sources for one island is how a client and a
+            // server come to disagree about where the floor is.
+            let haven = occ.haven;
+            movement::step(self.seed, haven, cols, occ, &mut self.body, &frame);
             self.record(frame.seq);
         }
     }
@@ -157,9 +163,10 @@ impl Predictor {
 
         let old = self.position();
         self.body = Self::adopt(own);
+        let haven = occ.haven;
         for i in 0..self.tail_len {
             let f = self.tail[i];
-            movement::step(self.seed, cols, occ, &mut self.body, &f);
+            movement::step(self.seed, haven, cols, occ, &mut self.body, &f);
             self.record(f.seq);
         }
         if self.started {

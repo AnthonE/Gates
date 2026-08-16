@@ -546,7 +546,7 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
         // the cooldown and the ring fallback all on this surface.
         world.survival = crate::survival::SurvivalContent::probe_fixture();
         world.deploy = crate::deploy::DeployContent::probe_fixture();
-        world.dev_spawn = Some(buildable_near(seq_seed, world.spawn_pos(1)));
+        world.dev_spawn = Some(buildable_near(seq_seed, &world.haven, world.spawn_pos(1)));
         world.tick(&[
             Command::Join { id: 1 },
             Command::Join { id: 2 },
@@ -652,7 +652,7 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
 /// it is a search and never a walk to nowhere. No trig and no `sqrt`: the
 /// step direction is normalized by its own largest component, which is a
 /// division (wall 1) and moves along the same ray.
-fn buildable_near(seed: u64, (x, z): (f32, f32)) -> (f32, f32) {
+fn buildable_near(seed: u64, haven: &terrain::Haven, (x, z): (f32, f32)) -> (f32, f32) {
     let c = terrain::ISLAND_SIZE * 0.5;
     let (mut dx, mut dz) = (c - x, c - z);
     let m = if dx < 0.0 { -dx } else { dx }.max(if dz < 0.0 { -dz } else { dz });
@@ -668,7 +668,7 @@ fn buildable_near(seed: u64, (x, z): (f32, f32)) -> (f32, f32) {
         let cz = crate::build::build_cell_of(pz);
         let ax = (cx as f32 + 0.5) * crate::build::BUILD_CELL_M;
         let az = (cz as f32 + 0.5) * crate::build::BUILD_CELL_M;
-        if crate::build::foundation_terrain_ok(seed, ax, az) {
+        if crate::build::foundation_terrain_ok(seed, haven, ax, az) {
             return (ax, az);
         }
         px += dx * crate::build::BUILD_CELL_M;

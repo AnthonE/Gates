@@ -303,6 +303,7 @@ pub fn draw(
 #[allow(clippy::too_many_arguments)]
 pub fn step(
     seed: u64,
+    haven: &terrain::Haven,
     cols: &ColIndex,
     occ: &mut Occupants,
     arrows: &mut Arrows,
@@ -355,9 +356,9 @@ pub fn step(
             let px = (ox + sx * t) / MM_PER_M;
             let py = (oy + sy * t) / MM_PER_M;
             let pz = (oz + sz * t) / MM_PER_M;
-            let hit = py <= terrain::height(seed, px, pz)
+            let hit = py <= terrain::ground(seed, haven, px, pz)
                 || occ.blocks_volume(seed, px, pz, py, ARROW_R_M, ARROW_R_M)
-                || collide::shot_blocked(seed, cols, prev.0, prev.1, px, pz, py, ARROW_R_M);
+                || collide::shot_blocked(seed, haven, cols, prev.0, prev.1, px, pz, py, ARROW_R_M);
             if hit {
                 stop_t = t;
                 stopped = true;

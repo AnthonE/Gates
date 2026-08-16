@@ -19,6 +19,35 @@ use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::world::{Command, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_GATHER};
 use sim_core::yaw_dir;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 20260802;
 /// The fixture's item 0: 34 damage, 2 m reach — three swings to kill.
 /// It is also one of the fixture's long-lived items (360 ticks).
@@ -62,7 +91,7 @@ fn place_in_front(w: &mut World, a: usize, b: usize, yaw: u16, dist: f32) {
     let (fx, fz) = yaw_dir(yaw);
     let body = w.players[a].body;
     let (ax, az) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
-    w.players[b].body = Body::at(SEED, ax + fx * dist, az + fz * dist);
+    w.players[b].body = Body::at(SEED, hv(SEED), ax + fx * dist, az + fz * dist);
 }
 
 /// Hold the swing on player 2 until they die. The button stays down —
@@ -196,7 +225,7 @@ fn a_bag_out_of_reach_stays_shut() {
     // Step the looter just past the reach they share with every other
     // world interaction, along the axis the bag is not on.
     let far = bag.qx as f32 * POS_XZ_Q + LOOT_REACH_M + 0.5;
-    w.players[0].body = Body::at(SEED, far, bag.qz as f32 * POS_XZ_Q);
+    w.players[0].body = Body::at(SEED, hv(SEED), far, bag.qz as f32 * POS_XZ_Q);
     w.tick(&[Command::Loot { id: 1 }]);
     assert_eq!(w.backpacks.len(), 1, "the bag is untouched");
     assert_eq!(w.backpacks.entries()[0].items[1].count, 42);
@@ -204,7 +233,7 @@ fn a_bag_out_of_reach_stays_shut() {
 
     // And one step inside it opens.
     let near = bag.qx as f32 * POS_XZ_Q + LOOT_REACH_M - 0.5;
-    w.players[0].body = Body::at(SEED, near, bag.qz as f32 * POS_XZ_Q);
+    w.players[0].body = Body::at(SEED, hv(SEED), near, bag.qz as f32 * POS_XZ_Q);
     w.tick(&[Command::Loot { id: 1 }]);
     assert!(
         w.backpacks.is_empty(),

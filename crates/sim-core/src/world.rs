@@ -1785,7 +1785,7 @@ impl World {
         self.players[slot] = Player {
             id,
             active: true,
-            body: Body::at(self.seed, x, z),
+            body: Body::at(self.seed, &self.haven, x, z),
             frame,
             hp,
             hp_max: hp,
@@ -1889,7 +1889,7 @@ impl World {
                 self.players[slot] = Player {
                     id,
                     active: true,
-                    body: Body::at(self.seed, x, z),
+                    body: Body::at(self.seed, &self.haven, x, z),
                     hp,
                     hp_max: hp,
                     ..Player::default()
@@ -2426,6 +2426,7 @@ impl World {
                 if let Some(slot) = self.live_slot_of(id) {
                     build::place(
                         self.seed,
+                        &self.haven,
                         &self.build,
                         &self.deploys,
                         &mut self.pieces,
@@ -2451,6 +2452,7 @@ impl World {
                 if let Some(slot) = self.live_slot_of(id) {
                     deploy::place_deploy(
                         self.seed,
+                        &self.haven,
                         &self.deploy,
                         &self.build,
                         &mut self.pieces,
@@ -2820,6 +2822,7 @@ impl World {
                 };
                 movement::step(
                     seed,
+                    &self.haven,
                     self.pieces.cols(),
                     &mut crate::occupy::Occupants {
                         table: &self.scatter,
@@ -2861,6 +2864,7 @@ impl World {
                 };
                 movement::step(
                     seed,
+                    &self.haven,
                     self.pieces.cols(),
                     &mut crate::occupy::Occupants {
                         table: &self.scatter,
@@ -2887,6 +2891,7 @@ impl World {
             let frame = self.players[i].frame;
             movement::step(
                 seed,
+                &self.haven,
                 self.pieces.cols(),
                 &mut crate::occupy::Occupants {
                     table: &self.scatter,
@@ -3010,6 +3015,7 @@ impl World {
                         );
                         if !took && swung == Swing::Free {
                             combat::raid(
+                                &self.haven,
                                 &self.combat,
                                 &self.build,
                                 &self.deploy,
@@ -3037,6 +3043,7 @@ impl World {
         let mut blast_kills = crate::charge::BlastKills::new();
         crate::charge::tick_fuses(
             seed,
+            &self.haven,
             &self.build,
             &self.deploy,
             self.combat.player_hp,
@@ -3070,6 +3077,7 @@ impl World {
         let mut bites = mob::Bites::new();
         mob::step(
             seed,
+            &self.haven,
             tick,
             &self.mob,
             self.pieces.cols(),
@@ -3127,6 +3135,7 @@ impl World {
         let mut kills = [ranged::Kill::default(); MAX_ARROWS];
         let n_kills = ranged::step(
             seed,
+            &self.haven,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
                 table: &self.scatter,
@@ -3196,7 +3205,7 @@ impl World {
         // that decayed with nothing in it.
         for i in 0..self.deploys.box_spill_len() {
             let bx = self.deploys.box_spill_at(i);
-            let (x, y, z) = deploy::box_drop_pos(seed, bx.cx, bx.cz, bx.level);
+            let (x, y, z) = deploy::box_drop_pos(seed, &self.haven, bx.cx, bx.cz, bx.level);
             let mut items = [ItemStack::default(); INV_SLOTS];
             items[..BOX_SLOTS].copy_from_slice(&bx.items);
             self.backpacks.stand_up(

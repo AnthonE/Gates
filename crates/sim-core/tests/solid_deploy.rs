@@ -38,6 +38,35 @@ use sim_core::terrain::{
 use sim_core::world::{Command, World};
 use sim_core::worldsave::WORLD_SAVE_MAX_BYTES;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 0x50_11D0;
 const PLAYER: u32 = 3;
 
@@ -87,7 +116,7 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                 let cx = (512 + dx).clamp(0, 1023) as u16;
                 let cz = (512 + dz).clamp(0, 1023) as u16;
                 let (x, z) = cell_center(cx, cz);
-                if foundation_terrain_ok(seed, x, z) {
+                if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);
                 }
             }
@@ -207,9 +236,16 @@ fn a_solid_nibble_blocks_and_clears() {
     cols.set_solid(cx, cz, 0, Some(ARCH_FURNACE));
 
     // Start one cell south, walk north (+Z is yaw 0).
-    let mut b = Body::at(SEED, fx, fz - 2.5);
+    let mut b = Body::at(SEED, hv(SEED), fx, fz - 2.5);
     for _ in 0..240 {
-        movement::step(SEED, &cols, &mut occ.occupants(), &mut b, &walk(0, 0));
+        movement::step(
+            SEED,
+            hv(SEED),
+            &cols,
+            &mut occ.occupants(),
+            &mut b,
+            &walk(0, 0),
+        );
     }
     let (_, _, z) = pos(&b);
     let (_, h, hd) = solid_vol(ARCH_FURNACE).expect("furnace is solid");
@@ -223,7 +259,14 @@ fn a_solid_nibble_blocks_and_clears() {
 
     cols.set_solid(cx, cz, 0, None);
     for _ in 0..240 {
-        movement::step(SEED, &cols, &mut occ.occupants(), &mut b, &walk(0, 0));
+        movement::step(
+            SEED,
+            hv(SEED),
+            &cols,
+            &mut occ.occupants(),
+            &mut b,
+            &walk(0, 0),
+        );
     }
     assert!(
         pos(&b).2 > fz + 1.0,
@@ -240,10 +283,17 @@ fn a_body_inside_a_solid_escapes() {
     let mut cols = Box::new(ColIndex::new());
     let (cx, cz) = buildable_cell(SEED);
     let (fx, fz) = cell_center(cx, cz);
-    let mut b = Body::at(SEED, fx, fz);
+    let mut b = Body::at(SEED, hv(SEED), fx, fz);
     cols.set_solid(cx, cz, 0, Some(ARCH_FURNACE));
     for _ in 0..240 {
-        movement::step(SEED, &cols, &mut occ.occupants(), &mut b, &walk(0, 0));
+        movement::step(
+            SEED,
+            hv(SEED),
+            &cols,
+            &mut occ.occupants(),
+            &mut b,
+            &walk(0, 0),
+        );
     }
     let (_, _, z) = pos(&b);
     assert!(
@@ -265,18 +315,19 @@ fn a_jump_lands_on_the_box_top() {
     let (_, h, _) = solid_vol(ARCH_BOX).expect("box is solid");
     // With feet at jump height, the best surface in the cell is the box
     // top (terrain + lift + h — well inside a 2 m lid).
-    let top = collide::piece_ground(SEED, &cols, fx, fz, terr + 2.0);
+    let top = collide::piece_ground(SEED, hv(SEED), &cols, fx, fz, terr + 2.0);
     assert!(top > NO_SURFACE, "the box top must be a surface");
     assert!(
         top > terr + h - 0.1,
         "the surface should be the box top, not the floor: {top} vs terrain {terr}"
     );
 
-    let mut b = Body::at(SEED, fx, fz - 1.6);
+    let mut b = Body::at(SEED, hv(SEED), fx, fz - 1.6);
     let mut stood_on_top = false;
     for _ in 0..300 {
         movement::step(
             SEED,
+            hv(SEED),
             &cols,
             &mut occ.occupants(),
             &mut b,
@@ -315,7 +366,7 @@ fn world() -> (World, u16, u16) {
     // Spawn one cell south of the build cell, outside the future volume.
     w.dev_spawn = Some((x, z - BUILD_CELL_M));
     w.tick(&[Command::Join { id: PLAYER }]);
-    w.players[0].body = Body::at(SEED, x, z - BUILD_CELL_M);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z - BUILD_CELL_M);
     w.players[0].inv[0] = ItemStack {
         item: 0,
         count: 5,
@@ -454,7 +505,7 @@ fn the_wall_survives_a_save_and_a_load() {
     w2.tick(&[Command::Join { id: PLAYER + 1 }]);
     let (x, _) = cell_center(cx, cz);
     let slot = w2.live_slot_of(PLAYER + 1).expect("joined");
-    w2.players[slot].body = Body::at(SEED, x, fz - BUILD_CELL_M);
+    w2.players[slot].body = Body::at(SEED, hv(SEED), x, fz - BUILD_CELL_M);
     for i in 0..240 {
         w2.tick(&[Command::Input {
             id: PLAYER + 1,
@@ -507,7 +558,7 @@ fn walking_into_the_shelter_stands_on_the_plinth() {
     // bearing from 6 m out, walking inward.
     let (dirx, dirz) = sim_core::yaw_dir((slot.yaw as u16) << 8);
     let start = (slot.x + dirx * 6.0, slot.z + dirz * 6.0);
-    let mut b = Body::at(seed, start.0, start.1);
+    let mut b = Body::at(seed, hv(seed), start.0, start.1);
     // Face the shelter: the yaw whose direction is -dir.
     let mut best_yaw = 0u16;
     let mut best_dot = f32::NEG_INFINITY;
@@ -523,6 +574,7 @@ fn walking_into_the_shelter_stands_on_the_plinth() {
     for _ in 0..400 {
         movement::step(
             seed,
+            hv(seed),
             &cols,
             &mut occ.occupants(),
             &mut b,
