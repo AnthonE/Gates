@@ -42,51 +42,43 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
-## 0dsc · Discord presence is built and dark *(operator — one act, then a slice)*
+## 0dsc · Discord presence is built, detailed and dark *(operator — one act)*
 
 The operator saw the game named in Discord and asked how it knew. Measured:
 Discord matches running exes against its detectable database — **22,455
 entries on 2026-08-16, none of them `gates` or `gates.exe`** — so that was
-not verified detection. It was the manual "Add it!", which shows the bare
-process name, which is the lowercase `gates` our launch contract ships.
+the manual "Add it!", which shows the bare process name.
 
-**That database is curated and it is NOT the open door** — the two are easy
-to conflate and the difference is the whole reason this was buildable in an
-afternoon. Rich presence takes only an application id, which any developer
-creates in the portal with no review; the detectable list is a separate,
-narrower thing you have to get *onto*. Checked in the data: VS Code, Spotify,
-Photoshop, Figma, Blender, OBS, IntelliJ and Neovim are **all absent** from
-the 22,455, and people see them in Discord statuses constantly — because
-those are rich presence with their own ids, not detection.
+**That database is curated and it is NOT the open door.** Rich presence takes
+only an application id, which any developer creates with no review. Checked
+in the data: VS Code, Spotify, Photoshop, Figma, Blender, OBS, IntelliJ and
+Neovim are all **absent** from the 22,455, and all appear in Discord statuses
+daily — as rich presence under their own ids.
 
-Built: `crates/client/src/discord.rs` (framing, payloads, copy — no
-dependency, 11 code-tier tests) and `render/presence.rs` (the `Screen`
-mapping, not registered on a capture run). **Dark** —
-`GATES_DISCORD_APP_ID` unset means no thread and no socket.
+Built, and the operator's 2026-08-16 call took it past the address question:
+the verb + where on the island + party + elapsed, and **Ask to Join**, both
+behind two settings under `SOCIAL` — `discord_presence` (on) and
+`discord_share_server` (off, opt-in, and it is a consent rather than a knob:
+`DECISIONS.md` has the pair rule and the gates). Still **dark** without
+`GATES_DISCORD_APP_ID`.
 
-**The operator acts, in this order:**
-1. Create the Discord application, set `GATES_DISCORD_APP_ID`. That alone
-   turns it on. **Name the application `Gates`** — the portal's application
-   name is the word Discord draws after "Playing", so this is what replaces
-   the lowercase `gates`, and it is the whole visible win. Optionally upload
-   art under the key `gates`.
-2. Decide *separately* whether to pursue the detectable list, which would
-   help players who never run rich presence and would stop some other
-   program named `gates` matching ours — a name this generic invites it.
-   ⚠ **Whether that route is even open was NOT confirmed**: Discord's
-   self-serve game selling is deprecated and no current submission form was
-   found, so treat this as a question to ask them rather than a step. Item 1
-   does not depend on it.
+**The one operator act:**
+1. Create the Discord application, set `GATES_DISCORD_APP_ID`, and **name it
+   `Gates`** — the portal's application name is the word drawn after
+   "Playing", which is what retires the lowercase `gates`.
+2. For Ask-to-Join on a friend who is *not* running the game, register the
+   URL scheme in the portal (`scry://` or `gates://`). That path is
+   `deeplink.rs` and needs no code. The already-running path is built.
+3. Optional: upload a 512×512 or 1024×1024 image under the asset key
+   `gates`. **There is no Gates mark in this repo** — `marketing/` holds only
+   the OBOL and MYRRH coin marks, which are the economy's and not the
+   game's. Without one Discord simply draws no image.
 
-**Then the slice, and it is blocked on a question rather than on work:** the
-join button. `deeplink.rs` already speaks `scry://join/<title>/<host:port>`,
-which is the shape Discord's party flow wants. But a join secret publishes a
-shard address to strangers by design, and `reference/VOICE.md` §9.1 is that
-bug with a different transport. Presence carries no address today and a test
-holds that. Answer the address question first. There is also no in-game
-on/off toggle — the player's control is Discord's own privacy switch.
+⚠ The detectable-list submission stays **unverified** — self-serve game
+selling is deprecated and no current form was found. A question for Discord,
+not a step, and nothing above depends on it.
 
-`DECISIONS.md` §open "discord rich presence v0" has the whole argument.
+`DECISIONS.md` 2026-08-16 (spoken) and §open "discord rich presence v0".
 
 ---
 

@@ -64,6 +64,23 @@ pub struct Persisted {
     pub vol_game: f32,
     pub vol_ambience: f32,
     pub vol_music: f32,
+    /// Tell Discord what the player is doing (`crate::discord`). On by
+    /// default, and that is safe rather than presumptuous for two reasons:
+    /// the whole path is dark unless the build carries an application id,
+    /// and what it says at this level — the verb, the place, the party
+    /// count — locates no machine and names no person.
+    pub discord_presence: bool,
+    /// Put the shard's name and address in that presence, which is what
+    /// makes Discord's **Ask to Join** appear.
+    ///
+    /// **Off by default, and it is the one setting here that is a
+    /// disclosure rather than a preference.** A presence line is visible to
+    /// everyone who can see the profile, so this hands strangers the address
+    /// of the box the player is on. The operator opened the door
+    /// (2026-08-16, *"nothing wrong with that if the player enables it"*) —
+    /// opt-in is what "enables it" means, and `reference/VOICE.md` §9.1 is
+    /// what the other default costs.
+    pub discord_share_server: bool,
 }
 
 /// What a parse hands back: the values (defaults where the file was silent
@@ -126,6 +143,8 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
             "vol_game" => num(&mut v.vol_game, value),
             "vol_ambience" => num(&mut v.vol_ambience, value),
             "vol_music" => num(&mut v.vol_music, value),
+            "discord_presence" => flag(&mut v.discord_presence, value),
+            "discord_share_server" => flag(&mut v.discord_share_server, value),
             // A comma-separated list, because the format is `key = value` and
             // a list of ids does not earn a second one. An id may not contain
             // a comma — `shardlist::parse` caps every field at
@@ -204,6 +223,11 @@ pub fn serialize(v: &Persisted, version: u32, favourites: &[String], unknown: &[
     s.push_str(&format!("vol_game = {}\n", v.vol_game));
     s.push_str(&format!("vol_ambience = {}\n", v.vol_ambience));
     s.push_str(&format!("vol_music = {}\n", v.vol_music));
+    s.push_str(&format!("discord_presence = {}\n", v.discord_presence));
+    s.push_str(&format!(
+        "discord_share_server = {}\n",
+        v.discord_share_server
+    ));
     // Written unconditionally, empty list included: a `favourites = ""` line
     // is how un-starring the last shard *sticks*. Omitting the key when the
     // list is empty would leave the previous file's line in place on a
@@ -305,6 +329,8 @@ mod tests {
             vol_game: 1.0,
             vol_ambience: 1.0,
             vol_music: 1.0,
+            discord_presence: false,
+            discord_share_server: true,
         }
     }
 
@@ -319,6 +345,8 @@ mod tests {
             vol_game: 0.3,
             vol_ambience: 0.0,
             vol_music: 0.45,
+            discord_presence: true,
+            discord_share_server: false,
         }
     }
 
