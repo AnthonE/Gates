@@ -712,6 +712,7 @@ mod tests {
             facing: 0,
             hp: 10,
             uh: 0,
+            dmg: 0,
         }];
         let (ax, az) = anchor(t.cx, t.cz, t.loc);
         let site = Site {

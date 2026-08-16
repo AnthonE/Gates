@@ -833,6 +833,12 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             facing,
             hp,
             uh,
+            // **The save format did not grow for wire v44**, and that is
+            // the payoff of deriving the band at the wire boundary rather
+            // than storing it: there is nothing here to write, nothing to
+            // read back, and no format bump. A loaded piece bands itself
+            // correctly the first time it is encoded, off `hp`.
+            dmg: 0,
         };
     }
 
@@ -881,6 +887,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // this line would ever look at it again.
             has_lock: false,
             locked: false,
+            // Not saved — see the piece load above.
+            dmg: 0,
         };
         bag_ready[i] = ready;
     }
