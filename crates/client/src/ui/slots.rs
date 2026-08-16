@@ -43,7 +43,9 @@
 //! must not draw a move it cannot address**, and it must send the values it
 //! drew.
 
+use protocol::event::ItemCatalog;
 use protocol::{encode_action_move, WireError};
+use sim_core::deploy::{box_key, DeployContent, DeployRec, ARCH_BOX};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{CONT_BOX, CONT_MAX, CONT_SELF, CONT_WORLD};
 use sim_core::limits::{BOX_SLOTS, HOTBAR_SLOTS, INV_SLOTS};
@@ -316,4 +318,103 @@ pub fn container_cols(kind: u8) -> usize {
     } else {
         GRID_COLS
     }
+}
+
+/// The deployable item standing at a box handle, if the client is already
+/// drawing one.
+///
+/// **No new wire.** `CONT_BOX`'s handle is `box_key(cx, cz, level)` — an
+/// address, not an id, and deliberately so (`sim_core::inventory`) — and the
+/// deploy sync the client draws every box from carries the same three
+/// numbers plus the baked row. So the panel can name the box it opened out
+/// of what is already on screen.
+///
+/// **The arch check is what makes the address unambiguous**, not tidiness: a
+/// handle names a cell and a level, and `DeployRec` also carries a `loc`, so
+/// a hearth and a box sharing one cell share one key. Filtering to `ARCH_BOX`
+/// picks the one the handle can actually mean.
+///
+/// `defs_have` is the watermark — the def table drips in over the first
+/// seconds of a session, and a row past it is a row of zeroes whose `arch`
+/// reads as `ARCH_BAG`. Reading it anyway would name a box after the wrong
+/// item, which is worse than not naming it.
+pub fn box_item_at(
+    handle: u32,
+    deploys: &[DeployRec],
+    defs: &DeployContent,
+    defs_have: u16,
+) -> Option<u16> {
+    deploys.iter().find_map(|d| {
+        if box_key(d.cx, d.cz, d.level) != handle || u16::from(d.row) >= defs_have {
+            return None;
+        }
+        let def = &defs.defs[d.row as usize];
+        (def.arch == ARCH_BOX).then_some(def.item)
+    })
+}
+
+/// What the LOOT panel's name bar says — the container's own name, in the
+/// reference frame's caps.
+///
+/// The reference names the thing you opened (`LARGE WOODEN BOX`) rather
+/// than its category, and the name is the only thing on that screen telling
+/// two boxes apart. Ours comes from `content/items.toml` by way of the
+/// catalog, so a shard that renames its boxes renames this bar with no code
+/// change — wall 7.
+///
+/// Falls back to [`container_title`] whenever the name cannot be *known*:
+/// a bag or a crate, whose handles are not addresses this side can resolve;
+/// a box whose deploy record or def row has not arrived yet; and an item
+/// index the catalog has no name for, which `item_label` renders as `#12`
+/// and which would read as a defect in 12 px caps. A generic word is a
+/// worse label and an honest one.
+pub fn container_name(
+    kind: u8,
+    handle: u32,
+    deploys: &[DeployRec],
+    defs: &DeployContent,
+    defs_have: u16,
+    catalog: &ItemCatalog,
+) -> String {
+    if kind == CONT_BOX {
+        if let Some(item) = box_item_at(handle, deploys, defs, defs_have) {
+            let name = crate::ui::craft::item_label(catalog, item);
+            if !name.starts_with('#') {
+                return name.to_uppercase();
+            }
+        }
+    }
+    container_title(kind).to_string()
+}
+
+/// The multiplier a filled cell draws, or `None` when there is nothing worth
+/// drawing.
+///
+/// Two rules, both the reference's own: **a count of one is not drawn** — a
+/// screen of tools would otherwise read as a screen of numbers — and the
+/// count that *is* drawn carries its `x`. The prefix is not decoration: a
+/// bare `3` sitting in the corner of a picture of an arrow is ambiguous with
+/// a quality, a tier or a slot number, and every reference frame this panel
+/// is measured against writes `x3`.
+pub fn count_badge(count: u16) -> Option<String> {
+    (count > 1).then(|| format!("x{count}"))
+}
+
+/// Where the thing in your hand is drawn, given the cursor and the tile's
+/// edge: **centred on the pointer**, which is what every game this client's
+/// players arrive from does.
+///
+/// It used to hang off to the lower right, and that is the bug this function
+/// exists to close rather than a taste call — an offset ghost is a ghost the
+/// player aims with by parallax, and at the screen's right edge it walks off
+/// the window while the cursor is still inside it. Centred, the tile *is*
+/// the cursor's payload: the cell under the pointer is the cell the drop
+/// addresses, and the picture over it is what will land there.
+///
+/// The tile never eats the pointer (`Pickable::IGNORE` at every node of it),
+/// so covering the target is free — and the OS cursor draws above the
+/// window, so the arrow stays visible on top of the item exactly as it does
+/// in the reference frame.
+pub fn ghost_origin(cursor_x: f32, cursor_y: f32, size: f32) -> (f32, f32) {
+    (cursor_x - size * 0.5, cursor_y - size * 0.5)
 }
