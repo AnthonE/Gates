@@ -61,7 +61,7 @@ use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
 use crate::pitch_lut::pitch_dir;
 use crate::terrain;
-use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_SHOT};
+use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_IMPACT, EV_SHOT};
 use crate::yaw_lut::yaw_dir;
 
 /// Height above the feet an arrow leaves from, millimetres. The eye, not
@@ -82,6 +82,28 @@ pub const ARROW_R_M: f32 = 0.05;
 /// Millimetres in a metre — the one conversion this module makes, named so
 /// the collision calls read as unit changes rather than magic scaling.
 const MM_PER_M: f32 = 1000.0;
+
+/// What an arrow stopped on (`EV_IMPACT`'s surface field) — the ground, a
+/// thing worldgen put there, or a thing a player built.
+///
+/// **Three, because three is what the stop test can answer.** `step`'s
+/// pass one asks exactly three questions in order — terrain height, then
+/// occupants, then pieces — so these are not a taxonomy anyone chose but a
+/// readout of the ladder that already existed. A finer one (pine vs
+/// boulder vs barrel) is a fourth question nothing currently asks, and
+/// `occupy` would have to answer it on the hot path to say so.
+///
+/// They cross the wire because the alternative is the client re-deciding
+/// what it hit, which is `collide` and `terrain` re-implemented on the
+/// draw side and drifting from the sim's copy the first time either moves
+/// — the failure `column_floor_y` was written to end. A position plus this
+/// byte is a *statement*; a position alone is a riddle.
+pub const SURF_GROUND: u8 = 0;
+/// An occupant: a trunk, a boulder, a barrel — anything worldgen stood in
+/// a slot (`occupy::Occupants::blocks_volume`).
+pub const SURF_WORLD: u8 = 1;
+/// A built piece: a wall, a floor, a door (`collide::shot_blocked`).
+pub const SURF_BUILT: u8 = 2;
 
 /// One arrow in flight. `life == 0` ⇔ the slot is free, which is also what
 /// keeps it out of `state_hash` (see `World::state_hash`).
@@ -347,20 +369,34 @@ pub fn step(
 
         // Pass one: how far along the segment the world stops it, if it
         // does. Pure point sampling — ground, then occupants, then pieces.
+        //
+        // The three predicates used to be one `||` chain and are now an
+        // `if`/`else if` ladder in the same order, which short-circuits
+        // identically — the arrow stops on exactly the sample it always
+        // stopped on. What the ladder adds is **which** of the three
+        // answered, because that is the difference between a puff of dirt,
+        // a chip of bark and a splintered plank, and it is knowable here
+        // and nowhere else (`SURF_*`).
         let mut stop_t = 1.0f32;
-        let mut stopped = false;
+        let mut surf: Option<u8> = None;
         let mut prev = (ox / MM_PER_M, oz / MM_PER_M);
         for k in 1..=n {
             let t = k as f32 / n as f32;
             let px = (ox + sx * t) / MM_PER_M;
             let py = (oy + sy * t) / MM_PER_M;
             let pz = (oz + sz * t) / MM_PER_M;
-            let hit = py <= terrain::height(seed, px, pz)
-                || occ.blocks_volume(seed, px, pz, py, ARROW_R_M, ARROW_R_M)
-                || collide::shot_blocked(seed, cols, prev.0, prev.1, px, pz, py, ARROW_R_M);
-            if hit {
+            let what = if py <= terrain::height(seed, px, pz) {
+                Some(SURF_GROUND)
+            } else if occ.blocks_volume(seed, px, pz, py, ARROW_R_M, ARROW_R_M) {
+                Some(SURF_WORLD)
+            } else if collide::shot_blocked(seed, cols, prev.0, prev.1, px, pz, py, ARROW_R_M) {
+                Some(SURF_BUILT)
+            } else {
+                None
+            };
+            if what.is_some() {
                 stop_t = t;
-                stopped = true;
+                surf = what;
                 break;
             }
             prev = (px, pz);
@@ -433,7 +469,37 @@ pub fn step(
             continue;
         }
 
-        if stopped {
+        if let Some(kind) = surf {
+            // Where it actually landed, in the body's own quanta.
+            //
+            // **Reached only here, which is the whole reason this is
+            // trustworthy.** The body branch above `continue`s, so an arrow
+            // that found flesh never arrives — a hit is `EV_HIT` and draws a
+            // hitmarker, not a chip out of the scenery. This is the other
+            // outcome: the arrow met the world and stopped.
+            //
+            // `stop_t` is the fraction the sample loop broke on, so this is
+            // the sim's own stop point rather than a re-solve of it. The
+            // quanta are `Body`'s (3 cm x/z, 1 cm y) and not the arrow's
+            // millimetres, because the wire already has windows and a range
+            // check for those and a decal is 20 cm across — a unit no eye
+            // can find is a unit not worth three bits an axis.
+            let qx = crate::fmath::floor_i32((ox + sx * stop_t) / (POS_XZ_Q * MM_PER_M));
+            let qy = crate::fmath::floor_i32((oy + sy * stop_t) / (POS_Y_Q * MM_PER_M));
+            let qz = crate::fmath::floor_i32((oz + sz * stop_t) / (POS_XZ_Q * MM_PER_M));
+            events.push(
+                EV_IMPACT,
+                (kind as u32) << 24 | qx as u32,
+                qz as u32,
+                // Signed, and the only field in the lane that is: an arrow
+                // can stop below sea level and `qy` is negative there. It
+                // crosses as the two's-complement bit pattern and the
+                // encoder reads it back with `as i32` before biasing it into
+                // the wire's window — a reinterpretation, never a cast that
+                // loses anything. `a`'s `qx` needs no such note: the island
+                // starts at zero.
+                qy as u32,
+            );
             arrows.a[ix].life = 0;
             continue;
         }

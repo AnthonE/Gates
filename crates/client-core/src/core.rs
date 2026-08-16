@@ -46,6 +46,23 @@ pub const OWN_BAG_NEAR_M: f32 = 4.0;
 /// dropped line is the one loss a player would actually notice.
 pub const CHAT_RING: usize = 16;
 
+/// Arrow impacts buffered for the renderer (drop-oldest, cosmetic).
+///
+/// **Deeper than `REFUSAL_RING` because this is a broadcast lane, not an
+/// own-fact one.** A refusal is one hand pressing one key, so four covers
+/// a stutter; an impact arrives from every archer on the island at once,
+/// and the tick that ends a volley ends several arrows in it. Eight is a
+/// full `TOAST_RING`'s worth of that, which is more than a drain window
+/// can plausibly miss.
+///
+/// It is deliberately **not** sized to `MAX_ARROWS` (128). That is a
+/// shard-wide cap on arrows in the air; this is a *view* buffer that the
+/// renderer empties every frame, and the thing that actually bounds how
+/// many marks exist is the decal pool, one crate over. Two caps for two
+/// questions — `render::tracer`'s `TRACERS` makes the same split for the
+/// same reason.
+pub const IMPACT_RING: usize = 8;
+
 /// What one event-lane message changed, as bit flags the bridge hands JS.
 pub const APPLIED_INV: u32 = 1 << 0;
 pub const APPLIED_SLOTS: u32 = 1 << 1;
@@ -1009,6 +1026,11 @@ pub struct ClientCore {
     shots: [(u32, u16, u8, u16, u16); REFUSAL_RING],
     shot_head: usize,
     shot_len: usize,
+    /// Where arrows stopped, in the wire's quanta, with the surface kind
+    /// (`sim_core::ranged::SURF_*`). Drop-oldest and purely cosmetic.
+    impacts: [(i32, i32, i32, u8); IMPACT_RING],
+    impact_head: usize,
+    impact_len: usize,
     /// Grants this client earned (lock v1): address + `lock::GRANT_*`. An
     /// own-fact, and the only thing that tells a client its code landed —
     /// the door itself does not move on a correct code.
@@ -1184,6 +1206,9 @@ impl ClientCore {
             shots: [(0, 0, 0, 0, 0); REFUSAL_RING],
             shot_head: 0,
             shot_len: 0,
+            impacts: [(0, 0, 0, 0); IMPACT_RING],
+            impact_head: 0,
+            impact_len: 0,
             knock_head: 0,
             knock_len: 0,
             auths: [(0, 0, 0, 0, 0); REFUSAL_RING],
@@ -1944,6 +1969,24 @@ impl ClientCore {
                     (shooter, yaw, pitch, speed_mmpt, drop_mmpt2);
                 self.shot_len += 1;
             }
+            EventMsg::Impact { qx, qy, qz, surf } => {
+                // Drop-oldest, the shot ring's policy and its reason: when
+                // more marks arrive than a frame can take, the newest are
+                // the ones still near enough to look at.
+                //
+                // **Nothing is validated here and nothing needs to be.**
+                // The decoder already refused a surface kind this build
+                // does not know and a point outside the island's window,
+                // and a mark is read by exactly one system that draws it —
+                // no rule, no prediction and no state hangs off this.
+                if self.impact_len == IMPACT_RING {
+                    self.impact_head = (self.impact_head + 1) % IMPACT_RING;
+                    self.impact_len -= 1;
+                }
+                self.impacts[(self.impact_head + self.impact_len) % IMPACT_RING] =
+                    (qx, qy, qz, surf);
+                self.impact_len += 1;
+            }
             EventMsg::Knock {
                 cx,
                 cz,
@@ -2199,6 +2242,25 @@ impl ClientCore {
         self.shot_head = (self.shot_head + 1) % REFUSAL_RING;
         self.shot_len -= 1;
         Some(s)
+    }
+
+    /// Oldest buffered impact: where an arrow stopped, in the wire's
+    /// quanta (3 cm x/z, 1 cm y), and what it stopped on
+    /// (`sim_core::ranged::SURF_*`).
+    ///
+    /// **Single-consumer, like every `pop_*` here.** `render::decal::mark`
+    /// is the one caller and a second reader takes `Res<Feed>` — the
+    /// clean-merge trap in CLAUDE.md is this exact ring shape, and
+    /// `tests/sound.rs` derives its verb list from this file so a ring
+    /// added and never drained reddens on its own.
+    pub fn pop_impact(&mut self) -> Option<(i32, i32, i32, u8)> {
+        if self.impact_len == 0 {
+            return None;
+        }
+        let i = self.impacts[self.impact_head];
+        self.impact_head = (self.impact_head + 1) % IMPACT_RING;
+        self.impact_len -= 1;
+        Some(i)
     }
 
     /// Oldest buffered grant: the lock's address and what it now allows
