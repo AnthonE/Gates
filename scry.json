@@ -1,7 +1,7 @@
 {
  "scry": 1,
  "game": "gates",
- "version": "0.3.0",
+ "version": "0.4.0",
  "_version": "The workspace version in Cargo.toml. scry never copies this onto the store row \u2014 it serves it beside the version actually published in its depot and flags the gap, so a tag ahead of a build shows up as a gap instead of vanishing. ci/scry_manifest.py --self-test keeps this equal to Cargo.toml, the same check release.yml already makes against a tag.",
  "listing": {
   "kind": "survival \u2014 100-player shards",
@@ -20,6 +20,12 @@
  },
  "_listing": "These fields are now THIS REPO's to write: whatever is here wins on the next pull, so editing them at scry's store desk is temporary and editing them here is permanent. Seeded byte-for-byte from the row as it stood 2026-08-11, so wiring this up changed no copy. Fields deliberately NOT claimed: state and play_url (the house decides when a title reads live), and capsule/hero/media (art is uploaded, not committed \u2014 a manifest is text and cannot ship bytes). band/hidden/placeholder/lane/note are the house's and a manifest may not write them at all.",
  "updates": [
+  {
+   "id": "v0.4.0",
+   "kind": "release",
+   "title": "0.4.0 \u2014 tools wear out, pieces line up, and the Windows build starts",
+   "body": "Tools have condition. Every paying swing wears the thing in your hand, the wire carries the number so the client can show it, and a spent tool refuses the swing and says why instead of quietly doing nothing. A hatchet is a resource now, and one you logged off with comes back as worn as you left it.\n\nBuilding lines up: pieces share a lattice, a solid deployable's top obeys the same step rule as every other surface you stand on, and structure damage reaches the client \u2014 so a wall coming apart is something you watch rather than infer.\n\nThe death screen offers the bag you actually have. The controls are the reference game's layout now, so eat is J. A panel that takes the pointer gives it back.\n\nThe island keeps getting its own paint: four ground surfaces with their own photographs and their own relief, and building pieces that wear one instead of a tier colour.\n\nDiscord can show what you are doing, if you turn it on. Presence carries the verb, the biome and your party size and locates nothing; sharing the shard's name and address is a second setting, off by default, and it is what makes Ask to Join appear.\n\nWindows: the 0.3.0 Windows build could not start. It wanted a C++ runtime a stock Windows box does not ship, and died with 0xc000007b before a frame. The depot carries that runtime beside the exe now, and CI boots the staged build under wine before publishing it \u2014 the first check here that has ever confirmed a Windows build starts.\n\nThis one breaks the wire \u2014 0.3.0 clients cannot join a 0.4.0 shard, so update before you connect \u2014 and the world is wiped with it, because the content moved. 34 commits since 0.3.0."
+  },
   {
    "id": "v0.3.0",
    "kind": "release",
