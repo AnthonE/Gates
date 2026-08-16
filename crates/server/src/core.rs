@@ -9,15 +9,16 @@ use crate::stats::ShardStats;
 use crate::store::PlayerKey;
 use protocol::{
     encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
-    encode_event_build_refused, encode_event_catalog, encode_event_charge_placed,
-    encode_event_chat, encode_event_consume_refused, encode_event_consumed, encode_event_cont_sync,
-    encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
-    encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
-    encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
-    encode_event_health, encode_event_hit, encode_event_inv, encode_event_knock,
-    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
-    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_research,
+    encode_event_bags, encode_event_build_refused, encode_event_catalog,
+    encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
+    encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
+    encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
+    encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
+    encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
+    encode_event_hit, encode_event_inv, encode_event_knock, encode_event_known,
+    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
+    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_research,
     encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
     encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
     encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark, ActionMsg, ChatMsg,
@@ -28,7 +29,7 @@ use protocol::{
 use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{PieceRec, LOC_PLANE};
 use sim_core::craft::CraftJob;
-use sim_core::deploy::DeployRec;
+use sim_core::deploy::{BagAnchor, DeployRec, BAG_CAP};
 use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WORLD};
 use sim_core::limits::{
@@ -1601,6 +1602,43 @@ impl ShardCore {
                     // is still worth a feed line, so the fallback is the
                     // world's own cause and no weapon — never a dropped
                     // death.
+                    // **The victim's own bags go first, on the same
+                    // ordered stream** (bag choice v0, wire v42). The
+                    // death screen shapes itself around this list — two
+                    // rows and a map with a bag on it, or one row and the
+                    // beach — so it has to be in hand by the time `Death`
+                    // raises the screen. The event lane is reliable and
+                    // ordered, so "before" here is a guarantee and not a
+                    // race.
+                    //
+                    // A death is the only moment this is sent, and that is
+                    // the whole bound: one message per death, never a
+                    // per-tick scan of `MAX_DEPLOYS` per client. What it
+                    // costs is a `ready` bit that ages while a player sits
+                    // on the screen — a cooldown lapses on a clock nothing
+                    // announces. `own_bags`' doc states it; the fallback
+                    // is the sim's own (ask for a bag that is not ready,
+                    // get a beach, and be told so).
+                    if let Some(slot) = self.client_slot_of(ev.a) {
+                        let mut anchors = [BagAnchor::default(); BAG_CAP];
+                        let n = self.world.deploys.own_bags(
+                            &self.world.deploy,
+                            ev.a,
+                            self.world.tick,
+                            &mut anchors,
+                        );
+                        match encode_event_bags(&anchors[..n], &mut self.ev_buf) {
+                            Ok(len) => {
+                                if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                    ShardStats::bump(&stats.ev_sent);
+                                } else {
+                                    self.clients[slot].ev_resync();
+                                    ShardStats::bump(&stats.ev_resyncs);
+                                }
+                            }
+                            Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                        }
+                    }
                     let (cause, item, range_cm) = self
                         .world
                         .players

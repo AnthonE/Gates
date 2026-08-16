@@ -424,5 +424,10 @@ fn main() {
         // what `every_encoder_has_a_golden` exists to refuse.
         let len = encode_action_research(goldens::action_research(), &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[91], &buf[..len]);
+
+        // Bag choice v0 (v42).
+        let (bags, n) = goldens::event_bags();
+        let len = protocol::encode_event_bags(&bags[..n], &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[92], &buf[..len]);
     }
 }

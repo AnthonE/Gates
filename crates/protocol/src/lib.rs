@@ -50,7 +50,7 @@ use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
     decode_event, encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed,
-    encode_event_bag_sync, encode_event_build_refused, encode_event_catalog,
+    encode_event_bag_sync, encode_event_bags, encode_event_build_refused, encode_event_catalog,
     encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
     encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
     encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
@@ -505,8 +505,13 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// next number neither claimed. No fixture keyed v38–v40 was ever
 /// authoritative on this trunk.
 ///
-/// Fixtures are keyed `v41_*` — **91**.
-pub const PROTO_VER: u16 = 41;
+/// **v42 adds `SUB_BAGS`** (bag choice v0): the own-fact list of the
+/// bags *you* placed, with each one's cooldown state. A pure addition —
+/// no existing layout moved — but a subtype the old decoder answers
+/// `Malformed` to, which is a wire change and takes the number.
+///
+/// Fixtures are keyed `v42_*` — **92**.
+pub const PROTO_VER: u16 = 42;
 
 /// This game's slug in the scry catalog.
 ///

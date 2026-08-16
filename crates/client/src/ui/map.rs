@@ -21,7 +21,7 @@
 
 use protocol::event::WireBag;
 use sim_core::build::BUILD_CELL_M;
-use sim_core::deploy::{DeployContent, DeployRec, ARCH_BAG, ARCH_HEARTH};
+use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, ARCH_HEARTH};
 use sim_core::movement::POS_XZ_Q;
 use sim_core::terrain::{self, Haven, ISLAND_SIZE, SEA_LEVEL};
 
@@ -236,6 +236,16 @@ pub fn paint(seed: u64, size: usize, out: &mut [u8]) {
 /// [`Marks`] rather than discarded — a cap that truncates silently reads as
 /// "everything is drawn" when it is not. `DECISIONS.md` §open, map markers v1.
 pub const MAP_MARKS_MAX: usize = 64;
+/// …and a full rack of bags fits inside it with room to spare, so
+/// [`resolve_wake_marks`]' drop is unreachable by an ordinary player.
+/// Compile-time rather than a test for `protocol`'s reason: a cap that is
+/// only correct while another crate's constant stays put is not a cap, and
+/// raising `BAG_CAP` past this would make the death screen silently stop
+/// drawing one of a player's own beds.
+const _: () = assert!(
+    sim_core::deploy::BAG_CAP <= MAP_MARKS_MAX,
+    "BAG_CAP outgrew the map's marker cap — a player's own bag would be dropped"
+);
 
 /// What a mark is a mark OF. `None` is the zero so a stale array slot cannot
 /// draw a bed — [`Marks::a`] is fixed-size and reused.
@@ -249,6 +259,16 @@ pub enum MarkKind {
     Waystation,
     /// A deployed sleeping bag: where you WAKE.
     Bed,
+    /// One of **your own** bags whose cooldown has not lapsed — a bed the
+    /// next death will skip over.
+    ///
+    /// Its own kind rather than a flag on [`MarkKind::Bed`] because the
+    /// renderer's `match` is the gate: a state with no draw branch fails
+    /// to compile, and a bool would have drawn a ready bag over a spent
+    /// one with nothing to notice. Only [`resolve_wake_marks`] can produce
+    /// it — readiness is an own-fact and the island-wide deploy mirror
+    /// does not carry it (`protocol`'s `SUB_BAGS`).
+    BedSpent,
     /// A hearth: the base's anchor, and what its upkeep is paid into.
     Hearth,
     /// A standing death backpack: where your stuff is.
@@ -271,7 +291,12 @@ impl MarkKind {
             // bug that draws it anyway is visible instead of plausible.
             MarkKind::None => [0.0, 0.0, 0.0],
             MarkKind::Haven | MarkKind::Waystation => [232.0, 228.0, 218.0],
-            MarkKind::Bed => [127.0, 179.0, 255.0],
+            // A spent bag is the SAME blue as a ready one: the colour says
+            // "this is a bed of yours", and the renderer's shape says
+            // whether it will answer. Two blues would be the one channel a
+            // player reading a small panel in a hurry cannot tell apart,
+            // which is the rule this whole table is built on.
+            MarkKind::Bed | MarkKind::BedSpent => [127.0, 179.0, 255.0],
             MarkKind::Hearth => [255.0, 157.0, 92.0],
             MarkKind::Backpack => [232.0, 215.0, 106.0],
         }
@@ -381,6 +406,50 @@ pub fn resolve_marks(
             MarkKind::Backpack,
             bag.qx as f32 * POS_XZ_Q,
             bag.qz as f32 * POS_XZ_Q,
+        );
+    }
+}
+
+/// Fill `out` with **your own bags** and nothing else — the death
+/// screen's map (bag choice v0).
+///
+/// A different function from [`resolve_marks`] rather than a flag on it,
+/// and the difference is the whole point of the screen:
+///
+///   · [`resolve_marks`] draws the island — every bed and hearth anyone
+///     placed, off the broadcast deploy mirror, which cannot say whose
+///     they are;
+///   · this draws the **answers to the question on screen**, off the
+///     own-fact bag list, which is the only thing that can.
+///
+/// So no haven, no waystations, no other player's bed, and — the one that
+/// is a rule rather than a choice — **no marker for where you fell.**
+/// `ALPHA.md` §1: "who/what killed you — range and weapon, no map
+/// position". A raider standing over your body is looking at your screen's
+/// twin on their own machine; the reason the death screen never carried a
+/// position is that yours would pin the base they just cleared. Adding a
+/// map here does not repeal that, and `no_wake_map_marks_the_corpse` is
+/// what keeps someone from helpfully adding it back.
+///
+/// The cap is [`resolve_marks`]'s and cannot be reached: `BAG_CAP` is 8
+/// against [`MAP_MARKS_MAX`]'s 64. It is checked anyway, because a cap
+/// that is only correct as long as another crate's constant does not move
+/// is not a cap.
+pub fn resolve_wake_marks(out: &mut Marks, bags: &[BagAnchor]) {
+    out.count = 0;
+    out.dropped = 0;
+    let half = BUILD_CELL_M * 0.5;
+    for b in bags {
+        out.push(
+            if b.ready {
+                MarkKind::Bed
+            } else {
+                MarkKind::BedSpent
+            },
+            // The cell CENTRE, `resolve_marks`' metric — the two maps put
+            // the same bag on the same pixel or one of them is lying.
+            b.cx as f32 * BUILD_CELL_M + half,
+            b.cz as f32 * BUILD_CELL_M + half,
         );
     }
 }
@@ -754,6 +823,7 @@ mod tests {
             MarkKind::Haven,
             MarkKind::Waystation,
             MarkKind::Bed,
+            MarkKind::BedSpent,
             MarkKind::Hearth,
             MarkKind::Backpack,
         ] {
@@ -772,5 +842,95 @@ mod tests {
         assert_eq!(MarkKind::default(), MarkKind::None);
         assert_eq!(Mark::default().kind, MarkKind::None);
         assert_eq!(MarkKind::None.fill(), [0.0, 0.0, 0.0]);
+    }
+
+    // ---- the death screen's map (bag choice v0) --------------------------
+
+    fn anchor(cx: u16, cz: u16, ready: bool) -> BagAnchor {
+        BagAnchor {
+            cx,
+            cz,
+            level: 0,
+            ready,
+        }
+    }
+
+    /// A ready bag and a spent one are different KINDS, so the renderer's
+    /// exhaustive match has to draw them differently — a bool would have
+    /// drawn one over the other with nothing to notice.
+    #[test]
+    fn a_spent_bag_is_not_the_same_mark_as_a_ready_one() {
+        let mut out = Marks::default();
+        resolve_wake_marks(&mut out, &[anchor(10, 20, true), anchor(11, 20, false)]);
+        assert_eq!(out.count, 2);
+        assert_eq!(out.a[0].kind, MarkKind::Bed);
+        assert_eq!(out.a[1].kind, MarkKind::BedSpent);
+        // …and the same blue either way: shape is the channel, not colour.
+        assert_eq!(MarkKind::Bed.fill(), MarkKind::BedSpent.fill());
+    }
+
+    /// **`ALPHA.md` §1: no map position.** The death screen grew a map and
+    /// that rule did not move — a marker for where you fell would hand the
+    /// raider standing over your body a pin to the base they just cleared.
+    /// Structural, because the way this breaks is somebody helpfully adding
+    /// a "you died here" dot.
+    #[test]
+    fn no_wake_map_marks_the_corpse() {
+        let mut out = Marks::default();
+        resolve_wake_marks(&mut out, &[anchor(10, 20, true)]);
+        assert_eq!(out.count, 1, "the wake map drew something besides the bags");
+        assert!(
+            out.a[..out.count]
+                .iter()
+                .all(|m| matches!(m.kind, MarkKind::Bed | MarkKind::BedSpent)),
+            "the wake map drew a kind that is not one of your own bags"
+        );
+        // No bags is an empty map and not a haven ring: this screen answers
+        // "where can I wake", and with no answer there is nothing to draw.
+        resolve_wake_marks(&mut out, &[]);
+        assert_eq!(out.count, 0);
+        assert_eq!(out.dropped, 0);
+    }
+
+    /// The two maps put the same bag on the same pixel. They are separate
+    /// functions over separate data — the island map reads the broadcast
+    /// deploy mirror, this reads the own-fact list — and a projection that
+    /// disagreed between them would be right on one screen and wrong on
+    /// the other, which is the positional-payload defect class exactly.
+    #[test]
+    fn the_two_maps_agree_about_where_a_bag_is() {
+        let (defs, have) = defs_with(&[ARCH_BAG]);
+        let haven = terrain::haven(42);
+        let mut island = Marks::default();
+        resolve_marks(&mut island, &haven, &[rec_at(37, 91, 0)], &defs, have, &[]);
+        let bed = island.a[..island.count]
+            .iter()
+            .find(|m| m.kind == MarkKind::Bed)
+            .expect("the island map drew the bed");
+
+        let mut wake = Marks::default();
+        resolve_wake_marks(&mut wake, &[anchor(37, 91, true)]);
+        assert_eq!(wake.count, 1);
+        assert_eq!(
+            (wake.a[0].px, wake.a[0].py),
+            (bed.px, bed.py),
+            "the death screen and the island map disagree about where a bag is"
+        );
+    }
+
+    /// The cap holds here too. It cannot be reached today — `BAG_CAP` is 8
+    /// against `MAP_MARKS_MAX`'s 64 — and it is asserted anyway, because a
+    /// cap that is only correct while another crate's constant stays put is
+    /// not a cap (wall 4).
+    #[test]
+    fn the_wake_map_is_bounded_and_says_so() {
+        let over = 5;
+        let bags: Vec<BagAnchor> = (0..MAP_MARKS_MAX + over)
+            .map(|i| anchor((i % 1000) as u16, 7, i % 2 == 0))
+            .collect();
+        let mut out = Marks::default();
+        resolve_wake_marks(&mut out, &bags);
+        assert_eq!(out.count, MAP_MARKS_MAX);
+        assert_eq!(out.dropped, over);
     }
 }

@@ -62,8 +62,9 @@ refuses a swing the node pays nothing for, `World::wake` re-grants, and
    wall, silently. Proven by fixture: hp falls at `hand_yield = 0`, not at
    25. Either the guard returns a `Swing` the raid arm declines, or `raid`
    learns the claim the build verbs already have. Gate it either way.
-2. **The refusal is silent and needs the wire.** `EV_MAX = 36` is dense,
-   `SUB_MAX = 48` is full: a `PROTO_VER` bump for
+2. **The refusal is silent and needs the wire.** `EV_MAX = 36` is dense and
+   `SUB_MAX` is **49** — bag choice v0 spent one and took `PROTO_VER` to 42,
+   so this line's "48 is full" was already a version stale: a `PROTO_VER` bump for
    `EV_GATHER_REFUSED{a = player, b = reason}` + subtype + role line +
    `refusals::gather`, one commit. `EV_GATHER` with `added = 0` is not the
    cheap way out — that encoding is the spill signal. **Name the torch, not
@@ -78,6 +79,28 @@ refuses a swing the node pays nothing for, `World::wake` re-grants, and
    node has a `hand` row" to "the kit holds a tool something pays", so an
    empty `[[spawn_kit]]` is an unwinnable world that boots green; and
    `parse_shard_toml`'s `dev_spawn_kit` arm pushes unbounded, caps after.
+
+## 0sw · The swing is drawn in first person only *(client lane)*
+
+Landed 2026-08-16 (operator: *"we need some animation atleast showing the
+rock swing"*): `ui::swing::SwingCadence` mirrors `gather::swing`'s rule
+(`BTN_PRIMARY` down, `tick >= next_swing`) over `Feed::server_tick_est`, so a
+**miss** animates — previously only a landed hit or a gather did, which meant
+the commonest swing in the game drew nothing. `Feed` stays as a backstop,
+gated on the arm being at rest so a hit arriving mid-stroke cannot restart
+the arc.
+
+What is still missing is the **other** half, and it is an asset gap rather
+than a code one: `render::anim::Clip` has five clips — Idle, Walk, Jog,
+Sprint, Sleep — and the mannequin `.glb` carries no swing, so **another
+player swinging at you is a body standing perfectly still**. That is worse
+than the first-person gap was: the one thing a fight needs to read is the
+wind-up. It wants a `Swing_Once` clip on the shared skeleton
+(`assets/models/WANTED.md`'s queue), a one-shot rather than a loop, and a
+trigger — `EV_HIT` is broadcast but a *miss* is not, so drawing a remote
+whiff needs either a wire fact or the same cadence prediction run per remote
+body off their input, which the client does not receive. Take the clip
+first; decide the trigger against what it costs.
 
 ## 0eat · The verbs speak; the latch behind them aliases *(client-core lane)*
 
@@ -114,21 +137,34 @@ way"* — is retired by §0kit's re-grant.
 **Two mechanisms this item listed were wrong, in opposite directions.** (2)
 said every kit item is `common` → ×1 → five minutes; `items.toml:79` makes
 `item.metal_frags` `uncommon` (×4), so the *old* kit's bag lived **20** min.
-§0kit created the five-minute bag §0die was credited with mitigating. (1)'s
-*"outside interest range → not on the map"* is wrong outright:
-`server/src/core.rs:1632` broadcasts `EV_BAG_DROPPED` to every slot with no
-distance test and `:2406` drip-feeds the standing set on join. The real
-mechanism is `MAP_MARKS_MAX = 64`, drop-newest, bags pushed **last** in
-`resolve_marks` (`client/src/ui/map.rs:381`) after haven, waystations and
-every bed and hearth, with no owner filter — so on a busy shard your own bag
-is the first mark the cap eats and looks like forty others.
+(1)'s *"outside interest range"* is wrong outright — `EV_BAG_DROPPED` is
+broadcast with no distance test. The real mechanism is `MAP_MARKS_MAX = 64`,
+drop-newest, bags pushed **last** in `resolve_marks` with no owner filter, so
+on a busy shard your own bag is the first mark the cap eats.
 
-Left: two operator calls, neither a hole (`DECISIONS.md` §open, "death
-backpack v0"). Whether five minutes is the intended floor for a common-only
-bag now the kit guarantees one; and whether the death screen carries the
-last-known bag position — `ALPHA.md` §1 says *"no map position"* on purpose
-and it is a wire add off `Player`. A third needs no wire and no word: rank
-the owner's own bag ahead of the cap in `resolve_marks`.
+**Bag choice v0 landed 2026-08-16** (operator; `DECISIONS.md`): the death
+screen offers the bag row only if you own one, and draws a map of **your own
+bags** — no corpse marker, which is how `ALPHA.md` §1 survives it. Off a new
+own-fact `SUB_BAGS` (`PROTO_VER` 42), because the deploy mirror could never
+have served it: `DeployRec::owner` is off the wire.
+
+Left, in order of cheapness:
+
+1. `ClientCore::own_bags()` exists now, so **ranking the owner's own bag
+   ahead of the cap in `resolve_marks`** is a filter over a list the client
+   already holds. No wire, no word.
+2. **Showing is not choosing.** The map marks three bags and `ACT_RESPAWN`
+   carries one bit, so the sim still takes the nearest ready one. Letting a
+   player click the bag they want is a bag index on the action plus a
+   `claim_bag` that honours it — a wire bump, and an operator call on whether
+   the choice is wanted at all.
+3. `SUB_BAGS` is sent **on a death and nowhere else**, so the `ready` bit
+   ages while a player sits on the screen. Nothing is wrong today (the sim
+   decides and `woke` says which anchor answered); re-send on the bag's own
+   placement and removal if it starts to matter.
+4. One operator call (`DECISIONS.md` §open, "death backpack v0"): whether
+   five minutes is the intended floor for a common-only bag now the kit
+   guarantees one.
 
 ## 0dur · Items have no condition *(systems lane — the wire slice)*
 

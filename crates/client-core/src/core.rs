@@ -16,7 +16,7 @@ use protocol::{
 use sim_core::build::{BuildContent, PieceRec};
 use sim_core::collide::ColIndex;
 use sim_core::craft::CraftContent;
-use sim_core::deploy::{DeployContent, DeployRec, ARCH_DOOR};
+use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_DOOR, BAG_CAP};
 use sim_core::gather::{cell_key, ItemStack, NO_CELL};
 use sim_core::input::InputFrame;
 use sim_core::inventory::CONT_SELF;
@@ -196,6 +196,16 @@ pub const APPLIED2_RESEARCH: u32 = 1 << 3;
 ///
 /// Word 1 because word 0 is full; see `APPLIED2_CHARGE`.
 pub const APPLIED2_SPILL: u32 = 1 << 4;
+
+/// This client's own bag list arrived (`EventMsg::Bags`, wire v42) —
+/// re-read `own_bags()`. Word 1 for `APPLIED2_CHARGE`'s reason.
+///
+/// The list is sent on a death and nowhere else, so in practice this bit
+/// is raised one message before the `Death` that raises the screen
+/// reading it. A reader that wants "is it fresh" wants this bit; a reader
+/// that wants "what do I own" can read the field any time — it is a
+/// latched set, not a ring, and it is only ever replaced whole.
+pub const APPLIED2_BAGS: u32 = 1 << 5;
 
 /// The client's mirror of the server's harvested-cell set — which scatter
 /// slots currently have no node standing. Bounded like the server's store
@@ -876,6 +886,18 @@ pub struct ClientCore {
     pub own_death_item: u16,
     pub own_death_range_cm: u16,
     pub woke_on_bag: bool,
+    /// **The bags this player has placed**, as the server last stated
+    /// them, with each one's cooldown state at send time (wire v42).
+    ///
+    /// Its own field rather than something derived off `deploys`, because
+    /// it cannot be derived: `DeployRec::owner` is deliberately not on the
+    /// wire, so the deploy mirror knows where every bed on the island is
+    /// and not which are this player's. `SUB_BAGS` has the whole argument.
+    ///
+    /// Read through `own_bags()`. Replaced whole by every message, never
+    /// merged, so a bag a raider destroyed cannot survive in it.
+    own_bags: [BagAnchor; BAG_CAP],
+    own_bags_count: usize,
     /// The placed-piece mirror (address-keyed; the renderer's truth).
     pub pieces: PieceSet,
     /// Piece records the last `on_stream` call added or replaced.
@@ -1066,6 +1088,8 @@ impl ClientCore {
             own_death_item: sim_core::gather::NO_ITEM,
             own_death_range_cm: 0,
             woke_on_bag: false,
+            own_bags: [BagAnchor::default(); BAG_CAP],
+            own_bags_count: 0,
             refusal_head: 0,
             refusal_len: 0,
             pieces: PieceSet::new(),
@@ -1117,6 +1141,24 @@ impl ClientCore {
             events_applied: 0,
             event_errors: 0,
         }
+    }
+
+    /// The bags this player has placed, as the server last stated them.
+    ///
+    /// Empty is a real answer and the one the death screen changes shape
+    /// for: no bag placed, no bag to offer, and the only way back is a
+    /// beach. It is also the state before the first `Bags` message of a
+    /// session, which is the same picture for the same reason — a client
+    /// that has not been told it owns a bag must not claim one.
+    pub fn own_bags(&self) -> &[BagAnchor] {
+        &self.own_bags[..self.own_bags_count]
+    }
+
+    /// Whether any own bag's cooldown had lapsed as of the last `Bags`
+    /// message. Advisory: the bit ages (see `APPLIED2_BAGS`), and the sim
+    /// is the authority either way.
+    pub fn any_bag_ready(&self) -> bool {
+        self.own_bags().iter().any(|b| b.ready)
     }
 
     /// The `APPLIED2_*` flags the last `on_stream` call set — word 1 of
@@ -1842,6 +1884,14 @@ impl ClientCore {
                 self.stock_count = count;
                 flags |= APPLIED_STOCK;
             }
+            // The whole list every time, so this is a replace and never a
+            // merge — `Known`'s posture, and for the same reason: a client
+            // that accumulated would offer a bag a raider took.
+            EventMsg::Bags { bags, count } => {
+                self.own_bags = bags;
+                self.own_bags_count = (count as usize).min(BAG_CAP);
+                self.applied2 |= APPLIED2_BAGS;
+            }
         }
         // Bit 31 is the bridge's error sentinel and shares this return
         // channel; a flag that reached it would read to JS as a decode
@@ -2221,6 +2271,20 @@ impl ClientCore {
             move_z,
             sel: sel.min(HOTBAR_SLOTS as u8 - 1),
         };
+    }
+
+    /// The button bits this client is currently **sending** — the exact
+    /// byte `advance` stamps into every input frame.
+    ///
+    /// Read by the viewmodel's swing cadence, and read from here rather
+    /// than from the render layer's own copy of the mouse on purpose: what
+    /// the sim acts on is this byte, after every decision `input::gather`
+    /// already made — a panel eating the click (buttons go out zeroed), the
+    /// held-item modality that turns a left click into a placement, the
+    /// death screen standing the corpse down. A second reading of the mouse
+    /// would animate a swing in every one of those cases.
+    pub fn buttons(&self) -> u8 {
+        self.input.buttons
     }
 
     /// Advance real time: run the fixed client ticks that elapsed, each

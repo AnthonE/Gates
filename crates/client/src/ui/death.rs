@@ -98,6 +98,93 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Which answers the screen offers (bag choice v0)
+// ---------------------------------------------------------------------------
+//
+// **A row for an anchor you do not have is not a choice, it is a wrong
+// button.** "Wake on your bag" was drawn unconditionally, and for a player
+// who has never placed one it always resolved to a beach — the sim's
+// deliberate kindness (`asking_for_a_bag_you_have_not_got_is_a_beach`),
+// arriving as a screen that offered two doors into one room. The list is
+// data now, and `ClientCore::own_bags()` is what decides its length.
+//
+// The order is fixed and the beach is LAST, which is what makes
+// `rows(false)` a suffix of `rows(true)` rather than a second table: the
+// digit that answers "just get me back in" is the last one either way.
+
+/// Where you wake up.
+///
+/// `ui` rather than `render` because the whole of "which rows exist and
+/// which key reaches them" is arithmetic that a headless test can read
+/// back, and it was in a Bevy file where nothing could
+/// (`crate::ui`'s standing rule).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Wake {
+    Bag,
+    Beach,
+}
+
+/// The rows, in the reference's order: the anchor you'd rather have first.
+/// `(wake, title, the small line under it)`.
+pub const WAKES: [(Wake, &str, &str); 2] = [
+    (
+        Wake::Bag,
+        "Wake on your bag",
+        "the nearest one that is ready",
+    ),
+    (Wake::Beach, "Wake on a beach", "the shoreline, somewhere"),
+];
+
+/// The rows to draw. `has_bag` is `!ClientCore::own_bags().is_empty()` —
+/// **owning one, not one being ready.** A bag inside its cooldown is still
+/// a bag you placed and still somewhere you might rather wake; the sim
+/// picks the nearest ready one and falls back to the beach if none is, and
+/// [`woke`] tells the player which answered. Hiding the row on a cooldown
+/// would take the choice away for five minutes over a fact the client
+/// learned at the moment of death and cannot refresh.
+pub fn rows(has_bag: bool) -> &'static [(Wake, &'static str, &'static str)] {
+    if has_bag {
+        &WAKES
+    } else {
+        &WAKES[1..]
+    }
+}
+
+/// The wake a **digit** selects — 1-based, over the rows actually drawn.
+///
+/// Position, not identity, which is the whole point: with no bag, `1` is
+/// the beach, because `1` is the first row on the screen. A player does
+/// not read a table, they press the number next to the words.
+pub fn wake_at(has_bag: bool, n: usize) -> Option<Wake> {
+    if n == 0 {
+        return None;
+    }
+    rows(has_bag).get(n - 1).map(|r| r.0)
+}
+
+/// Whether a wake is on the screen at all — the gate for the **letter**
+/// aliases, which are bound to the anchor rather than to the position.
+/// `F` must do nothing for a player with no bag, or the alias is a way to
+/// press a button that was deliberately not drawn.
+pub fn offers(has_bag: bool, wake: Wake) -> bool {
+    rows(has_bag).iter().any(|r| r.0 == wake)
+}
+
+/// The footer line under the rows.
+///
+/// With no bag there is no choice to explain and one thing worth saying
+/// instead — *why* there is only one row. A player who is not told assumes
+/// the feature is broken, which is the same failure [`woke`] exists to
+/// avoid one beat later.
+pub fn note(has_bag: bool) -> &'static str {
+    if has_bag {
+        "click a row, or press its number"
+    } else {
+        "no bag placed - the shoreline is the only way back"
+    }
+}
+
 /// What the toast says once the wake lands.
 ///
 /// `asked_for_bag` is what the player pressed and `on_bag` is which anchor
@@ -267,6 +354,67 @@ mod tests {
                 assert!(!s.contains(bad), "cause {cause} leaked a position: {s}");
             }
         }
+    }
+
+    /// **The item, in one assertion.** No bag placed ⇒ one row, and it is
+    /// the beach.
+    #[test]
+    fn a_player_with_no_bag_is_offered_no_bag() {
+        let r = rows(false);
+        assert_eq!(r.len(), 1, "a bagless death was offered a choice");
+        assert_eq!(r[0].0, Wake::Beach);
+        assert!(!offers(false, Wake::Bag));
+        assert_eq!(rows(true).len(), 2, "a bag owner lost the choice");
+        assert!(offers(true, Wake::Bag) && offers(true, Wake::Beach));
+    }
+
+    /// The beach is the LAST row either way, so the bagless list is a
+    /// suffix of the other. That is what keeps the two in one table
+    /// instead of two that can disagree about wording.
+    #[test]
+    fn the_beach_is_the_last_row_either_way() {
+        assert_eq!(rows(false), &WAKES[1..]);
+        assert_eq!(rows(true).last().unwrap().0, Wake::Beach);
+    }
+
+    /// A digit means the row it is drawn next to. With no bag, `1` is the
+    /// beach — the number the player can see, not the number the enum
+    /// happens to have.
+    #[test]
+    fn a_digit_selects_by_position_and_not_by_identity() {
+        assert_eq!(wake_at(true, 1), Some(Wake::Bag));
+        assert_eq!(wake_at(true, 2), Some(Wake::Beach));
+        assert_eq!(wake_at(false, 1), Some(Wake::Beach));
+        // Past the drawn rows, and the 1-based zero, are both nothing —
+        // never a wrap onto the other answer.
+        assert_eq!(wake_at(false, 2), None);
+        assert_eq!(wake_at(true, 3), None);
+        assert_eq!(wake_at(true, 0), None);
+        assert_eq!(wake_at(false, 0), None);
+    }
+
+    /// Every drawn row has a key that reaches it, in both shapes —
+    /// `render::death`'s old assertion, moved here where it can be
+    /// written against the list rather than against a length.
+    #[test]
+    fn every_drawn_row_is_reachable_by_its_own_digit() {
+        for has_bag in [false, true] {
+            for (i, (wake, _, _)) in rows(has_bag).iter().enumerate() {
+                assert_eq!(
+                    wake_at(has_bag, i + 1),
+                    Some(*wake),
+                    "row {i} of has_bag={has_bag} has no digit"
+                );
+            }
+        }
+    }
+
+    /// The bagless footer says WHY there is one row. Silence there reads
+    /// as a broken screen.
+    #[test]
+    fn the_bagless_footer_explains_itself() {
+        assert_ne!(note(false), note(true));
+        assert!(note(false).contains("bag"), "{}", note(false));
     }
 
     #[test]
