@@ -36,9 +36,10 @@
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::build::{
-    BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_TRI_XHI_ZHI,
-    LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, MAT_METAL, SHAPE_DOORWAY, SHAPE_FRAME,
-    SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
+    BUILD_CELL_M, DMG_BANDS, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO,
+    LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, MAT_METAL, SHAPE_DOORWAY,
+    SHAPE_FRAME, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL,
+    SHAPE_WINDOW,
 };
 use sim_core::collide::{
     DOOR_POST_W_M, FRAME_RIM_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
@@ -125,6 +126,13 @@ const TIER: [(&str, f32, f32, f32); N_TIERS] = [
     ("metal", 1.0, 0.38, 0.85),
 ];
 
+/// How far through the damage response a band sits: 0 at untouched, 1 at the
+/// worst band. The one place the band's 0..=7 becomes a ramp, so the darkening
+/// and the roughening cannot disagree about what band 3 means.
+pub fn damage_mix(band: u8) -> f32 {
+    band.min(DMG_BANDS - 1) as f32 / (DMG_BANDS - 1) as f32
+}
+
 /// One tier's cosmetics: texture role, scalar gain, roughness, metallic.
 ///
 /// Public so `tests/pieces.rs` can gate the thing that actually broke — that
@@ -163,16 +171,36 @@ pub const PIECE_TILES_PER_M: f32 = 0.55;
 ///
 /// The three average to exactly 1.0 — `(1.14 + 4 × 1.00 + 0.86) / 6` over a
 /// box's six faces — so a wall's delivered mean albedo is still the map's.
-const FACE_TOP: f32 = 1.14;
-const FACE_SIDE: f32 = 1.00;
-const FACE_BOTTOM: f32 = 0.86;
+pub const FACE_TOP: f32 = 1.14;
+pub const FACE_SIDE: f32 = 1.00;
+pub const FACE_BOTTOM: f32 = 0.86;
 
 /// A side face's own vertical ramp, foot to head. Rule 2 wants a contact term
 /// — *"nothing sits ON the ground; everything sits IN it"* — and a wall whose
 /// bottom metre is darker than its top reads as grounded for free. The two
 /// average to 1.0 over the face, so the ramp spends none of the mean.
-const SIDE_FOOT: f32 = 0.90;
-const SIDE_HEAD: f32 = 1.10;
+pub const SIDE_FOOT: f32 = 0.90;
+pub const SIDE_HEAD: f32 = 1.10;
+
+/// How dark a structure draws at the **worst** damage band, as a fraction of
+/// its undamaged albedo (wire v44). Bands in between lerp toward it.
+///
+/// **Why darkening, and why it is not enough on its own.** A cracked-and-
+/// scorched overlay is the right answer and it needs a map nobody has
+/// sourced; this is the response available from the material alone. It is a
+/// scalar multiply on `base_color`, so it keeps §7's span at 1.000 like every
+/// other gain in this file, and it moves in the direction damage actually
+/// moves a surface — soot, exposed core, shadowed cracks all darken.
+///
+/// 0.55 rather than something deeper because of `ART.md` rule 3: no lit
+/// surface's shaded face may fall below 0.30 of its lit face, and a wall
+/// already carries `FACE_BOTTOM` 0.86 and a 0.90 foot ramp on top of this.
+/// 0.55 × 0.86 × 0.90 = 0.43, which still clears it; 0.35 would not.
+pub const DMG_DARKEST: f32 = 0.55;
+/// …and how much rougher it gets, added to the tier's own roughness at the
+/// worst band. A broken surface scatters: the one thing a raided stone wall
+/// must not do is keep the clean specular of an intact one.
+pub const DMG_ROUGHEN: f32 = 0.12;
 
 /// Deployable stand-ins by archetype (`sim_core::deploy` order: bag, hearth,
 /// box, fire, furnace, workbench, door, lock, recycler, research): full size
@@ -320,6 +348,11 @@ struct Live {
     row: u8,
     open: bool,
     locked: bool,
+    /// The damage band it was drawn at (wire v44). Without it here, a wall
+    /// coming apart in front of the player would keep its first material
+    /// forever: this loop redraws on a CHANGE, and a change nobody records
+    /// is a change nobody notices.
+    dmg: u8,
 }
 
 /// Shared meshes and materials, built once on first use. A base is hundreds
@@ -337,7 +370,11 @@ struct Kit {
     /// hundred depths are `2 × SKIRT_STEPS` meshes and the hammer
     /// highlight's one-entity contract (`Transform` + `Mesh3d`) holds.
     footing: [[Handle<Mesh>; 2]; SKIRT_STEPS],
-    tier: [Handle<StandardMaterial>; N_TIERS],
+    /// One material per (tier, damage band). `DMG_BANDS` × `N_TIERS` = 32
+    /// materials, built once — which is the whole reason the band is 3 bits
+    /// and not a float: a continuous damage value would mean a material per
+    /// PIECE, and a base is thousands of them.
+    tier: [[Handle<StandardMaterial>; DMG_BANDS as usize]; N_TIERS],
     deploy_mesh: [Handle<Mesh>; DEPLOY.len()],
     deploy_mat: [Handle<StandardMaterial>; DEPLOY.len()],
     door_locked: Handle<StandardMaterial>,
@@ -1085,13 +1122,22 @@ fn build_kit(
     let tier = std::array::from_fn(|i| {
         let (role, gain, perceptual_roughness, metallic) = TIER[i];
         let map = MapSet::load(assets, role);
-        materials.add(StandardMaterial {
-            base_color: Color::linear_rgb(gain, gain, gain),
-            base_color_texture: Some(map.albedo),
-            normal_map_texture: Some(map.normal),
-            perceptual_roughness,
-            metallic,
-            ..default()
+        // The maps are loaded ONCE per tier and cloned into all eight bands
+        // — `MapSet::load` inside the band loop would be eight identical
+        // paths and eight identical settings, which the asset server would
+        // dedupe anyway, but relying on that to avoid eight loads is
+        // relying on a cache for correctness of cost.
+        std::array::from_fn(|band| {
+            let t = damage_mix(band as u8);
+            let g = gain * (1.0 + (DMG_DARKEST - 1.0) * t);
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(g, g, g),
+                base_color_texture: Some(map.albedo.clone()),
+                normal_map_texture: Some(map.normal.clone()),
+                perceptual_roughness: (perceptual_roughness + DMG_ROUGHEN * t).min(1.0),
+                metallic,
+                ..default()
+            })
         })
     });
     // A generated asset is one mesh with one primitive and one material —
@@ -1228,15 +1274,25 @@ pub fn stream(
         let key = (rec.cx, rec.cz, rec.level, rec.loc);
         if let Some(live) = ring.pieces.get_mut(&key) {
             live.seen = gen;
-            if live.row == rec.row {
+            // An upgrade keeps the address and changes the row; a raid keeps
+            // both and changes the band. Both are redraws, and the band is
+            // the one that moves while the player is standing there.
+            if live.row == rec.row && live.dmg == rec.dmg {
                 continue;
             }
-            // An upgrade in place: same address, new material.
             commands.entity(live.entity).despawn();
             ring.pieces.remove(&key);
         }
         let def = core.piece_defs.pieces[rec.row as usize];
-        let entity = spawn_piece(&mut commands, kit, seed, key, def.shape, def.material);
+        let entity = spawn_piece(
+            &mut commands,
+            kit,
+            seed,
+            key,
+            def.shape,
+            def.material,
+            rec.dmg,
+        );
         ring.pieces.insert(
             key,
             Live {
@@ -1245,6 +1301,7 @@ pub fn stream(
                 row: rec.row,
                 open: false,
                 locked: false,
+                dmg: rec.dmg,
             },
         );
     }
@@ -1266,6 +1323,15 @@ pub fn stream(
         if let Some(live) = ring.deploys.get_mut(&key) {
             live.seen = gen;
             // A door swing and a lock are both redraws at one address.
+            //
+            // **The damage band is deliberately NOT compared here.** A
+            // deployable's material is the one baked into its `.glb`
+            // (`DEPLOY_ASSET`), so there is no band variant to swap to and
+            // comparing would despawn and respawn a furnace on every swing
+            // for an identical picture. `Target::damaged` is correct for
+            // this store either way — that is the wire's doing, not the
+            // renderer's. When deployables get a damage response, this line
+            // and `Live::dmg` below change together.
             if live.row == rec.row && live.open == rec.open && live.locked == rec.locked {
                 continue;
             }
@@ -1282,6 +1348,7 @@ pub fn stream(
                 row: rec.row,
                 open: rec.open,
                 locked: rec.locked,
+                dmg: 0,
             },
         );
     }
@@ -1323,6 +1390,7 @@ pub fn stream(
                 row: 0,
                 open: false,
                 locked: false,
+                dmg: 0,
             },
         );
     }
@@ -1335,6 +1403,7 @@ pub fn stream(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_piece(
     commands: &mut Commands,
     kit: &Kit,
@@ -1342,12 +1411,15 @@ fn spawn_piece(
     addr: Addr,
     shape: u8,
     material: u8,
+    dmg: u8,
 ) -> Entity {
     // Clamped, not `.min(2)`: the table covers every material the sim has
     // (`N_TIERS`, gated in `tests/pieces.rs` §A), so this only catches a
     // material the sim gained without a row here — which is a red test long
     // before it is a wrong wall.
-    let mat = kit.tier[(material as usize).min(N_TIERS - 1)].clone();
+    let mat = kit.tier[(material as usize).min(N_TIERS - 1)]
+        [(dmg as usize).min(DMG_BANDS as usize - 1)]
+    .clone();
     // Edge pieces stand on the cell's low-x (x = cx·3) or low-z (z = cz·3)
     // boundary — canonical, so one physical edge is never addressable twice
     // (`build.rs`) — and the parts are the shared table's, so this and the

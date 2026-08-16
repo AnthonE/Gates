@@ -270,33 +270,35 @@ proven red. What remains, in rank order:
    slice's blocker cousin — an emptied slot keeping its `cond` — is fixed
    and gated (`spill.rs`, `persist.rs`: the canonical-empty trio).
 
-## 0ps · Pieces wear a photograph now — the two halves it does not do *(client lane)*
+## 0ps · Pieces wear a photograph and show damage — what is left *(client lane)*
 
 From the operator's 2026-08-16 ask, with the reference's twig/wood/stone
-foundations attached. **Landed 2026-08-16** — piece surface v0, numbers in
-`DECISIONS.md` §open, gate `client/tests/pieces.rs`: the tier table fixed
-(three rows against the sim's four materials, so every piece drew one rung
-off and twig had no look at all), all four tiers wearing albedo + normal off
-the already-shipped CC0 maps, metre-scaled UVs, tangents, mean-1 face tint.
-Remaining, ranked by what the reference images actually show:
+foundations attached. **Two slices landed**, numbers in `DECISIONS.md` §open,
+gates `client/tests/pieces.rs` + `sim-core/build.rs` §tests:
 
-1. **Nobody has looked at it.** Arithmetic says the maps are bound; a
-   person says whether a wall reads as wood. Boot, build a row, look.
-2. **A base is a hundred identical walls at one rotation** (rule 7) —
-   object-space UVs mean adjacent pieces wear the texture identically. Fix
-   is a small pool of per-tier variants (`uv_transform` offset + mean-1
-   tint) picked by address hash: a few materials, not a few hundred.
-3. **Trim is what the reference images are of** — lashings, plank seams, a
-   capstone rim. `shape_parts` is the place (shared with the ghost); price
-   it first, a one-part shape is one entity and a multi-part one is a
-   parent with children, at `MAX_PIECES` 8192.
-4. **Twig wears bark because no twig set exists** — straw/lashed pole via
-   `CANDIDATES.md`; the ×1.6 gain stands in for a source.
-5. **The roughness maps are still unwired**, here and everywhere: needs an
-   ORM packing step (R=ao, G=rough, B=metallic), which would serve terrain,
-   props and pieces at once.
-6. **Deployables are still flat greybox** where they have no `.glb` —
-   furnace, recycler, research table, both upper benches, door leaf, bag.
+- **piece surface v0** — the tier table had three rows against the sim's four
+  materials, so every piece drew one rung off and twig had no look at all.
+  Fixed, and all four tiers now wear albedo + normal off the already-shipped
+  CC0 maps, with metre-scaled UVs, tangents and a mean-1 face tint.
+- **structure damage v0 (wire v44)** — piece and deploy hp were never on the
+  wire, so `Target::damaged()` answered true for everything and the "not
+  damaged" guard had never fired. A 3-bit band now rides both records,
+  derived at the encode boundary: no `state_hash` change, no save bump.
+
+Remaining, ranked:
+
+1. **Nobody has looked at either.** Boot, build a row, hit it.
+2. **The catalogue is 11 shapes against the reference's 20** (`BUILDING.md`
+   §7b.1) — no half/low wall, floor frame, steps, ramp, 3 of 4 stairs. Rule 6
+   is silhouette before surface, so this outranks more material work.
+3. **A base is a hundred identical walls at one rotation** (rule 7). Fix is a
+   pool of per-tier variants (`uv_transform` offset + tint) by address hash.
+4. **Trim** — lashings, plank seams, a capstone rim; `shape_parts` is the
+   place, but price the entity count first at `MAX_PIECES` 8192.
+5. **Deployables got the wire fix, no damage visual** (materials baked in the
+   `.glb`), and nothing shows which face was struck.
+6. **Twig wears bark; roughness maps still unwired** — a twig set via
+   `CANDIDATES.md`, and an ORM packing step would serve terrain+props+pieces.
 
 ## 0bl · Pieces line up on a lattice now — what the stored plate would add *(client+sim lane)*
 

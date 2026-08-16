@@ -35,9 +35,11 @@
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use client::render::structures::{
-    footing_of, foundation_part, part_mesh, skirt_step, tier, Part, PartKind, N_TIERS,
-    PIECE_TILES_PER_M, SKIRT_MAX_M, SKIRT_STEPS, SKIRT_STEP_M, SLAB_T,
+    damage_mix, footing_of, foundation_part, part_mesh, skirt_step, tier, Part, PartKind,
+    DMG_DARKEST, FACE_BOTTOM, N_TIERS, PIECE_TILES_PER_M, SIDE_FOOT, SKIRT_MAX_M, SKIRT_STEPS,
+    SKIRT_STEP_M, SLAB_T,
 };
+use sim_core::build::DMG_BANDS;
 use sim_core::build::{MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD};
 
 /// Assets live beside the crate, not inside it — the hop `tests/ui.rs` and
@@ -293,6 +295,46 @@ fn the_whole_kit_builds() {
         }
     }
     assert!(built > 20, "the kit sweep built only {built} meshes");
+}
+
+// ---------------------------------------------------------------------------
+// §D · The damage response (wire v44)
+// ---------------------------------------------------------------------------
+
+/// The band ramp spans its whole range and stays inside `ART.md` rule 3.
+///
+/// **Rule 3 is the binding constraint and it composes**, which is the part
+/// worth gating: a damaged wall's shaded face pays the darkening AND
+/// `FACE_BOTTOM` AND the side ramp's foot, all multiplied. Each is defensible
+/// alone and the product is what a judge sees, so the assertion is on the
+/// product — no lit surface's shaded face below 0.30 of its lit face.
+#[test]
+fn the_damage_ramp_stays_inside_rule_three() {
+    assert_eq!(damage_mix(0), 0.0, "band 0 must be untouched");
+    assert_eq!(
+        damage_mix(DMG_BANDS - 1),
+        1.0,
+        "the worst band must be full"
+    );
+    // Monotonic, so a wall never brightens as it is broken.
+    let mut prev = -1.0f32;
+    for b in 0..DMG_BANDS {
+        let m = damage_mix(b);
+        assert!(m > prev, "band {b} mix {m} did not rise from {prev}");
+        prev = m;
+    }
+    // Out of range clamps rather than indexing past the material array.
+    assert_eq!(damage_mix(DMG_BANDS + 9), 1.0);
+
+    // The worst case a frame can contain: worst band × bottom face × the
+    // side ramp's foot, against rule 3's 0.30 floor.
+    let darkest = 1.0 + (DMG_DARKEST - 1.0) * damage_mix(DMG_BANDS - 1);
+    let worst = darkest * FACE_BOTTOM * SIDE_FOOT;
+    assert!(
+        worst >= 0.30,
+        "a fully damaged wall's darkest face is {worst} of its lit one — \
+         ART.md rule 3 sets the floor at 0.30"
+    );
 }
 
 // ---------------------------------------------------------------------------
