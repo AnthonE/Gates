@@ -1529,7 +1529,14 @@ pub fn demolish(
     // Refund before removal: `drop_piece` invalidates the index, and a
     // refund computed after it would be pricing a swapped-in neighbour.
     for &(item, count) in def.costs.iter().take(def.n_costs as usize) {
-        crate::gather::inv_add_spilling(&mut p.inv, spill, item, count, gc.stack_max_of(item));
+        crate::gather::inv_add_spilling(
+            &mut p.inv,
+            spill,
+            item,
+            count,
+            gc.stack_max_of(item),
+            gc.cond_max_of(item),
+        );
     }
     crate::deploy::drop_piece(dc, pieces, deploys, i, def.shape, events);
     *budget -= 1;
@@ -1734,7 +1741,11 @@ mod tests {
             ..Player::default()
         };
         for (i, &(item, count)) in items.iter().enumerate() {
-            p.inv[i] = ItemStack { item, count };
+            p.inv[i] = ItemStack {
+                item,
+                count,
+                cond: 0,
+            };
         }
         p
     }
@@ -4157,7 +4168,11 @@ mod tests {
             body: Body::at(SEED, 0.5 * BUILD_CELL_M, 0.5 * BUILD_CELL_M),
             ..Player::default()
         };
-        p.inv[0] = ItemStack { item: 0, count: 9 };
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 9,
+            cond: 0,
+        };
 
         place_deploy(
             SEED,

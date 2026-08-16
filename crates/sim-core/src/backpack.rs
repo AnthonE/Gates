@@ -182,7 +182,13 @@ impl BackpackRec {
 /// in-progress sync walk on any removal — the same contract the piece and
 /// deploy walks already carry.
 pub struct Backpacks {
-    entries: [BackpackRec; MAX_BACKPACKS],
+    /// Boxed via [`crate::boxed_array`], and it stopped being optional the
+    /// day `ItemStack` grew `cond`: 256 records × 30 six-byte stacks is
+    /// 53 248 B, past the line that turned `test_parity_wasm` into an
+    /// out-of-bounds read with every native test green (`CLAUDE.md`'s
+    /// shadow-stack trap — `Box::new(Backpacks::new())` materialised the
+    /// whole struct in a frame first).
+    entries: Box<[BackpackRec; MAX_BACKPACKS]>,
     len: usize,
     /// Next bag id. Sim state, hashed: two replays of the same WAL must
     /// name the same bag the same thing.
@@ -192,7 +198,7 @@ pub struct Backpacks {
 impl Backpacks {
     pub fn new() -> Self {
         Self {
-            entries: [BackpackRec::default(); MAX_BACKPACKS],
+            entries: crate::boxed_array(BackpackRec::default()),
             len: 0,
             next_id: 1,
         }
@@ -414,7 +420,16 @@ impl Backpacks {
                     continue;
                 }
                 let cap = gc.stack_max_of(stack.item);
-                let took = inv_add(&mut self.entries[i].items, stack.item, stack.count, cap);
+                // The stack already exists, so its condition travels with
+                // it — minting at the ceiling here would mend a worn tool
+                // by dropping it into a bag.
+                let took = inv_add(
+                    &mut self.entries[i].items,
+                    stack.item,
+                    stack.count,
+                    cap,
+                    stack.cond,
+                );
                 if took == 0 {
                     continue;
                 }
@@ -560,7 +575,9 @@ impl Backpacks {
             if cap == 0 {
                 continue; // an item the ladder cannot stack cannot be taken
             }
-            let took = inv_add(&mut p.inv, stack.item, stack.count, cap);
+            // An existing stack: its condition travels, or looting a bag
+            // would repair everything in it.
+            let took = inv_add(&mut p.inv, stack.item, stack.count, cap, stack.cond);
             if took == 0 {
                 continue;
             }
@@ -602,7 +619,11 @@ mod tests {
     fn stacks(rows: &[(u16, u16)]) -> [ItemStack; INV_SLOTS] {
         let mut inv = [ItemStack::default(); INV_SLOTS];
         for (i, &(item, count)) in rows.iter().enumerate() {
-            inv[i] = ItemStack { item, count };
+            inv[i] = ItemStack {
+                item,
+                count,
+                cond: 0,
+            };
         }
         inv
     }

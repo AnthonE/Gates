@@ -66,6 +66,12 @@ pub enum Refused {
     /// alone. `ui::refusals::CONSUME` words all three so neither verb reads
     /// as the other.
     Consume,
+    /// A gather swing the node refused (wire v42) —
+    /// `sim_core::gather`'s `REFUSE_G_*`. The one variant whose entry
+    /// carries an **item** beside the code (the held tool, `NO_ITEM` =
+    /// bare hands), because its sentence names it: *your torch cannot
+    /// harvest this* (`ui::refusals::GATHER`).
+    Gather,
 }
 
 /// One frame of own-facts. Cleared and refilled by [`drain`]; read-only to
@@ -81,6 +87,9 @@ pub struct Feed {
     n_deaths: usize,
     refusals: [Refused; FEED_CAP],
     refusal_codes: [u8; FEED_CAP],
+    /// The item a refusal names, `sim_core::gather::NO_ITEM` when the
+    /// sentence needs none — only `Refused::Gather` carries one today.
+    refusal_items: [u16; FEED_CAP],
     n_refusals: usize,
     gathered: [(u16, u16); FEED_CAP],
     n_gathered: usize,
@@ -152,10 +161,18 @@ impl Feed {
     pub fn deaths(&self) -> &[(u32, u32)] {
         &self.deaths[..self.n_deaths]
     }
-    /// `(which verb, reason code)` pairs, oldest first. The code is the
-    /// verb's own `REFUSE_*` integer — `ui::refusals` owns the sentences.
-    pub fn refusals(&self) -> impl Iterator<Item = (Refused, u8)> + '_ {
-        (0..self.n_refusals).map(|i| (self.refusals[i], self.refusal_codes[i]))
+    /// `(which verb, reason code, named item)` triples, oldest first. The
+    /// code is the verb's own `REFUSE_*` integer — `ui::refusals` owns the
+    /// sentences — and the item is `NO_ITEM` for every verb whose sentence
+    /// names none (all but `Gather` today).
+    pub fn refusals(&self) -> impl Iterator<Item = (Refused, u8, u16)> + '_ {
+        (0..self.n_refusals).map(|i| {
+            (
+                self.refusals[i],
+                self.refusal_codes[i],
+                self.refusal_items[i],
+            )
+        })
     }
     /// `(item index, units)` gathered this frame.
     pub fn gathered(&self) -> &[(u16, u16)] {
@@ -207,13 +224,14 @@ impl Feed {
         self.n_placed = 0;
     }
 
-    fn push_refusal(&mut self, which: Refused, code: u8) {
+    fn push_refusal(&mut self, which: Refused, code: u8, item: u16) {
         if self.n_refusals >= FEED_CAP {
             self.dropped = self.dropped.saturating_add(1);
             return;
         }
         self.refusals[self.n_refusals] = which;
         self.refusal_codes[self.n_refusals] = code;
+        self.refusal_items[self.n_refusals] = item;
         self.n_refusals += 1;
     }
 }
@@ -260,16 +278,19 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
         }
     }
     while let Some(code) = core.pop_research_refusal() {
-        feed.push_refusal(Refused::Research, code);
+        feed.push_refusal(Refused::Research, code, sim_core::gather::NO_ITEM);
     }
     while let Some(code) = core.pop_craft_refusal() {
-        feed.push_refusal(Refused::Craft, code);
+        feed.push_refusal(Refused::Craft, code, sim_core::gather::NO_ITEM);
+    }
+    while let Some((item, code)) = core.pop_gather_refusal() {
+        feed.push_refusal(Refused::Gather, code, item);
     }
     while let Some(code) = core.pop_build_refusal() {
-        feed.push_refusal(Refused::Build, code);
+        feed.push_refusal(Refused::Build, code, sim_core::gather::NO_ITEM);
     }
     while let Some(code) = core.pop_deploy_refusal() {
-        feed.push_refusal(Refused::Deploy, code);
+        feed.push_refusal(Refused::Deploy, code, sim_core::gather::NO_ITEM);
     }
     // The consume verbs are the one refusal here that is **not a ring**.
     // `ClientCore` latches `last_eat_refused` and raises `APPLIED_CONSUME`,
@@ -309,7 +330,7 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
         // that half by naming the item off `last_eat`.
         let code = core.last_eat_refused;
         if code != 0 {
-            feed.push_refusal(Refused::Consume, code);
+            feed.push_refusal(Refused::Consume, code, sim_core::gather::NO_ITEM);
         }
     }
     while let Some(k) = core.pop_knock() {

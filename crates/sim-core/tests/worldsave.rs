@@ -65,13 +65,23 @@ fn kit(w: &mut World, slot: usize) {
     w.players[slot].inv[0] = ItemStack {
         item: 0,
         count: 500,
+        cond: 0,
     };
     w.players[slot].inv[1] = ItemStack {
         item: 1,
         count: 500,
+        cond: 0,
     };
-    w.players[slot].inv[2] = ItemStack { item: 2, count: 9 };
-    w.players[slot].inv[3] = ItemStack { item: 4, count: 9 };
+    w.players[slot].inv[2] = ItemStack {
+        item: 2,
+        count: 9,
+        cond: 0,
+    };
+    w.players[slot].inv[3] = ItemStack {
+        item: 4,
+        count: 9,
+        cond: 0,
+    };
 }
 
 /// The **build** cell a body occupies, and the body snapped to its centre.
@@ -657,5 +667,75 @@ fn a_short_buffer_refuses_rather_than_truncating() {
     assert_eq!(
         worldsave::encode(&w, &mut tiny),
         Err(WorldSaveError::Truncated)
+    );
+}
+
+/// **A saved tool comes back worn, and an empty slot may not carry
+/// condition** (item durability v0, gate 7's world half; format 7). The
+/// first half round-trips a worn tool through the whole blob; the second
+/// pokes condition bytes onto a zeroed slot and must be refused —
+/// `count == 0 && cond != 0` is state nothing can see, wall 5's failure
+/// mode, refused exactly as `count == 0 && item != 0` always was.
+/// Proven red by reverting the reader's `stack()` to the four-byte form:
+/// the worn assert reads 0. The refusal half is proven red by dropping
+/// the new `(count == 0 && cond != 0)` arm.
+#[test]
+fn a_worn_tool_survives_the_world_and_an_empty_slot_may_not_wear() {
+    let mut w = armed();
+    w.tick(&[Command::Join { id: 9 }]);
+    w.players[0].inv[3] = ItemStack {
+        item: 2,
+        count: 1,
+        cond: 7_777,
+    };
+
+    let w2 = round_trip(&w);
+    let p = w2
+        .players
+        .iter()
+        .find(|p| p.active && p.id == 9)
+        .expect("the body survived the restart");
+    assert_eq!(
+        p.inv[3],
+        ItemStack {
+            item: 2,
+            count: 1,
+            cond: 7_777,
+        },
+        "the world blob dropped a tool's condition"
+    );
+    // Two loads of one blob agree byte for byte — the live world's own
+    // hash moves at the save (a save puts the body to bed), so the
+    // round-trip claim is load-vs-load, the same shape `raid_storm`'s
+    // save assert uses.
+    let w2b = round_trip(&w);
+    assert_eq!(
+        w2.state_hash(),
+        w2b.state_hash(),
+        "two loads of one blob disagree — the condition bytes are being \
+         read nondeterministically"
+    );
+
+    // The empty-slot half, at the byte level. The first body's inventory
+    // starts at HEAD + SCALARS(60) + jobs(16); slot 4 is empty (nothing
+    // granted there), and its cond bytes are the last two of its six.
+    let mut blob = vec![0u8; WORLD_SAVE_MAX_BYTES];
+    let n = w.save_world(&mut blob).expect("encodes");
+    blob.truncate(n);
+    let inv0 = sim_core::worldsave::HEAD_BYTES + 60 + 16;
+    let slot4_cond = inv0 + 4 * 6 + 4;
+    assert_eq!(
+        &blob[slot4_cond - 4..slot4_cond],
+        &[0, 0, 0, 0],
+        "fixture rot: slot 4 is not empty, so this poke proves nothing"
+    );
+    blob[slot4_cond..slot4_cond + 2].copy_from_slice(&5u16.to_le_bytes());
+    let mut w3 = armed();
+    assert_eq!(
+        w3.load(&blob),
+        Err(WorldSaveError::Player(
+            sim_core::persist::SaveError::BadItemStack
+        )),
+        "an empty slot carrying condition must refuse the whole record"
     );
 }

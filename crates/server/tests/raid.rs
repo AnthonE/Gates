@@ -146,10 +146,12 @@ fn shipped_world() -> Raid {
     w.players[0].inv[0] = ItemStack {
         item: wood,
         count: 200,
+        cond: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: satchel,
         count: 1,
+        cond: 0,
     };
     Raid { w, cx, cz, twig }
 }

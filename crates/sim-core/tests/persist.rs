@@ -66,8 +66,16 @@ fn a_played_character() -> (Box<World>, PlayerSave) {
     p.body.qx = quant_xz(x);
     p.body.qz = quant_xz(z);
     p.body.qy = quant_y(terrain::height(SEED, x, z));
-    p.inv[0] = ItemStack { item: 1, count: 37 };
-    p.inv[7] = ItemStack { item: 2, count: 4 };
+    p.inv[0] = ItemStack {
+        item: 1,
+        count: 37,
+        cond: 0,
+    };
+    p.inv[7] = ItemStack {
+        item: 2,
+        count: 4,
+        cond: 0,
+    };
     p.hp = 41;
     p.food = 300;
     p.food_acc = 12_345;
@@ -87,8 +95,22 @@ fn a_saved_character_comes_back_as_themselves() {
     assert!(p.active, "a restore must seat a body");
     assert_eq!(p.id, REJOIN, "the id is the connection's, never the save's");
     assert_eq!(p.body, save.body, "restored somewhere else");
-    assert_eq!(p.inv[0], ItemStack { item: 1, count: 37 });
-    assert_eq!(p.inv[7], ItemStack { item: 2, count: 4 });
+    assert_eq!(
+        p.inv[0],
+        ItemStack {
+            item: 1,
+            count: 37,
+            cond: 0,
+        }
+    );
+    assert_eq!(
+        p.inv[7],
+        ItemStack {
+            item: 2,
+            count: 4,
+            cond: 0,
+        }
+    );
     assert_eq!(p.hp, 41, "you log off hurt, you log in hurt");
     assert_eq!(p.hp_max, save.hp_max);
     assert_eq!(p.food, 300);
@@ -227,7 +249,11 @@ fn a_craft_queue_survives_and_rearms_against_the_new_clock() {
     let mut w = armed_still();
     w.tick(&[Command::Join { id: ID }]);
     // Enough input for the fixture's row 0 (3 of item 0 per unit).
-    w.players[0].inv[0] = ItemStack { item: 0, count: 90 };
+    w.players[0].inv[0] = ItemStack {
+        item: 0,
+        count: 90,
+        cond: 0,
+    };
     w.tick(&[Command::Craft {
         id: ID,
         recipe: 0,
@@ -298,7 +324,11 @@ fn a_body_that_logged_off_dead_wakes_on_a_beach() {
     let (x, z) = (1024.0f32, 1024.0f32);
     w.players[0].body.qx = quant_xz(x);
     w.players[0].body.qz = quant_xz(z);
-    w.players[0].inv[0] = ItemStack { item: 1, count: 9 };
+    w.players[0].inv[0] = ItemStack {
+        item: 1,
+        count: 9,
+        cond: 0,
+    };
     // A real death by a real cause — the survival clock, whose fixture spans
     // are seconds so a whole death fits in a test — and then the screen is
     // deliberately left unanswered. Constructing a record with `dead: true`
@@ -460,12 +490,20 @@ fn save_of_answers_for_any_body_the_world_still_has() {
 fn a_second_join_as_for_a_live_id_is_ignored() {
     let mut w = armed();
     w.tick(&[Command::Join { id: ID }]);
-    w.players[0].inv[0] = ItemStack { item: 3, count: 8 };
+    w.players[0].inv[0] = ItemStack {
+        item: 3,
+        count: 8,
+        cond: 0,
+    };
     let hash = w.state_hash();
     let mut stale = PlayerSave::EMPTY;
     stale.hp = 1;
     stale.hp_max = 1;
-    stale.inv[0] = ItemStack { item: 1, count: 1 };
+    stale.inv[0] = ItemStack {
+        item: 1,
+        count: 1,
+        cond: 0,
+    };
     stale.jobs[0] = CraftJob {
         recipe: 0,
         remaining: 1,
@@ -477,7 +515,11 @@ fn a_second_join_as_for_a_live_id_is_ignored() {
     // The tick advanced, so compare the body rather than the whole hash.
     assert_eq!(
         w.players[0].inv[0],
-        ItemStack { item: 3, count: 8 },
+        ItemStack {
+            item: 3,
+            count: 8,
+            cond: 0,
+        },
         "a restore overwrote a live body"
     );
     assert_ne!(w.players[0].hp, 1, "a restore overwrote live hp");
@@ -500,6 +542,7 @@ fn every_inventory_slot_survives_the_trip() {
         *s = ItemStack {
             item: (i % 8) as u16 + 1,
             count: i as u16 + 1,
+            cond: 0,
         };
     }
     let want = w.players[0].inv;
@@ -758,5 +801,54 @@ fn the_carried_decisions_survive_a_real_death() {
         deaths_before + 1,
         "the spawn-ring cursor did not survive either, so every death \
          sends the body back to the same beach"
+    );
+}
+
+/// **A saved tool comes back worn** (item durability v0, gate 7's player
+/// half; `SAVE_FORMAT` 3). Condition is per-stack state and the record
+/// carries it, so a hatchet at 41.5 points logs back in at 41.5 points —
+/// a restore that minted it whole would be a free repair bench on the
+/// login screen, and one that zeroed it would hand back a dead tool.
+/// Proven red by reverting `write_le`/`read_le`'s slot stride to the
+/// four-byte form (cond reads 0 and the worn assert fires).
+#[test]
+fn a_saved_tool_comes_back_worn() {
+    let mut w = armed_still();
+    w.tick(&[Command::Join { id: ID }]);
+    w.players[0].inv[0] = ItemStack {
+        item: 1,
+        count: 1,
+        cond: 4_150,
+    };
+    let save = PlayerSave::of(&w.players[0]);
+
+    // Through the bytes, not just the struct: the record IS the format.
+    let mut buf = [0u8; sim_core::persist::PLAYER_SAVE_BYTES];
+    save.write_le(&mut buf);
+    let back = PlayerSave::read_le(&buf).expect("a legal record decodes");
+    assert_eq!(
+        back.inv[0].cond, 4_150,
+        "the record dropped the condition on the way through the file"
+    );
+
+    // And through the seat: the restored body holds the worn tool.
+    let mut w2 = armed_still();
+    w2.tick(&[Command::JoinAs {
+        id: REJOIN,
+        save: back,
+    }]);
+    let p = w2
+        .players
+        .iter()
+        .find(|p| p.active && p.id == REJOIN)
+        .expect("the body seated");
+    assert_eq!(
+        p.inv[0],
+        ItemStack {
+            item: 1,
+            count: 1,
+            cond: 4_150,
+        },
+        "a saved tool must come back exactly as worn as it left"
     );
 }

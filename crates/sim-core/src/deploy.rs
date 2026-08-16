@@ -720,7 +720,13 @@ pub fn box_key(cx: u16, cz: u16, level: u8) -> u32 {
 /// takes for exactly the same reason. Nothing here allocates in the tick
 /// (wall 2).
 pub struct BoxStore {
-    entries: [BoxRec; MAX_BOXES],
+    /// Boxed via [`crate::boxed_array`] since `ItemStack` grew `cond`:
+    /// `Box::new(BoxStore::new())` materialises the whole struct in a
+    /// frame first, and 256 records of 12 six-byte stacks crosses the
+    /// wasm shadow-stack line `CLAUDE.md`'s trap entry measures — the
+    /// symptom is `test_parity_wasm` dying as an out-of-bounds read with
+    /// every native test green.
+    entries: Box<[BoxRec; MAX_BOXES]>,
     len: usize,
     /// Oven state, index-aligned to `entries` (`oven.rs`). Every
     /// container carries a row and a storage box's says `ARCH_BOX`, which
@@ -731,8 +737,8 @@ pub struct BoxStore {
     /// timer and twelve cook counters may not ride on it — the client
     /// draws a fire, it does not adjudicate one. Kept aligned by the two
     /// places that can move a box: the insert in `place_deploy` and the
-    /// swap-remove in `remove_at`.
-    ovens: [crate::oven::OvenState; MAX_BOXES],
+    /// swap-remove in `remove_at`. Boxed with `entries`, for its reason.
+    ovens: Box<[crate::oven::OvenState; MAX_BOXES]>,
     /// Contents of boxes removed this tick, awaiting a ground bag.
     /// `drop_deploy` is reached from decay and from a raid and holds
     /// neither the bag store nor the clock, so it parks the record here
@@ -744,9 +750,9 @@ pub struct BoxStore {
 impl BoxStore {
     fn new() -> Self {
         Self {
-            entries: [BoxRec::default(); MAX_BOXES],
+            entries: crate::boxed_array(BoxRec::default()),
             len: 0,
-            ovens: [crate::oven::OvenState::default(); MAX_BOXES],
+            ovens: crate::boxed_array(crate::oven::OvenState::default()),
             spill: [BoxRec::default(); MAX_BOX_SPILL_PER_TICK],
             spill_len: 0,
         }
@@ -1844,7 +1850,13 @@ pub fn lock_op(
             // carrying a full load can still take a lock off *and* keep it.
             if let Some(r) = lock_row(dc) {
                 let item = dc.defs[r].item;
-                lock::give_back(&mut p.inv, spill, item, gc.stack_max_of(item));
+                lock::give_back(
+                    &mut p.inv,
+                    spill,
+                    item,
+                    gc.stack_max_of(item),
+                    gc.cond_max_of(item),
+                );
             }
             deploys.entries[di].has_lock = false;
             deploys.entries[di].locked = false;
@@ -1965,10 +1977,23 @@ pub fn pick_up(
     if deploys.locks.find(cx, cz, level, loc).is_some() {
         if let Some(r) = lock_row(dc) {
             let item = dc.defs[r].item;
-            lock::give_back(&mut p.inv, spill, item, gc.stack_max_of(item));
+            lock::give_back(
+                &mut p.inv,
+                spill,
+                item,
+                gc.stack_max_of(item),
+                gc.cond_max_of(item),
+            );
         }
     }
-    crate::gather::inv_add_spilling(&mut p.inv, spill, def.item, 1, gc.stack_max_of(def.item));
+    crate::gather::inv_add_spilling(
+        &mut p.inv,
+        spill,
+        def.item,
+        1,
+        gc.stack_max_of(def.item),
+        gc.cond_max_of(def.item),
+    );
     drop_deploy(dc, pieces, deploys, i, events);
 }
 
@@ -2518,7 +2543,11 @@ mod tests {
             ..Player::default()
         };
         for (i, &(item, count)) in items.iter().enumerate() {
-            p.inv[i] = ItemStack { item, count };
+            p.inv[i] = ItemStack {
+                item,
+                count,
+                cond: 0,
+            };
         }
         p
     }

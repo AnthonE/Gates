@@ -638,7 +638,11 @@ mod tests {
         let mut sc = SurvivalContent::probe_fixture();
         sc.consumable[0].health = 0;
         let mut p = player(&sc);
-        p.inv[0] = ItemStack { item: 0, count: 2 };
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 2,
+            cond: 0,
+        };
         let mut q = EventQueue::default();
         assert!(!consume(&sc, 0, &mut p, &mut q), "full meters, no heal");
         assert_eq!(p.inv[0].count, 2, "the item is not destroyed");
@@ -653,7 +657,11 @@ mod tests {
         p.hp = 50;
         p.food = 10;
         p.water = 10;
-        p.inv[0] = ItemStack { item: 0, count: 1 };
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+        };
         let mut q = EventQueue::default();
         assert!(consume(&sc, 0, &mut p, &mut q));
         assert_eq!(p.food, 50, "food applied immediately");
@@ -698,7 +706,11 @@ mod tests {
         let mut p = player(&sc);
         p.food = sc.max_food - 1;
         p.water = sc.max_water - 1;
-        p.inv[0] = ItemStack { item: 0, count: 1 };
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+        };
         let mut q = EventQueue::default();
         assert!(consume(&sc, 0, &mut p, &mut q));
         assert_eq!((p.food, p.water), (sc.max_food, sc.max_water));

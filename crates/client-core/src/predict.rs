@@ -291,7 +291,11 @@ mod tests {
         world.build = BuildContent::probe_fixture();
         world.dev_spawn = Some((1024.5, 1024.5));
         world.tick(&[Command::Join { id: 7 }]);
-        world.players[0].inv[0] = ItemStack { item: 0, count: 50 };
+        world.players[0].inv[0] = ItemStack {
+            item: 0,
+            count: 50,
+            cond: 0,
+        };
         world.tick(&[
             Command::Place {
                 id: 7,

@@ -559,6 +559,7 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
             p.inv[10] = ItemStack {
                 item: 5, // the fixture's bag item (deploy row 3)
                 count: crate::deploy::BAG_CAP as u16,
+                cond: 0,
             };
         }
         let mut rng = Pcg32::new(seq_seed, 13);
@@ -726,6 +727,7 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
                 *s = ItemStack {
                     item: (slot % 2) as u16,
                     count: 1,
+                    cond: 0,
                 };
             }
         }

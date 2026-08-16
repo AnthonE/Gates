@@ -165,6 +165,14 @@ slot = "none"
 
 # --- T0, the naked era -------------------------------------------------
 
+# Condition (item durability v0, DECISIONS.md 2026-08-15): condition_max is
+# hundredths of a point, TAKEN from the reference's item definitions — rock
+# 100 pts, torch 50, stone tools 100, metal tools 400 — per item, never one
+# constant (the 4x stone->metal step IS the tool ladder). Absent means 0
+# means never wears and can never be repaired; a nonzero value requires
+# stack = 1 (validate V7). The rock DOES wear and is unrepairable: worn out,
+# it is re-crafted for 10 stone, which is the reference's own bootstrap
+# shape. No repair verb exists in v0 -- re-craft is the repair (Q3).
 [[item]]
 id = "item.rock"
 name = "Rock"
@@ -172,6 +180,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+condition_max = 10000
 
 [[item]]
 id = "item.torch"
@@ -180,6 +189,11 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+# 50 pts. Wears nowhere today -- no node pays a torch, so no condition_loss
+# row names it (V3 forbids an unreachable one) -- but the ceiling is the
+# reference's and the field is what makes a dead torch representable the
+# day something wears it.
+condition_max = 5000
 
 [[item]]
 id = "item.spear_wood"
@@ -196,6 +210,8 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+# 100 pts / 0.3 per hit (wiki-confirmed) = 333 hits, ~33 trees.
+condition_max = 10000
 
 [[item]]
 id = "item.pickaxe_stone"
@@ -204,6 +220,7 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
+condition_max = 10000
 
 [[item]]
 id = "item.bow"
@@ -303,6 +320,8 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+# 400 pts: the 4x stone->metal step is the reference's own tool ladder.
+condition_max = 40000
 
 [[item]]
 id = "item.pickaxe_metal"
@@ -311,6 +330,7 @@ stack = 1
 tier = 1
 rarity = "uncommon"
 slot = "hand"
+condition_max = 40000
 
 [[item]]
 id = "item.spear_metal"

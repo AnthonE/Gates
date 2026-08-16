@@ -288,7 +288,19 @@ const TICKS: u64 = 900;
 /// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
 /// this value was read off, which is why the equality asserts sit *before*
 /// the pin rather than after it.
-const GOLDEN_FINAL_HASH: u64 = 0x2D61_AAB2_F881_0C4C;
+///
+/// **Regenerated 2026-08-15 for item durability v0**, and it is both
+/// shapes at once, stated so nobody has to reconstruct it: state widened
+/// (`ItemStack` grew `cond`, so all four container loops in `state_hash`
+/// fold two more bytes per stack) AND the fixture's inputs moved (the
+/// gather probe fixture arms `cond_max` on items 0/1 and a wear row per
+/// node, and every minted stack now arrives at its item's ceiling, so the
+/// wear arithmetic runs inside this script's own farming). No command is
+/// new and `test_terrain_golden` did NOT move (worldgen untouched).
+/// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
+/// this value was read off — the panic that produced it was at the pin
+/// line alone, with both determinism asserts above it already passed.
+const GOLDEN_FINAL_HASH: u64 = 0x3151_CF28_D719_7EF6;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
@@ -615,7 +627,11 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         if t == 165 {
             hotbar_saved.copy_from_slice(&world.players[0].inv[..HOTBAR_SLOTS]);
             for slot in 0..HOTBAR_SLOTS {
-                world.players[0].inv[slot] = sim_core::gather::ItemStack { item: 3, count: 8 };
+                world.players[0].inv[slot] = sim_core::gather::ItemStack {
+                    item: 3,
+                    count: 8,
+                    cond: 0,
+                };
             }
         }
         if t == 167 {
@@ -639,7 +655,11 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     .iter()
                     .enumerate()
                     {
-                        world.players[w].inv[20 + k] = sim_core::gather::ItemStack { item, count };
+                        world.players[w].inv[20 + k] = sim_core::gather::ItemStack {
+                            item,
+                            count,
+                            cond: 0,
+                        };
                     }
                     walk_up_the_beach(&mut world, seed, w);
                 }

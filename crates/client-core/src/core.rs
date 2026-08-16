@@ -803,6 +803,13 @@ pub struct ClientCore {
     refusals: [u8; REFUSAL_RING],
     refusal_head: usize,
     refusal_len: usize,
+    /// `(held item, reason)` per refused gather swing (wire v42) —
+    /// drop-oldest and cosmetic, the craft refusal ring's posture. The
+    /// item rides beside the reason because the sentence names it: *a
+    /// torch cannot fell a tree*, never "bare hands" (`NOW.md` §0kit 2).
+    gather_refusals: [(u16, u8); REFUSAL_RING],
+    gather_refusal_head: usize,
+    gather_refusal_len: usize,
     /// Chat lines as received: (speaker id, global, text).
     chats: [(u32, bool, ChatText); CHAT_RING],
     chat_head: usize,
@@ -1112,6 +1119,9 @@ impl ClientCore {
             research_toast_head: 0,
             research_toast_len: 0,
             research_refusals: [0; REFUSAL_RING],
+            gather_refusals: [(0, 0); REFUSAL_RING],
+            gather_refusal_head: 0,
+            gather_refusal_len: 0,
             research_refusal_head: 0,
             research_refusal_len: 0,
             events_applied: 0,
@@ -1161,6 +1171,17 @@ impl ClientCore {
                     // spill and not a swing that earned nothing.
                     self.push_spill(item);
                 }
+            }
+            EventMsg::GatherRefused { item, reason } => {
+                if self.gather_refusal_len == REFUSAL_RING {
+                    self.gather_refusal_head = (self.gather_refusal_head + 1) % REFUSAL_RING;
+                    self.gather_refusal_len -= 1;
+                }
+                self.gather_refusals
+                    [(self.gather_refusal_head + self.gather_refusal_len) % REFUSAL_RING] =
+                    (item, reason);
+                self.gather_refusal_len += 1;
+                flags |= APPLIED_TOAST;
             }
             EventMsg::Inv { slots, count } => {
                 for s in slots.iter().take(count as usize) {
@@ -2199,6 +2220,18 @@ impl ClientCore {
         Some(r)
     }
 
+    /// Oldest buffered gather refusal: `(held item, reason)` —
+    /// `sim_core::gather::REFUSE_G_*`, item `NO_ITEM` = bare hands.
+    pub fn pop_gather_refusal(&mut self) -> Option<(u16, u8)> {
+        if self.gather_refusal_len == 0 {
+            return None;
+        }
+        let r = self.gather_refusals[self.gather_refusal_head];
+        self.gather_refusal_head = (self.gather_refusal_head + 1) % REFUSAL_RING;
+        self.gather_refusal_len -= 1;
+        Some(r)
+    }
+
     /// Oldest buffered craft refusal reason (`sim_core::craft::REFUSE_*`).
     pub fn pop_craft_refusal(&mut self) -> Option<u8> {
         if self.refusal_len == 0 {
@@ -2488,11 +2521,22 @@ mod tests {
         assert_eq!(c.applied2(), APPLIED2_SPILL);
         let slots = [InvSlot {
             slot: 4,
-            stack: ItemStack { item: 3, count: 21 },
+            stack: ItemStack {
+                item: 3,
+                count: 21,
+                cond: 0,
+            },
         }];
         let len = encode_event_inv(&slots, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_INV);
-        assert_eq!(c.inv[4], ItemStack { item: 3, count: 21 });
+        assert_eq!(
+            c.inv[4],
+            ItemStack {
+                item: 3,
+                count: 21,
+                cond: 0,
+            }
+        );
         assert_eq!(c.pop_toast(), Some((3, 7)));
         assert_eq!(c.pop_toast(), None);
         // The whiff went here instead, and carries which item it was.

@@ -112,10 +112,15 @@ fn box_world() -> (World, u32, u16, u16) {
     w.tick(&[Command::Join { id: PLAYER }]);
     w.players[0].body = sim_core::movement::Body::at(SEED, x, z);
 
-    w.players[0].inv[0] = ItemStack { item: 0, count: 5 };
+    w.players[0].inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
     w.players[0].inv[1] = ItemStack {
         item: BOX_ITEM,
         count: 1,
+        cond: 0,
     };
     w.tick(&[Command::Place {
         id: PLAYER,
@@ -228,26 +233,65 @@ fn a_placed_box_takes_a_record_and_an_address() {
 #[test]
 fn items_move_into_and_out_of_a_box() {
     let (mut w, key, _, _) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 40,
+        cond: 0,
+    };
 
     let (code, _, _) = do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 0, 25);
     assert_eq!(code, EV_MOVED, "a legal deposit must be applied");
-    assert_eq!(w.players[0].inv[4], ItemStack { item: 1, count: 15 });
-    assert_eq!(w.deploys.box_slot(0, 0), ItemStack { item: 1, count: 25 });
+    assert_eq!(
+        w.players[0].inv[4],
+        ItemStack {
+            item: 1,
+            count: 15,
+            cond: 0,
+        }
+    );
+    assert_eq!(
+        w.deploys.box_slot(0, 0),
+        ItemStack {
+            item: 1,
+            count: 25,
+            cond: 0,
+        }
+    );
 
     // Back out, into a different slot, so the return path is not just the
     // deposit read backwards.
     let (code, _, _) = do_move(&mut w, key, CONT_BOX, 0, CONT_SELF, 7, 10);
     assert_eq!(code, EV_MOVED, "a legal withdrawal must be applied");
-    assert_eq!(w.deploys.box_slot(0, 0), ItemStack { item: 1, count: 15 });
-    assert_eq!(w.players[0].inv[7], ItemStack { item: 1, count: 10 });
+    assert_eq!(
+        w.deploys.box_slot(0, 0),
+        ItemStack {
+            item: 1,
+            count: 15,
+            cond: 0,
+        }
+    );
+    assert_eq!(
+        w.players[0].inv[7],
+        ItemStack {
+            item: 1,
+            count: 10,
+            cond: 0,
+        }
+    );
 
     // And within the box, which is the case that reads and writes the
     // same array twice through the same index.
     let (code, _, _) = do_move(&mut w, key, CONT_BOX, 0, CONT_BOX, 11, 15);
     assert_eq!(code, EV_MOVED);
     assert_eq!(w.deploys.box_slot(0, 0), ItemStack::default());
-    assert_eq!(w.deploys.box_slot(0, 11), ItemStack { item: 1, count: 15 });
+    assert_eq!(
+        w.deploys.box_slot(0, 11),
+        ItemStack {
+            item: 1,
+            count: 15,
+            cond: 0,
+        }
+    );
     // The foundation and the box each spent their own cost at placement,
     // so the forty deposited units are all that is left to conserve.
     let total: u16 = (0..BOX_SLOTS)
@@ -265,7 +309,11 @@ fn items_move_into_and_out_of_a_box() {
 #[test]
 fn a_box_slot_past_its_size_is_refused_and_writes_nothing() {
     let (mut w, key, _, _) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 40,
+        cond: 0,
+    };
 
     for s in BOX_SLOTS..INV_SLOTS {
         let before = contents(&w);
@@ -278,7 +326,14 @@ fn a_box_slot_past_its_size_is_refused_and_writes_nothing() {
             "a refused move at slot {s} moved something"
         );
         // The source is intact, so nothing was taken and dropped either.
-        assert_eq!(w.players[0].inv[4], ItemStack { item: 1, count: 40 });
+        assert_eq!(
+            w.players[0].inv[4],
+            ItemStack {
+                item: 1,
+                count: 40,
+                cond: 0,
+            }
+        );
         // And the same slot as a *source* is equally not an address.
         let (code, why, _) = do_move(&mut w, key, CONT_BOX, s as u8, CONT_SELF, 5, 1);
         assert_eq!(code, EV_MOVE_REFUSED);
@@ -304,7 +359,11 @@ fn a_box_slot_past_its_size_is_refused_and_writes_nothing() {
 #[test]
 fn an_absent_or_distant_box_refuses_rather_than_disconnects() {
     let (mut w, key, cx, cz) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 40,
+        cond: 0,
+    };
 
     // Right cell, wrong storey: the level is part of the address, which is
     // the whole reason `box_key` is not `gather::cell_key`.
@@ -333,13 +392,21 @@ fn an_absent_or_distant_box_refuses_rather_than_disconnects() {
 #[test]
 fn a_move_between_two_ground_containers_is_refused() {
     let (mut w, key, _, _) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 40,
+        cond: 0,
+    };
     // A bag at the player's feet, dropped the way one reaches the world in
     // play — `drop_for` is the only route, so a fixture that reached into
     // the store could pass while the real one was broken.
     let mut body = w.players[0];
     body.inv = [ItemStack::default(); INV_SLOTS];
-    body.inv[0] = ItemStack { item: 1, count: 9 };
+    body.inv[0] = ItemStack {
+        item: 1,
+        count: 9,
+        cond: 0,
+    };
     let tick = w.tick;
     let bag = w
         .backpacks
@@ -375,7 +442,11 @@ fn a_move_between_two_ground_containers_is_refused() {
 #[test]
 fn emptying_a_box_leaves_it_standing() {
     let (mut w, key, _, _) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 6 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 6,
+        cond: 0,
+    };
     // A bag in the store at the same index the box holds in *its* store.
     // The two are addressed by different handles into different arrays, so
     // an emptied-container check aimed at the wrong one would remove this
@@ -383,7 +454,11 @@ fn emptying_a_box_leaves_it_standing() {
     // is the actual failure mode, not the box disappearing.
     let mut body = w.players[0];
     body.inv = [ItemStack::default(); INV_SLOTS];
-    body.inv[0] = ItemStack { item: 2, count: 3 };
+    body.inv[0] = ItemStack {
+        item: 2,
+        count: 3,
+        cond: 0,
+    };
     let tick = w.tick;
     let bag = w
         .backpacks
@@ -422,8 +497,16 @@ fn emptying_a_box_leaves_it_standing() {
 #[test]
 fn a_broken_box_spills_its_contents_onto_the_floor() {
     let (mut w, key, _, _) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 30 };
-    w.players[0].inv[5] = ItemStack { item: 2, count: 7 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 30,
+        cond: 0,
+    };
+    w.players[0].inv[5] = ItemStack {
+        item: 2,
+        count: 7,
+        cond: 0,
+    };
     do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 0, 30);
     do_move(&mut w, key, CONT_SELF, 5, CONT_BOX, 6, 7);
     let bags_before = w.backpacks.len();
@@ -453,8 +536,16 @@ fn a_broken_box_spills_its_contents_onto_the_floor() {
     let bag = w.backpacks.entries()[bags_before];
     let got: Vec<_> = bag.items.iter().filter(|s| s.count > 0).collect();
     assert_eq!(got.len(), 2, "both stacks survived the break");
-    assert!(got.contains(&&ItemStack { item: 1, count: 30 }));
-    assert!(got.contains(&&ItemStack { item: 2, count: 7 }));
+    assert!(got.contains(&&ItemStack {
+        item: 1,
+        count: 30,
+        cond: 0,
+    }));
+    assert!(got.contains(&&ItemStack {
+        item: 2,
+        count: 7,
+        cond: 0,
+    }));
     assert_eq!(bag.owner, PLAYER, "the spill belongs to whoever placed it");
     // Drained exactly once: a second tick must not stand a second bag up.
     w.tick(&[]);
@@ -490,7 +581,11 @@ fn a_broken_empty_box_leaves_no_bag() {
 #[test]
 fn box_contents_are_in_the_state_hash() {
     let (mut w, key, _, _) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 40,
+        cond: 0,
+    };
     let before = w.state_hash();
     do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 0, 20);
     assert_ne!(before, w.state_hash(), "a deposit must move the state hash");
@@ -510,9 +605,20 @@ fn box_contents_are_in_the_state_hash() {
 fn two_boxes_differing_only_in_slot_order_hash_differently() {
     fn deposit_into(slot: u8) -> u64 {
         let (mut w, key, _, _) = box_world();
-        w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+        w.players[0].inv[4] = ItemStack {
+            item: 1,
+            count: 40,
+            cond: 0,
+        };
         do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, slot, 20);
-        assert_eq!(w.players[0].inv[4], ItemStack { item: 1, count: 20 });
+        assert_eq!(
+            w.players[0].inv[4],
+            ItemStack {
+                item: 1,
+                count: 20,
+                cond: 0,
+            }
+        );
         w.state_hash()
     }
     assert_ne!(
@@ -536,7 +642,11 @@ fn two_boxes_differing_only_in_slot_order_hash_differently() {
 fn the_same_commands_land_on_the_same_box_state() {
     fn run() -> u64 {
         let (mut w, key, _, _) = box_world();
-        w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+        w.players[0].inv[4] = ItemStack {
+            item: 1,
+            count: 40,
+            cond: 0,
+        };
         do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 2, 11);
         do_move(&mut w, key, CONT_BOX, 2, CONT_BOX, 9, 4);
         w.state_hash()
