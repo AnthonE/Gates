@@ -73,9 +73,26 @@ jobs:
   # `published.json` names it, and that file is written by a person who has
   # looked at what they are about to serve (scry `CLAUDE.md`; `docs/LAUNCHER.md`
   # §8 row 1b). This produces the tree that act would rsync, and stops.
+  #
+  # **Both platforms, since 2026-08-16.** This job packaged linux only, so
+  # every Windows depot Gates ever published was hand-cut on one box — the
+  # "random code in a random place" failure this job's own header says it
+  # exists to end, still true for half the platforms. It is what let
+  # `0.2.0-gbed9e02d6` ship without the mingw C++ runtime beside it
+  # (`NOW.md` §0win): a build nobody could start, from a step nobody could
+  # re-run. A Windows depot cut here is cut the same way every night, by a
+  # recipe that is read rather than remembered.
   depot:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    strategy:
+      # One platform failing must not delete the other. A linux-only night is
+      # a thing an operator can look at and decide about; a cancelled matrix
+      # is not. Same argument `release.yml` makes, and it learned it the
+      # harder way.
+      fail-fast: false
+      matrix:
+        platform: [linux-x86_64, win-x86_64]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -92,7 +109,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: depot-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          # Keyed on the platform too: the two legs write different target
+          # subdirectories and share a registry, and a cache restored from the
+          # other leg is how a cross build picks up host artifacts.
+          key: depot-${{ matrix.platform }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
       # Each of these fails identically without its package — a `pkg-config
       # exited with status code 1` panic from a *-sys build script, 40 lines
       # into a build, with the crate named only in the backtrace. `libwayland`
@@ -103,12 +123,41 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev
+      # **The mingw half, and the threading model is not optional.** Ubuntu's
+      # default alternative is `13-win32`, whose `libgcc.a(gthr-win32.o)` has
+      # no `__mingwthr_key_dtor`, and the client fails at link with every gate
+      # green. Pointing only the linker at `-posix` moves the error rather than
+      # fixing it — the C++ deps (`basis-universal-sys`, via `cc` calling
+      # `x86_64-w64-mingw32-g++`) are still compiled win32 and die on
+      # `__gthr_win32_mutex_*`. Both halves must agree, which is why gcc AND
+      # g++ are set here (`CLAUDE.md`, the trap this pays).
+      #
+      # `binutils-mingw-w64-x86-64` is the load-bearing third: it carries the
+      # cross `strip` AND the cross-capable `objdump` that `ci/depot.py` reads
+      # the PE import table with. Without it the packager refuses rather than
+      # staging a Windows build whose runtime was never measured — which is
+      # correct, and is a red night rather than a broken depot.
+      - name: mingw, with POSIX threading on both halves
+        if: matrix.platform == 'win-x86_64'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 \
+                                  binutils-mingw-w64-x86-64
+          sudo update-alternatives --set x86_64-w64-mingw32-gcc \
+                                        /usr/bin/x86_64-w64-mingw32-gcc-posix
+          sudo update-alternatives --set x86_64-w64-mingw32-g++ \
+                                        /usr/bin/x86_64-w64-mingw32-g++-posix
+          rustup target add x86_64-pc-windows-gnu
+          # Stated rather than assumed: a win32 answer here is the link failure
+          # above, arriving twenty minutes later and reading as an LLVM crash.
+          x86_64-w64-mingw32-gcc -v 2>&1 | grep -q 'Thread model: posix' \
+            || { echo "::error::mingw is not on POSIX threading"; exit 1; }
       # ci/depot.py builds, stages, strips and writes the index itself. It
       # deliberately computes no digest — `scry digest` is the one
       # implementation of the number that gets notarized, and a second one
       # here would be scry's invariant 3 with money attached.
       - name: package the depot
-        run: ./ci/depot.py --out target/depot
+        run: ./ci/depot.py --platform ${{ matrix.platform }} --out target/depot
       - name: what was packaged
         run: |
           set -euo pipefail
@@ -119,20 +168,86 @@ jobs:
           doc = json.load(open(sys.argv[1]))
           n = len(doc["files"])
           total = sum(f["bytes"] for f in doc["files"])
-          print(f"build {doc['build']} — {n} file(s), {total:,} bytes")
+          req = doc.get("requires", {})
+          print(f"build {doc['build']} ({doc['platform']}) — {n} file(s), {total:,} bytes")
           print(f"launch: {doc['launch']['exec']} {' '.join(doc['launch']['args'])}")
-          print("needs: " + ", ".join(doc.get("requires", {}).get("libs", [])))
+          print("needs: " + ", ".join(req.get("libs", [])))
+          print("ships: " + (", ".join(req.get("bundled", [])) or "nothing"))
           # A depot with no files, or one that names no start command, would
           # install cleanly and do nothing — refuse it here rather than on a
           # player's disk.
           assert n > 0, "a depot with no files is not a build"
           assert doc["launch"]["exec"], "a depot with no launch.exec cannot start"
+
+          # **The assertion `0.2.0-gbed9e02d6` needed and did not have.** That
+          # depot's own requires.libs named libstdc++-6.dll and its tree held
+          # three files, and every check passed because every check was about
+          # the document. These two are about the SET: nothing the player is
+          # told to provide may be a thing the platform does not have, and the
+          # runtime we promised to ship has to actually be in the file list.
+          if doc["platform"].startswith("win-"):
+              staged = {f["path"].lower() for f in doc["files"]}
+              bundled = req.get("bundled", [])
+              assert bundled, "a windows depot with no bundled runtime cannot start"
+              for dll in bundled:
+                  assert dll.lower() in staged, f"{dll} is promised but not staged"
+              # A name mingw owns must never be left to the player. Anything
+              # matching this shape is ours, and its presence in `libs` means
+              # the sort in ci/depot.py stopped working.
+              stray = [x for x in req.get("libs", [])
+                       if x.lower().startswith(("libstdc++", "libgcc", "libwinpthread"))]
+              assert not stray, f"mingw runtime left to the player's machine: {stray}"
+              assert "LICENSE-MINGW-RUNTIME.txt" in {f["path"] for f in doc["files"]}, \
+                  "the runtime ships without the notice that must travel with it"
+              print(f"windows runtime OK — {len(bundled)} DLL(s) staged and credited")
           PY
           echo "$index" >> "$GITHUB_STEP_SUMMARY"
+      # **The only check here that runs the game rather than reading about it.**
+      # Everything above this line is arithmetic over a document, and a correct
+      # document is exactly what `0.2.0-gbed9e02d6` had: its `requires.libs`
+      # named the DLL it was missing. What no document check can answer is
+      # whether the loader resolves — and that is the whole of this bug class,
+      # because the failure happens in `loader_init` before a byte of our code
+      # runs.
+      #
+      # Wine is a real answer to that. Run from the STAGED directory, so what
+      # is tested is the app-directory DLL search a player's machine performs,
+      # against the files the depot actually carries. Measured both ways on
+      # 2026-08-16: with the runtime staged it prints its help and exits 0; with
+      # the three DLLs moved aside it dies as
+      #   err:module:import_dll Library libstdc++-6.dll ... not found
+      #   err:module:loader_init ... failed, status c0000135
+      # which is the player's Application Error box with a different code
+      # (theirs was c000007b — same cause, plus a 32-bit copy on their PATH).
+      #
+      # `--help` on purpose: no window, no GPU, no shard, ~7 s from a cold
+      # prefix. It is the loader and argument parsing, which is precisely the
+      # stage that breaks. A frame is not what this is for.
+      #
+      # NOT allowed to skip. A missing wine is a check that did not run, and a
+      # pass it did not earn is the worst bug class this repo names.
+      - name: the windows build actually starts
+        if: matrix.platform == 'win-x86_64'
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y wine64
+          command -v wine >/dev/null || { echo "::error::wine did not install — this check cannot skip"; exit 1; }
+          dir=$(find target/depot -name gates.exe -printf '%h\n' | head -1)
+          test -n "$dir" || { echo "::error::no staged gates.exe to run"; exit 1; }
+          export WINEPREFIX="$RUNNER_TEMP/wine" WINEDEBUG=-all
+          wineboot -i >/dev/null 2>&1 || true
+          ( cd "$dir" && wine gates.exe --help ) > start.log 2>&1 || {
+            echo "::error::the staged windows build did not start"; sed -n 1,40p start.log; exit 1; }
+          # Exit 0 with nothing on stdout would be a pass this did not earn —
+          # so assert on something only a running client prints.
+          grep -q -- "--no-launcher" start.log || {
+            echo "::error::it exited 0 but printed no help — did it really run?"
+            sed -n 1,40p start.log; exit 1; }
+          echo "the staged windows build starts and parses its arguments"
       - name: upload the depot
         uses: actions/upload-artifact@v4
         with:
-          name: gates-depot-${{ github.run_id }}
+          name: gates-depot-${{ matrix.platform }}-${{ github.run_id }}
           retention-days: 14
           # The staged tree AS IT WOULD BE SERVED — depot.json beside the files
           # it names, at the paths it names them at. An operator publishes by

@@ -49,6 +49,21 @@ contract rather than a licence. `assets/models/MANIFEST.md` records vendor,
 mode, prompt, task id and date for each one, which is what makes the rule
 auditable after the fact rather than a promise.
 
+**MinGW-w64 runtime** — *Windows builds only.*
+`libstdc++-6.dll` and `libgcc_s_seh-1.dll` — GCC, GPLv3 with the
+**GCC Runtime Library Exception** 3.1 — and `libwinpthread-1.dll` (winpthreads,
+MIT/Expat with BSD-3-clause and public-domain parts, © 2011–2016 the mingw-w64
+project). Reached through `basis-universal-sys`, Bevy's KTX2/Basis transcoder.
+They ride beside `gates.exe` in the Windows depot because Windows does not
+provide them and the build cannot start without them; the notice that must
+travel with them is `LICENSE-MINGW-RUNTIME.txt`, staged into every Windows
+depot by `ci/depot.py`, which refuses to package one without it.
+**The Runtime Library Exception is what the "nothing derives from GPL work"
+line below relies on** for these two files: it permits conveying the runtime
+alongside output of an unmodified GCC, so no part of Gates' own source becomes
+subject to the GPL. Stated rather than assumed, because it is the single place
+in this tree where a GPL-licensed artifact ships.
+
 **Rust dependencies.** Everything else linked into these binaries comes from
 crates.io and carries its own licence, overwhelmingly MIT OR Apache-2.0.
 `Cargo.lock` is the exact list for any given build; `cargo about` or

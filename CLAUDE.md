@@ -409,6 +409,46 @@ do not rediscover)
   **The general shape: a build step that enumerates by walking is only as
   correct as the tidiness of the box it runs on, which is not a property
   anything asserts.**
+- **Measuring what a build needs is not meeting it, and the depot shipped a
+  Windows game nobody could start.** `ci/depot.py` was written under a Linux
+  rule stated in its own docstring — bundle nothing, the machine provides it —
+  which is right for libwayland and libasound and wrong for
+  **`libstdc++-6.dll`**: mingw's C++ runtime, reached through
+  `basis-universal-sys`, and on approximately zero stock Windows machines. The
+  measurement was never the gap. `0.2.0-gbed9e02d6`'s published
+  `requires.libs` **named `libstdc++-6.dll`**, correctly, sitting among two
+  dozen genuine system DLLs where nothing distinguished it — and the staged
+  tree held three files. Every check passed because every check was about the
+  document: the packager hashed it, `--self-test`'s 51 checks read it, the
+  launcher fetched and verified it, and the player got an Application Error box
+  (`0xc000007b`) before a frame. Reported 2026-08-16 by the one person who ran
+  it. Two things to carry: **a needs-list is not a fix**, and *"the platform
+  provides its system libraries"* is a claim about a platform, so it must be
+  re-asked per platform rather than inherited. The fix is `runtime_dlls`, and
+  its shape is this repo's usual one — **ask, don't type**: `x86_64-w64-mingw32-gcc
+  -print-file-name=X` returns a path for a DLL the toolchain owns and echoes
+  the bare name back for one Windows owns, so the sort needs no maintained
+  list and resolves through the *selected* mingw alternative, which is the
+  threading-model trap below arriving at package time. **Transitively**, which
+  is the half that bites: `gates.exe` imports only `libstdc++-6.dll`, and
+  *that* imports `libgcc_s_seh-1.dll` and `libwinpthread-1.dll`, so a direct
+  read of the exe ships a third of the runtime and fails identically.
+  The gate that closes it is not another document check — `nightly.yml`'s
+  windows leg **runs the staged build under wine** (`gates.exe --help`, ~7 s
+  from a cold prefix, no window and no GPU), because every check that existed
+  read the depot and the depot was *correct*. Measured both ways: with the
+  runtime staged it exits 0, and with the three DLLs moved aside it dies as
+  `err:module:import_dll ... not found` / `loader_init ... failed, status
+  c0000135`. That is the same failure the player saw with a different code —
+  **absent is `c0000135`, present-but-32-bit is `c000007b`** — so a machine
+  with no copy at all fails identically and the distinction is only about
+  what junk is already on the box.
+  ⚠ **The code fixed here is the packager, not the depot on the origin.**
+  Republishing is an operator act, so until it happens the live Windows build
+  is still the broken one (`NOW.md` §0win). And `0xc000007b` specifically —
+  rather than a missing-DLL message — means that box *had* a 32-bit
+  `libstdc++-6.dll` on its search path; shipping ours beside the exe fixes
+  both cases, because the application directory outranks System32 and PATH.
 - **`x86_64-pc-windows-gnu` needs mingw's POSIX threading, and half a switch
   is worse than none.** Ubuntu's default alternative is `13-win32`, whose
   `libgcc.a(gthr-win32.o)` has no `__mingwthr_key_dtor` — the client fails at
