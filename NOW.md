@@ -270,6 +270,34 @@ proven red. What remains, in rank order:
    slice's blocker cousin — an emptied slot keeping its `cond` — is fixed
    and gated (`spill.rs`, `persist.rs`: the canonical-empty trio).
 
+## 0ps · Pieces wear a photograph now — the two halves it does not do *(client lane)*
+
+From the operator's 2026-08-16 ask, with the reference's twig/wood/stone
+foundations attached. **Landed 2026-08-16** — piece surface v0, numbers in
+`DECISIONS.md` §open, gate `client/tests/pieces.rs`: the tier table fixed
+(three rows against the sim's four materials, so every piece drew one rung
+off and twig had no look at all), all four tiers wearing albedo + normal off
+the already-shipped CC0 maps, metre-scaled UVs, tangents, mean-1 face tint.
+Remaining, ranked by what the reference images actually show:
+
+1. **Nobody has looked at it.** Arithmetic says the maps are bound; a
+   person says whether a wall reads as wood. Boot, build a row, look.
+2. **A base is a hundred identical walls at one rotation** (rule 7) —
+   object-space UVs mean adjacent pieces wear the texture identically. Fix
+   is a small pool of per-tier variants (`uv_transform` offset + mean-1
+   tint) picked by address hash: a few materials, not a few hundred.
+3. **Trim is what the reference images are of** — lashings, plank seams, a
+   capstone rim. `shape_parts` is the place (shared with the ghost); price
+   it first, a one-part shape is one entity and a multi-part one is a
+   parent with children, at `MAX_PIECES` 8192.
+4. **Twig wears bark because no twig set exists** — straw/lashed pole via
+   `CANDIDATES.md`; the ×1.6 gain stands in for a source.
+5. **The roughness maps are still unwired**, here and everywhere: needs an
+   ORM packing step (R=ao, G=rough, B=metallic), which would serve terrain,
+   props and pieces at once.
+6. **Deployables are still flat greybox** where they have no `.glb` —
+   furnace, recycler, research table, both upper benches, door leaf, bag.
+
 ## 0bl · Pieces line up on a lattice now — what the stored plate would add *(client+sim lane)*
 
 From the operator's 2026-08-15 screenshots (*"bad news about the building

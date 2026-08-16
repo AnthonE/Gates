@@ -37,8 +37,8 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::build::{
     BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_TRI_XHI_ZHI,
-    LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, SHAPE_DOORWAY, SHAPE_FRAME, SHAPE_STAIRS,
-    SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
+    LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, MAT_METAL, SHAPE_DOORWAY, SHAPE_FRAME,
+    SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::collide::{
     DOOR_POST_W_M, FRAME_RIM_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
@@ -50,6 +50,7 @@ use sim_core::deploy::{
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::terrain;
 
+use super::textures::MapSet;
 use super::{Net, WorldId};
 
 /// Plane-piece thickness, metres. Cosmetic — the sim's plane is a surface
@@ -62,17 +63,116 @@ pub const SLAB_T: f32 = 0.3;
 /// of a base. `scene.js` carries the same 0.04 for the same reason.
 pub const SEAM_M: f32 = 0.04;
 
-/// Wood, stone, metal — colour, perceptual roughness, metallic.
+/// How wide a piece draws across its cell, metres — the cell less its seam.
 ///
-/// Cosmetics (`DECISIONS.md` §open, client cosmetics). The response matters
-/// as much as the colour: `ART.md` reads the reference's tier as *sheen* as
-/// much as hue, so metal is a conductor with a real specular lobe and wood is
-/// flat. A tier told apart by colour alone reads as three paints.
-const TIER: [(Color, f32, f32); 3] = [
-    (Color::srgb(0.541, 0.416, 0.271), 0.88, 0.0), // wood  0x8a6a45
-    (Color::srgb(0.518, 0.514, 0.486), 0.72, 0.0), // stone 0x84837c
-    (Color::srgb(0.373, 0.416, 0.447), 0.38, 0.85), // metal 0x5f6a72
+/// One expression, three callers ([`shape_parts`], [`foundation_part`] and
+/// the kit's footing cache), because the footing mesh is now built to a size
+/// rather than scaled to one: a cache keyed on a span that drifted from the
+/// part's span would hand every foundation a mesh of the wrong footprint.
+pub fn piece_span() -> f32 {
+    BUILD_CELL_M - SEAM_M
+}
+
+/// How many build materials the sim can hand us: `MAT_TWIG`…`MAT_METAL`.
+/// Derived from the sim's own last code rather than typed, because a table
+/// that disagreed with it is exactly what shipped for six days — see [`TIER`].
+pub const N_TIERS: usize = MAT_METAL as usize + 1;
+
+/// Twig, wood, stone, metal — the photograph each tier wears, a scalar gain
+/// over it, perceptual roughness, metallic.
+///
+/// **This table had THREE rows against the sim's four materials until
+/// 2026-08-16, and every piece in the game drew one rung off.** `spawn_piece`
+/// indexed it `.min(2)`, so wood drew in the stone grey, stone drew as a
+/// `metallic: 0.85` conductor, metal was right by accident, and twig — which
+/// since twig v0 (`build.rs`, *"every piece enters the world as twig and
+/// nothing else"*) is the state every piece is FIRST seen in — had no row of
+/// its own at all. Nothing caught it because a colour table has no gate; the
+/// gate is `tests/pieces.rs` §A now, and it is a length check against
+/// `MAT_METAL`, so a fifth material is a red test rather than a silent
+/// inheritance.
+///
+/// **Every row wears a photograph** (`ART.md` rule 1: no surface may be one
+/// flat value). Pieces were the last surface in the client still drawing as a
+/// flat `base_color` — `props.rs` and `viewmodel.rs` have sampled these same
+/// already-shipped, already-manifested CC0 maps since 2026-08-11, and a wall
+/// is the largest flat thing a player ever stands in front of. Paths are
+/// `MapSet::load`'s, so the handles are the ones `PropMaps` already holds:
+/// the asset server keys on path plus settings, and these settings are the
+/// same, so wiring four tiers here costs zero extra residency.
+///
+/// **The gain is scalar and that is what makes it legal.** `ART.md` §7 bounds
+/// a per-channel gain to stretching a source's colour deviation by at most
+/// ×1; a scalar has span **1.000 by construction**, the same argument
+/// `GROUND_DETAIL_GAIN` is built on. Only twig carries one: it wears `bark`,
+/// which is the literal surface of a stick but measures luma 0.107 — darker
+/// than `wood` at 0.141, where the reference reads a twig frame as the PALER
+/// of the two. ×1.6 lands it at 0.171, between wood and stone, and clips
+/// 0.004% of texels (measured on the shipped file, 2026-08-16). The other
+/// three ship their colour whole, `base_color` white, exactly as the props do.
+///
+/// Roughness stays a scalar for the reason `props.rs` states: the `_rough`
+/// files are greyscale jpgs and `metallic_roughness_texture` is a glTF-packed
+/// ORM slot whose B channel is metallic, so binding one here would make every
+/// wall a half-metal. That needs a packing step, not a slot assignment.
+const TIER: [(&str, f32, f32, f32); N_TIERS] = [
+    // twig · lashed poles and thatch. The roughest thing in the game.
+    ("bark", 1.6, 0.95, 0.0),
+    ("wood", 1.0, 0.88, 0.0),
+    ("stone", 1.0, 0.72, 0.0),
+    // The one conductor: `ART.md` reads the reference's tier as *sheen* as
+    // much as hue, and a tier told apart by colour alone reads as paint.
+    ("metal", 1.0, 0.38, 0.85),
 ];
+
+/// One tier's cosmetics: texture role, scalar gain, roughness, metallic.
+///
+/// Public so `tests/pieces.rs` can gate the thing that actually broke — that
+/// every material the sim can send resolves to its OWN row, and that the role
+/// it names is a file that exists. A private table clamped by `.min(2)` is
+/// how four materials became three paints for six days.
+pub fn tier(material: u8) -> (&'static str, f32, f32, f32) {
+    TIER[(material as usize).min(N_TIERS - 1)]
+}
+
+/// Tiles of a tier's photograph per metre of piece surface.
+///
+/// **A piece mesh carried 0..1 UVs per face until 2026-08-16**, which is one
+/// tile stretched over a 3 m wall — the failure `textures.rs` records for the
+/// terrain, where a map that does not repeat "reads as no texture at all
+/// rather than as an error, so nothing would say so".
+///
+/// 0.5 is the authored structures' number (`props::authored`, the shelter and
+/// the canopy — the nearest thing in the tree to a built wall), and it puts a
+/// 1K map's texel at ~2 mm, well inside `ART.md` rule 1's < 5 cm near-field
+/// grain. It is deliberately NOT a whole number of tiles across a 3 m cell:
+/// at 0.5 a tile boundary would land exactly on every piece edge, which is
+/// rule 7's visible tiling drawn at the one place the eye is already looking.
+pub const PIECE_TILES_PER_M: f32 = 0.55;
+
+/// The per-face albedo multipliers a piece mesh carries in its vertices: top,
+/// side, bottom. A mean-1 LUMINANCE field, so it modulates the photograph
+/// instead of replacing it (`ART.md` §7, `props::tint1`'s form) — and being
+/// scalar per vertex, its colour-deviation span is 1.000 like the gain above.
+///
+/// Why it exists: the reference's foundations do not read as boxes because
+/// their top face is a different surface from their sides — a woven mat over
+/// poles, planks over beams, flagstone over coursed block. We cannot give a
+/// slab two materials without a second draw call, but the value separation is
+/// most of the read and it is free in a vertex.
+///
+/// The three average to exactly 1.0 — `(1.14 + 4 × 1.00 + 0.86) / 6` over a
+/// box's six faces — so a wall's delivered mean albedo is still the map's.
+const FACE_TOP: f32 = 1.14;
+const FACE_SIDE: f32 = 1.00;
+const FACE_BOTTOM: f32 = 0.86;
+
+/// A side face's own vertical ramp, foot to head. Rule 2 wants a contact term
+/// — *"nothing sits ON the ground; everything sits IN it"* — and a wall whose
+/// bottom metre is darker than its top reads as grounded for free. The two
+/// average to 1.0 over the face, so the ramp spends none of the mean.
+const SIDE_FOOT: f32 = 0.90;
+const SIDE_HEAD: f32 = 1.10;
 
 /// Deployable stand-ins by archetype (`sim_core::deploy` order: bag, hearth,
 /// box, fire, furnace, workbench, door, lock, recycler, research): full size
@@ -230,15 +330,14 @@ struct Kit {
     /// table — and deduplicated by size, so the doorway's two posts share a
     /// mesh and the three slab shapes share one slab.
     shape_mesh: [[Option<Handle<Mesh>>; MAX_PARTS]; N_SHAPES],
-    /// The unit cube and unit prism for the shapes whose one part is sized
-    /// PER ADDRESS rather than per shape — the foundations, whose skirt
-    /// depth follows the terrain under their cell ([`foundation_part`]).
-    /// One shared mesh scaled in the transform, so a hundred foundations
-    /// at a hundred depths are still one mesh and the hammer highlight's
-    /// one-entity contract (`Transform` + `Mesh3d`) holds.
-    unit_box: Handle<Mesh>,
-    unit_tri: Handle<Mesh>,
-    tier: [Handle<StandardMaterial>; 3],
+    /// The footings, for the shapes whose one part is sized PER ADDRESS
+    /// rather than per shape — the foundations, whose skirt depth follows
+    /// the terrain under their cell ([`foundation_part`]). Indexed by
+    /// [`skirt_step`]'s bucket, then by `Tri`, so a hundred foundations at a
+    /// hundred depths are `2 × SKIRT_STEPS` meshes and the hammer
+    /// highlight's one-entity contract (`Transform` + `Mesh3d`) holds.
+    footing: [[Handle<Mesh>; 2]; SKIRT_STEPS],
+    tier: [Handle<StandardMaterial>; N_TIERS],
     deploy_mesh: [Handle<Mesh>; DEPLOY.len()],
     deploy_mat: [Handle<StandardMaterial>; DEPLOY.len()],
     door_locked: Handle<StandardMaterial>,
@@ -405,7 +504,7 @@ pub const N_SHAPES: usize = SHAPE_TRI_ROOF as usize + 1;
 /// Returns a fixed array and a live count rather than pushing to a `Vec`:
 /// the ghost reads it on the frame path, and a [`Part`] is plain data.
 pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
-    let span = BUILD_CELL_M - SEAM_M;
+    let span = piece_span();
     let none = Part {
         size: Vec3::ZERO,
         offset: Vec3::ZERO,
@@ -585,6 +684,42 @@ pub const SKIRT_SINK_M: f32 = 0.35;
 /// the skirt hangs rather than growing without bound — the cap is wall
 /// 4's habit applied to a mesh.
 pub const SKIRT_MAX_M: f32 = 4.0;
+/// The step the drawn skirt's depth is quantised to, metres.
+///
+/// **Why a continuous depth had to become a discrete one.** The skirt is the
+/// one piece dimension that varies per ADDRESS, and it used to be drawn as a
+/// shared unit cube stretched by the transform — which is exactly what a
+/// metre-scaled UV cannot survive, because UVs do not scale with a transform
+/// (a 4 m skirt would wear one tile of stone stretched over its whole
+/// height). Quantising lets the kit cache one true-size mesh per depth and
+/// pick, so a hundred foundations at a hundred depths are still
+/// [`SKIRT_STEPS`] meshes and every one of them is correctly textured.
+///
+/// It rounds **up**, never down: a deeper skirt is still buried, where a
+/// shallower one could lift its bottom out of the ground and re-open the
+/// floating-plank screenshot the skirt exists to close. `tests/ghost.rs`
+/// gates that directly — the bottom must sit under every ground sample.
+pub const SKIRT_STEP_M: f32 = 0.25;
+/// How many quantised depths span [`SLAB_T`]..=[`SKIRT_MAX_M`] at
+/// [`SKIRT_STEP_M`]. Not derived in a const — `f32::ceil` is not const — so
+/// `tests/pieces.rs` §C sweeps the range and fails if this is short.
+pub const SKIRT_STEPS: usize = 16;
+
+/// The bucket a raw skirt depth draws at: its index, and the depth itself.
+///
+/// **One implementation, two callers** — [`foundation_part`] takes the depth
+/// and `build_kit`/`spawn_piece` take the index — for the reason every shared
+/// emit in this file exists: a mesh picked by one rule and sized by another
+/// is two rules, and they drift.
+pub fn skirt_step(raw: f32) -> (usize, f32) {
+    let over = (raw - SLAB_T).max(0.0);
+    let steps = (over / SKIRT_STEP_M).ceil() as usize;
+    let steps = steps.min(SKIRT_STEPS - 1);
+    (
+        steps,
+        (SLAB_T + steps as f32 * SKIRT_STEP_M).min(SKIRT_MAX_M),
+    )
+}
 
 /// The one drawn part of a foundation at its address: the slab whose top
 /// is the level plane, extended DOWN as a skirt until it is buried in the
@@ -610,7 +745,25 @@ pub const SKIRT_MAX_M: f32 = 4.0;
 /// residual). The top face is unmoved, so nothing about where a player
 /// stands changed with the skirt's depth.
 pub fn foundation_part(seed: u64, cx: u16, cz: u16, tri: bool) -> Part {
-    let span = BUILD_CELL_M - SEAM_M;
+    let span = piece_span();
+    let (_, depth) = footing_of(seed, cx, cz);
+    Part {
+        size: Vec3::new(span, depth, span),
+        offset: Vec3::new(0.0, -depth * 0.5, 0.0),
+        x_rot: 0.0,
+        kind: if tri { PartKind::Tri } else { PartKind::Box },
+    }
+}
+
+/// A cell's footing: which cached mesh draws it, and how deep that mesh is.
+///
+/// **Both callers ask this, never each other** — [`foundation_part`] wants
+/// the depth and `spawn_piece` wants the index — because recovering the index
+/// by dividing the depth back out would be a second quantisation, and two
+/// float quantisations of one value disagree at the bucket boundary by
+/// exactly one bucket. That is a foundation drawn 0.25 m too deep with every
+/// gate green, which is this file's oldest failure shape wearing a new hat.
+pub fn footing_of(seed: u64, cx: u16, cz: u16) -> (usize, f32) {
     let base = sim_core::build::column_floor_y(seed, cx, cz);
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
@@ -627,84 +780,220 @@ pub fn foundation_part(seed: u64, cx: u16, cz: u16, tri: bool) -> Part {
     ] {
         lo = lo.min(terrain::height(seed, px, pz));
     }
-    let depth = (base - lo + SKIRT_SINK_M).clamp(SLAB_T, SKIRT_MAX_M);
-    Part {
-        size: Vec3::new(span, depth, span),
-        offset: Vec3::new(0.0, -depth * 0.5, 0.0),
-        x_rot: 0.0,
-        kind: if tri { PartKind::Tri } else { PartKind::Box },
-    }
+    skirt_step((base - lo + SKIRT_SINK_M).clamp(SLAB_T, SKIRT_MAX_M))
 }
 
 /// The mesh a [`Part`] fills its extents with: the cuboid, or the NW
-/// half-cell prism scaled to size. One function for the kit's cache and
-/// the ghost's rebuild, so the preview and the piece cannot disagree
-/// about what a triangle looks like.
+/// half-cell prism, **built at its true size in metres**. One function for
+/// the kit's cache and the ghost's rebuild, so the preview and the piece
+/// cannot disagree about what a triangle looks like.
+///
+/// Both builders emit the four things a piece needs and none of which it had
+/// before 2026-08-16, each of which fails SILENTLY when absent:
+///
+/// 1. **Metre-scaled UVs** ([`PIECE_TILES_PER_M`]) instead of 0..1 per face —
+///    a stretched tile reads as no texture, not as an error.
+/// 2. **Per-face vertex tint** ([`FACE_TOP`] and friends), the mean-1 field
+///    that separates a slab's top from its sides.
+/// 3. **Tangents**, without which Bevy ignores `normal_map_texture` outright
+///    and the surface stays flat — `props.rs` calls this "the failure that
+///    looks like 'the texture did not load' and reports nothing at all".
+/// 4. **Flat normals on unshared vertices**, which the prism already had and
+///    `Cuboid` also gives; a piece is faceted by construction.
+///
+/// The size is baked into the vertices rather than left to a transform scale
+/// for reason 1: UVs do not scale with a transform, so a shared unit mesh
+/// cannot carry a correct metre UV for two different sizes. That is also why
+/// a foundation's skirt depth is quantised ([`skirt_step`]) — a per-address
+/// depth would otherwise mean a per-address mesh.
 pub fn part_mesh(part: &Part) -> Mesh {
     match part.kind {
-        PartKind::Box => Cuboid::new(part.size.x, part.size.y, part.size.z).into(),
-        PartKind::Tri => tri_prism_unit().scaled_by(part.size),
+        PartKind::Box => box_mesh(part.size),
+        PartKind::Tri => tri_prism_mesh(part.size),
     }
 }
 
-/// The unit NW half-cell prism: the triangle {u + w ≤ 0} over x, z ∈
-/// [−½, ½], extruded y ∈ [−½, ½] — corners at (−½,−½), (½,−½), (−½,½),
-/// hypotenuse facing +x+z. Flat normals per face (the pieces are
-/// flat-shaded greybox like the cuboids); positions/normals/uv0 only,
-/// the same vertex layout every other piece mesh has, so no new pipeline
-/// specializes for it (`RENDER.md` §2's prewarm trap).
-fn tri_prism_unit() -> Mesh {
+/// A quad's worth of vertices for one face, appended to the buffers.
+///
+/// `corners` runs the rim of the face in order, and the caller is responsible
+/// for handing them over counter-clockwise seen from OUTSIDE — which the two
+/// builders below get for free by walking a `(u, v)` pair chosen so
+/// `u × v = n`, rather than by a per-face special case.
+///
+/// The UV runs corner 0→1 then 0→3, in metres, so two faces of different
+/// sizes wear the same texture density.
+fn quad(b: &mut Buffers, corners: [Vec3; 4], n: Vec3, tint: impl Fn(Vec3) -> f32) {
+    let (pos, nor, col, uv, idx) = b;
+    let base = pos.len() as u32;
+    // Edge lengths in metres, straight off the corners, so a face whose
+    // extent is not axis-aligned (the prism's hypotenuse) is still measured
+    // rather than assumed.
+    let du = (corners[1] - corners[0]).length() * PIECE_TILES_PER_M;
+    let dv = (corners[3] - corners[0]).length() * PIECE_TILES_PER_M;
+    for (i, c) in corners.iter().enumerate() {
+        pos.push([c.x, c.y, c.z]);
+        nor.push([n.x, n.y, n.z]);
+        let t = tint(*c);
+        col.push([t, t, t, 1.0]);
+        uv.push(match i {
+            0 => [0.0, 0.0],
+            1 => [du, 0.0],
+            2 => [du, dv],
+            _ => [0.0, dv],
+        });
+    }
+    idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+/// The mean-1 albedo multiplier a vertex at `y` on a face with normal `n`
+/// carries: flat per face, plus the foot-to-head ramp on the uprights.
+///
+/// `y0`/`y1` are the part's own vertical extent, so the ramp spans the part
+/// rather than the world — a 3 m wall and a 0.3 m floor edge each get the
+/// full range over their own height.
+fn face_tint(n: Vec3, y: f32, y0: f32, y1: f32) -> f32 {
+    if n.y > 0.5 {
+        return FACE_TOP;
+    }
+    if n.y < -0.5 {
+        return FACE_BOTTOM;
+    }
+    let span = y1 - y0;
+    let t = if span > 1e-6 {
+        ((y - y0) / span).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    FACE_SIDE * (SIDE_FOOT + (SIDE_HEAD - SIDE_FOOT) * t)
+}
+
+/// Positions, normals, colours, UVs, indices — the buffers every piece mesh
+/// is assembled into, finished by [`finish`].
+type Buffers = (
+    Vec<[f32; 3]>,
+    Vec<[f32; 3]>,
+    Vec<[f32; 4]>,
+    Vec<[f32; 2]>,
+    Vec<u32>,
+);
+
+fn buffers(n: usize) -> Buffers {
+    (
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+        Vec::with_capacity(n),
+    )
+}
+
+/// Assemble the buffers into a mesh and generate its tangents.
+///
+/// The tangent generation is `expect`ed rather than handled: mikktspace
+/// refuses a degenerate triangle, and a piece part with a zero extent is a
+/// malformed table row, not a missing capability. `props.rs` takes the same
+/// position for the same reason — fail at boot, never ship a surface whose
+/// relief silently vanished.
+fn finish((pos, nor, col, uv, idx): Buffers) -> Mesh {
     use bevy::asset::RenderAssetUsages;
     use bevy::mesh::{Indices, PrimitiveTopology};
-    let h = 0.5f32;
-    // The three cross-section corners, CCW seen from +y (bevy's up).
-    let a = [-h, 0.0, -h]; // right angle (NW corner)
-    let b = [h, 0.0, -h]; // N-E corner
-    let c = [-h, 0.0, h]; // S-W corner
-    let mut pos: Vec<[f32; 3]> = Vec::with_capacity(24);
-    let mut nor: Vec<[f32; 3]> = Vec::with_capacity(24);
-    let mut uv: Vec<[f32; 2]> = Vec::with_capacity(24);
-    let mut idx: Vec<u32> = Vec::with_capacity(24);
-    // Top face (+y), CCW from above.
-    pos.extend([[a[0], h, a[2]], [b[0], h, b[2]], [c[0], h, c[2]]]);
-    nor.extend([[0.0, 1.0, 0.0]; 3]);
-    uv.extend([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
-    idx.extend([0, 2, 1]);
-    // Bottom face (−y), wound the other way.
-    let base = pos.len() as u32;
-    pos.extend([[a[0], -h, a[2]], [b[0], -h, b[2]], [c[0], -h, c[2]]]);
-    nor.extend([[0.0, -1.0, 0.0]; 3]);
-    uv.extend([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
-    idx.extend([base, base + 1, base + 2]);
-    // The two square sides and the hypotenuse. Outward normals: the N
-    // side faces −z, the W side −x, the hypotenuse +x+z (normalised).
-    let s = std::f32::consts::FRAC_1_SQRT_2;
-    for (p0, p1, n) in [
-        (a, b, [0.0, 0.0, -1.0]),
-        (c, a, [-1.0, 0.0, 0.0]),
-        (b, c, [s, 0.0, s]),
-    ] {
-        // A side wall of the prism: p0→p1 along the top, dropped to −h.
-        let base = pos.len() as u32;
-        pos.extend([
-            [p0[0], h, p0[2]],
-            [p1[0], h, p1[2]],
-            [p1[0], -h, p1[2]],
-            [p0[0], -h, p0[2]],
-        ]);
-        nor.extend([n; 4]);
-        uv.extend([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
-        idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
     let mut m = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     );
     m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
     m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nor);
+    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
     m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
     m.insert_indices(Indices::U32(idx));
+    m.generate_tangents()
+        .expect("a piece part has positions, normals and UVs");
     m
+}
+
+/// A box of `size`, centred on its own origin.
+fn box_mesh(size: Vec3) -> Mesh {
+    let h = size * 0.5;
+    let mut b = buffers(24);
+    // (normal, u, v) with u × v = normal — see [`quad`].
+    for (n, u, v) in [
+        (Vec3::Y, Vec3::Z, Vec3::X),
+        (Vec3::NEG_Y, Vec3::X, Vec3::Z),
+        (Vec3::X, Vec3::Y, Vec3::Z),
+        (Vec3::NEG_X, Vec3::Z, Vec3::Y),
+        (Vec3::Z, Vec3::X, Vec3::Y),
+        (Vec3::NEG_Z, Vec3::Y, Vec3::X),
+    ] {
+        let c = n * h;
+        let (hu, hv) = ((u * h).length(), (v * h).length());
+        quad(
+            &mut b,
+            [
+                c - u * hu - v * hv,
+                c + u * hu - v * hv,
+                c + u * hu + v * hv,
+                c - u * hu + v * hv,
+            ],
+            n,
+            |p| face_tint(n, p.y, -h.y, h.y),
+        );
+    }
+    finish(b)
+}
+
+/// The NW half-cell prism at true size: the triangle {u + w ≤ 0} over
+/// x, z ∈ [−½, ½] × `size`, extruded over y — corners at (−½,−½), (½,−½),
+/// (−½,½), hypotenuse facing +x+z.
+fn tri_prism_mesh(size: Vec3) -> Mesh {
+    let h = size * 0.5;
+    // The three cross-section corners, CCW seen from +y (bevy's up).
+    let a = Vec3::new(-h.x, 0.0, -h.z); // right angle (NW corner)
+    let b = Vec3::new(h.x, 0.0, -h.z); // N-E corner
+    let c = Vec3::new(-h.x, 0.0, h.z); // S-W corner
+    let mut buf = buffers(21);
+    // The two triangular caps. They are emitted by hand rather than through
+    // `quad` — a triangle is not a quad, and its UV is the cross-section's
+    // own x/z in metres so the cap's grain matches the sides'.
+    for (ny, y, wind) in [(1.0f32, h.y, false), (-1.0, -h.y, true)] {
+        let (pos, nor, col, uv, idx) = &mut buf;
+        let base = pos.len() as u32;
+        let n = Vec3::new(0.0, ny, 0.0);
+        let t = face_tint(n, y, -h.y, h.y);
+        for p in [a, b, c] {
+            pos.push([p.x, y, p.z]);
+            nor.push([0.0, ny, 0.0]);
+            col.push([t, t, t, 1.0]);
+            uv.push([
+                (p.x + h.x) * PIECE_TILES_PER_M,
+                (p.z + h.z) * PIECE_TILES_PER_M,
+            ]);
+        }
+        if wind {
+            idx.extend([base, base + 1, base + 2]);
+        } else {
+            idx.extend([base, base + 2, base + 1]);
+        }
+    }
+    // The two square sides and the hypotenuse. Outward normals: the N side
+    // faces −z, the W side −x, the hypotenuse +x+z. The hypotenuse's normal
+    // is derived from the corners rather than the 45° constant the unit
+    // prism could assume — a non-square cell would tilt it.
+    for (p0, p1) in [(a, b), (c, a), (b, c)] {
+        let e = p1 - p0;
+        let n = Vec3::new(e.z, 0.0, -e.x).normalize();
+        quad(
+            &mut buf,
+            [
+                p0 + Vec3::Y * h.y,
+                p1 + Vec3::Y * h.y,
+                p1 - Vec3::Y * h.y,
+                p0 - Vec3::Y * h.y,
+            ],
+            n,
+            |p| face_tint(n, p.y, -h.y, h.y),
+        );
+    }
+    finish(buf)
 }
 
 /// The world transform of an address's base point: the canonical anchor
@@ -790,10 +1079,16 @@ fn build_kit(
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
 ) -> Kit {
+    // The photographs. `base_color` is the scalar gain in grey rather than a
+    // hue — the map ships its own colour, and a coloured multiply here would
+    // be the per-channel gain `ART.md` §7 bounds (see [`TIER`]).
     let tier = std::array::from_fn(|i| {
-        let (base_color, perceptual_roughness, metallic) = TIER[i];
+        let (role, gain, perceptual_roughness, metallic) = TIER[i];
+        let map = MapSet::load(assets, role);
         materials.add(StandardMaterial {
-            base_color,
+            base_color: Color::linear_rgb(gain, gain, gain),
+            base_color_texture: Some(map.albedo),
+            normal_map_texture: Some(map.normal),
             perceptual_roughness,
             metallic,
             ..default()
@@ -866,15 +1161,19 @@ fn build_kit(
             *slot = Some(handle);
         }
     }
+    // One footing mesh per quantised depth, per kind — built here rather
+    // than on demand so a player walking onto new ground never pays a mesh
+    // upload mid-frame (`RENDER.md` §2's prewarm discipline, applied to
+    // geometry).
+    let span = piece_span();
+    let footing = std::array::from_fn(|i| {
+        let depth = SLAB_T + i as f32 * SKIRT_STEP_M;
+        let size = Vec3::new(span, depth.min(SKIRT_MAX_M), span);
+        [meshes.add(box_mesh(size)), meshes.add(tri_prism_mesh(size))]
+    });
     Kit {
         shape_mesh,
-        unit_box: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
-        unit_tri: meshes.add(part_mesh(&Part {
-            size: Vec3::ONE,
-            offset: Vec3::ZERO,
-            x_rot: 0.0,
-            kind: PartKind::Tri,
-        })),
+        footing,
         tier,
         deploy_mesh,
         deploy_mat,
@@ -1044,7 +1343,11 @@ fn spawn_piece(
     shape: u8,
     material: u8,
 ) -> Entity {
-    let mat = kit.tier[(material as usize).min(2)].clone();
+    // Clamped, not `.min(2)`: the table covers every material the sim has
+    // (`N_TIERS`, gated in `tests/pieces.rs` §A), so this only catches a
+    // material the sim gained without a row here — which is a red test long
+    // before it is a wrong wall.
+    let mat = kit.tier[(material as usize).min(N_TIERS - 1)].clone();
     // Edge pieces stand on the cell's low-x (x = cx·3) or low-z (z = cz·3)
     // boundary — canonical, so one physical edge is never addressable twice
     // (`build.rs`) — and the parts are the shared table's, so this and the
@@ -1061,16 +1364,17 @@ fn spawn_piece(
         sim_core::build::SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION
     ) {
         let part = foundation_part(seed, addr.0, addr.1, shape == SHAPE_TRI_FOUNDATION);
-        let unit = match part.kind {
-            PartKind::Box => kit.unit_box.clone(),
-            PartKind::Tri => kit.unit_tri.clone(),
-        };
+        // The mesh is picked by the same call that sized the part, and it is
+        // already true-size — so the transform carries NO scale, which is
+        // what lets the skirt wear a metre-scaled texture at all.
+        let (step, _) = footing_of(seed, addr.0, addr.1);
+        let mesh = kit.footing[step][usize::from(part.kind == PartKind::Tri)].clone();
         return commands
             .spawn((
                 super::WorldEntity,
-                Mesh3d(unit),
+                Mesh3d(mesh),
                 MeshMaterial3d(mat),
-                (root * part.transform()).with_scale(part.size),
+                root * part.transform(),
             ))
             .id();
     }
