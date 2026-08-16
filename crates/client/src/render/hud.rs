@@ -1229,7 +1229,7 @@ pub fn feedback(
     // a dry shoreline for free. A ring since 2026-08-15: this read the
     // `last_eat` latch off `Feed::applied`, and two answers in one drain
     // window collapsed — a landed eat vanished under a refusal that arrived
-    // in the same frame, which `KeyG` + `KeyH` in one frame produces.
+    // in the same frame, which `KeyJ` + `KeyH` in one frame produces.
     //
     // Why say anything: a bandage that worked and a bandage that was refused
     // looked identical from the chair. The only evidence of the first was the

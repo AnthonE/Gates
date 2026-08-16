@@ -64,7 +64,7 @@ pub enum Refused {
     Build,
     Deploy,
     Research,
-    /// An eat (`G`) or a drink (`H`) that did nothing —
+    /// An eat (`J`) or a drink (`H`) that did nothing —
     /// `sim_core::survival`'s `REFUSE_C_*`.
     ///
     /// **One variant for two verbs**, because the sim answers both on one
@@ -118,7 +118,7 @@ pub struct Feed {
     /// `Refused::Consume`. A ring since 2026-08-15 — it was a latched field
     /// pair (`last_eat` / `last_eat_refused`), and two consume answers in
     /// one drain window collapsed, which one frame reaches from the
-    /// keyboard (`KeyG` + `KeyH` are answered by one `World::tick`).
+    /// keyboard (`KeyJ` + `KeyH` are answered by one `World::tick`).
     consumed: [(u16, u16); FEED_CAP],
     n_consumed: usize,
     /// Knocks heard this frame: the door's address and who knocked (lock
@@ -315,7 +315,7 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     // pair (`last_eat` / `last_eat_refused`) plus `APPLIED_CONSUME`, and two
     // answers in one drain window collapsed — `Consumed` zeroed the reason,
     // `ConsumeRefused` overwrote it — which one frame reaches from the
-    // keyboard, because `KeyG` and `KeyH` are two independent presses that
+    // keyboard, because `KeyJ` and `KeyH` are two independent presses that
     // one `World::tick` answers together. `client-core`'s
     // `two_consume_answers_in_one_drain_window_both_surface` holds it.
     //

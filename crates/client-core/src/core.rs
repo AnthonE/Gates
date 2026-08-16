@@ -113,7 +113,7 @@ pub const APPLIED_VITALS: u32 = 1 << 27;
 /// ring gained an entry. One flag for both because the response to either
 /// is the same: drain `pop_consume_toast` and `pop_consume_refusal`, which
 /// say which it was. Rings since 2026-08-15 — as a field plus this bit, two
-/// answers in one drain window collapsed, and `KeyG` + `KeyH` in one frame
+/// answers in one drain window collapsed, and `KeyJ` + `KeyH` in one frame
 /// is answered by one `World::tick`.
 pub const APPLIED_CONSUME: u32 = 1 << 28;
 /// A drink landed (`EventMsg::Drank`). Its own bit and not `CONSUME`'s: a
@@ -848,7 +848,7 @@ pub struct ClientCore {
     /// 2026-08-15: as a field plus one bit (`last_eat` / `last_eat_refused`)
     /// two consume answers in one drain window collapsed — `Consumed` zeroed
     /// the reason and `ConsumeRefused` overwrote it — and one frame reaches
-    /// that from the keyboard, because `KeyG` and `KeyH` are two independent
+    /// that from the keyboard, because `KeyJ` and `KeyH` are two independent
     /// presses answered by one `World::tick`. Drained by `render/feed.rs`,
     /// worded by `render/hud.rs` off `Feed::consumed`.
     consume_toasts: [(u16, u16); TOAST_RING],
@@ -2713,7 +2713,7 @@ mod tests {
     /// the rings landed: `last_eat` / `last_eat_refused` were fields plus
     /// one bit, so two consume answers in one drain window collapsed —
     /// `Consumed` zeroed the reason and `ConsumeRefused` overwrote it. One
-    /// frame reaches that from the keyboard: `KeyG` and `KeyH` are two
+    /// frame reaches that from the keyboard: `KeyJ` and `KeyH` are two
     /// independent `just_pressed` checks in one system, and one
     /// `World::tick` answers both. Run against the field pair (2026-08-15),
     /// the land-then-refuse half failed "the landed eat vanished under the
