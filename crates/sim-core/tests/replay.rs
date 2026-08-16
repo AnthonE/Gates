@@ -300,7 +300,31 @@ const TICKS: u64 = 900;
 /// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
 /// this value was read off — the panic that produced it was at the pin
 /// line alone, with both determinism asserts above it already passed.
-const GOLDEN_FINAL_HASH: u64 = 0x3151_CF28_D719_7EF6;
+///
+/// **Regenerated 2026-08-16 for the build base lattice** (`DECISIONS.md`
+/// §open "build base lattice v0"): `build::column_floor_y` snaps every
+/// column's base to the 0.5 m lattice, so every piece, solid-deploy
+/// volume and box-drop height this script produces moved by up to a
+/// quarter-quantum — positions the bodies then walk on, which is the
+/// whole surface. The same change made a solid top take the step rule
+/// (`collide::deploy_blocked`), so the bots' paths over the barrel beach
+/// shifted too. No verb changed; `test_terrain_golden` did NOT move
+/// (worldgen itself is untouched — the lattice reads terrain, it does
+/// not write it). Evidence as above: both determinism equalities were
+/// green on the run this value was read off, run twice.
+///
+/// **Regenerated 2026-08-16 a third time, and this one is neither shape —
+/// it is the MERGE of the two above.** Durability v0 and the build base
+/// lattice landed on separate branches, each regenerating this pin for
+/// its own cause, and each was right about its own tree. Neither hash
+/// describes the tree that has both, so the merge could not pick a side:
+/// `0x3151…` (durability) and `0x8A52…` (lattice) are both stale here.
+/// The value below was read off the merged tree, and the evidence is the
+/// same as every entry above and load-bearing precisely because a merge
+/// is where a golden is easiest to wave through — both determinism
+/// equalities green, `test_terrain_golden` unmoved, and the failure that
+/// produced it at the pin line alone.
+const GOLDEN_FINAL_HASH: u64 = 0x1EFA_E540_E48C_195D;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

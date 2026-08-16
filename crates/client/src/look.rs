@@ -161,6 +161,47 @@ pub fn pitch_after(pitch: f32, dy_px: f32, rad_per_px: f32, invert: bool, limit:
     (pitch - dy * rad_per_px).clamp(-limit, limit)
 }
 
+/// How far the head may turn from the body while free look is held, radians.
+///
+/// **Ours, and not measured off the reference** (`DECISIONS.md` §open, "free
+/// look v0"): the reference offers the verb and publishes no number for it,
+/// and `BALANCE.md` §6 governs *sim* values rather than a client cosmetic, so
+/// this is a documented default rather than a taken one. 120° is chosen to be
+/// wider than a shoulder check and short of the full turn that would let the
+/// camera face the body's back — at which point the player is walking
+/// backwards with no way to tell.
+pub const FREE_LOOK_YAW_LIMIT: f32 = 2.094_395_1;
+
+/// The head's yaw OFFSET from the body after a mouse move, while free look
+/// is held.
+///
+/// Subtracted for exactly [`yaw_after`]'s reason, and that shared sign is the
+/// property worth gating: a free look that turned the opposite way from an
+/// ordinary look would be the header's original bug back again, in a mode
+/// nobody re-tests.
+pub fn free_yaw_after(offset: f32, dx_px: f32, rad_per_px: f32, limit: f32) -> f32 {
+    (offset - dx_px * rad_per_px).clamp(-limit, limit)
+}
+
+/// The head's pitch OFFSET from the body after a mouse move, while free look
+/// is held.
+///
+/// Clamped against the BODY's own pitch rather than against zero, so the
+/// summed view still stops short of the pole. Clamping the offset alone would
+/// let a body already pitched up carry the camera past vertical, where the
+/// yaw basis degenerates — [`PITCH_LIMIT`]'s whole reason.
+pub fn free_pitch_after(
+    offset: f32,
+    body: f32,
+    dy_px: f32,
+    rad_per_px: f32,
+    invert: bool,
+    limit: f32,
+) -> f32 {
+    let dy = if invert { -dy_px } else { dy_px };
+    (offset - dy * rad_per_px).clamp(-limit - body, limit - body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,5 +429,56 @@ mod tests {
         assert!(pitch_after(0.0, 100.0, 0.0022, true, limit) > 0.0);
         assert!(pitch_after(0.0, 100_000.0, 0.0022, false, limit) >= -limit);
         assert!(pitch_after(0.0, -100_000.0, 0.0022, false, limit) <= limit);
+    }
+
+    /// The head turns the same way the body does. A free look that answered a
+    /// rightward push by turning left would be the module header's original
+    /// defect surviving inside a mode, which is the one place it could hide.
+    #[test]
+    fn free_look_turns_the_same_way_an_ordinary_look_does() {
+        let rad = MOUSE_RAD_PER_PX;
+        for dx in [30.0f32, 120.0, -75.0] {
+            let ordinary = yaw_after(0.0, dx, rad);
+            let free = free_yaw_after(0.0, dx, rad, FREE_LOOK_YAW_LIMIT);
+            assert_eq!(
+                ordinary.signum(),
+                free.signum(),
+                "dx {dx}: the head and the body disagree about right",
+            );
+            assert!(
+                (ordinary - free).abs() < 1e-6,
+                "dx {dx}: same push, different travel"
+            );
+        }
+    }
+
+    #[test]
+    fn the_head_cannot_turn_past_its_limit() {
+        let rad = MOUSE_RAD_PER_PX;
+        let lim = FREE_LOOK_YAW_LIMIT;
+        // Push far enough to lap the circle several times, both ways.
+        assert!(free_yaw_after(0.0, 100_000.0, rad, lim) >= -lim);
+        assert!(free_yaw_after(0.0, -100_000.0, rad, lim) <= lim);
+        // And it saturates rather than wrapping — a head that wrapped would
+        // face the body's back with the player still walking forward.
+        assert!((free_yaw_after(0.0, -100_000.0, rad, lim) - lim).abs() < 1e-6);
+    }
+
+    /// The offset is clamped against the BODY's pitch, so the summed view
+    /// stops at the same pole an ordinary look does — whatever the body was
+    /// already doing when free look started.
+    #[test]
+    fn the_summed_free_pitch_never_passes_the_pole() {
+        let rad = MOUSE_RAD_PER_PX;
+        for body in [-1.4f32, -0.5, 0.0, 0.5, 1.4] {
+            for dy in [100_000.0f32, -100_000.0] {
+                let off = free_pitch_after(0.0, body, dy, rad, false, PITCH_LIMIT);
+                let total = body + off;
+                assert!(
+                    (-PITCH_LIMIT - 1e-4..=PITCH_LIMIT + 1e-4).contains(&total),
+                    "body {body}, dy {dy}: view reached {total}",
+                );
+            }
+        }
     }
 }

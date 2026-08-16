@@ -22,6 +22,8 @@
 
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
+use client_core::core::ClientCore;
+use sim_core::build::{SHAPE_FOUNDATION, SHAPE_TRI_FOUNDATION};
 use sim_core::limits::MAX_BUILD_LEVELS;
 
 use crate::look::yaw_u16;
@@ -29,10 +31,32 @@ use crate::ui::build::{row_for, PLACE_MATERIAL, SHAPES};
 use crate::ui::place::{self, DeploySite, DeployVerdict, Site, Target, Verdict};
 
 use super::hud::Toast;
-use super::input::Look;
+use super::input::{pitch_u8, Look};
 use super::panels::Ui;
 use super::structures::{self, base_transform, deploy_transform, shape_parts};
-use super::{Net, WorldId};
+use super::{Net, WorldId, EYE_HEIGHT};
+
+/// The planar point the ghost aims at: the LOOK ray — eye, yaw AND pitch,
+/// the tracer's own ray convention, so the ghost sits where a shot would
+/// land — marched into the world by [`place::aim_from_look`] against
+/// terrain and the predictor's piece surfaces.
+///
+/// Until 2026-08-15 the aim was `feet + yaw · 3.5 m`, pitch discarded: the
+/// crosshair rested on one cell and the ghost stood on another, which is
+/// how that day's playtest read `SPOT TAKEN` off a gap. The ray is the
+/// crosshair now; the fixed projection survives inside `aim_from_look` as
+/// the sky/out-of-range fallback.
+fn aim_point(seed: u64, core: &ClientCore, look: &Look, feet: [f32; 3]) -> (f32, f32) {
+    let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
+    let (ch, sv) = sim_core::pitch_dir(pitch_u8(look.pitch));
+    place::aim_from_look(
+        seed,
+        core.pieces.cols(),
+        [feet[0], feet[1] + EYE_HEIGHT, feet[2]],
+        [fx * ch, sv, fz * ch],
+        (feet[0], feet[2]),
+    )
+}
 
 /// The ghost's translucency, and its two verdicts. Cosmetics
 /// (`DECISIONS.md` §open, client cosmetics).
@@ -187,9 +211,9 @@ pub fn track(
         return;
     };
 
-    let [x, _, z] = core.predict.render_position();
-    let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
-    let target = place::target(x, z, fx, fz, shape, ghost.level);
+    let [x, y, z] = core.predict.render_position();
+    let aim = aim_point(world.seed, core, &look, [x, y, z]);
+    let target = place::target_at(aim.0, aim.1, shape, ghost.level);
     let verdict = place::verdict(
         target,
         row,
@@ -235,6 +259,19 @@ pub fn track(
     // Rebuild the children only when the shape changes. `despawn_related` drops
     // the previous set; a shape that keeps its part count would still be
     // rebuilt, which is fine because the trigger is a wheel turn.
+    // A foundation's one part is per-ADDRESS, not per shape: the skirt
+    // depth follows the terrain under the aimed cell
+    // (`structures::foundation_part` — the same emit the standing piece
+    // draws, so the preview promises exactly the object the click buys).
+    let footing = matches!(shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION).then(|| {
+        structures::foundation_part(
+            world.seed,
+            target.cx,
+            target.cz,
+            shape == SHAPE_TRI_FOUNDATION,
+        )
+    });
+
     if ghost.built_shape != Some(shape) {
         ghost.built_shape = Some(shape);
         commands.entity(root).despawn_related::<Children>();
@@ -243,8 +280,13 @@ pub fn track(
         // The shared table (`structures::shape_parts`): one unit mesh —
         // the cube, or the prism for a Tri part — scaled per part, where
         // the piece will use a real-size mesh per part. Same sizes, same
-        // offsets, same pitch, one emit site.
-        let (parts, n) = shape_parts(shape);
+        // offsets, same pitch, one emit site. The foundations' one part is
+        // the per-address footing computed above instead of the table's
+        // fixed-thickness fallback arm.
+        let (mut parts, n) = shape_parts(shape);
+        if let Some(part) = footing {
+            parts[0] = part;
+        }
         commands.entity(root).with_children(|c| {
             for part in &parts[..n] {
                 let unit = match part.kind {
@@ -266,13 +308,19 @@ pub fn track(
             }
         });
     } else {
-        // Same shape, so only the verdict colour can have moved.
+        // Same shape, so the verdict colour can have moved — and for a
+        // foundation, the footing's depth with the aimed cell.
         let kids: Vec<Entity> = children
             .get(root)
             .map(|c| c.iter().collect())
             .unwrap_or_default();
         for k in kids {
             commands.entity(k).insert(MeshMaterial3d(mat.clone()));
+            if let Some(part) = footing {
+                commands
+                    .entity(k)
+                    .insert(part.transform().with_scale(part.size));
+            }
         }
     }
 }
@@ -416,13 +464,13 @@ pub fn deploy_track(
     let arch = def.arch as usize;
     let size = super::structures::deploy_size(arch);
 
-    let [x, _, z] = core.predict.render_position();
-    let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
+    let [x, y, z] = core.predict.render_position();
+    let aim = aim_point(world.seed, core, &look, [x, y, z]);
     // A doorway-class deployable resolves an edge (the level is the build
     // ghost's working latch — placing a doorway at L1 leaves the latch
     // there, so the door that follows it aims the same storey); everything
     // else keeps `deploy_key`'s original plane target at level 0.
-    let t = place::deploy_target(x, z, fx, fz, def.placement, ghost.level);
+    let t = place::deploy_target_at(aim.0, aim.1, def.placement, ghost.level);
     let verdict = place::deploy_verdict(
         t,
         row,

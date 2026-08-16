@@ -1,7 +1,7 @@
 {
  "scry": 1,
  "game": "gates",
- "version": "0.2.0",
+ "version": "0.3.0",
  "_version": "The workspace version in Cargo.toml. scry never copies this onto the store row \u2014 it serves it beside the version actually published in its depot and flags the gap, so a tag ahead of a build shows up as a gap instead of vanishing. ci/scry_manifest.py --self-test keeps this equal to Cargo.toml, the same check release.yml already makes against a tag.",
  "listing": {
   "kind": "survival \u2014 100-player shards",
@@ -19,6 +19,14 @@
   "repo_public": true
  },
  "_listing": "These fields are now THIS REPO's to write: whatever is here wins on the next pull, so editing them at scry's store desk is temporary and editing them here is permanent. Seeded byte-for-byte from the row as it stood 2026-08-11, so wiring this up changed no copy. Fields deliberately NOT claimed: state and play_url (the house decides when a title reads live), and capsule/hero/media (art is uploaded, not committed \u2014 a manifest is text and cannot ship bytes). band/hidden/placeholder/lane/note are the house's and a manifest may not write them at all.",
+ "updates": [
+  {
+   "id": "v0.3.0",
+   "kind": "release",
+   "title": "0.3.0 \u2014 raiding, the research board, and an island with its colour back",
+   "body": "You wake with a rock and a torch now, and bare hands gather nothing \u2014 the rock is the bootstrap tool, and it is re-granted every time you come back. Eat and drink were dead buttons and are verbs again. The day/night cycle is 80 minutes, 70 of them light.\n\nRaiding works end to end: a satchel planted on a real base breaches it on the live wire, a swing pays by stance and by which face of the wall you hit, and a hundred bots can raid at once without a cap giving way. Research is a board instead of a list \u2014 the scrap era's ladder, workbench tiers 2 and 3, and the blueprint-gated items that previously had no way in. Dying no longer deletes the blueprints you paid for.\n\nThe island reads properly now: four ground surfaces that were quietly sharing one texture, undergrowth that grows instead of reading as gravel, and a sun, a compass and a map that agree on which way east is. F12 takes a screenshot.\n\nThis one breaks the wire \u2014 0.2.0 clients cannot join a 0.3.0 shard, so update before you connect. 124 commits since 0.2.0."
+  }
+ ],
  "_updates": "No posts in the first manifest on purpose \u2014 a post is public the moment it is pulled. Add entries here on a release: {\"id\": \"v0.2.0\", \"kind\": \"release\", \"title\": ..., \"body\": ...}. The id is what makes re-reading this file idempotent, so old entries are harmless to leave.",
  "_next": "Signed by scry.sig.json beside this file, over these exact bytes. Edit this and it must be re-signed \u2014 ci/gates.sh fails otherwise. Standard: https://scry.moreright.xyz/api/library/GAME-REPO.md"
 }

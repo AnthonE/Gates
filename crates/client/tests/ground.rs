@@ -32,8 +32,15 @@ use sim_core::terrain;
 const SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// One patch's per-vertex output, in the order the comparison walks it:
-/// positions, normals, colours.
-type Attrs = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>);
+/// positions, normals, splat weights, modifiers.
+///
+/// **The third slot used to be the resolved colour and is now the four splat
+/// weights** (2026-08-15, the splat material): the colour is resolved
+/// per-pixel in `ground_splat.wgsl` and what the mesh carries is its input.
+/// The fourth is new and is the half that would otherwise have gone unwatched
+/// — `UV_1`'s macro break-up and waterline are derived from exactly the shared
+/// taps this gate exists to check, so they belong under it.
+type Attrs = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<[f32; 2]>);
 
 /// `heightfield`'s body with every share taken back out — nine taps a vertex,
 /// `terrain::splat` resolving its own height and slope. This is what the
@@ -43,6 +50,7 @@ fn naive(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Attrs {
     let mut positions = Vec::with_capacity(n * n);
     let mut normals = Vec::with_capacity(n * n);
     let mut colors = Vec::with_capacity(n * n);
+    let mut mods = Vec::with_capacity(n * n);
     for iz in 0..n {
         for ix in 0..n {
             let x = ox + ix as f32 * step;
@@ -64,10 +72,11 @@ fn naive(seed: u64, ox: f32, oz: f32, n: usize, step: f32, drop: f32) -> Attrs {
             // the shipped path hands `splat_from` the two it already has.
             let w = terrain::splat(seed, x, z);
             let grad = ((hx * hx + hz * hz).sqrt()) / (2.0 * d);
-            colors.push(terrain_mesh::vertex_color(y, w, x, z, grad));
+            colors.push(terrain_mesh::vertex_splat(w));
+            mods.push(terrain_mesh::vertex_mods(y, x, z, grad));
         }
     }
-    (positions, normals, colors)
+    (positions, normals, colors, mods)
 }
 
 fn attrs(mesh: &Mesh) -> Attrs {
@@ -78,9 +87,15 @@ fn attrs(mesh: &Mesh) -> Attrs {
         panic!("no normals");
     };
     let Some(VertexAttributeValues::Float32x4(c)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) else {
-        panic!("no colours");
+        panic!("no splat weights");
     };
-    (p.clone(), nn.clone(), c.clone())
+    // A missing `UV_1` is the failure that would otherwise be invisible: the
+    // shader reads `uv_b` for the break-up and the waterline, and a mesh
+    // without it hands them whatever the slot defaults to rather than an error.
+    let Some(VertexAttributeValues::Float32x2(m)) = mesh.attribute(Mesh::ATTRIBUTE_UV_1) else {
+        panic!("no modifiers on UV_1");
+    };
+    (p.clone(), nn.clone(), c.clone(), m.clone())
 }
 
 fn tangents(mesh: &Mesh) -> Vec<[f32; 4]> {
@@ -91,8 +106,8 @@ fn tangents(mesh: &Mesh) -> Vec<[f32; 4]> {
 }
 
 fn compare(label: &str, ox: f32, oz: f32, n: usize, step: f32, drop: f32) {
-    let (wp, wn, wc) = attrs(&terrain_mesh::heightfield(SEED, ox, oz, n, step, drop));
-    let (np, nn, nc) = naive(SEED, ox, oz, n, step, drop);
+    let (wp, wn, wc, wm) = attrs(&terrain_mesh::heightfield(SEED, ox, oz, n, step, drop));
+    let (np, nn, nc, nm) = naive(SEED, ox, oz, n, step, drop);
     assert_eq!(wp.len(), np.len(), "{label}: vertex count");
     for i in 0..np.len() {
         for ch in 0..3 {
@@ -112,9 +127,17 @@ fn compare(label: &str, ox: f32, oz: f32, n: usize, step: f32, drop: f32) {
         for ch in 0..4 {
             assert!(
                 wc[i][ch].to_bits() == nc[i][ch].to_bits(),
-                "{label}: vertex {i} colour channel {ch}: {} vs naive {}",
+                "{label}: vertex {i} splat weight {ch}: {} vs naive {}",
                 wc[i][ch],
                 nc[i][ch]
+            );
+        }
+        for ch in 0..2 {
+            assert!(
+                wm[i][ch].to_bits() == nm[i][ch].to_bits(),
+                "{label}: vertex {i} modifier {ch}: {} vs naive {}",
+                wm[i][ch],
+                nm[i][ch]
             );
         }
     }
@@ -152,7 +175,7 @@ fn the_written_tangent_is_the_frame_mikktspace_solved() {
             .generate_tangents()
             .expect("the mesh has the UVs and normals mikktspace needs");
 
-        let (_, nor, _) = attrs(&ours);
+        let (_, nor, _, _) = attrs(&ours);
         let a = tangents(&ours);
         let b = tangents(&theirs);
         let mut worst = 0.0f32;

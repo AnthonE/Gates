@@ -48,6 +48,40 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 > slice that could not land in the run that designed it — landed
 > 2026-08-15/16, so each item below is what REMAINS of one.
 
+## 0ctl · Four controls the player expects and the sim has no verb for *(systems lane)*
+
+The 2026-08-16 control row copied the reference's scheme key for key. Six
+bindings landed; **four were refused because they are slices, not keystrokes**,
+and each would have been a key that does nothing — worse than an absent one.
+Bind each **in the commit that gives it a verb**, never before.
+
+1. **Reload (`R`).** No magazine, loaded state or reload verb exists in any
+   crate. Firing spends an arrow straight out of the inventory
+   (`ranged::draw`), and `bake_ammo` skips `WeaponKind::Firearm` entirely, so
+   `weapons.toml`'s revolver has no sim behaviour at all. Needs a loaded-round
+   state on the weapon stack — which is `0dur`'s per-instance `ItemStack` field
+   question wearing a different hat, so **read that row first; the two should
+   probably land together or agree on a shape.** `R` is repair until then.
+2. **ADS / secondary attack (RMB).** No `BTN_SECONDARY`, no aim or spread
+   state. The button is also fully spoken for — deploy-place, the build wheel,
+   the inventory's half-stack grab — so this needs a held-item modality answer
+   before it needs a bit. A new button bit is a `PROTO_VER` bump even though
+   the octet does not move (`sim-core/input.rs` states the precedent).
+3. **Flashlight (`F`).** No held light source. `item.torch` is an inert prop
+   with no weapons row, and `tests/held_assets.rs::nothing_held_glows` forbids
+   a carried emissive **by name** — so this starts by deciding that test's
+   fate, which is the point of it. `F` is the ghost's level-down while the
+   build wheel is up and free otherwise.
+4. **Voice chat (hold `V`).** Nothing exists: no capture, no codec, no
+   `KIND_*`, no fan-out. `reference/VOICE.md` §9 is the research and already
+   settles the two design questions (it is not its own transport; a
+   client-side attenuation of a broadcast stream is a wallhack).
+
+**Also open, and smaller than any of the four:** the viewmodel sways with the
+camera during free look, because it is parented to it and reads `eye.yaw`. The
+reference tilts the held item instead. Cosmetic, and named in §open
+"free look v0".
+
 ## 0kit · The rock landed; two doors and a boot rule remain *(systems lane)*
 
 Landed: kit → rock + torch, the four swung nodes' `hand` rows **deleted**
@@ -158,7 +192,33 @@ proven red. What remains, in rank order:
    slice's blocker cousin — an emptied slot keeping its `cond` — is fixed
    and gated (`spill.rs`, `persist.rs`: the canonical-empty trio).
 
-## 0sun · The sun sweeps; the deck that follows it is ungated *(client lane)*
+## 0bl · Pieces line up on a lattice now — what the stored plate would add *(client+sim lane)*
+
+From the operator's 2026-08-15 screenshots (*"bad news about the building
+system and pieces lining out"*). **Landed 2026-08-15/16** — build base
+lattice v0, `DECISIONS.md` §open has the knobs and the three mechanisms:
+one height implementation (`build::column_floor_y`, 0.5 m vertical lattice,
+flushness bit-equal, two formula copies retired), the terrain-following
+foundation skirt (`structures::foundation_part`, one emit for piece and
+ghost), and the ghost aimed by the LOOK ray (`place::aim_from_look`)
+instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
+`client/tests/ghost.rs` §footing, `place.rs` §aim. Remaining, ranked:
+
+1. **Nobody has looked at it.** Every claim is arithmetic; the screenshots
+   that opened this deserve their counter-shot. Boot, build a row on the
+   same hillside, look.
+2. **The stored plate is the real v1** — the reference's model: first
+   foundation pins a height, neighbours latch to it, too-high/too-low
+   refusals, stilts past one band. Costs a wire field + save bump + mirror
+   change (§open row prices it). Until then a slope steps every `q/slope`
+   metres and the player cannot choose where.
+3. **A band-boundary wall bases on its canonical cell** — it can hang one
+   band over the lower plate (an arrow-sized slit under it). The lower of
+   its two columns is the honest base; needs `collide` + render together.
+4. **The skirt draws and does not block** — walking into it from downhill
+   clips through. Piece side collision is its own slice.
+
+
 
 Landed: `to_sun` takes the **hour** and derives both coordinates, so no
 caller can pair this morning's height with this afternoon's bearing.
@@ -206,21 +266,44 @@ brightness-neutral to −0.024% so the coupled owner keeps brightness. New gate
 `ground_mix.rs`'s debt test is now a pin on the held mean. Knobs:
 `DECISIONS.md` §open "ground identity separation v0".
 
-**What remains, and it is the larger half.** Granite has stone's *value* now
-and not stone's *surface*: all four identities still share one greyscale detail
-map and one `perceptual_roughness`. `render/textures.rs` already loads all four
-`MapSet`s and only `detail` + `grass.normal` are ever bound — `RENDER.md` R4 is
-the spec, and it needs the first WGSL in the tree. Three things scouted this
-pass and worth not re-deriving: an `ExtendedMaterial` extension that does *not*
-declare `#[bindless]` forces the whole material non-bindless, which retires the
-blocker `terrain_mesh.rs`'s comment states; the four weights can reach the
-fragment with **no custom vertex shader** by packing two `u8` per `f32` into
-`ATTRIBUTE_UV_1` (exact under a 24-bit mantissa), leaving `ATTRIBUTE_COLOR` and
-every gate on it untouched; and the skills say blend by *height* not linearly
-(depth 0.2), sum normals as surface gradients, and **leave the classifier soft**
-— sharpening it makes bubble regions. Also open: `ui/map.rs` carries an
-independent minimap palette that nothing holds against `GROUND_ALBEDO`, and it
-did not move with this edit.
+**The larger half landed 2026-08-15 — the splat material.** Each identity
+carries its own photograph now: `assets/shaders/ground_splat.wgsl` (the first
+WGSL in the tree) + `render/ground_splat.rs`, four albedo and four normal maps
+on one shared sampler, per-identity roughness where one shared 0.92 stood.
+Measured at a pinned `dev_spawn` with the mix stated — 1500,600, litter 611‰,
+rock 329‰ — **near-ground neighbour contrast 6.43 → 8.53, +32.8%**, every frame
+improved. `tests/ground_splat.rs` is the gate.
+
+**Two of the three things scouted here were right and one was wrong**, which is
+worth keeping because the wrong one looks cheaper and someone will re-propose
+it. The `#[bindless]` route is right and is what shipped. Height blending is
+right *and measured as a no-op* (+0.1%) — `splat_from` is near-binary, so the
+band it arbitrates is a sliver; it is kept as insurance. **The packed-`UV_1`
+route is broken**: the rasterizer interpolates the packed value, so
+`floor(p/256)` mixes the low byte into the high one — exact at both vertices,
+50% wrong mid-triangle, i.e. at identity boundaries. The weights ride
+`ATTRIBUTE_COLOR` and the two scalar modifiers ride `UV_1` instead, which also
+made the identity mix per-pixel.
+
+What is still open here, in rank order:
+
+1. ⚠ **It costs 8.0% mean luma and that is not this material's to spend.**
+   Granite having granite's relief means more self-shadow; the number belongs to
+   the coupled tonemap/sky/exposure/fog owner (`CLAUDE.md` traps), so it is a
+   debt against §0fill rather than something to correct here.
+2. **The projection is still planar XZ, not biplanar** — a vertical face still
+   stretches. `RENDER.md` R4's remaining half.
+3. **The roughness maps are still unread, and the ORM reason no longer
+   applies.** `NOW.md` §0w item 5 blamed the glTF-packed `metallic_roughness`
+   slot; a custom shader samples `*_rough.jpg` directly and needs no packing
+   step. Four more texture bindings, and 8 → 12 is where the 16-sampled-texture
+   downlevel limit starts to matter alongside `StandardMaterial`'s own.
+4. **`ground_detail.jpg` is now loaded by nothing** — it is grass's baked
+   luminance field and the shader computes the same thing from `grass_albedo`.
+   It still ships and is still gated as a file; deleting it is a separate call,
+   because a pre-baked field is what a cheaper LOD would want.
+5. `ui/map.rs` carries an independent minimap palette that nothing holds against
+   `GROUND_ALBEDO`, and it did not move with either edit.
 
 ## 0tree · The research ladder exists — what it is still one edge short of *(systems lane)*
 
