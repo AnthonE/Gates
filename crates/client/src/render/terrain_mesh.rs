@@ -390,15 +390,26 @@ fn ground_material(
             // set here would be computed and then thrown away — and a reader
             // would reasonably believe it was in the frame.
             base_color: Color::WHITE,
-            // The roughness maps are still unread, and the reason recorded here
-            // for four days — that `metallic_roughness_texture` is a glTF-packed
-            // ORM slot whose B channel is metallic — **stops applying the moment
-            // a custom shader samples them directly.** It is a constraint of
-            // that slot, not of the files. Sampling `*_rough.jpg` in
-            // `ground_splat.wgsl` needs no ORM packing step at all; it needs
-            // four more texture bindings, which is the next slice.
-            // `IDENTITY_ROUGH` carries per-identity scalars until then, where
-            // one shared 0.92 stood before.
+            // **The roughness maps are read now** (2026-08-16), and the note
+            // that stood here is worth keeping as the shape of the mistake: the
+            // reason recorded for four days was that `metallic_roughness_texture`
+            // is a glTF-packed ORM slot whose B channel is metallic, so binding
+            // a greyscale roughness jpg would make the ground a half-metal. That
+            // is a constraint of **that slot**, not of the files, and it stopped
+            // applying the moment a custom shader sampled them directly. It cost
+            // four texture bindings and no ORM packing step at all
+            // (`render/ground_splat.rs` 110–113).
+            //
+            // ⚠ **The same false reason is still recorded in `render/props.rs`,
+            // where the five PROP roughness maps are still unread** — and it is
+            // false there for a second, independent mechanism: Bevy computes
+            // `metallic *= metallic_roughness.b`, a MULTIPLY against this very
+            // field, which `StandardMaterial::default()` leaves at 0.0. A
+            // greyscale map in that slot cannot make anything metal while
+            // `metallic` is zero. What the prop half actually needs is a
+            // decision about LEVEL (`perceptual_roughness` is a multiplier
+            // there, not a replacement), which is why it is a separate slice
+            // and not a slot assignment either. `NOW.md` carries it.
             metallic: 0.0,
             reflectance: 0.18,
             ..default()

@@ -29,7 +29,7 @@
 
 #![cfg(feature = "render")]
 
-use client::render::ground_splat::{GRAIN_GAIN, IDENTITY_ROUGH};
+use client::render::ground_splat::{GRAIN_GAIN, ROUGH_MEAN, WET_ROUGH};
 use client::render::terrain_mesh::{self, GROUND_ALBEDO};
 
 const SHADER: &str = concat!(
@@ -171,6 +171,10 @@ fn the_shader_and_the_rust_side_bind_the_same_slots() {
         (107, "normal_litter"),
         (108, "normal_rock"),
         (109, "ground_sampler"),
+        (110, "rough_sand"),
+        (111, "rough_grass"),
+        (112, "rough_litter"),
+        (113, "rough_rock"),
     ];
 
     let got: Vec<(u32, &str)> = found.iter().map(|(n, s)| (*n, s.as_str())).collect();
@@ -182,14 +186,19 @@ fn the_shader_and_the_rust_side_bind_the_same_slots() {
     );
 }
 
-/// Leg 2b. The sampler count stays at one.
+/// Leg 2b. The sampler count stays at one, however many maps arrive.
 ///
-/// Eight maps with a sampler each would put this bind group at 16 samplers in
-/// the fragment stage before `StandardMaterial`'s own are counted, over the 16
-/// the downlevel limit guarantees. That is a runtime validation failure on a
+/// Twelve maps with a sampler each would put this bind group at 24 samplers in
+/// the fragment stage before `StandardMaterial`'s own are counted, far over the
+/// 16 a downlevel adapter guarantees. That is a runtime validation failure on a
 /// stricter adapter and nothing else in the tree would catch it.
+///
+/// **This is the axis that binds, and the roughness slice is the proof.** It
+/// added four textures and zero samplers; textures are cheap here because Bevy
+/// asks the adapter for its own limits, and samplers are the one with a hard
+/// floor under them. A future map set must arrive the same way.
 #[test]
-fn the_eight_maps_share_one_sampler() {
+fn every_map_shares_one_sampler() {
     let src = std::fs::read_to_string(SHADER).expect("shader");
     let n = src.matches(": sampler;").count();
     assert_eq!(
@@ -313,20 +322,127 @@ fn a_packed_weight_pair_would_not_survive_interpolation() {
     }
 }
 
-/// Every identity's roughness is a plausible dielectric, and they are not all
-/// the same number — which was the defect this replaced.
+/// One map's mean RAW value — no sRGB decode, because a roughness map is data
+/// and `textures::tiling(false)` loads it that way. Decoding it as colour is
+/// the exact bug the `is_srgb` comment in `textures.rs` warns about, so the
+/// measurement has to be made the way the GPU will see it.
+fn mean_raw(role: &str, kind: &str) -> f64 {
+    let path = format!(
+        "{}/../../assets/textures/{role}_{kind}.jpg",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let bytes = std::fs::read(&path)
+        .unwrap_or_else(|e| panic!("{role}'s {kind} map is not on disk at {path}: {e}"));
+    let img = image::load_from_memory(&bytes)
+        .unwrap_or_else(|e| panic!("{role}_{kind}.jpg did not decode: {e}"))
+        .to_rgb8();
+    let mut sum = 0.0f64;
+    for px in img.pixels() {
+        sum += f64::from(px.0[0]) / 255.0;
+    }
+    sum / (f64::from(img.width()) * f64::from(img.height()))
+}
+
+/// Leg 5. `ROUGH_MEAN` is the shipped files' own, re-measured.
+///
+/// **Same argument as leg 1 and a sharper consequence.** A swapped albedo with
+/// a stale gain shifts brightness, which is at least visible; a swapped
+/// roughness map changes how the whole island catches the sun and nothing in
+/// the tree states what it should be, because `ART.md` §3 has no roughness row.
+/// This constant is the only written record of what the four surfaces measure,
+/// so it has to be held to the files or it is a comment.
 #[test]
-fn the_identities_have_their_own_roughness() {
-    for (k, r) in IDENTITY_ROUGH.iter().enumerate() {
+fn the_roughness_means_are_the_shipped_files_own() {
+    for (k, role) in ROLES.iter().enumerate() {
+        let want = mean_raw(role, "rough");
+        let got = f64::from(ROUGH_MEAN[k]);
+        let rel = (got - want).abs() / want;
+        assert!(
+            rel < 0.005,
+            "{role}: ROUGH_MEAN[{k}] is {got:.4} and the file measures \
+             {want:.4} ({:.2}% off).\n\
+             If the source was swapped deliberately, re-measure and update \
+             `ROUGH_MEAN` in `render/ground_splat.rs` — and LOOK at the \
+             frame, because this number is the island's specular.",
+            rel * 100.0
+        );
+    }
+}
+
+/// Leg 5b. The four identities do not share one roughness, and every one of
+/// them is a plausible dielectric.
+///
+/// The property the retired `IDENTITY_ROUGH` was gated on, restated against
+/// the maps — a source set that measured four near-identical means would put
+/// us back at the shared `perceptual_roughness: 0.92` while looking like it
+/// had four maps, and only a number would say so.
+#[test]
+fn the_identities_do_not_share_one_roughness() {
+    for (k, r) in ROUGH_MEAN.iter().enumerate() {
         assert!(
             (0.3..=1.0).contains(r),
             "identity {k}'s roughness {r} is outside the dielectric range"
         );
     }
-    let first = IDENTITY_ROUGH[0];
+    let lo = ROUGH_MEAN.iter().copied().fold(f32::MAX, f32::min);
+    let hi = ROUGH_MEAN.iter().copied().fold(f32::MIN, f32::max);
     assert!(
-        IDENTITY_ROUGH.iter().any(|r| *r != first),
-        "all four identities share one roughness again — that is the \
-         `perceptual_roughness: 0.92` this material replaced"
+        hi - lo > 0.1,
+        "the four roughness means span only {:.3} ({lo:.3}..{hi:.3}) — that is \
+         the shared `perceptual_roughness: 0.92` again, wearing four maps",
+        hi - lo
+    );
+}
+
+/// Leg 5c. **Granite is the smooth one, and it is the whole point.**
+///
+/// This is a claim about the WORLD, not about a file: a hard mineral face is
+/// smoother than dry beach sand or needle litter, and the retired
+/// `IDENTITY_ROUGH` had it exactly backwards (rock 0.88 against sand 0.86).
+/// Pinning the ordering here is what makes a future source swap that quietly
+/// reverses it a red gate rather than a frame nobody re-measures.
+#[test]
+fn granite_is_smoother_than_the_soft_ground() {
+    let [sand, grass, litter, rock] = ROUGH_MEAN;
+    for (name, other) in [("sand", sand), ("grass", grass), ("litter", litter)] {
+        assert!(
+            rock < other,
+            "granite ({rock:.3}) is not smoother than {name} ({other:.3}) — \
+             either the rock source was swapped for something matte or the \
+             other one was swapped for something polished. A mineral face is \
+             the smoothest ground on this island."
+        );
+    }
+}
+
+/// Leg 5d. Wet ground is smoother than dry ground, and never a mirror.
+///
+/// [`WET_ROUGH`] is a keep-fraction the wet factor ramps into, the same shape
+/// `WET_VALUE` uses for value. Two ways it can be wrong and both are silent:
+/// at 1.0 the waterline stops tightening at all and the residual
+/// `terrain_mesh.rs` names is re-opened while looking closed; low enough and
+/// the shore becomes a chrome band, which on the smoothest identity's own
+/// beach is where it would show first.
+#[test]
+fn the_wet_band_tightens_without_becoming_a_mirror() {
+    assert!(
+        (0.4..1.0).contains(&WET_ROUGH),
+        "WET_ROUGH is {WET_ROUGH} — at 1.0 or above wet ground never tightens, \
+         and under 0.4 the waterline is chrome"
+    );
+    // The identity actually at a waterline, fully soaked.
+    let wet_sand = ROUGH_MEAN[0] * WET_ROUGH;
+    assert!(
+        wet_sand > 0.5,
+        "soaked sand lands at {wet_sand:.3} perceptual roughness — that is a \
+         specular sheet, not a wet beach"
+    );
+    // Bevy floors `perceptual_roughness` at 0.089; the smoothest identity
+    // soaked must stay clear of it, or the clamp is doing the authoring.
+    let wet_rock = ROUGH_MEAN[3] * WET_ROUGH;
+    assert!(
+        wet_rock > 0.089,
+        "soaked granite lands at {wet_rock:.3}, at or under Bevy's own \
+         roughness floor — the clamp would be choosing the value"
     );
 }

@@ -84,6 +84,28 @@ carries, and a fifth band in `splat_from`), not a client one. The single-map
 limitation it was blamed on is gone and gravel did not move, which is the
 evidence that the diagnosis was wrong.
 
+✅ **The four ground roughness maps are read (2026-08-16)** — `sand`, `grass`,
+`litter`, `rock` at shader bindings 110–113, sampled per texel. They had been
+loaded, uploaded and resident since the day the set landed and nothing sampled
+them, so this cost four bindings, zero samplers and **zero new VRAM**. Measured
+raw (a roughness map is data, loaded `is_srgb = false`): **sand 0.9631 · grass
+0.9364 · litter 0.9197 · rock 0.6108**, and `tests/ground_splat.rs` re-measures
+all four off the files, so swapping a source changes the island's specular
+loudly instead of silently. The reason recorded against them for four days —
+the glTF-packed ORM slot whose B channel is metallic — was a constraint of that
+slot and never of these files; **the same false reason is still recorded in
+`render/props.rs` against the other five**, where it is false for a second
+reason as well (Bevy multiplies `metallic` by that channel, and it defaults to
+0.0). `NOW.md` §0gp item 6.
+
+⚠ **The maps had no detectable effect on the frame** (contrast −0.4% over six
+vantages, inside the harness's own ~0.3% run-to-run spread — `RENDER.md` §5)
+and that is not about the files: the ground material's
+`reflectance: 0.18` puts specular F0 at 0.52% where a dielectric is ~4%, so
+roughness has almost nothing to shape. Recorded because it is the next thing
+and it belongs to the coupled lighting owner — `DECISIONS.md` §open "ground
+specular v0".
+
 **What the splat material DID change here:** the four ground identities each
 sample their own albedo and normal now, instead of all four sharing
 `ground_detail.jpg` and `grass`'s normal map. So `sand`, `litter` and `rock`

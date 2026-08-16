@@ -6,6 +6,11 @@
 // `StandardMaterial` has one base-colour slot, which is the limitation this
 // file exists to remove.
 //
+// **All three channels are now the photograph's** — albedo relief (101–104),
+// normal (105–108) and, since 2026-08-16, roughness (110–113). The roughness
+// maps were the last third and they were the cheapest: they had been loaded,
+// uploaded and resident since the day the set landed, and nothing sampled them.
+//
 // **Why the maps contribute LUMINANCE and never colour.** `ART.md` §7 bounds a
 // mean-placing correction: a sourced map's colour deviation may not be
 // stretched by more than ×1. Measured over the four ground sources the gain
@@ -36,17 +41,19 @@
 
 struct GroundSplat {
     // Per identity, in `terrain::splat`'s order — sand · grass · litter · rock:
-    // `xyz` the authored LINEAR albedo (`terrain_mesh::GROUND_ALBEDO`), `w` its
-    // perceptual roughness.
+    // `xyz` the authored LINEAR albedo (`terrain_mesh::GROUND_ALBEDO`). `w` is
+    // RESERVED and zero — it carried the per-identity roughness scalar until
+    // the roughness maps landed at 110–113, and roughness is now per texel.
     identity: array<vec4<f32>, 4>,
     // Per identity, `1 / linear-luma mean` of its albedo map, so each map
     // delivers a mean of 1 and multiplies the authored colour without moving it.
     gain: vec4<f32>,
     // x = WET_VALUE, y = WET_SATURATION, z = ALBEDO_LUMA_FLOOR, w = blend depth.
     tune: vec4<f32>,
-    // x = HEIGHT_INFLUENCE, y = NORMAL_Z_FLOOR, zw reserved. Passed in rather
-    // than declared here: a knob that lives only in a shader is one the knob
-    // registry cannot see, and `ci/gates.sh` refuses its `DECISIONS.md` row.
+    // x = HEIGHT_INFLUENCE, y = NORMAL_Z_FLOOR, z = WET_ROUGH, w reserved.
+    // Passed in rather than declared here: a knob that lives only in a shader
+    // is one the knob registry cannot see, and `ci/gates.sh` refuses its
+    // `DECISIONS.md` row.
     blend: vec4<f32>,
 }
 
@@ -59,11 +66,20 @@ struct GroundSplat {
 @group(#{MATERIAL_BIND_GROUP}) @binding(106) var normal_grass: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(107) var normal_litter: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(108) var normal_rock: texture_2d<f32>;
-// **One sampler for all eight.** Every map wants the same tiling/anisotropy
-// descriptor, and a sampler each would put this material at 16 samplers in the
-// fragment stage on top of `StandardMaterial`'s own — over the 16 the downlevel
-// limit guarantees.
+// **One sampler for all twelve.** Every map wants the same tiling/anisotropy
+// descriptor, and a sampler each would put this material at 24 samplers in the
+// fragment stage on top of `StandardMaterial`'s own — far over the 16 a
+// downlevel adapter guarantees. Textures are the cheap axis here and samplers
+// are the one with a floor under it, which is why the roughness slice added
+// four of the first and none of the second.
 @group(#{MATERIAL_BIND_GROUP}) @binding(109) var ground_sampler: sampler;
+// The roughness maps. Greyscale, loaded `is_srgb = false` because a roughness
+// map is DATA — decoding one as sRGB would bend every value toward the dark end
+// and the ground would read uniformly glossy.
+@group(#{MATERIAL_BIND_GROUP}) @binding(110) var rough_sand: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(111) var rough_grass: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(112) var rough_litter: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(113) var rough_rock: texture_2d<f32>;
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
@@ -172,10 +188,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     // The authored colour, per pixel rather than per vertex.
     var base = vec3(0.0);
-    var rough = 0.0;
     for (var i = 0u; i < 4u; i = i + 1u) {
         base = base + splat.identity[i].xyz * bw[i];
-        rough = rough + splat.identity[i].w * bw[i];
     }
     // The macro break-up, then the waterline — in that order, so a wet vertex
     // keeps its own grain instead of having it multiplied back in at full dry
@@ -187,7 +201,49 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // relief and not colour.
     let lit = dot(bw, grain);
     pbr_input.material.base_color = vec4(base * lit, 1.0);
-    pbr_input.material.perceptual_roughness = rough;
+
+    // **Roughness, per texel.** Until 110–113 landed this was `Σ wᵢ·roughᵢ`
+    // over four authored scalars, and before those it was one shared 0.92 — so
+    // granite had stone's value and not stone's SURFACE, which is the sentence
+    // this whole material exists to retire. The maps close the last third of
+    // it.
+    //
+    // **Blended by `bw`, the same weights as the colour and the normal**, and
+    // deliberately not by anything cleverer. Averaging roughness across a seam
+    // does lose specular variance — the Toksvig/LEAN problem — but the fix for
+    // that is a variance term the sources do not carry, and using a DIFFERENT
+    // weight vector here than the colour uses would put an identity's albedo
+    // and its gloss in different places on the ground. One weight vector for
+    // all three channels is the property worth keeping.
+    //
+    // **Taken whole, with no mean placed.** `ART.md` §7's mean-1 construction
+    // exists to stop a photograph moving an authored COLOUR that §3 measured
+    // off reference frames; §3 has no roughness row, so there is no authored
+    // level for a map to move — the map is the only measurement in the room.
+    // `ground_splat::ROUGH_MEAN` records what the four now measure and the gate
+    // re-measures it, so a source swap changes the surface loudly.
+    let rough_map = vec4<f32>(
+        textureSample(rough_sand, ground_sampler, uv).r,
+        textureSample(rough_grass, ground_sampler, uv).r,
+        textureSample(rough_litter, ground_sampler, uv).r,
+        textureSample(rough_rock, ground_sampler, uv).r,
+    );
+    // Wet ground is smoother — `WET_VALUE`'s missing third. `terrain_mesh.rs`
+    // states the physics and then states why it could not have it: roughness
+    // "cannot vary per vertex without the shader `RENDER.md` §8 owns". This is
+    // that shader. Same shape as the value keep in `wetted`, one line below the
+    // one that darkens and saturates the same texel.
+    //
+    // **No clamp here, deliberately.** The result is provably in [0, 1]: `bw`
+    // sums to 1, a texture sample is in [0, 1] by format, so the dot is a
+    // convex combination of values in range, and `wet_keep` is in
+    // [`WET_ROUGH`, 1]. `apply_pbr_lighting` applies Filament's 0.089 floor
+    // itself (`bevy_pbr`'s `pbr_lighting.wgsl`) — restating that number here
+    // would be a hand-kept mirror of another crate's constant, which is the
+    // drift `CLAUDE.md` names twice. `tests/ground_splat.rs` holds our knob
+    // clear of it instead, which is the half that IS ours.
+    let wet_keep = 1.0 - in.uv_b.y * (1.0 - splat.blend.z);
+    pbr_input.material.perceptual_roughness = dot(bw, rough_map) * wet_keep;
 
     // The relief, blended as gradients and applied on the mesh's own written
     // tangent frame.

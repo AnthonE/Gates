@@ -10,6 +10,47 @@
 //! path, tonemapping. `ExtendedMaterial` keeps all of it and overrides the three
 //! terms this slice is about.
 //!
+//! ## What the roughness maps measured, which is ~nothing, and why that is the
+//! finding rather than a disappointment
+//!
+//! Six vantages at the pinned `dev_spawn = 1500,600`, seed 20260731, Xvfb +
+//! lavapipe, `--no-hud`, same shard, same build otherwise: **near-band
+//! neighbour contrast 9.008 → 8.973 (−0.4%), mean luma 101.08 → 100.95
+//! (−0.1%), near saturation 0.134 → 0.133 (−1.0%)**.
+//!
+//! **Those deltas are at the harness's own noise floor, and the floor was
+//! measured rather than assumed.** Re-running a behaviourally identical build
+//! twice moves contrast −0.3% and saturation −0.6% all by itself (the probe is
+//! a live client against a live shard, so wind phase and clutter animation do
+//! not repeat), and a third run put base → new at −0.7% contrast where the
+//! first put it at −0.4%. A change smaller than the spread between two runs of
+//! the same thing is not a measurement. **The only defensible reading is: no
+//! detectable effect on the frame.** The albedo/normal half of this material
+//! bought +32.8% contrast at the same spawn, which is two orders of magnitude
+//! clear of that floor — so the instrument is not blind, this change is quiet.
+//!
+//! **The cause is one constant and it is not in this file.**
+//! `terrain_mesh::ground_material` sets `reflectance: 0.18`, and Bevy maps
+//! that to normal-incidence specular as `F0 = 0.16 × reflectance²` —
+//! **0.0052, i.e. 0.52%**, against the ~4% (reflectance 0.5) of an ordinary
+//! dielectric. Roughness shapes the specular lobe and nothing else, so it is
+//! being asked to redistribute about an eighth of the energy a real surface
+//! would put there. The maps are bound, sampled per texel and correct; there
+//! is almost nothing for them to shape.
+//!
+//! **This slice must not fix that**, and the restraint is the point rather
+//! than timidity. Moving `reflectance` moves every ground pixel's specular at
+//! once, on an island whose brightness is already carrying an 8.0% debt from
+//! the albedo half — and `CLAUDE.md`'s coupled-owner trap is explicit that
+//! tonemap, sky, exposure and fog belong to one owner in one iteration,
+//! measured elsewhere as three parallel rounds making things worse. So the
+//! number is recorded here and in `DECISIONS.md` §open for that owner, and
+//! what landed here is the thing that had to land first: **when the ground's
+//! specular is turned up, there is now a measured per-texel roughness field
+//! for it to act on instead of one shared scalar.** That ordering is not
+//! reversible — turning up reflectance over a constant roughness makes the
+//! whole island uniformly shiny, which is the defect, not the fix.
+//!
 //! **It deliberately does NOT declare `#[bindless]`, and that is the point.**
 //! `terrain_mesh.rs` recorded the blocker: in 0.18 `StandardMaterial` is
 //! `#[bindless(index_table(range(0..31)))]`, so four maps blended by the splat
@@ -48,16 +89,52 @@ pub type GroundMaterial = ExtendedMaterial<StandardMaterial, GroundSplat>;
 /// drift, so a swapped source cannot silently keep the old gain.
 pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 3.7128];
 
-/// Per identity's perceptual roughness — sand · grass · litter · rock.
+/// Per identity, the mean of its shipped `*_rough.jpg` — sand · grass ·
+/// litter · rock, in `terrain::splat`'s order.
 ///
-/// **The one number here that is not measured**, and it is a knob: it replaces
-/// the single `perceptual_roughness: 0.92` every identity used to share, which
-/// is the other half of "granite has stone's value and not stone's surface".
-/// Ordered by how much a wet-looking specular lobe belongs on each surface —
-/// damp sand is the smoothest thing on the island and dry needle litter the
-/// roughest. `DECISIONS.md` §open carries it as "ground identity roughness v0";
-/// the rough MAPS are the follow-up that makes these unnecessary.
-pub const IDENTITY_ROUGH: [f32; 4] = [0.86, 0.93, 0.96, 0.88];
+/// **This is a record, not a setting: the shader samples the maps and this is
+/// what they measure.** Raw values, no sRGB decode — a roughness map is data
+/// and is loaded `is_srgb = false`. `tests/ground_splat.rs` re-measures all
+/// four off the files and fails on drift, so a swapped source cannot silently
+/// change how rough an identity is.
+///
+/// ⚠ **It replaces `IDENTITY_ROUGH = [0.86, 0.93, 0.96, 0.88]`, and the
+/// photograph disagreed with that knob about the ORDER, not just the level.**
+/// The knob was authored "by how much a wet-looking specular lobe belongs on
+/// each surface — damp sand is the smoothest thing on the island and dry
+/// needle litter the roughest", giving sand < rock < grass < litter. Measured,
+/// it is **rock ≪ litter < grass < sand**: dry beach sand is the *roughest*
+/// of the four (0.963, and near-constant at sd 0.0065) and granite is by far
+/// the smoothest (0.611). Both halves of the knob's premise were wrong —
+/// `damp` sand is smooth and dry sand is not, and that difference is the wet
+/// term's job ([`WET_ROUGH`]) rather than an identity's; and a hard mineral
+/// face genuinely is smoother than needle litter. Granite moving 0.88 → 0.611
+/// is the biggest single change here and it is the one to look at first.
+pub const ROUGH_MEAN: [f32; 4] = [0.9631, 0.9364, 0.9197, 0.6108];
+
+/// What a soaked surface keeps of its **dry roughness**.
+///
+/// `terrain_mesh::WET_VALUE`'s missing third: that file states the physics and
+/// then states why it could not have it — *"a wet surface is also smoother, so
+/// its specular tightens — is `perceptual_roughness`, which is per-material
+/// and cannot vary per vertex without the shader `RENDER.md` §8 owns"*. This
+/// module IS that shader, so the residual closes here, in the same shape
+/// [`super::terrain_mesh::WET_VALUE`] uses for value: a keep-fraction the wet
+/// factor ramps into.
+///
+/// It also carries the intent the retired `IDENTITY_ROUGH` was reaching for by
+/// hand. "Damp sand is the smoothest thing on the island" is true and is now
+/// true **by mechanism** — sand is the roughest identity dry and the wet band
+/// is what smooths it — instead of being baked into a constant that then made
+/// dry dune sand specular everywhere the tide never reaches.
+///
+/// PROPOSED, `DECISIONS.md` §open "ground roughness v1". Not measured off
+/// anything: no reference frame in `ART.md` §3 carries a roughness row, and
+/// water filling microrelief has no number in this tree. 0.75 is deliberately
+/// short of the 0.55 value keeps — a visible tightening at the waterline, not
+/// a mirror, because the identity actually at a waterline is the one whose map
+/// has almost no relief to lose (sand, sd 0.0065).
+pub const WET_ROUGH: f32 = 0.75;
 
 /// **How soft the height blend is.** A larger number is a wider contested band
 /// and a wash; a smaller one is a sharper seam and, past about 0.1, visible
@@ -88,13 +165,21 @@ pub const NORMAL_Z_FLOOR: f32 = 0.2;
 /// The uniform, laid out to match `GroundSplat` in the shader.
 #[derive(Clone, Default, ShaderType, Debug)]
 pub struct GroundSplatParams {
-    /// `xyz` the identity's authored linear albedo, `w` its roughness.
+    /// `xyz` the identity's authored linear albedo.
+    ///
+    /// **`w` is reserved and zero.** It carried `IDENTITY_ROUGH` until the
+    /// roughness maps landed; roughness is now sampled per texel and there is
+    /// no per-identity scalar left to send. The slot stays because a
+    /// `vec3` in a uniform array has a 16-byte stride anyway — dropping it
+    /// would change nothing about the layout and would cost the reader the
+    /// note explaining where the roughness went.
     pub identity: [Vec4; 4],
     pub gain: Vec4,
     /// x = `WET_VALUE`, y = `WET_SATURATION`, z = `ALBEDO_LUMA_FLOOR`,
     /// w = [`BLEND_DEPTH`].
     pub tune: Vec4,
-    /// x = [`HEIGHT_INFLUENCE`], y = [`NORMAL_Z_FLOOR`], zw reserved.
+    /// x = [`HEIGHT_INFLUENCE`], y = [`NORMAL_Z_FLOOR`], z = [`WET_ROUGH`],
+    /// w reserved.
     ///
     /// **These are here rather than as WGSL `const`s because a knob that lives
     /// only in a shader is a knob nothing can cross-check.** `ci/gates.sh`'s
@@ -112,25 +197,32 @@ impl GroundSplatParams {
         let mut identity = [Vec4::ZERO; 4];
         for k in 0..4 {
             let a = GROUND_ALBEDO[k];
-            identity[k] = Vec4::new(a[0], a[1], a[2], IDENTITY_ROUGH[k]);
+            identity[k] = Vec4::new(a[0], a[1], a[2], 0.0);
         }
         Self {
             identity,
             gain: Vec4::from_array(GRAIN_GAIN),
             tune: Vec4::new(WET_VALUE, WET_SATURATION, ALBEDO_LUMA_FLOOR, BLEND_DEPTH),
-            blend: Vec4::new(HEIGHT_INFLUENCE, NORMAL_Z_FLOOR, 0.0, 0.0),
+            blend: Vec4::new(HEIGHT_INFLUENCE, NORMAL_Z_FLOOR, WET_ROUGH, 0.0),
         }
     }
 }
 
-/// Four albedo maps, four normal maps and one sampler.
+/// Four albedo maps, four normal maps, four roughness maps and one sampler.
 ///
-/// **One sampler for eight textures.** Each map wants the identical tiling and
-/// anisotropy descriptor `textures::tiling` builds, and a sampler each would put
-/// this bind group at 16 in the fragment stage before `StandardMaterial`'s own
-/// are counted — over the 16 the downlevel limit guarantees. The textures are 8
-/// against `StandardMaterial`'s ~6 for the same reason: the roughness maps are a
-/// follow-up, not part of this slice.
+/// **One sampler for twelve textures, and that is the constraint that scales.**
+/// Each map wants the identical tiling and anisotropy descriptor
+/// `textures::tiling` builds, and a sampler each would put this bind group at
+/// 24 in the fragment stage before `StandardMaterial`'s own are counted — far
+/// over the 16 a downlevel adapter guarantees. Textures are the cheap axis
+/// (Bevy asks the adapter for its own limits, and every desktop adapter is far
+/// past 12); samplers are the one with a hard floor under it. So the roughness
+/// slice cost four bindings and **zero** samplers.
+///
+/// **It cost no new VRAM either.** `textures::MapSet::load` has always loaded
+/// `<role>_rough.jpg` and the `GroundMaps` resource has always held the handle,
+/// so all four have been resident and uploaded since the day the maps landed —
+/// paid for and unread. This binds what was already there.
 #[derive(Asset, AsBindGroup, TypePath, Clone)]
 pub struct GroundSplat {
     #[uniform(100)]
@@ -156,6 +248,15 @@ pub struct GroundSplat {
     pub normal_litter: Handle<Image>,
     #[texture(108)]
     pub normal_rock: Handle<Image>,
+    // 109 is the shared sampler, declared above on `albedo_rock`.
+    #[texture(110)]
+    pub rough_sand: Handle<Image>,
+    #[texture(111)]
+    pub rough_grass: Handle<Image>,
+    #[texture(112)]
+    pub rough_litter: Handle<Image>,
+    #[texture(113)]
+    pub rough_rock: Handle<Image>,
 }
 
 impl GroundSplat {
@@ -171,6 +272,10 @@ impl GroundSplat {
             normal_grass: maps.grass.normal.clone(),
             normal_litter: maps.litter.normal.clone(),
             normal_rock: maps.rock.normal.clone(),
+            rough_sand: maps.sand.rough.clone(),
+            rough_grass: maps.grass.rough.clone(),
+            rough_litter: maps.litter.rough.clone(),
+            rough_rock: maps.rock.rough.clone(),
         }
     }
 }
