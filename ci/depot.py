@@ -37,16 +37,29 @@ goes live when the origin's `published.json` names it, and that file is written
 by a person who has looked at what they are about to serve. This script prints
 the two commands and performs neither.
 
-**It does not bundle system libraries.** The binary loads libwayland, libudev
-and libasound from the machine it runs on, and shipping Ubuntu's copies of
-those to an arbitrary distro trades a clear error for a confusing one. What it
-does instead is *measure* what the binary needs (`requires.libs`, read off the
-ELF, never typed) so a launcher can say "you are missing libasound.so.2"
-BEFORE the download rather than after a silent failure to start. That measure
-exists because this exact wall was hit building it: the first `--features
-render` build died in `wayland-sys`'s build script on a box with no
-`libwayland-dev`, and a player's box will fail the same way at runtime with
-much less to go on.
+**It does not bundle SYSTEM libraries** — and the emphasis is load-bearing,
+because this line read "system libraries" flatly until 2026-08-16 and that
+sentence shipped a Windows build no player could start. The binary loads
+libwayland, libudev and libasound from the machine it runs on, and shipping
+Ubuntu's copies of those to an arbitrary distro trades a clear error for a
+confusing one. What it does instead is *measure* what the binary needs
+(`requires.libs`, read off the ELF, never typed) so a launcher can say "you are
+missing libasound.so.2" BEFORE the download rather than after a silent failure
+to start. That measure exists because this exact wall was hit building it: the
+first `--features render` build died in `wayland-sys`'s build script on a box
+with no `libwayland-dev`, and a player's box will fail the same way at runtime
+with much less to go on.
+
+⚠ **A library the platform does not ship at all is a different question, and
+answering it the same way is a game that cannot start.** The mingw build
+imports `libstdc++-6.dll` — mingw's C++ runtime, reached through
+`basis-universal-sys`, and present on approximately zero stock Windows
+machines. It is not the player's to provide; it is ours, and `runtime_dlls`
+stages it beside the exe along with everything it transitively needs. The
+distinction is asked rather than typed (`dll_probe` in TARGETS), so a name is
+sorted by whether the toolchain has a copy of it, not by a list somebody
+maintains. The measure was never the problem: `0.2.0-gbed9e02d6` NAMED
+`libstdc++-6.dll` in its published `requires.libs` and staged three files.
 
 ## The build id
 
@@ -101,6 +114,23 @@ TARGETS = {
         "strip": "x86_64-w64-mingw32-strip",
         "method": "pe-import-table",
         "dlopen": "vulkan-1.dll, d3d12.dll",
+        # **How a DLL name is sorted into "Windows provides this" vs "we do".**
+        # `gcc -print-file-name=X` answers with an absolute path when the
+        # toolchain has a copy of X and echoes the bare name straight back when
+        # it does not, so the question has a file-or-nothing answer and there
+        # is no typed list to rot. `kernel32.dll` resolves to nothing;
+        # `libstdc++-6.dll` resolves to a path, because it is mingw's C++
+        # runtime and not Windows'.
+        #
+        # It also resolves through the SELECTED mingw alternative, which is the
+        # property that matters most: a client linked against `13-posix` cannot
+        # be handed `13-win32`'s copy of the same filename. That is the
+        # threading-model split `CLAUDE.md` already warns about at build time,
+        # arriving again at package time.
+        "dll_probe": "x86_64-w64-mingw32-gcc",
+        # What the shipped DLLs must be, checked rather than assumed. A 32-bit
+        # DLL beside a 64-bit exe is `0xc000007b` on the player's machine.
+        "pe_format": "pei-x86-64",
     },
 }
 
@@ -268,6 +298,91 @@ def needed_libs(binary: Path, platform: str = PLATFORM) -> tuple[list[str], str]
     return [], absent
 
 
+def toolchain_dll(name: str, probe: str) -> Path | None:
+    """The toolchain's own copy of `name`, or None when it has none.
+
+    None is the answer for every genuine Windows DLL — `kernel32.dll`,
+    `ws2_32.dll`, `vulkan-1.dll` — and a path is the answer for the mingw
+    runtime. See `dll_probe` in TARGETS for why this is asked and not typed.
+    """
+    if shutil.which(probe) is None:
+        return None
+    p = subprocess.run([probe, f"-print-file-name={name}"],
+                       text=True, capture_output=True)
+    if p.returncode != 0:
+        return None
+    got = Path(p.stdout.strip())
+    return got if got.is_absolute() and got.is_file() else None
+
+
+def pe_format(path: Path) -> str:
+    """objdump's name for a PE's machine type, or "" if it could not be read."""
+    if shutil.which("objdump") is None:
+        return ""
+    p = subprocess.run(["objdump", "-f", str(path)], text=True, capture_output=True)
+    m = re.search(r"file format (\S+)", p.stdout) if p.returncode == 0 else None
+    return m.group(1) if m else ""
+
+
+def runtime_dlls(binary: Path, platform: str) -> list[Path]:
+    """Every DLL this build needs that Windows will not provide, transitively.
+
+    **This exists because the depot shipped a build that could not start.**
+    `0.2.0-gbed9e02d6`'s own measured `requires.libs` named `libstdc++-6.dll`
+    among two dozen genuine system DLLs, the staged tree held exactly three
+    files (`gates.exe`, `LICENSE`, `NOTICE`), and no gate could see the gap:
+    the packager hashed it, the launcher installed it, and the player got an
+    Application Error box before a frame was drawn. The Linux rule this
+    packager was written under — bundle nothing, the distro provides it — does
+    not transfer, because mingw's C++ runtime is not a thing a Windows machine
+    has. It is OUR runtime, and it rides with the binary that needs it.
+
+    **The closure is the whole point and a direct read of the exe misses it.**
+    `gates.exe` names `libstdc++-6.dll` and nothing else of ours; that DLL in
+    turn imports `libgcc_s_seh-1.dll` and `libwinpthread-1.dll`, which appear
+    in the executable's import table nowhere. Shipping only what the exe names
+    would produce a build that still cannot start, and the second failure would
+    be indistinguishable from the first.
+
+    Refusing is better than shipping a partial answer, so a missing probe or a
+    missing objdump exits rather than returning an empty list: staging no DLLs
+    at all is precisely the defect, and it must not be reachable by a tool
+    being absent.
+    """
+    spec = TARGETS[platform]
+    probe = spec.get("dll_probe")
+    if not probe:
+        return []
+    if shutil.which(probe) is None:
+        sys.exit(f"depot: {probe} is not on this machine, so the DLLs this build "
+                 "needs cannot be resolved. Refusing to stage a Windows build "
+                 "with no runtime beside it — that ships a game nobody can start.")
+
+    found: dict[str, Path] = {}
+    queue, seen = [binary], set()
+    while queue:
+        imports, why = needed_libs(queue.pop(), platform)
+        if why:
+            sys.exit(f"depot: {why}. Refusing to stage a Windows build whose "
+                     "runtime DLLs were never measured.")
+        for name in imports:
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            src = toolchain_dll(name, probe)
+            if src is None:
+                continue          # Windows' to provide, not ours.
+            want = spec.get("pe_format")
+            got = pe_format(src)
+            if want and got != want:
+                sys.exit(f"depot: {src} is {got or 'unreadable'}, not {want}. "
+                         "Shipping it would be 0xc000007b on the player's machine.")
+            found[key] = src
+            queue.append(src)     # ...and whatever IT needs.
+    return [found[k] for k in sorted(found)]
+
+
 # ── the depot document ───────────────────────────────────────────────────────
 
 def safe_relpath(raw: str) -> str:
@@ -381,6 +496,41 @@ def stage_build(out: Path, *, platform: str, do_build: bool,
     dest = stage / exec_name
     shutil.copy2(binary, dest)
 
+    # **The runtime the player's machine will not have.** Beside the exe, not
+    # in a subdirectory: Windows searches the directory the application loaded
+    # from FIRST, ahead of System32 and ahead of PATH, so a co-located copy is
+    # both the one that resolves and the one that wins over whatever stray
+    # same-named DLL a player already has. That second half is not incidental —
+    # a 32-bit `libstdc++-6.dll` on a player's PATH is `0xc000007b` rather than
+    # a missing-DLL message, and the same file placed here shadows it.
+    #
+    # Nothing is added to `launch.env` for this and nothing should be: the
+    # application directory is already first in the search order, and a build
+    # that needed an environment variable to find its own runtime would be one
+    # more thing to get wrong.
+    runtime = runtime_dlls(binary, platform)
+    for src in runtime:
+        shutil.copy2(src, stage / src.name)
+    bundled = sorted(p.name for p in runtime)
+    if bundled:
+        print(f"   staged {len(bundled)} runtime DLL(s): {', '.join(bundled)}")
+        # **Bundling them creates a notice obligation that measuring them did
+        # not.** `libwinpthread-1.dll` is Expat/BSD — notice licences, where
+        # the credit IS the condition — and the two GCC DLLs are GPLv3 carried
+        # by the Runtime Library Exception, which is the term that lets a sold
+        # MIT game redistribute them at all. Naming that reliance is the point:
+        # `CLAUDE.md`'s rail says nothing here derives from GPL work, and this
+        # is the one place that needs a stated reason rather than a silence.
+        # Fatal, exactly like LICENSE and NOTICE below, and for the same reason
+        # — a depot that plays while missing a licence it must carry is a
+        # defect that never arrives as a bug report.
+        notice_src = ROOT / "ci" / "licenses" / "MINGW-RUNTIME.txt"
+        if not notice_src.is_file():
+            sys.exit(f"depot: {notice_src} is missing — the runtime DLLs may not "
+                     "ship without the notice that has to travel with them")
+        shutil.copy2(notice_src, stage / "LICENSE-MINGW-RUNTIME.txt")
+        print("   staged LICENSE-MINGW-RUNTIME.txt (their notice travels with them)")
+
     # **The assets ride along, and forgetting them would not look like an
     # error.** `crates/client/src/render/textures.rs` loads
     # `textures/<role>_{albedo,normal,rough}.jpg` at runtime, and Bevy answers
@@ -471,8 +621,26 @@ def stage_build(out: Path, *, platform: str, do_build: bool,
         print(f"   NOT stripped — {stripper} is not on this machine")
     dest.chmod(0o755)
 
+    return stage, requires_doc(libs, bundled, spec, lib_why)
+
+
+def requires_doc(libs: list[str], bundled: list[str], spec: dict,
+                 lib_why: str = "") -> dict:
+    """The `requires` block: what the player's machine still has to provide.
+
+    Pure, so `--self-test` can drive it with no compiler and no binary — the
+    subtraction below is the part that would otherwise only be checked by a
+    person reading a published depot.
+    """
+    # **`requires.libs` is what the PLAYER's machine must have**, so anything
+    # riding in the depot comes back out of it. A launcher that told a player
+    # to go install `libstdc++-6.dll` would be sending them after a file we
+    # just handed them, and the one real gap would be buried in that noise.
+    # Case-insensitively, because a PE import table is: `KERNEL32.dll` and
+    # `kernel32.dll` both appear in one real measurement of this binary.
+    shipped = {b.lower() for b in bundled}
     requires = {
-        "libs": libs,
+        "libs": [lib for lib in libs if lib.lower() not in shipped],
         "method": spec["method"],
         # The honest bound on the list above. Everything in it IS required;
         # it is not everything that is required — winit and wgpu load the
@@ -480,18 +648,27 @@ def stage_build(out: Path, *, platform: str, do_build: bool,
         # either platform. A launcher may use this to say "you are definitely
         # missing X"; it may never say "you have everything".
         "complete": False,
-        "why": ("loaded from the player's machine at start. Nothing is bundled: "
-                "shipping one machine's copies of these to another trades a clear "
-                "error for a confusing one. LINK-TIME entries only — libraries "
-                f"opened at runtime ({spec['dlopen']}) are not "
-                "listed and this is not a checklist."),
+        "why": ("loaded from the player's machine at start. No SYSTEM library is "
+                "bundled: shipping one machine's copies of those to another trades "
+                "a clear error for a confusing one. What the platform does not "
+                "provide at all rides in the depot instead and is listed under "
+                "`bundled` — the two are different questions and answering them "
+                "the same way is what shipped a Windows build that could not "
+                "start. LINK-TIME entries only — libraries opened at runtime "
+                f"({spec['dlopen']}) are not listed and this is not a checklist."),
     }
+    # Named, not just staged. A player reporting a start-up failure and an
+    # operator reading a depot both need to know which runtime this build was
+    # cut against, and the file list alone does not say that these are the C++
+    # runtime rather than game data.
+    if bundled:
+        requires["bundled"] = bundled
     if lib_why:
         requires["measured"] = False
         requires["why"] = lib_why
     else:
         requires["measured"] = True
-    return stage, requires
+    return requires
 
 
 # ── the gate ─────────────────────────────────────────────────────────────────
@@ -629,6 +806,18 @@ def self_test() -> int:
     # counted: a count drifts every time an icon lands, a name does not.
     for who in ("game-icons.net", "CC BY 3.0", "Roboto Condensed", "Apache-2.0"):
         ok(who in notice, f"NOTICE still credits {who}")
+    # The Windows depot redistributes three binaries that are not ours, one of
+    # them GPL-licensed. Two notice licences and one exception being relied on
+    # is the most load-bearing credit in this file, and the only one whose
+    # absence would be a licence breach in a SOLD product.
+    lic = ROOT / "ci" / "licenses" / "MINGW-RUNTIME.txt"
+    ok(lic.is_file(), "the mingw runtime notice exists to be staged beside the DLLs")
+    mingw = lic.read_text("utf-8")
+    for who in ("libstdc++-6.dll", "libgcc_s_seh-1.dll", "libwinpthread-1.dll",
+                "GCC Runtime Library Exception", "mingw-w64"):
+        ok(who in mingw, f"the mingw runtime notice names {who}")
+    ok("GCC Runtime Library Exception" in notice and "mingw-w64" in notice.lower(),
+       "NOTICE names the mingw runtime and the exception that permits shipping it")
 
     # A nested asset path survives the document writer unchanged — the shape
     # `assets/textures/x.jpg` takes.
@@ -652,10 +841,21 @@ def self_test() -> int:
     ok(set(TARGETS) == {"linux-x86_64", "win-x86_64"},
        "the platform tags are the launcher's own vocabulary, spelled its way")
     for tag, spec in TARGETS.items():
-        ok(set(spec) == {"triple", "exec", "strip", "method", "dlopen"},
+        ok({"triple", "exec", "strip", "method", "dlopen"} <= set(spec),
            f"{tag}: the target spec is complete")
     ok(TARGETS["win-x86_64"]["exec"].endswith(".exe"),
        "a windows build launches a .exe — the name is part of the launch contract")
+    # **The Windows target must be able to answer "is this DLL mine to ship".**
+    # Without a probe, `runtime_dlls` returns nothing and the depot goes out
+    # with no C++ runtime beside the exe — which is exactly what `0.2.0` did,
+    # and it installs and hashes and verifies perfectly on the way to an
+    # Application Error box. Asserted here because the absence is silent.
+    ok(TARGETS["win-x86_64"].get("dll_probe"),
+       "the windows target knows how to resolve a DLL to the toolchain's copy")
+    ok(TARGETS["win-x86_64"].get("pe_format") == "pei-x86-64",
+       "and what a shipped DLL must be — a 32-bit one is 0xc000007b on a player's box")
+    ok("dll_probe" not in TARGETS["linux-x86_64"],
+       "the linux build bundles nothing: the distro provides its system libraries")
     ok(TARGETS["linux-x86_64"]["triple"] is None,
        "the host build takes no --target, so it reads target/release/")
 
@@ -671,6 +871,40 @@ def self_test() -> int:
     ok([f["path"] for f in wdoc["files"]] == ["gates.exe"] and
        wdoc["files"][0]["executable"],
        "and marks the .exe executable")
+
+    # ── what the player still has to provide ─────────────────────────────────
+    # The bug this guards: `0.2.0-gbed9e02d6`'s published `requires.libs` named
+    # `libstdc++-6.dll` beside two dozen genuine Windows DLLs, and the depot
+    # staged three files. The document was *correct* and the build could not
+    # start — measuring a need is not meeting it. Now a bundled DLL leaves the
+    # player's list and is named under `bundled` instead.
+    wspec = TARGETS["win-x86_64"]
+    measured = ["KERNEL32.dll", "libstdc++-6.dll", "ws2_32.dll"]
+    req = requires_doc(measured, ["libgcc_s_seh-1.dll", "libstdc++-6.dll",
+                                  "libwinpthread-1.dll"], wspec)
+    ok("libstdc++-6.dll" not in req["libs"],
+       "a DLL the depot ships is not also demanded of the player's machine")
+    ok(req["libs"] == ["KERNEL32.dll", "ws2_32.dll"],
+       "and the genuine system DLLs stay demanded, in order")
+    ok(req["bundled"] == ["libgcc_s_seh-1.dll", "libstdc++-6.dll",
+                          "libwinpthread-1.dll"],
+       "what rides along is named, not merely staged")
+    # The transitive two. They appear in no import table of `gates.exe` — only
+    # in `libstdc++-6.dll`'s own — so a packager that read the exe and stopped
+    # would ship one third of the runtime and fail identically.
+    ok({"libgcc_s_seh-1.dll", "libwinpthread-1.dll"} <= set(req["bundled"]),
+       "libstdc++'s own dependencies ride too — the closure, not the direct read")
+    ok("Nothing is bundled" not in req["why"],
+       "and the document does not claim otherwise")
+    # Case, because a PE import table mixes it: one real measurement of this
+    # binary carries both `KERNEL32.dll` and `kernel32.dll`.
+    ok(requires_doc(["LIBSTDC++-6.DLL"], ["libstdc++-6.dll"], wspec)["libs"] == [],
+       "the subtraction is case-insensitive, as DLL names are")
+    # Linux is untouched by all of it: nothing is bundled, so nothing is
+    # subtracted and no `bundled` key appears.
+    lreq = requires_doc(["libc.so.6"], [], TARGETS["linux-x86_64"])
+    ok(lreq["libs"] == ["libc.so.6"] and "bundled" not in lreq,
+       "a linux depot bundles nothing and demands its full measured list")
 
     # The depot must serialise to JSON with no surprises — it is fetched and
     # parsed by two independent implementations (python and rust).

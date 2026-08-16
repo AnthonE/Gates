@@ -42,6 +42,36 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0win · The published Windows depot cannot start *(operator — republish)*
+
+A player ran the launcher's Windows build on 2026-08-16 and got
+`gates.exe — Application Error … unable to start correctly (0xc000007b)`
+before a frame. Measured off the live depot: `0.2.0-gbed9e02d6`'s
+`requires.libs` **names `libstdc++-6.dll`** — mingw's C++ runtime, reached
+through `basis-universal-sys`, absent from a stock Windows box — while the
+staged tree holds three files and `launch.env` is `{}`. Bundle-nothing is a
+Linux rule and does not transfer. `0xc000007b` rather than a missing-DLL
+box means that machine *has* a 32-bit copy of the name on its search path.
+
+**Fixed in the packager** (`ci/depot.py`): `runtime_dlls` sorts each import
+by `x86_64-w64-mingw32-gcc -print-file-name`, stages the toolchain's ones
+beside the exe — transitively, since `libgcc_s_seh-1.dll` and
+`libwinpthread-1.dll` are `libstdc++-6.dll`'s imports and appear nowhere in
+the exe's own table — and drops them from `requires.libs`. Beside the exe
+so the shipped copy also shadows the player's 32-bit one.
+
+**What remains is operator-only**, and until it happens every Windows
+player is still handed the broken build: repackage (`--platform win-x86_64`,
+on a box whose mingw alternatives are `-posix`), read the tree,
+`scry digest`, rsync, **merge** the `win-x86_64` row into `published.json`,
+notarize. `nightly.yml`'s `depot` job packages linux only, so the Windows
+depot stays hand-cut until someone gives it a leg — that leg is the durable
+fix and is the real item here.
+
+Unmeasured, same class: the GitHub **release** zip is msvc, not mingw, and
+nobody has checked whether it needs the VC++ redist. Its notes list Linux's
+three `-dev` packages and say nothing for Windows.
+
 > **Playtest items, 2026-08-15 — the operator played the shard and five came
 > out of it** (`DECISIONS.md` 2026-08-15). **Four landed the same day**
 > (`0kit`, `0eat`, `0die`'s defect half, `0sun`), so each item below is what
