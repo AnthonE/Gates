@@ -50,7 +50,7 @@ use bits::{BitReader, BitWriter};
 pub use chat::{decode_chat, encode_chat, ChatMsg, ChatText, CHAT_MAX_BYTES};
 pub use event::{
     decode_event, encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed,
-    encode_event_bag_sync, encode_event_build_refused, encode_event_catalog,
+    encode_event_bag_sync, encode_event_bags, encode_event_build_refused, encode_event_catalog,
     encode_event_charge_placed, encode_event_chat, encode_event_consume_refused,
     encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
     encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
@@ -525,7 +525,25 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// `protocol_golden.rs`'s.) The four `v37_*.bin` orphans (superseded by
 /// the v41 rename and never deleted) go with this bump, unreachable match
 /// arms and all.
-pub const PROTO_VER: u16 = 42;
+///
+/// **v43 adds `SUB_BAGS`** (bag choice v0): the own-fact list of the bags
+/// *you* placed, with each one's cooldown state, so the death screen can
+/// offer the anchor a player actually has instead of a button that always
+/// resolves to a beach. A pure addition — no existing layout moved — but a
+/// subtype the old decoder answers `Malformed` to, which is a wire change
+/// and takes a number.
+///
+/// **43 and not 42, and the reason is this file's own recurring one.** It
+/// was written as 42 with `SUB_BAGS = 49` on a branch, while the durability
+/// slice above took exactly those two numbers on the trunk. Two different
+/// layouts both called 42 is the v38–v40 collision six paragraphs up and
+/// `worldsave.rs`'s format-3 collision one crate over; the cure is the same
+/// each time — **the trunk's number stands, and the branch takes the next
+/// one neither claimed.** So `SUB_BAGS` is 50 and no fixture keyed `v42_*`
+/// carrying a bag list was ever authoritative.
+///
+/// Fixtures are keyed `v43_*` — **94**, one added: the own-bag list.
+pub const PROTO_VER: u16 = 43;
 
 /// This game's slug in the scry catalog.
 ///

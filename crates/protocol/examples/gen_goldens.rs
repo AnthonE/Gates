@@ -432,4 +432,15 @@ fn main() {
         let len = protocol::encode_event_gather_refused(item, reason, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[92], &buf[..len]);
     }
+
+    // Bag choice v0 (v43). **93 and not 92**: the manifest is positional
+    // and the gather refusal above was appended first on the trunk, so
+    // the index moved under this writer in the merge. Both wrote 92 for a
+    // moment, which is one fixture silently never generated — the exact
+    // renumbering the manifest's own comments keep warning about.
+    {
+        let (bags, n) = goldens::event_bags();
+        let len = protocol::encode_event_bags(&bags[..n], &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[93], &buf[..len]);
+    }
 }

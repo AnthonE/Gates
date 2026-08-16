@@ -219,19 +219,35 @@ pub fn hover(mut q: Query<(&Interaction, &Hover, &mut BackgroundColor), Changed<
 /// Absolute and 100% on both axes so it covers whatever is behind it — which
 /// in the loading screen and the Esc menu is the world, still rendering.
 pub fn screen(bg: Color) -> impl Bundle {
-    (
-        Node {
-            position_type: PositionType::Absolute,
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            flex_direction: FlexDirection::Column,
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            row_gap: Val::Px(10.0),
-            ..default()
-        },
-        BackgroundColor(bg),
-    )
+    (screen_node(), BackgroundColor(bg))
+}
+
+/// [`screen`]'s layout, on its own, so a screen that needs ONE field
+/// different can spread it (`Node { padding: …, ..ui::SCREEN_NODE }`)
+/// instead of restating a full-viewport centred column.
+///
+/// Split out when the death screen grew a map and needed one field moved.
+/// ⚠ **The obvious way to do that does not work**: `(screen(bg),
+/// Node { padding })` puts two `Node`s in one bundle, and Bevy 0.18 does
+/// not merge or replace them — it **panics at spawn**, at runtime, from
+/// inside a command queue, with the system name elided unless the `debug`
+/// feature is on. `cargo build` and every headless gate stay green. So the
+/// composable half is this function, and a screen that wants a variant
+/// spreads it: `Node { padding: …, ..ui::screen_node() }`.
+///
+/// A function rather than a `const`, because `Node` holds types with
+/// destructors and a `const Node` does not compile.
+pub fn screen_node() -> Node {
+    Node {
+        position_type: PositionType::Absolute,
+        width: Val::Percent(100.0),
+        height: Val::Percent(100.0),
+        flex_direction: FlexDirection::Column,
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::Center,
+        row_gap: Val::Px(10.0),
+        ..default()
+    }
 }
 
 /// A screen's own heading — `YOU DIED`, `DISCONNECTED`.

@@ -240,6 +240,22 @@ do not rediscover)
   pointed at. Same shape for any `pub enum` or archetype table read from
   `render::`. When you add a variant, grep the feature-gated modules for
   its type before believing a green workspace run.
+- **Two of the same component in one Bevy bundle is a RUNTIME panic, and
+  every gate in this repo is blind to it.** `(DeathRoot, ui::screen(bg),
+  Node { padding })` is the obvious way to take a shared layout and move one
+  field, and it does not merge and does not replace: Bevy 0.18 dies at spawn
+  with *"has duplicate components"*, inside a command queue, naming the
+  system as `<Enable the debug feature to see the name>`. Written that way
+  on 2026-08-16; `cargo build`, `cargo clippy --features render` and
+  `./ci/gates.sh` were all green, and the client died the instant a body
+  reached the death screen — a screen no headless test spawns and no capture
+  probe visits. **Booting the game is what found it**, which is the whole of
+  why there is no pixel gate and why a person looking is the visual gate.
+  The composable shape is a `fn` returning the `Node`
+  (`ui::screen_node()`), spread into a fresh one; a `const Node` does not
+  compile, because `Node` holds types with destructors. The general rule:
+  **a spawn is not type-checked for duplicates, so a bundle assembled out of
+  two helpers is a claim you have to run.**
 - **A sweep window that agrees with itself across every case is still not
   validated, and this one nearly wiped a live shard.** On 2026-08-14 a pass
   measured 40 islands and concluded the shipped seed was the flattest of them —

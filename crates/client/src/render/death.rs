@@ -19,32 +19,54 @@
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
-use crate::ui::death::{sentence, woke, Death};
+use bevy::image::Image;
+
+use crate::ui::death::{note, rows, sentence, wake_at, woke, Death, Wake};
+use crate::ui::map;
 
 use super::hud::Toast;
 use super::menu::Screen;
-use super::{ui, Net};
+use super::{ui, Net, WorldId};
 
 /// Everything this screen owns.
 #[derive(Component)]
 pub struct DeathRoot;
 
-/// Where you wake up.
+/// The row a click lands on. A component wrapper around [`Wake`], which
+/// lives in `ui::death` with the table that decides which rows exist —
+/// the enum cannot be a `Component` there (no Bevy in `ui`), and it must
+/// not be a second enum here (two lists that can disagree about which
+/// button the player pressed).
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Wake {
-    Bag,
-    Beach,
-}
+pub struct WakeRow(pub Wake);
 
-/// The rows, in the reference's order: the anchor you'd rather have first.
-pub const WAKES: [(Wake, &str, &str); 2] = [
-    (
-        Wake::Bag,
-        "Wake on your bag",
-        "if one is placed and off cooldown",
-    ),
-    (Wake::Beach, "Wake on a beach", "the shoreline, somewhere"),
-];
+/// How large the death screen's map is drawn, screen px.
+///
+/// Smaller than `Screen::Map`'s 640 for two reasons, and the second is a
+/// measurement rather than taste. It answers "where are my bags" and not
+/// "where is everything", so the sentence above it is what the player reads
+/// first — and the whole column has to FIT: title, sentence, map, legend,
+/// two rows and a footer is ~640 px of stack, against Bevy's default 720 px
+/// window. At 360 the beach row sat over the hotbar in a capture; 300 buys
+/// the margin back and costs nothing legible, since a 2 048 m island at
+/// 300 px is ~6.8 m a pixel and a marker is 7 px wide either way.
+const DEATH_MAP_PX: f32 = 300.0;
+
+/// Bottom strip the centred column keeps clear, screen px.
+///
+/// **The HUD is still drawn under this screen** — the hotbar sits 18 px up
+/// and is 46 px tall, and `hud.rs` spawns it as several roots rather than
+/// one, so there is no single thing to hide and hiding it is a wider change
+/// than this slice. `ui::screen` centres its column in the whole viewport,
+/// so a tall column runs its last row straight through those cells: with
+/// the map added, "click a row, or press its number" printed over the
+/// hotbar in a 720 px capture. Padding the root lifts the centre instead,
+/// and costs nothing on the short (bagless) shape, which does not reach
+/// down that far anyway.
+///
+/// 82 = 18 + 46 + 18 of air. Written as the sum rather than as `82` so it
+/// is obvious what moves it.
+const HUD_CLEAR_PX: f32 = 18.0 + 46.0 + 18.0;
 
 /// The answer in flight, and what it asked for.
 ///
@@ -135,7 +157,13 @@ pub fn enter(
     }
 }
 
-pub fn setup(mut commands: Commands, net: NonSend<Net>) {
+pub fn setup(
+    mut commands: Commands,
+    net: NonSend<Net>,
+    world: Res<WorldId>,
+    mut island: ResMut<super::map::Island>,
+    mut images: ResMut<Assets<Image>>,
+) {
     let core = &net.session.core;
     let line = sentence(
         &Death {
@@ -148,33 +176,115 @@ pub fn setup(mut commands: Commands, net: NonSend<Net>) {
         &core.catalog,
     );
 
+    // **The list is what shapes the screen** (bag choice v0). Own-fact,
+    // sent with the death that raised this screen — the deploy mirror
+    // beside it knows where every bed on the island is and cannot say
+    // which are ours (`protocol`'s `SUB_BAGS`).
+    let bags = core.own_bags();
+    let has_bag = !bags.is_empty();
+    let ready = core.any_bag_ready();
+    let mut marks = map::Marks::default();
+    map::resolve_wake_marks(&mut marks, bags);
+    // Painted once per seed and shared with `Screen::Map` — the same
+    // texture, so this costs a handle clone on every death after the
+    // first open of either screen.
+    let texture = has_bag.then(|| island.texture(&mut images, world.seed));
+
     commands
         .spawn((
             DeathRoot,
+            // `ui::screen`'s layout with one field moved — lifted clear of
+            // the hotbar the HUD still draws under this screen.
+            //
+            // ⚠ **Spelt out rather than `(ui::screen(bg), Node { … })`,
+            // because that shape does not compose and does not fail to
+            // compile.** Bevy 0.18 PANICS at spawn on a bundle with two of
+            // the same component — *"has duplicate components"*, at
+            // runtime, from inside a command queue, with the system name
+            // elided unless the `debug` feature is on. It was written that
+            // way here first: `cargo build`, `cargo clippy` and every
+            // headless gate stayed green, and the client died the moment a
+            // body hit the death screen. Booting it is what found it.
+            Node {
+                padding: UiRect::bottom(Val::Px(HUD_CLEAR_PX)),
+                ..ui::screen_node()
+            },
             // Darker than the pause wash and warmer: the world is still
             // there, and you are not in it.
-            ui::screen(Color::srgba(0.06, 0.01, 0.01, 0.88)),
+            BackgroundColor(Color::srgba(0.06, 0.01, 0.01, 0.88)),
         ))
         .with_children(|root| {
             root.spawn(ui::title("YOU DIED"));
             root.spawn((
                 ui::strong(line, 16.0, ui::TEXT),
                 Node {
-                    margin: UiRect::bottom(Val::Px(18.0)),
+                    margin: UiRect::bottom(Val::Px(14.0)),
                     ..default()
                 },
             ));
 
-            for (i, (wake, name, detail)) in WAKES.iter().enumerate() {
-                root.spawn((ui::row(460.0), *wake)).with_children(|b| {
-                    b.spawn(ui::strong(format!("{}  {}", i + 1, name), 20.0, ui::TEXT));
-                    b.spawn(ui::label(*detail, 13.0, ui::DIM));
+            // The map, only for a player who has somewhere to wake. With
+            // no bag there is nothing on it to look at and the beach is
+            // not a place you get to pick, so an empty island here would
+            // be decoration on the one screen nobody wants to be reading.
+            if let Some(texture) = texture {
+                root.spawn((
+                    Node {
+                        width: Val::Px(DEATH_MAP_PX),
+                        height: Val::Px(DEATH_MAP_PX),
+                        border: UiRect::all(Val::Px(1.0)),
+                        margin: UiRect::bottom(Val::Px(10.0)),
+                        ..default()
+                    },
+                    BorderColor::all(ui::RULE),
+                    ImageNode::new(texture),
+                ))
+                .with_children(|frame| {
+                    // **Your bags, and nothing else.** No player marker
+                    // and no corpse marker: `ALPHA.md` §1's "no map
+                    // position" is about where you fell, and this screen
+                    // still does not say. `ui::map::resolve_wake_marks`
+                    // carries the argument.
+                    //
+                    // REVERSE, matching `Screen::Map` — one rule for both
+                    // maps rather than two that agree by accident. It
+                    // changes nothing visible here (every mark is one of
+                    // your own beds and the list is capped far below
+                    // `MAP_MARKS_MAX`), and the point of writing it the
+                    // same way is that the next kind added to `Marks` gets
+                    // the same stacking on both screens.
+                    for m in marks.a[..marks.count].iter().rev() {
+                        super::map::spawn_mark(frame, m);
+                    }
                 });
+                root.spawn((
+                    ui::label(
+                        if ready {
+                            "solid = ready    hollow = still cooling down"
+                        } else {
+                            "every bag is still cooling down - this will be a beach"
+                        },
+                        12.0,
+                        ui::FAINT,
+                    ),
+                    Node {
+                        margin: UiRect::bottom(Val::Px(12.0)),
+                        ..default()
+                    },
+                ));
+            }
+
+            for (i, (wake, name, detail)) in rows(has_bag).iter().enumerate() {
+                root.spawn((ui::row(460.0), WakeRow(*wake)))
+                    .with_children(|b| {
+                        b.spawn(ui::strong(format!("{}  {}", i + 1, name), 20.0, ui::TEXT));
+                        b.spawn(ui::label(*detail, 13.0, ui::DIM));
+                    });
             }
 
             root.spawn((
                 Note,
-                ui::label("click a row, or press its number", 13.0, ui::FAINT),
+                ui::label(note(has_bag), 13.0, ui::FAINT),
                 Node {
                     margin: UiRect::top(Val::Px(16.0)),
                     ..default()
@@ -187,31 +297,48 @@ pub fn setup(mut commands: Commands, net: NonSend<Net>) {
 #[derive(Component)]
 pub struct Note;
 
-pub fn click(rows: Query<(&Interaction, &Wake), Changed<Interaction>>, mut answer: ResMut<Answer>) {
+pub fn click(
+    pressed: Query<(&Interaction, &WakeRow), Changed<Interaction>>,
+    mut answer: ResMut<Answer>,
+) {
     if answer.sent {
         return;
     }
-    for (interaction, wake) in rows.iter() {
+    for (interaction, row) in pressed.iter() {
         if *interaction == Interaction::Pressed {
-            answer.chosen = Some(*wake);
+            answer.chosen = Some(row.0);
         }
     }
 }
 
-pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, mut answer: ResMut<Answer>) {
+pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, net: NonSend<Net>, mut answer: ResMut<Answer>) {
     if answer.sent {
         return;
     }
-    // 1/F wakes on the bag, 2/G on a beach — the digits the other screens
-    // use, plus the letter aliases the browser bound. **Escape is not one of
-    // them**: there is nothing to back out to, and a screen you can dismiss
-    // without answering is a corpse with no exit again.
-    for (keys, wake) in [
-        ([KeyCode::Digit1, KeyCode::KeyF], Wake::Bag),
-        ([KeyCode::Digit2, KeyCode::KeyG], Wake::Beach),
-    ] {
-        if keys.iter().any(|k| keyboard.just_pressed(*k)) {
-            answer.chosen = Some(wake);
+    let has_bag = !net.session.core.own_bags().is_empty();
+
+    // **Digits only, and POSITIONAL.** A digit means the row it is drawn
+    // beside — with no bag on the island, `1` is the beach, because `1` is
+    // the only row there is. A player does not read a table, they press the
+    // number next to the words.
+    //
+    // ⚠ **The `F`/`G` letter aliases are gone, and `G` is why.** They were
+    // the browser's, bound to the anchor rather than to the position — and
+    // as of 2026-08-16 `G` holds the MAP everywhere else in the game
+    // (`DECISIONS.md`, the control scheme). A player who has learned that
+    // key would press it here expecting to look at the island and would
+    // spawn on a beach instead, which is the one answer on this screen that
+    // cannot be taken back. Dropping both rather than re-lettering: an
+    // alias earns its place by being the key somebody already knows, and
+    // after a control rebind neither of these is.
+    //
+    // **Escape is not bound either**: there is nothing to back out to, and a
+    // screen you can dismiss without answering is a corpse with no exit.
+    for (n, digit) in [KeyCode::Digit1, KeyCode::Digit2].into_iter().enumerate() {
+        if keyboard.just_pressed(digit) {
+            if let Some(wake) = wake_at(has_bag, n + 1) {
+                answer.chosen = Some(wake);
+            }
         }
     }
 }
@@ -257,15 +384,23 @@ pub fn teardown(mut commands: Commands, roots: Query<Entity, With<DeathRoot>>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::ui::death::WAKES;
 
+    /// `pause`'s rule: a row the keyboard cannot reach is a row half the
+    /// players will not use. `keys` above binds **two digits**, so a third
+    /// row in the table would ship unreachable — the digit loop is
+    /// hand-written and cannot grow by itself.
+    ///
+    /// The reachability of each row that *is* drawn is
+    /// `ui::death::every_drawn_row_is_reachable_by_its_own_digit`, where
+    /// the table lives; this is the one half of it that can only be
+    /// checked here, against this file's key list.
     #[test]
-    fn every_drawn_row_has_a_key_that_reaches_it() {
-        // `pause`'s rule: a row the keyboard cannot reach is a row half the
-        // players will not use. `keys` binds two wakes; a third drawn here
-        // fails rather than shipping a dead row.
-        assert_eq!(WAKES.len(), 2);
-        assert_eq!(WAKES[0].0, Wake::Bag);
-        assert_eq!(WAKES[1].0, Wake::Beach);
+    fn the_digit_loop_covers_every_row_the_table_can_offer() {
+        assert_eq!(
+            WAKES.len(),
+            2,
+            "a row was added to the wake table and `keys` still binds two digits"
+        );
     }
 }

@@ -20,9 +20,33 @@
 //!     trails the camera and catches up. This is the one that costs least and
 //!     buys most: a rigidly parented object betrays itself the instant the
 //!     mouse moves.
-//!   · **Swing** — did I just do something? Triggered off [`Feed`], never off
-//!     the input buttons, because the swing worth drawing is the one that
-//!     LANDED. Reading the button animates swings the server refused.
+//!   · **Swing** — did I just do something? Driven by the client's mirror of
+//!     the sim's own swing cadence ([`crate::ui::swing`]), with [`Feed`] as a
+//!     backstop.
+//!
+//! ### The swing trigger moved, and why
+//!
+//! It was [`Feed`] alone — a landed hit or a gather payout — and the argument
+//! was *"the swing worth drawing is the one that LANDED; reading the button
+//! animates swings the server refused."* That is right about refusals and
+//! wrong about **misses**, which are not refusals: a rock swung at open air
+//! is a swing the sim fully took (it paid the cadence, whiffed the node scan,
+//! found nothing in reach) and announced nothing, because there is nothing to
+//! announce. So the commonest swing in the game drew no motion at all, and
+//! the item sat still in frame while the sound played.
+//!
+//! What replaces it mirrors the sim's rule rather than guessing at it —
+//! `BTN_PRIMARY` down and `tick >= next_swing` — over the tick estimate
+//! [`Feed`] already carries. It still decides nothing (`RENDER.md` §1): it
+//! picks a pose, on the same liberty `render::input`'s swing cue has taken
+//! since audio v0.
+//!
+//! [`Feed`] stays as a **backstop, gated on the arm being at rest**: a hit
+//! lands about a round trip after the local prediction started the stroke, so
+//! an ungated retrigger would restart the arc mid-swing and read as a stutter.
+//! At rest it can only mean the prediction did not fire — a clock that had
+//! slipped, a frame the input system did not run — and then drawing something
+//! beats drawing nothing.
 //!
 //! ## What this module may and may not read
 //!
@@ -146,6 +170,10 @@ pub struct Motion {
     started: bool,
     /// Swing progress, counting DOWN from 1 to 0. Zero is at rest.
     swing: f32,
+    /// The client's mirror of `Player::next_swing` — what turns a held
+    /// mouse button into a chop at the sim's cadence instead of a blur at
+    /// the frame rate. See [`crate::ui::swing`].
+    cadence: crate::ui::swing::SwingCadence,
 }
 
 /// Emit an axis-aligned box into a soup. `c` is the centre, `h` the
@@ -539,6 +567,10 @@ pub fn animate(
     time: Res<Time>,
     eye: Res<Eye>,
     feed: Res<Feed>,
+    // `Option`, like `swap`'s: a capture run has no session, and a
+    // viewmodel that refused to draw without one would take the held item
+    // out of every probe frame.
+    net: Option<NonSend<Net>>,
     mut m: ResMut<Motion>,
     mut q: Query<&mut Transform, With<HeldItem>>,
 ) {
@@ -547,6 +579,10 @@ pub fn animate(
     if dt <= 0.0 {
         return;
     }
+    // The byte the sim will act on, not the mouse — see `ClientCore::buttons`.
+    let swinging = net
+        .as_deref()
+        .is_some_and(|n| n.session.core.buttons() & sim_core::input::BTN_PRIMARY != 0);
 
     if !m.started {
         m.started = true;
@@ -590,11 +626,25 @@ pub fn animate(
     let sway = m.sway;
     m.sway = sway + (target - sway) * k;
 
-    // ── Swing, off the feed ──────────────────────────────────────────────
-    // A landed hit or a gather. Retriggers from the top rather than adding,
-    // so holding the button down is a steady chop instead of a wind-up that
-    // never resolves.
-    if feed.hits > 0 || !feed.gathered().is_empty() {
+    // ── Swing, off the cadence ───────────────────────────────────────────
+    // The sim's own rule, mirrored: button down and the cooldown lapsed.
+    // This is what draws a MISS, which is most swings — see the header.
+    // Retriggers from the top rather than adding, so holding the button
+    // down is a steady chop instead of a wind-up that never resolves.
+    //
+    // Both terms are bound before the branch rather than short-circuited:
+    // `poll` ADVANCES the cadence, so it has to run on every frame the arm
+    // is held whatever the other term says, or a swing the feed happened to
+    // draw would leave the predictor's window unspent and the next one would
+    // come early.
+    let predicted = m.cadence.poll(swinging, feed.server_tick_est);
+    // The backstop, and the `<= 0.0` is the whole of it: a landed hit
+    // arrives about a round trip into a stroke the prediction already
+    // started, and restarting the arc there is a visible stutter. At rest
+    // it can only mean the prediction missed one, and a swing drawn late
+    // beats a swing not drawn.
+    let landed_at_rest = m.swing <= 0.0 && (feed.hits > 0 || !feed.gathered().is_empty());
+    if predicted || landed_at_rest {
         m.swing = 1.0;
     }
     if m.swing > 0.0 {
@@ -620,6 +670,24 @@ pub fn animate(
         0.0,
     );
     t.rotation = motion * rest;
+}
+
+/// Forget everything the last session put in [`Motion`] — `map::forget`'s
+/// twin, registered on the same two transitions.
+///
+/// **Every field in `Motion` is session-scoped and none of them was being
+/// cleared.** `started`/`last_pos` are the pair `Motion`'s own doc explains:
+/// seeded on the first frame so the eye's jump from the origin to the spawn
+/// — 2,179 m on the measured seed — does not land in the first frame's
+/// speed. That seeding only happens while `started` is false, so a *second*
+/// session inherited the first one's last position and paid the jump the
+/// latch exists to avoid. The swing cadence has the same shape for a
+/// sharper reason: it holds an absolute server tick, and reconnecting to a
+/// shard whose clock is *behind* the last one leaves the arm on a cooldown
+/// measured in somebody else's ticks (`ui::swing`'s
+/// `a_reset_lets_a_fresher_shard_swing_again`).
+pub fn forget(mut m: ResMut<Motion>) {
+    *m = Motion::default();
 }
 
 /// Shortest signed arc into `-π..π`.

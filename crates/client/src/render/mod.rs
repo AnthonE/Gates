@@ -630,7 +630,10 @@ impl Plugin for GatesRenderPlugin {
                 OnEnter(Screen::Disconnected),
                 water::teardown.after(world_teardown),
             )
-            .add_systems(OnEnter(Screen::Disconnected), map::forget)
+            .add_systems(
+                OnEnter(Screen::Disconnected),
+                (map::forget, viewmodel::forget),
+            )
             .add_systems(OnExit(Screen::Disconnected), disconnected::teardown)
             .add_systems(
                 Update,
@@ -666,7 +669,7 @@ impl Plugin for GatesRenderPlugin {
                     .after(pause::open)
                     .run_if(in_state(Screen::InWorld)),
             )
-            .add_systems(OnEnter(Screen::Menu), map::forget);
+            .add_systems(OnEnter(Screen::Menu), (map::forget, viewmodel::forget));
 
         // ---- settings ------------------------------------------------
         // The two `apply_*` systems are deliberately NOT gated on the screen

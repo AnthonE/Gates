@@ -61,6 +61,39 @@ pub struct Island {
     seed: Option<u64>,
 }
 
+impl Island {
+    /// The painted island for this seed, painting it if this is the first
+    /// ask of the session.
+    ///
+    /// **Two screens share it and that is the reason it is a method.** The
+    /// death screen draws the same island (`render::death`), and a second
+    /// `paint` call there would be ~65 k height taps repeated on the one
+    /// frame a player is already unhappy about — plus a second texture in
+    /// VRAM for the same picture. The seed check is what makes it safe to
+    /// share: a second shard repaints rather than showing the first one's
+    /// coastline, which looks plausible and is the worst kind of wrong.
+    pub fn texture(&mut self, images: &mut Assets<Image>, seed: u64) -> Handle<Image> {
+        if self.seed != Some(seed) || self.texture.is_none() {
+            let mut buf = vec![0u8; MAP_PX * MAP_PX * 4];
+            map::paint(seed, MAP_PX, &mut buf);
+            let image = Image::new(
+                Extent3d {
+                    width: MAP_PX as u32,
+                    height: MAP_PX as u32,
+                    depth_or_array_layers: 1,
+                },
+                TextureDimension::D2,
+                buf,
+                TextureFormat::Rgba8UnormSrgb,
+                RenderAssetUsages::RENDER_WORLD,
+            );
+            self.texture = Some(images.add(image));
+            self.seed = Some(seed);
+        }
+        self.texture.clone().expect("painted above")
+    }
+}
+
 /// **Hold `G`.** The map is up while the key is down and gone when it is
 /// released; `Esc` also closes it, because every other screen in this client
 /// answers `Esc` and one that did not would read as a hang.
@@ -131,24 +164,7 @@ pub fn setup(
     look: Res<super::input::Look>,
 ) {
     // Paint on the first open of this seed, and never again.
-    if island.seed != Some(world.seed) || island.texture.is_none() {
-        let mut buf = vec![0u8; MAP_PX * MAP_PX * 4];
-        map::paint(world.seed, MAP_PX, &mut buf);
-        let image = Image::new(
-            Extent3d {
-                width: MAP_PX as u32,
-                height: MAP_PX as u32,
-                depth_or_array_layers: 1,
-            },
-            TextureDimension::D2,
-            buf,
-            TextureFormat::Rgba8UnormSrgb,
-            RenderAssetUsages::RENDER_WORLD,
-        );
-        island.texture = Some(images.add(image));
-        island.seed = Some(world.seed);
-    }
-    let texture = island.texture.clone().expect("painted above");
+    let texture = island.texture(&mut images, world.seed);
 
     let [x, _, z] = net.session.core.predict.render_position();
     let (px, py) = map::world_to_map(x, z, 1);
@@ -317,7 +333,11 @@ pub fn setup(
 ///
 /// The exhaustive `match` is the gate the browser needed a table-walk for: a
 /// kind added without a draw branch fails to compile.
-fn spawn_mark(frame: &mut ChildSpawnerCommands, m: &map::Mark) {
+///
+/// Shared with the death screen (`render::death`), which draws the same
+/// markers on the same island — one projection, one shape table, so a bag
+/// cannot be in two places depending on which screen you are looking at.
+pub(super) fn spawn_mark(frame: &mut ChildSpawnerCommands, m: &map::Mark) {
     let f = m.kind.fill();
     let fill = Color::srgb(f[0] / 255.0, f[1] / 255.0, f[2] / 255.0);
     let px = match m.kind {
@@ -352,6 +372,14 @@ fn spawn_mark(frame: &mut ChildSpawnerCommands, m: &map::Mark) {
             if m.kind == MarkKind::Hearth {
                 e.insert(UiTransform::from_rotation(Rot2::degrees(45.0)));
             }
+        }
+        // A bag inside its cooldown: the bed's square, HOLLOW. Weight is
+        // the channel (`MarkKind::fill`'s note says why it is not
+        // colour) — an outline reads as "this one is not answering" next
+        // to a solid one at a glance, and the two are the same blue so
+        // both still read as yours.
+        MarkKind::BedSpent => {
+            frame.spawn((node(2.0), BorderColor::all(fill)));
         }
         MarkKind::Backpack => {
             let mut n = node(1.0);

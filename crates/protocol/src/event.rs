@@ -21,7 +21,9 @@ use crate::{
 use sim_core::backpack::BackpackRec;
 use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_ZLO, MAT_METAL, SHAPE_TRI_ROOF};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
-use sim_core::deploy::{DeployContent, DeployDef, DeployRec, ARCH_WORKBENCH3, PLACE_DOOR};
+use sim_core::deploy::{
+    BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_WORKBENCH3, BAG_CAP, PLACE_DOOR,
+};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
 use sim_core::limits::{
@@ -230,7 +232,34 @@ const SUB_RESEARCH_ROWS: u32 = 48;
 /// the sentence the HUD owes is *a torch cannot fell a tree*, not "bare
 /// hands" (`NOW.md` §0kit item 2). 50th of the 64 a 6-bit field holds.
 const SUB_GATHER_REFUSED: u32 = 49;
-const SUB_MAX: u32 = SUB_GATHER_REFUSED;
+/// **Your own bags**, whole, with each one's cooldown state (wire v43,
+/// bag choice v0). Own-fact and `SUB_KNOWN`'s posture in both halves.
+///
+/// *Own*, because `DeployRec::owner` is deliberately not on the wire, so
+/// the deploy mirror a client already holds says where every bed on the
+/// island is and cannot say which are its own. The death screen has to
+/// know — a screen that offers "wake on your bag" to a player who has
+/// never placed one is a button that always lands on a beach — and the
+/// alternative to this message is an owner id on every deployable anyone
+/// can see, which hands a raider the census.
+///
+/// *Whole*, because a delta of a set this small buys nothing and can be
+/// lost: a client that missed one placement would offer a bag it does not
+/// have, or hide one it does, with no event left to correct it. Eight
+/// entries is `BAG_CAP`, which placement already enforces.
+///
+/// The `ready` bit is a **snapshot at send**, not a subscription: a
+/// cooldown lapses on a clock that emits nothing. `world.rs`'s respawn is
+/// still the authority and still falls back to the beach, and the client
+/// says which anchor answered (`ui::death::woke`), so a stale bit costs a
+/// sentence rather than a wrong place to wake up.
+/// **50, not 49** — see `PROTO_VER`'s v43 note. This landed on a branch
+/// as 49 with `PROTO_VER` 42, and the gather refusal above landed on the
+/// trunk as the same two numbers. Two layouts under one version is
+/// `worldsave.rs`'s format-3 collision, and it takes the same cure: the
+/// trunk's number stands and this takes the next one neither claimed.
+const SUB_BAGS: u32 = 50;
+const SUB_MAX: u32 = SUB_BAGS;
 /// And the field must hold it. A subtype declared past `SUB_BITS` would
 /// truncate on the way out and decode as a *different, live* code — the
 /// worst shape of wire drift there is, since both ends would agree on
@@ -358,6 +387,16 @@ const ARCH_BITS: u32 = 4;
 const PLACEMENT_BITS: u32 = 3;
 const STOCK_COUNT_BITS: u32 = 3;
 const BAG_SYNC_COUNT_BITS: u32 = 5;
+/// Own-bag count (`SUB_BAGS`). `BAG_CAP` is 8 and a *count* of 8 needs
+/// four bits, so 9..15 are forgeable and the decoder refuses them —
+/// `CONT_COUNT_BITS`' posture, written down because "8 fits in three
+/// bits" is the off-by-one that would truncate a full rack of bags to
+/// none and make the death screen quietly stop offering them.
+const BAGS_COUNT_BITS: u32 = 4;
+const _: () = assert!(
+    BAG_CAP < (1 << BAGS_COUNT_BITS),
+    "an own-bag count past the field width would truncate a full rack to zero"
+);
 /// Container-sync slot count. `CONT_SYNC_BATCH` is `INV_SLOTS` = 30, so
 /// six bits hold it and the count itself is bounded by the decoder rather
 /// than by the width — 31..63 are forgeable and refuse, the way `SUB_INV`
@@ -483,6 +522,14 @@ pub enum EventMsg {
     /// Every blueprint this player knows, as a bitmask over recipe
     /// indices. The whole mask, not a delta — see `SUB_KNOWN`.
     Known { mask: u64 },
+    /// Every bag **this player** has placed, whole, with each one's
+    /// cooldown state at send time — the death screen's data. See
+    /// `SUB_BAGS` for why it is its own message and not a column on the
+    /// deploy record everybody sees.
+    Bags {
+        bags: [BagAnchor; BAG_CAP],
+        count: u8,
+    },
     /// A craft request bounced: `reason` is a `sim_core::craft::REFUSE_*`
     /// code (unknown values render as a generic refusal).
     CraftRefused { reason: u8 },
@@ -1055,6 +1102,32 @@ pub fn encode_event_known(mask: u64, buf: &mut [u8]) -> Result<usize, WireError>
     // it.
     w.write((mask & 0xFFFF_FFFF) as u32, 32)?;
     w.write((mask >> 32) as u32, 32)?;
+    Ok(w.finish())
+}
+
+/// Your own bags, whole (wire v42). An **empty list is legal and load-
+/// bearing**: it is how a client is told it has no bag left to wake on,
+/// which is the state the death screen changes shape for. Every other
+/// batch encoder in this file refuses an empty body because emptiness
+/// there means "nothing to say"; here it is the thing being said.
+pub fn encode_event_bags(bags: &[BagAnchor], buf: &mut [u8]) -> Result<usize, WireError> {
+    if bags.len() > BAG_CAP {
+        return Err(WireError::Cap);
+    }
+    let mut w = begin(buf, SUB_BAGS)?;
+    w.write(bags.len() as u32, BAGS_COUNT_BITS)?;
+    for b in bags {
+        if b.cx as usize >= MAX_BUILD_COORD
+            || b.cz as usize >= MAX_BUILD_COORD
+            || b.level as usize >= MAX_BUILD_LEVELS
+        {
+            return Err(WireError::Range);
+        }
+        w.write(b.cx as u32, BUILD_CELL_BITS)?;
+        w.write(b.cz as u32, BUILD_CELL_BITS)?;
+        w.write(b.level as u32, BUILD_LEVEL_BITS)?;
+        w.write_bit(b.ready)?;
+    }
     Ok(w.finish())
 }
 
@@ -2308,6 +2381,29 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             let hi = r.read(32)?;
             EventMsg::Known {
                 mask: (hi as u64) << 32 | lo as u64,
+            }
+        }
+        SUB_BAGS => {
+            // `BAGS_COUNT_BITS` holds 0..=15 and `BAG_CAP` is 8, so the
+            // four values above the cap are forgeable and refuse here —
+            // the hotbar selector's posture, and the reason a count is
+            // never trusted straight into an index.
+            let count = r.read(BAGS_COUNT_BITS)? as usize;
+            if count > BAG_CAP {
+                return Err(WireError::Malformed);
+            }
+            let mut bags = [BagAnchor::default(); BAG_CAP];
+            for b in bags.iter_mut().take(count) {
+                *b = BagAnchor {
+                    cx: r.read(BUILD_CELL_BITS)? as u16,
+                    cz: r.read(BUILD_CELL_BITS)? as u16,
+                    level: r.read(BUILD_LEVEL_BITS)? as u8,
+                    ready: r.read_bit()?,
+                };
+            }
+            EventMsg::Bags {
+                bags,
+                count: count as u8,
             }
         }
         SUB_RESEARCH_ROWS => {
@@ -4565,6 +4661,13 @@ mod wire_domains {
             "DEPLOY_DEFS_COUNT_BITS",
             "STOCK_COUNT_BITS",
             "BAG_SYNC_COUNT_BITS",
+            // A count bounded by `BAG_CAP`, which is a sim-core *cap* and
+            // not an enumeration — `INV_COUNT_BITS`' and
+            // `STOCK_COUNT_BITS`' shape, so it is classified with them.
+            // What guards it against the cap being raised is the
+            // compile-time assert beside the declaration, which is the
+            // guard a DOMAINS row would have bought and cheaper.
+            "BAGS_COUNT_BITS",
             "CONT_COUNT_BITS",
             "LOCK_CODE_BITS",
         ];

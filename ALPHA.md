@@ -17,6 +17,15 @@
 - **Respawn flow**: death screen (who/what killed you — range and weapon,
   no map position), choose beach or a bag, spawn with nothing. No
   spawn protection anywhere, haven excepted.
+  ⚠ **The screen has a map on it since 2026-08-16 and "no map position"
+  still holds** (operator, `DECISIONS.md`; bag choice v0). The two are not
+  in conflict: the rule is about where *you fell* — a screen that said so
+  would hand the raider standing over your body a pin to the base they just
+  cleared — and what the map marks is **your own bags**, which are yours
+  already. No corpse marker, no player marker, and the bag row is not drawn
+  at all for a player who has none. `ui::map::no_wake_map_marks_the_corpse`
+  is the structural half, because the way this breaks is somebody helpfully
+  adding a "you died here" dot.
 - **First-person feel checklist** (client acceptance, not features):
   fixed-timestep-decoupled camera, ~10 Hz-to-60 fps interpolation never
   visible, sprint/crouch states in the input bitfield (already sized),

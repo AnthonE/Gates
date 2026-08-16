@@ -103,6 +103,28 @@ the shared feed queue and `ui::refusals::GATHER` (wire v42). Remainders:
    empty `[[spawn_kit]]` is an unwinnable world that boots green; and
    `parse_shard_toml`'s `dev_spawn_kit` arm pushes unbounded, caps after.
 
+## 0sw · The swing is drawn in first person only *(client lane)*
+
+Landed 2026-08-16 (operator: *"we need some animation atleast showing the
+rock swing"*): `ui::swing::SwingCadence` mirrors `gather::swing`'s rule
+(`BTN_PRIMARY` down, `tick >= next_swing`) over `Feed::server_tick_est`, so a
+**miss** animates — previously only a landed hit or a gather did, which meant
+the commonest swing in the game drew nothing. `Feed` stays as a backstop,
+gated on the arm being at rest so a hit arriving mid-stroke cannot restart
+the arc.
+
+What is still missing is the **other** half, and it is an asset gap rather
+than a code one: `render::anim::Clip` has five clips — Idle, Walk, Jog,
+Sprint, Sleep — and the mannequin `.glb` carries no swing, so **another
+player swinging at you is a body standing perfectly still**. That is worse
+than the first-person gap was: the one thing a fight needs to read is the
+wind-up. It wants a `Swing_Once` clip on the shared skeleton
+(`assets/models/WANTED.md`'s queue), a one-shot rather than a loop, and a
+trigger — `EV_HIT` is broadcast but a *miss* is not, so drawing a remote
+whiff needs either a wire fact or the same cadence prediction run per remote
+body off their input, which the client does not receive. Take the clip
+first; decide the trigger against what it costs.
+
 ## 0eat · The verbs speak; the latch behind them aliases *(client-core lane)*
 
 Landed, client-only: `ui::refusals::CONSUME` (all three `REFUSE_C_*`, one
@@ -138,29 +160,44 @@ way"* — is retired by §0kit's re-grant.
 **Two mechanisms this item listed were wrong, in opposite directions.** (2)
 said every kit item is `common` → ×1 → five minutes; `items.toml:79` makes
 `item.metal_frags` `uncommon` (×4), so the *old* kit's bag lived **20** min.
-§0kit created the five-minute bag §0die was credited with mitigating. (1)'s
-*"outside interest range → not on the map"* is wrong outright:
-`server/src/core.rs:1632` broadcasts `EV_BAG_DROPPED` to every slot with no
-distance test and `:2406` drip-feeds the standing set on join. The real
-mechanism is `MAP_MARKS_MAX = 64`, drop-newest, bags pushed **last** in
-`resolve_marks` (`client/src/ui/map.rs:381`) after haven, waystations and
-every bed and hearth, with no owner filter — so on a busy shard your own bag
-is the first mark the cap eats and looks like forty others.
+(1)'s *"outside interest range"* is wrong outright — `EV_BAG_DROPPED` is
+broadcast with no distance test. The real mechanism is `MAP_MARKS_MAX = 64`,
+drop-newest, bags pushed **last** in `resolve_marks` with no owner filter, so
+on a busy shard your own bag is the first mark the cap eats.
 
-Left: two operator calls, neither a hole (`DECISIONS.md` §open, "death
-backpack v0"). Whether five minutes is the intended floor for a common-only
-bag now the kit guarantees one; and whether the death screen carries the
-last-known bag position — `ALPHA.md` §1 says *"no map position"* on purpose
-and it is a wire add off `Player`. The third — rank the owner's own bag
-ahead of the cap — **landed 2026-08-16**, and it took a fact this item did
-not have: the wire carries no bag owner on purpose (`BackpackRec::owner` is
-sim-side only), so `ClientCore::own_bag` joins the `BagDropped` against the
-dead predicted body instead (death-position join, `OWN_BAG_NEAR_M`), and
-`resolve_marks` pushes the tagged bag directly behind the authored tier.
-Bags as a class also outrank the bed/hearth mirror now, and the map draws
-marks in reverse resolve order so cap rank and draw-on-top rank are one
-rule. Gated both ways (`ui/map.rs`, `client-core`'s two join tests).
+**Two things landed 2026-08-16 and they are different bags** — the word is
+overloaded in this tree and the two items below were nearly merged by
+mistake. The **death backpack** (`WireBag`, your loot) now outranks the
+anchor tier at the mark cap: the wire carries no bag owner on purpose, so
+`ClientCore::own_bag` joins the `BagDropped` against the dead predicted body
+(`OWN_BAG_NEAR_M`) and `resolve_marks` pushes the tagged one directly behind
+the authored tier — bags as a class outrank the bed/hearth mirror now, and
+both maps draw in reverse resolve order so cap rank and draw-on-top rank are
+one rule. The **sleeping bag** (`ARCH_BAG`, where you wake) got bag
+choice v0 (operator; `DECISIONS.md`): the death screen offers the bag row
+only if you own one and draws a map of your own beds — no corpse marker,
+which is how `ALPHA.md` §1 survives it — off a new own-fact `SUB_BAGS`
+(`PROTO_VER` 43), because `DeployRec::owner` is off the wire too.
 
+Left, in order of cheapness:
+
+1. **Beds did not get the ranking backpacks did.** `resolve_marks`' deploy
+   arm still pushes every bed and hearth on the island with no owner filter,
+   and it pushes them LAST — so on a busy shard your own bed is what the cap
+   eats now. `ClientCore::own_bags()` exists, so this is a filter over a list
+   the client already holds. No wire, no word.
+2. **Showing is not choosing.** The death map marks three beds and
+   `ACT_RESPAWN` carries one bit, so the sim still takes the nearest ready
+   one. Letting a player click the bed they want is a bag index on the action
+   plus a `claim_bag` that honours it — a wire bump, and an operator call on
+   whether the choice is wanted at all.
+3. `SUB_BAGS` is sent **on a death and nowhere else**, so the `ready` bit
+   ages while a player sits on the screen. Nothing is wrong today (the sim
+   decides and `woke` says which anchor answered); re-send on the bed's own
+   placement and removal if it starts to matter.
+4. One operator call (`DECISIONS.md` §open, "death backpack v0"): whether
+   five minutes is the intended floor for a common-only bag now the kit
+   guarantees one.
 ## 0dur · Durability landed; the number is invisible *(client lane)*
 
 **Landed 2026-08-15/16, all four questions closed** (`DECISIONS.md` §open

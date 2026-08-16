@@ -637,6 +637,31 @@ pub struct DeployRec {
     pub locked: bool,
 }
 
+/// One of your own bags, as the death screen needs to know it: where it
+/// stands and whether its cooldown has lapsed.
+///
+/// **Not a `DeployRec` subset for a reason.** A deploy record is a world
+/// fact and rides a broadcast; this is an **own-fact** — `owner` is
+/// deliberately not on the wire (`DeployRec`'s own doc), so a client cannot
+/// derive which beds are its own from the mirror it already holds, and the
+/// alternative to this type is putting an owner id on every deployable
+/// anyone can see. `ready` is likewise never broadcast: which of a
+/// defender's bags is spent is exactly what a raider would like to know.
+///
+/// No `owner` field: the message carries only the recipient's own bags, so
+/// an owner column would be one value repeated and one more thing that
+/// could disagree with the audience it was sent to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BagAnchor {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+    /// Whether `claim_bag` would take this one **at the tick it was read**.
+    /// A cooldown lapses on a clock nothing announces, so this is a
+    /// snapshot and not a subscription — see `own_bags`.
+    pub ready: bool,
+}
+
 /// The hearth's crew list — who may build inside its claim. Named so
 /// `worldsave` and `state_hash` can spell it without restating the cap.
 pub type CrewList = Roster<HEARTH_CREW_CAP>;
@@ -1286,6 +1311,50 @@ impl Deploys {
             .iter()
             .filter(|d| d.owner == owner && dc.defs[d.row as usize].arch == ARCH_BAG)
             .count()
+    }
+
+    /// Every bag this owner has placed, as anchors, newest last — the
+    /// **same filter `claim_bag` scans** and therefore the same set the
+    /// death screen may offer.
+    ///
+    /// `out` is filled from the front and the live count returned;
+    /// `BAG_CAP` is the ceiling placement already enforces
+    /// (`own_bag_count` above), so a full array is a full store and never
+    /// a truncation — the `break` is wall 4's cap check, not a policy.
+    ///
+    /// ⚠ **This is a READ, and it never spends a bag.** `claim_bag` is the
+    /// verb; this is the picture of it. Keeping them apart is what lets a
+    /// client be told about a bag without the world deciding it was used —
+    /// the same split `the_beach_button_refuses_a_ready_bag` gates one
+    /// layer up.
+    ///
+    /// Bounded and allocation-free: one pass of the store, one compare
+    /// against `tick` per bag, and no iteration order that is not the
+    /// store's own (wall 1).
+    pub fn own_bags(
+        &self,
+        dc: &DeployContent,
+        owner: u32,
+        tick: u64,
+        out: &mut [BagAnchor; BAG_CAP],
+    ) -> usize {
+        let mut n = 0;
+        for (i, d) in self.entries[..self.len].iter().enumerate() {
+            if d.owner != owner || dc.defs[d.row as usize].arch != ARCH_BAG {
+                continue;
+            }
+            if n == BAG_CAP {
+                break;
+            }
+            out[n] = BagAnchor {
+                cx: d.cx,
+                cz: d.cz,
+                level: d.level,
+                ready: self.bag_ready[i] <= tick,
+            };
+            n += 1;
+        }
+        n
     }
 
     /// The bag a dying player wakes on, and the cooldown that spends it.
