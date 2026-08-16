@@ -60,13 +60,20 @@ beside the exe — transitively, since `libgcc_s_seh-1.dll` and
 the exe's own table — and drops them from `requires.libs`. Beside the exe
 so the shipped copy also shadows the player's 32-bit one.
 
+**The leg is built too.** `nightly.yml`'s `depot` job is a two-platform
+matrix now, mingw set to `-posix` on gcc *and* g++ with the threading model
+asserted before the build, so a Windows depot is cut nightly by a recipe
+that is read rather than remembered — it had been hand-cut on one box, which
+is how this shipped. Its "what was packaged" step carries the assertion
+`0.2.0` needed: bundled must be non-empty, every promised DLL must be in the
+file list, no `libstdc++`/`libgcc`/`libwinpthread` may be left in `libs`,
+and the notice must travel. Proven red against the published `0.2.0`
+document and green against a repackage of it.
+
 **What remains is operator-only**, and until it happens every Windows
-player is still handed the broken build: repackage (`--platform win-x86_64`,
-on a box whose mingw alternatives are `-posix`), read the tree,
-`scry digest`, rsync, **merge** the `win-x86_64` row into `published.json`,
-notarize. `nightly.yml`'s `depot` job packages linux only, so the Windows
-depot stays hand-cut until someone gives it a leg — that leg is the durable
-fix and is the real item here.
+player is still handed the broken build: take the nightly's `win-x86_64`
+artifact (or repackage), read the tree, `scry digest`, rsync, **merge** the
+`win-x86_64` row into `published.json`, notarize.
 
 Unmeasured, same class: the GitHub **release** zip is msvc, not mingw, and
 nobody has checked whether it needs the VC++ redist. Its notes list Linux's
