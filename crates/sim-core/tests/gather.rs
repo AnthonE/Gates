@@ -1209,7 +1209,8 @@ fn wear_is_keyed_per_tool_and_node_not_per_tool() {
     for n in w2.gather.nodes.iter_mut() {
         n.weak_pct = 0;
     }
-    w2.gather.nodes[0].wear = [(sim_core::gather::NO_ITEM, 0); sim_core::gather::MAX_TOOLS_PER_NODE];
+    w2.gather.nodes[0].wear =
+        [(sim_core::gather::NO_ITEM, 0); sim_core::gather::MAX_TOOLS_PER_NODE];
     w2.players[0].inv[0] = ItemStack {
         item: tool,
         count: 1,
@@ -1226,7 +1227,10 @@ fn wear_is_keyed_per_tool_and_node_not_per_tool() {
             }
         }
     }
-    assert!(landed2 > 0, "the payout must land for the half to mean anything");
+    assert!(
+        landed2 > 0,
+        "the payout must land for the half to mean anything"
+    );
     assert_eq!(
         w2.players[0].inv[0].cond, ceiling,
         "a node whose wear table omits the tool wore it anyway — the rate \
@@ -1256,7 +1260,10 @@ fn a_dead_tool_gathers_at_the_hand_rate() {
         w.gather.cond_max[tool as usize] > 0,
         "fixture rot: the tool carries no ceiling, so zero is not dead"
     );
-    assert_ne!(per_hit, hand, "the two rates must differ or this sees nothing");
+    assert_ne!(
+        per_hit, hand,
+        "the two rates must differ or this sees nothing"
+    );
     w.players[0].inv[0] = ItemStack {
         item: tool,
         count: 1,

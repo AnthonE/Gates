@@ -803,3 +803,52 @@ fn the_carried_decisions_survive_a_real_death() {
          sends the body back to the same beach"
     );
 }
+
+/// **A saved tool comes back worn** (item durability v0, gate 7's player
+/// half; `SAVE_FORMAT` 3). Condition is per-stack state and the record
+/// carries it, so a hatchet at 41.5 points logs back in at 41.5 points —
+/// a restore that minted it whole would be a free repair bench on the
+/// login screen, and one that zeroed it would hand back a dead tool.
+/// Proven red by reverting `write_le`/`read_le`'s slot stride to the
+/// four-byte form (cond reads 0 and the worn assert fires).
+#[test]
+fn a_saved_tool_comes_back_worn() {
+    let mut w = armed_still();
+    w.tick(&[Command::Join { id: ID }]);
+    w.players[0].inv[0] = ItemStack {
+        item: 1,
+        count: 1,
+        cond: 4_150,
+    };
+    let save = PlayerSave::of(&w.players[0]);
+
+    // Through the bytes, not just the struct: the record IS the format.
+    let mut buf = [0u8; sim_core::persist::PLAYER_SAVE_BYTES];
+    save.write_le(&mut buf);
+    let back = PlayerSave::read_le(&buf).expect("a legal record decodes");
+    assert_eq!(
+        back.inv[0].cond, 4_150,
+        "the record dropped the condition on the way through the file"
+    );
+
+    // And through the seat: the restored body holds the worn tool.
+    let mut w2 = armed_still();
+    w2.tick(&[Command::JoinAs {
+        id: REJOIN,
+        save: back,
+    }]);
+    let p = w2
+        .players
+        .iter()
+        .find(|p| p.active && p.id == REJOIN)
+        .expect("the body seated");
+    assert_eq!(
+        p.inv[0],
+        ItemStack {
+            item: 1,
+            count: 1,
+            cond: 4_150,
+        },
+        "a saved tool must come back exactly as worn as it left"
+    );
+}

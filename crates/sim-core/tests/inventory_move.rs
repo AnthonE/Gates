@@ -901,5 +901,9 @@ fn a_moved_tool_keeps_its_condition() {
     };
     let plan = plan_move(1, a, b, 1).expect("whole stacks swap");
     let (src, dst) = resolve(plan, a, b);
-    assert_eq!((src, dst), (b, a), "a swap moves conditions with the stacks");
+    assert_eq!(
+        (src, dst),
+        (b, a),
+        "a swap moves conditions with the stacks"
+    );
 }
