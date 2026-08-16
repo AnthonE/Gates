@@ -9,11 +9,13 @@
 
 #![cfg(feature = "render")]
 
+use bevy::core_pipeline::Skybox;
 use bevy::light::light_consts::lux;
 use bevy::light::EnvironmentMapLight;
 use bevy::prelude::*;
 use client::render::feed::Feed;
 use client::render::fill::peak_lux;
+use client::render::sky;
 use client::render::rig::{
     self, day_night, sun_elevation, tick_at_frac as tick_at, DayPin, EyeCam, Sun, CAPTURE_DAY_FRAC,
     NIGHT_AMBIENT_LUX, RIG_SUN_ELEVATION,
@@ -115,6 +117,21 @@ fn app_pinned(pin: DayPin) -> App {
             rotation: Quat::IDENTITY,
             affects_lightmapped_mesh_diffuse: false,
         },
+        // The cloud deck. Third component of `day_night`'s camera query, and
+        // the one this fixture went WITHOUT until 2026-08-15 — the branch is
+        // `Option<&mut Skybox>`, so with no `Skybox` here the deck half of the
+        // system was dead in every suite: deleting the `deck_rotation` call
+        // site (rig.rs:594) left all 28 green, proven. Same silent-no-op shape
+        // as the hemisphere note above, one component later. Sentinel values,
+        // both wrong on purpose, so an assertion on them proves a WRITE and
+        // not a lucky spawn: no hour's brightness is negative and no hour's
+        // deck rotation is a half-turn (`RIG_SUN_ARC = π` sweeps the day, so
+        // the daytime offset from noon stays strictly inside ±π/2).
+        Skybox {
+            image: Handle::default(),
+            brightness: -1.0,
+            rotation: Quat::from_rotation_y(std::f32::consts::PI),
+        },
     ));
     app
 }
@@ -197,6 +214,70 @@ fn noon_and_midnight_reach_the_entities() {
             env.intensity
         );
     }
+}
+
+#[test]
+fn the_deck_follows_the_sun_it_is_lit_by() {
+    // The wiring gate for the Skybox branch (`rig.rs`, `day_night`'s camera
+    // query). `sky::deck_rotation` is already gated as arithmetic
+    // (`tests/sun.rs`); this holds the CALL SITE, which nothing did — the
+    // branch is dead without a `Skybox` on the entity, and a dead branch's
+    // deletion is green everywhere.
+    let mut app = app();
+    let read = |app: &mut App| {
+        let world = app.world_mut();
+        let sky = world
+            .query_filtered::<&Skybox, With<EyeCam>>()
+            .single(world)
+            .unwrap();
+        (sky.rotation, sky.brightness)
+    };
+
+    // Two hours, neither of them noon: at noon `deck_rotation` is the
+    // identity and the brightness is full, both of which a stale value could
+    // fake. Mid-morning and mid-afternoon sit on opposite sides of noon, so
+    // the deck's offset changes sign between them and the two reads cannot
+    // agree with each other either.
+    let morning_tick = tick_at(DAY_PORTION * 0.25);
+    let afternoon_tick = tick_at(DAY_PORTION * 0.75);
+
+    set_tick(&mut app, morning_tick);
+    let (rot_am, bright_am) = read(&mut app);
+    set_tick(&mut app, afternoon_tick);
+    let (rot_pm, bright_pm) = read(&mut app);
+
+    // The deck moved between the two hours…
+    assert!(
+        rot_am.angle_between(rot_pm) > 0.1,
+        "the deck did not move between morning and afternoon: {rot_am:?} vs {rot_pm:?}"
+    );
+    // …and each read is the arithmetic the sun gate already holds, computed
+    // through the sim's own forward map — the same frac the system saw.
+    for (name, tick, rot, bright) in [
+        ("morning", morning_tick, rot_am, bright_am),
+        ("afternoon", afternoon_tick, rot_pm, bright_pm),
+    ] {
+        let frac = day_frac(tick);
+        let want = sky::deck_rotation(frac);
+        assert!(
+            rot.angle_between(want) < 1e-4,
+            "{name}: deck at {rot:?}, deck_rotation says {want:?}"
+        );
+        // `sky.brightness` was ungated by the same dead branch; one fixture
+        // closes both (NOW.md §0sun item 1).
+        let want_b = sky::CLOUD_NITS * rig::daylight(frac);
+        assert!(
+            (bright - want_b).abs() < 1.0,
+            "{name}: deck brightness {bright}, wanted {want_b}"
+        );
+        assert!(bright > 0.0, "{name} is daytime; the sentinel survived");
+    }
+
+    // The brightness half at its other endpoint: dark at midnight (derived
+    // as the night's midpoint, same as every night sample in this file).
+    set_tick(&mut app, tick_at(DAY_PORTION + (1.0 - DAY_PORTION) * 0.5));
+    let (_, bright_night) = read(&mut app);
+    assert_eq!(bright_night, 0.0, "the deck must go dark at midnight");
 }
 
 // ── The capture probe's clock (capture clock v0) ─────────────────────────
