@@ -615,9 +615,20 @@ pub fn deploy_blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, feet_y: f32) -
             continue;
         };
         let bottom = base + level as f32 * LEVEL_H_M;
-        // Standing exactly on top is not inside — the `>=`/`<=` pair is
-        // `slot_blocks`'s, so a body on a box top stays free to walk.
-        if feet_y >= bottom + h || head <= bottom {
+        // A top within STEP_UP of the feet is a step, not a wall — the
+        // rule `piece_ground` already applies to every standable surface
+        // (its lid), extended here so the horizontal pass admits the move
+        // the vertical pass would land: the body mounts the top exactly
+        // as it mounts a lifted slab. It read `feet_y >= bottom + h`
+        // (top-or-above only) until 2026-08-16, when the build lattice
+        // exposed the asymmetry: a ground box's top rides up to q/2
+        // higher than it used to, and a 1.20 m top against the jump's
+        // 1.22 m apex left `a_jump_lands_on_the_box_top` a 2 cm window —
+        // the two passes disagreeing about whether the top was reachable.
+        // Walking in from flat ground is still blocked (a box top sits
+        // ≥ 0.7 above the feet, past the step), so the jump stays the
+        // verb that mounts one.
+        if feet_y + STEP_UP >= bottom + h || head <= bottom {
             continue;
         }
         let qx = (x - cxm).clamp(-hw, hw);
