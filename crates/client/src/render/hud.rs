@@ -1226,22 +1226,18 @@ pub fn feedback(
 
     // The consume verbs' LANDED half (`NOW.md` §0eat). The refused half is in
     // the loop above and rides the queue, so the mixer's refusal cue answers
-    // a dry shoreline for free; this half has no ring to ride.
-    //
-    // **Latch on the bit, never on the field.** `last_eat` and `last_drink`
-    // hold the last of their kind forever, so "is this frame's" is only
-    // answerable from `Feed::applied` — the same rule `APPLIED_STOCK` below
-    // follows, and the reason all three of these fields were written by
-    // `client-core` and read by nobody until this landed.
+    // a dry shoreline for free. A ring since 2026-08-15: this read the
+    // `last_eat` latch off `Feed::applied`, and two answers in one drain
+    // window collapsed — a landed eat vanished under a refusal that arrived
+    // in the same frame, which `KeyG` + `KeyH` in one frame produces.
     //
     // Why say anything: a bandage that worked and a bandage that was refused
     // looked identical from the chair. The only evidence of the first was the
     // hp bar creeping for four seconds and the only evidence of the second was
     // nothing at all.
-    if feed.applied & client_core::core::APPLIED_CONSUME != 0 && core.last_eat_refused == 0 {
-        // `item << 16 | slot`. The slot was the sender's own claim and tells a
-        // player nothing they did not just click, so only the item is named.
-        let item = (core.last_eat >> 16) as u16;
+    for &(item, _slot) in feed.consumed() {
+        // The slot was the sender's own claim and tells a player nothing
+        // they did not just click, so only the item is named.
         let label = crate::ui::craft::item_label(&core.catalog, item);
         // "used", not "ate": the same verb spends a bandage, and a bandage is
         // what the session that found this was holding.

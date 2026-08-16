@@ -125,8 +125,8 @@ pub const DEPLOY: [&str; 20] = [
 /// **Two things make this table unlike the four above it.**
 ///
 /// First, its codes start at **1**, not 0. Zero is not a refusal on this
-/// wire: `EventMsg::ConsumeRefused` never carries it and `ClientCore` uses
-/// `last_eat_refused == 0` to mean *the consume landed*. Index 0 is filled
+/// wire: `EventMsg::ConsumeRefused` never carries it (the encoder refuses
+/// it) and a landed consume is its own ring, not a zero here. Index 0 is filled
 /// anyway so the array INDEX stays the sim's own code — shifting the table
 /// by one would import the exact off-by-one class this whole file exists to
 /// refuse — and its string is worded so that a reader who ever sees it on
@@ -140,8 +140,8 @@ pub const DEPLOY: [&str; 20] = [
 /// name water, and code 2 — the one both verbs reach — names neither.
 pub const CONSUME: [&str; 4] = [
     // Code 0 = "no refusal". Unreachable through `render::feed::drain`,
-    // which only pushes a non-zero code, and unreachable through
-    // `hud::feedback`, which reads the landed half off `last_eat` instead.
+    // because the refusal ring never carries it, and unreachable through
+    // `hud::feedback`, which reads the landed half off `Feed::consumed`.
     "nothing was refused",
     "that is not something you can eat",
     "already full — that would be wasted",
@@ -212,9 +212,9 @@ pub fn deploy(code: u8) -> String {
 
 /// Why the eat or the drink did nothing.
 ///
-/// Never called with 0 — that code means the consume landed, and the landed
-/// sentence is `hud::feedback`'s, because it names the item off `last_eat`
-/// rather than a reason off this table.
+/// Never called with 0 — a landed consume never enters the refusal ring,
+/// and its sentence is `hud::feedback`'s, naming the item off
+/// `Feed::consumed` rather than a reason off this table.
 pub fn consume(code: u8) -> String {
     text(&CONSUME, code as u32)
 }

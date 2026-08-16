@@ -101,9 +101,12 @@ pub const APPLIED_BAGS: u32 = 1 << 25;
 pub const APPLIED_STRUCT_HIT: u32 = 1 << 26;
 /// Own food/water changed (`EventMsg::Vitals`).
 pub const APPLIED_VITALS: u32 = 1 << 27;
-/// An eat landed or was refused (`EventMsg::Consumed` /
-/// `EventMsg::ConsumeRefused`). One flag: the HUD's response to both is to
-/// re-read the eat readout, which says which it was.
+/// A consume answer arrived (`EventMsg::Consumed` / `ConsumeRefused`) — a
+/// ring gained an entry. One flag for both because the response to either
+/// is the same: drain `pop_consume_toast` and `pop_consume_refusal`, which
+/// say which it was. Rings since 2026-08-15 — as a field plus this bit, two
+/// answers in one drain window collapsed, and `KeyG` + `KeyH` in one frame
+/// is answered by one `World::tick`.
 pub const APPLIED_CONSUME: u32 = 1 << 28;
 /// A drink landed (`EventMsg::Drank`). Its own bit and not `CONSUME`'s: a
 /// refused drink already arrives as a `ConsumeRefused`, so sharing the bit
@@ -147,8 +150,11 @@ pub const STREAM_ERR: u32 = 1 << 31;
 /// never be read as a fresh one.
 ///
 /// A move landed or was refused (`EventMsg::Moved` / `MoveRefused`). One
-/// flag for both, `APPLIED_CONSUME`'s shape: the panel's response to
-/// either is to re-read `client_move_readout`, which says which it was.
+/// flag for both: the answer is in `last_move` / `last_move_refused`, which
+/// say which it was. (`client_move_readout`, named here until 2026-08-15,
+/// was the deleted C-ABI bridge; the real reader is
+/// `render/panels/mod.rs::sync_refusals`, which keys freshness on the
+/// `last_move` counter rather than on this flag.)
 pub const APPLIED2_MOVE: u32 = 1 << 0;
 /// The open container's view changed (`EventMsg::ContSync`) — contents
 /// arrived, or the server shut the panel. One flag for both, and for
@@ -828,16 +834,34 @@ pub struct ClientCore {
     pub water: u16,
     pub max_food: u16,
     pub max_water: u16,
-    /// The last eat: item << 16 | slot, and the refusal reason (0 = the
-    /// eat landed). Read together by `client_consume`.
-    pub last_eat: u32,
-    pub last_eat_refused: u8,
-    /// The last drink: water restored << 16 | hp it cost. Read by
-    /// `client_drank`, and the reason the HUD can name what took the hp.
+    /// Eats that landed, oldest first: (item, the slot it was spent from).
+    /// Drop-oldest, cosmetic — the toast rings' posture. Rings since
+    /// 2026-08-15: as a field plus one bit (`last_eat` / `last_eat_refused`)
+    /// two consume answers in one drain window collapsed — `Consumed` zeroed
+    /// the reason and `ConsumeRefused` overwrote it — and one frame reaches
+    /// that from the keyboard, because `KeyG` and `KeyH` are two independent
+    /// presses answered by one `World::tick`. Drained by `render/feed.rs`,
+    /// worded by `render/hud.rs` off `Feed::consumed`.
+    consume_toasts: [(u16, u16); TOAST_RING],
+    consume_toast_head: usize,
+    consume_toast_len: usize,
+    /// Refused consumes (`sim_core::survival::REFUSE_C_*`), eat and drink
+    /// both — one wire event answers the two verbs. Drop-oldest, cosmetic,
+    /// `refusals`' posture exactly. Drained by `render/feed.rs` onto the
+    /// shared refusal queue as `Refused::Consume`.
+    consume_refusals: [u8; REFUSAL_RING],
+    consume_refusal_head: usize,
+    consume_refusal_len: usize,
+    /// The last drink: water restored << 16 | hp it cost — the hp is how
+    /// the HUD can name what took it. Read by `render/hud.rs::feedback` off
+    /// `APPLIED_DRANK` (`client_drank`, named here until 2026-08-15, was
+    /// the deleted C-ABI bridge).
     pub last_drink: u32,
     /// The last move's address, `sim_core::inventory::addr`'s pack
     /// verbatim, and the refusal reason (0 = the move landed). Read
-    /// together by `client_move_readout`.
+    /// together by `render/panels/mod.rs::sync_refusals` and the panel's
+    /// rollback (`client_move_readout`, named here until 2026-08-15, was
+    /// the deleted C-ABI bridge).
     ///
     /// The **slot contents are deliberately not applied here.** The server
     /// diffs the whole inventory against its last-acked copy every tick
@@ -1054,8 +1078,12 @@ impl ClientCore {
             water: 0,
             max_food: 0,
             max_water: 0,
-            last_eat: 0,
-            last_eat_refused: 0,
+            consume_toasts: [(0, 0); TOAST_RING],
+            consume_toast_head: 0,
+            consume_toast_len: 0,
+            consume_refusals: [0; REFUSAL_RING],
+            consume_refusal_head: 0,
+            consume_refusal_len: 0,
             last_drink: 0,
             last_move: 0,
             last_move_refused: 0,
@@ -1699,12 +1727,25 @@ impl ClientCore {
                 flags |= APPLIED_VITALS;
             }
             EventMsg::Consumed { item, slot } => {
-                self.last_eat = ((item as u32) << 16) | slot as u32;
-                self.last_eat_refused = 0;
+                if self.consume_toast_len == TOAST_RING {
+                    self.consume_toast_head = (self.consume_toast_head + 1) % TOAST_RING;
+                    self.consume_toast_len -= 1;
+                }
+                self.consume_toasts
+                    [(self.consume_toast_head + self.consume_toast_len) % TOAST_RING] =
+                    (item, slot as u16);
+                self.consume_toast_len += 1;
                 flags |= APPLIED_CONSUME;
             }
             EventMsg::ConsumeRefused { reason } => {
-                self.last_eat_refused = reason;
+                if self.consume_refusal_len == REFUSAL_RING {
+                    self.consume_refusal_head = (self.consume_refusal_head + 1) % REFUSAL_RING;
+                    self.consume_refusal_len -= 1;
+                }
+                self.consume_refusals
+                    [(self.consume_refusal_head + self.consume_refusal_len) % REFUSAL_RING] =
+                    reason;
+                self.consume_refusal_len += 1;
                 flags |= APPLIED_CONSUME;
             }
             EventMsg::Moved {
@@ -2232,6 +2273,32 @@ impl ClientCore {
         Some(r)
     }
 
+    /// Oldest buffered landed eat: (item index, the slot it was spent from).
+    ///
+    /// Single-consumer like every `pop_*` here: `render::feed::drain` is the
+    /// one caller and `render/hud.rs` words it off `Feed::consumed`.
+    pub fn pop_consume_toast(&mut self) -> Option<(u16, u16)> {
+        if self.consume_toast_len == 0 {
+            return None;
+        }
+        let t = self.consume_toasts[self.consume_toast_head];
+        self.consume_toast_head = (self.consume_toast_head + 1) % TOAST_RING;
+        self.consume_toast_len -= 1;
+        Some(t)
+    }
+
+    /// Oldest buffered consume refusal (`sim_core::survival::REFUSE_C_*`),
+    /// eat and drink both — one wire event answers the two verbs.
+    pub fn pop_consume_refusal(&mut self) -> Option<u8> {
+        if self.consume_refusal_len == 0 {
+            return None;
+        }
+        let r = self.consume_refusals[self.consume_refusal_head];
+        self.consume_refusal_head = (self.consume_refusal_head + 1) % REFUSAL_RING;
+        self.consume_refusal_len -= 1;
+        Some(r)
+    }
+
     /// Oldest buffered craft refusal reason (`sim_core::craft::REFUSE_*`).
     pub fn pop_craft_refusal(&mut self) -> Option<u8> {
         if self.refusal_len == 0 {
@@ -2596,6 +2663,78 @@ mod tests {
             assert_eq!(c.pop_spill(), Some(i as u16));
         }
         assert_eq!(c.pop_spill(), None);
+    }
+
+    /// §0eat's remaining half, proven RED on the shape it replaced before
+    /// the rings landed: `last_eat` / `last_eat_refused` were fields plus
+    /// one bit, so two consume answers in one drain window collapsed —
+    /// `Consumed` zeroed the reason and `ConsumeRefused` overwrote it. One
+    /// frame reaches that from the keyboard: `KeyG` and `KeyH` are two
+    /// independent `just_pressed` checks in one system, and one
+    /// `World::tick` answers both. Run against the field pair (2026-08-15),
+    /// the land-then-refuse half failed "the landed eat vanished under the
+    /// refusal"; refuse-then-land lost the refusal the same way.
+    #[test]
+    fn two_consume_answers_in_one_drain_window_both_surface() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+
+        // The ugly order: the eat lands, then the drink is refused, both
+        // inside one drain window. The field pair told the player "no
+        // water within reach" while the bandage was gone and its heal
+        // ramp running.
+        let mut c = core();
+        let len = protocol::encode_event_consumed(9, 2, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_CONSUME);
+        let len = protocol::encode_event_consume_refused(3, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_CONSUME);
+        assert_eq!(
+            c.pop_consume_toast(),
+            Some((9, 2)),
+            "the landed eat vanished under the refusal"
+        );
+        assert_eq!(
+            c.pop_consume_refusal(),
+            Some(3),
+            "the refusal vanished under the landed eat"
+        );
+        assert_eq!(c.pop_consume_toast(), None);
+        assert_eq!(c.pop_consume_refusal(), None);
+
+        // The reverse order lost the refusal outright on the field pair.
+        let mut c = core();
+        let len = protocol::encode_event_consume_refused(3, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        let len = protocol::encode_event_consumed(9, 2, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.pop_consume_refusal(), Some(3));
+        assert_eq!(c.pop_consume_toast(), Some((9, 2)));
+    }
+
+    /// Wall 4 on the two consume rings: bounded, drop-oldest, and each
+    /// stays in arrival order past its cap.
+    #[test]
+    fn consume_rings_drop_oldest() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        for i in 0..(TOAST_RING + 2) as u16 {
+            let len = protocol::encode_event_consumed(i, 1, &mut buf).unwrap();
+            c.on_stream(&buf[..len]).unwrap();
+        }
+        for i in 2..(TOAST_RING + 2) as u16 {
+            assert_eq!(c.pop_consume_toast(), Some((i, 1)), "oldest-first broke");
+        }
+        assert_eq!(c.pop_consume_toast(), None);
+
+        // The refusal ring under the same rule (codes are 1-based: the
+        // encoder refuses 0, which is not a refusal on this wire).
+        for i in 0..(REFUSAL_RING + 2) as u8 {
+            let len = protocol::encode_event_consume_refused(i + 1, &mut buf).unwrap();
+            c.on_stream(&buf[..len]).unwrap();
+        }
+        for i in 2..(REFUSAL_RING + 2) as u8 {
+            assert_eq!(c.pop_consume_refusal(), Some(i + 1));
+        }
+        assert_eq!(c.pop_consume_refusal(), None);
     }
 
     #[test]

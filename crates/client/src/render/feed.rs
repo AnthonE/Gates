@@ -107,6 +107,14 @@ pub struct Feed {
     /// `(recipe, coin burned)` per blueprint learned this frame.
     learned: [(u16, u16); FEED_CAP],
     n_learned: usize,
+    /// Eats that landed this frame: (item index, the slot it was spent
+    /// from). Own-fact; the refused half rides `refusals` as
+    /// `Refused::Consume`. A ring since 2026-08-15 — it was a latched field
+    /// pair (`last_eat` / `last_eat_refused`), and two consume answers in
+    /// one drain window collapsed, which one frame reaches from the
+    /// keyboard (`KeyG` + `KeyH` are answered by one `World::tick`).
+    consumed: [(u16, u16); FEED_CAP],
+    n_consumed: usize,
     /// Knocks heard this frame: the door's address and who knocked (lock
     /// v1). Broadcast, so this is the one entry here that can be somebody
     /// else's action — the mixer wants the address, the HUD wants to say
@@ -192,6 +200,10 @@ impl Feed {
     pub fn learned(&self) -> &[(u16, u16)] {
         &self.learned[..self.n_learned]
     }
+    /// `(item index, slot)` eaten or used this frame, oldest first.
+    pub fn consumed(&self) -> &[(u16, u16)] {
+        &self.consumed[..self.n_consumed]
+    }
     /// Knocks heard this frame, oldest first.
     pub fn knocks(&self) -> &[(u16, u16, u8, u8, u32)] {
         &self.knocks[..self.n_knocks]
@@ -218,6 +230,7 @@ impl Feed {
         self.n_crafted = 0;
         self.n_spills = 0;
         self.n_learned = 0;
+        self.n_consumed = 0;
         self.n_knocks = 0;
         self.n_auths = 0;
         self.n_shots = 0;
@@ -292,45 +305,30 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     while let Some(code) = core.pop_deploy_refusal() {
         feed.push_refusal(Refused::Deploy, code, sim_core::gather::NO_ITEM);
     }
-    // The consume verbs are the one refusal here that is **not a ring**.
-    // `ClientCore` latches `last_eat_refused` and raises `APPLIED_CONSUME`,
-    // so the fact is a field plus a freshness bit — the shape [`Feed::applied`]
-    // exists for, and the same shape `stock` and `struct_hit` take.
+    // The consume verbs, rings since 2026-08-15. They were a latched field
+    // pair (`last_eat` / `last_eat_refused`) plus `APPLIED_CONSUME`, and two
+    // answers in one drain window collapsed — `Consumed` zeroed the reason,
+    // `ConsumeRefused` overwrote it — which one frame reaches from the
+    // keyboard, because `KeyG` and `KeyH` are two independent presses that
+    // one `World::tick` answers together. `client-core`'s
+    // `two_consume_answers_in_one_drain_window_both_surface` holds it.
     //
-    // It joins the queue anyway rather than being read straight off the core
-    // by the HUD, and that is the whole point: a refusal in this queue is a
-    // refusal to every reader, so `render::audio` plays the refusal cue for a
-    // dry shoreline without knowing the verb exists. A latched fact read
-    // privately by the HUD would have been silent.
-    //
-    // **What the latch costs, stated rather than hidden.** A field holds the
-    // LAST answer, so two consume answers landing inside one drain window
-    // collapse to one: `Consumed` zeroes the reason and `ConsumeRefused`
-    // overwrites it, so refuse-then-land loses the refusal and land-then-refuse
-    // loses the landing.
-    //
-    // ⚠ **This is reachable from the keyboard, and a comment here said it was
-    // not until 2026-08-15.** The claim was that `verbs.rs` reads
-    // `just_pressed` so a frame sends at most one consume — true, and beside
-    // the point: `KeyG` and `KeyH` are two independent presses in one system,
-    // so ONE frame sends an eat *and* a drink, the sim runs both inside one
-    // `World::tick`, and both answers land in one drain window. At
-    // `TICK_HZ = 30` a G and an H pressed 33 ms apart do it too. The ugly
-    // ordering is drink-refused-after-eat-landed: the player is told "no water
-    // within reach" and hears the refusal cue while the bandage is gone and
-    // its heal ramp is running — the client denying a thing it just did, which
-    // is worse than the silence this slice was landed to fix. The reverse
-    // order loses the drink refusal outright, which is §0eat's own symptom
-    // still live on `H`.
-    //
-    // The honest fix is a ring on `ClientCore` beside the four popped above,
-    // which is `client-core`'s file (`NOW.md` §0eat).
-    if feed.applied & client_core::core::APPLIED_CONSUME != 0 {
-        // Zero is the landed case and not a reason — `hud::feedback` answers
-        // that half by naming the item off `last_eat`.
-        let code = core.last_eat_refused;
-        if code != 0 {
-            feed.push_refusal(Refused::Consume, code, sim_core::gather::NO_ITEM);
+    // The refusal joins the shared queue rather than a private surface, and
+    // that is the point: a refusal in this queue is a refusal to every
+    // reader, so `render::audio` plays the refusal cue for a dry shoreline
+    // without knowing the verb exists. Zero never arrives — it is not a
+    // refusal on this wire and the encoder refuses it; the landed half is
+    // its own ring below.
+    while let Some(code) = core.pop_consume_refusal() {
+        feed.push_refusal(Refused::Consume, code, sim_core::gather::NO_ITEM);
+    }
+    while let Some(t) = core.pop_consume_toast() {
+        if feed.n_consumed >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_consumed;
+            feed.consumed[n] = t;
+            feed.n_consumed += 1;
         }
     }
     while let Some(k) = core.pop_knock() {

@@ -880,16 +880,34 @@ impl Plugin for GatesRenderPlugin {
                 .chain()
                 .run_if(world_running),
         )
-        // **The one `pop_*` call site in the client, and it runs first.**
-        // `hud::feedback` (inside `Stream`) and `audio::feed` (after it) both
-        // want this frame's hits, toasts and refusals, and the core hands each
-        // fact over exactly ONCE — so when both popped, the HUD drained every
-        // ring and the game fell silent, with no conflict and no failing test
-        // to say so. `feed::drain` fills a resource both read immutably;
+        // **The one `pop_*` call site in the client.** `hud::feedback`
+        // (inside `Stream`) and `audio::feed` (after it) both want this
+        // frame's hits, toasts and refusals, and the core hands each fact
+        // over exactly ONCE — so when both popped, the HUD drained every ring
+        // and the game fell silent, with no conflict and no failing test to
+        // say so. `feed::drain` fills a resource both read immutably;
         // `render/feed.rs` has the account. It is gated on `world_running`
         // rather than `world_placed` because a ring nobody drains overflows,
         // which is the reason `hud::feedback` gives for its own placement.
-        .add_systems(Update, feed::drain.before(Stream).run_if(world_running))
+        //
+        // **Ordered against the pump explicitly, both edges.** `place_eye`
+        // pumps the session (rings filled, `applied` word raised), the drain
+        // takes word and rings in one move, `Stream`'s readers see one
+        // coherent frame. Until 2026-08-15 only `.before(Stream)` was stated
+        // and drain-after-pump held by insertion order alone; the other
+        // schedule splits the word from the facts across frames, and a
+        // reader latching a stale `applied` bit beside freshly-pumped state
+        // reports one fact twice — the consume rings took the data off the
+        // latch for exactly that collapse, and the latched facts that remain
+        // (`struct_hit`, `charge_placed`, `stock`, `last_drink`) still live
+        // on the word being the same frame's as the fields.
+        .add_systems(
+            Update,
+            feed::drain
+                .after(input::place_eye)
+                .before(Stream)
+                .run_if(world_running),
+        )
         // The rig follows the server's clock (day/night v0). After the
         // drain so it reads this frame's tick estimate, not last frame's.
         .add_systems(

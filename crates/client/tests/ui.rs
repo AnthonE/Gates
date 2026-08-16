@@ -2872,8 +2872,12 @@ mod techtree_layout {
 //      converse half is checked too: a variant nothing ever *pushes* is a
 //      sentence for a fact that cannot happen.
 //
-//   2. **The latched consume readouts have a reader.** These three fields are
-//      not rings, so nothing drains them and nothing notices their absence.
+//   2. **The latched consume readout has a reader.** `last_drink` is a field,
+//      not a ring, so nothing drains it and nothing notices its absence.
+//      (`last_eat` / `last_eat_refused` were this list's other two rows until
+//      2026-08-15, when both became rings — `tests/sound.rs` derives those
+//      into the one-drain rule, the wiring gate below holds the refusal's
+//      sentence, and `the_landed_eat_reaches_a_sentence` holds the landing's.)
 //
 // Both predicates are factored out of their tests so the tests below them can
 // prove them RED against a doctored copy of the tree, on every run. A gate
@@ -3002,11 +3006,44 @@ fn the_wiring_gate_can_see_an_unwired_variant() {
     );
 }
 
+/// The landed half of the consume rework: `Feed::consumed` replaced the
+/// `last_eat` latch on 2026-08-15, and a ring nobody reads is §0eat's dead
+/// button over again. `tests/sound.rs`'s derived rule proves the drain
+/// FILLS it (`pop_consume_toast` must appear in feed.rs); this is the half
+/// that says a player reads it.
+#[test]
+fn the_landed_eat_reaches_a_sentence() {
+    let (_, hud) = feed_and_hud();
+    assert!(
+        hud.contains("feed.consumed()"),
+        "nothing in render/hud.rs reads `feed.consumed()` - a landed eat or \
+         bandage is a dead fact again, and only this grep can say so"
+    );
+}
+
+/// The gate above, proven red on its defect — every run.
+#[test]
+fn the_landed_eat_gate_can_see_the_reader_go_away() {
+    let (_, hud) = feed_and_hud();
+    let doctored = hud.replace("feed.consumed()", "feed.consumed_gone()");
+    assert_ne!(
+        doctored, hud,
+        "nothing in hud.rs matches `feed.consumed()` - this proof is scanning \
+         for text that is not there, so it proves nothing"
+    );
+    assert!(
+        !doctored.contains("feed.consumed()"),
+        "the landed-eat gate cannot see the reader go away, so it is not a gate"
+    );
+}
+
 /// Does `code` name `field` as a whole word, rather than as a prefix?
 ///
-/// `last_eat` is a prefix of `last_eat_refused`, so a plain `contains` would
-/// report the eat readout as read by the line that reads the refusal — the
-/// false green this gate exists to refuse.
+/// Kept even with one row left: `last_eat` was a prefix of
+/// `last_eat_refused` while both fields existed (until 2026-08-15), and a
+/// plain `contains` reported the eat readout as read by the line that read
+/// the refusal — the false green this helper exists to refuse, and the next
+/// latched field pair would reopen it.
 fn names_field(code: &str, field: &str) -> bool {
     let mut from = 0;
     while let Some(i) = code[from..].find(field) {
@@ -3020,18 +3057,14 @@ fn names_field(code: &str, field: &str) -> bool {
     false
 }
 
-/// The consume readouts `client-core` latches, and what each is worth saying.
-const CONSUME_READOUTS: [(&str, &str); 3] = [
-    (
-        "last_eat_refused",
-        "which reason the sim refused an eat or a drink for",
-    ),
-    ("last_eat", "which item the consume actually spent"),
-    (
-        "last_drink",
-        "how much water the drink restored and what it cost in hp",
-    ),
-];
+/// The consume readouts `client-core` still latches, and what each is worth
+/// saying. One row since 2026-08-15: the eat's answer and the refusal became
+/// rings (`pop_consume_toast` / `pop_consume_refusal`), which `tests/
+/// sound.rs`'s derived one-drain rule watches instead.
+const CONSUME_READOUTS: [(&str, &str); 1] = [(
+    "last_drink",
+    "how much water the drink restored and what it cost in hp",
+)];
 
 /// Which of those nothing under `src/render` reads. Comment lines are
 /// skipped: naming a field in prose is not reading it, and this gate exists
@@ -3076,8 +3109,8 @@ fn the_consume_readouts_are_read() {
 fn the_readout_gate_can_see_a_reader_go_away() {
     let sources = render_sources();
     for (field, _) in CONSUME_READOUTS {
-        // Rename the field everywhere it is named: `last_eat` becomes
-        // `last_eat_gone`, which `names_field` refuses as a prefix match.
+        // Rename the field everywhere it is named: `last_drink` becomes
+        // `last_drink_gone`, which `names_field` refuses as a prefix match.
         let doctored: Vec<(String, String)> = sources
             .iter()
             .map(|(p, t)| (p.clone(), t.replace(field, &format!("{field}_gone"))))
