@@ -51,7 +51,7 @@ fn aim_point(seed: u64, core: &ClientCore, look: &Look, feet: [f32; 3]) -> (f32,
     let (ch, sv) = sim_core::pitch_dir(pitch_u8(look.pitch));
     place::aim_from_look(
         seed,
-        core.cols(),
+        core.pieces.cols(),
         [feet[0], feet[1] + EYE_HEIGHT, feet[2]],
         [fx * ch, sv, fz * ch],
         (feet[0], feet[2]),
