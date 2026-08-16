@@ -13,9 +13,10 @@
 //! across rather than re-invented: both clients must agree about where a wall
 //! stands, because the sim's collision is a third opinion and it is the one
 //! that wins. The dimensions that ARE collision truth come from
-//! `sim_core::collide` by import (`PIECE_LIFT_M`, `WALL_THICKNESS_M`,
-//! `DOOR_POST_W_M`) rather than by copied literal — one class of drift the
-//! browser could not close and this can.
+//! `sim_core::collide` by import (`WALL_THICKNESS_M`, `DOOR_POST_W_M`) or by
+//! calling the sim's own function (`build::column_floor_y` under
+//! [`level_base_y`]) rather than by copied literal or copied formula — one
+//! class of drift the browser could not close and this can.
 //!
 //! ## Reconciled, not evented
 //!
@@ -40,7 +41,7 @@ use sim_core::build::{
     SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION, SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::collide::{
-    DOOR_POST_W_M, FRAME_RIM_M, PIECE_LIFT_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
+    DOOR_POST_W_M, FRAME_RIM_M, WALL_THICKNESS_M, WINDOW_HEAD_M, WINDOW_SILL_M,
 };
 use sim_core::deploy::{
     DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH, ARCH_RECYCLER,
@@ -229,6 +230,14 @@ struct Kit {
     /// table — and deduplicated by size, so the doorway's two posts share a
     /// mesh and the three slab shapes share one slab.
     shape_mesh: [[Option<Handle<Mesh>>; MAX_PARTS]; N_SHAPES],
+    /// The unit cube and unit prism for the shapes whose one part is sized
+    /// PER ADDRESS rather than per shape — the foundations, whose skirt
+    /// depth follows the terrain under their cell ([`foundation_part`]).
+    /// One shared mesh scaled in the transform, so a hundred foundations
+    /// at a hundred depths are still one mesh and the hammer highlight's
+    /// one-entity contract (`Transform` + `Mesh3d`) holds.
+    unit_box: Handle<Mesh>,
+    unit_tri: Handle<Mesh>,
     tier: [Handle<StandardMaterial>; 3],
     deploy_mesh: [Handle<Mesh>; DEPLOY.len()],
     deploy_mat: [Handle<StandardMaterial>; DEPLOY.len()],
@@ -270,15 +279,17 @@ impl StructRing {
 
 /// The world y a piece at `level` sits at, given the terrain under its cell.
 ///
-/// **This is collision truth, not a look.** `collide.rs`'s header states the
-/// same expression — `terrain height + PIECE_LIFT_M + level·LEVEL_H_M` — and
-/// calls it "the renderer's formula", because the sim walks players on a
-/// surface derived from it. A renderer that drew the floor 10 cm off would
-/// put every player ankle-deep in it or hovering above it, and no gate would
-/// say so: the sim would be right and the picture wrong.
+/// **This is collision truth, not a look, and since 2026-08-15 it is not a
+/// copy of it either.** This function restated `collide::col_base_y`'s
+/// expression for the whole life of the native client — two crates, one
+/// formula, hand-kept in lockstep, which is the exact mirror-drift shape
+/// `CLAUDE.md` warns about — and the day the sim's height rule changed (the
+/// build lattice, `build::column_floor_y`) is the day the copy would have
+/// silently drawn every floor off the surface the sim walks players on. It
+/// calls the sim's one implementation now; the storey term is the only
+/// arithmetic left here.
 pub fn level_base_y(seed: u64, cx: u16, cz: u16, level: u8) -> f32 {
-    let (cxm, czm) = cell_center(cx, cz);
-    terrain::height(seed, cxm, czm) + PIECE_LIFT_M + level as f32 * LEVEL_H_M
+    sim_core::build::column_floor_y(seed, cx, cz) + level as f32 * LEVEL_H_M
 }
 
 /// The world XZ of a cell's centre.
@@ -565,6 +576,66 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
     }
 }
 
+/// How far below the lowest ground sample under its cell a foundation's
+/// skirt sinks, metres — so a slope's dip between samples cannot open a
+/// lit crack under the wall of earth. Cosmetic (`DECISIONS.md` §open,
+/// "build base lattice v0").
+pub const SKIRT_SINK_M: f32 = 0.35;
+/// The skirt's depth ceiling, metres. On ground steep enough to beat it
+/// the skirt hangs rather than growing without bound — the cap is wall
+/// 4's habit applied to a mesh.
+pub const SKIRT_MAX_M: f32 = 4.0;
+
+/// The one drawn part of a foundation at its address: the slab whose top
+/// is the level plane, extended DOWN as a skirt until it is buried in the
+/// ground under every corner of its cell.
+///
+/// **Per-address where [`shape_parts`] is per-shape**, because the depth
+/// depends on the terrain under the cell — the build lattice holds the
+/// floor surface up to half a quantum off the ground and steps whole
+/// quanta between plates, and a 0.3 m slab floating over that gap was
+/// exactly the 2026-08-15 playtest's "pieces don't line up" screenshot:
+/// foundations reading as levitating planks with terrain showing through
+/// the steps. The skirt is how the reference grounds the same geometry.
+///
+/// **The one emit site for both the standing piece and the build ghost**
+/// (`spawn_piece` and `ghost::track`), the same rule the parts table
+/// carries for every other shape: a preview with its own idea of the
+/// skirt would promise a different object than the click delivers.
+/// `tests/ghost.rs` holds the top at the level plane and the bottom in
+/// the ground.
+///
+/// Drawn, not collided: the sim's plane is still a walkable surface at
+/// its base and the volume below it blocks nothing (`NOW.md` carries the
+/// residual). The top face is unmoved, so nothing about where a player
+/// stands changed with the skirt's depth.
+pub fn foundation_part(seed: u64, cx: u16, cz: u16, tri: bool) -> Part {
+    let span = BUILD_CELL_M - SEAM_M;
+    let base = sim_core::build::column_floor_y(seed, cx, cz);
+    let x0 = cx as f32 * BUILD_CELL_M;
+    let z0 = cz as f32 * BUILD_CELL_M;
+    // The lowest ground under the cell: four corners and the centre. Five
+    // samples bound a 3 m cell's dip well enough for a drawn skirt; the
+    // sink margin below covers what they miss.
+    let mut lo = f32::MAX;
+    for (px, pz) in [
+        (x0, z0),
+        (x0 + BUILD_CELL_M, z0),
+        (x0, z0 + BUILD_CELL_M),
+        (x0 + BUILD_CELL_M, z0 + BUILD_CELL_M),
+        (x0 + BUILD_CELL_M * 0.5, z0 + BUILD_CELL_M * 0.5),
+    ] {
+        lo = lo.min(terrain::height(seed, px, pz));
+    }
+    let depth = (base - lo + SKIRT_SINK_M).clamp(SLAB_T, SKIRT_MAX_M);
+    Part {
+        size: Vec3::new(span, depth, span),
+        offset: Vec3::new(0.0, -depth * 0.5, 0.0),
+        x_rot: 0.0,
+        kind: if tri { PartKind::Tri } else { PartKind::Box },
+    }
+}
+
 /// The mesh a [`Part`] fills its extents with: the cuboid, or the NW
 /// half-cell prism scaled to size. One function for the kit's cache and
 /// the ghost's rebuild, so the preview and the piece cannot disagree
@@ -797,6 +868,13 @@ fn build_kit(
     }
     Kit {
         shape_mesh,
+        unit_box: meshes.add(Cuboid::new(1.0, 1.0, 1.0)),
+        unit_tri: meshes.add(part_mesh(&Part {
+            size: Vec3::ONE,
+            offset: Vec3::ZERO,
+            x_rot: 0.0,
+            kind: PartKind::Tri,
+        })),
         tier,
         deploy_mesh,
         deploy_mat,
@@ -972,6 +1050,31 @@ fn spawn_piece(
     // (`build.rs`) — and the parts are the shared table's, so this and the
     // build ghost are the same object in the same pose.
     let root = base_transform(seed, addr);
+
+    // A foundation's one part is per-address — the terrain-following skirt
+    // ([`foundation_part`], the shared emit the ghost also draws) — so it
+    // takes the unit mesh scaled in the transform instead of the kit's
+    // per-shape cache. Still one entity with `Mesh3d` on it: the hammer
+    // highlight's contract.
+    if matches!(
+        shape,
+        sim_core::build::SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION
+    ) {
+        let part = foundation_part(seed, addr.0, addr.1, shape == SHAPE_TRI_FOUNDATION);
+        let unit = match part.kind {
+            PartKind::Box => kit.unit_box.clone(),
+            PartKind::Tri => kit.unit_tri.clone(),
+        };
+        return commands
+            .spawn((
+                super::WorldEntity,
+                Mesh3d(unit),
+                MeshMaterial3d(mat),
+                (root * part.transform()).with_scale(part.size),
+            ))
+            .id();
+    }
+
     let (parts, n) = shape_parts(shape);
     let meshes = &kit.shape_mesh[(shape as usize).min(N_SHAPES - 1)];
 

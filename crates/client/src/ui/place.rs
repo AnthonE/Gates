@@ -43,14 +43,88 @@ use sim_core::limits::{INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS};
 
 use super::build::affordable;
 
-/// How far ahead of the feet the ghost is aimed, metres.
+/// How far ahead of the feet the ghost is aimed when the LOOK ray finds
+/// nothing to land on (sky, sea, past range), metres.
 ///
 /// PROPOSED — `DECISIONS.md` §open ("build aim distance v0"), carried over
 /// from `web/src/main.js`'s `buildTarget`. Comfortably inside
 /// `BUILD_REACH_M` (5 m) so an aimed cell is one the sim will accept on
 /// reach, with room for the anchor being up to half a cell further than the
 /// centre.
+///
+/// Until 2026-08-15 this was the ONLY aim: the ghost sat at a fixed 3.5 m
+/// from the feet along the yaw, pitch ignored, so the crosshair pointed at
+/// one cell and the ghost stood in another — the player in that day's
+/// playtest was reading `SPOT TAKEN` off a ghost parked behind the gap
+/// they were looking at. [`aim_from_look`] is the aim now; this is its
+/// fallback.
 pub const AIM_AHEAD_M: f32 = 3.5;
+
+/// The look-ray march step, metres. At 0.25 the resolved point is well
+/// under a tenth of a cell off the true intersection, and the march is at
+/// most 32 terrain samples on the frame path — the same order the movement
+/// step already pays. Proposed default, `DECISIONS.md` §open ("build base
+/// lattice v0").
+pub const AIM_STEP_M: f32 = 0.25;
+
+/// How far past build reach the march bothers looking before falling back,
+/// metres. Same §open row.
+pub const AIM_RANGE_M: f32 = BUILD_REACH_M + 3.0;
+
+/// Where the LOOK ray meets the world, as a planar aim point for
+/// [`target_at`] — clamped to [`BUILD_REACH_M`] around the feet so the
+/// resolved cell is one the player could plausibly place in.
+///
+/// The march tests the ray against the same two grounds the sim stands
+/// players on: raw terrain, and the piece surfaces in the predictor's own
+/// collision index (`ClientCore::cols`) via `collide::piece_ground` — so
+/// aiming at your own floor extends the floor, at the working level or
+/// not. What it deliberately does NOT test is wall faces: a ray into a
+/// wall lands on the ground behind it, and the verdict says what the sim
+/// would say about that cell. `eye`/`dir` are the camera's own (the
+/// tracer's ray convention, so the ghost agrees with where a shot goes);
+/// pure and bevy-free so the whole aim is testable headless.
+pub fn aim_from_look(
+    seed: u64,
+    cols: &sim_core::collide::ColIndex,
+    eye: [f32; 3],
+    dir: [f32; 3],
+    feet: (f32, f32),
+) -> (f32, f32) {
+    let mut t = AIM_STEP_M;
+    while t <= AIM_RANGE_M {
+        let px = eye[0] + dir[0] * t;
+        let py = eye[1] + dir[1] * t;
+        let pz = eye[2] + dir[2] * t;
+        let ground = sim_core::terrain::height(seed, px, pz)
+            .max(sim_core::collide::piece_ground(seed, cols, px, pz, py));
+        if py <= ground {
+            return clamp_to_reach(feet, (px, pz));
+        }
+        t += AIM_STEP_M;
+    }
+    let planar = (dir[0] * dir[0] + dir[2] * dir[2]).sqrt().max(1e-3);
+    clamp_to_reach(
+        feet,
+        (
+            feet.0 + dir[0] / planar * AIM_AHEAD_M,
+            feet.1 + dir[2] / planar * AIM_AHEAD_M,
+        ),
+    )
+}
+
+/// Pull an aim point back onto the reach circle around the feet. The ghost
+/// never parks past what the sim could accept; at the rim the verdict
+/// still speaks (an anchor can sit past the point that resolved it).
+fn clamp_to_reach(feet: (f32, f32), p: (f32, f32)) -> (f32, f32) {
+    let (dx, dz) = (p.0 - feet.0, p.1 - feet.1);
+    let d2 = dx * dx + dz * dz;
+    if d2 <= BUILD_REACH_M * BUILD_REACH_M {
+        return p;
+    }
+    let s = BUILD_REACH_M / d2.sqrt();
+    (feet.0 + dx * s, feet.1 + dz * s)
+}
 
 /// A resolved build address.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -61,7 +135,17 @@ pub struct Target {
     pub loc: u8,
 }
 
-/// Which cell, level and location a shape would occupy, aimed from the feet.
+/// Which cell, level and location a shape would occupy, aimed from the feet
+/// along the yaw at the fixed fallback distance. The projection half of
+/// [`target_at`], kept because a caller with no look ray (and the tests
+/// that pin the addressing rules) still wants the old behaviour.
+pub fn target(x: f32, z: f32, fx: f32, fz: f32, shape: u8, level: u8) -> Target {
+    target_at(x + fx * AIM_AHEAD_M, z + fz * AIM_AHEAD_M, shape, level)
+}
+
+/// Which cell, level and location a shape would occupy for an aim POINT —
+/// wherever that point came from (the look-ray march, or [`target`]'s
+/// fixed projection).
 ///
 /// The `loc` rule is the grid's, not a preference: **edge pieces are
 /// canonical to a cell's low-x or low-z boundary** (`build.rs`), so the same
@@ -72,9 +156,7 @@ pub struct Target {
 /// A foundation is pinned to level 0 whatever the working level says: it is
 /// the piece that stands on the ground by definition, and letting the level
 /// stepper lift one is how a player spends materials on a refusal.
-pub fn target(x: f32, z: f32, fx: f32, fz: f32, shape: u8, level: u8) -> Target {
-    let ax = x + fx * AIM_AHEAD_M;
-    let az = z + fz * AIM_AHEAD_M;
+pub fn target_at(ax: f32, az: f32, shape: u8, level: u8) -> Target {
     let max = (MAX_BUILD_COORD - 1) as i32;
     let mut cx = build_cell_of(ax).clamp(0, max);
     let mut cz = build_cell_of(az).clamp(0, max);
@@ -291,6 +373,16 @@ pub fn deploy_target(x: f32, z: f32, fx: f32, fz: f32, placement: u8, level: u8)
         target(x, z, fx, fz, SHAPE_DOORWAY, level)
     } else {
         target(x, z, fx, fz, SHAPE_FOUNDATION, 0)
+    }
+}
+
+/// [`deploy_target`] for an aim POINT — the look-ray variant, split the
+/// way [`target_at`] is and for the same caller.
+pub fn deploy_target_at(ax: f32, az: f32, placement: u8, level: u8) -> Target {
+    if placement == PLACE_DOORWAY {
+        target_at(ax, az, SHAPE_DOORWAY, level)
+    } else {
+        target_at(ax, az, SHAPE_FOUNDATION, 0)
     }
 }
 
@@ -743,5 +835,55 @@ mod tests {
         assert_eq!(DeployVerdict::default(), DeployVerdict::Unknown);
         assert!(!DeployVerdict::default().refused());
         assert_eq!(DeployVerdict::No("spot taken").why(), "spot taken");
+    }
+
+    /// The aim is the LOOK ray. Three contracts, on the shipped island's
+    /// own terrain: looking straight down aims at your own feet; looking
+    /// steeply up finds no ground and falls back to the fixed projection;
+    /// and no direction at all — a 16×5 sweep of bearings and pitches —
+    /// parks the aim past build reach.
+    #[test]
+    fn the_aim_is_the_look_ray_and_never_leaves_reach() {
+        // Boxed: `ColIndex` is a large fixed array, and a big struct built
+        // on a test thread's stack is the wasm-shadow-stack trap's native
+        // cousin (`CLAUDE.md`).
+        let cols = Box::new(sim_core::collide::ColIndex::new());
+        let seed = 20260731u64;
+        let (fx, fz) = (1024.5f32, 1024.5f32);
+        let eye_y = sim_core::terrain::height(seed, fx, fz) + 1.6;
+
+        // Straight down: the ray meets the ground under the eye.
+        let (ax, az) = aim_from_look(seed, &cols, [fx, eye_y, fz], [0.0, -1.0, 0.0], (fx, fz));
+        assert!(
+            (ax - fx).abs() < 1e-3 && (az - fz).abs() < 1e-3,
+            "straight down aimed at ({ax}, {az}), not the feet"
+        );
+
+        // Steeply up: no ground inside the march (the climb outruns any
+        // slope), so the old fixed projection answers.
+        let (ax, az) = aim_from_look(seed, &cols, [fx, eye_y, fz], [0.1, 1.0, 0.0], (fx, fz));
+        assert!(
+            (ax - (fx + AIM_AHEAD_M)).abs() < 1e-3 && (az - fz).abs() < 1e-3,
+            "skyward aim fell back to ({ax}, {az}), not {AIM_AHEAD_M} ahead"
+        );
+
+        // Nothing escapes the reach circle, whatever the direction.
+        for b in 0..16 {
+            let a = b as f32 * std::f32::consts::TAU / 16.0;
+            for p in [-1.0f32, -0.5, -0.1, 0.2, 0.8] {
+                let (ax, az) = aim_from_look(
+                    seed,
+                    &cols,
+                    [fx, eye_y, fz],
+                    [a.cos(), p, a.sin()],
+                    (fx, fz),
+                );
+                let d = ((ax - fx).powi(2) + (az - fz).powi(2)).sqrt();
+                assert!(
+                    d <= BUILD_REACH_M + 1e-3,
+                    "bearing {b} pitch {p}: aim parked {d} out, past reach"
+                );
+            }
+        }
     }
 }

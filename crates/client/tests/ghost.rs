@@ -926,3 +926,87 @@ fn the_door_fits_the_opening_the_sim_leaves() {
         size.y
     );
 }
+
+// ---------------------------------------------------------------------------
+// The foundation footing (build base lattice v0, 2026-08-15) — the
+// per-address skirt `structures::foundation_part` emits for BOTH the
+// standing piece and the build ghost, gated the way every shared part is:
+// against the sim's own surfaces, not against a copy of the arithmetic.
+// ---------------------------------------------------------------------------
+
+/// The footing's TOP is the level plane — the exact surface
+/// `collide::piece_ground` stands players on — at every sampled cell, and
+/// its bottom is buried below every ground sample under the cell (or the
+/// depth cap was hit, on ground steep enough to beat it). A skirt that
+/// moved the top would move where players stand with every gate green;
+/// a skirt that missed the ground is the floating-plank screenshot the
+/// part exists to close.
+#[test]
+fn the_footing_keeps_the_floor_and_buries_its_skirt() {
+    use client::render::structures::{
+        foundation_part, PartKind, SEAM_M, SKIRT_MAX_M, SKIRT_SINK_M, SLAB_T,
+    };
+    use sim_core::build::BUILD_CELL_M;
+
+    let mut checked = 0;
+    for cx in (CX - 30..CX + 30).step_by(3) {
+        for cz in (CZ - 30..CZ + 30).step_by(3) {
+            let part = foundation_part(SEED, cx, cz, false);
+            assert_eq!(part.kind, PartKind::Box);
+            // Top at the level plane, exactly: offset is the box centre.
+            let top = part.offset.y + part.size.y * 0.5;
+            assert!(
+                top.abs() < 1e-4,
+                "cell ({cx},{cz}): footing top {top} is off the level plane"
+            );
+            // Footprint: the shared slab span, so the ghost's footing and a
+            // neighbouring floor tile stay the same object family.
+            assert!(
+                (part.size.x - (BUILD_CELL_M - SEAM_M)).abs() < 1e-4
+                    && (part.size.z - (BUILD_CELL_M - SEAM_M)).abs() < 1e-4,
+                "cell ({cx},{cz}): footing footprint {:?}",
+                part.size
+            );
+            assert!(
+                part.size.y >= SLAB_T - 1e-4 && part.size.y <= SKIRT_MAX_M + 1e-4,
+                "cell ({cx},{cz}): footing depth {} out of band",
+                part.size.y
+            );
+            // The bottom is in the ground under every corner — unless the
+            // cap cut it, which only steep ground reaches.
+            let base = level_base_y(SEED, cx, cz, 0);
+            let bottom = base + part.offset.y - part.size.y * 0.5;
+            let x0 = cx as f32 * BUILD_CELL_M;
+            let z0 = cz as f32 * BUILD_CELL_M;
+            let mut lo = f32::MAX;
+            for (px, pz) in [
+                (x0, z0),
+                (x0 + BUILD_CELL_M, z0),
+                (x0, z0 + BUILD_CELL_M),
+                (x0 + BUILD_CELL_M, z0 + BUILD_CELL_M),
+                (x0 + BUILD_CELL_M * 0.5, z0 + BUILD_CELL_M * 0.5),
+            ] {
+                lo = lo.min(sim_core::terrain::height(SEED, px, pz));
+            }
+            let capped = (part.size.y - SKIRT_MAX_M).abs() < 1e-4;
+            assert!(
+                capped || bottom <= lo - SKIRT_SINK_M + 1e-3,
+                "cell ({cx},{cz}): skirt bottom {bottom} floats over ground {lo}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 400, "the sweep checked only {checked} cells");
+}
+
+/// The tri footing is the same rule in the prism — same depth, same top —
+/// so a diagonal draft is grounded exactly like a square one.
+#[test]
+fn the_tri_footing_matches_the_square_one() {
+    use client::render::structures::{foundation_part, PartKind};
+    let sq = foundation_part(SEED, CX, CZ, false);
+    let tri = foundation_part(SEED, CX, CZ, true);
+    assert_eq!(tri.kind, PartKind::Tri);
+    assert_eq!(tri.size, sq.size);
+    assert_eq!(tri.offset, sq.offset);
+}

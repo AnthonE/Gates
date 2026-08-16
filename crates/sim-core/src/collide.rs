@@ -5,9 +5,10 @@
 //! prediction through a doorway holds bit for bit (skew is bounded by the
 //! one in-flight placement event, the same bound the slot store accepts).
 //!
-//! Geometry: a piece's vertical base is `terrain::height(cell center) +
-//! PIECE_LIFT_M + level·LEVEL_H_M` — the renderer's formula (scene.js),
-//! now sim-authoritative. Planes (foundation/floor/roof) are walkable
+//! Geometry: a piece's vertical base is `build::column_floor_y(cell) +
+//! level·LEVEL_H_M` — cell-center terrain snapped to the build lattice
+//! (`BUILD_BASE_Q_M`) plus the lift, one implementation shared with the
+//! renderer. Planes (foundation/floor/roof) are walkable
 //! surfaces at their base; stairs are a ramp rising toward +Z through the
 //! storey; walls block their edge for the storey they span; doorways
 //! block only their posts (the 1.2 m opening passes; the lintel never
@@ -43,7 +44,6 @@ use crate::build::{
 use crate::fmath::fabs;
 use crate::limits::{COL_INDEX_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS};
 use crate::movement::STEP_UP;
-use crate::terrain;
 
 /// Foundation top above the cell-center terrain sample. Was render-only
 /// (scene.js LIFT); collision makes it sim truth (DECISIONS.md §open,
@@ -497,16 +497,13 @@ impl Default for ColIndex {
     }
 }
 
-/// A column's level-0 base: the renderer's `groundY + LIFT` (scene.js),
-/// sampled at the cell center — no piece height ever rides the wire.
+/// A column's level-0 base — `build::column_floor_y`, the one
+/// implementation of the height rule (quantized to `BUILD_BASE_Q_M` so
+/// neighbouring columns in one terrain band are bit-equal flush; its doc
+/// carries the derivation). No piece height ever rides the wire.
 #[inline]
 pub(crate) fn col_base_y(seed: u64, cx: u16, cz: u16) -> f32 {
-    let half = BUILD_CELL_M * 0.5;
-    terrain::height(
-        seed,
-        cx as f32 * BUILD_CELL_M + half,
-        cz as f32 * BUILD_CELL_M + half,
-    ) + PIECE_LIFT_M
+    crate::build::column_floor_y(seed, cx, cz)
 }
 
 /// The highest built surface under (x, z) the capsule at `feet_y` may
@@ -1109,6 +1106,7 @@ mod tests {
     use crate::input::InputFrame;
     use crate::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
     use crate::rng::Pcg32;
+    use crate::terrain;
     use crate::world::{EventQueue, Player, EV_PIECE_PLACED};
 
     /// The browser-smoke seed and its guarded-walkable cell (build.rs
