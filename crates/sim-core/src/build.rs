@@ -212,6 +212,61 @@ pub const BUILD_REACH_M: f32 = 5.0;
 pub const FOUNDATION_MIN_H_M: f32 = 1.5;
 pub const FOUNDATION_MAX_SLOPE: f32 = 1.0;
 
+/// The vertical build lattice: a column's floor height is its cell-center
+/// terrain sample snapped to multiples of this, so neighbouring cells whose
+/// ground falls in the same band share ONE floor height — bit-equal, not
+/// approximately — and a row of foundations is a plate instead of a
+/// staircase of per-cell terrain samples (the 2026-08-15 playtest's
+/// "pieces don't line up"). Proposed default, `DECISIONS.md` §open
+/// ("build base lattice v0").
+///
+/// Three constraints picked the number and all three are load-bearing:
+/// - **Exactly representable in f32** (0.5 = 2⁻¹), so `k·q` for equal `k`
+///   is the same bits on every path and flushness is `==`, never epsilon.
+/// - **`BUILD_BASE_Q_M / 2 + PIECE_LIFT_M ≤ movement::STEP_UP`**
+///   (0.25 + 0.3 = 0.55 ≤ 0.6): round-to-nearest puts a slab top at most
+///   `q/2 + lift` above the ground under it, so a lone foundation can
+///   always be stepped onto. `tests/base_lattice.rs` holds the inequality.
+/// - **Under `STEP_UP` itself**, so where two plates meet, the 0.5 m band
+///   step is walked up like a stair rather than jumped.
+///
+/// `LEVEL_H_M / 6` exactly, so six bands stack to a storey.
+pub const BUILD_BASE_Q_M: f32 = 0.5;
+
+/// The world y of a column's level-0 floor surface — **the one
+/// implementation** of the piece height rule, and deliberately the only
+/// one: `collide::col_base_y` (the sim's movement/raid/charge walks), the
+/// client renderer's `level_base_y` and `deploy::box_drop_pos` all call
+/// this rather than restating the formula, because the formula existed in
+/// two crates before this function did and a third copy is how the drawn
+/// world and the collided world drift apart (`CLAUDE.md`'s hand-kept-mirror
+/// trap).
+///
+/// Cell-center terrain plus [`crate::collide::PIECE_LIFT_M`], snapped to
+/// [`BUILD_BASE_Q_M`] round-to-nearest — **the lift is folded INTO the
+/// snap**, so the returned height is itself an exact multiple of the
+/// quantum. Adding 0.3 after snapping was the first version and its gate
+/// caught it the day it was written: 0.3 is not exactly representable, so
+/// `k·q + 0.3` rounds differently at different magnitudes and two plates
+/// one band apart differed by 1.499999 — a step that is *almost* the
+/// quantum is the crack this function exists to close. Pure in
+/// (seed, cx, cz) — no piece height ever rides the wire, which is what
+/// lets the sim, the predictor and the renderer agree by construction
+/// instead of by sync. Allowed float ops only (÷ + × and floor-by-cast):
+/// wall 1. The delivered lift over the raw sample spans
+/// `PIECE_LIFT_M ± q/2` — `tests/base_lattice.rs` holds both ends against
+/// `movement::STEP_UP`.
+#[inline]
+pub fn column_floor_y(seed: u64, cx: u16, cz: u16) -> f32 {
+    let half = BUILD_CELL_M * 0.5;
+    let h = terrain::height(
+        seed,
+        cx as f32 * BUILD_CELL_M + half,
+        cz as f32 * BUILD_CELL_M + half,
+    );
+    floor_i32((h + crate::collide::PIECE_LIFT_M) / BUILD_BASE_Q_M + 0.5) as f32 * BUILD_BASE_Q_M
+}
+
 /// One baked piece row. `hp == 0` ⇒ inert (the empty-table row).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PieceDef {

@@ -1340,12 +1340,19 @@ impl Default for Deploys {
 }
 
 /// Where a broken box's contents fall: the centre of its own cell, on its
-/// own storey. The height is the collider's floor formula (`collide.rs`:
-/// terrain under the cell plus `level * LEVEL_H_M`), so the bag lands on
-/// the floor the box was standing on rather than inside it.
+/// own storey. The height is `build::column_floor_y` — the one floor
+/// formula — plus the storey, so the bag lands ON the floor the box stood
+/// on. This function restated the formula until 2026-08-15 and its copy
+/// had already drifted: it sampled raw terrain with no lift and no
+/// lattice, so the bag sat 0.3 m inside the slab it claimed to land on —
+/// the exact hand-kept-mirror failure `column_floor_y` exists to close.
 pub fn box_drop_pos(seed: u64, cx: u16, cz: u16, level: u8) -> (f32, f32, f32) {
     let (x, z) = cell_center(cx, cz);
-    (x, terrain::height(seed, x, z) + level as f32 * LEVEL_H_M, z)
+    (
+        x,
+        crate::build::column_floor_y(seed, cx, cz) + level as f32 * LEVEL_H_M,
+        z,
+    )
 }
 
 /// The point `place_deploy` measures reach to, for every `loc`. `build.rs`
