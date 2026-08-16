@@ -42,6 +42,46 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0dsc · Discord presence is built, detailed and dark *(operator — one act)*
+
+The operator saw the game named in Discord and asked how it knew. Measured:
+Discord matches running exes against its detectable database — **22,455
+entries on 2026-08-16, none of them `gates` or `gates.exe`** — so that was
+the manual "Add it!", which shows the bare process name.
+
+**That database is curated and it is NOT the open door.** Rich presence takes
+only an application id, which any developer creates with no review. Checked
+in the data: VS Code, Spotify, Photoshop, Figma, Blender, OBS, IntelliJ and
+Neovim are all **absent** from the 22,455, and all appear in Discord statuses
+daily — as rich presence under their own ids.
+
+Built, and the operator's 2026-08-16 call took it past the address question:
+the verb + where on the island + party + elapsed, and **Ask to Join**, both
+behind two settings under `SOCIAL` — `discord_presence` (on) and
+`discord_share_server` (off, opt-in, and it is a consent rather than a knob:
+`DECISIONS.md` has the pair rule and the gates). Still **dark** without
+`GATES_DISCORD_APP_ID`.
+
+**The one operator act:**
+1. Create the Discord application, set `GATES_DISCORD_APP_ID`, and **name it
+   `Gates`** — the portal's application name is the word drawn after
+   "Playing", which is what retires the lowercase `gates`.
+2. For Ask-to-Join on a friend who is *not* running the game, register the
+   URL scheme in the portal (`scry://` or `gates://`). That path is
+   `deeplink.rs` and needs no code. The already-running path is built.
+3. Optional: upload a 512×512 or 1024×1024 image under the asset key
+   `gates`. **There is no Gates mark in this repo** — `marketing/` holds only
+   the OBOL and MYRRH coin marks, which are the economy's and not the
+   game's. Without one Discord simply draws no image.
+
+⚠ The detectable-list submission stays **unverified** — self-serve game
+selling is deprecated and no current form was found. A question for Discord,
+not a step, and nothing above depends on it.
+
+`DECISIONS.md` 2026-08-16 (spoken) and §open "discord rich presence v0".
+
+---
+
 ## 0win · The published Windows depot cannot start *(operator — republish)*
 
 A player ran the launcher's Windows build on 2026-08-16 and got

@@ -70,8 +70,8 @@ pub const VOL_STEP: f32 = 0.1;
 /// it has rows — the rail is a map of the game's surface, and a category that
 /// vanished when it was empty would make the screen change shape as features
 /// land.
-pub const CATEGORIES: [&str; 6] = [
-    "GAMEPLAY", "AUDIO", "SCREEN", "GRAPHICS", "CONTROLS", "KEYBINDS",
+pub const CATEGORIES: [&str; 7] = [
+    "GAMEPLAY", "AUDIO", "SCREEN", "GRAPHICS", "CONTROLS", "SOCIAL", "KEYBINDS",
 ];
 
 /// What the player can change. Client-side every one of them; see the header.
@@ -92,6 +92,12 @@ pub struct Settings {
     /// The reference's `audio.musicvolume`, which is the one bus that does
     /// not open at full — see [`crate::sound::MUSIC_DEFAULT`].
     pub vol_music: f32,
+    /// Tell Discord what the player is doing (`crate::discord`).
+    pub discord_presence: bool,
+    /// Let that presence carry the shard's name and address, which is what
+    /// makes Discord's **Ask to Join** appear. The one row on this screen
+    /// that discloses something rather than setting a preference.
+    pub discord_share_server: bool,
     /// Which rail row is selected.
     pub cat: usize,
     /// Where Esc returns to. Settings is reachable from the intro screen and
@@ -131,6 +137,13 @@ impl Default for Settings {
             vol_master: 1.0,
             vol_game: 1.0,
             vol_ambience: 1.0,
+            // On: the whole path is dark without an application id, and at
+            // this level it locates no machine and names no person.
+            discord_presence: true,
+            // **Off, and this one is a disclosure rather than a
+            // preference** — the operator opened the door on condition the
+            // player enables it (2026-08-16), and opt-in is what that means.
+            discord_share_server: false,
             // **Not 1, and it is the reference's number rather than a
             // taste call**: their `audio.musicvolume` ships at 0.2 while
             // master and game ship at 1. A score at parity with footsteps
@@ -147,6 +160,8 @@ impl Default for Settings {
 /// match rather than five queries.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Knob {
+    DiscordPresence,
+    DiscordShareServer,
     Vsync,
     Fullscreen,
     Fov,
@@ -169,6 +184,24 @@ impl Settings {
         match knob {
             Knob::Vsync => self.vsync = !self.vsync,
             Knob::Fullscreen => self.fullscreen = !self.fullscreen,
+            // **Turning presence off takes sharing with it**, and that is the
+            // behaviour rather than a note beside it. A latent "share my
+            // address" left true under an off master is how a player who
+            // turns presence back on months later gets a disclosure they
+            // last consented to under different circumstances.
+            Knob::DiscordPresence => {
+                self.discord_presence = !self.discord_presence;
+                self.discord_share_server &= self.discord_presence;
+            }
+            // Sharing implies presence: a player who clicks the row that
+            // says "so friends can Ask to Join" has asked for the thing that
+            // carries it, and a toggle that silently does nothing because a
+            // master switch above it is off is worse than one that turns the
+            // master on.
+            Knob::DiscordShareServer => {
+                self.discord_share_server = !self.discord_share_server;
+                self.discord_presence |= self.discord_share_server;
+            }
             Knob::InvertLook => self.invert_look = !self.invert_look,
             Knob::Fov => {
                 self.fov_deg =
@@ -197,6 +230,8 @@ impl Settings {
         match knob {
             Knob::Vsync => on_off(self.vsync),
             Knob::Fullscreen => on_off(self.fullscreen),
+            Knob::DiscordPresence => on_off(self.discord_presence),
+            Knob::DiscordShareServer => on_off(self.discord_share_server),
             Knob::InvertLook => on_off(self.invert_look),
             Knob::Fov => format!("{:.0}", self.fov_deg),
             Knob::Sensitivity => format!("{:.2}", self.sensitivity),
@@ -221,6 +256,8 @@ impl Settings {
             vol_game: self.vol_game,
             vol_ambience: self.vol_ambience,
             vol_music: self.vol_music,
+            discord_presence: self.discord_presence,
+            discord_share_server: self.discord_share_server,
         }
     }
 
@@ -242,6 +279,13 @@ impl Settings {
             vol_game: step(p.vol_game, VOL_STEP).clamp(0.0, 1.0),
             vol_ambience: step(p.vol_ambience, VOL_STEP).clamp(0.0, 1.0),
             vol_music: step(p.vol_music, VOL_STEP).clamp(0.0, 1.0),
+            discord_presence: p.discord_presence,
+            // **Sanitized, not just loaded.** A hand-edited file could carry
+            // sharing on under presence off, which no sequence of clicks can
+            // reach — and the pair is a consent, so the loader resolves it
+            // the same way `adjust` does rather than honouring a state the
+            // screen cannot show.
+            discord_share_server: p.discord_share_server && p.discord_presence,
             ..Self::default()
         }
     }
@@ -405,6 +449,25 @@ fn rows(cat: usize) -> Vec<Row> {
         "CONTROLS" => vec![
             Row::Number("MOUSE SENSITIVITY", Knob::Sensitivity, "x base"),
             Row::Toggle("INVERT LOOK", Knob::InvertLook),
+        ],
+        "SOCIAL" => vec![
+            Row::Toggle("DISCORD STATUS", Knob::DiscordPresence),
+            Row::Fact(
+                "  what it says",
+                "What you are doing and roughly where - never your address",
+            ),
+            Row::Toggle("SHOW MY SERVER", Knob::DiscordShareServer),
+            Row::Fact(
+                "  what it says",
+                "The shard name and address, so friends can Ask to Join",
+            ),
+            // Said out loud on the screen that turns it on, because the cost
+            // is not obvious from the label: a presence line is public to
+            // everyone who can see the profile, not just to friends.
+            Row::Fact(
+                "  who can see it",
+                "Anyone who can see your Discord profile - not only friends",
+            ),
         ],
         "KEYBINDS" => BINDS.iter().map(|(k, v)| Row::Fact(k, v)).collect(),
         _ => vec![Row::Note("Nothing here yet.")],
@@ -818,6 +881,66 @@ pub fn apply_window(settings: Res<Settings>, mut window: Query<&mut Window, With
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two Discord rows are a **consent**, not two independent knobs,
+    /// and the pair has one rule in both directions: sharing implies
+    /// presence, and turning presence off withdraws sharing with it.
+    ///
+    /// The state this forbids is `share = true` under `presence = false` —
+    /// a latent "publish my address" that no row on the screen is showing,
+    /// waiting for the master to come back on months later and disclose
+    /// something the player last agreed to under other circumstances.
+    #[test]
+    fn the_discord_pair_cannot_reach_a_latent_disclosure() {
+        let mut s = Settings::default();
+        // Shipped: presence on, sharing off.
+        assert!(s.discord_presence);
+        assert!(!s.discord_share_server);
+
+        // Sharing on pulls presence with it, from either starting point.
+        s.adjust(Knob::DiscordPresence, 0);
+        assert!(!s.discord_presence);
+        s.adjust(Knob::DiscordShareServer, 0);
+        assert!(s.discord_share_server);
+        assert!(s.discord_presence, "sharing implies presence");
+
+        // Presence off withdraws sharing.
+        s.adjust(Knob::DiscordPresence, 0);
+        assert!(!s.discord_presence);
+        assert!(!s.discord_share_server, "presence off withdraws sharing");
+
+        // No sequence of clicks reaches the forbidden pair.
+        let mut s = Settings::default();
+        for i in 0..64 {
+            s.adjust(
+                if i % 3 == 0 {
+                    Knob::DiscordPresence
+                } else {
+                    Knob::DiscordShareServer
+                },
+                0,
+            );
+            assert!(
+                !(s.discord_share_server && !s.discord_presence),
+                "reached a latent disclosure after {i} clicks"
+            );
+        }
+    }
+
+    /// …and a hand-edited settings file cannot reach it either, which is the
+    /// half a click test cannot cover: the file is plain text a player can
+    /// open, so the loader resolves the pair the same way `adjust` does.
+    #[test]
+    fn a_hand_edited_file_cannot_smuggle_the_latent_disclosure() {
+        let mut p = Settings::default().persisted();
+        p.discord_presence = false;
+        p.discord_share_server = true;
+        let s = Settings::from_persisted(p);
+        assert!(
+            !s.discord_share_server,
+            "sharing under an off master must not load"
+        );
+    }
 
     #[test]
     fn a_stepper_cannot_walk_a_setting_out_of_range() {
