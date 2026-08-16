@@ -90,11 +90,19 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
     let rows = [
         InvSlot {
             slot: 0,
-            stack: ItemStack { item: 5, count: 40 },
+            stack: ItemStack {
+                item: 5,
+                count: 40,
+                cond: 0,
+            },
         },
         InvSlot {
             slot: 11,
-            stack: ItemStack { item: 31, count: 3 },
+            stack: ItemStack {
+                item: 31,
+                count: 3,
+                cond: 0,
+            },
         },
     ];
     let len = encode_event_cont_sync(CONT_BOX, BOX, true, &rows, &mut buf).unwrap();
@@ -107,8 +115,22 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
          address is the container divergence the reference answered by \
          disconnecting the client"
     );
-    assert_eq!(c.cont[0], ItemStack { item: 5, count: 40 });
-    assert_eq!(c.cont[11], ItemStack { item: 31, count: 3 });
+    assert_eq!(
+        c.cont[0],
+        ItemStack {
+            item: 5,
+            count: 40,
+            cond: 0,
+        }
+    );
+    assert_eq!(
+        c.cont[11],
+        ItemStack {
+            item: 31,
+            count: 3,
+            cond: 0,
+        }
+    );
     assert_eq!(
         c.cont[2],
         ItemStack::default(),
@@ -127,7 +149,11 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
     assert_eq!(c.cont[0], ItemStack::default(), "an emptied slot clears");
     assert_eq!(
         c.cont[11],
-        ItemStack { item: 31, count: 3 },
+        ItemStack {
+            item: 31,
+            count: 3,
+            cond: 0,
+        },
         "a diff must not disturb the slots it did not name"
     );
 
@@ -136,7 +162,11 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
     // thing an echo check can get wrong.
     let foreign = [InvSlot {
         slot: 11,
-        stack: ItemStack { item: 7, count: 99 },
+        stack: ItemStack {
+            item: 7,
+            count: 99,
+            cond: 0,
+        },
     }];
     let len = encode_event_cont_sync(CONT_BOX, BOX ^ 1, false, &foreign, &mut buf).unwrap();
     feed(&mut c, &buf[..len]);
@@ -147,7 +177,11 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
     );
     assert_eq!(
         c.cont[11],
-        ItemStack { item: 31, count: 3 },
+        ItemStack {
+            item: 31,
+            count: 3,
+            cond: 0,
+        },
         "a foreign diff reached this panel's slots"
     );
 

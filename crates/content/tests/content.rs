@@ -1027,16 +1027,85 @@ fn bake_backpack_walks_the_rarity_ladder_the_data_declares() {
     inv[0] = sim_core::gather::ItemStack {
         item: c.item_index(&commonest.id).unwrap(),
         count: 1,
+        cond: 0,
     };
     assert_eq!(bc.lifetime_ticks(&inv), bc.base_ticks);
     inv[1] = sim_core::gather::ItemStack {
         item: c.item_index(&rarest.id).unwrap(),
         count: 1,
+        cond: 0,
     };
     assert_eq!(
         bc.lifetime_ticks(&inv),
         bc.base_ticks * mults[rarest.rarity.canon() as usize],
         "one rare thing raises the whole bag"
+    );
+}
+
+/// The seven durability rules (item durability v0), each proven against
+/// the shipped set with one edit. V7 and V4 are the two the slice's gates
+/// name — the stack law everything else leans on, and the set check this
+/// repo keeps getting bitten by — and the other five are the dead-row and
+/// width refusals between them.
+#[test]
+fn the_durability_rules_refuse_what_they_name() {
+    // V7: a condition-carrying item must stack to 1. The rock keeps its
+    // 10 000 hundredths and grows a stack of 3 — refused, because
+    // condition is per-stack state and `plan_move`/`inv_add` keep their
+    // arithmetic only while no merge can ever meet two conditions.
+    refuses(
+        "items.toml",
+        "name = \"Rock\"\nstack = 1",
+        "name = \"Rock\"\nstack = 3",
+        "(V7)",
+    );
+    // V4, the set check: a condition-carrying tool that pays on a node
+    // must have a loss row there. Dropping the stone hatchet's tree row
+    // leaves a tool that farms the forest free forever.
+    refuses(
+        "gatherables.toml",
+        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.hatchet_stone\" = 30\n\"item.hatchet_metal\" = 30",
+        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.hatchet_metal\" = 30",
+        "(V4)",
+    );
+    // V1: the ceiling must fit the sim's u16 hundredths.
+    refuses(
+        "items.toml",
+        "condition_max = 40000\n\n[[item]]\nid = \"item.pickaxe_metal\"",
+        "condition_max = 90000\n\n[[item]]\nid = \"item.pickaxe_metal\"",
+        "(V1)",
+    );
+    // V2: bare hands do not wear — a `hand` loss row is refused. The
+    // bush is the one node with a hand row, so it is where the bait goes.
+    refuses(
+        "gatherables.toml",
+        "[gatherable.yield_per_hit]\nhand = 10",
+        "[gatherable.yield_per_hit]\nhand = 10\n\n[gatherable.condition_loss]\nhand = 30",
+        "(V2)",
+    );
+    // V3: a loss row must name a tool with a yield row on the same node —
+    // wear lands only on a paying hit, so a row for a non-paying tool is
+    // unreachable coverage. The torch carries condition and pays nowhere.
+    refuses(
+        "gatherables.toml",
+        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.hatchet_stone\" = 30\n\"item.hatchet_metal\" = 30",
+        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.hatchet_stone\" = 30\n\"item.hatchet_metal\" = 30\n\"item.torch\" = 30",
+        "(V3)",
+    );
+    // V5: a zero loss is an inert row, not a statement.
+    refuses(
+        "gatherables.toml",
+        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.pickaxe_stone\" = 30\n\"item.pickaxe_metal\" = 30\n\n# Bush",
+        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.pickaxe_stone\" = 0\n\"item.pickaxe_metal\" = 30\n\n# Bush",
+        "(V5)",
+    );
+    // V6: a loss row's tool must declare a condition to lose. Strip the
+    // stone hatchet's ceiling while its tree loss row still names it.
+    refuses(
+        "items.toml",
+        "# 100 pts / 0.3 per hit (wiki-confirmed) = 333 hits, ~33 trees.\ncondition_max = 10000",
+        "# 100 pts / 0.3 per hit (wiki-confirmed) = 333 hits, ~33 trees.\ncondition_max = 0",
+        "(V6)",
     );
 }
 

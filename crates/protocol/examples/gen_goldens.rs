@@ -425,4 +425,11 @@ fn main() {
         let len = encode_action_research(goldens::action_research(), &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[91], &buf[..len]);
     }
+
+    // The gather refusal (v42, item durability's wire window).
+    {
+        let (item, reason) = goldens::event_gather_refused();
+        let len = protocol::encode_event_gather_refused(item, reason, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[92], &buf[..len]);
+    }
 }

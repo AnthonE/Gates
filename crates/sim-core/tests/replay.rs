@@ -289,6 +289,18 @@ const TICKS: u64 = 900;
 /// this value was read off, which is why the equality asserts sit *before*
 /// the pin rather than after it.
 ///
+/// **Regenerated 2026-08-15 for item durability v0**, and it is both
+/// shapes at once, stated so nobody has to reconstruct it: state widened
+/// (`ItemStack` grew `cond`, so all four container loops in `state_hash`
+/// fold two more bytes per stack) AND the fixture's inputs moved (the
+/// gather probe fixture arms `cond_max` on items 0/1 and a wear row per
+/// node, and every minted stack now arrives at its item's ceiling, so the
+/// wear arithmetic runs inside this script's own farming). No command is
+/// new and `test_terrain_golden` did NOT move (worldgen untouched).
+/// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
+/// this value was read off — the panic that produced it was at the pin
+/// line alone, with both determinism asserts above it already passed.
+///
 /// **Regenerated 2026-08-16 for the build base lattice** (`DECISIONS.md`
 /// §open "build base lattice v0"): `build::column_floor_y` snaps every
 /// column's base to the 0.5 m lattice, so every piece, solid-deploy
@@ -300,7 +312,19 @@ const TICKS: u64 = 900;
 /// (worldgen itself is untouched — the lattice reads terrain, it does
 /// not write it). Evidence as above: both determinism equalities were
 /// green on the run this value was read off, run twice.
-const GOLDEN_FINAL_HASH: u64 = 0x8A52_A5C7_160A_1B60;
+///
+/// **Regenerated 2026-08-16 a third time, and this one is neither shape —
+/// it is the MERGE of the two above.** Durability v0 and the build base
+/// lattice landed on separate branches, each regenerating this pin for
+/// its own cause, and each was right about its own tree. Neither hash
+/// describes the tree that has both, so the merge could not pick a side:
+/// `0x3151…` (durability) and `0x8A52…` (lattice) are both stale here.
+/// The value below was read off the merged tree, and the evidence is the
+/// same as every entry above and load-bearing precisely because a merge
+/// is where a golden is easiest to wave through — both determinism
+/// equalities green, `test_terrain_golden` unmoved, and the failure that
+/// produced it at the pin line alone.
+const GOLDEN_FINAL_HASH: u64 = 0x1EFA_E540_E48C_195D;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
@@ -627,7 +651,11 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         if t == 165 {
             hotbar_saved.copy_from_slice(&world.players[0].inv[..HOTBAR_SLOTS]);
             for slot in 0..HOTBAR_SLOTS {
-                world.players[0].inv[slot] = sim_core::gather::ItemStack { item: 3, count: 8 };
+                world.players[0].inv[slot] = sim_core::gather::ItemStack {
+                    item: 3,
+                    count: 8,
+                    cond: 0,
+                };
             }
         }
         if t == 167 {
@@ -651,7 +679,11 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     .iter()
                     .enumerate()
                     {
-                        world.players[w].inv[20 + k] = sim_core::gather::ItemStack { item, count };
+                        world.players[w].inv[20 + k] = sim_core::gather::ItemStack {
+                            item,
+                            count,
+                            cond: 0,
+                        };
                     }
                     walk_up_the_beach(&mut world, seed, w);
                 }

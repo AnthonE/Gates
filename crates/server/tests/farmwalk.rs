@@ -175,9 +175,14 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
     for slot in core.world.players[p].inv.iter_mut() {
         *slot = Default::default();
     }
+    // Granted WHOLE, off the baked table rather than a literal: a stone
+    // hatchet at condition 0 is a dead tool since durability v0, and this
+    // instrument would measure a refusal loop instead of a farm.
+    let hatchet_cond = core.world.gather.cond_max[hatchet as usize];
     core.world.players[p].inv[sel] = sim_core::gather::ItemStack {
         item: hatchet,
         count: 1,
+        cond: hatchet_cond,
     };
 
     let wood = c.item_index("item.wood").expect("wood is an item");

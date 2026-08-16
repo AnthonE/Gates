@@ -210,26 +210,32 @@ fn restock(inv: &mut [ItemStack]) {
     inv[0] = ItemStack {
         item: CHARGE_ITEM,
         count: 100,
+        cond: 0,
     };
     inv[1] = ItemStack {
         item: COST_ITEM_A,
         count: 100,
+        cond: 0,
     };
     inv[2] = ItemStack {
         item: COST_ITEM_B,
         count: 100,
+        cond: 0,
     };
     inv[3] = ItemStack {
         item: BOX_ITEM,
         count: 50,
+        cond: 0,
     };
     inv[4] = ItemStack {
         item: LOCK_ITEM,
         count: 50,
+        cond: 0,
     };
     inv[5] = ItemStack {
         item: COST_ITEM_A,
         count: 100,
+        cond: 0,
     };
 }
 

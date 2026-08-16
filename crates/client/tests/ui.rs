@@ -49,12 +49,21 @@ fn empty() -> [ItemStack; INV_SLOTS] {
 
 fn stocked() -> [ItemStack; INV_SLOTS] {
     let mut inv = empty();
-    inv[0] = ItemStack { item: 7, count: 9 };
+    inv[0] = ItemStack {
+        item: 7,
+        count: 9,
+        cond: 0,
+    };
     inv[1] = ItemStack {
         item: 3,
         count: 100,
+        cond: 0,
     };
-    inv[2] = ItemStack { item: 7, count: 1 };
+    inv[2] = ItemStack {
+        item: 7,
+        count: 1,
+        cond: 0,
+    };
     inv
 }
 
@@ -90,7 +99,11 @@ fn move_marshals_every_field_to_its_own_name() {
 fn a_ground_move_carries_the_handle_and_the_containers_own_count() {
     let inv = empty();
     let mut cont = empty();
-    cont[4] = ItemStack { item: 2, count: 6 };
+    cont[4] = ItemStack {
+        item: 2,
+        count: 6,
+        cond: 0,
+    };
     let m = slots::move_args(HANDLE, CONT_BOX, 4, CONT_SELF, 0, Grab::All, &inv, &cont)
         .expect("box to self");
     assert_eq!(m.bag, HANDLE);
@@ -105,7 +118,11 @@ fn a_ground_move_carries_the_handle_and_the_containers_own_count() {
 fn refusals_in_order() {
     let inv = stocked();
     let mut cont = empty();
-    cont[0] = ItemStack { item: 2, count: 4 };
+    cont[0] = ItemStack {
+        item: 2,
+        count: 4,
+        cond: 0,
+    };
 
     // 1 · a kind past CONT_MAX.
     assert!(slots::move_args(HANDLE, 9, 0, CONT_SELF, 1, Grab::All, &inv, &cont).is_none());
@@ -222,13 +239,25 @@ fn craft_fixture() -> CraftContent {
 fn affordability_is_the_tightest_input() {
     let recipes = craft_fixture();
     let mut inv = empty();
-    inv[0] = ItemStack { item: 0, count: 7 };
+    inv[0] = ItemStack {
+        item: 0,
+        count: 7,
+        cond: 0,
+    };
     // Row 0 costs 3 of item 0, so seven pays for two and leaves one over.
     assert_eq!(craft::affordable(&recipes.recipes[0], &inv), 2);
 
     // Row 1 needs two items and the SCARCER one is the ceiling.
-    inv[1] = ItemStack { item: 1, count: 10 };
-    inv[2] = ItemStack { item: 2, count: 1 };
+    inv[1] = ItemStack {
+        item: 1,
+        count: 10,
+        cond: 0,
+    };
+    inv[2] = ItemStack {
+        item: 2,
+        count: 1,
+        cond: 0,
+    };
     assert_eq!(craft::affordable(&recipes.recipes[1], &inv), 1);
 
     // Nothing in the bag pays for nothing.
@@ -239,7 +268,11 @@ fn affordability_is_the_tightest_input() {
 fn the_ingredient_table_scales_with_the_stepper() {
     let recipes = craft_fixture();
     let mut inv = empty();
-    inv[0] = ItemStack { item: 0, count: 5 };
+    inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
     let (lines, n) = craft::ingredients(&recipes.recipes[0], 3, &inv);
     assert_eq!(n, 1);
     // AMOUNT is per craft and does NOT scale; TOTAL is what three cost.
@@ -547,7 +580,11 @@ fn the_wheel_prices_a_piece_against_the_bag() {
     let content = BuildContent::probe_fixture();
     let row = build::row_for(&content, SHAPE_FOUNDATION, MAT_TWIG).unwrap();
     let mut inv = empty();
-    inv[0] = ItemStack { item: 0, count: 4 };
+    inv[0] = ItemStack {
+        item: 0,
+        count: 4,
+        cond: 0,
+    };
     let (lines, n) = build::costs(&content, row, &inv);
     assert_eq!(n, 1);
     // The fixture's foundation costs 5 of item 0; four is short by one.
@@ -556,7 +593,11 @@ fn the_wheel_prices_a_piece_against_the_bag() {
     assert!(lines[0].short());
     assert!(!build::affordable(&content, row, &inv));
 
-    inv[0] = ItemStack { item: 0, count: 5 };
+    inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
     assert!(build::affordable(&content, row, &inv));
 }
 
@@ -2633,7 +2674,11 @@ mod techtree_model {
     fn inv_with_coin(count: u16) -> [ItemStack; INV_SLOTS] {
         let mut inv = [ItemStack::default(); INV_SLOTS];
         // The fixture's coin is item 3.
-        inv[0] = ItemStack { item: 3, count };
+        inv[0] = ItemStack {
+            item: 3,
+            count,
+            cond: 0,
+        };
         inv
     }
 
@@ -2827,8 +2872,12 @@ mod techtree_layout {
 //      converse half is checked too: a variant nothing ever *pushes* is a
 //      sentence for a fact that cannot happen.
 //
-//   2. **The latched consume readouts have a reader.** These three fields are
-//      not rings, so nothing drains them and nothing notices their absence.
+//   2. **The latched consume readout has a reader.** `last_drink` is a field,
+//      not a ring, so nothing drains it and nothing notices its absence.
+//      (`last_eat` / `last_eat_refused` were this list's other two rows until
+//      2026-08-15, when both became rings — `tests/sound.rs` derives those
+//      into the one-drain rule, the wiring gate below holds the refusal's
+//      sentence, and `the_landed_eat_reaches_a_sentence` holds the landing's.)
 //
 // Both predicates are factored out of their tests so the tests below them can
 // prove them RED against a doctored copy of the tree, on every run. A gate
@@ -2957,11 +3006,44 @@ fn the_wiring_gate_can_see_an_unwired_variant() {
     );
 }
 
+/// The landed half of the consume rework: `Feed::consumed` replaced the
+/// `last_eat` latch on 2026-08-15, and a ring nobody reads is §0eat's dead
+/// button over again. `tests/sound.rs`'s derived rule proves the drain
+/// FILLS it (`pop_consume_toast` must appear in feed.rs); this is the half
+/// that says a player reads it.
+#[test]
+fn the_landed_eat_reaches_a_sentence() {
+    let (_, hud) = feed_and_hud();
+    assert!(
+        hud.contains("feed.consumed()"),
+        "nothing in render/hud.rs reads `feed.consumed()` - a landed eat or \
+         bandage is a dead fact again, and only this grep can say so"
+    );
+}
+
+/// The gate above, proven red on its defect — every run.
+#[test]
+fn the_landed_eat_gate_can_see_the_reader_go_away() {
+    let (_, hud) = feed_and_hud();
+    let doctored = hud.replace("feed.consumed()", "feed.consumed_gone()");
+    assert_ne!(
+        doctored, hud,
+        "nothing in hud.rs matches `feed.consumed()` - this proof is scanning \
+         for text that is not there, so it proves nothing"
+    );
+    assert!(
+        !doctored.contains("feed.consumed()"),
+        "the landed-eat gate cannot see the reader go away, so it is not a gate"
+    );
+}
+
 /// Does `code` name `field` as a whole word, rather than as a prefix?
 ///
-/// `last_eat` is a prefix of `last_eat_refused`, so a plain `contains` would
-/// report the eat readout as read by the line that reads the refusal — the
-/// false green this gate exists to refuse.
+/// Kept even with one row left: `last_eat` was a prefix of
+/// `last_eat_refused` while both fields existed (until 2026-08-15), and a
+/// plain `contains` reported the eat readout as read by the line that read
+/// the refusal — the false green this helper exists to refuse, and the next
+/// latched field pair would reopen it.
 fn names_field(code: &str, field: &str) -> bool {
     let mut from = 0;
     while let Some(i) = code[from..].find(field) {
@@ -2975,18 +3057,14 @@ fn names_field(code: &str, field: &str) -> bool {
     false
 }
 
-/// The consume readouts `client-core` latches, and what each is worth saying.
-const CONSUME_READOUTS: [(&str, &str); 3] = [
-    (
-        "last_eat_refused",
-        "which reason the sim refused an eat or a drink for",
-    ),
-    ("last_eat", "which item the consume actually spent"),
-    (
-        "last_drink",
-        "how much water the drink restored and what it cost in hp",
-    ),
-];
+/// The consume readouts `client-core` still latches, and what each is worth
+/// saying. One row since 2026-08-15: the eat's answer and the refusal became
+/// rings (`pop_consume_toast` / `pop_consume_refusal`), which `tests/
+/// sound.rs`'s derived one-drain rule watches instead.
+const CONSUME_READOUTS: [(&str, &str); 1] = [(
+    "last_drink",
+    "how much water the drink restored and what it cost in hp",
+)];
 
 /// Which of those nothing under `src/render` reads. Comment lines are
 /// skipped: naming a field in prose is not reading it, and this gate exists
@@ -3031,8 +3109,8 @@ fn the_consume_readouts_are_read() {
 fn the_readout_gate_can_see_a_reader_go_away() {
     let sources = render_sources();
     for (field, _) in CONSUME_READOUTS {
-        // Rename the field everywhere it is named: `last_eat` becomes
-        // `last_eat_gone`, which `names_field` refuses as a prefix match.
+        // Rename the field everywhere it is named: `last_drink` becomes
+        // `last_drink_gone`, which `names_field` refuses as a prefix match.
         let doctored: Vec<(String, String)> = sources
             .iter()
             .map(|(p, t)| (p.clone(), t.replace(field, &format!("{field}_gone"))))

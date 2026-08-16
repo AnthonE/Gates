@@ -117,14 +117,17 @@ fn locked_box_world(code: u16) -> (World, u16, u16) {
     w.players[0].inv[0] = ItemStack {
         item: GOODS,
         count: 50,
+        cond: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: BOX_ITEM,
         count: 1,
+        cond: 0,
     };
     w.players[0].inv[2] = ItemStack {
         item: LOCK_ITEM,
         count: 1,
+        cond: 0,
     };
     // Foundation costs 5 of item 0 off slot 0 (build fixture row 0).
     w.tick(&[Command::Place {
@@ -161,7 +164,8 @@ fn locked_box_world(code: u16) -> (World, u16, u16) {
         w.deploys.boxes()[0].items[0],
         ItemStack {
             item: GOODS,
-            count: 10
+            count: 10,
+            cond: 0,
         },
         "a bare box banks the owner's deposit"
     );
@@ -263,6 +267,7 @@ fn a_locked_box_refuses_a_stranger_and_answers_its_owner() {
     w.players[stranger_slot].inv[0] = ItemStack {
         item: GOODS,
         count: 5,
+        cond: 0,
     };
     w.tick(&[Command::Move {
         id: STRANGER,

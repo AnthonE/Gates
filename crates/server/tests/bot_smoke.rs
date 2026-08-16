@@ -289,9 +289,12 @@ async fn test_bots_raid_over_the_wire() {
         item("item.lock_code"),
     );
     let mut kit = sim_core::inventory::SpawnKit::EMPTY;
+    // Minted whole off the baked table — a tool granted at condition 0
+    // would be dead in the hand since durability v0.
     let stack = |i: u16| sim_core::gather::ItemStack {
         item: i,
         count: gather.stack_max_of(i),
+        cond: gather.cond_max_of(i),
     };
     assert!(kit.set(KIT_CHARGE, stack(satchel)), "charge slot");
     assert!(kit.set(KIT_CONTAINER, stack(box_item)), "container slot");

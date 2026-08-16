@@ -125,8 +125,8 @@ pub const DEPLOY: [&str; 20] = [
 /// **Two things make this table unlike the four above it.**
 ///
 /// First, its codes start at **1**, not 0. Zero is not a refusal on this
-/// wire: `EventMsg::ConsumeRefused` never carries it and `ClientCore` uses
-/// `last_eat_refused == 0` to mean *the consume landed*. Index 0 is filled
+/// wire: `EventMsg::ConsumeRefused` never carries it (the encoder refuses
+/// it) and a landed consume is its own ring, not a zero here. Index 0 is filled
 /// anyway so the array INDEX stays the sim's own code — shifting the table
 /// by one would import the exact off-by-one class this whole file exists to
 /// refuse — and its string is worded so that a reader who ever sees it on
@@ -140,12 +140,28 @@ pub const DEPLOY: [&str; 20] = [
 /// name water, and code 2 — the one both verbs reach — names neither.
 pub const CONSUME: [&str; 4] = [
     // Code 0 = "no refusal". Unreachable through `render::feed::drain`,
-    // which only pushes a non-zero code, and unreachable through
-    // `hud::feedback`, which reads the landed half off `last_eat` instead.
+    // because the refusal ring never carries it, and unreachable through
+    // `hud::feedback`, which reads the landed half off `Feed::consumed`.
     "nothing was refused",
     "that is not something you can eat",
     "already full — that would be wasted",
     "no water within reach",
+];
+
+/// `sim_core::gather`'s `REFUSE_G_*: u32` — a gather swing the node
+/// refused (wire v42). [`CONSUME`]'s two oddities both apply: codes start
+/// at 1 (zero is "no refusal", refused by the codec at both ends), and
+/// the sentences serve a held item the caller names — each carries one
+/// `{}` that [`gather`] fills with the item's own label, because the
+/// point of the event's item field is saying *your torch cannot harvest
+/// this* instead of "bare hands" (`NOW.md` §0kit item 2).
+pub const GATHER: [&str; 3] = [
+    // Code 0 = "no refusal" — unreachable, `CONSUME[0]`'s posture.
+    "nothing was refused",
+    "{} cannot harvest this",
+    // Q3: re-craft is the repair, so the sentence names the act that
+    // fixes it — a refusal a player cannot act on reads as a bug.
+    "{} is broken — craft a new one",
 ];
 
 /// The sentence, or the bare code when the sim is ahead of the client.
@@ -196,11 +212,21 @@ pub fn deploy(code: u8) -> String {
 
 /// Why the eat or the drink did nothing.
 ///
-/// Never called with 0 — that code means the consume landed, and the landed
-/// sentence is `hud::feedback`'s, because it names the item off `last_eat`
-/// rather than a reason off this table.
+/// Never called with 0 — a landed consume never enters the refusal ring,
+/// and its sentence is `hud::feedback`'s, naming the item off
+/// `Feed::consumed` rather than a reason off this table.
 pub fn consume(code: u8) -> String {
     text(&CONSUME, code as u32)
+}
+
+/// Why the gather swing did nothing, with the held item's label spliced
+/// in — `held` is the possessive phrase ("your Torch", "bare hands"), so
+/// the sentence reads as a whole. Never called with 0, [`consume`]'s rule.
+pub fn gather(code: u8, held: &str) -> String {
+    match GATHER.get(code as usize) {
+        Some(s) if code != 0 => s.replacen("{}", held, 1),
+        _ => format!("code {code}"),
+    }
 }
 
 #[cfg(test)]
@@ -276,6 +302,13 @@ mod tests {
                 "CONSUME",
                 1,
             ),
+            (
+                "crates/sim-core/src/gather.rs",
+                "REFUSE_G_",
+                GATHER.len(),
+                "GATHER",
+                1,
+            ),
         ] {
             let declared = sim_code_count(file, prefix);
             assert_eq!(
@@ -292,6 +325,12 @@ mod tests {
         // text and would agree with itself if a code were declared and the
         // ledger's top left behind, so the table's length is also bound to
         // the ledger constant the wire's four-bit field is checked against.
+        assert_eq!(
+            GATHER.len(),
+            sim_core::gather::REFUSE_G_MAX as usize + 1,
+            "GATHER must cover 0..=REFUSE_G_MAX exactly — the sim refuses any \
+             reason above that constant at the encode boundary"
+        );
         assert_eq!(
             CONSUME.len(),
             sim_core::survival::REFUSE_C_MAX as usize + 1,
@@ -366,6 +405,17 @@ mod tests {
             "no water within reach"
         );
 
+        // GATHER, bound to the constants with a fixture label so the
+        // splice is checked with the binding.
+        assert_eq!(
+            gather(sim_core::gather::REFUSE_G_TOOL as u8, "your Torch"),
+            "your Torch cannot harvest this"
+        );
+        assert_eq!(
+            gather(sim_core::gather::REFUSE_G_BROKEN as u8, "your Rock"),
+            "your Rock is broken — craft a new one"
+        );
+
         use sim_core::craft::*;
         assert_eq!(craft(REFUSE_RECIPE as u8), "no such recipe");
         assert_eq!(craft(REFUSE_COUNT as u8), "bad count");
@@ -407,6 +457,7 @@ mod tests {
             // shoreline from a full stomach.
             (&RESEARCH[..], "RESEARCH"),
             (&CONSUME[..], "CONSUME"),
+            (&GATHER[..], "GATHER"),
         ] {
             for (i, a) in table.iter().enumerate() {
                 assert!(!a.is_empty(), "{name}[{i}] is empty");
@@ -430,6 +481,10 @@ mod tests {
         assert_eq!(
             consume(CONSUME.len() as u8),
             format!("code {}", CONSUME.len())
+        );
+        assert_eq!(
+            gather(GATHER.len() as u8, "your Torch"),
+            format!("code {}", GATHER.len())
         );
     }
 }

@@ -86,14 +86,17 @@ fn fire_world() -> (World, u32, u16, u16) {
     w.players[0].inv[0] = ItemStack {
         item: FIRE_ITEM,
         count: 1,
+        cond: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: FUEL,
         count: 40,
+        cond: 0,
     };
     w.players[0].inv[2] = ItemStack {
         item: RAW,
         count: 4,
+        cond: 0,
     };
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,
@@ -121,7 +124,15 @@ fn fire_world() -> (World, u32, u16, u16) {
 /// oven loaded without asserting the loading.
 fn load(w: &mut World, key: u32, slot: usize, item: u16, count: u16) {
     let i = w.deploys.box_index(key).expect("the fire is a container");
-    w.deploys.set_box_slot(i, slot, ItemStack { item, count });
+    w.deploys.set_box_slot(
+        i,
+        slot,
+        ItemStack {
+            item,
+            count,
+            cond: 0,
+        },
+    );
 }
 
 fn slot(w: &World, key: u32, s: usize) -> ItemStack {
@@ -396,7 +407,11 @@ fn an_oven_takes_fuel_and_what_it_cooks_and_nothing_else() {
     let (mut w, key, cx, _cz) = fire_world();
     let _ = cx;
     // Slot 3 holds something the fire has no use for.
-    w.players[0].inv[3] = ItemStack { item: 2, count: 5 };
+    w.players[0].inv[3] = ItemStack {
+        item: 2,
+        count: 5,
+        cond: 0,
+    };
 
     let mv = |w: &mut World, from_slot: u8, count: u16| {
         w.tick(&[Command::Move {
@@ -439,7 +454,8 @@ fn an_oven_takes_fuel_and_what_it_cooks_and_nothing_else() {
         w.players[0].inv[10],
         ItemStack {
             item: CHAR,
-            count: 3
+            count: 3,
+            cond: 0,
         },
         "the charcoal is takeable"
     );
@@ -461,6 +477,7 @@ fn a_removal_moves_both_halves() {
     w.players[0].inv[0] = ItemStack {
         item: FIRE_ITEM,
         count: 1,
+        cond: 0,
     };
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,
@@ -619,14 +636,17 @@ fn recycler_world() -> (World, u32, u16, u16) {
     w.players[0].inv[0] = ItemStack {
         item: RECYCLER_ITEM,
         count: 1,
+        cond: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: SALVAGE,
         count: 8,
+        cond: 0,
     };
     w.players[0].inv[2] = ItemStack {
         item: FUEL,
         count: 40,
+        cond: 0,
     };
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,

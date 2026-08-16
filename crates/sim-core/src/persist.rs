@@ -58,7 +58,10 @@ use crate::world::Player;
 /// rather than restated, so widening the inventory or the craft queue moves
 /// this number and takes the format version with it (`store.rs` asserts the
 /// file's `record_len` against it at boot).
-pub const PLAYER_SAVE_BYTES: usize = SCALARS_BYTES + CRAFT_QUEUE * 4 + INV_SLOTS * 4;
+///
+/// An inventory slot is **6 bytes since `SAVE_FORMAT` 3** (item durability
+/// v0): item, count, condition. 196 → 256.
+pub const PLAYER_SAVE_BYTES: usize = SCALARS_BYTES + CRAFT_QUEUE * 4 + INV_SLOTS * 6;
 
 /// The fixed head of the record: body, meters, heal, counters and the
 /// blueprint mask. 52 → 60 at research v0, which took `SAVE_FORMAT` with
@@ -223,7 +226,11 @@ impl PlayerSave {
             grounded: false,
         },
         dead: false,
-        inv: [ItemStack { item: 0, count: 0 }; INV_SLOTS],
+        inv: [ItemStack {
+            item: 0,
+            count: 0,
+            cond: 0,
+        }; INV_SLOTS],
         jobs: [CraftJob {
             recipe: 0,
             remaining: 0,
@@ -301,7 +308,8 @@ impl PlayerSave {
         for s in self.inv.iter() {
             out[at..at + 2].copy_from_slice(&s.item.to_le_bytes());
             out[at + 2..at + 4].copy_from_slice(&s.count.to_le_bytes());
-            at += 4;
+            out[at + 4..at + 6].copy_from_slice(&s.cond.to_le_bytes());
+            at += 6;
         }
         debug_assert_eq!(at, PLAYER_SAVE_BYTES);
     }
@@ -371,16 +379,24 @@ impl PlayerSave {
             *s = ItemStack {
                 item: u16_at(at),
                 count: u16_at(at + 2),
+                cond: u16_at(at + 4),
             };
-            // Canonical empty: an emptied slot zeroes both fields, which is
-            // what the state hash reads. A record that said "0 of item 7"
-            // would hash differently from the same inventory the sim
-            // produced, and a difference nothing can see is wall 5's
-            // failure mode.
-            if s.item as usize >= MAX_ITEM_DEFS || (s.count == 0 && s.item != 0) {
+            // Canonical empty: an emptied slot zeroes ALL THREE fields,
+            // which is what the state hash reads. A record that said "0 of
+            // item 7" would hash differently from the same inventory the
+            // sim produced, and a difference nothing can see is wall 5's
+            // failure mode — and since durability v0 the SAME sentence
+            // holds for condition: a slot emptied by a path that forgot to
+            // zero `cond` hashes differently from the sim's own empty, so
+            // `count == 0 && cond != 0` is refused exactly as
+            // `count == 0 && item != 0` always was.
+            if s.item as usize >= MAX_ITEM_DEFS
+                || (s.count == 0 && s.item != 0)
+                || (s.count == 0 && s.cond != 0)
+            {
                 return Err(SaveError::BadItemStack);
             }
-            at += 4;
+            at += 6;
         }
         debug_assert_eq!(at, PLAYER_SAVE_BYTES);
 
@@ -456,12 +472,20 @@ mod tests {
                 *slot = ItemStack {
                     item: (i % MAX_ITEM_DEFS) as u16,
                     count: (i as u16 + 1) * 7,
+                    cond: 0,
                 };
             }
         }
         // Slot 0 would be "0 of item 0" under the rule above; give it a
-        // real stack so the fixture is a legal record.
-        s.inv[0] = ItemStack { item: 5, count: 42 };
+        // real stack so the fixture is a legal record — a WORN one since
+        // format 3, so the round trip and the byte golden both pin the
+        // condition field in a nonzero state (gate 7: a saved tool comes
+        // back worn).
+        s.inv[0] = ItemStack {
+            item: 5,
+            count: 42,
+            cond: 0x2233,
+        };
         s
     }
 
@@ -479,7 +503,7 @@ mod tests {
     /// here to make somebody read (`store.rs` `SAVE_FORMAT`).
     #[test]
     fn the_record_is_the_size_the_format_declares() {
-        assert_eq!(PLAYER_SAVE_BYTES, 196, "the on-disk record size moved");
+        assert_eq!(PLAYER_SAVE_BYTES, 256, "the on-disk record size moved");
         assert_eq!(INV_SLOTS, 30);
         assert_eq!(CRAFT_QUEUE, 4);
     }
@@ -527,6 +551,11 @@ mod tests {
         assert_eq!(&buf[62..64], &5u16.to_le_bytes(), "jobs[0].remaining at 62");
         assert_eq!(&buf[76..78], &5u16.to_le_bytes(), "inv[0].item at 76");
         assert_eq!(&buf[78..80], &42u16.to_le_bytes(), "inv[0].count at 78");
+        assert_eq!(
+            &buf[80..82],
+            &0x2233u16.to_le_bytes(),
+            "inv[0].cond at 80 — the slot stride is 6 since format 3"
+        );
     }
 
     /// Every refusal, one per reason, built by hand off a legal record —
@@ -592,6 +621,17 @@ mod tests {
         assert_eq!(
             bent(&|b| b[78..80].copy_from_slice(&0u16.to_le_bytes())),
             Err(SaveError::BadItemStack)
+        );
+        // The cond half of canonical empty (format 3): inv[1] is a zeroed
+        // slot in the fixture, at offset 82; condition on an empty slot is
+        // state nothing can see and is refused exactly as "0 of item 7"
+        // always was. This is the check nobody would think of — a slot
+        // emptied by a path that forgot to zero `cond` hashes differently
+        // from the sim's own empty (wall 5).
+        assert_eq!(
+            bent(&|b| b[86..88].copy_from_slice(&7u16.to_le_bytes())),
+            Err(SaveError::BadItemStack),
+            "an empty slot may not carry condition"
         );
     }
 

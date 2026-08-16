@@ -216,15 +216,18 @@ fn bag_from_a_kill(
     core.world.players[w0].inv[0] = ItemStack {
         item: SPEAR,
         count: 1,
+        cond: 0,
     };
     core.world.players[w1].inv = [ItemStack::default(); INV_SLOTS];
     core.world.players[w1].inv[SLOT_A] = ItemStack {
         item: JUNK,
         count: COUNT_A,
+        cond: 0,
     };
     core.world.players[w1].inv[SLOT_B] = ItemStack {
         item: OTHER,
         count: COUNT_B,
+        cond: 0,
     };
     let deaths_before = core.world.players[w1].deaths;
     let mut burn = Vec::new();
@@ -282,6 +285,7 @@ fn only_the_opener_is_shown_a_container() {
     core.world.players[w1].inv[0] = ItemStack {
         item: THIRD,
         count: COUNT_C,
+        cond: 0,
     };
 
     let mut seen = Vec::new();
@@ -317,14 +321,16 @@ fn only_the_opener_is_shown_a_container() {
                 SLOT_A as u8,
                 ItemStack {
                     item: JUNK,
-                    count: COUNT_A
+                    count: COUNT_A,
+                    cond: 0,
                 }
             ),
             (
                 SLOT_B as u8,
                 ItemStack {
                     item: OTHER,
-                    count: COUNT_B
+                    count: COUNT_B,
+                    cond: 0,
                 }
             ),
         ],
@@ -345,7 +351,8 @@ fn only_the_opener_is_shown_a_container() {
         c0.cont[SLOT_A],
         ItemStack {
             item: JUNK,
-            count: COUNT_A
+            count: COUNT_A,
+            cond: 0,
         }
     );
     assert_eq!(c0.cont[SLOT_B].item, OTHER);
@@ -468,6 +475,7 @@ fn a_change_inside_an_open_container_arrives_as_a_diff() {
         ItemStack {
             item: THIRD,
             count: COUNT_C,
+            cond: 0,
         },
     );
     core.world
@@ -487,7 +495,8 @@ fn a_change_inside_an_open_container_arrives_as_a_diff() {
                 SLOT_A as u8,
                 ItemStack {
                     item: THIRD,
-                    count: COUNT_C
+                    count: COUNT_C,
+                    cond: 0,
                 }
             ),
             (SLOT_B as u8, ItemStack::default()),
@@ -499,7 +508,8 @@ fn a_change_inside_an_open_container_arrives_as_a_diff() {
         c0.cont[SLOT_A],
         ItemStack {
             item: THIRD,
-            count: COUNT_C
+            count: COUNT_C,
+            cond: 0,
         }
     );
     assert_eq!(c0.cont[SLOT_B], ItemStack::default());
@@ -547,6 +557,7 @@ fn a_client_close_shuts_the_view_without_a_reply() {
         ItemStack {
             item: THIRD,
             count: COUNT_C,
+            cond: 0,
         },
     );
     let mut later = Vec::new();
@@ -625,10 +636,15 @@ fn a_box_opens_by_its_packed_address() {
 
     let w0 = world_slot(&core, id_of(0));
     core.world.players[w0].body = Body::at(SEED, x, z);
-    core.world.players[w0].inv[0] = ItemStack { item: 0, count: 5 };
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
     core.world.players[w0].inv[1] = ItemStack {
         item: BOX_ITEM,
         count: 1,
+        cond: 0,
     };
     core.world.tick(&[Command::Place {
         id: id_of(0),
@@ -659,6 +675,7 @@ fn a_box_opens_by_its_packed_address() {
         ItemStack {
             item: JUNK,
             count: COUNT_A,
+            cond: 0,
         },
     );
     let key = box_key(cx, cz, 0);
@@ -679,7 +696,8 @@ fn a_box_opens_by_its_packed_address() {
             SLOT_A as u8,
             ItemStack {
                 item: JUNK,
-                count: COUNT_A
+                count: COUNT_A,
+                cond: 0,
             }
         )],
         "the box's contents did not cross correctly"
@@ -752,10 +770,15 @@ fn a_corpse_is_shown_no_container() {
     // will die on it. Client 1 is the killer.
     let w0 = world_slot(&core, id_of(0));
     core.world.players[w0].body = Body::at(SEED, x, z);
-    core.world.players[w0].inv[0] = ItemStack { item: 0, count: 5 };
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
     core.world.players[w0].inv[1] = ItemStack {
         item: BOX_ITEM,
         count: 1,
+        cond: 0,
     };
     core.world.tick(&[Command::Place {
         id: id_of(0),
@@ -780,6 +803,7 @@ fn a_corpse_is_shown_no_container() {
         ItemStack {
             item: JUNK,
             count: COUNT_A,
+            cond: 0,
         },
     );
     let key = box_key(cx, cz, 0);
@@ -801,7 +825,8 @@ fn a_corpse_is_shown_no_container() {
             SLOT_A as u8,
             ItemStack {
                 item: JUNK,
-                count: COUNT_A
+                count: COUNT_A,
+                cond: 0,
             }
         )],
         "the living view is the baseline the corpse must lose"
@@ -815,6 +840,7 @@ fn a_corpse_is_shown_no_container() {
     core.world.players[w1].inv[0] = ItemStack {
         item: SPEAR,
         count: 1,
+        cond: 0,
     };
     clients[1].1.set_input(BTN_PRIMARY, 0, 128, 0, 0, 0);
     clients[0].1.set_input(0, 0, 128, 0, 0, 0);
@@ -848,6 +874,7 @@ fn a_corpse_is_shown_no_container() {
         ItemStack {
             item: THIRD,
             count: COUNT_C,
+            cond: 0,
         },
     );
     let mut after = Vec::new();
@@ -969,14 +996,20 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
 
     // Foundation, box, goods inside, lock bolted on and armed — the
     // `lock_box.rs` fixture, driven with the owner's connected id.
-    core.world.players[w0].inv[0] = ItemStack { item: 0, count: 5 };
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
     core.world.players[w0].inv[1] = ItemStack {
         item: LOCKED_BOX_ITEM,
         count: 1,
+        cond: 0,
     };
     core.world.players[w0].inv[2] = ItemStack {
         item: LOCK_ITEM,
         count: 1,
+        cond: 0,
     };
     core.world.tick(&[Command::Place {
         id: id_of(0),
@@ -1001,6 +1034,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         ItemStack {
             item: JUNK,
             count: COUNT_A,
+            cond: 0,
         },
     );
     core.world.tick(&[Command::PlaceDeploy {
@@ -1069,7 +1103,8 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
             SLOT_A as u8,
             ItemStack {
                 item: JUNK,
-                count: COUNT_A
+                count: COUNT_A,
+                cond: 0,
             }
         )],
         "the owner was shown the wrong slots"
@@ -1106,7 +1141,8 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
             SLOT_A as u8,
             ItemStack {
                 item: JUNK,
-                count: COUNT_A
+                count: COUNT_A,
+                cond: 0,
             }
         )],
         "the unlocked view pays the same contents the owner saw"

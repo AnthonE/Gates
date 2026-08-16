@@ -39,6 +39,16 @@ pub struct Item {
     pub tier: u32,
     pub rarity: Rarity,
     pub slot: EquipSlot,
+    /// Maximum condition, **hundredths of a point** (item durability v0,
+    /// DECISIONS.md 2026-08-15 — taken from the reference, per item, never
+    /// one constant: rock 10 000, torch 5 000, stone tools 10 000, metal
+    /// tools 40 000). **Absent means 0 means never wears and can never be
+    /// repaired** — the schema default IS the rule for non-tools, so wood
+    /// and every consumable simply do not write the line. A nonzero value
+    /// requires `stack = 1` (validation rule V7): condition is per-stack
+    /// state and two conditions in one slot is a merge nobody can resolve.
+    #[serde(default)]
+    pub condition_max: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -86,6 +96,16 @@ pub struct Gatherable {
     pub finish_bonus_pct: u32,
     /// Tool item id (or `hand`) → units per hit. BTreeMap: canonical order.
     pub yield_per_hit: BTreeMap<String, u32>,
+    /// Tool item id → condition loss per landed hit, **hundredths of a
+    /// point** (item durability v0; the reference's 0.3/hit is 30). Keyed
+    /// per **(tool, node)** exactly as `yield_per_hit` is, because the
+    /// table IS the wrong-tool predicate (`reference/DURABILITY.md` §2 —
+    /// a metal hatchet pays 0.3 on a tree and 1.0 on flesh, one tool, two
+    /// rates, chosen by what it is swung at). There is no predicate to
+    /// port. Never `hand` (bare hands do not wear — V2), and every
+    /// condition-carrying tool a node pays must have a row (V4).
+    #[serde(default)]
+    pub condition_loss: BTreeMap<String, u32>,
     /// The optional side payout. Absent on every node that pays one thing.
     #[serde(default)]
     pub secondary: Option<Secondary>,

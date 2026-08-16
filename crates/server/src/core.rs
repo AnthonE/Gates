@@ -14,16 +14,16 @@ use protocol::{
     encode_event_craft_done, encode_event_craft_q, encode_event_craft_refused, encode_event_death,
     encode_event_deploy_defs, encode_event_deploy_placed, encode_event_deploy_refused,
     encode_event_deploy_sync, encode_event_door, encode_event_drank, encode_event_gather,
-    encode_event_health, encode_event_hit, encode_event_inv, encode_event_knock,
-    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
-    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
-    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_research,
-    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
-    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
-    encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark, ActionMsg, ChatMsg,
-    EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag,
-    WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_gather_refused, encode_event_health, encode_event_hit, encode_event_inv,
+    encode_event_knock, encode_event_known, encode_event_move_refused, encode_event_moved,
+    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
+    encode_event_removed, encode_event_research, encode_event_research_refused,
+    encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
+    encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog,
+    SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH,
+    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{PieceRec, LOC_PLANE};
@@ -44,10 +44,10 @@ use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
-    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED,
-    EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS,
-    EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_KNOCK, EV_KNOWN, EV_MOVED,
+    EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESEARCH,
+    EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
+    EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 
 /// Unpack `sim_core::inventory::addr` — from kind, from slot, to kind, to
@@ -1285,6 +1285,27 @@ impl ShardCore {
                             } else {
                                 // A lost toast is cosmetic, but the resync
                                 // costs nothing when nothing else was lost.
+                                self.clients[slot].ev_resync();
+                                ShardStats::bump(&stats.ev_resyncs);
+                            }
+                        }
+                        Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                    }
+                }
+                EV_GATHER_REFUSED => {
+                    let Some(slot) = self.client_slot_of(ev.a) else {
+                        continue; // swinger left this tick
+                    };
+                    // b = held item << 16 | reason (world.rs's role line).
+                    let item = (ev.b >> 16) as u16;
+                    let reason = ev.b as u8;
+                    match encode_event_gather_refused(item, reason, &mut self.ev_buf) {
+                        Ok(len) => {
+                            if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                                ShardStats::bump(&stats.ev_sent);
+                            } else {
+                                // A lost refusal toast is cosmetic; the
+                                // resync is the uniform recovery.
                                 self.clients[slot].ev_resync();
                                 ShardStats::bump(&stats.ev_resyncs);
                             }
@@ -3188,7 +3209,11 @@ mod tests {
         // cursor reset below the guard is a mutation the forged event
         // would actually reach — the order half of the assert.
         core.world.backpack = BackpackContent::probe_fixture();
-        let one = [ItemStack { item: 0, count: 1 }; INV_SLOTS];
+        let one = [ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+        }; INV_SLOTS];
         let w = &mut core.world;
         w.backpacks
             .stand_up(&w.backpack, 0, 0, 0, PLAYER, &one, 0, &mut w.events)

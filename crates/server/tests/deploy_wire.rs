@@ -133,9 +133,21 @@ fn deployables_ride_the_wire() {
 
     // Grant the owner a kit server-side (gather_wire covers earning).
     let w0 = world_slot(&core, id_of(0));
-    core.world.players[w0].inv[0] = ItemStack { item: 0, count: 50 };
-    core.world.players[w0].inv[1] = ItemStack { item: 1, count: 50 };
-    core.world.players[w0].inv[2] = ItemStack { item: 2, count: 5 };
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 50,
+        cond: 0,
+    };
+    core.world.players[w0].inv[1] = ItemStack {
+        item: 1,
+        count: 50,
+        cond: 0,
+    };
+    core.world.players[w0].inv[2] = ItemStack {
+        item: 2,
+        count: 5,
+        cond: 0,
+    };
 
     // Foundation + hearth at the spawn cell: both broadcast; the hearth
     // consumes its item.
@@ -182,7 +194,11 @@ fn deployables_ride_the_wire() {
     // The bystander (same spawn cell, inside the radius, not the owner)
     // is refused by the claim, with the reason delivered to them only.
     let w1 = world_slot(&core, id_of(1));
-    core.world.players[w1].inv[0] = ItemStack { item: 0, count: 50 };
+    core.world.players[w1].inv[0] = ItemStack {
+        item: 0,
+        count: 50,
+        cond: 0,
+    };
     act(
         &mut core,
         1,
@@ -266,7 +282,11 @@ fn deployables_ride_the_wire() {
     // Commit the spawn foundation: a twig piece is never upkept, so the
     // "hearth-paid piece survives" half of the decay check below needs a
     // graded one to be about anything (twig v0, `build::upgrade`).
-    core.world.players[w0].inv[0] = ItemStack { item: 0, count: 10 };
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 10,
+        cond: 0,
+    };
     act(
         &mut core,
         0,
@@ -293,7 +313,11 @@ fn deployables_ride_the_wire() {
     let far_cx = CX + 20;
     let far_x = (far_cx as f32 + 0.5) * sim_core::build::BUILD_CELL_M;
     core.world.players[w0].body = sim_core::movement::Body::at(SEED, far_x, SPAWN.1);
-    core.world.players[w0].inv[0] = ItemStack { item: 0, count: 10 };
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 10,
+        cond: 0,
+    };
     act(
         &mut core,
         0,
@@ -368,9 +392,21 @@ fn doors_toggle_across_the_wire() {
     // The kit: wood for the foundation and the doorway, one door, and a
     // code lock to bolt onto it.
     let w0 = world_slot(&core, id_of(0));
-    core.world.players[w0].inv[0] = ItemStack { item: 0, count: 50 };
-    core.world.players[w0].inv[1] = ItemStack { item: 4, count: 5 };
-    core.world.players[w0].inv[2] = ItemStack { item: 7, count: 2 };
+    core.world.players[w0].inv[0] = ItemStack {
+        item: 0,
+        count: 50,
+        cond: 0,
+    };
+    core.world.players[w0].inv[1] = ItemStack {
+        item: 4,
+        count: 5,
+        cond: 0,
+    };
+    core.world.players[w0].inv[2] = ItemStack {
+        item: 7,
+        count: 2,
+        cond: 0,
+    };
 
     for a in [
         ActionMsg::Place {
@@ -880,7 +916,11 @@ fn a_removal_storm_leaves_every_walk_standing() {
         let (ax, az) = sim_core::build::anchor(cx, cz, LOC_PLANE);
         let p = &mut core.world.players[builder];
         p.body = sim_core::movement::Body::at(SEED, ax, az);
-        p.inv[0] = ItemStack { item: 0, count: 10 };
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 10,
+            cond: 0,
+        };
         sim_core::build::place(
             SEED,
             &core.world.build,
@@ -940,7 +980,11 @@ fn a_removal_storm_leaves_every_walk_standing() {
         // upkeep comes due, and it is standing at the end to be compared.
         if t == STORM_LAST {
             let w0 = world_slot(&core, id_of(0));
-            core.world.players[w0].inv[0] = ItemStack { item: 0, count: 10 };
+            core.world.players[w0].inv[0] = ItemStack {
+                item: 0,
+                count: 10,
+                cond: 0,
+            };
             act(
                 &mut core,
                 0,
@@ -1080,7 +1124,11 @@ fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
         let (ax, az) = sim_core::build::anchor(cx, cz, LOC_PLANE);
         let p = &mut core.world.players[builder];
         p.body = sim_core::movement::Body::at(SEED, ax, az);
-        p.inv[0] = ItemStack { item: 0, count: 10 };
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 10,
+            cond: 0,
+        };
         let hour = if k < DOOMED { 0 } else { HOURS };
         sim_core::build::place(
             SEED,

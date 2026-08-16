@@ -63,6 +63,7 @@ fn duel_world() -> World {
         p.inv[0] = ItemStack {
             item: SPEAR,
             count: 1,
+            cond: 0,
         };
     }
     w
@@ -254,6 +255,7 @@ fn a_return_takes_over_the_body_it_left() {
     w.players[slot].inv[3] = ItemStack {
         item: SPEAR,
         count: 7,
+        cond: 0,
     };
     let carried = w.players[slot].inv;
     let stood = w.players[slot].body;

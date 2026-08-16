@@ -319,10 +319,12 @@ fn test_alloc_zero() {
     world.players[0].inv[20] = ItemStack {
         item: 0,
         count: 60_000,
+        cond: 0,
     };
     world.players[0].inv[21] = ItemStack {
         item: 1,
         count: 60_000,
+        cond: 0,
     };
     // The duel: bots 3 and 4, armed in the hand they hold. Deliberately
     // not bot 1 — the builder must keep its stock and its own cell, and a
@@ -332,7 +334,11 @@ fn test_alloc_zero() {
     // 38 ticks, so the kill lands around tick 76 of the 300 — the assert
     // at the end is what holds that claim, not this comment.
     for i in [2usize, 3] {
-        world.players[i].inv[0] = ItemStack { item: 0, count: 1 };
+        world.players[i].inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+        };
     }
     // Bot 1's own build cell, so place and upgrade always have reach.
     let builder_cell = |w: &World| {
@@ -371,7 +377,11 @@ fn test_alloc_zero() {
         let (x, z) = cell_center(bag_cell.0, bag_cell.1);
         sim_core::movement::Body::at(SEED, x, z)
     };
-    world.players[5].inv[10] = ItemStack { item: 5, count: 1 };
+    world.players[5].inv[10] = ItemStack {
+        item: 5,
+        count: 1,
+        cond: 0,
+    };
     world.tick(&[Command::PlaceDeploy {
         id: 6,
         row: 3, // the fixture's ground-class bag
@@ -425,7 +435,11 @@ fn test_alloc_zero() {
         (target.cx as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
         (target.cz as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
     );
-    world.players[4].inv[0] = ItemStack { item: 0, count: 1 };
+    world.players[4].inv[0] = ItemStack {
+        item: 0,
+        count: 1,
+        cond: 0,
+    };
     // Bot 6 is the starving body: both meters emptied as the window opens,
     // deliberately not a bot the duel, the raid or the build script uses.
     // The shard's own meters do not run dry until ~tick 240 and a full body

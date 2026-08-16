@@ -94,10 +94,12 @@ fn archer(id: u32, x: f32, feet_y: f32, z: f32, yaw: u16, pitch: u8, ammo: u16) 
     p.inv[0] = ItemStack {
         item: BOW,
         count: 1,
+        cond: 0,
     };
     p.inv[7] = ItemStack {
         item: ARROW,
         count: ammo,
+        cond: 0,
     };
     p.frame = InputFrame {
         seq: 1,
@@ -448,7 +450,11 @@ fn an_empty_hand_hands_the_arm_back() {
     let mut arrows = Arrows::new();
     let cc = bow_fixture();
     let mut p = archer(1, 0.0, 50.0, 0.0, 0, LEVEL, 10);
-    p.inv[0] = ItemStack { item: 9, count: 1 };
+    p.inv[0] = ItemStack {
+        item: 9,
+        count: 1,
+        cond: 0,
+    };
     assert!(!ranged::draw(
         0,
         &cc,

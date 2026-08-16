@@ -575,7 +575,11 @@ fn player_at_cell(cx: u16, cz: u16, items: &[(u16, u16)]) -> Player {
         ..Player::default()
     };
     for (i, &(item, count)) in items.iter().enumerate() {
-        p.inv[i] = ItemStack { item, count };
+        p.inv[i] = ItemStack {
+            item,
+            count,
+            cond: 0,
+        };
     }
     p
 }
@@ -754,7 +758,11 @@ fn a_bad_row_is_red_on_both_sides() {
         costs: [(0, 0); sim_core::limits::MAX_DEPLOY_COSTS],
     };
     rig.dc.def_count = 7;
-    p.inv[8] = ItemStack { item: 9, count: 1 };
+    p.inv[8] = ItemStack {
+        item: 9,
+        count: 1,
+        cond: 0,
+    };
     rig.agree_no(
         &mut p,
         6,

@@ -24,6 +24,7 @@ use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_DEPLOYS,
     MAX_PIECES, MAX_SLOT_LIVES,
 };
+use sim_core::movement::POS_XZ_Q;
 use sim_core::occupy::{Harvested, Occupants, SlotCache};
 use sim_core::terrain::{self, Haven, ScatterTable};
 
@@ -32,6 +33,13 @@ pub const TOAST_RING: usize = 8;
 
 /// Craft refusal reasons buffered for the HUD (drop-oldest, cosmetic).
 pub const REFUSAL_RING: usize = 4;
+
+/// How far a `BagDropped` may land from the dead predicted body and still
+/// be tagged as this body's own bag (`ClientCore::own_bag`). Covers the
+/// unreconciled prediction lead at death — a sprint's worth of round trip
+/// (~5.5 m/s x 300 ms) with room to spare — while staying far under the
+/// distance at which two simultaneous deaths stop being "the same spot".
+pub const OWN_BAG_NEAR_M: f32 = 4.0;
 
 /// Chat lines buffered for the log (drop-oldest). Deeper than the toast
 /// ring because the pump drains it every event, not every frame, and a
@@ -101,9 +109,12 @@ pub const APPLIED_BAGS: u32 = 1 << 25;
 pub const APPLIED_STRUCT_HIT: u32 = 1 << 26;
 /// Own food/water changed (`EventMsg::Vitals`).
 pub const APPLIED_VITALS: u32 = 1 << 27;
-/// An eat landed or was refused (`EventMsg::Consumed` /
-/// `EventMsg::ConsumeRefused`). One flag: the HUD's response to both is to
-/// re-read the eat readout, which says which it was.
+/// A consume answer arrived (`EventMsg::Consumed` / `ConsumeRefused`) — a
+/// ring gained an entry. One flag for both because the response to either
+/// is the same: drain `pop_consume_toast` and `pop_consume_refusal`, which
+/// say which it was. Rings since 2026-08-15 — as a field plus this bit, two
+/// answers in one drain window collapsed, and `KeyJ` + `KeyH` in one frame
+/// is answered by one `World::tick`.
 pub const APPLIED_CONSUME: u32 = 1 << 28;
 /// A drink landed (`EventMsg::Drank`). Its own bit and not `CONSUME`'s: a
 /// refused drink already arrives as a `ConsumeRefused`, so sharing the bit
@@ -112,8 +123,9 @@ pub const APPLIED_CONSUME: u32 = 1 << 28;
 pub const APPLIED_DRANK: u32 = 1 << 29;
 /// The death screen opened or closed — `EventMsg::Death` naming *you*, or
 /// the `EventMsg::Respawn` that answers it. One flag for both because the
-/// HUD's response to either is to re-read `client_death_screen`, which
-/// says which it was; the same shape `APPLIED_CONSUME` takes.
+/// response to either is to re-read [`ClientCore::dead`] (`render/death.rs`
+/// is the reader), which says which it was; the same shape
+/// `APPLIED_CONSUME` takes.
 ///
 /// Not `APPLIED_DEATH`'s bit, and the distinction is the whole point of a
 /// separate flag: `Death` is broadcast, so most of them are somebody
@@ -147,8 +159,11 @@ pub const STREAM_ERR: u32 = 1 << 31;
 /// never be read as a fresh one.
 ///
 /// A move landed or was refused (`EventMsg::Moved` / `MoveRefused`). One
-/// flag for both, `APPLIED_CONSUME`'s shape: the panel's response to
-/// either is to re-read `client_move_readout`, which says which it was.
+/// flag for both: the answer is in `last_move` / `last_move_refused`, which
+/// say which it was. (`client_move_readout`, named here until 2026-08-15,
+/// was the deleted C-ABI bridge; the real reader is
+/// `render/panels/mod.rs::sync_refusals`, which keys freshness on the
+/// `last_move` counter rather than on this flag.)
 pub const APPLIED2_MOVE: u32 = 1 << 0;
 /// The open container's view changed (`EventMsg::ContSync`) — contents
 /// arrived, or the server shut the panel. One flag for both, and for
@@ -803,6 +818,13 @@ pub struct ClientCore {
     refusals: [u8; REFUSAL_RING],
     refusal_head: usize,
     refusal_len: usize,
+    /// `(held item, reason)` per refused gather swing (wire v42) —
+    /// drop-oldest and cosmetic, the craft refusal ring's posture. The
+    /// item rides beside the reason because the sentence names it: *a
+    /// torch cannot fell a tree*, never "bare hands" (`NOW.md` §0kit 2).
+    gather_refusals: [(u16, u8); REFUSAL_RING],
+    gather_refusal_head: usize,
+    gather_refusal_len: usize,
     /// Chat lines as received: (speaker id, global, text).
     chats: [(u32, bool, ChatText); CHAT_RING],
     chat_head: usize,
@@ -821,16 +843,34 @@ pub struct ClientCore {
     pub water: u16,
     pub max_food: u16,
     pub max_water: u16,
-    /// The last eat: item << 16 | slot, and the refusal reason (0 = the
-    /// eat landed). Read together by `client_consume`.
-    pub last_eat: u32,
-    pub last_eat_refused: u8,
-    /// The last drink: water restored << 16 | hp it cost. Read by
-    /// `client_drank`, and the reason the HUD can name what took the hp.
+    /// Eats that landed, oldest first: (item, the slot it was spent from).
+    /// Drop-oldest, cosmetic — the toast rings' posture. Rings since
+    /// 2026-08-15: as a field plus one bit (`last_eat` / `last_eat_refused`)
+    /// two consume answers in one drain window collapsed — `Consumed` zeroed
+    /// the reason and `ConsumeRefused` overwrote it — and one frame reaches
+    /// that from the keyboard, because `KeyJ` and `KeyH` are two independent
+    /// presses answered by one `World::tick`. Drained by `render/feed.rs`,
+    /// worded by `render/hud.rs` off `Feed::consumed`.
+    consume_toasts: [(u16, u16); TOAST_RING],
+    consume_toast_head: usize,
+    consume_toast_len: usize,
+    /// Refused consumes (`sim_core::survival::REFUSE_C_*`), eat and drink
+    /// both — one wire event answers the two verbs. Drop-oldest, cosmetic,
+    /// `refusals`' posture exactly. Drained by `render/feed.rs` onto the
+    /// shared refusal queue as `Refused::Consume`.
+    consume_refusals: [u8; REFUSAL_RING],
+    consume_refusal_head: usize,
+    consume_refusal_len: usize,
+    /// The last drink: water restored << 16 | hp it cost — the hp is how
+    /// the HUD can name what took it. Read by `render/hud.rs::feedback` off
+    /// `APPLIED_DRANK` (`client_drank`, named here until 2026-08-15, was
+    /// the deleted C-ABI bridge).
     pub last_drink: u32,
     /// The last move's address, `sim_core::inventory::addr`'s pack
     /// verbatim, and the refusal reason (0 = the move landed). Read
-    /// together by `client_move_readout`.
+    /// together by `render/panels/mod.rs::sync_refusals` and the panel's
+    /// rollback (`client_move_readout`, named here until 2026-08-15, was
+    /// the deleted C-ABI bridge).
     ///
     /// The **slot contents are deliberately not applied here.** The server
     /// diffs the whole inventory against its last-acked copy every tick
@@ -876,6 +916,23 @@ pub struct ClientCore {
     pub own_death_item: u16,
     pub own_death_range_cm: u16,
     pub woke_on_bag: bool,
+    /// The bag that stood where THIS body died — `WireBag::id`, zero for
+    /// none (the store's own "no bag" sentinel). The wire deliberately
+    /// carries no bag owner (`BackpackRec::owner` is sim-side only), so
+    /// this is a client-side join, exact in everything the client knows:
+    /// a `BagDropped` that lands while `dead`, before any other has since
+    /// this death, within [`OWN_BAG_NEAR_M`] of the predicted body — which
+    /// while dead IS the death position, since a dead body neither moves
+    /// nor predicts. A neighbour dying on the same spot inside the same
+    /// window can mis-tag; the cost is one map mark ranked as yours, and
+    /// the alternative is a wire field `ALPHA.md` §1 reserves as an
+    /// operator call. Cleared by the bag's own `BagRemoved`, NOT by
+    /// respawn — walking back to it is the point.
+    pub own_bag: u32,
+    /// Armed by the `Death` naming this body, spent by the first
+    /// qualifying `BagDropped`: the latch that keeps a stranger's later
+    /// bag from re-tagging while the screen is up.
+    own_bag_pending: bool,
     /// The placed-piece mirror (address-keyed; the renderer's truth).
     pub pieces: PieceSet,
     /// Piece records the last `on_stream` call added or replaced.
@@ -1047,8 +1104,12 @@ impl ClientCore {
             water: 0,
             max_food: 0,
             max_water: 0,
-            last_eat: 0,
-            last_eat_refused: 0,
+            consume_toasts: [(0, 0); TOAST_RING],
+            consume_toast_head: 0,
+            consume_toast_len: 0,
+            consume_refusals: [0; REFUSAL_RING],
+            consume_refusal_head: 0,
+            consume_refusal_len: 0,
             last_drink: 0,
             last_move: 0,
             last_move_refused: 0,
@@ -1066,6 +1127,8 @@ impl ClientCore {
             own_death_item: sim_core::gather::NO_ITEM,
             own_death_range_cm: 0,
             woke_on_bag: false,
+            own_bag: 0,
+            own_bag_pending: false,
             refusal_head: 0,
             refusal_len: 0,
             pieces: PieceSet::new(),
@@ -1112,6 +1175,9 @@ impl ClientCore {
             research_toast_head: 0,
             research_toast_len: 0,
             research_refusals: [0; REFUSAL_RING],
+            gather_refusals: [(0, 0); REFUSAL_RING],
+            gather_refusal_head: 0,
+            gather_refusal_len: 0,
             research_refusal_head: 0,
             research_refusal_len: 0,
             events_applied: 0,
@@ -1161,6 +1227,17 @@ impl ClientCore {
                     // spill and not a swing that earned nothing.
                     self.push_spill(item);
                 }
+            }
+            EventMsg::GatherRefused { item, reason } => {
+                if self.gather_refusal_len == REFUSAL_RING {
+                    self.gather_refusal_head = (self.gather_refusal_head + 1) % REFUSAL_RING;
+                    self.gather_refusal_len -= 1;
+                }
+                self.gather_refusals
+                    [(self.gather_refusal_head + self.gather_refusal_len) % REFUSAL_RING] =
+                    (item, reason);
+                self.gather_refusal_len += 1;
+                flags |= APPLIED_TOAST;
             }
             EventMsg::Inv { slots, count } => {
                 for s in slots.iter().take(count as usize) {
@@ -1428,6 +1505,18 @@ impl ClientCore {
                 if self.bags.insert(WireBag { id, qx, qy, qz }) {
                     flags |= APPLIED_BAGS;
                 }
+                // The own-bag join (`own_bag`'s field doc): while dead the
+                // predicted body is the death position, and the server
+                // stands the bag at the body it killed, so the first drop
+                // since this death that lands beside it is this body's.
+                if self.own_bag_pending && self.dead {
+                    let dx = (qx - self.predict.body.qx) as f32 * POS_XZ_Q;
+                    let dz = (qz - self.predict.body.qz) as f32 * POS_XZ_Q;
+                    if dx * dx + dz * dz <= OWN_BAG_NEAR_M * OWN_BAG_NEAR_M {
+                        self.own_bag = id;
+                        self.own_bag_pending = false;
+                    }
+                }
             }
             EventMsg::BagSync { reset, recs, count } => {
                 if reset {
@@ -1480,6 +1569,9 @@ impl ClientCore {
                 // not have yet; the set only cares that it is gone.
                 if self.bags.remove(id) {
                     flags |= APPLIED_BAGS;
+                }
+                if self.own_bag == id {
+                    self.own_bag = 0; // looted out, expired or evicted
                 }
             }
             EventMsg::DeployRefused { reason } => {
@@ -1678,12 +1770,25 @@ impl ClientCore {
                 flags |= APPLIED_VITALS;
             }
             EventMsg::Consumed { item, slot } => {
-                self.last_eat = ((item as u32) << 16) | slot as u32;
-                self.last_eat_refused = 0;
+                if self.consume_toast_len == TOAST_RING {
+                    self.consume_toast_head = (self.consume_toast_head + 1) % TOAST_RING;
+                    self.consume_toast_len -= 1;
+                }
+                self.consume_toasts
+                    [(self.consume_toast_head + self.consume_toast_len) % TOAST_RING] =
+                    (item, slot as u16);
+                self.consume_toast_len += 1;
                 flags |= APPLIED_CONSUME;
             }
             EventMsg::ConsumeRefused { reason } => {
-                self.last_eat_refused = reason;
+                if self.consume_refusal_len == REFUSAL_RING {
+                    self.consume_refusal_head = (self.consume_refusal_head + 1) % REFUSAL_RING;
+                    self.consume_refusal_len -= 1;
+                }
+                self.consume_refusals
+                    [(self.consume_refusal_head + self.consume_refusal_len) % REFUSAL_RING] =
+                    reason;
+                self.consume_refusal_len += 1;
                 flags |= APPLIED_CONSUME;
             }
             EventMsg::Moved {
@@ -1756,6 +1861,7 @@ impl ClientCore {
                 // sentence on it.
                 if victim == self.player_id {
                     self.dead = true;
+                    self.own_bag_pending = true;
                     self.own_death_killer = killer;
                     self.own_death_cause = cause;
                     self.own_death_item = item;
@@ -2199,6 +2305,44 @@ impl ClientCore {
         Some(r)
     }
 
+    /// Oldest buffered gather refusal: `(held item, reason)` —
+    /// `sim_core::gather::REFUSE_G_*`, item `NO_ITEM` = bare hands.
+    pub fn pop_gather_refusal(&mut self) -> Option<(u16, u8)> {
+        if self.gather_refusal_len == 0 {
+            return None;
+        }
+        let r = self.gather_refusals[self.gather_refusal_head];
+        self.gather_refusal_head = (self.gather_refusal_head + 1) % REFUSAL_RING;
+        self.gather_refusal_len -= 1;
+        Some(r)
+    }
+
+    /// Oldest buffered landed eat: (item index, the slot it was spent from).
+    ///
+    /// Single-consumer like every `pop_*` here: `render::feed::drain` is the
+    /// one caller and `render/hud.rs` words it off `Feed::consumed`.
+    pub fn pop_consume_toast(&mut self) -> Option<(u16, u16)> {
+        if self.consume_toast_len == 0 {
+            return None;
+        }
+        let t = self.consume_toasts[self.consume_toast_head];
+        self.consume_toast_head = (self.consume_toast_head + 1) % TOAST_RING;
+        self.consume_toast_len -= 1;
+        Some(t)
+    }
+
+    /// Oldest buffered consume refusal (`sim_core::survival::REFUSE_C_*`),
+    /// eat and drink both — one wire event answers the two verbs.
+    pub fn pop_consume_refusal(&mut self) -> Option<u8> {
+        if self.consume_refusal_len == 0 {
+            return None;
+        }
+        let r = self.consume_refusals[self.consume_refusal_head];
+        self.consume_refusal_head = (self.consume_refusal_head + 1) % REFUSAL_RING;
+        self.consume_refusal_len -= 1;
+        Some(r)
+    }
+
     /// Oldest buffered craft refusal reason (`sim_core::craft::REFUSE_*`).
     pub fn pop_craft_refusal(&mut self) -> Option<u8> {
         if self.refusal_len == 0 {
@@ -2488,11 +2632,22 @@ mod tests {
         assert_eq!(c.applied2(), APPLIED2_SPILL);
         let slots = [InvSlot {
             slot: 4,
-            stack: ItemStack { item: 3, count: 21 },
+            stack: ItemStack {
+                item: 3,
+                count: 21,
+                cond: 0,
+            },
         }];
         let len = encode_event_inv(&slots, &mut buf).unwrap();
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_INV);
-        assert_eq!(c.inv[4], ItemStack { item: 3, count: 21 });
+        assert_eq!(
+            c.inv[4],
+            ItemStack {
+                item: 3,
+                count: 21,
+                cond: 0,
+            }
+        );
         assert_eq!(c.pop_toast(), Some((3, 7)));
         assert_eq!(c.pop_toast(), None);
         // The whiff went here instead, and carries which item it was.
@@ -2552,6 +2707,82 @@ mod tests {
             assert_eq!(c.pop_spill(), Some(i as u16));
         }
         assert_eq!(c.pop_spill(), None);
+    }
+
+    /// §0eat's remaining half, proven RED on the shape it replaced before
+    /// the rings landed: `last_eat` / `last_eat_refused` were fields plus
+    /// one bit, so two consume answers in one drain window collapsed —
+    /// `Consumed` zeroed the reason and `ConsumeRefused` overwrote it. One
+    /// frame reaches that from the keyboard: `KeyJ` and `KeyH` are two
+    /// independent `just_pressed` checks in one system, and one
+    /// `World::tick` answers both. Run against the field pair (2026-08-15),
+    /// the land-then-refuse half failed "the landed eat vanished under the
+    /// refusal"; refuse-then-land lost the refusal the same way.
+    #[test]
+    fn two_consume_answers_in_one_drain_window_both_surface() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+
+        // The ugly order: the eat lands, then the drink is refused, both
+        // inside one drain window. The field pair told the player "no
+        // water within reach" while the bandage was gone and its heal
+        // ramp running.
+        let mut c = core();
+        let len = protocol::encode_event_consumed(9, 2, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_CONSUME);
+        let len = protocol::encode_event_consume_refused(3, &mut buf).unwrap();
+        assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_CONSUME);
+        assert_eq!(
+            c.pop_consume_toast(),
+            Some((9, 2)),
+            "the landed eat vanished under the refusal"
+        );
+        assert_eq!(
+            c.pop_consume_refusal(),
+            Some(3),
+            "the refusal vanished under the landed eat"
+        );
+        assert_eq!(c.pop_consume_toast(), None);
+        assert_eq!(c.pop_consume_refusal(), None);
+
+        // The reverse order lost the refusal outright on the field pair.
+        let mut c = core();
+        let len = protocol::encode_event_consume_refused(3, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        let len = protocol::encode_event_consumed(9, 2, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.pop_consume_refusal(), Some(3));
+        assert_eq!(c.pop_consume_toast(), Some((9, 2)));
+    }
+
+    /// Wall 4 on the two consume rings: bounded, drop-oldest, and each
+    /// stays in arrival order past its cap.
+    #[test]
+    fn consume_rings_drop_oldest() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        for i in 0..(TOAST_RING + 2) as u16 {
+            let len = protocol::encode_event_consumed(i, 1, &mut buf).unwrap();
+            c.on_stream(&buf[..len]).unwrap();
+        }
+        for i in 2..(TOAST_RING + 2) as u16 {
+            assert_eq!(c.pop_consume_toast(), Some((i, 1)), "oldest-first broke");
+        }
+        assert_eq!(c.pop_consume_toast(), None);
+
+        // The refusal ring under the same rule. Codes cycle inside the
+        // sim's own ledger (1..=REFUSE_C_MAX): the encoder range-checks
+        // both ends now, so a test that invented codes above the ledger
+        // to tell slots apart would no longer encode at all.
+        for i in 0..(REFUSAL_RING + 2) as u8 {
+            let code = (i % sim_core::survival::REFUSE_C_MAX as u8) + 1;
+            let len = protocol::encode_event_consume_refused(code, &mut buf).unwrap();
+            c.on_stream(&buf[..len]).unwrap();
+        }
+        for i in 2..(REFUSAL_RING + 2) as u8 {
+            let code = (i % sim_core::survival::REFUSE_C_MAX as u8) + 1;
+            assert_eq!(c.pop_consume_refusal(), Some(code), "oldest-first broke");
+        }
+        assert_eq!(c.pop_consume_refusal(), None);
     }
 
     #[test]
@@ -2844,5 +3075,102 @@ mod tests {
         let len = encode_event_removed(false, cx, cz, level, LOC_EDGE_XLO, &mut buf).unwrap();
         c.on_stream(&buf[..len]).unwrap();
         assert!(!shut(&c), "a removed door leaves nothing sealed");
+    }
+
+    /// The own-bag join, whole: a `Death` naming this body arms the
+    /// latch, the first `BagDropped` beside the dead predicted body is
+    /// tagged, a stranger's bag farther away is not, a later neighbour
+    /// bag cannot re-tag while the screen is still up, and the bag's own
+    /// `BagRemoved` clears the tag. The wire carries no owner — this is
+    /// the client-side join `own_bag`'s field doc states, gated end to
+    /// end over real encoded events.
+    #[test]
+    fn the_own_bag_is_tagged_by_death_and_distance_and_cleared_by_removal() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+
+        // A stranger's bag before any death: never tagged.
+        let far = protocol::WireBag {
+            id: 9,
+            qx: 90_000,
+            qy: 0,
+            qz: 90_000,
+        };
+        let len = protocol::encode_event_bag_dropped(&far, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 0, "no death, no tag");
+
+        // This body dies. The predicted body sits at the default origin,
+        // so the death position is (0, 0).
+        let len = protocol::encode_event_death(0x107, 5, 0, 0, 100, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert!(c.dead);
+
+        // A bag beside the body (1 m off, inside OWN_BAG_NEAR_M): tagged.
+        let near_q = (1.0 / POS_XZ_Q) as i32;
+        let mine = protocol::WireBag {
+            id: 11,
+            qx: near_q,
+            qy: 0,
+            qz: 0,
+        };
+        let len = protocol::encode_event_bag_dropped(&mine, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 11, "the first drop beside the dead body is mine");
+
+        // A neighbour dies on the same spot a moment later: the latch is
+        // spent, the tag holds.
+        let theirs = protocol::WireBag {
+            id: 12,
+            qx: 0,
+            qy: 0,
+            qz: near_q,
+        };
+        let len = protocol::encode_event_bag_dropped(&theirs, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 11, "a spent latch cannot re-tag");
+
+        // Respawn does NOT clear it — walking back is the point.
+        let len = protocol::encode_event_respawn(false, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 11, "the tag outlives the death screen");
+
+        // The bag's own removal does.
+        let len = protocol::encode_event_bag_removed(11, 1, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 0, "a removed bag is nobody's mark");
+    }
+
+    /// The distance half alone: a death whose only bag lands beyond
+    /// `OWN_BAG_NEAR_M` tags nothing — a stranger dying across the meadow
+    /// in the same window is not this body's bag, and the latch stays
+    /// armed for the drop that IS.
+    #[test]
+    fn a_far_bag_does_not_spend_the_own_bag_latch() {
+        let mut c = core();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let len = protocol::encode_event_death(0x107, 5, 0, 0, 100, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+
+        let far_q = (8.0 / POS_XZ_Q) as i32; // 2x the join radius
+        let theirs = protocol::WireBag {
+            id: 21,
+            qx: far_q,
+            qy: 0,
+            qz: 0,
+        };
+        let len = protocol::encode_event_bag_dropped(&theirs, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 0, "eight metres away is somebody else");
+
+        let mine = protocol::WireBag {
+            id: 22,
+            qx: 0,
+            qy: 0,
+            qz: 0,
+        };
+        let len = protocol::encode_event_bag_dropped(&mine, &mut buf).unwrap();
+        c.on_stream(&buf[..len]).unwrap();
+        assert_eq!(c.own_bag, 22, "the latch waited for the drop at the body");
     }
 }

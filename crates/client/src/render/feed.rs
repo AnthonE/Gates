@@ -26,10 +26,16 @@
 //! ## The bound
 //!
 //! Every array here is [`FEED_CAP`] long, which is `client_core`'s own
-//! `TOAST_RING` — the core cannot hand over more per frame than its rings
-//! hold, so the cap is exact rather than generous. Overflow policy: **drop the
-//! newest and count it** ([`Feed::dropped`]), matching `sound::CUE_QUEUE_CAP`.
-//! A non-zero count means the core grew a ring and this file did not follow.
+//! `TOAST_RING`. For the single-source arrays that cap is exact — the core
+//! cannot hand over more per frame than the one ring holds. The shared
+//! refusal queue is the exception and this line used to deny it: SIX verb
+//! rings drain into it (research, craft, gather, build, deploy, consume),
+//! so a frame can offer more refusals than one array holds with nothing
+//! drifted anywhere. Overflow policy: **drop the newest and count it**
+//! ([`Feed::dropped`]), matching `sound::CUE_QUEUE_CAP` — a seventh
+//! refusal in one frame is noise, not news. A non-zero count on a
+//! single-source array still means the core grew a ring and this file did
+//! not follow.
 
 use bevy::prelude::*;
 use client_core::core::TOAST_RING;
@@ -58,7 +64,7 @@ pub enum Refused {
     Build,
     Deploy,
     Research,
-    /// An eat (`G`) or a drink (`H`) that did nothing —
+    /// An eat (`J`) or a drink (`H`) that did nothing —
     /// `sim_core::survival`'s `REFUSE_C_*`.
     ///
     /// **One variant for two verbs**, because the sim answers both on one
@@ -66,6 +72,12 @@ pub enum Refused {
     /// alone. `ui::refusals::CONSUME` words all three so neither verb reads
     /// as the other.
     Consume,
+    /// A gather swing the node refused (wire v42) —
+    /// `sim_core::gather`'s `REFUSE_G_*`. The one variant whose entry
+    /// carries an **item** beside the code (the held tool, `NO_ITEM` =
+    /// bare hands), because its sentence names it: *your torch cannot
+    /// harvest this* (`ui::refusals::GATHER`).
+    Gather,
 }
 
 /// One frame of own-facts. Cleared and refilled by [`drain`]; read-only to
@@ -81,6 +93,9 @@ pub struct Feed {
     n_deaths: usize,
     refusals: [Refused; FEED_CAP],
     refusal_codes: [u8; FEED_CAP],
+    /// The item a refusal names, `sim_core::gather::NO_ITEM` when the
+    /// sentence needs none — only `Refused::Gather` carries one today.
+    refusal_items: [u16; FEED_CAP],
     n_refusals: usize,
     gathered: [(u16, u16); FEED_CAP],
     n_gathered: usize,
@@ -98,6 +113,14 @@ pub struct Feed {
     /// `(recipe, coin burned)` per blueprint learned this frame.
     learned: [(u16, u16); FEED_CAP],
     n_learned: usize,
+    /// Eats that landed this frame: (item index, the slot it was spent
+    /// from). Own-fact; the refused half rides `refusals` as
+    /// `Refused::Consume`. A ring since 2026-08-15 — it was a latched field
+    /// pair (`last_eat` / `last_eat_refused`), and two consume answers in
+    /// one drain window collapsed, which one frame reaches from the
+    /// keyboard (`KeyJ` + `KeyH` are answered by one `World::tick`).
+    consumed: [(u16, u16); FEED_CAP],
+    n_consumed: usize,
     /// Knocks heard this frame: the door's address and who knocked (lock
     /// v1). Broadcast, so this is the one entry here that can be somebody
     /// else's action — the mixer wants the address, the HUD wants to say
@@ -152,10 +175,18 @@ impl Feed {
     pub fn deaths(&self) -> &[(u32, u32)] {
         &self.deaths[..self.n_deaths]
     }
-    /// `(which verb, reason code)` pairs, oldest first. The code is the
-    /// verb's own `REFUSE_*` integer — `ui::refusals` owns the sentences.
-    pub fn refusals(&self) -> impl Iterator<Item = (Refused, u8)> + '_ {
-        (0..self.n_refusals).map(|i| (self.refusals[i], self.refusal_codes[i]))
+    /// `(which verb, reason code, named item)` triples, oldest first. The
+    /// code is the verb's own `REFUSE_*` integer — `ui::refusals` owns the
+    /// sentences — and the item is `NO_ITEM` for every verb whose sentence
+    /// names none (all but `Gather` today).
+    pub fn refusals(&self) -> impl Iterator<Item = (Refused, u8, u16)> + '_ {
+        (0..self.n_refusals).map(|i| {
+            (
+                self.refusals[i],
+                self.refusal_codes[i],
+                self.refusal_items[i],
+            )
+        })
     }
     /// `(item index, units)` gathered this frame.
     pub fn gathered(&self) -> &[(u16, u16)] {
@@ -174,6 +205,10 @@ impl Feed {
     /// `(recipe index, coin burned)` learned this frame (research v0).
     pub fn learned(&self) -> &[(u16, u16)] {
         &self.learned[..self.n_learned]
+    }
+    /// `(item index, slot)` eaten or used this frame, oldest first.
+    pub fn consumed(&self) -> &[(u16, u16)] {
+        &self.consumed[..self.n_consumed]
     }
     /// Knocks heard this frame, oldest first.
     pub fn knocks(&self) -> &[(u16, u16, u8, u8, u32)] {
@@ -201,19 +236,21 @@ impl Feed {
         self.n_crafted = 0;
         self.n_spills = 0;
         self.n_learned = 0;
+        self.n_consumed = 0;
         self.n_knocks = 0;
         self.n_auths = 0;
         self.n_shots = 0;
         self.n_placed = 0;
     }
 
-    fn push_refusal(&mut self, which: Refused, code: u8) {
+    fn push_refusal(&mut self, which: Refused, code: u8, item: u16) {
         if self.n_refusals >= FEED_CAP {
             self.dropped = self.dropped.saturating_add(1);
             return;
         }
         self.refusals[self.n_refusals] = which;
         self.refusal_codes[self.n_refusals] = code;
+        self.refusal_items[self.n_refusals] = item;
         self.n_refusals += 1;
     }
 }
@@ -260,56 +297,44 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
         }
     }
     while let Some(code) = core.pop_research_refusal() {
-        feed.push_refusal(Refused::Research, code);
+        feed.push_refusal(Refused::Research, code, sim_core::gather::NO_ITEM);
     }
     while let Some(code) = core.pop_craft_refusal() {
-        feed.push_refusal(Refused::Craft, code);
+        feed.push_refusal(Refused::Craft, code, sim_core::gather::NO_ITEM);
+    }
+    while let Some((item, code)) = core.pop_gather_refusal() {
+        feed.push_refusal(Refused::Gather, code, item);
     }
     while let Some(code) = core.pop_build_refusal() {
-        feed.push_refusal(Refused::Build, code);
+        feed.push_refusal(Refused::Build, code, sim_core::gather::NO_ITEM);
     }
     while let Some(code) = core.pop_deploy_refusal() {
-        feed.push_refusal(Refused::Deploy, code);
+        feed.push_refusal(Refused::Deploy, code, sim_core::gather::NO_ITEM);
     }
-    // The consume verbs are the one refusal here that is **not a ring**.
-    // `ClientCore` latches `last_eat_refused` and raises `APPLIED_CONSUME`,
-    // so the fact is a field plus a freshness bit — the shape [`Feed::applied`]
-    // exists for, and the same shape `stock` and `struct_hit` take.
+    // The consume verbs, rings since 2026-08-15. They were a latched field
+    // pair (`last_eat` / `last_eat_refused`) plus `APPLIED_CONSUME`, and two
+    // answers in one drain window collapsed — `Consumed` zeroed the reason,
+    // `ConsumeRefused` overwrote it — which one frame reaches from the
+    // keyboard, because `KeyJ` and `KeyH` are two independent presses that
+    // one `World::tick` answers together. `client-core`'s
+    // `two_consume_answers_in_one_drain_window_both_surface` holds it.
     //
-    // It joins the queue anyway rather than being read straight off the core
-    // by the HUD, and that is the whole point: a refusal in this queue is a
-    // refusal to every reader, so `render::audio` plays the refusal cue for a
-    // dry shoreline without knowing the verb exists. A latched fact read
-    // privately by the HUD would have been silent.
-    //
-    // **What the latch costs, stated rather than hidden.** A field holds the
-    // LAST answer, so two consume answers landing inside one drain window
-    // collapse to one: `Consumed` zeroes the reason and `ConsumeRefused`
-    // overwrites it, so refuse-then-land loses the refusal and land-then-refuse
-    // loses the landing.
-    //
-    // ⚠ **This is reachable from the keyboard, and a comment here said it was
-    // not until 2026-08-15.** The claim was that `verbs.rs` reads
-    // `just_pressed` so a frame sends at most one consume — true, and beside
-    // the point: `KeyG` and `KeyH` are two independent presses in one system,
-    // so ONE frame sends an eat *and* a drink, the sim runs both inside one
-    // `World::tick`, and both answers land in one drain window. At
-    // `TICK_HZ = 30` a G and an H pressed 33 ms apart do it too. The ugly
-    // ordering is drink-refused-after-eat-landed: the player is told "no water
-    // within reach" and hears the refusal cue while the bandage is gone and
-    // its heal ramp is running — the client denying a thing it just did, which
-    // is worse than the silence this slice was landed to fix. The reverse
-    // order loses the drink refusal outright, which is §0eat's own symptom
-    // still live on `H`.
-    //
-    // The honest fix is a ring on `ClientCore` beside the four popped above,
-    // which is `client-core`'s file (`NOW.md` §0eat).
-    if feed.applied & client_core::core::APPLIED_CONSUME != 0 {
-        // Zero is the landed case and not a reason — `hud::feedback` answers
-        // that half by naming the item off `last_eat`.
-        let code = core.last_eat_refused;
-        if code != 0 {
-            feed.push_refusal(Refused::Consume, code);
+    // The refusal joins the shared queue rather than a private surface, and
+    // that is the point: a refusal in this queue is a refusal to every
+    // reader, so `render::audio` plays the refusal cue for a dry shoreline
+    // without knowing the verb exists. Zero never arrives — it is not a
+    // refusal on this wire and the encoder refuses it; the landed half is
+    // its own ring below.
+    while let Some(code) = core.pop_consume_refusal() {
+        feed.push_refusal(Refused::Consume, code, sim_core::gather::NO_ITEM);
+    }
+    while let Some(t) = core.pop_consume_toast() {
+        if feed.n_consumed >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_consumed;
+            feed.consumed[n] = t;
+            feed.n_consumed += 1;
         }
     }
     while let Some(k) = core.pop_knock() {

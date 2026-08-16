@@ -170,6 +170,7 @@ pub fn setup(
         &core.deploy_defs,
         core.deploy_defs_have,
         core.bags.entries(),
+        core.own_bag,
     );
 
     commands
@@ -239,10 +240,16 @@ pub fn setup(
                 }
                 // The marks, UNDER the player: a sibling spawned later draws
                 // on top, and *where am I* outranks everything else drawn
-                // here. Positions are `resolve_marks`'s fractions — the same
-                // `world_to_map` the player goes through, so the two cannot
-                // disagree about the projection.
-                for m in &marks.a[..marks.count] {
+                // here. Spawned in REVERSE resolve order, so the push order
+                // is one rule with two ends — first pushed is last the cap
+                // eats AND last spawned, drawing on top: the haven over a
+                // bag over a stranger's bed. (Forward order quietly flipped
+                // when bags moved ahead of the anchors: the beds, spawned
+                // later, papered over the bag marks the rank had just
+                // protected.) Positions are `resolve_marks`'s fractions —
+                // the same `world_to_map` the player goes through, so the
+                // two cannot disagree about the projection.
+                for m in marks.a[..marks.count].iter().rev() {
                     spawn_mark(frame, m);
                 }
 

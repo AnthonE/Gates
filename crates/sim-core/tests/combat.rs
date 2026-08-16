@@ -34,6 +34,7 @@ fn duel_world() -> World {
         p.inv[0] = ItemStack {
             item: SPEAR,
             count: 1,
+            cond: 0,
         };
     }
     w
@@ -183,6 +184,7 @@ fn no_weapon_may_hit_its_own_holder() {
     w.players[0].inv[0] = ItemStack {
         item: SPEAR,
         count: 1,
+        cond: 0,
     };
     swing_once(&mut w, 1, 0, 0);
     assert_eq!(w.players[0].hp, FIXTURE_HP);
@@ -197,7 +199,11 @@ fn a_hand_with_no_weapon_in_it_cannot_hurt() {
         let mut w = duel_world();
         place_in_front(&mut w, 0, 1, 0, 1.0);
         w.players[0].inv[0] = match held {
-            Some(item) if item != NO_ITEM => ItemStack { item, count: 1 },
+            Some(item) if item != NO_ITEM => ItemStack {
+                item,
+                count: 1,
+                cond: 0,
+            },
             _ => ItemStack::default(),
         };
         swing_once(&mut w, 1, 0, 0);
@@ -241,6 +247,7 @@ fn a_standing_node_outranks_a_person() {
         p.inv[0] = ItemStack {
             item: SPEAR,
             count: 1,
+            cond: 0,
         };
     }
     w.players[1].body = Body::at(SEED, tx + 0.5, tz);
@@ -293,8 +300,13 @@ fn death_takes_the_beach_and_everything_on_you() {
     w.players[0].inv[0] = ItemStack {
         item: SPEAR,
         count: 1,
+        cond: 0,
     };
-    w.players[1].inv[5] = ItemStack { item: 3, count: 42 };
+    w.players[1].inv[5] = ItemStack {
+        item: 3,
+        count: 42,
+        cond: 0,
+    };
     w.players[1].hp = 1; // one swing from the end
 
     swing_once(&mut w, 1, yaw, 0);

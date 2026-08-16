@@ -116,7 +116,15 @@ use crate::worldcont::WorldContRec;
 /// `row` and `hp`, the soft side's direction, validated ≤ 1. It is in
 /// `state_hash` — a swing's price reads it — so a save without it would
 /// resume a shard whose walls forgot which way they were built.
-pub const WORLD_SAVE_FORMAT: u16 = 6;
+///
+/// **7 — every item stack carries its condition** (item durability v0):
+/// the shared `stack` writer/reader grows two bytes, so every player
+/// inventory, bag, box and world container widens together, and the
+/// canonical-empty rule widens with them — `count == 0 && cond != 0` is
+/// refused beside `count == 0 && item != 0`, or a slot emptied by a path
+/// that forgot to zero `cond` would hash differently from the sim's own
+/// empty (wall 5's failure mode, named where the old rule was).
+pub const WORLD_SAVE_FORMAT: u16 = 7;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
 /// the next bag id, and the ten section counts.
@@ -178,7 +186,7 @@ const HEARTH_BYTES: usize = 9 + HEARTH_STOCK_ROWS * 4 + 1 + HEARTH_CREW_CAP * 4;
 /// container carries the state — a storage box's says `ARCH_BOX` and is
 /// six zeroed bytes plus twelve zeroed counters, which is the price of
 /// the two stores staying one store (`deploy::holds_items`).
-const BOX_BYTES: usize = 9 + BOX_SLOTS * 4 + 6 + BOX_SLOTS * 2;
+const BOX_BYTES: usize = 9 + BOX_SLOTS * 6 + 6 + BOX_SLOTS * 2;
 /// One code lock (lock v1). Address, owner, both codes, the locked bit,
 /// both remembered lists with their counts, and the three brute-force
 /// counters — the whole `LockRec`, because every field of it is hashed
@@ -187,7 +195,7 @@ const BOX_BYTES: usize = 9 + BOX_SLOTS * 4 + 6 + BOX_SLOTS * 2;
 /// over).
 const LOCK_BYTES: usize =
     6 + 4 + 2 + 2 + 1 + 1 + 1 + LOCK_AUTH_CAP * 4 + LOCK_GUEST_CAP * 4 + 1 + 8 + 8;
-const BACKPACK_BYTES: usize = 28 + INV_SLOTS * 4;
+const BACKPACK_BYTES: usize = 28 + INV_SLOTS * 6;
 /// One authored world container (format 5, `worldcont.rs`): the cell, the
 /// quantized stand position, the table it rolls, the refill deadline, and
 /// its slots. The position is saved rather than re-derived from
@@ -195,7 +203,7 @@ const BACKPACK_BYTES: usize = 28 + INV_SLOTS * 4;
 /// a load must not cost 60 `noise2` evaluations per container — and the
 /// decoder re-checks it against the cell it claims, so a hand-edited save
 /// cannot move a crate to the player's feet.
-const WORLD_CONT_BYTES: usize = 2 + 2 + 4 + 4 + 1 + 8 + INV_SLOTS * 4;
+const WORLD_CONT_BYTES: usize = 2 + 2 + 4 + 4 + 1 + 8 + INV_SLOTS * 6;
 /// A burning fuse: address + store bit + the three copied-at-plant
 /// numbers (structure, damage, blast — format 4) + deadline + planter.
 const CHARGE_BYTES: usize = 25;
@@ -349,6 +357,7 @@ impl<'a> W<'a> {
     fn stack(&mut self, s: &ItemStack) {
         self.u16(s.item);
         self.u16(s.count);
+        self.u16(s.cond);
     }
 }
 
@@ -615,10 +624,15 @@ impl<'a> R<'a> {
     fn stack(&mut self, max_item: usize) -> Result<ItemStack, WorldSaveError> {
         let item = self.u16()?;
         let count = self.u16()?;
-        if item as usize >= max_item || (count == 0 && item != 0) {
+        let cond = self.u16()?;
+        // The canonical-empty rule, all three fields (format 7): a slot
+        // emptied by a path that forgot to zero `cond` hashes differently
+        // from the same empty slot the sim produced — a difference nothing
+        // can see, which is wall 5's failure mode.
+        if item as usize >= max_item || (count == 0 && item != 0) || (count == 0 && cond != 0) {
             return Err(WorldSaveError::BadItemStack);
         }
-        Ok(ItemStack { item, count })
+        Ok(ItemStack { item, count, cond })
     }
 }
 
@@ -1229,6 +1243,59 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
 mod tests {
     use super::*;
 
+    /// The canonical-empty rule's **container** arm (format 7): a bag slot
+    /// emptied by a path that forgot to zero `cond` is refused by THIS
+    /// module's own `stack` reader — the player sections go through
+    /// `PlayerSave::read_le`, which carries the same rule separately, so
+    /// dropping the arm here alone would leave every bag, box and world
+    /// container unguarded with the player-side test still green. In-crate
+    /// because the corrupt record is minted through `restore`, which no
+    /// command can produce — that is the point: the save file is the one
+    /// non-command path into `World`.
+    #[test]
+    fn a_container_slot_emptied_without_zeroing_cond_is_refused() {
+        use crate::backpack::BackpackRec;
+        use crate::gather::ItemStack;
+        use crate::world::World;
+
+        let mut w = Box::new(World::new(1));
+        let mut bag = BackpackRec {
+            id: 1,
+            qx: 100,
+            qy: 50,
+            qz: 100,
+            owner: 3,
+            expires: 500,
+            items: [ItemStack::default(); crate::limits::INV_SLOTS],
+        };
+        // The non-canonical empty nothing can see: no item, no count, a
+        // condition. Written verbatim by the encoder (a pure read), so the
+        // decoder is the only thing standing between it and `state_hash`.
+        bag.items[0] = ItemStack {
+            item: 0,
+            count: 0,
+            cond: 9,
+        };
+        // A second, legal stack so the bag is not empty-by-construction.
+        bag.items[1] = ItemStack {
+            item: 1,
+            count: 3,
+            cond: 0,
+        };
+        w.backpacks.restore(&[bag], 2);
+
+        let mut blob = vec![0u8; WORLD_SAVE_MAX_BYTES];
+        let n = encode(&w, &mut blob).expect("encodes");
+        blob.truncate(n);
+
+        let mut w2 = Box::new(World::new(1));
+        assert_eq!(
+            decode_into(&mut w2, &blob),
+            Err(WorldSaveError::BadItemStack),
+            "a bag slot with condition and no count must refuse the load"
+        );
+    }
+
     /// The size constant, asserted rather than trusted — it is derived from
     /// nine caps, and it is what the server preallocates. A cap that moves
     /// without this test being read is a buffer that is silently too small.
@@ -1236,7 +1303,7 @@ mod tests {
     fn the_ceiling_is_what_the_caps_add_up_to() {
         assert_eq!(PLAYER_TAIL_BYTES, 52);
         assert_eq!(
-            PLAYER_BYTES, 248,
+            PLAYER_BYTES, 308,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -1247,21 +1314,22 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 56                    // head
-            + 100 * 248                     // players
+            + 100 * 308                     // players (a slot is 6 B at format 7)
             + 8_192 * 19                    // pieces + placement tick
             + 1_024 * 33                    // deploys + bag_ready + placed
             + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
-            + 256 * 87                      // containers: 57 + the oven's 30
+            + 256 * 111                     // containers: 9 + 12 six-byte stacks + the oven's 30
             + 512 * 98                      // code locks
-            + 256 * 148                     // bags
-            + 64 * 141                      // world containers: 21 + 30 stacks
+            + 256 * 208                     // bags: 28 + 30 six-byte stacks
+            + 64 * 201                      // world containers: 21 + 30 six-byte stacks
             + 64 * 25                       // charges
             + 16_384 * 14; // harvested slots
                            // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
         assert_eq!(HEAD_BYTES, 56);
-        // A world container is 141: 4 cell + 8 quantized position + 1 table
-        // + 8 refill deadline, then `INV_SLOTS` stacks at four bytes.
-        assert_eq!(WORLD_CONT_BYTES, 141);
+        // A world container is 201: 4 cell + 8 quantized position + 1 table
+        // + 8 refill deadline, then `INV_SLOTS` stacks at six bytes
+        // (format 7: item, count, condition).
+        assert_eq!(WORLD_CONT_BYTES, 201);
         // A lock is 98: 6 address + 4 owner + 2 + 2 codes + 1 locked + 2
         // counts + 8 auth ids + 8 guest ids at four bytes each + 1 miss
         // counter + 8 + 8 for the two tick deadlines.
@@ -1279,8 +1347,12 @@ mod tests {
         // (damage + blast_cm, satchel blast v0) and there are 64 of them.
         // Moved 572_502 → 581_528 at format 5: the world-container section,
         // `MAX_WORLD_CONTS` (64) × 141, plus two head bytes for its count.
+        // Moved 581_528 → 612_872 at format 7: every stack in every store
+        // is six bytes (item durability v0) — 100 inventories, 256 bags,
+        // 256 boxes and 64 world containers all widened together, because
+        // one shared `stack` writer is what they all go through.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 581_528,
+            WORLD_SAVE_MAX_BYTES, 612_872,
             "the world save ceiling moved"
         );
     }
