@@ -293,17 +293,47 @@ What is still open here, in rank order:
    debt against §0fill rather than something to correct here.
 2. **The projection is still planar XZ, not biplanar** — a vertical face still
    stretches. `RENDER.md` R4's remaining half.
-3. **The roughness maps are still unread, and the ORM reason no longer
-   applies.** `NOW.md` §0w item 5 blamed the glTF-packed `metallic_roughness`
-   slot; a custom shader samples `*_rough.jpg` directly and needs no packing
-   step. Four more texture bindings, and 8 → 12 is where the 16-sampled-texture
-   downlevel limit starts to matter alongside `StandardMaterial`'s own.
+3. ~~The roughness maps are still unread~~ **LANDED 2026-08-16** — bindings
+   110–113, sampled per texel, blended by the same `bw` as colour and normal,
+   plus wet-band smoothing. Four textures and **zero** samplers: samplers are
+   the axis with the 16 floor, textures are not, and Bevy asks the adapter for
+   its own limits. ⚠ **No detectable effect on the frame** (contrast −0.4%
+   over six vantages, inside the harness's own ~0.3% run-to-run spread, which
+   this pass measured — `RENDER.md` §5) and landed anyway, because the cause is
+   item 3b and the ordering only runs one way.
+3b. **The ground's specular is off: `reflectance: 0.18` → F0 = 0.52%**, where a
+   dielectric is ~4% (`F0 = 0.16 × reflectance²`). Roughness shapes the
+   specular lobe and nothing else, so the maps have almost nothing to shape.
+   The constant is an undocumented one in `terrain_mesh::ground_material`. **It
+   is the coupled lighting owner's** (§0fill), not the ground material's, and
+   it is now unblocked: raising it over one shared roughness makes the island
+   uniformly shiny, raising it over the per-texel field that now exists is the
+   fix. `DECISIONS.md` §open "ground specular v0".
 4. **`ground_detail.jpg` is now loaded by nothing** — it is grass's baked
    luminance field and the shader computes the same thing from `grass_albedo`.
    It still ships and is still gated as a file; deleting it is a separate call,
    because a pre-baked field is what a cheaper LOD would want.
-5. `ui/map.rs` carries an independent minimap palette that nothing holds against
-   `GROUND_ALBEDO`, and it did not move with either edit.
+5. ~~`ui/map.rs` carries an independent minimap palette that nothing holds~~
+   **GATED 2026-08-16** — `crates/client/tests/map_palette.rs`. Hue tracks to
+   within 2° on three of four, value span is properly compressed, and the two
+   value-order inversions are pinned by name. One is convention (woodland
+   darker than meadow); **one is the drift this item suspected** — granite
+   passed beach sand on the ground in the 2026-08-15 re-place and the map's
+   `ROCK` did not follow. Fixing it departs from a `mapraw.jpg` reading, so it
+   is an operator call: `DECISIONS.md` §open "minimap palette v0".
+6. **The five PROP roughness maps are still unread, and their recorded reason
+   is false too.** `props.rs` repeats the ORM story; Bevy computes
+   `metallic *= metallic_roughness.b` against a `metallic` that defaults to
+   **0.0**, so a greyscale map in that slot cannot make anything metal. What it
+   actually needs is a level decision — `perceptual_roughness` is a *multiplier*
+   there, so shipping the map whole means factor 1.0 and losing the authored
+   `rock 0.88` / `ore_stone 0.80` distinction, while mean-placing it wants
+   0.88/0.611 = 1.44 and Bevy clamps at 1.0. Not slipped into the ground
+   slice: one owner per pass, and it is a look question rather than a
+   binding one. (`viewmodel.rs` is not in the way — its `wood` material
+   takes `PropMaps` at the default `metallic: 0.0`, and the `steel` one
+   that runs `metallic: 0.55` carries no maps at all, by the sourcing gap
+   recorded beside it.)
 
 ## 0tree · The research ladder exists — what it is still one edge short of *(systems lane)*
 

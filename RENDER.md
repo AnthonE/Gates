@@ -697,6 +697,56 @@ human looking at a PNG. That is the top of §8's list, it is the pivot's stated
 debt, and calling it anything other than open would be the "pass it didn't
 earn" this repo names as its worst bug class.
 
+⚠ **The probe is a player, and wolves kill it.** Recorded 2026-08-16, after it
+had cost several runs and been diagnosed as everything else first. A capture
+run connects as an ordinary client and its body stands in the world, unarmed
+and unmoving, from the moment the shard places it until the sixth vantage is
+written. That is long enough to be found.
+
+**The tell is that the kill rate tracks the BUILD, not the seed: 3 of 4 runs
+carrying a heavy change died, against 0 of 2 baseline runs on the same seed and
+the same spawn.** Nothing about the wolves changed. A heavier build takes longer
+in wall-clock to fill three rings and warm 30 frames — that is the whole
+mechanism — so the probe stands there longer and the leash brings something to
+it. Which makes this worse than a flake: **the measurement's failure rate is a
+function of the size of the thing being measured.** The captures you most want
+are the ones least likely to reach disk, and the bias points the wrong way for
+every purpose the harness has. Anyone reading a run of missing vantages as
+"expensive change, must have hung" would be reading the correlation exactly
+backwards.
+
+**Pin `dev_spawn` in `shard.toml`.** A pinned spawn is already the rule for a
+different reason — the shard hashes a spawn per player id, so two unpinned runs
+compare two places and not two builds (`render/ground_splat.rs` states where
+that already cost a before/after). It also happens to fix this, by letting you
+choose ground the roster has not homed on.
+
+**Not to `1024,1024`.** The island centre is the obvious pin and it is the
+worst one available: `mob::home_of` draws each slot's home from the seed and
+rejects it against `HOME_MAX_SLOPE`, so homes concentrate on exactly the flat
+walkable interior the centre is the middle of, and every one of them is leashed
+to return there. `1500,600` is the spawn the ground material's own measurements
+were taken at and it has been quiet across runs.
+
+**The harness has a noise floor of roughly 0.3%, and it had never been
+measured.** Re-running the *same build* twice through `ci/native_bar.py`'s
+estimator moves near-band neighbour contrast by −0.3% and near saturation by
+−0.6% — the probe is a live client against a live shard, so wind phase, clutter
+animation and mob positions do not repeat between runs, and only `5-sky` (which
+frames nothing that moves) comes back bit-stable. Anything a change buys under
+about a percent is therefore **not a result**, and the way to know which side of
+the line you are on is to run the unchanged build twice and subtract, rather
+than to trust one A/B. This is the same lesson as the clock rule above wearing
+different clothes: the number that looks like a measurement is the one to check
+against a second source. Measured 2026-08-16 while landing the ground roughness
+maps, whose whole reported effect (−0.4%) turned out to sit inside it.
+
+**What would actually fix it** is making the probe not a target — a capture
+client that the sim does not treat as huntable, or a shard flag that stands the
+roster down for a capture run. Both are sim-core changes for a harness's
+benefit, which is the wrong direction for a wall, so the pin is the answer
+until the harness is a gate rather than a measurement.
+
 Also landed, and it is the cheapest thing in the document: **the render
 feature now compiles under a lint gate.** `cargo clippy -p client --features
 render --all-targets -- -D warnings` is green and it caught three real
