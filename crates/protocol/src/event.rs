@@ -82,7 +82,8 @@ pub const MAX_ITEM_NAME_BYTES: usize = 24;
 
 /// Slots one container-sync message carries. Not a drip constant like the
 /// syncs above it, and that is the point: the widest container is
-/// `INV_SLOTS` and a slot is 37 bits, so a *whole* container is ≈ 145 B —
+/// `INV_SLOTS` and a slot is 53 bits (v42 added 16 of condition), so a
+/// *whole* container is ≈ 205 B —
 /// comfortably inside `MAX_EVENT_MSG_BYTES` — and a cursor would buy a
 /// second walk to restart, a second reset flag to get wrong, and a window
 /// in which a panel is drawn half full. One message, one truth.
