@@ -288,7 +288,19 @@ const TICKS: u64 = 900;
 /// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
 /// this value was read off, which is why the equality asserts sit *before*
 /// the pin rather than after it.
-const GOLDEN_FINAL_HASH: u64 = 0x2D61_AAB2_F881_0C4C;
+///
+/// **Regenerated 2026-08-16 for the build base lattice** (`DECISIONS.md`
+/// §open "build base lattice v0"): `build::column_floor_y` snaps every
+/// column's base to the 0.5 m lattice, so every piece, solid-deploy
+/// volume and box-drop height this script produces moved by up to a
+/// quarter-quantum — positions the bodies then walk on, which is the
+/// whole surface. The same change made a solid top take the step rule
+/// (`collide::deploy_blocked`), so the bots' paths over the barrel beach
+/// shifted too. No verb changed; `test_terrain_golden` did NOT move
+/// (worldgen itself is untouched — the lattice reads terrain, it does
+/// not write it). Evidence as above: both determinism equalities were
+/// green on the run this value was read off, run twice.
+const GOLDEN_FINAL_HASH: u64 = 0x8A52_A5C7_160A_1B60;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
