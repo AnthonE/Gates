@@ -49,12 +49,21 @@ fn empty() -> [ItemStack; INV_SLOTS] {
 
 fn stocked() -> [ItemStack; INV_SLOTS] {
     let mut inv = empty();
-    inv[0] = ItemStack { item: 7, count: 9 };
+    inv[0] = ItemStack {
+        item: 7,
+        count: 9,
+        cond: 0,
+    };
     inv[1] = ItemStack {
         item: 3,
         count: 100,
+        cond: 0,
     };
-    inv[2] = ItemStack { item: 7, count: 1 };
+    inv[2] = ItemStack {
+        item: 7,
+        count: 1,
+        cond: 0,
+    };
     inv
 }
 
@@ -90,7 +99,11 @@ fn move_marshals_every_field_to_its_own_name() {
 fn a_ground_move_carries_the_handle_and_the_containers_own_count() {
     let inv = empty();
     let mut cont = empty();
-    cont[4] = ItemStack { item: 2, count: 6 };
+    cont[4] = ItemStack {
+        item: 2,
+        count: 6,
+        cond: 0,
+    };
     let m = slots::move_args(HANDLE, CONT_BOX, 4, CONT_SELF, 0, Grab::All, &inv, &cont)
         .expect("box to self");
     assert_eq!(m.bag, HANDLE);
@@ -105,7 +118,11 @@ fn a_ground_move_carries_the_handle_and_the_containers_own_count() {
 fn refusals_in_order() {
     let inv = stocked();
     let mut cont = empty();
-    cont[0] = ItemStack { item: 2, count: 4 };
+    cont[0] = ItemStack {
+        item: 2,
+        count: 4,
+        cond: 0,
+    };
 
     // 1 · a kind past CONT_MAX.
     assert!(slots::move_args(HANDLE, 9, 0, CONT_SELF, 1, Grab::All, &inv, &cont).is_none());
@@ -222,13 +239,25 @@ fn craft_fixture() -> CraftContent {
 fn affordability_is_the_tightest_input() {
     let recipes = craft_fixture();
     let mut inv = empty();
-    inv[0] = ItemStack { item: 0, count: 7 };
+    inv[0] = ItemStack {
+        item: 0,
+        count: 7,
+        cond: 0,
+    };
     // Row 0 costs 3 of item 0, so seven pays for two and leaves one over.
     assert_eq!(craft::affordable(&recipes.recipes[0], &inv), 2);
 
     // Row 1 needs two items and the SCARCER one is the ceiling.
-    inv[1] = ItemStack { item: 1, count: 10 };
-    inv[2] = ItemStack { item: 2, count: 1 };
+    inv[1] = ItemStack {
+        item: 1,
+        count: 10,
+        cond: 0,
+    };
+    inv[2] = ItemStack {
+        item: 2,
+        count: 1,
+        cond: 0,
+    };
     assert_eq!(craft::affordable(&recipes.recipes[1], &inv), 1);
 
     // Nothing in the bag pays for nothing.
@@ -239,7 +268,11 @@ fn affordability_is_the_tightest_input() {
 fn the_ingredient_table_scales_with_the_stepper() {
     let recipes = craft_fixture();
     let mut inv = empty();
-    inv[0] = ItemStack { item: 0, count: 5 };
+    inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
     let (lines, n) = craft::ingredients(&recipes.recipes[0], 3, &inv);
     assert_eq!(n, 1);
     // AMOUNT is per craft and does NOT scale; TOTAL is what three cost.
@@ -547,7 +580,11 @@ fn the_wheel_prices_a_piece_against_the_bag() {
     let content = BuildContent::probe_fixture();
     let row = build::row_for(&content, SHAPE_FOUNDATION, MAT_TWIG).unwrap();
     let mut inv = empty();
-    inv[0] = ItemStack { item: 0, count: 4 };
+    inv[0] = ItemStack {
+        item: 0,
+        count: 4,
+        cond: 0,
+    };
     let (lines, n) = build::costs(&content, row, &inv);
     assert_eq!(n, 1);
     // The fixture's foundation costs 5 of item 0; four is short by one.
@@ -556,7 +593,11 @@ fn the_wheel_prices_a_piece_against_the_bag() {
     assert!(lines[0].short());
     assert!(!build::affordable(&content, row, &inv));
 
-    inv[0] = ItemStack { item: 0, count: 5 };
+    inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
     assert!(build::affordable(&content, row, &inv));
 }
 
@@ -2633,7 +2674,11 @@ mod techtree_model {
     fn inv_with_coin(count: u16) -> [ItemStack; INV_SLOTS] {
         let mut inv = [ItemStack::default(); INV_SLOTS];
         // The fixture's coin is item 3.
-        inv[0] = ItemStack { item: 3, count };
+        inv[0] = ItemStack {
+            item: 3,
+            count,
+            cond: 0,
+        };
         inv
     }
 
@@ -2827,8 +2872,12 @@ mod techtree_layout {
 //      converse half is checked too: a variant nothing ever *pushes* is a
 //      sentence for a fact that cannot happen.
 //
-//   2. **The latched consume readouts have a reader.** These three fields are
-//      not rings, so nothing drains them and nothing notices their absence.
+//   2. **The latched consume readout has a reader.** `last_drink` is a field,
+//      not a ring, so nothing drains it and nothing notices its absence.
+//      (`last_eat` / `last_eat_refused` were this list's other two rows until
+//      2026-08-15, when both became rings — `tests/sound.rs` derives those
+//      into the one-drain rule, the wiring gate below holds the refusal's
+//      sentence, and `the_landed_eat_reaches_a_sentence` holds the landing's.)
 //
 // Both predicates are factored out of their tests so the tests below them can
 // prove them RED against a doctored copy of the tree, on every run. A gate
@@ -2957,11 +3006,44 @@ fn the_wiring_gate_can_see_an_unwired_variant() {
     );
 }
 
+/// The landed half of the consume rework: `Feed::consumed` replaced the
+/// `last_eat` latch on 2026-08-15, and a ring nobody reads is §0eat's dead
+/// button over again. `tests/sound.rs`'s derived rule proves the drain
+/// FILLS it (`pop_consume_toast` must appear in feed.rs); this is the half
+/// that says a player reads it.
+#[test]
+fn the_landed_eat_reaches_a_sentence() {
+    let (_, hud) = feed_and_hud();
+    assert!(
+        hud.contains("feed.consumed()"),
+        "nothing in render/hud.rs reads `feed.consumed()` - a landed eat or \
+         bandage is a dead fact again, and only this grep can say so"
+    );
+}
+
+/// The gate above, proven red on its defect — every run.
+#[test]
+fn the_landed_eat_gate_can_see_the_reader_go_away() {
+    let (_, hud) = feed_and_hud();
+    let doctored = hud.replace("feed.consumed()", "feed.consumed_gone()");
+    assert_ne!(
+        doctored, hud,
+        "nothing in hud.rs matches `feed.consumed()` - this proof is scanning \
+         for text that is not there, so it proves nothing"
+    );
+    assert!(
+        !doctored.contains("feed.consumed()"),
+        "the landed-eat gate cannot see the reader go away, so it is not a gate"
+    );
+}
+
 /// Does `code` name `field` as a whole word, rather than as a prefix?
 ///
-/// `last_eat` is a prefix of `last_eat_refused`, so a plain `contains` would
-/// report the eat readout as read by the line that reads the refusal — the
-/// false green this gate exists to refuse.
+/// Kept even with one row left: `last_eat` was a prefix of
+/// `last_eat_refused` while both fields existed (until 2026-08-15), and a
+/// plain `contains` reported the eat readout as read by the line that read
+/// the refusal — the false green this helper exists to refuse, and the next
+/// latched field pair would reopen it.
 fn names_field(code: &str, field: &str) -> bool {
     let mut from = 0;
     while let Some(i) = code[from..].find(field) {
@@ -2975,18 +3057,14 @@ fn names_field(code: &str, field: &str) -> bool {
     false
 }
 
-/// The consume readouts `client-core` latches, and what each is worth saying.
-const CONSUME_READOUTS: [(&str, &str); 3] = [
-    (
-        "last_eat_refused",
-        "which reason the sim refused an eat or a drink for",
-    ),
-    ("last_eat", "which item the consume actually spent"),
-    (
-        "last_drink",
-        "how much water the drink restored and what it cost in hp",
-    ),
-];
+/// The consume readouts `client-core` still latches, and what each is worth
+/// saying. One row since 2026-08-15: the eat's answer and the refusal became
+/// rings (`pop_consume_toast` / `pop_consume_refusal`), which `tests/
+/// sound.rs`'s derived one-drain rule watches instead.
+const CONSUME_READOUTS: [(&str, &str); 1] = [(
+    "last_drink",
+    "how much water the drink restored and what it cost in hp",
+)];
 
 /// Which of those nothing under `src/render` reads. Comment lines are
 /// skipped: naming a field in prose is not reading it, and this gate exists
@@ -3031,8 +3109,8 @@ fn the_consume_readouts_are_read() {
 fn the_readout_gate_can_see_a_reader_go_away() {
     let sources = render_sources();
     for (field, _) in CONSUME_READOUTS {
-        // Rename the field everywhere it is named: `last_eat` becomes
-        // `last_eat_gone`, which `names_field` refuses as a prefix match.
+        // Rename the field everywhere it is named: `last_drink` becomes
+        // `last_drink_gone`, which `names_field` refuses as a prefix match.
         let doctored: Vec<(String, String)> = sources
             .iter()
             .map(|(p, t)| (p.clone(), t.replace(field, &format!("{field}_gone"))))
@@ -3042,5 +3120,219 @@ fn the_readout_gate_can_see_a_reader_go_away() {
             "the readout gate cannot see `{field}` lose its last reader, so it is \
              not a gate for it"
         );
+    }
+}
+
+// §N · the bind list is not fiction
+//
+// `settings::BINDS` is the only screen that tells a player what the keys are,
+// and it is a HAND-KEPT MIRROR of six systems across `src/render`. That is
+// `CLAUDE.md`'s most-repeated defect shape — the `props.js` count, the `pop_*`
+// verb list, the `grep -rn` line whose number had drifted by the time anyone
+// re-ran it — and it had already happened here: the list carried eight rows
+// while the client read about twenty keys, so `E`, the map, chat and the
+// inventory were absent from the one place a player could look them up.
+//
+// This cannot derive the list (the display text is prose, deliberately: "Hold
+// Left Alt (the head turns, the body does not)" is worth more to a player than
+// `AltLeft`). What it can do is refuse the two failures that matter: a row
+// that advertises a key **no system reads**, and a row added with **nothing
+// checking it at all**.
+
+/// Every `BINDS` row, against the `KeyCode`/`MouseButton` idents the client
+/// must actually read for that row to be true.
+///
+/// An empty list means the row is not a discrete button — `LOOK` is mouse
+/// motion — and is exempt by name rather than by falling through.
+const BIND_IDENTS: [(&str, &[&str]); 17] = [
+    ("MOVE", &["KeyW", "KeyA", "KeyS", "KeyD"]),
+    ("SPRINT", &["ShiftLeft"]),
+    ("CROUCH", &["ControlLeft"]),
+    ("JUMP", &["Space"]),
+    ("FREE LOOK", &["AltLeft"]),
+    ("LOOK", &[]),
+    ("USE / ATTACK", &["MouseButton::Left"]),
+    ("INTERACT / OPEN", &["KeyE"]),
+    (
+        "HOTBAR",
+        &["Digit1", "Digit2", "Digit3", "Digit4", "Digit5", "Digit6"],
+    ),
+    ("INVENTORY / CRAFTING", &["Tab", "KeyI", "KeyQ"]),
+    ("MAP", &["KeyG"]),
+    ("CHAT", &["KeyT", "Enter"]),
+    ("EAT / DRINK", &["KeyJ", "KeyH"]),
+    ("BUILD", &["MouseButton::Right"]),
+    ("REPAIR / UPGRADE", &["KeyR", "KeyU"]),
+    ("MENU", &["Escape"]),
+    ("QUIT", &["Escape"]),
+];
+
+/// The binds among `rows` that name an ident no render system reads.
+fn unread_binds(haystack: &str, rows: &[(&str, &[&str])]) -> Vec<String> {
+    let mut dead = Vec::new();
+    for (label, idents) in rows {
+        for id in *idents {
+            // `MouseButton::Left` is already qualified; a bare ident is a
+            // `KeyCode`.
+            let needle = if id.contains("::") {
+                (*id).to_string()
+            } else {
+                format!("KeyCode::{id}")
+            };
+            if !haystack.contains(&needle) {
+                dead.push(format!("{label} advertises `{needle}`"));
+            }
+        }
+    }
+    dead
+}
+
+fn render_text() -> String {
+    render_sources()
+        .iter()
+        .map(|(_, t)| t.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A row may not name a key the client does not read.
+#[test]
+fn every_advertised_bind_is_read_by_some_system() {
+    let dead = unread_binds(&render_text(), &BIND_IDENTS);
+    assert!(
+        dead.is_empty(),
+        "the settings screen promises binds no system reads: {}",
+        dead.join(", ")
+    );
+}
+
+/// The row labels `settings::BINDS` actually declares, read out of the source.
+///
+/// **Read from the text rather than imported, and that is not squeamishness.**
+/// `settings` is behind `--features render`, so `use client::render::settings`
+/// does not compile on the default `cargo test --workspace` — the exact
+/// feature-line trap `CLAUDE.md` records, where a check lives on the far side
+/// of the flag and is green twice while being red at the one gate that costs
+/// five minutes to reach. A grep runs on every build.
+/// **String literals, not lines.** The first cut of this matched `("LABEL"` at
+/// the head of a line and `cargo fmt` immediately broke it: a row whose two
+/// strings are long enough gets split across three lines, so `("CROUCH",` never
+/// appears and two real rows went invisible. The gate caught it — which is the
+/// gate working — but a parser that a formatter can silently narrow is one that
+/// would eventually pass by seeing nothing, the failure this whole section
+/// exists to refuse. Every entry is a `(label, value)` pair whatever the
+/// layout, so taking the even-indexed literals is layout-proof.
+fn declared_bind_labels() -> Vec<String> {
+    let src = std::fs::read_to_string("src/render/settings.rs").expect("settings.rs is readable");
+    let start = src
+        .find("pub const BINDS")
+        .expect("settings.rs declares BINDS");
+    let body = &src[start..];
+    let end = body.find("\n];").expect("the BINDS array is closed");
+    // Past the `= [`, so the type's own `&str` tokens are not scanned.
+    let body = &body[..end];
+    let body = &body[body.find('[').expect("the BINDS array opens")..];
+    let mut lits = Vec::new();
+    let mut rest = body;
+    while let Some(open) = rest.find('"') {
+        rest = &rest[open + 1..];
+        let close = rest.find('"').expect("an unterminated string in BINDS");
+        lits.push(rest[..close].to_string());
+        rest = &rest[close + 1..];
+    }
+    assert_eq!(
+        lits.len() % 2,
+        0,
+        "BINDS parsed to an odd number of string literals ({}), so the pairs \
+         do not line up and the labels below would be values",
+        lits.len()
+    );
+    lits.into_iter().step_by(2).collect()
+}
+
+/// And the gate may not go quiet when the list grows.
+///
+/// Without this, adding a row to `BINDS` and not to `BIND_IDENTS` passes —
+/// the loop above would simply never look at it, which is the silent-skip
+/// failure `CLAUDE.md` calls the worst bug class.
+#[test]
+fn the_bind_gate_covers_every_row() {
+    let declared = declared_bind_labels();
+    assert!(
+        declared.len() > 8,
+        "only parsed {} bind rows out of settings.rs — the parser has lost \
+         the array, which would make this gate pass by seeing nothing",
+        declared.len()
+    );
+    let checked: Vec<&str> = BIND_IDENTS.iter().map(|(l, _)| *l).collect();
+    assert_eq!(
+        declared, checked,
+        "the bind list and its gate disagree — a bind was added, removed or \
+         reordered without anything checking it"
+    );
+}
+
+/// The gate above, proven red — every run, through the same function.
+///
+/// A gate nobody has watched fail is a gate nobody knows the polarity of.
+/// This feeds `unread_binds` a row naming a key the client genuinely does not
+/// read and asserts it is caught; `F7` qualifies because `F12` is the only
+/// function key this client binds (`render/shot.rs` says so and the claim is
+/// re-checked here rather than trusted).
+#[test]
+fn the_bind_gate_can_see_a_dead_key() {
+    let haystack = render_text();
+    assert!(
+        !haystack.contains("KeyCode::F7"),
+        "this proof needs a key nothing reads, and F7 stopped being one"
+    );
+    let doctored: [(&str, &[&str]); 1] = [("MADE UP", &["F7"])];
+    let caught = unread_binds(&haystack, &doctored);
+    assert_eq!(
+        caught.len(),
+        1,
+        "the bind gate cannot see a row naming a key nothing reads, so it is \
+         not a gate"
+    );
+}
+
+// §O · the wheel walks the hotbar
+
+/// A notch moves exactly one slot, and away-from-the-player walks toward
+/// slot 1 — the direction that is invisible in a screenshot and wrong in
+/// exactly one of two ways.
+#[test]
+fn one_notch_is_one_slot_and_up_walks_toward_slot_one() {
+    use client::ui::slots::hotbar_scrolled;
+    assert_eq!(hotbar_scrolled(3, -1), 2, "a wheel pushed away walks down");
+    assert_eq!(hotbar_scrolled(3, 1), 4, "a wheel pulled back walks up");
+}
+
+/// It wraps at both ends, because six slots under a wheel is a ring — a
+/// saturating hotbar could not reach slot 6 from slot 1 without a full sweep.
+#[test]
+fn the_hotbar_wheel_wraps_at_both_ends() {
+    use client::ui::slots::hotbar_scrolled;
+    use sim_core::limits::HOTBAR_SLOTS;
+    let last = HOTBAR_SLOTS as u8 - 1;
+    assert_eq!(hotbar_scrolled(0, -1), last, "slot 1 wraps back to the end");
+    assert_eq!(hotbar_scrolled(last, 1), 0, "the end wraps round to slot 1");
+}
+
+/// Whatever is thrown at it, the result is a slot that exists. `set_input`
+/// clamps too, but a client that computed an out-of-range slot and leaned on
+/// the clamp would be sending a different slot than it drew.
+#[test]
+fn the_scrolled_slot_is_always_in_range() {
+    use client::ui::slots::hotbar_scrolled;
+    use sim_core::limits::HOTBAR_SLOTS;
+    for sel in 0..=8u8 {
+        for notches in [-1000i32, -7, -1, 0, 1, 7, 1000, i32::MAX, i32::MIN] {
+            let got = hotbar_scrolled(sel, notches);
+            assert!(
+                (got as usize) < HOTBAR_SLOTS,
+                "sel {sel} notches {notches} left the bar at {got}"
+            );
+        }
     }
 }

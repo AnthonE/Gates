@@ -84,7 +84,8 @@ pub const MAX_ITEM_NAME_BYTES: usize = 24;
 
 /// Slots one container-sync message carries. Not a drip constant like the
 /// syncs above it, and that is the point: the widest container is
-/// `INV_SLOTS` and a slot is 37 bits, so a *whole* container is ≈ 145 B —
+/// `INV_SLOTS` and a slot is 53 bits (v42 added 16 of condition), so a
+/// *whole* container is ≈ 205 B —
 /// comfortably inside `MAX_EVENT_MSG_BYTES` — and a cursor would buy a
 /// second walk to restart, a second reset flag to get wrong, and a window
 /// in which a panel is drawn half full. One message, one truth.
@@ -225,7 +226,13 @@ const SUB_SHOT: u32 = 47;
 /// drawn from. The coin item rides every batch header rather than its
 /// own message: three spare bytes against a subtype nobody else needs.
 const SUB_RESEARCH_ROWS: u32 = 48;
-/// **Your own bags**, whole, with each one's cooldown state (wire v42,
+/// A gather swing the node refused (wire v42, `EV_GATHER_REFUSED`).
+/// Own-fact, `SUB_CONSUME_REFUSED`'s posture — a button that did nothing
+/// says so — and it carries the **held item** beside the reason, because
+/// the sentence the HUD owes is *a torch cannot fell a tree*, not "bare
+/// hands" (`NOW.md` §0kit item 2). 50th of the 64 a 6-bit field holds.
+const SUB_GATHER_REFUSED: u32 = 49;
+/// **Your own bags**, whole, with each one's cooldown state (wire v43,
 /// bag choice v0). Own-fact and `SUB_KNOWN`'s posture in both halves.
 ///
 /// *Own*, because `DeployRec::owner` is deliberately not on the wire, so
@@ -246,7 +253,12 @@ const SUB_RESEARCH_ROWS: u32 = 48;
 /// still the authority and still falls back to the beach, and the client
 /// says which anchor answered (`ui::death::woke`), so a stale bit costs a
 /// sentence rather than a wrong place to wake up.
-const SUB_BAGS: u32 = 49;
+/// **50, not 49** — see `PROTO_VER`'s v43 note. This landed on a branch
+/// as 49 with `PROTO_VER` 42, and the gather refusal above landed on the
+/// trunk as the same two numbers. Two layouts under one version is
+/// `worldsave.rs`'s format-3 collision, and it takes the same cure: the
+/// trunk's number stands and this takes the next one neither claimed.
+const SUB_BAGS: u32 = 50;
 const SUB_MAX: u32 = SUB_BAGS;
 /// And the field must hold it. A subtype declared past `SUB_BITS` would
 /// truncate on the way out and decode as a *different, live* code — the
@@ -302,6 +314,10 @@ const _: () = assert!(
 /// Consume-refusal reason width (`survival::REFUSE_C_*`: three codes
 /// today, and zero is reserved as "no reason", which the codec refuses).
 const REFUSE_C_BITS: u32 = 4;
+/// Gather-refusal reason width (`gather::REFUSE_G_*`: two codes today,
+/// zero reserved as "no reason", refused at both ends — `REFUSE_C_BITS`'s
+/// posture exactly).
+const REFUSE_G_BITS: u32 = 4;
 /// Build-refusal reason width (`build::REFUSE_B_*`: ten codes today, and
 /// zero is a live one — `REFUSE_B_PIECE`).
 ///
@@ -447,6 +463,11 @@ pub enum EventMsg {
     /// Own gather payout: `added` units of `item` landed (or 0 — full
     /// inventory). The toast, not the truth: `Inv` is authoritative.
     Gather { item: u16, added: u16 },
+    /// A gather swing bounced (wire v42): `item` is what was held —
+    /// `sim_core::gather::NO_ITEM` means bare hands — and `reason` is a
+    /// `sim_core::gather::REFUSE_G_*` code. The item crosses so the HUD
+    /// can name the torch instead of saying "bare hands" (`SUB_GATHER_REFUSED`).
+    GatherRefused { item: u16, reason: u8 },
     /// Authoritative own-inventory slots that changed since last sent.
     Inv {
         slots: [InvSlot; INV_SLOTS],
@@ -900,6 +921,27 @@ pub fn encode_event_gather(item: u16, added: u16, buf: &mut [u8]) -> Result<usiz
     Ok(w.finish())
 }
 
+/// The gather refusal (wire v42). `reason` is a `gather::REFUSE_G_*` code:
+/// zero is reserved as "no reason" and refused here exactly as
+/// `encode_event_consume_refused` refuses its own zero; anything past the
+/// sim's ledger is a bug at this end and refused the same way. `item` is
+/// unbounded 16 bits on purpose — `NO_ITEM` (0xFFFF) is a live value
+/// meaning bare hands, so the field carries the whole `u16` domain the
+/// inventory already speaks.
+pub fn encode_event_gather_refused(
+    item: u16,
+    reason: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if reason == 0 || (reason as u32) > sim_core::gather::REFUSE_G_MAX {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_GATHER_REFUSED)?;
+    w.write(item as u32, 16)?;
+    w.write(reason as u32, REFUSE_G_BITS)?;
+    Ok(w.finish())
+}
+
 /// `slots` must be non-empty and within `INV_SLOTS` rows/indices — an
 /// empty update is a server bug, not a message.
 pub fn encode_event_inv(slots: &[InvSlot], buf: &mut [u8]) -> Result<usize, WireError> {
@@ -915,6 +957,7 @@ pub fn encode_event_inv(slots: &[InvSlot], buf: &mut [u8]) -> Result<usize, Wire
         w.write(s.slot as u32, INV_SLOT_BITS)?;
         w.write(s.stack.item as u32, 16)?;
         w.write(s.stack.count as u32, 16)?;
+        w.write(s.stack.cond as u32, 16)?;
     }
     Ok(w.finish())
 }
@@ -1909,6 +1952,7 @@ pub fn encode_event_cont_sync(
         w.write(s.slot as u32, INV_SLOT_BITS)?;
         w.write(s.stack.item as u32, 16)?;
         w.write(s.stack.count as u32, 16)?;
+        w.write(s.stack.cond as u32, 16)?;
     }
     Ok(w.finish())
 }
@@ -2053,9 +2097,11 @@ pub fn encode_event_consumed(item: u16, slot: u8, buf: &mut [u8]) -> Result<usiz
 
 /// The eat refusal (`sim_core::survival::REFUSE_C_*`). Reason zero is not a
 /// reason — a refusal that cannot say why is the silence this event exists
-/// to replace, so it is refused at the encoder.
+/// to replace — and anything past the sim's own ledger is a bug at this
+/// end; both are refused at the encoder, the posture every other refusal
+/// encoder here already takes (`REFUSE_M_MAX`, `REFUSE_G_MAX`).
 pub fn encode_event_consume_refused(reason: u8, buf: &mut [u8]) -> Result<usize, WireError> {
-    if reason == 0 {
+    if reason == 0 || (reason as u32) > sim_core::survival::REFUSE_C_MAX {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_CONSUME_REFUSED)?;
@@ -2137,6 +2183,20 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             item: r.read(16)? as u16,
             added: r.read(16)? as u16,
         },
+        SUB_GATHER_REFUSED => {
+            let item = r.read(16)? as u16;
+            let reason = r.read(REFUSE_G_BITS)? as u8;
+            // Zero is refused (`SUB_CONSUME_REFUSED`'s posture exactly);
+            // the upper end is deliberately NOT bounded here, also that
+            // refusal's posture — a shard newer than this client can
+            // legitimately send a reason it has no word for, and the
+            // client's table prints it as `code N` instead of dropping
+            // the frame (the domain table's stated forgery-slack call).
+            if reason == 0 {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::GatherRefused { item, reason }
+        }
         SUB_INV => {
             let count = r.read(INV_COUNT_BITS)? as usize;
             if count == 0 || count > INV_SLOTS {
@@ -2153,6 +2213,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     stack: ItemStack {
                         item: r.read(16)? as u16,
                         count: r.read(16)? as u16,
+                        cond: r.read(16)? as u16,
                     },
                 };
             }
@@ -2889,6 +2950,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     stack: ItemStack {
                         item: r.read(16)? as u16,
                         count: r.read(16)? as u16,
+                        cond: r.read(16)? as u16,
                     },
                 };
             }
@@ -2936,6 +2998,42 @@ mod tests {
         );
     }
 
+    /// **The container sync carries condition** (item durability v0, gate
+    /// 8) — on both lanes that carry slots, proven by roundtrip equality
+    /// against the INPUT and deliberately not against a fixture: the
+    /// golden was regenerated from this same encoder, so zeroing the
+    /// `cond` write would regenerate a matching golden and stay green
+    /// there, while this check reads 0 where it wrote 4 660 and goes red.
+    #[test]
+    fn a_worn_slot_crosses_both_lanes_with_its_condition() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        let worn = InvSlot {
+            slot: 3,
+            stack: ItemStack {
+                item: 7,
+                count: 1,
+                cond: 0x1234,
+            },
+        };
+        let len = encode_event_inv(&[worn], &mut buf).unwrap();
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::Inv { slots, .. } => assert_eq!(
+                slots[0].stack.cond, 0x1234,
+                "SUB_INV dropped the condition — a worn tool arrives whole"
+            ),
+            other => panic!("wrong variant: {other:?}"),
+        }
+        let len = encode_event_cont_sync(CONT_BAG, 5, false, &[worn], &mut buf).unwrap();
+        match decode_event(&buf[..len]).unwrap() {
+            EventMsg::ContSync { slots, .. } => assert_eq!(
+                slots[0].stack.cond, 0x1234,
+                "SUB_CONT_SYNC dropped the condition — a worn tool in a \
+                 container arrives whole"
+            ),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
     #[test]
     fn inv_round_trips_and_refuses_bad_shapes() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
@@ -2946,6 +3044,7 @@ mod tests {
                 stack: ItemStack {
                     item: i as u16,
                     count: 100 + i as u16,
+                    cond: 200 + i as u16,
                 },
             };
         }
@@ -3619,13 +3718,18 @@ mod tests {
         let rows = [
             InvSlot {
                 slot: 0,
-                stack: ItemStack { item: 9, count: 4 },
+                stack: ItemStack {
+                    item: 9,
+                    count: 4,
+                    cond: 0,
+                },
             },
             InvSlot {
                 slot: 11,
                 stack: ItemStack {
                     item: 21,
                     count: 60,
+                    cond: 7_500,
                 },
             },
         ];
@@ -3654,7 +3758,11 @@ mod tests {
         // A bag reset carrying the widest slot index there is.
         let wide = [InvSlot {
             slot: (INV_SLOTS - 1) as u8,
-            stack: ItemStack { item: 3, count: 1 },
+            stack: ItemStack {
+                item: 3,
+                count: 1,
+                cond: 42,
+            },
         }];
         let len = encode_event_cont_sync(CONT_BAG, 7, true, &wide, &mut buf).unwrap();
         match decode_event(&buf[..len]).unwrap() {
@@ -3712,7 +3820,11 @@ mod tests {
         // the same slot is legal one line down under a bag.
         let past_box = [InvSlot {
             slot: BOX_SLOTS as u8,
-            stack: ItemStack { item: 1, count: 1 },
+            stack: ItemStack {
+                item: 1,
+                count: 1,
+                cond: 0,
+            },
         }];
         assert_eq!(
             encode_event_cont_sync(CONT_BOX, 1, true, &past_box, &mut buf),
@@ -3775,6 +3887,7 @@ mod tests {
                 stack: ItemStack {
                     item: (i as u16) + 1,
                     count: u16::MAX,
+                    cond: u16::MAX,
                 },
             };
         }
@@ -4133,6 +4246,18 @@ mod wire_domains {
             live_max: 3,
         },
         Domain {
+            what: "gather refusal",
+            sim_site: "gather.rs REFUSE_G_*",
+            wire_site: "REFUSE_G_BITS",
+            home: "gather.rs",
+            prefix: "pub const REFUSE_G_",
+            ty: ": u32 = ",
+            exempt: &["MAX"],
+            min_members: 2,
+            bits: REFUSE_G_BITS,
+            live_max: 2,
+        },
+        Domain {
             what: "build refusal",
             sim_site: "build.rs REFUSE_B_*",
             wire_site: "REFUSE_B_BITS",
@@ -4417,7 +4542,7 @@ mod wire_domains {
     fn the_domain_table_states_its_own_coverage() {
         assert_eq!(
             DOMAINS.len(),
-            14,
+            15,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \

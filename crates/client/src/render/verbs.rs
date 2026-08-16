@@ -1,4 +1,4 @@
-//! The in-world keys: what the crosshair is on, and what `E`, `G` and `H` do
+//! The in-world keys: what the crosshair is on, and what `E`, `J` and `H` do
 //! about it.
 //!
 //! **Twelve of the wire's sixteen action verbs had no key in this client.**
@@ -182,7 +182,7 @@ pub fn resolve(
     );
 }
 
-/// `E`, `G`, `H`.
+/// `E`, `J`, `H`.
 ///
 /// Runs in `Screen::InWorld` only and stands down while a panel owns the
 /// pointer, for `input::gather`'s reason: every verb here spends something —
@@ -271,19 +271,25 @@ pub fn keys(
     if keys.just_pressed(KeyCode::Backspace) {
         demolish_near(&net, &near.0, &mut toast);
     }
-    if keys.just_pressed(KeyCode::KeyG) {
-        // Eat what is in the selected hotbar slot. `G` rather than a
+    if keys.just_pressed(KeyCode::KeyJ) {
+        // Eat what is in the selected hotbar slot. A key rather than a
         // right-click because the swing arm is already spoken for, and a
         // consume that shared it would fire every time you chopped a tree
         // holding berries. Whether the slot holds food is the sim's verdict,
         // announced back either way (`survival.rs`).
+        //
+        // **`J`, and it was `G` until 2026-08-16**, when `G` became the map
+        // (`DECISIONS.md`, the control scheme). What the old binding was
+        // chosen for survives the move intact: the reason was never the
+        // letter `G`, it was that eat and drink sit under one hand as a pair,
+        // and `J`–`H` are adjacent exactly as `G`–`H` were.
         let slot = net.sel;
         send(&net, &mut toast, "eat", |buf| {
             protocol::encode_action_consume(slot, buf)
         });
     }
     if keys.just_pressed(KeyCode::KeyH) {
-        // Drink from the water at your feet. `H` because `G` is the eat and
+        // Drink from the water at your feet. `H` because `J` is the eat and
         // the two are one gesture from the player's side — adjacent keys, one
         // hand. Payload-free: the sim reads the heightfield under the body,
         // so there is nothing to aim and no reach for the client to guess.

@@ -44,6 +44,32 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if i.name.trim().is_empty() {
             return Err(format!("item `{}`: empty name", i.id));
         }
+        // --- durability V7, FIRST because everything else leans on it: a
+        // condition-carrying item stacks to exactly 1. Condition is
+        // per-stack state, so a stack of 30 hatchets with one condition is
+        // a merge nobody can resolve — and `stack = 1` is what lets
+        // `plan_move` and `inv_add` keep their arithmetic unchanged: no
+        // merge path is ever asked to reconcile two conditions.
+        if i.condition_max > 0 && i.stack != 1 {
+            return Err(format!(
+                "item `{}`: condition_max {} on a stack of {} — condition is \
+                 per-stack state, so a wearing item must stack to 1 (V7)",
+                i.id, i.condition_max, i.stack
+            ));
+        }
+        // --- durability V1: the ceiling fits the sim's u16 hundredths.
+        // 65 535 hundredths is 655 points — the metal tier's 40 000 sits
+        // inside it with headroom, and a value past it would truncate in
+        // the bake rather than mean anything.
+        if i.condition_max > u16::MAX as u32 {
+            return Err(format!(
+                "item `{}`: condition_max {} overflows the sim's u16 \
+                 hundredths (max {}) (V1)",
+                i.id,
+                i.condition_max,
+                u16::MAX
+            ));
+        }
     }
     for g in &c.gatherables {
         check_id(&g.id, "gather.", "gatherable")?;
@@ -117,6 +143,88 @@ pub fn structural(c: &Content) -> Result<(), String> {
             if c.item(tool).map(|i| i.slot) != Some(EquipSlot::Hand) {
                 return Err(format!(
                     "gatherable `{}`: tool `{tool}` is not a hand item",
+                    g.id
+                ));
+            }
+        }
+        // --- durability V2–V6: the wear table, keyed per (tool, node)
+        // exactly as `yield_per_hit` is. The rules are the two directions
+        // of one completeness claim plus three shapes of dead row, and
+        // every one is a boot refusal because a wear table that is quietly
+        // wrong is a tool economy that is quietly wrong.
+        for (tool, loss) in &g.condition_loss {
+            // V2: bare hands do not wear. A `hand` row here is a loss
+            // nothing can pay — the hand is not an item and carries no
+            // condition.
+            if tool == "hand" {
+                return Err(format!(
+                    "gatherable `{}`: condition_loss has a `hand` row — bare \
+                     hands are not an item and cannot wear (V2)",
+                    g.id
+                ));
+            }
+            item_exists(tool, &format!("gatherable `{}` condition_loss", g.id))?;
+            // V5: a zero loss row is an inert row. "This tool does not
+            // wear here" is said by omitting the row; "this item never
+            // wears" is said by omitting `condition_max` — a zero here is
+            // one of those wearing the other's clothes.
+            if *loss == 0 {
+                return Err(format!(
+                    "gatherable `{}`: condition_loss for `{tool}` is 0 — drop \
+                     the row (no wear on this node) or drop the item's \
+                     condition_max (never wears) instead of shipping an inert \
+                     row (V5)",
+                    g.id
+                ));
+            }
+            // V1's shape for the loss: it must fit the sim's u16.
+            if *loss > u16::MAX as u32 {
+                return Err(format!(
+                    "gatherable `{}`: condition_loss {} for `{tool}` \
+                     overflows the sim's u16 hundredths (V1)",
+                    g.id, loss
+                ));
+            }
+            // V3: a loss row must name a tool with a yield row on this
+            // node. Wear happens only on a landed, paying hit — a swing
+            // the node pays nothing for is refused before the wear — so a
+            // loss row for a non-paying tool is unreachable by
+            // construction and reads as coverage that is not there.
+            if !g.yield_per_hit.contains_key(tool) {
+                return Err(format!(
+                    "gatherable `{}`: condition_loss names `{tool}`, which has \
+                     no yield_per_hit row here — wear lands only on a paying \
+                     hit, so this row is unreachable (V3)",
+                    g.id
+                ));
+            }
+            // V6: the tool must declare a condition to lose. A loss row
+            // for an item with condition_max 0 is arithmetic on a meter
+            // the item does not have.
+            if c.item(tool).map(|i| i.condition_max) == Some(0) {
+                return Err(format!(
+                    "gatherable `{}`: condition_loss names `{tool}`, whose \
+                     condition_max is 0 — nothing wears on an item with no \
+                     condition (V6)",
+                    g.id
+                ));
+            }
+        }
+        // V4, the set check — the class this repo keeps getting bitten
+        // by: every non-hand tool that carries condition and is paid by
+        // this node must have a loss row on it. Without this, adding a
+        // tool row quietly mints a tool that farms this node for free
+        // forever, green on every gate.
+        for tool in g.yield_per_hit.keys() {
+            if tool == "hand" {
+                continue;
+            }
+            let has_cond = c.item(tool).map(|i| i.condition_max > 0) == Some(true);
+            if has_cond && !g.condition_loss.contains_key(tool) {
+                return Err(format!(
+                    "gatherable `{}`: `{tool}` carries condition and pays \
+                     here, and condition_loss has no row for it — the pair \
+                     would farm this node free forever (V4)",
                     g.id
                 ));
             }

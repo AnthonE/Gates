@@ -217,6 +217,7 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
                 core.world.players[w].inv[0] = ItemStack {
                     item,
                     count: units.saturating_mul(4).max(4),
+                    cond: 0,
                 };
             }
             cmds.push(Command::Place {

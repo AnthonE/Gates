@@ -170,7 +170,16 @@ mod tests {
     #[test]
     fn an_empty_slot_draws_no_icon() {
         let c = catalog_with(&["Wood"]);
-        let s = |count| icon_stem(&c, sim_core::gather::ItemStack { item: 0, count });
+        let s = |count| {
+            icon_stem(
+                &c,
+                sim_core::gather::ItemStack {
+                    item: 0,
+                    count,
+                    cond: 0,
+                },
+            )
+        };
         assert_eq!(s(0), None, "an empty slot must draw nothing at all");
         assert_eq!(s(1), Some("wood"));
     }
@@ -182,7 +191,14 @@ mod tests {
         // which is strictly worse than blank.
         let c = catalog_with(&["Nonexistent Widget"]);
         assert_eq!(
-            icon_stem(&c, sim_core::gather::ItemStack { item: 0, count: 3 }),
+            icon_stem(
+                &c,
+                sim_core::gather::ItemStack {
+                    item: 0,
+                    count: 3,
+                    cond: 0,
+                }
+            ),
             None
         );
         // An id past the catalog is the same answer and not a panic: the id
@@ -192,7 +208,8 @@ mod tests {
                 &c,
                 sim_core::gather::ItemStack {
                     item: 999,
-                    count: 1
+                    count: 1,
+                    cond: 0,
                 }
             ),
             None
@@ -204,7 +221,11 @@ mod tests {
         // The property that makes a rename break in one place: both lookups
         // normalise the same string with the same function.
         let c = catalog_with(&["Stone Hatchet"]);
-        let st = sim_core::gather::ItemStack { item: 0, count: 1 };
+        let st = sim_core::gather::ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+        };
         assert_eq!(icon_stem(&c, st), Some("stone_hatchet"));
         assert_eq!(
             crate::ui::hold::held_model(&c, st),

@@ -121,7 +121,11 @@ fn craft_rides_the_wire() {
     // Grant the crafter its inputs server-side (gather_wire covers how
     // resources are earned; this gate is about the craft lane).
     let w0 = world_slot(&core, id_of(0));
-    core.world.players[w0].inv[0] = sim_core::gather::ItemStack { item: 0, count: 20 };
+    core.world.players[w0].inv[0] = sim_core::gather::ItemStack {
+        item: 0,
+        count: 20,
+        cond: 0,
+    };
 
     // Craft 2 of recipe 0 (3 × item0 per unit, 2 ticks each).
     act(

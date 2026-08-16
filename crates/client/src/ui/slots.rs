@@ -61,6 +61,27 @@ pub const GRID_ROWS: usize = (INV_SLOTS - HOTBAR_SLOTS) / GRID_COLS;
 
 const _: () = assert!(HOTBAR_SLOTS + GRID_ROWS * GRID_COLS == INV_SLOTS);
 
+/// The hotbar slot a scroll of `notches` lands on, wrapping at both ends.
+///
+/// Pure, and here rather than inside `render::input`, for this module's own
+/// stated reason: a mapping that lives inside a system is a mapping no test
+/// in the code tier can call.
+///
+/// `notches` is signed, and **negative walks toward slot 1** — a wheel pushed
+/// away from the player. That is the direction every reference this client's
+/// players arrive from uses, and it is the half of a scroll binding that is
+/// actually worth gating, because it is invisible in a screenshot and wrong
+/// in exactly one of two ways.
+///
+/// **It wraps rather than saturating.** Six slots under a wheel is a ring;
+/// saturating would make the wheel unable to reach slot 6 from slot 1 without
+/// a full sweep back, which is the one thing a wheel is for.
+pub fn hotbar_scrolled(sel: u8, notches: i32) -> u8 {
+    (sel as i32)
+        .wrapping_add(notches)
+        .rem_euclid(HOTBAR_SLOTS as i32) as u8
+}
+
 /// Where a slot sits on screen, in cells. Row 0 is the belt; rows 1.. are
 /// the main grid. Pure geometry — the render layer multiplies by a cell
 /// size and adds an origin, and nothing else knows the layout.

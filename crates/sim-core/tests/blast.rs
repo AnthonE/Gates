@@ -87,10 +87,15 @@ fn raid_world() -> (World, u16, u16) {
     // The bystander starts far outside every blast in this file.
     w.players[1].body = Body::at(SEED, x + 60.0, z);
 
-    w.players[0].inv[0] = ItemStack { item: 0, count: 20 };
+    w.players[0].inv[0] = ItemStack {
+        item: 0,
+        count: 20,
+        cond: 0,
+    };
     w.players[0].inv[1] = ItemStack {
         item: SATCHEL,
         count: 2,
+        cond: 0,
     };
     w.tick(&[Command::Place {
         id: RAIDER,

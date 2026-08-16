@@ -121,6 +121,10 @@ fn place_bag(
     core.world.players[w].inv[10] = ItemStack {
         item: BAG_ITEM,
         count: 1,
+        // Durability v0 landed on the trunk while this branch was open: a
+        // bag is not a tool and carries no condition, and `..default()`
+        // would hide that from a reader rather than say it.
+        cond: 0,
     };
     let before = core.world.deploys.len();
     assert!(core.wants_action(net_slot), "hand should be open");

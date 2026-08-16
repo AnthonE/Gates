@@ -5,9 +5,10 @@
 //! prediction through a doorway holds bit for bit (skew is bounded by the
 //! one in-flight placement event, the same bound the slot store accepts).
 //!
-//! Geometry: a piece's vertical base is `terrain::height(cell center) +
-//! PIECE_LIFT_M + level·LEVEL_H_M` — the renderer's formula (scene.js),
-//! now sim-authoritative. Planes (foundation/floor/roof) are walkable
+//! Geometry: a piece's vertical base is `build::column_floor_y(cell) +
+//! level·LEVEL_H_M` — cell-center terrain snapped to the build lattice
+//! (`BUILD_BASE_Q_M`) plus the lift, one implementation shared with the
+//! renderer. Planes (foundation/floor/roof) are walkable
 //! surfaces at their base; stairs are a ramp rising toward +Z through the
 //! storey; walls block their edge for the storey they span; doorways
 //! block only their posts (the 1.2 m opening passes; the lintel never
@@ -43,7 +44,6 @@ use crate::build::{
 use crate::fmath::fabs;
 use crate::limits::{COL_INDEX_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS};
 use crate::movement::STEP_UP;
-use crate::terrain;
 
 /// Foundation top above the cell-center terrain sample. Was render-only
 /// (scene.js LIFT); collision makes it sim truth (DECISIONS.md §open,
@@ -497,16 +497,13 @@ impl Default for ColIndex {
     }
 }
 
-/// A column's level-0 base: the renderer's `groundY + LIFT` (scene.js),
-/// sampled at the cell center — no piece height ever rides the wire.
+/// A column's level-0 base — `build::column_floor_y`, the one
+/// implementation of the height rule (quantized to `BUILD_BASE_Q_M` so
+/// neighbouring columns in one terrain band are bit-equal flush; its doc
+/// carries the derivation). No piece height ever rides the wire.
 #[inline]
 pub(crate) fn col_base_y(seed: u64, cx: u16, cz: u16) -> f32 {
-    let half = BUILD_CELL_M * 0.5;
-    terrain::height(
-        seed,
-        cx as f32 * BUILD_CELL_M + half,
-        cz as f32 * BUILD_CELL_M + half,
-    ) + PIECE_LIFT_M
+    crate::build::column_floor_y(seed, cx, cz)
 }
 
 /// The highest built surface under (x, z) the capsule at `feet_y` may
@@ -618,9 +615,20 @@ pub fn deploy_blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, feet_y: f32) -
             continue;
         };
         let bottom = base + level as f32 * LEVEL_H_M;
-        // Standing exactly on top is not inside — the `>=`/`<=` pair is
-        // `slot_blocks`'s, so a body on a box top stays free to walk.
-        if feet_y >= bottom + h || head <= bottom {
+        // A top within STEP_UP of the feet is a step, not a wall — the
+        // rule `piece_ground` already applies to every standable surface
+        // (its lid), extended here so the horizontal pass admits the move
+        // the vertical pass would land: the body mounts the top exactly
+        // as it mounts a lifted slab. It read `feet_y >= bottom + h`
+        // (top-or-above only) until 2026-08-16, when the build lattice
+        // exposed the asymmetry: a ground box's top rides up to q/2
+        // higher than it used to, and a 1.20 m top against the jump's
+        // 1.22 m apex left `a_jump_lands_on_the_box_top` a 2 cm window —
+        // the two passes disagreeing about whether the top was reachable.
+        // Walking in from flat ground is still blocked (a box top sits
+        // ≥ 0.7 above the feet, past the step), so the jump stays the
+        // verb that mounts one.
+        if feet_y + STEP_UP >= bottom + h || head <= bottom {
             continue;
         }
         let qx = (x - cxm).clamp(-hw, hw);
@@ -1109,6 +1117,7 @@ mod tests {
     use crate::input::InputFrame;
     use crate::movement::{self, Body, POS_XZ_Q, POS_Y_Q};
     use crate::rng::Pcg32;
+    use crate::terrain;
     use crate::world::{EventQueue, Player, EV_PIECE_PLACED};
 
     /// The browser-smoke seed and its guarded-walkable cell (build.rs

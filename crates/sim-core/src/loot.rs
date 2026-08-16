@@ -188,7 +188,15 @@ impl LootContent {
                 n += 1;
                 continue; // an item the ladder cannot stack cannot be held
             }
-            written = written.saturating_add(inv_add(out, e.item, count as u16, cap));
+            // A rolled item is a mint, so it arrives at its own ceiling —
+            // a barrel paying a dead tool would be a reward that is not one.
+            written = written.saturating_add(inv_add(
+                out,
+                e.item,
+                count as u16,
+                cap,
+                gc.cond_max_of(e.item),
+            ));
             n += 1;
         }
         written
@@ -230,7 +238,11 @@ mod tests {
     use crate::gather::cell_key as cell;
 
     fn empty() -> [ItemStack; INV_SLOTS] {
-        [ItemStack { item: 0, count: 0 }; INV_SLOTS]
+        [ItemStack {
+            item: 0,
+            count: 0,
+            cond: 0,
+        }; INV_SLOTS]
     }
 
     #[test]

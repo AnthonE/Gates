@@ -88,6 +88,12 @@ impl Content {
             let idx = self.item_index(&item.id).expect("own id") as usize;
             gc.stack_max[idx] = u16::try_from(item.stack)
                 .map_err(|_| format!("bake: `{}` stack {} overflows u16", item.id, item.stack))?;
+            gc.cond_max[idx] = u16::try_from(item.condition_max).map_err(|_| {
+                format!(
+                    "bake: `{}` condition_max {} overflows u16 hundredths",
+                    item.id, item.condition_max
+                )
+            })?;
         }
         for g in &self.gatherables {
             let slot = node_slot(g.archetype);
@@ -109,6 +115,7 @@ impl Content {
                 finish_pct: u16::try_from(g.finish_bonus_pct)
                     .map_err(|_| format!("bake: `{}` finish bonus overflows u16", g.id))?,
                 tools: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
+                wear: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
                 secondary: match &g.secondary {
                     None => (NO_ITEM, 0),
                     Some(s) => (
@@ -139,6 +146,26 @@ impl Content {
                     .ok_or_else(|| format!("bake: `{}` tool `{tool}` missing", g.id))?;
                 def.tools[tool_n] = (idx, per);
                 tool_n += 1;
+            }
+            // The wear table, resolved to item indices exactly as the
+            // tool rows are. `validate` (V2–V6) has already refused a
+            // `hand` row, a zero loss, an orphan tool and a tool with no
+            // condition; what this adds is the width refusal and the
+            // capacity one — the same posture as the tool loop above.
+            for (wear_n, (tool, loss)) in g.condition_loss.iter().enumerate() {
+                let per = u16::try_from(*loss).map_err(|_| {
+                    format!("bake: `{}` condition_loss for `{tool}` overflows u16", g.id)
+                })?;
+                if wear_n == MAX_TOOLS_PER_NODE {
+                    return Err(format!(
+                        "bake: `{}` has more than {MAX_TOOLS_PER_NODE} condition_loss rows",
+                        g.id
+                    ));
+                }
+                let idx = self
+                    .item_index(tool)
+                    .ok_or_else(|| format!("bake: `{}` wear tool `{tool}` missing", g.id))?;
+                def.wear[wear_n] = (idx, per);
             }
             gc.nodes[slot] = def;
         }
@@ -778,7 +805,21 @@ impl Content {
             }
             let count = u16::try_from(e.count)
                 .map_err(|_| format!("bake: spawn_kit `{}` count overflows u16", e.item))?;
-            if !kit.set(i, ItemStack { item: idx, count }) {
+            // The kit's stack is minted at the item's own condition
+            // ceiling, NOT 0 (item durability v0). Inert while the kit is
+            // a rock and a torch — but a kit tool minted at 0 would be a
+            // dead tool on every spawn, a one-line trap with a two-week
+            // fuse the day a hatchet goes back in it.
+            let cond = u16::try_from(def.condition_max)
+                .map_err(|_| format!("bake: spawn_kit `{}` condition_max overflows u16", e.item))?;
+            if !kit.set(
+                i,
+                ItemStack {
+                    item: idx,
+                    count,
+                    cond,
+                },
+            ) {
                 return Err(format!("bake: spawn_kit slot {i} refused"));
             }
         }
@@ -1180,15 +1221,22 @@ impl Content {
                 loot: [ItemStack {
                     item: NO_ITEM,
                     count: 0,
+                    cond: 0,
                 }; MOB_LOOT_ROWS],
             };
             for (i, d) in m.drops.iter().enumerate() {
                 let item = self
                     .item_index(&d.item)
                     .ok_or_else(|| format!("bake: mob `{}` drops unknown `{}`", m.id, d.item))?;
+                // A drop is a mint, so it arrives at its own ceiling —
+                // 0 for meat, and whole the day a species drops a tool.
                 def.loot[i] = ItemStack {
                     item,
                     count: small(d.count, "drop count")?,
+                    cond: u16::try_from(self.item(&d.item).map(|it| it.condition_max).unwrap_or(0))
+                        .map_err(|_| {
+                            format!("bake: mob `{}` drop `{}` condition overflows", m.id, d.item)
+                        })?,
                 };
             }
             mc.defs[which] = def;

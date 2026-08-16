@@ -463,7 +463,13 @@ pub fn consume(sc: &SurvivalContent, slot: usize, p: &mut Player, events: &mut E
 
     p.inv[slot].count -= 1;
     if p.inv[slot].count == 0 {
-        p.inv[slot].item = NO_ITEM;
+        // The canonical empty, all three fields — NOT `NO_ITEM`, which
+        // `PlayerSave::read_le` refuses twice over (`item >= MAX_ITEM_DEFS`
+        // and the canonical-empty rule): eat your last stack, get swept by
+        // the autosave, and the record could never be read back. Every
+        // reader of an inventory slot keys on `count`, never on the stored
+        // item of an empty slot (`held_item` derives its own `NO_ITEM`).
+        p.inv[slot] = crate::gather::ItemStack::default();
     }
     // Saturating, not wrapping: `min` clamps the *result*, so a plain add
     // would have to be correct before the clamp could help it. The bake
@@ -638,7 +644,11 @@ mod tests {
         let mut sc = SurvivalContent::probe_fixture();
         sc.consumable[0].health = 0;
         let mut p = player(&sc);
-        p.inv[0] = ItemStack { item: 0, count: 2 };
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 2,
+            cond: 0,
+        };
         let mut q = EventQueue::default();
         assert!(!consume(&sc, 0, &mut p, &mut q), "full meters, no heal");
         assert_eq!(p.inv[0].count, 2, "the item is not destroyed");
@@ -653,7 +663,11 @@ mod tests {
         p.hp = 50;
         p.food = 10;
         p.water = 10;
-        p.inv[0] = ItemStack { item: 0, count: 1 };
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+        };
         let mut q = EventQueue::default();
         assert!(consume(&sc, 0, &mut p, &mut q));
         assert_eq!(p.food, 50, "food applied immediately");
@@ -698,7 +712,11 @@ mod tests {
         let mut p = player(&sc);
         p.food = sc.max_food - 1;
         p.water = sc.max_water - 1;
-        p.inv[0] = ItemStack { item: 0, count: 1 };
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+        };
         let mut q = EventQueue::default();
         assert!(consume(&sc, 0, &mut p, &mut q));
         assert_eq!((p.food, p.water), (sc.max_food, sc.max_water));

@@ -39,6 +39,7 @@ fn duel_world() -> World {
         p.inv[0] = ItemStack {
             item: SPEAR,
             count: 1,
+            cond: 0,
         };
     }
     w
@@ -102,6 +103,7 @@ fn a_kill_leaves_what_the_body_carried_on_the_ground() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 42,
+        cond: 0,
     };
     let victim_id = w.players[1].id;
     let (_, vx, vz) = kill_player_two(&mut w);
@@ -133,6 +135,7 @@ fn the_kill_is_announced_as_a_bag_the_whole_shard_can_see() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 3,
+        cond: 0,
     };
     let victim_id = w.players[1].id;
     kill_player_two(&mut w);
@@ -149,6 +152,7 @@ fn the_killer_takes_it_and_the_bag_is_gone() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 42,
+        cond: 0,
     };
     kill_player_two(&mut w);
     let bag_id = w.backpacks.entries()[0].id;
@@ -184,6 +188,7 @@ fn a_bag_out_of_reach_stays_shut() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 42,
+        cond: 0,
     };
     kill_player_two(&mut w);
     let bag = w.backpacks.entries()[0];
@@ -213,6 +218,7 @@ fn what_does_not_fit_stays_in_the_bag() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 42,
+        cond: 0,
     };
     // Fill the killer to the brim with something else, leaving one slot
     // that already holds the spear (which can still top up by 1).
@@ -220,6 +226,7 @@ fn what_does_not_fit_stays_in_the_bag() {
         *s = ItemStack {
             item: 1,
             count: STACK_MAX,
+            cond: 0,
         };
     }
     kill_player_two(&mut w);
@@ -233,7 +240,8 @@ fn what_does_not_fit_stays_in_the_bag() {
         w.players[0].inv[0],
         ItemStack {
             item: SPEAR,
-            count: 2
+            count: 2,
+            cond: 0,
         },
         "but the stack that could top up did"
     );
@@ -250,6 +258,7 @@ fn a_bag_despawns_on_the_ladder_the_content_declares() {
     w.players[1].inv[0] = ItemStack {
         item: JUNK,
         count: 5,
+        cond: 0,
     };
     let (killed_at, _, _) = kill_player_two(&mut w);
     let bag = w.backpacks.entries()[0];
@@ -275,6 +284,7 @@ fn one_long_lived_item_keeps_the_whole_bag_standing() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 5,
+        cond: 0,
     };
     let (killed_at, _, _) = kill_player_two(&mut w);
     // Slot 0 still holds the spear — a fixture "rare", 360 ticks.
@@ -292,6 +302,7 @@ fn an_inert_ladder_destroys_exactly_as_it_did_before() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 42,
+        cond: 0,
     };
     kill_player_two(&mut w);
     assert!(
@@ -338,7 +349,11 @@ fn looting_nothing_is_not_an_error() {
 /// constructor's temporaries overflow a test thread's stack.
 fn hash_after_a_kill_carrying(count: u16) -> (u64, usize) {
     let mut w = duel_world();
-    w.players[1].inv[1] = ItemStack { item: JUNK, count };
+    w.players[1].inv[1] = ItemStack {
+        item: JUNK,
+        count,
+        cond: 0,
+    };
     kill_player_two(&mut w);
     let slots = w.backpacks.entries()[0].items.len();
     (w.state_hash(), slots)

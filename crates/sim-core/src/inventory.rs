@@ -264,11 +264,23 @@ pub fn resolve(plan: MovePlan, src: ItemStack, dst: ItemStack) -> (ItemStack, It
                 ItemStack {
                     item: src.item,
                     count: left,
+                    cond: src.cond,
                 }
             };
+            // The moved stack keeps its condition — this splice is the
+            // item-move trap's exact anatomy: it built the destination
+            // from `item` and `count` alone, dropped `cond`, and
+            // **compiled either way**, so a moved tool arrived dead with
+            // every gate green. Into an empty slot the source's condition
+            // travels; a merge keeps the destination's, and V7
+            // (condition ⇒ stack of 1) is what guarantees a merge is
+            // never asked to reconcile two conditions — a condition item
+            // at its one-stack ceiling refuses with `REFUSE_M_NO_ROOM`
+            // before this arm is reached.
             let new_dst = ItemStack {
                 item,
                 count: dst.count + count,
+                cond: if dst.count == 0 { src.cond } else { dst.cond },
             };
             (new_src, new_dst)
         }
@@ -316,7 +328,11 @@ pub struct SpawnKit {
 impl SpawnKit {
     /// The inert default: nothing granted, which is a naked spawn.
     pub const EMPTY: Self = Self {
-        stacks: [ItemStack { item: 0, count: 0 }; MAX_SPAWN_KIT],
+        stacks: [ItemStack {
+            item: 0,
+            count: 0,
+            cond: 0,
+        }; MAX_SPAWN_KIT],
         count: 0,
     };
 

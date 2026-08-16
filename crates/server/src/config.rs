@@ -767,6 +767,10 @@ pub fn dev_spawn_kit(
             item: idx,
             count: u16::try_from(*count)
                 .map_err(|_| format!("dev_spawn_kit: `{id}` count {count} overflows u16"))?,
+            // Minted whole, `bake_spawn_kit`'s rule: a dev kit tool at 0
+            // would be a dead tool on every tester's spawn.
+            cond: u16::try_from(item.condition_max)
+                .map_err(|_| format!("dev_spawn_kit: `{id}` condition_max overflows u16"))?,
         };
         if !kit.set(i, stack) {
             return Err(format!(

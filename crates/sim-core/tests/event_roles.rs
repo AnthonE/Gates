@@ -95,10 +95,10 @@ use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_MAX, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED,
-    EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESEARCH,
-    EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
-    EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_KNOCK, EV_KNOWN, EV_MAX,
+    EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED,
+    EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED,
+    EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
 
@@ -297,6 +297,7 @@ fn duel_world() -> World {
     w.players[0].inv[0] = ItemStack {
         item: SPEAR,
         count: 1,
+        cond: 0,
     };
     let (fx, fz) = yaw_dir(YAW);
     let a = w.players[0].body;
@@ -314,6 +315,7 @@ fn arm_victim_with_junk(w: &mut World) {
     w.players[1].inv[0] = ItemStack {
         item: JUNK,
         count: JUNK_COUNT,
+        cond: 0,
     };
 }
 
@@ -431,10 +433,12 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
     w.players[0].inv[0] = ItemStack {
         item: BOW,
         count: 1,
+        cond: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: ARROW,
         count: 5,
+        cond: 0,
     };
     w.tick(&[Command::Input {
         id: ATTACKER,
@@ -686,6 +690,143 @@ fn gather_names_the_player_then_item_over_count() {
     );
 }
 
+/// `EV_GATHER_REFUSED: a = player id, b = held item index << 16 |
+/// gather::REFUSE_G_* reason` (wire v42).
+///
+/// Driven through the dead-tool cause rather than the wrong-tool one, and
+/// that is discipline 2 at work: `REFUSE_G_TOOL` is 1 and the swinger's id
+/// is 1, so the wrong-tool arrangement packs the same number into `a` and
+/// `b`'s low half and is blind to that exchange. The broken cause puts
+/// (1, 7, 2) in the three seats — all pairwise distinct.
+///
+/// The arrangement mutates the fixture the way every arrangement here
+/// does: the junk item is given a condition ceiling so a zero-condition
+/// stack of it reads as DEAD (`gather::swing`'s Q4 guard), and the tree's
+/// hand row is zeroed so the fallback pays nothing — the shipped content's
+/// own shape since 2026-08-15.
+#[test]
+fn gather_refused_names_the_player_then_item_over_reason() {
+    use sim_core::gather::{REFUSE_G_BROKEN, SWING_INTERVAL_TICKS};
+
+    // A tree with a clear stand point, found the way `tests/gather.rs`
+    // finds one: scan the scatter for an isolated one.
+    let table = sim_core::terrain::ScatterTable::alpha_default();
+    let haven = terrain::haven(SEED);
+    let mut found = None;
+    'scan: for cz in 40..216i32 {
+        for cx in 40..216i32 {
+            let s = terrain::scatter(SEED, &table, &haven, cx, cz);
+            if s.occupant != sim_core::terrain::Occupant::Tree {
+                continue;
+            }
+            let (px, pz) = (s.x - 1.2, s.z);
+            let py = terrain::height(SEED, px, pz);
+            if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
+                continue;
+            }
+            let pcx = (px / sim_core::terrain::CELL_SIZE) as i32;
+            let pcz = (pz / sim_core::terrain::CELL_SIZE) as i32;
+            let mut rivals = 0;
+            for ddz in -1..=1i32 {
+                for ddx in -1..=1i32 {
+                    let n = terrain::scatter(SEED, &table, &haven, pcx + ddx, pcz + ddz);
+                    let aims = sim_core::gather::node_index(n.occupant).is_some()
+                        || n.occupant == sim_core::terrain::Occupant::BarrelSlot;
+                    if aims && (n.x != s.x || n.z != s.z) {
+                        let d2 = (n.x - px) * (n.x - px) + (n.z - pz) * (n.z - pz);
+                        if d2 <= 6.25 {
+                            rivals += 1;
+                        }
+                    }
+                }
+            }
+            if rivals > 0 {
+                continue;
+            }
+            let (dx, dz) = (s.x - px, s.z - pz);
+            let mut best_yaw = 0u16;
+            let mut best_dot = f32::MIN;
+            for hi in 0..=255u16 {
+                let (fx, fz) = yaw_dir(hi << 8);
+                let dot = fx * dx + fz * dz;
+                if dot > best_dot {
+                    best_dot = dot;
+                    best_yaw = hi << 8;
+                }
+            }
+            found = Some(((px, pz), best_yaw));
+            break 'scan;
+        }
+    }
+    let ((px, pz), yaw) = found.expect("the seed offers an isolated tree");
+
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    for n in w.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+        n.hand_yield = 0;
+    }
+    // The junk item gains a ceiling so a zero-condition stack of it is a
+    // DEAD tool rather than a mere non-tool. 123 is distinct from every
+    // other value in the check.
+    w.gather.cond_max[JUNK as usize] = 123;
+    w.dev_spawn = Some((px, pz));
+    w.tick(&[Command::Join { id: BODY }]);
+    w.players[0].inv[0] = ItemStack {
+        item: JUNK,
+        count: 1,
+        cond: 0,
+    };
+
+    let mut seq = 1u16;
+    let mut steps = 0u32;
+    loop {
+        w.tick(&[Command::Input {
+            id: BODY,
+            frame: InputFrame {
+                seq,
+                buttons: BTN_PRIMARY,
+                yaw,
+                pitch: 0,
+                move_x: 0,
+                move_z: 0,
+                sel: 0,
+            },
+        }]);
+        seq = seq.wrapping_add(1);
+        if w.events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_GATHER_REFUSED)
+        {
+            break;
+        }
+        steps += 1;
+        assert!(
+            steps < SWING_INTERVAL_TICKS as u32 * 4,
+            "no EV_GATHER_REFUSED within four swing windows — the cause is \
+             broken, not slow"
+        );
+    }
+
+    let got = only(&w, EV_GATHER_REFUSED);
+    distinct3(got, "EV_GATHER_REFUSED");
+    distinct_halves(got.b, "EV_GATHER_REFUSED.b (item over reason)");
+    assert_eq!(got.a, BODY, "EV_GATHER_REFUSED.a is who swung");
+    assert_eq!(
+        got.b >> 16,
+        JUNK as u32,
+        "EV_GATHER_REFUSED.b's HIGH half is the HELD item — the sentence \
+         names the torch, never bare hands"
+    );
+    assert_eq!(
+        got.b & 0xffff,
+        REFUSE_G_BROKEN,
+        "EV_GATHER_REFUSED.b's LOW half is the reason, and a dead tool is \
+         REFUSE_G_BROKEN"
+    );
+}
+
 // ---------------------------------------------------------------------
 // The survival lane: EV_VITALS, EV_CONSUMED, EV_DRANK, EV_CONSUME_REFUSED.
 //
@@ -869,6 +1010,7 @@ fn consumed_names_the_player_then_item_over_slot() {
     w.players[0].inv[FOOD_SLOT as usize] = ItemStack {
         item: FOOD_ITEM,
         count: 1,
+        cond: 0,
     };
     w.tick(&[Command::Consume {
         id: BODY,
@@ -1244,7 +1386,11 @@ fn builder_world(w: &mut World) -> (u16, u16) {
     // fixture's bug, not the sim's. Slot 4 is left free on purpose: the
     // oven test below stocks the fire's own item there.
     for (slot, item) in [(0usize, 0u16), (1, 1), (2, 2), (3, 4), (5, 7)] {
-        w.players[0].inv[slot] = ItemStack { item, count: 200 };
+        w.players[0].inv[slot] = ItemStack {
+            item,
+            count: 200,
+            cond: 0,
+        };
     }
     (cx, cz)
 }
@@ -1379,7 +1525,11 @@ fn oven_names_the_cell_then_its_state_then_who_lit_it() {
     // The fixture's fire costs item 0 to place and item 6 to hold; the
     // builder's kit above carries neither, so stock both here rather than
     // widening a fixture four other tests read.
-    w.players[0].inv[4] = ItemStack { item: 6, count: 4 };
+    w.players[0].inv[4] = ItemStack {
+        item: 6,
+        count: 4,
+        cond: 0,
+    };
     place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
 
     // Fuel goes in through the container the oven IS: one unit of item 0,
@@ -1387,8 +1537,15 @@ fn oven_names_the_cell_then_its_state_then_who_lit_it() {
     // refusal, not an announcement — which is itself asserted below.
     let key = box_key(cx, cz, GROUND);
     let i = w.deploys.box_index(key).expect("the fire is a container");
-    w.deploys
-        .set_box_slot(i, 0, ItemStack { item: 0, count: 2 });
+    w.deploys.set_box_slot(
+        i,
+        0,
+        ItemStack {
+            item: 0,
+            count: 2,
+            cond: 0,
+        },
+    );
 
     w.tick(&[Command::Use {
         id: BUILDER,
@@ -2301,6 +2458,7 @@ fn moved_names_the_address_and_what_moved() {
     w.players[0].inv[0] = ItemStack {
         item: JUNK,
         count: 30,
+        cond: 0,
     };
     w.players[0].inv[9] = ItemStack::default();
 
@@ -2418,6 +2576,7 @@ fn charge_placed_names_the_cell_then_the_address_then_the_fuse() {
     w.players[0].inv[CHARGE_SLOT as usize] = ItemStack {
         item: CHARGE_ITEM,
         count: 3,
+        cond: 0,
     };
     // Select the charge on its own tick. Buttons stay at zero throughout:
     // item 3 is also a melee row in this fixture, and a held primary would
@@ -2710,8 +2869,16 @@ fn craft_done_names_the_crafter_then_item_over_units() {
     for s in w.players[0].inv.iter_mut() {
         *s = ItemStack::default();
     }
-    w.players[0].inv[0] = ItemStack { item: 1, count: 2 };
-    w.players[0].inv[1] = ItemStack { item: 2, count: 1 };
+    w.players[0].inv[0] = ItemStack {
+        item: 1,
+        count: 2,
+        cond: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: 2,
+        count: 1,
+        cond: 0,
+    };
     w.tick(&[Command::Craft {
         id: BODY,
         recipe: RECIPE_PAYS_ONE,
@@ -2742,6 +2909,7 @@ fn craft_done_names_the_crafter_then_item_over_units() {
         ItemStack {
             item: def.output,
             count: def.out_count,
+            cond: 0,
         },
         "and the inventory holds what the event announced"
     );
@@ -2750,11 +2918,16 @@ fn craft_done_names_the_crafter_then_item_over_units() {
     // stack the batch does not empty, every other slot is full of the
     // output at its own ceiling, and the doc's parenthetical is the law
     // under test: the loss is announced, never silent.
-    w.players[0].inv[0] = ItemStack { item: 0, count: 4 };
+    w.players[0].inv[0] = ItemStack {
+        item: 0,
+        count: 4,
+        cond: 0,
+    };
     for s in w.players[0].inv.iter_mut().skip(1) {
         *s = ItemStack {
             item: 2,
             count: 100,
+            cond: 0,
         };
     }
     w.tick(&[Command::Craft {
@@ -2953,6 +3126,7 @@ fn respawn_names_the_player_then_which_anchor_answered() {
     w.players[0].inv[0] = ItemStack {
         item: BAG_PLACE_ITEM,
         count: 1,
+        cond: 0,
     };
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
@@ -3103,8 +3277,9 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 36] = [
+    const COVERED: [(&str, u8); 37] = [
         ("EV_GATHER", EV_GATHER),
+        ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
         ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
         ("EV_PIECE_PLACED", EV_PIECE_PLACED),
@@ -3408,7 +3583,11 @@ fn table_world(w: &mut World) {
         (cz as f32 + 0.5) * BUILD_CELL_M,
     );
     w.players[0].body = Body::at(SEED, x, z);
-    w.players[0].inv[0] = ItemStack { item: 10, count: 1 };
+    w.players[0].inv[0] = ItemStack {
+        item: 10,
+        count: 1,
+        cond: 0,
+    };
     w.tick(&[Command::PlaceDeploy {
         id: BUILDER,
         row: 7,
@@ -3422,8 +3601,16 @@ fn table_world(w: &mut World) {
         1,
         "the table has to stand or nothing fires"
     );
-    w.players[0].inv[0] = ItemStack { item: 4, count: 1 };
-    w.players[0].inv[1] = ItemStack { item: 3, count: 20 };
+    w.players[0].inv[0] = ItemStack {
+        item: 4,
+        count: 1,
+        cond: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: 3,
+        count: 20,
+        cond: 0,
+    };
 }
 
 /// `EV_RESEARCH: a = player, b = recipe, c = coin burned`.

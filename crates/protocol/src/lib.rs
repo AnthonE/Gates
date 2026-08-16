@@ -55,11 +55,11 @@ pub use event::{
     encode_event_consumed, encode_event_cont_sync, encode_event_craft_done, encode_event_craft_q,
     encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
-    encode_event_door, encode_event_drank, encode_event_gather, encode_event_health,
-    encode_event_hit, encode_event_inv, encode_event_knock, encode_event_known,
-    encode_event_move_refused, encode_event_moved, encode_event_oven, encode_event_piece_defs,
-    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
-    encode_event_recipes, encode_event_removed, encode_event_research,
+    encode_event_door, encode_event_drank, encode_event_gather, encode_event_gather_refused,
+    encode_event_health, encode_event_hit, encode_event_inv, encode_event_knock,
+    encode_event_known, encode_event_move_refused, encode_event_moved, encode_event_oven,
+    encode_event_piece_defs, encode_event_piece_placed, encode_event_piece_repaired,
+    encode_event_piece_sync, encode_event_recipes, encode_event_removed, encode_event_research,
     encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
     encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
     encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot,
@@ -505,13 +505,45 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// next number neither claimed. No fixture keyed v38–v40 was ever
 /// authoritative on this trunk.
 ///
-/// **v42 adds `SUB_BAGS`** (bag choice v0): the own-fact list of the
-/// bags *you* placed, with each one's cooldown state. A pure addition —
-/// no existing layout moved — but a subtype the old decoder answers
-/// `Malformed` to, which is a wire change and takes the number.
+/// Fixtures are keyed `v41_*` — **91**.
 ///
-/// Fixtures are keyed `v42_*` — **92**.
-pub const PROTO_VER: u16 = 42;
+/// **v42 — every inventory slot carries its condition** (item durability
+/// v0, DECISIONS.md 2026-08-15). `InvSlot` grows `cond`, 16 bits after
+/// `count`, on both messages that carry slots — `SUB_INV` and
+/// `SUB_CONT_SYNC` — so a worn tool draws worn in the hand and in every
+/// container without a byte of new message: condition rides the existing
+/// diff, +2 B per slot, worst case 206 B against `MAX_EVENT_MSG_BYTES` on
+/// the reliable stream where no datagram clamp applies. And the gather
+/// refusal stops being silent: `SUB_GATHER_REFUSED` is the 50th subtype,
+/// carrying the held item and a `gather::REFUSE_G_*` reason, so a torch
+/// swung at a tree finally says *a torch cannot fell a tree* (`NOW.md`
+/// §0kit item 2 — the same wire window, taken together on purpose).
+///
+/// Fixtures are keyed `v42_*` — **93**, one added: the gather refusal.
+/// (The v41 note above says 91 and the tree said 92 — the count drifted
+/// the way counts in prose do; the number the gate pins is
+/// `protocol_golden.rs`'s.) The four `v37_*.bin` orphans (superseded by
+/// the v41 rename and never deleted) go with this bump, unreachable match
+/// arms and all.
+///
+/// **v43 adds `SUB_BAGS`** (bag choice v0): the own-fact list of the bags
+/// *you* placed, with each one's cooldown state, so the death screen can
+/// offer the anchor a player actually has instead of a button that always
+/// resolves to a beach. A pure addition — no existing layout moved — but a
+/// subtype the old decoder answers `Malformed` to, which is a wire change
+/// and takes a number.
+///
+/// **43 and not 42, and the reason is this file's own recurring one.** It
+/// was written as 42 with `SUB_BAGS = 49` on a branch, while the durability
+/// slice above took exactly those two numbers on the trunk. Two different
+/// layouts both called 42 is the v38–v40 collision six paragraphs up and
+/// `worldsave.rs`'s format-3 collision one crate over; the cure is the same
+/// each time — **the trunk's number stands, and the branch takes the next
+/// one neither claimed.** So `SUB_BAGS` is 50 and no fixture keyed `v42_*`
+/// carrying a bag list was ever authoritative.
+///
+/// Fixtures are keyed `v43_*` — **94**, one added: the own-bag list.
+pub const PROTO_VER: u16 = 43;
 
 /// This game's slug in the scry catalog.
 ///

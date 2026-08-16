@@ -113,7 +113,11 @@ fn build_rides_the_wire() {
     // Grant the builder its materials server-side (gather_wire covers how
     // resources are earned; this gate is about the build lane).
     let w0 = world_slot(&core, id_of(0));
-    core.world.players[w0].inv[0] = sim_core::gather::ItemStack { item: 0, count: 20 };
+    core.world.players[w0].inv[0] = sim_core::gather::ItemStack {
+        item: 0,
+        count: 20,
+        cond: 0,
+    };
 
     // Foundation at the spawn cell: the piece lands for the placer AND
     // the bystander (placed pieces broadcast), and the cost is paid.
@@ -238,8 +242,16 @@ fn upgrade_rides_the_wire() {
     }
 
     let w0 = world_slot(&core, id_of(0));
-    core.world.players[w0].inv[0] = sim_core::gather::ItemStack { item: 0, count: 20 };
-    core.world.players[w0].inv[1] = sim_core::gather::ItemStack { item: 1, count: 10 };
+    core.world.players[w0].inv[0] = sim_core::gather::ItemStack {
+        item: 0,
+        count: 20,
+        cond: 0,
+    };
+    core.world.players[w0].inv[1] = sim_core::gather::ItemStack {
+        item: 1,
+        count: 10,
+        cond: 0,
+    };
     for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_XLO)] {
         act(
             &mut core,

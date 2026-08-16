@@ -923,8 +923,12 @@ missing it survivable.
      `piece_defs.pieces[row]`, and **that read must be gated on
      `piece_defs_have`**: an undripped row is `INERT`, whose shape is
      `SHAPE_FOUNDATION`, so an ungated read draws a foundation slab in mid-air
-     where a wall belongs. Base height is resampled locally —
-     `terrain::height(seed, cx*3+1.5, cz*3+1.5) + PIECE_LIFT_M + level*3` —
+     where a wall belongs. Base height is resampled locally by calling
+     `sim_core::build::column_floor_y(seed, cx, cz) + level*3` — the sim's
+     one implementation (cell-center terrain snapped to `BUILD_BASE_Q_M`,
+     2026-08-15; this line restated the raw formula until then, and the day
+     the sim's rule changed is the day a restated copy would have drawn
+     every floor off the surface the sim walks) —
      at the CELL CENTRE for every `loc`, including edge pieces, so the two
      cells an edge adjoins cannot disagree. A plane's slab hangs BELOW its
      walk surface (centre at `base_y - 0.15`, top at `base_y`); getting that

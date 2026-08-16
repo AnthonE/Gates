@@ -643,9 +643,17 @@ impl Plugin for GatesRenderPlugin {
             );
 
         // ---- the map -------------------------------------------------
-        // `open` is registered after the panels and after chat, so `M` typed
-        // into a search box or a chat composer is theirs — both consume the
-        // press before this sees it.
+        // **Hold `G`.** `open` is ordered after the panels and after chat,
+        // and that ordering is necessary but was never sufficient — the claim
+        // here used to be that a letter typed into a search box or a composer
+        // is theirs because "both consume the press before this sees it", and
+        // only half of that was ever true. `chat::keys` does consume it: it
+        // clears the whole keyboard while the composer is up. `panels::keys`
+        // clears **only `Escape`**, and the inventory search box reads
+        // `KeyboardInput` messages rather than `ButtonInput`, so the press
+        // survives — which is why typing `m` into the crafting search used to
+        // open the map. `map::open` carries its own guard now and does not
+        // rely on being downstream of anything.
         app.init_resource::<map::Island>()
             .add_systems(OnEnter(Screen::Map), (map::enter, map::setup).chain())
             .add_systems(OnExit(Screen::Map), (map::teardown, map::leave))
@@ -793,14 +801,28 @@ impl Plugin for GatesRenderPlugin {
         // streamer, and a sea that froze while the Esc menu was up would
         // resume with a visible jump in every wave.
         .add_systems(Update, water::animate.run_if(world_running))
-        // Input is the one thing that is `InWorld` and nothing else: it is
-        // the only system that writes what the sim reads, and a player
+        // Input writes what the sim reads, so it runs on the two screens where
+        // the player is still *in* the world and nowhere else: a player
         // reading a settings pane must not be swinging an axe.
+        //
+        // **`Map` is the second screen, and it has to be.** The map is held
+        // rather than toggled now, so the player is running while it is up —
+        // and `ClientCore::set_input` is a LATCH that `advance` re-emits every
+        // tick. Stop feeding it and the body keeps walking on whatever keys
+        // were down when the map opened, forever, until the map closes. That
+        // was already a live bug on the `M` toggle (`pause::enter` and
+        // `death::enter` both zero the latch on their way in; `map::enter`
+        // never did) and a hold would have made it the common case instead of
+        // the odd one. Keeping `gather` alive fixes it at the source: the
+        // latch stays honest, and letting go of `W` stops the body.
+        //
+        // Only `gather`. `verbs::keys` and the ghost stay `InWorld`, so no
+        // door opens and nothing is placed while the map is up.
         .add_systems(
             Update,
             input::gather
                 .before(input::place_eye)
-                .run_if(in_state(Screen::InWorld)),
+                .run_if(in_state(Screen::InWorld).or(in_state(Screen::Map))),
         )
         // The in-world verbs. `InWorld` for the same reason `gather` is: every
         // one of them spends something, and a player reading a settings pane
@@ -891,16 +913,34 @@ impl Plugin for GatesRenderPlugin {
                 .chain()
                 .run_if(world_running),
         )
-        // **The one `pop_*` call site in the client, and it runs first.**
-        // `hud::feedback` (inside `Stream`) and `audio::feed` (after it) both
-        // want this frame's hits, toasts and refusals, and the core hands each
-        // fact over exactly ONCE — so when both popped, the HUD drained every
-        // ring and the game fell silent, with no conflict and no failing test
-        // to say so. `feed::drain` fills a resource both read immutably;
+        // **The one `pop_*` call site in the client.** `hud::feedback`
+        // (inside `Stream`) and `audio::feed` (after it) both want this
+        // frame's hits, toasts and refusals, and the core hands each fact
+        // over exactly ONCE — so when both popped, the HUD drained every ring
+        // and the game fell silent, with no conflict and no failing test to
+        // say so. `feed::drain` fills a resource both read immutably;
         // `render/feed.rs` has the account. It is gated on `world_running`
         // rather than `world_placed` because a ring nobody drains overflows,
         // which is the reason `hud::feedback` gives for its own placement.
-        .add_systems(Update, feed::drain.before(Stream).run_if(world_running))
+        //
+        // **Ordered against the pump explicitly, both edges.** `place_eye`
+        // pumps the session (rings filled, `applied` word raised), the drain
+        // takes word and rings in one move, `Stream`'s readers see one
+        // coherent frame. Until 2026-08-15 only `.before(Stream)` was stated
+        // and drain-after-pump held by insertion order alone; the other
+        // schedule splits the word from the facts across frames, and a
+        // reader latching a stale `applied` bit beside freshly-pumped state
+        // reports one fact twice — the consume rings took the data off the
+        // latch for exactly that collapse, and the latched facts that remain
+        // (`struct_hit`, `charge_placed`, `stock`, `last_drink`) still live
+        // on the word being the same frame's as the fields.
+        .add_systems(
+            Update,
+            feed::drain
+                .after(input::place_eye)
+                .before(Stream)
+                .run_if(world_running),
+        )
         // The rig follows the server's clock (day/night v0). After the
         // drain so it reads this frame's tick estimate, not last frame's.
         .add_systems(

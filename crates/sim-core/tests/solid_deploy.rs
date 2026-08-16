@@ -316,14 +316,20 @@ fn world() -> (World, u16, u16) {
     w.dev_spawn = Some((x, z - BUILD_CELL_M));
     w.tick(&[Command::Join { id: PLAYER }]);
     w.players[0].body = Body::at(SEED, x, z - BUILD_CELL_M);
-    w.players[0].inv[0] = ItemStack { item: 0, count: 5 };
+    w.players[0].inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
     w.players[0].inv[1] = ItemStack {
         item: FURNACE_ITEM,
         count: 1,
+        cond: 0,
     };
     w.players[0].inv[2] = ItemStack {
         item: BAG_ITEM,
         count: 1,
+        cond: 0,
     };
     w.tick(&[Command::Place {
         id: PLAYER,

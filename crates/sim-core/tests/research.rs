@@ -95,6 +95,7 @@ fn table_world() -> (World, u16, u16) {
     w.players[0].inv[0] = ItemStack {
         item: TABLE_ITEM,
         count: 1,
+        cond: 0,
     };
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,
@@ -119,10 +120,12 @@ fn stock(w: &mut World) {
     w.players[0].inv[0] = ItemStack {
         item: SAMPLE,
         count: 2,
+        cond: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: COIN,
         count: 20,
+        cond: 0,
     };
 }
 
@@ -248,6 +251,7 @@ fn a_refusal_for_the_price_costs_neither_half() {
     w.players[0].inv[1] = ItemStack {
         item: COIN,
         count: COST - 1,
+        cond: 0,
     };
     ask(&mut w, 0);
 
@@ -269,14 +273,17 @@ fn the_price_is_paid_across_stacks_and_the_sample_is_one_unit() {
     w.players[0].inv[1] = ItemStack {
         item: COIN,
         count: 2,
+        cond: 0,
     };
     w.players[0].inv[2] = ItemStack {
         item: COIN,
         count: 2,
+        cond: 0,
     };
     w.players[0].inv[3] = ItemStack {
         item: COIN,
         count: 2,
+        cond: 0,
     };
     ask(&mut w, 0);
 
@@ -377,6 +384,7 @@ fn bench_world() -> World {
     w.players[0].inv[2] = ItemStack {
         item: BENCH_ITEM,
         count: 1,
+        cond: 0,
     };
     w.tick(&[Command::PlaceDeploy {
         id: PLAYER,
@@ -449,6 +457,7 @@ fn the_tree_refuses_with_reasons_and_takes_nothing() {
     w.players[0].inv[1] = ItemStack {
         item: COIN,
         count: 3,
+        cond: 0,
     };
     ask_unlock(&mut w, NODE_RECIPE);
     assert_eq!(refusal(&w, EV_RESEARCH_REFUSED), Some(REFUSE_R_COST));
@@ -477,7 +486,11 @@ fn the_tree_needs_a_bench_and_says_so() {
 fn the_table_researches_a_sample_with_no_questions_about_parents() {
     let (mut w, _, _) = table_world();
     // Row 1's sample (item 5) in hand, parent (recipe 2) unknown.
-    w.players[0].inv[0] = ItemStack { item: 5, count: 1 };
+    w.players[0].inv[0] = ItemStack {
+        item: 5,
+        count: 1,
+        cond: 0,
+    };
     assert!(!knows(w.players[0].known, GATED_RECIPE));
     ask(&mut w, 0);
     assert!(

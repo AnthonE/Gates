@@ -245,7 +245,15 @@ pub fn setup(
                     // position" is about where you fell, and this screen
                     // still does not say. `ui::map::resolve_wake_marks`
                     // carries the argument.
-                    for m in &marks.a[..marks.count] {
+                    //
+                    // REVERSE, matching `Screen::Map` — one rule for both
+                    // maps rather than two that agree by accident. It
+                    // changes nothing visible here (every mark is one of
+                    // your own beds and the list is capped far below
+                    // `MAP_MARKS_MAX`), and the point of writing it the
+                    // same way is that the next kind added to `Marks` gets
+                    // the same stacking on both screens.
+                    for m in marks.a[..marks.count].iter().rev() {
                         super::map::spawn_mark(frame, m);
                     }
                 });
@@ -309,26 +317,28 @@ pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, net: NonSend<Net>, mut answer: 
     }
     let has_bag = !net.session.core.own_bags().is_empty();
 
-    // **The digits are POSITIONAL and the letters are not.** A digit means
-    // the row it is drawn beside — with no bag on the island, `1` is the
-    // beach, because `1` is the only row there is. The letters stay bound
-    // to the anchor (the aliases the browser bound), so `F` is a bag
-    // wherever the bag is drawn — and does nothing at all when no bag row
-    // exists, which is what keeps an alias from pressing a button that was
-    // deliberately not offered.
+    // **Digits only, and POSITIONAL.** A digit means the row it is drawn
+    // beside — with no bag on the island, `1` is the beach, because `1` is
+    // the only row there is. A player does not read a table, they press the
+    // number next to the words.
     //
-    // **Escape is not one of them**: there is nothing to back out to, and a
+    // ⚠ **The `F`/`G` letter aliases are gone, and `G` is why.** They were
+    // the browser's, bound to the anchor rather than to the position — and
+    // as of 2026-08-16 `G` holds the MAP everywhere else in the game
+    // (`DECISIONS.md`, the control scheme). A player who has learned that
+    // key would press it here expecting to look at the island and would
+    // spawn on a beach instead, which is the one answer on this screen that
+    // cannot be taken back. Dropping both rather than re-lettering: an
+    // alias earns its place by being the key somebody already knows, and
+    // after a control rebind neither of these is.
+    //
+    // **Escape is not bound either**: there is nothing to back out to, and a
     // screen you can dismiss without answering is a corpse with no exit.
     for (n, digit) in [KeyCode::Digit1, KeyCode::Digit2].into_iter().enumerate() {
         if keyboard.just_pressed(digit) {
             if let Some(wake) = wake_at(has_bag, n + 1) {
                 answer.chosen = Some(wake);
             }
-        }
-    }
-    for (key, wake) in [(KeyCode::KeyF, Wake::Bag), (KeyCode::KeyG, Wake::Beach)] {
-        if keyboard.just_pressed(key) && crate::ui::death::offers(has_bag, wake) {
-            answer.chosen = Some(wake);
         }
     }
 }

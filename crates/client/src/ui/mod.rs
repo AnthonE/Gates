@@ -87,6 +87,7 @@ pub mod keypad;
 pub mod load;
 pub mod map;
 pub mod place;
+pub mod pointer;
 pub mod refusals;
 pub mod servers;
 pub mod slots;

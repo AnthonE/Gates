@@ -96,6 +96,7 @@ fn place_bag(w: &mut World, cx: u16, cz: u16) {
     w.players[0].inv[10] = ItemStack {
         item: BAG_ITEM,
         count: 1,
+        cond: 0,
     };
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
@@ -472,6 +473,7 @@ fn a_corpse_cannot_act() {
     w.players[0].inv[0] = ItemStack {
         item: BAG_ITEM,
         count: 4,
+        cond: 0,
     };
     die(&mut w);
     // The backpack took the inventory with it; put something back by hand
@@ -479,6 +481,7 @@ fn a_corpse_cannot_act() {
     w.players[0].inv[0] = ItemStack {
         item: BAG_ITEM,
         count: 4,
+        cond: 0,
     };
     let hash_before = w.state_hash();
 
@@ -611,8 +614,28 @@ fn the_death_screen_is_hashed_state() {
 /// gather.
 fn probe_kit() -> sim_core::inventory::SpawnKit {
     let mut kit = sim_core::inventory::SpawnKit::EMPTY;
-    assert!(kit.set(0, ItemStack { item: 8, count: 1 }), "kit slot 0");
-    assert!(kit.set(1, ItemStack { item: 9, count: 1 }), "kit slot 1");
+    assert!(
+        kit.set(
+            0,
+            ItemStack {
+                item: 8,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "kit slot 0"
+    );
+    assert!(
+        kit.set(
+            1,
+            ItemStack {
+                item: 9,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "kit slot 1"
+    );
     kit
 }
 
@@ -639,8 +662,16 @@ fn a_respawn_re_grants_the_spawn_kit() {
     assert_eq!(
         (w.players[0].inv[0], w.players[0].inv[1]),
         (
-            ItemStack { item: 8, count: 1 },
-            ItemStack { item: 9, count: 1 }
+            ItemStack {
+                item: 8,
+                count: 1,
+                cond: 0
+            },
+            ItemStack {
+                item: 9,
+                count: 1,
+                cond: 0
+            }
         ),
         "the fresh spawn did not get the kit — nothing below proves anything"
     );
@@ -648,7 +679,11 @@ fn a_respawn_re_grants_the_spawn_kit() {
     // Something the player EARNED, in a slot the kit does not write. It must
     // not survive the death: a respawn that kept your pockets would make the
     // assertion below true for the wrong reason.
-    w.players[0].inv[6] = ItemStack { item: 3, count: 40 };
+    w.players[0].inv[6] = ItemStack {
+        item: 3,
+        count: 40,
+        cond: 0,
+    };
 
     die(&mut w);
     wake(&mut w, false);
@@ -656,8 +691,16 @@ fn a_respawn_re_grants_the_spawn_kit() {
     assert_eq!(
         (w.players[0].inv[0], w.players[0].inv[1]),
         (
-            ItemStack { item: 8, count: 1 },
-            ItemStack { item: 9, count: 1 }
+            ItemStack {
+                item: 8,
+                count: 1,
+                cond: 0
+            },
+            ItemStack {
+                item: 9,
+                count: 1,
+                cond: 0
+            }
         ),
         "a respawned body woke naked — the kit is still fresh-arm only"
     );

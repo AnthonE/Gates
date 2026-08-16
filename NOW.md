@@ -44,38 +44,61 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 > **Playtest items, 2026-08-15 — the operator played the shard and five came
 > out of it** (`DECISIONS.md` 2026-08-15). **Four landed the same day**
-> (`0kit`, `0eat`, `0die`'s defect half, `0sun`), so each item below is what
-> REMAINS of one. `0dur` is the only one still whole: it is a wall-6 slice
-> and could not land in the run that designed it.
+> (`0kit`, `0eat`, `0die`'s defect half, `0sun`) and `0dur` — the wall-6
+> slice that could not land in the run that designed it — landed
+> 2026-08-15/16, so each item below is what REMAINS of one.
 
-## 0kit · The rock landed; the swing it refuses is silent *(systems lane)*
+## 0ctl · Four controls the player expects and the sim has no verb for *(systems lane)*
+
+The 2026-08-16 control row copied the reference's scheme key for key. Six
+bindings landed; **four were refused because they are slices, not keystrokes**,
+and each would have been a key that does nothing — worse than an absent one.
+Bind each **in the commit that gives it a verb**, never before.
+
+1. **Reload (`R`).** No magazine, loaded state or reload verb exists in any
+   crate. Firing spends an arrow straight out of the inventory
+   (`ranged::draw`), and `bake_ammo` skips `WeaponKind::Firearm` entirely, so
+   `weapons.toml`'s revolver has no sim behaviour at all. Needs a loaded-round
+   state on the weapon stack — which is `0dur`'s per-instance `ItemStack` field
+   question wearing a different hat, so **read that row first; the two should
+   probably land together or agree on a shape.** `R` is repair until then.
+2. **ADS / secondary attack (RMB).** No `BTN_SECONDARY`, no aim or spread
+   state. The button is also fully spoken for — deploy-place, the build wheel,
+   the inventory's half-stack grab — so this needs a held-item modality answer
+   before it needs a bit. A new button bit is a `PROTO_VER` bump even though
+   the octet does not move (`sim-core/input.rs` states the precedent).
+3. **Flashlight (`F`).** No held light source. `item.torch` is an inert prop
+   with no weapons row, and `tests/held_assets.rs::nothing_held_glows` forbids
+   a carried emissive **by name** — so this starts by deciding that test's
+   fate, which is the point of it. `F` is the ghost's level-down while the
+   build wheel is up and free otherwise.
+4. **Voice chat (hold `V`).** Nothing exists: no capture, no codec, no
+   `KIND_*`, no fan-out. `reference/VOICE.md` §9 is the research and already
+   settles the two design questions (it is not its own transport; a
+   client-side attenuation of a broadcast stream is a wallhack).
+
+**Also open, and smaller than any of the four:** the viewmodel sways with the
+camera during free look, because it is parented to it and reads `eye.yaw`. The
+reference tilts the held item instead. Cosmetic, and named in §open
+"free look v0".
+
+## 0kit · The rock landed; two doors and a boot rule remain *(systems lane)*
 
 Landed: kit → rock + torch, the four swung nodes' `hand` rows **deleted**
 (`hand = 0` is a refused boot; the bush keeps its only row), `gather::swing`
 refuses a swing the node pays nothing for, `World::wake` re-grants, and
-`shard.toml`'s `dev_spawn_kit` keeps the fat kit on a dev box. Remainders:
+`shard.toml`'s `dev_spawn_kit` keeps the fat kit on a dev box. **Items 1
+and 2 landed 2026-08-15/16 with the durability wire slice**: the refused
+swing returns `Swing::Refused` and the raid arm declines it (gated both
+ways in `tests/gather.rs`), and `EV_GATHER_REFUSED` names the held item —
+*your Torch cannot harvest this* — through the pump, `client-core`'s ring,
+the shared feed queue and `ui::refusals::GATHER` (wire v42). Remainders:
 
-1. **A wrong-tool swing now falls through to `combat::raid`.** `swing`
-   returns `Swing::Free`, `world.rs:2954` passes it to strike → mob → raid,
-   and `combat.rs:587` has **no owner or privilege filter** — a stone hatchet
-   aimed at a stone node inside your own base takes 2 structure off your own
-   wall, silently. Proven by fixture: hp falls at `hand_yield = 0`, not at
-   25. Either the guard returns a `Swing` the raid arm declines, or `raid`
-   learns the claim the build verbs already have. Gate it either way.
-2. **The refusal is silent and needs the wire.** `EV_MAX = 36` is dense and
-   `SUB_MAX` is **49** — bag choice v0 spent one and took `PROTO_VER` to 42,
-   so this line's "48 is full" was already a version stale: a `PROTO_VER` bump for
-   `EV_GATHER_REFUSED{a = player, b = reason}` + subtype + role line +
-   `refusals::gather`, one commit. `EV_GATHER` with `added = 0` is not the
-   cheap way out — that encoding is the spill signal. **Name the torch, not
-   bare hands**: hotbar 2, one key from the rock, no melee row either, so a
-   new player pressing `2` at a tree gets nothing at all. Same wire window
-   as §0dur — take both.
-3. **Two doors have no gate.** `wake` has three callers: the respawn command,
+1. **Two doors have no gate.** `wake` has three callers: the respawn command,
    a save that logged off dead, a sleeper takeover of a dead body. All three
    are correctly paid; only the first is tested, so an early return in either
    of the others wakes a player naked with every suite green.
-4. Content/boot, both small: `validate.rs` has no rule coupling "no swung
+2. Content/boot, both small: `validate.rs` has no rule coupling "no swung
    node has a `hand` row" to "the kit holds a tool something pays", so an
    empty `[[spawn_kit]]` is an unwinnable world that boots green; and
    `parse_shard_toml`'s `dev_spawn_kit` arm pushes unbounded, caps after.
@@ -142,65 +165,97 @@ broadcast with no distance test. The real mechanism is `MAP_MARKS_MAX = 64`,
 drop-newest, bags pushed **last** in `resolve_marks` with no owner filter, so
 on a busy shard your own bag is the first mark the cap eats.
 
-**Bag choice v0 landed 2026-08-16** (operator; `DECISIONS.md`): the death
-screen offers the bag row only if you own one, and draws a map of **your own
-bags** — no corpse marker, which is how `ALPHA.md` §1 survives it. Off a new
-own-fact `SUB_BAGS` (`PROTO_VER` 42), because the deploy mirror could never
-have served it: `DeployRec::owner` is off the wire.
+**Two things landed 2026-08-16 and they are different bags** — the word is
+overloaded in this tree and the two items below were nearly merged by
+mistake. The **death backpack** (`WireBag`, your loot) now outranks the
+anchor tier at the mark cap: the wire carries no bag owner on purpose, so
+`ClientCore::own_bag` joins the `BagDropped` against the dead predicted body
+(`OWN_BAG_NEAR_M`) and `resolve_marks` pushes the tagged one directly behind
+the authored tier — bags as a class outrank the bed/hearth mirror now, and
+both maps draw in reverse resolve order so cap rank and draw-on-top rank are
+one rule. The **sleeping bag** (`ARCH_BAG`, where you wake) got bag
+choice v0 (operator; `DECISIONS.md`): the death screen offers the bag row
+only if you own one and draws a map of your own beds — no corpse marker,
+which is how `ALPHA.md` §1 survives it — off a new own-fact `SUB_BAGS`
+(`PROTO_VER` 43), because `DeployRec::owner` is off the wire too.
 
 Left, in order of cheapness:
 
-1. `ClientCore::own_bags()` exists now, so **ranking the owner's own bag
-   ahead of the cap in `resolve_marks`** is a filter over a list the client
-   already holds. No wire, no word.
-2. **Showing is not choosing.** The map marks three bags and `ACT_RESPAWN`
-   carries one bit, so the sim still takes the nearest ready one. Letting a
-   player click the bag they want is a bag index on the action plus a
-   `claim_bag` that honours it — a wire bump, and an operator call on whether
-   the choice is wanted at all.
+1. **Beds did not get the ranking backpacks did.** `resolve_marks`' deploy
+   arm still pushes every bed and hearth on the island with no owner filter,
+   and it pushes them LAST — so on a busy shard your own bed is what the cap
+   eats now. `ClientCore::own_bags()` exists, so this is a filter over a list
+   the client already holds. No wire, no word.
+2. **Showing is not choosing.** The death map marks three beds and
+   `ACT_RESPAWN` carries one bit, so the sim still takes the nearest ready
+   one. Letting a player click the bed they want is a bag index on the action
+   plus a `claim_bag` that honours it — a wire bump, and an operator call on
+   whether the choice is wanted at all.
 3. `SUB_BAGS` is sent **on a death and nowhere else**, so the `ready` bit
    ages while a player sits on the screen. Nothing is wrong today (the sim
-   decides and `woke` says which anchor answered); re-send on the bag's own
+   decides and `woke` says which anchor answered); re-send on the bed's own
    placement and removal if it starts to matter.
 4. One operator call (`DECISIONS.md` §open, "death backpack v0"): whether
    five minutes is the intended floor for a common-only bag now the kit
    guarantees one.
+## 0dur · Durability landed; the number is invisible *(client lane)*
 
-## 0dur · Items have no condition *(systems lane — the wire slice)*
+**Landed 2026-08-15/16, all four questions closed** (`DECISIONS.md` §open
+"item durability v0" has the ledger; the dated rows hold the answers).
+`cond` on `ItemStack`, wear per (tool, node) as content, the Q4 dead-tool
+guard, `EV_GATHER_REFUSED`, wire v42, save formats 3/7, eight gates each
+proven red. What remains, in rank order:
 
-**Operator, 2026-08-15:** *"we need durability on items"*. **Designed
-2026-08-15, not landed** — a wall-6 slice cannot ship in the run that
-designs it. Research: `reference/DURABILITY.md`.
+1. **No panel draws the number.** `ClientCore::inv` and `::cont` carry
+   `cond` off the wire already; the hotbar, bag grid and container panels
+   draw item + count and nothing else, so the first warning a player gets
+   is the `REFUSE_G_BROKEN` toast at zero. A durability pip wants the
+   reference's shape (a bar under the icon, visible only when worn) and
+   `ART.md`'s pass on it — client-only, no wire.
+2. **Weapons and armour do not wear.** `reference/DURABILITY.md` §5 left
+   both unsourced (per shot / when hit), so there is nothing to take yet —
+   a research row, not a build item, and wear-on-swing-at-players is a
+   mechanism question (`tools as weapons`, §open).
+3. **Repair is v1 by decision** (Q3: re-craft is the repair). When a bench
+   lands it is `Station::Workbench1..3` + a blueprint check, never a new
+   deployable, and §3's 0.20 ratio stays DISPUTED until someone checks it
+   against the in-game price.
+4. **The save readers accept un-mintable condition** (review finding,
+   2026-08-16): both decoders run without the content tables, so a save
+   can smuggle `cond` above the item's ceiling or onto an item whose
+   `condition_max` is 0 — states no command can mint, in the one
+   non-command path into `World`. A post-load clamp where content is in
+   scope (server boot), or a validate pass over the loaded world. The
+   slice's blocker cousin — an emptied slot keeping its `cond` — is fixed
+   and gated (`spill.rs`, `persist.rs`: the canonical-empty trio).
 
-**Two of its four numbers were TAKEN from the reference the same day** and
-are no longer open (`DECISIONS.md` 2026-08-15, "Item condition is per-item
-and the rock wears"): maximum is **per item** — rock 100, torch 50, stone
-tools 100, metal tools 400 — and **the rock wears**, unrepairable, re-crafted
-rather than mended. `repairable = false` does not disable condition; those
-are separate fields, which is what made `DURABILITY.md` §4 read both ways.
+## 0bl · Pieces line up on a lattice now — what the stored plate would add *(client+sim lane)*
 
-**Still open, both gameplay rather than fidelity:** where a worn tool is
-repaired, and what a tool at zero condition does. `DECISIONS.md` §open,
-**"item durability v0"**, carries them plus the measured blast radius (30
-production `ItemStack` literals against 327 test ones), the ordered v0 cut
-and the eight gates it earns — but read its Q1/Q2 only as history, they are
-superseded. Read the row before starting; it is the item.
+From the operator's 2026-08-15 screenshots (*"bad news about the building
+system and pieces lining out"*). **Landed 2026-08-15/16** — build base
+lattice v0, `DECISIONS.md` §open has the knobs and the three mechanisms:
+one height implementation (`build::column_floor_y`, 0.5 m vertical lattice,
+flushness bit-equal, two formula copies retired), the terrain-following
+foundation skirt (`structures::foundation_part`, one emit for piece and
+ghost), and the ghost aimed by the LOOK ray (`place::aim_from_look`)
+instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
+`client/tests/ghost.rs` §footing, `place.rs` §aim. Remaining, ranked:
 
-The three things to know before opening the file. **The field on the stack
-beats a side table** because a missed site is a build error rather than a
-wrong condition green on every gate we own — not for the reason
-`DURABILITY.md` §9.2 gives, which cites a move-verb hazard our
-`set_cont_slot` funnel already forecloses. **Box `Backpacks::entries` and
-`BoxStore::entries`/`ovens` in the same commit** (`backpack.rs:193`,
-`deploy.rs:745`): they are stack-built and cross 53 KB, and the symptom is
-`test_parity_wasm` failing as an out-of-bounds read with every native test
-green. **No new `EV_*` is owed** — condition rides the existing `SUB_INV`
-diff, +2 B per slot, worst case 162 → 206 B against `MAX_EVENT_MSG_BYTES =
-320` on the reliable stream, so no datagram clamp applies.
+1. **Nobody has looked at it.** Every claim is arithmetic; the screenshots
+   that opened this deserve their counter-shot. Boot, build a row on the
+   same hillside, look.
+2. **The stored plate is the real v1** — the reference's model: first
+   foundation pins a height, neighbours latch to it, too-high/too-low
+   refusals, stilts past one band. Costs a wire field + save bump + mirror
+   change (§open row prices it). Until then a slope steps every `q/slope`
+   metres and the player cannot choose where.
+3. **A band-boundary wall bases on its canonical cell** — it can hang one
+   band over the lower plate (an arrow-sized slit under it). The lower of
+   its two columns is the honest base; needs `collide` + render together.
+4. **The skirt draws and does not block** — walking into it from downhill
+   clips through. Piece side collision is its own slice.
 
-§0kit's zero-yield refusal wants the same wire window. Take both.
 
-## 0sun · The sun sweeps; the deck that follows it is ungated *(client lane)*
 
 Landed: `to_sun` takes the **hour** and derives both coordinates, so no
 caller can pair this morning's height with this afternoon's bearing.
@@ -1852,16 +1907,16 @@ Lifted out of "done this pass" items before pruning (2026-08-05, again
 2026-08-09) — each was written down **only** inside a done item. All of it
 is `crates/`/wire work no single-surface lane may take.
 
-1. **The UDP socket buffer is a `NETCODE.md` row and nothing else** (found
-   2026-08-11 standing the public shard up). §2.2's config-of-record says
-   `SO_RCVBUF/SNDBUF 8 MiB, passed via with_bind_socket`; nothing in
-   `crates/` calls it, and the shard is running on this box's default
-   `rmem_max` of 212992 — the ~208 KiB the row's own "why" column names as
-   too small, quoting quinn's README. Two halves and the order matters: the
-   **code** half asks for the buffer (one `with_bind_socket` at the
-   endpoint), and only then does an ops sysctl raise the ceiling it would
-   otherwise hit. Doing ops first buys nothing measurable, which is why this
-   is a `crates/` item and not a runbook line. The row is marked ⚠ in place.
+1. ~~The UDP socket buffer is a `NETCODE.md` row and nothing else~~ —
+   **landed 2026-08-15 with the transport-truth pass** (`net::bind_udp`,
+   `UDP_BUF_BYTES` 8 MiB asked AND read back into `ShardStats`, gated by
+   `the_socket_buffer_records_what_it_got_not_what_it_asked`; the §2.2 row
+   is rewritten). This item stood a full day after the code landed and a
+   parallel lane rebuilt the feature from a stale base off it — struck
+   2026-08-16, the lane dropped. **The ops half is still owed**: this box
+   grants 4 MiB of the 8 asked (`rmem_max`), and raising the sysctl on the
+   public shard is an operator act. A stale item is not a small cost; it is
+   a whole lane's work spent twice.
 2. **Shore barrels as a second destination class.** The road pays unevenly
    now (the bay slots landed) and the haven pad is the one place worth
    walking to. A second class on the shore would give the ring two ends
