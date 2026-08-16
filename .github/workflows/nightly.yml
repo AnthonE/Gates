@@ -295,10 +295,22 @@ jobs:
         run: |
           rustup show active-toolchain || rustup toolchain install
           rustup target add ${{ matrix.target }}
+      # **`g++` too, and this job failed every night for two weeks without it.**
+      # `cargo check` still RUNS build scripts, and `basis-universal-sys`'s asks
+      # cc-rs for a C++ compiler family before it compiles anything — with only
+      # `gcc-mingw-w64-x86-64` installed that is `ToolNotFound:
+      # x86_64-w64-mingw32-g++` and the job dies at exit 101, which reads as a
+      # cross-compile regression and is really a missing package. Same pair the
+      # depot job's win leg installs, and POSIX threading for the same reason:
+      # half a switch moves the error rather than fixing it.
       - name: mingw (the gnu triple wants a linker even to check some crates)
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-mingw-w64-x86-64
+          sudo apt-get install -y gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+          sudo update-alternatives --set x86_64-w64-mingw32-gcc \
+                                        /usr/bin/x86_64-w64-mingw32-gcc-posix
+          sudo update-alternatives --set x86_64-w64-mingw32-g++ \
+                                        /usr/bin/x86_64-w64-mingw32-g++-posix
       - name: the three -dev packages the host build script side still wants
         run: sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev
       - name: cache cargo
