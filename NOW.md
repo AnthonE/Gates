@@ -48,6 +48,40 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 > REMAINS of one. `0dur` is the only one still whole: it is a wall-6 slice
 > and could not land in the run that designed it.
 
+## 0ctl · Four controls the player expects and the sim has no verb for *(systems lane)*
+
+The 2026-08-16 control row copied the reference's scheme key for key. Six
+bindings landed; **four were refused because they are slices, not keystrokes**,
+and each would have been a key that does nothing — worse than an absent one.
+Bind each **in the commit that gives it a verb**, never before.
+
+1. **Reload (`R`).** No magazine, loaded state or reload verb exists in any
+   crate. Firing spends an arrow straight out of the inventory
+   (`ranged::draw`), and `bake_ammo` skips `WeaponKind::Firearm` entirely, so
+   `weapons.toml`'s revolver has no sim behaviour at all. Needs a loaded-round
+   state on the weapon stack — which is `0dur`'s per-instance `ItemStack` field
+   question wearing a different hat, so **read that row first; the two should
+   probably land together or agree on a shape.** `R` is repair until then.
+2. **ADS / secondary attack (RMB).** No `BTN_SECONDARY`, no aim or spread
+   state. The button is also fully spoken for — deploy-place, the build wheel,
+   the inventory's half-stack grab — so this needs a held-item modality answer
+   before it needs a bit. A new button bit is a `PROTO_VER` bump even though
+   the octet does not move (`sim-core/input.rs` states the precedent).
+3. **Flashlight (`F`).** No held light source. `item.torch` is an inert prop
+   with no weapons row, and `tests/held_assets.rs::nothing_held_glows` forbids
+   a carried emissive **by name** — so this starts by deciding that test's
+   fate, which is the point of it. `F` is the ghost's level-down while the
+   build wheel is up and free otherwise.
+4. **Voice chat (hold `V`).** Nothing exists: no capture, no codec, no
+   `KIND_*`, no fan-out. `reference/VOICE.md` §9 is the research and already
+   settles the two design questions (it is not its own transport; a
+   client-side attenuation of a broadcast stream is a wallhack).
+
+**Also open, and smaller than any of the four:** the viewmodel sways with the
+camera during free look, because it is parented to it and reads `eye.yaw`. The
+reference tilts the held item instead. Cosmetic, and named in §open
+"free look v0".
+
 ## 0kit · The rock landed; the swing it refuses is silent *(systems lane)*
 
 Landed: kit → rock + torch, the four swung nodes' `hand` rows **deleted**

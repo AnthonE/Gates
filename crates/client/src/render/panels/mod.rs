@@ -15,7 +15,7 @@
 //!
 //! | screen | key | reference frame |
 //! |---|---|---|
-//! | inventory + crafting | `Tab` | the reference `inventory.jpeg`, `crafting.png` |
+//! | inventory + crafting | `Tab` toggles; `I`/`Q` open; `Esc` closes | the reference `inventory.jpeg`, `crafting.png` |
 //! | container | opens itself when the sim says one is open | `storageandtoolchest.jpeg` |
 //! | build wheel | hold right, building plan in hand | the radial in the operator's second frame |
 //! | hammer wheel | hold right, hammer in hand | the reference's second radial ("right click when equipped for more options") |
@@ -380,7 +380,29 @@ pub fn keys(
     let holding_wheel = hand.opens_a_wheel() && mouse.pressed(MouseButton::Right);
     let was_inventory = ui.panel == Panel::Inventory;
 
-    if keyboard.just_pressed(KeyCode::Tab) {
+    // **Three keys, one panel, and that is the honest mapping rather than a
+    // convenience.** The reference separates inventory (`Tab`/`I`) from a
+    // crafting menu (`Q`); this client draws crafting *inside* the inventory
+    // screen — `inv::build_screen` calls `craft::build_browser` and
+    // `craft::build_detail`, and every craft system self-gates on
+    // `Panel::Inventory` — so there is no second panel for `Q` to open and
+    // inventing one to justify the key would be the tail wagging the dog.
+    // Pointing all three at the screen that actually holds both means a
+    // player who reaches for `Q` to craft arrives at the crafting UI, which
+    // is the whole of what the binding promises.
+    //
+    // **`Tab` toggles; `I` and `Q` only ever OPEN, and the asymmetry is
+    // forced rather than chosen.** This screen has a search box, and it
+    // captures every printable key the whole time it is up (below, and it has
+    // no focus concept to check). So a letter that also closed the panel
+    // would close it mid-word: type "iron" into the search field and the `i`
+    // shuts the screen you are searching. `Tab` and `Esc` are safe as closers
+    // precisely because neither is a character — which is why they remain the
+    // only two, and why this is not the toggle the binding list implies.
+    let open_inventory = keyboard.just_pressed(KeyCode::Tab)
+        || ((keyboard.just_pressed(KeyCode::KeyI) || keyboard.just_pressed(KeyCode::KeyQ))
+            && ui.panel != Panel::Inventory);
+    if open_inventory {
         ui.panel = match ui.panel {
             Panel::Inventory => Panel::None,
             _ => Panel::Inventory,

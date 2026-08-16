@@ -640,9 +640,17 @@ impl Plugin for GatesRenderPlugin {
             );
 
         // ---- the map -------------------------------------------------
-        // `open` is registered after the panels and after chat, so `M` typed
-        // into a search box or a chat composer is theirs — both consume the
-        // press before this sees it.
+        // **Hold `G`.** `open` is ordered after the panels and after chat,
+        // and that ordering is necessary but was never sufficient — the claim
+        // here used to be that a letter typed into a search box or a composer
+        // is theirs because "both consume the press before this sees it", and
+        // only half of that was ever true. `chat::keys` does consume it: it
+        // clears the whole keyboard while the composer is up. `panels::keys`
+        // clears **only `Escape`**, and the inventory search box reads
+        // `KeyboardInput` messages rather than `ButtonInput`, so the press
+        // survives — which is why typing `m` into the crafting search used to
+        // open the map. `map::open` carries its own guard now and does not
+        // rely on being downstream of anything.
         app.init_resource::<map::Island>()
             .add_systems(OnEnter(Screen::Map), (map::enter, map::setup).chain())
             .add_systems(OnExit(Screen::Map), (map::teardown, map::leave))
@@ -790,14 +798,28 @@ impl Plugin for GatesRenderPlugin {
         // streamer, and a sea that froze while the Esc menu was up would
         // resume with a visible jump in every wave.
         .add_systems(Update, water::animate.run_if(world_running))
-        // Input is the one thing that is `InWorld` and nothing else: it is
-        // the only system that writes what the sim reads, and a player
+        // Input writes what the sim reads, so it runs on the two screens where
+        // the player is still *in* the world and nowhere else: a player
         // reading a settings pane must not be swinging an axe.
+        //
+        // **`Map` is the second screen, and it has to be.** The map is held
+        // rather than toggled now, so the player is running while it is up —
+        // and `ClientCore::set_input` is a LATCH that `advance` re-emits every
+        // tick. Stop feeding it and the body keeps walking on whatever keys
+        // were down when the map opened, forever, until the map closes. That
+        // was already a live bug on the `M` toggle (`pause::enter` and
+        // `death::enter` both zero the latch on their way in; `map::enter`
+        // never did) and a hold would have made it the common case instead of
+        // the odd one. Keeping `gather` alive fixes it at the source: the
+        // latch stays honest, and letting go of `W` stops the body.
+        //
+        // Only `gather`. `verbs::keys` and the ghost stay `InWorld`, so no
+        // door opens and nothing is placed while the map is up.
         .add_systems(
             Update,
             input::gather
                 .before(input::place_eye)
-                .run_if(in_state(Screen::InWorld)),
+                .run_if(in_state(Screen::InWorld).or(in_state(Screen::Map))),
         )
         // The in-world verbs. `InWorld` for the same reason `gather` is: every
         // one of them spends something, and a player reading a settings pane
