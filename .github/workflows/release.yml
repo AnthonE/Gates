@@ -71,7 +71,15 @@ jobs:
   gates:
     needs: check
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # **60, and 30 is what it was when v0.4.0's run died.** Measured, not
+    # padded: run 31974102692's `gates` job ran 21:38:56Z → 22:09:12Z and was
+    # cancelled at exactly 30:16 while `test_parity_wasm`'s `probe` was still
+    # running — so `build` skipped, `release` downloaded 0 artifacts, and the
+    # tag produced no draft at all. v0.3.0's run fit; the suite grew past the
+    # budget between the two releases and nothing was watching the margin.
+    # The failure mode is the reason this is generous rather than tight: a
+    # timeout here reads as "the release is broken" and is really a clock.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
