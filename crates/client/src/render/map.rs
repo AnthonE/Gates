@@ -16,7 +16,6 @@ use bevy::asset::RenderAssetUsages;
 use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::ui::map::{self, MarkKind, GRID_COLS, GRID_LETTERS};
 
@@ -62,34 +61,66 @@ pub struct Island {
     seed: Option<u64>,
 }
 
-/// `M` opens the map from the world; `M` or `Esc` closes it.
-pub fn open(keyboard: Res<ButtonInput<KeyCode>>, mut next: ResMut<NextState<Screen>>) {
-    if keyboard.just_pressed(KeyCode::KeyM) {
+/// **Hold `G`.** The map is up while the key is down and gone when it is
+/// released; `Esc` also closes it, because every other screen in this client
+/// answers `Esc` and one that did not would read as a hang.
+///
+/// It was a `M` toggle until 2026-08-16 (`DECISIONS.md`, the control scheme),
+/// and a hold is a different thing rather than the same thing with a shorter
+/// press: you keep running while you read it, which is why the two systems
+/// below are careful about state that a toggle could afford to be sloppy with.
+///
+/// **The guard is not decoration.** `open` runs `in_state(InWorld)` — which is
+/// exactly where the inventory panel and the door keypad also live, since
+/// neither is a `Screen` — so without it, `G` typed into the crafting search
+/// box or into a keypad's code would also throw the map up. That was a live
+/// bug on the old binding (`M` into the search box opened the map) and it is
+/// fixed here rather than inherited: `verbs::keys` and `ghost::level_keys`
+/// already stand down for the same reason, and this system simply never had
+/// the check. The chat composer needs no arm — `chat::keys` clears the whole
+/// keyboard while it is open.
+pub fn open(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut next: ResMut<NextState<Screen>>,
+    ui: Option<Res<super::panels::Ui>>,
+    pad: Option<Res<super::verbs::Pad>>,
+) {
+    let busy = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false)
+        || pad.map(|p| p.0.is_open()).unwrap_or(false);
+    if !busy && keyboard.just_pressed(KeyCode::KeyG) {
         next.set(Screen::Map);
     }
 }
 
+/// Closed by letting go — `!pressed` rather than `just_released`.
+///
+/// The difference is a real frame and not a style choice: a tap shorter than
+/// one frame produces a `just_pressed` that `open` sees and a `just_released`
+/// that this system never observes, and the map would be stuck up with no key
+/// held. Asking whether the key is down now cannot miss that edge.
 pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, mut next: ResMut<NextState<Screen>>) {
-    if keyboard.just_pressed(KeyCode::KeyM) || keyboard.just_pressed(KeyCode::Escape) {
+    if !keyboard.pressed(KeyCode::KeyG) || keyboard.just_pressed(KeyCode::Escape) {
         next.set(Screen::InWorld);
     }
 }
 
-/// Let the pointer go: this is a screen you read, not an overlay you fight
-/// under.
-pub fn enter(mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>) {
-    if let Ok(mut c) = cursor.single_mut() {
-        c.grab_mode = CursorGrabMode::None;
-        c.visible = true;
-    }
-}
+/// **The pointer stays locked, and the world keeps running under it.**
+///
+/// This was a screen you stopped at and read, with the cursor released. A
+/// held map is the opposite: the player is moving, the mouse is still
+/// steering, and handing the pointer back for the duration would swing the
+/// view on release when the OS cursor snapped home. `input::gather` is
+/// registered to keep running in `Screen::Map` for the same reason — see
+/// `render/mod.rs`, where that is also what keeps the sim's input latch fresh
+/// instead of leaving the body walking on the last frame's keys.
+///
+/// Kept as an empty system rather than deleted so the `OnEnter`/`OnExit`
+/// wiring stays visible at the registration site: this screen deliberately
+/// does nothing to the cursor, which is worth reading as a decision rather
+/// than as an omission.
+pub fn enter() {}
 
-pub fn leave(mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>) {
-    if let Ok(mut c) = cursor.single_mut() {
-        c.grab_mode = CursorGrabMode::Locked;
-        c.visible = false;
-    }
-}
+pub fn leave() {}
 
 pub fn setup(
     mut commands: Commands,
@@ -254,7 +285,7 @@ pub fn setup(
             root.spawn((
                 ui::label(
                     format!(
-                        "{}    -    north is up    -    M or Esc closes",
+                        "{}    -    north is up    -    let go of G to close",
                         &GRID_LETTERS[..1.min(GRID_LETTERS.len())]
                     ),
                     12.0,

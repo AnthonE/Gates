@@ -103,6 +103,11 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
                 }
             });
 
+            // Names only the two closers, deliberately. `I` and `Q` open this
+            // screen and cannot close it — the search box eats every letter,
+            // so a letter that closed would close it mid-word — and a hint
+            // promising a round trip that does not exist is worse than a hint
+            // that is merely incomplete.
             root.spawn((
                 Text::new(
                     "drag to move   -   right-drag takes half   -   ctrl-drag takes one   \

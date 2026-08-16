@@ -411,17 +411,46 @@ fn rows(cat: usize) -> Vec<Row> {
     }
 }
 
-/// The binds, read off `input::gather` and `pause::keys`. Read-only: rebinding
-/// needs a stored map and a conflict check, which is its own slice. Drawn
-/// anyway, because **a bind the player is never told about is a bind that does
-/// not exist** — the rule the intro screen's numbered rows already obey.
-pub const BINDS: [(&str, &str); 8] = [
+/// The binds, read off `input::gather`, `verbs::keys`, `panels::keys`,
+/// `map::open`, `chat::keys` and `pause::keys`. Read-only: rebinding needs a
+/// stored map and a conflict check, which is its own slice. Drawn anyway,
+/// because **a bind the player is never told about is a bind that does not
+/// exist** — the rule the intro screen's numbered rows already obey.
+///
+/// ⚠ **This array is a HAND-KEPT MIRROR of six systems and nothing gates it**
+/// — `CLAUDE.md`'s own recurring defect, the shape of the `props.js` count and
+/// the `pop_*` verb list. It had already drifted before this edit: it named
+/// eight binds against roughly twenty in the code, so every in-world verb the
+/// client has — `E`, the map, chat, the inventory — was absent from the only
+/// screen that tells a player what the keys are. Growing it is the fix for
+/// today; deriving it is the fix, and `tests/ui.rs` §H now at least fails if a
+/// row here names a key no system reads.
+///
+/// **CROUCH is listed as doing nothing on purpose.** `BTN_CROUCH` crosses the
+/// wire and no sim code reads it (`sim-core/input.rs`), so the row states that
+/// rather than implying a stance the player will go looking for.
+pub const BINDS: [(&str, &str); 17] = [
     ("MOVE", "W A S D"),
     ("SPRINT", "Left Shift"),
+    (
+        "CROUCH",
+        "Left Ctrl (sent, no effect until the combat pass)",
+    ),
     ("JUMP", "Space"),
-    ("USE / ATTACK", "Left Mouse"),
-    ("HOTBAR", "1 - 6"),
+    (
+        "FREE LOOK",
+        "Hold Left Alt (the head turns, the body does not)",
+    ),
     ("LOOK", "Mouse (click to capture the pointer)"),
+    ("USE / ATTACK", "Left Mouse"),
+    ("INTERACT / OPEN", "E"),
+    ("HOTBAR", "1 - 6, or the scroll wheel"),
+    ("INVENTORY / CRAFTING", "Tab, I or Q  (Tab or Esc closes)"),
+    ("MAP", "Hold G"),
+    ("CHAT", "T or Enter"),
+    ("EAT / DRINK", "J / H"),
+    ("BUILD", "Hold Right Mouse with a plan; Left Mouse places"),
+    ("REPAIR / UPGRADE", "R / U, or Left Mouse with a hammer"),
     ("MENU", "Esc"),
     ("QUIT", "Esc from the server list"),
 ];
