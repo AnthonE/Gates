@@ -146,11 +146,15 @@ fn a_band_step_is_an_exact_multiple_of_the_quantum() {
 /// reddens a gate instead of stranding players at their own first slab.
 #[test]
 fn a_lone_foundation_is_always_steppable() {
-    assert!(
-        BUILD_BASE_Q_M * 0.5 + PIECE_LIFT_M <= STEP_UP,
-        "q/2 + lift = {} exceeds STEP_UP {STEP_UP}: a lone foundation can strand its builder",
-        BUILD_BASE_Q_M * 0.5 + PIECE_LIFT_M
-    );
+    // A const assertion, because the bound is on constants (`tests/ghost.rs`
+    // §inset's own idiom): a retune of any of the three that breaks the
+    // coupling fails the BUILD, not just the test run.
+    const {
+        assert!(
+            BUILD_BASE_Q_M * 0.5 + PIECE_LIFT_M <= STEP_UP,
+            "q/2 + PIECE_LIFT_M exceeds STEP_UP: a lone foundation can strand its builder"
+        )
+    };
     for seed in SEEDS {
         for (cx, cz) in cells() {
             if band(seed, cx, cz).is_none() {
