@@ -1370,10 +1370,12 @@ fn a_clock_with_no_answer_is_refused() {
         "[gatherable.secondary]\noutput = \"item.cloth_UNUSED\"",
         "is not an item",
     );
-    // The honest version of the same defect — the rows simply absent. Both
-    // of them, since 2026-08-09: the tree's mushrooms answer hunger on
-    // their own, so deleting only the bush's berries no longer starves the
-    // island — which is the redundancy working, not the check weakening.
+    // The honest version of the same defect — the rows simply absent. All
+    // three of them since world containers v0 widened the clock's
+    // reachable set (2026-08-17): the tree's mushrooms answer hunger on
+    // their own, and so does the barrel's corn now that a verb opens every
+    // shipped container — which is the redundancy working, not the check
+    // weakening.
     let mut srcs = sources();
     let g = srcs
         .iter_mut()
@@ -1389,6 +1391,18 @@ fn a_clock_with_no_answer_is_refused() {
         );
         g.1 = g.1.replace(row, "\n");
     }
+    // Positive control for the widening itself: with both secondaries gone
+    // the barrel's corn is the island's only food, and it counts — before
+    // 2026-08-17 this exact set was refused as unanswerable, which had
+    // become a false refusal the day the open verb landed.
+    build(&srcs).expect("the barrel's corn answers hunger since world containers v0");
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    let corn_row = "    { item = \"item.corn\", weight = 8, count_min = 2, count_max = 4 },\n";
+    assert!(
+        l.1.contains(corn_row),
+        "test fixture rot: the barrel's corn row moved"
+    );
+    l.1 = l.1.replace(corn_row, "");
     let err = build(&srcs).expect_err("a foodless island must be refused");
     assert!(
         err.contains("the clock has no answer"),
@@ -1416,6 +1430,13 @@ fn a_clock_with_no_answer_is_refused() {
             *text = text.replace(
                 "id = \"item.mushrooms\"\nhealth = 3\nfood = 15\nwater = 5",
                 "id = \"item.mushrooms\"\nhealth = 3\nfood = 15\nwater = 0",
+            );
+            // The barrel's corn counts toward the clock since world
+            // containers v0 widened the reachable set, so the dry island
+            // has to dry it out too.
+            *text = text.replace(
+                "id = \"item.corn\"\nhealth = 0\nfood = 40\nwater = 20",
+                "id = \"item.corn\"\nhealth = 0\nfood = 40\nwater = 0",
             );
         }
     }
@@ -2450,14 +2471,16 @@ fn the_meal_left_on_the_fire_burns() {
 ///
 /// The seed set is what the world pays DIRECTLY, one entry per verb the sim
 /// actually runs: a swing on a node (gather primary + secondary), a kill
-/// (mob drops), a smashed barrel (`gather::smash` rolls `LOOT_BARREL` and
-/// nothing else — no verb opens a cache or a crate yet, `loot.rs`'s own
-/// words, so counting their rows would be exactly the lie `validate.rs`'s
-/// clock comment warns about; when those verbs land, this widens in that
-/// commit), and the spawn kit. The closure then walks the transformations:
-/// the oven's burn (fuel → byproduct), cook rows, and recipes whose inputs
-/// — and whose station, itself an item that must be produced — are all
-/// reachable, to a fixpoint.
+/// (mob drops), an opened container — every table `bake::container_index`
+/// knows, because a barrel is smashed (`gather::smash`) and a crate or a
+/// cache is opened (`worldcont::open`, world containers v0, 2026-08-14),
+/// while a table naming any other container is refused at bake and seeds
+/// nothing (this walk counted barrels alone until 2026-08-17, on the
+/// then-true reason "no verb opens a cache or a crate yet") — and the
+/// spawn kit. The closure then walks the transformations: the oven's burn
+/// (fuel → byproduct), cook rows, and recipes whose inputs — and whose
+/// station, itself an item that must be produced — are all reachable, to a
+/// fixpoint.
 fn unreachable_consumables(c: &Content) -> Vec<String> {
     let mut have = std::collections::BTreeSet::new();
     for g in &c.gatherables {
@@ -2472,7 +2495,7 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
         }
     }
     for l in &c.loot_tables {
-        if l.container == "barrel" {
+        if content::bake::container_index(&l.container).is_some() {
             for e in &l.entries {
                 have.insert(e.item.as_str());
             }
@@ -2536,8 +2559,8 @@ fn every_consumable_the_content_ships_is_reachable() {
         missing.is_empty(),
         "consumables nothing in the world can produce: {missing:?} — every \
          row in consumables.toml must be producible by a live verb chain \
-         (gather, kill, barrel smash, spawn kit; then burn/cook/recipe \
-         closure)"
+         (gather, kill, container smash/open, spawn kit; then \
+         burn/cook/recipe closure)"
     );
 
     // The enumeration is honest: strip one producer row and its consumable
@@ -2569,12 +2592,42 @@ fn every_consumable_the_content_ships_is_reachable() {
         "fixture rot: the barrel's corn row moved"
     );
     l.1 = l.1.replace(row, "");
-    let mutant = build(&srcs).expect("still valid — a loot row is not the clock's answer");
+    let mutant = build(&srcs).expect("still valid — the bush and the tree keep the clock answered");
     assert_eq!(
         unreachable_consumables(&mutant),
         vec!["item.corn".to_string()],
         "deleting the barrel's corn row must strand exactly the corn"
     );
+
+    // World containers v0 (2026-08-14) made the crate and the cache
+    // verb-openable (`worldcont::open`), so a consumable that exists ONLY
+    // in one of their tables is reachable — the pre-widening walk (barrel
+    // rows alone) called exactly this fixture stranded, which is the
+    // regression this pins.
+    let corn_row = "    { item = \"item.corn\", weight = 8, count_min = 2, count_max = 4 },\n";
+    for anchor in [
+        // The crate's metal_frags row — unique counts, so the corn lands
+        // in the crate's table.
+        "    { item = \"item.metal_frags\", weight = 15, count_min = 25, count_max = 50 },\n",
+        // The cache's — same, for the third container kind.
+        "    { item = \"item.metal_frags\", weight = 15, count_min = 15, count_max = 30 },\n",
+    ] {
+        let mut srcs = sources();
+        let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+        assert!(
+            l.1.contains(corn_row) && l.1.contains(anchor),
+            "fixture rot: the corn row or the metal_frags anchor moved"
+        );
+        l.1 = l.1.replace(corn_row, "");
+        l.1 = l.1.replace(anchor, &format!("{anchor}{corn_row}"));
+        let mutant = build(&srcs).expect("moving the corn between containers is legal content");
+        assert_eq!(
+            unreachable_consumables(&mutant),
+            Vec::<String>::new(),
+            "corn only in a verb-openable container's table is reachable — \
+             a walk that counts barrels alone is stale since world containers v0"
+        );
+    }
 }
 
 /// The mob validator refuses what it claims to. Each of these is a content

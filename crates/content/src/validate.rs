@@ -613,14 +613,18 @@ pub fn structural(c: &Content) -> Result<(), String> {
         }
 
         // Reachable means a gatherable pays it, **or the drink verb is
-        // armed** — the two payout paths the sim has. The drink counts
-        // because it is a verb the sim actually runs against the
-        // heightfield every shard boots on, which is exactly the property
-        // the loot tables lack below. Loot tables deliberately do not
-        // count: nine barrel entries are parsed and hashed, and no verb
-        // opens a container (that judge's ranked gap 2), so counting them
-        // would be exactly the lie this check exists to catch. When the
-        // open verb lands, the set widens in that commit.
+        // armed, or a live verb opens a container whose table rolls it** —
+        // the payout paths the sim has. The drink counts because it is a
+        // verb the sim actually runs against the heightfield every shard
+        // boots on. Loot tables count since world containers v0
+        // (2026-08-14): a barrel is smashed (`gather::smash`) and a crate
+        // or a cache is opened (`worldcont::open`), so every container
+        // `bake::container_index` knows is reachable loot — and only
+        // those, because a table naming any other container is refused at
+        // bake and its rows reach nobody. This comment refused to count
+        // loot while no verb opened a container and promised to widen the
+        // set in the commit the verb landed in; the verb landed, and the
+        // widening is below (2026-08-17).
         let mut gathered_food = false;
         let mut gathered_water = s.drink_water > 0;
         for g in &c.gatherables {
@@ -630,6 +634,20 @@ pub fn structural(c: &Content) -> Result<(), String> {
             {
                 for con in &c.consumables {
                     if &con.id != id {
+                        continue;
+                    }
+                    gathered_food |= con.food > 0;
+                    gathered_water |= con.water > 0;
+                }
+            }
+        }
+        for l in &c.loot_tables {
+            if crate::bake::container_index(&l.container).is_none() {
+                continue;
+            }
+            for e in &l.entries {
+                for con in &c.consumables {
+                    if con.id != e.item {
                         continue;
                     }
                     gathered_food |= con.food > 0;
