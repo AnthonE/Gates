@@ -138,6 +138,16 @@ pub struct Feed {
     /// own events whether or not anything drew a streak.
     shots: [(u32, u16, u8, u16, u16); FEED_CAP],
     n_shots: usize,
+    /// Arrow impacts heard this frame: the stop point in the wire's quanta
+    /// (3 cm x/z, 1 cm y, y signed) and what it stopped on
+    /// (`sim_core::ranged::SURF_*`).
+    ///
+    /// Broadcast, like `shots` and `knocks` above it and unlike the own-fact
+    /// rings — every arrow on the island that stops on something lands here,
+    /// not only this player's. Cosmetic only: what reads this leaves a mark,
+    /// and a mark decides nothing.
+    impacts: [(i32, i32, i32, u8); FEED_CAP],
+    n_impacts: usize,
     /// Placements that happened this frame: address + which store (`true` =
     /// deployable). Broadcast-only by construction — the core's ring is fed
     /// by `PiecePlaced`/`DeployPlaced` and never by a sync walk, so a join
@@ -219,6 +229,10 @@ impl Feed {
     pub fn shots(&self) -> &[(u32, u16, u8, u16, u16)] {
         &self.shots[..self.n_shots]
     }
+    /// Arrow impacts heard this frame, oldest first.
+    pub fn impacts(&self) -> &[(i32, i32, i32, u8)] {
+        &self.impacts[..self.n_impacts]
+    }
     pub fn auths(&self) -> &[(u16, u16, u8, u8, u8)] {
         &self.auths[..self.n_auths]
     }
@@ -240,6 +254,7 @@ impl Feed {
         self.n_knocks = 0;
         self.n_auths = 0;
         self.n_shots = 0;
+        self.n_impacts = 0;
         self.n_placed = 0;
     }
 
@@ -362,6 +377,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_shots;
             feed.shots[n] = sh;
             feed.n_shots += 1;
+        }
+    }
+    while let Some(im) = core.pop_impact() {
+        if feed.n_impacts >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_impacts;
+            feed.impacts[n] = im;
+            feed.n_impacts += 1;
         }
     }
     while let Some(p) = core.pop_placed() {

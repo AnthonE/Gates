@@ -3343,3 +3343,212 @@ fn the_scrolled_slot_is_always_in_range() {
         }
     }
 }
+
+// §P · the loot panel — the name bar, the stack badge, and the tile under
+// the cursor
+//
+// Three things the reference loot frame does that ours did not, and all
+// three are arithmetic rather than colour, which is why they are here and
+// not in `render::panels::inv`. The name bar is the interesting one: it is
+// derived from the deploy sync the client already draws, so the gate that
+// matters is that it refuses to guess — a def row that has not arrived, an
+// item the catalog cannot name, and a hearth sharing the box's cell are all
+// ways to put a confident wrong word on a heading.
+
+mod loot {
+    use client::ui::slots::{container_name, count_badge, ghost_origin};
+    use protocol::event::ItemCatalog;
+    use sim_core::deploy::{box_key, DeployContent, DeployDef, DeployRec, ARCH_BOX, ARCH_HEARTH};
+    use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_WORLD};
+
+    const CX: u16 = 40;
+    const CZ: u16 = 77;
+    const LEVEL: u8 = 1;
+    /// The item index the fixtures name; nothing depends on the value.
+    const LARGE_BOX: u16 = 4;
+
+    fn handle() -> u32 {
+        box_key(CX, CZ, LEVEL)
+    }
+
+    /// One def table with `arch`/`item` on row 0 and nothing else live.
+    fn defs(arch: u8, item: u16) -> DeployContent {
+        let mut dc = DeployContent::EMPTY;
+        dc.defs[0] = DeployDef {
+            arch,
+            item,
+            ..DeployDef::INERT
+        };
+        dc.def_count = 1;
+        dc
+    }
+
+    fn rec(row: u8, loc: u8) -> DeployRec {
+        DeployRec {
+            cx: CX,
+            cz: CZ,
+            level: LEVEL,
+            loc,
+            row,
+            ..DeployRec::default()
+        }
+    }
+
+    fn named() -> ItemCatalog {
+        let mut c = ItemCatalog::EMPTY;
+        c.set(LARGE_BOX as usize, b"Large Box").unwrap();
+        c
+    }
+
+    /// The bar says what was opened, in the frame's caps — the whole point
+    /// of it, and the thing `BOX` could not say about two boxes.
+    #[test]
+    fn the_loot_bar_names_the_box_that_was_opened() {
+        assert_eq!(
+            container_name(
+                CONT_BOX,
+                handle(),
+                &[rec(0, 0)],
+                &defs(ARCH_BOX, LARGE_BOX),
+                1,
+                &named()
+            ),
+            "LARGE BOX"
+        );
+    }
+
+    /// The def table drips in over the first seconds of a session, and a row
+    /// past the watermark is a row of zeroes whose `arch` reads as
+    /// `ARCH_BAG`. Reading it anyway would name the box after item 0.
+    #[test]
+    fn a_def_row_that_has_not_arrived_is_not_read() {
+        assert_eq!(
+            container_name(
+                CONT_BOX,
+                handle(),
+                &[rec(0, 0)],
+                &defs(ARCH_BOX, LARGE_BOX),
+                0,
+                &named()
+            ),
+            "BOX",
+            "a heading is allowed to be generic and is not allowed to guess"
+        );
+    }
+
+    /// A handle names a cell and a level; a `DeployRec` also carries a `loc`,
+    /// so a hearth and a box can share one key. The arch filter is what makes
+    /// the address mean one of them.
+    #[test]
+    fn the_bar_reads_the_box_at_the_handle_not_the_hearth_beside_it() {
+        let mut dc = defs(ARCH_HEARTH, 9);
+        dc.defs[1] = DeployDef {
+            arch: ARCH_BOX,
+            item: LARGE_BOX,
+            ..DeployDef::INERT
+        };
+        dc.def_count = 2;
+        assert_eq!(
+            container_name(
+                CONT_BOX,
+                handle(),
+                &[rec(0, 0), rec(1, 3)],
+                &dc,
+                2,
+                &named()
+            ),
+            "LARGE BOX"
+        );
+    }
+
+    /// A box somewhere else does not name this one.
+    #[test]
+    fn a_box_at_another_address_is_not_this_box() {
+        let elsewhere = DeployRec {
+            cz: CZ + 1,
+            ..rec(0, 0)
+        };
+        assert_eq!(
+            container_name(
+                CONT_BOX,
+                handle(),
+                &[elsewhere],
+                &defs(ARCH_BOX, LARGE_BOX),
+                1,
+                &named()
+            ),
+            "BOX"
+        );
+    }
+
+    /// The catalog drips in too, and `item_label`'s answer for a name it does
+    /// not have is `#4` — which in 12 px caps on a heading reads as a defect.
+    #[test]
+    fn an_unnamed_item_falls_back_rather_than_printing_a_hash() {
+        let got = container_name(
+            CONT_BOX,
+            handle(),
+            &[rec(0, 0)],
+            &defs(ARCH_BOX, LARGE_BOX),
+            1,
+            &ItemCatalog::EMPTY,
+        );
+        assert!(
+            !got.contains('#'),
+            "the bar printed a raw item index: {got}"
+        );
+        assert_eq!(got, "BOX");
+    }
+
+    /// A bag's handle is an id and a crate's is a cell key for a container
+    /// terrain places — neither resolves through the deploy set, so both keep
+    /// the generic title rather than being named after whatever box happens
+    /// to sit at the same number.
+    #[test]
+    fn a_bag_and_a_crate_keep_their_generic_titles() {
+        let dc = defs(ARCH_BOX, LARGE_BOX);
+        let recs = [rec(0, 0)];
+        assert_eq!(
+            container_name(CONT_BAG, handle(), &recs, &dc, 1, &named()),
+            "BAG"
+        );
+        assert_eq!(
+            container_name(CONT_WORLD, handle(), &recs, &dc, 1, &named()),
+            "CRATE"
+        );
+    }
+
+    /// The badge carries its `x`, and a single is not drawn — a bare `3` in
+    /// the corner of a picture of an arrow is ambiguous with a tier, and a
+    /// screen of tools each labelled `1` reads as a screen of numbers.
+    #[test]
+    fn the_stack_badge_carries_its_x_and_a_single_is_not_drawn() {
+        assert_eq!(count_badge(0), None);
+        assert_eq!(count_badge(1), None);
+        assert_eq!(count_badge(3).as_deref(), Some("x3"));
+        assert_eq!(count_badge(100).as_deref(), Some("x100"));
+        assert_eq!(count_badge(u16::MAX).as_deref(), Some("x65535"));
+    }
+
+    /// The tile is centred on the pointer, not hung off it: the cell under
+    /// the cursor is the cell the drop addresses, so the cargo is drawn
+    /// there and nowhere else.
+    #[test]
+    fn the_ghost_is_centred_on_the_cursor() {
+        let size = 44.0;
+        for (x, y) in [(0.0, 0.0), (100.0, 200.0), (1279.0, 719.0)] {
+            let (left, top) = ghost_origin(x, y, size);
+            assert_eq!(left + size * 0.5, x, "the tile's centre left the cursor");
+            assert_eq!(top + size * 0.5, y, "the tile's centre left the cursor");
+        }
+    }
+
+    /// And it is genuinely centred rather than merely offset — the bug it
+    /// replaced was a fixed nudge to the lower right, which passes any test
+    /// that only checks the tile moved with the pointer.
+    #[test]
+    fn the_ghost_is_not_hung_off_the_cursor() {
+        let (left, top) = ghost_origin(500.0, 500.0, 44.0);
+        assert_eq!((left, top), (478.0, 478.0));
+    }
+}

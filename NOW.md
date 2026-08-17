@@ -198,6 +198,38 @@ the shared feed queue and `ui::refusals::GATHER` (wire v42). Remainders:
    empty `[[spawn_kit]]` is an unwinnable world that boots green; and
    `parse_shard_toml`'s `dev_spawn_kit` arm pushes unbounded, caps after.
 
+## 0mk · Arrows leave marks; swings and paint do not *(systems+client lane)*
+
+Landed 2026-08-16 (operator: *"when i hit a tree it needs a mark on it,
+when i shot the ground it needs bullet holes"*): `EV_IMPACT` (wire v45)
+carries where an arrow stopped and which of `ranged::step`'s three
+predicates stopped it, and `render/decal.rs` draws it as a pooled
+`ForwardDecal` — the first decal in the tree. The sim already computed
+both and threw them away. Knobs and the full argument: `DECISIONS.md`
+§open, "surface marks v0".
+
+Three gaps, in the order they are worth closing.
+
+1. **A melee swing leaves nothing**, and it is the same missing wire fact
+   as §0sw's remote swing animation rather than a second problem:
+   `EV_HIT` carries no position and a *miss* is not broadcast at all. Do
+   not solve it twice — whatever fact answers §0sw should carry a point.
+2. **A mark on a built piece faces its cell's dominant axis**, which is
+   right for a wall and wrong for a floor (it gets a wall's normal and
+   reads as a mark on the lip). Ground and world occupants are exact —
+   terrain gradient and slot centre, both shared worldgen. The fix is the
+   piece's address on `EV_IMPACT`; `SURF_BITS` has no spare value, but the
+   message has room.
+3. **Spray paint is not this.** A player-authored mark that persists is a
+   deployable, not a decal: a cap in `limits.rs`, a slot in
+   `worldsave.rs`, a build-privilege question, decay, and — if the mark is
+   painted rather than picked from N authored stencils — moderation
+   forever. Decide stencil-vs-painted before any of it.
+
+Also open, and cheap: nothing prewarms the *other* materials. `decal.rs`
+pays `CLAUDE.md`'s shader-prewarm trap for its own pipeline and no module
+else does, on a trap with no gate since `browser_smoke` went.
+
 ## 0sw · The swing is drawn in first person only *(client lane)*
 
 Landed 2026-08-16 (operator: *"we need some animation atleast showing the

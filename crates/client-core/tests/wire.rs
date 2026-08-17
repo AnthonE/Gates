@@ -44,13 +44,14 @@ use client_core::core::{
 };
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
-    encode_event_cont_sync, encode_event_death, encode_event_hit, encode_event_move_refused,
-    encode_event_moved, encode_event_respawn, encode_event_shot, encode_event_struct_hit,
-    encode_event_vitals, InvSlot, WireBag, MAX_EVENT_MSG_BYTES,
+    encode_event_cont_sync, encode_event_death, encode_event_hit, encode_event_impact,
+    encode_event_move_refused, encode_event_moved, encode_event_respawn, encode_event_shot,
+    encode_event_struct_hit, encode_event_vitals, InvSlot, WireBag, MAX_EVENT_MSG_BYTES,
 };
 use sim_core::backpack::{BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{addr, CONT_BAG, CONT_BOX, CONT_SELF, REFUSE_M_NO_ROOM};
+use sim_core::ranged::{SURF_GROUND, SURF_WORLD};
 use sim_core::world::{DEATH_BY_ARROW, DEATH_BY_HAND};
 
 /// The player this core is. Distinct from every other id below, because
@@ -302,6 +303,84 @@ fn a_shot_crosses_whole_and_drains_once() {
         "the shot arrived with a field in the wrong seat"
     );
     assert_eq!(c.pop_shot(), None, "the shot ring must drain");
+}
+
+/// An impact crosses whole, keeps its axes and its sign, and drains once.
+///
+/// **The fixture is chosen against a transposition, not against zero.**
+/// `qx` and `qz` are the same kind of number in the same units — two axes
+/// of one point — so the only thing that can catch them swapped is a
+/// fixture where they differ in both halves and an assertion that names
+/// which is which. `EV_SHOT` above makes the same argument about its two
+/// pairs; this is the same trap with the pair spread across two fields.
+///
+/// **The negative `qy` is the other half of the test.** This is the only
+/// signed coordinate on the event lane: it rides `POS_Y_BIAS` across the
+/// wire and comes back through an `i32` cast on both sides. A decoder that
+/// forgot the bias, or read the field unsigned, produces a *plausible*
+/// altitude rather than an obviously broken one — which is exactly the
+/// class of bug a byte-golden cannot see.
+#[test]
+fn an_impact_crosses_whole_and_drains_once() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    assert_eq!(c.pop_impact(), None, "the impact ring starts empty");
+
+    // Two axes distinguishable in both halves, and a Y below datum.
+    let (qx, qy, qz, surf) = (0xA179i32, -312i32, 0x58A3i32, SURF_WORLD);
+    let len = encode_event_impact(qx, qy, qz, surf, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(
+        c.pop_impact(),
+        Some((qx, qy, qz, surf)),
+        "the impact arrived with an axis in the wrong seat, or a Y that \
+         lost its sign"
+    );
+    assert_eq!(c.pop_impact(), None, "the impact ring must drain");
+}
+
+/// A surface kind this build does not know is refused, not guessed at.
+///
+/// `SURF_BITS` is two, the sim makes three kinds, and the fourth value is
+/// dead. Dead is not the same as spare: a decoder that accepted it would
+/// turn a forged byte into a fact, and the mark it produced would be
+/// whatever the renderer's fallback happens to be. Both ends refuse —
+/// `encode_event_impact` returns `Range`, and this is the decoder's half.
+///
+/// **The forge is bit-exact and paired with a control**, `a_shot_with_no_
+/// speed_is_malformed`'s discipline: the header is 10 bits and the writer
+/// packs LSB-first, so the fields land at bit 10 (qx, 17), 27 (qy, 14), 41
+/// (qz, 17) and **58 (surf, 2)**. Setting both surf bits makes 3; the
+/// control sets only the low one, which is `SURF_WORLD` and must still
+/// decode.
+#[test]
+fn an_unknown_impact_surface_is_malformed() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    let len = encode_event_impact(0xA179, -312, 0x58A3, SURF_GROUND, &mut buf).unwrap();
+
+    // Control: bit 58 is byte 7, offset 2 — set it alone and the surface
+    // reads as `SURF_WORLD`, a kind this build knows.
+    let mut control = buf[..len].to_vec();
+    control[7] |= 0b0000_0100;
+    assert!(
+        c.on_stream(&control).is_ok(),
+        "the control must decode, or the forge below proves nothing"
+    );
+    assert_eq!(
+        c.pop_impact().map(|i| i.3),
+        Some(SURF_WORLD),
+        "and it must reach the ring as the kind the control set"
+    );
+
+    // Forge: set both bits, which is the fourth value nothing emits.
+    let mut forged = buf[..len].to_vec();
+    forged[7] |= 0b0000_1100;
+    assert!(
+        c.on_stream(&forged).is_err(),
+        "a surface kind past SURF_BUILT must be refused, not drawn"
+    );
+    assert_eq!(c.pop_impact(), None, "and nothing may reach the ring");
 }
 
 /// A round with no muzzle speed is refused rather than drawn.

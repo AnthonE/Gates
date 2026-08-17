@@ -87,18 +87,19 @@ use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{self, CONT_SELF, REFUSE_M_EMPTY};
 use sim_core::limits::TICK_HZ;
 use sim_core::loot::LootContent;
-use sim_core::movement::{Body, POS_XZ_Q};
+use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::oven::CookContent;
+use sim_core::ranged::SURF_GROUND;
 use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFUSE_C_NO_WATER};
 use sim_core::terrain;
 use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_MAX, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_KNOCK, EV_KNOWN, EV_MAX,
-    EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED,
-    EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED,
-    EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_IMPACT, EV_KNOCK, EV_KNOWN,
+    EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
+    EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED,
+    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 use sim_core::yaw_dir;
 
@@ -510,6 +511,130 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         "EV_SHOT.c's low half is drop"
     );
 }
+
+/// `EV_IMPACT: a = SURF_* << 24 | x, b = z, c = y` — all three in the
+/// entity lane's quanta, `c` signed.
+///
+/// **The sharpest positional payload in the lane, and the reason this
+/// file exists.** `a`'s low half and `b` are the same kind of number in
+/// the same units — two axes of one point — so a transposition at the
+/// `events.push` site produces a mark somewhere else on the island with
+/// every other gate green: the encoder is untouched (golden green), the
+/// event queue is not in `state_hash` (replay green), and both are `u32`
+/// (clippy green). That is `reference/FINDINGS.md` §1's trap exactly, and
+/// the only thing that can see it is an assertion that knows which axis
+/// is which.
+///
+/// So the fixture stands the shooter somewhere x and z **cannot be
+/// confused**, and asserts it: `distinct_axes` below fails loudly rather
+/// than letting the checks pass vacuously if the spawn ever moves to a
+/// diagonal.
+///
+/// Straight down (`pitch` 0) for the surface: an arrow dropped from the
+/// eye meets the ground under the shooter's own feet, which is a
+/// `SURF_GROUND` this test can predict without re-implementing the stop
+/// ladder. The other two kinds are `ranged.rs`'s to decide and the
+/// wire-domain table's to bound; what is checked here is the *roles*.
+#[test]
+fn impact_names_the_surface_then_x_then_z_then_y() {
+    /// Straight down. `pitch_dir(0)` is the bottom of the 256-entry table
+    /// — planar scale ~0, vertical −1 — so the arrow falls from the eye
+    /// rather than flying, and what it meets is the ground below.
+    const DOWN: u8 = 0;
+    const BOW: u16 = 5;
+    const ARROW: u16 = 6;
+
+    let mut w = duel_world();
+    w.combat.ranged[BOW as usize] = RangedDef {
+        damage: 30,
+        ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 60,
+        range_mm: 60_000,
+    };
+    w.combat.ammo[ARROW as usize] = AmmoDef {
+        speed_mmpt: 1_333,
+        drop_mmpt2: 22,
+    };
+    w.players[0].inv[0] = ItemStack {
+        item: BOW,
+        count: 1,
+        cond: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: ARROW,
+        count: 5,
+        cond: 0,
+    };
+    // The victim would be under the falling arrow otherwise, and a body
+    // resolves before the world does — `EV_HIT`, not this.
+    w.players[1].dead = true;
+    w.players[1].active = false;
+
+    let (want_x, want_z) = (w.players[0].body.qx, w.players[0].body.qz);
+    assert_ne!(
+        want_x, want_z,
+        "the shooter stands on a diagonal, so x and z carry the same \
+         number and every axis check below is blind to a swap. Move the \
+         fixture, not the assertion."
+    );
+
+    w.tick(&[Command::Input {
+        id: ATTACKER,
+        frame: InputFrame {
+            seq: 1,
+            buttons: BTN_PRIMARY,
+            yaw: YAW,
+            pitch: DOWN,
+            move_x: 0,
+            move_z: 0,
+            sel: 0,
+        },
+    }]);
+    until(&mut w, EV_IMPACT);
+    let im = only(&w, EV_IMPACT);
+
+    assert_eq!(
+        im.a >> 24,
+        SURF_GROUND as u32,
+        "EV_IMPACT.a's high byte is the surface kind, and an arrow dropped \
+         onto open ground met the ground"
+    );
+    // One quantum of slack an axis: the stop point is the sample the loop
+    // broke on, not the shooter's own cell, so it may land a quantum
+    // either side. Slack this tight still cannot absorb a swap — the two
+    // axes are thousands of quanta apart.
+    let (got_x, got_z) = ((im.a & 0x00FF_FFFF) as i32, im.b as i32);
+    assert!(
+        (got_x - want_x).abs() <= 1,
+        "EV_IMPACT.a's low 24 bits are the impact's X ({want_x}), got \
+         {got_x} — if this reads as the Z ({want_z}), the axes are \
+         transposed at the push site"
+    );
+    assert!(
+        (got_z - want_z).abs() <= 1,
+        "EV_IMPACT.b is the impact's Z ({want_z}), got {got_z} — if this \
+         reads as the X ({want_x}), the axes are transposed at the push site"
+    );
+
+    // `c` signed, which no other field on this lane is: the ground under
+    // the shooter may be below datum, and the whole point of carrying the
+    // two's-complement pattern is that such a mark still lands there.
+    let ground_q = (terrain::height(SEED, want_x as f32 * POS_XZ_Q, want_z as f32 * POS_XZ_Q)
+        / POS_Y_Q) as i32;
+    let got_y = im.c as i32;
+    assert!(
+        (got_y - ground_q).abs() <= ARROW_STEP_Q,
+        "EV_IMPACT.c is the impact's Y in POS_Y_Q quanta ({ground_q} is \
+         the ground here), got {got_y}. A y read off the wrong axis, or \
+         read unsigned where the ground is below datum, lands here."
+    );
+}
+
+/// One tick of a falling arrow, in `POS_Y_Q` quanta — the slack the Y
+/// check above allows, stated as the sample spacing rather than guessed.
+/// The stop point is the first sample *under* the surface, so it may sit
+/// up to one segment below it.
+const ARROW_STEP_Q: i32 = 200;
 
 /// `EV_HIT: a = attacker player id, b = victim player id, c = damage`.
 ///
@@ -3306,7 +3431,7 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 37] = [
+    const COVERED: [(&str, u8); 38] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -3344,6 +3469,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_RESEARCH_REFUSED", EV_RESEARCH_REFUSED),
         ("EV_SHOT", EV_SHOT),
         ("EV_KNOWN", EV_KNOWN),
+        ("EV_IMPACT", EV_IMPACT),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next

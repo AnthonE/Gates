@@ -29,124 +29,129 @@ use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 94] = [
-    "v44_input_acks_only.bin",
-    "v44_input_full.bin",
-    "v44_snapshot_keyframe.bin",
-    "v44_snapshot_delta.bin",
-    "v44_snapshot_cap.bin",
-    "v44_hello.bin",
-    "v44_welcome.bin",
-    "v44_refuse_full.bin",
-    "v44_event_gather.bin",
-    "v44_event_inv.bin",
-    "v44_event_slot_harvested.bin",
-    "v44_event_slot_respawned.bin",
-    "v44_event_slot_sync.bin",
-    "v44_event_catalog.bin",
-    "v44_event_weak_mark.bin",
-    "v44_event_craft_q.bin",
-    "v44_event_craft_done.bin",
-    "v44_event_craft_refused.bin",
-    "v44_event_recipes.bin",
-    "v44_action_craft.bin",
-    "v44_action_cancel.bin",
-    "v44_action_place.bin",
-    "v44_event_piece_placed.bin",
-    "v44_event_piece_sync.bin",
-    "v44_event_build_refused.bin",
-    "v44_event_piece_defs.bin",
-    "v44_action_deploy.bin",
-    "v44_action_feed.bin",
-    "v44_event_deploy_placed.bin",
-    "v44_event_deploy_sync.bin",
-    "v44_event_deploy_refused.bin",
-    "v44_event_deploy_defs.bin",
-    "v44_event_piece_removed.bin",
-    "v44_event_deploy_removed.bin",
-    "v44_event_stock.bin",
-    "v44_action_use.bin",
-    "v44_action_access.bin",
-    "v44_event_door.bin",
-    "v44_action_upgrade.bin",
-    "v44_chat.bin",
-    "v44_event_chat.bin",
-    "v44_event_hit.bin",
-    "v44_event_health.bin",
-    "v44_event_death.bin",
-    "v44_action_loot.bin",
-    "v44_event_bag_dropped.bin",
-    "v44_event_bag_sync.bin",
-    "v44_event_bag_removed.bin",
-    "v44_event_struct_hit_piece.bin",
-    "v44_event_struct_hit_deploy.bin",
-    "v44_event_vitals.bin",
-    "v44_event_consumed.bin",
-    "v44_event_consume_refused.bin",
-    "v44_action_consume.bin",
-    "v44_event_drank.bin",
-    "v44_action_drink.bin",
-    "v44_event_respawn.bin",
-    "v44_action_respawn.bin",
-    "v44_action_move.bin",
-    "v44_event_moved.bin",
-    "v44_event_move_refused.bin",
-    "v44_action_move_box.bin",
-    "v44_action_container.bin",
-    "v44_action_container_close.bin",
-    "v44_event_cont_sync.bin",
-    "v44_event_cont_close.bin",
-    "v44_action_repair_piece.bin",
-    "v44_action_repair_deploy.bin",
-    "v44_event_piece_repaired_piece.bin",
-    "v44_event_piece_repaired_deploy.bin",
-    "v44_action_throw_piece.bin",
-    "v44_action_throw_deploy.bin",
-    "v44_event_charge_placed_piece.bin",
-    "v44_event_charge_placed_deploy.bin",
-    "v44_challenge.bin",
-    "v44_auth.bin",
-    "v44_event_oven_lit.bin",
-    "v44_event_oven_out.bin",
+pub const FIXTURES: [&str; 95] = [
+    "v45_input_acks_only.bin",
+    "v45_input_full.bin",
+    "v45_snapshot_keyframe.bin",
+    "v45_snapshot_delta.bin",
+    "v45_snapshot_cap.bin",
+    "v45_hello.bin",
+    "v45_welcome.bin",
+    "v45_refuse_full.bin",
+    "v45_event_gather.bin",
+    "v45_event_inv.bin",
+    "v45_event_slot_harvested.bin",
+    "v45_event_slot_respawned.bin",
+    "v45_event_slot_sync.bin",
+    "v45_event_catalog.bin",
+    "v45_event_weak_mark.bin",
+    "v45_event_craft_q.bin",
+    "v45_event_craft_done.bin",
+    "v45_event_craft_refused.bin",
+    "v45_event_recipes.bin",
+    "v45_action_craft.bin",
+    "v45_action_cancel.bin",
+    "v45_action_place.bin",
+    "v45_event_piece_placed.bin",
+    "v45_event_piece_sync.bin",
+    "v45_event_build_refused.bin",
+    "v45_event_piece_defs.bin",
+    "v45_action_deploy.bin",
+    "v45_action_feed.bin",
+    "v45_event_deploy_placed.bin",
+    "v45_event_deploy_sync.bin",
+    "v45_event_deploy_refused.bin",
+    "v45_event_deploy_defs.bin",
+    "v45_event_piece_removed.bin",
+    "v45_event_deploy_removed.bin",
+    "v45_event_stock.bin",
+    "v45_action_use.bin",
+    "v45_action_access.bin",
+    "v45_event_door.bin",
+    "v45_action_upgrade.bin",
+    "v45_chat.bin",
+    "v45_event_chat.bin",
+    "v45_event_hit.bin",
+    "v45_event_health.bin",
+    "v45_event_death.bin",
+    "v45_action_loot.bin",
+    "v45_event_bag_dropped.bin",
+    "v45_event_bag_sync.bin",
+    "v45_event_bag_removed.bin",
+    "v45_event_struct_hit_piece.bin",
+    "v45_event_struct_hit_deploy.bin",
+    "v45_event_vitals.bin",
+    "v45_event_consumed.bin",
+    "v45_event_consume_refused.bin",
+    "v45_action_consume.bin",
+    "v45_event_drank.bin",
+    "v45_action_drink.bin",
+    "v45_event_respawn.bin",
+    "v45_action_respawn.bin",
+    "v45_action_move.bin",
+    "v45_event_moved.bin",
+    "v45_event_move_refused.bin",
+    "v45_action_move_box.bin",
+    "v45_action_container.bin",
+    "v45_action_container_close.bin",
+    "v45_event_cont_sync.bin",
+    "v45_event_cont_close.bin",
+    "v45_action_repair_piece.bin",
+    "v45_action_repair_deploy.bin",
+    "v45_event_piece_repaired_piece.bin",
+    "v45_event_piece_repaired_deploy.bin",
+    "v45_action_throw_piece.bin",
+    "v45_action_throw_deploy.bin",
+    "v45_event_charge_placed_piece.bin",
+    "v45_event_charge_placed_deploy.bin",
+    "v45_challenge.bin",
+    "v45_auth.bin",
+    "v45_event_oven_lit.bin",
+    "v45_event_oven_out.bin",
     // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
-    "v44_event_knock.bin",
-    "v44_event_auth.bin",
-    "v44_action_access_crew.bin",
-    "v44_action_demolish.bin",
-    "v44_event_shot.bin",
+    "v45_event_knock.bin",
+    "v45_event_auth.bin",
+    "v45_action_access_crew.bin",
+    "v45_action_demolish.bin",
+    "v45_event_shot.bin",
     // World containers v0 (v37): the fourth container kind. Three
     // fixtures and not one, because `action_move_box`'s own doc records
     // what happens otherwise — the third kind crossed the wire for a
     // whole version with only the *open* pinned, so the bytes that mean
     // "take it out of the box" were checked by nothing. Kind 3 gets its
     // open, its move and its sync in the commit that legalises it.
-    "v44_action_container_world.bin",
-    "v44_action_move_world.bin",
-    "v44_event_cont_sync_world.bin",
+    "v45_action_container_world.bin",
+    "v45_action_move_world.bin",
+    "v45_event_cont_sync_world.bin",
     // The bench ladder + tech tree (v38): the unlock action and the
     // research-rows drip, plus the three research-lane events that had
     // ridden unpinned since v32 — the role gate checked their payloads
     // and nothing checked their bytes, which is the exact seat the v37
     // world-container note called out as empty.
-    "v44_action_unlock.bin",
-    "v44_event_research_rows.bin",
-    "v44_event_research.bin",
-    "v44_event_research_refused.bin",
-    "v44_event_known.bin",
+    "v45_action_unlock.bin",
+    "v45_event_research_rows.bin",
+    "v45_event_research.bin",
+    "v45_event_research_refused.bin",
+    "v45_event_known.bin",
     // The table verb's own action, pinned by the local branch and kept
     // through the 2026-08-15 integration: `encode_action_research` is
     // still live (the client's `verbs.rs` calls it), so
     // `every_encoder_has_a_golden` requires these bytes.
-    "v44_action_research.bin",
+    "v45_action_research.bin",
     // The gather refusal (v42) — appended, because the manifest is
     // positional and a name in the middle silently renumbers every
     // writer after it.
-    "v44_event_gather_refused.bin",
+    "v45_event_gather_refused.bin",
     // Bag choice v0 (v43): the own-fact bag list the death screen shapes
     // itself around. Appended for the same positional reason.
-    "v44_event_bags.bin",
+    "v45_event_bags.bin",
+    // Surface marks v0 (v45): where an arrow stopped, and on what.
+    // Appended, like the two above — `gen_goldens` writes this list by
+    // INDEX, so inserting anywhere but the end silently re-points every
+    // fixture after the insertion at another message's bytes.
+    "v45_event_impact.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -1290,6 +1295,27 @@ pub fn event_oven_out() -> (u16, u16, u8, bool, u32) {
 /// the pitch's width would truncate visibly rather than plausibly.
 pub fn event_shot() -> (u32, u16, u8, u16, u16) {
     (0x0000_2B17, 41_234, 203, 1_333, 22)
+}
+
+/// Where an arrow stopped (wire v44): x, y, z in the entity lane's quanta
+/// and a `ranged::SURF_*`.
+///
+/// **Three same-typed neighbours, so the positional rule bites hardest
+/// here** (`reference/FINDINGS.md` §1, and it is the trap `event_roles.rs`
+/// exists for on the sim side). `qx` and `qz` are the pair a transposition
+/// would silently swap, so they differ in both halves and neither is a
+/// round number; `qy` is **negative**, which is this fixture's real job —
+/// it is the only signed field on the event lane, it rides a bias, and a
+/// decoder that forgot either would produce a plausible positive altitude
+/// rather than a visibly wrong one. −312 is 3.12 m under datum: a shot
+/// into a riverbed, well inside the window and nowhere near its edge, so
+/// the fixture proves the bias rather than the clamp.
+///
+/// `surf` is `SURF_WORLD` — the middle of the three, so a decoder that
+/// read the field one bit narrow or wide lands on a different live kind
+/// instead of on a value the refusal would have caught for free.
+pub fn event_impact() -> (i32, i32, i32, u8) {
+    (0x0000_A179, -312, 0x0000_58A3, 1)
 }
 
 /// Opening a **world container** (wire v37) — the fourth kind, and the
