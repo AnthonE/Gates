@@ -192,18 +192,11 @@ the shared feed queue and `ui::refusals::GATHER` (wire v42). Remainders:
 1. **Closed 2026-08-17.** All three of `wake`'s doors are gated now:
    `persist.rs`/`sleepers.rs` drive the dead restore and the dead-sleeper
    takeover, each proven red under a skipped wake and a deleted `grant_kit`.
-2. Content/boot: `validate.rs` has no rule coupling "no swung node has a
-   `hand` row" to "the kit holds a tool something pays", so an empty
-   `[[spawn_kit]]` is an unwinnable world that boots green. (The other
-   half — `dev_spawn_kit` capping after the push — landed 2026-08-17.)
-1. **Two doors have no gate.** `wake` has three callers: the respawn command,
-   a save that logged off dead, a sleeper takeover of a dead body. All three
-   are correctly paid; only the first is tested, so an early return in either
-   of the others wakes a player naked with every suite green.
-2. Content/boot: the validate half landed 2026-08-17 — a kit holding no tool
-   any swung node pays is a refused boot when no `hand` row exists (gated in
-   `content.rs`, red-proven both ways). Remaining, server lane:
-   `parse_shard_toml`'s `dev_spawn_kit` arm pushes unbounded, caps after.
+2. **Closed 2026-08-17, both halves.** A kit holding no tool any swung node
+   pays is a refused boot when no `hand` row exists (`validate::structural`,
+   gated in `content.rs`, red-proven both ways), and `parse_shard_toml`'s
+   `dev_spawn_kit` arm checks `MAX_SPAWN_KIT` at the push site — refuses,
+   never truncates (gated in `config.rs`, red-proven).
 
 ## 0mk · Arrows leave marks; swings and paint do not *(systems+client lane)*
 
