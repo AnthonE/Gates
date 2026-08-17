@@ -2349,9 +2349,9 @@ The decode side landed: `why == 3` / `reason` 4..15 refuse as `Malformed`,
 counted at the client pump; both `*_MAX`s derive from sim-core and the exempt
 list carries them; no `PROTO_VER` turned — the narrowing rule is written at
 `PROTO_VER` (lib.rs), and the button octet stays whole at the codec by
-decision (`decode_input`'s doc — the wall is `accept_input`'s). Residue for
-the server lane: `server/core.rs`'s pump comment "the encoder bounds the
-width" is stale, the encoder bounds the domain now.
+decision (`decode_input`'s doc — the wall is `accept_input`'s). The one
+residue (`server/core.rs`'s stale "encoder bounds the width" pump comment)
+was fixed in the same merge window.
 
 ---
 
