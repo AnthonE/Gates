@@ -96,6 +96,50 @@ pub const MAT_WOOD: u8 = 1;
 pub const MAT_STONE: u8 = 2;
 pub const MAT_METAL: u8 = 3;
 
+/// How many damage bands a structure's condition is told in on the wire —
+/// 8, so it rides in 3 bits (`protocol`'s `DMG_BAND_BITS`).
+///
+/// **Why a band and not the hp.** A client draws a wall; it does not
+/// adjudicate one (`Pieces::placed`'s rule, applied from the other side).
+/// Exact hp is 16 bits per record against 3, it changes on every swing where
+/// a band changes on one swing in eight, and shipping it would hand a raider
+/// a readout of precisely how many more hits a wall needs — a mechanic, not a
+/// cosmetic, and not one anybody has spoken for. The band is what the
+/// renderer can actually show and what `ui::structure::Target::damaged` needs.
+pub const DMG_BANDS: u8 = 8;
+
+/// The damage band of a structure standing at `hp` out of `max`: **0 is
+/// untouched**, 7 is nearly gone.
+///
+/// Integer arithmetic throughout — this is `sim-core`, so wall 1's float
+/// restriction applies, and a band computed two ways on two sides of the wire
+/// is the mirror-drift shape this repo keeps paying for. One function, called
+/// by the encoder and by nothing else that could disagree with it.
+///
+/// **It rounds the loss UP**, so a wall one point down from full reports band
+/// 1 rather than 0. A structure that has been hit must never draw untouched:
+/// that is the whole point of the field, and the rounding that loses it is
+/// the rounding that hides the first swing of a raid.
+///
+/// `max == 0` is the undripped-def case (`PieceDef::INERT`) and answers 0 —
+/// the client is told "no damage" rather than a fraction of an unknown, which
+/// is `hud::struct_hit_line`'s rule: a fraction over an unknown maximum is
+/// worse than silence.
+pub fn damage_band(hp: u16, max: u16) -> u8 {
+    if max == 0 || hp >= max {
+        return 0;
+    }
+    let lost = (max - hp) as u32;
+    let top = (DMG_BANDS - 1) as u32;
+    // Ceil, so any loss at all is at least band 1.
+    let band = (lost * top).div_ceil(max as u32);
+    if band > top {
+        top as u8
+    } else {
+        band as u8
+    }
+}
+
 /// Grid locations within a cell. Planes and risers occupy the cell body;
 /// edge pieces are canonical to the cell's **low-x** (x = cx·3 m) or
 /// **low-z** (z = cz·3 m) boundary — the same physical edge is never
@@ -412,8 +456,11 @@ impl BuildContent {
 
 /// One placed piece. Its grid address (cx, cz, level, loc) is its
 /// identity — pieces don't move and the wire refers to them by address.
-/// `hp` and `uh` are sim-only (the wire carries address + row; clients
-/// learn of decay by the removal broadcast, not by watching hp).
+/// `hp` and `uh` are sim-only; what a client learns of them is [`dmg`], the
+/// 3-bit band, and decay still arrives as a removal broadcast rather than as
+/// a watched hp.
+///
+/// [`dmg`]: PieceRec::dmg
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PieceRec {
     pub cx: u16,
@@ -435,6 +482,28 @@ pub struct PieceRec {
     pub hp: u16,
     /// Last upkeep period processed (`tick / UPKEEP_PERIOD_TICKS`).
     pub uh: u16,
+    /// The damage band this record was **sent** at ([`damage_band`], 0 =
+    /// untouched). Wire v44.
+    ///
+    /// ⚠ **This is a wire field, and on the SERVER it is not maintained.**
+    /// The store leaves it 0 forever; the encode site fills it from `hp` and
+    /// the row's baked maximum, on the copy it hands the writer. Read it on
+    /// a client, never on a shard — `hp` is the truth there and this would
+    /// be a stale zero.
+    ///
+    /// Filling it at encode rather than tracking it is deliberate, and it is
+    /// the cheaper half of a trade this repo has paid for before: a stored
+    /// band must be updated at every site that moves `hp` — a swing, decay,
+    /// upkeep, a repair — and the one that gets forgotten is a wall drawing
+    /// untouched while the sim knows it is nearly through, with every gate
+    /// green. Derived at the boundary, it cannot drift from `hp` because it
+    /// does not exist apart from it.
+    ///
+    /// It is deliberately **absent from `state_hash`**, which walks an
+    /// explicit 12-byte field list rather than the struct — so this field
+    /// cannot move a hash, and a shard that never fills it is bit-identical
+    /// to one that does.
+    pub dmg: u8,
 }
 
 /// The placed-piece store: dense, insertion-ordered (command order, so
@@ -584,6 +653,7 @@ impl Pieces {
             facing: 0,
             hp: bc.pieces[row as usize].hp,
             uh: 0,
+            dmg: 0,
         };
         assert!(
             self.insert(rec, bc.pieces[row as usize].shape, 0),
@@ -1348,6 +1418,8 @@ pub fn place(
         },
         hp: def.hp,
         uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
+        // Wire-only; the store never maintains it (`PieceRec::dmg`).
+        dmg: 0,
     };
     if !pieces.insert(rec, def.shape, tick) {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_FULL, 0);
@@ -1764,6 +1836,59 @@ mod tests {
     use crate::deploy::UPKEEP_PERIOD_TICKS;
     use crate::gather::ItemStack;
     use crate::limits::{INV_SLOTS, MAX_REMOVALS_PER_TICK};
+
+    /// The damage band's four edges, and the one that matters is the second:
+    /// **a structure one point down from full must not report untouched.**
+    /// That is the first swing of a raid, and a band that rounds it away
+    /// hides exactly the moment the field exists to show.
+    #[test]
+    fn the_damage_band_holds_its_edges() {
+        for max in [10u16, 50, 250, 500, 1000, 65535] {
+            assert_eq!(damage_band(max, max), 0, "full is untouched (max {max})");
+            assert!(
+                damage_band(max, max) == 0 && damage_band(max - 1, max) >= 1,
+                "max {max}: one point of damage rounded away to untouched"
+            );
+            assert_eq!(
+                damage_band(0, max),
+                DMG_BANDS - 1,
+                "max {max}: a dead structure is not at the worst band"
+            );
+            // Over-full is a repair landing before a decay tick, not a bug.
+            //
+            // `saturating_add` and not `+ 1`: at `max = u16::MAX` the sum
+            // wraps to 0 in a release build and the case silently inverts
+            // into "a dead structure", which is how this line first failed
+            // — green in debug, red under `ci/gates.sh`. Saturating keeps
+            // the assertion pointed at what it means (hp at or above the
+            // maximum bands to untouched) at every maximum.
+            assert_eq!(damage_band(max.saturating_add(1), max), 0);
+        }
+        // An undripped def row has no maximum, and a fraction of an unknown
+        // is worse than silence (`hud::struct_hit_line`'s rule).
+        assert_eq!(damage_band(0, 0), 0);
+        assert_eq!(damage_band(500, 0), 0);
+    }
+
+    /// It is monotonic and stays in range across a whole hp sweep — the
+    /// property a renderer indexing an array of `DMG_BANDS` materials needs,
+    /// and the one an off-by-one in the ceil would break at exactly one hp.
+    #[test]
+    fn the_damage_band_is_monotonic_and_bounded() {
+        for max in [7u16, 10, 64, 250, 999] {
+            let mut prev = DMG_BANDS - 1;
+            for hp in 0..=max {
+                let b = damage_band(hp, max);
+                assert!(b < DMG_BANDS, "max {max} hp {hp}: band {b} out of range");
+                assert!(
+                    b <= prev,
+                    "max {max}: band rose from {prev} to {b} as hp rose to {hp}"
+                );
+                prev = b;
+            }
+            assert_eq!(prev, 0, "max {max}: full hp did not land on band 0");
+        }
+    }
 
     /// One tick's structural removal budget, as `World::tick` hands it
     /// out. These fixtures collapse or raid one structure at a time and
@@ -2518,6 +2643,7 @@ mod tests {
                     facing: 0,
                     hp: 1,
                     uh: 0,
+                    dmg: 0,
                 },
                 SHAPE_FOUNDATION,
                 0
@@ -3652,6 +3778,7 @@ mod tests {
                 facing: 0,
                 hp: 100,
                 uh: 0,
+                dmg: 0,
             },
             shape,
             0,

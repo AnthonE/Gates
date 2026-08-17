@@ -72,6 +72,10 @@ pub mod mobs;
 // player sees instead of the world, `panels` is what they see on top of it.
 pub mod panels;
 pub mod pause;
+// Discord rich presence: which screen means what, and the handoff to the
+// worker. The model — socket, framing, payloads, copy — is `crate::discord`,
+// which is pure and unconditional. Dark unless `GATES_DISCORD_APP_ID` is set.
+pub mod presence;
 pub mod props;
 pub mod rig;
 pub mod settings;
@@ -1019,6 +1023,20 @@ impl Plugin for GatesRenderPlugin {
             // has to remember the rules for.
             app.init_resource::<shot::Shots>()
                 .add_systems(Update, shot::take);
+
+            // ---- discord rich presence -------------------------------
+            // **Not on a capture run either**, and this one is the
+            // strongest case of the three: the probe would open a socket to
+            // whatever Discord happens to be running on the box, which is a
+            // gate whose behaviour depends on who is logged in.
+            //
+            // Registers nothing at all unless `GATES_DISCORD_APP_ID` names
+            // an application — dark is the shipping default, because the
+            // application is an operator act and there is no id in this
+            // tree (`crate::discord`).
+            if presence::register(app) {
+                info!("discord presence: live");
+            }
         }
 
         if let Some(dir) = &self.capture {

@@ -33,8 +33,12 @@ size and quality number below as a browser-era artifact, not a budget.**
 **`rock` is the one exception to that encode spec — albedo q74, normal q82.** It
 holds the swap at **553 KB against `cliff_side`'s 562 KB**, so the only identity
 here that costs client boot time does not cost more of it than what it replaced.
-(Only the four ground identities are bundled; `stone`/`metal`/`wood`/`bark` are
-not loaded by the client at all today.) It is cheap — span 1.03 and keep 0.97 are
+(⚠ This parenthetical used to say only the four ground identities were bundled
+and `stone`/`metal`/`wood`/`bark` were "not loaded by the client at all today".
+That went stale twice: the props bound all four on 2026-08-11 — the **bundled**
+paragraph below has said so since — and the build pieces bound the last three
+on 2026-08-16. Eight of nine roles are loaded; `gravel` is the one that is not.)
+It is cheap — span 1.03 and keep 0.97 are
 unchanged, albedo sd moves 0.0942 → 0.0933 — so it is kept as margin.
 
 **It is margin, not a fix, and the record should say so.** The trim was first made
@@ -127,7 +131,7 @@ is still gated as a file.
 | `sand` | PH [coast_sand_01](https://polyhaven.com/a/coast_sand_01) | ✓ | ✓ | fine coastal sand, close to ART §3's 42°/10% sample |
 | `stone` | aCG [Bricks089](https://ambientcg.com/view?id=Bricks089) | ✓ | ✓ | replaced `castle_brick_01` 2026-08-04. Photoscanned medieval stacked field stone — the identity ART asks for, not brick. sd 0.0947 → **0.1253**, anisotropy 1.34 → **1.09** (less row-banding). |
 | `ground_detail` | **derived** from `grass` (PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01)) | | ✓ | Rec.601 luma of the source's LINEAR albedo, re-encoded to sRGB greyscale, 1024 q88, 342 KB. The ground's near-field grain: `ART.md` §7 asks a modifier that sets a colour to multiply the surface's own **mean-1 luminance field**, and a luminance field has gain span **1.000 by construction** where the four colour sources measure 2.454 / 2.073 / 3.586 / 1.054 (grass / sand / litter / rock) against a ×1 ceiling. Linear luma mean 0.2464, sd 0.0762. Derived, never edited: the source stays pristine and swappable, and regenerating is a luma convert. |
-| `wood` | PH [brown_planks_03](https://polyhaven.com/a/brown_planks_03) | | ✓ | weathered grey planks; building tier 1 |
+| `wood` | PH [brown_planks_03](https://polyhaven.com/a/brown_planks_03) | | ✓ | weathered grey planks; building tier 1 — **and it is that tier's map since 2026-08-16**, four days after this note was written as an intention. `stone` is tier 2, `metal` tier 3, and `bark` doubles as tier 0 (twig) at a ×1.6 scalar gain for want of a straw/lashed-pole set. `structures::TIER` |
 
 **The three marginal picks are gone, and `rock` is why the others went with it.**
 `cliff_side` was layered sandstone standing in for granite. Its gain span was

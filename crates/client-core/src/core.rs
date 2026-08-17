@@ -369,6 +369,27 @@ impl PieceSet {
         self.cols.set_solid(cx, cz, level, arch);
     }
 
+    /// Re-band the piece at an address, if one stands there (wire v44).
+    ///
+    /// **The sync walk is not enough on its own and this is the half that
+    /// makes the field live.** A piece record reaches a client on join and
+    /// on resync; nothing re-sends it because a wall lost hp. So without
+    /// this, a base raided in front of you keeps drawing untouched until
+    /// you relog — the band would be correct exactly once, at the moment
+    /// you arrived, which is the worst kind of correct.
+    ///
+    /// `EV_STRUCT_HIT` already carries the address and the hp left, and
+    /// `EV_PIECE_REPAIRED` the way back, so both edges are on the wire
+    /// already and this costs no byte.
+    fn set_dmg(&mut self, cx: u16, cz: u16, level: u8, loc: u8, dmg: u8) {
+        for r in self.recs[..self.len].iter_mut() {
+            if r.cx == cx && r.cz == cz && r.level == level && r.loc == loc {
+                r.dmg = dmg;
+                return;
+            }
+        }
+    }
+
     /// True if the set changed (a known address with the same row is a
     /// duplicate, not a change).
     fn insert(&mut self, rec: PieceRec, defs: &BuildContent, have: u16) -> bool {
@@ -526,6 +547,16 @@ impl DeploySet {
 
     pub fn entries(&self) -> &[DeployRec] {
         &self.recs[..self.len]
+    }
+
+    /// `PieceSet::set_dmg`'s twin — that one carries the reasoning.
+    fn set_dmg(&mut self, cx: u16, cz: u16, level: u8, loc: u8, dmg: u8) {
+        for r in self.recs[..self.len].iter_mut() {
+            if r.cx == cx && r.cz == cz && r.level == level && r.loc == loc {
+                r.dmg = dmg;
+                return;
+            }
+        }
     }
 
     /// True if the set changed (same contract as `PieceSet::insert`).
@@ -1722,6 +1753,16 @@ impl ClientCore {
                         .map(|r| self.piece_defs.pieces[r.row as usize].hp)
                 };
                 self.struct_hit = (cx, cz, level, loc, left, max.unwrap_or(0));
+                // …and re-band the mirror, so the wall the player is
+                // watching come apart actually comes apart (`set_dmg`).
+                // An unknown maximum bands to 0 by `damage_band`'s own
+                // rule rather than guessing a fraction of nothing.
+                let band = sim_core::build::damage_band(left, max.unwrap_or(0));
+                if deploy {
+                    self.deploys.set_dmg(cx, cz, level, loc, band);
+                } else {
+                    self.pieces.set_dmg(cx, cz, level, loc, band);
+                }
                 // Both flags on purpose: `HIT` is the hitmarker fact and
                 // owns draining the ring, `STRUCT_HIT` adds where it
                 // landed. One flag would either strand the ring or make
@@ -1749,6 +1790,13 @@ impl ClientCore {
                 // direction — and no hitmarker, so `APPLIED_HIT` stays
                 // off: nobody was struck.
                 self.struct_hit = (cx, cz, level, loc, hp, hp);
+                // Band 0 without consulting `damage_band`, and that is not
+                // a shortcut: the verb's whole contract is that a repaired
+                // structure stands at its baked row's hp and never a point
+                // over, which is the same reason the `deploy` bit is
+                // ignored above. `damage_band(hp, hp)` is 0 by definition.
+                self.deploys.set_dmg(cx, cz, level, loc, 0);
+                self.pieces.set_dmg(cx, cz, level, loc, 0);
                 flags |= APPLIED_STRUCT_HIT;
             }
             EventMsg::ChargePlaced {

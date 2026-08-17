@@ -1747,6 +1747,13 @@ fn hammer_piece_defs() -> (BuildContent, u16) {
     (c, 3)
 }
 
+/// A target still stated in hp, banded the way the SERVER bands it.
+///
+/// The signature deliberately did not change with wire v44: these cases mean
+/// "half a wall" and "an intact wall", and saying that in bands would be
+/// restating `damage_band`'s arithmetic in the test that depends on it.
+/// Running the real function here is also the only place the client side
+/// exercises it against the hp values the content actually ships.
 fn target(store: Store, row: u8, hp: u16, hp_max: u16) -> Target {
     Target {
         store,
@@ -1755,7 +1762,7 @@ fn target(store: Store, row: u8, hp: u16, hp_max: u16) -> Target {
         level: 1,
         loc: 2,
         row,
-        hp,
+        dmg: sim_core::build::damage_band(hp, hp_max),
         hp_max,
         side: None,
     }

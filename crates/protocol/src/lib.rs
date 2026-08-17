@@ -543,14 +543,32 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// one neither claimed.** So `SUB_BAGS` is 50 and no fixture keyed `v42_*`
 /// carrying a bag list was ever authoritative.
 ///
-/// **v44 adds `SUB_IMPACT`** (surface marks v0): where an arrow stopped
+/// v44 widened two records rather than adding a message: both
+/// `write_piece_rec` and `write_deploy_rec` gained a 3-bit damage band
+/// (`DMG_BAND_BITS`), so every fixture carrying a piece or deploy record
+/// moved by bits without changing shape. That is the cheapest kind of bump
+/// and also the easiest to land by accident, which is exactly what
+/// `test_protocol_golden` is for.
+///
+/// **v45 adds `SUB_IMPACT`** (surface marks v0): where an arrow stopped
 /// and what kind of surface it met. It is the first message on this lane
 /// carrying a **signed** coordinate — `qy` rides `POS_Y_BIAS` exactly as a
 /// body's does, because an arrow can stop below datum and a mark in a
 /// riverbed is a mark.
 ///
-/// Fixtures are keyed `v44_*` — **95**, one added: the impact point.
-pub const PROTO_VER: u16 = 44;
+/// **45 and not 44, and this file's recurring paragraph gets another
+/// entry.** Surface marks were written as 44 with `SUB_IMPACT = 51` on a
+/// branch, while the damage band above took 44 on the trunk — the third
+/// time a branch and the trunk have claimed one number (v38–v40, then v43,
+/// now this), and the cure has not changed: **the trunk's number stands,
+/// and the branch takes the next one neither claimed.** The two changes are
+/// otherwise independent — a widened record and a new subtype touch nothing
+/// in common, which is precisely why both sides stayed green in isolation
+/// and why the collision is about the *number* rather than the bytes. No
+/// fixture keyed `v44_*` carrying an impact was ever authoritative.
+///
+/// Fixtures are keyed `v45_*` — **95**, one added: the impact point.
+pub const PROTO_VER: u16 = 45;
 
 /// This game's slug in the scry catalog.
 ///
@@ -1082,6 +1100,14 @@ pub(crate) const PIECE_ROW_BITS: u32 = 8;
 /// Deployable rows cross in 4 bits — exactly `MAX_DEPLOY_DEFS`, so the
 /// width itself is the range check.
 pub(crate) const DEPLOY_ROW_BITS: u32 = 4;
+/// A structure's damage band (`sim_core::build::DMG_BANDS`, wire v44).
+///
+/// Three bits is the whole width, so — like `DEPLOY_ROW_BITS` — **the width
+/// IS the range check** and no decoder needs to refuse a value: every one of
+/// the eight it can carry is legal. That is the property worth having on a
+/// field a hostile client can set, and it is why the band is 8 rather than a
+/// rounder 10.
+pub(crate) const DMG_BAND_BITS: u32 = 3;
 /// The upgrade action's target material (build.rs `MAT_*`: wood, stone,
 /// metal). Three values in two bits, so the fourth is forgeable and the
 /// decoder refuses it — the same posture as the hotbar selector.

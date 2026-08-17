@@ -3,7 +3,7 @@
 //! Ranged combat has landed marks on nothing since it shipped: the sim
 //! stopped arrows on ground, trunks and walls, `EV_SHOT` grew a tracer so
 //! the arrow was visible in flight, and then the streak simply stopped
-//! existing at the surface it hit. `EV_IMPACT` (wire v44) is the fact that
+//! existing at the surface it hit. `EV_IMPACT` (wire v45) is the fact that
 //! was missing; this is what draws it.
 //!
 //! # Bevy has decals and we were not using them
