@@ -252,33 +252,6 @@ whiff needs either a wire fact or the same cadence prediction run per remote
 body off their input, which the client does not receive. Take the clip
 first; decide the trigger against what it costs.
 
-## 0eat · The verbs speak; the latch behind them aliases *(client-core lane)*
-
-Landed, client-only: `ui::refusals::CONSUME` (all three `REFUSE_C_*`, one
-table worded for both verbs), `Refused::Consume` on the feed, said lines on
-both landed halves, and the refusal cue for free because the refusal joins
-the shared queue rather than being read privately. **Drink was dead by the
-same mechanism and closed with it.**
-
-What remains is `crates/client-core/src/core.rs`: `last_eat` /
-`last_eat_refused` are **fields plus one bit**, not a ring, so two consume
-answers in one drain window collapse — `Consumed` zeroes the reason,
-`ConsumeRefused` overwrites it. Reachable from the keyboard, not only from a
-hitch: `KeyG` and `KeyH` are two independent `just_pressed` checks in one
-system, so one frame sends both and one `World::tick` answers both. The bad
-ordering says "no water within reach" while the bandage is gone and its heal
-ramp is running; the reverse loses the drink refusal, §0eat's own symptom
-still live on `H`. Fix: `pop_consume_refusal()` plus a consume toast ring.
-`tests/sound.rs` derives its verb list from `core.rs` now, so a ring added
-and not drained reddens that gate on its own — the drain half needs no gate.
-
-Two notes. `core.rs` ~151/~825/~829/~833 still name `client_consume`,
-`client_drank` and `client_move_readout` as these fields' readers; those are
-the deleted C-ABI bridge, and the real readers are `render/feed.rs` and
-`render/hud.rs`. And nothing orders `feed::drain` against `input::place_eye`
-in `render/mod.rs` — today's insertion order is the safe one, but a stale
-`applied` word beside freshly-pumped fields would print one eat twice.
-
 ## 0die · Two questions to re-take, no defect left *(operator)*
 
 Mechanism 3 — *"the kit is fresh-arm only, so you wake naked and stay that
@@ -333,19 +306,17 @@ Left, in order of cheapness:
 guard, `EV_GATHER_REFUSED`, wire v42, save formats 3/7, eight gates each
 proven red. What remains, in rank order:
 
-1. **No panel draws the number.** `ClientCore::inv` and `::cont` carry
-   `cond` off the wire already; the hotbar, bag grid and container panels
-   draw item + count and nothing else, so the first warning a player gets
-   is the `REFUSE_G_BROKEN` toast at zero. A durability pip wants the
-   reference's shape (a bar under the icon, visible only when worn) and
-   `ART.md`'s pass on it. ⚠ **NOT client-only as this said** (measured
-   2026-08-17): the client holds no `condition_max` to divide by — the
-   catalog drips names only, no def table carries a ceiling, and the client
-   links no content crate — so the pip needs a catalog column (wire lane) or
-   content shipped to the client (operator call). The visibility contract is
-   landed and gated (`ui::slots::pip_fraction`, `tests/ui.rs` §Q, its doc
-   has the full argument incl. why a session-learned ceiling was refused);
-   the panels wait on the ceiling.
+1. **No panel draws the number — but the ceiling ships now, so what
+   remains is pure client-lane drawing.** The 2026-08-17 blocker (the
+   client held no `condition_max` to divide by) closed the same day: wire
+   v46 puts `cond_max` beside every name on the catalog drip, baked from
+   content in `net::bake_catalog` and gated end to end —
+   `boot_tables.rs::the_shipped_catalog_carries_every_condition_ceiling`
+   proven red under a dropped column, the golden pins the bytes. A panel's
+   call is `pip_fraction(stack.cond, core.catalog.cond_max(item))`;
+   `tests/ui.rs` §Q holds the visibility contract (worn-only, dead draws
+   empty). Left: the hotbar, bag grid and container cells draw the bar —
+   the reference's shape, with `ART.md`'s pass on it.
 2. **Weapons and armour do not wear.** `reference/DURABILITY.md` §5 left
    both unsourced (per shot / when hit), so there is nothing to take yet —
    a research row, not a build item, and wear-on-swing-at-players is a
