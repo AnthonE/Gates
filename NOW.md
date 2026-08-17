@@ -2348,16 +2348,15 @@ crate-wide, but its *contiguity* claim is file-local.
 
 ---
 
-## 5b · The wire accepts values the sim can never mean
+## 5b · The wire accepts values the sim can never mean — **CLOSED 2026-08-17**
 
-`every_domain_fits_its_wire_field` (`protocol/src/event.rs`) gates ten value
-domains; the sim/server refusal side is closed (`lane/wire-values`:
-`BAG_GONE_*`/`REFUSE_C_*` refused at the pump and counted, `buttons` bits
-4–7 refused at `accept_input`, never a disconnect). Still open, the wire act
-this item always named: the *decode* side — the client's decoder taking
-`why == 3` / `reason` 4..15, the button octet — plus deriving the two
-`*_MAX`s into protocol's exempt list and the `PROTO_VER` judgement for
-narrowing what decodes. One protocol pass. Systems lane (`crates/protocol`).
+The decode side landed: `why == 3` / `reason` 4..15 refuse as `Malformed`,
+counted at the client pump; both `*_MAX`s derive from sim-core and the exempt
+list carries them; no `PROTO_VER` turned — the narrowing rule is written at
+`PROTO_VER` (lib.rs), and the button octet stays whole at the codec by
+decision (`decode_input`'s doc — the wall is `accept_input`'s). Residue for
+the server lane: `server/core.rs`'s pump comment "the encoder bounds the
+width" is stale, the encoder bounds the domain now.
 
 ---
 
@@ -2416,9 +2415,9 @@ Deliberately its own commit: widening the draw changes fixture bytes, and
 changing golden bytes for a reason unrelated to the version's meaning
 muddies the one signal wall 6 reads. It is a `PROTO_VER` judgement call —
 the answer may be that a golden's fuzz range is not part of the wire
-contract at all. Decide that first; it is the actual question. Same shape
-one level down: whether `decode_input` itself should narrow the unmeant
-bits is the protocol pass §5b still owes.
+contract at all. Decide that first; it is the actual question. The shape
+one level down is decided (§5b, 2026-08-17): `decode_input` carries the
+octet whole; the domain wall is `accept_input`'s (`decode_input`'s doc).
 
 ## 5d · The agent player has a spec and no code *(systems lane)*
 
