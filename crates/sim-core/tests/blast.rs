@@ -19,6 +19,35 @@ use sim_core::movement::Body;
 use sim_core::world::{Command, World, DEATH_BY_CHARGE};
 use sim_core::worldsave::WORLD_SAVE_MAX_BYTES;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 0xB1A57;
 const RAIDER: u32 = 3;
 const BYSTANDER: u32 = 4;
@@ -46,7 +75,7 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                 let cx = (512 + dx).clamp(0, 1023) as u16;
                 let cz = (512 + dz).clamp(0, 1023) as u16;
                 let (x, z) = cell_center(cx, cz);
-                if foundation_terrain_ok(seed, x, z) {
+                if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);
                 }
             }
@@ -83,9 +112,9 @@ fn raid_world() -> (World, u16, u16) {
     w.dev_spawn = Some((x, z));
     w.tick(&[Command::Join { id: RAIDER }]);
     w.tick(&[Command::Join { id: BYSTANDER }]);
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     // The bystander starts far outside every blast in this file.
-    w.players[1].body = Body::at(SEED, x + 60.0, z);
+    w.players[1].body = Body::at(SEED, hv(SEED), x + 60.0, z);
 
     w.players[0].inv[0] = ItemStack {
         item: 0,
@@ -168,7 +197,12 @@ fn the_planted_wall_takes_full_structure_and_the_floor_a_share() {
     plant(&mut w, cx, cz, LOC_EDGE_XLO);
     // The raider steps away during the fuse, so the body numbers stay out
     // of this test — which is also the verb working as designed.
-    w.players[0].body = Body::at(SEED, cell_center(cx, cz).0 + 20.0, cell_center(cx, cz).1);
+    w.players[0].body = Body::at(
+        SEED,
+        hv(SEED),
+        cell_center(cx, cz).0 + 20.0,
+        cell_center(cx, cz).1,
+    );
     wait_out(&mut w);
 
     let wall_after = piece_hp(&w, cx, cz, 0, LOC_EDGE_XLO).unwrap();
@@ -195,9 +229,9 @@ fn the_blast_kills_at_the_epicentre_and_spares_nobody() {
     // The bystander stands at the wall; the raider plants and then stays
     // close enough to die too (both inside the lethal ~2.4 m of a
     // 475-damage 3 m blast).
-    w.players[1].body = Body::at(SEED, x - 1.4, z);
+    w.players[1].body = Body::at(SEED, hv(SEED), x - 1.4, z);
     plant(&mut w, cx, cz, LOC_EDGE_XLO);
-    w.players[0].body = Body::at(SEED, x - 1.0, z + 0.5);
+    w.players[0].body = Body::at(SEED, hv(SEED), x - 1.0, z + 0.5);
     wait_out(&mut w);
 
     assert!(w.players[1].dead, "the bystander at the wall dies");
@@ -226,10 +260,10 @@ fn the_edge_of_the_blast_scratches() {
     let (x, z) = cell_center(cx, cz);
     let wall_x = cx as f32 * BUILD_CELL_M;
     // 2.9 m from the wall's anchor (the edge's midpoint), planar.
-    w.players[1].body = Body::at(SEED, wall_x + 2.9, z);
+    w.players[1].body = Body::at(SEED, hv(SEED), wall_x + 2.9, z);
     let full = w.players[1].hp;
     plant(&mut w, cx, cz, LOC_EDGE_XLO);
-    w.players[0].body = Body::at(SEED, x + 20.0, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x + 20.0, z);
     wait_out(&mut w);
     assert!(
         !w.players[1].dead,
@@ -248,7 +282,7 @@ fn the_edge_of_the_blast_scratches() {
 fn a_fuse_survives_a_save_and_still_blasts() {
     let (mut w, cx, cz) = raid_world();
     let (x, z) = cell_center(cx, cz);
-    w.players[0].body = Body::at(SEED, x + 20.0, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x + 20.0, z);
     w.tick(&[Command::Input {
         id: RAIDER,
         frame: sim_core::input::InputFrame {
@@ -258,7 +292,7 @@ fn a_fuse_survives_a_save_and_still_blasts() {
         },
     }]);
     // Plant from in reach, then step away before the save.
-    w.players[0].body = Body::at(SEED, x - 1.0, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x - 1.0, z);
     w.tick(&[Command::Throw {
         id: RAIDER,
         deploy: false,
@@ -270,7 +304,7 @@ fn a_fuse_survives_a_save_and_still_blasts() {
     assert_eq!(w.charges.len(), 1);
     let rec = w.charges.entries()[0];
     assert_eq!((rec.damage, rec.blast_cm), (475, 300), "copied at plant");
-    w.players[0].body = Body::at(SEED, x + 20.0, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x + 20.0, z);
 
     let mut buf = vec![0u8; WORLD_SAVE_MAX_BYTES];
     let n = w.save_world(&mut buf).expect("save mid-fuse");

@@ -18,6 +18,35 @@ use sim_core::terrain::{self, Occupant};
 use sim_core::world::{Command, World, DEATH_BY_HAND};
 use sim_core::yaw_dir;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 20260802;
 /// The fixture's item 0: 34 damage, 2 m reach — three swings to kill.
 const SPEAR: u16 = 0;
@@ -59,7 +88,7 @@ fn place_in_front(w: &mut World, attacker: usize, victim: usize, yaw: u16, dist:
     let (fx, fz) = yaw_dir(yaw);
     let a = w.players[attacker].body;
     let (ax, az) = (a.qx as f32 * POS_XZ_Q, a.qz as f32 * POS_XZ_Q);
-    w.players[victim].body = Body::at(SEED, ax + fx * dist, az + fz * dist);
+    w.players[victim].body = Body::at(SEED, hv(SEED), ax + fx * dist, az + fz * dist);
 }
 
 /// One tick where only `attacker` swings; nobody moves.
@@ -250,7 +279,7 @@ fn a_standing_node_outranks_a_person() {
             cond: 0,
         };
     }
-    w.players[1].body = Body::at(SEED, tx + 0.5, tz);
+    w.players[1].body = Body::at(SEED, hv(SEED), tx + 0.5, tz);
     // Face +x: find the yaw whose direction points that way.
     let yaw = (0..256u16)
         .map(|i| i << 8)
@@ -293,6 +322,7 @@ fn death_takes_the_beach_and_everything_on_you() {
     let a = w.players[0].body;
     w.players[1].body = Body::at(
         SEED,
+        hv(SEED),
         a.qx as f32 * POS_XZ_Q + fx,
         a.qz as f32 * POS_XZ_Q + fz,
     );

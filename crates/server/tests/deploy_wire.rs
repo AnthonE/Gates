@@ -19,6 +19,35 @@ use sim_core::build::{BuildContent, LOC_EDGE_XLO, LOC_PLANE};
 use sim_core::deploy::{DeployContent, REFUSE_D_CLAIM, UPKEEP_PERIOD_TICKS};
 use sim_core::gather::{GatherContent, ItemStack};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 20_260_731;
 /// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests` — walkable terrain also takes ground-class deploys.
@@ -312,7 +341,7 @@ fn deployables_ride_the_wire() {
     // inputs would take minutes of ticks).
     let far_cx = CX + 20;
     let far_x = (far_cx as f32 + 0.5) * sim_core::build::BUILD_CELL_M;
-    core.world.players[w0].body = sim_core::movement::Body::at(SEED, far_x, SPAWN.1);
+    core.world.players[w0].body = sim_core::movement::Body::at(SEED, hv(SEED), far_x, SPAWN.1);
     core.world.players[w0].inv[0] = ItemStack {
         item: 0,
         count: 10,
@@ -915,7 +944,7 @@ fn a_removal_storm_leaves_every_walk_standing() {
         n += 1;
         let (ax, az) = sim_core::build::anchor(cx, cz, LOC_PLANE);
         let p = &mut core.world.players[builder];
-        p.body = sim_core::movement::Body::at(SEED, ax, az);
+        p.body = sim_core::movement::Body::at(SEED, hv(SEED), ax, az);
         p.inv[0] = ItemStack {
             item: 0,
             count: 10,
@@ -923,6 +952,7 @@ fn a_removal_storm_leaves_every_walk_standing() {
         };
         sim_core::build::place(
             SEED,
+            hv(SEED),
             &core.world.build,
             &core.world.deploys,
             &mut core.world.pieces,
@@ -1123,7 +1153,7 @@ fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
         let (cx, cz) = (CX + (k as u16) / 24, CZ + (k as u16) % 24);
         let (ax, az) = sim_core::build::anchor(cx, cz, LOC_PLANE);
         let p = &mut core.world.players[builder];
-        p.body = sim_core::movement::Body::at(SEED, ax, az);
+        p.body = sim_core::movement::Body::at(SEED, hv(SEED), ax, az);
         p.inv[0] = ItemStack {
             item: 0,
             count: 10,
@@ -1132,6 +1162,7 @@ fn a_cliff_cannot_run_the_piece_cursor_off_the_store() {
         let hour = if k < DOOMED { 0 } else { HOURS };
         sim_core::build::place(
             SEED,
+            hv(SEED),
             &core.world.build,
             &core.world.deploys,
             &mut core.world.pieces,

@@ -325,6 +325,7 @@ pub fn draw(
 #[allow(clippy::too_many_arguments)]
 pub fn step(
     seed: u64,
+    haven: &terrain::Haven,
     cols: &ColIndex,
     occ: &mut Occupants,
     arrows: &mut Arrows,
@@ -385,11 +386,17 @@ pub fn step(
             let px = (ox + sx * t) / MM_PER_M;
             let py = (oy + sy * t) / MM_PER_M;
             let pz = (oz + sz * t) / MM_PER_M;
-            let what = if py <= terrain::height(seed, px, pz) {
+            // `ground`, not `height`: an arrow stops on the surface a player
+            // stands on, and on an authored site that is the carved floor. A
+            // raw read here puts the impact — and now the decal main added
+            // with it — several metres under the pad.
+            let what = if py <= terrain::ground(seed, haven, px, pz) {
                 Some(SURF_GROUND)
             } else if occ.blocks_volume(seed, px, pz, py, ARROW_R_M, ARROW_R_M) {
                 Some(SURF_WORLD)
-            } else if collide::shot_blocked(seed, cols, prev.0, prev.1, px, pz, py, ARROW_R_M) {
+            } else if collide::shot_blocked(
+                seed, haven, cols, prev.0, prev.1, px, pz, py, ARROW_R_M,
+            ) {
                 Some(SURF_BUILT)
             } else {
                 None

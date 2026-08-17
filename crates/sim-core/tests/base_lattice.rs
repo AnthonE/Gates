@@ -30,6 +30,35 @@ use sim_core::fmath::{fabs, floor_i32};
 use sim_core::movement::STEP_UP;
 use sim_core::terrain::{self, ISLAND_SIZE};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 /// The shipped island (`shard.toml`), plus one arbitrary other seed so the
 /// lattice is a property of the rule and not of one world.
 const SEEDS: [u64; 2] = [20260731, 7];
@@ -75,8 +104,8 @@ fn neighbouring_columns_in_one_band_are_bit_equal_flush() {
                 };
                 land_pairs += 1;
                 if a == b {
-                    let ya = column_floor_y(seed, cx, cz);
-                    let yb = column_floor_y(seed, nx, nz);
+                    let ya = column_floor_y(seed, hv(seed), cx, cz);
+                    let yb = column_floor_y(seed, hv(seed), nx, nz);
                     assert!(
                         ya == yb,
                         "seed {seed}: cells ({cx},{cz}) and ({nx},{nz}) share band {a} \
@@ -125,7 +154,8 @@ fn a_band_step_is_an_exact_multiple_of_the_quantum() {
                 if a == b {
                     continue;
                 }
-                let d = column_floor_y(seed, cx, cz) - column_floor_y(seed, nx, nz);
+                let d =
+                    column_floor_y(seed, hv(seed), cx, cz) - column_floor_y(seed, hv(seed), nx, nz);
                 let k = d / BUILD_BASE_Q_M;
                 assert!(
                     k == floor_i32(k) as f32,
@@ -160,7 +190,7 @@ fn a_lone_foundation_is_always_steppable() {
             if band(seed, cx, cz).is_none() {
                 continue;
             }
-            let lift = column_floor_y(seed, cx, cz) - center_h(seed, cx, cz);
+            let lift = column_floor_y(seed, hv(seed), cx, cz) - center_h(seed, cx, cz);
             assert!(
                 lift <= STEP_UP + 1e-4,
                 "seed {seed}: cell ({cx},{cz}) floats {lift} above its own ground — unclimbable"
@@ -181,7 +211,7 @@ fn the_lattice_holds_the_ground_within_half_a_quantum() {
     for seed in SEEDS {
         for (cx, cz) in cells() {
             let h = center_h(seed, cx, cz);
-            let snapped = column_floor_y(seed, cx, cz) - PIECE_LIFT_M;
+            let snapped = column_floor_y(seed, hv(seed), cx, cz) - PIECE_LIFT_M;
             assert!(
                 fabs(snapped - h) <= BUILD_BASE_Q_M * 0.5 + 1e-4,
                 "seed {seed}: cell ({cx},{cz}) snapped {h} to {snapped}"

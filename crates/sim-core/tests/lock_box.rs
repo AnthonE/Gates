@@ -34,6 +34,35 @@ use sim_core::lock::GRANT_GUEST;
 use sim_core::world::{Command, World, EV_AUTH, EV_DEPLOY_REFUSED, EV_MOVED, EV_MOVE_REFUSED};
 use sim_core::worldsave::WORLD_SAVE_MAX_BYTES;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 0x6000_10CB;
 const OWNER: u32 = 3;
 const STRANGER: u32 = 9;
@@ -90,7 +119,7 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                 let cx = (512 + dx).clamp(0, 1023) as u16;
                 let cz = (512 + dz).clamp(0, 1023) as u16;
                 let (x, z) = cell_center(cx, cz);
-                if foundation_terrain_ok(seed, x, z) {
+                if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);
                 }
             }
@@ -112,7 +141,7 @@ fn locked_box_world(code: u16) -> (World, u16, u16) {
     let (x, z) = cell_center(cx, cz);
     w.dev_spawn = Some((x, z));
     w.tick(&[Command::Join { id: OWNER }]);
-    w.players[0].body = sim_core::movement::Body::at(SEED, x, z);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
 
     w.players[0].inv[0] = ItemStack {
         item: GOODS,
@@ -208,7 +237,7 @@ fn join_at(w: &mut World, id: u32, cx: u16, cz: u16) -> usize {
     let slot = (0..w.players.len())
         .find(|&s| w.players[s].active && w.players[s].id == id)
         .expect("the joiner seats");
-    w.players[slot].body = sim_core::movement::Body::at(SEED, x, z);
+    w.players[slot].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
     slot
 }
 

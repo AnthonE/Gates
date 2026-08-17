@@ -502,8 +502,8 @@ impl Default for ColIndex {
 /// neighbouring columns in one terrain band are bit-equal flush; its doc
 /// carries the derivation). No piece height ever rides the wire.
 #[inline]
-pub(crate) fn col_base_y(seed: u64, cx: u16, cz: u16) -> f32 {
-    crate::build::column_floor_y(seed, cx, cz)
+pub(crate) fn col_base_y(seed: u64, haven: &crate::terrain::Haven, cx: u16, cz: u16) -> f32 {
+    crate::build::column_floor_y(seed, haven, cx, cz)
 }
 
 /// The highest built surface under (x, z) the capsule at `feet_y` may
@@ -511,7 +511,14 @@ pub(crate) fn col_base_y(seed: u64, cx: u16, cz: u16) -> f32 {
 /// `NO_SURFACE` when none. "May stand on" is the step rule: a surface
 /// more than STEP_UP above the feet is a ceiling, not a floor (walking
 /// under a level-2 floor must not teleport anyone up).
-pub fn piece_ground(seed: u64, cols: &ColIndex, x: f32, z: f32, feet_y: f32) -> f32 {
+pub fn piece_ground(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    feet_y: f32,
+) -> f32 {
     let bx = crate::build::build_cell_of(x);
     let bz = crate::build::build_cell_of(z);
     if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
@@ -522,7 +529,7 @@ pub fn piece_ground(seed: u64, cols: &ColIndex, x: f32, z: f32, feet_y: f32) -> 
     if m.planes == 0 && m.stairs == 0 && tris == 0 && m.solid == SOLID_NONE {
         return NO_SURFACE;
     }
-    let base = col_base_y(seed, bx as u16, bz as u16);
+    let base = col_base_y(seed, haven, bx as u16, bz as u16);
     let lid = feet_y + STEP_UP;
     let mut best = NO_SURFACE;
     // A triangle plane is ground over its own half of the cell and air
@@ -591,7 +598,14 @@ pub fn piece_ground(seed: u64, cols: &ColIndex, x: f32, z: f32, feet_y: f32) -> 
 /// the clamp-to-rectangle circle distance `terrain::boxes_block` uses,
 /// for its reason — growing the rectangle by the radius rounds corners
 /// the wrong way.
-pub fn deploy_blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, feet_y: f32) -> bool {
+pub fn deploy_blocked(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    feet_y: f32,
+) -> bool {
     let bx = crate::build::build_cell_of(x);
     let bz = crate::build::build_cell_of(z);
     if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
@@ -601,7 +615,7 @@ pub fn deploy_blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, feet_y: f32) -
     if m.solid == SOLID_NONE {
         return false;
     }
-    let base = col_base_y(seed, bx as u16, bz as u16);
+    let base = col_base_y(seed, haven, bx as u16, bz as u16);
     let head = feet_y + CAPSULE_HEIGHT_M;
     let (cxm, czm) = (
         bx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
@@ -708,6 +722,7 @@ pub fn frame_solid_at(t: f32, y: f32) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn cell_edges_block(
     seed: u64,
+    haven: &crate::terrain::Haven,
     cols: &ColIndex,
     bx: i32,
     bz: i32,
@@ -753,7 +768,7 @@ fn cell_edges_block(
         if walls | doors | frames == 0 {
             continue;
         }
-        let base = col_base_y(seed, ecx as u16, ecz as u16);
+        let base = col_base_y(seed, haven, ecx as u16, ecz as u16);
         for level in 0..MAX_BUILD_LEVELS {
             let bit = 1u8 << level;
             let has_wall = walls & bit != 0;
@@ -852,6 +867,7 @@ fn diag_meet(
 #[allow(clippy::too_many_arguments)]
 fn cell_diags_block(
     seed: u64,
+    haven: &crate::terrain::Haven,
     cols: &ColIndex,
     bx: i32,
     bz: i32,
@@ -871,7 +887,7 @@ fn cell_diags_block(
     if m.diag_a | m.diag_b == 0 {
         return false;
     }
-    let base = col_base_y(seed, bx as u16, bz as u16);
+    let base = col_base_y(seed, haven, bx as u16, bz as u16);
     for level in 0..MAX_BUILD_LEVELS {
         let bit = 1u8 << level;
         if (m.diag_a | m.diag_b) & bit == 0 {
@@ -905,7 +921,24 @@ fn cell_diags_block(
 /// ≤ 0.19 m, so testing the endpoint's z against the edge span (instead
 /// of the exact crossing point) cuts at most a fingertip off a post
 /// corner.
-pub fn blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, nx: f32, nz: f32, feet_y: f32) -> bool {
+// One over the arity bar, and the eighth is `haven`. Bundling `(seed, haven)`
+// into a "which island" struct is the obvious tidy and it is the wrong one
+// here: every collision entry point in this file takes the pair positionally,
+// `movement::step` and `ranged::step` hand it straight through, and a context
+// type introduced at this one call site would be a second spelling of the
+// island that only half the seam uses. The pair travels together everywhere or
+// nowhere; today it is everywhere.
+#[allow(clippy::too_many_arguments)]
+pub fn blocked(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    nx: f32,
+    nz: f32,
+    feet_y: f32,
+) -> bool {
     let (bx0, bz0) = (
         crate::build::build_cell_of(x),
         crate::build::build_cell_of(z),
@@ -914,15 +947,18 @@ pub fn blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, nx: f32, nz: f32, fee
         crate::build::build_cell_of(nx),
         crate::build::build_cell_of(nz),
     );
-    if cell_edges_block(seed, cols, bx1, bz1, x, z, nx, nz, feet_y) {
+    if cell_edges_block(seed, haven, cols, bx1, bz1, x, z, nx, nz, feet_y) {
         return true;
     }
-    if (bx0 != bx1 || bz0 != bz1) && cell_edges_block(seed, cols, bx0, bz0, x, z, nx, nz, feet_y) {
+    if (bx0 != bx1 || bz0 != bz1)
+        && cell_edges_block(seed, haven, cols, bx0, bz0, x, z, nx, nz, feet_y)
+    {
         return true;
     }
     let (lo, hi) = (feet_y, feet_y + CAPSULE_HEIGHT_M);
     if cell_diags_block(
         seed,
+        haven,
         cols,
         bx1,
         bz1,
@@ -940,6 +976,7 @@ pub fn blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, nx: f32, nz: f32, fee
     if (bx0 != bx1 || bz0 != bz1)
         && cell_diags_block(
             seed,
+            haven,
             cols,
             bx0,
             bz0,
@@ -976,6 +1013,7 @@ pub fn blocked(seed: u64, cols: &ColIndex, x: f32, z: f32, nx: f32, nz: f32, fee
 #[allow(clippy::too_many_arguments)]
 pub fn shot_blocked(
     seed: u64,
+    haven: &crate::terrain::Haven,
     cols: &ColIndex,
     x: f32,
     z: f32,
@@ -992,20 +1030,21 @@ pub fn shot_blocked(
         crate::build::build_cell_of(nx),
         crate::build::build_cell_of(nz),
     );
-    if cell_edges_stop_shot(seed, cols, bx1, bz1, x, z, nx, nz, y, r) {
+    if cell_edges_stop_shot(seed, haven, cols, bx1, bz1, x, z, nx, nz, y, r) {
         return true;
     }
-    if (bx0 != bx1 || bz0 != bz1) && cell_edges_stop_shot(seed, cols, bx0, bz0, x, z, nx, nz, y, r)
+    if (bx0 != bx1 || bz0 != bz1)
+        && cell_edges_stop_shot(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, r)
     {
         return true;
     }
     // The diagonals, with the point's own band: containment of `y`, not a
     // capsule's overlap.
-    if cell_diags_block(seed, cols, bx1, bz1, x, z, nx, nz, y, y, true, r) {
+    if cell_diags_block(seed, haven, cols, bx1, bz1, x, z, nx, nz, y, y, true, r) {
         return true;
     }
     if (bx0 != bx1 || bz0 != bz1)
-        && cell_diags_block(seed, cols, bx0, bz0, x, z, nx, nz, y, y, true, r)
+        && cell_diags_block(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, y, true, r)
     {
         return true;
     }
@@ -1018,6 +1057,7 @@ pub fn shot_blocked(
 #[allow(clippy::too_many_arguments)]
 fn cell_edges_stop_shot(
     seed: u64,
+    haven: &crate::terrain::Haven,
     cols: &ColIndex,
     bx: i32,
     bz: i32,
@@ -1059,7 +1099,7 @@ fn cell_edges_stop_shot(
         if walls | doors | wins | frames == 0 {
             continue;
         }
-        let base = col_base_y(seed, ecx as u16, ecz as u16);
+        let base = col_base_y(seed, haven, ecx as u16, ecz as u16);
         for level in 0..MAX_BUILD_LEVELS {
             let bit = 1u8 << level;
             if (walls | doors | wins | frames) & bit == 0 {
@@ -1123,6 +1163,17 @@ mod tests {
     /// The browser-smoke seed and its guarded-walkable cell (build.rs
     /// tests use the same anchors).
     const SEED: u64 = 20260731;
+
+    /// The solved authored sites for `SEED`, memoized.
+    ///
+    /// `terrain::haven` is a few thousand `height` taps and these cases call
+    /// the carved-ground path from nearly every assertion, so resolving it
+    /// once per suite is the difference between a fast test and a slow one.
+    /// It is a pure function of the seed, so caching it cannot change a result.
+    fn hv() -> &'static crate::terrain::Haven {
+        static HV: std::sync::OnceLock<crate::terrain::Haven> = std::sync::OnceLock::new();
+        HV.get_or_init(|| crate::terrain::haven(SEED))
+    }
     const CX: u16 = 341;
     const CZ: u16 = 341;
 
@@ -1165,6 +1216,7 @@ mod tests {
             active: true,
             body: Body::at(
                 SEED,
+                hv(),
                 (cx as f32 + 0.5) * BUILD_CELL_M,
                 (cz as f32 + 0.5) * BUILD_CELL_M,
             ),
@@ -1173,7 +1225,19 @@ mod tests {
         let mut ev = EventQueue::default();
         let nod = Deploys::new();
         place(
-            SEED, bc, &nod, pieces, &mut p, 0, row, cx, cz, level, loc, &mut ev,
+            SEED,
+            hv(),
+            bc,
+            &nod,
+            pieces,
+            &mut p,
+            0,
+            row,
+            cx,
+            cz,
+            level,
+            loc,
+            &mut ev,
         );
         let last = ev.entries()[ev.len() - 1];
         assert_eq!(
@@ -1184,7 +1248,7 @@ mod tests {
     }
 
     fn body_at(x: f32, z: f32) -> Body {
-        Body::at(SEED, x, z)
+        Body::at(SEED, hv(), x, z)
     }
 
     fn walk(frame_x: i8, frame_z: i8) -> InputFrame {
@@ -1223,6 +1287,7 @@ mod tests {
         for _ in 0..120 {
             movement::step(
                 SEED,
+                hv(),
                 pieces.cols(),
                 &mut occ.occupants(),
                 &mut b,
@@ -1245,6 +1310,7 @@ mod tests {
         for _ in 0..120 {
             movement::step(
                 SEED,
+                hv(),
                 pieces.cols(),
                 &mut occ.occupants(),
                 &mut b,
@@ -1262,6 +1328,7 @@ mod tests {
         for _ in 0..120 {
             movement::step(
                 SEED,
+                hv(),
                 pieces.cols(),
                 &mut occ.occupants(),
                 &mut b,
@@ -1287,6 +1354,7 @@ mod tests {
         for _ in 0..120 {
             movement::step(
                 SEED,
+                hv(),
                 pieces.cols(),
                 &mut occ.occupants(),
                 &mut b,
@@ -1308,12 +1376,13 @@ mod tests {
         let bc = free_table();
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
-        let base = col_base_y(SEED, CX, CZ);
+        let base = col_base_y(SEED, hv(), CX, CZ);
 
         // Standing in the cell snaps up onto the slab (lift ≤ step-up)…
         let mut b = body_at(1024.5, 1024.5);
         movement::step(
             SEED,
+            hv(),
             pieces.cols(),
             &mut occ.occupants(),
             &mut b,
@@ -1331,6 +1400,7 @@ mod tests {
         put(&bc, &mut pieces, CX, CZ, 2, LOC_PLANE, 3);
         movement::step(
             SEED,
+            hv(),
             pieces.cols(),
             &mut occ.occupants(),
             &mut b,
@@ -1347,6 +1417,7 @@ mod tests {
         for _ in 0..240 {
             movement::step(
                 SEED,
+                hv(),
                 pieces.cols(),
                 &mut occ.occupants(),
                 &mut b,
@@ -1371,7 +1442,7 @@ mod tests {
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
         put(&bc, &mut pieces, CX, CZ, 0, LOC_RISER, 4);
-        let base = col_base_y(SEED, CX, CZ);
+        let base = col_base_y(SEED, hv(), CX, CZ);
 
         // Walk +Z up the ramp: feet rise monotonically to base + storey.
         let mut b = body_at(1024.5, CZ as f32 * BUILD_CELL_M + 0.2);
@@ -1380,6 +1451,7 @@ mod tests {
         for _ in 0..180 {
             movement::step(
                 SEED,
+                hv(),
                 pieces.cols(),
                 &mut occ.occupants(),
                 &mut b,
@@ -1428,6 +1500,7 @@ mod tests {
         for _ in 0..120 {
             movement::step(
                 SEED,
+                hv(),
                 pieces.cols(),
                 &mut occ.occupants(),
                 &mut b,
@@ -1441,7 +1514,7 @@ mod tests {
         );
 
         // The same edge, to a shot: the storey base is the column's own.
-        let base = col_base_y(SEED, CX, CZ);
+        let base = col_base_y(SEED, hv(), CX, CZ);
         let (z_open, z_jamb) = (
             CZ as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5, // mid-opening
             CZ as f32 * BUILD_CELL_M + 0.4,                // inside a jamb
@@ -1449,12 +1522,23 @@ mod tests {
         let (x0, x1) = (wall_x + 0.5, wall_x - 0.5);
         let mid_band = base + (WINDOW_SILL_M + WINDOW_HEAD_M) * 0.5;
         assert!(
-            !shot_blocked(SEED, pieces.cols(), x0, z_open, x1, z_open, mid_band, 0.05),
+            !shot_blocked(
+                SEED,
+                hv(),
+                pieces.cols(),
+                x0,
+                z_open,
+                x1,
+                z_open,
+                mid_band,
+                0.05
+            ),
             "an arrow through the aperture must pass"
         );
         assert!(
             shot_blocked(
                 SEED,
+                hv(),
                 pieces.cols(),
                 x0,
                 z_open,
@@ -1468,6 +1552,7 @@ mod tests {
         assert!(
             shot_blocked(
                 SEED,
+                hv(),
                 pieces.cols(),
                 x0,
                 z_open,
@@ -1479,7 +1564,17 @@ mod tests {
             "the header over the aperture must stop it"
         );
         assert!(
-            shot_blocked(SEED, pieces.cols(), x0, z_jamb, x1, z_jamb, mid_band, 0.05),
+            shot_blocked(
+                SEED,
+                hv(),
+                pieces.cols(),
+                x0,
+                z_jamb,
+                x1,
+                z_jamb,
+                mid_band,
+                0.05
+            ),
             "a jamb must stop it at aperture height"
         );
 
@@ -1488,7 +1583,17 @@ mod tests {
         put(&bc, &mut walled, CX, CZ, 0, LOC_PLANE, 0);
         put(&bc, &mut walled, CX, CZ, 0, crate::build::LOC_EDGE_XLO, 1);
         assert!(
-            shot_blocked(SEED, walled.cols(), x0, z_open, x1, z_open, mid_band, 0.05),
+            shot_blocked(
+                SEED,
+                hv(),
+                walled.cols(),
+                x0,
+                z_open,
+                x1,
+                z_open,
+                mid_band,
+                0.05
+            ),
             "a wall stops what a window's aperture passes"
         );
 
@@ -1501,6 +1606,7 @@ mod tests {
         for _ in 0..120 {
             movement::step(
                 SEED,
+                hv(),
                 framed.cols(),
                 &mut occ.occupants(),
                 &mut b,
@@ -1515,6 +1621,7 @@ mod tests {
         assert!(
             !shot_blocked(
                 SEED,
+                hv(),
                 framed.cols(),
                 x0,
                 z_jamb,
@@ -1527,12 +1634,23 @@ mod tests {
         );
         let z_rim = CZ as f32 * BUILD_CELL_M + 0.05;
         assert!(
-            shot_blocked(SEED, framed.cols(), x0, z_rim, x1, z_rim, base + 0.5, 0.05),
+            shot_blocked(
+                SEED,
+                hv(),
+                framed.cols(),
+                x0,
+                z_rim,
+                x1,
+                z_rim,
+                base + 0.5,
+                0.05
+            ),
             "the frame's rim jamb must stop a shot"
         );
         assert!(
             shot_blocked(
                 SEED,
+                hv(),
                 framed.cols(),
                 x0,
                 z_open,
@@ -1553,6 +1671,7 @@ mod tests {
         assert!(
             !shot_blocked(
                 SEED,
+                hv(),
                 doored.cols(),
                 x0,
                 z_open,
@@ -1566,6 +1685,7 @@ mod tests {
         assert!(
             shot_blocked(
                 SEED,
+                hv(),
                 doored.cols(),
                 x0,
                 z_open,
@@ -1596,17 +1716,17 @@ mod tests {
             crate::build::LOC_TRI_XLO_ZLO,
             7,
         );
-        let base = col_base_y(SEED, CX, CZ);
+        let base = col_base_y(SEED, hv(), CX, CZ);
         let x0 = CX as f32 * BUILD_CELL_M;
         let z0 = CZ as f32 * BUILD_CELL_M;
 
         // Ground on the NW side of the split; terrain on the SE side.
-        let on = piece_ground(SEED, pieces.cols(), x0 + 0.7, z0 + 0.7, base + 0.05);
+        let on = piece_ground(SEED, hv(), pieces.cols(), x0 + 0.7, z0 + 0.7, base + 0.05);
         assert!(
             fabs(on - base) < 1e-4,
             "the half's own ground reads the slab: {on} vs {base}"
         );
-        let off = piece_ground(SEED, pieces.cols(), x0 + 2.5, z0 + 2.5, base + 0.05);
+        let off = piece_ground(SEED, hv(), pieces.cols(), x0 + 2.5, z0 + 2.5, base + 0.05);
         assert_eq!(off, NO_SURFACE, "the other half is not this piece");
 
         // The diagonal wall across B: a walk from the NW half toward SE
@@ -1615,6 +1735,7 @@ mod tests {
         for _ in 0..160 {
             movement::step(
                 SEED,
+                hv(),
                 pieces.cols(),
                 &mut occ.occupants(),
                 &mut b,
@@ -1632,6 +1753,7 @@ mod tests {
         for _ in 0..160 {
             movement::step(
                 SEED,
+                hv(),
                 pieces.cols(),
                 &mut occ.occupants(),
                 &mut b,
@@ -1649,6 +1771,7 @@ mod tests {
         assert!(
             shot_blocked(
                 SEED,
+                hv(),
                 pieces.cols(),
                 x0 + 1.0,
                 z0 + 1.0,
@@ -1662,6 +1785,7 @@ mod tests {
         assert!(
             !shot_blocked(
                 SEED,
+                hv(),
                 pieces.cols(),
                 x0 + 0.3,
                 z0 + 1.0,
@@ -1766,6 +1890,7 @@ mod tests {
         for _ in 0..120 {
             movement::step(
                 SEED,
+                hv(),
                 pieces.cols(),
                 &mut occ.occupants(),
                 &mut b,

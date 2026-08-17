@@ -1187,6 +1187,27 @@ Residue, one line each: arrows still pass through every deployable
 (`ranged.rs` never asks the solid nibbles — same class as its piece gap),
 and whether a sleeper blocks stays unanswered (§0y item 1, untouched).
 
+**The carve is BUILT AND ARMED** (2026-08-16, operator). Stage 8 makes its flat
+pad now: 128 seeds, every site fully flat, worst floor 8.06 m → 0.000. Two
+mechanisms carry it and both were forced by measurement — `blend_m` (the ramp
+runs 12 m past the scatter mask, because confining it there built a 2.09
+rise/run wall on rough seeds) and `max_cut` (the cut is clamped to what the ramp
+can carry). `WAYSTATION_RADIUS_M` is derived now, 11.0 → 15.01. **`test_terrain_golden`
+moved and is regenerated in the same commit — this is a wipe**; the probe
+hashes windows over all three sites and they stand on the ring, so a golden
+that had held still would have meant the carve missed them. `DECISIONS.md`
+2026-08-16 has the numbers.
+
+**The reference's placement datum is taken** (2026-08-17, operator).
+`Haven::floor_y` / `site_floor_y`: a site's floor cuts to the level of lowest
+error over the ground it flattens, not the raw height at its centre — their
+terrain anchoring, `reference/MONUMENTS.md` §9.2b. Worst required cut 4.909 →
+4.100 m over 384 sites; all still flatten. A separate field from `y`, so site
+selection and every existing reader are untouched. ⚠ It bought floor headroom
+and **not** the gentler ramp §9.2b predicted: the clamp binds out in the band
+(deepest cut wanted 11.777 m against a 6.320 m cap) where the datum barely
+moves, so the carved gradient is unchanged at 0.5951.
+
 §9.3 is the gap and it is not urgent yet: `haven()` + `pick_minor` produce two
 kinds of site, the separation floor is one hand-asserted constant
 (`WAYSTATION_MIN_SEP_M`), and there is no reservation ledger. That is correct
@@ -2230,18 +2251,23 @@ entry names the landed gate and keeps the mechanism as the lesson.)
   restart must not duplicate it) and to `pick_up` (nobody pockets the
   haven's machine). Systems lane. Bank and vendor stay blocked on an
   operator act.
-- **The waystations want a silhouette, and it must be a *different* one.**
-  Their containers and loot tables differ from the pad's now; the site
-  itself is still two boxes on bare ground, and a second copy of
-  `HAVEN_SHELTER` would make the two tiers look identical.
-- **The pad carve is still unbuilt, and smaller than this file used to
-  say**: `height` has 18 production call sites in 3 crates (not "~80 in
-  four"), and `haven()` measures 12,463 taps mean over 16 seeds. Re-scope
-  against 18 before assuming it cannot be a pass. Whether a tier should
-  carve at all is **open for the operator** (`DECISIONS.md` §open,
-  waystation canopy v0).
-- **Nothing threatens the walk between them.** The pig flees and never
-  fights — §0m item 2 is this gap seen from the other end.
+- ~~**The waystations want a silhouette**~~ **LANDED** — `WAYSTATION_CANOPY_BOXES`,
+  9 rows, deliberately not a shrunk `HAVEN_SHELTER` (4 posts, a knee-high
+  parapet, 4.1 m). `DECISIONS.md` §open "waystation canopy v0" has the
+  derivation; this bullet described the tree before it.
+- **The pad carve's SEAM is built and the cut is dark** (2026-08-16, §0n2).
+  The count in this bullet was wrong too — 65 `height` reads, 31 inside
+  `terrain.rs`, ~18 consumers — and the number was never the hard part: the
+  split is by role, and `tests/height_roles.rs` now holds it. What remains is
+  two spoken numbers, both in `DECISIONS.md` §open "site carve v0".
+- **Nothing threatens the walk between them — the SITES are contested now,
+  the road is not.** Guards v0 landed (wolf slots leashed to a site's
+  `SiteFootprint`, `tests/guard.rs`), so this bullet's original claim is
+  stale; what is still true is that the ground *between* destinations is
+  empty. Note the promotion it causes: `MONUMENTS.md` §9.4 item 4 said nav
+  enters "the moment an NPC defends a monument", and one does — guards route
+  through `movement::step`, so they slide along a shelter wall rather than
+  path around it.
 
 ## 4b · The domain gate reads the crate now — one residual
 

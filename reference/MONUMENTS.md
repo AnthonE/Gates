@@ -334,9 +334,101 @@ hard circle; the band collapsed to zero width).
 Not built, and each is a row this struct gains when a reader exists:
 `BuildBlockMask` (nothing in `build.rs`/`deploy.rs` mentions a site, so a
 player may build on the pad today — whether that is wrong is a design call, not
-a defect, and it is in `DECISIONS.md` §open), `HeightStamp` (there is no carve
-at all — `TERRAIN.md` §1 stage 8 finds flat ground rather than making it, and
-`NOW.md` §4b prices the change), `NavMask`, `WaterMask`.
+a defect, and it is in `DECISIONS.md` §open), `NavMask`, `WaterMask`.
+
+**`HeightStamp` landed 2026-08-16 as `SiteFootprint::stamp_m` + `site_stamp` /
+`terrain::ground`, and it is ARMED** — it shipped dark for one pass and the
+operator armed it the same day. Three things from this file's own §9.2 argument
+were confirmed by building it, one was corrected, and the third is the one this
+file predicted best:
+
+- **The mask-not-a-radius shape carried over intact.** `stamp_of` is
+  `sweep_of`'s profile read the other way up, so the carve's blend band and the
+  clutter population's dither are the same band by construction — §3's lesson
+  about visible circular plateaus, got for free rather than re-argued.
+- **The row is NOT `swept_m`, and assuming it was is a real defect.** A site's
+  swept floor is derived from its *container ring*, and containers are
+  point-like; structures are not. The waystation canopy is footed out to
+  10.46 m while that site's `swept_m` is 7.14, so a carve to the swept radius
+  puts three and a third metres of the structure on the blend ramp — which is
+  *steeper than the hill it replaced*, because the ramp compresses the whole
+  raw delta into the band. Measured at full strength over 16 seeds: the haven
+  shelter improves 1.374 m → 0.063 m and the waystation canopy gets **worse**,
+  1.795 m → 1.889 m. `stamp_m` is therefore derived from what the site SEATS.
+- **§3 was right and we had to find out the hard way.** This file says terrain
+  blending is *not* flattening a patch — authored per-monument masks, a profile
+  rather than a circle. The first armed draft still ran its ramp out to the
+  scatter mask, because that is the radius the code already had, and over 128
+  seeds it built a **2.09 rise/run wall** around the waystations against a 1.19
+  cliff threshold. The fix is `SiteFootprint::blend_m`: the ramp runs 12 m past
+  the mask and the vegetation grows over it, which is §3's sentence arrived at
+  by measurement instead of by reading. **The order in §9.5 is what saved it** —
+  the sites resolve first and everything else reads them as an input, so moving
+  the blend radius touched no solver at all.
+- `WAYSTATION_RADIUS_M` widened 11.0 → 15.0102 to fit the carved floor, derived
+  as its own floor plus the pad's blend band. Spoken, because it moves what the
+  island scatters near a waystation.
+
+### 9.2b · Two tier-1 claims, finally sourced — and one of them is a number
+
+**Provenance, stated first because §0 is the reason to.** Written 2026-08-16
+after the carve was armed. `rust.facepunch.com`, `wiki.facepunch.com` and
+`rustedit.io` are **all still egress-blocked from this box** — every fetch
+returned `EGRESS_BLOCKED`, so §10's "if the proxy is ever fixed" condition is
+NOT met and its two named claims (the 2022 vertical-grid 0.4 ms, the 2020
+4000→4250 world-size bump) remain unverified. What follows is **tier 2: search
+summaries of Devblog 167 (2017-07-06) and Devblog 54 (2015-04-02)**, which is
+`DOORS.md`'s posture, not `DURABILITY.md`'s. No number here may reach
+`content/`.
+
+**1 · They moved off radial falloff, and we are deliberately where they were.**
+Devblog 167: monuments gained "a detailed terrain blending map instead of a
+basic radial falloff … to avoid unnecessary flattening of the terrain around
+them", and the same post says monuments without one "should no longer look like
+they're placed on a circular plateau" — while conceding that not all monuments
+had maps yet, so "things are still expected to look somewhat circular". §3 said
+this and it is now sourced. **It is not a gap for us to close**: an authored
+per-monument mask needs an authored monument, and we have one greybox per tier.
+Our `SiteFootprint` is the right shape to gain one when there is something to
+author — which is §9.2's whole point about masks over radii.
+
+**2 · Their anchoring picks the altitude that minimises error. Ours takes the
+height at the site's centre. Measured: that is worth ~18%.**
+Devblog 54 describes anchoring that "looks for the perfect placement altitude in
+every attempt"; 167 sharpens it to "the placement height that results in the
+lowest possible error for any given placement position". `Haven::y` /
+`Waystation::y` are `height(seed, x, z)` at the centre (`terrain.rs`), which is
+an arbitrary sample on a sloped site — and since the carve was armed that datum
+is also **the level the floor is cut to**, so it sets how deep the cut has to
+be. Measured over 384 sites on 128 seeds, worst / mean |cut| required:
+
+| datum | worst | mean |
+|---|---|---|
+| height at the centre (ours) | 4.909 m | 1.459 m |
+| mean over the floor | 4.664 m | 1.373 m |
+| **midpoint of min/max** (the minimax optimum) | **4.028 m** | **1.209 m** |
+
+**TAKEN 2026-08-17** (operator: *"take what we can from them"*) as
+`Haven::floor_y` / `Waystation::floor_y`, filled by `site_floor_y` — 17 taps,
+paid once per site at world init and never on a candidate, which is cheaper than
+the `haven_relief` rosette that runs on every candidate already. It is a
+**separate field from `y`, and that is what made it cheap**: `y` is a
+*selection* input (the stage 8 score reads it) and a probe field, so redefining
+it would have moved which sites the argmax picks; `floor_y` answers the
+different question the carve created. Nothing that read `y` changed. Measured
+against the shipped code: worst required cut **4.909 m → 4.100 m** over 384
+sites on 128 seeds, and all 384 still flatten completely.
+
+⚠ **The prediction attached to this row was wrong and the measurement is why it
+is still worth having.** It said an 18% shallower cut would take 18% off the
+carved gradient "the clamp is pinned to". It took **zero** — the gradient sits
+at 0.5951 before and after. The clamp does not bind on the floor at all: the
+deepest cut wanted anywhere in a blend is **11.777 m against a 6.320 m cap**,
+and the 709 samples in 679,936 that clip are all far out in the *band*, where
+`floor_y - raw` is largest and the datum barely moves. So what this bought is
+16.5% more headroom before a site stops flattening — robustness on the floor —
+and not a gentler ramp. The two are different budgets and the row conflated
+them.
 
 ### 9.3 · The gap that matters most: our solver is two hand-written tiers
 

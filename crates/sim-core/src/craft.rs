@@ -436,6 +436,12 @@ pub fn step(
 
 #[cfg(test)]
 mod tests {
+
+    /// The solved authored sites for a test's seed. `craft.rs` declares its
+    /// `SEED` per case rather than per module, so this takes one.
+    fn hv(seed: u64) -> crate::terrain::Haven {
+        crate::terrain::haven(seed)
+    }
     use super::*;
     use crate::gather::NO_CELL;
     use crate::input::InputFrame;
@@ -670,10 +676,12 @@ mod tests {
         // The browser-smoke cell (world::tests guards it walkable), so
         // the any-class workbench can stand on bare terrain.
         const SEED: u64 = 20260731;
+
         let mut p = player(&[(0, 10), (3, 1)]);
-        p.body = Body::at(SEED, 1024.0, 1024.0);
+        p.body = Body::at(SEED, &hv(SEED), 1024.0, 1024.0);
         crate::deploy::place_deploy(
             SEED,
+            &hv(SEED),
             &dc,
             &BuildContent::probe_fixture(),
             &mut Pieces::new(),
@@ -709,7 +717,7 @@ mod tests {
         // gate that outranks it.
         let mut far = player(&[(0, 10)]);
         far.known |= 1 << 2;
-        far.body = Body::at(SEED, 1024.0 + STATION_RADIUS_M + 2.0, 1024.0);
+        far.body = Body::at(SEED, &hv(SEED), 1024.0 + STATION_RADIUS_M + 2.0, 1024.0);
         enqueue(&cc, &dc, &nod, 10, &mut far, 2, 1, &mut ev);
         let e = ev.entries()[ev.len() - 1];
         assert_eq!((e.code, e.b), (EV_CRAFT_REFUSED, REFUSE_STATION));
@@ -750,12 +758,13 @@ mod tests {
         let mut ev = EventQueue::default();
         let mut p = player(&[(0, 40), (3, 2)]);
         p.known |= 1 << 2;
-        p.body = Body::at(SEED, 1024.0, 1024.0);
+        p.body = Body::at(SEED, &hv(SEED), 1024.0, 1024.0);
 
         // A tier-1 bench beside the crafter: the tier-2 recipe still
         // refuses on the station, because near is not rung enough.
         crate::deploy::place_deploy(
             SEED,
+            &hv(SEED),
             &dc,
             &bc,
             &mut Pieces::new(),
@@ -780,6 +789,7 @@ mod tests {
         // The tier-2 bench on the next cell arms it.
         crate::deploy::place_deploy(
             SEED,
+            &hv(SEED),
             &dc,
             &bc,
             &mut Pieces::new(),
@@ -815,9 +825,10 @@ mod tests {
         let mut only_wb2 = Deploys::new();
         let mut q = player(&[(0, 40), (3, 2)]);
         q.known |= 1 << 2;
-        q.body = Body::at(SEED, 1024.0, 1024.0);
+        q.body = Body::at(SEED, &hv(SEED), 1024.0, 1024.0);
         crate::deploy::place_deploy(
             SEED,
+            &hv(SEED),
             &dc,
             &bc,
             &mut Pieces::new(),

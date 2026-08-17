@@ -17,6 +17,35 @@ use sim_core::terrain;
 use sim_core::world::{self, Command, World};
 use sim_core::yaw_dir;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 fn armed(seed: u64) -> World {
     let mut w = World::new(seed);
     w.mob = MobContent::probe_fixture();
@@ -310,7 +339,7 @@ fn hunt_world() -> (World, usize) {
     let (fx, fz) = yaw_dir(0);
     let b = w.players[0].body;
     let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
-    w.mobs.m[slot].body = Body::at(11, ax + fx, az + fz);
+    w.mobs.m[slot].body = Body::at(11, hv(11), ax + fx, az + fz);
     (w, slot)
 }
 
@@ -457,7 +486,7 @@ fn a_whole_pig_charges_and_bites() {
     // reach's edge, so the very first charge think can land one.
     let b = w.players[0].body;
     let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
-    w.mobs.m[slot].body = Body::at(11, ax + 2.0, az);
+    w.mobs.m[slot].body = Body::at(11, hv(11), ax + 2.0, az);
     let full = w.players[0].hp;
     assert!(full > 0, "combat fixture arms bodies");
     // Two bite periods plus a think: enough for at least one landed bite,
@@ -493,7 +522,7 @@ fn a_hurt_pig_breaks_off_and_flees() {
     let slot = first_alive(&w, MOB_PIG);
     let b = w.players[0].body;
     let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
-    w.mobs.m[slot].body = Body::at(11, ax + 2.0, az);
+    w.mobs.m[slot].body = Body::at(11, hv(11), ax + 2.0, az);
     // Hurt it below the courage floor by hand — the wound, without the
     // chase that would move both bodies.
     let def = MobContent::probe_fixture().def(MOB_PIG);
@@ -541,7 +570,7 @@ fn a_bite_can_kill_and_the_cause_is_the_mob() {
     let slot = first_alive(&w, MOB_PIG);
     let b = w.players[0].body;
     let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
-    w.mobs.m[slot].body = Body::at(11, ax + 2.0, az);
+    w.mobs.m[slot].body = Body::at(11, hv(11), ax + 2.0, az);
     // One bite from dead.
     w.players[0].hp = 1;
     for seq in 0..(MobContent::probe_fixture().def(MOB_PIG).attack_ticks * 2 + 30) {
@@ -588,7 +617,7 @@ fn alone_with(kind: u8, metres: f32) -> (World, usize) {
     }
     let b = w.players[0].body;
     let (ax, az) = (b.qx as f32 * POS_XZ_Q, b.qz as f32 * POS_XZ_Q);
-    w.mobs.m[slot].body = Body::at(11, ax + metres, az);
+    w.mobs.m[slot].body = Body::at(11, hv(11), ax + metres, az);
     (w, slot)
 }
 

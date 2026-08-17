@@ -35,6 +35,35 @@ use sim_core::ranged::{self, Arrows, Kill, ARROW_EYE_MM};
 use sim_core::terrain::{self, Occupant, ScatterTable, Slot, CELLS_PER_SIDE};
 use sim_core::world::{EventQueue, Player, EV_DEATH, EV_HIT, EV_SHOT};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 /// Same set and same rule as `walk.rs`: a seed that fails is a bug in the
 /// generator, not a reroll.
 const SEEDS: [u64; 4] = [0, 1, 7, 12345];
@@ -234,6 +263,7 @@ fn shoot_through(
         events = EventQueue::default();
         ranged::step(
             seed,
+            hv(seed),
             &cols,
             occ,
             &mut arrows,
@@ -355,6 +385,7 @@ fn an_arrow_in_the_open_lands_and_is_announced() {
         events = EventQueue::default();
         ranged::step(
             seed,
+            hv(seed),
             &cols,
             &mut sc.occupants(),
             &mut arrows,
@@ -397,6 +428,7 @@ fn four_arrows_kill_and_the_kill_names_the_bow() {
         );
         let n = ranged::step(
             seed,
+            hv(seed),
             &cols,
             &mut sc.occupants(),
             &mut arrows,
@@ -689,6 +721,7 @@ fn an_arrow_never_hits_its_owner() {
         events = EventQueue::default();
         ranged::step(
             seed,
+            hv(seed),
             &cols,
             &mut sc.occupants(),
             &mut arrows,
@@ -728,6 +761,7 @@ fn the_ground_stops_an_arrow_and_the_store_drains() {
             events = EventQueue::default();
             ranged::step(
                 seed,
+                hv(seed),
                 &cols,
                 &mut sc.occupants(),
                 &mut arrows,
@@ -772,6 +806,7 @@ fn the_same_shot_flies_the_same_path_twice() {
             events = EventQueue::default();
             ranged::step(
                 seed,
+                hv(seed),
                 &cols,
                 &mut sc.occupants(),
                 &mut arrows,

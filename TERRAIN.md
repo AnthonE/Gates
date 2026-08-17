@@ -95,12 +95,33 @@ Stages, in order — each cheap, each deterministic:
    marched seaward to the *first* shoreline crossing and stepped back
    `ROAD_INLAND_M` — the road's own center-line definition inverted, so the
    site is on the ring by construction. Resolved at `World::new`, passed
-   into `scatter` rather than resolved there. **The exclusion zone is
-   built; the carve is not.** A carve writes to `height`, which has ~50
-   call sites in four crates, so it is a cross-lane change and not a
-   detail — v0 therefore *finds* a flat site rather than *making* one, and
-   `Haven::relief` publishes how flat it got (worst 3.76 m over a 32 m pad
-   across 16 seeds).
+   into `scatter` rather than resolved there. **The exclusion zone is built and
+   THE CARVE IS BUILT** — armed 2026-08-16 (operator), so stage 8 now MAKES its
+   flat pad instead of finding one. Measured over 128 seeds: every site fully
+   flat, worst floor spread 8.06 m → 0.000.
+   The split that carries it is by ROLE, not by call site — solvers (`haven`,
+   `road_band`, `spawn_pos`, the determinism probe) read `height`, consumers
+   (`movement`, `terrain_mesh`, `ranged`, `build`/`deploy`, the placement
+   ghost, and the `y` an authored object is seated at) read `terrain::ground`,
+   and `sim-core/tests/height_roles.rs` holds that rule as a scrape. The counts
+   this paragraph used to quote were wrong in both directions: 65 `height`
+   reads in all, 31 inside `terrain.rs`, ~18 consumers.
+   **The ramp is not bounded by the exclusion zone, and that is the part worth
+   carrying.** `SiteFootprint::blend_m` runs the blend `SITE_BLEND_M` = 12 m
+   PAST `scatter_m`, because a ramp confined to the mask has ~3.9 m to absorb
+   whatever height lies between the made floor and the hill — and over 128
+   seeds that built a **2.09 rise/run wall** around the waystations against a
+   1.19 cliff threshold. Nothing ever required the two radii to be equal: past
+   the floor the scatter grid should stand things, and vegetation growing over
+   the ramp is what stops the ramp being visible. `max_cut` clamps the cut to
+   what the ramp can carry. §7's `tests/carve.rs` holds both.
+   ⚠ **`Haven::relief` is not the number the carve fixes**, which this file
+   implied for months by quoting the two together. It is a rosette at
+   `HAVEN_RADIUS_M` — exactly `HAVEN_FOOTPRINT.scatter_m`, where the stamp
+   has faded to nothing by construction — so it stays near 3.76 m however
+   deep the cut is. The carve's own measure is the spread over the floor it
+   makes (`SiteFootprint::stamp_m`); `Haven::relief` still publishes how flat
+   the site was *found*, which is what the argmax selected on.
    **The scatter table — the third of the hook — is now built, and it is the
    part the carve does not block.** `HAVEN_CRATES = 5` containers stand on a
    `HAVEN_CRATE_R_M = 10.0` ring, at authored positions rather than drawn
@@ -121,7 +142,8 @@ Stages, in order — each cheap, each deterministic:
    construction, so `HAVEN_PHASE_TRIES = 16` rotations of the ring are tried
    and the site is refused if none is clear). `SPAWN.md` §5's placement-check
    chain, arrived at from the other direction: **refuse the position, never
-   patch the object.** The carve is still not built.
+   patch the object.** The carve is built and armed; see above and
+   `DECISIONS.md` 2026-08-16.
    **A greybox now stands on it, and it stands BESIDE the road rather than
    on it.** The clearing stopped being self-evidently made the moment stage 9
    gave the island natural clearings — 2.2–4.1% of forest windows are empty

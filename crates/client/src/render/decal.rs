@@ -371,7 +371,10 @@ fn tint(surf: u8) -> Color {
 /// why the surface is on the wire and this is not.
 ///
 /// - **Ground** is exact: the terrain gradient by central differences on
-///   `terrain::height`, the same function the mesh is built from.
+///   `terrain::ground`, the same function the mesh is built from. **Carved,
+///   and that sentence is the reason** — the mesh moved to `ground` when the
+///   site carve was armed, so a raw read here would lay the mark on the hill
+///   the pad replaced while the pad is what a player sees and shoots at.
 /// - **A world occupant** is exact too, and cheaper than it looks: a
 ///   trunk's axis is its slot's own `x`/`z`, so the outward normal is the
 ///   horizontal from that axis to the impact. `terrain::scatter` is the
@@ -389,8 +392,10 @@ fn facing(world: &WorldId, x: f32, z: f32, surf: u8) -> Vec3 {
             // float noise, wider and the normal is of a hill rather than
             // of the ground under the mark.
             const H: f32 = 0.25;
-            let dx = terrain::height(world.seed, x + H, z) - terrain::height(world.seed, x - H, z);
-            let dz = terrain::height(world.seed, x, z + H) - terrain::height(world.seed, x, z - H);
+            let dx = terrain::ground(world.seed, &world.haven, x + H, z)
+                - terrain::ground(world.seed, &world.haven, x - H, z);
+            let dz = terrain::ground(world.seed, &world.haven, x, z + H)
+                - terrain::ground(world.seed, &world.haven, x, z - H);
             Vec3::new(-dx, 2.0 * H, -dz).normalize_or(Vec3::Y)
         }
         SURF_WORLD => {
@@ -443,7 +448,7 @@ pub fn mark(
         // is the ground ahead, and a player looking at the sky would
         // otherwise put the prewarm mark behind the horizon.
         let ahead = eye.pos + Vec3::new(eye.yaw.sin(), 0.0, eye.yaw.cos()) * 3.0;
-        let y = terrain::height(world.seed, ahead.x, ahead.z);
+        let y = terrain::ground(world.seed, &world.haven, ahead.x, ahead.z);
         let ix = pool.claim();
         pool.slots[ix] = Mark {
             left: LIFE_S,

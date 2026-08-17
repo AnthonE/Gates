@@ -31,6 +31,35 @@ use sim_core::survival::SurvivalContent;
 use sim_core::world::{Command, World};
 use sim_core::worldsave::{self, WorldSaveError, HEAD_BYTES, PLAYER_BYTES, WORLD_SAVE_MAX_BYTES};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 20260807;
 /// The doorway row in the build fixture, and the door row in the deploy
 /// fixture — read off `probe_fixture()` rather than guessed.
@@ -114,7 +143,7 @@ fn stand_in_build_cell(w: &mut World, slot: usize) -> (u16, u16) {
                 }
                 let ax = (cx as f32 + 0.5) * BUILD_CELL_M;
                 let az = (cz as f32 + 0.5) * BUILD_CELL_M;
-                if foundation_terrain_ok(SEED, ax, az) {
+                if foundation_terrain_ok(SEED, hv(SEED), ax, az) {
                     found = Some((cx as u16, cz as u16, ax, az));
                     break 'outer;
                 }
@@ -122,7 +151,7 @@ fn stand_in_build_cell(w: &mut World, slot: usize) -> (u16, u16) {
         }
     }
     let (cx, cz, ax, az) = found.expect("no buildable ground within 24 cells of the spawn");
-    w.players[slot].body = Body::at(SEED, ax, az);
+    w.players[slot].body = Body::at(SEED, hv(SEED), ax, az);
     (cx, cz)
 }
 

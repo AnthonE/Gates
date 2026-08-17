@@ -397,12 +397,15 @@ fn the_skirt_quantises_up_and_stays_in_range() {
 #[test]
 fn a_real_footing_draws_at_its_cached_depth() {
     const SEED: u64 = 20260731;
+    // The island's solved sites: both calls read carved ground, so the test
+    // has to hand them the same island the client would.
+    let haven = sim_core::terrain::haven(SEED);
     let mut checked = 0;
     let mut buckets = std::collections::BTreeSet::new();
     for cx in (300..360).step_by(3) {
         for cz in (300..360).step_by(3) {
-            let p = foundation_part(SEED, cx, cz, false);
-            let (i, d) = footing_of(SEED, cx, cz);
+            let p = foundation_part(SEED, &haven, cx, cz, false);
+            let (i, d) = footing_of(SEED, &haven, cx, cz);
             assert!(i < SKIRT_STEPS, "cell ({cx},{cz}) indexed bucket {i}");
             assert_eq!(
                 d, p.size.y,

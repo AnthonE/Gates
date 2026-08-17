@@ -450,7 +450,8 @@ pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound
 /// cannot come from a different place than the wall appears in.
 pub fn place(feed: Res<super::feed::Feed>, world: Res<super::WorldId>, mut sound: ResMut<Sound>) {
     for &(cx, cz, level, loc, _deploy) in feed.placed() {
-        let p = super::structures::base_transform(world.seed, (cx, cz, level, loc)).translation;
+        let p = super::structures::base_transform(world.seed, &world.haven, (cx, cz, level, loc))
+            .translation;
         sound.play(Request::at(Cue::Place, [p.x, p.y, p.z]));
     }
 }

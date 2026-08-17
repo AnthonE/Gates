@@ -69,6 +69,35 @@ use sim_core::rng::Pcg32;
 use sim_core::world::{Command, World, EV_BUILD_REFUSED};
 use sim_core::worldsave::WORLD_SAVE_MAX_BYTES;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 0x5701_4D21;
 
 /// Plots, each holding one owner and one attacker. 32 × 2 = 64 bodies,
@@ -144,7 +173,7 @@ fn plots(seed: u64) -> [(u16, u16); PLOTS] {
                 let cx = (512 + dx).clamp(0, 1023) as u16;
                 let cz = (512 + dz).clamp(0, 1023) as u16;
                 let (x, z) = cell_center(cx, cz);
-                if !foundation_terrain_ok(seed, x, z) {
+                if !foundation_terrain_ok(seed, hv(seed), x, z) {
                     continue;
                 }
                 if out[..n].iter().any(|&(ox, oz)| ox == cx && oz == cz) {
@@ -293,7 +322,7 @@ fn storm() -> Storm {
         let (x, z) = cell_center(plan.cx, plan.cz);
         let slot = slot_of(&w, plan.id);
         assert_eq!(slot, i, "join order is slot order");
-        w.players[slot].body = Body::at(SEED, x, z);
+        w.players[slot].body = Body::at(SEED, hv(SEED), x, z);
     }
 
     // The script's own stream, and deliberately not the one `bot_frame`

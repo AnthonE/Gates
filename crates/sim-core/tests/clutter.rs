@@ -13,6 +13,38 @@ use sim_core::terrain::{
     SKIRT_MIN, SKIRT_MIN_R_M, SKIRT_PER_TILE, SKIRT_SCAN_CELLS, SKIRT_TILE_CELLS,
 };
 
+/// Is clutter CELL (cx, cz) inside any live site's carve blend?
+///
+/// Distinct from `site_sweep > 0`, which asks about the *scatter mask*. Since
+/// the carve was armed the two differ by `SITE_BLEND_M`: between the mask and
+/// the blend the ground is reshaped while the scatter grid behaves exactly as
+/// it does in the wilderness, and that gap is where a ground element may
+/// legitimately differ from the control's.
+///
+/// **Keyed on the cell, not on the element, and that is not a detail.** An
+/// absent element is `CLUTTER_NONE`, whose x and z are 0.0 — so asking a
+/// vanished element where it stood answers "the island's corner", which is
+/// outside every blend, and the first draft of this helper reported a leak at
+/// the far end of the map for a tuft that had simply been carved away. The cell
+/// index is the coordinate that exists whether or not anything stands on it.
+/// One cell of tolerance because the two strata jitter independently inside
+/// their shared 0.64 m cell.
+fn in_any_blend(haven: &Haven, cx: i32, cz: i32) -> bool {
+    let x = cx as f32 * CLUTTER_CELL_M;
+    let z = cz as f32 * CLUTTER_CELL_M;
+    let pad = CLUTTER_CELL_M;
+    let d2 = |sx: f32, sz: f32| (x - sx) * (x - sx) + (z - sz) * (z - sz);
+    let hf = terrain::HAVEN_FOOTPRINT;
+    let wf = terrain::WAYSTATION_FOOTPRINT;
+    if d2(haven.x, haven.z) < (hf.blend_m + pad) * (hf.blend_m + pad) {
+        return true;
+    }
+    (0..terrain::WAYSTATIONS).any(|w| {
+        let ws = &haven.minor[w];
+        ws.live && d2(ws.x, ws.z) < (wf.blend_m + pad) * (wf.blend_m + pad)
+    })
+}
+
 const SEEDS: [u64; 3] = [0x0047_4154_4553, 1, 0xDEAD_BEEF];
 
 /// `ART.md` rule 4, verbatim: "~3 m²".
@@ -1420,6 +1452,8 @@ fn sites_parked_offshore() -> Haven {
         x: -100_000.0,
         z: -100_000.0,
         y: 0.0,
+        // Inert: parked off the island, so nothing carves and no floor exists.
+        floor_y: 0.0,
         relief: 0.0,
         phase: 0,
         shelter: 0,
@@ -1544,13 +1578,29 @@ fn test_an_authored_site_sweeps_its_own_floor() {
                                 e0.z,
                                 e.kind
                             );
-                        } else if sweep <= 0.0 {
-                            // 2 · outside the mask nothing moved, bit for bit.
+                        } else if sweep <= 0.0 && !in_any_blend(&haven, cx, cz) {
+                            // 2 · outside the mask AND outside the carve's blend,
+                            // nothing moved, bit for bit.
+                            //
+                            // The second half of that condition arrived with the
+                            // armed carve. A site's blend runs `SITE_BLEND_M` past
+                            // its scatter mask (`SiteFootprint::blend_m`), so
+                            // between the two the GROUND is reshaped while the
+                            // scatter grid behaves exactly as it does in the
+                            // wilderness — `clutter_kind_at` reads the carved
+                            // height and slope, so an element there may change
+                            // kind, or fail its land check and vanish, and its
+                            // position field goes with it. That is the design
+                            // working (`SiteFootprint::blend_m`: vegetation
+                            // growing over the ramp is what stops the ramp being
+                            // visible), not a leak. What this gate still holds —
+                            // and what it was written for — is that a site
+                            // changes NOTHING beyond the blend it publishes.
                             assert_eq!(
                                 (e.kind, e.x.to_bits(), e.z.to_bits(), e.yaw),
                                 (e0.kind, e0.x.to_bits(), e0.z.to_bits(), e0.yaw),
                                 "seed {seed:#x}: the sweep changed a coverage element at \
-                                 ({:.1}, {:.1}), outside every site's scatter mask",
+                                 ({:.1}, {:.1}), outside every site's blend",
                                 e0.x,
                                 e0.z
                             );
@@ -1558,13 +1608,22 @@ fn test_an_authored_site_sweeps_its_own_floor() {
                     }
 
                     // The sweep only ever REMOVES understory, so a cell the
-                    // control left empty must still be empty.
+                    // control left empty must still be empty — **outside the
+                    // carve's blend**. Inside it the ground itself moved, and a
+                    // cell that failed its land line or its richness draw against
+                    // the old height can pass against the new one; an element
+                    // appearing there is the carve raising ground, not the sweep
+                    // inventing understory. Beyond the blend nothing moved and the
+                    // original claim stands unchanged.
                     if r0.kind == Clutter::None {
-                        assert_eq!(
-                            r.kind,
-                            Clutter::None,
-                            "seed {seed:#x}: the sweep created an understory element"
-                        );
+                        if !in_any_blend(&haven, cx, cz) {
+                            assert_eq!(
+                                r.kind,
+                                Clutter::None,
+                                "seed {seed:#x}: the sweep created an understory element \
+                                 outside every site's blend"
+                            );
+                        }
                         continue;
                     }
                     let sweep = terrain::site_sweep(&haven, r0.x, r0.z);
@@ -1578,13 +1637,15 @@ fn test_an_authored_site_sweeps_its_own_floor() {
                             r0.x,
                             r0.z
                         );
-                    } else if sweep <= 0.0 {
-                        // 2 · outside the mask nothing moved, bit for bit.
+                    } else if sweep <= 0.0 && !in_any_blend(&haven, cx, cz) {
+                        // 2 · outside the mask AND the blend, nothing moved. See
+                        // the coverage branch above for why the blend joined the
+                        // condition when the carve was armed.
                         assert_eq!(
                             (r.kind, r.x.to_bits(), r.z.to_bits(), r.yaw),
                             (r0.kind, r0.x.to_bits(), r0.z.to_bits(), r0.yaw),
                             "seed {seed:#x}: the sweep changed an understory element at \
-                             ({:.1}, {:.1}), outside every site's scatter mask",
+                             ({:.1}, {:.1}), outside every site's blend",
                             r0.x,
                             r0.z
                         );

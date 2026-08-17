@@ -585,6 +585,7 @@ enum Target {
 /// occupancy in one probe.
 #[allow(clippy::too_many_arguments)]
 pub fn raid(
+    haven: &crate::terrain::Haven,
     cc: &CombatContent,
     bc: &BuildContent,
     dc: &DeployContent,
@@ -633,7 +634,7 @@ pub fn raid(
         let Some(d2) = aimed_at_rec(&aimed_at, rec.cx, rec.cz, rec.loc) else {
             continue;
         };
-        if !storey_ok(col_base_y(seed, rec.cx, rec.cz), rec.level) {
+        if !storey_ok(col_base_y(seed, haven, rec.cx, rec.cz), rec.level) {
             continue;
         }
         if best.is_none_or(|(bd2, _)| d2 < bd2) {
@@ -682,7 +683,7 @@ pub fn raid(
                 if best.is_some_and(|(bd2, _)| d2 >= bd2) {
                     continue; // an equal or nearer target already stands
                 }
-                let base = *base.get_or_insert_with(|| col_base_y(seed, cx, cz));
+                let base = *base.get_or_insert_with(|| col_base_y(seed, haven, cx, cz));
                 for level in 0..MAX_BUILD_LEVELS as u8 {
                     if mask & (1 << level) == 0 || !storey_ok(base, level) {
                         continue;
@@ -763,6 +764,17 @@ mod tests {
     use crate::world::{EV_DEPLOY_REMOVED, EV_PIECE_REMOVED, EV_STRUCT_HIT};
 
     const SEED: u64 = 20260731;
+
+    /// The solved authored sites for `SEED`, memoized.
+    ///
+    /// `terrain::haven` is a few thousand `height` taps and these cases call
+    /// the carved-ground path from nearly every assertion, so resolving it
+    /// once per suite is the difference between a fast test and a slow one.
+    /// It is a pure function of the seed, so caching it cannot change a result.
+    fn hv() -> &'static crate::terrain::Haven {
+        static HV: std::sync::OnceLock<crate::terrain::Haven> = std::sync::OnceLock::new();
+        HV.get_or_init(|| crate::terrain::haven(SEED))
+    }
     const CX: u16 = 341;
     const CZ: u16 = 341;
     /// Wire yaw facing +X — LUT index 64 of 256 (yaw_lut.rs: index 0 is
@@ -803,6 +815,7 @@ mod tests {
         let mut ev = EventQueue::default();
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -835,6 +848,7 @@ mod tests {
             hp: 100,
             body: Body::at(
                 SEED,
+                hv(),
                 (cx as f32 + 0.5) * BUILD_CELL_M,
                 (cz as f32 + 0.5) * BUILD_CELL_M,
             ),
@@ -861,6 +875,7 @@ mod tests {
         for expect_left in [66u32, 32] {
             ev.clear();
             assert!(raid(
+                hv(),
                 &cc,
                 &bc,
                 &dc,
@@ -885,6 +900,7 @@ mod tests {
 
         ev.clear();
         assert!(raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -906,6 +922,7 @@ mod tests {
         // Nothing left to hit: the swing finds no target at all.
         ev.clear();
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -939,6 +956,7 @@ mod tests {
         let mut ev = EventQueue::default();
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -960,12 +978,13 @@ mod tests {
         // Both attackers face +Z (default yaw) at the wall's anchor,
         // 0.3 m to either side of the edge plane.
         let mut soft = raider(CX, CZ);
-        soft.body = Body::at(SEED, x0 + 0.3, z0 + 0.5);
+        soft.body = Body::at(SEED, hv(), x0 + 0.3, z0 + 0.5);
         let mut hard = raider(CX, CZ);
-        hard.body = Body::at(SEED, x0 - 0.3, z0 + 0.5);
+        hard.body = Body::at(SEED, hv(), x0 - 0.3, z0 + 0.5);
 
         ev.clear();
         assert!(raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -986,6 +1005,7 @@ mod tests {
 
         ev.clear();
         assert!(raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1018,6 +1038,7 @@ mod tests {
         // Four cells away — 12 m, far past the fixture's 2 m reach.
         let far = raider(CX + 4, CZ);
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1034,6 +1055,7 @@ mod tests {
         let mut turned = raider(CX + 1, CZ);
         turned.frame.yaw = 0;
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1068,6 +1090,7 @@ mod tests {
         }; // the hearth's own item
         crate::deploy::place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -1086,6 +1109,7 @@ mod tests {
         for _ in 0..3 {
             ev.clear();
             assert!(raid(
+                hv(),
                 &cc,
                 &bc,
                 &dc,
@@ -1112,6 +1136,7 @@ mod tests {
         // With the hearth gone the same swing reaches the foundation.
         ev.clear();
         assert!(raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1153,6 +1178,7 @@ mod tests {
         };
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -1167,6 +1193,7 @@ mod tests {
         );
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -1182,6 +1209,7 @@ mod tests {
         assert_eq!(pieces.len(), 2, "foundation + doorway");
         crate::deploy::place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -1200,6 +1228,7 @@ mod tests {
         // bare until somebody pays for the security.
         crate::deploy::place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -1262,6 +1291,7 @@ mod tests {
         // …and the swing does not care. 60 hp, 34 a swing: two.
         ev.clear();
         assert!(raid(
+            hv(),
             &cc(),
             &bc,
             &dc,
@@ -1279,6 +1309,7 @@ mod tests {
         );
         assert_eq!(ev.entries()[0].c, (34 << 16) | 26);
         assert!(raid(
+            hv(),
             &cc(),
             &bc,
             &dc,
@@ -1308,6 +1339,7 @@ mod tests {
         // swings to the slab underfoot.
         foe.body = Body::at(
             SEED,
+            hv(),
             CX as f32 * BUILD_CELL_M + 0.4,
             (CZ as f32 + 0.5) * BUILD_CELL_M,
         );
@@ -1315,6 +1347,7 @@ mod tests {
         ev.clear();
         for _ in 0..3 {
             raid(
+                hv(),
                 &cc(),
                 &bc,
                 &dc,
@@ -1342,6 +1375,7 @@ mod tests {
         let (cc, bc, dc, mut pieces, mut deploys, ground) = rig();
         let mut ev = EventQueue::default();
         assert!(raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1360,6 +1394,7 @@ mod tests {
         aloft.body.qy += 600;
         ev.clear();
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1380,6 +1415,7 @@ mod tests {
         let cc = CombatContent::EMPTY;
         let mut ev = EventQueue::default();
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1402,6 +1438,7 @@ mod tests {
         let mut dead = raider(CX, CZ);
         dead.hp = 0;
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1416,6 +1453,7 @@ mod tests {
         let mut empty = raider(CX, CZ);
         empty.inv[0] = ItemStack::default();
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1430,6 +1468,7 @@ mod tests {
         let mut gone = raider(CX, CZ);
         gone.active = false;
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1460,7 +1499,7 @@ mod tests {
                 count: 1,
                 cond: 0,
             };
-            p.body = Body::at(SEED, 512.0, 512.0);
+            p.body = Body::at(SEED, hv(), 512.0, 512.0);
         }
         let mut ev = EventQueue::default();
         assert_eq!(strike(&cc, 0, &mut players, &mut ev), Strike::Hit);

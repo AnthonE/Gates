@@ -46,11 +46,18 @@ use super::{Net, WorldId, EYE_HEIGHT};
 /// how that day's playtest read `SPOT TAKEN` off a gap. The ray is the
 /// crosshair now; the fixed projection survives inside `aim_from_look` as
 /// the sky/out-of-range fallback.
-fn aim_point(seed: u64, core: &ClientCore, look: &Look, feet: [f32; 3]) -> (f32, f32) {
+fn aim_point(
+    seed: u64,
+    haven: &sim_core::terrain::Haven,
+    core: &ClientCore,
+    look: &Look,
+    feet: [f32; 3],
+) -> (f32, f32) {
     let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
     let (ch, sv) = sim_core::pitch_dir(pitch_u8(look.pitch));
     place::aim_from_look(
         seed,
+        haven,
         core.pieces.cols(),
         [feet[0], feet[1] + EYE_HEIGHT, feet[2]],
         [fx * ch, sv, fz * ch],
@@ -212,7 +219,7 @@ pub fn track(
     };
 
     let [x, y, z] = core.predict.render_position();
-    let aim = aim_point(world.seed, core, &look, [x, y, z]);
+    let aim = aim_point(world.seed, &world.haven, core, &look, [x, y, z]);
     let target = place::target_at(aim.0, aim.1, shape, ghost.level);
     let verdict = place::verdict(
         target,
@@ -220,6 +227,7 @@ pub fn track(
         shape,
         &Site {
             seed: world.seed,
+            haven: &world.haven,
             at: (x, z),
             taken: core.pieces.entries(),
             content: &core.piece_defs,
@@ -234,7 +242,11 @@ pub fn track(
     // The same base point and quarter-turn `structures::spawn_piece` gives
     // the real thing, from the same function, so the ghost and the piece it
     // becomes are the same object in the same pose.
-    let transform = base_transform(world.seed, (target.cx, target.cz, target.level, target.loc));
+    let transform = base_transform(
+        world.seed,
+        &world.haven,
+        (target.cx, target.cz, target.level, target.loc),
+    );
     let mat = if verdict.ok() {
         ghost.ok_mat.clone()
     } else {
@@ -266,6 +278,7 @@ pub fn track(
     let footing = matches!(shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION).then(|| {
         structures::foundation_part(
             world.seed,
+            &world.haven,
             target.cx,
             target.cz,
             shape == SHAPE_TRI_FOUNDATION,
@@ -465,7 +478,7 @@ pub fn deploy_track(
     let size = super::structures::deploy_size(arch);
 
     let [x, y, z] = core.predict.render_position();
-    let aim = aim_point(world.seed, core, &look, [x, y, z]);
+    let aim = aim_point(world.seed, &world.haven, core, &look, [x, y, z]);
     // A doorway-class deployable resolves an edge (the level is the build
     // ghost's working latch — placing a doorway at L1 leaves the latch
     // there, so the door that follows it aims the same storey); everything
@@ -476,6 +489,7 @@ pub fn deploy_track(
         row,
         &DeploySite {
             seed: world.seed,
+            haven: &world.haven,
             at: (x, z),
             pieces: core.pieces.entries(),
             piece_defs: &core.piece_defs,
@@ -492,8 +506,14 @@ pub fn deploy_track(
     // The one pose site (`structures::deploy_transform`, closed): the ghost
     // and the deployable it becomes are the same box in the same place —
     // for a door, in the doorway's edge.
-    let transform = deploy_transform(world.seed, (t.cx, t.cz, t.level, t.loc), arch as u8, false)
-        .with_scale(size);
+    let transform = deploy_transform(
+        world.seed,
+        &world.haven,
+        (t.cx, t.cz, t.level, t.loc),
+        arch as u8,
+        false,
+    )
+    .with_scale(size);
     let mat = if verdict.refused() {
         ghost.no_mat.clone()
     } else {
