@@ -307,11 +307,11 @@ which is how `ALPHA.md` §1 survives it — off a new own-fact `SUB_BAGS`
 
 Left, in order of cheapness:
 
-1. **Beds did not get the ranking backpacks did.** `resolve_marks`' deploy
-   arm still pushes every bed and hearth on the island with no owner filter,
-   and it pushes them LAST — so on a busy shard your own bed is what the cap
-   eats now. `ClientCore::own_bags()` exists, so this is a filter over a list
-   the client already holds. No wire, no word.
+1. ~~Beds did not get the ranking backpacks did.~~ **Done 2026-08-17**:
+   `resolve_marks` takes `own_bags()` and pushes mirror beds matching an own
+   anchor by address directly behind the own bag, ahead of every stranger
+   tier — gated (`ui/map.rs::your_own_bed_outranks_a_shard_of_strangers_beds`,
+   proven red against the unranked order). No wire, no word.
 2. **Showing is not choosing.** The death map marks three beds and
    `ACT_RESPAWN` carries one bit, so the sim still takes the nearest ready
    one. Letting a player click the bed they want is a bag index on the action
@@ -337,7 +337,14 @@ proven red. What remains, in rank order:
    draw item + count and nothing else, so the first warning a player gets
    is the `REFUSE_G_BROKEN` toast at zero. A durability pip wants the
    reference's shape (a bar under the icon, visible only when worn) and
-   `ART.md`'s pass on it — client-only, no wire.
+   `ART.md`'s pass on it. ⚠ **NOT client-only as this said** (measured
+   2026-08-17): the client holds no `condition_max` to divide by — the
+   catalog drips names only, no def table carries a ceiling, and the client
+   links no content crate — so the pip needs a catalog column (wire lane) or
+   content shipped to the client (operator call). The visibility contract is
+   landed and gated (`ui::slots::pip_fraction`, `tests/ui.rs` §Q, its doc
+   has the full argument incl. why a session-learned ceiling was refused);
+   the panels wait on the ceiling.
 2. **Weapons and armour do not wear.** `reference/DURABILITY.md` §5 left
    both unsourced (per shot / when hit), so there is nothing to take yet —
    a research row, not a build item, and wear-on-swing-at-players is a
