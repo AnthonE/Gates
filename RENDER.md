@@ -491,6 +491,19 @@ Three things it settled that are worth not re-deriving:
   break-up at 0.5–1 m and near-field grain under 5 cm (rule 1). **The blend and
   the grain landed; the projection is still planar XZ, not biplanar** — a
   vertical face still stretches, and that is what R4 has left.
+- **Built pieces were the last flat surface, and landed 2026-08-16** (piece
+  surface v0, `DECISIONS.md` §open · `NOW.md` §0ps). A wall is the largest
+  flat thing a player stands in front of and it drew as a `base_color` until
+  now, while props and the viewmodel had sampled the same maps since
+  2026-08-11. Four tiers × (albedo + normal), no new file: the paths are
+  `MapSet::load`'s, so the handles are `PropMaps`' own. The three
+  prerequisites are the transferable part — **0..1 UVs became metre-scaled**
+  (a stretched tile reads as no texture), **meshes gained tangents** (Bevy
+  drops `normal_map_texture` without them, silently), and a **mean-1 per-face
+  vertex tint** carries the cap-vs-side separation a second draw call would
+  otherwise cost. It also found a defect nothing could see: the tier table had
+  three rows against the sim's four materials, so every piece drew one rung
+  off and twig had no look at all. Gate `client/tests/pieces.rs`.
 - AO maps become `indirectDiffuse *= ao` — indirect only, medium scale — and
   `min(bakedAO, ssAO)` where SSAO also runs, never a sum or a product. Micro
   occlusion stays baked in albedo and *does* apply to direct light. Specular

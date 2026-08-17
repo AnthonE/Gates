@@ -27,9 +27,9 @@ use protocol::{
     PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::backpack::BAG_GONE_MAX;
-use sim_core::build::{PieceRec, LOC_PLANE};
+use sim_core::build::{damage_band, BuildContent, PieceRec, LOC_PLANE};
 use sim_core::craft::CraftJob;
-use sim_core::deploy::{BagAnchor, DeployRec, BAG_CAP};
+use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
 use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WORLD};
 use sim_core::limits::{
@@ -50,6 +50,28 @@ use sim_core::world::{
     EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK,
     EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
+
+/// A piece row's baked maximum hp, or 0 if the row is past the table.
+///
+/// 0 is not a fallback here, it is the answer `damage_band` wants: an
+/// unknown maximum reports "untouched" rather than a fraction of nothing,
+/// which is `hud::struct_hit_line`'s rule for the same problem.
+fn piece_hp_max(bc: &BuildContent, row: u8) -> u16 {
+    if (row as u16) < bc.piece_count {
+        bc.pieces[row as usize].hp
+    } else {
+        0
+    }
+}
+
+/// The same for a deployable row.
+fn deploy_hp_max(dc: &DeployContent, row: u8) -> u16 {
+    if (row as u16) < dc.def_count {
+        dc.defs[row as usize].hp
+    } else {
+        0
+    }
+}
 
 /// Unpack `sim_core::inventory::addr` — from kind, from slot, to kind, to
 /// slot. One function, used by both move events, so the two can never
@@ -2398,7 +2420,15 @@ impl ShardCore {
         };
         if c.piece_sync_reset || owed > 0 {
             let n = PIECE_SYNC_BATCH.min(owed);
-            let batch = &pieces[owed - n..owed];
+            // The band is filled HERE and stored nowhere (`PieceRec::dmg`).
+            // A stack copy of the batch, not an allocation — wall 2 counts
+            // the tick and this is `PIECE_SYNC_BATCH` records deep.
+            let mut wire = [PieceRec::default(); PIECE_SYNC_BATCH];
+            for (dst, src) in wire.iter_mut().zip(&pieces[owed - n..owed]) {
+                *dst = *src;
+                dst.dmg = damage_band(src.hp, piece_hp_max(&self.world.build, src.row));
+            }
+            let batch = &wire[..n];
             match encode_event_piece_sync(c.piece_sync_reset, batch, &mut self.ev_buf) {
                 Ok(len) => {
                     if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -2446,7 +2476,13 @@ impl ShardCore {
         if c.deploy_sync_reset || c.deploy_sync_cursor < deploys.len() {
             let at = c.deploy_sync_cursor.min(deploys.len());
             let n = DEPLOY_SYNC_BATCH.min(deploys.len() - at);
-            let batch = &deploys[at..][..n];
+            // The band, filled at the boundary — `PieceRec::dmg`'s note.
+            let mut wire = [DeployRec::default(); DEPLOY_SYNC_BATCH];
+            for (dst, src) in wire.iter_mut().zip(&deploys[at..][..n]) {
+                *dst = *src;
+                dst.dmg = damage_band(src.hp, deploy_hp_max(&self.world.deploy, src.row));
+            }
+            let batch = &wire[..n];
             match encode_event_deploy_sync(c.deploy_sync_reset, batch, &mut self.ev_buf) {
                 Ok(len) => {
                     if send(Lane::Event, slot, &self.ev_buf[..len]) {

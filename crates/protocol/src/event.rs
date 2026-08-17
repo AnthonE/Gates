@@ -16,10 +16,12 @@ use crate::chat::{read_text, write_text, ChatText};
 use crate::loc_max;
 use crate::{
     expect_zero_padding, BUILD_CELL_BITS, BUILD_LEVEL_BITS, BUILD_LOC_BITS, DEPLOY_ROW_BITS,
-    KIND_BITS, KIND_EVENT, PIECE_ROW_BITS, POS_XZ_BITS, POS_Y_BIAS, POS_Y_BITS,
+    DMG_BAND_BITS, KIND_BITS, KIND_EVENT, PIECE_ROW_BITS, POS_XZ_BITS, POS_Y_BIAS, POS_Y_BITS,
 };
 use sim_core::backpack::BackpackRec;
-use sim_core::build::{BuildContent, PieceDef, PieceRec, LOC_EDGE_ZLO, MAT_METAL, SHAPE_TRI_ROOF};
+use sim_core::build::{
+    BuildContent, PieceDef, PieceRec, DMG_BANDS, LOC_EDGE_ZLO, MAT_METAL, SHAPE_TRI_ROOF,
+};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
 use sim_core::deploy::{
     BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_WORKBENCH3, BAG_CAP, PLACE_DOOR,
@@ -1244,6 +1246,12 @@ fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
     w.write(rec.loc as u32, BUILD_LOC_BITS)?;
     w.write(rec.row as u32, PIECE_ROW_BITS)?;
     w.write_bit(rec.facing != 0)?;
+    // The damage band (wire v44). `dmg` is a wire field the store does not
+    // maintain — `PieceRec::dmg` says so — so a caller that forgets to fill
+    // it sends 0, which draws an untouched wall. `server::core` fills it at
+    // the one place it builds these; `tests/protocol_golden.rs` §dmg holds
+    // the round trip.
+    w.write((rec.dmg & (DMG_BANDS - 1)) as u32, DMG_BAND_BITS)?;
     Ok(())
 }
 
@@ -1258,6 +1266,9 @@ fn read_piece_rec(r: &mut BitReader) -> Result<PieceRec, WireError> {
     };
     let rec = PieceRec {
         facing: r.read_bit()? as u8,
+        // Every one of the eight values `DMG_BAND_BITS` can carry is legal,
+        // so this needs no range check — the width is the check.
+        dmg: r.read(DMG_BAND_BITS)? as u8,
         ..rec
     };
     // Coord/level/facing widths are exact; the row — and, since v40's
@@ -1466,6 +1477,8 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write_bit(rec.open)?;
     w.write_bit(rec.locked)?;
     w.write_bit(rec.has_lock)?;
+    // The damage band (wire v44) — `write_piece_rec`'s note applies here.
+    w.write((rec.dmg & (DMG_BANDS - 1)) as u32, DMG_BAND_BITS)?;
     Ok(())
 }
 
@@ -1479,6 +1492,8 @@ fn read_deploy_rec(r: &mut BitReader) -> Result<DeployRec, WireError> {
         open: r.read_bit()?,
         locked: r.read_bit()?,
         has_lock: r.read_bit()?,
+        // Width is the range check — see `read_piece_rec`.
+        dmg: r.read(DMG_BAND_BITS)? as u8,
         ..DeployRec::default()
     };
     // The loc became forgeable when the field widened for the piece

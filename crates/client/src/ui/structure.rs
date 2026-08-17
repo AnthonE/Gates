@@ -51,9 +51,23 @@ pub struct Target {
     pub level: u8,
     pub loc: u8,
     pub row: u8,
-    /// Current and baked hp, so a prompt can say whether repair has anything
-    /// to buy. `max` is 0 when the def table has not dripped that row.
-    pub hp: u16,
+    /// The damage band the server last stated for this address
+    /// (`build::damage_band`, 0 = untouched), so a prompt can say whether
+    /// repair has anything to buy.
+    ///
+    /// **This was `hp`/`hp_max` until wire v44, and the pair was a lie.**
+    /// Piece and deploy hp were never on the wire — `write_piece_rec` wrote
+    /// address and row and stopped — so the mirror's `hp` was a permanent 0
+    /// and `damaged()` answered TRUE for every structure in the world. The
+    /// one thing it gates, `hammer.rs`'s "not damaged" refusal, was
+    /// therefore unreachable: every repair swing at an intact wall took a
+    /// server round trip to come back refused, by a client-side check that
+    /// had never once fired. A band is what the wire carries now, and it is
+    /// all this needs — `damaged()` is a comparison against 0.
+    pub dmg: u8,
+    /// The row's baked maximum hp, 0 until that def row has dripped in.
+    /// Kept because the repair prompt prices against it; it is content the
+    /// client already holds, not a per-piece fact off the wire.
     pub hp_max: u16,
     /// Which face of a sided piece the player stands on — `Some(true)` is
     /// the SOFT side, `Some(false)` the hard one, `None` a shape with no
@@ -68,7 +82,7 @@ impl Target {
     /// piece (`REFUSE_B_INTACT`), so a client that offered one would be
     /// advertising a refusal.
     pub fn damaged(&self) -> bool {
-        self.hp_max > 0 && self.hp < self.hp_max
+        self.dmg > 0
     }
 }
 
@@ -113,7 +127,7 @@ pub fn nearest(
             level: rec.level,
             loc: rec.loc,
             row: rec.row,
-            hp: rec.hp,
+            dmg: rec.dmg,
             hp_max: if (rec.row as u16) < piece_have {
                 piece_defs.pieces[rec.row as usize].hp
             } else {
@@ -139,7 +153,7 @@ pub fn nearest(
             level: rec.level,
             loc: rec.loc,
             row: rec.row,
-            hp: rec.hp,
+            dmg: rec.dmg,
             hp_max: if (rec.row as u16) < deploy_have {
                 deploy_defs.defs[rec.row as usize].hp
             } else {
@@ -188,7 +202,7 @@ pub fn next_material(piece_defs: &BuildContent, have: u16, row: u8) -> Option<u8
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sim_core::build::{PieceDef, LOC_EDGE_XLO, LOC_PLANE, MAT_STONE, MAT_WOOD};
+    use sim_core::build::{damage_band, PieceDef, LOC_EDGE_XLO, LOC_PLANE, MAT_STONE, MAT_WOOD};
     use sim_core::deploy::{DeployDef, ARCH_DOOR};
     use sim_core::limits::MAX_PIECE_COSTS;
 
@@ -218,6 +232,9 @@ mod tests {
         (c, 1)
     }
 
+    /// A piece still stated in hp and banded the way the SERVER bands it
+    /// (wire v44) — against `piece_table`'s own 500, so the fixture and the
+    /// def it is measured against cannot drift apart.
     fn piece(cx: u16, cz: u16, loc: u8, hp: u16) -> PieceRec {
         PieceRec {
             cx,
@@ -228,6 +245,7 @@ mod tests {
             facing: 0,
             hp,
             uh: 0,
+            dmg: damage_band(hp, 500),
         }
     }
 
@@ -244,6 +262,8 @@ mod tests {
             open: false,
             locked: false,
             has_lock: false,
+            // `deploy_table`'s own 200 — see `piece`.
+            dmg: damage_band(hp, 200),
         }
     }
 
@@ -288,7 +308,7 @@ mod tests {
             dh,
         )
         .unwrap();
-        assert_eq!((t.hp, t.hp_max), (250, 500));
+        assert_eq!((t.dmg, t.hp_max), (damage_band(250, 500), 500));
         assert!(t.damaged());
 
         let (ax, az) = anchor(6, 6, LOC_EDGE_XLO);
@@ -302,13 +322,26 @@ mod tests {
             dh,
         )
         .unwrap();
-        assert_eq!((t.hp, t.hp_max), (200, 200));
+        assert_eq!((t.dmg, t.hp_max), (0, 200));
         assert!(!t.damaged(), "an intact door has nothing to buy");
     }
 
-    /// A row the def table has not dripped reports max 0, and `damaged`
-    /// answers false — the caller draws nothing rather than a fraction over
-    /// an unknown denominator.
+    /// A row the def table has not dripped reports max 0 — and since wire
+    /// v44 it still reports **damage**, which is the improvement rather than
+    /// a regression.
+    ///
+    /// This asserted `!damaged()` until 2026-08-16, and that was a property
+    /// of the arithmetic rather than of the system: `damaged` divided hp by
+    /// a maximum the client did not have, so an undripped row could only
+    /// answer false. The band is the SERVER's division now — it knows every
+    /// maximum — so it survives a def table that has not arrived, and a
+    /// player who walks into a raided base before the drip finishes sees the
+    /// damage rather than a clean wall.
+    ///
+    /// **What has not changed is the behaviour that mattered**: `hammer`'s
+    /// repair guard is `!damaged() && hp_max > 0`, so an undripped row still
+    /// sends and lets the sim answer. That is gated where it belongs, on
+    /// `hammer::act` itself (`tests/ui.rs` §K), not inferred from this.
     #[test]
     fn an_undripped_row_reports_no_maximum() {
         let (pd, _) = piece_table(&[MAT_WOOD]);
@@ -324,8 +357,12 @@ mod tests {
             dh,
         )
         .unwrap();
-        assert_eq!(t.hp_max, 0);
-        assert!(!t.damaged());
+        assert_eq!(t.hp_max, 0, "an undripped row has no known maximum");
+        // The fixture bands against `piece_table`'s own 500, which is what
+        // the server would have sent: hp 100 of 500 is heavy damage, and it
+        // reaches the client whole even with the def table empty.
+        assert_eq!(t.dmg, damage_band(100, 500));
+        assert!(t.damaged(), "the server's band survives an undripped table");
     }
 
     #[test]

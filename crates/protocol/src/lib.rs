@@ -542,8 +542,13 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// one neither claimed.** So `SUB_BAGS` is 50 and no fixture keyed `v42_*`
 /// carrying a bag list was ever authoritative.
 ///
-/// Fixtures are keyed `v43_*` — **94**, one added: the own-bag list.
-pub const PROTO_VER: u16 = 43;
+/// Fixtures are keyed `v44_*` — **94**, none added: v44 widened two records
+/// rather than adding a message. Both `write_piece_rec` and `write_deploy_rec`
+/// gained a 3-bit damage band (`DMG_BAND_BITS`), so every fixture carrying a
+/// piece or deploy record moved by bits without changing shape. That is the
+/// cheapest kind of bump and also the easiest to land by accident, which is
+/// exactly what `test_protocol_golden` is for.
+pub const PROTO_VER: u16 = 44;
 
 /// This game's slug in the scry catalog.
 ///
@@ -1075,6 +1080,14 @@ pub(crate) const PIECE_ROW_BITS: u32 = 8;
 /// Deployable rows cross in 4 bits — exactly `MAX_DEPLOY_DEFS`, so the
 /// width itself is the range check.
 pub(crate) const DEPLOY_ROW_BITS: u32 = 4;
+/// A structure's damage band (`sim_core::build::DMG_BANDS`, wire v44).
+///
+/// Three bits is the whole width, so — like `DEPLOY_ROW_BITS` — **the width
+/// IS the range check** and no decoder needs to refuse a value: every one of
+/// the eight it can carry is legal. That is the property worth having on a
+/// field a hostile client can set, and it is why the band is 8 rather than a
+/// rounder 10.
+pub(crate) const DMG_BAND_BITS: u32 = 3;
 /// The upgrade action's target material (build.rs `MAT_*`: wood, stone,
 /// metal). Three values in two bits, so the fourth is forgeable and the
 /// decoder refuses it — the same posture as the hotbar selector.

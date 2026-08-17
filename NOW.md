@@ -42,6 +42,46 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0dsc · Discord presence is built, detailed and dark *(operator — one act)*
+
+The operator saw the game named in Discord and asked how it knew. Measured:
+Discord matches running exes against its detectable database — **22,455
+entries on 2026-08-16, none of them `gates` or `gates.exe`** — so that was
+the manual "Add it!", which shows the bare process name.
+
+**That database is curated and it is NOT the open door.** Rich presence takes
+only an application id, which any developer creates with no review. Checked
+in the data: VS Code, Spotify, Photoshop, Figma, Blender, OBS, IntelliJ and
+Neovim are all **absent** from the 22,455, and all appear in Discord statuses
+daily — as rich presence under their own ids.
+
+Built, and the operator's 2026-08-16 call took it past the address question:
+the verb + where on the island + party + elapsed, and **Ask to Join**, both
+behind two settings under `SOCIAL` — `discord_presence` (on) and
+`discord_share_server` (off, opt-in, and it is a consent rather than a knob:
+`DECISIONS.md` has the pair rule and the gates). Still **dark** without
+`GATES_DISCORD_APP_ID`.
+
+**The one operator act:**
+1. Create the Discord application, set `GATES_DISCORD_APP_ID`, and **name it
+   `Gates`** — the portal's application name is the word drawn after
+   "Playing", which is what retires the lowercase `gates`.
+2. For Ask-to-Join on a friend who is *not* running the game, register the
+   URL scheme in the portal (`scry://` or `gates://`). That path is
+   `deeplink.rs` and needs no code. The already-running path is built.
+3. Optional: upload a 512×512 or 1024×1024 image under the asset key
+   `gates`. **There is no Gates mark in this repo** — `marketing/` holds only
+   the OBOL and MYRRH coin marks, which are the economy's and not the
+   game's. Without one Discord simply draws no image.
+
+⚠ The detectable-list submission stays **unverified** — self-serve game
+selling is deprecated and no current form was found. A question for Discord,
+not a step, and nothing above depends on it.
+
+`DECISIONS.md` 2026-08-16 (spoken) and §open "discord rich presence v0".
+
+---
+
 ## 0win · The published Windows depot cannot start *(operator — republish)*
 
 A player ran the launcher's Windows build on 2026-08-16 and got
@@ -74,14 +114,28 @@ window), which fails with `loader_init ... c0000135` the moment the runtime
 is not beside it. That is the first thing in this repo that has ever
 verified a Windows build starts.
 
-**What remains is operator-only**, and until it happens every Windows
-player is still handed the broken build: take the nightly's `win-x86_64`
-artifact (or repackage), read the tree, `scry digest`, rsync, **merge** the
-`win-x86_64` row into `published.json`, notarize.
+~~What remains is operator-only~~ — **done 2026-08-16 with v0.4.0**
+(`DECISIONS.md`). The live `win-x86_64` row is `0.4.0-g193a8d2a6`: 140
+files, the three DLLs staged beside `gates.exe`, `LICENSE-MINGW-RUNTIME.txt`
+travelling with them, and no `libstdc++`/`libgcc`/`libwinpthread` left in
+`requires.libs` for the player to find. Verified on the **served** document,
+not the staged one. Notarized `0x4a1ac31e…`.
+
+**What is still not measured is the thing this item is named for**: nobody
+has started it on a real Windows machine. CI's wine leg is the strongest
+evidence there is and it is not that — it is a cold prefix answering
+`--help`, which exercises the loader and nothing after it. The next Windows
+boot is the measurement; if it fails, the failure is past `loader_init` and
+this item is the wrong file for it.
 
 Unmeasured, same class: the GitHub **release** zip is msvc, not mingw, and
 nobody has checked whether it needs the VC++ redist. Its notes list Linux's
 three `-dev` packages and say nothing for Windows.
+
+Also stale and **not ours to fix**: scry's own launcher manifest
+(`/data/apps/scry-forge/data/launcher/gates.manifest.json` on morr) still
+tells a player the Windows row bundles nothing and has never been run. A
+player reads that row.
 
 > **Playtest items, 2026-08-15 — the operator played the shard and five came
 > out of it** (`DECISIONS.md` 2026-08-15). **Four landed the same day**
@@ -269,6 +323,36 @@ proven red. What remains, in rank order:
    scope (server boot), or a validate pass over the loaded world. The
    slice's blocker cousin — an emptied slot keeping its `cond` — is fixed
    and gated (`spill.rs`, `persist.rs`: the canonical-empty trio).
+
+## 0ps · Pieces wear a photograph and show damage — what is left *(client lane)*
+
+From the operator's 2026-08-16 ask, with the reference's twig/wood/stone
+foundations attached. **Two slices landed**, numbers in `DECISIONS.md` §open,
+gates `client/tests/pieces.rs` + `sim-core/build.rs` §tests:
+
+- **piece surface v0** — the tier table had three rows against the sim's four
+  materials, so every piece drew one rung off and twig had no look at all.
+  Fixed, and all four tiers now wear albedo + normal off the already-shipped
+  CC0 maps, with metre-scaled UVs, tangents and a mean-1 face tint.
+- **structure damage v0 (wire v44)** — piece and deploy hp were never on the
+  wire, so `Target::damaged()` answered true for everything and the "not
+  damaged" guard had never fired. A 3-bit band now rides both records,
+  derived at the encode boundary: no `state_hash` change, no save bump.
+
+Remaining, ranked:
+
+1. **Nobody has looked at either.** Boot, build a row, hit it.
+2. **The catalogue is 11 shapes against the reference's 20** (`BUILDING.md`
+   §7b.1) — no half/low wall, floor frame, steps, ramp, 3 of 4 stairs. Rule 6
+   is silhouette before surface, so this outranks more material work.
+3. **A base is a hundred identical walls at one rotation** (rule 7). Fix is a
+   pool of per-tier variants (`uv_transform` offset + tint) by address hash.
+4. **Trim** — lashings, plank seams, a capstone rim; `shape_parts` is the
+   place, but price the entity count first at `MAX_PIECES` 8192.
+5. **Deployables got the wire fix, no damage visual** (materials baked in the
+   `.glb`), and nothing shows which face was struck.
+6. **Twig wears bark; roughness maps still unwired** — a twig set via
+   `CANDIDATES.md`, and an ORM packing step would serve terrain+props+pieces.
 
 ## 0bl · Pieces line up on a lattice now — what the stored plate would add *(client+sim lane)*
 
@@ -1351,9 +1435,11 @@ What remains, in order:
    has to carry that message, which IS a layout change (wall 6: version bump +
    goldens in the same commit). Worth doing for the prompt alone; it is a
    slice, not a line.
-4. **The depot is Linux only.** `ci/depot.py` says so in its first line and
-   scry's platform enum has the other rows. The SDK can now reach a launcher
-   on Windows; nothing packages a Windows build of this game.
+4. ~~**The depot is Linux only.**~~ — **retired 2026-08-14** (the packager
+   takes `--platform` and bakes it into `root`), and both platforms are
+   published from one commit as of v0.4.0. This line survived two days past
+   the change it described, which is the ⚠ at the top of `CLAUDE.md`: `ls`
+   the file, do not trust a doc's memory of it.
 5. **The public shard is up and no one has ever joined it** (2026-08-11).
    Boot, persistence, the SIGTERM flush and the status endpoint are all
    measured; the join is not, and **the tools here cannot measure it**:

@@ -635,6 +635,14 @@ pub struct DeployRec {
     /// `World::rebuild_doors` after a load, exactly as the collision
     /// index's shut bits are.
     pub locked: bool,
+    /// The damage band this record was **sent** at
+    /// (`build::damage_band`, 0 = untouched). Wire v44.
+    ///
+    /// ⚠ Wire-only and filled at encode, exactly as `build::PieceRec::dmg`
+    /// is — that field carries the full reasoning, including why the store
+    /// deliberately does not maintain this and why it is absent from
+    /// `state_hash`. Read it on a client, never on a shard.
+    pub dmg: u8,
 }
 
 /// One of your own bags, as the death screen needs to know it: where it
@@ -1661,6 +1669,8 @@ pub fn place_deploy(
         // onto is a door anyone in reach may work (`DOORS.md` §9.2).
         has_lock: false,
         locked: false,
+        // Wire-only; the store never maintains it (`PieceRec::dmg`).
+        dmg: 0,
     };
     if !deploys.insert(rec, tick) {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_FULL, 0);
@@ -3686,6 +3696,7 @@ mod tests {
                 open: false,
                 has_lock: false,
                 locked: false,
+                dmg: 0,
             },
             0,
         ));
