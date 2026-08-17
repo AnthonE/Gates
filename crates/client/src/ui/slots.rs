@@ -400,6 +400,37 @@ pub fn count_badge(count: u16) -> Option<String> {
     (count > 1).then(|| format!("x{count}"))
 }
 
+/// The durability pip's fill fraction, or `None` when no pip is drawn
+/// (`NOW.md` §0dur item 1) — [`count_badge`]'s shape for the other number a
+/// cell carries.
+///
+/// The reference's rule, and all three states are it: a thin bar under the
+/// icon, **visible only when the item is worn**. An item that carries no
+/// condition (`cond_max == 0` — wood, stone, every stackable) never draws
+/// one; a pristine tool (`cond >= cond_max`, and `>` only off a smuggled
+/// save) draws none either, because a full bar under every fresh tool is a
+/// screen of bars; a worn tool draws `cond / cond_max`, and a dead one
+/// (`cond == 0` under a nonzero ceiling) draws the bar EMPTY — the warning
+/// `REFUSE_G_BROKEN` otherwise gives only at the moment the swing bounces.
+///
+/// ⚠ **No panel can call this yet, and the reason is a measurement, not a
+/// choice** (2026-08-17): the client holds `cond` per stack off the wire
+/// (`ClientCore::inv`/`cont`, wire v42) and holds NO ceiling to divide by —
+/// the catalog drip (`SUB_CATALOG`) carries display names only, no def
+/// table the client receives carries `condition_max`, and the client links
+/// no content crate. So `NOW.md` §0dur item 1's "client-only, no wire" was
+/// wrong as stated; the honest routes are a catalog column (a wire slice,
+/// `PROTO_VER` bump) or shipping the content tables to the client (an
+/// operator call). A session-learned ceiling (max `cond` seen per item) was
+/// considered and REFUSED: a tool looted half-worn would read pristine,
+/// which is the exact lie the pip exists to prevent; and hardcoding the
+/// per-item table here is wall 7's business. This function is the half that
+/// is right under any source, gated now (`tests/ui.rs` §Q) so the data
+/// slice lands against a fixed contract.
+pub fn pip_fraction(cond: u16, cond_max: u16) -> Option<f32> {
+    (cond < cond_max).then(|| cond as f32 / cond_max as f32)
+}
+
 /// Where the thing in your hand is drawn, given the cursor and the tile's
 /// edge: **centred on the pointer**, which is what every game this client's
 /// players arrive from does.

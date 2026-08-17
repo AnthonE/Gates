@@ -338,7 +338,14 @@ proven red. What remains, in rank order:
    draw item + count and nothing else, so the first warning a player gets
    is the `REFUSE_G_BROKEN` toast at zero. A durability pip wants the
    reference's shape (a bar under the icon, visible only when worn) and
-   `ART.md`'s pass on it — client-only, no wire.
+   `ART.md`'s pass on it. ⚠ **NOT client-only as this said** (measured
+   2026-08-17): the client holds no `condition_max` to divide by — the
+   catalog drips names only, no def table carries a ceiling, and the client
+   links no content crate — so the pip needs a catalog column (wire lane) or
+   content shipped to the client (operator call). The visibility contract is
+   landed and gated (`ui::slots::pip_fraction`, `tests/ui.rs` §Q, its doc
+   has the full argument incl. why a session-learned ceiling was refused);
+   the panels wait on the ceiling.
 2. **Weapons and armour do not wear.** `reference/DURABILITY.md` §5 left
    both unsourced (per shot / when hit), so there is nothing to take yet —
    a research row, not a build item, and wear-on-swing-at-players is a
