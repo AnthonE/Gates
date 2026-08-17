@@ -423,7 +423,7 @@ fn the_browser_skips_inert_rows() {
 #[test]
 fn an_unnamed_item_prints_its_index_rather_than_nothing() {
     let mut catalog = protocol::event::ItemCatalog::EMPTY;
-    catalog.set(4, b"Wood").unwrap();
+    catalog.set(4, b"Wood", 0).unwrap();
     assert_eq!(craft::item_name(&catalog, 4), Some("Wood"));
     assert_eq!(craft::item_name(&catalog, 9), None);
     assert_eq!(craft::item_label(&catalog, 4), "Wood");
@@ -3396,7 +3396,7 @@ mod loot {
 
     fn named() -> ItemCatalog {
         let mut c = ItemCatalog::EMPTY;
-        c.set(LARGE_BOX as usize, b"Large Box").unwrap();
+        c.set(LARGE_BOX as usize, b"Large Box", 0).unwrap();
         c
     }
 
@@ -3556,11 +3556,13 @@ mod loot {
 // ---------------------------------------------------------------------------
 // §Q · the durability pip's visibility contract (`NOW.md` §0dur item 1)
 //
-// `pip_fraction` is the pure half of the pip and the only half that can land
-// today — its own doc comment carries the measured blocker (the client holds
-// `cond` per stack and no `condition_max` to divide by). These pin the
-// reference's rule so the data slice, when it lands, lands against a fixed
-// contract rather than re-deciding it in a panel.
+// `pip_fraction` is the pure half of the pip. When these were written it
+// was also the only half that COULD land — the client held `cond` per
+// stack and no `condition_max` to divide by. The ceiling ships on the
+// catalog drip since wire v46 (`ClientCore::catalog.cond_max`), so what
+// remains is the panels drawing the bar; these pin the reference's rule so
+// that drawing lands against a fixed contract rather than re-deciding it
+// in a panel.
 mod q_durability_pip {
     use client::ui::slots::pip_fraction;
 

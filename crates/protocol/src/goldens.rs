@@ -30,128 +30,128 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
 pub const FIXTURES: [&str; 95] = [
-    "v45_input_acks_only.bin",
-    "v45_input_full.bin",
-    "v45_snapshot_keyframe.bin",
-    "v45_snapshot_delta.bin",
-    "v45_snapshot_cap.bin",
-    "v45_hello.bin",
-    "v45_welcome.bin",
-    "v45_refuse_full.bin",
-    "v45_event_gather.bin",
-    "v45_event_inv.bin",
-    "v45_event_slot_harvested.bin",
-    "v45_event_slot_respawned.bin",
-    "v45_event_slot_sync.bin",
-    "v45_event_catalog.bin",
-    "v45_event_weak_mark.bin",
-    "v45_event_craft_q.bin",
-    "v45_event_craft_done.bin",
-    "v45_event_craft_refused.bin",
-    "v45_event_recipes.bin",
-    "v45_action_craft.bin",
-    "v45_action_cancel.bin",
-    "v45_action_place.bin",
-    "v45_event_piece_placed.bin",
-    "v45_event_piece_sync.bin",
-    "v45_event_build_refused.bin",
-    "v45_event_piece_defs.bin",
-    "v45_action_deploy.bin",
-    "v45_action_feed.bin",
-    "v45_event_deploy_placed.bin",
-    "v45_event_deploy_sync.bin",
-    "v45_event_deploy_refused.bin",
-    "v45_event_deploy_defs.bin",
-    "v45_event_piece_removed.bin",
-    "v45_event_deploy_removed.bin",
-    "v45_event_stock.bin",
-    "v45_action_use.bin",
-    "v45_action_access.bin",
-    "v45_event_door.bin",
-    "v45_action_upgrade.bin",
-    "v45_chat.bin",
-    "v45_event_chat.bin",
-    "v45_event_hit.bin",
-    "v45_event_health.bin",
-    "v45_event_death.bin",
-    "v45_action_loot.bin",
-    "v45_event_bag_dropped.bin",
-    "v45_event_bag_sync.bin",
-    "v45_event_bag_removed.bin",
-    "v45_event_struct_hit_piece.bin",
-    "v45_event_struct_hit_deploy.bin",
-    "v45_event_vitals.bin",
-    "v45_event_consumed.bin",
-    "v45_event_consume_refused.bin",
-    "v45_action_consume.bin",
-    "v45_event_drank.bin",
-    "v45_action_drink.bin",
-    "v45_event_respawn.bin",
-    "v45_action_respawn.bin",
-    "v45_action_move.bin",
-    "v45_event_moved.bin",
-    "v45_event_move_refused.bin",
-    "v45_action_move_box.bin",
-    "v45_action_container.bin",
-    "v45_action_container_close.bin",
-    "v45_event_cont_sync.bin",
-    "v45_event_cont_close.bin",
-    "v45_action_repair_piece.bin",
-    "v45_action_repair_deploy.bin",
-    "v45_event_piece_repaired_piece.bin",
-    "v45_event_piece_repaired_deploy.bin",
-    "v45_action_throw_piece.bin",
-    "v45_action_throw_deploy.bin",
-    "v45_event_charge_placed_piece.bin",
-    "v45_event_charge_placed_deploy.bin",
-    "v45_challenge.bin",
-    "v45_auth.bin",
-    "v45_event_oven_lit.bin",
-    "v45_event_oven_out.bin",
+    "v46_input_acks_only.bin",
+    "v46_input_full.bin",
+    "v46_snapshot_keyframe.bin",
+    "v46_snapshot_delta.bin",
+    "v46_snapshot_cap.bin",
+    "v46_hello.bin",
+    "v46_welcome.bin",
+    "v46_refuse_full.bin",
+    "v46_event_gather.bin",
+    "v46_event_inv.bin",
+    "v46_event_slot_harvested.bin",
+    "v46_event_slot_respawned.bin",
+    "v46_event_slot_sync.bin",
+    "v46_event_catalog.bin",
+    "v46_event_weak_mark.bin",
+    "v46_event_craft_q.bin",
+    "v46_event_craft_done.bin",
+    "v46_event_craft_refused.bin",
+    "v46_event_recipes.bin",
+    "v46_action_craft.bin",
+    "v46_action_cancel.bin",
+    "v46_action_place.bin",
+    "v46_event_piece_placed.bin",
+    "v46_event_piece_sync.bin",
+    "v46_event_build_refused.bin",
+    "v46_event_piece_defs.bin",
+    "v46_action_deploy.bin",
+    "v46_action_feed.bin",
+    "v46_event_deploy_placed.bin",
+    "v46_event_deploy_sync.bin",
+    "v46_event_deploy_refused.bin",
+    "v46_event_deploy_defs.bin",
+    "v46_event_piece_removed.bin",
+    "v46_event_deploy_removed.bin",
+    "v46_event_stock.bin",
+    "v46_action_use.bin",
+    "v46_action_access.bin",
+    "v46_event_door.bin",
+    "v46_action_upgrade.bin",
+    "v46_chat.bin",
+    "v46_event_chat.bin",
+    "v46_event_hit.bin",
+    "v46_event_health.bin",
+    "v46_event_death.bin",
+    "v46_action_loot.bin",
+    "v46_event_bag_dropped.bin",
+    "v46_event_bag_sync.bin",
+    "v46_event_bag_removed.bin",
+    "v46_event_struct_hit_piece.bin",
+    "v46_event_struct_hit_deploy.bin",
+    "v46_event_vitals.bin",
+    "v46_event_consumed.bin",
+    "v46_event_consume_refused.bin",
+    "v46_action_consume.bin",
+    "v46_event_drank.bin",
+    "v46_action_drink.bin",
+    "v46_event_respawn.bin",
+    "v46_action_respawn.bin",
+    "v46_action_move.bin",
+    "v46_event_moved.bin",
+    "v46_event_move_refused.bin",
+    "v46_action_move_box.bin",
+    "v46_action_container.bin",
+    "v46_action_container_close.bin",
+    "v46_event_cont_sync.bin",
+    "v46_event_cont_close.bin",
+    "v46_action_repair_piece.bin",
+    "v46_action_repair_deploy.bin",
+    "v46_event_piece_repaired_piece.bin",
+    "v46_event_piece_repaired_deploy.bin",
+    "v46_action_throw_piece.bin",
+    "v46_action_throw_deploy.bin",
+    "v46_event_charge_placed_piece.bin",
+    "v46_event_charge_placed_deploy.bin",
+    "v46_challenge.bin",
+    "v46_auth.bin",
+    "v46_event_oven_lit.bin",
+    "v46_event_oven_out.bin",
     // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
-    "v45_event_knock.bin",
-    "v45_event_auth.bin",
-    "v45_action_access_crew.bin",
-    "v45_action_demolish.bin",
-    "v45_event_shot.bin",
+    "v46_event_knock.bin",
+    "v46_event_auth.bin",
+    "v46_action_access_crew.bin",
+    "v46_action_demolish.bin",
+    "v46_event_shot.bin",
     // World containers v0 (v37): the fourth container kind. Three
     // fixtures and not one, because `action_move_box`'s own doc records
     // what happens otherwise — the third kind crossed the wire for a
     // whole version with only the *open* pinned, so the bytes that mean
     // "take it out of the box" were checked by nothing. Kind 3 gets its
     // open, its move and its sync in the commit that legalises it.
-    "v45_action_container_world.bin",
-    "v45_action_move_world.bin",
-    "v45_event_cont_sync_world.bin",
+    "v46_action_container_world.bin",
+    "v46_action_move_world.bin",
+    "v46_event_cont_sync_world.bin",
     // The bench ladder + tech tree (v38): the unlock action and the
     // research-rows drip, plus the three research-lane events that had
     // ridden unpinned since v32 — the role gate checked their payloads
     // and nothing checked their bytes, which is the exact seat the v37
     // world-container note called out as empty.
-    "v45_action_unlock.bin",
-    "v45_event_research_rows.bin",
-    "v45_event_research.bin",
-    "v45_event_research_refused.bin",
-    "v45_event_known.bin",
+    "v46_action_unlock.bin",
+    "v46_event_research_rows.bin",
+    "v46_event_research.bin",
+    "v46_event_research_refused.bin",
+    "v46_event_known.bin",
     // The table verb's own action, pinned by the local branch and kept
     // through the 2026-08-15 integration: `encode_action_research` is
     // still live (the client's `verbs.rs` calls it), so
     // `every_encoder_has_a_golden` requires these bytes.
-    "v45_action_research.bin",
+    "v46_action_research.bin",
     // The gather refusal (v42) — appended, because the manifest is
     // positional and a name in the middle silently renumbers every
     // writer after it.
-    "v45_event_gather_refused.bin",
+    "v46_event_gather_refused.bin",
     // Bag choice v0 (v43): the own-fact bag list the death screen shapes
     // itself around. Appended for the same positional reason.
-    "v45_event_bags.bin",
+    "v46_event_bags.bin",
     // Surface marks v0 (v45): where an arrow stopped, and on what.
     // Appended, like the two above — `gen_goldens` writes this list by
     // INDEX, so inserting anywhere but the end silently re-points every
     // fixture after the insertion at another message's bytes.
-    "v45_event_impact.bin",
+    "v46_event_impact.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -576,25 +576,28 @@ pub fn event_weak_mark() -> (u16, u16, u8, bool) {
 }
 
 /// A catalog whose first batch is exactly `CATALOG_BATCH` names of mixed
-/// length — the fixture encodes the batch at `first = 0`.
+/// length — the fixture encodes the batch at `first = 0`. The ceilings
+/// (v46) mix 0 (no condition) with real values and the u16 corner so the
+/// golden pins the column's width and order, not just its presence.
 pub fn event_catalog() -> ItemCatalog {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = 11;
-    let names: [&[u8]; 11] = [
-        b"Wood",
-        b"Stone",
-        b"Metal Ore",
-        b"Sulfur Ore",
-        b"Cloth",
-        b"Animal Fat",
-        b"Charcoal",
-        b"Fixture Name Of Width 24",
-        b"Sulfur",
-        b"Gunpowder",
-        b"Low Grade Fuel",
+    let rows: [(&[u8], u16); 11] = [
+        (b"Wood", 0),
+        (b"Stone", 0),
+        (b"Metal Ore", 0),
+        (b"Sulfur Ore", 0),
+        (b"Cloth", 0),
+        (b"Animal Fat", 0),
+        (b"Charcoal", 40_000),
+        (b"Fixture Name Of Width 24", u16::MAX),
+        (b"Sulfur", 0),
+        (b"Gunpowder", 1),
+        (b"Low Grade Fuel", 0),
     ];
-    for (i, n) in names.iter().enumerate() {
-        cat.set(i, n).expect("golden names are in-cap by design");
+    for (i, (n, cm)) in rows.iter().enumerate() {
+        cat.set(i, n, *cm)
+            .expect("golden names are in-cap by design");
     }
     cat
 }

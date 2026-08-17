@@ -567,7 +567,18 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// and why the collision is about the *number* rather than the bytes. No
 /// fixture keyed `v44_*` carrying an impact was ever authoritative.
 ///
-/// Fixtures are keyed `v45_*` — **95**, one added: the impact point.
+/// **v46 widens the catalog row** (durability pip, NOW.md §0dur.1): each
+/// dripped item row carries its condition ceiling as a u16 after the name,
+/// in the same hundredths `ItemStack::cond` rides the container lanes in.
+/// The client has held per-slot condition since v42 with nothing to divide
+/// it by — the catalog dripped names only, no def table carried a ceiling,
+/// and the client links no content crate — so `ui::slots::pip_fraction`'s
+/// landed contract had no caller. Every row moves by 16 bits, so the old
+/// decoder misreads rather than refuses: exactly the silent drift this
+/// number exists to make loud.
+///
+/// Fixtures are keyed `v46_*` — **95**, none added: one (the catalog)
+/// moved bytes, the rest were renamed with the bump.
 ///
 /// ---
 ///
@@ -591,7 +602,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// minted as meaningful, that is the widening above and takes the bump
 /// (`every_domain_fits_its_wire_field`'s `live_max` pin is what demands
 /// the sentence).
-pub const PROTO_VER: u16 = 45;
+pub const PROTO_VER: u16 = 46;
 
 /// This game's slug in the scry catalog.
 ///

@@ -203,3 +203,39 @@ fn no_shipped_blueprint_recipe_is_unreachable() {
         );
     }
 }
+
+/// The catalog a shard drips carries the condition ceiling beside every
+/// name (wire v46, NOW.md §0dur.1). Before this column existed the client
+/// held per-slot condition with nothing to divide it by — the catalog was
+/// names only, no def table carried a ceiling, and the client links no
+/// content crate — so `ui::slots::pip_fraction`'s landed contract had no
+/// caller. This is the behavioural half: shipped content, through the boot
+/// path a shard runs, row for row against the authored `condition_max`.
+#[test]
+fn the_shipped_catalog_carries_every_condition_ceiling() {
+    let content = content::Content::load_dir(&content_dir()).expect("shipped content loads");
+    let tables = server::net::bake_all(&content).expect("shipped content bakes");
+
+    let mut conditioned = 0usize;
+    for item in &content.items {
+        let idx = content.item_index(&item.id).expect("own id resolves") as usize;
+        let authored = u16::try_from(item.condition_max).expect("validated content fits u16");
+        assert_eq!(
+            tables.catalog.cond_max(idx),
+            authored,
+            "`{}` ships condition_max {} and the catalog drips {} — the pip \
+             would divide by the wrong ceiling",
+            item.id,
+            authored,
+            tables.catalog.cond_max(idx)
+        );
+        if authored > 0 {
+            conditioned += 1;
+        }
+    }
+    assert!(
+        conditioned > 0,
+        "no shipped item carries a condition ceiling — the column is \
+         untested by this content set and this gate is passing for free"
+    );
+}

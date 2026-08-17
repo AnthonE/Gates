@@ -413,20 +413,18 @@ pub fn count_badge(count: u16) -> Option<String> {
 /// (`cond == 0` under a nonzero ceiling) draws the bar EMPTY — the warning
 /// `REFUSE_G_BROKEN` otherwise gives only at the moment the swing bounces.
 ///
-/// ⚠ **No panel can call this yet, and the reason is a measurement, not a
-/// choice** (2026-08-17): the client holds `cond` per stack off the wire
-/// (`ClientCore::inv`/`cont`, wire v42) and holds NO ceiling to divide by —
-/// the catalog drip (`SUB_CATALOG`) carries display names only, no def
-/// table the client receives carries `condition_max`, and the client links
-/// no content crate. So `NOW.md` §0dur item 1's "client-only, no wire" was
-/// wrong as stated; the honest routes are a catalog column (a wire slice,
-/// `PROTO_VER` bump) or shipping the content tables to the client (an
-/// operator call). A session-learned ceiling (max `cond` seen per item) was
-/// considered and REFUSED: a tool looted half-worn would read pristine,
-/// which is the exact lie the pip exists to prevent; and hardcoding the
-/// per-item table here is wall 7's business. This function is the half that
-/// is right under any source, gated now (`tests/ui.rs` §Q) so the data
-/// slice lands against a fixed contract.
+/// **The ceiling arrives now** (wire v46, 2026-08-17): the catalog drip
+/// carries `cond_max` beside every name, so a panel's call is
+/// `pip_fraction(stack.cond, core.catalog.cond_max(stack.item as usize))`.
+/// Until that bump this function had no possible caller — the client held
+/// `cond` per stack (wire v42) and NO ceiling to divide by, because the
+/// catalog was names-only and the client links no content crate. A
+/// session-learned ceiling (max `cond` seen per item) was considered and
+/// REFUSED on the way: a tool looted half-worn would read pristine, which
+/// is the exact lie the pip exists to prevent; and hardcoding the per-item
+/// table here is wall 7's business. What still remains is the drawing —
+/// the panels call nothing yet, and the bar wants `ART.md`'s pass
+/// (`NOW.md` §0dur item 1).
 pub fn pip_fraction(cond: u16, cond_max: u16) -> Option<f32> {
     (cond < cond_max).then(|| cond as f32 / cond_max as f32)
 }
