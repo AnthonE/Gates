@@ -120,10 +120,28 @@ impl Default for Settings {
             sensitivity: 1.0,
             invert_look: false,
             vsync: true,
-            // **60** (operator, 2026-08-17: *"cant we cap thigns at like 60 fps?"*).
-            // Raisable on this screen; see MAX_FPS_LADDER for why 60 is the
-            // default rather than the ceiling.
-            max_fps: 60,
+            // **Uncapped** (operator, 2026-08-17, revising the same day's
+            // "cant we cap thigns at like 60 fps?" with *"client can go faster
+            // than 60 we cant stop that"*). The cap is a tool on this screen,
+            // not a policy: a player who bought a 144 Hz panel did so on
+            // purpose, and a default that quietly halves it reads as the game
+            // feeling worse than it is.
+            //
+            // **What made that safe to choose was fixing the real problem
+            // underneath it.** The reason a frame cap looked like the answer
+            // was that drawing faster genuinely cost you input:
+            // `ClientCore::set_input` overwrote, so a press that began and
+            // ended between two 30 Hz ticks never reached the sim, and a frame
+            // at 400 fps is 2.5 ms against a 33 ms tick. That is latched now
+            // (`ClientCore::sticky_buttons`), gated at every framerate from 30
+            // to 400 by `client-core/tests/input_sampling.rs`, so frame rate
+            // and input fidelity are no longer traded against each other and
+            // the ceiling can go back to being the player's choice.
+            //
+            // What is still true, and is why `limit_frames` stays: with vsync
+            // off, a menu holding one still image is redrawn as fast as the
+            // hardware allows. That is a real cost and now it has a switch.
+            max_fps: 0,
             // **On** (operator, 2026-08-13). A survival game opens filling
             // the screen; the windowed default was Bevy's, never a choice.
             // Borderless rather than exclusive, which is what `apply_window`
@@ -1232,14 +1250,16 @@ mod tests {
         );
     }
 
-    /// The default is the operator's spoken 60, and it is ON the ladder — a
-    /// default off its own ladder would mean the first click of `-` jumped
-    /// somewhere unrelated.
+    /// The default is the operator's spoken UNCAPPED, and it is ON the ladder
+    /// — a default off its own ladder would mean the first click of `-` jumped
+    /// somewhere unrelated. (It is the ladder's last rung, so `-` steps to 240
+    /// and `+` stays put, which is the intended shape: there is nothing above
+    /// uncapped to reach for.)
     #[test]
-    fn the_default_cap_is_sixty_and_is_a_rung() {
-        assert_eq!(Settings::default().max_fps, 60);
+    fn the_default_cap_is_uncapped_and_is_a_rung() {
+        assert_eq!(Settings::default().max_fps, 0);
         assert!(MAX_FPS_LADDER.contains(&Settings::default().max_fps));
-        assert_eq!(Settings::default().value(Knob::MaxFps), "60");
+        assert_eq!(Settings::default().value(Knob::MaxFps), "UNCAPPED");
         let uncapped = Settings {
             max_fps: 0,
             ..Settings::default()

@@ -768,6 +768,38 @@ pub struct ClientCore {
     pub interp: Interp,
     pub clock: ClientClock,
     input: InputState,
+    /// Buttons seen down at ANY point since the last input frame was built.
+    ///
+    /// **The render loop samples input; the sim consumes it on a fixed 30 Hz
+    /// tick, and those two rates are not the same number.** `set_input`
+    /// overwrites, so without this the only render frame that reached the sim
+    /// was whichever one happened to be the last before a tick boundary — and
+    /// every press that began and ended between two ticks was silently
+    /// dropped. Measured before this existed: a normal ~50 ms click survived
+    /// at 100 % on every framerate (which is why nobody noticed), but a press
+    /// lasting one render frame survived at 100 % at 30 fps, 50 % at 60, and
+    /// essentially by luck above that. The probability of losing a tap is
+    /// roughly `1 - press_ms / 33.3`, so **the faster the client renders, the
+    /// more likely a fast click is to vanish** — a frame at 400 fps is 2.5 ms
+    /// and the tick that would carry it is 33 ms away.
+    ///
+    /// Sticky OR, consumed by the first tick that runs. That makes a tap
+    /// exactly one tick of the button rather than none or two: the level
+    /// (`input.buttons`) already carries a genuinely held button, so this only
+    /// ever supplies a bit that was released before anyone looked.
+    ///
+    /// **Not sim state and not on the wire in any new way.** It changes which
+    /// byte the client puts in a frame it was already sending, so the server
+    /// sims what it receives exactly as before and the predictor uses the same
+    /// frame it sends — no `PROTO_VER`, no goldens, no determinism surface.
+    ///
+    /// Deliberately buttons only. The move axes stay level-sampled: an axis
+    /// has no impulse meaning, and synthesizing a whole tick of travel (~18 cm
+    /// at run speed) out of a 2.5 ms tap invents motion the player never held.
+    /// The view angles need nothing — `Look` integrates mouse delta into a
+    /// free-running angle, so every pixel of motion between two ticks is
+    /// already inside the value the tick samples.
+    sticky_buttons: u8,
     next_seq: u16,
     input_due: bool,
     pub snapshots_applied: u64,
@@ -1142,6 +1174,7 @@ impl ClientCore {
             interp: Interp::new(),
             clock: ClientClock::new(server_tick),
             input: InputState::default(),
+            sticky_buttons: 0,
             next_seq: 1,
             input_due: false,
             snapshots_applied: 0,
@@ -2527,6 +2560,10 @@ impl ClientCore {
     /// The live input state; sampled once per generated frame. `sel`
     /// clamps into the hotbar (the encoder refuses 6+ outright).
     pub fn set_input(&mut self, buttons: u8, yaw: u16, pitch: u8, move_x: i8, move_z: i8, sel: u8) {
+        // See `sticky_buttons`: the level is overwritten, the presses are
+        // remembered. Without the OR, a press that begins and ends between
+        // two 30 Hz ticks never reaches the sim at all.
+        self.sticky_buttons |= buttons;
         self.input = InputState {
             buttons,
             yaw,
@@ -2588,13 +2625,22 @@ impl ClientCore {
         for _ in 0..steps {
             let frame = InputFrame {
                 seq: self.next_seq,
-                buttons: self.input.buttons,
+                // The level, plus anything pressed since the last tick and
+                // already released. Cleared below so a tap is ONE tick of the
+                // button — a second step in the same `advance` call must not
+                // replay it as a hold.
+                buttons: self.input.buttons | self.sticky_buttons,
                 yaw: self.input.yaw,
                 pitch: self.input.pitch,
                 move_x: self.input.move_x,
                 move_z: self.input.move_z,
                 sel: self.input.sel,
             };
+            // Consumed by the FIRST step of this call, never carried into a
+            // second. A frame that happened to span two ticks would otherwise
+            // turn one tap into a two-tick hold, which for a held-item swing
+            // is a second swing the player did not ask for.
+            self.sticky_buttons = 0;
             self.next_seq = self.next_seq.wrapping_add(1);
             self.clock.client_tick = self.clock.client_tick.wrapping_add(1);
             self.predict.step(
