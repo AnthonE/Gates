@@ -308,11 +308,11 @@ which is how `ALPHA.md` §1 survives it — off a new own-fact `SUB_BAGS`
 
 Left, in order of cheapness:
 
-1. **Beds did not get the ranking backpacks did.** `resolve_marks`' deploy
-   arm still pushes every bed and hearth on the island with no owner filter,
-   and it pushes them LAST — so on a busy shard your own bed is what the cap
-   eats now. `ClientCore::own_bags()` exists, so this is a filter over a list
-   the client already holds. No wire, no word.
+1. ~~Beds did not get the ranking backpacks did.~~ **Done 2026-08-17**:
+   `resolve_marks` takes `own_bags()` and pushes mirror beds matching an own
+   anchor by address directly behind the own bag, ahead of every stranger
+   tier — gated (`ui/map.rs::your_own_bed_outranks_a_shard_of_strangers_beds`,
+   proven red against the unranked order). No wire, no word.
 2. **Showing is not choosing.** The death map marks three beds and
    `ACT_RESPAWN` carries one bit, so the sim still takes the nearest ready
    one. Letting a player click the bed they want is a bag index on the action

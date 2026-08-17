@@ -21,9 +21,9 @@
 
 use protocol::event::WireBag;
 use sim_core::build::BUILD_CELL_M;
-use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, ARCH_HEARTH};
+use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, ARCH_HEARTH, BAG_CAP};
 use sim_core::movement::POS_XZ_Q;
-use sim_core::terrain::{self, Haven, ISLAND_SIZE, SEA_LEVEL};
+use sim_core::terrain::{self, Haven, ISLAND_SIZE, SEA_LEVEL, WAYSTATIONS};
 
 /// Metres per grid square. 2048 / 128 = 16 squares a side.
 pub const GRID_M: f32 = 128.0;
@@ -243,8 +243,18 @@ pub const MAP_MARKS_MAX: usize = 64;
 /// raising `BAG_CAP` past this would make the death screen silently stop
 /// drawing one of a player's own beds.
 const _: () = assert!(
-    sim_core::deploy::BAG_CAP <= MAP_MARKS_MAX,
+    BAG_CAP <= MAP_MARKS_MAX,
     "BAG_CAP outgrew the map's marker cap — a player's own bag would be dropped"
+);
+/// …and the whole OWN tier of [`resolve_marks`] — authored destinations,
+/// the own death bag, and every own bed (at most `BAG_CAP`) — fits ahead
+/// of the cap. This is what makes "the cap can never eat what is yours" a
+/// property rather than a probability, and it is compile-time for the
+/// assert above's reason: two of the three terms are other crates'
+/// constants.
+const _: () = assert!(
+    1 + WAYSTATIONS + 1 + BAG_CAP <= MAP_MARKS_MAX,
+    "the own tier outgrew the marker cap — a player's own bed would be dropped"
 );
 
 /// What a mark is a mark OF. `None` is the zero so a stale array slot cannot
@@ -353,8 +363,10 @@ impl Marks {
 /// Fill `out` with every marker the map draws.
 ///
 /// Push ORDER is the drop policy: authored destinations first, so the cap
-/// (drop-newest) can never cost the haven; then the standing bags; then the
-/// anchors off the deploy mirror.
+/// (drop-newest) can never cost the haven; then what is YOURS — the own
+/// death bag, then your own beds; then the standing bags; then the anchors
+/// off the deploy mirror. Both maps draw in reverse resolve order, so cap
+/// rank and draw-on-top rank stay one rule.
 ///
 /// Bags outrank the anchor tier deliberately (`NOW.md` §0die): the deploy
 /// mirror is island-wide, so on a busy shard beds and hearths alone can fill
@@ -365,15 +377,27 @@ impl Marks {
 /// OWN (`ClientCore::own_bag`, the death-position join), and `own_bag` here
 /// is that tag: the one bag pushed ahead of every other, directly behind the
 /// authored tier, so it survives any cap the authored marks leave room in —
-/// which is all of them, `AUTHORED + 1 < MAP_MARKS_MAX` by a wide margin.
+/// which is all of them, the compile-time assert above [`MarkKind`].
 /// Stranger bags still pay the cap against each other, newest first among
 /// the marks behind them. The cap itself does not move and drop-newest
 /// stays stated.
+///
+/// `own_beds` is the same fix for the anchor tier (`NOW.md` §0die remainder
+/// 1: beds did not get the ranking backpacks did). `DeployRec::owner` is
+/// deliberately not on the wire, so the mirror cannot say whose a bed is —
+/// but `ClientCore::own_bags()` (the `SUB_BAGS` own-fact, the death map's
+/// data) can, and a mirror record matching an anchor by address
+/// `(cx, cz, level)` is tagged as yours and pushed directly behind the own
+/// bag, ahead of every stranger's bag and bed. The mirror stays the truth:
+/// an anchor with no mirror record draws nothing (the bed was destroyed
+/// since the list was sent), and readiness stays the death screen's fact —
+/// [`MarkKind::BedSpent`] is still only [`resolve_wake_marks`]'s to make.
 ///
 /// `have` is `ClientCore::deploy_defs_have`, and the guard is load-bearing:
 /// an undripped row reads as `DeployDef::INERT`, whose arch is `ARCH_BAG` —
 /// so without it a not-yet-known deployable is drawn as somebody's bed.
 /// `interact::resolve` skips for the same reason.
+#[allow(clippy::too_many_arguments)] // two own-fact tags rode in on one fix each
 pub fn resolve_marks(
     out: &mut Marks,
     haven: &Haven,
@@ -382,6 +406,7 @@ pub fn resolve_marks(
     have: u16,
     bags: &[WireBag],
     own_bag: u32,
+    own_beds: &[BagAnchor],
 ) {
     out.count = 0;
     out.dropped = 0;
@@ -390,6 +415,18 @@ pub fn resolve_marks(
     for w in &haven.minor {
         out.push(MarkKind::Waystation, w.x, w.z);
     }
+
+    let have = have.min(defs.def_count);
+    let half = BUILD_CELL_M * 0.5;
+    // A mirror record that one of YOUR anchors names — same address, and
+    // only for the bag archetype, so a hearth sharing the cell is not
+    // swept into the tier.
+    let is_own_bed = |rec: &DeployRec| {
+        defs.defs[rec.row as usize].arch == ARCH_BAG
+            && own_beds
+                .iter()
+                .any(|b| b.cx == rec.cx && b.cz == rec.cz && b.level == rec.level)
+    };
 
     // The own bag first (zero = none, the store's own sentinel), so the cap
     // can never eat it behind a shard's worth of strangers.
@@ -401,6 +438,18 @@ pub fn resolve_marks(
                 bag.qz as f32 * POS_XZ_Q,
             );
         }
+    }
+    // Your own beds next — at most `BAG_CAP` of them, inside the compile-time
+    // budget above, so the cap can never eat one behind a busy shard's mirror.
+    for rec in deploys {
+        if (rec.row as u16) >= have || !is_own_bed(rec) {
+            continue;
+        }
+        out.push(
+            MarkKind::Bed,
+            rec.cx as f32 * BUILD_CELL_M + half,
+            rec.cz as f32 * BUILD_CELL_M + half,
+        );
     }
     for bag in bags {
         if own_bag != 0 && bag.id == own_bag {
@@ -416,8 +465,6 @@ pub fn resolve_marks(
         );
     }
 
-    let have = have.min(defs.def_count);
-    let half = BUILD_CELL_M * 0.5;
     for rec in deploys {
         if (rec.row as u16) >= have {
             continue;
@@ -428,6 +475,9 @@ pub fn resolve_marks(
             // Everything else is deliberately unmarked — see the module note.
             _ => continue,
         };
+        if kind == MarkKind::Bed && is_own_bed(rec) {
+            continue; // already pushed, ahead of the cap
+        }
         // The cell CENTRE — where `interact::resolve` measures reach to and
         // where the mesh stands. A marker on the corner sits up to half a
         // cell off the thing it names.
@@ -726,7 +776,7 @@ mod tests {
         let haven = terrain::haven(42);
         let (defs, have) = defs_with(&[]);
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0);
+        resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0, &[]);
 
         assert_eq!(out.count, AUTHORED, "haven + {WAYSTATIONS} waystations");
         assert_eq!(out.dropped, 0);
@@ -770,7 +820,7 @@ mod tests {
             qz: 20_000,
         }];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0);
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0, &[]);
 
         assert_eq!(out.count, AUTHORED + 3);
         let half = BUILD_CELL_M * 0.5;
@@ -797,7 +847,7 @@ mod tests {
         let (defs, have) = defs_with(&[ARCH_BOX, ARCH_DOOR, ARCH_FIRE]);
         let deploys = [rec_at(10, 10, 0), rec_at(11, 10, 1), rec_at(12, 10, 2)];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0);
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &[]);
         assert_eq!(out.count, AUTHORED, "only the authored tier");
     }
 
@@ -811,7 +861,7 @@ mod tests {
         let (defs, _) = defs_with(&[ARCH_BAG]);
         let deploys = [rec_at(10, 10, 0)];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, 0, &[], 0);
+        resolve_marks(&mut out, &haven, &deploys, &defs, 0, &[], 0, &[]);
         assert_eq!(out.count, AUTHORED, "an unknown row must not mark");
     }
 
@@ -831,14 +881,14 @@ mod tests {
             })
             .collect();
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &[], &defs, have, &bags, 0);
+        resolve_marks(&mut out, &haven, &[], &defs, have, &bags, 0, &[]);
 
         assert_eq!(out.count, MAP_MARKS_MAX);
         assert_eq!(out.dropped, AUTHORED + over);
         assert_eq!(out.a[0].kind, MarkKind::Haven, "authored is never dropped");
         // A second resolve on the same `Marks` starts clean — the reuse bug
         // the browser gated (an accumulating set draws yesterday's bags).
-        resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0);
+        resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0, &[]);
         assert_eq!(out.count, AUTHORED);
         assert_eq!(out.dropped, 0);
     }
@@ -864,7 +914,7 @@ mod tests {
             qz: 20_000,
         }];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0);
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0, &[]);
 
         assert_eq!(out.count, MAP_MARKS_MAX);
         assert_eq!(out.dropped, AUTHORED + 1 + deploys.len() - MAP_MARKS_MAX);
@@ -900,7 +950,7 @@ mod tests {
             qz: 20_000,
         });
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &[], &defs, 0, &bags, 7);
+        resolve_marks(&mut out, &haven, &[], &defs, 0, &bags, 7, &[]);
 
         assert_eq!(out.count, MAP_MARKS_MAX);
         let (px, py) = world_to_map(40_000.0 * POS_XZ_Q, 20_000.0 * POS_XZ_Q, 1);
@@ -927,7 +977,7 @@ mod tests {
             })
             .collect();
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &[], &defs, have, &bags, 0);
+        resolve_marks(&mut out, &haven, &[], &defs, have, &bags, 0, &[]);
 
         assert_eq!(out.count, MAP_MARKS_MAX);
         assert_eq!(out.dropped, AUTHORED + 1, "the overflow is counted");
@@ -940,6 +990,98 @@ mod tests {
             !out.a[..out.count].iter().any(|m| (m.px, m.py) == (px, py)),
             "drop-newest means the LAST bag is the one refused"
         );
+    }
+
+    /// `NOW.md` §0die remainder 1: beds did not get the ranking backpacks
+    /// did. The deploy mirror cannot say whose a bed is, but the `SUB_BAGS`
+    /// own-fact can — a mirror record matching an own anchor by address is
+    /// pushed ahead of the stranger tier. Here a cap-full of STRANGER beds
+    /// arrives first and the owner's bed is handed to the resolve last;
+    /// under the unranked ordering (own_beds = &[]) it is the first mark
+    /// the cap eats, and the second resolve below proves exactly that.
+    #[test]
+    fn your_own_bed_outranks_a_shard_of_strangers_beds() {
+        let haven = terrain::haven(42);
+        let (defs, have) = defs_with(&[ARCH_BAG]);
+        // Enough stranger beds to fill the cap on their own, then yours.
+        let mut deploys: Vec<DeployRec> =
+            (0..MAP_MARKS_MAX).map(|i| rec_at(i as u16, 7, 0)).collect();
+        deploys.push(rec_at(500, 400, 0));
+        let own = [anchor(500, 400, true)];
+        let half = BUILD_CELL_M * 0.5;
+        let (px, py) = world_to_map(
+            500.0 * BUILD_CELL_M + half,
+            400.0 * BUILD_CELL_M + half,
+            1,
+        );
+
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &own);
+        assert_eq!(out.count, MAP_MARKS_MAX);
+        assert_eq!(
+            out.a[..out.count]
+                .iter()
+                .filter(|m| (m.px, m.py) == (px, py))
+                .count(),
+            1,
+            "the owner's bed must survive the cap, drawn exactly once"
+        );
+        // Directly behind the authored tier — the rank that makes the
+        // survival a property, and (reverse draw order) draws it on top.
+        assert_eq!(out.a[AUTHORED].kind, MarkKind::Bed);
+        assert_eq!((out.a[AUTHORED].px, out.a[AUTHORED].py), (px, py));
+
+        // The same shard with no tag: drop-newest eats exactly this bed —
+        // the defect this test exists to hold closed.
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &[]);
+        assert!(
+            !out.a[..out.count].iter().any(|m| (m.px, m.py) == (px, py)),
+            "untagged, the newest bed is the first mark the cap eats"
+        );
+    }
+
+    /// The tag re-ranks, never duplicates or invents: with room for
+    /// everyone the mark count is unchanged, an own anchor whose bed the
+    /// mirror no longer holds draws nothing (the mirror is the truth), and
+    /// a hearth is not swept into the tier by sharing an address.
+    #[test]
+    fn an_own_bed_is_reranked_not_redrawn() {
+        let haven = terrain::haven(42);
+        let (defs, have) = defs_with(&[ARCH_BAG, ARCH_HEARTH]);
+        // A STRANGER's bed first in the mirror, then yours, then a hearth
+        // on your bed's cell — so "yours is first" below can only pass if
+        // the tag re-ranked it past the stranger's.
+        let mut deploys = [rec_at(11, 20, 0), rec_at(10, 20, 0), rec_at(10, 20, 1)];
+        let own = [anchor(10, 20, true), anchor(900, 900, true)];
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &own);
+
+        assert_eq!(out.count, AUTHORED + 3, "re-ranked, not duplicated");
+        assert_eq!(out.a[AUTHORED].kind, MarkKind::Bed, "yours is first");
+        let half = BUILD_CELL_M * 0.5;
+        let (px, py) = world_to_map(10.0 * BUILD_CELL_M + half, 20.0 * BUILD_CELL_M + half, 1);
+        assert_eq!((out.a[AUTHORED].px, out.a[AUTHORED].py), (px, py));
+        // The destroyed bed's anchor (900, 900) drew nothing: no mark
+        // stands at its cell.
+        let (gx, gy) = world_to_map(900.0 * BUILD_CELL_M + half, 900.0 * BUILD_CELL_M + half, 1);
+        assert!(
+            !out.a[..out.count].iter().any(|m| (m.px, m.py) == (gx, gy)),
+            "an anchor with no mirror record must draw nothing"
+        );
+        // The hearth on the shared cell stayed a hearth in the anchor tier.
+        assert_eq!(
+            out.a[..out.count]
+                .iter()
+                .filter(|m| m.kind == MarkKind::Hearth)
+                .count(),
+            1
+        );
+
+        // An undripped row cannot be tagged either — the INERT-reads-as-bag
+        // guard holds inside the own tier too.
+        deploys[0].row = 1; // hearth row, but pretend the drip is behind
+        resolve_marks(&mut out, &haven, &deploys, &defs, 0, &[], 0, &own);
+        assert_eq!(out.count, AUTHORED, "an unknown row must not mark");
     }
 
     /// No marker fill may sit near a ground colour — a marker that shares
@@ -1039,6 +1181,7 @@ mod tests {
             have,
             &[],
             0,
+            &[],
         );
         let bed = island.a[..island.count]
             .iter()
