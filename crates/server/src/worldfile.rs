@@ -323,6 +323,40 @@ impl std::fmt::Debug for WorldFile {
     }
 }
 
+/// Every place a loaded world holds item stacks, swept against the content
+/// ceilings the caller installed on it (`crate::cond` — the refuse-not-clamp
+/// policy lives there). Returns which store and the first violation.
+///
+/// Four stores, which is every stack the blob carries: player inventories
+/// (sleepers), placed boxes/ovens, death bags on the ground, and authored
+/// world containers. Hearth stock is `u32` amounts and charges carry no
+/// stacks, so neither is here.
+fn cond_violation(
+    w: &sim_core::world::World,
+) -> Option<(&'static str, crate::cond::CondViolation)> {
+    for p in w.players.iter().filter(|p| p.active) {
+        if let Some(v) = crate::cond::violation(&p.inv, &w.gather) {
+            return Some(("a player inventory:", v));
+        }
+    }
+    for b in w.deploys.boxes() {
+        if let Some(v) = crate::cond::violation(&b.items, &w.gather) {
+            return Some(("a placed box:", v));
+        }
+    }
+    for b in w.backpacks.entries() {
+        if let Some(v) = crate::cond::violation(&b.items, &w.gather) {
+            return Some(("a death bag:", v));
+        }
+    }
+    for c in w.world_conts.entries() {
+        if let Some(v) = crate::cond::violation(&c.items, &w.gather) {
+            return Some(("a world container:", v));
+        }
+    }
+    None
+}
+
 /// Open the world file and read it into `world`.
 ///
 /// Every refusal names what to do about it, because every one of them is an
@@ -540,6 +574,29 @@ pub fn open(
             path.display()
         )
     })?;
+    // The condition wall (`crate::cond`), over the loaded world — the blob
+    // decoder bounds every item index and enforces canonical-empty, but it
+    // runs without asking content what an item's ceiling is; the caller
+    // installed the baked tables before this open, so here is where the
+    // question can finally be asked. Refused whole, never clamped (the
+    // module header says why): a world is loaded whole or not at all, and
+    // unlike the player store there is no per-record blast radius to
+    // prefer — every store below is everyone's shared world.
+    if let Some((where_, v)) = cond_violation(world) {
+        return Err(format!(
+            "world file {} carries a condition no command can mint: {where_} \
+             slot {} holds item {} at condition {} over its content ceiling {} \
+             — the checksum passed, so the file was edited or corrupted in \
+             place. Refused rather than clamped ({}). `{}.1` is the previous run",
+            path.display(),
+            v.slot,
+            v.item,
+            v.cond,
+            v.max,
+            "a clamp would launder the edit into a free repair",
+            path.display()
+        ));
+    }
 
     let bodies = world.players.iter().filter(|p| p.active).count();
     // An identity naming a body the world does not have is dropped rather
