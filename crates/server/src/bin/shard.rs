@@ -217,7 +217,14 @@ async fn main() {
             println!("saves off: no save_file — every join builds a fresh character");
             server::store::Saves::off()
         }
-        Some(path) => match server::store::open(Path::new(path), cfg.seed, content.hash()) {
+        Some(path) => match server::store::open(
+            Path::new(path),
+            cfg.seed,
+            content.hash(),
+            // For the condition wall (`server::cond`): the one record check
+            // the decoder cannot make without the baked ceilings.
+            &tables.gather,
+        ) {
             Ok((saves, found)) => {
                 if found.created {
                     println!("saves ok: created {path} — remembering nobody yet");

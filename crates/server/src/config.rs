@@ -388,11 +388,34 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             // for the loaded content, and this function has none
             // (`dev_spawn_kit`, below, is where the boot asks them).
             "dev_spawn_kit" => {
-                let mut stacks = Vec::new();
+                let mut stacks = Vec::with_capacity(sim_core::limits::MAX_SPAWN_KIT);
                 for part in value.split(',') {
                     let part = part.trim();
                     if part.is_empty() {
                         continue;
+                    }
+                    // Wall 4 at the push site, not after the loop: the cap
+                    // is checked before the Vec grows, so a hostile or
+                    // machine-generated config line cannot make this parse
+                    // allocate past the sim's own kit width — it used to
+                    // collect the whole line first and count afterwards.
+                    // Overflow policy: refuse the boot at the first stack
+                    // past the cap (never truncate into a kit the operator
+                    // did not write), without reading the tail — the count
+                    // an operator needs is the cap, not how far past it
+                    // they went.
+                    if stacks.len() == sim_core::limits::MAX_SPAWN_KIT {
+                        return Err(format!(
+                            "shard.toml line {}: dev_spawn_kit is past the sim's \
+                             {}-slot kit — refused at the stack after `{}` rather \
+                             than truncated",
+                            n + 1,
+                            sim_core::limits::MAX_SPAWN_KIT,
+                            stacks
+                                .last()
+                                .map(|(id, _): &(String, u32)| id.as_str())
+                                .unwrap_or("?"),
+                        ));
                     }
                     let (id, count) = part.split_once(':').ok_or_else(|| {
                         format!(
@@ -415,15 +438,6 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                          key to use the content's own kit, or write \
                          `dev_spawn_kit = \"\"` nowhere at all",
                         n + 1
-                    ));
-                }
-                if stacks.len() > sim_core::limits::MAX_SPAWN_KIT {
-                    return Err(format!(
-                        "shard.toml line {}: dev_spawn_kit has {} stacks, past the \
-                         sim's {}-slot kit",
-                        n + 1,
-                        stacks.len(),
-                        sim_core::limits::MAX_SPAWN_KIT
                     ));
                 }
                 dev_spawn_kit = Some(stacks);
@@ -982,6 +996,52 @@ mod tests {
         assert!(
             parse_shard_toml(&format!("{base}dev_spawn_kit = \"{}\"\n", long.join(", "))).is_err(),
             "a kit past MAX_SPAWN_KIT was accepted"
+        );
+    }
+
+    /// Wall 4's "no push without a cap check" AT the push site, not after
+    /// the loop — the arm used to collect the whole line into the Vec and
+    /// count afterwards, so an over-cap line was refused only after the
+    /// parse had allocated whatever the config held.
+    ///
+    /// The observable difference is which error a bounded parse reports on
+    /// a line whose TAIL is garbage: entries past the cap are never read,
+    /// so the refusal must be the cap naming itself, never a parse error
+    /// from an entry the parse had no business reaching. Proven red against
+    /// the unfixed code (cap checked after the loop): the same input then
+    /// reported `bad dev_spawn_kit count` from the malformed entry past the
+    /// cap, because the loop had walked into territory the cap forbids.
+    #[test]
+    fn the_kit_parse_is_bounded_at_the_push_site() {
+        let base = "bind = \"127.0.0.1:1\"\nseed = 1\n";
+        // MAX_SPAWN_KIT legal entries, then one more that does not even
+        // parse. A push-site cap refuses before touching it.
+        let mut parts: Vec<String> = (0..sim_core::limits::MAX_SPAWN_KIT)
+            .map(|i| format!("item.x{i}:1"))
+            .collect();
+        parts.push("item.tail:not_a_number".into());
+        let err = parse_shard_toml(&format!("{base}dev_spawn_kit = \"{}\"\n", parts.join(", ")))
+            .expect_err("an over-cap kit must refuse the boot");
+        assert!(
+            err.contains(&format!("{}-slot kit", sim_core::limits::MAX_SPAWN_KIT)),
+            "the refusal must name the cap, not the tail it never read: {err}"
+        );
+        assert!(
+            !err.contains("not_a_number"),
+            "an entry past the cap was parsed — the check is not at the push \
+             site: {err}"
+        );
+
+        // Exactly at the cap is legal: the bound refuses the first stack
+        // PAST it, never the kit that fills it.
+        let full: Vec<String> = (0..sim_core::limits::MAX_SPAWN_KIT)
+            .map(|i| format!("item.x{i}:1"))
+            .collect();
+        let ok = parse_shard_toml(&format!("{base}dev_spawn_kit = \"{}\"\n", full.join(", ")))
+            .expect("a kit that exactly fills the slots must parse");
+        assert_eq!(
+            ok.dev_spawn_kit.map(|k| k.len()),
+            Some(sim_core::limits::MAX_SPAWN_KIT)
         );
     }
 }

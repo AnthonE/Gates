@@ -540,6 +540,98 @@ fn the_bag_set_adds_syncs_and_removes() {
     assert_eq!(ids, vec![92], "an unknown removal disturbed the set");
 }
 
+/// The decode-side narrowing (NOW.md §5b): a `why` or `reason` the sim's
+/// ledger has no name for is refused at the pump — counted
+/// (`event_errors`), dropped, applied to nothing, never a panic. The wire
+/// widths hold values past both ledgers (`BAG_GONE_*` tops at 2 in 2 bits,
+/// `REFUSE_C_*` at 3 in 4), so the patterns are forgeable; until
+/// 2026-08-17 they decoded intact and reached the HUD as values no rule
+/// owns.
+///
+/// **The forge is bit-exact and paired with a control**, because a frame
+/// corrupted at large would be refused for any number of reasons and
+/// prove nothing about this one. The event header is 10 bits (`KIND_BITS`
+/// 4 + `SUB_BITS` 6, LSB-first). Bag removal: `id` at bits 10..41, `why`
+/// at 42..43 — byte 5, offsets 2–3. Consume refusal: `reason` at bits
+/// 10..13 — byte 1, offsets 2–5.
+#[test]
+fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+
+    // A bag this client knows about, so a removal has something to lose.
+    let bag = WireBag {
+        id: 11,
+        qx: 1_000,
+        qy: 2_000,
+        qz: 3_000,
+    };
+    let len = encode_event_bag_dropped(&bag, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(c.bags.entries().len(), 1);
+
+    let len = encode_event_bag_removed(11, BAG_GONE_EMPTIED as u8, &mut buf).unwrap();
+    // Control: flip why 1 → 2 (`BAG_GONE_EVICTED`), a value this build
+    // knows. It must decode and remove the bag, which is what proves the
+    // forge below is refused for its value and not for the tampering.
+    let mut control = buf[..len].to_vec();
+    control[5] = (control[5] & !0b0000_0100) | 0b0000_1000;
+    assert!(
+        c.on_stream(&control).is_ok(),
+        "the control must decode, or the forge below proves nothing"
+    );
+    assert!(c.bags.entries().is_empty(), "and it must remove the bag");
+
+    // Re-announce, then forge: both why bits set — the fourth value,
+    // which no BAG_GONE_* names.
+    let len2 = encode_event_bag_dropped(&bag, &mut buf).unwrap();
+    feed(&mut c, &buf[..len2]);
+    let errors_before = c.event_errors;
+    let len = encode_event_bag_removed(11, BAG_GONE_EMPTIED as u8, &mut buf).unwrap();
+    let mut forged = buf[..len].to_vec();
+    forged[5] |= 0b0000_1100;
+    assert!(
+        c.on_stream(&forged).is_err(),
+        "why == 3 names no BAG_GONE_* and must be refused, not applied"
+    );
+    assert_eq!(
+        c.event_errors,
+        errors_before + 1,
+        "the drop must be counted"
+    );
+    assert_eq!(c.bags.entries().len(), 1, "and the bag must survive it");
+
+    // The consume refusal: reason 9 (0b1001) — inside the 4-bit width,
+    // outside `REFUSE_C_MAX` — against a control at reason 3, the highest
+    // live code.
+    let len = protocol::encode_event_consume_refused(2, &mut buf).unwrap();
+    let mut control = buf[..len].to_vec();
+    control[1] = (control[1] & !0b0011_1100) | (3 << 2);
+    assert!(
+        c.on_stream(&control).is_ok(),
+        "the control must decode, or the forge below proves nothing"
+    );
+    assert_eq!(c.pop_consume_refusal(), Some(3), "and reach the ring");
+
+    let errors_before = c.event_errors;
+    let mut forged = buf[..len].to_vec();
+    forged[1] = (forged[1] & !0b0011_1100) | (9 << 2);
+    assert!(
+        c.on_stream(&forged).is_err(),
+        "reason 9 names no REFUSE_C_* and must be refused, not toasted"
+    );
+    assert_eq!(
+        c.event_errors,
+        errors_before + 1,
+        "the drop must be counted"
+    );
+    assert_eq!(
+        c.pop_consume_refusal(),
+        None,
+        "and nothing may reach the ring"
+    );
+}
+
 /// The struct-hit readout, including the one field the wire does not
 /// carry: `max` is resolved from the def table this client holds, and a
 /// row it has not received yet reports 0 rather than a guess.

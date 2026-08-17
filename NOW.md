@@ -189,14 +189,14 @@ ways in `tests/gather.rs`), and `EV_GATHER_REFUSED` names the held item —
 *your Torch cannot harvest this* — through the pump, `client-core`'s ring,
 the shared feed queue and `ui::refusals::GATHER` (wire v42). Remainders:
 
-1. **Two doors have no gate.** `wake` has three callers: the respawn command,
-   a save that logged off dead, a sleeper takeover of a dead body. All three
-   are correctly paid; only the first is tested, so an early return in either
-   of the others wakes a player naked with every suite green.
-2. Content/boot, both small: `validate.rs` has no rule coupling "no swung
-   node has a `hand` row" to "the kit holds a tool something pays", so an
-   empty `[[spawn_kit]]` is an unwinnable world that boots green; and
-   `parse_shard_toml`'s `dev_spawn_kit` arm pushes unbounded, caps after.
+1. **Closed 2026-08-17.** All three of `wake`'s doors are gated now:
+   `persist.rs`/`sleepers.rs` drive the dead restore and the dead-sleeper
+   takeover, each proven red under a skipped wake and a deleted `grant_kit`.
+2. **Closed 2026-08-17, both halves.** A kit holding no tool any swung node
+   pays is a refused boot when no `hand` row exists (`validate::structural`,
+   gated in `content.rs`, red-proven both ways), and `parse_shard_toml`'s
+   `dev_spawn_kit` arm checks `MAX_SPAWN_KIT` at the push site — refuses,
+   never truncates (gated in `config.rs`, red-proven).
 
 ## 0mk · Arrows leave marks; swings and paint do not *(systems+client lane)*
 
@@ -308,11 +308,11 @@ which is how `ALPHA.md` §1 survives it — off a new own-fact `SUB_BAGS`
 
 Left, in order of cheapness:
 
-1. **Beds did not get the ranking backpacks did.** `resolve_marks`' deploy
-   arm still pushes every bed and hearth on the island with no owner filter,
-   and it pushes them LAST — so on a busy shard your own bed is what the cap
-   eats now. `ClientCore::own_bags()` exists, so this is a filter over a list
-   the client already holds. No wire, no word.
+1. ~~Beds did not get the ranking backpacks did.~~ **Done 2026-08-17**:
+   `resolve_marks` takes `own_bags()` and pushes mirror beds matching an own
+   anchor by address directly behind the own bag, ahead of every stranger
+   tier — gated (`ui/map.rs::your_own_bed_outranks_a_shard_of_strangers_beds`,
+   proven red against the unranked order). No wire, no word.
 2. **Showing is not choosing.** The death map marks three beds and
    `ACT_RESPAWN` carries one bit, so the sim still takes the nearest ready
    one. Letting a player click the bed they want is a bag index on the action
@@ -338,7 +338,14 @@ proven red. What remains, in rank order:
    draw item + count and nothing else, so the first warning a player gets
    is the `REFUSE_G_BROKEN` toast at zero. A durability pip wants the
    reference's shape (a bar under the icon, visible only when worn) and
-   `ART.md`'s pass on it — client-only, no wire.
+   `ART.md`'s pass on it. ⚠ **NOT client-only as this said** (measured
+   2026-08-17): the client holds no `condition_max` to divide by — the
+   catalog drips names only, no def table carries a ceiling, and the client
+   links no content crate — so the pip needs a catalog column (wire lane) or
+   content shipped to the client (operator call). The visibility contract is
+   landed and gated (`ui::slots::pip_fraction`, `tests/ui.rs` §Q, its doc
+   has the full argument incl. why a session-learned ceiling was refused);
+   the panels wait on the ceiling.
 2. **Weapons and armour do not wear.** `reference/DURABILITY.md` §5 left
    both unsourced (per shot / when hit), so there is nothing to take yet —
    a research row, not a build item, and wear-on-swing-at-players is a
@@ -347,14 +354,10 @@ proven red. What remains, in rank order:
    lands it is `Station::Workbench1..3` + a blueprint check, never a new
    deployable, and §3's 0.20 ratio stays DISPUTED until someone checks it
    against the in-game price.
-4. **The save readers accept un-mintable condition** (review finding,
-   2026-08-16): both decoders run without the content tables, so a save
-   can smuggle `cond` above the item's ceiling or onto an item whose
-   `condition_max` is 0 — states no command can mint, in the one
-   non-command path into `World`. A post-load clamp where content is in
-   scope (server boot), or a validate pass over the loaded world. The
-   slice's blocker cousin — an emptied slot keeping its `cond` — is fixed
-   and gated (`spill.rs`, `persist.rs`: the canonical-empty trio).
+4. **Landed 2026-08-17 — the save readers refuse un-mintable condition**:
+   both boot paths now check `cond` against the baked ceilings, refused
+   never clamped (`server/src/cond.rs` has the why; gated in
+   `persist_store.rs` + `world_persist.rs`, each proven red).
 
 ## 0ps · Pieces wear a photograph and show damage — what is left *(client lane)*
 
@@ -2311,10 +2314,9 @@ crate-wide, but its *contiguity* claim is file-local.
   `content.rs::every_consumable_the_content_ships_is_reachable` gates the
   general form (every consumable producible by a live verb chain). Still
   owed, and both are code: a standalone forest-floor pickup archetype and a
-  farming lane. The open verb landed 2026-08-14, so the third clause here is
-  spent — but `validate` still counts barrel rows alone and its stated reason
-  ("no verb opens a container") is now false. Widening the reachable set to
-  the tables a verb opens is a `validate.rs` change nobody has made.
+  farming lane. The open verb landed 2026-08-14 and the reachable set widened
+  2026-08-17: `validate.rs`'s clock and `content.rs`'s walk both count every
+  verb-openable container (`bake::container_index`); the stale reason is fixed.
 - ~~Day/night does not exist~~ — **landed 2026-08-11** (day/night v0,
   `DECISIONS.md` §open): 45-minute cycle, 70 % day, derived from the tick
   with **no wire field**, driven through the rig's coupled-set owner.
@@ -2348,16 +2350,15 @@ crate-wide, but its *contiguity* claim is file-local.
 
 ---
 
-## 5b · The wire accepts values the sim can never mean
+## 5b · The wire accepts values the sim can never mean — **CLOSED 2026-08-17**
 
-`every_domain_fits_its_wire_field` (`protocol/src/event.rs`) gates ten value
-domains; the sim/server refusal side is closed (`lane/wire-values`:
-`BAG_GONE_*`/`REFUSE_C_*` refused at the pump and counted, `buttons` bits
-4–7 refused at `accept_input`, never a disconnect). Still open, the wire act
-this item always named: the *decode* side — the client's decoder taking
-`why == 3` / `reason` 4..15, the button octet — plus deriving the two
-`*_MAX`s into protocol's exempt list and the `PROTO_VER` judgement for
-narrowing what decodes. One protocol pass. Systems lane (`crates/protocol`).
+The decode side landed: `why == 3` / `reason` 4..15 refuse as `Malformed`,
+counted at the client pump; both `*_MAX`s derive from sim-core and the exempt
+list carries them; no `PROTO_VER` turned — the narrowing rule is written at
+`PROTO_VER` (lib.rs), and the button octet stays whole at the codec by
+decision (`decode_input`'s doc — the wall is `accept_input`'s). The one
+residue (`server/core.rs`'s stale "encoder bounds the width" pump comment)
+was fixed in the same merge window.
 
 ---
 
@@ -2416,9 +2417,9 @@ Deliberately its own commit: widening the draw changes fixture bytes, and
 changing golden bytes for a reason unrelated to the version's meaning
 muddies the one signal wall 6 reads. It is a `PROTO_VER` judgement call —
 the answer may be that a golden's fuzz range is not part of the wire
-contract at all. Decide that first; it is the actual question. Same shape
-one level down: whether `decode_input` itself should narrow the unmeant
-bits is the protocol pass §5b still owes.
+contract at all. Decide that first; it is the actual question. The shape
+one level down is decided (§5b, 2026-08-17): `decode_input` carries the
+octet whole; the domain wall is `accept_input`'s (`decode_input`'s doc).
 
 ## 5d · The agent player has a spec and no code *(systems lane)*
 

@@ -187,6 +187,7 @@ pub fn setup(
         core.deploy_defs_have,
         core.bags.entries(),
         core.own_bag,
+        core.own_bags(),
     );
 
     commands

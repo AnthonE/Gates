@@ -1815,9 +1815,12 @@ impl ShardCore {
                 }
                 EV_BAG_REMOVED => {
                     // NOW.md §5b: the wire field is two bits and the
-                    // reason domain tops out at BAG_GONE_MAX — the encoder
-                    // bounds the width, so a forged `why == 3` would cross
-                    // intact. The sim can never mean it; refuse it into
+                    // reason domain tops out at BAG_GONE_MAX. Since the
+                    // §5b decode pass the encoder bounds the DOMAIN too
+                    // (`encode_event_bag_removed` refuses `why == 3`), so
+                    // this pump check is the belt to that suspender — it
+                    // still runs first because validation goes ahead of
+                    // mutation (the item-move trap), into
                     // the same counter the encoder's own range check uses,
                     // and refuse **before** the cursor loop below moves
                     // anything (validation ahead of mutation — the

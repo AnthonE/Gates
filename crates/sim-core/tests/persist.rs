@@ -373,6 +373,126 @@ fn a_body_that_logged_off_dead_wakes_on_a_beach() {
     );
 }
 
+/// A two-entry kit of stand-in item ids, in `SpawnKit`'s own shape —
+/// `bag_respawn.rs`'s probe kit, duplicated rather than shared because a
+/// tests/ helper crate is a bigger structure than two functions deserve.
+/// Ids 8 and 9 are outside every table this file arms, so nothing else here
+/// can pay them into a pocket and make a re-grant look like a restore.
+fn probe_kit() -> sim_core::inventory::SpawnKit {
+    let mut kit = sim_core::inventory::SpawnKit::EMPTY;
+    assert!(
+        kit.set(
+            0,
+            ItemStack {
+                item: 8,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "kit slot 0"
+    );
+    assert!(
+        kit.set(
+            1,
+            ItemStack {
+                item: 9,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "kit slot 1"
+    );
+    kit
+}
+
+/// **The second of `wake`'s three doors is paid too** (`NOW.md` §0kit
+/// remainder 1). A save marked `dead` falls through `seat`'s restore arm
+/// into `wake`, and `wake` is where a new body is built — so a player who
+/// logged off on the death screen logs back in holding the spawn kit, not
+/// naked. The test above proves that door wakes the body *somewhere*; with
+/// `spawn_kit` EMPTY there, nothing proved the body woke *armed*, and a
+/// refactor that reimplemented the beach-wake inline without `grant_kit`
+/// stayed green on every suite.
+///
+/// Proven red 2026-08-17, both ways. Early-returning before the wake in
+/// `seat`'s dead arm (`if s.dead { return; }` in place of the `wake` call)
+/// fails this on slot 0 reading empty ("woke naked") — beside the beach
+/// gate above, which catches that skip on its whole-body hp assertion.
+/// Deleting only `inventory::grant_kit` from `wake` fails this on the same
+/// line while every pre-existing gate in this suite stays green — that
+/// narrower hole, a wake that stands the body up and forgets to arm it, is
+/// the coverage this test adds.
+#[test]
+fn a_dead_save_wakes_holding_the_spawn_kit() {
+    let mut w = armed();
+    w.spawn_kit = probe_kit();
+    w.tick(&[Command::Join { id: ID }]);
+    // The fresh arm granted it — otherwise the assertion after the restore
+    // could pass on a door that grants nothing anywhere.
+    assert_eq!(
+        w.players[0].inv[0].item, 8,
+        "the fresh spawn did not get the kit — nothing below proves anything"
+    );
+    // Something the player EARNED, in a slot the kit does not write. The
+    // death must take it, or the kit assertion below would be reading a
+    // survived inventory rather than a grant.
+    w.players[0].inv[6] = ItemStack {
+        item: 2,
+        count: 5,
+        cond: 0,
+    };
+
+    // A real death by a real cause, screen left unanswered — the same
+    // fixture as the beach test above, because the door under test is the
+    // same one: `PlayerSave::of` must see the corpse.
+    w.players[0].food = 0;
+    w.players[0].water = 0;
+    let mut fell = false;
+    for _ in 0..120 * sim_core::limits::TICK_HZ {
+        w.tick(&[]);
+        if w.players[0].dead {
+            fell = true;
+            break;
+        }
+    }
+    assert!(fell, "the clock did not kill the body — setup failed");
+    let save = w.save_of(ID).expect("a corpse keeps its slot");
+    assert!(save.dead, "the record must know the body was down");
+
+    let mut w2 = armed();
+    w2.spawn_kit = probe_kit();
+    w2.tick(&[Command::JoinAs { id: REJOIN, save }]);
+    let p = w2.players[0];
+    assert!(!p.dead, "a corpse must not come back as a corpse");
+    assert_eq!(
+        (p.inv[0], p.inv[1]),
+        (
+            ItemStack {
+                item: 8,
+                count: 1,
+                cond: 0
+            },
+            ItemStack {
+                item: 9,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "a body that logged off dead woke naked — this door skipped the kit"
+    );
+    assert_eq!(
+        p.inv[6],
+        ItemStack::default(),
+        "the earned stack survived the death, so the slots above may be a \
+         restored inventory rather than a grant — this test proves nothing"
+    );
+    assert_eq!(p.hp, w2.combat.player_hp, "a wake is a whole body");
+    assert!(
+        p.food > 0 && p.water > 0,
+        "a body that starved to death respawned already starving"
+    );
+}
+
 /// **Wall 5, for the restore path.** Same build, same seed, same command
 /// stream — including the `JoinAs` and its record — must give the same state
 /// hashes, tick for tick.

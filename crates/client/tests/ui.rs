@@ -3552,3 +3552,47 @@ mod loot {
         assert_eq!((left, top), (478.0, 478.0));
     }
 }
+
+// ---------------------------------------------------------------------------
+// §Q · the durability pip's visibility contract (`NOW.md` §0dur item 1)
+//
+// `pip_fraction` is the pure half of the pip and the only half that can land
+// today — its own doc comment carries the measured blocker (the client holds
+// `cond` per stack and no `condition_max` to divide by). These pin the
+// reference's rule so the data slice, when it lands, lands against a fixed
+// contract rather than re-deciding it in a panel.
+mod q_durability_pip {
+    use client::ui::slots::pip_fraction;
+
+    /// A worn tool draws, and draws its own fraction — the whole point of
+    /// the pip is a warning BEFORE the `REFUSE_G_BROKEN` toast at zero.
+    #[test]
+    fn a_worn_tool_draws_its_fraction() {
+        assert_eq!(pip_fraction(5_000, 10_000), Some(0.5));
+        assert_eq!(pip_fraction(9_999, 10_000), Some(0.9999));
+    }
+
+    /// A pristine tool draws nothing — a full bar under every fresh tool
+    /// is a screen of bars, and the reference hides it. Above the ceiling
+    /// (only a smuggled save can mint it — `NOW.md` §0dur item 4) is
+    /// pristine too, not a >100% bar.
+    #[test]
+    fn a_pristine_tool_draws_nothing() {
+        assert_eq!(pip_fraction(10_000, 10_000), None);
+        assert_eq!(pip_fraction(10_001, 10_000), None);
+    }
+
+    /// A dead tool draws the bar EMPTY — zero is a state the player must
+    /// see, because the tool stays in the hand and stops being a tool.
+    #[test]
+    fn a_dead_tool_draws_an_empty_bar() {
+        assert_eq!(pip_fraction(0, 10_000), Some(0.0));
+    }
+
+    /// An item that carries no condition never draws a pip — wood at
+    /// `cond == 0` is not a dead tool, it is a stack of wood.
+    #[test]
+    fn an_item_with_no_ceiling_never_draws() {
+        assert_eq!(pip_fraction(0, 0), None);
+    }
+}
