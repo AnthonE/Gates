@@ -94,11 +94,18 @@ Everything else in §2–§8 has a slot that already indexes it.
 
 ## 1 · Already covered — do not spend credits here
 
-- **The player body.** `assets/models/mannequin.gltf` — CC0, 53 joints, 46
-  animation clips, and `render/anim.rs` binds them. A *replacement* character
-  is welcome (§6 note) but it must be rigged to the same skeleton or the clips
-  go with it. Generated meshes are not rigged; this is the one row where a
-  generator is the wrong tool.
+- **The player body.** `assets/models/stumpy.glb` — commissioned, 24 joints,
+  **53 clips**, 1.800 m, and `render/anim.rs` binds them.
+  ⚠ **This bullet was wrong in three ways on 2026-08-17 and is worth reading
+  as a correction rather than a fact.** It said the body was the mannequin,
+  that a replacement *must* be rigged to the mannequin's 53-joint skeleton or
+  its 46 clips would be lost, and that "generated meshes are not rigged; this
+  is the one row where a generator is the wrong tool." The replacement landed
+  that day: it came from a generator, it arrived **rigged and animated**, it
+  is on its **own** skeleton — and the 46 clips came across anyway, by
+  retarget (`ci/retarget_anim.py`), in nine seconds. Every clause was a
+  reasonable inference and every one was overtaken. The mannequin stays in the
+  tree as the retarget's source.
 - **Every plant.** Trees, bushes, grass — **do not buy a foliage `.glb`, from
   a generator or anywhere else.** `reference/PLANTS.md` is the whole argument;
   the short form is that a plant is an alpha-card problem and a mesh generator
@@ -243,10 +250,19 @@ corpse bag.
 
 ## 6 · Worn — 3
 
-`content/armor.toml`. These fit the **mannequin's skeleton** (§1), so unlike
+`content/armor.toml`. These fit the **player rig's skeleton**, so unlike
 everything else on this list they are not standalone props — they are either
 skinned to the same rig or rigid pieces parented to a joint. Rigid is fine for
 the hood and the vest; the tunic is not.
+
+⚠ **Which skeleton that is changed on 2026-08-17 and this section said the
+wrong one until then.** The rig is `stumpy.glb` — **24 joints**, named
+`Hips / Spine / Spine01 / Spine02 / neck / Head / Left|Right + UpLeg, Leg,
+Foot, ToeBase, Shoulder, Arm, ForeArm, Hand`. The mannequin's 53 Rigify
+`DEF-*` names are no longer what anything loads. Two consequences for this
+section: a parented piece names a joint from *that* list, and **there are no
+finger joints at all**, so anything that wanted to fit a hand fits `LeftHand`
+or `RightHand` as one rigid piece.
 
 | # | item | slot | notes |
 |---|---|---|---|
@@ -254,10 +270,40 @@ the hood and the vest; the tunic is not.
 | 6.2 | Burlap tunic | body | Sackcloth over the torso. **Wants skinning**, or it will not follow the run cycle. |
 | 6.3 | Roadsign vest | body | Cut-and-bent sheet metal plates lashed over the chest — scavenged, not fitted. Rigid plates over a skinned strap is the honest build. |
 
-> Note on a replacement character: a clothed survivor is welcome and would
-> retire the mannequin, but it must ship **rigged to the mannequin's 53-joint
-> skeleton** or all 46 clips die with it. That is a hand job in Blender, not a
-> generator job.
+> **The replacement character landed, and it did exactly what the note that
+> used to stand here warned about.** `stumpy.glb` ships on its own 24-joint
+> skeleton, not the mannequin's, so the 46 clips did not come with it — the
+> game runs on the seven the delivery carried. The warning was right; it was
+> also not a veto, because the character is the product and an animation set
+> is a thing you can add to a rig. §11 is the bill.
+
+---
+
+## 11 · The player's missing clips — 0
+
+**Opened and closed the same day.** This section listed seven clips the
+character did not have; `ci/retarget_anim.py` moved the mannequin's whole
+46-clip library onto its skeleton and six came across — `Sprint_Loop`,
+`Death01`, `Hit_Chest`, `Jump_Loop`, `Swim_Fwd_Loop`, `Crouch_Idle_Loop` +
+`Crouch_Fwd_Loop`. The two routes named here were "commission them" and
+"retarget them, nobody has tried it"; the second was tried, took nine seconds
+and cost 1 MB.
+
+The rig is `stumpy.glb`, 24 joints (§6), **53 clips**. A name must be
+**exactly** right: `render/anim.rs` resolves by name and
+`crates/client/tests/rig_asset.rs` fails on a mismatch.
+
+**Closed 2026-08-17 — nothing on this list is outstanding.** The last item was
+a `Gather_Swing`, since 46 clips contain no chopping motion; the operator took
+`Sword_Attack` instead (*"accept sword attack because tbh thats rust lol you
+just swing whatever pretty much"*, `DECISIONS.md`). The reference game swings
+one animation at everything, so a dedicated chop was a distinction it does not
+draw either.
+
+**Nothing here is now waiting on an asset.** What third-person swinging is
+waiting on is a fact on the wire — `bodies.rs` sees a remote's position, yaw
+and sleeping flag and nothing else — which is `NOW.md` §0sw's problem and not
+this file's.
 
 ---
 

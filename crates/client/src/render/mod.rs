@@ -765,6 +765,12 @@ impl Plugin for GatesRenderPlugin {
             Update,
             (
                 viewmodel::spawn_item,
+                // The arms wait on the rig's glTF, so they cannot spawn beside
+                // the item — `dress_arms` then runs until the scene's own
+                // entities exist, which is a frame or two later again.
+                viewmodel::spawn_arms,
+                viewmodel::dress_arms,
+                viewmodel::arms_report,
                 viewmodel::animate
                     .after(feed::drain)
                     .after(viewmodel::spawn_item),
@@ -799,9 +805,25 @@ impl Plugin for GatesRenderPlugin {
             (
                 anim::build,
                 anim::bind.after(Stream),
+                anim::bind_head.after(Stream),
                 anim::reshade.after(Stream),
                 anim::drive.after(anim::bind),
             )
+                .run_if(world_running),
+        )
+        // **The head override lives in `PostUpdate`, between the animation
+        // and the propagation, and that window is the whole reason it is
+        // cheap.** The clip has posed the skeleton and nothing has turned
+        // local transforms into world ones yet, so pointing one bone at the
+        // pitch the wire carried costs a quaternion multiply and no
+        // re-propagation. Scheduled anywhere in `Update` it would either be
+        // overwritten by the animation player or need the hierarchy walked
+        // again.
+        .add_systems(
+            PostUpdate,
+            anim::head_look
+                .after(bevy::app::AnimationSystems)
+                .before(bevy::transform::TransformSystems::Propagate)
                 .run_if(world_running),
         )
         // The cloud deck hangs on the camera, so it waits for the rig too.

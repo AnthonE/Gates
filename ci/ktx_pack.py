@@ -110,10 +110,21 @@ def encode(png_bytes, size, is_srgb, tmp):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
     size = 1024
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if "--size" in sys.argv:
-        size = int(sys.argv[sys.argv.index("--size") + 1])
+        at = sys.argv.index("--size") + 1
+        size = int(sys.argv[at])
+        # **`--size`'s VALUE is not a positional argument**, and until
+        # 2026-08-17 this function counted it as one: passing the flag this
+        # docstring documents left three "positionals" and printed the usage
+        # text instead of packing anything. Silent in the sense that matters —
+        # the flag's only documented value is also its default, so every
+        # invocation that hit it either used the default or looked like a
+        # typo. Filtered by position rather than by shape, because a size and
+        # a path are both just strings.
+        args = [a for i, a in enumerate(sys.argv[1:], start=1)
+                if not a.startswith("--") and i != at]
     if len(args) != 2:
         raise SystemExit(__doc__)
     src_path, dst_path = args

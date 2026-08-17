@@ -12,6 +12,117 @@ Renamed from `AnimationLibrary_Godot_Standard.{gltf,bin}`; the only edit is the
 buffer `uri`, which had to follow the rename. Nothing else in the file is
 touched, so re-vendoring is a copy and one string.
 
+⚠ **Nothing loads the mannequin since 2026-08-17** — `render/anim.rs` loads
+`stumpy.glb` — and it is kept because **it is the source of that file's
+animation library**. All 46 of its clips were retargeted onto the new
+character's skeleton the same day (`ci/retarget_anim.py`), and a retarget is
+only reproducible while both rigs are in the tree: re-running it needs this
+file, its rest pose and its bone names, none of which survive in the output.
+3.2 MB is the price of being able to re-derive 46 clips instead of owning them
+as a black box.
+
+## `stumpy.glb` — the player character
+
+**Commissioned output, on the `deploy/` rail below** — Meshy, paid plan, so
+private ownership with no attribution owed and no `NOTICE` entry due.
+
+| | |
+|---|---|
+| file | `stumpy.glb`, **4.2 MB** |
+| mesh | one skinned character, 21,360 verts / 31,252 tris, **24 joints**, split into `char1_arms` (8,184 tris) + `char1_body` for the first-person view |
+| clips | **53** — the delivery's 7, plus 46 retargeted off the mannequin |
+| texture | one 4096² base colour, packed to **1024 UASTC** (28.9 MB → 2.8 MB) |
+| stands | **1.800 m**, feet on y = 0 — the sim's own `Capsule3d::new(0.4, 1.0)` exactly, so `ANIM_RIG_H_M` is 1.8 and the scale is 1 |
+| source | `Meshy_AI_Stumpy_biped.zip` → `..._Meshy_Merged_Animations.glb` |
+| ⚠ owed | **the prompt, the task id and the credit count are not recorded here** — they are the operator's to supply, and the rail below asks for all three. Every other row in this file has them; this one is a gap, written down rather than invented |
+
+Imported with **`ci/import_char.py`**, which is the prop importer's sibling and
+differs from it in the one way that matters: it corrects the **scene root**
+rather than the vertices, because a skinned mesh is not drawn where its
+vertices are (the file's header has the whole argument). Two corrections were
+needed and both are the generator's, not ours:
+
+```
+ci/import_char.py <merged>.glb stumpy_raw.glb \
+    --rename Idle_11=Idle_Loop --rename Walking=Walk_Loop \
+    --rename Running=Jog_Fwd_Loop --single-sided --roughness 0.85
+ci/ktx_pack.py stumpy_raw.glb stumpy_packed.glb
+ci/retarget_anim.py assets/models/mannequin.gltf stumpy_packed.glb stumpy_rt.glb
+ci/split_arms.py stumpy_rt.glb assets/models/stumpy.glb
+```
+
+
+1. **The up axis is Z.** The merged-animation export lies on its back; the
+   character export of the *same model* is Y-up. One generator, one rig, two
+   files, two answers — so this is checked per delivery, never assumed.
+2. **The clip names are the generator's.** `render/anim.rs` resolves by NAME
+   and a name it cannot find draws a body frozen in its bind pose, so
+   `Idle_11` is an idle that never plays.
+
+**The last step is what makes a first-person viewmodel possible**, and it is
+one line because the alternative was believed impossible: the mesh becomes
+`char1_arms` + `char1_body`, two nodes on one skeleton **sharing their vertex
+buffers** and differing only in their index array (+0.4 MB, no second copy of
+anything). `render/viewmodel.rs` hides the body half and draws the arms on the
+camera; `bodies.rs` draws both and is unchanged.
+
+`crates/client/tests/rig_asset.rs` gates all of it — the clip names off `Clip`
+itself, the height against `ANIM_RIG_H_M`, the stand-up rotation, one material,
+KTX2 textures, both halves of the split, and the arms' hold clip. Four of the
+first five were watched going red against the raw file and green against the
+imported one.
+
+### The 46 retargeted clips
+
+The delivery carried seven. `ci/retarget_anim.py` moved the **whole**
+mannequin library across in nine seconds for **+1.0 MB**, which is why the
+character has a death, a sprint, a jump, a swim, a crouch and two hit
+reactions without a credit being spent. Its header carries the maths; the two
+things to know here are that only ROTATIONS transfer (a source bone's
+translation is that skeleton's limb length, and copying it stretches the
+target onto somebody else's build) and that the hips are the one exception,
+converted through the hip-height ratio and this rig's centimetre units.
+
+⚠ **It shipped once with the arms 43° low, and the cause is worth carrying.**
+A rest-pose retarget transfers each rig's *deviation from its own rest*, which
+silently assumes the two rests are the same pose. Measured here, they are not:
+the source rests in a true T (upper arm `[1, 0, 0]`, dead horizontal) and this
+character rests in an A, 43° below it. Spine 2–7°, legs 3–17°, **arms 36–43°**
+— so the legs looked right, the walk looked right, and every arm arrived 43°
+low, which reads as a hand passing through the torso. Reported off the bench as
+*"the right arm is inside the model"*, and it is **not** a proportions problem,
+which is what it looks like.
+
+The fix anchors each bone on a *virtual* rest whose bone direction matches the
+source's rather than on its own (`qbetween`, minimal-arc so no twist is
+invented). `--no-align` restores the old behaviour for a pair of rigs that
+genuinely share a rest pose. **The general lesson: "retarget the delta from
+rest" is only as true as the claim that both rests mean the same thing, and
+that claim is measurable in one command** — compare the rest bone directions
+before trusting a single frame.
+
+**On a name collision the delivery's own clip keeps the bare name** and the
+retarget takes `_alt` — so `Idle_Loop`, `Walk_Loop` and `Jog_Fwd_Loop` are
+still the ones authored for this character, with `Idle_Loop_alt` and friends
+beside them for comparison. `--bin modelview <file> mannequin.gltf --per-clip`
+puts the retarget next to its source in one frame under one clip name, which
+is how this was checked: **`A_TPose` retargets to an actual T-pose**, which is
+the diagnostic that isolates the rest-pose maths from everything else.
+
+The library's own irrelevant clips came across too (`Pistol_*`, `Spell_*`,
+`Driving_Loop`, `Sitting_*`). They cost ~300 KB and were kept rather than
+curated, because the cheap thing to do later is delete a name and the
+expensive thing is to re-derive one.
+
+**What is still missing**: the client has no state to drive most of the 46
+from. `bodies.rs` knows a remote's position, yaw, pitch and whether it is
+asleep, and that is the whole input — so `Death01`, `Jump_Loop`,
+`Swim_Fwd_Loop` and the crouch pair sit in the file unplayable, each waiting
+on a fact on the wire. The clips are there before the states that would play
+them, which is the right way round. (`WANTED.md` §11 is closed: the gather
+swing is `Sword_Attack` by operator call, and nothing here is waiting on an
+asset.)
+
 ## `deploy/` — generated, and the rail they land on
 
 **These are commissioned output, not licensed work, which is a different basis

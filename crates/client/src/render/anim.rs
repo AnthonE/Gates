@@ -36,9 +36,24 @@ use std::time::Duration;
 use bevy::gltf::Gltf;
 use bevy::prelude::*;
 
-/// The clips this game actually asks for. The library ships 46; the rest are
-/// for games that drive, cast spells or hold pistols (`assets/models/
-/// MANIFEST.md` says why they are not trimmed out of the file).
+/// The clips this game actually asks for.
+///
+/// **The rig changed under this enum twice in one day and the enum never had
+/// to move**, which is the payoff for resolving by name. The commissioned
+/// character (`assets/models/stumpy.glb`) arrived with seven clips where the
+/// Quaternius mannequin had 46, so `Sprint` briefly aliased the jog; then
+/// `ci/retarget_anim.py` moved all 46 onto the new skeleton and the alias was
+/// deleted. Neither change touched a variant.
+///
+/// **One alias is left and it is a design choice, not a gap.** `Sleep` plays
+/// the idle: a sleeper stands, because the sim hits it with the standing
+/// capsule, and there is no pose that would be more honest than a person
+/// standing still.
+///
+/// An unmatched name is not a silent fallback — `nodes[slot]` would stay
+/// `AnimationNodeIndex::default()`, that index is the graph ROOT, and playing
+/// the root plays nothing, so the body would stand frozen in its bind pose.
+/// `build` says so loudly and `tests/rig_asset.rs` fails before it can ship.
 ///
 /// Ordering is meaningful only to `ALL`; nothing depends on the discriminants.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -57,19 +72,31 @@ pub enum Clip {
 
 impl Clip {
     /// The name in the glTF. Resolved through `Gltf::named_animations`.
-    fn name(self) -> &'static str {
+    /// Public because the asset gate reads it: `tests/rig_asset.rs` checks
+    /// every name this returns against the shipped file, and a gate that
+    /// re-typed the list would be checking its own copy rather than the
+    /// client's.
+    pub fn name(self) -> &'static str {
         match self {
             Clip::Idle => "Idle_Loop",
             Clip::Walk => "Walk_Loop",
             Clip::Jog => "Jog_Fwd_Loop",
+            // **A real sprint again since 2026-08-17.** It aliased the jog
+            // played 1.35× faster for one afternoon, because the commissioned
+            // rig shipped seven clips and none of them was this;
+            // `ci/retarget_anim.py` moved the mannequin's whole library onto
+            // the new skeleton and the alias is retired. The per-clip playback
+            // rate that alias needed went with it — every clip now runs at the
+            // speed it was authored at, which is the only rate anybody can
+            // defend.
             Clip::Sprint => "Sprint_Loop",
-            // Deliberately not `A_TPose`: a sleeper is a person standing
+            // Deliberately not a T-pose: a sleeper is a person standing
             // still, and the T-pose is a rig artifact.
             Clip::Sleep => "Idle_Loop",
         }
     }
 
-    const ALL: [Clip; 5] = [Clip::Idle, Clip::Walk, Clip::Jog, Clip::Sprint, Clip::Sleep];
+    pub const ALL: [Clip; 5] = [Clip::Idle, Clip::Walk, Clip::Jog, Clip::Sprint, Clip::Sleep];
 
     fn slot(self) -> usize {
         match self {
@@ -100,11 +127,13 @@ pub const ANIM_BLEND_S: f32 = 0.18;
 /// The rig's own height, metres — **measured off the shipped file, not
 /// assumed and not measured at runtime.**
 ///
-/// `mannequin.gltf`'s POSITION accessor bounds are `min.y 0.00046`, `max.y
-/// 1.8292`: the rig stands 1.829 m with its feet on its own origin. The sim's
-/// player is `Capsule3d::new(0.4, 1.0)` — 1.0 of cylinder plus two 0.4 caps,
-/// so **1.8 m** — which means the library is within 2% of our own body and the
-/// correct scale is 1.
+/// `stumpy.glb` measures **1.800 m** with its feet on y = 0, read off the
+/// spawned scene by `cargo run -p client --features render --bin modelview`
+/// (which computes it the way the GPU does — `JointWorld_0 · IBM_0` over the
+/// mesh's bind box — because a skinned mesh is not drawn where its node says
+/// it is). The sim's player is `Capsule3d::new(0.4, 1.0)` — 1.0 of cylinder
+/// plus two 0.4 caps, so **1.8 m** — so the two agree exactly and the correct
+/// scale is 1. The retired mannequin was 1.829 and wanted 0.9843.
 ///
 /// **The first cut measured this at runtime and was wrong in a way worth
 /// recording.** It walked every `Mesh` in `Assets<Mesh>` looking for the
@@ -115,7 +144,7 @@ pub const ANIM_BLEND_S: f32 = 0.18;
 /// re-vendored at a different height, this is a number to re-measure with the
 /// two-line Python in `assets/models/MANIFEST.md`'s history, not a system to
 /// reintroduce.
-pub const ANIM_RIG_H_M: f32 = 1.829;
+pub const ANIM_RIG_H_M: f32 = 1.800;
 /// What the sim collides and shoots with — `bodies.rs`'s retired capsule, and
 /// the height the drawn body must agree with. A renderer that disagrees with
 /// the sim about how tall a player is draws a head that cannot be shot.
@@ -136,6 +165,22 @@ pub struct Rig {
     /// and a clip was renamed — reported once, loudly, rather than silently
     /// falling back to idle forever.
     missing: Vec<&'static str>,
+    /// The graph node for [`ARMS_HOLD_CLIP`]. Not in `nodes`, because that
+    /// array is indexed by `Clip::slot` and the arms are not a body state —
+    /// nothing in `BodyAnim` can ever select this.
+    arms: AnimationNodeIndex,
+    /// Whether the shade step has reached a conclusion — either it took the
+    /// model's material or it refused the file and said why.
+    ///
+    /// **Its own flag, and not `ready()`, because the two can finish on
+    /// different frames.** The graph needs the `Gltf` and nothing else; the
+    /// shades additionally need the `StandardMaterial` sub-asset to be *in*
+    /// `Assets<StandardMaterial>`. Folding them together is a permanent
+    /// failure waiting to happen: `build` returns early once `ready()`, so a
+    /// single frame where the material had not landed yet would leave every
+    /// player in the world wearing the untextured fallback for the whole
+    /// session, with no error anywhere and a body that looks merely drab.
+    shaded: bool,
 }
 
 impl Rig {
@@ -147,6 +192,10 @@ impl Rig {
     fn node(&self, c: Clip) -> AnimationNodeIndex {
         self.nodes[c.slot()]
     }
+    /// The hold pose for the first-person arms.
+    pub fn arms_node(&self) -> AnimationNodeIndex {
+        self.arms
+    }
 }
 
 /// Start the load. A `Startup` system beside `textures::load`, for the same
@@ -157,6 +206,11 @@ pub fn load(
     assets: Res<AssetServer>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    // **A fallback pair, replaced by [`build`] the moment the glTF lands.**
+    // Untextured, because for the frame or two before the asset is in there is
+    // nothing to texture with — and because a resource that does not exist
+    // yet makes Bevy skip every system that asks for it, silently. Two flat
+    // colours that are never seen beat a system that never runs.
     commands.insert_resource(BodyShades {
         awake: materials.add(StandardMaterial {
             base_color: Color::srgb(0.42, 0.36, 0.28),
@@ -164,38 +218,95 @@ pub fn load(
             ..default()
         }),
         sleeping: materials.add(StandardMaterial {
-            // Colder and darker than the waking body, not brighter: a sleeper
-            // is the thing you sneak up on, and making it the most legible
-            // object on the beach would hand the raider more than the wire
-            // does.
             base_color: Color::srgb(0.24, 0.26, 0.30),
             perceptual_roughness: 0.9,
             ..default()
         }),
+        from_gltf: false,
     });
     commands.insert_resource(Rig {
-        gltf: assets.load("models/mannequin.gltf"),
+        gltf: assets.load("models/stumpy.glb"),
         scene: None,
         graph: None,
         nodes: [AnimationNodeIndex::default(); 5],
+        arms: AnimationNodeIndex::default(),
         scale: ANIM_BODY_H_M / ANIM_RIG_H_M,
         missing: Vec::new(),
+        shaded: false,
     });
 }
 
-/// Build the graph once the glTF is in. Runs every frame until it succeeds,
-/// then costs one `ready()` branch.
+/// Build the graph and the shades once the glTF is in. Runs every frame until
+/// **both** have finished, then costs two branches.
 pub fn build(
     mut rig: ResMut<Rig>,
     gltfs: Res<Assets<Gltf>>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut shades: ResMut<BodyShades>,
 ) {
-    if rig.ready() {
+    if rig.ready() && rig.shaded {
         return;
     }
     let Some(gltf) = gltfs.get(&rig.gltf) else {
         return;
     };
+
+    // **The waking shade is now the MODEL'S OWN material, and that is a
+    // reversal.** It used to be a flat brown, because the mannequin's
+    // materials were another game's yellow-and-purple preview colours and
+    // anything was better. The commissioned character carries a baked bark
+    // albedo that is the entire reason it was commissioned, so painting over
+    // it would throw away the asset and leave a brown pill with a face.
+    //
+    // The sleeper still has to be distinguishable — `BodyShades` says why at
+    // length, and it is the one thing here that is load-bearing rather than
+    // decorative — so it is the same material, TINTED. `base_color` multiplies
+    // the base-colour texture in Bevy, so a cold dark factor darkens the bark
+    // without replacing it: still obviously the same character, obviously not
+    // awake.
+    //
+    // **One material only, and the guard is loud.** Repainting every mesh with
+    // `materials[0]` is exactly right for a single-material character and
+    // silently wrong for a two-material one — it would flatten the second onto
+    // the first. A model that grows a second material needs `reshade` to
+    // remember each mesh's own handle instead, so this refuses rather than
+    // guessing, and keeps the flat fallback so the game still draws bodies.
+    //
+    // **Retried until the material is actually readable, not until the `Gltf`
+    // is.** The two are separate assets and the sub-asset can arrive a frame
+    // later; giving up on the first miss is what would strand every body in
+    // the fallback for a session.
+    if !rig.shaded {
+        match gltf.materials.as_slice() {
+            [only] => {
+                if let Some(base) = materials.get(only) {
+                    let mut tinted = base.clone();
+                    tinted.base_color = Color::srgb(0.34, 0.38, 0.46);
+                    tinted.perceptual_roughness = (tinted.perceptual_roughness + 0.1).min(1.0);
+                    shades.awake = only.clone();
+                    shades.sleeping = materials.add(tinted);
+                    shades.from_gltf = true;
+                    rig.shaded = true;
+                }
+            }
+            many => {
+                error!(
+                    "anim: models/stumpy.glb carries {} materials, not 1 — the sleeper \
+                     shade cannot repaint a multi-material body without losing one of \
+                     them, so bodies keep the untextured fallback",
+                    many.len()
+                );
+                // Concluded, not succeeded. Without this the error repeats
+                // every frame for the life of the process, which is a log
+                // nobody can read and a refusal nobody can act on.
+                rig.shaded = true;
+            }
+        }
+    }
+    if rig.ready() {
+        return;
+    }
 
     let mut graph = AnimationGraph::new();
     let root = graph.root;
@@ -207,17 +318,28 @@ pub fn build(
             None => missing.push(clip.name()),
         }
     }
+    // The arms share the body's graph rather than owning a second one: one
+    // graph asset, one handle, and `bind` cannot bind the arms by accident
+    // because it requires a `BodyAnim` ancestor and the arms have none.
+    let mut arms = AnimationNodeIndex::default();
+    match gltf.named_animations.get(ARMS_HOLD_CLIP) {
+        Some(h) => arms = graph.add_clip(h.clone(), 1.0, root),
+        None => missing.push(ARMS_HOLD_CLIP),
+    }
 
     if !missing.is_empty() {
         error!(
-            "anim: {} clip name(s) missing from models/mannequin.gltf: {:?} — \
-             the library was re-vendored and a clip was renamed",
+            "anim: {} clip name(s) missing from models/stumpy.glb: {:?} — \
+             the rig was re-imported and a clip was renamed. `ci/import_char.py \
+             --rename OLD=NEW` is where that is fixed; a missing name draws a \
+             body frozen in its bind pose",
             missing.len(),
             missing
         );
     }
     rig.missing = missing;
     rig.nodes = nodes;
+    rig.arms = arms;
     rig.graph = Some(graphs.add(graph));
     rig.scene = gltf
         .default_scene
@@ -236,6 +358,14 @@ pub struct BodyAnim {
     pub speed: f32,
     /// Last interpolated position, for the difference.
     pub last: Option<Vec3>,
+    /// Where this body is looking, radians from level, positive up. Straight
+    /// off the wire — `bodies::stream` decodes it — and read by [`head_look`].
+    ///
+    /// **The wire has carried this since the first snapshot and nothing ever
+    /// read it**, exactly as it had carried `yaw` before bodies started
+    /// facing where they walk. A body that looks at you is the difference
+    /// between a figure and a person, and it costs no packet.
+    pub pitch: f32,
 }
 
 impl BodyAnim {
@@ -289,10 +419,13 @@ impl BodyAnim {
 
 /// A body whose descendants still need our materials painted onto them.
 ///
-/// **Two things make this necessary and neither is optional.** The library's
-/// own materials are `M_Main` and `M_Joints` — the yellow-and-purple preview
-/// mannequin — so a body spawned untouched arrives in another game's colours.
-/// And `bodies.rs` distinguishes a sleeper from a waking player by SHADE, which
+/// **One thing makes this necessary, and it used to be two.** The retired
+/// mannequin's own materials were `M_Main` and `M_Joints` — a yellow-and-purple
+/// preview rig — so a body spawned untouched arrived in another game's
+/// colours; that half is gone, because the commissioned character's material
+/// IS what we want a waking body to wear (`build` assigns it as `awake`).
+/// What remains is the half that was always load-bearing:
+/// `bodies.rs` distinguishes a sleeper from a waking player by SHADE, which
 /// it calls load-bearing in its own comment: "is that player about to shoot me,
 /// or is nobody home" is the question sleepers create, and a client that draws
 /// both identically makes it unanswerable. A `SceneRoot` has no material of its
@@ -366,6 +499,193 @@ pub fn reshade(
 pub struct BodyShades {
     pub awake: Handle<StandardMaterial>,
     pub sleeping: Handle<StandardMaterial>,
+    /// False while these are [`load`]'s untextured placeholders, true once
+    /// [`build`] has replaced them with the model's own material and its
+    /// tinted copy. Read by nothing yet; it is here so a body drawn brown is
+    /// answerable without a debugger — the two states look different and only
+    /// one of them is a bug.
+    pub from_gltf: bool,
+}
+
+/// How far a head may turn from level before the rest of the look is dropped,
+/// radians. ~52°, against a wire that can carry ~88°.
+///
+/// **A clamp and not a scale**, because the two fail differently: scaling
+/// makes every glance an understatement, and clamping is only wrong at the
+/// extremes — where a head-only look is *already* wrong, since a person
+/// looking at their own feet bends at the chest. The remainder is dropped
+/// rather than distributed, and distributing it across the spine is the
+/// follow-up this constant exists to make obvious.
+pub const ANIM_HEAD_PITCH_MAX: f32 = 0.9;
+
+/// The head bone of one body, and the axis it pitches about.
+///
+/// **The axis is DERIVED from the rig at spawn, never typed.** "Look up" is a
+/// rotation about the body's right, and which local axis that is depends on
+/// how the exporter oriented the neck — this rig's bones are not
+/// axis-aligned, and guessing produced a head that rolled toward its shoulder
+/// instead of nodding. So it is read: at the frame a body is bound, the
+/// entity transforms are still the rig's rest pose, and the parent chain is
+/// walked to express the body's own right vector in the head's parent space.
+/// The retarget one directory over is the same lesson — a rig's axis
+/// convention is a measurement, not a convention you may assume.
+#[derive(Component)]
+pub struct HeadBone {
+    entity: Entity,
+    /// Pitch axis, in the head's PARENT space, so the rotation pre-multiplies.
+    axis: Vec3,
+    /// The delta this system last wrote, so it can be removed before the next
+    /// one is composed.
+    ///
+    /// **Without it the head accelerates into the ground.** The animation
+    /// player rewrites the head's local rotation every frame *for a clip that
+    /// animates the head*, which is every clip this rig has — so composing
+    /// onto whatever is there happens to work, until a clip that leaves the
+    /// head alone arrives and the delta compounds sixty times a second. Sixty
+    /// frames of a 0.9 rad offset is not a subtle bug, but it is one that only
+    /// appears with a future asset, which is the kind worth spending a
+    /// quaternion on now.
+    applied: Quat,
+}
+
+/// Find each body's head bone and work out which way it nods.
+///
+/// Runs on `Added<AnimationPlayer>` like [`bind`] and for the same reason: it
+/// is the one moment the scene's entities exist and nothing has posed them.
+pub fn bind_head(
+    mut commands: Commands,
+    names: Query<(Entity, &Name)>,
+    parents: Query<&ChildOf>,
+    transforms: Query<&Transform>,
+    bodies: Query<Entity, (With<BodyAnim>, Without<HeadBone>)>,
+    added: Query<Entity, Added<AnimationPlayer>>,
+) {
+    for player in &added {
+        let mut at = player;
+        let mut body = None;
+        for _ in 0..16 {
+            if bodies.get(at).is_ok() {
+                body = Some(at);
+                break;
+            }
+            match parents.get(at) {
+                Ok(p) => at = p.0,
+                Err(_) => break,
+            }
+        }
+        let Some(body) = body else { continue };
+
+        // The head, by name, among this body's descendants only — two bodies
+        // are in the world at once and a global search would find somebody
+        // else's.
+        let mut head = None;
+        for (e, name) in &names {
+            if name.as_str() != HEAD_BONE {
+                continue;
+            }
+            let mut up = e;
+            for _ in 0..16 {
+                if up == body {
+                    head = Some(e);
+                    break;
+                }
+                match parents.get(up) {
+                    Ok(p) => up = p.0,
+                    Err(_) => break,
+                }
+            }
+            if head.is_some() {
+                break;
+            }
+        }
+        let Some(head) = head else {
+            error!(
+                "anim: no bone named {HEAD_BONE:?} under a body — remote heads \
+                 will not follow the wire's pitch"
+            );
+            commands.entity(body).insert(HeadBone {
+                entity: Entity::PLACEHOLDER,
+                axis: Vec3::X,
+                applied: Quat::IDENTITY,
+            });
+            continue;
+        };
+
+        // The rest rotation of the head's PARENT, relative to the body root —
+        // walked from local transforms, because global ones have not been
+        // propagated for a scene spawned this frame.
+        let mut rot = Quat::IDENTITY;
+        let mut up = parents.get(head).map(|p| p.0).unwrap_or(head);
+        for _ in 0..16 {
+            if up == body {
+                break;
+            }
+            if let Ok(t) = transforms.get(up) {
+                rot = t.rotation * rot;
+            }
+            match parents.get(up) {
+                Ok(p) => up = p.0,
+                Err(_) => break,
+            }
+        }
+        // The body's right, expressed in that parent's space.
+        let axis = (rot.inverse() * Vec3::X).normalize_or_zero();
+        commands.entity(body).insert(HeadBone {
+            entity: head,
+            axis: if axis == Vec3::ZERO { Vec3::X } else { axis },
+            applied: Quat::IDENTITY,
+        });
+    }
+}
+
+/// The bone that nods. A name, because clips resolve by name for the reasons
+/// this module's header gives at length, and a skeleton's bone names are the
+/// same kind of contract.
+const HEAD_BONE: &str = "Head";
+
+/// The clip the FIRST-PERSON arms hold (`render/viewmodel.rs`).
+///
+/// **Chosen by measurement, and the name is the library's rather than ours.**
+/// A viewmodel needs a pose with the hands up in front of the eye, and the
+/// retargeted library was searched for one by computing where each clip puts
+/// the right hand in view space: nine clips put a hand in frame and this is
+/// the only one that is both a two-handed hold and a LOOP — `Pistol_Aim_Neutral`
+/// is a 0.17 s pose and `Archery_Shot_1` a one-shot. It is called what its
+/// source called it, because renaming a retargeted clip would break the one
+/// property that makes the library legible: these are the mannequin's names.
+pub const ARMS_HOLD_CLIP: &str = "Pistol_Idle_Loop";
+
+/// The half of the mesh a first-person view draws, and the half it hides.
+/// Written by `ci/split_arms.py`; `tests/rig_asset.rs` fails if either goes
+/// missing, because a re-import that forgets the split silently removes the
+/// arms and leaves a body wrapped around the camera.
+pub const ARMS_NODE: &str = "char1_arms";
+pub const BODY_NODE: &str = "char1_body";
+
+/// Point every remote's head where the wire says it is looking.
+///
+/// **Scheduled between the animation and the transform propagation**, which is
+/// the only window where this is a single cheap write: the clip has posed the
+/// skeleton and nothing has turned local transforms into world ones yet, so
+/// overriding one bone costs one quaternion multiply and no re-propagation.
+///
+/// Bevy draws, it does not decide (`RENDER.md` §1): the pitch is a value the
+/// sim already sent, this writes a transform, and nothing reads it back.
+pub fn head_look(mut bodies: Query<(&BodyAnim, &mut HeadBone)>, mut bones: Query<&mut Transform>) {
+    for (anim, mut head) in &mut bodies {
+        if head.entity == Entity::PLACEHOLDER {
+            continue;
+        }
+        let Ok(mut t) = bones.get_mut(head.entity) else {
+            continue;
+        };
+        // Remove last frame's delta before composing this one — see `applied`.
+        let base = head.applied.inverse() * t.rotation;
+        let want = anim.pitch.clamp(-ANIM_HEAD_PITCH_MAX, ANIM_HEAD_PITCH_MAX);
+        let delta = Quat::from_axis_angle(head.axis, want);
+        t.rotation = delta * base;
+        head.applied = delta;
+    }
 }
 
 /// Which body an `AnimationPlayer` belongs to.

@@ -42,6 +42,103 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0chr · The player is a stick-man now — what the seven clips cannot cover *(client lane)*
+
+Landed 2026-08-17: `stumpy.glb` replaces the mannequin as every drawn body.
+It measures **1.800 m with its feet on y = 0**, which is the sim's capsule
+exactly, so `ANIM_RIG_H_M` is 1.8 and the scale is 1. `ci/import_char.py`
+stands the Z-up export up and renames the clips; `ci/ktx_pack.py` takes it
+28.9 → 2.8 MB; `crates/client/tests/rig_asset.rs` gates all of it and four of
+its five checks were watched going red against the raw file.
+
+**It has 53 clips, not 7.** `ci/retarget_anim.py` moved the mannequin's whole
+library onto the new 24-joint skeleton the same day — nine seconds, +1.0 MB,
+no credits. Rotations only (a source bone's translation is that skeleton's
+limb length) plus the hips through the hip-height ratio. `Clip::Sprint` plays
+a real `Sprint_Loop` again.
+
+⚠ **Its first cut put the arms 43° low and only a person looking caught it.**
+`A_TPose` retargeting to a T-pose, the legs, the walk and the spine were all
+correct, so every check that had been run passed; the operator opened the
+bench and said an arm was inside the model. Cause: the two rigs rest in
+different POSES — source a true T, this character an A — and transferring a
+delta from each rig's own rest assumes they do not. Arms 36–43° apart, spine
+and legs under 17°, which is exactly why the failure was limbs-only and
+survived a contact sheet. Fixed by anchoring on an aligned virtual rest.
+**Nothing gates this and nothing can**: it is a per-bone measurement whose
+answer is "does the pose look right".
+
+**Heads follow the wire's pitch since 2026-08-17.** `bodies.rs` read `yaw` and
+never `pitch`, so a remote faced where it walked and stared at the horizon
+forever. `anim::head_look` runs between the animation and the propagation —
+the one window where overriding a bone is a single quaternion — and the pitch
+axis is **derived from the rest pose, not typed**, because this rig's neck is
+not axis-aligned and a typed `Vec3::X` swings the head sideways instead of
+nodding. Clamped to ±0.9 rad; the spine split is the follow-up.
+`crates/client/tests/head_look.rs` gates it and was proven red under a typed
+axis.
+
+What is left:
+
+1. **The clips outrun the states that would play them.** `bodies.rs` knows a
+   remote's position, yaw, pitch and sleeping flag — that is the whole input,
+   so `Death01`, `Jump_Loop`, `Swim_Fwd_Loop` and the crouch pair sit in the
+   file unplayable. Each needs a fact on the wire or derivable from it. That
+   is the next slice and it is a sim/wire question, not an art one.
+
+**First-person arms landed 2026-08-17, and are in a captured game frame.**
+The claim that "hide everything but the arms is not achievable on this asset"
+was wrong: what was missing was not a trick but **something to hide**.
+`ci/split_arms.py` splits the mesh by skin weight into `char1_arms` (8,184
+tris, 26%) and `char1_body`, two nodes sharing one skeleton, one material and
+one set of vertex buffers — they differ only in their index array, so the
+split costs 0.4 MB and no second copy of the mesh. Hiding half is then a
+`Visibility`.
+
+`VIEWMODEL_ARMS` is **derived, not dialled in**: the rig is measured to face
++Z, a Bevy camera looks down −Z, so the arms are yawed 180°, and the offset is
+whatever puts `Pistol_Idle_Loop`'s right hand exactly on `VIEWMODEL_HOLD` —
+chosen by computing where every one of the 53 clips puts that hand in view
+space, and it is the only two-handed hold that LOOPS. Measured in the running
+client: the hand lands at **(0.321, −0.305, −0.522)** against a target of
+(0.32, −0.30, −0.52).
+
+⚠ **It still drew nothing until frustum culling was turned off**, and that is
+the skinned-mesh AABB fact arriving a *third* time in a third disguise: the
+culler tests the BIND box against the mesh NODE's transform, and that node
+hangs under an armature carrying `scale 0.01`, so it was testing a 2 cm blob
+1.5 m below the eye while the GPU skinned the vertices right in front of the
+camera. Everything else was already correct — which is why the diagnostic that
+measures the hand exists and stayed in.
+
+What is left on the arms:
+
+- **The item is not parented to the hand.** It does not need to be — the hand
+  is on the hold point and `animate` moves both with one motion — but
+  parenting is the better design and needs the grip retuned against the arm's
+  frame, which is judged by looking, not derived. `ViewArms::hand` records the
+  bone so that change is one line.
+- **No render layer, so the arms can clip into a wall.** Deliberately not
+  built: a second camera has to duplicate exposure, tonemap and atmosphere,
+  and `CLAUDE.md`'s trap list says that coupled set has exactly one owner.
+  The held item has had the same flaw since it existed.
+- **The hand reads large and the fingers are splayed rather than gripping.**
+  Tuning, and it needs a GPU — `--bin modelview <file> --eye --hide
+  char1_body` previews the same geometry.
+2. **The gather swing is `Sword_Attack`** (operator, 2026-08-17 — the
+   reference game swings one animation at everything). No asset is owed; the
+   blocker is item 1, a fact on the wire.
+3. **No in-game frame has been shot with a body in it.** The bench proves
+   the asset and a capture run proves the client boots and connects, but the
+   six fixed bearings had no bot in frame. The sleeper tint —
+   `anim::build`'s cold copy of the model's own material — has been read and
+   not seen.
+4. **The mannequin stays** (3.2 MB): a retarget is reproducible only while
+   both rigs are in the tree, and its rest pose and bone names do not survive
+   into the output.
+
+---
+
 ## 0dsc · Discord presence is built, detailed and dark *(operator — one act)*
 
 The operator saw the game named in Discord and asked how it knew. Measured:

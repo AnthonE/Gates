@@ -32,6 +32,19 @@ fn wire_yaw_to_radians(q: f32) -> f32 {
     q * (std::f32::consts::TAU / 65536.0)
 }
 
+/// Wire pitch is a `u8` with **128 level and 255 straight up** — the exact
+/// inverse of `look::pitch_u8`, which is the one place the local client
+/// encodes it. Positive is up.
+///
+/// **Quantize both sides or it drifts** (`CLAUDE.md` traps). The wire carries
+/// 255 steps over π, so a head can only point at one of 255 angles and this
+/// says so rather than pretending to a precision the packet does not have —
+/// which is also why the value is interpolated as a float before it gets
+/// here (`interp::RemoteState::pitch`) and not rounded again.
+fn wire_pitch_to_radians(p: f32) -> f32 {
+    (p / 255.0 - 0.5) * std::f32::consts::PI
+}
+
 /// One networked body, keyed by the entity id the wire uses.
 #[derive(Component)]
 pub struct Body(pub u32);
@@ -127,6 +140,7 @@ pub fn stream(
                     t.rotation = facing;
                     // The clip choice, off state the sim already sent.
                     anim.observe(pos, time.delta_secs(), rs.sleeping);
+                    anim.pitch = wire_pitch_to_radians(rs.pitch);
                 }
                 if was_sleeping != rs.sleeping {
                     // The shade lives on the scene's descendants now, so the
@@ -141,6 +155,7 @@ pub fn stream(
             None => {
                 let mut anim = BodyAnim::default();
                 anim.observe(pos, 0.0, rs.sleeping);
+                anim.pitch = wire_pitch_to_radians(rs.pitch);
                 let entity = commands
                     .spawn((
                         super::WorldEntity,

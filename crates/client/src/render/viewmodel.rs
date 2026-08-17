@@ -60,6 +60,7 @@
 //! position delta rather than from a velocity the wire does not carry, and the
 //! swing is a reaction to a fact the server already confirmed.
 
+use bevy::camera::visibility::NoFrustumCulling;
 use bevy::prelude::*;
 
 use super::feed::Feed;
@@ -450,6 +451,241 @@ pub fn spawn_item(
 #[derive(Component)]
 pub struct Fallback;
 
+/// The first-person arms: the player's own character, from the inside.
+///
+/// ## What made this possible, and what nearly made it impossible
+///
+/// A viewmodel needs the arms and **nothing else**, and the obvious way to get
+/// that does not work on this character: the body is one mesh with one
+/// material, so `Visibility` (per entity) has no limb to reach, and the only
+/// lever that does — collapsing a joint to zero scale — inherits down the
+/// hierarchy, so hiding the torso hides the arms hanging off it. That was
+/// reported as "not reachable on this asset", and the report was wrong in a
+/// useful way: what was missing was not a trick but **something to hide**.
+/// `ci/split_arms.py` makes one, splitting the mesh by skin weight into
+/// [`anim::ARMS_NODE`] and [`anim::BODY_NODE`] — two nodes sharing one
+/// skeleton, one material and one set of vertex buffers, differing only in
+/// their index array. Hiding half is then a `Visibility`.
+///
+/// ## The placement is derived, not dialled in
+///
+/// [`VIEWMODEL_ARMS`] is arithmetic: the rig is measured to face **+Z**
+/// (`headfront` sits +0.18 m in Z from `Head`, and the toes lead the hips),
+/// a Bevy camera looks down `-Z`, so the arms are yawed 180°; then the offset
+/// is whatever puts the hold clip's right hand exactly on [`VIEWMODEL_HOLD`],
+/// where the item already sits. That is what lets the item parent to the HAND
+/// while every constant in this file keeps its meaning — the bob, the sway and
+/// the swing still move the viewmodel, they just move an arm that is holding
+/// the thing instead of a thing floating beside it.
+///
+/// ⚠ **Derived is not the same as judged.** The numbers put the hand on the
+/// hold point; whether an arm entering frame from that angle *reads* is a
+/// question for a person with a GPU, and this box renders one frame every few
+/// minutes. `--bin modelview <file> --eye --hide char1_body` previews the same
+/// geometry.
+#[derive(Component)]
+pub struct ViewArms {
+    /// The `RightHand` bone, once the scene has spawned it. The held item is
+    /// re-parented onto this.
+    hand: Option<Entity>,
+    /// Whether the body half has been hidden and the player bound.
+    dressed: bool,
+}
+
+/// Where the arms rig's own origin — the character's FEET — sits in view
+/// space, and the yaw that turns it to face the way the camera looks.
+///
+/// **Derived** (see [`ViewArms`]): the rig's feet start `EYE_HEIGHT` below the
+/// eye, and the offset added to that is `VIEWMODEL_HOLD` minus where
+/// [`anim::ARMS_HOLD_CLIP`] puts the right hand in view space — measured at
+/// `(0.082, -0.423, -0.279)`. So the hand lands on the hold point by
+/// construction rather than by taste.
+pub const VIEWMODEL_ARMS: Vec3 = Vec3::new(0.238, -1.477, -0.241);
+
+/// Spawn the arms once the rig's glTF is in.
+///
+/// A child of the camera, so the arms follow the view the way a viewmodel
+/// must. **Not** a second instance of the world body — that one is drawn at
+/// the player's own position by `bodies::stream` for everybody else, and the
+/// local player's is never drawn at all.
+pub fn spawn_arms(
+    mut commands: Commands,
+    mut done: Local<bool>,
+    rig: Res<super::anim::Rig>,
+    cam: Query<Entity, With<EyeCam>>,
+) {
+    if *done || !rig.ready() {
+        return;
+    }
+    let (Ok(cam), Some(scene)) = (cam.single(), rig.scene.clone()) else {
+        return;
+    };
+    *done = true;
+    commands.entity(cam).with_children(|c| {
+        c.spawn((
+            ViewArms {
+                hand: None,
+                dressed: false,
+            },
+            SceneRoot(scene),
+            Transform::from_translation(VIEWMODEL_ARMS)
+                .with_rotation(Quat::from_rotation_y(std::f32::consts::PI))
+                .with_scale(Vec3::splat(rig.scale)),
+            Visibility::Inherited,
+        ));
+    });
+}
+
+/// Hide the body half, find the hand, start the hold clip, and move the held
+/// item into the hand.
+///
+/// Runs until it has done all of that once — the scene spawns asynchronously,
+/// so a one-shot pass at spawn time would find an empty entity and silently
+/// leave a whole body wrapped around the camera.
+/// Nine parameters, which clippy counts. A `SystemParam` struct would exist
+/// only to satisfy the count — every one of these is a distinct thing the
+/// dressing genuinely reads, and it runs once per session.
+#[allow(clippy::too_many_arguments)]
+pub fn dress_arms(
+    mut commands: Commands,
+    rig: Res<super::anim::Rig>,
+    mut arms: Query<(Entity, &mut ViewArms)>,
+    children: Query<&Children>,
+    names: Query<&Name>,
+    mut vis: Query<&mut Visibility>,
+    players: Query<Entity, With<AnimationPlayer>>,
+    meshes: Query<(), With<Mesh3d>>,
+    item: Query<Entity, With<HeldItem>>,
+) {
+    let Ok((root, mut arms)) = arms.single_mut() else {
+        return;
+    };
+    if arms.dressed {
+        return;
+    }
+    // Bounded walk of the spawned scene — `anim::reshade`'s cap and its reason.
+    let mut stack = vec![root];
+    let mut seen = 0usize;
+    let (mut body_half, mut hand, mut player) = (None, None, None);
+    let mut drawn = Vec::new();
+    while let Some(e) = stack.pop() {
+        seen += 1;
+        if seen > 512 {
+            break;
+        }
+        if meshes.get(e).is_ok() {
+            drawn.push(e);
+        }
+        if let Ok(n) = names.get(e) {
+            match n.as_str() {
+                super::anim::BODY_NODE => body_half = Some(e),
+                "RightHand" => hand = Some(e),
+                _ => {}
+            }
+        }
+        if players.get(e).is_ok() {
+            player = Some(e);
+        }
+        if let Ok(kids) = children.get(e) {
+            stack.extend(kids.iter());
+        }
+    }
+    let (Some(body_half), Some(hand), Some(player)) = (body_half, hand, player) else {
+        return;
+    };
+
+    // **Frustum culling has to be turned off, and finding out why cost a
+    // capture.** Everything below was already right — the hold clip played,
+    // and a diagnostic measured the hand landing at (0.322, -0.305, -0.522)
+    // against a target of (0.32, -0.30, -0.52) — and the arms still did not
+    // appear in a single frame. The culler was throwing them away: a skinned
+    // mesh's `Aabb` is its BIND box in mesh space, tested against the mesh
+    // NODE's global transform, and that node hangs under an armature carrying
+    // `scale 0.01`. So the box the culler tests is a 2 cm blob sitting 1.5 m
+    // below the eye, comfortably outside the frustum, while the vertices the
+    // GPU actually skins are right in front of the camera.
+    //
+    // This is the same fact that made the bench report a 1.8 m character as
+    // 18 mm — **a skinned mesh is not where its node says it is** — arriving a
+    // third time, in a third disguise. It is safe to disable here and only
+    // here: the arms are a handful of triangles that are in view by
+    // construction, so there is nothing for a culler to save.
+    for e in drawn {
+        commands.entity(e).insert(NoFrustumCulling);
+    }
+
+    // The half that is not arms. `Visibility` and not scale: a skinned mesh's
+    // own node transform is ignored by the spec, so scaling it does nothing at
+    // all — which is exactly the way this failed first time in the bench.
+    if let Ok(mut v) = vis.get_mut(body_half) {
+        *v = Visibility::Hidden;
+    }
+
+    if let Some(graph) = rig.graph.clone() {
+        let mut transitions = AnimationTransitions::new();
+        let mut p = AnimationPlayer::default();
+        transitions
+            .play(&mut p, rig.arms_node(), std::time::Duration::ZERO)
+            .repeat();
+        commands
+            .entity(player)
+            .insert((AnimationGraphHandle(graph), transitions, p));
+    }
+
+    // **The item is deliberately NOT re-parented onto the hand yet**, and the
+    // reason is honesty about what can be checked here. `VIEWMODEL_ARMS` puts
+    // the hand ON the hold point, so the item already appears in the hand and
+    // `animate` moves both with one motion — but a child of the hand needs its
+    // grip offset and tilt re-derived against the arm's own frame, and a grip
+    // is judged by looking at it, not computed. The hand is recorded so that
+    // change is one line when somebody with a GPU can see the result.
+    let _ = &item;
+
+    arms.hand = Some(hand);
+    arms.dressed = true;
+    info!("viewmodel: arms up, body half hidden");
+}
+
+/// Say where the hand actually ended up, once, in VIEW space.
+///
+/// **A diagnostic that earns its place rather than a debug print left in.**
+/// [`VIEWMODEL_ARMS`] is derived arithmetic — it should put the hand on
+/// [`VIEWMODEL_HOLD`] — and the only way to know whether the derivation
+/// survived contact with the scene graph is to measure the result in the
+/// running client. It fires once, ~2 s in, costs nothing after, and it is what
+/// turns "the arms are not in frame" from a guess into a number. The frame
+/// delay is not decoration: the scene spawns over several frames and the
+/// animation has to pose it before a bone is anywhere in particular.
+pub fn arms_report(
+    mut at: Local<u32>,
+    arms: Query<&ViewArms>,
+    cam: Query<&GlobalTransform, With<EyeCam>>,
+    xf: Query<&GlobalTransform>,
+) {
+    if *at > 45 {
+        return;
+    }
+    *at += 1;
+    if *at != 45 {
+        return;
+    }
+    let (Ok(arms), Ok(cam)) = (arms.single(), cam.single()) else {
+        warn!("viewmodel: no arms entity or no camera to measure against");
+        return;
+    };
+    let Some(hand) = arms.hand else {
+        warn!("viewmodel: the arms never found a hand");
+        return;
+    };
+    let Ok(h) = xf.get(hand) else { return };
+    let local = cam.affine().inverse().transform_point3(h.translation());
+    info!(
+        "viewmodel: the hand sits at {:.3}, {:.3}, {:.3} in view space \
+         (VIEWMODEL_HOLD is {:.2}, {:.2}, {:.2})",
+        local.x, local.y, local.z, VIEWMODEL_HOLD.x, VIEWMODEL_HOLD.y, VIEWMODEL_HOLD.z
+    );
+}
+
 /// Put the selected item's model in the hand.
 ///
 /// **The three states are deliberately different pictures**, because
@@ -572,7 +808,11 @@ pub fn animate(
     // out of every probe frame.
     net: Option<NonSend<Net>>,
     mut m: ResMut<Motion>,
-    mut q: Query<&mut Transform, With<HeldItem>>,
+    // `Without<ViewArms>` is not decoration: two `&mut Transform` queries in
+    // one system have to be PROVABLY disjoint, and two different `With`
+    // markers do not prove it — an entity could carry both.
+    mut q: Query<&mut Transform, (With<HeldItem>, Without<ViewArms>)>,
+    mut arms: Query<&mut Transform, With<ViewArms>>,
 ) {
     let Ok(mut t) = q.single_mut() else { return };
     let dt = time.delta_secs();
@@ -670,6 +910,25 @@ pub fn animate(
         0.0,
     );
     t.rotation = motion * rest;
+
+    // ── The arms ride the same motion ────────────────────────────────────
+    //
+    // **Translation only, and the omission is the point.** The item rotates
+    // about its own origin, which is in the hand; the arms rotate about the
+    // character's FEET, a metre and a half away, so the same sway applied to
+    // both would swing the hands out of frame while the item stayed put. So
+    // the arms take the bob and the swing's push — which are displacements of
+    // the whole body and read correctly from either pivot — and not the sway
+    // or the swing's pitch.
+    //
+    // The two therefore travel together, which is what keeps the hand on the
+    // item without the item being parented to the hand. Parenting it is the
+    // better design and the follow-up: it needs the grip retuned against the
+    // arm, and a grip is judged by looking rather than derived.
+    if let Ok(mut a) = arms.single_mut() {
+        a.translation =
+            VIEWMODEL_ARMS + bob + Vec3::new(0.0, arc * 0.05, arc * VIEWMODEL_SWING_PUSH);
+    }
 }
 
 /// Forget everything the last session put in [`Motion`] — `map::forget`'s
