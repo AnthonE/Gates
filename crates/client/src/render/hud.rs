@@ -1537,25 +1537,55 @@ pub fn readout(
 ///
 /// `err` is the one that would have caught the accumulation bug: it belongs
 /// at zero except for the moment after a correction.
-pub fn net_line(net: NonSend<super::Net>, mut line: Query<&mut Text, With<NetLine>>) {
+/// **Sampled at 4 Hz, and the error is a PEAK rather than an instant.**
+///
+/// Two reasons, and they point the same way. `format!` allocates, and
+/// `CLAUDE.md` holds the client to the sim thread's no-per-frame-allocation
+/// discipline — a string built 60 to 144 times a second to be compared
+/// against itself is exactly the shape that rule is about. And a number
+/// redrawn every frame is unreadable anyway; the HUD already runs on a
+/// 250 ms cadence (`DECISIONS.md`, client render cosmetics) for that reason.
+///
+/// The peak is what makes the slow cadence safe. A correction decays inside
+/// ~200 ms, so an instantaneous sample at 4 Hz would usually catch a healthy
+/// zero and print it right through the event worth seeing. Holding the
+/// maximum since the last print means a transient cannot fall between two
+/// samples — which matters, because the defect this row exists to expose is
+/// exactly one that shows up as an offset the eye can see and the sample rate
+/// cannot.
+pub fn net_line(
+    net: NonSend<super::Net>,
+    time: Res<Time>,
+    mut since: Local<f32>,
+    mut peak: Local<f32>,
+    mut line: Query<&mut Text, With<NetLine>>,
+) {
+    let p = &net.session.core.predict;
+    *peak = peak.max(p.error_magnitude());
+    *since += time.delta_secs();
+    if *since < NET_LINE_PERIOD_S {
+        return;
+    }
+    *since = 0.0;
     let Ok(mut text) = line.single_mut() else {
         return;
     };
-    let p = &net.session.core.predict;
     let total = p.confirmations + p.mispredictions;
     if total == 0 {
         return;
     }
-    let want = format!(
+    text.0 = format!(
         "net {:.2}% ok · {} miss · err {:.2} m",
         100.0 * p.confirmations as f64 / total as f64,
         p.mispredictions,
-        p.error_magnitude(),
+        *peak,
     );
-    if text.0 != want {
-        text.0 = want;
-    }
+    *peak = 0.0;
 }
+
+/// How often [`net_line`] rebuilds its string. The HUD's own cadence
+/// (`DECISIONS.md`, client render cosmetics: "HUD 250 ms").
+const NET_LINE_PERIOD_S: f32 = 0.25;
 
 /// The centre prompt and the compass.
 // Eight sources and each is a distinct input: the two picks, the swing,

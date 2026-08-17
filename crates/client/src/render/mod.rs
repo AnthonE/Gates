@@ -711,7 +711,17 @@ impl Plugin for GatesRenderPlugin {
                     settings::apply_window,
                     settings::save_on_change,
                 ),
-            );
+            )
+            // **The frame cap, and it must be `Last` and unconditional.**
+            // `Last` because a cap has to be the final thing a frame does —
+            // registered in `Update` it would sleep before the render it is
+            // pacing. Unconditional because the screen that wasted the most
+            // was the MENU: Bevy's focused update mode is `Continuous`, so
+            // with vsync off a still image was redrawn as fast as the
+            // hardware allowed, and a cap that only ran in-world would have
+            // left exactly that case uncapped.
+            .init_resource::<settings::FrameDeadline>()
+            .add_systems(Last, settings::limit_frames);
 
         // One hover handler for every screen that has buttons on it.
         app.add_systems(Update, ui::hover);

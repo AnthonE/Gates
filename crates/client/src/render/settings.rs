@@ -82,6 +82,8 @@ pub struct Settings {
     pub sensitivity: f32,
     pub invert_look: bool,
     pub vsync: bool,
+    /// Frames-per-second ceiling; 0 is uncapped. See [`MAX_FPS_LADDER`].
+    pub max_fps: u16,
     pub fullscreen: bool,
     /// The audio buses, 0..1. The reference's `audio.master`, `audio.game`,
     /// `audio.ambience` and `audio.musicvolume` — `crate::sound::Mix` is what
@@ -118,6 +120,10 @@ impl Default for Settings {
             sensitivity: 1.0,
             invert_look: false,
             vsync: true,
+            // **60** (operator, 2026-08-17: *"cant we cap thigns at like 60 fps?"*).
+            // Raisable on this screen; see MAX_FPS_LADDER for why 60 is the
+            // default rather than the ceiling.
+            max_fps: 60,
             // **On** (operator, 2026-08-13). A survival game opens filling
             // the screen; the windowed default was Bevy's, never a choice.
             // Borderless rather than exclusive, which is what `apply_window`
@@ -163,6 +169,7 @@ pub enum Knob {
     DiscordPresence,
     DiscordShareServer,
     Vsync,
+    MaxFps,
     Fullscreen,
     Fov,
     Sensitivity,
@@ -183,6 +190,7 @@ impl Settings {
     pub fn adjust(&mut self, knob: Knob, delta: i32) {
         match knob {
             Knob::Vsync => self.vsync = !self.vsync,
+            Knob::MaxFps => self.max_fps = step_fps(self.max_fps, delta),
             Knob::Fullscreen => self.fullscreen = !self.fullscreen,
             // **Turning presence off takes sharing with it**, and that is the
             // behaviour rather than a note beside it. A latent "share my
@@ -229,6 +237,13 @@ impl Settings {
     fn value(&self, knob: Knob) -> String {
         match knob {
             Knob::Vsync => on_off(self.vsync),
+            Knob::MaxFps => {
+                if self.max_fps == 0 {
+                    "UNCAPPED".to_string()
+                } else {
+                    format!("{}", self.max_fps)
+                }
+            }
             Knob::Fullscreen => on_off(self.fullscreen),
             Knob::DiscordPresence => on_off(self.discord_presence),
             Knob::DiscordShareServer => on_off(self.discord_share_server),
@@ -251,6 +266,7 @@ impl Settings {
             sensitivity: self.sensitivity,
             invert_look: self.invert_look,
             vsync: self.vsync,
+            max_fps: self.max_fps,
             fullscreen: self.fullscreen,
             vol_master: self.vol_master,
             vol_game: self.vol_game,
@@ -274,6 +290,19 @@ impl Settings {
             sensitivity: step(p.sensitivity, SENS_STEP).clamp(SENS_MIN, SENS_MAX),
             invert_look: p.invert_look,
             vsync: p.vsync,
+            // **Floored, not snapped to a rung.** The bounds live beside the
+            // stepper like every other row's, but the rule differs on purpose:
+            // a value off the ladder is honoured as long as it is a rate a
+            // person could mean, because unlike fov or a volume there is a
+            // legitimate reason to hand-edit this one — a 165 Hz panel is not
+            // on any ladder anybody would ship. What is refused is the range
+            // below the floor, where a typo'd `max_fps = 1` would present as
+            // the game having hung.
+            max_fps: if p.max_fps == 0 {
+                0
+            } else {
+                p.max_fps.max(MIN_FPS_CAP)
+            },
             fullscreen: p.fullscreen,
             vol_master: step(p.vol_master, VOL_STEP).clamp(0.0, 1.0),
             vol_game: step(p.vol_game, VOL_STEP).clamp(0.0, 1.0),
@@ -380,6 +409,52 @@ pub fn save_on_change(
     }
 }
 
+/// The frame-rate ceilings this screen offers, ascending, with **0 last and
+/// meaning uncapped**.
+///
+/// A ladder rather than a `+1 fps` stepper: the values a player actually wants
+/// are their monitor's refresh rate or a clean divisor of it, and 210 clicks
+/// to get from 30 to 240 is not a setting, it is a punishment. The rungs are
+/// the common panel rates plus the two halves that matter (30 for a laptop on
+/// battery, 120 for a 240 Hz panel at half).
+///
+/// **Uncapped is on the ladder and is not the default** (operator,
+/// 2026-08-17). It has to be reachable — a player who bought a 360 Hz panel
+/// did so on purpose, and vsync alone is the old behaviour — but it is the end
+/// of the ladder rather than the start, because the thing it costs is a core
+/// and a GPU spinning to redraw a menu that is not moving.
+pub const MAX_FPS_LADDER: [u16; 6] = [30, 60, 120, 144, 240, 0];
+
+/// The lowest cap the loader will honour from a file, frames per second.
+///
+/// It is the ladder's own bottom rung, so the screen cannot reach below it
+/// either. Under about this the client stops reading as slow and starts
+/// reading as hung — a hand-edited `max_fps = 1` would present as a bug
+/// report about the game freezing, which is an expensive way to learn that a
+/// setting was honoured too literally.
+pub const MIN_FPS_CAP: u16 = MAX_FPS_LADDER[0];
+
+/// One click of the FPS row: step along [`MAX_FPS_LADDER`], clamped at both
+/// ends rather than wrapping. Wrapping would put "uncapped" one click below
+/// 30, which is the single most surprising place to land by accident.
+fn step_fps(v: u16, delta: i32) -> u16 {
+    let at = MAX_FPS_LADDER
+        .iter()
+        .position(|&f| f == v)
+        // A value the ladder does not carry (a hand-edited settings file, or
+        // a rung removed by a later build) steps from the nearest rung at or
+        // above it rather than resetting — the file said something and it is
+        // not this function's place to discard it.
+        .unwrap_or_else(|| {
+            MAX_FPS_LADDER
+                .iter()
+                .position(|&f| f >= v && f != 0)
+                .unwrap_or(MAX_FPS_LADDER.len() - 1)
+        });
+    let next = (at as i32 + delta).clamp(0, MAX_FPS_LADDER.len() as i32 - 1);
+    MAX_FPS_LADDER[next as usize]
+}
+
 /// One click of a volume slider, rounded onto the step and clamped to 0..1.
 fn step_vol(v: f32, delta: i32) -> f32 {
     let steps = ((v + delta as f32 * VOL_STEP) / VOL_STEP).round();
@@ -435,6 +510,7 @@ fn rows(cat: usize) -> Vec<Row> {
         ],
         "SCREEN" => vec![
             Row::Toggle("VSYNC", Knob::Vsync),
+            Row::Number("FPS LIMIT", Knob::MaxFps, "frames per second"),
             Row::Toggle("FULLSCREEN", Knob::Fullscreen),
         ],
         "GRAPHICS" => vec![
@@ -878,6 +954,62 @@ pub fn apply_window(settings: Res<Settings>, mut window: Query<&mut Window, With
     }
 }
 
+/// The frame deadline the limiter is pacing toward. `None` while uncapped.
+///
+/// A resource rather than a `Local` so a test can read it and so the reset on
+/// a settings change has somewhere to live.
+#[derive(Resource, Default)]
+pub struct FrameDeadline(pub Option<std::time::Instant>);
+
+/// Hold the render loop to `Settings::max_fps`.
+///
+/// **Why this exists at all.** Bevy's focused update mode is
+/// `UpdateMode::Continuous` — "over and over, as fast as it possibly can" —
+/// and `WinitSettings::default()` is `game()`, so nothing but vsync stood
+/// between this loop and the hardware. Vsync is a row on this very screen, so
+/// turning it off uncapped the client, and a menu screen with one still image
+/// on it would spin a core and a GPU at four figures. (The *unfocused* mode
+/// was already `reactive_low_power(1/60)`, so a backgrounded client was never
+/// the waste; a focused one looking at a menu was.)
+///
+/// **Deadline-based, not sleep-a-fixed-amount**, which is the same shape the
+/// shard's tick loop uses (`server/src/net.rs`): advancing from the target
+/// rather than from "now" keeps the average rate honest instead of drifting
+/// slower by however much each sleep overshoots. `std::thread::sleep` is
+/// granular to about a millisecond here, so a 60 cap measures 58-60 rather
+/// than exactly 60 — and the alternative, spinning down the last millisecond,
+/// burns the core this system exists to give back.
+///
+/// **It re-bases rather than catching up.** After a stall the deadline is
+/// behind by more than a frame, and sprinting through uncapped frames to
+/// repay that debt is precisely the behaviour a cap is for preventing. The
+/// lost frames stay lost.
+///
+/// Runs in `Last` because a cap has to be the final thing a frame does; put
+/// it earlier and it sleeps *before* the render it is supposed to be pacing.
+pub fn limit_frames(settings: Res<Settings>, mut deadline: ResMut<FrameDeadline>) {
+    use std::time::{Duration, Instant};
+    if settings.max_fps == 0 {
+        // Uncapped: drop the deadline so re-enabling the cap starts from now
+        // rather than from a stale instant, which would otherwise spend one
+        // frame thinking it was hours behind.
+        deadline.0 = None;
+        return;
+    }
+    let frame = Duration::from_nanos(1_000_000_000 / settings.max_fps as u64);
+    let now = Instant::now();
+    let target = deadline.0.unwrap_or(now);
+    if now < target {
+        std::thread::sleep(target - now);
+    }
+    let mut next = target + frame;
+    let after = Instant::now();
+    if next < after {
+        next = after;
+    }
+    deadline.0 = Some(next);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1040,6 +1172,79 @@ mod tests {
         assert_eq!(s.vol_master, 1.0);
         assert_eq!(s.vol_game, 0.0);
         assert_eq!(s.value(Knob::VolAmbience), "40%");
+    }
+
+    /// The ladder clamps at both ends rather than wrapping, and UNCAPPED is
+    /// only ever one click from the top rung.
+    ///
+    /// Wrapping is the tempting implementation and it is the wrong one here:
+    /// it puts "uncapped" one click below 30, so a player easing the cap down
+    /// on a laptop lands on the single setting that spins the fan hardest.
+    #[test]
+    fn the_fps_ladder_clamps_and_hides_uncapped_at_the_top() {
+        assert_eq!(step_fps(30, -1), 30, "the bottom rung does not wrap");
+        assert_eq!(step_fps(30, 1), 60);
+        assert_eq!(step_fps(60, -1), 30);
+        assert_eq!(step_fps(240, 1), 0, "uncapped is past the top rung");
+        assert_eq!(step_fps(0, 1), 0, "and it is the end of the ladder");
+        assert_eq!(step_fps(0, -1), 240, "stepping back off uncapped is a rate");
+        // A rate no rung carries — a hand-edited file, or a rung a later
+        // build dropped — steps from the nearest rung at or above it rather
+        // than being discarded.
+        assert_eq!(step_fps(144, 0), 144);
+        assert_eq!(
+            step_fps(100, -1),
+            60,
+            "an off-ladder rate still steps sanely"
+        );
+    }
+
+    /// A file may set a rate the ladder does not carry — a 165 Hz panel is on
+    /// nobody's ladder — but not one that reads as a hang.
+    #[test]
+    fn a_hand_edited_cap_is_honoured_unless_it_looks_like_a_freeze() {
+        let odd = Persisted {
+            max_fps: 165,
+            ..Settings::default().persisted()
+        };
+        assert_eq!(
+            Settings::from_persisted(odd).max_fps,
+            165,
+            "an off-ladder rate a real panel runs at must survive the loader"
+        );
+        let silly = Persisted {
+            max_fps: 1,
+            ..Settings::default().persisted()
+        };
+        assert_eq!(
+            Settings::from_persisted(silly).max_fps,
+            MIN_FPS_CAP,
+            "one frame a second is indistinguishable from a hung client"
+        );
+        let off = Persisted {
+            max_fps: 0,
+            ..Settings::default().persisted()
+        };
+        assert_eq!(
+            Settings::from_persisted(off).max_fps,
+            0,
+            "0 is uncapped, not a rate to be floored"
+        );
+    }
+
+    /// The default is the operator's spoken 60, and it is ON the ladder — a
+    /// default off its own ladder would mean the first click of `-` jumped
+    /// somewhere unrelated.
+    #[test]
+    fn the_default_cap_is_sixty_and_is_a_rung() {
+        assert_eq!(Settings::default().max_fps, 60);
+        assert!(MAX_FPS_LADDER.contains(&Settings::default().max_fps));
+        assert_eq!(Settings::default().value(Knob::MaxFps), "60");
+        let uncapped = Settings {
+            max_fps: 0,
+            ..Settings::default()
+        };
+        assert_eq!(uncapped.value(Knob::MaxFps), "UNCAPPED");
     }
 
     #[test]

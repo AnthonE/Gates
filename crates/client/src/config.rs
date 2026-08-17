@@ -59,6 +59,16 @@ pub struct Persisted {
     pub sensitivity: f32,
     pub invert_look: bool,
     pub vsync: bool,
+    /// Frames per second ceiling; **0 means uncapped**, and then vsync is the
+    /// only thing holding the loop down.
+    ///
+    /// Bevy's focused update mode is `Continuous` — as fast as it possibly
+    /// can — so with vsync off there was nothing between the render loop and
+    /// the hardware. A menu with nothing in it would spin a core and a GPU at
+    /// four figures to draw the same still frame. (Its *unfocused* mode is
+    /// already `reactive_low_power(1/60)`, so a backgrounded client was never
+    /// the problem; a focused one on a menu was.)
+    pub max_fps: u16,
     pub fullscreen: bool,
     pub vol_master: f32,
     pub vol_game: f32,
@@ -138,6 +148,7 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
             "sensitivity" => num(&mut v.sensitivity, value),
             "invert_look" => flag(&mut v.invert_look, value),
             "vsync" => flag(&mut v.vsync, value),
+            "max_fps" => count(&mut v.max_fps, value),
             "fullscreen" => flag(&mut v.fullscreen, value),
             "vol_master" => num(&mut v.vol_master, value),
             "vol_game" => num(&mut v.vol_game, value),
@@ -197,6 +208,14 @@ fn flag(slot: &mut bool, value: &str) {
     }
 }
 
+/// A whole non-negative count. Out-of-range or non-numeric keeps the default
+/// rather than guessing — `num`'s posture for a field that is not a float.
+fn count(slot: &mut u16, value: &str) {
+    if let Ok(n) = value.parse::<u16>() {
+        *slot = n;
+    }
+}
+
 /// Is this something a future build could plausibly have written as a key?
 /// ASCII word characters only — the preserve policy is for another version's
 /// knobs, not for arbitrary bytes to ride the file forever.
@@ -218,6 +237,7 @@ pub fn serialize(v: &Persisted, version: u32, favourites: &[String], unknown: &[
     s.push_str(&format!("sensitivity = {}\n", v.sensitivity));
     s.push_str(&format!("invert_look = {}\n", v.invert_look));
     s.push_str(&format!("vsync = {}\n", v.vsync));
+    s.push_str(&format!("max_fps = {}\n", v.max_fps));
     s.push_str(&format!("fullscreen = {}\n", v.fullscreen));
     s.push_str(&format!("vol_master = {}\n", v.vol_master));
     s.push_str(&format!("vol_game = {}\n", v.vol_game));
@@ -324,6 +344,7 @@ mod tests {
             sensitivity: 1.0,
             invert_look: false,
             vsync: true,
+            max_fps: 60,
             fullscreen: false,
             vol_master: 1.0,
             vol_game: 1.0,
@@ -340,6 +361,7 @@ mod tests {
             sensitivity: 0.55,
             invert_look: true,
             vsync: false,
+            max_fps: 0,
             fullscreen: true,
             vol_master: 0.7,
             vol_game: 0.3,
