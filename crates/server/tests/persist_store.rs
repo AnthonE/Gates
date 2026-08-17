@@ -562,7 +562,8 @@ fn one_corrupt_record_costs_one_player_and_boots() {
     raw[second] ^= 0xff;
     std::fs::write(&path, &raw).expect("write");
 
-    let (saves, found) = store::open(&path, SEED, CONTENT, &gc()).expect("a torn record must still boot");
+    let (saves, found) =
+        store::open(&path, SEED, CONTENT, &gc()).expect("a torn record must still boot");
     assert_eq!(found.corrupt, 1, "the torn record was not counted");
     assert_eq!(found.live, 1, "the intact record was lost with it");
     assert!(

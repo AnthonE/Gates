@@ -594,7 +594,11 @@ fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
         c.on_stream(&forged).is_err(),
         "why == 3 names no BAG_GONE_* and must be refused, not applied"
     );
-    assert_eq!(c.event_errors, errors_before + 1, "the drop must be counted");
+    assert_eq!(
+        c.event_errors,
+        errors_before + 1,
+        "the drop must be counted"
+    );
     assert_eq!(c.bags.entries().len(), 1, "and the bag must survive it");
 
     // The consume refusal: reason 9 (0b1001) — inside the 4-bit width,
@@ -616,8 +620,16 @@ fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
         c.on_stream(&forged).is_err(),
         "reason 9 names no REFUSE_C_* and must be refused, not toasted"
     );
-    assert_eq!(c.event_errors, errors_before + 1, "the drop must be counted");
-    assert_eq!(c.pop_consume_refusal(), None, "and nothing may reach the ring");
+    assert_eq!(
+        c.event_errors,
+        errors_before + 1,
+        "the drop must be counted"
+    );
+    assert_eq!(
+        c.pop_consume_refusal(),
+        None,
+        "and nothing may reach the ring"
+    );
 }
 
 /// The struct-hit readout, including the one field the wire does not

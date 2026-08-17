@@ -1020,11 +1020,8 @@ mod tests {
             .map(|i| format!("item.x{i}:1"))
             .collect();
         parts.push("item.tail:not_a_number".into());
-        let err = parse_shard_toml(&format!(
-            "{base}dev_spawn_kit = \"{}\"\n",
-            parts.join(", ")
-        ))
-        .expect_err("an over-cap kit must refuse the boot");
+        let err = parse_shard_toml(&format!("{base}dev_spawn_kit = \"{}\"\n", parts.join(", ")))
+            .expect_err("an over-cap kit must refuse the boot");
         assert!(
             err.contains(&format!("{}-slot kit", sim_core::limits::MAX_SPAWN_KIT)),
             "the refusal must name the cap, not the tail it never read: {err}"
@@ -1040,11 +1037,8 @@ mod tests {
         let full: Vec<String> = (0..sim_core::limits::MAX_SPAWN_KIT)
             .map(|i| format!("item.x{i}:1"))
             .collect();
-        let ok = parse_shard_toml(&format!(
-            "{base}dev_spawn_kit = \"{}\"\n",
-            full.join(", ")
-        ))
-        .expect("a kit that exactly fills the slots must parse");
+        let ok = parse_shard_toml(&format!("{base}dev_spawn_kit = \"{}\"\n", full.join(", ")))
+            .expect("a kit that exactly fills the slots must parse");
         assert_eq!(
             ok.dev_spawn_kit.map(|k| k.len()),
             Some(sim_core::limits::MAX_SPAWN_KIT)

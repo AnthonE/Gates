@@ -1009,11 +1009,7 @@ mod tests {
         deploys.push(rec_at(500, 400, 0));
         let own = [anchor(500, 400, true)];
         let half = BUILD_CELL_M * 0.5;
-        let (px, py) = world_to_map(
-            500.0 * BUILD_CELL_M + half,
-            400.0 * BUILD_CELL_M + half,
-            1,
-        );
+        let (px, py) = world_to_map(500.0 * BUILD_CELL_M + half, 400.0 * BUILD_CELL_M + half, 1);
 
         let mut out = Marks::default();
         resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &own);
