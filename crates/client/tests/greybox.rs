@@ -185,9 +185,32 @@ fn the_authored_pair_bounds_equal_what_the_sim_publishes() {
 fn excused(o: Occupant) -> Option<&'static str> {
     match o {
         Occupant::None => Some("not a thing; nothing is drawn"),
-        // `tests/tree.rs` gates all CONIFER_POOL variants against PINE_MAX_R
-        // and PINE_H, which is the same assertion at pool granularity.
-        Occupant::Tree => Some("a generated pool, gated variant by variant in tests/tree.rs"),
+        // **The one archetype whose drawn geometry may exceed what stops a
+        // body, and the excuse here has to say WHICH assertion covers it.**
+        //
+        // It used to read "a generated pool, gated variant by variant in
+        // tests/tree.rs", which was false in the way that matters: that file
+        // gated the CANOPY ceiling (`TREE_MAX_R` → `SPAWN_CLEAR_M`), the
+        // height, the rooting and the tri count, and never mentioned
+        // `OCCUPANT_R_M` at all. So the one occupant whose mesh is generated
+        // — the only one that can move without anybody editing a constant —
+        // was the one occupant whose blocking radius nothing measured, and it
+        // sat 0.26 against a 0.2398 m trunk for the life of the native
+        // client, citing a three.js cylinder that had been deleted.
+        //
+        // §B's rule cannot apply to a tree and should not: the bark mesh's
+        // limbs reach 0.86 m (pine) and 2.38 m (broadleaf) inside the
+        // capsule's height band, and a cylinder that contained them would
+        // seal a forest a player is meant to walk through. What IS checkable
+        // is the trunk, which is what a player actually collides with, and
+        // `tree.rs::the_blocked_cylinder_is_the_trunk_the_client_draws` now
+        // holds the row to it at the same 1 mm §B uses — plus
+        // `the_limbs_reach_past_the_trunk_and_that_is_the_intent`, so the
+        // exemption is recorded as a measurement rather than as a sentence.
+        Occupant::Tree => Some(
+            "limbs are passable by design; the TRUNK is held to OCCUPANT_R_M \
+             at 1 mm by tree.rs::the_blocked_cylinder_is_the_trunk_the_client_draws",
+        ),
         // `OCCUPANT_R_M`'s row 5 is 0.0 on purpose — you walk through a bush.
         Occupant::Bush => Some("deliberately passable: OCCUPANT_R_M and _TOP_M are 0"),
         _ => None,

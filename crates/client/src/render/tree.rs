@@ -636,6 +636,38 @@ pub fn min_y(meshes: &[&Mesh]) -> f32 {
     }
 }
 
+/// How high up the bark mesh [`trunk_radius`] measures, metres.
+///
+/// **Chosen so the measurement is unambiguous, not to be generous.** Above
+/// this the bark mesh is trunk AND limbs, and a radial max over both is a
+/// number about branches — measured at 0.86 m on a pine and 2.38 m on a
+/// broadleaf inside the capsule's own height band. Below it every species is
+/// a single tapering column: the generator starts limbs at 10 % of the pine's
+/// trunk (0.66 m) and 22 % of the broadleaf's (1.19 m), both comfortably
+/// clear. `tests/tree.rs` asserts the result stays trunk-scale, so a future
+/// species that puts a limb on the ground fails loudly rather than quietly
+/// inflating the cylinder the sim blocks with.
+pub const TRUNK_MEASURE_H_M: f32 = 0.25;
+
+/// The drawn trunk's radius at its base, metres, at a slot scale of 1.0 —
+/// the number `terrain::OCCUPANT_R_M`'s `Tree` row has to be.
+///
+/// The base, because a trunk tapers upward and this is therefore its widest
+/// point inside the band a player's capsule occupies. Erring outward is the
+/// convention `SHELTER_CORNER_R_M` states and the reason the row is rounded
+/// up from this: a wasted narrow-phase test costs a compare, while erring
+/// inward lets a body stand inside visible bark.
+pub fn trunk_radius(bark: &Mesh) -> f32 {
+    let mut r = 0.0f32;
+    let Some(p) = positions(bark) else { return r };
+    for v in p {
+        if v[1] <= TRUNK_MEASURE_H_M {
+            r = r.max((v[0] * v[0] + v[2] * v[2]).sqrt());
+        }
+    }
+    r
+}
+
 /// Does the pair fit the volume the sim blocks? `PINE_MAX_R` is not a
 /// rendering number: `world.rs` derives `SPAWN_CLEAR_M = 4.0` from it, so a
 /// canopy that grew past it puts fresh spawns inside trees.

@@ -641,6 +641,22 @@ pub struct HitMark;
 #[derive(Component)]
 pub struct Compass;
 
+/// The netcode readout under the build stamp: reconcile confirm rate and the
+/// live smoothing offset.
+///
+/// **It exists because these numbers were computed and shown nowhere, and a
+/// half-metre defect lived in them for the life of the code.**
+/// `Predictor` has counted `confirmations` and `mispredictions` on every
+/// snapshot since M0 and no surface ever read either; `error_magnitude()`'s
+/// own doc says "HUD/diagnostics" and no HUD called it. The offset that put a
+/// tree's trunk a foot to the side of the thing that stopped you
+/// (`ClientCore::advance`) would have been one glance to spot, because the
+/// number was right there and growing. Same justification as the build stamp
+/// it sits under: its job is to be legible in a screenshot pasted into a bug
+/// report, not to be part of the frame a player looks at.
+#[derive(Component)]
+pub struct NetLine;
+
 /// The code lock's keypad, drawn — the root of [`pad_overlay`]'s small
 /// panel. Spawned and despawned by the system itself, so it lives here in
 /// the HUD (over the world, pointer-free) and not in `panels::` (which
@@ -859,6 +875,23 @@ pub fn setup(mut commands: Commands) {
         Text::new(protocol::version::BUILD_ID),
         super::ui::font(11.0),
         TextColor(Color::srgba(0.86, 0.83, 0.76, 0.45)),
+        Pickable::IGNORE,
+    ));
+
+    // The netcode readout, directly under the build stamp and dimmer still —
+    // see [`NetLine`] for why it exists at all.
+    commands.spawn((
+        super::WorldEntity,
+        NetLine,
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(24.0),
+            left: Val::Px(12.0),
+            ..default()
+        },
+        Text::new(""),
+        super::ui::font(11.0),
+        TextColor(Color::srgba(0.86, 0.83, 0.76, 0.35)),
         Pickable::IGNORE,
     ));
 
@@ -1489,6 +1522,39 @@ pub fn readout(
         text.0 = want;
     }
     color.0 = color.0.with_alpha(alpha);
+}
+
+/// Keep [`NetLine`] current: the reconcile confirm rate and the live
+/// smoothing offset.
+///
+/// Reads the predictor rather than any render-side mirror, because the whole
+/// point is to show what the netcode itself believes. `mispredictions` is
+/// printed as a rate rather than a count: a count grows forever and stops
+/// being readable, while the rate is the number that says whether prediction
+/// is working — measured at 100.00 % on a clean wire and 99.68 % at 10 %
+/// packet loss (`server/tests/client_loop.rs`), so anything meaningfully
+/// under that is a real signal and not noise.
+///
+/// `err` is the one that would have caught the accumulation bug: it belongs
+/// at zero except for the moment after a correction.
+pub fn net_line(net: NonSend<super::Net>, mut line: Query<&mut Text, With<NetLine>>) {
+    let Ok(mut text) = line.single_mut() else {
+        return;
+    };
+    let p = &net.session.core.predict;
+    let total = p.confirmations + p.mispredictions;
+    if total == 0 {
+        return;
+    }
+    let want = format!(
+        "net {:.2}% ok · {} miss · err {:.2} m",
+        100.0 * p.confirmations as f64 / total as f64,
+        p.mispredictions,
+        p.error_magnitude(),
+    );
+    if text.0 != want {
+        text.0 = want;
+    }
 }
 
 /// The centre prompt and the compass.

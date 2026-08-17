@@ -33,6 +33,7 @@ pub mod icons;
 // frames depend on whether a composer is open is not a gate.
 pub mod chat;
 pub mod clutter;
+pub mod collider_debug;
 // The hemisphere sky fill. `rig.rs` owns the light; this owns the arithmetic
 // of what a sky-facing face and a ground-facing face each receive, because
 // Bevy's `AmbientLight` cannot tell them apart and `ART.md` §4 requires that
@@ -377,6 +378,7 @@ impl Plugin for GatesRenderPlugin {
         app.add_plugins(MaterialPlugin::<ground_splat::GroundMaterial>::default());
         app.insert_resource(day_pin)
             .init_resource::<Eye>()
+            .init_resource::<collider_debug::ShowColliders>()
             .init_resource::<input::Look>()
             .init_resource::<terrain_mesh::Ring>()
             .init_resource::<props::PropRing>()
@@ -923,6 +925,15 @@ impl Plugin for GatesRenderPlugin {
                     // (`feed.rs` — a reader borrows, only the drain pops).
                     hud::readout,
                     hud::prompt,
+                    // The netcode readout under the build stamp. Reads the
+                    // predictor's own counters, which until now were computed
+                    // every snapshot and displayed nowhere — see `NetLine`.
+                    hud::net_line,
+                    // F3: draw what the SIM blocks over what the client
+                    // draws. Not a gate and not a probe — it does nothing
+                    // until a person presses the key.
+                    collider_debug::toggle,
+                    collider_debug::draw,
                     // The keypad's small panel, beside the prompt that
                     // goes quiet while it is up. HUD, not `panels::` — it
                     // must not grab the pointer, so it runs on a capture

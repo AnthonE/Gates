@@ -78,7 +78,6 @@ fn pump_seen(
     let mut buf = [0u8; 1100];
     for (slot, c) in clients.iter_mut() {
         c.advance(1000.0 / 30.0);
-        c.predict.decay_error();
         let n = c.poll_input(&mut buf);
         if n > 0 {
             let dg = protocol::decode_input(&buf[..n]).expect("client encodes valid input");

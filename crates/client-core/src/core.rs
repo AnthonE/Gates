@@ -2553,8 +2553,38 @@ impl ClientCore {
 
     /// Advance real time: run the fixed client ticks that elapsed, each
     /// generating one input frame and stepping prediction. Returns steps.
+    ///
+    /// **This is also where the reconciliation offset decays, and it lives
+    /// here rather than at the caller because a caller forgot.**
+    /// `Predictor::decay_error` is documented "call once per render frame",
+    /// and until 2026-08-17 the only things that called it were the eight
+    /// `server/tests/*_wire.rs` harnesses — each hand-rolling the line with
+    /// the comment *"the render loop's once-per-frame call"*. The actual
+    /// render loop (`render::input::gather` → `Session::pump` → here) never
+    /// did. `err` is written `+=` on every mispredicted reconcile
+    /// (`predict.rs`) and nothing drained it, so the shipping client
+    /// accumulated every correction it had ever taken into a permanent
+    /// offset between the camera (`render_position`) and the body the world
+    /// actually collides against — bounded only by `SNAP_AT_M`'s 4 m zero,
+    /// which is a teleport rather than a fix. Reported from play: a tree's
+    /// trunk sitting a foot to the side of the thing that stopped you.
+    ///
+    /// Every gate was green because the harnesses supplied the missing call
+    /// themselves — `client_loop.rs` asserts `error_magnitude() < 0.05`
+    /// eleven lines after making the call the product does not make, so the
+    /// suite proved the function works and never asked whether anyone runs
+    /// it. The fix is placement, not logic: `advance` is the one entry every
+    /// render frame goes through on both paths, so the decay cannot be
+    /// forgotten by a caller again. Same shape as the `pop_*` single-drain
+    /// rule in `CLAUDE.md` — an owner named in code, not in a comment.
+    ///
+    /// Once per CALL, never per step: the offset is a render-frame quantity
+    /// (`SMOOTH_NEAR` is a per-frame rate) and a frame that happened to
+    /// carry two 30 Hz ticks would otherwise decay twice as fast as one
+    /// that carried one.
     pub fn advance(&mut self, dt_ms: f64) -> u32 {
         let steps = self.clock.advance(dt_ms);
+        self.predict.decay_error();
         for _ in 0..steps {
             let frame = InputFrame {
                 seq: self.next_seq,

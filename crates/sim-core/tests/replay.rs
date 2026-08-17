@@ -353,7 +353,24 @@ const TICKS: u64 = 900;
 /// is where a golden is easiest to wave through — both determinism
 /// equalities green, `test_terrain_golden` unmoved, and the failure that
 /// produced it at the pin line alone.
-const GOLDEN_FINAL_HASH: u64 = 0x1EFA_E540_E48C_195D;
+/// **Regenerated 2026-08-17 for `OCCUPANT_R_M`'s `Tree` row, 0.26 → 0.2398**,
+/// and it is purely the first shape: a rule changed, no state was added.
+/// The row was the bottom radius of the *browser* client's hand-authored
+/// `CylinderGeometry(0.13, 0.26)` — a mesh deleted with that client — while
+/// the native client draws a generated trunk measuring 0.2398 m at the base.
+/// Nothing re-measured it when the mesh was replaced, so the sim blocked a
+/// cylinder up to 0.11 m proud of the visible bark at chest height. It is the
+/// measurement now, held there by
+/// `client/tests/tree.rs::the_blocked_cylinder_is_the_trunk_the_client_draws`.
+///
+/// The script's bots walk a beach thick with scatter, so a 2 cm narrower
+/// trunk changes where bodies stop against trees and the whole run follows.
+/// Evidence, the same as every entry above: both determinism equalities were
+/// green on the run this value was read off — the failure was at the pin line
+/// alone — and `test_terrain_golden` did NOT move, which is the check that
+/// matters here specifically, because a radius is read by collision and never
+/// by worldgen. A tree stands in the same place; a body stops 2 cm nearer it.
+const GOLDEN_FINAL_HASH: u64 = 0x21ED_CFC4_648B_60F0;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

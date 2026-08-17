@@ -3584,8 +3584,27 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// player could see. Those rows are the measured bounds now (operator,
 /// 2026-08-10), and the gate holds them there.
 pub const OCCUPANT_R_M: [f32; 13] = [
-    0.0,  // None
-    0.26, // Tree — the TRUNK, not the canopy: `CylinderGeometry(0.13, 0.26)`
+    0.0, // None
+    // Tree — the TRUNK, not the canopy, measured off the drawn bark mesh at
+    // its base by `client/tests/tree.rs`. **It read 0.26 until 2026-08-17,
+    // citing `CylinderGeometry(0.13, 0.26)`** — three.js, i.e. the bottom
+    // radius of the BROWSER client's hand-authored cone pine, a mesh that no
+    // longer exists. The native client draws `bevy_procedural_tree` output
+    // (~0.19 m pine, 0.2398 m broadleaf), so the sim was blocking a cylinder
+    // up to 0.11 m proud of the bark at chest height: an invisible skirt,
+    // reported from play as a trunk standing to the side of the thing that
+    // stopped you. Nobody re-measured it when the mesh was replaced, and the
+    // gate that holds every other row to its mesh **excused** this one on a
+    // claim about a test that did not check it (`greybox.rs::excused`).
+    //
+    // The base, because a trunk tapers upward and is therefore widest there
+    // inside the capsule's band. The LIMBS are deliberately outside this and
+    // always will be — they reach 0.86 m on a pine and 2.38 m on a broadleaf
+    // within the same band, and a cylinder covering them would seal a forest
+    // meant to be walked through. A tree is the one archetype whose drawn
+    // geometry intentionally exceeds its collision; `tree.rs`'s two gates say
+    // so in both directions.
+    0.2398,
     // The three ore nodes share one mesh, so they share one measurement:
     // `blob_mesh(1.0, 0.46, …)` reaches 0.914739 m, NOT the nominal 1.0 —
     // the jitter displaces inward. Rounded outward at 4 dp, the convention
@@ -3690,7 +3709,10 @@ pub const OCCUPANT_PROBE_CELLS: i32 = 1;
 pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
     match o {
         Occupant::None => (0.0, 0.0),
-        Occupant::Tree => (0.26, 5.7),
+        // The trunk at its base, measured off the drawn bark by
+        // `client/tests/tree.rs`. See `OCCUPANT_R_M`'s row 1 for why it is
+        // not the 0.26 a deleted three.js cylinder used to justify.
+        Occupant::Tree => (0.2398, 5.7),
         Occupant::StoneNode => (0.9148, 1.1269),
         Occupant::MetalNode => (0.9148, 1.1269),
         Occupant::SulfurNode => (0.9148, 1.1269),

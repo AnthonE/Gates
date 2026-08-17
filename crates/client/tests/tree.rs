@@ -236,3 +236,96 @@ fn the_needle_card_is_actually_cut_out() {
         opaque * 100 / total
     );
 }
+
+/// **The blocking cylinder is the TRUNK, and until now nothing measured it.**
+///
+/// `terrain::OCCUPANT_R_M`'s `Tree` row read 0.26 with the comment
+/// "`CylinderGeometry(0.13, 0.26)`" — three.js, i.e. the bottom radius of the
+/// *browser* client's hand-authored cone pine. That mesh is deleted. The
+/// native client draws `bevy_procedural_tree` output whose base measures
+/// ~0.19 m (pine) and ~0.24 m (broadleaf), so the sim blocked a cylinder up
+/// to 0.11 m proud of the bark at chest height — an invisible skirt a player
+/// is stopped by, reported from play as a trunk sitting to the side of the
+/// thing that stopped them.
+///
+/// It survived because `tests/greybox.rs` — which holds every OTHER
+/// archetype's row to its drawn mesh at 1 mm — **excuses** `Occupant::Tree`
+/// on the grounds that it is "gated variant by variant in tests/tree.rs".
+/// That was false: this file gated the CANOPY ceiling (`TREE_MAX_R`, which
+/// feeds `SPAWN_CLEAR_M`), the height, the rooting and the tri count, and
+/// never mentioned `OCCUPANT_R_M`. The one occupant whose mesh is generated
+/// was the one occupant whose blocking radius nothing checked. Now it does,
+/// and the excuse over there says what is actually true.
+///
+/// **Both directions, like greybox's equality**, because the two failures are
+/// different and both are real: too narrow and a body stands inside visible
+/// bark, too wide and it is stopped by nothing it can see.
+#[test]
+fn the_blocked_cylinder_is_the_trunk_the_client_draws() {
+    use client::render::tree::{trunk_radius, TRUNK_MEASURE_H_M};
+
+    let published = sim_core::terrain::OCCUPANT_R_M[sim_core::terrain::Occupant::Tree as usize];
+    let mut widest = 0.0f32;
+    for v in 0..CONIFER_POOL {
+        let (bark, _) = conifer(v);
+        let r = trunk_radius(&bark);
+        // The measurement must still BE a trunk. The generator starts limbs
+        // well above `TRUNK_MEASURE_H_M` today; a species that changed that
+        // would silently turn this gate into one about branches and push the
+        // sim's cylinder out to seal the forest, so it fails here instead.
+        assert!(
+            r > 0.05 && r < 0.5,
+            "variant {v}'s bark measures {r:.4} m below {TRUNK_MEASURE_H_M} m — \
+             that is not a trunk, so this gate is no longer measuring one"
+        );
+        assert!(
+            r <= published + 1.0e-4,
+            "variant {v}'s trunk is {r:.4} m at the base but the sim blocks \
+             {published:.4} m — a body would stand inside drawn bark"
+        );
+        widest = widest.max(r);
+    }
+    // No invisible skirt: the same 1 mm the authored rows are held to.
+    assert!(
+        published - widest <= 0.001,
+        "the sim blocks {published:.4} m and the widest trunk drawn is \
+         {widest:.4} m — that is {:.4} m of cylinder a player is stopped by \
+         and cannot see. Set OCCUPANT_R_M's Tree row to the measurement, \
+         rounded outward.",
+        published - widest
+    );
+}
+
+/// The limbs are deliberately outside the blocked volume, and saying so here
+/// is what keeps the gate above from being read as a bug.
+///
+/// `greybox.rs`'s rule for every other archetype is "nothing drawn may reach
+/// past what stops a body". A tree cannot be held to it and should not be: the
+/// bark mesh's limbs reach 0.86 m (pine) and 2.38 m (broadleaf) inside the
+/// capsule's height band, and a cylinder that covered them would seal a forest
+/// a player is meant to walk through. So a tree is the one archetype whose
+/// drawn geometry intentionally exceeds its collision, and this records the
+/// measurement rather than leaving the next reader to wonder.
+#[test]
+fn the_limbs_reach_past_the_trunk_and_that_is_the_intent() {
+    use client::render::tree::trunk_radius;
+
+    let band = sim_core::collide::CAPSULE_HEIGHT_M;
+    let mut worst = 0.0f32;
+    for v in 0..CONIFER_POOL {
+        let (bark, _) = conifer(v);
+        let (_, full) = bounds(&[&bark]);
+        assert!(
+            full > trunk_radius(&bark),
+            "variant {v}'s bark never reaches past its own trunk — the \
+             generator stopped producing limbs, which is a render change \
+             this gate should not be the one to discover"
+        );
+        worst = worst.max(full);
+    }
+    println!(
+        "bark reaches {worst:.3} m against a {:.4} m blocked cylinder — limbs \
+         are passable by design (capsule band {band} m)",
+        sim_core::terrain::OCCUPANT_R_M[sim_core::terrain::Occupant::Tree as usize],
+    );
+}

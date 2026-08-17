@@ -66,6 +66,17 @@ fn steer(c: &mut ClientCore, rng: &mut Pcg32, yaw: &mut u16, moving: bool) {
 
 /// One lockstep pump: clients advance one tick and post inputs, the shard
 /// ticks and posts snapshots. `lose` decides per-datagram delivery.
+///
+/// **This loop used to call `c.predict.decay_error()` itself**, commented
+/// "the render loop's once-per-frame call" — and so did seven other
+/// `*_wire.rs` harnesses, while the actual render loop called it nowhere.
+/// The drain assertion at the bottom of `own_prediction_converges_under_loss`
+/// was therefore checking the harness rather than the product: it proved the
+/// decay function worked when invoked and never asked whether the shipping
+/// client invoked it (it did not, for the whole life of the code). The call
+/// lives inside `ClientCore::advance` now, which both this harness and
+/// `Session::pump` already go through, so the line below is deleted rather
+/// than moved and the assertion means what it always claimed to.
 fn pump(
     core: &mut ShardCore,
     stats: &ShardStats,
@@ -75,7 +86,6 @@ fn pump(
     let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
     for (slot, c) in clients.iter_mut() {
         c.advance(TICK_MS);
-        c.predict.decay_error(); // the render loop's once-per-frame call
         let n = c.poll_input(&mut buf);
         if n > 0 && !lose() {
             let dg = decode_input(&buf[..n]).expect("client encodes valid input");
@@ -266,4 +276,157 @@ fn churn_keeps_the_body_and_marks_it_asleep() {
         "the body is still drawn as a live player — the wire's sleeping bit \
          is not arriving, so a raider cannot tell nobody is home"
     );
+}
+
+/// **The gate for the defect this whole suite was blind to: `err` accumulates
+/// forever if nothing drains it, and nothing drained it in the product.**
+///
+/// Every other test here runs a *lossless* in-process wire, where
+/// `clean_delivery_predicts_bit_exact` proves the prediction is bit-exact and
+/// therefore `err` is never written at all. That is why eight harnesses could
+/// hand-roll the missing `decay_error` call, and why the one assertion that
+/// would have caught its absence (`error_magnitude() < 0.05`, above) passed
+/// for the life of the code: with no loss there is no correction, and with a
+/// short lossy burst followed by a clean tail there is time to drain. Neither
+/// resembles three minutes on a real network.
+///
+/// So this runs the shape that found it: a **sustained** 2 % loss for 5,400
+/// ticks — three minutes at 30 Hz, the length of the session that reported a
+/// trunk sitting a foot to the side of the thing that stopped you — while the
+/// body wanders through the real scattered world and collides with real trees.
+///
+/// It tracks BOTH numbers, because only one of them is the assertion and the
+/// other is the evidence:
+/// - `shadow` is the vector sum of every correction, which is exactly what
+///   `err` held before the fix (`predict.rs` writes `err += old - new` and
+///   nothing subtracted). It is measured here rather than asserted — it is
+///   what the player saw.
+/// - `error_magnitude()` is what `err` holds now. That is the assertion.
+#[test]
+fn the_correction_offset_does_not_accumulate_over_a_long_lossy_session() {
+    /// Three minutes at 30 Hz — the length of the session that reported it.
+    const TICKS: u32 = 5_400;
+
+    /// Ticks of clean delivery after the lossy phase. Corrections stop, so
+    /// whatever the offset holds here is what it FAILS to drain — which is
+    /// the defect, as distinct from the size of any one correction.
+    const CLEAN_TAIL: u32 = 120;
+
+    /// One session at one loss rate. Returns
+    /// `(confirms, mispredicts, peak_live_err, final_live_err, no_decay_err)`.
+    fn session(loss_percent: u32) -> (u64, u64, f32, f32, f32) {
+        let stats = ShardStats::default();
+        let mut core = Box::new(ShardCore::new(SEED));
+        pin_together(&mut core);
+        assert!(core.connect(0, id_of(0)));
+        let mut c = ClientCore::new(SEED, id_of(0), 0);
+        let mut rng = Pcg32::new(SEED, 77);
+        let mut loss_rng = Pcg32::new(SEED, 78);
+        let mut yaw = 100u16;
+
+        // The no-decay accumulator: every correction summed, never drained —
+        // exactly what `err` held before the fix.
+        let mut shadow = [0.0f32; 3];
+        let mut peak_live = 0.0f32;
+
+        for tick in 0..TICKS + CLEAN_TAIL {
+            // The tail delivers everything: the offset has nothing new to
+            // absorb and every frame decays it. `decay_error` runs once per
+            // `advance`, which is once per 30 Hz tick HERE and once per
+            // render frame in the client — so a 60–144 Hz client drains
+            // faster than this harness and the bound below is conservative.
+            let loss_percent = if tick < TICKS { loss_percent } else { 0 };
+            steer(&mut c, &mut rng, &mut yaw, tick < TICKS);
+
+            // `pump`'s body, opened up so the reconcile can be measured on
+            // both sides of the snapshot that causes it.
+            let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
+            c.advance(TICK_MS);
+            let n = c.poll_input(&mut buf);
+            if n > 0 && loss_rng.next_u32() % 100 >= loss_percent {
+                let dg = decode_input(&buf[..n]).expect("client encodes valid input");
+                core.push_input(0, &dg);
+            }
+            let mut outs: Vec<Vec<u8>> = Vec::new();
+            let mut ev_outs: Vec<Vec<u8>> = Vec::new();
+            core.tick_bare(&stats, |lane, _slot, bytes| {
+                match lane {
+                    Lane::Snapshot => outs.push(bytes.to_vec()),
+                    Lane::Event => ev_outs.push(bytes.to_vec()),
+                }
+                true
+            });
+            for bytes in ev_outs {
+                c.on_stream(&bytes).expect("server events decode");
+            }
+            for bytes in outs {
+                if loss_rng.next_u32() % 100 < loss_percent {
+                    continue;
+                }
+                // `position()` is the sim-truth body with no smoothing, so the
+                // difference across the reconcile IS the correction `err`
+                // takes. Gated on `started` for the same reason `reconcile`
+                // gates its own write: the FIRST snapshot is not a correction,
+                // it is the spawn adoption, moving the body from the default
+                // `[0,0,0]` to a real beach ~2.1 km away. Counting it reads as
+                // a two-kilometre error and drowns what is being measured.
+                let started = c.predict.started;
+                let before = c.predict.position();
+                c.on_datagram(&bytes);
+                let after = c.predict.position();
+                if started {
+                    for i in 0..3 {
+                        shadow[i] += before[i] - after[i];
+                    }
+                }
+            }
+            peak_live = peak_live.max(c.predict.error_magnitude());
+        }
+        let sh = (shadow[0] * shadow[0] + shadow[1] * shadow[1] + shadow[2] * shadow[2]).sqrt();
+        (
+            c.predict.confirmations,
+            c.predict.mispredictions,
+            peak_live,
+            c.predict.error_magnitude(),
+            sh,
+        )
+    }
+
+    println!(
+        "\n{TICKS} ticks (3 min at 30 Hz) + {CLEAN_TAIL} clean, wandering the real \
+         scattered world\n\
+         loss  reconciles  confirmed  mispredicts   peak err   settled err   \
+         if never drained"
+    );
+    for loss in [0u32, 2, 10, 30] {
+        let (ok, bad, peak, settled, shadow) = session(loss);
+        let total = ok + bad;
+        println!(
+            "{loss:3}%  {total:10}  {:8.2}%  {bad:11}  {peak:7.4} m   {settled:9.4} m   \
+             {shadow:13.4} m",
+            100.0 * ok as f64 / total.max(1) as f64,
+        );
+        // **The assertion is about DRAINING, not about size.** A single
+        // correction under heavy loss is legitimately large — 0.53 m at 30 %,
+        // measured — and smoothing it is the whole job. What may never happen
+        // is that it stays: with corrections stopped for `CLEAN_TAIL` ticks
+        // the offset must be gone. Without the decay call this reads the
+        // `if never drained` column instead, which is red at every rate that
+        // mispredicts at all.
+        assert!(
+            settled < 0.05,
+            "at {loss}% loss the smoothing offset settled at {settled:.4} m after \
+             {CLEAN_TAIL} clean ticks — it is accumulating rather than decaying, \
+             which is the camera sitting that far from the body the world collides \
+             against (it would hold {shadow:.4} m with no decay at all)"
+        );
+        // A client that mispredicted constantly would also hold a small `err`
+        // and would be worthless, so the offset bound is only meaningful
+        // beside this.
+        assert!(
+            ok > bad,
+            "at {loss}% loss most reconciles must confirm bit-exact; \
+             got {ok} confirms to {bad} mispredicts"
+        );
+    }
 }
