@@ -1841,13 +1841,16 @@ impl World {
         // when the save is `dead` (logged off on the death screen), and the
         // sleeper takeover when the body it takes over is dead. All three
         // rebuild the body from `..Player::default()`, so all three are new
-        // bodies and all three are meant to be paid — but only the first
-        // has a gate (`tests/bag_respawn.rs`, `server/tests/spawn_kit.rs`
-        // both drive `Command::Respawn`). A later pass that early-returns
-        // either of the other two before reaching here leaves a player who
-        // logged off dead waking naked, with every suite green, and with no
-        // `hand` row on any swung node there is no route back to a rock
-        // except dying again. That gate is owed (`NOW.md` §0kit).
+        // bodies and all three are paid — and since 2026-08-17 all three
+        // are gated: `tests/bag_respawn.rs` and `server/tests/spawn_kit.rs`
+        // drive `Command::Respawn`;
+        // `persist.rs::a_dead_save_wakes_holding_the_spawn_kit` drives the
+        // dead restore; `sleepers.rs::
+        // a_takeover_of_a_dead_body_wakes_holding_the_spawn_kit` drives the
+        // takeover. Each of the latter two is proven red both under an
+        // early return at its own door and under deleting this `grant_kit`
+        // call alone — the mutation the doors' older position/hp gates
+        // cannot see.
         //
         // A returning login whose save is ALIVE is the different door and
         // still grants nothing, because a saved character keeps what it

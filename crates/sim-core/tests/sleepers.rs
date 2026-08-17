@@ -357,6 +357,114 @@ fn waking_onto_a_corpse_beaches_you_alive() {
     );
 }
 
+/// A two-entry kit of stand-in item ids, in `SpawnKit`'s own shape —
+/// `bag_respawn.rs`'s probe kit. Ids 8 and 9 are outside every table
+/// `duel_world` arms (the fixture spear is item 0), so the assertion below
+/// cannot be satisfied by anything the corpse was carrying.
+fn probe_kit() -> sim_core::inventory::SpawnKit {
+    let mut kit = sim_core::inventory::SpawnKit::EMPTY;
+    assert!(
+        kit.set(
+            0,
+            ItemStack {
+                item: 8,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "kit slot 0"
+    );
+    assert!(
+        kit.set(
+            1,
+            ItemStack {
+                item: 9,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "kit slot 1"
+    );
+    kit
+}
+
+/// **The third of `wake`'s three doors is paid too** (`NOW.md` §0kit
+/// remainder 1). A takeover of a dead body goes through `wake`, and `wake`
+/// is where a new body is built — so the victim of an offline raid logs
+/// back in holding the spawn kit. The test above proves this door beaches
+/// the body alive; with `duel_world`'s `spawn_kit` EMPTY, its
+/// inventory-is-empty assertion said nothing about the kit, and a refactor
+/// that early-returned around the grant stayed green on every suite. This
+/// is the door where a missed kit costs most: the raid already took
+/// everything else, so waking naked here is §0die's ended session exactly.
+///
+/// Proven red 2026-08-17, both ways, and the two mutations measure
+/// different things. Early-returning before the wake in `take_over`
+/// (`if self.players[slot].dead { return; }` in place of the `wake` call)
+/// fails this on "woke naked" — beside the beach gate above, which catches
+/// that skip on `!p.dead`. Deleting only `inventory::grant_kit` from
+/// `wake` fails this on the same line while **every pre-existing gate in
+/// this file stays green** — that narrower hole, a wake that stands the
+/// body up and forgets to arm it, is the coverage this test adds.
+#[test]
+fn a_takeover_of_a_dead_body_wakes_holding_the_spawn_kit() {
+    let mut w = duel_world();
+    // After the joins, deliberately: the fresh arm must not be the grantor
+    // this test observes. The kit reaches the body through `wake` or not
+    // at all.
+    w.spawn_kit = probe_kit();
+    let sleeper = slot_of(&w, 2);
+    let raider = slot_of(&w, 1);
+    let yaw = 0u16;
+    place_in_front(&mut w, raider, sleeper, yaw, 1.0);
+    w.tick(&[Command::Leave { id: 2 }]);
+    for seq in 0..200u16 {
+        if w.players[sleeper].dead {
+            break;
+        }
+        w.tick(&[Command::Input {
+            id: 1,
+            frame: swing_frame(seq, yaw),
+        }]);
+    }
+    assert!(w.players[sleeper].dead, "setup: the sleeper must be dead");
+
+    w.tick(&[Command::Wake {
+        id: 0x0202,
+        sleeper: 2,
+    }]);
+
+    let p = &w.players[sleeper];
+    assert!(!p.dead, "you came back as a corpse");
+    assert_eq!(
+        (p.inv[0], p.inv[1]),
+        (
+            ItemStack {
+                item: 8,
+                count: 1,
+                cond: 0
+            },
+            ItemStack {
+                item: 9,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "a raided sleeper's owner woke naked — the takeover door skipped the kit"
+    );
+    // …and only the kit: the spear the corpse carried went into the bag the
+    // raider is owed, so any fixture item beyond slots 0 and 1 means the
+    // grant is reading a survived inventory rather than paying a fresh one.
+    assert!(
+        p.inv[2..].iter().all(|s| *s == ItemStack::default()),
+        "a corpse's inventory came back beside the kit"
+    );
+    assert_eq!(
+        p.deaths, 1,
+        "the death count did not move — this wake did not go through `wake`"
+    );
+}
+
 /// **Waking a body with the id you were just handed.** Not an exotic case:
 /// a player id is `generation << 8 | slot`, and a restart resets the slot
 /// table, so the first connection after one is minted exactly the id the
