@@ -34,6 +34,13 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// `blend_m` changes at all, bit for bit, islandwide — so what this digest sees
 /// is the whole of what moved.
 ///
+/// Regenerated again the same day, from `0x97E7_4336_299A_D2FD`, for the second
+/// half of the same work: a site's floor is cut to the level of LOWEST ERROR
+/// over the ground it flattens (`Haven::floor_y`, `site_floor_y`) rather than
+/// to the raw height at its centre — the reference's own terrain anchoring,
+/// `reference/MONUMENTS.md` §9.2b. `probe_sites` hashes the new datum, and the
+/// three seated arrangements move with it.
+///
 /// A previous regeneration, kept because it explains the value it replaced: the
 /// road shoulder's barrel rate stopped being one number and became two — dense
 /// on the coast's sheltered arcs, sparse on the open shore (`terrain::in_bay`,
@@ -41,7 +48,7 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// the scatter pass stopped choosing a biome row and started blending four
 /// (`terrain::scatter_row`), a delta confined to the ~11% of land cells no
 /// single splat channel owns outright.
-const GOLDEN_TERRAIN_HASH: u64 = 0x97E7_4336_299A_D2FD;
+const GOLDEN_TERRAIN_HASH: u64 = 0x7356_4E57_06B4_74D9;
 
 #[test]
 fn test_terrain_golden() {

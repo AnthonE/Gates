@@ -83,6 +83,14 @@ const RAW_READERS: &[(&str, &str, &str)] = &[
     ),
     (
         "terrain.rs",
+        "site_floor_y",
+        "locator: it CHOOSES the altitude a site's floor is cut to, by minimax \
+         over the raw ground. Reading the carve here would have the datum \
+         measure the cut it is about to define — the circularity in miniature, \
+         and the one place it could still be written.",
+    ),
+    (
+        "terrain.rs",
         "haven_relief",
         "locator: the flatness term the argmax scores. Carve it and the score \
          measures the carve.",

@@ -126,6 +126,9 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
     hash_f32(&mut h, haven.x);
     hash_f32(&mut h, haven.z);
     hash_f32(&mut h, haven.y);
+    // The carved floor's level: worldgen state since the carve was armed, and
+    // the datum every seated object and every cut depth is measured from.
+    hash_f32(&mut h, haven.floor_y);
     hash_f32(&mut h, haven.relief);
     h.update(&[haven.phase, haven.shelter]);
     let (sx, sz, syaw) = terrain::haven_shelter(&haven);
@@ -148,6 +151,7 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
         hash_f32(&mut h, ws.x);
         hash_f32(&mut h, ws.z);
         hash_f32(&mut h, ws.y);
+        hash_f32(&mut h, ws.floor_y);
         h.update(&[ws.phase, ws.live as u8]);
         let mut c = 0i32;
         while c < terrain::WAYSTATION_CRATES {

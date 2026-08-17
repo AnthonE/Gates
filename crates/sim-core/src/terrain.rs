@@ -884,6 +884,9 @@ pub struct Waystation {
     pub x: f32,
     pub z: f32,
     pub y: f32,
+    /// The level this site's carved floor sits at — `site_floor_y`, not `y`.
+    /// See `Haven::floor_y`.
+    pub floor_y: f32,
     /// Rotation of the container pair, as a yaw-LUT index — carried for the
     /// same reason `Haven::phase` is: `waystation_crate` must be a pure
     /// function of the site, and the client, the server and the gate all ask
@@ -905,6 +908,7 @@ impl Waystation {
         x: 0.0,
         z: 0.0,
         y: 0.0,
+        floor_y: 0.0,
         phase: 0,
         canopy: 0,
         live: false,
@@ -921,6 +925,18 @@ pub struct Haven {
     pub x: f32,
     pub z: f32,
     pub y: f32,
+    /// The level this site's carved floor sits at.
+    ///
+    /// **Separate from `y` on purpose, and the separation is the whole reason
+    /// this could be taken cheaply.** `y` is a *selection* input — the stage 8
+    /// score reads it (`relief + HAVEN_HEIGHT_W * (y - LAND_MIN_H)`), and the
+    /// determinism probe hashes it — so redefining it would move which sites
+    /// the argmax picks and ripple through everything that has ever asked where
+    /// a haven is. `floor_y` answers a different question that only exists
+    /// because the carve exists: not "how high is the ground here" but "what
+    /// level is this site's floor". One field per question; nothing that read
+    /// `y` had to change.
+    pub floor_y: f32,
     pub relief: f32,
     /// Rotation of the container ring, as a yaw-LUT index. Carried rather
     /// than recomputed because `haven_crate` must be a pure function of the
@@ -945,6 +961,52 @@ pub struct Haven {
     /// answer rather than one pad: the pad is `x`/`z`, the lesser tier is
     /// here, and no signature moved.
     pub minor: [Waystation; WAYSTATIONS],
+}
+
+/// The altitude a site's floor is cut to — **the level of lowest error over
+/// the ground the carve flattens**, not the height at the site's centre.
+///
+/// Taken from the reference (`reference/MONUMENTS.md` §9.2b): Devblog 54's
+/// terrain anchoring "looks for the perfect placement altitude in every
+/// attempt", sharpened by Devblog 167 to "the placement height that results in
+/// the lowest possible error for any given placement position". Ours used the
+/// raw height at the centre, which is an arbitrary sample on a sloped site and
+/// — since the carve was armed — is also the level the floor cuts to, so it set
+/// how deep every cut had to be.
+///
+/// **The midpoint of min and max, which is the minimax optimum**: it minimises
+/// the WORST deviation over the floor, and the worst deviation is exactly what
+/// the carve pays for, because `max_cut` bounds the deepest cut and the ramp's
+/// steepest gradient is set by it. A mean would minimise total error instead
+/// and measures worse here — 4.664 m worst against the midpoint's 4.028 m,
+/// over 384 sites on 128 seeds, where the centre datum gives 4.909 m.
+///
+/// Sampled on the disc the carve actually flattens (`SiteFootprint::stamp_m`),
+/// centre plus two rings, which is 17 taps — paid once per site at world init,
+/// for the three sites that exist, and never on a candidate. It is cheaper than
+/// the `haven_relief` rosette that runs on every candidate already.
+fn site_floor_y(seed: u64, x: f32, z: f32, stamp_m: f32) -> f32 {
+    let h0 = height(seed, x, z);
+    let mut lo = h0;
+    let mut hi = h0;
+    let step = (256 / HAVEN_PROBES) as u16;
+    // Two rings: the floor's edge, and half way out. One ring would miss a
+    // dome or a dip in the middle of the pad, which is the shape a rim-only
+    // rosette is blindest to.
+    let mut ring = 1i32;
+    while ring <= 2 {
+        let r = stamp_m * (ring as f32 * 0.5);
+        let mut j = 0i32;
+        while j < HAVEN_PROBES {
+            let (dx, dz) = crate::yaw_lut::yaw_dir((j as u16 * step) << 8);
+            let h = height(seed, x + dx * r, z + dz * r);
+            lo = lo.min(h);
+            hi = hi.max(h);
+            j += 1;
+        }
+        ring += 1;
+    }
+    (lo + hi) * 0.5
 }
 
 /// Max−min height over the pad footprint at (x, z): center plus a rim
@@ -982,6 +1044,9 @@ fn haven_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
             x,
             z,
             y: 0.0,
+            // Inert: this fixture exists to answer `haven_crate`, which reads
+            // x/z/phase only. Nothing here carves.
+            floor_y: 0.0,
             relief: 0.0,
             phase,
             shelter: 0,
@@ -1027,6 +1092,8 @@ fn haven_shelter_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
         x,
         z,
         y: 0.0,
+        // Inert, as in `haven_ring_phase` above.
+        floor_y: 0.0,
         relief: 0.0,
         phase,
         shelter: 0,
@@ -1193,6 +1260,10 @@ pub fn haven(seed: u64) -> Haven {
             x,
             z,
             y,
+            // The floor the carve will cut, resolved for the site that is
+            // actually taken rather than for every candidate: this is 17 taps
+            // and `haven()` scores `HAVEN_CANDIDATES` of them.
+            floor_y: site_floor_y(seed, x, z, HAVEN_FOOTPRINT.stamp_m),
             relief,
             phase,
             shelter,
@@ -1216,6 +1287,7 @@ pub fn haven(seed: u64) -> Haven {
         x: c,
         z: c,
         y: height(seed, c, c),
+        floor_y: site_floor_y(seed, c, c, HAVEN_FOOTPRINT.stamp_m),
         relief: 0.0,
         phase: 0,
         shelter: 0,
@@ -1297,6 +1369,7 @@ fn pick_minor(seed: u64, pad: &Haven, cand: &[(f32, f32, f32, f32)]) -> [Waystat
                 x,
                 z,
                 y,
+                floor_y: site_floor_y(seed, x, z, WAYSTATION_FOOTPRINT.stamp_m),
                 phase,
                 canopy,
                 live: true,
@@ -1341,6 +1414,8 @@ fn waystation_ring_phase(seed: u64, x: f32, z: f32) -> Option<(u8, u8)> {
             x,
             z,
             y: 0.0,
+            // Inert: read for x/z/phase by `waystation_crate` only.
+            floor_y: 0.0,
             phase,
             canopy: 0,
             live: true,
@@ -1394,6 +1469,8 @@ fn waystation_canopy_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8>
         x,
         z,
         y: 0.0,
+        // Inert, as in `waystation_ring_phase` above.
+        floor_y: 0.0,
         phase,
         canopy: 0,
         live: true,
@@ -1914,7 +1991,7 @@ pub fn site_stamp_with(strength: f32, haven: &Haven, raw: f32, x: f32, z: f32) -
     let mut s = stamp_of(
         strength,
         &HAVEN_FOOTPRINT,
-        haven.y,
+        haven.floor_y,
         haven.x,
         haven.z,
         raw,
@@ -1928,7 +2005,16 @@ pub fn site_stamp_with(strength: f32, haven: &Haven, raw: f32, x: f32, z: f32) -
         if !ws.live {
             continue;
         }
-        s += stamp_of(strength, &WAYSTATION_FOOTPRINT, ws.y, ws.x, ws.z, raw, x, z);
+        s += stamp_of(
+            strength,
+            &WAYSTATION_FOOTPRINT,
+            ws.floor_y,
+            ws.x,
+            ws.z,
+            raw,
+            x,
+            z,
+        );
     }
     s
 }

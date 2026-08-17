@@ -356,6 +356,7 @@ impl Scratch<Barren> {
                 x: -1.0e6,
                 z: -1.0e6,
                 y: 0.0,
+                floor_y: 0.0,
                 relief: 0.0,
                 phase: 0,
                 shelter: 0,

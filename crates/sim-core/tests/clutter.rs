@@ -1452,6 +1452,8 @@ fn sites_parked_offshore() -> Haven {
         x: -100_000.0,
         z: -100_000.0,
         y: 0.0,
+        // Inert: parked off the island, so nothing carves and no floor exists.
+        floor_y: 0.0,
         relief: 0.0,
         phase: 0,
         shelter: 0,

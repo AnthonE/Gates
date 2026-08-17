@@ -408,15 +408,27 @@ be. Measured over 384 sites on 128 seeds, worst / mean |cut| required:
 | mean over the floor | 4.664 m | 1.373 m |
 | **midpoint of min/max** (the minimax optimum) | **4.028 m** | **1.209 m** |
 
-−18% on both, for a datum that is strictly cheaper to compute than the rosette
-`haven_relief` already runs. It buys ramp headroom directly: the worst carved
-gradient is `depth × 1.5 / band`, currently sitting at 0.595 against a 0.596
-budget, so an 18% shallower cut is 18% off the number the clamp is pinned to.
+**TAKEN 2026-08-17** (operator: *"take what we can from them"*) as
+`Haven::floor_y` / `Waystation::floor_y`, filled by `site_floor_y` — 17 taps,
+paid once per site at world init and never on a candidate, which is cheaper than
+the `haven_relief` rosette that runs on every candidate already. It is a
+**separate field from `y`, and that is what made it cheap**: `y` is a
+*selection* input (the stage 8 score reads it) and a probe field, so redefining
+it would have moved which sites the argmax picks; `floor_y` answers the
+different question the carve created. Nothing that read `y` changed. Measured
+against the shipped code: worst required cut **4.909 m → 4.100 m** over 384
+sites on 128 seeds, and all 384 still flatten completely.
 
-**Not taken here, and the reason is scope rather than doubt** (`BALANCE.md` §6
-would take theirs by default): `Haven::y` is read by `probe.rs`, `mob.rs` and
-the client's map as well as by the carve, and moving it is a second worldgen
-change — another golden, another wipe. `NOW.md` §0n2 carries it.
+⚠ **The prediction attached to this row was wrong and the measurement is why it
+is still worth having.** It said an 18% shallower cut would take 18% off the
+carved gradient "the clamp is pinned to". It took **zero** — the gradient sits
+at 0.5951 before and after. The clamp does not bind on the floor at all: the
+deepest cut wanted anywhere in a blend is **11.777 m against a 6.320 m cap**,
+and the 709 samples in 679,936 that clip are all far out in the *band*, where
+`floor_y - raw` is largest and the datum barely moves. So what this bought is
+16.5% more headroom before a site stops flattening — robustness on the floor —
+and not a gentler ramp. The two are different budgets and the row conflated
+them.
 
 ### 9.3 · The gap that matters most: our solver is two hand-written tiers
 

@@ -1082,15 +1082,15 @@ hashes windows over all three sites and they stand on the ring, so a golden
 that had held still would have meant the carve missed them. `DECISIONS.md`
 2026-08-16 has the numbers.
 
-**Take the reference's placement datum — measured at 18%, not taken yet.**
-`reference/MONUMENTS.md` §9.2b (sourced 2026-08-16, tier 2): their terrain
-anchoring picks the altitude of *lowest error* over the footprint; our
-`Haven::y` is the raw height at the site centre, which since arming is also the
-level the floor cuts to. Midpoint-of-min/max over the floor drops the worst
-required cut 4.909 → 4.028 m and the mean 1.459 → 1.209 m over 384 sites, which
-comes straight off the ramp gradient the clamp is pinned to. It is a second
-worldgen change (golden + wipe) and `Haven::y` has readers outside the carve
-(`probe.rs`, `mob.rs`, `ui/map.rs`), so it is an operator call, not a spare pass.
+**The reference's placement datum is taken** (2026-08-17, operator).
+`Haven::floor_y` / `site_floor_y`: a site's floor cuts to the level of lowest
+error over the ground it flattens, not the raw height at its centre — their
+terrain anchoring, `reference/MONUMENTS.md` §9.2b. Worst required cut 4.909 →
+4.100 m over 384 sites; all still flatten. A separate field from `y`, so site
+selection and every existing reader are untouched. ⚠ It bought floor headroom
+and **not** the gentler ramp §9.2b predicted: the clamp binds out in the band
+(deepest cut wanted 11.777 m against a 6.320 m cap) where the datum barely
+moves, so the carved gradient is unchanged at 0.5951.
 
 §9.3 is the gap and it is not urgent yet: `haven()` + `pick_minor` produce two
 kinds of site, the separation floor is one hand-asserted constant

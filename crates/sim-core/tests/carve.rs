@@ -68,11 +68,15 @@ const MM: f32 = 1.0e-3;
 /// Every live site on a seed as `(x, z, y, footprint)` — including the ones
 /// whose footprint does not currently fit and therefore carve nothing.
 fn sites(h: &Haven) -> Vec<(f32, f32, f32, terrain::SiteFootprint)> {
-    let mut v = vec![(h.x, h.z, h.y, HAVEN_FOOTPRINT)];
+    // `floor_y`, not `y`: the third element is the level the carve cuts TO, and
+    // since 2026-08-17 that is the site's lowest-error datum rather than the
+    // raw height at its centre (`site_floor_y`, the reference's terrain
+    // anchoring). `y` is a selection input and means something else.
+    let mut v = vec![(h.x, h.z, h.floor_y, HAVEN_FOOTPRINT)];
     for w in 0..WAYSTATIONS {
         let ws = &h.minor[w];
         if ws.live {
-            v.push((ws.x, ws.z, ws.y, WAYSTATION_FOOTPRINT));
+            v.push((ws.x, ws.z, ws.floor_y, WAYSTATION_FOOTPRINT));
         }
     }
     v
