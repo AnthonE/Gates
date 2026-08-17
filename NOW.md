@@ -193,9 +193,9 @@ the shared feed queue and `ui::refusals::GATHER` (wire v42). Remainders:
    a save that logged off dead, a sleeper takeover of a dead body. All three
    are correctly paid; only the first is tested, so an early return in either
    of the others wakes a player naked with every suite green.
-2. Content/boot, both small: `validate.rs` has no rule coupling "no swung
-   node has a `hand` row" to "the kit holds a tool something pays", so an
-   empty `[[spawn_kit]]` is an unwinnable world that boots green; and
+2. Content/boot: the validate half landed 2026-08-17 — a kit holding no tool
+   any swung node pays is a refused boot when no `hand` row exists (gated in
+   `content.rs`, red-proven both ways). Remaining, server lane:
    `parse_shard_toml`'s `dev_spawn_kit` arm pushes unbounded, caps after.
 
 ## 0mk · Arrows leave marks; swings and paint do not *(systems+client lane)*

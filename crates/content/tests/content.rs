@@ -2070,13 +2070,52 @@ fn the_spawn_kit_bakes_and_seats() {
     assert!(swung >= 4, "only {swung} swung nodes — this gate got thin");
 }
 
-/// Absent is legal, and it means naked.
+/// Absent is legal, and it means naked — **while bare hands can start the
+/// loop.** The default matters more than the alpha kit does: a public shard
+/// wants a beach spawn, and `#[serde(default)]` is what lets that be
+/// expressed by deleting a table rather than by editing code.
 ///
-/// The default matters more than the alpha kit does: a public shard wants a
-/// beach spawn, and `#[serde(default)]` is what lets that be expressed by
-/// deleting a table rather than by editing code.
+/// The fixture restores a `hand` row on the tree first, because over the
+/// SHIPPED gatherables (no swung node pays bare hands, DECISIONS.md
+/// 2026-08-15) an absent kit is an unwinnable world and the boot rule
+/// refuses it — that half is `a_kit_that_cannot_start_the_loop_is_refused`.
 #[test]
 fn no_spawn_kit_is_a_naked_spawn() {
+    let mut srcs = sources();
+    let g = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "gatherables.toml")
+        .unwrap();
+    let anchor = "[gatherable.yield_per_hit]\n\"item.rock\" = 50";
+    assert!(
+        g.1.contains(anchor),
+        "fixture rot: the tree's rock row moved"
+    );
+    g.1 = g.1.replace(
+        anchor,
+        "[gatherable.yield_per_hit]\nhand = 25\n\"item.rock\" = 50",
+    );
+    let entry = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+    let cut = entry
+        .1
+        .find("[[spawn_kit]]")
+        .expect("the alpha kit is there");
+    entry.1.truncate(cut);
+    let c = build(&srcs).expect("with a hand row back, content without a spawn kit validates");
+    let kit = c.bake_spawn_kit().expect("an absent kit bakes");
+    assert_eq!(kit.count, 0, "an absent kit granted something");
+}
+
+/// The boot rule (NOW.md §0kit remainder 2, landed 2026-08-17): with no
+/// `hand` row on any swung node, a kit that grants no paying tool boots a
+/// world where every swing is refused forever — unwinnable, and until this
+/// rule it validated green. Three cases: the empty kit, the kit of
+/// non-tools, and the coupling itself (a restored hand row makes the empty
+/// kit a legal naked spawn again, so the rule fires on the pair of tables
+/// and never on the kit alone).
+#[test]
+fn a_kit_that_cannot_start_the_loop_is_refused() {
+    // An empty kit over handless nodes: delete the whole table.
     let mut srcs = sources();
     let entry = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
     let cut = entry
@@ -2084,9 +2123,44 @@ fn no_spawn_kit_is_a_naked_spawn() {
         .find("[[spawn_kit]]")
         .expect("the alpha kit is there");
     entry.1.truncate(cut);
-    let c = build(&srcs).expect("content without a spawn kit still validates");
-    let kit = c.bake_spawn_kit().expect("an absent kit bakes");
-    assert_eq!(kit.count, 0, "an absent kit granted something");
+    let err = build(&srcs).expect_err("an empty kit over handless swung nodes booted");
+    assert!(
+        err.contains("no tool any swung node pays"),
+        "expected the unwinnable-spawn refusal, got: {err}"
+    );
+
+    // A kit of only the torch: an item, a hand item even, and a tool no
+    // swung node has a yield row for.
+    refuses(
+        "balance.toml",
+        "[[spawn_kit]]\nitem = \"item.rock\"\ncount = 1\n\n",
+        "",
+        "no tool any swung node pays",
+    );
+
+    // The coupling: restore a hand row on one swung node and the same
+    // empty kit is a naked beach spawn again, not a refusal.
+    let mut srcs = sources();
+    let g = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "gatherables.toml")
+        .unwrap();
+    let anchor = "[gatherable.yield_per_hit]\n\"item.rock\" = 50";
+    assert!(
+        g.1.contains(anchor),
+        "fixture rot: the tree's rock row moved"
+    );
+    g.1 = g.1.replace(
+        anchor,
+        "[gatherable.yield_per_hit]\nhand = 25\n\"item.rock\" = 50",
+    );
+    let entry = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+    let cut = entry
+        .1
+        .find("[[spawn_kit]]")
+        .expect("the alpha kit is there");
+    entry.1.truncate(cut);
+    build(&srcs).expect("a hand row on the tree makes the empty kit legal again");
 }
 
 /// The four refusals, re-anchored on the rock when the kit became a rock

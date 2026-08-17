@@ -653,8 +653,9 @@ pub fn structural(c: &Content) -> Result<(), String> {
 
     // The spawn kit. Every refusal here is the same class: a kit that seats
     // a player holding something the rest of the tables disagree about.
-    // An EMPTY kit is not checked and not an error — a naked beach spawn is
-    // the game, and it is what content without a `[[spawn_kit]]` gives.
+    // An EMPTY kit is legal and means a naked beach spawn — but only while
+    // bare hands can start the loop; the boot rule at the end of this
+    // block is the coupling (NOW.md §0kit).
     {
         let kit = &c.balance.spawn_kit;
         if kit.len() > INV_SLOTS {
@@ -686,6 +687,33 @@ pub fn structural(c: &Content) -> Result<(), String> {
             // order and never merges.
             if !seen_items.insert(&e.item) {
                 return Err(format!("spawn_kit: `{}` granted twice", e.item));
+            }
+        }
+        // The boot rule (NOW.md §0kit). Since 2026-08-15 no swung node pays
+        // bare hands, so the kit is the only thing standing between a fresh
+        // spawn and a world it cannot touch. When that is true of the
+        // tables, the kit must hold a tool at least one swung node pays —
+        // an empty kit, or a kit of non-tools (a torch), would boot a
+        // world where `gather::swing` refuses every swing forever:
+        // unwinnable, and green on every other gate. A swung node is
+        // `hits >= 2`; the bush (`hits = 1`) is an instant hand pickup and
+        // keeps its `hand` row on purpose, so it neither lifts the
+        // condition nor satisfies the kit.
+        let swung: Vec<&Gatherable> = c.gatherables.iter().filter(|g| g.hits >= 2).collect();
+        let hands_pay = swung.iter().any(|g| g.yield_per_hit.contains_key("hand"));
+        if !swung.is_empty() && !hands_pay {
+            let kit_pays = kit
+                .iter()
+                .any(|e| swung.iter().any(|g| g.yield_per_hit.contains_key(&e.item)));
+            if !kit_pays {
+                return Err(
+                    "spawn_kit: no swung node pays bare hands and the kit grants \
+                     no tool any swung node pays — a fresh spawn could never \
+                     gather; grant a paying tool in balance.toml `[[spawn_kit]]` \
+                     (the rock) or give a swung node a `hand` row in \
+                     gatherables.toml"
+                        .to_string(),
+                );
             }
         }
     }
