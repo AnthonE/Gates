@@ -306,17 +306,21 @@ Left, in order of cheapness:
 guard, `EV_GATHER_REFUSED`, wire v42, save formats 3/7, eight gates each
 proven red. What remains, in rank order:
 
-1. **No panel draws the number — but the ceiling ships now, so what
-   remains is pure client-lane drawing.** The 2026-08-17 blocker (the
-   client held no `condition_max` to divide by) closed the same day: wire
-   v46 puts `cond_max` beside every name on the catalog drip, baked from
-   content in `net::bake_catalog` and gated end to end —
-   `boot_tables.rs::the_shipped_catalog_carries_every_condition_ceiling`
-   proven red under a dropped column, the golden pins the bytes. A panel's
-   call is `pip_fraction(stack.cond, core.catalog.cond_max(item))`;
-   `tests/ui.rs` §Q holds the visibility contract (worn-only, dead draws
-   empty). Left: the hotbar, bag grid and container cells draw the bar —
-   the reference's shape, with `ART.md`'s pass on it.
+1. **Closed 2026-08-17 — the bar is drawn.** All four cells that hold a
+   stack call `pip_fraction` against the catalog's ceiling: the hotbar
+   (`render/hud.rs`, a trough per cell spawned once and hidden when there
+   is nothing to say), your grid, the container's, and the drag ghost,
+   which had to have it because that tile is a copy of the cell it came
+   out of. Colours are the vitals' own measured pair rather than a new
+   one and there is no warning band (`DECISIONS.md` §open, "durability
+   pip v0"). Two gates on top of §Q's four pure-value tests, each proven
+   red: a call-site scan over both files, and one on the panel's redraw
+   key, which watched `(item, count)` and now watches `cond` too — nothing
+   wears with the screen open today, so that half is the door shut before
+   repair walks through it. **Looked at**, which is the visual gate: a
+   capture with a forced 35 % rock reads as a green bar in a dark trough
+   inside the cell border, and the hotbar count badge lifts 3 px to clear
+   it. NOT done: the detail pane still says nothing in words.
 2. **Weapons and armour do not wear.** `reference/DURABILITY.md` §5 left
    both unsourced (per shot / when hit), so there is nothing to take yet —
    a research row, not a build item, and wear-on-swing-at-players is a
