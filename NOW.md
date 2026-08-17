@@ -196,6 +196,14 @@ the shared feed queue and `ui::refusals::GATHER` (wire v42). Remainders:
    `hand` row" to "the kit holds a tool something pays", so an empty
    `[[spawn_kit]]` is an unwinnable world that boots green. (The other
    half — `dev_spawn_kit` capping after the push — landed 2026-08-17.)
+1. **Two doors have no gate.** `wake` has three callers: the respawn command,
+   a save that logged off dead, a sleeper takeover of a dead body. All three
+   are correctly paid; only the first is tested, so an early return in either
+   of the others wakes a player naked with every suite green.
+2. Content/boot: the validate half landed 2026-08-17 — a kit holding no tool
+   any swung node pays is a refused boot when no `hand` row exists (gated in
+   `content.rs`, red-proven both ways). Remaining, server lane:
+   `parse_shard_toml`'s `dev_spawn_kit` arm pushes unbounded, caps after.
 
 ## 0mk · Arrows leave marks; swings and paint do not *(systems+client lane)*
 
@@ -2313,10 +2321,9 @@ crate-wide, but its *contiguity* claim is file-local.
   `content.rs::every_consumable_the_content_ships_is_reachable` gates the
   general form (every consumable producible by a live verb chain). Still
   owed, and both are code: a standalone forest-floor pickup archetype and a
-  farming lane. The open verb landed 2026-08-14, so the third clause here is
-  spent — but `validate` still counts barrel rows alone and its stated reason
-  ("no verb opens a container") is now false. Widening the reachable set to
-  the tables a verb opens is a `validate.rs` change nobody has made.
+  farming lane. The open verb landed 2026-08-14 and the reachable set widened
+  2026-08-17: `validate.rs`'s clock and `content.rs`'s walk both count every
+  verb-openable container (`bake::container_index`); the stale reason is fixed.
 - ~~Day/night does not exist~~ — **landed 2026-08-11** (day/night v0,
   `DECISIONS.md` §open): 45-minute cycle, 70 % day, derived from the tick
   with **no wire field**, driven through the rig's coupled-set owner.
