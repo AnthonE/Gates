@@ -383,6 +383,27 @@ pub const EV_KNOWN: u8 = 36;
 /// cadence: at most one per `SWING_INTERVAL_TICKS` per player.
 pub const EV_GATHER_REFUSED: u8 = 37;
 
+/// EV_IMPACT: a = `ranged::SURF_*` << 24 | the stop point's x in `POS_XZ_Q`
+/// quanta, b = its z in the same, c = its y in `POS_Y_Q` quanta **as a
+/// signed `i32` reinterpreted** — an arrow can stop below sea level, and
+/// this is the one field in the lane that can be negative.
+///
+/// **Broadcast**, `EV_SHOT`'s posture and its reason: where an arrow
+/// landed is a world fact, and the mark it leaves is visible to anyone who
+/// walks past it later. A client that misses one loses a scuff.
+///
+/// **It fires only where an arrow met the WORLD.** `ranged::step` resolves
+/// a body first and leaves by another door, so flesh is `EV_HIT` and this
+/// is everything else — the two are exclusive and a reader never has to
+/// ask which kind of mark to make.
+///
+/// The position is here rather than read back out of a store at encode
+/// (`EV_BAG_DROPPED`'s trick) because there is nothing left to read: the
+/// arrow's slot is freed on the same line that pushes this. An impact is a
+/// fact about a moment, not about a thing that persists, which is also why
+/// nothing about it is saved — see `worldsave.rs` for what is.
+pub const EV_IMPACT: u8 = 38;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -390,7 +411,7 @@ pub const EV_GATHER_REFUSED: u8 = 37;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_GATHER_REFUSED;
+pub const EV_MAX: u8 = EV_IMPACT;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server

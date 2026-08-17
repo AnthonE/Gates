@@ -261,7 +261,40 @@ const SUB_GATHER_REFUSED: u32 = 49;
 /// `worldsave.rs`'s format-3 collision, and it takes the same cure: the
 /// trunk's number stands and this takes the next one neither claimed.
 const SUB_BAGS: u32 = 50;
-const SUB_MAX: u32 = SUB_BAGS;
+/// Where an arrow stopped, and on what kind of surface (wire v45,
+/// `sim-core/ranged.rs`). Broadcast, `SUB_SHOT`'s posture: a scuff in the
+/// world is a world fact, and unlike the shot it outlives the moment —
+/// somebody walking past later is the second audience.
+///
+/// **The position is absolute and in the entity lane's own quanta**, which
+/// is the whole of why this message is four fields and not seven. A mark
+/// is placed once and never moves, so there is no baseline to delta
+/// against and no interpolation to feed; and reusing `POS_XZ_BITS` /
+/// `POS_Y_BITS` / `POS_Y_BIAS` means the window check here is the one
+/// `write_bag` already performs, rather than a second opinion about where
+/// the island is.
+///
+/// `surf` is two bits and the fourth value is refused at decode — the
+/// posture `SEL_BITS` takes for hotbar 6–7. Three kinds is what the sim's
+/// stop test can answer (`ranged::SURF_*`); a fourth would be a new
+/// question asked on the hot path, not a spare code waiting here.
+const SUB_IMPACT: u32 = 51;
+const SUB_MAX: u32 = SUB_IMPACT;
+/// Width of `SUB_IMPACT`'s surface field, and how many values it may say.
+///
+/// **`SURF_KINDS` is derived from the sim's own last kind rather than
+/// typed**, which is the point of it existing: a fourth `SURF_*` added in
+/// `ranged.rs` makes the assert below fail to compile here, in the crate
+/// that would otherwise have truncated it into a live code. A hand-kept
+/// mirror of another crate's surface goes stale — `CLAUDE.md` says so
+/// twice, once about a doc comment and once about a grep — so this one is
+/// read rather than remembered.
+const SURF_BITS: u32 = 2;
+const SURF_KINDS: u32 = sim_core::ranged::SURF_BUILT as u32 + 1;
+const _: () = assert!(
+    SURF_KINDS <= (1 << SURF_BITS),
+    "a surface kind past the field width would decode as a different one"
+);
 /// And the field must hold it. A subtype declared past `SUB_BITS` would
 /// truncate on the way out and decode as a *different, live* code — the
 /// worst shape of wire drift there is, since both ends would agree on
@@ -737,6 +770,14 @@ pub enum EventMsg {
         speed_mmpt: u16,
         drop_mmpt2: u16,
     },
+    /// An arrow stopped here, on this kind of surface (broadcast, wire
+    /// v44). Position in the entity lane's quanta — 3 cm in x/z, 1 cm in
+    /// y — and `surf` is a `sim_core::ranged::SURF_*`.
+    ///
+    /// No shooter and no item, `Shot`'s omissions for `Shot`'s reason: a
+    /// mark in the world is the same mark whoever made it, and the client
+    /// that wants to know whose arrow it was already heard the shot.
+    Impact { qx: i32, qy: i32, qz: i32, surf: u8 },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list (item index, units).
     Stock {
@@ -1839,6 +1880,41 @@ pub fn encode_event_shot(
     Ok(w.finish())
 }
 
+/// Where an arrow stopped: a point in the entity lane's quanta and what
+/// kind of surface it met (`SUB_IMPACT`).
+///
+/// **The window check is `write_bag`'s, verbatim and deliberately.** These
+/// are the same quanta a body's position crosses in, so "is this point on
+/// the island" has one answer here and there is no reason for this
+/// encoder to hold a second. A stop point outside the window is the sim
+/// surfacing a bug — refused, not wrapped into somebody's base.
+///
+/// A `surf` past [`SURF_KINDS`] is refused for the reason the field is two
+/// bits wide at all: a fourth kind that truncated would decode as a live
+/// one and paint bark on open ground, which is the quiet half of wire
+/// drift rather than the loud half.
+pub fn encode_event_impact(
+    qx: i32,
+    qy: i32,
+    qz: i32,
+    surf: u8,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if !(0..(1i64 << POS_XZ_BITS)).contains(&(qx as i64))
+        || !(0..(1i64 << POS_XZ_BITS)).contains(&(qz as i64))
+        || !(0..(1i64 << POS_Y_BITS)).contains(&(qy as i64 + POS_Y_BIAS as i64))
+        || surf as u32 >= SURF_KINDS
+    {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_IMPACT)?;
+    w.write(qx as u32, POS_XZ_BITS)?;
+    w.write((qy + POS_Y_BIAS) as u32, POS_Y_BITS)?;
+    w.write(qz as u32, POS_XZ_BITS)?;
+    w.write(surf as u32, SURF_BITS)?;
+    Ok(w.finish())
+}
+
 /// The attacker's hitmarker: `damage` landed on `victim`.
 /// One standing backpack as the wire carries it: identity and where it
 /// is, nothing else. Owner, expiry and contents stay sim-side — the
@@ -2750,6 +2826,26 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 return Err(WireError::Malformed);
             }
             m
+        }
+        SUB_IMPACT => {
+            let qx = r.read(POS_XZ_BITS)? as i32;
+            let qy = r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS;
+            let qz = r.read(POS_XZ_BITS)? as i32;
+            let surf = r.read(SURF_BITS)?;
+            // The encoder's refusal, mirrored — `SUB_SHOT`'s posture one
+            // arm up. Two bits hold four values and the sim makes three,
+            // so the fourth is a sender this build does not understand
+            // and the honest answer is malformed rather than a guess at
+            // which mark it meant.
+            if surf >= SURF_KINDS {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Impact {
+                qx,
+                qy,
+                qz,
+                surf: surf as u8,
+            }
         }
         SUB_OVEN => EventMsg::Oven {
             cx: r.read(BUILD_CELL_BITS)? as u16,
@@ -4394,6 +4490,23 @@ mod wire_domains {
             live_max: 2,
         },
         Domain {
+            what: "impact surface",
+            sim_site: "ranged.rs SURF_*",
+            wire_site: "SURF_BITS",
+            home: "ranged.rs",
+            prefix: "pub const SURF_",
+            ty: ": u8 = ",
+            exempt: &[],
+            min_members: 3,
+            bits: SURF_BITS,
+            // A fourth kind fits the two bits, which is exactly why this
+            // pin is not the same claim as the fit check: `SURF_BITS`'
+            // spare value is currently *refused* at both ends, and a
+            // widening that quietly made it live would turn a forged byte
+            // into a fact. Moving this is a deliberate act, once per kind.
+            live_max: 2,
+        },
+        Domain {
             what: "access op",
             sim_site: "deploy.rs ACCESS_OP_*",
             wire_site: "ACCESS_OP_BITS",
@@ -4557,7 +4670,7 @@ mod wire_domains {
     fn the_domain_table_states_its_own_coverage() {
         assert_eq!(
             DOMAINS.len(),
-            15,
+            16,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \

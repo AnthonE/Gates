@@ -52,6 +52,7 @@ pub mod disconnected;
 // The build ghost: the cell being aimed at, and the click that commits it.
 pub mod ghost;
 // The blue wash over the piece a hammer is aimed at.
+pub mod decal;
 pub mod highlight;
 pub mod tracer;
 // The launcher-backed nav entries: the title manifest's fetch, and the click
@@ -256,6 +257,7 @@ pub fn world_teardown(
     mut structures: ResMut<structures::StructRing>,
     mut ghost: ResMut<ghost::Ghost>,
     mut highlight: ResMut<highlight::Highlight>,
+    mut marks: ResMut<decal::Marks>,
     mut bodies: ResMut<bodies::Bodies>,
     mut herd: ResMut<mobs::Herd>,
     mut eye: ResMut<Eye>,
@@ -281,6 +283,10 @@ pub fn world_teardown(
     *ghost = ghost::Ghost::default();
     // Same reason, same shape: the hammer's wash holds an `Entity` too.
     highlight::forget_in(&mut highlight);
+    // And the mark pool, whose entities are NOT `WorldEntity` — spawned at
+    // `Startup`, so the despawn above walks past them and last shard's
+    // bullet holes would still be standing in the next world.
+    decal::forget_in(&mut commands, &mut marks);
     *bodies = bodies::Bodies::default();
     *herd = mobs::Herd::default();
     // The readout holds the LAST wall hit and charge clock — facts about
@@ -395,6 +401,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<ghost::Ghost>()
             .init_resource::<highlight::Highlight>()
             .init_resource::<tracer::Tracers>()
+            .init_resource::<decal::Marks>()
             .init_resource::<hud::Toast>()
             .init_resource::<hud::Readout>()
             .init_resource::<feed::Feed>()
@@ -497,6 +504,11 @@ impl Plugin for GatesRenderPlugin {
                 // The tracer pool. Spawned once here so the frame path
                 // never spawns an entity for an arrow (`tracer.rs`).
                 tracer::setup,
+                // The mark pool, for the same reason plus one more: the
+                // materials it builds here are what the prewarm draw
+                // specializes, and a pipeline compiled mid-fight is the
+                // stall `decal.rs`'s `PREWARM_FRAMES` exists to avoid.
+                decal::setup,
                 // The menu's footage. Wanted on the first screen after the
                 // splash, so it warms while everything else does.
                 ui::load_backdrop,
@@ -756,6 +768,12 @@ impl Plugin for GatesRenderPlugin {
                 // tracer's first frame already shows motion.
                 tracer::launch.after(feed::drain),
                 tracer::fly.after(tracer::launch),
+                // The mark's two halves, the tracer's shape exactly.
+                // `mark` reads the drained feed so it follows the drain;
+                // `fade` then ages everything including the mark just
+                // claimed, which is what releases the prewarm slot.
+                decal::mark.after(feed::drain),
+                decal::fade.after(decal::mark),
             )
                 .run_if(world_running)
                 .run_if(move || !plate),
