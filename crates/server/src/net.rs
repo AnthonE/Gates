@@ -228,12 +228,21 @@ pub struct ShardHandle {
 /// Bake the item-name catalog from validated content (the same
 /// index-is-sorted-rank mapping `bake_gather` uses). Boot path: a name
 /// the wire can't carry refuses the boot, same as any other bake error.
+/// Each row carries its condition ceiling (wire v46) in the u16 hundredths
+/// the sim runs on — the same conversion `bake::bake_gather` performs, and
+/// the same refusal when a `condition_max` overflows it.
 pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = content.items.len() as u16;
     for item in &content.items {
         let idx = content.item_index(&item.id).expect("own id resolves") as usize;
-        cat.set(idx, item.name.as_bytes()).map_err(|_| {
+        let cond_max = u16::try_from(item.condition_max).map_err(|_| {
+            format!(
+                "catalog: item `{}` condition_max {} overflows u16 hundredths",
+                item.id, item.condition_max
+            )
+        })?;
+        cat.set(idx, item.name.as_bytes(), cond_max).map_err(|_| {
             format!(
                 "catalog: item `{}` name `{}` is empty or over {} bytes",
                 item.id,

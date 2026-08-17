@@ -1396,13 +1396,16 @@ impl ClientCore {
                 count,
                 names,
                 lens,
+                cond_max,
             } => {
                 self.catalog.count = total as u16;
                 for i in 0..count as usize {
                     // Server-sent lens are wire-validated ≤ the cap.
-                    let _ = self
-                        .catalog
-                        .set(first as usize + i, &names[i][..lens[i] as usize]);
+                    let _ = self.catalog.set(
+                        first as usize + i,
+                        &names[i][..lens[i] as usize],
+                        cond_max[i],
+                    );
                 }
                 flags |= APPLIED_CATALOG;
             }
@@ -3105,15 +3108,22 @@ mod tests {
         let mut c = core();
         let mut cat = ItemCatalog::EMPTY;
         cat.count = 3;
-        cat.set(0, b"Wood").unwrap();
-        cat.set(1, b"Stone").unwrap();
-        cat.set(2, b"Cloth").unwrap();
+        cat.set(0, b"Wood", 0).unwrap();
+        cat.set(1, b"Stone", 0).unwrap();
+        cat.set(2, b"Cloth", 12_000).unwrap();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
         assert_eq!(took, 3);
         assert_eq!(c.on_stream(&buf[..len]).unwrap(), APPLIED_CATALOG);
         assert_eq!(c.catalog.count, 3);
         assert_eq!(c.catalog.name(1), b"Stone");
+        assert_eq!(
+            c.catalog.cond_max(2),
+            12_000,
+            "the ceiling column (wire v46) must land beside the name — \
+             it is what pip_fraction divides by"
+        );
+        assert_eq!(c.catalog.cond_max(0), 0);
         assert_eq!(c.events_applied, 1);
 
         assert!(c.on_stream(&[0xFF, 0xFF, 0xFF]).is_err());

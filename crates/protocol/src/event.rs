@@ -36,8 +36,9 @@ use sim_core::limits::{
 use sim_core::research::{ResearchRow, NO_RECIPE};
 
 /// Longest event-lane message. Sized by the worst subtype (a full catalog
-/// batch ≈ 264 B, a full slot-sync batch ≈ 258 B) with headroom; the
-/// client-side framer refuses past it. Registered in DECISIONS.md §open.
+/// batch ≈ 280 B since v46's per-row `cond_max`, a full slot-sync batch
+/// ≈ 258 B) with headroom; the client-side framer refuses past it.
+/// Registered in DECISIONS.md §open.
 pub const MAX_EVENT_MSG_BYTES: usize = 320;
 
 /// Harvested cells one sync message carries (join sync is drip-fed, one
@@ -471,10 +472,18 @@ pub struct InvSlot {
 /// The item-index → display-name table (the mapping `content::bake`
 /// promises the wire ships). Server bakes it at boot; the client fills
 /// its copy from catalog messages. Fixed storage, `MAX_ITEM_DEFS` rows.
+///
+/// v46 added `cond_max` — the item's condition ceiling in the same u16
+/// hundredths `ItemStack::cond` rides the container lanes in — because the
+/// client held condition with nothing to divide it by (NOW.md §0dur.1: the
+/// catalog dripped names only, no def table carried a ceiling, and the
+/// client links no content crate). 0 means the item carries no condition,
+/// the same convention `content` and the sim use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemCatalog {
     pub names: [[u8; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
     pub lens: [u8; MAX_ITEM_DEFS],
+    pub cond_max: [u16; MAX_ITEM_DEFS],
     pub count: u16,
 }
 
@@ -482,18 +491,23 @@ impl ItemCatalog {
     pub const EMPTY: Self = Self {
         names: [[0; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
         lens: [0; MAX_ITEM_DEFS],
+        cond_max: [0; MAX_ITEM_DEFS],
         count: 0,
     };
 
-    /// Install one name. Refuses empty, oversize, or out-of-table — the
-    /// server's bake path turns this into a refused boot.
-    pub fn set(&mut self, idx: usize, name: &[u8]) -> Result<(), WireError> {
+    /// Install one row. Refuses empty, oversize, or out-of-table — the
+    /// server's bake path turns this into a refused boot. `cond_max` is a
+    /// parameter rather than a second setter so the compiler refuses a row
+    /// installed without its ceiling (the omission that kept the column
+    /// off the wire for four versions).
+    pub fn set(&mut self, idx: usize, name: &[u8], cond_max: u16) -> Result<(), WireError> {
         if idx >= MAX_ITEM_DEFS || name.is_empty() || name.len() > MAX_ITEM_NAME_BYTES {
             return Err(WireError::Range);
         }
         self.names[idx][..name.len()].copy_from_slice(name);
         self.names[idx][name.len()..].fill(0);
         self.lens[idx] = name.len() as u8;
+        self.cond_max[idx] = cond_max;
         Ok(())
     }
 
@@ -502,6 +516,16 @@ impl ItemCatalog {
             &self.names[idx][..self.lens[idx] as usize]
         } else {
             &[]
+        }
+    }
+
+    /// The condition ceiling for one item index; 0 out of table, matching
+    /// the 0-means-no-condition convention in table.
+    pub fn cond_max(&self, idx: usize) -> u16 {
+        if idx < MAX_ITEM_DEFS {
+            self.cond_max[idx]
+        } else {
+            0
         }
     }
 }
@@ -541,12 +565,16 @@ pub enum EventMsg {
         count: u8,
     },
     /// Item display names `first..first+count` of a `total`-row table.
+    /// Each row carries its condition ceiling too (v46) — the number
+    /// `pip_fraction` divides a container lane's `cond` by; 0 means the
+    /// item carries no condition.
     Catalog {
         total: u8,
         first: u8,
         count: u8,
         names: [[u8; MAX_ITEM_NAME_BYTES]; CATALOG_BATCH],
         lens: [u8; CATALOG_BATCH],
+        cond_max: [u16; CATALOG_BATCH],
     },
     /// Own weak-spot mark after a landed hit (swinger-only): the node's
     /// cell, the next mark heading (u8 over the shared 256-entry yaw LUT,
@@ -1089,6 +1117,7 @@ pub fn encode_event_catalog(
         for &b in name {
             w.write(b as u32, 8)?;
         }
+        w.write(catalog.cond_max(idx) as u32, 16)?;
     }
     Ok((w.finish(), count))
 }
@@ -2375,6 +2404,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             let mut names = [[0u8; MAX_ITEM_NAME_BYTES]; CATALOG_BATCH];
             let mut lens = [0u8; CATALOG_BATCH];
+            let mut cond_max = [0u16; CATALOG_BATCH];
             for i in 0..count {
                 let len = r.read(NAME_LEN_BITS)? as usize;
                 if len == 0 || len > MAX_ITEM_NAME_BYTES {
@@ -2384,6 +2414,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     *b = r.read(8)? as u8;
                 }
                 lens[i] = len as u8;
+                cond_max[i] = r.read(16)? as u16;
             }
             EventMsg::Catalog {
                 total: total as u8,
@@ -2391,6 +2422,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 count: count as u8,
                 names,
                 lens,
+                cond_max,
             }
         }
         SUB_WEAK_MARK => EventMsg::WeakMark {
@@ -3248,9 +3280,11 @@ mod tests {
         let mut cat = ItemCatalog::EMPTY;
         cat.count = 11;
         for i in 0..11usize {
-            // Worst-width names so the cap check is honest.
+            // Worst-width names so the cap check is honest; ceilings mix
+            // zero (no condition) with the full u16 corner.
             let name = [b'a' + (i as u8 % 26); MAX_ITEM_NAME_BYTES];
-            cat.set(i, &name).unwrap();
+            let cond_max = if i % 2 == 0 { 0 } else { u16::MAX - i as u16 };
+            cat.set(i, &name, cond_max).unwrap();
         }
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
@@ -3263,9 +3297,13 @@ mod tests {
                 count,
                 names,
                 lens,
+                cond_max,
             } => {
                 assert_eq!((total, first, count), (11, 0, CATALOG_BATCH as u8));
                 assert_eq!(&names[0][..lens[0] as usize], cat.name(0));
+                for (i, &cm) in cond_max.iter().enumerate().take(CATALOG_BATCH) {
+                    assert_eq!(cm, cat.cond_max(i), "ceiling column drifted at row {i}");
+                }
             }
             other => panic!("wrong variant: {other:?}"),
         }

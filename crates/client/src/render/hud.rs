@@ -2217,7 +2217,7 @@ mod tests {
         let mut c = protocol::event::ItemCatalog::EMPTY;
         let mut top = 0;
         for &(idx, name) in rows {
-            c.set(idx, name.as_bytes()).unwrap();
+            c.set(idx, name.as_bytes(), 0).unwrap();
             top = top.max(idx);
         }
         c.count = (top + 1) as u16;

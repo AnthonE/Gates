@@ -20,7 +20,8 @@
 //!
 //! ## The key is the item's NAME, and that is forced
 //!
-//! `protocol::ItemCatalog` carries display names and nothing else — there is
+//! `protocol::ItemCatalog` carries display names and condition ceilings
+//! (v46) and nothing else — there is
 //! no content id on the wire. So a cell finds its icon by normalising the
 //! name the server sent (`"Low Grade Fuel"` → `low_grade_fuel`) and the baker
 //! writes its files under the same normalisation, derived from
