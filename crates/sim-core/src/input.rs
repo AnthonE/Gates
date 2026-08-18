@@ -26,12 +26,14 @@
 /// quantize-both-sides law and `PROTO_VER` exist to make impossible. The
 /// handshake refusing the pairing outright is the correct outcome.
 ///
-/// One coverage hole worth naming and NOT closing here: `goldens.rs` draws
-/// `buttons` from `rng.next_bounded(4)`, so the protocol golden's fuzz has
-/// only ever exercised bits 0–1 — `BTN_PRIMARY` is outside it too, and has
-/// been since M1. Widening that draw would change fixture bytes for a reason
-/// unrelated to this version's meaning, which muddies exactly the signal wall
-/// 6 reads. It is filed in `NOW.md` as its own item.
+/// The coverage hole this doc used to name is **closed** (2026-08-18, NOW.md
+/// §5c): `goldens.rs` drew `buttons` from `rng.next_bounded(4)`, so from v0 to
+/// v46 the protocol golden's fuzz exercised bits 0–1 only — `BTN_PRIMARY` was
+/// outside it too, since M1. It now draws the whole octet, and
+/// `the_input_golden_fuzzes_the_whole_button_octet` reads the fixture bytes
+/// back so the coverage cannot narrow again unnoticed. It changed fixture
+/// bytes and turned **no `PROTO_VER`**, on the rule written there: what a test
+/// feeds an encoder is the test's coverage, not the wire's meaning.
 pub const BTN_SPRINT: u8 = 1 << 0;
 pub const BTN_CROUCH: u8 = 1 << 1;
 pub const BTN_PRIMARY: u8 = 1 << 2;

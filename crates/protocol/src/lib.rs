@@ -602,6 +602,21 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// minted as meaningful, that is the widening above and takes the bump
 /// (`every_domain_fits_its_wire_field`'s `live_max` pin is what demands
 /// the sentence).
+///
+/// **A fixture's INPUT is not the wire either** (decided 2026-08-18,
+/// NOW.md §5c). Widening a golden's fuzz draw — `input_full`'s `buttons`
+/// from `next_bounded(4)` to the whole octet — moves fixture bytes and
+/// turns nothing here: no encoder, no decoder, no field width and no
+/// subtype number changed, and a `goldens.rs` constructor is linked by
+/// exactly two callers, `gen_goldens` and `test_protocol_golden`, so the
+/// frames two v46 builds exchange are identical before and after. What
+/// moved is which values the test feeds an encoder, which is the test's
+/// coverage. Bumping for it would refuse every installed client over a
+/// difference no packet can express, and spend this number's one signal
+/// on a test edit. v37's four *added* fixtures set the precedent with no
+/// bump; the difference here is that existing bytes MOVED, which is why
+/// `goldens.rs`'s header requires such a regenerate to be its own commit
+/// and never to share a diff with an encoder change.
 pub const PROTO_VER: u16 = 46;
 
 /// This game's slug in the scry catalog.
