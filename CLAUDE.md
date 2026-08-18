@@ -565,8 +565,29 @@ shot on seed 20260731 under `art/capture-native.sh` — the same island the
 shard ships, which is the only reason those gaps are about our world at all.
 Steer from `NOW.md` until the loop is restarted.
 
-**`git push` is blocked** by a `pre-push` hook the runner installs. Publishing
-is an operator act: read the diff, then `git push --no-verify`.
+**`git push` is blocked** by a `pre-push` hook the runner installs, and
+`--no-verify` is how anything gets past it. That friction stays: a push is
+publication, it is hard to take back, and it should cost a deliberate act.
+
+**An agent may push when the operator has plainly asked for it** (operator,
+2026-08-17: *"when its clear that i wanna push you can push please"*). This
+supersedes the older rule that publishing was operator-only in every case.
+The bar is an **explicit instruction in the conversation** — "push it", "get
+it up", "ship it" — about a state the operator can see. It is not an
+inference from approval of the work: "looks good, merge it" is a merge and
+nothing more, and a green gate is never a licence to publish.
+
+Three things do not move:
+
+- **The loop still never pushes.** It proposes; it has no conversation to be
+  instructed in. Every autonomous pass ends unpushed.
+- **Read the diff first, and say what is in it** — including commits that are
+  not yours. A fast-forward publishes everything between the remote and the
+  tip, and the operator is agreeing to the sentence you put in front of them,
+  not to `git log`.
+- **The other operator-only acts are untouched** (§loop discipline): the tag,
+  the public-shard deploy, the depot publish, anything on-chain. Pushing a
+  branch is not any of those.
 
 **A gate that waits on a clock is not a gate on this box.** Eight cores here —
 the rule was learned on the morr box's four at load 4–5, running a cargo
