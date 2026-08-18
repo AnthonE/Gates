@@ -196,17 +196,31 @@ backpack → bag respawn, the kill feed, and since v48 a corpse that falls
    data that looks armed. `combat.rs`'s header claimed the same of the
    *bow* until 2026-08-18, which is why this line names a file and a rule.
 4. **Armor is priced and unread.** `grep -rn armor crates/sim-core/src`
-   returns one comment; `reference/ARMOR.md` §9.1 is the audit, §9.2 the
-   plan, and `CONT_WEAR` is the wire cost.
+   returns **two lines** — one sentence, and this item said "one" until
+   2026-08-18, when the sentence itself was widened. Planned in full:
+   `findings/armor-design-20260818.md`. Headline: the smallest useful
+   slice needs **no wire bump** (bake the table, add `Player::worn`, fill
+   it from content), and applying armor reddens **no** anchor, because
+   every anchor reads `content/` and armor changes no content number —
+   `WORLD.md` §8.2's ward collision arriving through a scheduled system.
 5. **No lag compensation.** `NETCODE.md` §8 designs the rewind ring at
    length and `grep -rn rewind crates/` finds a bit-writer and nothing
    else — both `strike` and the arrow resolve on present server state, so
-   a fight is led rather than aimed. The largest doc/code delta on this
-   path and the one a player would report as "my hits do not register".
+   a fight is led rather than aimed. Planned:
+   `findings/lagcomp-design-20260818.md`, which also carries **nine
+   errata against §8** — it is wrong about this tree, not merely unbuilt.
+   No wire bump is owed at any slice: §8 asks the server to track a
+   "varying" interp delay that is a `const 4.0` both ends already share.
 6. **Nothing has fought at population.** `raid_storm.rs:516` says so in
    its own source — *"nobody swings"* — so wall 4's caps are gated one
    site at a time on every combat path, and `EV_SWING`'s AOI-free fan-out
-   is still unpriced (§0sw).
+   is still unpriced (§0sw). Planned:
+   `findings/combat-soak-design-20260818.md`. Two findings worth the read
+   before anything else: **`EVENT_RING_CAP` (64) is smaller than
+   `MAX_PLAYERS` (100)**, so 65 simultaneous swingers resync every client
+   at once and a resync re-drips seven cursors; and the **cheapest slice
+   is no code at all** — `bots.rs:53-60` already presses `BTN_PRIMARY`
+   1-in-3, so re-running the 100-bot soak prices the fan-out today.
 
 ## 0dsc · Discord presence is built, detailed and dark *(operator — one act)*
 
