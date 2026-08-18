@@ -1266,29 +1266,29 @@ Remaining, in the order the measurement ranks them:
    them flips the ripple map's green channel. Which is right is a question
    about how that map was authored — boot the game and look, do not guess.
 
-## 0bd · The barrel is measured and the sim still blocks the guess *(client+sim lane)*
+## 0bd · The barrel is the measured drum — LANDED 2026-08-18, one residual *(client+sim lane)*
 
-The drawn barrel and the blocked barrel are one number in two files and they
-disagree with the real object. `OCCUPANT_R_M[BarrelSlot]` is **0.45** and its
-comment cites `CylinderGeometry(0.45, 0.45, 0.95)` — the deleted browser
-client's geometry, i.e. a guess carried forward. A 55-gallon drum is **0.585 m
-across by 0.88 tall** (1.5x taller than wide); 0.9 x 0.95 is near-spherical and
-~44% too fat. Two independent sources agree: the reference set’s `barrelroad`, and
-Meshy's `auto_size` vision estimate landing on 0.880 x 0.585 unprompted
-(2026-08-11).
+The drawn barrel and the blocked barrel were one number in two files and both
+were the deleted browser client's `CylinderGeometry(0.45, 0.45, 0.95)`. They are
+the measured 55-gallon drum now — **0.585 m across by 0.88 tall** — so radius
+**0.2925**, half-height **0.44**, `archetype_lift` 0.44 (the base IS the slot's
+ground) and `OCCUPANT_TOP_M` **0.88**. Mesh and volume moved in one commit
+because they cannot move apart: `greybox.rs`'s
+`every_drawn_archetype_fits_the_volume_the_sim_blocks` fails a mesh narrower
+than the blocked volume by more than `SLACK_R_M`. `test_replay`'s golden
+regenerated with it (wall 5); the knob is `DECISIONS.md` §open, barrel
+proportions v1.
 
-**Why it is not already done.** It was drawn narrow on a branch, and the merge
-with origin fired `greybox.rs`'s
-`every_drawn_archetype_fits_the_volume_the_sim_blocks`: the sim blocked 0.1575 m
-wider than the client drew, past `SLACK_R_M`. That assert is right — an
-invisible collision skirt is a player passing through geometry — and it means
-the mesh cannot move alone.
-
-**The slice**: narrow `OCCUPANT_R_M` and the `(0.45, 0.975)` pair in
-`terrain.rs`, and `archetype_mesh`'s cylinder, in one commit. It is a
-**collision change**, so `test_replay` and `test_terrain_golden` move with it
-and the goldens are regenerated deliberately in the same commit (wall 5/6).
-Check the other occupants for the same browser-geometry citation while there.
+**Residual — the tree's trunk radius is the same class and nothing measures
+it.** `OCCUPANT_R_M[Tree] = 0.26` cites `CylinderGeometry(0.13, 0.26)`, browser
+geometry, and the tree is the one row `greybox.rs` *excuses*: `tests/tree.rs`
+measures the canopy against `PINE_MAX_R` and the base against y = 0, never the
+trunk against 0.26. A generated conifer's trunk could be any width with both
+gates green. Unlike the barrel there is no second source to take, so this is a
+measurement to make — bound the bark mesh's radius over the trunk's own height
+band in `tests/tree.rs` — not a number to paste. The box rows (`CrateSlot`,
+`CacheSlot`, both authored structures) are browser-cited too and are fine:
+greybox holds each to its drawn mesh in both directions.
 
 ## 0b · Balance sits on the reference's numbers now — what is still off *(content lane)*
 
