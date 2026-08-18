@@ -134,7 +134,18 @@ ITEMS = {
     "gears": "lorc/gears",
     "rope": "delapouite/rope-coil",
     "tarp": "delapouite/camping-tent",
-    "rock": "john-redman/rock",
+    # **Not `john-redman/rock`**, which was the mapping until 2026-08-18 and
+    # is the rock of rock-paper-scissors: a closed FIST. The game's starting
+    # tool — the one item every player wakes holding — drew a punch in the
+    # hotbar, on a shipped build, and no gate could see it because
+    # `tests/ui.rs` §G asks whether a picture EXISTS, never whether it is a
+    # picture of the thing. Booting the client and looking at the hotbar is
+    # what found it, which is the whole argument for that being the visual
+    # gate. `lorc/rock` is one angular stone; picked over `lorc/stone-block`
+    # (a cube reads as a building material), `lorc/stone-sphere` (a football
+    # at 38 px) and `delapouite/stone-pile`, which is already `stone` and
+    # would collide in silhouette with the resource the rock harvests.
+    "rock": "lorc/rock",
     "torch": "delapouite/torch",
     "spear_wood": "lorc/spears",
     "hatchet_stone": "delapouite/hatchet",

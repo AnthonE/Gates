@@ -99,9 +99,9 @@ use sim_core::world::{
     EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_IMPACT, EV_KNOCK, EV_KNOWN,
     EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
     EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED,
-    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_TRUST, EV_VITALS, EV_WEAK_MARK, PRESENCE_ASLEEP,
-    PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT,
-    TRUST_DOOR, TRUST_VERB_MAX,
+    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_TRUST, EV_VITALS, EV_WEAK_MARK,
+    PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
+    TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
 };
 use sim_core::yaw_dir;
 
@@ -3404,6 +3404,59 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
     seen
 }
 
+/// **A swing is a swing whether or not it hit anything.** `EV_SWING` is
+/// pushed from `gather::swing`'s cadence gate, the only line in the tree
+/// that runs exactly once per swing regardless of outcome, so the case
+/// this drives is the hard one: a body swinging at empty air.
+///
+/// `EV_HIT` cannot stand in for it, and this test says so by construction —
+/// nothing is struck here, so a fact keyed on a hit would produce zero
+/// events and `only` would fail on the vacuity rather than on the role.
+///
+/// Two mutants, both proven: moving the push below the target scan (so
+/// only a landed swing announces) reddens this with zero events, and
+/// putting `p.id` in `b` reddens the `a` assertion. `b` and `c` are
+/// asserted zero rather than ignored — they are the room this fact has for
+/// a held item later, and a stray value in one now is the positional
+/// payload trap this whole suite exists to catch.
+#[test]
+fn swing_names_the_swinger_and_nothing_else() {
+    use sim_core::gather::SWING_INTERVAL_TICKS;
+    assert_ne!(BODY, 0, "a zero swinger id makes the role check vacuous");
+    let mut w = lone_world();
+    let mut seq = 1u16;
+    let mut steps = 0u32;
+    loop {
+        w.tick(&[Command::Input {
+            id: BODY,
+            frame: InputFrame {
+                seq,
+                buttons: BTN_PRIMARY,
+                yaw: 0,
+                pitch: 0,
+                move_x: 0,
+                move_z: 0,
+                sel: 0,
+            },
+        }]);
+        seq = seq.wrapping_add(1);
+        if count(&w, EV_SWING) > 0 {
+            break;
+        }
+        steps += 1;
+        assert!(
+            steps < SWING_INTERVAL_TICKS as u32 * 4,
+            "no EV_SWING within four swing windows — the cause is broken, \
+             not slow"
+        );
+    }
+
+    let got = only(&w, EV_SWING);
+    assert_eq!(got.a, BODY, "EV_SWING.a is who swung");
+    assert_eq!(got.b, 0, "EV_SWING.b is reserved and must stay zero");
+    assert_eq!(got.c, 0, "EV_SWING.c is reserved and must stay zero");
+}
+
 /// Coverage, stated rather than implied — and now earned rather than
 /// asserted.
 ///
@@ -3433,7 +3486,7 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 39] = [
+    const COVERED: [(&str, u8); 40] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -3473,6 +3526,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_KNOWN", EV_KNOWN),
         ("EV_IMPACT", EV_IMPACT),
         ("EV_TRUST", EV_TRUST),
+        ("EV_SWING", EV_SWING),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next

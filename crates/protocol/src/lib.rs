@@ -62,11 +62,11 @@ pub use event::{
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_removed, encode_event_research, encode_event_research_refused,
     encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
-    encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH,
-    SLOT_SYNC_BATCH,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
+    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
+    BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
+    RESEARCH_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -617,7 +617,14 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// bump; the difference here is that existing bytes MOVED, which is why
 /// `goldens.rs`'s header requires such a regenerate to be its own commit
 /// and never to share a diff with an encoder change.
-pub const PROTO_VER: u16 = 46;
+/// **v47 (2026-08-18): one new event subtype, `SUB_SWING` = 52.** A remote
+/// body had no wire fact to animate from: `EV_HIT` is unicast to the
+/// attacker and drops field `a` at encode, and a *miss* — the commonest
+/// swing in the game — crossed nothing at all, so another player swinging
+/// at you was a body standing perfectly still (`NOW.md` §0sw). A new
+/// subtype is a layout change and takes the bump; the 95 existing fixtures
+/// re-key and one is appended.
+pub const PROTO_VER: u16 = 47;
 
 /// This game's slug in the scry catalog.
 ///

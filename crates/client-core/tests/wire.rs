@@ -46,7 +46,8 @@ use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
     encode_event_cont_sync, encode_event_death, encode_event_hit, encode_event_impact,
     encode_event_move_refused, encode_event_moved, encode_event_respawn, encode_event_shot,
-    encode_event_struct_hit, encode_event_vitals, InvSlot, WireBag, MAX_EVENT_MSG_BYTES,
+    encode_event_struct_hit, encode_event_swing, encode_event_vitals, InvSlot, WireBag,
+    MAX_EVENT_MSG_BYTES,
 };
 use sim_core::backpack::{BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
 use sim_core::gather::ItemStack;
@@ -703,4 +704,71 @@ fn garbage_is_refused_rather_than_applied() {
     assert_eq!(c.cont_kind, CONT_SELF);
     assert_eq!(c.pop_hit(), None);
     assert!(!c.dead);
+}
+
+/// A swing crosses whole and drains exactly once.
+///
+/// The payload is one `u32` and the failure it can have is positional in a
+/// different way from the packed events: a field read one bit narrow halves
+/// the id, one bit wide doubles it, and either way the arc plays on the
+/// wrong body or on none. The fixture id is chosen with bits in all four
+/// bytes for exactly that (`goldens::event_swing`).
+///
+/// Mutants: `w.read(32)` → `w.read(31)` in the decoder and the id comes
+/// back halved; drop `swing_len -= 1` in `pop_swing` and the drains-once
+/// half fails.
+#[test]
+fn a_swing_crosses_whole_and_drains_once() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    assert_eq!(c.pop_swing(), None, "the swing ring starts empty");
+
+    let swinger = protocol::goldens::event_swing();
+    let len = encode_event_swing(swinger, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(
+        c.pop_swing(),
+        Some(swinger),
+        "the swinger arrived at the wrong width or in the wrong seat"
+    );
+    assert_eq!(c.pop_swing(), None, "the swing ring must drain");
+}
+
+/// **The swing ring is bounded and says so** (wall 4).
+///
+/// A broadcast lane has no upper bound on how many bodies swing in the
+/// window between two frames, so the ring's overflow policy is load-bearing
+/// rather than theoretical. It is drop-OLDEST, and the assertion is about
+/// IDENTITY and not merely count: a ring that kept the oldest would also
+/// return `SWING_RING` entries and would draw the arcs that already
+/// finished instead of the ones that just started.
+///
+/// Red-proof: swap the drop-oldest block for an early `continue` (drop
+/// newest) and the identity assert fails while the count assert still
+/// passes — which is exactly why counting alone is not the gate.
+#[test]
+fn the_swing_ring_is_bounded_and_says_so() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    let n = client_core::core::SWING_RING + 3;
+    for i in 0..n {
+        let len = encode_event_swing(1000 + i as u32, &mut buf).unwrap();
+        feed(&mut c, &buf[..len]);
+    }
+    let mut got = Vec::new();
+    while let Some(s) = c.pop_swing() {
+        got.push(s);
+    }
+    assert_eq!(
+        got.len(),
+        client_core::core::SWING_RING,
+        "the ring must hold exactly its cap, never grow"
+    );
+    let want: Vec<u32> = (n - client_core::core::SWING_RING..n)
+        .map(|i| 1000 + i as u32)
+        .collect();
+    assert_eq!(
+        got, want,
+        "drop-oldest: the ring must keep the NEWEST swings, in order"
+    );
 }

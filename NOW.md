@@ -210,21 +210,65 @@ both and threw them away. Knobs and the full argument: `DECISIONS.md`
 
 Three gaps, in the order they are worth closing.
 
-1. **A melee swing leaves nothing**, and it is the same missing wire fact
-   as §0sw's remote swing animation rather than a second problem:
-   `EV_HIT` carries no position and a *miss* is not broadcast at all. Do
-   not solve it twice — whatever fact answers §0sw should carry a point.
-2. **A mark on a built piece faces its cell's dominant axis**, which is
-   right for a wall and wrong for a floor (it gets a wall's normal and
-   reads as a mark on the lip). Ground and world occupants are exact —
-   terrain gradient and slot centre, both shared worldgen. The fix is the
-   piece's address on `EV_IMPACT`; `SURF_BITS` has no spare value, but the
-   message has room.
+1. **Landed 2026-08-18 for a struck node, and it cost no wire byte.** The
+   premise here was wrong in a useful way: this said the mark needed the
+   same missing fact as §0sw, and it did not. `EV_IMPACT` was never an
+   arrow's fact — it is *a surface was struck at this point*, already
+   broadcast, already carrying a quantized point and a surface class, and
+   `render/decal.rs` was already its only reader. So `gather::swing`
+   pushes it where a landed swing bit an occupant, on the skin
+   (`occupant_volume` × slot scale) facing the swinger, at the shared eye
+   height — no `PROTO_VER` bump, no golden, no client line. Three gates in
+   `tests/gather.rs`, five red-proofs. **Still open: a swing at a built
+   PIECE marks nothing** (`combat::raid` is the site, `SURF_BUILT` the
+   kind) and it is deliberately behind item 2 — a piece mark faces the
+   wrong way on a floor today, and volume on a known-wrong path is not
+   progress. Flesh stays unmarked: `SURF_BITS` holds one spare code and
+   spending it on blood is a deliberate act nobody has asked for.
+2. **⚠ This item's symptom is UNREACHABLE, and the real defect is one
+   layer down** (measured 2026-08-18). It says a mark on a floor gets a
+   wall's normal — but no arrow has ever hit a floor: `collide::shot_blocked`
+   (`collide.rs:1014`) calls only `cell_edges_stop_shot` and
+   `cell_diags_block`, which read the wall/door/window/frame masks and the
+   two diagonals, and **never `ColIndex::planes`** — the field
+   `SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF` live in (`collide.rs:211`;
+   its only readers are `is_empty`, `piece_ground` and a test). So an arrow
+   fired down inside a base passes through every floor and lands on the
+   terrain as `SURF_GROUND`. **Fix that first** — a bullet that ignores
+   floors is a raid defect, not a decal one — and only then the address on
+   the message. What IS reachable in the facing arm today is a diagonal
+   wall, 45° out. Bit accounting for when it is time: a full piece address
+   is 27 bits, the message has 4 spare pad bits, so it grows to 11 bytes
+   (`MAX_EVENT_MSG_BYTES` is 320, so there is room to grow, not room
+   inside). `SURF_BITS`'s fourth value is dead-but-present, refused at both
+   ends and pinned by the wire-domain table.
+   Also open: a swing at a piece still marks nothing, and that is deliberate
+   until this is settled.
 3. **Spray paint is not this.** A player-authored mark that persists is a
    deployable, not a decal: a cap in `limits.rs`, a slot in
    `worldsave.rs`, a build-privilege question, decay, and — if the mark is
    painted rather than picked from N authored stencils — moderation
    forever. Decide stencil-vs-painted before any of it.
+
+⚠ **NOBODY HAS SEEN A DECAL, and it cannot be checked on a headless box**
+(measured 2026-08-18). The sim's half is confirmed: a swing at the boulder
+beside spawn emits `EV_IMPACT` at `1024.74, 12.86, 1025.07` with `surf 1`,
+0.98 m from the slot centre — that slot's scaled radius exactly — and the
+capture probe now walks to a node, swings, and points the camera at those
+coordinates. **The frame shows no mark.** Then the discriminating runs:
+5.5× `SIZE_M` — nothing; the boot-time prewarm decal at full alpha, 1.2 m
+across, flat on the terrain with an up normal — nothing. So **no
+`ForwardDecal` renders under lavapipe at any size, alpha or orientation**,
+and the arrow marks of 2026-08-16 have never been seen either.
+
+That is a claim about THIS BOX and not about the game: a software adapter
+is the environment that would degrade first, and the client logs *"Too many
+textures in mesh pipeline view layout, this might cause us to hit
+`max_sampled_textures_per_shader_stage` in some environments"* on boot,
+which is the leading suspect since a forward decal adds a binding. **One
+boot on a real GPU settles it** — swing at a rock and look — and that is an
+operator act, not a loop's. Until then treat every decal in this tree as
+unverified rather than as working or broken.
 
 Also open, and cheap: nothing prewarms the *other* materials. `decal.rs`
 pays `CLAUDE.md`'s shader-prewarm trap for its own pipeline and no module
@@ -240,17 +284,46 @@ the commonest swing in the game drew nothing. `Feed` stays as a backstop,
 gated on the arm being at rest so a hit arriving mid-stroke cannot restart
 the arc.
 
-What is still missing is the **other** half, and it is an asset gap rather
-than a code one: `render::anim::Clip` has five clips — Idle, Walk, Jog,
-Sprint, Sleep — and the mannequin `.glb` carries no swing, so **another
-player swinging at you is a body standing perfectly still**. That is worse
-than the first-person gap was: the one thing a fight needs to read is the
-wind-up. It wants a `Swing_Once` clip on the shared skeleton
-(`assets/models/WANTED.md`'s queue), a one-shot rather than a loop, and a
-trigger — `EV_HIT` is broadcast but a *miss* is not, so drawing a remote
-whiff needs either a wire fact or the same cadence prediction run per remote
-body off their input, which the client does not receive. Take the clip
-first; decide the trigger against what it costs.
+⚠ **This item said the other half was an ASSET gap and that was false**
+(corrected 2026-08-18, and it would have cost a mesh purchase). The shipped
+`assets/models/mannequin.gltf` carries **46 clips** including `Sword_Attack`
+(1.5 s), `Punch_Cross` and `Punch_Jab`, all on the same 53-joint skeleton —
+`MANIFEST.md` and `WANTED.md` both say 46 and only this line said
+otherwise. Nothing needs buying.
+
+**Landed 2026-08-18.** `EV_SWING` (broadcast, outcome-free, wire v47)
+carries the swinger's id and nothing else — no position, because the
+snapshot already says where every body is, and the one thing a client
+cannot derive is that the arm moved. Pushed from `gather::swing`'s cadence
+gate, the only line that runs once per swing whatever the swing finds, so a
+**whiff animates** — which is the commonest swing in the game. `Clip::Swing`
+is the first one-shot in `anim.rs` (`.repeat()` omitted; `RepeatAnimation::
+default()` is `Never`), living beside the gait as `BodyAnim::swing_s` rather
+than inside `clip`, which `observe` recomputes from speed every frame.
+Gates: the role check on a whiff, a server routing gate proven red both
+unicast and armless, the ring's drop-oldest identity, and a source scrape
+that catches the four-literal array width that would otherwise panic the
+first time somebody swings near you.
+
+⚠ **Nothing has ever played the clip.** `client/tests/anim.rs` is a source
+scrape by construction, `client-core/tests/wire.rs` stops at the ring, and
+no headless test spawns a `SceneRoot`. The wire half is gated end to end;
+the arc itself is unseen, exactly like the decal above. And the throughput
+half of the fan-out is unpriced: `EV_SWING` is one broadcast per swing per
+player with no AOI filter, so a 100-player shard swinging pays 100× the
+per-client event rate — `raid_storm.rs` cannot see it, because that gate's
+bots never press `BTN_PRIMARY`. A soak with swinging bots is the
+measurement, and it is the same gap wall 4 has had since the soak landed.
+
+Two things remain, and the first needs a word rather than work. **The clip
+is `Punch_Cross` and the ask was a rock swing** — arithmetic, not taste:
+the sim allows a swing every 1.267 s and `Sword_Attack` is 1.5 s, 1.68 s
+with the blend, so every arc would be cut off by the next. Accept the
+punch or shorten the sword clip (`DECISIONS.md` §open). **And the swing is
+silent for a remote**: `Cue::Swing` is non-positional with a 120 ms
+cooldown because it is the local player's, so reusing it would play every
+island swing at full volume with no pan. A positional cue is its own slice.
+The lane now exists for `Death01` and `Hit_Chest` too.
 
 ## 0die · Two questions to re-take, no defect left *(operator)*
 
@@ -351,7 +424,14 @@ gates `client/tests/pieces.rs` + `sim-core/build.rs` §tests:
 
 Remaining, ranked:
 
-1. **Nobody has looked at either.** Boot, build a row, hit it.
+1. **Nobody has looked at either, and the probe still cannot stage it.**
+   The capture harness can walk to a world node and swing at it now
+   (2026-08-18), which is what §0mk needed, but it cannot BUILD — a piece
+   is a verb behind a wheel and a material cost, so "build a row and hit
+   it" is still a person at a keyboard. Landing that in the probe is the
+   next slice if this item is picked up; the swing pass is the shape to
+   copy. ⚠ And see §0mk: no decal renders under lavapipe at all, so a
+   headless run cannot check surfaces that carry marks either.
 2. **The catalogue is 11 shapes against the reference's 20** (`BUILDING.md`
    §7b.1) — no half/low wall, floor frame, steps, ramp, 3 of 4 stairs. Rule 6
    is silhouette before surface, so this outranks more material work.

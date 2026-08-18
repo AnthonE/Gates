@@ -392,16 +392,29 @@ pub const EV_GATHER_REFUSED: u8 = 37;
 /// landed is a world fact, and the mark it leaves is visible to anyone who
 /// walks past it later. A client that misses one loses a scuff.
 ///
-/// **It fires only where an arrow met the WORLD.** `ranged::step` resolves
-/// a body first and leaves by another door, so flesh is `EV_HIT` and this
-/// is everything else — the two are exclusive and a reader never has to
-/// ask which kind of mark to make.
+/// **It fires only where something met the WORLD, never where it met
+/// flesh.** `ranged::step` resolves a body first and leaves by another
+/// door, so flesh is `EV_HIT` and this is everything else — the two are
+/// exclusive and a reader never has to ask which kind of mark to make.
+///
+/// **Two producers since 2026-08-18, and it was never really an arrow's
+/// fact.** `ranged::step` pushes it where an arrow stopped, and
+/// `gather::swing` pushes it where a landed melee swing bit an occupant
+/// (`NOW.md` §0mk item 1). The fact is *a surface was struck at this
+/// point*, which belongs to neither verb, so a mark on a tree cost no wire
+/// byte, no `PROTO_VER` bump and no client line — `render/decal.rs` was
+/// already the single reader and could not tell the two apart, which is
+/// the test of whether reuse was honest rather than convenient. A swing
+/// the node REFUSES pushes nothing: the mark sits below that arm, so a
+/// torch waved at a tree leaves the bark clean.
 ///
 /// The position is here rather than read back out of a store at encode
-/// (`EV_BAG_DROPPED`'s trick) because there is nothing left to read: the
-/// arrow's slot is freed on the same line that pushes this. An impact is a
-/// fact about a moment, not about a thing that persists, which is also why
-/// nothing about it is saved — see `worldsave.rs` for what is.
+/// (`EV_BAG_DROPPED`'s trick) because on the arrow path there is nothing
+/// left to read — the arrow's slot is freed on the same line that pushes
+/// this — and on the swing path the point is not a thing at all, only the
+/// place where two things touched. An impact is a fact about a moment, not
+/// about a thing that persists, which is also why nothing about it is
+/// saved — see `worldsave.rs` for what is.
 pub const EV_IMPACT: u8 = 38;
 
 /// EV_TRUST: a = the player who acted, b = the counterparty — the player
@@ -450,6 +463,32 @@ pub const EV_IMPACT: u8 = 38;
 /// `tests/event_roles.rs` asserts its verb's own event is on the tick
 /// beside the trust row.
 pub const EV_TRUST: u8 = 39;
+
+/// EV_SWING: a = the swinging player's id, b = 0, c = 0.
+///
+/// **Broadcast**, `EV_SHOT`'s posture and its reason: a swing is a fact
+/// about a body that other clients are drawing, and a client that misses
+/// one loses an arc. It carries no position, because it does not need to —
+/// every body's place is already in the snapshot, and the one thing a
+/// remote client cannot derive is *that the arm moved*, since it never
+/// receives another player's input frame.
+///
+/// **Outcome-free, and that is the whole point.** It fires once per swing
+/// on a hit AND on a whiff, from the only line in the tree that runs
+/// exactly once per swing regardless of what the swing found:
+/// `gather::swing`'s cadence gate. Every later exit — a refusal, a free
+/// arm handed on to flesh, a smashed barrel — is downstream of a decision
+/// the swinger has already committed to with their arm. A fact that only
+/// fires when something was hit is not a swing fact; it is a hit fact, and
+/// this lane already has one (`EV_HIT`), which is unicast to the attacker
+/// and drops field `a` at encode precisely because it is theirs alone.
+///
+/// **`b` and `c` are zero and stay zero until something reads them.** The
+/// held item would be cheap in bits and would make an a/b transposition
+/// detectable by `event_roles.rs`'s own discipline, but nothing draws a
+/// different arc for a rock than for a hatchet yet, and a field nobody
+/// reads is a field nobody maintains (`validate.rs` names that shape).
+pub const EV_SWING: u8 = 40;
 
 /// Which trust-bearing verb `EV_TRUST.c` is about, in its high byte.
 ///
@@ -515,7 +554,7 @@ pub const PRESENCE_MAX: u8 = PRESENCE_GONE;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_TRUST;
+pub const EV_MAX: u8 = EV_SWING;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server

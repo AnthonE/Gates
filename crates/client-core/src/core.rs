@@ -63,6 +63,23 @@ pub const CHAT_RING: usize = 16;
 /// same reason.
 pub const IMPACT_RING: usize = 8;
 
+/// Buffered swings — one entry is one body's arm starting to move
+/// (wire v47).
+///
+/// **Eight, and eight because `FEED_CAP` is eight.** The render side drains
+/// this into a fixed `Feed` buffer of that size every frame, so a deeper
+/// ring here could only ever hand the drain a surplus it must then count as
+/// dropped — a queue that overflows one layer further in is not a bigger
+/// queue, it is a bigger silence. Sized against the shard rather than
+/// guessed: `SWING_INTERVAL_TICKS` is 38, so 100 players all swinging as
+/// fast as the sim allows produce ~2.6 swings a tick, and a frame that fell
+/// behind by three ticks would still fit.
+///
+/// Drop-**oldest**, `IMPACT_RING`'s policy for `IMPACT_RING`'s reason: if
+/// more arrive than a frame can take, the newest are the arcs still worth
+/// drawing.
+pub const SWING_RING: usize = 8;
+
 /// What one event-lane message changed, as bit flags the bridge hands JS.
 pub const APPLIED_INV: u32 = 1 << 0;
 pub const APPLIED_SLOTS: u32 = 1 << 1;
@@ -1062,6 +1079,9 @@ pub struct ClientCore {
     impacts: [(i32, i32, i32, u8); IMPACT_RING],
     impact_head: usize,
     impact_len: usize,
+    swings: [u32; SWING_RING],
+    swing_head: usize,
+    swing_len: usize,
     /// Grants this client earned (lock v1): address + `lock::GRANT_*`. An
     /// own-fact, and the only thing that tells a client its code landed —
     /// the door itself does not move on a correct code.
@@ -1240,6 +1260,9 @@ impl ClientCore {
             impacts: [(0, 0, 0, 0); IMPACT_RING],
             impact_head: 0,
             impact_len: 0,
+            swings: [0; SWING_RING],
+            swing_head: 0,
+            swing_len: 0,
             knock_head: 0,
             knock_len: 0,
             auths: [(0, 0, 0, 0, 0); REFUSAL_RING],
@@ -2038,6 +2061,18 @@ impl ClientCore {
                     (qx, qy, qz, surf);
                 self.impact_len += 1;
             }
+            EventMsg::Swing { swinger } => {
+                // Drop-oldest, and nothing is validated: an id that names
+                // no body simply matches nothing when `render::bodies`
+                // walks its live set, which is the same answer it gives a
+                // body that left the interest band mid-arc.
+                if self.swing_len == SWING_RING {
+                    self.swing_head = (self.swing_head + 1) % SWING_RING;
+                    self.swing_len -= 1;
+                }
+                self.swings[(self.swing_head + self.swing_len) % SWING_RING] = swinger;
+                self.swing_len += 1;
+            }
             EventMsg::Knock {
                 cx,
                 cz,
@@ -2312,6 +2347,24 @@ impl ClientCore {
         self.impact_head = (self.impact_head + 1) % IMPACT_RING;
         self.impact_len -= 1;
         Some(i)
+    }
+
+    /// Oldest buffered swing: the id of a body whose arm started to move.
+    ///
+    /// **Single-consumer, like every `pop_*` here.** `render::feed::drain`
+    /// is the one caller and `render::bodies::stream` reads the drained
+    /// slice through `Res<Feed>` — the clean-merge trap in CLAUDE.md is
+    /// this exact ring shape, and `tests/sound.rs` derives its verb list
+    /// from this file, so a ring added and never drained reddens on its
+    /// own and a second reader reddens too.
+    pub fn pop_swing(&mut self) -> Option<u32> {
+        if self.swing_len == 0 {
+            return None;
+        }
+        let s = self.swings[self.swing_head];
+        self.swing_head = (self.swing_head + 1) % SWING_RING;
+        self.swing_len -= 1;
+        Some(s)
     }
 
     /// Oldest buffered grant: the lock's address and what it now allows
