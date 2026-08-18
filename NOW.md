@@ -2408,27 +2408,29 @@ so rather than a comment.
 
 ## 5d · The agent player has a spec and no code *(systems lane)*
 
-`PLAYERS.md` landed 2026-08-05 — the verb set, the observation encoder, and
-four walls with their gates. Nothing under it is built. `sim-core/bots.rs`
-already drives deterministic synthetic input, so the missing piece is the
-intent layer above it, not a new client.
+`PLAYERS.md` landed 2026-08-05 — the verb set, the observation encoder, four
+walls. `bots.rs` already drives synthetic input; the intent layer is missing.
 
-Smallest useful slice, and it is not the API: **log the condition.** Every
-trust-bearing verb (door, TC authorize, container access, give) gains an
-event carrying whether the counterparty was online, landing inside
-`tests/event_roles.rs` with two causes per code in the same commit (§4's
-discipline). That field is the whole measurement `SUBSTRATE.md` §3 turns on,
-it is ordinary game state a human client already sees, and retrofitting it
-makes every shard-hour logged before it worthless. It is also independently
-useful: offline-raid telemetry is a thing the game wants anyway.
+**LANDED 2026-08-18 — the condition is logged.** `EV_TRUST` (code 39):
+a = actor, b = counterparty, c = `TRUST_*` << 8 | `PRESENCE_*`, pushed by
+`World::log_trust` from four sites — a leaf worked (`deploy::use_door`), a
+lock's code accepted (`lock_op`), a hearth crew seat taken (`crew_op`), a
+box/oven/bag moved through (`World::move_item`). It fires only when the
+record's owner is somebody else; `owner == actor`, `owner == 0` and a
+`mob::mob_id` are silent. Presence is three values, not a bool — awake,
+asleep, **gone** (the body left its slot). Sim-side only, so no wire byte
+moved and wall 6 is untouched. Six checks in `tests/event_roles.rs` — four
+causes, five silences, one ledger parse — and 15 mutants reproduced red
+before any of it was believed.
 
-Then the verb table, then an agent client that plays badly. Wall 1 (agent
-verbs ⊆ human verbs) wants its gate in the same commit as the table, not
-after — it is a subset assertion over two lists and cheap while both are
-small.
-
-Not this lane's call: what an agent pays to enter and what it earns
-(`ALPHA.md` + scry side).
+Remains, in order:
+- **Nothing reads it.** `ShardCore`'s drain hits `_ => {}`: a row is minted
+  and dropped, so no shard-hour is recorded until a server lane sinks it.
+- **A dropped row is gone** — it rides the 256-seat drop-newest ring, and
+  unlike every other event a resync cannot re-derive a fact about a moment.
+- `TRUST_GIVE` waits on the give verb; there is no player-to-player give.
+- Then the verb table, wall 1's subset gate in the same commit, then an agent
+  client that plays badly. Entry price and earnings are `ALPHA.md`.
 
 ## OP · the operator lane — a loop cannot pick any of these
 
