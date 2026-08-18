@@ -422,9 +422,15 @@ pub fn count_badge(count: u16) -> Option<String> {
 /// session-learned ceiling (max `cond` seen per item) was considered and
 /// REFUSED on the way: a tool looted half-worn would read pristine, which
 /// is the exact lie the pip exists to prevent; and hardcoding the per-item
-/// table here is wall 7's business. What still remains is the drawing —
-/// the panels call nothing yet, and the bar wants `ART.md`'s pass
-/// (`NOW.md` §0dur item 1).
+/// table here is wall 7's business.
+///
+/// **Drawn since 2026-08-17** by all three cells that hold a stack — the
+/// hotbar (`render::hud`), the inventory and container grids and the drag
+/// ghost (`render::panels::inv`) — and by nothing else, which is a property
+/// of call sites rather than of this value, so `tests/ui.rs` §Q scans for
+/// them. The colours and the bar's height are
+/// `render::panels::{PIP_FILL, PIP_TROUGH, PIP_H_PX}`; this function decides
+/// only whether there is a bar and how full it is.
 pub fn pip_fraction(cond: u16, cond_max: u16) -> Option<f32> {
     (cond < cond_max).then(|| cond as f32 / cond_max as f32)
 }

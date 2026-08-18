@@ -145,8 +145,15 @@ pub struct Ui {
 /// changes and not otherwise.
 #[derive(Default)]
 pub(crate) struct Seen {
-    pub inv: [(u16, u16); sim_core::limits::INV_SLOTS],
-    pub cont: [(u16, u16); sim_core::limits::INV_SLOTS],
+    /// `(item, count, cond)` per slot. **Condition is in the key**, and it
+    /// was not until the durability pip landed: a panel that redraws on
+    /// `(item, count)` alone cannot see a tool wear, so the bar it drew
+    /// would keep claiming a condition the stack no longer has. Nothing
+    /// wears while this screen is open in v0 — you cannot swing through it
+    /// — so this is not a defect being fixed but the door being shut before
+    /// repair or wear-on-hit walks through it.
+    pub inv: [(u16, u16, u16); sim_core::limits::INV_SLOTS],
+    pub cont: [(u16, u16, u16); sim_core::limits::INV_SLOTS],
     pub cont_kind: u8,
     pub cont_handle: u32,
     pub jobs: [(u8, u8); sim_core::limits::CRAFT_QUEUE],
@@ -253,6 +260,29 @@ pub const VITAL_WATER: Color = Color::srgb(0.306, 0.592, 0.816);
 pub const VITAL_FOOD: Color = Color::srgb(0.765, 0.435, 0.212);
 /// The trough a vital bar sits in.
 pub const VITAL_TROUGH: Color = Color::srgba(0.106, 0.098, 0.086, 0.72);
+
+// ---- the durability pip (`NOW.md` §0dur item 1) ----------------------------
+//
+// A cell's second number, drawn as a bar rather than a digit: a fraction of a
+// maximum, which is the same statement the vitals stack makes, so it is drawn
+// in the same two colours rather than in a third pair nobody measured.
+// `ui::slots::pip_fraction` owns *whether* there is a bar; these own what it
+// looks like. Proposed defaults (`DECISIONS.md` §open, "durability pip v0").
+//
+// **One colour, no threshold tier.** A green-to-red ramp at some fraction is
+// the obvious embellishment and it would be an invented knob: nothing in
+// `reference/DURABILITY.md` sources a warning band, and the state that
+// actually matters — a dead tool — is already distinct without one, because a
+// pristine item draws no bar at all and a dead one draws the trough empty.
+/// The durability pip's fill.
+pub const PIP_FILL: Color = VITAL_HP;
+/// The trough it sits in — the vitals' own, so an empty bar reads as empty
+/// rather than as a cell with a dark edge.
+pub const PIP_TROUGH: Color = VITAL_TROUGH;
+/// The pip's height, px. Thin on purpose: at [`CELL_PX`] the bar shares the
+/// bottom edge with the count badge, and anything taller starts competing
+/// with the icon for the cell it is annotating.
+pub const PIP_H_PX: f32 = 3.0;
 
 /// Grid cell edge, px. Proposed default, same `DECISIONS.md` row.
 ///
@@ -554,10 +584,10 @@ pub fn rebuild(
 
     // Change detection against the core's authoritative view.
     if ui.panel != Panel::None {
-        let inv: [(u16, u16); sim_core::limits::INV_SLOTS] =
-            std::array::from_fn(|i| (core.inv[i].item, core.inv[i].count));
-        let cont: [(u16, u16); sim_core::limits::INV_SLOTS] =
-            std::array::from_fn(|i| (core.cont[i].item, core.cont[i].count));
+        let inv: [(u16, u16, u16); sim_core::limits::INV_SLOTS] =
+            std::array::from_fn(|i| (core.inv[i].item, core.inv[i].count, core.inv[i].cond));
+        let cont: [(u16, u16, u16); sim_core::limits::INV_SLOTS] =
+            std::array::from_fn(|i| (core.cont[i].item, core.cont[i].count, core.cont[i].cond));
         if inv != ui.seen.inv
             || cont != ui.seen.cont
             || core.cont_kind != ui.seen.cont_kind

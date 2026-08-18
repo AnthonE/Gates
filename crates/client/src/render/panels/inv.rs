@@ -67,13 +67,14 @@ use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS};
 
 use super::{
     craft, font, font_bold, GhostRoot, Panel, PanelRoot, Ui, BADGE, CELL_BG, CELL_FULL,
-    CELL_GAP_PX, CELL_HOVER, CELL_PX, LINE, LINE_HOT, PANEL_BG, SCRIM, TEXT, TEXT_DIM,
+    CELL_GAP_PX, CELL_HOVER, CELL_PX, LINE, LINE_HOT, PANEL_BG, PIP_FILL, PIP_H_PX, PIP_TROUGH,
+    SCRIM, TEXT, TEXT_DIM,
 };
 use crate::render::icons::Icons;
 use crate::ui::craft::{cell_abbrev, item_label, CELL_LINE_CHARS};
 use crate::ui::slots::{
-    container_cols, container_name, count_badge, ghost_origin, move_args, refusal_text, slots_in,
-    Drag, Grab,
+    container_cols, container_name, count_badge, ghost_origin, move_args, pip_fraction,
+    refusal_text, slots_in, Drag, Grab,
 };
 
 /// One addressable cell. `kind` is a `CONT_*`, so the same component serves
@@ -375,7 +376,55 @@ fn cell(
                         Pickable::IGNORE,
                     ));
                 }
+                // The other number a cell carries, and the one a player has
+                // no other way to read: `cond` has been on the wire since
+                // v42 and its ceiling since v46, and until now every panel
+                // drew both of them nowhere.
+                pip(c, stack, core);
             }
+        });
+}
+
+/// The durability pip: a thin trough under the cell's icon with a fill, or
+/// nothing at all.
+///
+/// `ui::slots::pip_fraction` decides all three states and the argument for
+/// them is written there — the short version is that a pristine tool draws
+/// nothing, because a full bar under every fresh tool is a screen of bars.
+///
+/// **Absolute and pinned to both side edges** rather than laid out in the
+/// cell's column: the flow in a cell is the icon and the count badge, and a
+/// bar taking part in it would push the badge off the corner every reference
+/// frame puts it in. Pinning `left` and `right` also means the bar is the
+/// cell's own width whatever the padding and border do to the content box,
+/// which is what the icon's hand-fitted `CELL_PX - 10` does not.
+fn pip(parent: &mut ChildSpawnerCommands, stack: ItemStack, core: &ClientCore) {
+    let Some(frac) = pip_fraction(stack.cond, core.catalog.cond_max(stack.item as usize)) else {
+        return;
+    };
+    parent
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                bottom: Val::Px(0.0),
+                height: Val::Px(PIP_H_PX),
+                ..default()
+            },
+            BackgroundColor(PIP_TROUGH),
+            Pickable::IGNORE,
+        ))
+        .with_children(|trough| {
+            trough.spawn((
+                Node {
+                    width: Val::Percent(frac * 100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+                BackgroundColor(PIP_FILL),
+                Pickable::IGNORE,
+            ));
         });
 }
 
@@ -679,6 +728,11 @@ fn spawn_ghost(
                     Pickable::IGNORE,
                 ));
             }
+            // The ghost is a copy of the source cell, and the pip is part of
+            // the copy: an item carrying condition never stacks (content rule
+            // V7), so `units` is the whole of it and the bar on the cursor is
+            // the bar that will land.
+            pip(g, stack, core);
             // Hung off the tile rather than laid out under it: an in-flow
             // caption would be as wide as the name and would recentre the
             // tile it is captioning, which is the one thing this ghost's
