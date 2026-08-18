@@ -295,6 +295,70 @@ pub struct ShardStats {
     pub net_sndbuf_bytes: AtomicU64,
     /// Asked-for UDP send buffer.
     pub net_sndbuf_asked: AtomicU64,
+    // ── Lane bytes (NOW.md §0q item 4, "real bytes") ────────────────────
+    //
+    // The soak's headline bandwidth number was a **ceiling** — budget ×
+    // rate × clients, computed by hand — because nothing in the shard had
+    // ever counted a byte. These four pairs are the measurement, and they
+    // are four pairs rather than one number for two reasons.
+    //
+    // **The lanes are counted apart** because they degrade apart: the
+    // datagram lane sheds under budget pressure and the stream lane
+    // backpressures, so a single conflated total would move for reasons an
+    // operator could not tell apart, which is worse than no number.
+    //
+    // **Bytes carry a count** because bytes alone cannot separate "more
+    // packets" from "fatter packets" — the same kB/s is a snapshot rate
+    // problem or an AOI fill problem depending on which half moved, and
+    // those have opposite fixes.
+    //
+    // **Aggregate, not per-client**, deliberately: the send/receive sites
+    // hold a slot index into `SlotTable`, which is a table of state *words*
+    // and nothing else, so a per-client byte table would be a new structure
+    // invented for a counter. The per-client half already exists on the
+    // other end — `botclient::BotReport` measures one client's own bytes and
+    // `bin/bots` prints a line per bot — so a soak gets its distribution
+    // there and its shard truth here, divided by the `players` gauge.
+    //
+    // **Payload bytes, on the steady-state lanes.** What QUIC then spends on
+    // headers, ACKs and encryption is not here; `net_sent_packets` is, so the
+    // two together are the overhead ratio. The handshake is excluded too — a
+    // per-join constant is not part of a rate, and threading a counter
+    // through five accept-path helpers to say so would buy nothing.
+    /// Snapshot datagram payload bytes the socket **accepted** — counted on
+    /// `Ok` from `send_datagram` and nowhere else, so an oversize refusal or
+    /// a dead connection moves `snap_send_errors` and leaves this alone.
+    /// Bytes we asked to send are not bytes that went (`net_rcvbuf_bytes`
+    /// exists for the same reason one lane up).
+    pub net_dg_out_bytes: AtomicU64,
+    /// Snapshot datagrams accepted. `net_dg_out_bytes / this` is the mean
+    /// snapshot size, which is the number `DATAGRAM_BUDGET_BYTES` is a
+    /// ceiling for and which nothing has ever compared against it.
+    pub net_dg_out_count: AtomicU64,
+    /// Input datagram payload bytes that **arrived**, counted before the
+    /// decode and regardless of it: a forged or malformed datagram cost the
+    /// same path the same bytes, and a bandwidth number that only counted
+    /// the well-formed ones would flatter a shard under exactly the load it
+    /// matters under.
+    pub net_dg_in_bytes: AtomicU64,
+    /// Input datagrams that arrived. Sums with `input_dg_ok` +
+    /// `input_dg_bad` + `input_dg_forged`, which is the cross-check.
+    pub net_dg_in_count: AtomicU64,
+    /// Event-lane bytes written to the reliable stream, **length prefix
+    /// included** — the prefix is on the wire, so a count that left it out
+    /// would understate the lane by two bytes per frame, and the event lane
+    /// is the one that sends many small frames.
+    pub net_stream_out_bytes: AtomicU64,
+    /// Event-lane frames written. Counted only on a write that returned
+    /// `Ok`; a frame that died half-written is counted as `ev_send_errors`
+    /// and its partial bytes are deliberately not guessed at.
+    pub net_stream_out_frames: AtomicU64,
+    /// C→S action/chat bytes read off the reliable stream, prefix included
+    /// and counted before the demux, so a chat line the limiter refuses
+    /// still cost what it cost.
+    pub net_stream_in_bytes: AtomicU64,
+    /// C→S frames read.
+    pub net_stream_in_frames: AtomicU64,
     /// Connection attempts answered with a QUIC Retry — the address had not
     /// proved it can receive, and the shard was busy enough to make it
     /// prove that before spending a handshake. Costs a legitimate joiner one
@@ -376,6 +440,18 @@ impl ShardStats {
     /// and must be counted once (`core.rs` says where).
     pub fn add(field: &AtomicU64, n: u64) {
         field.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// Record one message on a lane: its count and its bytes, in one call.
+    ///
+    /// Paired on purpose. Two `add` calls at the site are the same two
+    /// atomics right up until somebody adds a lane and writes one of them,
+    /// and a byte total with no message count cannot tell "more packets"
+    /// from "fatter packets" — which is the whole reason the byte counters
+    /// come in pairs (see the lane-bytes block above).
+    pub fn add_msg(count: &AtomicU64, bytes: &AtomicU64, n: usize) {
+        count.fetch_add(1, Ordering::Relaxed);
+        bytes.fetch_add(n as u64, Ordering::Relaxed);
     }
 
     pub fn get(field: &AtomicU64) -> u64 {

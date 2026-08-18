@@ -17,7 +17,7 @@
 //! server cannot tell a raiding bot from a player, which is the whole point:
 //! a refusal counted here was earned on the real path.
 
-use crate::net::{client_handshake, read_event_frame, write_frame};
+use crate::net::{client_handshake, read_event_frame, write_frame, FRAME_PREFIX_BYTES};
 use crate::view::{Applied, ClientView};
 use protocol::{
     decode_event, encode_action_access, encode_action_demolish, encode_action_deploy,
@@ -57,6 +57,35 @@ pub struct BotReport {
     /// the lane like any real client must — an unread lane backpressures).
     pub events_received: u64,
     pub event_decode_errors: u64,
+
+    // ---- what this client actually cost the wire (NOW.md §0q item 4) -----
+    //
+    // The **per-client** half of the byte measurement. The shard counts its
+    // lanes in aggregate (`ShardStats`, and see the lane-bytes block in
+    // `stats.rs` for why it cannot do better without inventing a per-client
+    // table); one bot already is a client, so the same four lanes measured
+    // here are a *distribution* rather than a mean — which is the thing a
+    // shard total divided by `players` can never be.
+    //
+    // Only bytes are new: the frame and datagram counts they pair with are
+    // already above (`inputs_sent`, `events_received`, `actions_sent`), and
+    // a second count of the same events would be a number that can disagree
+    // with itself.
+    /// Snapshot datagram bytes that arrived, counted before the decode and
+    /// regardless of it — the path charged for them either way.
+    pub dg_in_bytes: u64,
+    /// Snapshot datagrams that arrived. Not the same as
+    /// `snapshots_applied`: a stale or baseline-less one still crossed.
+    pub dg_in_count: u64,
+    /// Input datagram bytes the socket accepted (pairs with `inputs_sent`).
+    pub dg_out_bytes: u64,
+    /// Event-lane bytes read off the reliable stream, length prefix
+    /// included (pairs with `events_received` + `event_decode_errors`).
+    pub ev_in_bytes: u64,
+    /// Action-lane bytes written, prefix included (pairs with
+    /// `actions_sent`); a write that failed is not counted here and is
+    /// `action_lane_errors` instead.
+    pub act_out_bytes: u64,
 
     // ---- the raid lane (`None` rows = this bot only walks) ----------------
     /// Action frames written over the reliable stream.
@@ -111,6 +140,10 @@ pub struct BotReport {
 struct EventTally {
     received: AtomicU64,
     decode_errors: AtomicU64,
+    /// Bytes off the event stream, prefix included. Lives here rather than
+    /// on `BotReport` because the lane is drained on its own task — the
+    /// same reason `received` does.
+    bytes: AtomicU64,
     build_refused: AtomicU64,
     deploy_refused: AtomicU64,
     move_refused: AtomicU64,
@@ -279,6 +312,9 @@ pub async fn run_bot(
         tokio::spawn(async move {
             let mut recv = recv;
             while let Some((buf, len)) = read_event_frame(&mut recv).await {
+                tally
+                    .bytes
+                    .fetch_add((FRAME_PREFIX_BYTES + len) as u64, Ordering::Relaxed);
                 match decode_event(&buf[..len]) {
                     Ok(ev) => {
                         tally.received.fetch_add(1, Ordering::Relaxed);
@@ -350,6 +386,9 @@ pub async fn run_bot(
                     // send_datagram, never _wait (the trap list).
                     if connection.send_datagram(&dg_buf[..len]).is_ok() {
                         report.inputs_sent += 1;
+                        // On `Ok` only: what the socket took, not what we
+                        // handed it (`net.rs` counts its side the same way).
+                        report.dg_out_bytes += len as u64;
                     }
                 }
                 report.last_executed_seq = view.last_executed_seq;
@@ -388,6 +427,8 @@ pub async fn run_bot(
                                 Some(Ok(len)) => {
                                     if write_frame(&mut send, &act_buf[..len]).await.is_ok() {
                                         report.actions_sent += 1;
+                                        report.act_out_bytes +=
+                                            (FRAME_PREFIX_BYTES + len) as u64;
                                     } else {
                                         // The stream is gone. Keep walking
                                         // rather than ending the run: a
@@ -406,6 +447,8 @@ pub async fn run_bot(
             }
             dg = connection.receive_datagram() => {
                 let dg = dg.map_err(|e| format!("receive: {e}"))?;
+                report.dg_in_count += 1;
+                report.dg_in_bytes += dg.len() as u64;
                 if peek_kind(&dg) != Ok(KIND_SNAPSHOT) {
                     report.decode_errors += 1;
                     continue;
@@ -431,6 +474,7 @@ pub async fn run_bot(
                 report.last_executed_seq = view.last_executed_seq;
                 report.events_received = tally.received.load(Ordering::Relaxed);
                 report.event_decode_errors = tally.decode_errors.load(Ordering::Relaxed);
+                report.ev_in_bytes = tally.bytes.load(Ordering::Relaxed);
                 report.build_refused = tally.build_refused.load(Ordering::Relaxed);
                 report.deploy_refused = tally.deploy_refused.load(Ordering::Relaxed);
                 report.move_refused = tally.move_refused.load(Ordering::Relaxed);

@@ -2127,12 +2127,19 @@ is `crates/`/wire work no single-surface lane may take.
    interest band both held at a population they had never met. The anomaly
    log's whole path was proven in the same run (8 bots against a full shard
    made `refused_full` move, and the file gained exactly that line).
-   **Four things it still does not have**, each its own small item: real
-   **bytes** (nothing counts them — the 16.5 kB/s/client figure is a
-   ceiling, not a measurement), jitter as a **distribution** rather than a
-   threshold crossing, an **hour** (this was 25 minutes, so slow leaks are
-   not excluded), and **contention** — bots walk, they do not raid, so wall
-   4's caps are still gated one site at a time.
+   ~~real **bytes**~~ — **counted 2026-08-18.** Four lanes apart in
+   `ShardStats` (datagram/stream × in/out, each a byte total *and* a message
+   count, because bytes alone cannot tell "more packets" from "fatter
+   packets"), aggregate on the shard and per-client on `bin/bots`, served by
+   `/status.json`. So the next soak divides by `secs` and reports a measured
+   kB/s/client instead of a ceiling. Not counted, and stated in `stats.rs`:
+   the handshake (a per-join constant, not a rate) and QUIC's own framing
+   (`net_sent_packets` is the other half of that ratio).
+   **Three things it still does not have**, each its own small item: jitter
+   as a **distribution** rather than a threshold crossing, an **hour** (this
+   was 25 minutes, so slow leaks are not excluded), and **contention** —
+   bots walk, they do not raid, so wall 4's caps are still gated one site at
+   a time.
 4. **You cannot stand ON anything.** `movement::step` asks `slot_blocks` and
    nothing asks a ground query for occupants — the shelter's plinth reads as
    a kerb you sink into, crate and boulder tops the same (`terrain.rs`'s
