@@ -3181,17 +3181,21 @@ impl ShardCore {
             qvy: p.body.qvy,
             grounded: p.body.grounded,
             sleeping: p.sleeping,
+            dead: p.dead,
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
         }
     }
 
-    /// One animal as the same record. Three of the nine fields have no
+    /// One animal as the same record. Four of the ten fields have no
     /// meaning here and each is answered rather than left to a default:
     /// `pitch` is zero because nothing about a pig looks up or down;
     /// `sleeping` is false because that bit means *nobody is driving this
     /// body*, and something always is — dormancy is not the same fact and
-    /// a client would draw the slumped pose for it; `yaw` is the animal's
+    /// a client would draw the slumped pose for it; `dead` is false because
+    /// a mob that dies is *removed* rather than left in its slot (`mob.rs`
+    /// clears `alive` and the snapshot skips it), so unlike a player there
+    /// is never a corpse of one on the wire to flag; `yaw` is the animal's
     /// heading, which is both where it is going and where it is facing,
     /// because a quadruped does not strafe.
     fn wire_mob(slot: usize, m: &sim_core::mob::Mob) -> EntityState {
@@ -3203,6 +3207,7 @@ impl ShardCore {
             qvy: m.body.qvy,
             grounded: m.body.grounded,
             sleeping: false,
+            dead: false,
             yaw: m.yaw,
             pitch: 0,
         }

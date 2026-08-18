@@ -81,10 +81,32 @@ axis.
 What is left:
 
 1. **The clips outrun the states that would play them.** `bodies.rs` knows a
-   remote's position, yaw, pitch and sleeping flag — that is the whole input,
-   so `Death01`, `Jump_Loop`, `Swim_Fwd_Loop` and the crouch pair sit in the
-   file unplayable. Each needs a fact on the wire or derivable from it. That
-   is the next slice and it is a sim/wire question, not an art one.
+   remote's position, yaw, pitch, sleeping flag and — since wire v48 —
+   `dead`, so `Jump_Loop`, `Swim_Fwd_Loop` and the crouch pair sit in the
+   file unplayable. Each needs a fact on the wire or derivable from it: a
+   sim/wire question, not an art one.
+
+   **`Death01` came off this list 2026-08-18** and it is the worked example.
+   A corpse keeps its slot until its owner leaves the death screen, so a
+   killed player was drawn standing at idle and the one thing a fight has to
+   read — *is that person still in it* — was answerable only from the kill
+   feed. The fact is one unconditional bit beside `sleeping`
+   (`DECISIONS.md`, "remote death fact v0"), and the clip is the second
+   non-looping one in `anim.rs`: a STATE rather than a transient, which is
+   why it needed a bit where the swing needed an event. Gated
+   (`server/tests/client_loop.rs::a_killed_body_is_marked_dead_on_the_wire`,
+   proven red with the fill removed; three `anim.rs` units, proven red).
+   ⚠ **Nothing has seen the pose**, exactly like the swing below: the wire is
+   gated end to end and `Death01` playing on a real body has never been on a
+   screen. Boot the game and kill something.
+
+   **`Hit_Chest` is the one this leaves next, and it is not the same shape.**
+   A flinch is an instant, so it is `EV_SWING`'s problem and not this one:
+   `EV_HIT` is unicast to the attacker and `pop_hit` drops the victim id at
+   the client, so making a victim flinch for everyone is a second broadcast
+   on the hottest path in a fight — one per landed blow per player, with no
+   AOI filter, which is the same unpriced fan-out §0sw already owes a soak.
+   Price it before building it.
 
 **First-person arms landed 2026-08-17, and are in a captured game frame.**
 The claim that "hide everything but the arms is not achievable on this asset"
@@ -138,6 +160,43 @@ What is left on the arms:
    into the output.
 
 ---
+
+## 0pvp · What a fight still cannot do — the readiness audit *(systems lane)*
+
+Taken 2026-08-18 against the tree rather than against the docs, and every
+line below is a command somebody ran. **What works end to end**: melee
+player-vs-player (`combat::strike`, TTK 3–5 by band), the bow (`ranged.rs`,
+server-simulated, integer ballistics), the satchel's blast, death →
+backpack → bag respawn, the kill feed, and since v48 a corpse that falls
+(§0chr). Six gaps, cheapest first:
+
+1. **A hit body does not flinch.** `Hit_Chest` ships and 0.333 s of it is
+   the strongest feedback a fight has. **Cheaper than it looks**: the
+   victim id is already on the wire and `client-core/src/core.rs:2016`
+   throws it away — `let _ = victim; // v0 marks the hit, not who took it`
+   — so an ATTACKER-side flinch is one field, no bump. It is asymmetric
+   (nobody else sees it, because `EV_HIT` is unicast) and that asymmetry
+   wants a word before it lands; the symmetric version is a broadcast on
+   the hottest path in a fight and owes the pricing §0sw already owes.
+2. **A remote's swing is silent.** `Cue::Swing` is non-positional with a
+   120 ms cooldown because it is the local player's — reusing it plays
+   every island swing at full volume with no pan (§0sw).
+3. **`weapons.toml` prices a revolver nothing can fire.** `bake_combat`
+   drops every row that is not melee, throwable or bow, so the firearm is
+   data that looks armed. `combat.rs`'s header claimed the same of the
+   *bow* until 2026-08-18, which is why this line names a file and a rule.
+4. **Armor is priced and unread.** `grep -rn armor crates/sim-core/src`
+   returns one comment; `reference/ARMOR.md` §9.1 is the audit, §9.2 the
+   plan, and `CONT_WEAR` is the wire cost.
+5. **No lag compensation.** `NETCODE.md` §8 designs the rewind ring at
+   length and `grep -rn rewind crates/` finds a bit-writer and nothing
+   else — both `strike` and the arrow resolve on present server state, so
+   a fight is led rather than aimed. The largest doc/code delta on this
+   path and the one a player would report as "my hits do not register".
+6. **Nothing has fought at population.** `raid_storm.rs:516` says so in
+   its own source — *"nobody swings"* — so wall 4's caps are gated one
+   site at a time on every combat path, and `EV_SWING`'s AOI-free fan-out
+   is still unpriced (§0sw).
 
 ## 0dsc · Discord presence is built, detailed and dark *(operator — one act)*
 
@@ -420,7 +479,10 @@ punch or shorten the sword clip (`DECISIONS.md` §open). **And the swing is
 silent for a remote**: `Cue::Swing` is non-positional with a 120 ms
 cooldown because it is the local player's, so reusing it would play every
 island swing at full volume with no pan. A positional cue is its own slice.
-The lane now exists for `Death01` and `Hit_Chest` too.
+The lane now exists for `Death01` and `Hit_Chest` too — **and `Death01` did
+not use it**: a death is a condition rather than an instant, so it landed as
+a wire bit (v48, §0chr) and not as an event. `Hit_Chest` is still this
+lane's, and still unpriced.
 
 ## 0die · Two questions to re-take, no defect left *(operator)*
 

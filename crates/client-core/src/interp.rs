@@ -67,6 +67,13 @@ pub struct RemoteState {
     /// awake to lerp to, and rounding one would make the flag flicker for a
     /// frame at every transition.
     pub sleeping: bool,
+    /// This body has been killed and has not respawned (`world.rs`
+    /// `Player::dead`). Taken from the newer sample for `sleeping`'s reason
+    /// — it is a fact, not a quantity — and in the same direction: a body
+    /// reads as a corpse for the interpolation window rather than as a
+    /// player for an extra ~100 ms after the server stopped treating it as
+    /// one.
+    pub dead: bool,
 }
 
 fn dequant(s: &Sample, out: &mut RemoteState) {
@@ -77,6 +84,7 @@ fn dequant(s: &Sample, out: &mut RemoteState) {
     out.yaw = s.e.yaw as f32;
     out.pitch = s.e.pitch as f32;
     out.sleeping = s.e.sleeping;
+    out.dead = s.e.dead;
 }
 
 pub struct Interp {
@@ -244,6 +252,7 @@ impl Interp {
                 // an extra ~100 ms after the server stopped treating it as
                 // one.
                 out.sleeping = s1.e.sleeping;
+                out.dead = s1.e.dead;
                 out.live = true;
                 return true;
             }
@@ -271,6 +280,7 @@ mod tests {
             qvy: 0,
             grounded: true,
             sleeping: false,
+            dead: false,
             yaw,
             pitch: 100,
         }

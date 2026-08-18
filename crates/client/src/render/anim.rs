@@ -73,6 +73,25 @@ pub enum Clip {
     /// needs to read is the wind-up, and another player's arm was perfectly
     /// still (`NOW.md` §0sw).
     Swing,
+    /// A killed body, falling and then staying down. **The second
+    /// non-looping clip, and the only one that is a STATE rather than a
+    /// transient** — which is the whole reason it needed a wire bit
+    /// (`dead`, v48) where the swing needed an event.
+    ///
+    /// A corpse keeps its slot until its owner leaves the death screen, so
+    /// before v48 the client drew a killed player standing at idle: you
+    /// could not tell from the body whether the person in front of you was
+    /// still in the fight. It outranks everything, including `Sleep` — a
+    /// sleeper who is killed is a corpse, and the sim agrees (`die` carries
+    /// `sleeping` forward but `hp == 0` is what every weapon tests).
+    ///
+    /// **Laying this body down is safe in a way `Sleep`'s is not**, which
+    /// is why the pose argument that keeps a sleeper standing does not
+    /// reach here: `combat::strike`, `ranged` and the blast all skip
+    /// `hp == 0`, and players do not collide with each other, so a corpse
+    /// is inside no volume the server tests. There is nothing left for the
+    /// drawn pose to disagree with.
+    Death,
 }
 
 impl Clip {
@@ -116,19 +135,42 @@ impl Clip {
             // right one was retimed onto the cadence instead
             // (`ci/retarget_anim.py --retime`).
             Clip::Swing => "Sword_Attack",
+            // Plays once and **holds its last pose** — the omitted
+            // `.repeat()` in `drive`, and `RepeatAnimation::default()` is
+            // `Never`, so the body falls and stays fallen for as long as
+            // the corpse is on the wire. 2.375 s in the shipped file,
+            // against a death screen a player sits on for as long as they
+            // like, so there is no cadence for it to fit inside the way
+            // the swing has one.
+            //
+            // **Measured off the shipped file rather than assumed** (the
+            // `ANIM_RIG_H_M` habit): sampling the clip's last keyframe
+            // through the joint chain puts `Head` at **y 0.107 m** where it
+            // starts at 1.229, `Hips` at 0.052, and both feet within 1 cm of
+            // the ground — so it ends genuinely prone and not merely
+            // slumped. It also carries ~0.95 m of baked root motion
+            // backwards along the body's own Z, which means the drawn corpse
+            // settles about a metre from the point the wire names. That is
+            // cosmetic and stays: nothing in the sim tests a corpse's volume
+            // (`combat::strike`, `ranged` and the blast all skip `hp == 0`),
+            // so there is no second opinion for it to disagree with — but it
+            // is the reason a *loot bag* must keep coming from the wire's
+            // position and never from where the body is drawn.
+            Clip::Death => "Death01",
         }
     }
 
     /// Public because the asset gate reads it: `tests/rig_asset.rs` walks this
     /// list against the shipped file, and a gate holding its own copy would be
     /// checking itself rather than the client.
-    pub const ALL: [Clip; 6] = [
+    pub const ALL: [Clip; 7] = [
         Clip::Idle,
         Clip::Walk,
         Clip::Jog,
         Clip::Sprint,
         Clip::Sleep,
         Clip::Swing,
+        Clip::Death,
     ];
 
     fn slot(self) -> usize {
@@ -139,6 +181,7 @@ impl Clip {
             Clip::Sprint => 3,
             Clip::Sleep => 4,
             Clip::Swing => 5,
+            Clip::Death => 6,
         }
     }
 }
@@ -230,7 +273,7 @@ pub struct Rig {
     /// on a one-shot means the first time anybody swings near you.
     /// `tests/anim.rs` counts them against `Clip::ALL` as text for exactly
     /// that reason.
-    nodes: [AnimationNodeIndex; 6],
+    nodes: [AnimationNodeIndex; 7],
     /// Uniform scale that puts the rig at [`ANIM_BODY_H_M`]. A constant ratio
     /// of two measured heights, not a runtime fit — see [`ANIM_RIG_H_M`].
     pub scale: f32,
@@ -301,7 +344,7 @@ pub fn load(
         gltf: assets.load("models/stumpy.glb"),
         scene: None,
         graph: None,
-        nodes: [AnimationNodeIndex::default(); 6],
+        nodes: [AnimationNodeIndex::default(); 7],
         arms: AnimationNodeIndex::default(),
         scale: ANIM_BODY_H_M / ANIM_RIG_H_M,
         missing: Vec::new(),
@@ -383,7 +426,7 @@ pub fn build(
 
     let mut graph = AnimationGraph::new();
     let root = graph.root;
-    let mut nodes = [AnimationNodeIndex::default(); 6];
+    let mut nodes = [AnimationNodeIndex::default(); 7];
     let mut missing = Vec::new();
     for clip in Clip::ALL {
         match gltf.named_animations.get(clip.name()) {
@@ -459,7 +502,7 @@ impl BodyAnim {
     /// The low pass is on the SPEED and not on the position: smoothing the
     /// position would fight the interpolator, which is already the authority
     /// on where the body is (`bodies.rs` header).
-    pub fn observe(&mut self, pos: Vec3, dt: f32, sleeping: bool) {
+    pub fn observe(&mut self, pos: Vec3, dt: f32, sleeping: bool, dead: bool) {
         // The one-shot's clock, run here because this is the one function
         // every live body passes through every frame with a `dt` in hand.
         // `bodies::stream` calls this BEFORE it hears the frame's swings,
@@ -477,6 +520,17 @@ impl BodyAnim {
         }
         self.last = Some(pos);
 
+        // **Death outranks everything, including sleep and including a
+        // swing in flight.** A body that is killed mid-stroke stops
+        // swinging; the one-shot's clock is still running above, and
+        // `drive` prefers this over it while `dead` holds, so the arc is
+        // abandoned rather than finished by a corpse. `Sleep` is below it
+        // for the same reason the sim puts `hp == 0` above `sleeping`: a
+        // sleeper who is killed is a corpse, not a sleeper.
+        if dead {
+            self.clip = Some(Clip::Death);
+            return;
+        }
         if sleeping {
             self.clip = Some(Clip::Sleep);
             return;
@@ -777,7 +831,18 @@ pub fn head_look(mut bodies: Query<(&BodyAnim, &mut HeadBone)>, mut bones: Query
         };
         // Remove last frame's delta before composing this one — see `applied`.
         let base = head.applied.inverse() * t.rotation;
-        let want = anim.pitch.clamp(-ANIM_HEAD_PITCH_MAX, ANIM_HEAD_PITCH_MAX);
+        // **A corpse is not looking at anything.** The wire keeps carrying
+        // the pitch a body died holding — a dead player's record is frozen,
+        // not cleared — so composing it onto `Death01`'s fallen pose cranks
+        // the head of a body lying on the ground. The look is dropped to
+        // level rather than frozen at its last value, and dropped through
+        // the same `applied` bookkeeping so the delta it already wrote is
+        // still removed.
+        let want = if matches!(anim.clip, Some(Clip::Death)) {
+            0.0
+        } else {
+            anim.pitch.clamp(-ANIM_HEAD_PITCH_MAX, ANIM_HEAD_PITCH_MAX)
+        };
         let delta = Quat::from_axis_angle(head.axis, want);
         t.rotation = delta * base;
         head.applied = delta;
@@ -858,13 +923,15 @@ pub fn drive(
         // sequence number is what lets a second swing restart the stroke:
         // without it the `playing == want` guard below would swallow every
         // swing after the first for as long as the body kept swinging.
-        let swinging = anim.swing_s > 0.0;
-        let want = if swinging {
-            Clip::Swing
-        } else {
-            let Some(c) = anim.clip else { continue };
-            c
-        };
+        //
+        // **The gait is read first, because one of its values outranks the
+        // one-shot.** A body killed mid-stroke must stop swinging, and
+        // `observe` has already written `Clip::Death` — so the swing wins
+        // over a *gait* and loses to a corpse, which is the only ordering
+        // that does not draw a dead man finishing his punch.
+        let Some(gait) = anim.clip else { continue };
+        let swinging = anim.swing_s > 0.0 && gait != Clip::Death;
+        let want = if swinging { Clip::Swing } else { gait };
         let restart = swinging && playing.1 != anim.swing_seq;
         if playing.0 == Some(want) && !restart {
             continue;
@@ -876,12 +943,14 @@ pub fn drive(
             rig.node(want),
             Duration::from_secs_f32(ANIM_BLEND_S),
         );
-        // **`.repeat()` for a gait and nothing for the swing.**
-        // `RepeatAnimation::default()` is `Never`, so the one-shot is an
-        // omission rather than a feature — and the return to the gait needs
-        // no completion callback either, because `swing_s` runs out and the
-        // next frame's `want` is the gait again.
-        if want != Clip::Swing {
+        // **`.repeat()` for a gait and nothing for the two one-shots.**
+        // `RepeatAnimation::default()` is `Never`, so both the swing and the
+        // death are omissions rather than features — and neither needs a
+        // completion callback. The swing's `swing_s` runs out and the next
+        // frame's `want` is the gait again; the death simply never stops
+        // being wanted, so Bevy holds its final pose and the body stays
+        // down for as long as the corpse is on the wire.
+        if !matches!(want, Clip::Swing | Clip::Death) {
             active.repeat();
         }
     }
@@ -897,7 +966,7 @@ mod tests {
         let mut p = a.last.unwrap_or(Vec3::ZERO);
         for _ in 0..frames {
             p.x += speed * dt;
-            a.observe(p, dt, false);
+            a.observe(p, dt, false, false);
         }
     }
 
@@ -938,7 +1007,7 @@ mod tests {
             let wobble = if i % 2 == 0 { 0.2 } else { -0.2 };
             p.x += (ANIM_JOG_MPS + wobble) * dt;
             let before = a.clip;
-            a.observe(p, dt, false);
+            a.observe(p, dt, false, false);
             if a.clip != before {
                 changes += 1;
             }
@@ -951,8 +1020,73 @@ mod tests {
     fn a_sleeper_is_a_sleeper_whatever_its_speed() {
         let mut a = BodyAnim::default();
         step(&mut a, 6.0, 60);
-        a.observe(a.last.unwrap(), 1.0 / 60.0, true);
+        a.observe(a.last.unwrap(), 1.0 / 60.0, true, false);
         assert_eq!(a.clip, Some(Clip::Sleep));
+    }
+
+    #[test]
+    fn a_corpse_is_a_corpse_whatever_else_is_true() {
+        // The defect this exists for: before wire v48 nothing on a remote's
+        // record said it had been killed, so a body that a player had just
+        // shot went on jogging or standing at idle until its owner left the
+        // death screen. Death has to outrank BOTH the gait and the sleeper
+        // flag — a sleeper who is killed is a corpse, which is the order the
+        // sim itself takes (`hp == 0` is what every weapon tests, and `die`
+        // carries `sleeping` forward untouched).
+        for (mps, sleeping) in [(0.0, false), (6.0, false), (0.0, true), (6.0, true)] {
+            let mut a = BodyAnim::default();
+            let dt = 1.0 / 60.0;
+            let mut p = a.last.unwrap_or(Vec3::ZERO);
+            for _ in 0..120 {
+                p.x += mps * dt;
+                a.observe(p, dt, sleeping, true);
+            }
+            assert_eq!(
+                a.clip,
+                Some(Clip::Death),
+                "at {mps} m/s with sleeping={sleeping}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_body_that_respawns_walks_again() {
+        // The other half, and the one a `dead` latch would have broken: the
+        // bit clears when the player leaves the death screen and the body is
+        // theirs again. A corpse that stayed a corpse would be a player
+        // sliding around the island face-down.
+        let mut a = BodyAnim::default();
+        let dt = 1.0 / 60.0;
+        let mut p = Vec3::ZERO;
+        for _ in 0..60 {
+            a.observe(p, dt, false, true);
+        }
+        assert_eq!(a.clip, Some(Clip::Death));
+        for _ in 0..120 {
+            p.x += 4.0 * dt;
+            a.observe(p, dt, false, false);
+        }
+        assert_eq!(a.clip, Some(Clip::Jog));
+    }
+
+    #[test]
+    fn death_stops_a_swing_in_flight() {
+        // `drive` reads the gait first for this: a body killed mid-stroke
+        // has a one-shot still running (`swing_s` counts down on a clock
+        // nothing else resets), and the only ordering that does not draw a
+        // dead man finishing his punch is death over swing over gait.
+        let mut a = BodyAnim::default();
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false);
+        a.swing();
+        assert!(a.swing_s > 0.0);
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, true);
+        assert_eq!(a.clip, Some(Clip::Death));
+        // The clock is still running — the point is that `drive` prefers the
+        // corpse anyway, which is the condition this mirrors.
+        assert!(a.swing_s > 0.0, "the swing clock is not what death clears");
+        let gait = a.clip.expect("observe always writes one");
+        let swinging = a.swing_s > 0.0 && gait != Clip::Death;
+        assert!(!swinging, "a corpse must not be drawn swinging");
     }
 
     #[test]

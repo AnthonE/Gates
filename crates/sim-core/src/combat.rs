@@ -34,12 +34,27 @@
 //! **What v0 deliberately does not do**, all of it registered in
 //! `DECISIONS.md` §open ("melee combat v0" and "piece damage v0"): no
 //! headshots (aim is planar until M2's rewound raycasts, so there is no
-//! head to hit), no armor reduction, no per-weapon cadence (every swing
-//! rides gather's one interval, which is the melee rows' own rate), no
-//! ranged of any kind (`weapons.toml` prices a revolver and `bake_combat`
-//! still drops bow and firearm rows — a projectile the sim could read but
-//! not fire is a number that looks armed and is not), and no corpse:
-//! death drops what you carried into a backpack where you fell.
+//! head to hit), no armor reduction — and that one is a *gap* rather than
+//! a choice now, because `content/armor.toml` has been priced, validated,
+//! hashed and balance-anchored since M1 while nothing in this crate reads
+//! a row of it (`reference/ARMOR.md` §9.1 is the audit) — no per-weapon
+//! cadence (every swing rides gather's one interval, which is the melee
+//! rows' own rate), and no corpse: death drops what you carried into a
+//! backpack where you fell. That last clause is about the SIM and stays
+//! true — there is no lootable body entity, only a bag — while the client
+//! has drawn a fallen one since wire v48 (`render/anim.rs` `Clip::Death`).
+//! The two do not disagree: the drawn body is not a container and not a
+//! target, which is exactly why it was safe to lay it down.
+//!
+//! ⚠ **"No ranged of any kind" stood here after it stopped being true**,
+//! which is `CLAUDE.md`'s dead-citation trap in the present tense: bows
+//! are baked (`content/bake.rs` — `WeaponKind::Bow` takes `bake_bow` and
+//! the `[[ammo]]` rows go first) and fired (`ranged.rs`), so an arrow has
+//! killed a player since well before this line was re-read on 2026-08-18.
+//! What `bake_combat` still drops is the **firearm** rows: anything that
+//! is not melee, throwable or bow falls through the loop, so
+//! `weapons.toml`'s revolver is priced and unarmed. That half of the
+//! sentence is the live half.
 //!
 //! Three clauses that used to stand here have since landed and are named
 //! rather than deleted, because each is a place this module's shape was

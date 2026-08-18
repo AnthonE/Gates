@@ -126,11 +126,15 @@ curated, because the cheap thing to do later is delete a name and the
 expensive thing is to re-derive one.
 
 **What is still missing**: the client has no state to drive most of the 46
-from. `bodies.rs` knows a remote's position, yaw, pitch and whether it is
-asleep, and that is the whole input — so `Death01`, `Jump_Loop`,
-`Swim_Fwd_Loop` and the crouch pair sit in the file unplayable, each waiting
-on a fact on the wire. The clips are there before the states that would play
-them, which is the right way round. (`WANTED.md` §11 is closed: the gather
+from. `bodies.rs` knows a remote's position, yaw, pitch, whether it is asleep
+and — since wire v48 — whether it has been **killed**, and that is the whole
+input, so `Jump_Loop`, `Swim_Fwd_Loop` and the crouch pair sit in the file
+unplayable, each waiting on a fact on the wire. `Death01` came off that list
+on 2026-08-18: the fact it was waiting for is one bit on `EntityState`, and
+it plays as a one-shot that holds its fallen pose (`render/anim.rs`
+`Clip::Death`). The clips are there before the states that would play them,
+which is the right way round — and the death is the case that shows why: the
+asset cost nothing and the wire cost everything. (`WANTED.md` §11 is closed: the gather
 swing is `Sword_Attack` by operator call, and nothing here is waiting on an
 asset.)
 

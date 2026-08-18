@@ -140,7 +140,10 @@ pub fn stream(
                     t.translation = pos;
                     t.rotation = facing;
                     // The clip choice, off state the sim already sent.
-                    anim.observe(pos, time.delta_secs(), rs.sleeping);
+                    // `dead` is the v48 bit: a corpse keeps its slot until
+                    // its owner leaves the death screen, so without it a
+                    // killed player is drawn standing at idle.
+                    anim.observe(pos, time.delta_secs(), rs.sleeping, rs.dead);
                     anim.pitch = wire_pitch_to_radians(rs.pitch);
                     // **The one thing the sim sends that state cannot
                     // imply.** Everything else here is derived — the gait
@@ -167,7 +170,7 @@ pub fn stream(
             }
             None => {
                 let mut anim = BodyAnim::default();
-                anim.observe(pos, 0.0, rs.sleeping);
+                anim.observe(pos, 0.0, rs.sleeping, rs.dead);
                 anim.pitch = wire_pitch_to_radians(rs.pitch);
                 // A body that enters AOI on the same frame it swings still
                 // gets its arc; without this the first swing of every

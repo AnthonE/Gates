@@ -254,6 +254,7 @@ mod tests {
             qvy: p.body.qvy,
             grounded: p.body.grounded,
             sleeping: p.sleeping,
+            dead: p.dead,
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
         }
