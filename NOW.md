@@ -237,6 +237,26 @@ Three gaps, in the order they are worth closing.
    painted rather than picked from N authored stencils — moderation
    forever. Decide stencil-vs-painted before any of it.
 
+⚠ **NOBODY HAS SEEN A DECAL, and it cannot be checked on a headless box**
+(measured 2026-08-18). The sim's half is confirmed: a swing at the boulder
+beside spawn emits `EV_IMPACT` at `1024.74, 12.86, 1025.07` with `surf 1`,
+0.98 m from the slot centre — that slot's scaled radius exactly — and the
+capture probe now walks to a node, swings, and points the camera at those
+coordinates. **The frame shows no mark.** Then the discriminating runs:
+5.5× `SIZE_M` — nothing; the boot-time prewarm decal at full alpha, 1.2 m
+across, flat on the terrain with an up normal — nothing. So **no
+`ForwardDecal` renders under lavapipe at any size, alpha or orientation**,
+and the arrow marks of 2026-08-16 have never been seen either.
+
+That is a claim about THIS BOX and not about the game: a software adapter
+is the environment that would degrade first, and the client logs *"Too many
+textures in mesh pipeline view layout, this might cause us to hit
+`max_sampled_textures_per_shader_stage` in some environments"* on boot,
+which is the leading suspect since a forward decal adds a binding. **One
+boot on a real GPU settles it** — swing at a rock and look — and that is an
+operator act, not a loop's. Until then treat every decal in this tree as
+unverified rather than as working or broken.
+
 Also open, and cheap: nothing prewarms the *other* materials. `decal.rs`
 pays `CLAUDE.md`'s shader-prewarm trap for its own pipeline and no module
 else does, on a trap with no gate since `browser_smoke` went.
@@ -381,7 +401,14 @@ gates `client/tests/pieces.rs` + `sim-core/build.rs` §tests:
 
 Remaining, ranked:
 
-1. **Nobody has looked at either.** Boot, build a row, hit it.
+1. **Nobody has looked at either, and the probe still cannot stage it.**
+   The capture harness can walk to a world node and swing at it now
+   (2026-08-18), which is what §0mk needed, but it cannot BUILD — a piece
+   is a verb behind a wheel and a material cost, so "build a row and hit
+   it" is still a person at a keyboard. Landing that in the probe is the
+   next slice if this item is picked up; the swing pass is the shape to
+   copy. ⚠ And see §0mk: no decal renders under lavapipe at all, so a
+   headless run cannot check surfaces that carry marks either.
 2. **The catalogue is 11 shapes against the reference's 20** (`BUILDING.md`
    §7b.1) — no half/low wall, floor frame, steps, ramp, 3 of 4 stairs. Rule 6
    is silhouette before surface, so this outranks more material work.
