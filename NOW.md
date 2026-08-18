@@ -225,12 +225,25 @@ Three gaps, in the order they are worth closing.
    wrong way on a floor today, and volume on a known-wrong path is not
    progress. Flesh stays unmarked: `SURF_BITS` holds one spare code and
    spending it on blood is a deliberate act nobody has asked for.
-2. **A mark on a built piece faces its cell's dominant axis**, which is
-   right for a wall and wrong for a floor (it gets a wall's normal and
-   reads as a mark on the lip). Ground and world occupants are exact —
-   terrain gradient and slot centre, both shared worldgen. The fix is the
-   piece's address on `EV_IMPACT`; `SURF_BITS` has no spare value, but the
-   message has room.
+2. **⚠ This item's symptom is UNREACHABLE, and the real defect is one
+   layer down** (measured 2026-08-18). It says a mark on a floor gets a
+   wall's normal — but no arrow has ever hit a floor: `collide::shot_blocked`
+   (`collide.rs:1014`) calls only `cell_edges_stop_shot` and
+   `cell_diags_block`, which read the wall/door/window/frame masks and the
+   two diagonals, and **never `ColIndex::planes`** — the field
+   `SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF` live in (`collide.rs:211`;
+   its only readers are `is_empty`, `piece_ground` and a test). So an arrow
+   fired down inside a base passes through every floor and lands on the
+   terrain as `SURF_GROUND`. **Fix that first** — a bullet that ignores
+   floors is a raid defect, not a decal one — and only then the address on
+   the message. What IS reachable in the facing arm today is a diagonal
+   wall, 45° out. Bit accounting for when it is time: a full piece address
+   is 27 bits, the message has 4 spare pad bits, so it grows to 11 bytes
+   (`MAX_EVENT_MSG_BYTES` is 320, so there is room to grow, not room
+   inside). `SURF_BITS`'s fourth value is dead-but-present, refused at both
+   ends and pinned by the wire-domain table.
+   Also open: a swing at a piece still marks nothing, and that is deliberate
+   until this is settled.
 3. **Spray paint is not this.** A player-authored mark that persists is a
    deployable, not a decal: a cap in `limits.rs`, a slot in
    `worldsave.rs`, a build-privilege question, decay, and — if the mark is
@@ -291,6 +304,16 @@ Gates: the role check on a whiff, a server routing gate proven red both
 unicast and armless, the ring's drop-oldest identity, and a source scrape
 that catches the four-literal array width that would otherwise panic the
 first time somebody swings near you.
+
+⚠ **Nothing has ever played the clip.** `client/tests/anim.rs` is a source
+scrape by construction, `client-core/tests/wire.rs` stops at the ring, and
+no headless test spawns a `SceneRoot`. The wire half is gated end to end;
+the arc itself is unseen, exactly like the decal above. And the throughput
+half of the fan-out is unpriced: `EV_SWING` is one broadcast per swing per
+player with no AOI filter, so a 100-player shard swinging pays 100× the
+per-client event rate — `raid_storm.rs` cannot see it, because that gate's
+bots never press `BTN_PRIMARY`. A soak with swinging bots is the
+measurement, and it is the same gap wall 4 has had since the soak landed.
 
 Two things remain, and the first needs a word rather than work. **The clip
 is `Punch_Cross` and the ask was a rock swing** — arithmetic, not taste:

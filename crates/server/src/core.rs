@@ -2008,7 +2008,11 @@ impl ShardCore {
                     // sends to one slot and drops field `a` at encode; copy
                     // that here and the feature is a body standing still
                     // for everybody, with every other gate green — which is
-                    // why `server/tests/swing_wire.rs` exists.
+                    // why `gather_wire.rs`'s
+                    // `a_swing_reaches_every_client_not_just_the_swinger`
+                    // exists. (That citation named a `swing_wire.rs` that was
+                    // never written, for one commit: the exact dead-citation
+                    // class `CLAUDE.md` says to `ls` before writing.)
                     match encode_event_swing(ev.a, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {

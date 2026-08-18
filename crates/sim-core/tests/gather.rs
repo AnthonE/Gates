@@ -1525,3 +1525,74 @@ fn a_bush_pays_but_has_no_skin_to_mark() {
     );
     assert_eq!(marks, 0, "a bush has no skin to scuff");
 }
+
+/// **The waist rule, pinned as a value** — the branch that added it shipped
+/// it entered by nothing.
+///
+/// `skin_point` takes the LOWER of the swinger's eye height and the
+/// occupant's own waist, and the eye arm is the one every existing test
+/// happens to exercise: `strike_y` is feet + 1.6 m, so the `.min` only
+/// bites when `top * STRIKE_WAIST_FRAC` is under that — a tree's is 2.85 m
+/// and never does. The rock beside the shipped seed's spawn is where it
+/// bites, and `a_landed_swing_marks_the_node…`'s y assertion cannot see it:
+/// that check allows the occupant's WHOLE span, which is twice as wide as
+/// this guarantee and would pass a mark pinned to the rim — which is
+/// exactly what the old code did.
+///
+/// Red-proven both ways: drop the `.min` and the short node's mark returns
+/// to eye height; drop the `.max` and a strike below a raised occupant's
+/// base goes under it.
+#[test]
+fn a_short_node_is_struck_at_its_waist_and_a_tall_one_at_the_eye() {
+    let (pos, yaw, (cx, cz)) = find_isolated(SEED, Occupant::StoneNode);
+    let table = ScatterTable::alpha_default();
+    let s = terrain::scatter(SEED, &table, hv(SEED), cx, cz);
+    let (_, top_m) = terrain::occupant_volume(s.occupant);
+    let top = top_m * s.scale;
+    let waist = s.y + top * sim_core::gather::STRIKE_WAIST_FRAC;
+
+    let mut w = world_at(pos);
+    // The probe fixture pays a bare hand on the tree and not necessarily on
+    // the stone node, so arm the row this test swings at — the geometry is
+    // what is being pinned here, not the payout table. (`Occupant::Rock` is
+    // NOT a gatherable at all — `node_index` calls it one of the two things
+    // a swing passes through — so the short node a player actually mines is
+    // this one.)
+    let ni = sim_core::gather::node_index(Occupant::StoneNode).expect("a stone node is a node");
+    w.gather.nodes[ni].hand_yield = 1;
+    w.gather.nodes[ni].weak_pct = 0;
+    assert!(
+        w.gather.nodes[ni].output != sim_core::gather::NO_ITEM,
+        "the fixture's stone row must pay something or the swing is refused"
+    );
+    let eye = w.players[0].body.qy as f32 * movement::POS_Y_Q + 1.6;
+    // The fixture must be the case this test is about, or it proves nothing
+    // about the arm it claims to pin.
+    assert!(
+        waist < eye,
+        "this node's waist {waist:.2} is above the eye {eye:.2}, so the \
+         .min arm is not taken and this test is vacuous — pick another node"
+    );
+
+    let mut marks = Vec::new();
+    for t in 0..SWING_INTERVAL_TICKS {
+        w.tick(&[hold_primary(yaw, t as u16)]);
+        for e in w.events.entries() {
+            if e.code == sim_core::world::EV_IMPACT {
+                marks.push(e.c as i32 as f32 * movement::POS_Y_Q);
+            }
+        }
+    }
+    assert_eq!(marks.len(), 1, "one landed swing leaves exactly one mark");
+    assert!(
+        (marks[0] - waist).max(waist - marks[0]) <= 2.0 * movement::POS_Y_Q,
+        "mark at y {:.2}, want the waist {waist:.2} — eye was {eye:.2}, so a \
+         mark up there is the pre-2026-08-18 rule with its rim problem",
+        marks[0]
+    );
+    assert!(
+        marks[0] < s.y + top - movement::POS_Y_Q,
+        "the mark is at the occupant's rim, where its own horizontal normal \
+         has nothing to lie against"
+    );
+}

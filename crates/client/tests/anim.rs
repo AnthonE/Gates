@@ -124,3 +124,39 @@ fn the_clip_table_and_the_graph_are_the_same_width() {
         "Clip::ALL and Clip::name()'s arms disagree on how many clips there are"
     );
 }
+
+/// **The one-shot has to fit inside the cadence, and that is arithmetic.**
+///
+/// `Punch_Cross` was chosen over `Sword_Attack` for one reason: the sim
+/// lets a player swing every `SWING_INTERVAL_TICKS / TICK_HZ` seconds, and
+/// a clip longer than that (plus the blend it costs to get into) means
+/// every arc is cut off by the next one and no body ever finishes a
+/// stroke. The choice is recorded in `DECISIONS.md` §open with the numbers;
+/// this is the check that the numbers still hold.
+///
+/// It is deliberately NOT a check that `SWING_CLIP_S` equals the shipped
+/// clip's length — that would need the glTF's accessor maxima and would be
+/// a hand-kept mirror either way. It is the *inequality the decision rests
+/// on*, so switching to a 1.5 s clip fails here rather than in play.
+#[test]
+fn the_swing_clip_fits_between_two_swings() {
+    let cadence = sim_core::gather::SWING_INTERVAL_TICKS as f32 / sim_core::limits::TICK_HZ as f32;
+    // The constants are read out of the source rather than linked, because
+    // this suite is not behind the `render` feature and `anim.rs` is.
+    let read = |name: &str| -> f32 {
+        ANIM.split(&format!("{name}: f32 = "))
+            .nth(1)
+            .and_then(|s| s.split(';').next())
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .unwrap_or_else(|| panic!("{name} is not declared as a plain f32 literal any more"))
+    };
+    let clip = read("pub const SWING_CLIP_S");
+    let blend = read("pub const ANIM_BLEND_S");
+    assert!(
+        clip + blend < cadence,
+        "the swing clip is {clip} s and the blend {blend} s, but the sim \
+         allows a swing every {cadence:.3} s — every arc would be cut off by \
+         the next one and no body would finish a stroke. This is the whole \
+         reason the clip is Punch_Cross and not Sword_Attack."
+    );
+}

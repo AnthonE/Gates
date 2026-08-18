@@ -412,6 +412,16 @@ struct Target {
     top: f32,
 }
 
+/// Where up a short occupant a strike lands, as a fraction of its height.
+///
+/// **Its own constant because it is an invented number and the rule is that
+/// they are spoken** (`CLAUDE.md` §loop discipline; `DECISIONS.md` §open,
+/// "melee mark v0"). Half is the middle of the thing rather than a tuning
+/// — you cannot strike the centre of a knee-high rock from eye level — but
+/// a bare `* 0.5` in an expression is not registrable, and the two
+/// constants either side of it in this seam both carry rows.
+pub const STRIKE_WAIST_FRAC: f32 = 0.5;
+
 /// A melee strike lands at the swinger's eye height, because melee is
 /// planar: the pick below reads `yaw` and never `pitch` (this file says so
 /// in words at the top), so the arm swings level from the same origin
@@ -461,7 +471,7 @@ fn skin_point(
     // thing: you cannot strike the centre of a knee-high rock from eye
     // level, and for anything taller than you — every tree — the eye still
     // wins, which is where a swing at a trunk actually lands.
-    let y = strike_y.min(pos.1 + top * 0.5).max(pos.1);
+    let y = strike_y.min(pos.1 + top * STRIKE_WAIST_FRAC).max(pos.1);
     Some((pos.0 + ox * inv * r, y, pos.2 + oz * inv * r))
 }
 
