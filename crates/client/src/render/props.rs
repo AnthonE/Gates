@@ -872,18 +872,19 @@ pub fn archetype_mesh(o: Occupant) -> Option<Mesh> {
         }
         Occupant::Bush => blob_mesh(0.7, 0.58, 0x2545_f491, 0x2c5f2e, 1, false),
         Occupant::Rock => blob_mesh(1.5, 0.52, 0x1b87_3593, 0x8e887c, 3, true),
-        // ⚠ THE MEASURED DRUM IS 0.585 x 0.88 AND THIS IS NOT IT, on purpose.
-        // A 55-gallon drum is 1.5x taller than wide; 0.9 across by 0.95 tall is
-        // near-spherical and ~44% too fat, and the reference `barrelroad` plus
-        // Meshy's independent `auto_size` estimate both say so. It stays wrong
-        // here because the number is HALF of a pair: `OCCUPANT_R_M[BarrelSlot]`
-        // in sim-core blocks 0.45, and `greybox.rs`'s
+        // The measured drum: 0.585 m across by 0.88 tall, so a radius of
+        // 0.2925 and a full height of 0.88 — 1.5x taller than wide, which is
+        // what a 55-gallon drum is. It drew 0.9 across by 0.95 tall until
+        // 2026-08-18, the browser client's `CylinderGeometry(0.45, 0.45, 0.95)`
+        // carried forward: near-spherical and ~44% too fat. The reference set's
+        // `barrelroad` and Meshy's independent `auto_size` estimate agree on
+        // the pair. The mesh could not move alone — `greybox.rs`'s
         // `every_drawn_archetype_fits_the_volume_the_sim_blocks` fails a mesh
-        // narrower than the volume by more than SLACK_R_M — an invisible
-        // collision skirt is a player passing through geometry. Narrowing the
-        // sim is a collision change that moves the replay goldens, so it is a
-        // deliberate slice of its own (`NOW.md`), not a merge's side effect.
-        Occupant::BarrelSlot => Cylinder::new(0.45, 0.95).mesh().resolution(10).build(),
+        // narrower than the blocked volume by more than SLACK_R_M, because an
+        // invisible collision skirt is a player passing through geometry — so
+        // `OCCUPANT_R_M`/`OCCUPANT_TOP_M` moved in the same commit and the
+        // replay golden moved with them.
+        Occupant::BarrelSlot => Cylinder::new(0.2925, 0.88).mesh().resolution(10).build(),
         Occupant::CrateSlot => boxes_mesh(&[([0., 0., 0.], [0.55, 0.4, 0.4], 0x6b5334)]),
         Occupant::CacheSlot => boxes_mesh(&[([0., 0., 0.], [0.45, 0.275, 0.35], 0x6a5940)]),
         Occupant::HavenShelter => boxes_mesh(&authored(&terrain::SHELTER_BOXES, &SHELTER_HEX)),
@@ -906,7 +907,9 @@ pub fn archetype_lift(o: Occupant) -> f32 {
         Occupant::StoneNode | Occupant::MetalNode | Occupant::SulfurNode => 0.5,
         Occupant::Bush => 0.45,
         Occupant::Rock => 0.55,
-        Occupant::BarrelSlot => 0.5,
+        // The half-height, so the drum's base is the slot's ground and its
+        // top is its own 0.88 m. It was 0.5 against a half-height of 0.475.
+        Occupant::BarrelSlot => 0.44,
         Occupant::CrateSlot => 0.4,
         Occupant::CacheSlot => 0.275,
         // The two authored structures and the tree stand on their own base:

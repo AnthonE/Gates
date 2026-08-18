@@ -353,7 +353,20 @@ const TICKS: u64 = 900;
 /// is where a golden is easiest to wave through — both determinism
 /// equalities green, `test_terrain_golden` unmoved, and the failure that
 /// produced it at the pin line alone.
-const GOLDEN_FINAL_HASH: u64 = 0x1EFA_E540_E48C_195D;
+/// **Regenerated 2026-08-18 for the barrel's measured proportions**
+/// (`DECISIONS.md` §open "barrel proportions v1"): `OCCUPANT_R_M` and
+/// `OCCUPANT_TOP_M` for `BarrelSlot` went from the deleted browser
+/// client's guess (0.45 / 0.975) to the measured 55-gallon drum
+/// (0.2925 / 0.88). That is a collision change and this script's bots
+/// walk a beach the road's barrels stand on, so every body that
+/// squeezed past one takes a different path from that tick onward —
+/// the first shape, a verb changing, with no state added and no field
+/// widened. `test_terrain_golden` did NOT move: worldgen places slots,
+/// it does not read their radii. Evidence as every entry above:
+/// `hashes_a == hashes_b` and `final_a == final_b` were both green on
+/// the run this value was read off, and the failure that produced it
+/// was at the pin line alone.
+const GOLDEN_FINAL_HASH: u64 = 0x1309_BB77_F474_F27A;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

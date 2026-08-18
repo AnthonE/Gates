@@ -1266,29 +1266,29 @@ Remaining, in the order the measurement ranks them:
    them flips the ripple map's green channel. Which is right is a question
    about how that map was authored — boot the game and look, do not guess.
 
-## 0bd · The barrel is measured and the sim still blocks the guess *(client+sim lane)*
+## 0bd · The barrel is the measured drum — LANDED 2026-08-18, one residual *(client+sim lane)*
 
-The drawn barrel and the blocked barrel are one number in two files and they
-disagree with the real object. `OCCUPANT_R_M[BarrelSlot]` is **0.45** and its
-comment cites `CylinderGeometry(0.45, 0.45, 0.95)` — the deleted browser
-client's geometry, i.e. a guess carried forward. A 55-gallon drum is **0.585 m
-across by 0.88 tall** (1.5x taller than wide); 0.9 x 0.95 is near-spherical and
-~44% too fat. Two independent sources agree: the reference set’s `barrelroad`, and
-Meshy's `auto_size` vision estimate landing on 0.880 x 0.585 unprompted
-(2026-08-11).
+The drawn barrel and the blocked barrel were one number in two files and both
+were the deleted browser client's `CylinderGeometry(0.45, 0.45, 0.95)`. They are
+the measured 55-gallon drum now — **0.585 m across by 0.88 tall** — so radius
+**0.2925**, half-height **0.44**, `archetype_lift` 0.44 (the base IS the slot's
+ground) and `OCCUPANT_TOP_M` **0.88**. Mesh and volume moved in one commit
+because they cannot move apart: `greybox.rs`'s
+`every_drawn_archetype_fits_the_volume_the_sim_blocks` fails a mesh narrower
+than the blocked volume by more than `SLACK_R_M`. `test_replay`'s golden
+regenerated with it (wall 5); the knob is `DECISIONS.md` §open, barrel
+proportions v1.
 
-**Why it is not already done.** It was drawn narrow on a branch, and the merge
-with origin fired `greybox.rs`'s
-`every_drawn_archetype_fits_the_volume_the_sim_blocks`: the sim blocked 0.1575 m
-wider than the client drew, past `SLACK_R_M`. That assert is right — an
-invisible collision skirt is a player passing through geometry — and it means
-the mesh cannot move alone.
-
-**The slice**: narrow `OCCUPANT_R_M` and the `(0.45, 0.975)` pair in
-`terrain.rs`, and `archetype_mesh`'s cylinder, in one commit. It is a
-**collision change**, so `test_replay` and `test_terrain_golden` move with it
-and the goldens are regenerated deliberately in the same commit (wall 5/6).
-Check the other occupants for the same browser-geometry citation while there.
+**Residual — the tree's trunk radius is the same class and nothing measures
+it.** `OCCUPANT_R_M[Tree] = 0.26` cites `CylinderGeometry(0.13, 0.26)`, browser
+geometry, and the tree is the one row `greybox.rs` *excuses*: `tests/tree.rs`
+measures the canopy against `PINE_MAX_R` and the base against y = 0, never the
+trunk against 0.26. A generated conifer's trunk could be any width with both
+gates green. Unlike the barrel there is no second source to take, so this is a
+measurement to make — bound the bark mesh's radius over the trunk's own height
+band in `tests/tree.rs` — not a number to paste. The box rows (`CrateSlot`,
+`CacheSlot`, both authored structures) are browser-cited too and are fine:
+greybox holds each to its drawn mesh in both directions.
 
 ## 0b · Balance sits on the reference's numbers now — what is still off *(content lane)*
 
@@ -2127,12 +2127,19 @@ is `crates/`/wire work no single-surface lane may take.
    interest band both held at a population they had never met. The anomaly
    log's whole path was proven in the same run (8 bots against a full shard
    made `refused_full` move, and the file gained exactly that line).
-   **Four things it still does not have**, each its own small item: real
-   **bytes** (nothing counts them — the 16.5 kB/s/client figure is a
-   ceiling, not a measurement), jitter as a **distribution** rather than a
-   threshold crossing, an **hour** (this was 25 minutes, so slow leaks are
-   not excluded), and **contention** — bots walk, they do not raid, so wall
-   4's caps are still gated one site at a time.
+   ~~real **bytes**~~ — **counted 2026-08-18.** Four lanes apart in
+   `ShardStats` (datagram/stream × in/out, each a byte total *and* a message
+   count, because bytes alone cannot tell "more packets" from "fatter
+   packets"), aggregate on the shard and per-client on `bin/bots`, served by
+   `/status.json`. So the next soak divides by `secs` and reports a measured
+   kB/s/client instead of a ceiling. Not counted, and stated in `stats.rs`:
+   the handshake (a per-join constant, not a rate) and QUIC's own framing
+   (`net_sent_packets` is the other half of that ratio).
+   **Three things it still does not have**, each its own small item: jitter
+   as a **distribution** rather than a threshold crossing, an **hour** (this
+   was 25 minutes, so slow leaks are not excluded), and **contention** —
+   bots walk, they do not raid, so wall 4's caps are still gated one site at
+   a time.
 4. **You cannot stand ON anything.** `movement::step` asks `slot_blocks` and
    nothing asks a ground query for occupants — the shelter's plinth reads as
    a kerb you sink into, crate and boulder tops the same (`terrain.rs`'s
@@ -2379,22 +2386,25 @@ And two items the arc does not carry, which stay real work:
 Standing rule: anything a playtest breaks jumps this queue; anything a wall
 catches jumps the playtest.
 
-## 5c · The protocol golden has never fuzzed a button above bit 1 *(systems lane)*
+## 5c · The protocol golden never fuzzed a button above bit 1 — **CLOSED 2026-08-18**
 
-Found while landing jump. `goldens.rs` draws the input fixture's `buttons`
-from `rng.next_bounded(4)`, so the golden exercises only `BTN_SPRINT` and
-`BTN_CROUCH` — `BTN_PRIMARY` and `BTN_JUMP` are outside the draw. The field
-is 8 bits wide either way, so the golden still pins the *layout* and nothing
-is currently wrong on the wire; what it cannot see is a future encoder that
-masks or reorders the high nibble.
+`input_full` draws the whole octet now, one fixture moved
+(`v46_input_full.bin`), and **no `PROTO_VER` turned**: the judgement call
+the item asked for went the way it framed it — a golden's fuzz range is the
+test's coverage, not the wire's meaning, so nothing two v46 builds exchange
+changed. The rule is written as the narrowing rule's third clause at
+`PROTO_VER` (lib.rs) and in `goldens.rs`'s header, which now says which of
+the two reasons to regenerate takes a bump and which does not.
 
-Deliberately its own commit: widening the draw changes fixture bytes, and
-changing golden bytes for a reason unrelated to the version's meaning
-muddies the one signal wall 6 reads. It is a `PROTO_VER` judgement call —
-the answer may be that a golden's fuzz range is not part of the wire
-contract at all. Decide that first; it is the actual question. The shape
-one level down is decided (§5b, 2026-08-17): `decode_input` carries the
-octet whole; the domain wall is `accept_input`'s (`decode_input`'s doc).
+`the_input_golden_fuzzes_the_whole_button_octet` reads the fixture BYTES
+(every bit set somewhere, and clear somewhere). Its measured job is the
+re-narrowing: with the draw wide a masking encoder already reddens the
+golden's round-trip, but a narrowed draw regenerates green everywhere else
+and this gate alone fails. `goldens.rs:894`'s `loc: next_bounded(4)` looked like
+the same defect and is not — four IS the deploy store's domain
+(`loc_max(true)`), a wider draw would be unencodable, and the piece lane
+already draws all ten; `the_loc_fuzz_covers_each_stores_whole_domain` says
+so rather than a comment.
 
 ## 5d · The agent player has a spec and no code *(systems lane)*
 

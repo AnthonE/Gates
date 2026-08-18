@@ -1,5 +1,5 @@
-//! Gates for the status endpoint (`status.rs`): the document's three fields
-//! exist and parse as integers, refusals close instead of panicking, and the
+//! Gates for the status endpoint (`status.rs`): the document's fields exist
+//! and parse as integers, refusals close instead of panicking, and the
 //! `players` gauge counts occupancy rather than `joins - leaves`.
 //!
 //! Every assertion is on observable state — a byte the responder wrote or a
@@ -51,6 +51,43 @@ fn field(body: &str, name: &str) -> u64 {
 fn start(stats: Arc<ShardStats>) -> SocketAddr {
     // Port 0: the OS assigns, spawn_status reports back — no clock, no race.
     spawn_status("127.0.0.1:0".parse().expect("static addr"), stats).expect("bind loopback")
+}
+
+/// The lane byte counters reach the document (NOW.md §0q item 4).
+///
+/// The endpoint is the only way a running shard's bandwidth can be read
+/// without a debugger, and a counter that never leaves `ShardStats` is a
+/// measurement nobody takes. Each field is set to a distinct value so a
+/// transposed pair — bytes served where the count belongs, in or out — is a
+/// failure rather than eight identical zeros agreeing with each other.
+#[test]
+fn serves_the_lane_bytes_each_from_its_own_counter() {
+    let stats = Arc::new(ShardStats::default());
+    let fields: [(&str, &std::sync::atomic::AtomicU64, u64); 8] = [
+        ("dg_out_bytes", &stats.net_dg_out_bytes, 11),
+        ("dg_out_pkts", &stats.net_dg_out_count, 22),
+        ("dg_in_bytes", &stats.net_dg_in_bytes, 33),
+        ("dg_in_pkts", &stats.net_dg_in_count, 44),
+        ("stream_out_bytes", &stats.net_stream_out_bytes, 55),
+        ("stream_out_frames", &stats.net_stream_out_frames, 66),
+        ("stream_in_bytes", &stats.net_stream_in_bytes, 77),
+        ("stream_in_frames", &stats.net_stream_in_frames, 88),
+    ];
+    for (_, counter, v) in fields {
+        ShardStats::set(counter, v);
+    }
+    let addr = start(stats.clone());
+
+    let resp = exchange(addr, b"GET /status.json HTTP/1.1\r\nHost: t\r\n\r\n");
+    let text = String::from_utf8(resp).expect("the response is text");
+    let body = text.split("\r\n\r\n").nth(1).expect("a body after headers");
+    for (name, _, v) in fields {
+        assert_eq!(
+            field(body, name),
+            v,
+            "`{name}` is not reading its own counter"
+        );
+    }
 }
 
 #[test]

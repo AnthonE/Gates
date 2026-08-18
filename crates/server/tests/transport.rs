@@ -19,6 +19,14 @@ use server::stats::ShardStats;
 use server::store::Saves;
 use std::time::Duration;
 
+/// The raid profile's rows, resolved by content id — the same resolution
+/// `bin/bots` and a booting shard use, never a typed row number (wall 7).
+fn raid_rows() -> Option<sim_core::bots::RaidRows> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+    let content = content::Content::load_dir(&dir).ok()?;
+    server::population::raid_rows(&content).ok()
+}
+
 fn baked_content() -> server::net::SimTables {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
     let content = content::Content::load_dir(&dir).expect("shipped content loads");
@@ -93,6 +101,130 @@ async fn the_transport_reports_its_own_numbers() {
     assert!(
         mtu as usize >= sim_core::limits::DATAGRAM_BUDGET_BYTES,
         "the datagram budget does not fit the path MTU the transport reports"
+    );
+}
+
+/// **The shard counts the bytes it actually moved** (NOW.md §0q item 4).
+///
+/// The 100-bot soak's headline bandwidth number — 16.5 kB/s/client — was
+/// budget × rate × clients, computed by hand, because nothing in `crates/`
+/// had ever counted a byte. This drives one real client over all four lanes
+/// and asserts the counters moved, that each byte total is consistent with
+/// its own message count, and — the part that makes it a measurement rather
+/// than a "> 0" — that the inbound datagram arrivals **reconcile with the
+/// three verdict counters that partition them**, which is a second source
+/// for the same events.
+///
+/// It does not assert a rate. A loopback shard with one bot is not the
+/// soak; the deliverable here is the instrument.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_shard_counts_the_bytes_it_actually_moved() {
+    let tables = baked_content();
+    let handle = spawn_shard(
+        ShardConfig::ephemeral(0xB17E5),
+        tables,
+        Saves::off(),
+        server::worldfile::WorldBoot::off(),
+    )
+    .await
+    .expect("shard boots");
+    let addr = handle.local_addr;
+
+    let endpoint = std::sync::Arc::new(bot_endpoint().expect("client endpoint"));
+    // Raiding, so the C→S **stream** lane carries action frames: a walking
+    // bot writes nothing after its handshake and `net_stream_in_*` would
+    // stay at zero for a reason that has nothing to do with the counter.
+    let rows = raid_rows();
+    assert!(
+        rows.is_some(),
+        "the shipped content must resolve the raid rows, or this gate would \
+         silently stop exercising the C→S stream lane"
+    );
+    let report = run_bot(&endpoint, addr, 1, Duration::from_secs(3), rows)
+        .await
+        .expect("bot ran");
+
+    let s = &handle.stats;
+    // Read the verdict counters BEFORE the arrival count: the arrival pair
+    // is bumped first at the site, so this ordering can only leave the
+    // arrival count ahead by the one datagram in flight, never behind.
+    let verdicts = ShardStats::get(&s.input_dg_ok)
+        + ShardStats::get(&s.input_dg_bad)
+        + ShardStats::get(&s.input_dg_forged);
+    let dg_in = ShardStats::get(&s.net_dg_in_count);
+    let dg_in_bytes = ShardStats::get(&s.net_dg_in_bytes);
+    let dg_out = ShardStats::get(&s.net_dg_out_count);
+    let dg_out_bytes = ShardStats::get(&s.net_dg_out_bytes);
+    let st_out = ShardStats::get(&s.net_stream_out_frames);
+    let st_out_bytes = ShardStats::get(&s.net_stream_out_bytes);
+    let st_in = ShardStats::get(&s.net_stream_in_frames);
+    let st_in_bytes = ShardStats::get(&s.net_stream_in_bytes);
+
+    assert!(
+        dg_in > 0 && dg_out > 0,
+        "no datagram was counted either way"
+    );
+    assert!(
+        st_out > 0,
+        "no event-lane frame was counted — the S→C stream is silent or unwatched"
+    );
+    assert!(
+        st_in > 0,
+        "no C→S frame was counted, and this bot raided: the action lane is unwatched"
+    );
+
+    // Bytes against counts. A datagram is at least one byte and at most the
+    // budget it is encoded against, so the mean lands inside that band —
+    // which is what says the number is *bytes* and not entities, frames, or
+    // whatever else a plausible wrong call site would have handed it.
+    let budget = sim_core::limits::DATAGRAM_BUDGET_BYTES as u64;
+    assert!(
+        dg_out_bytes >= dg_out && dg_out_bytes <= dg_out * budget,
+        "outbound mean {} B over {dg_out} datagrams is outside 1..={budget} B",
+        dg_out_bytes / dg_out
+    );
+    assert!(
+        dg_in_bytes >= dg_in,
+        "inbound bytes cannot be below arrivals"
+    );
+    assert!(
+        st_out_bytes >= st_out * (server::net::FRAME_PREFIX_BYTES as u64 + 1),
+        "stream-out bytes {st_out_bytes} cannot cover {st_out} prefixed frames"
+    );
+    assert!(
+        st_in_bytes >= st_in * (server::net::FRAME_PREFIX_BYTES as u64 + 1),
+        "stream-in bytes {st_in_bytes} cannot cover {st_in} prefixed frames"
+    );
+
+    // The second source. `<= 1` is the one datagram that can sit between
+    // the two bumps of a single reader task, and nothing wider.
+    assert!(
+        dg_in >= verdicts && dg_in - verdicts <= 1,
+        "arrivals {dg_in} do not reconcile with verdicts {verdicts} — one of \
+         the two is counting a different set of datagrams"
+    );
+
+    // And the per-client half, off the same run: what one client measured
+    // of its own traffic must be non-zero on every lane it used. The two
+    // sides do not have to agree to the byte (loss, and the shard counts
+    // every client), but a client reporting zero while the shard reports
+    // traffic means one of the two is measuring nothing.
+    assert!(
+        report.dg_in_bytes > 0 && report.dg_in_count > 0,
+        "the bot received snapshots and counted no bytes"
+    );
+    assert!(
+        report.dg_out_bytes > 0,
+        "the bot sent inputs and counted no bytes"
+    );
+    assert!(
+        report.ev_in_bytes > 0,
+        "the bot drained the event lane and counted no bytes"
+    );
+    assert!(
+        report.act_out_bytes > 0,
+        "the bot wrote {} action frames and counted no bytes",
+        report.actions_sent
     );
 }
 
