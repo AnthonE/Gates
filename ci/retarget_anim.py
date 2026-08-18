@@ -48,6 +48,11 @@ Usage:
                           wins the bare name, because it was authored for it
       [--only NAME]       repeatable; retarget just these
       [--skip NAME]       repeatable
+      [--retime NAME=S]   write this clip S seconds long instead of its own
+                          length. The motion is unchanged and complete -- only
+                          the clock it is written against moves -- so a swing
+                          can be made to fit a cadence it was not authored for.
+                          Repeatable.
       [--no-align]        anchor each bone on its OWN rest instead of on one
                           aligned to the source's. Wrong for these two rigs --
                           it is what put the arms 43 degrees low -- and kept
@@ -356,6 +361,7 @@ def main():
     fps = 30.0
     suffix = "_alt"
     only, skip = [], []
+    retime = {}
     no_align = False
     i = 0
     while i < len(argv):
@@ -368,6 +374,11 @@ def main():
             only.append(argv[i + 1]); i += 2
         elif a == "--skip":
             skip.append(argv[i + 1]); i += 2
+        elif a == "--retime":
+            k, _, v = argv[i + 1].partition("=")
+            if not k or not v:
+                raise SystemExit("--retime wants NAME=SECONDS")
+            retime[k] = float(v); i += 2
         elif a == "--no-align":
             no_align = True; i += 1
         elif a.startswith("--"):
@@ -502,13 +513,20 @@ def main():
             print(f"  skip {name}: zero length")
             continue
         chans = channels_of(sg, sb, anim)
-        n = max(2, int(round(dur * fps)) + 1)
-        times = np.linspace(0.0, dur, n)
+        # **Retiming is a property of the OUTPUT clock, not of the sampling.**
+        # The source is still read across its whole length — every pose is
+        # kept — and only the times written against those poses are compressed.
+        # Sampling the source faster instead would drop frames out of the
+        # middle of the motion, which is a different and worse thing.
+        out_dur = retime.get(name, dur)
+        n = max(2, int(round(out_dur * fps)) + 1)
+        src_times = np.linspace(0.0, dur, n)
+        times = np.linspace(0.0, out_dur, n)
 
         rot_out = {t: np.empty((n, 4), dtype=float) for t in tmap}
         hips_out = np.empty((n, 3), dtype=float)
 
-        for k, t in enumerate(times):
+        for k, t in enumerate(src_times):
             # Source globals, over the WHOLE source hierarchy — unmapped
             # ancestors included, because the armature root is where a
             # root-motion clip puts the body's travel.
@@ -567,7 +585,8 @@ def main():
         tg.setdefault("animations", []).append(
             {"name": out_name, "samplers": samplers, "channels": channels})
         added += 1
-        print(f"  {out_name:24s} {dur:5.2f}s  {n:4d} frames")
+        note = f"  (retimed from {dur:.2f}s)" if name in retime else ""
+        print(f"  {out_name:24s} {out_dur:5.2f}s  {n:4d} frames{note}")
 
     tg["buffers"][0]["byteLength"] = len(new_blob)
     write_glb(out_path, tg, new_blob)

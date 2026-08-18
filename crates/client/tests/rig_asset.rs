@@ -36,7 +36,7 @@
 
 #![cfg(feature = "render")]
 
-use client::render::anim::{Clip, ANIM_BODY_H_M, ANIM_RIG_H_M};
+use client::render::anim::{Clip, ANIM_BODY_H_M, ANIM_RIG_H_M, SWING_CLIP_S};
 
 /// Assets live beside the crate, not inside it — the same hop
 /// `tests/deploy_assets.rs` and `tests/ui.rs` make.
@@ -59,6 +59,21 @@ impl Glb {
         let json = serde_json::from_slice(&raw[20..20 + len])
             .unwrap_or_else(|e| panic!("{}: bad JSON chunk: {e}", path.display()));
         Self { json }
+    }
+
+    /// One clip's length, read off the longest `input` accessor its samplers
+    /// point at — which is what a player defines "over" as.
+    fn clip_duration(&self, name: &str) -> Option<f32> {
+        let anims = self.json["animations"].as_array()?;
+        let a = anims.iter().find(|a| a["name"].as_str() == Some(name))?;
+        let mut d = 0.0f32;
+        for s in a["samplers"].as_array()? {
+            let i = s["input"].as_u64()? as usize;
+            if let Some(m) = self.json["accessors"][i]["max"][0].as_f64() {
+                d = d.max(m as f32);
+            }
+        }
+        Some(d)
     }
 
     fn clips(&self) -> Vec<String> {
@@ -303,6 +318,48 @@ fn the_arms_have_a_hold_clip_to_play() {
     assert!(
         have.iter().any(|n| n == want),
         "{RIG} has no clip {want:?} for the first-person arms"
+    );
+}
+
+#[test]
+fn the_swing_clip_fits_the_swing_cadence() {
+    // **The one timing in the client that the sim can invalidate from a
+    // distance.** A player may swing every `SWING_INTERVAL_TICKS / TICK_HZ`;
+    // the stroke must finish and blend back into the gait inside that, or
+    // every arc is cut off by the next and a body never completes a swing —
+    // which looks like a stutter, not like a wrong number.
+    //
+    // `SWING_CLIP_S` is derived from those sim constants, and the ASSET is cut
+    // to match with `ci/retarget_anim.py --retime`. This is the check that the
+    // two still agree: raise the cadence and the constant moves, the shipped
+    // file does not, and this fails instead of the picture quietly degrading.
+    let glb = Glb::open(&asset_path(RIG));
+    let name = Clip::Swing.name();
+    let dur = glb
+        .clip_duration(name)
+        .unwrap_or_else(|| panic!("{RIG} has no clip {name:?}"));
+    // One frame of the 30 Hz resample is the tolerance; the retime lands on a
+    // whole number of frames and cannot hit an arbitrary float exactly.
+    assert!(
+        (dur - SWING_CLIP_S).abs() < 1.0 / 30.0,
+        "{RIG}'s {name:?} runs {dur:.3} s and SWING_CLIP_S is {SWING_CLIP_S:.3} s — \
+         re-cut it: ci/retarget_anim.py --retime {name}={SWING_CLIP_S:.5}"
+    );
+    let cadence = sim_core::gather::SWING_INTERVAL_TICKS as f32 / sim_core::limits::TICK_HZ as f32;
+    // `SWING_CLIP_S` is a literal because the knob registry cannot pin an
+    // expression — so this is where the derivation actually lives, and it is
+    // checked rather than left as a comment beside the number.
+    assert!(
+        (SWING_CLIP_S - (cadence - client::render::anim::ANIM_BLEND_S - 1.0 / 30.0)).abs() < 1e-4,
+        "SWING_CLIP_S is {SWING_CLIP_S} but the cadence minus the blend and a frame is {} — \
+         the literal has drifted from the sim it is derived from",
+        cadence - client::render::anim::ANIM_BLEND_S - 1.0 / 30.0
+    );
+    assert!(
+        dur + client::render::anim::ANIM_BLEND_S <= cadence + 1.0 / 30.0,
+        "the swing takes {:.3} s including its blend but the sim allows one every \
+         {cadence:.3} s — every arc would be cut off by the next",
+        dur + client::render::anim::ANIM_BLEND_S
     );
 }
 

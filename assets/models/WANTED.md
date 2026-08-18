@@ -296,10 +296,12 @@ The rig is `stumpy.glb`, 24 joints (§6), **53 clips**. A name must be
 **Closed 2026-08-17 — nothing on this list is outstanding.** The last item was
 a `Gather_Swing`, since 46 clips contain no chopping motion; the operator took
 `Sword_Attack` instead (*"accept sword attack because tbh thats rust lol you
-just swing whatever pretty much"*, `DECISIONS.md`). ⚠ **The clip that shipped
-is `Punch_Cross`**: a parallel lane measured that `Sword_Attack` is 1.5 s
-against a 1.267 s swing cadence, so every arc would be cut off by the next.
-Same day, same question, two lanes — see the 2026-08-17 reversal row. The reference game swings
+just swing whatever pretty much"*, `DECISIONS.md`). ⚠ **It shipped as `Punch_Cross` for a day and is `Sword_Attack` again.**
+A parallel lane measured that `Sword_Attack`'s 1.5 s does not fit the 1.267 s
+swing cadence and took the only clip short enough; the operator then rejected
+the punch on sight, because it puts a hand 15 cm inside this body's oversized
+head (0.147 m against a 0.295 m head radius, where the sword holds 0.490 m).
+The clip is retimed to 1.087 s at import instead — see the 2026-08-18 row. The reference game swings
 one animation at everything, so a dedicated chop was a distinction it does not
 draw either.
 

@@ -27,7 +27,13 @@
 //! another file's surface goes stale, so read the surface.
 
 const ANIM: &str = include_str!("../src/render/anim.rs");
-const GLTF: &str = include_str!("../../../assets/models/mannequin.gltf");
+/// The rig `anim.rs` actually loads. **A `.glb` is binary, so this is bytes** —
+/// its JSON chunk is UTF-8 at the head of the file, which is all a name search
+/// needs. It pointed at `mannequin.gltf` until 2026-08-18 and passed the whole
+/// time by coincidence: every name this client asks for came *from* the
+/// mannequin by retarget, so the old check could never have caught the one
+/// thing it existed to catch — a clip missing from the file the game opens.
+const RIG_GLB: &[u8] = include_bytes!("../../../assets/models/stumpy.glb");
 
 /// Every `Clip` name in the match arms, scraped as text.
 fn clip_names() -> Vec<String> {
@@ -52,7 +58,7 @@ fn clip_names() -> Vec<String> {
 
 /// Every clip the code asks for is a clip the shipped rig has.
 #[test]
-fn every_clip_name_ships_in_the_mannequin() {
+fn every_clip_name_ships_in_the_rig() {
     let names = clip_names();
     // Anti-vacuity: a scrape that stopped matching would otherwise pass by
     // finding nothing at all, which is the failure mode this repo names as
@@ -63,14 +69,14 @@ fn every_clip_name_ships_in_the_mannequin() {
          and this gate is looking at nothing",
         names.len()
     );
+    let json = String::from_utf8_lossy(&RIG_GLB[..RIG_GLB.len().min(400_000)]);
     for n in &names {
         assert!(
-            GLTF.contains(&format!("\"name\":\"{n}\""))
-                || GLTF.contains(&format!("\"name\": \"{n}\"")),
-            "anim.rs asks for clip {n:?}, which models/mannequin.gltf does \
-             not have — the library was re-vendored and a clip renamed. \
-             The symptom is a body that stops animating and an error! line \
-             nobody reads."
+            json.contains(&format!("\"name\":\"{n}\""))
+                || json.contains(&format!("\"name\": \"{n}\"")),
+            "anim.rs asks for clip {n:?}, which models/stumpy.glb does not \
+             have — the rig was re-imported and a clip renamed. The symptom \
+             is a body that stops animating and an error! line nobody reads."
         );
     }
 }
@@ -127,12 +133,22 @@ fn the_clip_table_and_the_graph_are_the_same_width() {
 
 /// **The one-shot has to fit inside the cadence, and that is arithmetic.**
 ///
-/// `Punch_Cross` was chosen over `Sword_Attack` for one reason: the sim
-/// lets a player swing every `SWING_INTERVAL_TICKS / TICK_HZ` seconds, and
-/// a clip longer than that (plus the blend it costs to get into) means
-/// every arc is cut off by the next one and no body ever finishes a
-/// stroke. The choice is recorded in `DECISIONS.md` §open with the numbers;
-/// this is the check that the numbers still hold.
+/// The sim lets a player swing every `SWING_INTERVAL_TICKS / TICK_HZ`
+/// seconds, and a clip longer than that (plus the blend it costs to get
+/// into) means every arc is cut off by the next one and no body ever
+/// finishes a stroke. This is the check that the numbers still hold.
+///
+/// ⚠ **The clip is `Sword_Attack`, not `Punch_Cross`, and the reasoning this
+/// gate was written under has been inverted.** `Punch_Cross` was picked here
+/// as the only candidate short enough to fit unmodified — then the operator
+/// saw it on the real body: an oversized head that a punch drives a hand
+/// 15 cm inside (0.147 m against a 0.295 m head radius, measured). So the
+/// long clip was cut to fit instead (`ci/retarget_anim.py --retime`) rather
+/// than a short one being accepted. The inequality below is unchanged and is
+/// now satisfied by construction — `SWING_CLIP_S` is derived from it — which
+/// is why this stayed a strict `<`: the derivation leaves exactly one
+/// resample frame, and a gate that allowed equality would permit a stroke
+/// that rounds past the cadence.
 ///
 /// It is deliberately NOT a check that `SWING_CLIP_S` equals the shipped
 /// clip's length — that would need the glTF's accessor maxima and would be
@@ -156,7 +172,7 @@ fn the_swing_clip_fits_between_two_swings() {
         clip + blend < cadence,
         "the swing clip is {clip} s and the blend {blend} s, but the sim \
          allows a swing every {cadence:.3} s — every arc would be cut off by \
-         the next one and no body would finish a stroke. This is the whole \
-         reason the clip is Punch_Cross and not Sword_Attack."
+         the next one and no body would finish a stroke. The clip is cut to \
+         fit at import; re-cut it with ci/retarget_anim.py --retime."
     );
 }

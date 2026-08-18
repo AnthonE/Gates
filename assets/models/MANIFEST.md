@@ -47,7 +47,8 @@ ci/import_char.py <merged>.glb stumpy_raw.glb \
     --rename Idle_11=Idle_Loop --rename Walking=Walk_Loop \
     --rename Running=Jog_Fwd_Loop --single-sided --roughness 0.85
 ci/ktx_pack.py stumpy_raw.glb stumpy_packed.glb
-ci/retarget_anim.py assets/models/mannequin.gltf stumpy_packed.glb stumpy_rt.glb
+ci/retarget_anim.py assets/models/mannequin.gltf stumpy_packed.glb stumpy_rt.glb \
+    --retime Sword_Attack=1.05333
 ci/split_arms.py stumpy_rt.glb assets/models/stumpy.glb
 ```
 
@@ -68,9 +69,19 @@ camera; `bodies.rs` draws both and is unchanged.
 
 `crates/client/tests/rig_asset.rs` gates all of it — the clip names off `Clip`
 itself, the height against `ANIM_RIG_H_M`, the stand-up rotation, one material,
-KTX2 textures, both halves of the split, and the arms' hold clip. Four of the
-first five were watched going red against the raw file and green against the
-imported one.
+KTX2 textures, both halves of the split, the arms' hold clip, and that the
+swing clip still fits the sim's swing cadence. Five of the eight were watched
+going red under their own defect — four against the raw file, and the cadence
+one against the un-retimed 1.5 s swing.
+
+**The `--retime` on the swing is not cosmetic.** `SWING_CLIP_S` is derived
+from the sim (`SWING_INTERVAL_TICKS / TICK_HZ − ANIM_BLEND_S − one frame` = 1.05333 s), and
+the asset is cut to it, because a stroke longer than the cadence is cut off by
+the next swing and never finishes. `Sword_Attack` is the clip despite being the
+long one: on this body a punch puts a hand **15 cm inside the head**, measured
+(0.147 m against a 0.295 m head radius) where the sword holds 0.490 m. A
+retargeted clip inherits the source's proportions as assumptions, and an
+oversized head breaks them.
 
 ### The 46 retargeted clips
 

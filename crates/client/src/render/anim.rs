@@ -98,19 +98,24 @@ impl Clip {
             // Deliberately not a T-pose: a sleeper is a person standing
             // still, and the T-pose is a rig artifact.
             Clip::Sleep => "Idle_Loop",
-            // **`Punch_Cross` and not `Sword_Attack`, and the reason is
-            // arithmetic rather than taste.** `SWING_INTERVAL_TICKS` is 38
-            // at `TICK_HZ` 30, so the sim lets a player swing every
-            // 1.267 s; `Sword_Attack` runs 1.500 s and with `ANIM_BLEND_S`
-            // on top is 1.68 s, so a player swinging as fast as the rules
-            // allow would have every arc cut off by the next one and the
-            // body would never finish a stroke. `Punch_Cross` is 1.000 s,
-            // 1.18 s with the blend, and fits inside the cadence with room
-            // to return to the gait. **It is a punch and the operator asked
-            // for a rock swing** — `DECISIONS.md` §open carries that as the
-            // open question, because the honest alternatives both need a
-            // word: accept the punch, or shorten the sword clip.
-            Clip::Swing => "Punch_Cross",
+            // **`Sword_Attack`, retimed at import to fit exactly** — see
+            // [`SWING_CLIP_S`]. It was `Punch_Cross` for a day, chosen
+            // because it was the only candidate short enough to fit the
+            // cadence unmodified, and the operator rejected it on sight:
+            // *"our model has a big head and its like leaning forward in
+            // that clip and the hands clip all into the head."* Measured
+            // against the shipped mesh and they are right — a punch brings
+            // a hand to **0.147 m** of the head's centre where the vertices
+            // weighted to `Head` reach 0.295 m, so 15 cm of hand is inside
+            // the log. `Sword_Attack` stays **0.490 m** clear, which is the
+            // widest berth of any swing in the library.
+            //
+            // **The clip was made to fit rather than the fit made to
+            // accept the clip**, which is the whole of this change: a
+            // shorter clip existed and was wrong for this body, so the
+            // right one was retimed onto the cadence instead
+            // (`ci/retarget_anim.py --retime`).
+            Clip::Swing => "Sword_Attack",
         }
     }
 
@@ -138,9 +143,36 @@ impl Clip {
     }
 }
 
-/// How long the one-shot swing clip runs, seconds — `Punch_Cross`'s own
-/// length in the shipped glTF, not a picked number.
-pub const SWING_CLIP_S: f32 = 1.0;
+/// How long the one-shot swing clip runs, seconds.
+///
+/// **Derived from the sim's own cadence, and the ASSET is cut to match it** —
+/// not the other way round, and not a number anybody typed. A player may swing
+/// every `SWING_INTERVAL_TICKS / TICK_HZ` = 1.267 s; the stroke has to be over
+/// and blended back into the gait before the next one starts, the blend out
+/// costs [`ANIM_BLEND_S`], and one resample frame is left over so "before" is
+/// strict. So the clip gets whatever is left.
+///
+/// `ci/retarget_anim.py --retime Sword_Attack=1.05333` writes the clip that
+/// long — the motion is complete and only its clock is compressed, 1.5 s of
+/// authored swing played over 1.053 — and
+/// `tests/rig_asset.rs::the_swing_clip_fits_the_swing_cadence` fails if the
+/// file and this constant ever disagree. **That is the loop worth having**:
+/// change the sim's cadence and the constant moves, the shipped clip no longer
+/// matches, and the gate says so instead of the body silently never finishing
+/// a stroke.
+/// ⚠ **A literal, and deliberately not the expression that derives it.** The
+/// knob registry (`ci/knob_registry.mjs`) pins every shipped number to a
+/// spoken declaration, and it cannot read an expression — writing the
+/// derivation here made the gate refuse the file. The coupling is not lost,
+/// it moved to where it can be checked against the asset as well:
+/// `the_swing_clip_fits_the_swing_cadence` recomputes
+/// `SWING_INTERVAL_TICKS / TICK_HZ − ANIM_BLEND_S − one frame` from the sim's
+/// own constants and fails if this literal, or the shipped clip, drifts from
+/// it. **The frame of margin is not slack**: the retime quantizes the clip to
+/// whole 30 Hz frames, so a stroke derived to land exactly ON the cadence can
+/// round to just past it, and `tests/anim.rs` asks for a strict inequality for
+/// that reason.
+pub const SWING_CLIP_S: f32 = 1.05333;
 
 /// Speed thresholds, m/s, and the band around each that a body must cross to
 /// change its mind. Derived speed is noisy — a packet arriving a millisecond
