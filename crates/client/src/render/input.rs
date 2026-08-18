@@ -94,6 +94,10 @@ pub fn gather(
     // Same shape as `ui`, and the same reason it is optional: a capture run
     // registers neither.
     chat: Option<Res<super::chat::Chat>>,
+    // The inverse of the two above: present ONLY on a capture run, absent in
+    // every player's client. `capture::drive` runs `.before` this system, so
+    // the intent read here was decided this frame and not last one.
+    cap: Option<Res<super::capture::Capture>>,
     // The pointer's memory across frames. A `Local` holding a pure type from
     // `ui::` rather than loose booleans, for that module's reason: the defect
     // it fixes is a SEQUENCE, and a sequence inside a system can only be
@@ -257,9 +261,21 @@ pub fn gather(
     if keys.pressed(KeyCode::KeyA) {
         right -= 1;
     }
+    // **The probe drives here or it does not drive at all.** A capture run
+    // with a verb pass hands its intent in through the same two axes and
+    // the same button mask a keyboard produces, so the frame it photographs
+    // went through the whole path — prediction, quantization, the wire —
+    // rather than through a private door into `set_input`. When the probe
+    // is only looking (every frame of the vantage pass, and every frame of
+    // a real player's session) this is `None` and nothing below changes.
+    let probe = cap.and_then(|c| c.intent);
+    let (fwd, right) = match probe {
+        Some(i) => (i.fwd, i.right),
+        None => (fwd, right),
+    };
     let (move_x, move_z) = look::move_axes(fwd, right);
 
-    let mut buttons = 0u8;
+    let mut buttons = probe.map_or(0u8, |i| i.buttons);
     if keys.pressed(KeyCode::ShiftLeft) {
         buttons |= BTN_SPRINT;
     }

@@ -28,6 +28,7 @@ use super::clutter::ClutterRing;
 use super::input::Look;
 use super::props::PropRing;
 use super::terrain_mesh::Ring;
+use sim_core::terrain;
 
 /// Frames to wait for the server to place the player before giving up.
 ///
@@ -57,6 +58,28 @@ pub const FRAMES_PER_SHOT: u32 = 6;
 /// Frames to hold after the last shot so the async readback lands on disk.
 pub const TAIL_FRAMES: u32 = 20;
 
+/// Cells either side of the probe searched for something to swing at.
+///
+/// Two, so the walk is at most ~24 m — long enough that a spawn point with
+/// no node in its own cell still finds one, short enough that the budget
+/// below is not a euphemism for "forever".
+pub const QUARRY_CELLS: i32 = 2;
+/// Frames the probe may spend walking at its quarry before giving up.
+///
+/// A frame count, like every other budget here, and for the same reason:
+/// under a CPU rasterizer elapsed milliseconds measure the box. The walk
+/// is server-side at `movement::WALK_SPEED` and the client sends one input
+/// frame per rendered frame, so this is generous by design — a probe that
+/// gives up early would report "no mark" for a mark that was coming.
+pub const WALK_FRAMES: u32 = 900;
+/// Frames the probe holds the swing once it is in reach. `gather::swing`
+/// pays one swing per `SWING_INTERVAL_TICKS`, so this is several swings at
+/// any frame rate, and a node's first swing is the only one the mark needs.
+pub const SWING_FRAMES: u32 = 120;
+/// Frames between the swing pass ending and its shot, so the decal that
+/// swing produced has crossed the wire and been drawn.
+pub const MARK_SETTLE_FRAMES: u32 = 12;
+
 /// `(label, yaw radians, pitch radians)`.
 ///
 /// ⚠ **`1` and `3` SWAPPED LABELS on 2026-08-15 and kept their yaws**
@@ -79,6 +102,37 @@ pub const VANTAGES: [(&str, f32, f32); 6] = [
     ("sky", 2.35, 0.35),
 ];
 
+/// What the probe wants the player to do this frame, in the player's own
+/// terms — the same two axes and the same button mask a keyboard produces.
+///
+/// It exists because a capture that can only LOOK cannot photograph a verb,
+/// and every mark, swing arc and built piece in this game is the result of
+/// one. `render::input::gather` reads it instead of the keyboard while it
+/// is `Some`, which keeps the wire path identical: the probe is a player
+/// with no hands, not a second way into `set_input`.
+#[derive(Clone, Copy, Default)]
+pub struct Intent {
+    pub fwd: i32,
+    pub right: i32,
+    pub buttons: u8,
+}
+
+/// How far the probe has got through the verb pass that follows the
+/// vantages. Ordered, and each arm ends by naming the next one.
+#[derive(Clone, Copy, PartialEq)]
+enum Verb {
+    /// Nothing chosen yet — the scan below runs once.
+    Hunt,
+    /// Walking at a quarry at `(x, z)`, since frame `_`.
+    Walk { x: f32, z: f32, since: u32 },
+    /// In reach and swinging, since frame `_`.
+    Swing { since: u32 },
+    /// Swung; waiting for the mark to arrive, then shooting it.
+    Settle { since: u32 },
+    /// Over, either shot or honestly skipped.
+    Done,
+}
+
 #[derive(Resource)]
 pub struct Capture {
     pub dir: PathBuf,
@@ -88,6 +142,10 @@ pub struct Capture {
     built: bool,
     finished_at: Option<u32>,
     frame: u32,
+    /// The probe's intent for `input::gather`, `None` whenever the probe is
+    /// only looking (which is every frame of the vantage pass).
+    pub intent: Option<Intent>,
+    verb: Verb,
 }
 
 impl Capture {
@@ -99,6 +157,8 @@ impl Capture {
             built: false,
             finished_at: None,
             frame: 0,
+            intent: None,
+            verb: Verb::Hunt,
         }
     }
 }
@@ -116,6 +176,7 @@ pub fn drive(
     mut look: ResMut<Look>,
     mut exit: MessageWriter<AppExit>,
     eye: Res<super::Eye>,
+    world: Res<super::WorldId>,
     ring: Res<Ring>,
     props: Res<PropRing>,
     clutter: Res<ClutterRing>,
@@ -212,7 +273,12 @@ pub fn drive(
     let phase = (cap.since_built - WARM_FRAMES) % FRAMES_PER_SHOT;
     let idx = ((cap.since_built - WARM_FRAMES) / FRAMES_PER_SHOT) as usize;
     if idx >= VANTAGES.len() {
-        cap.finished_at = Some(cap.frame);
+        // The vantages are shot. Everything past here photographs a VERB,
+        // which is the half a fixed camera cannot reach: a swing, and the
+        // mark it leaves. `NOW.md` §0ps item 1 — *nobody has looked at
+        // either* — is a standing item precisely because the probe could
+        // only ever stand still and turn its head.
+        verb_pass(&mut commands, &mut cap, &mut look, &eye, &world);
         return;
     }
 
@@ -229,5 +295,210 @@ pub fn drive(
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(path));
         cap.taken += 1;
+    }
+}
+
+/// Face `(dx, dz)` in the sim's own headings.
+///
+/// A scan of the 256 LUT bearings rather than an `atan2`, and the reason is
+/// that the answer has to agree with `sim_core::yaw_dir` — the function the
+/// SERVER will resolve this swing's aim cone with. Deriving the angle
+/// analytically means re-deriving that LUT's sign and phase conventions from
+/// the outside and being quietly one octant out; asking it directly cannot
+/// be. This runs once per frame of a probe run and never in a player's
+/// client.
+fn bearing_to(dx: f32, dz: f32) -> f32 {
+    let mut best = (0u16, f32::MIN);
+    for hi in 0..=255u16 {
+        let (fx, fz) = sim_core::yaw_dir(hi << 8);
+        let dot = fx * dx + fz * dz;
+        if dot > best.1 {
+            best = (hi, dot);
+        }
+    }
+    best.0 as f32 / 256.0 * std::f32::consts::TAU
+}
+
+/// Walk at the nearest swingable thing, swing it, and photograph the mark.
+///
+/// **This is a probe, not a gate.** It writes a frame and scores nothing —
+/// `CLAUDE.md` is explicit that the pixel gate was the mistake and a person
+/// looking is the visual gate. What this removes is the reason a person
+/// could not look: the verb was unreachable without a keyboard.
+fn verb_pass(
+    commands: &mut Commands,
+    cap: &mut Capture,
+    look: &mut Look,
+    eye: &super::Eye,
+    world: &super::WorldId,
+) {
+    match cap.verb {
+        Verb::Hunt => {
+            // The client resolves the island the same way the server does,
+            // so the quarry is found from shared worldgen rather than from
+            // anything on the wire — no snapshot carries a tree.
+            let (pcx, pcz) = (
+                (eye.pos.x / terrain::CELL_SIZE).floor() as i32,
+                (eye.pos.z / terrain::CELL_SIZE).floor() as i32,
+            );
+            let mut best: Option<(f32, f32, f32)> = None;
+            for dz in -QUARRY_CELLS..=QUARRY_CELLS {
+                for dx in -QUARRY_CELLS..=QUARRY_CELLS {
+                    let sl = terrain::scatter(
+                        world.seed,
+                        &world.table,
+                        &world.haven,
+                        pcx + dx,
+                        pcz + dz,
+                    );
+                    if sim_core::gather::node_index(sl.occupant).is_none() {
+                        continue;
+                    }
+                    // Skip anything with no skin: a bush is swingable and
+                    // leaves no mark by design (`gather::skin_point`), so
+                    // walking at one would photograph the absence of the
+                    // thing this pass exists to show.
+                    if terrain::occupant_volume(sl.occupant).0 <= 0.0 {
+                        continue;
+                    }
+                    let d2 = (sl.x - eye.pos.x).powi(2) + (sl.z - eye.pos.z).powi(2);
+                    if best.is_none_or(|b| d2 < b.2) {
+                        best = Some((sl.x, sl.z, d2));
+                    }
+                }
+            }
+            match best {
+                Some((x, z, d2)) => {
+                    println!(
+                        "capture: quarry at {x:.1},{z:.1} — {:.1} m off, walking",
+                        d2.sqrt()
+                    );
+                    cap.verb = Verb::Walk {
+                        x,
+                        z,
+                        since: cap.frame,
+                    };
+                }
+                None => {
+                    // Loud, never silent: an absent frame with no line
+                    // printed is indistinguishable from a broken renderer,
+                    // which is this repo's worst bug class.
+                    eprintln!(
+                        "capture: SKIPPED the verb pass — no swingable node with a \
+                         surface within {QUARRY_CELLS} cells of {:.0},{:.0}. The \
+                         vantages stand; nothing was swung.",
+                        eye.pos.x, eye.pos.z
+                    );
+                    cap.verb = Verb::Done;
+                    cap.finished_at = Some(cap.frame);
+                }
+            }
+        }
+        Verb::Walk { x, z, since } => {
+            let (dx, dz) = (x - eye.pos.x, z - eye.pos.z);
+            look.yaw = bearing_to(dx, dz);
+            look.pitch = 0.0;
+            let d2 = dx * dx + dz * dz;
+            // In reach when the sim would say so, with a margin — and the
+            // margin is small on purpose. `gather::swing` measures to the
+            // slot CENTRE, while collision stops the body at the occupant's
+            // radius plus the capsule's: a rock is 1.11 m of trunk and the
+            // body halts ~1.5 m out, so a stop threshold tighter than that
+            // is a probe that walks into a boulder until its budget runs
+            // out. `REACH_M` is 2.0 and 0.9 of it clears every occupant in
+            // `occupant_volume` while still being inside what the server
+            // will answer.
+            if d2 <= (sim_core::gather::REACH_M * 0.9).powi(2) {
+                cap.intent = Some(Intent::default());
+                cap.verb = Verb::Swing { since: cap.frame };
+            } else if cap.frame - since > WALK_FRAMES {
+                eprintln!(
+                    "capture: SKIPPED the verb pass — {WALK_FRAMES} frames of walking \
+                     did not reach the quarry (still {:.1} m off). Something is \
+                     between the probe and it.",
+                    d2.sqrt()
+                );
+                cap.intent = None;
+                cap.verb = Verb::Done;
+                cap.finished_at = Some(cap.frame);
+            } else {
+                cap.intent = Some(Intent {
+                    fwd: 1,
+                    right: 0,
+                    buttons: 0,
+                });
+            }
+        }
+        Verb::Swing { since } => {
+            cap.intent = Some(Intent {
+                fwd: 0,
+                right: 0,
+                buttons: sim_core::input::BTN_PRIMARY,
+            });
+            if cap.frame - since > SWING_FRAMES {
+                cap.intent = Some(Intent::default());
+                cap.verb = Verb::Settle { since: cap.frame };
+            }
+        }
+        Verb::Settle { since } => {
+            cap.intent = Some(Intent::default());
+            if cap.frame - since > MARK_SETTLE_FRAMES {
+                let path = cap.dir.join(format!("{}-swing.png", VANTAGES.len()));
+                println!("capture: {}", path.display());
+                commands
+                    .spawn(Screenshot::primary_window())
+                    .observe(save_to_disk(path));
+                cap.taken += 1;
+                cap.intent = None;
+                cap.verb = Verb::Done;
+                cap.finished_at = Some(cap.frame);
+            }
+        }
+        Verb::Done => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The probe must face what it walks at, through the conversion the
+    /// wire actually applies.** `bearing_to` picks a heading off
+    /// `sim_core::yaw_dir`'s own LUT and then hands it back as radians for
+    /// `Look`, which `look::yaw_u16` re-quantizes on the way to
+    /// `set_input`. That round trip is where an off-by-one-octant lives, and
+    /// it would show up as a probe that walks past its quarry rather than as
+    /// a compile error. Asserted against the LUT's own resolution: 256
+    /// headings is 1.4° apart, so the worst honest miss is 0.7°, whose
+    /// cosine is 0.99992.
+    #[test]
+    fn the_probe_faces_what_it_walks_at() {
+        for (dx, dz) in [
+            (1.0f32, 0.0f32),
+            (-1.0, 0.0),
+            (0.0, 1.0),
+            (0.0, -1.0),
+            (0.7, 0.7),
+            (-3.0, 1.5),
+        ] {
+            let yaw = bearing_to(dx, dz);
+            let (fx, fz) = sim_core::yaw_dir(crate::look::yaw_u16(yaw));
+            let len = (dx * dx + dz * dz).sqrt();
+            let dot = fx * dx / len + fz * dz / len;
+            assert!(
+                dot > 0.999,
+                "bearing_to({dx}, {dz}) -> {yaw} rad faces ({fx}, {fz}), dot {dot}"
+            );
+        }
+    }
+
+    /// A fresh probe is only looking, so a player's input path is untouched
+    /// by the existence of this module — `input::gather` reads `None` and
+    /// falls through to the keyboard.
+    #[test]
+    fn a_fresh_probe_drives_nothing() {
+        let cap = Capture::new(PathBuf::from("/nonexistent"));
+        assert!(cap.intent.is_none());
+        assert!(cap.verb == Verb::Hunt);
     }
 }
