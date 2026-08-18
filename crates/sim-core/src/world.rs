@@ -464,6 +464,32 @@ pub const EV_IMPACT: u8 = 38;
 /// beside the trust row.
 pub const EV_TRUST: u8 = 39;
 
+/// EV_SWING: a = the swinging player's id, b = 0, c = 0.
+///
+/// **Broadcast**, `EV_SHOT`'s posture and its reason: a swing is a fact
+/// about a body that other clients are drawing, and a client that misses
+/// one loses an arc. It carries no position, because it does not need to —
+/// every body's place is already in the snapshot, and the one thing a
+/// remote client cannot derive is *that the arm moved*, since it never
+/// receives another player's input frame.
+///
+/// **Outcome-free, and that is the whole point.** It fires once per swing
+/// on a hit AND on a whiff, from the only line in the tree that runs
+/// exactly once per swing regardless of what the swing found:
+/// `gather::swing`'s cadence gate. Every later exit — a refusal, a free
+/// arm handed on to flesh, a smashed barrel — is downstream of a decision
+/// the swinger has already committed to with their arm. A fact that only
+/// fires when something was hit is not a swing fact; it is a hit fact, and
+/// this lane already has one (`EV_HIT`), which is unicast to the attacker
+/// and drops field `a` at encode precisely because it is theirs alone.
+///
+/// **`b` and `c` are zero and stay zero until something reads them.** The
+/// held item would be cheap in bits and would make an a/b transposition
+/// detectable by `event_roles.rs`'s own discipline, but nothing draws a
+/// different arc for a rock than for a hatchet yet, and a field nobody
+/// reads is a field nobody maintains (`validate.rs` names that shape).
+pub const EV_SWING: u8 = 40;
+
 /// Which trust-bearing verb `EV_TRUST.c` is about, in its high byte.
 ///
 /// A leaf someone else placed, worked by this hand (`deploy::use_door`).
@@ -528,7 +554,7 @@ pub const PRESENCE_MAX: u8 = PRESENCE_GONE;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_TRUST;
+pub const EV_MAX: u8 = EV_SWING;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server

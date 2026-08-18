@@ -800,6 +800,19 @@ pub fn swing(
     }
     p.next_swing = tick + SWING_INTERVAL_TICKS;
 
+    // **The arm moved, and that is a fact about a body other people are
+    // drawing.** Pushed HERE and nowhere else, because the two lines above
+    // are the cadence gate: this is the only point in the tree that runs
+    // exactly once per swing regardless of what the swing goes on to find.
+    // Every exit below it — a whiff, a refusal, a free arm handed to flesh,
+    // a smashed barrel — is downstream of a decision the swinger has
+    // already committed to, and a fact that fires only when something was
+    // hit is a HIT fact, not a swing fact. This lane already has one of
+    // those, and `EV_HIT` is unicast to the attacker for exactly that
+    // reason. `NOW.md` §0sw: the commonest swing in the game is the one
+    // that misses, and it drew nothing on any screen but the swinger's.
+    events.push(crate::world::EV_SWING, p.id, 0, 0);
+
     let px = p.body.qx as f32 * POS_XZ_Q;
     let py = p.body.qy as f32 * POS_Y_Q;
     let pz = p.body.qz as f32 * POS_XZ_Q;

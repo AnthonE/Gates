@@ -280,7 +280,14 @@ const SUB_BAGS: u32 = 50;
 /// stop test can answer (`ranged::SURF_*`); a fourth would be a new
 /// question asked on the hot path, not a spare code waiting here.
 const SUB_IMPACT: u32 = 51;
-const SUB_MAX: u32 = SUB_IMPACT;
+/// A body swung, and every client drawing that body needs to know.
+///
+/// One `u32` and nothing else — no position, because every body's place is
+/// already in the snapshot, and no outcome, because the arm moves whether
+/// or not the swing found anything. `SUB_SHOT` is the shape this copies:
+/// a broadcast cosmetic fact about someone else's hands.
+const SUB_SWING: u32 = 52;
+const SUB_MAX: u32 = SUB_SWING;
 /// Width of `SUB_IMPACT`'s surface field, and how many values it may say.
 ///
 /// **`SURF_KINDS` is derived from the sim's own last kind rather than
@@ -827,6 +834,15 @@ pub enum EventMsg {
     /// mark in the world is the same mark whoever made it, and the client
     /// that wants to know whose arrow it was already heard the shot.
     Impact { qx: i32, qy: i32, qz: i32, surf: u8 },
+    /// A body swung (wire v47). The swinger's entity id and nothing else:
+    /// the receiver already knows where that body is and which way it
+    /// faces, and what it could not know is that the arm moved, because a
+    /// client never receives another player's input frame.
+    ///
+    /// Outcome-free on purpose — it fires on a whiff as well as a hit, and
+    /// the whiff is the commoner of the two. `EV_HIT` is the hit fact and
+    /// is unicast to the attacker.
+    Swing { swinger: u32 },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list (item index, units).
     Stock {
@@ -1965,6 +1981,16 @@ pub fn encode_event_impact(
     Ok(w.finish())
 }
 
+/// One swing, as the wire carries it: who. Thirty-two bits, the same width
+/// `Shot` spends on its shooter, because an entity id is an entity id and a
+/// narrower field here would be a second opinion about how many bodies
+/// there can be.
+pub fn encode_event_swing(swinger: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_SWING)?;
+    w.write(swinger, 32)?;
+    Ok(w.finish())
+}
+
 /// The attacker's hitmarker: `damage` landed on `victim`.
 /// One standing backpack as the wire carries it: identity and where it
 /// is, nothing else. Owner, expiry and contents stay sim-side — the
@@ -2886,6 +2912,9 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             m
         }
+        SUB_SWING => EventMsg::Swing {
+            swinger: r.read(32)?,
+        },
         SUB_IMPACT => {
             let qx = r.read(POS_XZ_BITS)? as i32;
             let qy = r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS;

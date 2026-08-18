@@ -258,18 +258,29 @@ the arc.
 `MANIFEST.md` and `WANTED.md` both say 46 and only this line said
 otherwise. Nothing needs buying.
 
-What is missing is CODE, in two pieces. `render::anim::Clip` has five
-variants and `drive` calls `.repeat()` unconditionally, so nothing in the
-file can play a clip once — though `RepeatAnimation::default()` is already
-`Never`, so a one-shot is an omission rather than a feature. And
-`BodyAnim::observe` recomputes the clip from speed every frame, so a
-one-shot written into that field is stomped the next one: it needs a
-separate transient beside the gait, not a sixth `Clip`. Then the trigger:
-`EV_HIT` is broadcast but a *miss* is not, so a remote whiff still wants
-one new broadcast fact — swinger id, aim, held item; no position, because
-the client already knows where every body is. **So another player swinging
-at you is still a body standing perfectly still**, and the one thing a
-fight needs to read is the wind-up.
+**Landed 2026-08-18.** `EV_SWING` (broadcast, outcome-free, wire v47)
+carries the swinger's id and nothing else — no position, because the
+snapshot already says where every body is, and the one thing a client
+cannot derive is that the arm moved. Pushed from `gather::swing`'s cadence
+gate, the only line that runs once per swing whatever the swing finds, so a
+**whiff animates** — which is the commonest swing in the game. `Clip::Swing`
+is the first one-shot in `anim.rs` (`.repeat()` omitted; `RepeatAnimation::
+default()` is `Never`), living beside the gait as `BodyAnim::swing_s` rather
+than inside `clip`, which `observe` recomputes from speed every frame.
+Gates: the role check on a whiff, a server routing gate proven red both
+unicast and armless, the ring's drop-oldest identity, and a source scrape
+that catches the four-literal array width that would otherwise panic the
+first time somebody swings near you.
+
+Two things remain, and the first needs a word rather than work. **The clip
+is `Punch_Cross` and the ask was a rock swing** — arithmetic, not taste:
+the sim allows a swing every 1.267 s and `Sword_Attack` is 1.5 s, 1.68 s
+with the blend, so every arc would be cut off by the next. Accept the
+punch or shorten the sword clip (`DECISIONS.md` §open). **And the swing is
+silent for a remote**: `Cue::Swing` is non-positional with a 120 ms
+cooldown because it is the local player's, so reusing it would play every
+island swing at full volume with no pan. A positional cue is its own slice.
+The lane now exists for `Death01` and `Hit_Chest` too.
 
 ## 0die · Two questions to re-take, no defect left *(operator)*
 

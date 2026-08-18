@@ -71,11 +71,11 @@ pub const QUARRY_CELLS: i32 = 2;
 /// is server-side at `movement::WALK_SPEED` and the client sends one input
 /// frame per rendered frame, so this is generous by design — a probe that
 /// gives up early would report "no mark" for a mark that was coming.
-pub const WALK_FRAMES: u32 = 900;
+pub const WALK_FRAMES: u32 = 240;
 /// Frames the probe holds the swing once it is in reach. `gather::swing`
 /// pays one swing per `SWING_INTERVAL_TICKS`, so this is several swings at
 /// any frame rate, and a node's first swing is the only one the mark needs.
-pub const SWING_FRAMES: u32 = 120;
+pub const SWING_FRAMES: u32 = 45;
 /// Frames between the swing pass ending and its shot, so the decal that
 /// swing produced has crossed the wire and been drawn.
 pub const MARK_SETTLE_FRAMES: u32 = 12;
@@ -112,8 +112,19 @@ pub const VANTAGES: [(&str, f32, f32); 6] = [
 /// with no hands, not a second way into `set_input`.
 #[derive(Clone, Copy, Default)]
 pub struct Intent {
-    pub fwd: i32,
-    pub right: i32,
+    /// The wire's own movement axes, ±127, **not** a pair of key states.
+    ///
+    /// The sim reads these analog — `movement::step` divides by 127 — and
+    /// the probe needs that range, because a keyboard's ±1 is uncontrollable
+    /// at this frame rate. Under lavapipe a frame is about a second, the
+    /// server applies the last input it received on every one of its 30
+    /// ticks, and a body at `WALK_SPEED` therefore covers ~3 m between two
+    /// probe frames: full throttle at a quarry 2.3 m away walks straight
+    /// past it, turns round, and walks past it again forever. Measured, not
+    /// predicted — the first cut of this pass did exactly that and burned
+    /// its whole budget oscillating.
+    pub move_x: i8,
+    pub move_z: i8,
     pub buttons: u8,
 }
 
@@ -177,6 +188,7 @@ pub fn drive(
     mut exit: MessageWriter<AppExit>,
     eye: Res<super::Eye>,
     world: Res<super::WorldId>,
+    time: Res<Time>,
     ring: Res<Ring>,
     props: Res<PropRing>,
     clutter: Res<ClutterRing>,
@@ -278,7 +290,14 @@ pub fn drive(
         // mark it leaves. `NOW.md` §0ps item 1 — *nobody has looked at
         // either* — is a standing item precisely because the probe could
         // only ever stand still and turn its head.
-        verb_pass(&mut commands, &mut cap, &mut look, &eye, &world);
+        verb_pass(
+            &mut commands,
+            &mut cap,
+            &mut look,
+            &eye,
+            &world,
+            time.delta_secs(),
+        );
         return;
     }
 
@@ -331,6 +350,7 @@ fn verb_pass(
     look: &mut Look,
     eye: &super::Eye,
     world: &super::WorldId,
+    dt: f32,
 ) {
     match cap.verb {
         Verb::Hunt => {
@@ -408,7 +428,8 @@ fn verb_pass(
             // out. `REACH_M` is 2.0 and 0.9 of it clears every occupant in
             // `occupant_volume` while still being inside what the server
             // will answer.
-            if d2 <= (sim_core::gather::REACH_M * 0.9).powi(2) {
+            let stop_at = sim_core::gather::REACH_M * 0.9;
+            if d2 <= stop_at * stop_at {
                 cap.intent = Some(Intent::default());
                 cap.verb = Verb::Swing { since: cap.frame };
             } else if cap.frame - since > WALK_FRAMES {
@@ -422,17 +443,25 @@ fn verb_pass(
                 cap.verb = Verb::Done;
                 cap.finished_at = Some(cap.frame);
             } else {
+                // Throttle so one frame's travel lands ON the stop distance
+                // rather than past it. `dt` is the probe's own frame, which
+                // under a CPU rasterizer is enormous, and the axis is
+                // analog — so the correct request is "cover this much
+                // ground", not "hold W".
+                let full = sim_core::movement::WALK_SPEED * dt.max(1.0 / 240.0);
+                let want = (d2.sqrt() - stop_at) / full;
+                let throttle = want.clamp(0.10, 1.0);
                 cap.intent = Some(Intent {
-                    fwd: 1,
-                    right: 0,
+                    move_x: 0,
+                    move_z: (throttle * 127.0) as i8,
                     buttons: 0,
                 });
             }
         }
         Verb::Swing { since } => {
             cap.intent = Some(Intent {
-                fwd: 0,
-                right: 0,
+                move_x: 0,
+                move_z: 0,
                 buttons: sim_core::input::BTN_PRIMARY,
             });
             if cap.frame - since > SWING_FRAMES {

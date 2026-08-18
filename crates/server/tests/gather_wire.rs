@@ -93,6 +93,21 @@ fn pump(
     clients: &mut [(usize, ClientCore)],
     drop_events_for: &[usize],
 ) -> [u32; 4] {
+    pump_seen(core, stats, clients, drop_events_for, &mut Vec::new())
+}
+
+/// The same pump, keeping every event message the server actually put on a
+/// lane, decoded from those bytes (`deploy_wire`'s shape and its reason: a
+/// client mirror can agree with the world for reasons the ENCODER never
+/// earned, so anything the wire alone is responsible for — routing, above
+/// all — has to be asserted on what was sent).
+fn pump_seen(
+    core: &mut ShardCore,
+    stats: &ShardStats,
+    clients: &mut [(usize, ClientCore)],
+    drop_events_for: &[usize],
+    seen: &mut Vec<(usize, protocol::EventMsg)>,
+) -> [u32; 4] {
     let mut buf = [0u8; 1100];
     for (slot, c) in clients.iter_mut() {
         c.advance(1000.0 / 30.0);
@@ -120,6 +135,10 @@ fn pump(
     });
     let mut flags = [0u32; 4];
     for (slot, bytes) in events {
+        seen.push((
+            slot,
+            protocol::decode_event(&bytes).expect("server events decode"),
+        ));
         if let Some(c) = clients.iter_mut().find(|(s, _)| *s == slot).map(|(_, c)| c) {
             flags[slot] |= c.on_stream(&bytes).expect("server events decode");
         }
@@ -333,4 +352,81 @@ fn event_ring_overflow_heals_by_resync() {
         "resync never restored the harvested cell"
     );
     assert!(clients[0].1.harvested.contains(key), "clean client kept it");
+}
+
+/// **A swing must reach the shard, not only the hand that swung.**
+///
+/// This is the routing gate, and it exists because `pump_events` ends in a
+/// `_ => {}`: a missing arm sends nothing, silently, with every other gate
+/// in the tree green — the sim pushes the event, `event_roles` passes,
+/// `protocol_golden` passes, the client ring is correct and empty forever.
+/// The one thing that can catch it is asserting on the bytes the server put
+/// on each client's lane.
+///
+/// It is asserted BOTH ways on purpose. The swinger's own client gets the
+/// message too (it costs nothing and keeps the arm consistent if prediction
+/// ever misses); the stranger getting it is the feature. Mutants: replace
+/// the broadcast loop with `client_slot_of(ev.a)` and the stranger's count
+/// goes to zero, and delete the arm entirely and both go to zero.
+///
+/// A **whiff**, deliberately: the swinger faces a bearing with nothing on
+/// it. A hit would also produce `EV_GATHER`, and a fact that only travels
+/// when something was struck is the exact defect `EV_SWING` exists to
+/// avoid.
+#[test]
+fn a_swing_reaches_every_client_not_just_the_swinger() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.dev_spawn = Some((1024.0, 1024.0));
+    core.catalog = probe_catalog();
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    for _ in 0..4 {
+        clients[0].1.set_input(0, 0, 0, 0, 0, 0);
+        clients[1].1.set_input(0, 0, 0, 0, 0, 0);
+        pump(&mut core, &stats, &mut clients, &[]);
+    }
+
+    let mut seen: Vec<(usize, protocol::EventMsg)> = Vec::new();
+    for _ in 0..SWING_INTERVAL_TICKS + 2 {
+        clients[0].1.set_input(BTN_PRIMARY, 0, 0, 0, 0, 0);
+        clients[1].1.set_input(0, 0, 0, 0, 0, 0);
+        pump_seen(&mut core, &stats, &mut clients, &[], &mut seen);
+    }
+
+    let swings: Vec<(usize, u32)> = seen
+        .iter()
+        .filter_map(|(slot, m)| match m {
+            protocol::EventMsg::Swing { swinger } => Some((*slot, *swinger)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !swings.is_empty(),
+        "no swing crossed at all — the sim never pushed it, or the server \
+         has no arm for it"
+    );
+    for (_, swinger) in &swings {
+        assert_eq!(
+            *swinger,
+            id_of(0),
+            "the swing names the wrong body, so the arc would play on one"
+        );
+    }
+    let to_swinger = swings.iter().filter(|(slot, _)| *slot == 0).count();
+    let to_stranger = swings.iter().filter(|(slot, _)| *slot == 1).count();
+    assert!(
+        to_stranger > 0,
+        "the swing reached only the hand that swung — a broadcast fact was \
+         routed as an own fact, and every other gate stays green"
+    );
+    assert_eq!(
+        to_swinger, to_stranger,
+        "a broadcast reaches every connected client the same number of times"
+    );
 }

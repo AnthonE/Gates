@@ -269,11 +269,13 @@ pub fn gather(
     // is only looking (every frame of the vantage pass, and every frame of
     // a real player's session) this is `None` and nothing below changes.
     let probe = cap.and_then(|c| c.intent);
-    let (fwd, right) = match probe {
-        Some(i) => (i.fwd, i.right),
-        None => (fwd, right),
+    let (move_x, move_z) = match probe {
+        // The probe speaks the wire's axes directly, because it needs the
+        // analog range a keyboard cannot produce — `capture::Intent` says
+        // why in full.
+        Some(i) => (i.move_x, i.move_z),
+        None => look::move_axes(fwd, right),
     };
-    let (move_x, move_z) = look::move_axes(fwd, right);
 
     let mut buttons = probe.map_or(0u8, |i| i.buttons);
     if keys.pressed(KeyCode::ShiftLeft) {
