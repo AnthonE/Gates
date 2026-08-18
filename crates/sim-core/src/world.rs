@@ -404,6 +404,110 @@ pub const EV_GATHER_REFUSED: u8 = 37;
 /// nothing about it is saved — see `worldsave.rs` for what is.
 pub const EV_IMPACT: u8 = 38;
 
+/// EV_TRUST: a = the player who acted, b = the counterparty — the player
+/// whose record the verb answered to, c = `TRUST_*` verb << 8 |
+/// `PRESENCE_*`.
+///
+/// **The trust ledger's own row** (`PLAYERS.md` §the four walls, wall 3).
+/// Every other event in this lane says what happened to a *thing*; this
+/// one says what happened between two *people*, and it carries the one
+/// field none of the others has room for: whether the counterparty was
+/// online when it happened. That field is what the agent-player
+/// measurement turns on, it is ordinary game state a human client already
+/// sees standing there, and it cannot be added later — a shard-hour
+/// logged without it is a shard-hour that cannot answer the question.
+///
+/// **Sim-side only, and deliberately.** Nothing encodes it, so no wire
+/// byte moves (wall 6 is untouched) — and that is the design, not an
+/// omission being deferred. Broadcasting "this base's owner is asleep"
+/// would hand every client a fact it has to *walk to a base and watch*
+/// to learn, which is `PLAYERS.md` wall 1's affordance rule failing on
+/// the human side first. The record is the server's to keep, the way a
+/// bag's position is the server's to read at encode.
+///
+/// **It fires when the verb answered to somebody else's record**, and the
+/// filter is one rule in one place (`World::log_trust`): a verb on your
+/// own door, your own hearth, your own box creates no trust relationship,
+/// so `counterparty == actor` is silent. So is `counterparty == 0` (no
+/// player placed it) and so is a `mob::mob_id` (a boar's corpse bag is
+/// loot, not a counterparty).
+///
+/// ⚠ **It rides the same drop-newest ring as everything else, and it is
+/// the one passenger a resync cannot re-derive.** `MAX_EVENTS_PER_TICK` is
+/// 256 against a `MAX_COMMANDS_PER_TICK` of 256, so a tick saturated with
+/// trust verbs was already at the ring's edge before this code existed —
+/// what is new is that each such verb now costs two seats instead of one.
+/// Every other event in the lane is a fact about *state*, which the late-
+/// join sync walk re-derives from the world; this is a fact about a
+/// *moment*, and a dropped one is gone. `EventQueue::dropped` counts it,
+/// which is the honest floor and not a fix.
+///
+/// **No address.** Three fields are spent on who/whom/what, and the
+/// address is not lost: every push here rides the same tick as the verb's
+/// own addressed event — `EV_DOOR` for a leaf, `EV_AUTH` for a grant or a
+/// crew seat, `EV_MOVED` for a container — so a reader joins the two by
+/// tick and loses nothing. That is a claim, so each of the four causes in
+/// `tests/event_roles.rs` asserts its verb's own event is on the tick
+/// beside the trust row.
+pub const EV_TRUST: u8 = 39;
+
+/// Which trust-bearing verb `EV_TRUST.c` is about, in its high byte.
+///
+/// A leaf someone else placed, worked by this hand (`deploy::use_door`).
+/// The counterparty is the **deployable's** owner and not the lock's: the
+/// thing worked is the door, a lock may be bolted on by another hand
+/// entirely, and "who placed this leaf" is the question a raid record
+/// wants answered.
+pub const TRUST_DOOR: u8 = 1;
+/// An access list someone else owns, exercised by this hand — a correct
+/// code on their lock (`lock::Outcome::Authorized`) or a crew op on their
+/// hearth (`deploy::crew_op`). One value for both, because `EV_AUTH` is
+/// already one event for both: "who may do this here" is one question
+/// whichever `Roster` answers it (`reference/BUILDING.md` §1 fact 1).
+pub const TRUST_AUTH: u8 = 2;
+/// A container someone else owns, moved through by this hand — a box, an
+/// oven or a bag (`World::move_item`). A world container has no owner and
+/// is therefore never this: nobody's crate is nobody's trust.
+pub const TRUST_CONT: u8 = 3;
+/// The highest verb above, named rather than counted — `EV_MAX`'s
+/// discipline applied to a value domain, exactly as `DEATH_BY_MAX` is.
+///
+/// The difference from `DEATH_BY_MAX` is worth stating, because it is the
+/// reason this one is cheaper: a new `DEATH_BY_*` is refused by an
+/// encoder at runtime and nothing sees it until a death screen fails to
+/// open. Nothing encodes `EV_TRUST`, so a new verb here cannot be refused
+/// by the wire — which means the only thing standing between a new value
+/// and an unclassified log column is this constant and the ledger that
+/// reads it (`event_roles.rs`).
+///
+/// `PLAYERS.md`'s verb list names a fourth — **give** — and it is
+/// deliberately absent: there is no player-to-player give verb in the sim
+/// yet, so a `TRUST_GIVE` declared now would be a value with no cause,
+/// which is the one thing this lane's discipline refuses. It lands in the
+/// commit that lands the verb.
+pub const TRUST_VERB_MAX: u8 = TRUST_CONT;
+
+/// Whether the counterparty was online, in `EV_TRUST.c`'s low byte.
+///
+/// A body with a client driving it. A player on the death screen is
+/// **awake**: they are watching, and the whole question this field asks is
+/// whether the act was witnessed.
+pub const PRESENCE_AWAKE: u8 = 1;
+/// A sleeper — the body is standing in the world and nobody is behind it
+/// (`Player::sleeping`). This is the value the measurement is for, and the
+/// same bit offline raiding already runs on.
+pub const PRESENCE_ASLEEP: u8 = 2;
+/// No body at all: the id names nobody in the world, because the slot was
+/// freed. Its own value rather than folded into `ASLEEP`, because they are
+/// different facts about the counterparty and folding them would let the
+/// record say a player was reachable when their body was gone.
+pub const PRESENCE_GONE: u8 = 3;
+/// The highest presence above, `TRUST_VERB_MAX`'s discipline for the low
+/// byte. Zero is deliberately not a value here: `EV_TRUST.c` is two
+/// packed fields, and a zero in either half is a half that reads the same
+/// as a field nobody wrote.
+pub const PRESENCE_MAX: u8 = PRESENCE_GONE;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -411,7 +515,7 @@ pub const EV_IMPACT: u8 = 38;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_IMPACT;
+pub const EV_MAX: u8 = EV_TRUST;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -1397,6 +1501,64 @@ impl World {
         self.slot_of(id).filter(|&s| !self.players[s].dead)
     }
 
+    /// Was this player online — [`PRESENCE_AWAKE`], [`PRESENCE_ASLEEP`] or
+    /// [`PRESENCE_GONE`] (`EV_TRUST`'s low byte).
+    ///
+    /// The linear scan is `slot_of`'s, and deliberately not a smarter
+    /// lookup: a player id is minted `generation << 8 | slot` by the
+    /// **server**, and sim-core does not know that — deriving a slot from
+    /// an id here would be this crate learning a convention it is not
+    /// allowed to depend on, and it would be silently wrong the first time
+    /// the minter changes. `MAX_PLAYERS` compares on a door press is
+    /// bounded work in a tick that already did a reach check.
+    ///
+    /// A corpse reads awake on purpose: the death screen is a player
+    /// watching, and the question this answers is whether the act had a
+    /// witness.
+    pub fn presence_of(&self, id: u32) -> u8 {
+        match self.players.iter().find(|p| p.active && p.id == id) {
+            None => PRESENCE_GONE,
+            Some(p) if p.sleeping => PRESENCE_ASLEEP,
+            Some(_) => PRESENCE_AWAKE,
+        }
+    }
+
+    /// Push one `EV_TRUST` row: `actor` exercised `verb` against a record
+    /// `counterparty` owns, and this is whether they were there to see it.
+    ///
+    /// **The one place the "is this a counterparty at all" rule lives**,
+    /// so the four emit sites cannot disagree about it. Three ids are not
+    /// counterparties and each is silent for its own reason:
+    ///
+    /// - `0` — nobody placed it. Every deployable in the world today comes
+    ///   from a player (`NOW.md` §4b), so this is the authored-site case
+    ///   arriving early rather than a live path; it is here because the
+    ///   record must not gain a row whose subject is the number zero the
+    ///   day one lands.
+    /// - `actor` — your own door, your own hearth, your own box. A verb on
+    ///   your own thing creates no trust relationship, and logging it would
+    ///   bury the rows that are the measurement under the rows that are
+    ///   ordinary play.
+    /// - a `mob::mob_id` — a corpse bag carries the dead animal's tagged
+    ///   id where a player's would be (`EV_BAG_DROPPED`). A boar is not a
+    ///   counterparty, and without this check every skinned carcass would
+    ///   log one against a player number that does not exist.
+    fn log_trust(&mut self, actor: u32, counterparty: u32, verb: u8) {
+        if counterparty == 0
+            || counterparty == actor
+            || crate::mob::slot_of_id(counterparty).is_some()
+        {
+            return;
+        }
+        let presence = self.presence_of(counterparty);
+        self.events.push(
+            EV_TRUST,
+            actor,
+            counterparty,
+            ((verb as u32) << 8) | presence as u32,
+        );
+    }
+
     /// One slot of whichever container `kind` names, by value. `ci` is the
     /// resolved ground-container index and is only read when the kind is a
     /// ground container — the caller has already proved it resolves.
@@ -1637,6 +1799,23 @@ impl World {
             addr,
             ((count as u32) << 16) | src.item as u32,
         );
+        // Whose container this was — the trust row for the move verb
+        // (`EV_TRUST`). Read here rather than at the top, because it must
+        // be read after the move succeeded and before `drop_if_empty`
+        // below can take the bag's record out from under it.
+        //
+        // A world container is deliberately absent: a loot crate is
+        // nobody's, so a hand in one answers to nobody. `CONT_SELF` to
+        // `CONT_SELF` leaves `ground` at `CONT_SELF` and falls through the
+        // same way — arranging your own hotbar is not a relationship.
+        let owner = match ground {
+            inventory::CONT_BOX => Some(self.deploys.boxes()[ci].owner),
+            inventory::CONT_BAG => Some(self.backpacks.entries()[ci].owner),
+            _ => None,
+        };
+        if let Some(owner) = owner {
+            self.log_trust(pid, owner, TRUST_CONT);
+        }
         // A bag a withdrawal emptied leaves by `loot_nearest`'s route, so
         // the wire sees one removal contract however it was emptied. A box
         // does **not** take that route and that is the difference between
@@ -2530,7 +2709,7 @@ impl World {
                         &mut self.events,
                     );
                     if !lit {
-                        deploy::use_door(
+                        let owner = deploy::use_door(
                             &self.deploy,
                             &mut self.pieces,
                             &mut self.deploys,
@@ -2541,6 +2720,15 @@ impl World {
                             loc,
                             &mut self.events,
                         );
+                        // The trust row rides here rather than inside the
+                        // verb, and that is the whole reason the verb
+                        // returns an owner instead of pushing the event:
+                        // `use_door` holds `&mut players[slot]`, so it
+                        // cannot also read the roster the presence
+                        // question is asked of. One borrow later, this can.
+                        if let Some(owner) = owner {
+                            self.log_trust(id, owner, TRUST_DOOR);
+                        }
                     }
                 }
             }
@@ -2606,8 +2794,12 @@ impl World {
                     // a door's edge. `deploy::op_is_crew` is the split,
                     // written once so the wire's range check and this
                     // cannot disagree about which store an op means.
+                    // One `TRUST_AUTH` for both stores, because `EV_AUTH`
+                    // is already one event for both — the crew and the
+                    // lock's list are the same `Roster` answering the same
+                    // question.
                     if deploy::op_is_crew(op) {
-                        deploy::crew_op(
+                        let owner = deploy::crew_op(
                             &mut self.deploys,
                             &self.players[slot],
                             cx,
@@ -2616,9 +2808,12 @@ impl World {
                             op,
                             &mut self.events,
                         );
+                        if let Some(owner) = owner {
+                            self.log_trust(id, owner, TRUST_AUTH);
+                        }
                     } else {
                         let mut spill = [ItemStack::default(); INV_SLOTS];
-                        deploy::lock_op(
+                        let owner = deploy::lock_op(
                             &self.deploy,
                             &self.gather,
                             &mut self.deploys,
@@ -2634,6 +2829,9 @@ impl World {
                             &mut spill,
                         );
                         self.drain_spill(slot, &mut spill);
+                        if let Some(owner) = owner {
+                            self.log_trust(id, owner, TRUST_AUTH);
+                        }
                     }
                 }
             }
