@@ -422,6 +422,130 @@ tree's 10), noted at the row. The medkit refusal stands (no equivalent
 item). **Row 1e's stack column is done**: every cell is either theirs or
 a confirmed match, and none is open.
 
+## 1f · The recycler take (2026-08-18) — row 1e's `cooking.toml` quarter, and an egress re-probe that changes the posture
+
+**Probe first, because §1c and §1e both left one owed and `SOURCES.md` §0
+says reachability is a property of the container.** On this box egress is
+**open**, and wider than any pass since 2026-08-09 has had:
+`wiki.facepunch.com` 200, `rusthelp.com` 200 (**400 without a browser
+User-Agent** — the one practical catch, and it reads as a dead host if you
+do not set one), `rust.facepunch.com/news` 200, `corrosionhour.com` 202,
+`example.com` 200. `wiki.rustclash.com` still answers **403**, unchanged
+since 2026-08-09 and re-confirmed by `DURABILITY.md`. So **§1e's "a browser
+is still the only route" is retired on this container** — it was never a
+fact about the hosts.
+
+**Tier: page, whole.** Every number below is read off
+`wiki.facepunch.com/rust/item/{gears,rope,tarp,scrap}`, which carry a
+**Recycle** table with a `Recycler` and a `Safe Zone Recycler` column —
+the same class of table `DURABILITY.md` §0 found there for gather rates,
+and one more correction to `SOURCES.md`'s claim that this host "carries no
+yield tables".
+
+**The source scores 4/4 on cells we already hold** (§6.3 rung 1, on a
+source we came to for something else): gears ×20, rope ×50, tarp ×20,
+scrap ×1000 — every one EXACT against `items.toml`, where §1e-b took them
+off a *different* host four days earlier. Two independent hosts agreeing
+on the checkable column is why the column we came for lands without a
+case.
+
+### What moved
+
+| row | ours before | theirs, taken |
+|---|---|---|
+| gears → metal fragments | 8 | **15** |
+| gears → obol *(their scrap)* | 2 | **12** |
+| rope → cloth | 5 | **18** |
+| tarp → cloth | 8 | **60** |
+| rope → obol | 1 | **row deleted** — theirs returns cloth and no scrap |
+| tarp → obol | 1 | **row deleted** — same |
+
+The two deletions are the take, not a trim: a cook row paying 0 is inert
+and `validate::structural` refuses one, so "theirs pays no scrap here" can
+only be expressed by removing the row. Coin concentrating on the single
+component that is *crafted out of* coin is their design — the gears page
+prices a gear at 100 scrap and hands 12 back.
+
+**Refused, and it is a missing tier rather than a preference**: the *Safe
+Zone Recycler* column (gears 10 + 8, rope 12, tarp 40). Ours is a
+craftable machine you own, which is their full-rate one; there is no safe
+zone here to hold the other rate.
+
+### What this cost, all of it derived rather than asserted
+
+**Nothing.** Every anchor is bit-identical across the commit — the three
+raid ratios, `starter_minutes` 90.4, `satchel_minutes` 42.4,
+`upkeep_daily_minutes` 8.17, `wood_wall_minutes` 4.0, the breach swings —
+because `balance::check` never reads a cook row. Only the content hash
+moved, which is wall 7 working. **Derive them rather than quoting even
+this** (`NOW.md` §0b): `Content::load_dir(…)` then `.anchors()`.
+
+### The finding, and it is bigger than the four cells
+
+The faucet's own arithmetic, off `loot.toml` × `cooking.toml`: our barrel
+paid **0.848** obol across the three components and now pays **2.727** on
+the gear alone — a 3.2× faucet. Theirs pays **~2.42 scrap a barrel** (2
+direct at 100 %, plus a 2–3 gear roll at 1.4 % recycled at 12). So after
+this take **one obol buys about what one scrap buys, within 13 %**.
+
+Which retires a figure that is cited as a *reason* in two content files.
+`research.toml` and `recipes.toml` both justify our own obol prices
+against *"a ~10-scrap barrel where ours pays ~0.85 obol, so neither lands
+raw"*. The 0.85 is right and **the ~10 was never measured and is wrong**.
+
+Priced in barrels over the four researchable items we both have — their
+**Research Table** column, read at the page the same hour:
+
+| | theirs, scrap | theirs, barrels | ours, obol | ours before | ours after |
+|---|---|---|---|---|---|
+| metal arrow *(their HV arrow)* | 15 | 6.2 | 20 | 23.6 | 7.3 |
+| revolver | 30 | 12.4 | 75 | 88.4 | 27.5 |
+| satchel charge | 60 | 24.8 | 75 | 88.4 | 27.5 |
+| gunpowder | 120 | 49.6 | 40 | 47.2 | 14.7 |
+| **total** | **225** | **93.0** | **210** | **247.6** | **77.0** |
+
+**Our research economy cost 2.66× theirs before this take and 0.83× after
+it — and no price moved.** The faucet is what brought it into their range;
+the prices were never the half that was wrong. The bench ladder survives
+for its own reason: 125 / 300 were taken as *ratios* over our T1 research
+row (6.7× and 16.7×), and a multiple of an unmoved row does not move.
+
+So this is row 1b's lesson landing the other way up. Taking one half of a
+ratio is worse than taking neither — and the half nobody had compared here
+was **the faucet**, not the price. Both citations are corrected in place.
+
+**What the table also shows is a real outstanding row, and it would have
+been invisible without the faucet fixed first**: the *shape* is still ours.
+Their spread is 8× (15 → 120) against our 3.75× (20 → 75), and the two
+disagree on where gunpowder sits — their most expensive early blueprint,
+our middle rung, while their revolver is cheap (30) against our 75. Total
+matched, ordering not. That is a `research.toml` row for a later pass and
+it is §2's row **1g**.
+
+### What it leaves open, named because absence has been mistaken for a decision once already
+
+- **`loot.toml` has no coverage** and it is now the load-bearing gap: every
+  number above is per-component, and what a barrel *pays* depends on how
+  often it rolls one. Their Blue/Yellow Barrel pays scrap 2 at 100 %,
+  gears 2–3 at 1.4 %, rope 1–3 at 15.4 %, tarp 1–2 at 8.0 % — all four read
+  at the page this pass and **none of them taken**, because a loot table is
+  a set and taking four rows of one is exactly the error above. It is the
+  next row.
+- **Era.** These yields are the *current* game's. The bench ladder sits
+  under a spoken **pre-Oct-2025** era (`DECISIONS.md` 2026-08-15) because
+  fragment gating is priced against monument contest we do not have. The
+  two are consistent today only because our research prices happen to
+  total what the current era's do; if the era is ever re-spoken, the
+  faucet is the first thing to re-check.
+- **The research ladder's per-item ordering**, above: total taken by
+  accident, shape untaken. Filed as §2 row **1g** — cheap to execute now
+  that egress is open, since every cost is one `Research Table` cell on an
+  item page.
+- **`armor.toml`, and the rest of `cooking.toml`** — the fuel row and the
+  two fire rows — still have no coverage.
+
+---
+
 ## 2 · Outstanding — the queue
 
 Ranked by what a returning player notices, which is `BALANCE.md` §5's
@@ -452,7 +576,8 @@ it is for: when you take a row, look for the column beside it.
 | 1b | ~~**building block costs**~~ | ✅ **TAKEN 2026-08-10** | **This row never existed until the number was already taken, and that is the entry worth reading.** Our `cost` column in `building.toml` — 350 wood / 350 stone / 200 frags for every shape — was written in the M1 build slice off our own `farm_per_min` and **never compared to theirs**. The 2026-08-08 balance pass took the hp ladder and the satchel out of that very file and left `cost` alone; this list opened no row, so nothing was tracking it as outstanding and nothing read as wrong. Row 1's node take is what exposed it: once a tree paid *their* 810 wood, a wall priced at *ours* cost **1.75× theirs in trees**. Taken whole — grade base twig 50 / wood 200 / stone 300 / metal 200, `BUILDING.md` §7b.3's shape ratios off it — so the 24 cells are theirs. One band re-spoken (`wood_wall_minutes` [5, 9] → [3, 5], value 4.0) under §6.2/§7. **The lesson for the rows below**: taking one half of a ratio is worse than taking neither, and a row that is not on this list is not thereby fine — it may simply never have been looked at. |
 | 1c | ~~**the `recipes.toml` cost column**~~ | ✅ **TAKEN 2026-08-10** — 23 of 39 rows moved, 5 already matched, 8 have no equivalent | Struck — §1c below has the row-by-row table, the provenance caveat, and the eight refusals. Headline: the **tool cupboard 300 wood + 100 stone → 1,000 wood**, the wooden door 200 → 300, the sheet metal door 200 → 150 frags, the building plan 50 → 20, the hammer 75 → 100. **Every band held with no re-speak.** |
 | 1d | ~~**`deployables.toml` hp**~~ | ✅ **TAKEN 2026-08-10**, in the same commit as 1c by design | 7 of 12 moved, 2 already matched, 3 refused. The one that matters: **sheet metal door 800 → 250 hp**, which is what makes the door the breach point their design intends rather than a second wall. Wooden door 200 and small box 150 were already theirs. Not taken: the code lock (their lock has no standalone hp — it is not independently destructible, which is a mechanism difference from `lock.rs`), the recycler (no equivalent — theirs is a monument fixture, ours is craftable by design, `DECISIONS.md` "recycler v0"), and the **tool cupboard's own hp**, where the source declined to answer and one earlier search summary said 100 against our 500. That last one is the largest open cell on this list. |
-| 1e | **the files with no coverage at all** — ~~`items.toml` stack sizes~~ ✅ **TAKEN 2026-08-11** (§1e) | `READY` (research not started on the rest) | `armor.toml` · `cooking.toml` · `loot.toml` · `research.toml` (scrap costs) still have zero coverage. Named here because row 1b proved that **absence from this list has been mistaken for a decision**. `armor.toml` has a real §4.1 reason (per-damage-type vs our flat %) and still deserves a row saying so; the other three have no reason recorded anywhere, which is not the same as having one. The stack-size half is **done** (§1e-b, 2026-08-14): the 12 open cells were read at the page — six taken, the rest confirmed matches — so what remains of this row is exactly the four uncovered files. |
+| 1e | **the files with no coverage at all** — ~~`items.toml` stack sizes~~ ✅ **TAKEN 2026-08-11** (§1e) | `READY` (research not started on the rest) | ~~`cooking.toml`~~ ✅ **its recycler column TAKEN 2026-08-18** (§1f, page tier — and that pass re-probed egress **open**, which retires the "a browser is the only route" note this row carried). `armor.toml` · `loot.toml` still have zero coverage; `research.toml`'s prices now carry a measured reason instead of a wrong one (§1f). Named here because row 1b proved that **absence from this list has been mistaken for a decision**. `armor.toml` has a real §4.1 reason (per-damage-type vs our flat %) and still deserves a row saying so; `loot.toml` has no reason recorded anywhere, which is not the same as having one — and §1f makes it the load-bearing one, since the recycler's yields only price a barrel through how often it rolls a component. The stack-size half is **done** (§1e-b, 2026-08-14): the 12 open cells were read at the page — six taken, the rest confirmed matches — so what remains of this row is exactly the four uncovered files. |
+| 1g | **the research ladder's per-item ordering** | `READY` (page tier, and the pages are open) | Opened by §1f, which took the faucet and made the comparison possible for the first time. The **total** matched by accident — our four shared blueprints cost 0.83× theirs in barrels once the recycler pays what theirs pays — but the **shape** is ours: their spread is 8× (HV arrow 15 → gunpowder 120) against our 3.75× (20 → 75), and they disagree on the ordering, not just the scale. Gunpowder is their most expensive early blueprint and our middle rung; their revolver is cheap at 30 where ours is 75. Costs one `Research Table` cell per item page and one `research.toml` edit; **no band reads a research price**, so `test_content` will not argue either way — which makes the citation at the row the only record, and §6's requirement the whole gate. ⚠ Their column is the *current* era and our bench ladder sits under a spoken pre-Oct-2025 one (§1f's era note): settle that before taking the numbers, not after. |
 | 2 | **per-material damage resistance** | `READY` (mechanism build, not a lookup) | The biggest *model* gap, and `BALANCE.md` §4.1 calls it a build: a schema column plus a sim multiply. Their stone wall takes 4 satchels and their sheet metal 23; ours takes 8 because one `structure` column serves every material. Until this exists, their raid numbers above stone cannot be taken at all — the ladder has nowhere to go. |
 | 3 | **smelt rates** ✅ · **craft-time rebate** | smelt: ✅ **TAKEN 2026-08-10** · rebate: `NEEDS-MECHANISM` | Smelt landed via §6.3's ladder — rung 3 picked metal 2.5 / sulfur 2.5 over metal 3.3 / sulfur 1.7, and **the shape was the real win**: theirs smelt alike where ours had sulfur at half of metal, so sulfur went 1 → 2. Both rows sit at 2 because `seconds` is integer (row 3a). The mechanism half already matched — their furnace is parallel per slot and `oven::sweep` is too. **The rebate (50% one tier up, 75% two) unblocked 2026-08-15**: the ladder landed (row 7), so this is now the lookup it was waiting to be — `craft::enqueue` knows the recipe's rung and `bench_near` could answer "best rung in reach" instead of a bool. `NOW.md` §0tt residual 1. |
 | 3a | **sub-second smelt/craft precision** | `NEEDS-MECHANISM` (schema) | Their 2.5 s is not expressible: `Recipe::seconds` is a `u32` baked as `seconds × TICK_HZ`, so content can only say 2 or 3 while the sim happily runs 75 ticks. Widen the content field (tenths, or ticks outright) and the smelt rows can carry their real number. Small, self-contained, and it unblocks every future time that is not a whole second. |

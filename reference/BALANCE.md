@@ -82,6 +82,39 @@ The anchors that came out the other side: raid ratio **0.69 / 1.38 / 2.77**
 (wood/stone/metal, band [1.0, 3.0] on stone), door breach **50** swings,
 wall breach **63 / 125 / 250**, TTK 4–5 across every melee row.
 
+### 3a · The recycler, 2026-08-18 — and a reason of ours that turned out to be a bad measurement
+
+`reference/RIPLIST.md` §1f has the row and the provenance (page tier, the
+official wiki's own **Recycle** table). Four cells and two deletions:
+
+| | reference | ours before | ours now |
+|---|---|---|---|
+| gears → metal fragments | 15 | 8 | **15** |
+| gears → scrap *(our OBOL)* | 12 | 2 | **12** |
+| rope → cloth | 18 | 5 | **18** |
+| tarp → cloth | 60 | 8 | **60** |
+| rope / tarp → scrap | none | 1 each | **rows deleted** |
+
+**No band moved and no anchor moved** — `balance::check` reads no cook row,
+so this take had nothing to argue with. What it did move is a *reason*.
+`research.toml` and `recipes.toml` each justified holding our own obol
+prices against "a ~10-scrap barrel where ours pays ~0.85 obol". The 0.85
+was derived from our own tables and right; **the ~10 was never measured**,
+and the page puts their barrel at ~2.42 scrap. Taking the faucet puts ours
+at 2.727 obol. Priced in barrels over the four researchable items we both
+have (§1f's table), **our research economy cost 2.66× theirs before the
+take and 0.83× after it — with no price moved.** The prices were never the
+half that was wrong. Their *ordering* still is: an 8× spread against our
+3.75×, gunpowder their top rung and our middle one. That is an outstanding
+row, and it was invisible until the faucet was right.
+
+That is §6.2's failure mode in its least obvious costume. Not effort, not a
+band, not source uncertainty — **an arithmetic reason nobody had checked**,
+which reads as a mechanism difference right up until someone reads the
+page. The check is the same one §6.3 rung 1 already prescribes for
+choosing between sources: score it on a cell you can verify. Apply it to
+your own stated reasons too.
+
 ## 4 · What has NOT moved — separated into real reasons and excuses
 
 Rewritten 2026-08-08 after the operator asked the right question: *"explain

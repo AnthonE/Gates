@@ -1318,17 +1318,26 @@ of twelve content files with zero coverage.
 craft column and deployable hp, `RIPLIST.md` §1c is the record. What is
 left of that thread, in order:
 
-1. **Row 1e**: `items.toml` stack sizes ✅ taken 2026-08-11 at tier 3
-   (`RIPLIST.md` §1e: 5 cells moved — ammo 128, arrows 64, bandage 3,
-   gunpowder 1000 — 9 confirmed matched, 12 left open with the reason
-   named; the spawn kit's bandages went 5 → 3 as forced fallout).
-   `armor` · `cooking` · `loot` · `research` still have zero coverage.
-2. ⚠ **The source tier dropped to get 1c/1d**: every candidate page is
-   `EGRESS_BLOCKED` here, so the table came through a second assistant —
-   a summary of pages nobody in this loop read. Re-verify if egress opens.
-   **Re-probed 2026-08-11: closed harder** (fetches blocked for every
-   host, search summaries only — §1e says so), so the re-verify stays
-   owed and a browser is still the only route.
+1. **Row 1e**: stacks ✅ 2026-08-11, and `cooking.toml`'s recycler column
+   ✅ **2026-08-18 at page tier** (`RIPLIST.md` §1f — gears → 15 frags +
+   12 obol, rope → 18 cloth, tarp → 60 cloth, the rope/tarp coin rows
+   deleted because theirs pay no scrap). No anchor moved; only the content
+   hash. **`armor.toml` and `loot.toml` are the zero-coverage remainder**,
+   and §1f makes `loot.toml` load-bearing: a per-component yield only
+   prices a barrel through how often the barrel rolls one.
+2. ✅ **Egress is OPEN here** (2026-08-18) and the old "a browser is the
+   only route" note is retired: facepunch wiki 200 with full **Recycle**
+   tables, `rusthelp.com` 200 — **400 without a browser User-Agent**, which
+   reads as a dead host — only `wiki.rustclash.com` still 403s. Probe;
+   `SOURCES.md` §0 is right that this is a property of the container.
+3. **A stated reason of ours was a bad measurement — §6.2's least obvious
+   costume.** Two files held our obol prices against "a ~10-scrap barrel
+   where ours pays ~0.85". The 0.85 was right; **the ~10 was never
+   measured** — the page says 2.42. In barrels over the four researchable
+   items we both have, **our research economy cost 2.66× theirs before the
+   take and 0.83× after, with no price moved.** Their per-item *ordering*
+   is still ours (8× spread against our 3.75×; gunpowder their top rung,
+   our middle one) — `RIPLIST.md` §2 row 1g, `READY` and cheap.
 
 Closed 2026-08-11 by the operator, all three: the rock **is** craftable
 (15 → 10 stone, and the tier-4 source beat my prior — §1c says so), OBOL
