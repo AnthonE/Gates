@@ -1833,3 +1833,153 @@ fn every_encoder_has_a_golden() {
         unpinned
     );
 }
+
+/// The fixture whose name ends in `suffix`, by index into `GOLDEN`.
+///
+/// By suffix rather than by index or by full name, because both of those
+/// go stale in a way that is silent: `FIXTURES` is positional so an index
+/// re-points at another message the moment a name is inserted rather than
+/// appended, and the full name carries the version, so every bump would
+/// leave these gates looking for a file that no longer exists — and a
+/// lookup that finds nothing is one `unwrap_or` away from a gate that
+/// checks nothing.
+fn fixture_index(suffix: &str) -> usize {
+    FIXTURES
+        .iter()
+        .position(|n| n.ends_with(suffix))
+        .unwrap_or_else(|| panic!("no fixture named `*{suffix}` — this gate is aimed at nothing"))
+}
+
+/// **The input golden exercises all eight button bits, both ways.**
+///
+/// `input_full` drew `buttons` from `next_bounded(4)` from v0 to v46, so
+/// the one fixture that carries a button pinned bits 0–1 and nothing else:
+/// `BTN_PRIMARY`, `BTN_JUMP` and every unmeant bit were outside the draw
+/// (NOW.md §5c, found while landing jump). No byte on the wire was wrong —
+/// the field is eight bits wide either way — but under that draw an
+/// encoder that masked or reordered the high nibble would have regenerated
+/// a green fixture, and `decode_input`'s doc names a silently narrowed
+/// octet as the one wrong answer this codec must never give.
+///
+/// **What this gate is actually for, measured rather than assumed.** With
+/// the draw wide, a masking encoder reddens `golden_input`'s round-trip on
+/// its own (proven: mask `& BTN_MASK` at `encode_input`, regenerate — that
+/// gate fails too). What nothing else catches is the *coverage* narrowing
+/// back: narrow the draw and regenerate and `test_protocol_golden` is
+/// green, because the fixture agrees with the constructor that produced
+/// it — this gate is the only red one (also proven). So its job is to keep
+/// the fixture wide enough for the other gates to have something to see.
+///
+/// It reads the **fixture bytes** rather than `input_full()` because that
+/// costs nothing and is strictly more: a constructor scan would say the
+/// draw is wide even if the bytes on disk were written by an older,
+/// narrower one.
+///
+/// Both directions: every bit set somewhere (a mask) and every bit clear
+/// somewhere (an encoder that jams a bit high, and the reason a fixture of
+/// all-`0xFF` frames would not do).
+#[test]
+fn the_input_golden_fuzzes_the_whole_button_octet() {
+    let dg = decode_input(GOLDEN[fixture_index("_input_full.bin")]).expect("the fixture decodes");
+    let frames = dg.frames();
+    assert!(
+        frames.len() > 1,
+        "the input fixture carries {} frame(s) — a one-frame fixture cannot \
+         cover an octet and this gate would be asserting on a coin flip",
+        frames.len()
+    );
+
+    let mut ones: u8 = 0;
+    let mut zeros: u8 = 0;
+    for f in frames {
+        ones |= f.buttons;
+        zeros |= !f.buttons;
+    }
+    assert_eq!(
+        ones, 0xFF,
+        "button bits {:#04x} are set in no frame of the input golden, so \
+         nothing pins that the encoder writes them: widen `input_full`'s \
+         draw, or set the missing bits on a named frame the way \
+         `rng_entity` sets `sleeping`. The wire width is the target, not \
+         `BTN_MASK` — bits 4–7 name no button and cross whole on purpose \
+         (`decode_input`'s doc).",
+        !ones
+    );
+    assert_eq!(
+        zeros, 0xFF,
+        "button bits {:#04x} are set in EVERY frame of the input golden — \
+         an encoder that jams a bit high would read as covered",
+        !zeros
+    );
+}
+
+/// **Each build store's `loc` fuzz covers that store's whole domain.**
+///
+/// The question §5c's button hole raised about every other fuzzed field:
+/// `event_deploy_sync` draws `loc` from `next_bounded(4)`, which looks
+/// identical to the button defect and is not one. A deployable lives on
+/// the plane and the two straight edges — `loc_max(true)` — so four IS the
+/// domain and a wider draw would make the fixture unencodable. The piece
+/// store gained six more locs at v40 and its fixture draws all ten.
+///
+/// Written as coverage of a domain **derived from `sim_core::build`**
+/// rather than as a bound copied from the generator, so it stays true if a
+/// store gains a loc: the day `LOC_DIAG_B` is not the top, this goes red
+/// on the fixture that no longer reaches it rather than on the constant.
+#[test]
+fn the_loc_fuzz_covers_each_stores_whole_domain() {
+    use sim_core::build::{LOC_DIAG_B, LOC_EDGE_ZLO};
+
+    let mut seen = [false; 16];
+    match decode_event(GOLDEN[fixture_index("_event_piece_sync.bin")]).expect("piece sync decodes")
+    {
+        EventMsg::PieceSync { recs, count, .. } => {
+            for rec in recs.iter().take(count as usize) {
+                seen[rec.loc as usize] = true;
+            }
+        }
+        other => panic!("the piece-sync fixture decoded as {other:?}"),
+    }
+    for loc in 0..=LOC_DIAG_B {
+        assert!(
+            seen[loc as usize],
+            "no piece in the sync golden sits at loc {loc}, so its bytes are \
+             pinned by nothing — the piece store addresses 0..={LOC_DIAG_B}"
+        );
+    }
+    for (loc, hit) in seen.iter().enumerate().skip(LOC_DIAG_B as usize + 1) {
+        assert!(
+            !*hit,
+            "the piece-sync golden carries loc {loc}, which no store can \
+             address — the fixture is pinning a forgery as if it were legal"
+        );
+    }
+
+    let mut seen = [false; 16];
+    match decode_event(GOLDEN[fixture_index("_event_deploy_sync.bin")])
+        .expect("deploy sync decodes")
+    {
+        EventMsg::DeploySync { recs, count, .. } => {
+            for rec in recs.iter().take(count as usize) {
+                seen[rec.loc as usize] = true;
+            }
+        }
+        other => panic!("the deploy-sync fixture decoded as {other:?}"),
+    }
+    for loc in 0..=LOC_EDGE_ZLO {
+        assert!(
+            seen[loc as usize],
+            "no deployable in the sync golden sits at loc {loc} — the \
+             deploy store addresses 0..={LOC_EDGE_ZLO} and every one of \
+             those values should reach the bytes"
+        );
+    }
+    for (loc, hit) in seen.iter().enumerate().skip(LOC_EDGE_ZLO as usize + 1) {
+        assert!(
+            !*hit,
+            "the deploy-sync golden carries loc {loc}, past the deploy \
+             store's own top ({LOC_EDGE_ZLO}) — the encoder is supposed to \
+             refuse that, so a fixture holding it means the refusal moved"
+        );
+    }
+}

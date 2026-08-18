@@ -2386,22 +2386,25 @@ And two items the arc does not carry, which stay real work:
 Standing rule: anything a playtest breaks jumps this queue; anything a wall
 catches jumps the playtest.
 
-## 5c · The protocol golden has never fuzzed a button above bit 1 *(systems lane)*
+## 5c · The protocol golden never fuzzed a button above bit 1 — **CLOSED 2026-08-18**
 
-Found while landing jump. `goldens.rs` draws the input fixture's `buttons`
-from `rng.next_bounded(4)`, so the golden exercises only `BTN_SPRINT` and
-`BTN_CROUCH` — `BTN_PRIMARY` and `BTN_JUMP` are outside the draw. The field
-is 8 bits wide either way, so the golden still pins the *layout* and nothing
-is currently wrong on the wire; what it cannot see is a future encoder that
-masks or reorders the high nibble.
+`input_full` draws the whole octet now, one fixture moved
+(`v46_input_full.bin`), and **no `PROTO_VER` turned**: the judgement call
+the item asked for went the way it framed it — a golden's fuzz range is the
+test's coverage, not the wire's meaning, so nothing two v46 builds exchange
+changed. The rule is written as the narrowing rule's third clause at
+`PROTO_VER` (lib.rs) and in `goldens.rs`'s header, which now says which of
+the two reasons to regenerate takes a bump and which does not.
 
-Deliberately its own commit: widening the draw changes fixture bytes, and
-changing golden bytes for a reason unrelated to the version's meaning
-muddies the one signal wall 6 reads. It is a `PROTO_VER` judgement call —
-the answer may be that a golden's fuzz range is not part of the wire
-contract at all. Decide that first; it is the actual question. The shape
-one level down is decided (§5b, 2026-08-17): `decode_input` carries the
-octet whole; the domain wall is `accept_input`'s (`decode_input`'s doc).
+`the_input_golden_fuzzes_the_whole_button_octet` reads the fixture BYTES
+(every bit set somewhere, and clear somewhere). Its measured job is the
+re-narrowing: with the draw wide a masking encoder already reddens the
+golden's round-trip, but a narrowed draw regenerates green everywhere else
+and this gate alone fails. `goldens.rs:894`'s `loc: next_bounded(4)` looked like
+the same defect and is not — four IS the deploy store's domain
+(`loc_max(true)`), a wider draw would be unencodable, and the piece lane
+already draws all ten; `the_loc_fuzz_covers_each_stores_whole_domain` says
+so rather than a comment.
 
 ## 5d · The agent player has a spec and no code *(systems lane)*
 

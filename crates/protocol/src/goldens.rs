@@ -4,10 +4,17 @@
 //! produces them byte-for-byte. Content is deterministic (sim-core Pcg32,
 //! fixed seeds), so "regenerate" is reproducible on any box.
 //!
-//! Regenerating fixtures is only ever legitimate alongside a `PROTO_VER`
-//! bump in the same commit (CLAUDE.md wall 6). A diff here without a bump
-//! is the wire drifting by accident — the exact thing the gate exists to
-//! catch.
+//! Regenerating fixtures is legitimate for exactly two reasons, the diff
+//! looks the same either way, and that is why each takes its own commit.
+//! **The encoder moved** — a layout or a meaning change — takes a
+//! `PROTO_VER` bump in the same commit (CLAUDE.md wall 6); a diff here
+//! without one is the wire drifting by accident, the exact thing the gate
+//! exists to catch. **The fixture's INPUT moved** — a fuzz draw widened, a
+//! deliberate value pinned — takes no bump, because a constructor in this
+//! module is the test's coverage and not a fact about the wire
+//! (`PROTO_VER`'s own doc carries that rule, decided 2026-08-18 under
+//! NOW.md §5c). Never both at once: the bytes would then move for two
+//! reasons and no reader afterwards can tell which byte answers to which.
 
 use crate::{
     ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, Nudge, Refuse,
@@ -326,17 +333,47 @@ pub fn input_acks_only() -> InputDatagram {
 
 /// A full input datagram: `MAX_INPUT_FRAMES` consecutive frames with
 /// varied field content, seq run crossing the u16 wrap.
+///
+/// **`buttons` is drawn across the whole octet, and it was drawn from
+/// `next_bounded(4)` until 2026-08-18** — so from v0 to v46 the only
+/// fixture that carries a button pinned bits 0–1 and nothing else.
+/// `BTN_PRIMARY` and `BTN_JUMP` were outside the draw, and so was every
+/// unmeant bit. Nothing on the wire was wrong: the field is eight bits
+/// wide either way and the layout was pinned. What no fixture could see is
+/// an encoder that masks or reorders the high nibble on its way out —
+/// `decode_input`'s doc calls a silently narrowed octet the one wrong
+/// answer, and the golden was blind to precisely that.
+///
+/// The draw is the **wire width**, not `BTN_MASK`: bits 4–7 name no button
+/// and the codec carries them whole on purpose, so a fixture that stopped
+/// at the mask would re-open half the hole. The seed happens to cover all
+/// eight bits set and all eight clear across the ten frames — happens to,
+/// so `the_input_golden_fuzzes_the_whole_button_octet` checks it off the
+/// fixture bytes rather than trusting it. If a future draw change loses a
+/// bit, set it deliberately on a named frame (`rng_entity`'s `sleeping`
+/// precedent) rather than rerolling until it comes back.
+///
+/// Widening it changed this fixture's bytes and **turned no `PROTO_VER`**:
+/// what a test feeds an encoder is the test's coverage, not the wire's
+/// meaning (`PROTO_VER`'s narrowing-rule section, third clause).
 pub fn input_full() -> InputDatagram {
     let mut rng = Pcg32::new(0x0047_4154_4553, 11);
     let mut dg = InputDatagram::new(0x0102, 0xFFFF_FFFF, 0xFFFF_FFFE);
     for i in 0..MAX_INPUT_FRAMES as u16 {
         let f = InputFrame {
             seq: 0xFFFC_u16.wrapping_add(i),
-            buttons: rng.next_bounded(4) as u8,
+            buttons: rng.next_bounded(0x100) as u8,
             yaw: rng.next_bounded(0x1_0000) as u16,
             pitch: rng.next_bounded(0x100) as u8,
             move_x: rng.next_bounded(255) as i32 as i8,
             move_z: (rng.next_bounded(255) as i32 - 127) as i8,
+            // 6 is `HOTBAR_SLOTS`, i.e. the whole encodable domain and not
+            // a narrowed one: `encode_input` refuses 6–7 and `decode_input`
+            // refuses them back, so a wider draw here would make the
+            // fixture unencodable rather than better covered. Read that
+            // beside `buttons` above, where the same-looking bound WAS the
+            // defect — the two differ because the codec is total over
+            // `sel` and deliberately not over `buttons`.
             sel: rng.next_bounded(6) as u8,
         };
         dg.push(f).expect("golden construction is in-cap by design");
@@ -885,6 +922,18 @@ pub fn event_deploy_placed() -> DeployRec {
 }
 
 /// A full deploy-sync batch with the reset bit set.
+///
+/// `loc`'s `next_bounded(4)` **looks like `input_full`'s old button draw
+/// and is not the same thing** (checked 2026-08-18, NOW.md §5c). The
+/// deployable store lives on the plane and the two straight edges, so its
+/// whole domain is `0..=LOC_EDGE_ZLO` — `loc_max(true)`, which
+/// `encode_event_deploy_sync` enforces — and a wider draw would make this
+/// fixture *unencodable*, not better covered. The field's own width is
+/// four bits since v40 and its top two are pinned elsewhere:
+/// `event_piece_sync` draws `next_bounded(10)`, the piece store's whole
+/// domain including the diagonals. So the octet-shaped hole does not exist
+/// here; every value either store can send appears in some fixture, and
+/// `the_loc_fuzz_covers_each_stores_whole_domain` is what says so.
 pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 19);
     let recs = core::array::from_fn(|_| DeployRec {
