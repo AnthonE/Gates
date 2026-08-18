@@ -210,10 +210,21 @@ both and threw them away. Knobs and the full argument: `DECISIONS.md`
 
 Three gaps, in the order they are worth closing.
 
-1. **A melee swing leaves nothing**, and it is the same missing wire fact
-   as §0sw's remote swing animation rather than a second problem:
-   `EV_HIT` carries no position and a *miss* is not broadcast at all. Do
-   not solve it twice — whatever fact answers §0sw should carry a point.
+1. **Landed 2026-08-18 for a struck node, and it cost no wire byte.** The
+   premise here was wrong in a useful way: this said the mark needed the
+   same missing fact as §0sw, and it did not. `EV_IMPACT` was never an
+   arrow's fact — it is *a surface was struck at this point*, already
+   broadcast, already carrying a quantized point and a surface class, and
+   `render/decal.rs` was already its only reader. So `gather::swing`
+   pushes it where a landed swing bit an occupant, on the skin
+   (`occupant_volume` × slot scale) facing the swinger, at the shared eye
+   height — no `PROTO_VER` bump, no golden, no client line. Three gates in
+   `tests/gather.rs`, five red-proofs. **Still open: a swing at a built
+   PIECE marks nothing** (`combat::raid` is the site, `SURF_BUILT` the
+   kind) and it is deliberately behind item 2 — a piece mark faces the
+   wrong way on a floor today, and volume on a known-wrong path is not
+   progress. Flesh stays unmarked: `SURF_BITS` holds one spare code and
+   spending it on blood is a deliberate act nobody has asked for.
 2. **A mark on a built piece faces its cell's dominant axis**, which is
    right for a wall and wrong for a floor (it gets a wall's normal and
    reads as a mark on the lip). Ground and world occupants are exact —
@@ -240,17 +251,25 @@ the commonest swing in the game drew nothing. `Feed` stays as a backstop,
 gated on the arm being at rest so a hit arriving mid-stroke cannot restart
 the arc.
 
-What is still missing is the **other** half, and it is an asset gap rather
-than a code one: `render::anim::Clip` has five clips — Idle, Walk, Jog,
-Sprint, Sleep — and the mannequin `.glb` carries no swing, so **another
-player swinging at you is a body standing perfectly still**. That is worse
-than the first-person gap was: the one thing a fight needs to read is the
-wind-up. It wants a `Swing_Once` clip on the shared skeleton
-(`assets/models/WANTED.md`'s queue), a one-shot rather than a loop, and a
-trigger — `EV_HIT` is broadcast but a *miss* is not, so drawing a remote
-whiff needs either a wire fact or the same cadence prediction run per remote
-body off their input, which the client does not receive. Take the clip
-first; decide the trigger against what it costs.
+⚠ **This item said the other half was an ASSET gap and that was false**
+(corrected 2026-08-18, and it would have cost a mesh purchase). The shipped
+`assets/models/mannequin.gltf` carries **46 clips** including `Sword_Attack`
+(1.5 s), `Punch_Cross` and `Punch_Jab`, all on the same 53-joint skeleton —
+`MANIFEST.md` and `WANTED.md` both say 46 and only this line said
+otherwise. Nothing needs buying.
+
+What is missing is CODE, in two pieces. `render::anim::Clip` has five
+variants and `drive` calls `.repeat()` unconditionally, so nothing in the
+file can play a clip once — though `RepeatAnimation::default()` is already
+`Never`, so a one-shot is an omission rather than a feature. And
+`BodyAnim::observe` recomputes the clip from speed every frame, so a
+one-shot written into that field is stomped the next one: it needs a
+separate transient beside the gait, not a sixth `Clip`. Then the trigger:
+`EV_HIT` is broadcast but a *miss* is not, so a remote whiff still wants
+one new broadcast fact — swinger id, aim, held item; no position, because
+the client already knows where every body is. **So another player swinging
+at you is still a body standing perfectly still**, and the one thing a
+fight needs to read is the wind-up.
 
 ## 0die · Two questions to re-take, no defect left *(operator)*
 

@@ -392,16 +392,29 @@ pub const EV_GATHER_REFUSED: u8 = 37;
 /// landed is a world fact, and the mark it leaves is visible to anyone who
 /// walks past it later. A client that misses one loses a scuff.
 ///
-/// **It fires only where an arrow met the WORLD.** `ranged::step` resolves
-/// a body first and leaves by another door, so flesh is `EV_HIT` and this
-/// is everything else — the two are exclusive and a reader never has to
-/// ask which kind of mark to make.
+/// **It fires only where something met the WORLD, never where it met
+/// flesh.** `ranged::step` resolves a body first and leaves by another
+/// door, so flesh is `EV_HIT` and this is everything else — the two are
+/// exclusive and a reader never has to ask which kind of mark to make.
+///
+/// **Two producers since 2026-08-18, and it was never really an arrow's
+/// fact.** `ranged::step` pushes it where an arrow stopped, and
+/// `gather::swing` pushes it where a landed melee swing bit an occupant
+/// (`NOW.md` §0mk item 1). The fact is *a surface was struck at this
+/// point*, which belongs to neither verb, so a mark on a tree cost no wire
+/// byte, no `PROTO_VER` bump and no client line — `render/decal.rs` was
+/// already the single reader and could not tell the two apart, which is
+/// the test of whether reuse was honest rather than convenient. A swing
+/// the node REFUSES pushes nothing: the mark sits below that arm, so a
+/// torch waved at a tree leaves the bark clean.
 ///
 /// The position is here rather than read back out of a store at encode
-/// (`EV_BAG_DROPPED`'s trick) because there is nothing left to read: the
-/// arrow's slot is freed on the same line that pushes this. An impact is a
-/// fact about a moment, not about a thing that persists, which is also why
-/// nothing about it is saved — see `worldsave.rs` for what is.
+/// (`EV_BAG_DROPPED`'s trick) because on the arrow path there is nothing
+/// left to read — the arrow's slot is freed on the same line that pushes
+/// this — and on the swing path the point is not a thing at all, only the
+/// place where two things touched. An impact is a fact about a moment, not
+/// about a thing that persists, which is also why nothing about it is
+/// saved — see `worldsave.rs` for what is.
 pub const EV_IMPACT: u8 = 38;
 
 /// EV_TRUST: a = the player who acted, b = the counterparty — the player

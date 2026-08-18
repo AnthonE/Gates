@@ -1374,3 +1374,154 @@ fn a_dead_tool_is_refused_where_hands_are() {
         "a dead tool spent the node's budget"
     );
 }
+
+/// **A landed swing scuffs the thing it hit.** Marks on the world were an
+/// arrow's privilege until 2026-08-18 (`NOW.md` §0mk item 1: *"a melee
+/// swing leaves nothing"*), and closing it needed no wire byte, because
+/// `EV_IMPACT` was never really an arrow's fact — it is *a surface was
+/// struck at this point*, already broadcast, already carrying a quantized
+/// point and a surface class, already drawn by `render/decal.rs`.
+///
+/// Three claims, and each one is the whole of a different bug:
+///   · the mark exists at all, and is `SURF_WORLD` — an occupant is not
+///     ground and not a built piece, so a wrong kind here would tint and
+///     orient it by the wrong rule at the far end;
+///   · it sits on the node's own collision skin rather than at its centre,
+///     because `decal::facing` derives the normal as the horizontal from
+///     the scatter slot's centre TO the impact — a mark at the centre is a
+///     zero vector and a decal facing nowhere;
+///   · it is on the side the swinger is standing, which is the half that
+///     makes the first two mean anything.
+///
+/// Red-proven three ways: pushing the slot centre instead of the skin
+/// point fails the radius assert, pushing `SURF_GROUND` fails the kind
+/// assert, and negating the offset direction fails the side assert.
+#[test]
+fn a_landed_swing_marks_the_node_on_the_side_it_was_hit_from() {
+    let (pos, yaw, (cx, cz)) = find_isolated(SEED, Occupant::Tree);
+    let table = ScatterTable::alpha_default();
+    let s = terrain::scatter(SEED, &table, hv(SEED), cx, cz);
+    let (r_m, top_m) = terrain::occupant_volume(s.occupant);
+    let (skin, top) = (r_m * s.scale, top_m * s.scale);
+    assert!(skin > 0.0, "a tree has a trunk or this test proves nothing");
+
+    let mut w = world_at(pos);
+    let mut marks = Vec::new();
+    for t in 0..SWING_INTERVAL_TICKS {
+        w.tick(&[hold_primary(yaw, t as u16)]);
+        for e in w.events.entries() {
+            if e.code == sim_core::world::EV_IMPACT {
+                marks.push((e.a, e.b, e.c));
+            }
+        }
+    }
+    assert_eq!(marks.len(), 1, "one landed swing leaves exactly one mark");
+
+    let (a, b, c) = marks[0];
+    assert_eq!(
+        (a >> 24) as u8,
+        sim_core::ranged::SURF_WORLD,
+        "a struck occupant is the world, not the ground under it"
+    );
+    let mx = (a & 0x00ff_ffff) as i32 as f32 * movement::POS_XZ_Q;
+    let mz = b as i32 as f32 * movement::POS_XZ_Q;
+    let my = c as i32 as f32 * movement::POS_Y_Q;
+
+    // On the skin: the planar distance from the slot centre is the
+    // occupant's own radius, to within the quantum the point crossed in.
+    let (dx, dz) = (mx - s.x, mz - s.z);
+    let d = (dx * dx + dz * dz).sqrt();
+    assert!(
+        (d - skin).max(skin - d) <= 2.0 * movement::POS_XZ_Q,
+        "mark {d:.3} m from the trunk centre, want its {skin:.3} m radius"
+    );
+    // On the swinger's side: the swinger stands 1.2 m west of the slot, so
+    // the mark's offset must point at them rather than through the trunk.
+    let (px, pz) = pos;
+    assert!(
+        dx * (px - s.x) + dz * (pz - s.z) > 0.0,
+        "mark landed on the far side of the trunk from the swinger"
+    );
+    // Within the occupant's own span, never floating above it.
+    assert!(
+        my >= s.y - movement::POS_Y_Q && my <= s.y + top + movement::POS_Y_Q,
+        "mark at y {my:.2} is outside the trunk's {:.2}..{:.2}",
+        s.y,
+        s.y + top
+    );
+}
+
+/// **A refusal scuffs nothing**, and this is the door shut before the
+/// obvious shortcut walks through it: the mark push sits below the tool
+/// refusal on purpose, so a torch swung at a tree says *your Torch cannot
+/// harvest this* (wire v42) and leaves the bark clean. Putting the push at
+/// the top of `swing` — where the cadence is paid and the swing is
+/// undeniably a swing — is the version of this that ships a chip out of
+/// every tree a new player waves a torch at.
+///
+/// Red-proven by moving the push above the `yield_for(held) == 0` arm.
+#[test]
+fn a_refused_swing_leaves_no_mark() {
+    let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
+    let mut w = world_at(pos);
+    // Hand the swinger an item the fixture's tree pays nothing for, in the
+    // selected slot. The fixture's own outputs are its tools, so an item
+    // id past the table cannot be one.
+    let dud = (sim_core::limits::MAX_ITEM_DEFS - 1) as u16;
+    w.players[0].inv[0] = ItemStack {
+        item: dud,
+        count: 1,
+        cond: 0,
+    };
+    for n in w.gather.nodes.iter_mut() {
+        n.hand_yield = 0;
+    }
+    let mut marks = 0;
+    let mut refusals = 0;
+    for t in 0..SWING_INTERVAL_TICKS * 2 {
+        w.tick(&[hold_primary(yaw, t as u16)]);
+        for e in w.events.entries() {
+            match e.code {
+                sim_core::world::EV_IMPACT => marks += 1,
+                sim_core::world::EV_GATHER_REFUSED => refusals += 1,
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        refusals > 0,
+        "the swing must have been refused to prove this"
+    );
+    assert_eq!(marks, 0, "a refused swing marks nothing");
+}
+
+/// **The bush is the one swingable thing with no surface to mark.**
+/// `terrain::occupant_volume` gives it `(0.0, 0.0)` — it does not block a
+/// body and it has no skin — so `skin_point` refuses rather than putting a
+/// scuff at its centre, where `decal::facing` would read a zero-length
+/// normal. A gather still happens; only the mark is absent.
+///
+/// Red-proven by dropping `skin_point`'s `r <= 0.0` arm: the bush then
+/// marks its own centre and this goes red on the mark count.
+#[test]
+fn a_bush_pays_but_has_no_skin_to_mark() {
+    let (pos, yaw, _) = find_isolated(SEED, Occupant::Bush);
+    let mut w = world_at(pos);
+    let mut marks = 0;
+    let mut gathers = 0;
+    for t in 0..SWING_INTERVAL_TICKS {
+        w.tick(&[hold_primary(yaw, t as u16)]);
+        for e in w.events.entries() {
+            match e.code {
+                sim_core::world::EV_IMPACT => marks += 1,
+                EV_GATHER => gathers += 1,
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        gathers > 0,
+        "the bush must have paid or this proves nothing"
+    );
+    assert_eq!(marks, 0, "a bush has no skin to scuff");
+}
