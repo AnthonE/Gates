@@ -440,6 +440,13 @@ struck node got its mark for free.
 
 ## 7 · Staging, cheapest first, with the gate each slice earns
 
+⚠ **`bin/bots` with a `secs` argument does not exit** — found 2026-08-18 while
+taking the lag-comp measurement, on two separate runs. The fleet disconnects on
+time and the process then hangs, so anything that scripts a soak and waits for
+the child to terminate waits forever. Kill it. Nothing in this note's staging
+depends on the exit code, but a `&&` chain would stall, and that is the kind of
+thing that reads as "the soak is still running" for an hour.
+
 **S0 — re-run the 100-bot soak. No code.** The counters and `EV_SWING` both
 landed 2026-08-18; the bots already swing (`bots.rs:53-60`). Divide
 `net_stream_out_bytes` and `net_stream_out_frames` by ticks and by `players`,

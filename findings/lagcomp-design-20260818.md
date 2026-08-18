@@ -97,6 +97,16 @@ resurrects the position of somebody else's body.
 **But 30 ticks contradicts §8's own clamp**: 250 ms of favouring is 7.5 ticks at
 30 Hz, so 750 ms of that ring is unreachable by construction. See §8-errata 4.
 
+⚠ **§0.1's table is right about its own arithmetic and wrong as a model of
+what slice 1 measured.** Loopback RTT is ~0 and raw `T - S` is still **1.107
+ticks** (100 bots x 60 s, 179,718 samples, max 3, nothing at or past 4). Raw
+staleness is the input buffer plus the age of the newest applied snapshot
+(`SNAPSHOT_INTERVAL_TICKS = 2`, so ~1 tick of it on average) — **a floor no
+network improvement removes**, which an RTT table cannot see. Add the two
+constant terms and the favour is `1.107 + 4 - 1 ~= 4.1 ticks / 137 ms`, against
+this table's 4.6 at 20 ms RTT. Close, for a different reason than the table
+gives.
+
 **Recommended: `REWIND_TICKS = 8`** — a power of two, so the index is
 `tick & (REWIND_TICKS - 1)` and not a modulo (wall 1 likes integers; wall 3
 likes no division). Eight rows hold the seven the clamp can reach plus the row
@@ -212,12 +222,22 @@ Stamp each buffered frame with the ack it arrived under — a parallel
 
 Two properties worth writing down:
 
-- **Duplicates keep the freshest evidence.** `push_frame` drops a frame it has
+- ⚠ **RETRACTED 2026-08-18, on the day slice 1 was built.** This bullet read:
+  *"Duplicates keep the freshest evidence. `push_frame` drops a frame it has
   already seen (`client.rs:462-465`), so the stamp is the one from the datagram
-  that arrived *first*. A frame that only ever arrives inside a retransmit tail
-  gets a stamp that is too new, which measures *less* staleness — under-favouring
-  the shooter on exactly the inputs that were already lost. That is the safe
-  direction.
+  that arrived first."* **It does not.** That guard is
+  `if ahead == 0 || ahead > 0x7FFF { return; }` — it drops a frame already
+  *executed*, or ancient. A frame sitting **buffered but unexecuted** is
+  overwritten by the retransmit tail of the next datagram, so left alone the
+  stamp would track the *newest* datagram to mention the frame: a fresher `S`,
+  a smaller `T - S`, and a systematic **understatement** of staleness on every
+  frame that waits a tick in the buffer — which is all of them under the consume
+  throttle. Keep-first had to be written explicitly (`repeat = in_valid[slot] &&
+  in_frames[slot].seq == f.seq`) and gated, not inherited.
+  **The half that survives:** a frame whose original datagram was lost and which
+  only ever arrives inside a retransmit tail is still stamped too new and
+  measures too little — under-favouring the shooter on inputs that were already
+  lost, which is the safe direction.
 - **The client cannot overstate.** `on_acks` (`client.rs:351`) only credits acks
   against snapshots the server actually sent, from its own ring.
 
