@@ -72,6 +72,11 @@ pub const QUARRY_CELLS: i32 = 2;
 /// frame per rendered frame, so this is generous by design — a probe that
 /// gives up early would report "no mark" for a mark that was coming.
 pub const WALK_FRAMES: u32 = 240;
+/// Frames of no measurable approach that count as "as close as collision
+/// will let this body get". Small, because the probe's frames are huge:
+/// under lavapipe this is a handful of seconds of a body pressed against
+/// whatever stopped it.
+pub const STALL_FRAMES: u32 = 20;
 /// Frames the probe holds the swing once it is in reach. `gather::swing`
 /// pays one swing per `SWING_INTERVAL_TICKS`, so this is several swings at
 /// any frame rate, and a node's first swing is the only one the mark needs.
@@ -134,8 +139,23 @@ pub struct Intent {
 enum Verb {
     /// Nothing chosen yet — the scan below runs once.
     Hunt,
-    /// Walking at a quarry at `(x, z)`, since frame `_`.
-    Walk { x: f32, z: f32, since: u32 },
+    /// Walking at a quarry at `(x, z)`, since frame `_`, with the closest
+    /// approach so far and the frame it was last improved on.
+    ///
+    /// **The stall is the arrival signal, not a distance.** A body is
+    /// stopped by collision at the occupant's radius plus the capsule's,
+    /// which is a different number for a tree, a rock and a stone node —
+    /// so any threshold picked here is right for one of them. Measured:
+    /// with a threshold of 0.9 × `REACH_M` the probe converged on the
+    /// shipped seed's boulder at exactly 1.8 m and sat there until its
+    /// budget ran out, because 1.8 m IS that rock's standoff.
+    Walk {
+        x: f32,
+        z: f32,
+        since: u32,
+        best: f32,
+        improved: u32,
+    },
     /// In reach and swinging, since frame `_`.
     Swing { since: u32 },
     /// Swung; waiting for the mark to arrive, then shooting it.
@@ -397,6 +417,8 @@ fn verb_pass(
                         x,
                         z,
                         since: cap.frame,
+                        best: f32::MAX,
+                        improved: cap.frame,
                     };
                 }
                 None => {
@@ -414,48 +436,78 @@ fn verb_pass(
                 }
             }
         }
-        Verb::Walk { x, z, since } => {
+        Verb::Walk {
+            x,
+            z,
+            since,
+            best,
+            improved,
+        } => {
             let (dx, dz) = (x - eye.pos.x, z - eye.pos.z);
             look.yaw = bearing_to(dx, dz);
             look.pitch = 0.0;
-            let d2 = dx * dx + dz * dz;
-            // In reach when the sim would say so, with a margin — and the
-            // margin is small on purpose. `gather::swing` measures to the
-            // slot CENTRE, while collision stops the body at the occupant's
-            // radius plus the capsule's: a rock is 1.11 m of trunk and the
-            // body halts ~1.5 m out, so a stop threshold tighter than that
-            // is a probe that walks into a boulder until its budget runs
-            // out. `REACH_M` is 2.0 and 0.9 of it clears every occupant in
-            // `occupant_volume` while still being inside what the server
-            // will answer.
-            let stop_at = sim_core::gather::REACH_M * 0.9;
-            if d2 <= stop_at * stop_at {
+            let d = (dx * dx + dz * dz).sqrt();
+
+            // Arrived, by either of two tests, and the second is the one
+            // that actually fires. **In reach** is the server's own
+            // question — `gather::swing` measures to the slot CENTRE
+            // against `REACH_M` — so anything inside it can be swung at.
+            // **Stalled** is how we know we are as close as collision will
+            // allow: the body has stopped closing, which for a big rock
+            // happens well before any threshold worth picking.
+            let stalled = cap.frame - improved > STALL_FRAMES;
+            if d <= sim_core::gather::REACH_M * 0.98 || (stalled && d <= sim_core::gather::REACH_M)
+            {
                 cap.intent = Some(Intent::default());
                 cap.verb = Verb::Swing { since: cap.frame };
+            } else if stalled {
+                eprintln!(
+                    "capture: SKIPPED the verb pass — the walk stalled {d:.1} m from \
+                     the quarry, past the sim's {:.1} m reach. Something is between \
+                     the probe and it, or the quarry is bigger than the reach.",
+                    sim_core::gather::REACH_M
+                );
+                cap.intent = None;
+                cap.verb = Verb::Done;
+                cap.finished_at = Some(cap.frame);
             } else if cap.frame - since > WALK_FRAMES {
                 eprintln!(
                     "capture: SKIPPED the verb pass — {WALK_FRAMES} frames of walking \
-                     did not reach the quarry (still {:.1} m off). Something is \
-                     between the probe and it.",
-                    d2.sqrt()
+                     did not reach the quarry (still {d:.1} m off, closest {best:.1} m)."
                 );
                 cap.intent = None;
                 cap.verb = Verb::Done;
                 cap.finished_at = Some(cap.frame);
             } else {
-                // Throttle so one frame's travel lands ON the stop distance
-                // rather than past it. `dt` is the probe's own frame, which
-                // under a CPU rasterizer is enormous, and the axis is
-                // analog — so the correct request is "cover this much
-                // ground", not "hold W".
+                // Throttle so one frame's travel lands ON the target rather
+                // than past it. `dt` is the probe's own frame, which under a
+                // CPU rasterizer is about a second, and the movement axis is
+                // ANALOG — the sim divides it by 127 — so the correct
+                // request is "cover this much ground", not "hold W". At full
+                // throttle a frame here is ~3 m and the first cut of this
+                // pass oscillated past a 2.3 m quarry forever.
                 let full = sim_core::movement::WALK_SPEED * dt.max(1.0 / 240.0);
-                let want = (d2.sqrt() - stop_at) / full;
+                let want = (d - sim_core::gather::REACH_M * 0.9) / full;
                 let throttle = want.clamp(0.10, 1.0);
                 cap.intent = Some(Intent {
                     move_x: 0,
                     move_z: (throttle * 127.0) as i8,
                     buttons: 0,
                 });
+                // Closing counts as progress only if it is more than the
+                // quantization noise of a 3 cm position quantum.
+                let (best, improved) = if d < best - 0.05 {
+                    (d, cap.frame)
+                } else {
+                    (best.min(d), improved)
+                };
+                cap.verb = Verb::Walk {
+                    x,
+                    z,
+                    since,
+                    best,
+                    improved,
+                };
             }
         }
         Verb::Swing { since } => {
