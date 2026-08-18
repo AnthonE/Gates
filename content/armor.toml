@@ -2,6 +2,52 @@
 # applies to hits on that slot; the band (balance.toml) asserts any single
 # piece adds at most +2 hits-to-kill against every banded weapon
 # (CONTENT §4 anchor 2).
+#
+# **These three numbers are OURS, and as of 2026-08-18 that is a written
+# block rather than an unexamined gap** (`reference/RIPLIST.md` §1h).
+# Theirs were read at page tier the same day —
+# `wiki.facepunch.com/rust/item/{burlap.headwrap,burlap.shirt,
+# roadsign.jacket}`, each carrying a **Protection** table — and they are
+# takeable whole:
+#
+# | | theirs, projectile = melee | ours |
+# |---|---|---|
+# | burlap headwrap | 15 % | 10 % |
+# | burlap shirt | 10 % | 15 % |
+# | road sign jacket | 20 % | 25 % |
+# | road sign `move_penalty_pct` | none | 5 % |
+#
+# **The reason this file had for differing does not survive reading the
+# pages.** `BALANCE.md` §4.1 filed the armour ladder under *real* reasons
+# — "their protection is per damage type; ours is a flat percentage;
+# copying their percentages onto our model would mislead". True of their
+# model in the abstract and **false for every piece we own**: their
+# Projectile and Melee cells are EQUAL on all three, and those are the
+# only two damage classes our combat has, so one scalar expresses theirs
+# exactly. The columns we cannot key against — Bite, Radiation, Cold —
+# are mechanics we do not ship. §4.1 is retracted.
+#
+# **Our ladder is also inverted**, which is the part a player feels: ours
+# has the headwrap weaker than the shirt where theirs has it stronger.
+# Taking the column fixes an ordering, not only three magnitudes.
+#
+# ⚠ **Why the numbers are still ours: `crates/content/tests/content.rs`
+# anchors a fixture on `reduction_pct = 25`.** The take was applied,
+# validated, and passed every band (`armor_extra_hits_max` holds with no
+# re-speak — the set gets weaker, not stronger); `band_breaks_refused`
+# then failed as *"test fixture rot"*, because its armour case mutates the
+# roadsign's 25 into 60 to prove the band bites. The whole fix is
+# re-anchoring that one string on the new value — 20 is unique to the
+# roadsign row under the take, where 25 is today — and `RIPLIST.md` §5
+# step 4 says the fixture belongs in the same commit as the numbers. The
+# content lane that found this may not edit `crates/`, so it is filed
+# rather than done.
+#
+# ⚠ **And this file is scheduled to change shape anyway** (`DECISIONS.md`
+# 2026-08-17, spoken): equipment v0 replaces `reduction_pct` with a
+# per-type vector. §1h carries all five of their columns off the same
+# pages, so that slice can take the whole table and re-anchor the fixture
+# in one move — which is probably the right place for this to land.
 
 [[armor]]
 id = "item.armor_burlap_head"

@@ -1296,16 +1296,15 @@ Landed 2026-08-08 (operator: *"balance the game similar to rust so people
 dont get too lost"*). `reference/BALANCE.md` is the research and §6 is the
 standing instruction. Building blocks are 250/500/1000, a stone wall takes
 four satchels, tool and melee damage are theirs, the pig is a 150-hp boar.
-Two bands moved and the raid ratio re-priced itself. ⚠ **The three numbers
-that used to sit here — 1.04/1.73/3.46 — were 2026-08-08's and were stale
-by two days**; measured 2026-08-10 the tree read 0.69/1.38/2.77 before that
-day's building work and **0.76/1.52/3.04** after it. Derive it (the probe
-is five lines against `balance::check`), never quote it.
+Two bands moved and the raid ratio re-priced itself. ⚠ **Derive the raid
+ratio, never quote it** — `Content::load_dir(…)` then `.anchors()`, five
+lines. This paragraph carried three readings and every one went stale
+inside two days; the fourth was quoted here until 2026-08-18 and was wrong
+too, which is the whole argument for the probe over the sentence.
 
-**The measurement landed 2026-08-09 and `reference/RIPLIST.md` is now the
-queue for this item** — what is taken, what is outstanding, what blocks
-each row, and the six steps for executing one. Read it before touching a
-balance number; do not re-derive that list here.
+**`reference/RIPLIST.md` is the queue for this item** — what is taken,
+outstanding or blocked, and the six steps for executing a row. Read it
+before touching a balance number; do not re-derive that list here.
 
 ⚠ **Two rules changed on 2026-08-10 and both are operator-spoken.**
 (a) *"lighten our own math and lean on them for now"* — a band of ours
@@ -1318,26 +1317,31 @@ of twelve content files with zero coverage.
 craft column and deployable hp, `RIPLIST.md` §1c is the record. What is
 left of that thread, in order:
 
-1. **Row 1e**: stacks ✅ 2026-08-11, and `cooking.toml`'s recycler column
-   ✅ **2026-08-18 at page tier** (`RIPLIST.md` §1f — gears → 15 frags +
-   12 obol, rope → 18 cloth, tarp → 60 cloth, the rope/tarp coin rows
-   deleted because theirs pay no scrap). No anchor moved; only the content
-   hash. **`armor.toml` and `loot.toml` are the zero-coverage remainder**,
-   and §1f makes `loot.toml` load-bearing: a per-component yield only
-   prices a barrel through how often the barrel rolls one.
-2. ✅ **Egress is OPEN here** (2026-08-18) and the old "a browser is the
-   only route" note is retired: facepunch wiki 200 with full **Recycle**
-   tables, `rusthelp.com` 200 — **400 without a browser User-Agent**, which
-   reads as a dead host — only `wiki.rustclash.com` still 403s. Probe;
-   `SOURCES.md` §0 is right that this is a property of the container.
-3. **A stated reason of ours was a bad measurement — §6.2's least obvious
-   costume.** Two files held our obol prices against "a ~10-scrap barrel
-   where ours pays ~0.85". The 0.85 was right; **the ~10 was never
-   measured** — the page says 2.42. In barrels over the four researchable
-   items we both have, **our research economy cost 2.66× theirs before the
-   take and 0.83× after, with no price moved.** Their per-item *ordering*
-   is still ours (8× spread against our 3.75×; gunpowder their top rung,
-   our middle one) — `RIPLIST.md` §2 row 1g, `READY` and cheap.
+1. **Row 1e is CLOSED** — all four uncovered content files have coverage,
+   at page tier 2026-08-18: `cooking.toml`'s recycler taken (`RIPLIST.md`
+   §1f). `armor.toml` and `loot.toml` are both **researched at page tier
+   and blocked** — rows **1j** and **1i** — with their numbers written
+   down so nobody re-researches them. 1j is one fixture string in
+   `crates/content/tests/content.rs` (the take passes every band; it is
+   `band_breaks_refused`'s anchor that breaks) and belongs inside
+   equipment v0. 1i is a schema field: their container ladder is a
+   *guaranteed* scrap payout and `LootEntry` cannot express a certain
+   drop — the half-take measures **9× worse than leaving it alone**.
+   Next unblocked: §2 row **1g**, the research ladder's ordering.
+2. ✅ **Egress is OPEN here** and the old "a browser is the only route"
+   note is retired: facepunch wiki 200 and its item pages carry full
+   Protection / Recycle / Research tables, `rusthelp.com` 200 — **400
+   without a browser User-Agent**, which reads as a dead host — only
+   `wiki.rustclash.com` still 403s. Probe; `SOURCES.md` §0 is right that
+   this is a property of the container.
+3. **Both of this pass's findings were a reason of ours nobody had scored
+   against the source — §6.2's fourth costume, and the hardest to see,
+   because it reads as admissible.** `BALANCE.md` §4.1 filed armour under
+   *real* reasons ("protection is per damage type") when their projectile
+   and melee cells are **equal** on all three pieces we own — retracted,
+   and the retraction lands even though the numbers are blocked.
+   And two files priced obol against "a ~10-scrap barrel" that was never
+   measured; the page says 2.42. Detail in `RIPLIST.md` §1f/§1h.
 
 Closed 2026-08-11 by the operator, all three: the rock **is** craftable
 (15 → 10 stone, and the tier-4 source beat my prior — §1c says so), OBOL

@@ -115,6 +115,34 @@ page. The check is the same one §6.3 rung 1 already prescribes for
 choosing between sources: score it on a cell you can verify. Apply it to
 your own stated reasons too.
 
+### 3b · The armour column, 2026-08-18 — sourced, not moved
+
+| | reference (projectile = melee) | ours |
+|---|---|---|
+| burlap headwrap | 15 % | 10 % |
+| burlap shirt | 10 % | 15 % |
+| road sign jacket | 20 % | 25 % |
+| road sign `move_penalty_pct` | none — their only movement cost is the 40 % *heavy category*, a rung we lack | 5 % |
+
+**Nothing in this table moved, and the reason is worth the row.** The take
+was applied and run: it validates, and `armor_extra_hits_max` holds with
+no re-speak because the set gets *weaker*. It is blocked on one string —
+`band_breaks_refused` anchors on the shipped `reduction_pct = 25` to
+mutate it into a band break — which lives in `crates/` and so outside the
+content lane that found it (`RIPLIST.md` §1h, filed as row 1j).
+
+**What lands regardless is the retraction below**, because §4.1's claim is
+about *their* data rather than ours: their Projectile and Melee cells are
+equal on all three pieces we own. `RIPLIST.md` §1h has the full
+five-column table for equipment v0 to key against when it lands.
+
+**Both of this pass's findings are the same shape and it is worth naming**
+(§3a is the other): a *reason of ours* that nobody had scored against the
+source — an arithmetic one there, a model one here. §6.2 lists three
+costumes a cost wears; this is a fourth, and it is the hardest to see,
+because a reason that sounds like a mechanism reads as admissible under
+§6.2 rather than as something to check.
+
 ## 4 · What has NOT moved — separated into real reasons and excuses
 
 Rewritten 2026-08-08 after the operator asked the right question: *"explain
@@ -136,8 +164,21 @@ which is worse than plainly differing.
   `hp ÷ structure`, so our metal wall takes 8. Ordering right, early game
   right, ladder above stone compressed. **This is the biggest one and it is
   a build, not a decision**: a schema column plus a sim multiply.
-- **The armour ladder.** Their protection is per damage type; ours is a flat
-  percentage. Copying their percentages onto our model would mislead.
+- ~~**The armour ladder.**~~ **RETRACTED 2026-08-18, and it was never a
+  real reason.** It read: "their protection is per damage type; ours is a
+  flat percentage; copying their percentages onto our model would
+  mislead." True of their model in the abstract and **false for every
+  piece we own** — their **Projectile and Melee cells are equal** on the
+  burlap headwrap, the burlap shirt and the road sign jacket, and those
+  two are the only damage classes our combat has, so one scalar expresses
+  theirs exactly. The columns we cannot key against (Bite, Radiation,
+  Cold) are mechanics we do not ship. Taken at `RIPLIST.md` §1h — and it
+  found our ladder *inverted*, the headwrap weaker than the shirt where
+  theirs is the reverse. The numbers themselves are blocked on a test
+  fixture and are filed as `RIPLIST.md` row 1j — **this retraction does
+  not wait on them**, because it is a claim about their data and reading
+  the page settles it. **Nobody had read the page**, which is the point: a
+  model claim is a claim, and §6.3 rung 1's test works turned inward.
 - **Upkeep and decay.** Their tool cupboard consumes resources scaled by
   building privilege radius. Ours is a different mechanism, not a different
   rate.
