@@ -77,9 +77,17 @@ pub const WALK_FRAMES: u32 = 240;
 /// under lavapipe this is a handful of seconds of a body pressed against
 /// whatever stopped it.
 pub const STALL_FRAMES: u32 = 20;
-/// Frames the probe holds the swing once it is in reach. `gather::swing`
-/// pays one swing per `SWING_INTERVAL_TICKS`, so this is several swings at
-/// any frame rate, and a node's first swing is the only one the mark needs.
+/// Frames the probe may hold the swing before giving up on ever seeing a
+/// mark — a BOUND, not the plan.
+///
+/// **The stop is observable state: the first impact the client hears.**
+/// That is not fussiness, it is the difference between a photograph of the
+/// thing and a photograph of where the thing used to be. `gather::swing`
+/// pays one swing per `SWING_INTERVAL_TICKS` (1.267 s) while a probe frame
+/// under lavapipe is about a second, so a budget of 45 frames is ~35
+/// swings — measured, and it harvested the boulder beside spawn to
+/// nothing before the shutter opened. The mark lands on the FIRST swing;
+/// every one after it is spent destroying the surface the mark is on.
 pub const SWING_FRAMES: u32 = 45;
 /// Frames between the swing pass ending and its shot, so the decal that
 /// swing produced has crossed the wire and been drawn.
@@ -208,6 +216,7 @@ pub fn drive(
     mut exit: MessageWriter<AppExit>,
     eye: Res<super::Eye>,
     world: Res<super::WorldId>,
+    feed: Res<super::feed::Feed>,
     time: Res<Time>,
     ring: Res<Ring>,
     props: Res<PropRing>,
@@ -316,6 +325,7 @@ pub fn drive(
             &mut look,
             &eye,
             &world,
+            &feed,
             time.delta_secs(),
         );
         return;
@@ -370,6 +380,7 @@ fn verb_pass(
     look: &mut Look,
     eye: &super::Eye,
     world: &super::WorldId,
+    feed: &super::feed::Feed,
     dt: f32,
 ) {
     match cap.verb {
@@ -516,7 +527,19 @@ fn verb_pass(
                 move_z: 0,
                 buttons: sim_core::input::BTN_PRIMARY,
             });
-            if cap.frame - since > SWING_FRAMES {
+            // **Stop on the mark, not on a clock.** `EV_IMPACT` arriving is
+            // the sim telling us a swing bit something, which is the exact
+            // moment there is a decal worth photographing — and the moment
+            // after which every further swing is spent destroying the
+            // surface it is drawn on.
+            if !feed.impacts().is_empty() {
+                cap.intent = Some(Intent::default());
+                cap.verb = Verb::Settle { since: cap.frame };
+            } else if cap.frame - since > SWING_FRAMES {
+                eprintln!(
+                    "capture: swung for {SWING_FRAMES} frames and heard no impact — \
+                     shooting anyway, but this frame is evidence of nothing."
+                );
                 cap.intent = Some(Intent::default());
                 cap.verb = Verb::Settle { since: cap.frame };
             }
