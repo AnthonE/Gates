@@ -313,6 +313,13 @@ fn render(cue: Cue) -> Vec<f32> {
         Cue::RemoteStepRock => render(Cue::StepRock),
         Cue::RemoteStepWater => render(Cue::StepWater),
 
+        // ---- a remote swing ---------------------------------------------
+        // The same arm through the same air, by delegation for the remote
+        // steps' reason: what makes a swing remote is its def — positional,
+        // at the body, culled by the falloff law — never its waveform, and
+        // a copied parameter set is a fork waiting to happen.
+        Cue::RemoteSwing => render(Cue::Swing),
+
         // ---- the forest layer -------------------------------------------
         Cue::Bird => bird(&mut r),
 

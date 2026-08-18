@@ -100,13 +100,12 @@ What is left:
    gated end to end and `Death01` playing on a real body has never been on a
    screen. Boot the game and kill something.
 
-   **`Hit_Chest` is the one this leaves next, and it is not the same shape.**
-   A flinch is an instant, so it is `EV_SWING`'s problem and not this one:
-   `EV_HIT` is unicast to the attacker and `pop_hit` drops the victim id at
-   the client, so making a victim flinch for everyone is a second broadcast
-   on the hottest path in a fight — one per landed blow per player, with no
-   AOI filter, which is the same unpriced fan-out §0sw already owes a soak.
-   Price it before building it.
+   **`Hit_Chest` came off this list 2026-08-18 too, and it took the cheap
+   half.** `pop_hit` no longer drops the victim id, so the flinch is drawn
+   for the ATTACKER only, off a field that was already on the wire.
+   The broadcast version (everyone sees the recoil) is still unpriced and
+   still the same fan-out §0sw owes a soak; §0pvp item 1 and the
+   `DECISIONS.md` row carry the asymmetry.
 
 **First-person arms landed 2026-08-17, and are in a captured game frame.**
 The claim that "hide everything but the arms is not achievable on this asset"
@@ -170,17 +169,28 @@ server-simulated, integer ballistics), the satchel's blast, death →
 backpack → bag respawn, the kill feed, and since v48 a corpse that falls
 (§0chr). Six gaps, cheapest first:
 
-1. **A hit body does not flinch.** `Hit_Chest` ships and 0.333 s of it is
-   the strongest feedback a fight has. **Cheaper than it looks**: the
-   victim id is already on the wire and `client-core/src/core.rs:2016`
-   throws it away — `let _ = victim; // v0 marks the hit, not who took it`
-   — so an ATTACKER-side flinch is one field, no bump. It is asymmetric
-   (nobody else sees it, because `EV_HIT` is unicast) and that asymmetry
-   wants a word before it lands; the symmetric version is a broadcast on
-   the hottest path in a fight and owes the pricing §0sw already owes.
-2. **A remote's swing is silent.** `Cue::Swing` is non-positional with a
-   120 ms cooldown because it is the local player's — reusing it plays
-   every island swing at full volume with no pan (§0sw).
+1. ~~A hit body does not flinch.~~ **Landed 2026-08-18, attacker-side, no
+   wire byte.** `pop_hit` carries `(victim, damage)` now — the field was
+   already there — and `Clip::Flinch` plays `Hit_Chest`. Two knobs, both
+   measured off the file: `FLINCH_CLIP_S` is its length and
+   `FLINCH_BLEND_S` is its **apex** (0.16667 s, where the pose peaks at
+   19.92° off rest), because the general 0.18 s blend finishes *after*
+   that and would draw the apex at partial weight. The flinch and the
+   swing are one slot with the newest winning; death outranks both.
+   ⚠ **The asymmetry is real and is a PROPOSED row** (`DECISIONS.md`,
+   "attacker-side flinch v0"): `EV_HIT` is unicast, so the recoil happens
+   on one screen in the world. Reverse it by saying so — the symmetric
+   version is a new broadcast, not an edit. **Nobody has seen the pose.**
+2. ~~A remote's swing is silent.~~ **Landed 2026-08-18.**
+   `Cue::RemoteSwing` — positional, appended after `Growl`, the local
+   swing's own waveform by delegation, radius and gain read off the local
+   row (20 m / 0.45: numbers that row has carried and nothing has ever
+   read, because a non-positional cue has no distance). 40 ms cooldown,
+   not the local 120: it is per-CUE, so it is the crew's stagger.
+   Produced from `feed.swings()` against the transform `bodies::stream`
+   just wrote, so the sound and the arc cannot disagree.
+   **Nobody has heard it.** A positional *hit* sound is not in this: it
+   needs a flesh-impact waveform `synth.rs` does not generate.
 3. **`weapons.toml` prices a revolver nothing can fire.** `bake_combat`
    drops every row that is not melee, throwable or bow, so the firearm is
    data that looks armed. `combat.rs`'s header claimed the same of the
@@ -475,14 +485,13 @@ Two things remain, and the first needs a word rather than work. **The clip
 is `Punch_Cross` and the ask was a rock swing** — arithmetic, not taste:
 the sim allows a swing every 1.267 s and `Sword_Attack` is 1.5 s, 1.68 s
 with the blend, so every arc would be cut off by the next. Accept the
-punch or shorten the sword clip (`DECISIONS.md` §open). **And the swing is
-silent for a remote**: `Cue::Swing` is non-positional with a 120 ms
-cooldown because it is the local player's, so reusing it would play every
-island swing at full volume with no pan. A positional cue is its own slice.
-The lane now exists for `Death01` and `Hit_Chest` too — **and `Death01` did
-not use it**: a death is a condition rather than an instant, so it landed as
-a wire bit (v48, §0chr) and not as an event. `Hit_Chest` is still this
-lane's, and still unpriced.
+punch or shorten the sword clip (`DECISIONS.md` §open).
+~~And the swing is silent for a remote.~~ **Closed 2026-08-18** — `Cue::RemoteSwing`, positional, §0pvp item 2.
+The lane now exists for `Death01` and `Hit_Chest` too — **and neither used
+it**: a death is a condition rather than an instant, so it landed as a wire
+bit (v48, §0chr), and `Hit_Chest` landed attacker-side off `EV_HIT`'s
+already-present victim id (§0pvp item 1) rather than as a broadcast. So the
+unpriced fan-out above is still `EV_SWING`'s alone.
 
 ## 0die · Two questions to re-take, no defect left *(operator)*
 

@@ -89,6 +89,19 @@ pub struct Feed {
     /// prints it and the mixer only asks whether it is non-zero.
     pub damage: u16,
     pub hits: u16,
+    /// The bodies this frame's own hits landed on, oldest first — an
+    /// **own-fact**, because `EV_HIT` is unicast to the attacker.
+    ///
+    /// Beside the sum rather than replacing it: the two readers of `damage`
+    /// and `hits` want the total (the HUD prints it, the mixer asks only
+    /// whether it is non-zero) and the flinch wants the identities, and
+    /// neither can be recovered from the other. A hit on a wall
+    /// (`EV_STRUCT_HIT`) shares the core's ring and carries
+    /// `client_core::core::NO_VICTIM`, which is filtered out here rather
+    /// than handed on — nothing downstream should have to know the
+    /// sentinel exists.
+    hit_victims: [u32; FEED_CAP],
+    n_hit_victims: usize,
     deaths: [(u32, u32); FEED_CAP],
     n_deaths: usize,
     refusals: [Refused; FEED_CAP],
@@ -243,6 +256,12 @@ impl Feed {
     pub fn swings(&self) -> &[u32] {
         &self.swings[..self.n_swings]
     }
+
+    /// Bodies this player's blows landed on this frame, oldest first.
+    /// Never contains `client_core::core::NO_VICTIM` — see the field.
+    pub fn hit_victims(&self) -> &[u32] {
+        &self.hit_victims[..self.n_hit_victims]
+    }
     pub fn auths(&self) -> &[(u16, u16, u8, u8, u8)] {
         &self.auths[..self.n_auths]
     }
@@ -254,6 +273,7 @@ impl Feed {
     fn clear(&mut self) {
         self.damage = 0;
         self.hits = 0;
+        self.n_hit_victims = 0;
         self.n_deaths = 0;
         self.n_refusals = 0;
         self.n_gathered = 0;
@@ -299,9 +319,20 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     let core = &mut net.session.core;
     feed.server_tick_est = core.clock.server_est;
 
-    while let Some(d) = core.pop_hit() {
+    while let Some((victim, d)) = core.pop_hit() {
         feed.damage = feed.damage.saturating_add(d);
         feed.hits = feed.hits.saturating_add(1);
+        // A wall took it, not a person: the sentinel stops here.
+        if victim == client_core::core::NO_VICTIM {
+            continue;
+        }
+        if feed.n_hit_victims >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_hit_victims;
+            feed.hit_victims[n] = victim;
+            feed.n_hit_victims += 1;
+        }
     }
     while let Some(victim) = core.pop_death() {
         // `last_death_killer` is set by the pop, so one pop yields a whole

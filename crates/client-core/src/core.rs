@@ -80,6 +80,21 @@ pub const IMPACT_RING: usize = 8;
 /// drawing.
 pub const SWING_RING: usize = 8;
 
+/// The victim slot of a hitmarker that names no body.
+///
+/// The hitmarker ring carries two facts that read identically to a player —
+/// *my swing landed for N* — and only one of them happened to a person:
+/// `EV_HIT` names a victim, and `EV_STRUCT_HIT` names a wall. Rather than
+/// split the ring (the marker and the music bump would then have to be
+/// summed from two places), the structure's entry carries this instead of an
+/// id. `sim_core::gather::NO_ITEM`'s shape, one field over.
+///
+/// `u32::MAX` is safe as a sentinel and not merely unlikely: a player id is
+/// a roster index below `limits::MAX_PLAYERS` and an animal's is
+/// `limits::MOB_ID_TAG | slot` with `slot < MAX_MOBS`, so neither family can
+/// reach it.
+pub const NO_VICTIM: u32 = u32::MAX;
+
 /// What one event-lane message changed, as bit flags the bridge hands JS.
 pub const APPLIED_INV: u32 = 1 << 0;
 pub const APPLIED_SLOTS: u32 = 1 << 1;
@@ -995,8 +1010,19 @@ pub struct ClientCore {
     /// hook — an id it did not predict means its picture of the container
     /// had drifted, so it redraws rather than trusting the drag it drew.
     pub last_move_count: u32,
-    /// Own landed hits, oldest first: damage dealt. The hitmarker ring.
-    hits: [u16; TOAST_RING],
+    /// Own landed hits, oldest first: `(victim, damage dealt)`. The
+    /// hitmarker ring.
+    ///
+    /// **The victim was thrown away until 2026-08-18** — the `EV_HIT` arm
+    /// read `let _ = victim; // v0 marks the hit, not who took it` — which
+    /// meant the client knew a blow had landed and not on whom, and the
+    /// renderer could not flinch the body that took it. The field was
+    /// already on the wire, so keeping it costs no packet and no
+    /// `PROTO_VER` bump.
+    ///
+    /// [`NO_VICTIM`] for the structure half of this ring, which names an
+    /// address rather than a person.
+    hits: [(u32, u16); TOAST_RING],
     hit_head: usize,
     hit_len: usize,
     /// Deaths as broadcast, oldest first: (victim, killer) — the kill feed.
@@ -1252,7 +1278,7 @@ impl ClientCore {
             last_move: 0,
             last_move_refused: 0,
             last_move_count: 0,
-            hits: [0; TOAST_RING],
+            hits: [(NO_VICTIM, 0); TOAST_RING],
             hit_head: 0,
             hit_len: 0,
             deaths: [(0, 0); TOAST_RING],
@@ -1787,12 +1813,14 @@ impl ClientCore {
                 left,
             } => {
                 // The raid's own hitmarker: the same ring a body hit uses,
-                // because "my swing landed for N" is the same fact.
+                // because "my swing landed for N" is the same fact. It is
+                // the one entry with no victim — a wall is not a person and
+                // has nothing to flinch — so it rides `NO_VICTIM`.
                 if self.hit_len == TOAST_RING {
                     self.hit_head = (self.hit_head + 1) % TOAST_RING;
                     self.hit_len -= 1;
                 }
-                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = damage;
+                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = (NO_VICTIM, damage);
                 self.hit_len += 1;
                 let addressed =
                     |r: &(u16, u16, u8, u8)| r.0 == cx && r.1 == cz && r.2 == level && r.3 == loc;
@@ -2013,12 +2041,17 @@ impl ClientCore {
                 flags |= APPLIED_HEALTH;
             }
             EventMsg::Hit { victim, damage } => {
-                let _ = victim; // v0 marks the hit, not who took it
+                // **The victim is kept, and it used to be dropped here.**
+                // `EV_HIT` is unicast to the attacker, so this names the
+                // body *your* blow landed on — which is the whole of what
+                // `render::bodies` needs to flinch it. It may be an animal
+                // (`mob::mob_id`): `mobs::stream` draws those and carries
+                // no `BodyAnim`, so the id simply matches nothing.
                 if self.hit_len == TOAST_RING {
                     self.hit_head = (self.hit_head + 1) % TOAST_RING;
                     self.hit_len -= 1;
                 }
-                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = damage;
+                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = (victim, damage);
                 self.hit_len += 1;
                 flags |= APPLIED_HIT;
             }
@@ -2450,15 +2483,17 @@ impl ClientCore {
         Some(r)
     }
 
-    /// Oldest buffered hitmarker, if any: damage this client's swing dealt.
-    pub fn pop_hit(&mut self) -> Option<u16> {
+    /// Oldest buffered hitmarker, if any: `(victim, damage)` this client's
+    /// blow dealt. The victim is [`NO_VICTIM`] when the thing struck was a
+    /// wall rather than a body — see the `hits` field.
+    pub fn pop_hit(&mut self) -> Option<(u32, u16)> {
         if self.hit_len == 0 {
             return None;
         }
-        let d = self.hits[self.hit_head];
+        let h = self.hits[self.hit_head];
         self.hit_head = (self.hit_head + 1) % TOAST_RING;
         self.hit_len -= 1;
-        Some(d)
+        Some(h)
     }
 
     /// Oldest buffered death, if any: the victim's id, with the killer

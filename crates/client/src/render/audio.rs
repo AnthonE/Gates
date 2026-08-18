@@ -330,6 +330,48 @@ pub fn remote_steps(
     }
 }
 
+/// Another player's swing — the second sound that decides fights, and until
+/// this system nothing produced it: a remote's arm moved in silence.
+///
+/// **Off the same `feed.swings()` slice `bodies::stream` animates from**, so
+/// the sound and the arc cannot disagree about who swung, and off the
+/// TRANSFORM that system just wrote, so they cannot disagree about where. It
+/// runs after `Stream` for that reason, like [`remote_steps`] beside it.
+///
+/// Two properties fall out of querying the drawn bodies rather than the feed
+/// alone, and both are load-bearing:
+///
+/// - **Your own swing cannot reach here.** `bodies::stream` skips
+///   `core.player_id`, so no entity carries it — the local arm stays
+///   [`Cue::Swing`], non-positional, exactly once (`render::input`). Without
+///   that you would hear your own swing twice, once at each ear and once at
+///   your feet.
+/// - **A swinger outside AOI cannot either.** No body, no transform, no
+///   sound — which is the honest cull, because a position we do not have is
+///   not a position we may guess at.
+///
+/// "Only nearby" is then the mixer's own falloff at the cue's radius: the
+/// falling tree's pattern, and the remote footsteps' — push with a position
+/// and let the one distance law decide.
+pub fn remote_swings(
+    feed: Res<super::feed::Feed>,
+    bodies: Query<(&super::bodies::Body, &Transform)>,
+    mut sound: ResMut<Sound>,
+) {
+    if feed.swings().is_empty() {
+        return;
+    }
+    for (body, t) in bodies.iter() {
+        if !feed.swings().contains(&body.0) {
+            continue;
+        }
+        sound.play(Request::at(
+            Cue::RemoteSwing,
+            [t.translation.x, t.translation.y, t.translation.z],
+        ));
+    }
+}
+
 /// This frame's own-facts, as cues.
 ///
 /// **Reads [`super::feed::Feed`]; pops nothing.** It used to pop the core's

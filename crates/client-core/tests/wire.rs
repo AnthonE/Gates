@@ -40,7 +40,7 @@
 //! fail, so no two fields may share a value.
 
 use client_core::core::{
-    ClientCore, APPLIED2_CONT, APPLIED2_MOVE, APPLIED_BAGS, APPLIED_DEATH, APPLIED_HIT,
+    ClientCore, APPLIED2_CONT, APPLIED2_MOVE, APPLIED_BAGS, APPLIED_DEATH, APPLIED_HIT, NO_VICTIM,
 };
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
@@ -269,7 +269,15 @@ fn the_hit_ring_fills_and_drains() {
 
     let len = encode_event_hit(9, 37, &mut buf).unwrap();
     assert_eq!(feed(&mut c, &buf[..len]) & APPLIED_HIT, APPLIED_HIT);
-    assert_eq!(c.pop_hit(), Some(37), "hitmarker damage mismatch");
+    // **The victim rides with the damage since 2026-08-18** and the two are
+    // distinct numbers here on purpose: the arm used to write `let _ =
+    // victim` and a ring that carried the damage twice would look identical
+    // to one that carried both.
+    assert_eq!(
+        c.pop_hit(),
+        Some((9, 37)),
+        "hitmarker (victim, damage) mismatch"
+    );
     assert_eq!(c.pop_hit(), None, "the hit ring must drain");
 }
 
@@ -658,8 +666,8 @@ fn a_struct_hit_carries_its_address_and_never_guesses_a_maximum() {
     );
     assert_eq!(
         c.pop_hit(),
-        Some(40),
-        "a raid swing must still feed the hitmarker ring"
+        Some((NO_VICTIM, 40)),
+        "a raid swing must still feed the hitmarker ring, and a wall is not a body"
     );
 }
 

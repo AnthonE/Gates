@@ -36,7 +36,9 @@
 
 #![cfg(feature = "render")]
 
-use client::render::anim::{Clip, ANIM_BODY_H_M, ANIM_RIG_H_M, SWING_CLIP_S};
+use client::render::anim::{
+    Clip, ANIM_BODY_H_M, ANIM_RIG_H_M, FLINCH_BLEND_S, FLINCH_CLIP_S, SWING_CLIP_S,
+};
 
 /// Assets live beside the crate, not inside it — the same hop
 /// `tests/deploy_assets.rs` and `tests/ui.rs` make.
@@ -49,6 +51,11 @@ const RIG: &str = "models/stumpy.glb";
 
 struct Glb {
     json: serde_json::Value,
+    /// The BIN chunk. Kept since 2026-08-18 because one gate needs sample
+    /// VALUES and not just the accessor headers: `FLINCH_BLEND_S` is derived
+    /// from where inside `Hit_Chest` the pose peaks, which is a property of
+    /// the keyframes rather than of their count.
+    bin: Vec<u8>,
 }
 
 impl Glb {
@@ -58,7 +65,102 @@ impl Glb {
         let len = u32::from_le_bytes(raw[12..16].try_into().unwrap()) as usize;
         let json = serde_json::from_slice(&raw[20..20 + len])
             .unwrap_or_else(|e| panic!("{}: bad JSON chunk: {e}", path.display()));
-        Self { json }
+        // The second chunk, immediately after the first, 4-byte aligned.
+        let at = 20 + len.next_multiple_of(4);
+        let bin = if at + 8 <= raw.len() && &raw[at + 4..at + 8] == b"BIN\0" {
+            let n = u32::from_le_bytes(raw[at..at + 4].try_into().unwrap()) as usize;
+            raw[at + 8..at + 8 + n].to_vec()
+        } else {
+            Vec::new()
+        };
+        Self { json, bin }
+    }
+
+    /// One accessor's floats, row by row. Only the two component layouts an
+    /// animation sampler can have here — `f32` SCALAR inputs and `f32` VEC4
+    /// rotation outputs — and it **refuses** anything else rather than
+    /// guessing, because a silently-wrong decode would make the gate below
+    /// pass on numbers it invented.
+    fn floats(&self, i: usize) -> Vec<Vec<f32>> {
+        let a = &self.json["accessors"][i];
+        assert_eq!(
+            a["componentType"].as_u64(),
+            Some(5126),
+            "{RIG}: accessor {i} is not f32 — this reader cannot decode it"
+        );
+        let n = match a["type"].as_str() {
+            Some("SCALAR") => 1,
+            Some("VEC3") => 3,
+            Some("VEC4") => 4,
+            other => panic!("{RIG}: accessor {i} is {other:?} — this reader cannot decode it"),
+        };
+        let bv = &self.json["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
+        let base = bv["byteOffset"].as_u64().unwrap_or(0) as usize
+            + a["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let stride = bv["byteStride"].as_u64().unwrap_or(0) as usize;
+        let stride = if stride == 0 { 4 * n } else { stride };
+        let count = a["count"].as_u64().unwrap() as usize;
+        assert!(
+            base + (count - 1) * stride + 4 * n <= self.bin.len(),
+            "{RIG}: accessor {i} runs past the BIN chunk — the chunk was not read"
+        );
+        (0..count)
+            .map(|k| {
+                (0..n)
+                    .map(|c| {
+                        let o = base + k * stride + 4 * c;
+                        f32::from_le_bytes(self.bin[o..o + 4].try_into().unwrap())
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The time, in seconds, at which a clip's pose is furthest from its own
+    /// first keyframe — measured as the largest quaternion angle between any
+    /// rotation channel's sample and that channel's first sample.
+    ///
+    /// Rotations only, and that is not a simplification: this rig's clips
+    /// are rotation-plus-hips by construction (`ci/retarget_anim.py` — a
+    /// source bone's translation is the target skeleton's limb length), so
+    /// the rotations are where a pose lives.
+    fn pose_apex(&self, name: &str) -> f32 {
+        let anims = self.json["animations"].as_array().expect("no animations");
+        let a = anims
+            .iter()
+            .find(|a| a["name"].as_str() == Some(name))
+            .unwrap_or_else(|| panic!("{RIG} has no clip {name:?}"));
+        let mut best = (0.0f32, -1.0f32); // (time, angle)
+        let mut channels = 0;
+        for ch in a["channels"].as_array().unwrap() {
+            if ch["target"]["path"].as_str() != Some("rotation") {
+                continue;
+            }
+            channels += 1;
+            let s = &a["samplers"][ch["sampler"].as_u64().unwrap() as usize];
+            let t = self.floats(s["input"].as_u64().unwrap() as usize);
+            let q = self.floats(s["output"].as_u64().unwrap() as usize);
+            assert_eq!(
+                t.len(),
+                q.len(),
+                "{RIG}: {name:?} has an interpolation this reader cannot walk \
+                 (CUBICSPLINE stores three values per key)"
+            );
+            let rest = &q[0];
+            for (ti, qi) in t.iter().zip(q.iter()) {
+                let dot: f32 = rest.iter().zip(qi.iter()).map(|(a, b)| a * b).sum();
+                let ang = 2.0 * dot.abs().min(1.0).acos();
+                if ang > best.1 {
+                    best = (ti[0], ang);
+                }
+            }
+        }
+        assert!(
+            channels > 8,
+            "{RIG}: {name:?} has {channels} rotation channel(s) — this gate is \
+             measuring almost nothing"
+        );
+        best.0
     }
 
     /// One clip's length, read off the longest `input` accessor its samplers
@@ -393,4 +495,57 @@ fn the_textures_are_gpu_compressed() {
             "{RIG} ships a {m} texture — run ci/ktx_pack.py after ci/import_char.py"
         );
     }
+}
+
+/// **The flinch's length is measured off the file, not chosen** — the
+/// `ANIM_RIG_H_M` habit, and the reason `FLINCH_CLIP_S` is allowed to be a
+/// literal at all. Unlike the swing there is nothing to cut it to fit: the
+/// sim has no cadence on *being* hit, so the constant follows the asset
+/// rather than the asset following the constant, and this is the check that
+/// it still does.
+#[test]
+fn the_flinch_clip_is_the_length_the_client_thinks_it_is() {
+    let glb = Glb::open(&asset_path(RIG));
+    let name = Clip::Flinch.name();
+    let dur = glb
+        .clip_duration(name)
+        .unwrap_or_else(|| panic!("{RIG} has no clip {name:?}"));
+    // One frame of the 30 Hz resample, the tolerance the swing's gate uses.
+    assert!(
+        (dur - FLINCH_CLIP_S).abs() < 1.0 / 30.0,
+        "{RIG}'s {name:?} runs {dur:.5} s and FLINCH_CLIP_S is {FLINCH_CLIP_S:.5} s — \
+         the constant is measured off this file and has drifted from it"
+    );
+}
+
+/// **`FLINCH_BLEND_S` is the clip's own apex, and this re-measures it.**
+///
+/// The blend must have finished by the moment the pose is most struck, or
+/// the body is drawn *least* bent at the one frame that carries the
+/// information. That moment is a property of the keyframes — it is not
+/// 0.333/2, and it is not the general `ANIM_BLEND_S`, which is past it — so
+/// the constant is read out of the binary chunk here rather than trusted.
+///
+/// A re-cut of `Hit_Chest` moves the apex and reddens this, which is the
+/// loop worth having: the alternative is a soft flinch nobody can point at.
+#[test]
+fn the_flinch_blend_lands_on_the_clips_own_apex() {
+    let glb = Glb::open(&asset_path(RIG));
+    let name = Clip::Flinch.name();
+    let apex = glb.pose_apex(name);
+    // 1e-4, not a frame: the constant is a rounded literal of a keyframe
+    // time that sits exactly on the 30 Hz grid (5/30 s), so a frame of slack
+    // would have accepted `ANIM_BLEND_S` itself — measured, and it did.
+    assert!(
+        (apex - FLINCH_BLEND_S).abs() < 1e-4,
+        "{RIG}'s {name:?} peaks at {apex:.5} s and FLINCH_BLEND_S is \
+         {FLINCH_BLEND_S:.5} s — the cross-fade no longer finishes when the \
+         pose does, so the apex is drawn at partial weight"
+    );
+    // And the bound the number exists to satisfy, stated as the inequality
+    // rather than as the fitted value: blending in must finish inside the
+    // clip, whatever the clip becomes. `const {}` because both sides are
+    // constants and clippy is right that a runtime assert over two of those
+    // is a check deferred for no reason — this way it is a compile error.
+    const { assert!(FLINCH_BLEND_S < FLINCH_CLIP_S) };
 }

@@ -157,6 +157,17 @@ pub fn stream(
                     if feed.swings().contains(&id) {
                         anim.swing();
                     }
+                    // **And the blow you just landed on them** — the other
+                    // fact no amount of interpolated state can imply.
+                    // Attacker-only, because `EV_HIT` is unicast to the
+                    // attacker: `Clip::Flinch`'s doc comment and the
+                    // `DECISIONS.md` row carry the asymmetry in full.
+                    // After the swing, so a body hit on the same frame it
+                    // swung flinches — `BodyAnim::flinch` is the newest of
+                    // the two transients here and clears the other.
+                    if feed.hit_victims().contains(&id) {
+                        anim.flinch();
+                    }
                 }
                 if was_sleeping != rs.sleeping {
                     // The shade lives on the scene's descendants now, so the
@@ -177,6 +188,11 @@ pub fn stream(
                 // newly-visible raider is the one nobody sees.
                 if feed.swings().contains(&id) {
                     anim.swing();
+                }
+                // Same for the blow: a body that enters AOI on the frame
+                // your arrow reaches it still flinches.
+                if feed.hit_victims().contains(&id) {
+                    anim.flinch();
                 }
                 let entity = commands
                     .spawn((
