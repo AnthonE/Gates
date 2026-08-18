@@ -1857,6 +1857,14 @@ fn announce_door(deploys: &Deploys, i: usize, by: u32, events: &mut EventQueue) 
 /// The shut bit in the collision index flips in the same call, so the
 /// tick that toggles is the tick that blocks (or opens); EV_DOOR
 /// announces the new state for the wire.
+///
+/// Returns **whose leaf this was** when one actually moved — the trust
+/// ledger's counterparty (`world.rs`'s `EV_TRUST`). Deliberately the
+/// deployable's owner and not the lock's: the thing worked is the door,
+/// and a lock is a separate entity that another hand may have bolted on
+/// (`reference/DOORS.md` §1). `None` for every refusal, so the row is a
+/// record of access *exercised* and never of access asked for — the knock
+/// is already the event for that.
 #[allow(clippy::too_many_arguments)]
 pub fn use_door(
     dc: &DeployContent,
@@ -1868,10 +1876,8 @@ pub fn use_door(
     level: u8,
     loc: u8,
     events: &mut EventQueue,
-) {
-    let Some(i) = door_in_reach(dc, deploys, p, cx, cz, level, loc, arch_is_door, events) else {
-        return;
-    };
+) -> Option<u32> {
+    let i = door_in_reach(dc, deploys, p, cx, cz, level, loc, arch_is_door, events)?;
     if !deploys.lock_passes(cx, cz, level, loc, p.id) {
         // Knocking is the whole reason a refusal here is not silent
         // (`DOORS.md` §4): it is the only channel a locked-out player has
@@ -1884,12 +1890,13 @@ pub fn use_door(
             p.id,
         );
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
-        return;
+        return None;
     }
     let open = !deploys.entries[i].open;
     deploys.entries[i].open = open;
     pieces.set_door(cx, cz, level, loc, !open);
     announce_door(deploys, i, p.id, events);
+    Some(deploys.entries[i].owner)
 }
 
 /// Apply one lock request (`Command::Access`): run `op` against the code
@@ -1920,14 +1927,16 @@ pub fn lock_op(
     tick: u64,
     events: &mut EventQueue,
     spill: &mut [ItemStack; INV_SLOTS],
-) {
-    let Some(di) = door_in_reach(dc, deploys, p, cx, cz, level, loc, lockable, events) else {
-        return;
-    };
+) -> Option<u32> {
+    let di = door_in_reach(dc, deploys, p, cx, cz, level, loc, lockable, events)?;
     let Some(li) = deploys.locks.find_index(cx, cz, level, loc) else {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_NO_LOCK, 0);
-        return;
+        return None;
     };
+    // Read before the op, because the op can take the lock off the door
+    // (`Outcome::Removed`) and the owner would then be a field of a record
+    // that no longer stands.
+    let owner = deploys.locks.entries[li].owner;
     match lock::apply(&mut deploys.locks, li, p.id, op, code, tick) {
         Outcome::Done { relock } => {
             deploys.entries[di].locked = relock;
@@ -1962,6 +1971,10 @@ pub fn lock_op(
                 ((level as u32) << 16) | ((loc as u32) << 8) | grant as u32,
                 p.id,
             );
+            // The one outcome here that is a *trust* act: a hand this lock
+            // did not know now stands on its list, and the owner may or
+            // may not have been there to see it (`world.rs`'s `EV_TRUST`).
+            return Some(owner);
         }
         Outcome::Wrong { shock, shut } => {
             lock::shock(&mut p.hp, shock);
@@ -1981,6 +1994,7 @@ pub fn lock_op(
         Outcome::ListFull => events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_AUTH_FULL, 0),
         Outcome::BadOp => events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_KIND, 0),
     }
+    None
 }
 
 /// Take a deployable back up and return its item — **pickup v1**
@@ -2101,6 +2115,15 @@ pub fn pick_up(
 /// whole model** — you authorize *yourself* at a hearth whose crew let you
 /// reach it, which is why there is no id on the wire and nothing to forge:
 /// the only player a crew op can name is its sender.
+///
+/// Returns **whose hearth this was** when an op actually landed — the same
+/// counterparty `use_door` returns and for the same ledger (`world.rs`'s
+/// `EV_TRUST`). The op worth having it for is the clear: only a crew
+/// member may run it and it evicts everyone else, so a crew member who
+/// clears a hearth they did not place locks its owner out of their own
+/// base — which is the shape of betrayal this record exists to be able to
+/// count, and the shape whose whole meaning is whether the owner was
+/// there.
 #[allow(clippy::too_many_arguments)]
 pub fn crew_op(
     deploys: &mut Deploys,
@@ -2110,22 +2133,31 @@ pub fn crew_op(
     level: u8,
     op: u8,
     events: &mut EventQueue,
-) {
+) -> Option<u32> {
     let Some(h) = deploys.hearths[..deploys.hearth_count]
         .iter()
         .position(|hr| hr.cx == cx && hr.cz == cz && hr.level == level)
     else {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_HEARTH, 0);
-        return;
+        return None;
     };
     let (ax, az) = cell_center(cx, cz);
     let (px, pz) = player_xz(p);
     let (dx, dz) = (ax - px, az - pz);
     if dx * dx + dz * dz > crate::build::BUILD_REACH_M * crate::build::BUILD_REACH_M {
         events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_REACH, 0);
-        return;
+        return None;
     }
     let crew = &mut deploys.hearths[h].crew;
+    // Whether the crew's membership actually moved. The trust row rides
+    // this and not the op's success, because one op succeeds while
+    // changing nothing: a `CREW_LEAVE` is deliberately ungated — refusing
+    // it would tell a stranger whether the crew knew them — so a hand that
+    // was never on the list presses it, `remove` returns false, and the
+    // announcement below still goes out. Returning the owner there would
+    // log a betrayal for a button that did nothing, in a record whose
+    // whole value is that its rows mean something.
+    let moved;
     match op {
         // **Anyone in reach may join an empty-crewed hearth, and only the
         // crew may join a crewed one.** The first half cannot happen —
@@ -2135,11 +2167,16 @@ pub fn crew_op(
         ACCESS_OP_CREW_JOIN => {
             if !crew.is_empty() && !crew.contains(p.id) {
                 events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
-                return;
+                return None;
             }
-            if crew.add(p.id) == Added::Full {
-                events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_AUTH_FULL, 0);
-                return;
+            // `Already` is a re-press by a member: the list is unchanged,
+            // so nothing was newly entrusted.
+            match crew.add(p.id) {
+                Added::Full => {
+                    events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_AUTH_FULL, 0);
+                    return None;
+                }
+                added => moved = added == Added::New,
             }
         }
         ACCESS_OP_CREW_LEAVE => {
@@ -2147,21 +2184,22 @@ pub fn crew_op(
             // already not on it, and a refusal there would tell a
             // stranger whether they were. `remove` returning false is
             // simply nothing happening.
-            crew.remove(p.id);
+            moved = crew.remove(p.id);
         }
         ACCESS_OP_CREW_CLEAR => {
             if !crew.contains(p.id) {
                 events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_OWNER, 0);
-                return;
+                return None;
             }
             // Clear to the clearer, one operation. A bare `clear()` would
             // leave the hearth crewless for the instant between two
             // statements, and an empty crew is a hearth anyone may join.
             crew.reset_to(p.id);
+            moved = true;
         }
         _ => {
             events.push(EV_DEPLOY_REFUSED, p.id, REFUSE_D_KIND, 0);
-            return;
+            return None;
         }
     }
     // The sender's own standing afterwards, absolute, to the sender only —
@@ -2178,6 +2216,7 @@ pub fn crew_op(
         ((level as u32) << 16) | ((LOC_PLANE as u32) << 8) | grant as u32,
         p.id,
     );
+    moved.then_some(deploys.hearths[h].owner)
 }
 
 /// The baked row of the code lock, if the loaded content has one. A table

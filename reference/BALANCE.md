@@ -82,6 +82,67 @@ The anchors that came out the other side: raid ratio **0.69 / 1.38 / 2.77**
 (wood/stone/metal, band [1.0, 3.0] on stone), door breach **50** swings,
 wall breach **63 / 125 / 250**, TTK 4–5 across every melee row.
 
+### 3a · The recycler, 2026-08-18 — and a reason of ours that turned out to be a bad measurement
+
+`reference/RIPLIST.md` §1f has the row and the provenance (page tier, the
+official wiki's own **Recycle** table). Four cells and two deletions:
+
+| | reference | ours before | ours now |
+|---|---|---|---|
+| gears → metal fragments | 15 | 8 | **15** |
+| gears → scrap *(our OBOL)* | 12 | 2 | **12** |
+| rope → cloth | 18 | 5 | **18** |
+| tarp → cloth | 60 | 8 | **60** |
+| rope / tarp → scrap | none | 1 each | **rows deleted** |
+
+**No band moved and no anchor moved** — `balance::check` reads no cook row,
+so this take had nothing to argue with. What it did move is a *reason*.
+`research.toml` and `recipes.toml` each justified holding our own obol
+prices against "a ~10-scrap barrel where ours pays ~0.85 obol". The 0.85
+was derived from our own tables and right; **the ~10 was never measured**,
+and the page puts their barrel at ~2.42 scrap. Taking the faucet puts ours
+at 2.727 obol. Priced in barrels over the four researchable items we both
+have (§1f's table), **our research economy cost 2.66× theirs before the
+take and 0.83× after it — with no price moved.** The prices were never the
+half that was wrong. Their *ordering* still is: an 8× spread against our
+3.75×, gunpowder their top rung and our middle one. That is an outstanding
+row, and it was invisible until the faucet was right.
+
+That is §6.2's failure mode in its least obvious costume. Not effort, not a
+band, not source uncertainty — **an arithmetic reason nobody had checked**,
+which reads as a mechanism difference right up until someone reads the
+page. The check is the same one §6.3 rung 1 already prescribes for
+choosing between sources: score it on a cell you can verify. Apply it to
+your own stated reasons too.
+
+### 3b · The armour column, 2026-08-18 — sourced, not moved
+
+| | reference (projectile = melee) | ours |
+|---|---|---|
+| burlap headwrap | 15 % | 10 % |
+| burlap shirt | 10 % | 15 % |
+| road sign jacket | 20 % | 25 % |
+| road sign `move_penalty_pct` | none — their only movement cost is the 40 % *heavy category*, a rung we lack | 5 % |
+
+**Nothing in this table moved, and the reason is worth the row.** The take
+was applied and run: it validates, and `armor_extra_hits_max` holds with
+no re-speak because the set gets *weaker*. It is blocked on one string —
+`band_breaks_refused` anchors on the shipped `reduction_pct = 25` to
+mutate it into a band break — which lives in `crates/` and so outside the
+content lane that found it (`RIPLIST.md` §1h, filed as row 1j).
+
+**What lands regardless is the retraction below**, because §4.1's claim is
+about *their* data rather than ours: their Projectile and Melee cells are
+equal on all three pieces we own. `RIPLIST.md` §1h has the full
+five-column table for equipment v0 to key against when it lands.
+
+**Both of this pass's findings are the same shape and it is worth naming**
+(§3a is the other): a *reason of ours* that nobody had scored against the
+source — an arithmetic one there, a model one here. §6.2 lists three
+costumes a cost wears; this is a fourth, and it is the hardest to see,
+because a reason that sounds like a mechanism reads as admissible under
+§6.2 rather than as something to check.
+
 ## 4 · What has NOT moved — separated into real reasons and excuses
 
 Rewritten 2026-08-08 after the operator asked the right question: *"explain
@@ -103,8 +164,21 @@ which is worse than plainly differing.
   `hp ÷ structure`, so our metal wall takes 8. Ordering right, early game
   right, ladder above stone compressed. **This is the biggest one and it is
   a build, not a decision**: a schema column plus a sim multiply.
-- **The armour ladder.** Their protection is per damage type; ours is a flat
-  percentage. Copying their percentages onto our model would mislead.
+- ~~**The armour ladder.**~~ **RETRACTED 2026-08-18, and it was never a
+  real reason.** It read: "their protection is per damage type; ours is a
+  flat percentage; copying their percentages onto our model would
+  mislead." True of their model in the abstract and **false for every
+  piece we own** — their **Projectile and Melee cells are equal** on the
+  burlap headwrap, the burlap shirt and the road sign jacket, and those
+  two are the only damage classes our combat has, so one scalar expresses
+  theirs exactly. The columns we cannot key against (Bite, Radiation,
+  Cold) are mechanics we do not ship. Taken at `RIPLIST.md` §1h — and it
+  found our ladder *inverted*, the headwrap weaker than the shirt where
+  theirs is the reverse. The numbers themselves are blocked on a test
+  fixture and are filed as `RIPLIST.md` row 1j — **this retraction does
+  not wait on them**, because it is a claim about their data and reading
+  the page settles it. **Nobody had read the page**, which is the point: a
+  model claim is a claim, and §6.3 rung 1's test works turned inward.
 - **Upkeep and decay.** Their tool cupboard consumes resources scaled by
   building privilege radius. Ours is a different mechanism, not a different
   rate.
