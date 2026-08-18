@@ -5,6 +5,7 @@
 //! drive it directly, no sockets required.
 
 use crate::client::ClientNetState;
+use crate::interest::{self, PIECE_SCAN_BATCH};
 use crate::stats::ShardStats;
 use crate::store::PlayerKey;
 use protocol::{
@@ -1484,7 +1485,32 @@ impl ShardCore {
                     match encode_event_piece_placed(&rec, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
-                                if !self.clients[slot].connected {
+                                let c = &self.clients[slot];
+                                if !c.connected {
+                                    continue;
+                                }
+                                // Class-S interest (`interest.rs`), the same
+                                // predicate against the same anchor the walk
+                                // uses — which is what makes this a filter
+                                // rather than a second opinion. A piece
+                                // placed after a client's walk finished can
+                                // only reach it here, so the two have to
+                                // agree about where that client is or the
+                                // walk's guarantee has a hole in it exactly
+                                // the width of the disagreement.
+                                //
+                                // An anchor that is not yet valid passes
+                                // everything: the client has no body this
+                                // tick, and its pending walk will cover the
+                                // store from the position it does get.
+                                if c.piece_anchor_valid
+                                    && !interest::piece_in_interest(
+                                        c.piece_anchor_cm,
+                                        addr.0,
+                                        addr.1,
+                                    )
+                                {
+                                    ShardStats::bump(&stats.piece_events_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -2191,6 +2217,23 @@ impl ShardCore {
                                 // *placement* reaching the client, and that
                                 // seam is worth proving one store at a time
                                 // (`stats.rs` `piece_walk_restarts`).
+                                //
+                                // **A removal is broadcast to everyone, and
+                                // class-S interest deliberately does not
+                                // filter it** (`interest.rs`). A placement
+                                // a client is not told about costs it
+                                // nothing — it has no record to be wrong
+                                // about — but a removal it is not told
+                                // about is a wall that stands in its world
+                                // forever, because nothing re-derives an
+                                // absence: the walk sends what IS there and
+                                // has no way to say what stopped being.
+                                // Until a client can be un-subscribed from
+                                // a region and drop what it holds there,
+                                // the asymmetry is the correct one, and it
+                                // is cheap — a removal is nine bytes and a
+                                // raid produces far fewer of them than the
+                                // walk it used to restart.
                                 let c = &mut self.clients[slot];
                                 if !piece
                                     && c.deploy_sync_cursor > 0
@@ -2450,44 +2493,113 @@ impl ShardCore {
         // does the same for everyone. That is the trade the paragraph
         // above buys, and it is why the deployable walk was left reading
         // upward until its own placement seam is proven.
+        //
+        // **And it is aimed** (class-S interest v0, `interest.rs`). The
+        // walk streams what is within `PIECE_INTEREST_CM` of the anchor it
+        // was armed at and skips the rest, so a joiner pays for the base
+        // it landed beside rather than for every structure on the island;
+        // walking `PIECE_REARM_CM` out from under that anchor re-arms the
+        // walk at the new position, which is the class-D hysteresis band
+        // spent as this walk's margin. The two rates are separate on
+        // purpose: `PIECE_SCAN_BATCH` entries are *looked at* per tick, of
+        // which at most `PIECE_SYNC_BATCH` are *said*, and a window that
+        // says nothing still advances — silence is the filter working.
+        if let Some(w) = self.live_wslot(slot) {
+            let body = self.world.players[w].body;
+            let here = interest::body_cm(body.qx, body.qz);
+            let len = self.world.pieces.len();
+            let c = &mut self.clients[slot];
+            if !c.piece_anchor_valid {
+                c.piece_anchor_cm = here;
+                c.piece_anchor_valid = true;
+            } else if interest::d2_cm(c.piece_anchor_cm, here)
+                > interest::PIECE_REARM_CM * interest::PIECE_REARM_CM
+            {
+                // Re-arm from the tail, and **without** the reset bit: the
+                // client keeps every piece it has been told about and the
+                // address-keyed apply dedups whatever arrives twice. A
+                // re-arm mid-walk cannot livelock the way a removal
+                // restart could — a full-store walk is 32 ticks and a
+                // sprinter covers 5.9 m of the 32 m that triggers this
+                // (`interest::PIECE_SCAN_BATCH` carries the arithmetic).
+                c.piece_anchor_cm = here;
+                c.piece_sync_cursor = len;
+                ShardStats::bump(&stats.piece_walk_rearms);
+            }
+        }
         let c = &self.clients[slot];
         let pieces = self.world.pieces.entries();
+        let anchor = c.piece_anchor_cm;
         let owed = if c.piece_sync_reset {
             pieces.len()
         } else {
             c.piece_sync_cursor.min(pieces.len())
         };
-        if c.piece_sync_reset || owed > 0 {
-            let n = PIECE_SYNC_BATCH.min(owed);
+        // No body to aim from (the join command is still queued): hold the
+        // walk rather than aim it at the origin. It is owed a reset batch
+        // either way, and this is a one-tick window.
+        if c.piece_anchor_valid && (c.piece_sync_reset || owed > 0) {
+            let window = PIECE_SCAN_BATCH.min(owed);
             // The band is filled HERE and stored nowhere (`PieceRec::dmg`).
             // A stack copy of the batch, not an allocation — wall 2 counts
             // the tick and this is `PIECE_SYNC_BATCH` records deep.
             let mut wire = [PieceRec::default(); PIECE_SYNC_BATCH];
-            for (dst, src) in wire.iter_mut().zip(&pieces[owed - n..owed]) {
-                *dst = *src;
-                dst.dmg = damage_band(src.hp, piece_hp_max(&self.world.build, src.row));
-            }
-            let batch = &wire[..n];
-            match encode_event_piece_sync(c.piece_sync_reset, batch, &mut self.ev_buf) {
-                Ok(len) => {
-                    if send(Lane::Event, slot, &self.ev_buf[..len]) {
-                        ShardStats::bump(&stats.ev_sent);
-                        let c = &mut self.clients[slot];
-                        c.piece_sync_reset = false;
-                        c.piece_sync_cursor = owed - n;
-                        if c.piece_sync_cursor == 0 {
-                            // The client now holds every piece the store
-                            // had when this walk began. Counted here and
-                            // nowhere else: an empty world completes on the
-                            // reset batch alone, which is the honest answer
-                            // to "has this client got the world yet".
-                            ShardStats::bump(&stats.piece_walk_completes);
-                        }
-                    } else {
-                        return;
-                    }
+            let mut n = 0usize;
+            let mut scanned = 0usize;
+            // Scanned from the TOP of the owed region down, because the
+            // cursor names a contiguous prefix: stopping early has to
+            // leave `[0, owed − scanned)` owed, and only a downward scan
+            // makes what was consumed adjacent to what was already sent.
+            for src in pieces[owed - window..owed].iter().rev() {
+                scanned += 1;
+                if !interest::rec_in_interest(anchor, src) {
+                    continue;
                 }
-                Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                wire[n] = *src;
+                wire[n].dmg = damage_band(src.hp, piece_hp_max(&self.world.build, src.row));
+                n += 1;
+                if n == PIECE_SYNC_BATCH {
+                    break;
+                }
+            }
+            // Turned back to store order, so a batch with nothing filtered
+            // out of it is the same bytes this walk has always sent.
+            wire[..n].reverse();
+            let rest = owed - scanned;
+            let done = |c: &mut ClientNetState| {
+                c.piece_sync_reset = false;
+                c.piece_sync_cursor = rest;
+                // Counted where the cursor moves, not where the scan ran: a
+                // refused ring push re-offers this same window next tick,
+                // and a counter that bumped on the offer would report the
+                // filter doing work it has not done yet.
+                ShardStats::add(&stats.piece_sync_skipped, (scanned - n) as u64);
+                if rest == 0 {
+                    // The client now holds every piece the store had
+                    // within its anchor's radius when this walk began.
+                    // Counted here and nowhere else: an empty world — or
+                    // one whose every piece is out of range — completes on
+                    // the reset batch alone, which is the honest answer to
+                    // "has this client got the world yet".
+                    ShardStats::bump(&stats.piece_walk_completes);
+                }
+            };
+            if n > 0 || c.piece_sync_reset {
+                match encode_event_piece_sync(c.piece_sync_reset, &wire[..n], &mut self.ev_buf) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            done(&mut self.clients[slot]);
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
+                }
+            } else {
+                // The whole window was out of range: no message, and the
+                // walk still advances. This is the byte the filter saves.
+                done(&mut self.clients[slot]);
             }
         }
 
