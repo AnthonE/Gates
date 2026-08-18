@@ -448,13 +448,21 @@ fn skin_point(
         return None;
     }
     let inv = 1.0 / d2.sqrt();
-    Some((
-        pos.0 + ox * inv * r,
-        // Clamped into the occupant's own span, so a swing uphill of a
-        // waist-high stone node marks the stone and not the air above it.
-        strike_y.clamp(pos.1, pos.1 + top),
-        pos.2 + oz * inv * r,
-    ))
+    // **Eye height, or the occupant's waist if the occupant is shorter.**
+    //
+    // Measured rather than reasoned, and the first cut was wrong: clamping
+    // to the occupant's TOP put a mark on the rim of the boulder beside
+    // spawn — 13.43 against an eye at 13.87 — where the mark's own normal
+    // is horizontal and the surface curves away under it, so a decal
+    // projecting sideways across a rounded rim grazes it and draws
+    // nothing. A capture aimed at those exact coordinates is what found it.
+    //
+    // Half the height is not a tuned number, it is the middle of the
+    // thing: you cannot strike the centre of a knee-high rock from eye
+    // level, and for anything taller than you — every tree — the eye still
+    // wins, which is where a swing at a trunk actually lands.
+    let y = strike_y.min(pos.1 + top * 0.5).max(pos.1);
+    Some((pos.0 + ox * inv * r, y, pos.2 + oz * inv * r))
 }
 
 /// What a swing did, for the caller that owns the stores gather does not.
