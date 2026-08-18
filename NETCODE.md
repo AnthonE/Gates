@@ -425,19 +425,33 @@ Subscribe cost is dominated by first-visit chunk state; the join bundle
 pre-streams the spawn ring (9 chunks) before the first keyframe so a fresh
 spawn never sees pop-in of the base they spawned beside.
 
-⚠ **That paragraph is the design; the tree does neither half of it**
-(measured 2026-08-10, `reference/NETWORK.md` §9.3). There is no grid and no
-chunk subscription. Class D is a flat scan of `MAX_PLAYERS + MAX_MOBS` with
-a radial hysteresis compare, per client per tick
-(`server/src/core.rs:2163`, `:2208`) — 16,400 distance tests per tick at
-cap, which is affordable and is not the problem. **Class S has no interest
-filter at all**: the join walk drips the *entire* piece store to every
-client regardless of distance, 32 per tick, and any piece removal mid-walk
-restarts it from zero (`core.rs:1872`, `:1663`). That is
-`reference/NETWORK.md` §2 — the reference game's own 2014 mistake — plus a
-re-send amplification it did not have. §9.2.1 there has the arithmetic and
-the smallest fix; the interest filter is the real one and is a `NOW.md`
-item, not a patch.
+⚠ **That paragraph is the design; the tree has the radius and not the
+grid** (measured 2026-08-10, `reference/NETWORK.md` §9.3; half of what it
+found is closed). There is still no grid and no chunk subscription. Class D
+is a flat scan of `MAX_PLAYERS + MAX_MOBS` with a radial hysteresis
+compare, per client per tick — 16,400 distance tests per tick at cap, which
+is affordable and is not the problem.
+
+**Class S is filtered as of 2026-08-18** (`server/src/interest.rs`,
+`DECISIONS.md` §open "class-S interest v0"), and it is filtered on class
+D's own numbers, which is the sentence above taken as far as it goes
+without a grid: the piece walk is aimed from an anchor, streams
+`AOI_EXIT_CM`, and re-arms when the player leaves the anchor by
+`AOI_EXIT_CM − AOI_ENTER_CM` — so a completed walk holds every piece within
+`AOI_ENTER_CM`, and the `EV_PIECE_PLACED` broadcast uses the same predicate
+rather than a second opinion. Measured on a 2,291-piece island with 454
+pieces in range: a joiner's walk went 2,291 → 454 records, 11,384 → 2,258
+bytes, complete at tick 72 → 19. `server/tests/piece_interest.rs` is the
+gate; §11's `test_stream_in` is still unbuilt and is a different assertion
+(the client's per-frame apply/teardown budget, which nothing measures).
+
+**What is still §5's design and not the tree**: there is no chunk version,
+no subscribe/unsubscribe, and therefore no way to tell a client to *drop*
+what it holds — so a piece removal is still broadcast to everyone
+unfiltered, because nothing else can un-say a wall, and a re-arm re-walks
+the whole in-range set rather than the difference. Deploys and backpacks
+are unfiltered on both counts, and the deployable walk still restarts on a
+removal (`reference/NETWORK.md` §9.2.1's amplifier, one store over).
 
 **The planned extension is occlusion, and it lands here** (`DECISIONS.md`
 2026-08-04 · `NOW.md` 18): a class-D member fully occluded by terrain is

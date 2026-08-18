@@ -170,6 +170,29 @@ pub struct ShardStats {
     /// walk, so `completes` short of the join count is a shard where
     /// somebody is still waiting.
     pub piece_walk_completes: AtomicU64,
+    /// Piece walks re-armed because the player walked `PIECE_REARM_CM` out
+    /// from under the anchor the walk was aimed from (class-S interest v0,
+    /// `interest.rs`).
+    ///
+    /// The *intended* restart, and it is the one number that says what the
+    /// filter costs: a re-arm re-walks everything now in range rather than
+    /// the difference, so `rearms` × the local base is the redundancy v0
+    /// pays for having no chunk grid to subscribe to. Bounded by movement —
+    /// at most one per 32 m travelled, ~5.8 s of sprinting — which is what
+    /// keeps it apart from `piece_walk_restarts`, whose bound was a raid's
+    /// removal rate and therefore was not one.
+    pub piece_walk_rearms: AtomicU64,
+    /// Piece-store entries a walk scanned and skipped as out of interest.
+    ///
+    /// The filter's yield, and the honest denominator for it: `skipped`
+    /// against `PIECE_SCAN_BATCH × walking ticks` says how much of the
+    /// island a shard's clients are being spared, and a shard where it
+    /// stays near zero is one whose players all stand in the same place —
+    /// not one where the filter is off.
+    pub piece_sync_skipped: AtomicU64,
+    /// `EV_PIECE_PLACED` broadcasts a connection was not sent because the
+    /// piece is outside its class-S interest.
+    pub piece_events_skipped: AtomicU64,
     /// Clients forced back to the zero-state baseline by a bookkeeping
     /// overflow (pending removals) — the honest escape hatch.
     pub forced_resyncs: AtomicU64,

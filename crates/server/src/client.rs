@@ -146,6 +146,23 @@ pub struct ClientNetState {
     /// The next piece batch carries the reset bit (fresh join or
     /// event-lane resync): the client clears its piece set first.
     pub piece_sync_reset: bool,
+    /// Where this client's piece walk is **aimed**, in centimetres — the
+    /// player position the walk was armed at, not where the player is now
+    /// (class-S interest v0, `interest.rs` carries the argument).
+    ///
+    /// Fixed for a walk's duration on purpose. The filter has to answer the
+    /// same way for every batch of one walk, or "this client has been sent
+    /// everything within R" is a claim about a moving circle and means
+    /// nothing. It is also what the `EV_PIECE_PLACED` broadcast tests
+    /// against, so a piece placed after the walk finished is covered by the
+    /// identical arithmetic rather than by a second opinion.
+    pub piece_anchor_cm: (i64, i64),
+    /// False until this client has a body to aim from — a connection whose
+    /// join command is still queued has no position, and a walk aimed at
+    /// the origin would stream the wrong corner of the island. The walk
+    /// holds (it is owed a reset batch either way) and the placement
+    /// broadcast passes unfiltered for that window, which is one tick.
+    pub piece_anchor_valid: bool,
     /// Next deployable-def row the deploy-menu drip sends.
     pub deploy_defs_cursor: usize,
     /// Placed-deployable walk: the next `world.deploys` entry index to
@@ -238,6 +255,8 @@ impl ClientNetState {
             piece_defs_cursor: 0,
             piece_sync_cursor: 0,
             piece_sync_reset: true,
+            piece_anchor_cm: (0, 0),
+            piece_anchor_valid: false,
             deploy_defs_cursor: 0,
             deploy_sync_cursor: 0,
             deploy_sync_reset: true,
@@ -269,6 +288,10 @@ impl ClientNetState {
         self.piece_defs_cursor = 0;
         self.piece_sync_cursor = 0;
         self.piece_sync_reset = true;
+        // The anchor is dropped with the walk it aimed: a resync re-arms
+        // from where the player is *now*, which is the only position the
+        // batch it is about to send can honestly claim to cover.
+        self.piece_anchor_valid = false;
         self.deploy_defs_cursor = 0;
         self.deploy_sync_cursor = 0;
         self.deploy_sync_reset = true;

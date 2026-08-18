@@ -1110,32 +1110,32 @@ WebTransport. §0wt keeps its other reasons.
    still has no loss/RTT source, and `client/src/lib.rs` holds a
    `Connection` it never asks anything — the same gap, other end.
 
-## 0n1 · The class-S join walk has no interest filter *(server lane)*
+## 0n1 · Class-S interest — the radius lands, the grid does not *(server lane)*
 
-`reference/NETWORK.md` §9.2.1, measured 2026-08-10. `pump_events` drips the
-**entire** piece store to every client — `PIECE_SYNC_BATCH = 32` per tick,
-no distance test anywhere (`server/src/core.rs:1872`). At `MAX_PIECES` that
-is 256 ticks (8.5 s) to teach one joiner about every structure on the
-island, near or far. This is the reference game's own 2014 mistake, which
-they fixed by sending spawn-local entities instead.
+`reference/NETWORK.md` §9.2.1. `pump_events` used to drip the **entire**
+piece store to every client with no distance test anywhere. Both halves of
+that are now closed: the removal restart went with the tail-down walk, and
+the filter landed 2026-08-18 (`server/src/interest.rs`, `DECISIONS.md`
+§open "class-S interest v0").
 
-The restart makes it worse and is the reachable half. A removal while a
-client's cursor is inside the store resets it to zero (`core.rs:1663`) —
-correct under the store's swap-remove, unbounded in cost. A 3,000-piece
-base walks in ~94 ticks and a raid removes pieces faster than that, so a
-client joining mid-raid can be walked back to zero indefinitely and never
-finish. `ev_resync` compounds it: a full event ring zeroes **every** walk
-cursor at once (`client.rs:249`), and the resend it triggers refills the
-ring that triggered it.
+The walk is aimed from an anchor, streams `AOI_EXIT_CM`, and re-arms at
+`AOI_EXIT_CM − AOI_ENTER_CM` — class D's own band, so §7's "one spatial
+truth" is one set of numbers. `EV_PIECE_PLACED` takes the same predicate; a
+removal does not, because nothing can yet tell a client to forget. Measured
+on a 2,291-piece island with 454 in range: **2,291 → 454 records, 11,384 →
+2,258 bytes, done at tick 72 → 19**; a full walk is bounded at 32 ticks
+(was 256). Gate: `server/tests/piece_interest.rs`, red both ways.
 
-Landed this pass: `piece_walk_restarts` counts the restart, so the
-livelock is visible before it is fixed. Not landed: the filter. The fix is
-`NETCODE.md` §7's chunk subscription — one spatial truth for both classes,
-which the doc already specifies and the tree has never had — and it wants
-`test_stream_in` and §11's `test_raid_storm` with it (§11 there: **all
-seven of its gates are unbuilt**, retitled to stop claiming otherwise —
-and note the name is now shared, see §0rs: the sim-core storm that landed
-is wall 4's caps gate, not §11's wire one).
+**What remains, ranked.**
+1. **The grid.** No chunk version, no subscribe/unsubscribe, so no client
+   can be told to forget a region — which is why removals stay broadcast
+   and why a re-arm re-walks the in-range set instead of the difference.
+   That is §5/§7 proper and wants a wire change; this lane could not take
+   one (`protocol` was another lane's this window).
+2. **Deploys and backpacks are unfiltered**, and the deployable walk still
+   restarts on a removal — §9.2.1's amplifier, one store over.
+3. `test_stream_in` (§11) is still unbuilt: this gate counts records, not
+   the client's per-frame apply/teardown budget, which is the other half.
 
 ---
 
