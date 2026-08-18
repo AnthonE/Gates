@@ -402,6 +402,77 @@ struct Target {
     ni: usize,
     /// The slot's world position (m).
     pos: (f32, f32, f32),
+    /// The occupant's own radius and top, **already scaled** by the slot
+    /// (`terrain::occupant_volume` × `Slot::scale`) — the same pair
+    /// `terrain::slot_blocks` collides against. Carried from the pick
+    /// rather than re-queried at the push site because the slot is right
+    /// here and a second `cache.slot` call would be a second chance to
+    /// disagree with the thing we actually hit.
+    r: f32,
+    top: f32,
+}
+
+/// Where up a short occupant a strike lands, as a fraction of its height.
+///
+/// **Its own constant because it is an invented number and the rule is that
+/// they are spoken** (`CLAUDE.md` §loop discipline; `DECISIONS.md` §open,
+/// "melee mark v0"). Half is the middle of the thing rather than a tuning
+/// — you cannot strike the centre of a knee-high rock from eye level — but
+/// a bare `* 0.5` in an expression is not registrable, and the two
+/// constants either side of it in this seam both carry rows.
+pub const STRIKE_WAIST_FRAC: f32 = 0.5;
+
+/// A melee strike lands at the swinger's eye height, because melee is
+/// planar: the pick below reads `yaw` and never `pitch` (this file says so
+/// in words at the top), so the arm swings level from the same origin
+/// `ranged::fire` shoots from. Derived from `ARROW_EYE_MM` rather than
+/// picked, so the two origins cannot drift apart — no new knob is spoken
+/// for here and none is invented.
+const EYE_M: f32 = crate::ranged::ARROW_EYE_MM as f32 / 1000.0;
+
+/// Where a landed swing scuffs the thing it hit: the point on the struck
+/// occupant's own collision skin, on the side the swinger is standing.
+///
+/// `None` for an occupant with no volume. The bush is the only swingable
+/// one (`terrain::occupant_volume` gives it `(0.0, 0.0)`) and a bundle of
+/// leaves has no surface to mark, so it gets no mark rather than a mark at
+/// its centre. That refusal is also what keeps the arithmetic safe: a
+/// positive radius means the slot blocks, which means the swinger is
+/// standing outside it, so `d2` cannot be the zero this function would
+/// otherwise divide by.
+///
+/// The offset direction is slot→swinger, which is exactly what
+/// `render/decal.rs::facing` re-derives at the other end — the horizontal
+/// from the scatter slot's centre to the impact point. So the decal turns
+/// to face whoever made it and no normal ever crosses the wire.
+fn skin_point(
+    pos: (f32, f32, f32),
+    ox: f32,
+    oz: f32,
+    d2: f32,
+    r: f32,
+    top: f32,
+    strike_y: f32,
+) -> Option<(f32, f32, f32)> {
+    if r <= 0.0 || top <= 0.0 || d2 <= 0.0 {
+        return None;
+    }
+    let inv = 1.0 / d2.sqrt();
+    // **Eye height, or the occupant's waist if the occupant is shorter.**
+    //
+    // Measured rather than reasoned, and the first cut was wrong: clamping
+    // to the occupant's TOP put a mark on the rim of the boulder beside
+    // spawn — 13.43 against an eye at 13.87 — where the mark's own normal
+    // is horizontal and the surface curves away under it, so a decal
+    // projecting sideways across a rounded rim grazes it and draws
+    // nothing. A capture aimed at those exact coordinates is what found it.
+    //
+    // Half the height is not a tuned number, it is the middle of the
+    // thing: you cannot strike the centre of a knee-high rock from eye
+    // level, and for anything taller than you — every tree — the eye still
+    // wins, which is where a swing at a trunk actually lands.
+    let y = strike_y.min(pos.1 + top * STRIKE_WAIST_FRAC).max(pos.1);
+    Some((pos.0 + ox * inv * r, y, pos.2 + oz * inv * r))
 }
 
 /// What a swing did, for the caller that owns the stores gather does not.
@@ -747,6 +818,19 @@ pub fn swing(
     }
     p.next_swing = tick + SWING_INTERVAL_TICKS;
 
+    // **The arm moved, and that is a fact about a body other people are
+    // drawing.** Pushed HERE and nowhere else, because the two lines above
+    // are the cadence gate: this is the only point in the tree that runs
+    // exactly once per swing regardless of what the swing goes on to find.
+    // Every exit below it — a whiff, a refusal, a free arm handed to flesh,
+    // a smashed barrel — is downstream of a decision the swinger has
+    // already committed to, and a fact that fires only when something was
+    // hit is a HIT fact, not a swing fact. This lane already has one of
+    // those, and `EV_HIT` is unicast to the attacker for exactly that
+    // reason. `NOW.md` §0sw: the commonest swing in the game is the one
+    // that misses, and it drew nothing on any screen but the swinger's.
+    events.push(crate::world::EV_SWING, p.id, 0, 0);
+
     let px = p.body.qx as f32 * POS_XZ_Q;
     let py = p.body.qy as f32 * POS_Y_Q;
     let pz = p.body.qz as f32 * POS_XZ_Q;
@@ -778,6 +862,7 @@ pub fn swing(
                     && best.as_ref().is_none_or(|b| d2 < b.d2)
                     && !lives.is_harvested(cx as u16, cz as u16)
                 {
+                    let (or_m, otop_m) = terrain::occupant_volume(s.occupant);
                     best = Some(Target {
                         d2,
                         ox: -dx,
@@ -786,6 +871,8 @@ pub fn swing(
                         cz: cz as u16,
                         ni,
                         pos: (s.x, s.y, s.z),
+                        r: or_m * s.scale,
+                        top: otop_m * s.scale,
                     });
                 }
             }
@@ -801,6 +888,8 @@ pub fn swing(
         cz,
         ni,
         pos,
+        r: hit_r,
+        top: hit_top,
     }) = best
     else {
         return Swing::Free; // whiff — the cooldown is paid, the arm is free
@@ -904,6 +993,31 @@ pub fn swing(
     if exhausted {
         let jitter = splitmix64(cell_hash(seed, cx as i32, cz as i32, CH_RESPAWN) ^ tick);
         life.respawn_at = tick + RESPAWN_MIN_TICKS + jitter % RESPAWN_RANGE_TICKS;
+    }
+
+    // **The swing has landed, so it leaves the mark an arrow leaves.**
+    // Reached only past the tool refusal and the store insert above, which
+    // is what makes it mean "this swing bit the node" rather than "a button
+    // was down" — a refused swing scuffs nothing, and `Swing::Refused`
+    // already returns before here.
+    //
+    // `EV_IMPACT` is reused rather than joined by a second event, and that
+    // is the whole slice: the fact is *a surface was struck at this point*,
+    // which is neither an arrow's fact nor a swing's. It is already
+    // broadcast, already carries a quantized point and a surface class, and
+    // `render/decal.rs` is already its single reader — so a mark on a tree
+    // costs no wire byte, no `PROTO_VER` bump and no client line
+    // (`NOW.md` §0mk item 1).
+    if let Some((mx, my, mz)) = skin_point(pos, ox, oz, d2, hit_r, hit_top, py + EYE_M) {
+        let qx = crate::fmath::floor_i32(mx / POS_XZ_Q);
+        let qy = crate::fmath::floor_i32(my / POS_Y_Q);
+        let qz = crate::fmath::floor_i32(mz / POS_XZ_Q);
+        events.push(
+            crate::world::EV_IMPACT,
+            (crate::ranged::SURF_WORLD as u32) << 24 | qx as u32,
+            qz as u32,
+            qy as u32,
+        );
     }
 
     // Pay pro rata for the budget spent, less the share this node holds

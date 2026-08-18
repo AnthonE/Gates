@@ -3583,6 +3583,21 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// ("DodecahedronGeometry(1.5)") blocked up to 0.39 m wider than anything a
 /// player could see. Those rows are the measured bounds now (operator,
 /// 2026-08-10), and the gate holds them there.
+///
+/// **The barrel is the third correction and it came from outside the tree.**
+/// Row 7 read 0.45 and cited `CylinderGeometry(0.45, 0.45, 0.95)` — the
+/// deleted browser client's geometry, a guess carried forward — and 0.9 m
+/// across by 0.95 tall is near-spherical where a 55-gallon drum is half again
+/// taller than it is wide. It is the measured object now: **0.585 m across by
+/// 0.88 tall**, so 0.585/2 here, 0.88 in `OCCUPANT_TOP_M`, and the client's
+/// `archetype_lift` set to the half-height so the drum's base is the slot's
+/// ground. Two independent sources agree on the pair — the reference set's
+/// `barrelroad`, and Meshy's `auto_size` vision estimate, which returned it
+/// unprompted (`DECISIONS.md` §open, barrel proportions v1). The mesh could
+/// not move without this row: `greybox.rs` refuses a mesh narrower than the
+/// volume, because an invisible collision skirt is a player passing through
+/// geometry — so the pair moved in one commit and `test_replay`'s golden
+/// moved with it.
 pub const OCCUPANT_R_M: [f32; 13] = [
     0.0, // None
     // Tree — the TRUNK, not the canopy, measured off the drawn bark mesh at
@@ -3615,7 +3630,7 @@ pub const OCCUPANT_R_M: [f32; 13] = [
     0.9148,             // SulfurNode — the same mesh
     0.0,                // Bush — deliberately passable
     1.1145,             // Rock — measured off blob_mesh(1.5, 0.52); nominal was 1.5
-    0.45,               // BarrelSlot — CylinderGeometry(0.45, 0.45, 0.95)
+    0.2925,             // BarrelSlot — the drum is 0.585 m across, so 0.585/2
     0.0,                // 8: the client's stump. Not a sim occupant; the hole is the point.
     0.6801,             // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
     SHELTER_CORNER_R_M, // HavenShelter — broad phase; SHELTER_BOXES is the volume
@@ -3651,7 +3666,7 @@ pub const OCCUPANT_TOP_M: [f32; 13] = [
     1.1269,         // SulfurNode
     0.0,            // Bush
     1.5403,         // Rock — lift 0.55 + 0.990298; was 2.05 off the nominal
-    0.975,          // BarrelSlot — lift 0.5 + half-height 0.475
+    0.88,           // BarrelSlot — lift 0.44 + half-height 0.44
     0.0,            // 8: the stump
     0.8,            // CrateSlot — lift 0.4 + half-height 0.4
     SHELTER_PEAK_M, // HavenShelter — tower-cap at 9.0 + 0.2
@@ -3718,7 +3733,7 @@ pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
         Occupant::SulfurNode => (0.9148, 1.1269),
         Occupant::Bush => (0.0, 0.0),
         Occupant::Rock => (1.1145, 1.5403),
-        Occupant::BarrelSlot => (0.45, 0.975),
+        Occupant::BarrelSlot => (0.2925, 0.88),
         Occupant::CrateSlot => (0.6801, 0.8),
         Occupant::HavenShelter => (SHELTER_CORNER_R_M, SHELTER_PEAK_M),
         Occupant::CacheSlot => (0.5701, 0.55),

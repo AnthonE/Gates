@@ -126,10 +126,17 @@ inputs = [
 # The bench ladder (bench ladder v0): each rung is crafted AT the rung
 # below, which is the reference's own shape and the whole progression —
 # the satchel is not gated by its own price so much as by the two benches
-# standing in front of it. Costs are the pre-Oct-2025 scrap-era ratios
-# scaled onto our faucet (~0.85 obol/barrel against their ~10 scrap):
-# their WB2 was 6.7× a T1 research and WB3 16.7×, ours are 125 and 300
-# against the 20-obol T1 row. Their 20/100 HQM line has no equivalent
+# standing in front of it. Costs are the pre-Oct-2025 scrap-era **ratios**
+# over our own T1 research row: their WB2 was 6.7× a T1 research and WB3
+# 16.7×, ours are 125 and 300 against the 20-obol T1 row. That the ratio
+# is what was taken is what makes this row survive 2026-08-18, when the
+# recycler's yields became theirs (`reference/RIPLIST.md` §1f): the
+# faucet tripled, our T1 research row did not move, and a multiple of an
+# unmoved row does not move either. The clause it used to carry — the
+# ratios "scaled onto our faucet (~0.85 obol/barrel against their ~10
+# scrap)" — is struck, because **the ~10 was never measured**; their
+# barrel pays ~2.42 and ours now pays 2.727, so no scaling is applied to
+# anything here. Their 20/100 HQM line has no equivalent
 # here (no HQM tier — `reference/RIPLIST.md` §3) and is refused, not
 # substituted; the frags line carries their frags line as written.
 # DECISIONS.md §open "bench ladder v0" is the knob row.

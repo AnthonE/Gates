@@ -941,7 +941,12 @@ impl Plugin for GatesRenderPlugin {
                     props::fall,
                     clutter::stream,
                     structures::stream,
-                    bodies::stream,
+                    // **`.after(feed::drain)`, like every other reader of a
+                    // drained fact.** A swing lives for exactly the frame it
+                    // was drained on, so a body that streams before the
+                    // drain reads last frame's swings and misses this
+                    // frame's — a dropped arc nothing would report.
+                    bodies::stream.after(feed::drain),
                     mobs::stream,
                     // The legs read the gait `mobs::stream` just advanced.
                     mobs::trot,

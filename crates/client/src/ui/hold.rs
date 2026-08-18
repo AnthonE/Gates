@@ -116,7 +116,8 @@ pub fn held_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> Held {
 /// icons and the mouse modality key off.
 ///
 /// **This is the third reader of `stem`, and that is the point.** The wire
-/// carries display names and nothing else — no content id, no tag — so a
+/// carries display names (and, since v46, condition ceilings — a number,
+/// not an identity) — no content id, no tag — so a
 /// rename in `content/items.toml` has exactly one place to break rather than
 /// three, and `tests/ui.rs` drives all three off the same table. The
 /// alternative was an item→model id on the wire, which is wall 6 for a fact
@@ -213,7 +214,7 @@ mod tests {
     fn catalog_with(names: &[&str]) -> ItemCatalog {
         let mut c = ItemCatalog::EMPTY;
         for (i, n) in names.iter().enumerate() {
-            c.set(i, n.as_bytes()).expect("a short name fits");
+            c.set(i, n.as_bytes(), 0).expect("a short name fits");
         }
         c.count = names.len() as u16;
         c

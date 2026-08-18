@@ -228,12 +228,21 @@ pub struct ShardHandle {
 /// Bake the item-name catalog from validated content (the same
 /// index-is-sorted-rank mapping `bake_gather` uses). Boot path: a name
 /// the wire can't carry refuses the boot, same as any other bake error.
+/// Each row carries its condition ceiling (wire v46) in the u16 hundredths
+/// the sim runs on — the same conversion `bake::bake_gather` performs, and
+/// the same refusal when a `condition_max` overflows it.
 pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = content.items.len() as u16;
     for item in &content.items {
         let idx = content.item_index(&item.id).expect("own id resolves") as usize;
-        cat.set(idx, item.name.as_bytes()).map_err(|_| {
+        let cond_max = u16::try_from(item.condition_max).map_err(|_| {
+            format!(
+                "catalog: item `{}` condition_max {} overflows u16 hundredths",
+                item.id, item.condition_max
+            )
+        })?;
+        cat.set(idx, item.name.as_bytes(), cond_max).map_err(|_| {
             format!(
                 "catalog: item `{}` name `{}` is empty or over {} bytes",
                 item.id,
@@ -1383,6 +1392,11 @@ fn accept_input(
     input_tx: &mut rtrb::Producer<protocol::InputDatagram>,
     stats: &ShardStats,
 ) {
+    // **First, before any verdict on it.** These bytes crossed the path
+    // whatever the decoder goes on to think of them, and a bandwidth number
+    // that only counted the datagrams we liked would read lowest exactly
+    // when a shard is being fed garbage (NOW.md §0q item 4).
+    ShardStats::add_msg(&stats.net_dg_in_count, &stats.net_dg_in_bytes, dg.len());
     let ok = peek_kind(dg).map(|k| k == KIND_INPUT).unwrap_or(false);
     if !ok {
         ShardStats::bump(&stats.input_dg_bad);
@@ -1483,6 +1497,13 @@ async fn action_reader_task(
         let Some((buf, len)) = read_frame(&mut recv).await else {
             break; // stream closed or oversize frame: the session is done
         };
+        // Before the demux: an action, a chat line and a chat line the
+        // limiter is about to refuse all cost the same bytes.
+        ShardStats::add_msg(
+            &stats.net_stream_in_frames,
+            &stats.net_stream_in_bytes,
+            FRAME_PREFIX_BYTES + len,
+        );
         if peek_kind(&buf[..len]) == Ok(KIND_CHAT) {
             accept_chat(
                 &buf[..len],
@@ -1599,8 +1620,13 @@ async fn writer_task(
                 ShardStats::bump(&stats.snap_send_errors);
                 continue;
             }
+            // Counted on `Ok` and nowhere else: the socket accepting the
+            // datagram is the event, not our intent to hand it one. The
+            // clamp above has already refused the oversize case into
+            // `snap_send_errors` without touching this pair.
+            let n = msg.bytes().len();
             match connection.send_datagram(msg.bytes()) {
-                Ok(()) => {}
+                Ok(()) => ShardStats::add_msg(&stats.net_dg_out_count, &stats.net_dg_out_bytes, n),
                 Err(SendDatagramError::NotConnected) => break,
                 Err(_) => ShardStats::bump(&stats.snap_send_errors),
             }
@@ -1631,11 +1657,17 @@ async fn event_writer_task(
             return; // slot moved on; sim (or reader) already knows
         }
         while let Ok(msg) = ev_rx.pop() {
+            let n = FRAME_PREFIX_BYTES + msg.bytes().len();
             if write_frame(&mut send, msg.bytes()).await.is_err() {
                 ShardStats::bump(&stats.ev_send_errors);
                 slots.mark_leaving(slot, generation);
                 return;
             }
+            // The prefix is on the wire, so it is in the count. A frame
+            // that failed half-written is not: `write_all` reports the
+            // failure and not how far it got, and a guessed byte is worse
+            // than a missing one.
+            ShardStats::add_msg(&stats.net_stream_out_frames, &stats.net_stream_out_bytes, n);
         }
     }
 }
@@ -1643,6 +1675,13 @@ async fn event_writer_task(
 // ---------------------------------------------------------------------------
 // Stream framing (u16 LE length prefix per message)
 // ---------------------------------------------------------------------------
+
+/// The length prefix every stream frame carries, in bytes. Named because
+/// the byte counters have to include it — it is on the wire — and a `+ 2`
+/// at four call sites is a magic number that silently lies the day the
+/// prefix widens.
+pub const FRAME_PREFIX_BYTES: usize = 2;
+const _: () = assert!(FRAME_PREFIX_BYTES == core::mem::size_of::<u16>());
 
 /// One length-prefixed message off a stream: `(buffer, len)`, or None on
 /// EOF/oversize (the caller drops the session). The 64 B cap is the
@@ -2320,6 +2359,100 @@ mod tests {
         let bad = [KIND_CHAT as u8 | 0x08, 0xff, 0xff];
         accept_chat(&bad, &mut fresh, t0, &mut tx, &stats);
         assert_eq!(ShardStats::get(&stats.chat_bad), 1);
+    }
+
+    /// **The bytes a lane counts are the bytes that crossed it, not the
+    /// bytes it approved of** (NOW.md §0q item 4, "real bytes").
+    ///
+    /// The naive place to count an arriving datagram is beside
+    /// `input_dg_ok`, which is one line lower and reads identically at a
+    /// glance — and it would produce a bandwidth number that falls when a
+    /// shard is fed garbage, i.e. lowest under exactly the load the number
+    /// exists to describe. So the pair is bumped *first*, and this asserts
+    /// the two properties that says: a malformed datagram still costs its
+    /// bytes, and the arrival count reconciles with the three verdict
+    /// counters that partition it.
+    #[test]
+    fn the_lane_counts_the_bytes_that_arrived_not_the_ones_it_liked() {
+        use protocol::{encode_input, InputDatagram};
+        use sim_core::input::InputFrame;
+
+        let stats = ShardStats::default();
+        let (mut tx, _rx) = RingBuffer::<InputDatagram>::new(INPUT_RING_CAP);
+
+        let mut dg = InputDatagram::new(0, 0, 0);
+        dg.push(InputFrame::default()).expect("one frame fits");
+        let mut buf = [0u8; 256];
+        let good = encode_input(&dg, &mut buf).expect("encodes");
+        accept_input(&buf[..good], &mut tx, &stats);
+        assert_eq!(ShardStats::get(&stats.net_dg_in_count), 1);
+        assert_eq!(
+            ShardStats::get(&stats.net_dg_in_bytes),
+            good as u64,
+            "the counter must carry the datagram's real length, not a \
+             budget, a header size, or a count of frames"
+        );
+
+        // Line noise: `peek_kind` refuses it. It crossed the path anyway.
+        let junk = [0xEEu8; 37];
+        accept_input(&junk, &mut tx, &stats);
+        assert_eq!(ShardStats::get(&stats.input_dg_bad), 1);
+        assert_eq!(
+            ShardStats::get(&stats.net_dg_in_bytes),
+            good as u64 + junk.len() as u64,
+            "a datagram the decoder refused still cost its bytes"
+        );
+
+        // A forged in-layout value: decodes, refused, and still counted.
+        let mut dg = InputDatagram::new(0, 0, 0);
+        dg.push(InputFrame {
+            buttons: BTN_MASK | 0x10,
+            ..InputFrame::default()
+        })
+        .expect("one frame fits");
+        let forged = encode_input(&dg, &mut buf).expect("encodes");
+        accept_input(&buf[..forged], &mut tx, &stats);
+        assert_eq!(ShardStats::get(&stats.input_dg_forged), 1);
+
+        // The reconciliation: every arrival lands in exactly one verdict
+        // counter, so the arrival count is their sum. A byte counter that
+        // agrees with nothing else is a number nobody can check.
+        assert_eq!(ShardStats::get(&stats.net_dg_in_count), 3);
+        assert_eq!(
+            ShardStats::get(&stats.net_dg_in_count),
+            ShardStats::get(&stats.input_dg_ok)
+                + ShardStats::get(&stats.input_dg_bad)
+                + ShardStats::get(&stats.input_dg_forged),
+            "the arrival count must partition into the verdict counters"
+        );
+        assert_eq!(
+            ShardStats::get(&stats.net_dg_in_bytes),
+            (good + junk.len() + forged) as u64
+        );
+    }
+
+    /// The stream lanes count the **prefix** too, because it is on the wire.
+    ///
+    /// A frame counter that reported `payload.len()` would understate the
+    /// event lane by two bytes per frame — and the event lane is the one
+    /// that sends many small frames, so the error is largest where the lane
+    /// is busiest. Pinned against `write_frame`'s own arithmetic rather
+    /// than against the literal 2.
+    #[test]
+    fn a_stream_frame_costs_its_prefix() {
+        assert_eq!(
+            FRAME_PREFIX_BYTES,
+            (0u16).to_le_bytes().len(),
+            "the byte counters add the prefix write_frame actually makes"
+        );
+        let stats = ShardStats::default();
+        ShardStats::add_msg(
+            &stats.net_stream_out_frames,
+            &stats.net_stream_out_bytes,
+            FRAME_PREFIX_BYTES + 7,
+        );
+        assert_eq!(ShardStats::get(&stats.net_stream_out_frames), 1);
+        assert_eq!(ShardStats::get(&stats.net_stream_out_bytes), 9);
     }
 
     /// NOW.md §5b: the wire carries `buttons` as a full octet and the sim

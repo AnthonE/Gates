@@ -62,11 +62,11 @@ pub use event::{
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_removed, encode_event_research, encode_event_research_refused,
     encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_vitals,
-    encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES,
-    MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH,
-    SLOT_SYNC_BATCH,
+    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
+    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
+    BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
+    RESEARCH_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -567,8 +567,64 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// and why the collision is about the *number* rather than the bytes. No
 /// fixture keyed `v44_*` carrying an impact was ever authoritative.
 ///
-/// Fixtures are keyed `v45_*` — **95**, one added: the impact point.
-pub const PROTO_VER: u16 = 45;
+/// **v46 widens the catalog row** (durability pip, NOW.md §0dur.1): each
+/// dripped item row carries its condition ceiling as a u16 after the name,
+/// in the same hundredths `ItemStack::cond` rides the container lanes in.
+/// The client has held per-slot condition since v42 with nothing to divide
+/// it by — the catalog dripped names only, no def table carried a ceiling,
+/// and the client links no content crate — so `ui::slots::pip_fraction`'s
+/// landed contract had no caller. Every row moves by 16 bits, so the old
+/// decoder misreads rather than refuses: exactly the silent drift this
+/// number exists to make loud.
+///
+/// Fixtures are keyed `v46_*` — **95**, none added: one (the catalog)
+/// moved bytes, the rest were renamed with the bump.
+///
+/// ---
+///
+/// **The narrowing rule — what does NOT turn this number** (decided
+/// 2026-08-17, NOW.md §5b). A *widened meaning* turns the version even
+/// when no byte moves: v22 made a button bit meant, v34 renumbered what a
+/// material value names, v37 made a container kind live — in each, bytes
+/// both ends previously refused (or ignored) became facts, so two builds
+/// sharing a number would disagree about a packet. A **narrowed
+/// acceptance** is the reverse and does not turn it: refusing at decode a
+/// value the sim's ledger has no name for — `SUB_BAG_REMOVED`'s
+/// `why == 3`, `SUB_CONSUME_REFUSED`'s 4..=15 — changes the handling of
+/// bytes **no compliant peer can produce** (the encoder refuses them, and
+/// the sim cannot emit them), so the set of frames two v45 builds
+/// exchange is byte-for-byte identical before and after, and every golden
+/// stays untouched. The narrowing is enforcement of the version's
+/// existing meaning, not a change to it. Two corollaries hold the rule
+/// honest: the bound must be the *domain*, derived from the sim's ledger
+/// (`event.rs` `BAG_GONE_MAX` / `REFUSE_C_MAX`), never the width — a
+/// width check narrows nothing; and the moment a narrowed value is
+/// minted as meaningful, that is the widening above and takes the bump
+/// (`every_domain_fits_its_wire_field`'s `live_max` pin is what demands
+/// the sentence).
+///
+/// **A fixture's INPUT is not the wire either** (decided 2026-08-18,
+/// NOW.md §5c). Widening a golden's fuzz draw — `input_full`'s `buttons`
+/// from `next_bounded(4)` to the whole octet — moves fixture bytes and
+/// turns nothing here: no encoder, no decoder, no field width and no
+/// subtype number changed, and a `goldens.rs` constructor is linked by
+/// exactly two callers, `gen_goldens` and `test_protocol_golden`, so the
+/// frames two v46 builds exchange are identical before and after. What
+/// moved is which values the test feeds an encoder, which is the test's
+/// coverage. Bumping for it would refuse every installed client over a
+/// difference no packet can express, and spend this number's one signal
+/// on a test edit. v37's four *added* fixtures set the precedent with no
+/// bump; the difference here is that existing bytes MOVED, which is why
+/// `goldens.rs`'s header requires such a regenerate to be its own commit
+/// and never to share a diff with an encoder change.
+/// **v47 (2026-08-18): one new event subtype, `SUB_SWING` = 52.** A remote
+/// body had no wire fact to animate from: `EV_HIT` is unicast to the
+/// attacker and drops field `a` at encode, and a *miss* — the commonest
+/// swing in the game — crossed nothing at all, so another player swinging
+/// at you was a body standing perfectly still (`NOW.md` §0sw). A new
+/// subtype is a layout change and takes the bump; the 95 existing fixtures
+/// re-key and one is appended.
+pub const PROTO_VER: u16 = 47;
 
 /// This game's slug in the scry catalog.
 ///
@@ -2129,6 +2185,26 @@ pub fn encode_input(dg: &InputDatagram, buf: &mut [u8]) -> Result<usize, WireErr
     Ok(w.finish())
 }
 
+/// **The button octet decodes whole, and that is a decision, not an
+/// omission** (NOW.md §5b / §5c, decided 2026-08-17). Bits 4–7 name no
+/// button (`sim_core::input::BTN_MASK`) and the domain refusal lives one
+/// layer up, in the server's `accept_input` (`server/net.rs`), which
+/// drops the whole datagram and counts it **attributably**
+/// (`input_dg_forged`) — refusing here would re-route that to the generic
+/// decode-error counter and tell the operator nothing about forgery,
+/// while dropping exactly the same datagram. Masking the bits off here is
+/// the one wrong answer: a silently narrowed octet is the silent
+/// reinterpretation this repo's posture forbids, and it would hide the
+/// forgery the wall exists to count
+/// (`an_unmeant_button_bit_survives_the_codec_unmasked` pins this).
+///
+/// `sel` is different on purpose, not by neglect: 6–7 are unencodable
+/// (`encode_input` refuses them), so the decode refusal mirrors the
+/// encode refusal exactly — the codec staying total over its own output.
+/// `buttons` has no encode-side mask because a *new* button bit is a
+/// `PROTO_VER` bump with no layout change (`input.rs`'s v22 note), and
+/// the codec is the one layer that should not have to know which bits
+/// are meant this version.
 pub fn decode_input(buf: &[u8]) -> Result<InputDatagram, WireError> {
     let mut r = BitReader::new(buf);
     if r.read(KIND_BITS)? != KIND_INPUT {
@@ -2916,6 +2992,33 @@ mod tests {
         let len = encode_input(&dg, &mut buf).unwrap();
         // One spare byte after a valid packet must fail the strict tail.
         assert_eq!(decode_input(&buf[..len + 1]), Err(WireError::Malformed));
+    }
+
+    /// An unmeant button bit crosses the codec intact — pinned, because
+    /// both wrong answers are one edit away (`decode_input`'s doc has the
+    /// decision). Masking bit 6 off here would hide the forgery the
+    /// server's domain wall exists to count (`accept_input`,
+    /// `input_dg_forged`); refusing it here would re-route that counter to
+    /// the generic `input_dg_bad` and tell the operator nothing. The codec
+    /// carries the octet whole; the *meaning* wall is the server's.
+    #[test]
+    fn an_unmeant_button_bit_survives_the_codec_unmasked() {
+        let mut dg = InputDatagram::new(1, 2, 3);
+        let f = InputFrame {
+            seq: 9,
+            buttons: sim_core::input::BTN_MASK | (1 << 6),
+            ..InputFrame::default()
+        };
+        dg.push(f).unwrap();
+        let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
+        let len = encode_input(&dg, &mut buf).unwrap();
+        let back = decode_input(&buf[..len]).unwrap();
+        assert_eq!(
+            back.frames()[0].buttons,
+            sim_core::input::BTN_MASK | (1 << 6),
+            "the codec narrowed or dropped a button bit — the refusal \
+             belongs to accept_input, where it is counted as forged"
+        );
     }
 
     /// The container action's shape, and the two things it refuses.

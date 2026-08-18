@@ -68,6 +68,11 @@ pub enum Clip {
     /// `bodies.rs` already argues this for the sleeper's colour and the same
     /// reasoning binds harder for a pose.
     Sleep,
+    /// **The one-shot, and the only clip here that is not a loop.** A remote
+    /// body swinging drew nothing before wire v47 — the one thing a fight
+    /// needs to read is the wind-up, and another player's arm was perfectly
+    /// still (`NOW.md` §0sw).
+    Swing,
 }
 
 impl Clip {
@@ -93,10 +98,33 @@ impl Clip {
             // Deliberately not a T-pose: a sleeper is a person standing
             // still, and the T-pose is a rig artifact.
             Clip::Sleep => "Idle_Loop",
+            // **`Punch_Cross` and not `Sword_Attack`, and the reason is
+            // arithmetic rather than taste.** `SWING_INTERVAL_TICKS` is 38
+            // at `TICK_HZ` 30, so the sim lets a player swing every
+            // 1.267 s; `Sword_Attack` runs 1.500 s and with `ANIM_BLEND_S`
+            // on top is 1.68 s, so a player swinging as fast as the rules
+            // allow would have every arc cut off by the next one and the
+            // body would never finish a stroke. `Punch_Cross` is 1.000 s,
+            // 1.18 s with the blend, and fits inside the cadence with room
+            // to return to the gait. **It is a punch and the operator asked
+            // for a rock swing** — `DECISIONS.md` §open carries that as the
+            // open question, because the honest alternatives both need a
+            // word: accept the punch, or shorten the sword clip.
+            Clip::Swing => "Punch_Cross",
         }
     }
 
-    pub const ALL: [Clip; 5] = [Clip::Idle, Clip::Walk, Clip::Jog, Clip::Sprint, Clip::Sleep];
+    /// Public because the asset gate reads it: `tests/rig_asset.rs` walks this
+    /// list against the shipped file, and a gate holding its own copy would be
+    /// checking itself rather than the client.
+    pub const ALL: [Clip; 6] = [
+        Clip::Idle,
+        Clip::Walk,
+        Clip::Jog,
+        Clip::Sprint,
+        Clip::Sleep,
+        Clip::Swing,
+    ];
 
     fn slot(self) -> usize {
         match self {
@@ -105,9 +133,14 @@ impl Clip {
             Clip::Jog => 2,
             Clip::Sprint => 3,
             Clip::Sleep => 4,
+            Clip::Swing => 5,
         }
     }
 }
+
+/// How long the one-shot swing clip runs, seconds — `Punch_Cross`'s own
+/// length in the shipped glTF, not a picked number.
+pub const SWING_CLIP_S: f32 = 1.0;
 
 /// Speed thresholds, m/s, and the band around each that a body must cross to
 /// change its mind. Derived speed is noisy — a packet arriving a millisecond
@@ -157,7 +190,15 @@ pub struct Rig {
     pub scene: Option<Handle<Scene>>,
     pub graph: Option<Handle<AnimationGraph>>,
     /// One node per [`Clip`], indexed by `Clip::slot`.
-    nodes: [AnimationNodeIndex; 5],
+    ///
+    /// ⚠ **This width, `Clip::ALL`'s and the two constructors' are one
+    /// number in four places, and nothing but a runtime index-out-of-bounds
+    /// connects them.** Adding a variant and moving three of the four
+    /// compiles clean and panics the first time that clip is played — which
+    /// on a one-shot means the first time anybody swings near you.
+    /// `tests/anim.rs` counts them against `Clip::ALL` as text for exactly
+    /// that reason.
+    nodes: [AnimationNodeIndex; 6],
     /// Uniform scale that puts the rig at [`ANIM_BODY_H_M`]. A constant ratio
     /// of two measured heights, not a runtime fit — see [`ANIM_RIG_H_M`].
     pub scale: f32,
@@ -228,7 +269,7 @@ pub fn load(
         gltf: assets.load("models/stumpy.glb"),
         scene: None,
         graph: None,
-        nodes: [AnimationNodeIndex::default(); 5],
+        nodes: [AnimationNodeIndex::default(); 6],
         arms: AnimationNodeIndex::default(),
         scale: ANIM_BODY_H_M / ANIM_RIG_H_M,
         missing: Vec::new(),
@@ -310,7 +351,7 @@ pub fn build(
 
     let mut graph = AnimationGraph::new();
     let root = graph.root;
-    let mut nodes = [AnimationNodeIndex::default(); 5];
+    let mut nodes = [AnimationNodeIndex::default(); 6];
     let mut missing = Vec::new();
     for clip in Clip::ALL {
         match gltf.named_animations.get(clip.name()) {
@@ -366,6 +407,18 @@ pub struct BodyAnim {
     /// facing where they walk. A body that looks at you is the difference
     /// between a figure and a person, and it costs no packet.
     pub pitch: f32,
+    /// Seconds left of a one-shot swing.
+    ///
+    /// **Beside the gait rather than inside `clip`, and that is the whole
+    /// design.** `observe` recomputes `clip` from speed every single frame,
+    /// so a one-shot written there would be stomped the next one — the
+    /// transient has to live in a field nothing else recomputes.
+    pub swing_s: f32,
+    /// Bumped once per swing heard. `drive` compares it against what it
+    /// last started, so a second swing arriving while the first arc is
+    /// still playing restarts the stroke instead of being swallowed by the
+    /// `playing == want` guard.
+    pub swing_seq: u32,
 }
 
 impl BodyAnim {
@@ -375,6 +428,11 @@ impl BodyAnim {
     /// position would fight the interpolator, which is already the authority
     /// on where the body is (`bodies.rs` header).
     pub fn observe(&mut self, pos: Vec3, dt: f32, sleeping: bool) {
+        // The one-shot's clock, run here because this is the one function
+        // every live body passes through every frame with a `dt` in hand.
+        // `bodies::stream` calls this BEFORE it hears the frame's swings,
+        // so a swing heard this frame gets its whole span.
+        self.swing_s = (self.swing_s - dt).max(0.0);
         if let (Some(last), true) = (self.last, dt > 0.0) {
             // Horizontal only. A body riding terrain up a hill is walking, not
             // climbing, and counting the vertical would read a slope as speed.
@@ -414,6 +472,12 @@ impl BodyAnim {
             Clip::Idle
         };
         self.clip = Some(want);
+    }
+
+    /// Start a one-shot swing on this body.
+    pub fn swing(&mut self) {
+        self.swing_s = SWING_CLIP_S;
+        self.swing_seq = self.swing_seq.wrapping_add(1);
     }
 }
 
@@ -701,7 +765,7 @@ pub struct PlayerOf(pub Entity);
 /// a second and every body would stand frozen in its first pose — a failure
 /// that looks exactly like "the animation did not load".
 #[derive(Component, Default)]
-pub struct Playing(Option<Clip>);
+pub struct Playing(Option<Clip>, u32);
 
 /// Attach the graph to every newly spawned player and find its body.
 pub fn bind(
@@ -758,18 +822,36 @@ pub fn drive(
         let Ok(anim) = anims.get(owner.0) else {
             continue;
         };
-        let Some(want) = anim.clip else { continue };
-        if playing.0 == Some(want) {
+        // The one-shot outranks the gait while it is running, and the
+        // sequence number is what lets a second swing restart the stroke:
+        // without it the `playing == want` guard below would swallow every
+        // swing after the first for as long as the body kept swinging.
+        let swinging = anim.swing_s > 0.0;
+        let want = if swinging {
+            Clip::Swing
+        } else {
+            let Some(c) = anim.clip else { continue };
+            c
+        };
+        let restart = swinging && playing.1 != anim.swing_seq;
+        if playing.0 == Some(want) && !restart {
             continue;
         }
         playing.0 = Some(want);
-        transitions
-            .play(
-                &mut player,
-                rig.node(want),
-                Duration::from_secs_f32(ANIM_BLEND_S),
-            )
-            .repeat();
+        playing.1 = anim.swing_seq;
+        let active = transitions.play(
+            &mut player,
+            rig.node(want),
+            Duration::from_secs_f32(ANIM_BLEND_S),
+        );
+        // **`.repeat()` for a gait and nothing for the swing.**
+        // `RepeatAnimation::default()` is `Never`, so the one-shot is an
+        // omission rather than a feature — and the return to the gait needs
+        // no completion callback either, because `swing_s` runs out and the
+        // next frame's `want` is the gait again.
+        if want != Clip::Swing {
+            active.repeat();
+        }
     }
 }
 

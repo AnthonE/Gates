@@ -34,9 +34,12 @@ pub mod auth;
 pub mod boot;
 pub mod botclient;
 pub mod client;
+pub mod cond;
 pub mod config;
 pub mod core;
 pub mod entitle;
+/// Class-S interest: the radius a structural walk streams at (`NETCODE.md` §7).
+pub mod interest;
 pub mod net;
 pub mod population;
 pub mod slot;

@@ -205,7 +205,7 @@ mod tests {
 
     fn catalog_with(idx: usize, name: &str) -> ItemCatalog {
         let mut c = ItemCatalog::EMPTY;
-        c.set(idx, name.as_bytes()).unwrap();
+        c.set(idx, name.as_bytes(), 0).unwrap();
         c.count = (idx + 1) as u16;
         c
     }

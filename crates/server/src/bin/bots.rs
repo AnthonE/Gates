@@ -130,7 +130,8 @@ async fn main() {
                         "bot {i}: id {} · snaps {} (delta {}, stale {}, nobase {}) · \
                          decode err {} · inputs {} (exec {}) · own {} · maxent {} · \
                          events {} (err {}) · raid {}c actions {} (unenc {}, lane err {}) · \
-                         refused b{} d{} m{} · placed p{} d{} · armed {} · hits {} · auth {}",
+                         refused b{} d{} m{} · placed p{} d{} · armed {} · hits {} · auth {} · \
+                         bytes dg in {}/{} out {} · stream in {} out {}",
                         r.player_id,
                         r.snapshots_applied,
                         r.delta_snapshots,
@@ -161,6 +162,16 @@ async fn main() {
                         r.charges_planted,
                         r.struct_hits,
                         r.auths,
+                        // The per-client bandwidth measurement (NOW.md §0q
+                        // item 4). `dg in` is bytes/datagrams, the rest are
+                        // bytes against counts already printed above. A soak
+                        // divides these by its `secs` argument and gets the
+                        // kB/s/client that has only ever been a ceiling.
+                        r.dg_in_bytes,
+                        r.dg_in_count,
+                        r.dg_out_bytes,
+                        r.ev_in_bytes,
+                        r.act_out_bytes,
                     );
                 }
                 Err(e) => {

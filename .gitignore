@@ -61,3 +61,9 @@ assets/textures/candidates/
 # nothing warning it off (`CLAUDE.md`'s packager trap says why that rule lived
 # in the wrong place once already).
 assets/models/To Examine/
+
+# Agent worktrees the harness parks under .claude/ while parallel lanes run.
+# Each is a whole duplicate checkout; they are transient and auto-cleaned, and
+# committing one would be the depot-walk trap one directory up from where it
+# was paid for. Scoped: .claude/skills/ is tracked and ships.
+.claude/worktrees/

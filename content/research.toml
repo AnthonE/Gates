@@ -44,14 +44,30 @@ item = "item.obol"
 # medkit, pistol ammo and metal arrows), which is what makes the verb a
 # reason to walk to the haven rather than a tax on crafting.
 #
-# **The prices are ours** (`reference/RIPLIST.md` §2 row 7 sourced theirs
-# at page tier 2026-08-14: pre-Oct-2025 was 75/125/250/500, post-cut is
-# 15/30/60/120 — both priced against a ~10-scrap barrel where ours pays
-# ~0.85 obol, so neither lands raw). The anchor is the recycler: a
-# component pays 1–2 obol, a barrel rolls 1–2 components, so 20 is a
-# handful of barrels and 75 is a deliberate trip. The ladder is 20 / 40 /
-# 75 — reachable, a session, a project — and it moves with the faucet
-# counts or the ratio breaks (DECISIONS.md §open, "OBOL faucet v0").
+# **The prices are ours, and as of 2026-08-18 their TOTAL is theirs by
+# accident** — which is a better place to be than the reason they used to
+# carry. That reason read: theirs are 75/125/250/500 pre-Oct-2025 and
+# 15/30/60/120 post-cut (`reference/RIPLIST.md` §2 row 7, page tier
+# 2026-08-14), "both priced against a ~10-scrap barrel where ours pays
+# ~0.85 obol, so neither lands raw". **The ~10 was never measured and is
+# wrong**: their barrel pays ~2.42 scrap (§1f — 2 direct at 100 % plus a
+# 1.4 % gear roll recycled), and taking their recycler yields the same day
+# put ours at 2.727 obol a barrel. One obol now buys about what one scrap
+# buys. Priced in barrels over the four researchable items we both have —
+# their Research Table column, page-read 2026-08-18: HV arrow 15,
+# revolver 30, satchel 60, gunpowder 120 — **this ladder cost 2.66× theirs
+# before that take and 0.83× after it.** No price moved; the justification
+# did, and the total is now theirs to within a sixth.
+#
+# **The SHAPE is still ours and is the open half.** Their spread is 8×
+# (15 → 120) against our 3.75× (20 → 75), and the two disagree on where
+# gunpowder sits: theirs is the most expensive blueprint in the game's
+# early ladder, ours is the middle rung, while their revolver is cheap
+# (30) where ours is 75. Taking their per-item ordering is a real row and
+# nobody has opened it (`reference/RIPLIST.md` §2 row 1g); until then
+# this ladder still reads reachable, a session, a project, and it still
+# moves with the faucet counts or the ratio breaks (DECISIONS.md §open,
+# "OBOL faucet v0").
 #
 # **`requires` is the tech tree** (tech tree v0 — spoken 2026-08-14, the
 # pre-Oct-2025 era 2026-08-15). Two verbs read this table: the research

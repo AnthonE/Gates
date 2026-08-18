@@ -148,6 +148,11 @@ pub struct Feed {
     /// and a mark decides nothing.
     impacts: [(i32, i32, i32, u8); FEED_CAP],
     n_impacts: usize,
+    /// Bodies whose arm started to move this frame, by wire entity id
+    /// (broadcast, wire v47). Cosmetic and unvalidated: an id naming no
+    /// live body matches nothing when `bodies::stream` walks its set.
+    swings: [u32; FEED_CAP],
+    n_swings: usize,
     /// Placements that happened this frame: address + which store (`true` =
     /// deployable). Broadcast-only by construction — the core's ring is fed
     /// by `PiecePlaced`/`DeployPlaced` and never by a sync walk, so a join
@@ -233,6 +238,11 @@ impl Feed {
     pub fn impacts(&self) -> &[(i32, i32, i32, u8)] {
         &self.impacts[..self.n_impacts]
     }
+
+    /// Bodies that swung this frame, oldest first.
+    pub fn swings(&self) -> &[u32] {
+        &self.swings[..self.n_swings]
+    }
     pub fn auths(&self) -> &[(u16, u16, u8, u8, u8)] {
         &self.auths[..self.n_auths]
     }
@@ -255,6 +265,7 @@ impl Feed {
         self.n_auths = 0;
         self.n_shots = 0;
         self.n_impacts = 0;
+        self.n_swings = 0;
         self.n_placed = 0;
     }
 
@@ -386,6 +397,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_impacts;
             feed.impacts[n] = im;
             feed.n_impacts += 1;
+        }
+    }
+    while let Some(sw) = core.pop_swing() {
+        if feed.n_swings >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_swings;
+            feed.swings[n] = sw;
+            feed.n_swings += 1;
         }
     }
     while let Some(p) = core.pop_placed() {

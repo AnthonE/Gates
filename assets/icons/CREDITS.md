@@ -10,7 +10,6 @@ Icons made by:
 
 - carl-olsen
 - delapouite
-- john-redman
 - lorc
 
 Available on https://game-icons.net
@@ -58,7 +57,7 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `research_table.png` | `lorc/scroll-unfurled` |
 | `revolver.png` | `delapouite/revolver` |
 | `roadsign_vest.png` | `lorc/armor-vest` |
-| `rock.png` | `john-redman/rock` |
+| `rock.png` | `lorc/rock` |
 | `rope.png` | `delapouite/rope-coil` |
 | `satchel_charge.png` | `delapouite/dynamite` |
 | `shape_doorway.png` | `delapouite/door` |

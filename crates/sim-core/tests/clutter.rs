@@ -880,7 +880,7 @@ fn test_skirt_count_tracks_the_published_footprint() {
     // ringed by fewer elements than a narrower one.
     assert!(
         terrain::skirt_count(Occupant::Rock) >= terrain::skirt_count(Occupant::BarrelSlot),
-        "a 1.5 m boulder is skirted more thinly than a 0.45 m barrel"
+        "a 1.5 m boulder is skirted more thinly than a 0.2925 m barrel"
     );
 }
 

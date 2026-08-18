@@ -326,6 +326,23 @@ describes. Two cheap things first — count restarts and walk completions
 than zero where the swap-remove provably did not move anything before it.
 The interest filter is the real fix and is a `NOW.md` item, not a patch.
 
+✅ **Both are built, and the second one differently than proposed.** The
+counters landed first; then the restart was removed rather than re-validated
+— the walk reads the store from the **tail down**, where the entry a
+swap-remove moves is always one already sent, so there is nothing to
+restart. The filter landed 2026-08-18 (`server/src/interest.rs`,
+`server/tests/piece_interest.rs`, `DECISIONS.md` §open "class-S interest
+v0"): the walk is aimed from an anchor, streams `AOI_EXIT_CM`, re-arms at
+`AOI_EXIT_CM − AOI_ENTER_CM`, and `EV_PIECE_PLACED` takes the same
+predicate. Measured on a 2,291-piece island with 454 pieces in range: 2,291
+→ 454 records, 11,384 → 2,258 bytes, walk complete at tick 72 → 19. **The
+paragraphs above are the 2026-08-10 measurement and are kept as written**;
+read them as history, not as the tree. What is still true of the tree: the
+deploy and backpack walks are unfiltered and the deployable one still
+restarts on a removal, and §9's real answer — a chunk subscription that can
+tell a client to *forget* — is unbuilt, which is why a removal is still
+broadcast to everybody.
+
 **9.2.2 · An event-ring overflow costs the whole world, and that makes the
 overflow more likely.** *(high — reachable whenever a client stalls)*
 
@@ -478,7 +495,10 @@ Two further doc claims that the tree does not support:
   subscription. Class D is a flat O(`MAX_PLAYERS` + `MAX_MOBS`) scan per
   client per tick (`core.rs:2163`, `:2208`), which is 16,400 distance tests
   per tick at cap and entirely affordable; class S has no interest filter at
-  all (9.2.1). One spatial truth, one product, not two.
+  all (9.2.1). One spatial truth, one product, not two. ✅ **The class-S
+  half of this is closed** (2026-08-18): still no grid, but the piece walk
+  filters on class D's own `AOI_ENTER_CM`/`AOI_EXIT_CM` band, so the two
+  products come from one set of numbers. 9.2.1 has the measurement.
 - **§2.2 "wtransport git-pin ≥ commit `0f7609a`"** — the tree pins
   `rev = a11e6a8e…` (`crates/server/Cargo.toml:26`, `client/Cargo.toml:185`),
   resolving to `0.7.1` from git (`Cargo.lock`). Nothing in the repo records

@@ -522,6 +522,21 @@ pub struct CellIcon(usize);
 #[derive(Component)]
 pub struct CellCount(usize);
 
+/// The durability pip's trough under a hotbar cell's icon — hidden outright
+/// for a slot whose item carries no condition or has not been worn yet, which
+/// is `ui::slots::pip_fraction`'s `None`.
+///
+/// Index-aligned like [`CellIcon`], and spawned once for every cell rather
+/// than added and removed as tools come and go: a hotbar cell's contents
+/// change every time the player picks something up, and a per-frame spawn is
+/// an allocation on the frame path for a bar that is three pixels tall.
+#[derive(Component)]
+pub struct CellPip(usize);
+
+/// The fill inside [`CellPip`]'s trough. Its width is the fraction.
+#[derive(Component)]
+pub struct CellPipFill(usize);
+
 /// Which vital a row draws. The reference's order top-to-bottom, which is
 /// also its colour order: green, blue, orange.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -733,11 +748,48 @@ pub fn setup(mut commands: Commands) {
                         Node {
                             position_type: PositionType::Absolute,
                             right: Val::Px(3.0),
-                            bottom: Val::Px(1.0),
+                            // Lifted off the edge by the pip's own height, so
+                            // the digits sit ON the cell rather than over the
+                            // durability bar. The count moved; the bar is the
+                            // thing anchored to the edge, because a bar that
+                            // floats is a bar that reads as a progress
+                            // indicator for the cell above it.
+                            bottom: Val::Px(super::panels::PIP_H_PX + 1.0),
                             ..default()
                         },
                         Pickable::IGNORE,
                     ));
+                    // The durability pip: spawned hidden, shown by `update`
+                    // for a worn tool only. Same three states as the
+                    // inventory panel's, drawn by the same numbers — the
+                    // hotbar and the bag must never disagree about how worn
+                    // the thing in your hand is.
+                    cell.spawn((
+                        CellPip(i),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(0.0),
+                            right: Val::Px(0.0),
+                            bottom: Val::Px(0.0),
+                            height: Val::Px(super::panels::PIP_H_PX),
+                            ..default()
+                        },
+                        BackgroundColor(super::panels::PIP_TROUGH),
+                        Visibility::Hidden,
+                        Pickable::IGNORE,
+                    ))
+                    .with_children(|trough| {
+                        trough.spawn((
+                            CellPipFill(i),
+                            Node {
+                                width: Val::Percent(0.0),
+                                height: Val::Percent(100.0),
+                                ..default()
+                            },
+                            BackgroundColor(super::panels::PIP_FILL),
+                            Pickable::IGNORE,
+                        ));
+                    });
                 });
             }
         });
@@ -1033,6 +1085,11 @@ pub fn update(
     mut cells: Query<(&Cell, &mut BorderColor, &mut BackgroundColor)>,
     mut icons: Query<(&CellIcon, &mut ImageNode, &mut Visibility)>,
     mut counts: Query<(&CellCount, &mut Text), (Without<Plan>, Without<VitalNum>)>,
+    mut pips: Query<(&CellPip, &mut Visibility), Without<CellIcon>>,
+    mut pip_fills: Query<
+        (&CellPipFill, &mut Node),
+        (Without<VitalFill>, Without<VitalRow>, Without<Cell>),
+    >,
     art: Res<super::icons::Icons>,
     mut plan: Query<&mut Text, (With<Plan>, Without<VitalNum>)>,
     mut rows: Query<(&VitalRow, &mut Node), (Without<VitalFill>, Without<Cell>)>,
@@ -1148,6 +1205,42 @@ pub fn update(
         };
         if text.0 != want {
             text.0 = want;
+        }
+    }
+
+    // The durability pip. Two loops for one bar because the trough carries the
+    // visibility and the fill carries the width, and Bevy will not hand one
+    // system `&mut` on the same component twice.
+    //
+    // `pip_fraction` is the whole rule and it is not restated here: the
+    // hotbar's job is to hand it the same two numbers the inventory panel
+    // does, so the bar under the thing in your hand and the bar under the same
+    // stack in the bag are one decision drawn twice.
+    for (pip, mut vis) in pips.iter_mut() {
+        let stack = core.inv.get(pip.0).copied().unwrap_or_default();
+        let worn = stack.count > 0
+            && crate::ui::slots::pip_fraction(
+                stack.cond,
+                core.catalog.cond_max(stack.item as usize),
+            )
+            .is_some();
+        let want = if worn {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *vis != want {
+            *vis = want;
+        }
+    }
+    for (fill, mut node) in pip_fills.iter_mut() {
+        let stack = core.inv.get(fill.0).copied().unwrap_or_default();
+        let frac =
+            crate::ui::slots::pip_fraction(stack.cond, core.catalog.cond_max(stack.item as usize))
+                .unwrap_or(0.0);
+        let want = Val::Percent(frac * 100.0);
+        if node.width != want {
+            node.width = want;
         }
     }
 
@@ -2313,7 +2406,7 @@ mod tests {
         let mut c = protocol::event::ItemCatalog::EMPTY;
         let mut top = 0;
         for &(idx, name) in rows {
-            c.set(idx, name.as_bytes()).unwrap();
+            c.set(idx, name.as_bytes(), 0).unwrap();
             top = top.max(idx);
         }
         c.count = (top + 1) as u16;

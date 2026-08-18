@@ -85,7 +85,7 @@ use sim_core::deploy::{box_key, DeployContent, REFUSE_D_KIND, REFUSE_D_SPOT};
 use sim_core::gather::{cell_key, weak_mark8, GatherContent, ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{self, CONT_SELF, REFUSE_M_EMPTY};
-use sim_core::limits::TICK_HZ;
+use sim_core::limits::{INV_SLOTS, TICK_HZ};
 use sim_core::loot::LootContent;
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::oven::CookContent;
@@ -99,7 +99,9 @@ use sim_core::world::{
     EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_IMPACT, EV_KNOCK, EV_KNOWN,
     EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
     EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED,
-    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_TRUST, EV_VITALS, EV_WEAK_MARK,
+    PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
+    TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
 };
 use sim_core::yaw_dir;
 
@@ -3402,6 +3404,59 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
     seen
 }
 
+/// **A swing is a swing whether or not it hit anything.** `EV_SWING` is
+/// pushed from `gather::swing`'s cadence gate, the only line in the tree
+/// that runs exactly once per swing regardless of outcome, so the case
+/// this drives is the hard one: a body swinging at empty air.
+///
+/// `EV_HIT` cannot stand in for it, and this test says so by construction —
+/// nothing is struck here, so a fact keyed on a hit would produce zero
+/// events and `only` would fail on the vacuity rather than on the role.
+///
+/// Two mutants, both proven: moving the push below the target scan (so
+/// only a landed swing announces) reddens this with zero events, and
+/// putting `p.id` in `b` reddens the `a` assertion. `b` and `c` are
+/// asserted zero rather than ignored — they are the room this fact has for
+/// a held item later, and a stray value in one now is the positional
+/// payload trap this whole suite exists to catch.
+#[test]
+fn swing_names_the_swinger_and_nothing_else() {
+    use sim_core::gather::SWING_INTERVAL_TICKS;
+    assert_ne!(BODY, 0, "a zero swinger id makes the role check vacuous");
+    let mut w = lone_world();
+    let mut seq = 1u16;
+    let mut steps = 0u32;
+    loop {
+        w.tick(&[Command::Input {
+            id: BODY,
+            frame: InputFrame {
+                seq,
+                buttons: BTN_PRIMARY,
+                yaw: 0,
+                pitch: 0,
+                move_x: 0,
+                move_z: 0,
+                sel: 0,
+            },
+        }]);
+        seq = seq.wrapping_add(1);
+        if count(&w, EV_SWING) > 0 {
+            break;
+        }
+        steps += 1;
+        assert!(
+            steps < SWING_INTERVAL_TICKS as u32 * 4,
+            "no EV_SWING within four swing windows — the cause is broken, \
+             not slow"
+        );
+    }
+
+    let got = only(&w, EV_SWING);
+    assert_eq!(got.a, BODY, "EV_SWING.a is who swung");
+    assert_eq!(got.b, 0, "EV_SWING.b is reserved and must stay zero");
+    assert_eq!(got.c, 0, "EV_SWING.c is reserved and must stay zero");
+}
+
 /// Coverage, stated rather than implied — and now earned rather than
 /// asserted.
 ///
@@ -3431,7 +3486,7 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 38] = [
+    const COVERED: [(&str, u8); 40] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -3470,6 +3525,8 @@ fn coverage_is_stated_not_implied() {
         ("EV_SHOT", EV_SHOT),
         ("EV_KNOWN", EV_KNOWN),
         ("EV_IMPACT", EV_IMPACT),
+        ("EV_TRUST", EV_TRUST),
+        ("EV_SWING", EV_SWING),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next
@@ -3873,4 +3930,642 @@ fn known_names_the_holder_then_the_mask_low_half_first() {
         "a real death erased blueprints bought with OBOL — `wake` is not \
          carrying `known` across"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The trust ledger (`EV_TRUST`) — `PLAYERS.md` wall 3.
+//
+// The one event in this lane whose subject is a *pair of people*, and the
+// only one carrying whether the counterparty was online. Everything this
+// file's header says about role checks applies harder here: `a` and `b`
+// are both player ids, so a swap at an emit site turns "the stranger
+// worked the owner's door" into "the owner worked the stranger's" and no
+// other gate in this repo can see it — the encoder cannot, because nothing
+// encodes this event at all. `distinct3` refuses a fixture where the two
+// ids are the same number, and every cause below drives a *stranger*
+// against a *builder* so they never can be.
+//
+// `c` is two packed fields, which takes `distinct_halves`' discipline one
+// pack narrower: `verb << 8 | presence`, and a reading where the verb and
+// the presence carry the same number is blind to the pack reversed. The
+// three causes are paired as a derangement — door/asleep, auth/gone,
+// container/awake — so every value in both domains is driven, no reading
+// has verb == presence, and neither byte can be a constant across the
+// file. `distinct_pack8` fails loudly if a later edit lines a pair up.
+
+/// A stranger — a second body, joined into the builder's world and stood
+/// at the builder's feet so every reach check the verbs make is paid.
+///
+/// `BUILDER + 1` rather than a small number: `EV_TRUST` carries two player
+/// ids side by side and the whole point of this suite is that swapping
+/// them is visible, so the two must differ and neither may be 0 or 1 —
+/// which is what half the packed fields in this lane read as.
+const OUTSIDER: u32 = BUILDER + 1;
+
+fn stand_an_outsider(w: &mut World) {
+    assert_ne!(
+        OUTSIDER, BUILDER,
+        "the two bodies must be distinguishable or a swapped a/b reads green"
+    );
+    w.tick(&[Command::Join { id: OUTSIDER }]);
+    let slot = outsider_slot(w);
+    w.players[slot].body = w.players[0].body;
+}
+
+fn outsider_slot(w: &World) -> usize {
+    (0..8)
+        .find(|&i| w.players[i].active && w.players[i].id == OUTSIDER)
+        .expect("the outsider joined")
+}
+
+/// Put the builder's body to sleep through the real verb, and prove it — a
+/// `Leave` that silently did nothing would leave every presence assertion
+/// below reading `AWAKE` and passing for the wrong reason.
+fn put_the_builder_to_sleep(w: &mut World) {
+    w.tick(&[Command::Leave { id: BUILDER }]);
+    assert!(
+        w.players[0].sleeping,
+        "the builder is still awake after Leave — the fixture, not the \
+         mechanic"
+    );
+    assert!(
+        w.players[0].active,
+        "a sleeper keeps its slot (`Player::sleeping`). If it stopped doing \
+         so, the ASLEEP cause below is measuring GONE and naming it ASLEEP"
+    );
+}
+
+/// Take the sleeping builder's body out of the world through the real
+/// verb. `Command::Evict` is the second phase of the server's two-phase
+/// eviction and the only way a body ever vacates its slot (`world.rs`), so
+/// `PRESENCE_GONE` is proven against a cause the sim can actually produce
+/// rather than against a poked `active` flag.
+fn evict_the_builder(w: &mut World) {
+    put_the_builder_to_sleep(w);
+    w.tick(&[Command::Evict { id: BUILDER }]);
+    assert!(
+        !w.players.iter().any(|p| p.active && p.id == BUILDER),
+        "the eviction left the builder's body in the world — this cause is \
+         measuring ASLEEP and naming it GONE"
+    );
+}
+
+/// `distinct_halves`, one pack narrower: `EV_TRUST.c` is `verb << 8 |
+/// presence`, two byte fields rather than two halfwords, and a reading
+/// where they carry the same number cannot see the pack reversed.
+fn distinct_pack8(packed: u32, what: &str) {
+    assert!(
+        packed >> 8 != packed & 0xff,
+        "{what} packs {} into both bytes, so this check cannot see the pack \
+         reversed. Move the fixture, not the assertion.",
+        packed >> 8
+    );
+}
+
+/// `EV_TRUST: a = the player who acted, b = the counterparty, c = verb << 8
+/// | presence` — cause one: **a door, against an owner who is asleep.**
+///
+/// The offline raid, which is the row the whole ledger exists for. The
+/// leaf is bare on purpose: a door with no lock is anyone's
+/// (`reference/DOORS.md` §1), so nothing here is about a grant — it is a
+/// hand working a leaf somebody else placed, which is exactly the fact a
+/// raid record wants and exactly the fact no other event in this lane
+/// carries. `EV_DOOR` announces the leaf on the same tick and is asserted
+/// here, because the trust row deliberately carries no address and a
+/// reader joins the two by tick.
+#[test]
+fn trust_names_the_actor_the_owner_and_a_door_worked_while_they_slept() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
+    stand_an_outsider(&mut w);
+    put_the_builder_to_sleep(&mut w);
+
+    w.tick(&[Command::Use {
+        id: OUTSIDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+    }]);
+
+    let t = only(&w, EV_TRUST);
+    distinct3(t, "EV_TRUST");
+    distinct_pack8(t.c, "EV_TRUST.c");
+    assert_eq!(
+        t.a, OUTSIDER,
+        "EV_TRUST.a is the hand that ACTED, not whose door it was"
+    );
+    assert_eq!(
+        t.b, BUILDER,
+        "EV_TRUST.b is the COUNTERPARTY — the player whose record the verb \
+         answered to. Reading the actor here is the a/b swap this whole \
+         file exists to catch, committed on the one event where it rewrites \
+         who betrayed whom"
+    );
+    assert_eq!(
+        t.c >> 8,
+        TRUST_DOOR as u32,
+        "EV_TRUST.c's high byte is the VERB"
+    );
+    assert_eq!(
+        t.c & 0xff,
+        PRESENCE_ASLEEP as u32,
+        "EV_TRUST.c's low byte is the PRESENCE, and the owner is a sleeper"
+    );
+    // The address is not on this event and is not lost: the verb's own
+    // addressed announcement rides the same tick.
+    assert_eq!(
+        count(&w, EV_DOOR),
+        1,
+        "the trust row carries no address, so it is only readable joined to \
+         the verb's own event on the same tick — and there is no EV_DOOR here"
+    );
+    // And the verb actually happened. A role check against a cause that did
+    // nothing is a check on a lie.
+    assert!(
+        w.deploys
+            .entries()
+            .iter()
+            .any(|d| d.cx == cx && d.cz == cz && d.level == UPPER && d.open),
+        "the leaf never moved, so this row is about nothing"
+    );
+}
+
+/// Cause two: **a grant, against an owner whose body is gone.**
+///
+/// `knock_and_auth_name_the_door_then_the_player`'s fixture — a lock the
+/// outsider has never been on, a correct code — with the owner evicted
+/// first. Two things ride on the pairing. `PRESENCE_GONE` is its own value
+/// and not a shade of `ASLEEP`, so it needs its own cause; and this reading
+/// must differ from cause one's in *both* bytes, or neither byte is proven
+/// to be a channel.
+#[test]
+fn trust_names_a_grant_taken_on_the_lock_of_a_body_that_is_gone() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
+    bolt_lock(&mut w, cx, cz, UPPER, DOOR_EDGE);
+    w.tick(&[Command::Access {
+        id: BUILDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+        op: sim_core::deploy::ACCESS_OP_SET_CODE,
+        code: 1234,
+    }]);
+    stand_an_outsider(&mut w);
+    evict_the_builder(&mut w);
+
+    w.tick(&[Command::Access {
+        id: OUTSIDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+        op: sim_core::deploy::ACCESS_OP_ENTER,
+        code: 1234,
+    }]);
+
+    let t = only(&w, EV_TRUST);
+    distinct3(t, "EV_TRUST");
+    distinct_pack8(t.c, "EV_TRUST.c");
+    assert_eq!(t.a, OUTSIDER, "EV_TRUST.a is the hand that ACTED");
+    assert_eq!(
+        t.b, BUILDER,
+        "EV_TRUST.b is the lock's OWNER, not the hand it just remembered — \
+         and an evicted body is still a counterparty, which is the whole \
+         reason GONE is a value rather than a silence"
+    );
+    assert_eq!(
+        t.c >> 8,
+        TRUST_AUTH as u32,
+        "a code entered on a lock is TRUST_AUTH, not TRUST_DOOR — the two \
+         readings in this file must differ in this byte or it is a constant"
+    );
+    assert_eq!(
+        t.c & 0xff,
+        PRESENCE_GONE as u32,
+        "the owner's body left its slot, so the presence byte is GONE — not \
+         ASLEEP, which would claim a body was standing there to be raided"
+    );
+    assert_eq!(
+        count(&w, EV_AUTH),
+        1,
+        "the grant's own addressed event rides the same tick as its trust row"
+    );
+}
+
+/// Cause three: **a container, against an owner who is watching.**
+///
+/// The third verb and the third presence, and the one reading in this file
+/// taken while the counterparty is standing right there — which is the
+/// control the other two are measured against: the same act, logged
+/// differently only because somebody was home.
+///
+/// The container is the fixture's fire, which is a box as far as the move
+/// verb is concerned (`deploy::holds_items`): the probe fixture carries no
+/// plain box row, and the branch under test is `boxes()[ci].owner`, the
+/// same field for both.
+#[test]
+fn trust_names_a_container_opened_while_its_owner_watches() {
+    let mut w = World::new(SEED);
+    w.cook = CookContent::probe_fixture();
+    let (cx, cz) = builder_world(&mut w);
+    // The fixture's fire holds item 6 and costs item 0 to place; the
+    // builder's kit carries neither, and slot 4 is the one `builder_world`
+    // leaves free for exactly this.
+    w.players[0].inv[4] = ItemStack {
+        item: 6,
+        count: 4,
+        cond: 0,
+    };
+    place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
+    let key = box_key(cx, cz, GROUND);
+    let bi = w.deploys.box_index(key).expect("the fire is a container");
+    w.deploys.set_box_slot(
+        bi,
+        0,
+        ItemStack {
+            item: JUNK,
+            count: JUNK_COUNT,
+            cond: 0,
+        },
+    );
+    stand_an_outsider(&mut w);
+    let os = outsider_slot(&w);
+    w.players[os].inv[0] = ItemStack::default();
+    assert!(
+        !w.players[0].sleeping,
+        "this cause wants the owner AWAKE; a sleeping one here would leave \
+         the presence byte with only two of its three values driven"
+    );
+
+    w.tick(&[Command::Move {
+        id: OUTSIDER,
+        cont: key,
+        from_kind: inventory::CONT_BOX,
+        from_slot: 0,
+        to_kind: CONT_SELF,
+        to_slot: 0,
+        count: JUNK_COUNT,
+    }]);
+
+    let t = only(&w, EV_TRUST);
+    distinct3(t, "EV_TRUST");
+    distinct_pack8(t.c, "EV_TRUST.c");
+    assert_eq!(t.a, OUTSIDER, "EV_TRUST.a is the hand that ACTED");
+    assert_eq!(t.b, BUILDER, "EV_TRUST.b is the container's OWNER");
+    assert_eq!(
+        t.c >> 8,
+        TRUST_CONT as u32,
+        "a hand in somebody's box is TRUST_CONT"
+    );
+    assert_eq!(
+        t.c & 0xff,
+        PRESENCE_AWAKE as u32,
+        "the owner is standing there, so the presence byte is AWAKE"
+    );
+    assert_eq!(
+        count(&w, EV_MOVED),
+        1,
+        "the move's own addressed event rides the same tick as its trust row"
+    );
+    assert_eq!(
+        w.players[os].inv[0].count, JUNK_COUNT,
+        "the withdrawal never landed, so this row is about nothing"
+    );
+}
+
+/// The two ids that are **not** counterparties, and the silence is the
+/// assertion.
+///
+/// A ledger that logs your own door buries its signal under ordinary play,
+/// and one that logs a boar carries rows about a player number that does
+/// not exist — `EV_BAG_DROPPED` puts a dead animal's tagged `mob::mob_id`
+/// where a player's id goes, so every skinned carcass would mint one. Both
+/// filters live in `World::log_trust` and both are driven here, because a
+/// filter with no cause is a claim.
+#[test]
+fn trust_is_silent_for_your_own_door_and_for_an_animals_bag() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
+
+    // Your own door, worked by your own hand: the leaf moves, `EV_DOOR`
+    // announces it, and no trust relationship was exercised.
+    w.tick(&[Command::Use {
+        id: BUILDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+    }]);
+    assert_eq!(
+        count(&w, EV_DOOR),
+        1,
+        "the verb refused, so the silence below proves nothing"
+    );
+    assert_eq!(
+        count(&w, EV_TRUST),
+        0,
+        "opening your own door logged a trust row against yourself"
+    );
+
+    // A locked door, pressed by a hand the lock does not know. The row is
+    // a record of access *exercised*, never of access asked for — the
+    // knock is already the event for that, and a ledger that logged the
+    // ask would count every rattled handle as a betrayal.
+    bolt_lock(&mut w, cx, cz, UPPER, DOOR_EDGE);
+    w.tick(&[Command::Access {
+        id: BUILDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+        op: sim_core::deploy::ACCESS_OP_SET_CODE,
+        code: 1234,
+    }]);
+    stand_an_outsider(&mut w);
+    w.tick(&[Command::Use {
+        id: OUTSIDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+    }]);
+    assert_eq!(
+        count(&w, EV_KNOCK),
+        1,
+        "the press never reached the lock, so the silence below proves \
+         nothing"
+    );
+    assert_eq!(
+        count(&w, EV_TRUST),
+        0,
+        "a refused door logged a trust row — the leaf never moved and \
+         nothing was exercised"
+    );
+
+    // A bag a dead animal left. `stand_up` is the call `mob.rs` reaches
+    // through when a carcass drops one, with the same tagged id in `owner`;
+    // standing it here rather than hunting a pig keeps the cause to the one
+    // field under test.
+    w.backpack = BackpackContent::probe_fixture();
+    let carcass = {
+        let b = w.players[0].body;
+        let mut items = [ItemStack::default(); INV_SLOTS];
+        items[0] = ItemStack {
+            item: JUNK,
+            count: JUNK_COUNT,
+            cond: 0,
+        };
+        let tick = w.tick;
+        w.backpacks
+            .stand_up(
+                &w.backpack,
+                b.qx,
+                b.qy,
+                b.qz,
+                sim_core::mob::mob_id(0),
+                &items,
+                tick,
+                &mut w.events,
+            )
+            .expect("the carcass bag stood up")
+    };
+    w.players[0].inv[6] = ItemStack::default();
+    w.tick(&[Command::Move {
+        id: BUILDER,
+        cont: carcass,
+        from_kind: inventory::CONT_BAG,
+        from_slot: 0,
+        to_kind: CONT_SELF,
+        to_slot: 6,
+        count: JUNK_COUNT,
+    }]);
+    assert_eq!(
+        count(&w, EV_MOVED),
+        1,
+        "the loot refused, so the silence below proves nothing"
+    );
+    assert_eq!(
+        count(&w, EV_TRUST),
+        0,
+        "looting an animal's carcass logged a trust row against a mob id \
+         sitting in a player id's seat"
+    );
+}
+
+/// Cause four: **the same `TRUST_AUTH`, through the other store.**
+///
+/// `EV_AUTH` is one event for two rosters — a lock's remembered list and a
+/// hearth's crew — because "who may do this here" is one question
+/// (`reference/BUILDING.md` §1 fact 1), and `TRUST_AUTH` follows it for
+/// the same reason. Which means the verb has two emit sites, and a cause
+/// that only ever drives one of them leaves the other exactly as
+/// unwatched as it was before this file existed.
+///
+/// The path an outsider legitimately takes onto somebody else's crew is
+/// the one the rules already allow: the crew empties when its last member
+/// leaves, and an empty-crewed hearth is anyone's in reach
+/// (`deploy::crew_op`). So the builder steps off their own hearth and the
+/// outsider steps on — which is the moment a stranger acquires the right
+/// to build, upgrade and deploy inside another player's claim, with the
+/// owner standing right there.
+///
+/// The second half is the half the trust row exists for: a `CREW_LEAVE`
+/// pressed by a hand that was never on the list is a deliberate no-op
+/// (refusing it would tell a stranger whether the crew knew them), and it
+/// still announces. A row there would say a relationship moved when
+/// nothing did.
+#[test]
+fn trust_names_a_crew_seat_taken_on_someone_elses_hearth() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, UPPER, LOC_PLANE);
+    stand_an_outsider(&mut w);
+
+    // The no-op first, while the crew still holds only its owner: the
+    // outsider is not on it, so leaving it changes nothing.
+    w.tick(&[Command::Access {
+        id: OUTSIDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: LOC_PLANE,
+        op: sim_core::deploy::ACCESS_OP_CREW_LEAVE,
+        code: 0,
+    }]);
+    assert_eq!(
+        count(&w, EV_AUTH),
+        1,
+        "the op never reached the hearth, so the silence below proves nothing"
+    );
+    assert_eq!(
+        count(&w, EV_TRUST),
+        0,
+        "a crew op that moved no membership logged a trust row"
+    );
+
+    // The owner steps off their own hearth, which empties the crew.
+    w.tick(&[Command::Access {
+        id: BUILDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: LOC_PLANE,
+        op: sim_core::deploy::ACCESS_OP_CREW_LEAVE,
+        code: 0,
+    }]);
+    assert!(
+        w.deploys.hearths()[0].crew.is_empty(),
+        "the owner is still on the crew, so the join below is a refusal \
+         rather than the seat this cause is about"
+    );
+    assert_eq!(
+        count(&w, EV_TRUST),
+        0,
+        "leaving your OWN hearth's crew logged a trust row against yourself"
+    );
+
+    // And the outsider takes the seat.
+    w.tick(&[Command::Access {
+        id: OUTSIDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: LOC_PLANE,
+        op: sim_core::deploy::ACCESS_OP_CREW_JOIN,
+        code: 0,
+    }]);
+
+    let t = only(&w, EV_TRUST);
+    distinct3(t, "EV_TRUST");
+    distinct_pack8(t.c, "EV_TRUST.c");
+    assert_eq!(t.a, OUTSIDER, "EV_TRUST.a is the hand that ACTED");
+    assert_eq!(
+        t.b, BUILDER,
+        "EV_TRUST.b is the hearth's OWNER — the field `HearthRec` keeps for \
+         exactly this, and deliberately not the crew, which is now the \
+         actor alone"
+    );
+    assert_eq!(
+        t.c >> 8,
+        TRUST_AUTH as u32,
+        "a crew seat is TRUST_AUTH, the same value the lock's grant carries"
+    );
+    assert_eq!(
+        t.c & 0xff,
+        PRESENCE_AWAKE as u32,
+        "the owner is standing there watching it happen"
+    );
+    assert_eq!(
+        count(&w, EV_AUTH),
+        1,
+        "the crew op's own addressed event rides the same tick as its trust \
+         row — the trust row carries no address and is only readable joined \
+         to it"
+    );
+    assert!(
+        w.deploys.hearths()[0].crew.contains(OUTSIDER),
+        "the seat was never taken, so this row is about nothing"
+    );
+}
+
+/// `death_causes_are_a_closed_ledger`'s discipline, applied to `EV_TRUST`'s
+/// two value domains — and it is here for the *weaker* of the two reasons,
+/// which is worth being explicit about.
+///
+/// A stray `DEATH_BY_*` is caught eventually, by an encoder returning
+/// `Err(Range)` on a real death. Nothing encodes `EV_TRUST`, so a stray
+/// `TRUST_*` or `PRESENCE_*` is caught by nothing at all: it would ride the
+/// ring, reach whatever sink reads it, and become a column in the record
+/// with no name anywhere. This parse is the only thing between that and a
+/// silently widened log.
+#[test]
+fn trust_verbs_and_presences_are_closed_ledgers() {
+    const SRC: &str = include_str!("../src/world.rs");
+
+    for (prefix, bound) in [
+        ("pub const TRUST_", TRUST_VERB_MAX),
+        ("pub const PRESENCE_", PRESENCE_MAX),
+    ] {
+        // Borrowed out of `SRC`, never built — wall 3's `String` ban binds
+        // a test too, and the names here are `'static` slices already.
+        let mut seen: Vec<(&str, u8)> = Vec::new();
+        for line in SRC.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix(prefix) else {
+                continue;
+            };
+            let Some((name, value)) = rest.split_once(": u8 = ") else {
+                continue;
+            };
+            // The bound names the ledger; it is not in it. `VERB_MAX`
+            // rather than a bare `MAX` on the verb side because the two
+            // domains would otherwise share a stem the day a third lands.
+            if name == "VERB_MAX" || name == "MAX" {
+                continue;
+            }
+            let value = value.trim_end_matches(';');
+            let v: u8 = value.parse().unwrap_or_else(|_| {
+                panic!(
+                    "{prefix}{name} is declared as `{value}`, which is not a \
+                     literal — this parser reads the constant block in \
+                     `world.rs`, and a non-literal there makes the domain's \
+                     range unknowable"
+                )
+            });
+            seen.push((name, v));
+        }
+
+        // The parser's own liveness. Reflow the block and every
+        // `strip_prefix` misses, which passes while reading nothing — a
+        // gate that silently stops looking is worse than one that fails.
+        assert!(
+            seen.len() >= 3,
+            "only {} values parsed for {prefix}* out of world.rs — the \
+             constant block's shape changed and this gate is now reading \
+             nothing, which is worse than failing",
+            seen.len()
+        );
+
+        let highest = seen.iter().map(|(_, v)| *v).max().unwrap();
+        assert_eq!(
+            highest, bound,
+            "world.rs declares a {prefix}* value {highest} against a bound \
+             of {bound}. Nothing encodes EV_TRUST, so no wire check will \
+             ever notice: move the bound in the same commit as the value, \
+             and give the value a cause in this file."
+        );
+        // 1..=bound with no gaps. Zero is deliberately not a value in
+        // either domain (`world.rs` says why): `c` packs two bytes, and a
+        // zero in either reads the same as a byte nobody wrote.
+        let mut sorted: Vec<u8> = seen.iter().map(|(_, v)| *v).collect();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted.len(),
+            bound as usize,
+            "{prefix}* declares {} values against a bound of {bound} — the \
+             domain is 1..={bound} with no gaps and no duplicates",
+            sorted.len()
+        );
+        for (i, v) in sorted.iter().enumerate() {
+            assert_eq!(
+                *v,
+                i as u8 + 1,
+                "the {prefix}* values are not 1..={bound} with no gaps: {:?}",
+                seen
+            );
+        }
+    }
 }

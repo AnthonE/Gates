@@ -227,10 +227,13 @@ impl PlayerKey {
 pub struct SaveLoad {
     /// Records loaded and admitted.
     pub live: usize,
-    /// Records refused: a bad checksum (a torn write) or a field the sim's
-    /// own validator would not accept. The slot is treated as empty and is
-    /// free to be reused, so a corrupt record costs one player their save
-    /// and nothing else.
+    /// Records refused: a bad checksum (a torn write), a field the sim's
+    /// own validator would not accept, or a condition the loaded content
+    /// could not have minted (`crate::cond` — the decoder runs without the
+    /// content tables, so the ceiling check has to happen here, where they
+    /// are in scope). The slot is treated as empty and is free to be
+    /// reused, so a corrupt record costs one player their save and nothing
+    /// else.
     pub corrupt: usize,
     /// True when the file did not exist and was created empty.
     pub created: bool,
@@ -547,7 +550,19 @@ fn rotate_backups(path: &Path) {
 /// `.sav.1` may itself be corrupt, because corruption can predate the newest
 /// backup by several save cycles — which is why a depth of one is not worth
 /// having and 2 is their documented minimum (`reference/SAVES.md` §6).
-pub fn open(path: &Path, seed: u64, content_hash: u64) -> Result<(Saves, SaveLoad), String> {
+///
+/// `gather` is the baked content this shard runs, and it is here for one
+/// check the decoder cannot make: a record whose condition no command could
+/// have minted (`crate::cond` carries the refuse-not-clamp policy) is
+/// counted corrupt, exactly as a torn write is. `content_hash` already
+/// pinned the content this file was written under, so the ceilings asked of
+/// `gather` are the ceilings the save was played under.
+pub fn open(
+    path: &Path,
+    seed: u64,
+    content_hash: u64,
+    gather: &sim_core::gather::GatherContent,
+) -> Result<(Saves, SaveLoad), String> {
     // Before the handle is taken, and before any validation: a file this boot
     // is about to refuse is exactly the file an operator most wants a copy of.
     if path.exists() {
@@ -679,6 +694,14 @@ pub fn open(path: &Path, seed: u64, content_hash: u64) -> Result<(Saves, SaveLoa
             .map_err(|e| format!("save file {}: reading record {index}: {e}", path.display()))?;
         match decode_record(&rec) {
             Ok(None) => {}
+            // The condition wall (`crate::cond`): the decoder bounded every
+            // field it could see without content; this is the one it could
+            // not. Refused as corrupt, never clamped — the module header
+            // there says why, and per-record rather than per-file because
+            // one edited save is one player's, not everyone's.
+            Ok(Some((_, _, save))) if crate::cond::violation(&save.inv, gather).is_some() => {
+                found.corrupt += 1;
+            }
             Ok(Some((key, stamp, save))) => {
                 found.live += 1;
                 store.put(&key, stamp, save);

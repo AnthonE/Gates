@@ -423,7 +423,7 @@ fn the_browser_skips_inert_rows() {
 #[test]
 fn an_unnamed_item_prints_its_index_rather_than_nothing() {
     let mut catalog = protocol::event::ItemCatalog::EMPTY;
-    catalog.set(4, b"Wood").unwrap();
+    catalog.set(4, b"Wood", 0).unwrap();
     assert_eq!(craft::item_name(&catalog, 4), Some("Wood"));
     assert_eq!(craft::item_name(&catalog, 9), None);
     assert_eq!(craft::item_label(&catalog, 4), "Wood");
@@ -3396,7 +3396,7 @@ mod loot {
 
     fn named() -> ItemCatalog {
         let mut c = ItemCatalog::EMPTY;
-        c.set(LARGE_BOX as usize, b"Large Box").unwrap();
+        c.set(LARGE_BOX as usize, b"Large Box", 0).unwrap();
         c
     }
 
@@ -3550,5 +3550,123 @@ mod loot {
     fn the_ghost_is_not_hung_off_the_cursor() {
         let (left, top) = ghost_origin(500.0, 500.0, 44.0);
         assert_eq!((left, top), (478.0, 478.0));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// §Q · the durability pip's visibility contract (`NOW.md` §0dur item 1)
+//
+// `pip_fraction` is the pure half of the pip. When these were written it
+// was also the only half that COULD land — the client held `cond` per
+// stack and no `condition_max` to divide by. The ceiling ships on the
+// catalog drip since wire v46 (`ClientCore::catalog.cond_max`), so what
+// remains is the panels drawing the bar; these pin the reference's rule so
+// that drawing lands against a fixed contract rather than re-deciding it
+// in a panel.
+mod q_durability_pip {
+    use client::ui::slots::pip_fraction;
+
+    /// A worn tool draws, and draws its own fraction — the whole point of
+    /// the pip is a warning BEFORE the `REFUSE_G_BROKEN` toast at zero.
+    #[test]
+    fn a_worn_tool_draws_its_fraction() {
+        assert_eq!(pip_fraction(5_000, 10_000), Some(0.5));
+        assert_eq!(pip_fraction(9_999, 10_000), Some(0.9999));
+    }
+
+    /// A pristine tool draws nothing — a full bar under every fresh tool
+    /// is a screen of bars, and the reference hides it. Above the ceiling
+    /// (only a smuggled save can mint it — `NOW.md` §0dur item 4) is
+    /// pristine too, not a >100% bar.
+    #[test]
+    fn a_pristine_tool_draws_nothing() {
+        assert_eq!(pip_fraction(10_000, 10_000), None);
+        assert_eq!(pip_fraction(10_001, 10_000), None);
+    }
+
+    /// A dead tool draws the bar EMPTY — zero is a state the player must
+    /// see, because the tool stays in the hand and stops being a tool.
+    #[test]
+    fn a_dead_tool_draws_an_empty_bar() {
+        assert_eq!(pip_fraction(0, 10_000), Some(0.0));
+    }
+
+    /// An item that carries no condition never draws a pip — wood at
+    /// `cond == 0` is not a dead tool, it is a stack of wood.
+    #[test]
+    fn an_item_with_no_ceiling_never_draws() {
+        assert_eq!(pip_fraction(0, 0), None);
+    }
+
+    /// **And every cell that draws a stack draws the pip.** The contract
+    /// above is a pure function, and a pure function nobody calls is exactly
+    /// what this feature was from wire v42 to v46 — `cond` shipped on every
+    /// slot, then its ceiling beside every name, and no panel divided one by
+    /// the other, so a player farming with a rock could not see it wear out.
+    /// That is a property of call sites rather than of a value, so a source
+    /// scan is the instrument (`tests/sound.rs`'s drain gate and
+    /// `the_swing_path_reads_the_island_through_the_memo` are the same
+    /// shape).
+    ///
+    /// Both files, because the two must never disagree: the bar under the
+    /// thing in your hand and the bar under that same stack in the bag are
+    /// one decision drawn twice. `inv.rs` covers three of the four cells
+    /// (your grid, the container's, the drag ghost) through one `pip`
+    /// helper; `hud.rs` is the hotbar.
+    #[test]
+    fn every_cell_that_holds_a_stack_draws_the_pip() {
+        const SITES: [&str; 2] = ["src/render/panels/inv.rs", "src/render/hud.rs"];
+        for site in SITES {
+            let src = std::fs::read_to_string(site).unwrap_or_else(|e| panic!("{site}: {e}"));
+            // Comments may name it freely — every one of them is *about* this
+            // rule. `tls_callsite.rs`'s `code_of`, inlined.
+            let code: String = src
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .filter(|l| !l.trim_start().starts_with("///"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                code.contains("pip_fraction("),
+                "{site} draws item cells and never calls `pip_fraction` — the \
+                 condition is on the wire (v42) with its ceiling beside it \
+                 (v46) and this panel is throwing both away, which is the \
+                 state `NOW.md` §0dur item 1 exists to end"
+            );
+            assert!(
+                code.contains("cond_max("),
+                "{site} calls `pip_fraction` with something that is not the \
+                 catalog's ceiling. A session-learned or hardcoded maximum is \
+                 refused by name in `ui::slots::pip_fraction`'s own doc: a \
+                 tool looted half-worn would read pristine"
+            );
+            assert!(
+                code.contains("PIP_FILL") && code.contains("PIP_TROUGH"),
+                "{site} draws a pip in colours of its own. Both bars are \
+                 `render::panels::{{PIP_FILL, PIP_TROUGH}}` so the hotbar and \
+                 the bag cannot drift into two different-looking bars"
+            );
+        }
+    }
+
+    /// **And the panel redraws when a condition moves.** The inventory screen
+    /// is rebuilt from a key of what it last drew, and a bar drawn off a
+    /// field that is not in that key is a bar that can go stale — it would
+    /// keep claiming a condition the stack no longer has, with every gate in
+    /// this repo green, because nothing else on the screen changed.
+    ///
+    /// Unreachable in v0 (you cannot swing with the screen open, and repair
+    /// is v1 by decision), which is the whole reason to gate it now: the day
+    /// a repair bench or wear-on-hit lands, this is a defect nobody would
+    /// think to look for.
+    #[test]
+    fn the_panel_redraws_when_a_condition_moves() {
+        let src = std::fs::read_to_string("src/render/panels/mod.rs").expect("panels/mod.rs");
+        assert!(
+            src.contains("core.inv[i].cond") && src.contains("core.cont[i].cond"),
+            "`panels::rebuild`'s change key dropped `cond` — the durability \
+             pip is drawn from it, so both grids would draw a stale bar until \
+             an item or a count happened to move (`NOW.md` §0dur item 1)"
+        );
     }
 }

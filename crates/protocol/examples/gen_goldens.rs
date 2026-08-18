@@ -450,4 +450,11 @@ fn main() {
         let len = protocol::encode_event_impact(qx, qy, qz, surf, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[94], &buf[..len]);
     }
+
+    // Remote swing fact v0 (v47): a body swung, hit or miss.
+    {
+        let s = goldens::event_swing();
+        let len = protocol::encode_event_swing(s, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[95], &buf[..len]);
+    }
 }

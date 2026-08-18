@@ -286,14 +286,14 @@ ways in `tests/gather.rs`), and `EV_GATHER_REFUSED` names the held item —
 *your Torch cannot harvest this* — through the pump, `client-core`'s ring,
 the shared feed queue and `ui::refusals::GATHER` (wire v42). Remainders:
 
-1. **Two doors have no gate.** `wake` has three callers: the respawn command,
-   a save that logged off dead, a sleeper takeover of a dead body. All three
-   are correctly paid; only the first is tested, so an early return in either
-   of the others wakes a player naked with every suite green.
-2. Content/boot, both small: `validate.rs` has no rule coupling "no swung
-   node has a `hand` row" to "the kit holds a tool something pays", so an
-   empty `[[spawn_kit]]` is an unwinnable world that boots green; and
-   `parse_shard_toml`'s `dev_spawn_kit` arm pushes unbounded, caps after.
+1. **Closed 2026-08-17.** All three of `wake`'s doors are gated now:
+   `persist.rs`/`sleepers.rs` drive the dead restore and the dead-sleeper
+   takeover, each proven red under a skipped wake and a deleted `grant_kit`.
+2. **Closed 2026-08-17, both halves.** A kit holding no tool any swung node
+   pays is a refused boot when no `hand` row exists (`validate::structural`,
+   gated in `content.rs`, red-proven both ways), and `parse_shard_toml`'s
+   `dev_spawn_kit` arm checks `MAX_SPAWN_KIT` at the push site — refuses,
+   never truncates (gated in `config.rs`, red-proven).
 
 ## 0mk · Arrows leave marks; swings and paint do not *(systems+client lane)*
 
@@ -307,21 +307,65 @@ both and threw them away. Knobs and the full argument: `DECISIONS.md`
 
 Three gaps, in the order they are worth closing.
 
-1. **A melee swing leaves nothing**, and it is the same missing wire fact
-   as §0sw's remote swing animation rather than a second problem:
-   `EV_HIT` carries no position and a *miss* is not broadcast at all. Do
-   not solve it twice — whatever fact answers §0sw should carry a point.
-2. **A mark on a built piece faces its cell's dominant axis**, which is
-   right for a wall and wrong for a floor (it gets a wall's normal and
-   reads as a mark on the lip). Ground and world occupants are exact —
-   terrain gradient and slot centre, both shared worldgen. The fix is the
-   piece's address on `EV_IMPACT`; `SURF_BITS` has no spare value, but the
-   message has room.
+1. **Landed 2026-08-18 for a struck node, and it cost no wire byte.** The
+   premise here was wrong in a useful way: this said the mark needed the
+   same missing fact as §0sw, and it did not. `EV_IMPACT` was never an
+   arrow's fact — it is *a surface was struck at this point*, already
+   broadcast, already carrying a quantized point and a surface class, and
+   `render/decal.rs` was already its only reader. So `gather::swing`
+   pushes it where a landed swing bit an occupant, on the skin
+   (`occupant_volume` × slot scale) facing the swinger, at the shared eye
+   height — no `PROTO_VER` bump, no golden, no client line. Three gates in
+   `tests/gather.rs`, five red-proofs. **Still open: a swing at a built
+   PIECE marks nothing** (`combat::raid` is the site, `SURF_BUILT` the
+   kind) and it is deliberately behind item 2 — a piece mark faces the
+   wrong way on a floor today, and volume on a known-wrong path is not
+   progress. Flesh stays unmarked: `SURF_BITS` holds one spare code and
+   spending it on blood is a deliberate act nobody has asked for.
+2. **⚠ This item's symptom is UNREACHABLE, and the real defect is one
+   layer down** (measured 2026-08-18). It says a mark on a floor gets a
+   wall's normal — but no arrow has ever hit a floor: `collide::shot_blocked`
+   (`collide.rs:1014`) calls only `cell_edges_stop_shot` and
+   `cell_diags_block`, which read the wall/door/window/frame masks and the
+   two diagonals, and **never `ColIndex::planes`** — the field
+   `SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF` live in (`collide.rs:211`;
+   its only readers are `is_empty`, `piece_ground` and a test). So an arrow
+   fired down inside a base passes through every floor and lands on the
+   terrain as `SURF_GROUND`. **Fix that first** — a bullet that ignores
+   floors is a raid defect, not a decal one — and only then the address on
+   the message. What IS reachable in the facing arm today is a diagonal
+   wall, 45° out. Bit accounting for when it is time: a full piece address
+   is 27 bits, the message has 4 spare pad bits, so it grows to 11 bytes
+   (`MAX_EVENT_MSG_BYTES` is 320, so there is room to grow, not room
+   inside). `SURF_BITS`'s fourth value is dead-but-present, refused at both
+   ends and pinned by the wire-domain table.
+   Also open: a swing at a piece still marks nothing, and that is deliberate
+   until this is settled.
 3. **Spray paint is not this.** A player-authored mark that persists is a
    deployable, not a decal: a cap in `limits.rs`, a slot in
    `worldsave.rs`, a build-privilege question, decay, and — if the mark is
    painted rather than picked from N authored stencils — moderation
    forever. Decide stencil-vs-painted before any of it.
+
+⚠ **NOBODY HAS SEEN A DECAL, and it cannot be checked on a headless box**
+(measured 2026-08-18). The sim's half is confirmed: a swing at the boulder
+beside spawn emits `EV_IMPACT` at `1024.74, 12.86, 1025.07` with `surf 1`,
+0.98 m from the slot centre — that slot's scaled radius exactly — and the
+capture probe now walks to a node, swings, and points the camera at those
+coordinates. **The frame shows no mark.** Then the discriminating runs:
+5.5× `SIZE_M` — nothing; the boot-time prewarm decal at full alpha, 1.2 m
+across, flat on the terrain with an up normal — nothing. So **no
+`ForwardDecal` renders under lavapipe at any size, alpha or orientation**,
+and the arrow marks of 2026-08-16 have never been seen either.
+
+That is a claim about THIS BOX and not about the game: a software adapter
+is the environment that would degrade first, and the client logs *"Too many
+textures in mesh pipeline view layout, this might cause us to hit
+`max_sampled_textures_per_shader_stage` in some environments"* on boot,
+which is the leading suspect since a forward decal adds a binding. **One
+boot on a real GPU settles it** — swing at a rock and look — and that is an
+operator act, not a loop's. Until then treat every decal in this tree as
+unverified rather than as working or broken.
 
 Also open, and cheap: nothing prewarms the *other* materials. `decal.rs`
 pays `CLAUDE.md`'s shader-prewarm trap for its own pipeline and no module
@@ -337,44 +381,46 @@ the commonest swing in the game drew nothing. `Feed` stays as a backstop,
 gated on the arm being at rest so a hit arriving mid-stroke cannot restart
 the arc.
 
-What is still missing is the **other** half, and it is an asset gap rather
-than a code one: `render::anim::Clip` has five clips — Idle, Walk, Jog,
-Sprint, Sleep — and the mannequin `.glb` carries no swing, so **another
-player swinging at you is a body standing perfectly still**. That is worse
-than the first-person gap was: the one thing a fight needs to read is the
-wind-up. It wants a `Swing_Once` clip on the shared skeleton
-(`assets/models/WANTED.md`'s queue), a one-shot rather than a loop, and a
-trigger — `EV_HIT` is broadcast but a *miss* is not, so drawing a remote
-whiff needs either a wire fact or the same cadence prediction run per remote
-body off their input, which the client does not receive. Take the clip
-first; decide the trigger against what it costs.
+⚠ **This item said the other half was an ASSET gap and that was false**
+(corrected 2026-08-18, and it would have cost a mesh purchase). The shipped
+`assets/models/mannequin.gltf` carries **46 clips** including `Sword_Attack`
+(1.5 s), `Punch_Cross` and `Punch_Jab`, all on the same 53-joint skeleton —
+`MANIFEST.md` and `WANTED.md` both say 46 and only this line said
+otherwise. Nothing needs buying.
 
-## 0eat · The verbs speak; the latch behind them aliases *(client-core lane)*
+**Landed 2026-08-18.** `EV_SWING` (broadcast, outcome-free, wire v47)
+carries the swinger's id and nothing else — no position, because the
+snapshot already says where every body is, and the one thing a client
+cannot derive is that the arm moved. Pushed from `gather::swing`'s cadence
+gate, the only line that runs once per swing whatever the swing finds, so a
+**whiff animates** — which is the commonest swing in the game. `Clip::Swing`
+is the first one-shot in `anim.rs` (`.repeat()` omitted; `RepeatAnimation::
+default()` is `Never`), living beside the gait as `BodyAnim::swing_s` rather
+than inside `clip`, which `observe` recomputes from speed every frame.
+Gates: the role check on a whiff, a server routing gate proven red both
+unicast and armless, the ring's drop-oldest identity, and a source scrape
+that catches the four-literal array width that would otherwise panic the
+first time somebody swings near you.
 
-Landed, client-only: `ui::refusals::CONSUME` (all three `REFUSE_C_*`, one
-table worded for both verbs), `Refused::Consume` on the feed, said lines on
-both landed halves, and the refusal cue for free because the refusal joins
-the shared queue rather than being read privately. **Drink was dead by the
-same mechanism and closed with it.**
+⚠ **Nothing has ever played the clip.** `client/tests/anim.rs` is a source
+scrape by construction, `client-core/tests/wire.rs` stops at the ring, and
+no headless test spawns a `SceneRoot`. The wire half is gated end to end;
+the arc itself is unseen, exactly like the decal above. And the throughput
+half of the fan-out is unpriced: `EV_SWING` is one broadcast per swing per
+player with no AOI filter, so a 100-player shard swinging pays 100× the
+per-client event rate — `raid_storm.rs` cannot see it, because that gate's
+bots never press `BTN_PRIMARY`. A soak with swinging bots is the
+measurement, and it is the same gap wall 4 has had since the soak landed.
 
-What remains is `crates/client-core/src/core.rs`: `last_eat` /
-`last_eat_refused` are **fields plus one bit**, not a ring, so two consume
-answers in one drain window collapse — `Consumed` zeroes the reason,
-`ConsumeRefused` overwrites it. Reachable from the keyboard, not only from a
-hitch: `KeyG` and `KeyH` are two independent `just_pressed` checks in one
-system, so one frame sends both and one `World::tick` answers both. The bad
-ordering says "no water within reach" while the bandage is gone and its heal
-ramp is running; the reverse loses the drink refusal, §0eat's own symptom
-still live on `H`. Fix: `pop_consume_refusal()` plus a consume toast ring.
-`tests/sound.rs` derives its verb list from `core.rs` now, so a ring added
-and not drained reddens that gate on its own — the drain half needs no gate.
-
-Two notes. `core.rs` ~151/~825/~829/~833 still name `client_consume`,
-`client_drank` and `client_move_readout` as these fields' readers; those are
-the deleted C-ABI bridge, and the real readers are `render/feed.rs` and
-`render/hud.rs`. And nothing orders `feed::drain` against `input::place_eye`
-in `render/mod.rs` — today's insertion order is the safe one, but a stale
-`applied` word beside freshly-pumped fields would print one eat twice.
+Two things remain, and the first needs a word rather than work. **The clip
+is `Punch_Cross` and the ask was a rock swing** — arithmetic, not taste:
+the sim allows a swing every 1.267 s and `Sword_Attack` is 1.5 s, 1.68 s
+with the blend, so every arc would be cut off by the next. Accept the
+punch or shorten the sword clip (`DECISIONS.md` §open). **And the swing is
+silent for a remote**: `Cue::Swing` is non-positional with a 120 ms
+cooldown because it is the local player's, so reusing it would play every
+island swing at full volume with no pan. A positional cue is its own slice.
+The lane now exists for `Death01` and `Hit_Chest` too.
 
 ## 0die · Two questions to re-take, no defect left *(operator)*
 
@@ -405,11 +451,11 @@ which is how `ALPHA.md` §1 survives it — off a new own-fact `SUB_BAGS`
 
 Left, in order of cheapness:
 
-1. **Beds did not get the ranking backpacks did.** `resolve_marks`' deploy
-   arm still pushes every bed and hearth on the island with no owner filter,
-   and it pushes them LAST — so on a busy shard your own bed is what the cap
-   eats now. `ClientCore::own_bags()` exists, so this is a filter over a list
-   the client already holds. No wire, no word.
+1. ~~Beds did not get the ranking backpacks did.~~ **Done 2026-08-17**:
+   `resolve_marks` takes `own_bags()` and pushes mirror beds matching an own
+   anchor by address directly behind the own bag, ahead of every stranger
+   tier — gated (`ui/map.rs::your_own_bed_outranks_a_shard_of_strangers_beds`,
+   proven red against the unranked order). No wire, no word.
 2. **Showing is not choosing.** The death map marks three beds and
    `ACT_RESPAWN` carries one bit, so the sim still takes the nearest ready
    one. Letting a player click the bed they want is a bag index on the action
@@ -430,12 +476,21 @@ Left, in order of cheapness:
 guard, `EV_GATHER_REFUSED`, wire v42, save formats 3/7, eight gates each
 proven red. What remains, in rank order:
 
-1. **No panel draws the number.** `ClientCore::inv` and `::cont` carry
-   `cond` off the wire already; the hotbar, bag grid and container panels
-   draw item + count and nothing else, so the first warning a player gets
-   is the `REFUSE_G_BROKEN` toast at zero. A durability pip wants the
-   reference's shape (a bar under the icon, visible only when worn) and
-   `ART.md`'s pass on it — client-only, no wire.
+1. **Closed 2026-08-17 — the bar is drawn.** All four cells that hold a
+   stack call `pip_fraction` against the catalog's ceiling: the hotbar
+   (`render/hud.rs`, a trough per cell spawned once and hidden when there
+   is nothing to say), your grid, the container's, and the drag ghost,
+   which had to have it because that tile is a copy of the cell it came
+   out of. Colours are the vitals' own measured pair rather than a new
+   one and there is no warning band (`DECISIONS.md` §open, "durability
+   pip v0"). Two gates on top of §Q's four pure-value tests, each proven
+   red: a call-site scan over both files, and one on the panel's redraw
+   key, which watched `(item, count)` and now watches `cond` too — nothing
+   wears with the screen open today, so that half is the door shut before
+   repair walks through it. **Looked at**, which is the visual gate: a
+   capture with a forced 35 % rock reads as a green bar in a dark trough
+   inside the cell border, and the hotbar count badge lifts 3 px to clear
+   it. NOT done: the detail pane still says nothing in words.
 2. **Weapons and armour do not wear.** `reference/DURABILITY.md` §5 left
    both unsourced (per shot / when hit), so there is nothing to take yet —
    a research row, not a build item, and wear-on-swing-at-players is a
@@ -444,14 +499,10 @@ proven red. What remains, in rank order:
    lands it is `Station::Workbench1..3` + a blueprint check, never a new
    deployable, and §3's 0.20 ratio stays DISPUTED until someone checks it
    against the in-game price.
-4. **The save readers accept un-mintable condition** (review finding,
-   2026-08-16): both decoders run without the content tables, so a save
-   can smuggle `cond` above the item's ceiling or onto an item whose
-   `condition_max` is 0 — states no command can mint, in the one
-   non-command path into `World`. A post-load clamp where content is in
-   scope (server boot), or a validate pass over the loaded world. The
-   slice's blocker cousin — an emptied slot keeping its `cond` — is fixed
-   and gated (`spill.rs`, `persist.rs`: the canonical-empty trio).
+4. **Landed 2026-08-17 — the save readers refuse un-mintable condition**:
+   both boot paths now check `cond` against the baked ceilings, refused
+   never clamped (`server/src/cond.rs` has the why; gated in
+   `persist_store.rs` + `world_persist.rs`, each proven red).
 
 ## 0ps · Pieces wear a photograph and show damage — what is left *(client lane)*
 
@@ -470,7 +521,14 @@ gates `client/tests/pieces.rs` + `sim-core/build.rs` §tests:
 
 Remaining, ranked:
 
-1. **Nobody has looked at either.** Boot, build a row, hit it.
+1. **Nobody has looked at either, and the probe still cannot stage it.**
+   The capture harness can walk to a world node and swing at it now
+   (2026-08-18), which is what §0mk needed, but it cannot BUILD — a piece
+   is a verb behind a wheel and a material cost, so "build a row and hit
+   it" is still a person at a keyboard. Landing that in the probe is the
+   next slice if this item is picked up; the swing pass is the shape to
+   copy. ⚠ And see §0mk: no decal renders under lavapipe at all, so a
+   headless run cannot check surfaces that carry marks either.
 2. **The catalogue is 11 shapes against the reference's 20** (`BUILDING.md`
    §7b.1) — no half/low wall, floor frame, steps, ramp, 3 of 4 stairs. Rule 6
    is silhouette before surface, so this outranks more material work.
@@ -1229,32 +1287,32 @@ WebTransport. §0wt keeps its other reasons.
    still has no loss/RTT source, and `client/src/lib.rs` holds a
    `Connection` it never asks anything — the same gap, other end.
 
-## 0n1 · The class-S join walk has no interest filter *(server lane)*
+## 0n1 · Class-S interest — the radius lands, the grid does not *(server lane)*
 
-`reference/NETWORK.md` §9.2.1, measured 2026-08-10. `pump_events` drips the
-**entire** piece store to every client — `PIECE_SYNC_BATCH = 32` per tick,
-no distance test anywhere (`server/src/core.rs:1872`). At `MAX_PIECES` that
-is 256 ticks (8.5 s) to teach one joiner about every structure on the
-island, near or far. This is the reference game's own 2014 mistake, which
-they fixed by sending spawn-local entities instead.
+`reference/NETWORK.md` §9.2.1. `pump_events` used to drip the **entire**
+piece store to every client with no distance test anywhere. Both halves of
+that are now closed: the removal restart went with the tail-down walk, and
+the filter landed 2026-08-18 (`server/src/interest.rs`, `DECISIONS.md`
+§open "class-S interest v0").
 
-The restart makes it worse and is the reachable half. A removal while a
-client's cursor is inside the store resets it to zero (`core.rs:1663`) —
-correct under the store's swap-remove, unbounded in cost. A 3,000-piece
-base walks in ~94 ticks and a raid removes pieces faster than that, so a
-client joining mid-raid can be walked back to zero indefinitely and never
-finish. `ev_resync` compounds it: a full event ring zeroes **every** walk
-cursor at once (`client.rs:249`), and the resend it triggers refills the
-ring that triggered it.
+The walk is aimed from an anchor, streams `AOI_EXIT_CM`, and re-arms at
+`AOI_EXIT_CM − AOI_ENTER_CM` — class D's own band, so §7's "one spatial
+truth" is one set of numbers. `EV_PIECE_PLACED` takes the same predicate; a
+removal does not, because nothing can yet tell a client to forget. Measured
+on a 2,291-piece island with 454 in range: **2,291 → 454 records, 11,384 →
+2,258 bytes, done at tick 72 → 19**; a full walk is bounded at 32 ticks
+(was 256). Gate: `server/tests/piece_interest.rs`, red both ways.
 
-Landed this pass: `piece_walk_restarts` counts the restart, so the
-livelock is visible before it is fixed. Not landed: the filter. The fix is
-`NETCODE.md` §7's chunk subscription — one spatial truth for both classes,
-which the doc already specifies and the tree has never had — and it wants
-`test_stream_in` and §11's `test_raid_storm` with it (§11 there: **all
-seven of its gates are unbuilt**, retitled to stop claiming otherwise —
-and note the name is now shared, see §0rs: the sim-core storm that landed
-is wall 4's caps gate, not §11's wire one).
+**What remains, ranked.**
+1. **The grid.** No chunk version, no subscribe/unsubscribe, so no client
+   can be told to forget a region — which is why removals stay broadcast
+   and why a re-arm re-walks the in-range set instead of the difference.
+   That is §5/§7 proper and wants a wire change; this lane could not take
+   one (`protocol` was another lane's this window).
+2. **Deploys and backpacks are unfiltered**, and the deployable walk still
+   restarts on a removal — §9.2.1's amplifier, one store over.
+3. `test_stream_in` (§11) is still unbuilt: this gate counts records, not
+   the client's per-frame apply/teardown budget, which is the other half.
 
 ---
 
@@ -1385,29 +1443,29 @@ Remaining, in the order the measurement ranks them:
    them flips the ripple map's green channel. Which is right is a question
    about how that map was authored — boot the game and look, do not guess.
 
-## 0bd · The barrel is measured and the sim still blocks the guess *(client+sim lane)*
+## 0bd · The barrel is the measured drum — LANDED 2026-08-18, one residual *(client+sim lane)*
 
-The drawn barrel and the blocked barrel are one number in two files and they
-disagree with the real object. `OCCUPANT_R_M[BarrelSlot]` is **0.45** and its
-comment cites `CylinderGeometry(0.45, 0.45, 0.95)` — the deleted browser
-client's geometry, i.e. a guess carried forward. A 55-gallon drum is **0.585 m
-across by 0.88 tall** (1.5x taller than wide); 0.9 x 0.95 is near-spherical and
-~44% too fat. Two independent sources agree: the reference set’s `barrelroad`, and
-Meshy's `auto_size` vision estimate landing on 0.880 x 0.585 unprompted
-(2026-08-11).
+The drawn barrel and the blocked barrel were one number in two files and both
+were the deleted browser client's `CylinderGeometry(0.45, 0.45, 0.95)`. They are
+the measured 55-gallon drum now — **0.585 m across by 0.88 tall** — so radius
+**0.2925**, half-height **0.44**, `archetype_lift` 0.44 (the base IS the slot's
+ground) and `OCCUPANT_TOP_M` **0.88**. Mesh and volume moved in one commit
+because they cannot move apart: `greybox.rs`'s
+`every_drawn_archetype_fits_the_volume_the_sim_blocks` fails a mesh narrower
+than the blocked volume by more than `SLACK_R_M`. `test_replay`'s golden
+regenerated with it (wall 5); the knob is `DECISIONS.md` §open, barrel
+proportions v1.
 
-**Why it is not already done.** It was drawn narrow on a branch, and the merge
-with origin fired `greybox.rs`'s
-`every_drawn_archetype_fits_the_volume_the_sim_blocks`: the sim blocked 0.1575 m
-wider than the client drew, past `SLACK_R_M`. That assert is right — an
-invisible collision skirt is a player passing through geometry — and it means
-the mesh cannot move alone.
-
-**The slice**: narrow `OCCUPANT_R_M` and the `(0.45, 0.975)` pair in
-`terrain.rs`, and `archetype_mesh`'s cylinder, in one commit. It is a
-**collision change**, so `test_replay` and `test_terrain_golden` move with it
-and the goldens are regenerated deliberately in the same commit (wall 5/6).
-Check the other occupants for the same browser-geometry citation while there.
+**Residual — the tree's trunk radius is the same class and nothing measures
+it.** `OCCUPANT_R_M[Tree] = 0.26` cites `CylinderGeometry(0.13, 0.26)`, browser
+geometry, and the tree is the one row `greybox.rs` *excuses*: `tests/tree.rs`
+measures the canopy against `PINE_MAX_R` and the base against y = 0, never the
+trunk against 0.26. A generated conifer's trunk could be any width with both
+gates green. Unlike the barrel there is no second source to take, so this is a
+measurement to make — bound the bark mesh's radius over the trunk's own height
+band in `tests/tree.rs` — not a number to paste. The box rows (`CrateSlot`,
+`CacheSlot`, both authored structures) are browser-cited too and are fine:
+greybox holds each to its drawn mesh in both directions.
 
 ## 0b · Balance sits on the reference's numbers now — what is still off *(content lane)*
 
@@ -1415,16 +1473,15 @@ Landed 2026-08-08 (operator: *"balance the game similar to rust so people
 dont get too lost"*). `reference/BALANCE.md` is the research and §6 is the
 standing instruction. Building blocks are 250/500/1000, a stone wall takes
 four satchels, tool and melee damage are theirs, the pig is a 150-hp boar.
-Two bands moved and the raid ratio re-priced itself. ⚠ **The three numbers
-that used to sit here — 1.04/1.73/3.46 — were 2026-08-08's and were stale
-by two days**; measured 2026-08-10 the tree read 0.69/1.38/2.77 before that
-day's building work and **0.76/1.52/3.04** after it. Derive it (the probe
-is five lines against `balance::check`), never quote it.
+Two bands moved and the raid ratio re-priced itself. ⚠ **Derive the raid
+ratio, never quote it** — `Content::load_dir(…)` then `.anchors()`, five
+lines. This paragraph carried three readings and every one went stale
+inside two days; the fourth was quoted here until 2026-08-18 and was wrong
+too, which is the whole argument for the probe over the sentence.
 
-**The measurement landed 2026-08-09 and `reference/RIPLIST.md` is now the
-queue for this item** — what is taken, what is outstanding, what blocks
-each row, and the six steps for executing one. Read it before touching a
-balance number; do not re-derive that list here.
+**`reference/RIPLIST.md` is the queue for this item** — what is taken,
+outstanding or blocked, and the six steps for executing a row. Read it
+before touching a balance number; do not re-derive that list here.
 
 ⚠ **Two rules changed on 2026-08-10 and both are operator-spoken.**
 (a) *"lighten our own math and lean on them for now"* — a band of ours
@@ -1437,17 +1494,31 @@ of twelve content files with zero coverage.
 craft column and deployable hp, `RIPLIST.md` §1c is the record. What is
 left of that thread, in order:
 
-1. **Row 1e**: `items.toml` stack sizes ✅ taken 2026-08-11 at tier 3
-   (`RIPLIST.md` §1e: 5 cells moved — ammo 128, arrows 64, bandage 3,
-   gunpowder 1000 — 9 confirmed matched, 12 left open with the reason
-   named; the spawn kit's bandages went 5 → 3 as forced fallout).
-   `armor` · `cooking` · `loot` · `research` still have zero coverage.
-2. ⚠ **The source tier dropped to get 1c/1d**: every candidate page is
-   `EGRESS_BLOCKED` here, so the table came through a second assistant —
-   a summary of pages nobody in this loop read. Re-verify if egress opens.
-   **Re-probed 2026-08-11: closed harder** (fetches blocked for every
-   host, search summaries only — §1e says so), so the re-verify stays
-   owed and a browser is still the only route.
+1. **Row 1e is CLOSED** — all four uncovered content files have coverage,
+   at page tier 2026-08-18: `cooking.toml`'s recycler taken (`RIPLIST.md`
+   §1f). `armor.toml` and `loot.toml` are both **researched at page tier
+   and blocked** — rows **1j** and **1i** — with their numbers written
+   down so nobody re-researches them. 1j is one fixture string in
+   `crates/content/tests/content.rs` (the take passes every band; it is
+   `band_breaks_refused`'s anchor that breaks) and belongs inside
+   equipment v0. 1i is a schema field: their container ladder is a
+   *guaranteed* scrap payout and `LootEntry` cannot express a certain
+   drop — the half-take measures **9× worse than leaving it alone**.
+   Next unblocked: §2 row **1g**, the research ladder's ordering.
+2. ✅ **Egress is OPEN here** and the old "a browser is the only route"
+   note is retired: facepunch wiki 200 and its item pages carry full
+   Protection / Recycle / Research tables, `rusthelp.com` 200 — **400
+   without a browser User-Agent**, which reads as a dead host — only
+   `wiki.rustclash.com` still 403s. Probe; `SOURCES.md` §0 is right that
+   this is a property of the container.
+3. **Both of this pass's findings were a reason of ours nobody had scored
+   against the source — §6.2's fourth costume, and the hardest to see,
+   because it reads as admissible.** `BALANCE.md` §4.1 filed armour under
+   *real* reasons ("protection is per damage type") when their projectile
+   and melee cells are **equal** on all three pieces we own — retracted,
+   and the retraction lands even though the numbers are blocked.
+   And two files priced obol against "a ~10-scrap barrel" that was never
+   measured; the page says 2.42. Detail in `RIPLIST.md` §1f/§1h.
 
 Closed 2026-08-11 by the operator, all three: the rock **is** craftable
 (15 → 10 stone, and the tier-4 source beat my prior — §1c says so), OBOL
@@ -2246,12 +2317,19 @@ is `crates/`/wire work no single-surface lane may take.
    interest band both held at a population they had never met. The anomaly
    log's whole path was proven in the same run (8 bots against a full shard
    made `refused_full` move, and the file gained exactly that line).
-   **Four things it still does not have**, each its own small item: real
-   **bytes** (nothing counts them — the 16.5 kB/s/client figure is a
-   ceiling, not a measurement), jitter as a **distribution** rather than a
-   threshold crossing, an **hour** (this was 25 minutes, so slow leaks are
-   not excluded), and **contention** — bots walk, they do not raid, so wall
-   4's caps are still gated one site at a time.
+   ~~real **bytes**~~ — **counted 2026-08-18.** Four lanes apart in
+   `ShardStats` (datagram/stream × in/out, each a byte total *and* a message
+   count, because bytes alone cannot tell "more packets" from "fatter
+   packets"), aggregate on the shard and per-client on `bin/bots`, served by
+   `/status.json`. So the next soak divides by `secs` and reports a measured
+   kB/s/client instead of a ceiling. Not counted, and stated in `stats.rs`:
+   the handshake (a per-join constant, not a rate) and QUIC's own framing
+   (`net_sent_packets` is the other half of that ratio).
+   **Three things it still does not have**, each its own small item: jitter
+   as a **distribution** rather than a threshold crossing, an **hour** (this
+   was 25 minutes, so slow leaks are not excluded), and **contention** —
+   bots walk, they do not raid, so wall 4's caps are still gated one site at
+   a time.
 4. **You cannot stand ON anything.** `movement::step` asks `slot_blocks` and
    nothing asks a ground query for occupants — the shelter's plinth reads as
    a kerb you sink into, crate and boulder tops the same (`terrain.rs`'s
@@ -2408,10 +2486,9 @@ crate-wide, but its *contiguity* claim is file-local.
   `content.rs::every_consumable_the_content_ships_is_reachable` gates the
   general form (every consumable producible by a live verb chain). Still
   owed, and both are code: a standalone forest-floor pickup archetype and a
-  farming lane. The open verb landed 2026-08-14, so the third clause here is
-  spent — but `validate` still counts barrel rows alone and its stated reason
-  ("no verb opens a container") is now false. Widening the reachable set to
-  the tables a verb opens is a `validate.rs` change nobody has made.
+  farming lane. The open verb landed 2026-08-14 and the reachable set widened
+  2026-08-17: `validate.rs`'s clock and `content.rs`'s walk both count every
+  verb-openable container (`bake::container_index`); the stale reason is fixed.
 - ~~Day/night does not exist~~ — **landed 2026-08-11** (day/night v0,
   `DECISIONS.md` §open): 45-minute cycle, 70 % day, derived from the tick
   with **no wire field**, driven through the rig's coupled-set owner.
@@ -2445,16 +2522,15 @@ crate-wide, but its *contiguity* claim is file-local.
 
 ---
 
-## 5b · The wire accepts values the sim can never mean
+## 5b · The wire accepts values the sim can never mean — **CLOSED 2026-08-17**
 
-`every_domain_fits_its_wire_field` (`protocol/src/event.rs`) gates ten value
-domains; the sim/server refusal side is closed (`lane/wire-values`:
-`BAG_GONE_*`/`REFUSE_C_*` refused at the pump and counted, `buttons` bits
-4–7 refused at `accept_input`, never a disconnect). Still open, the wire act
-this item always named: the *decode* side — the client's decoder taking
-`why == 3` / `reason` 4..15, the button octet — plus deriving the two
-`*_MAX`s into protocol's exempt list and the `PROTO_VER` judgement for
-narrowing what decodes. One protocol pass. Systems lane (`crates/protocol`).
+The decode side landed: `why == 3` / `reason` 4..15 refuse as `Malformed`,
+counted at the client pump; both `*_MAX`s derive from sim-core and the exempt
+list carries them; no `PROTO_VER` turned — the narrowing rule is written at
+`PROTO_VER` (lib.rs), and the button octet stays whole at the codec by
+decision (`decode_input`'s doc — the wall is `accept_input`'s). The one
+residue (`server/core.rs`'s stale "encoder bounds the width" pump comment)
+was fixed in the same merge window.
 
 ---
 
@@ -2500,46 +2576,51 @@ And two items the arc does not carry, which stay real work:
 Standing rule: anything a playtest breaks jumps this queue; anything a wall
 catches jumps the playtest.
 
-## 5c · The protocol golden has never fuzzed a button above bit 1 *(systems lane)*
+## 5c · The protocol golden never fuzzed a button above bit 1 — **CLOSED 2026-08-18**
 
-Found while landing jump. `goldens.rs` draws the input fixture's `buttons`
-from `rng.next_bounded(4)`, so the golden exercises only `BTN_SPRINT` and
-`BTN_CROUCH` — `BTN_PRIMARY` and `BTN_JUMP` are outside the draw. The field
-is 8 bits wide either way, so the golden still pins the *layout* and nothing
-is currently wrong on the wire; what it cannot see is a future encoder that
-masks or reorders the high nibble.
+`input_full` draws the whole octet now, one fixture moved
+(`v46_input_full.bin`), and **no `PROTO_VER` turned**: the judgement call
+the item asked for went the way it framed it — a golden's fuzz range is the
+test's coverage, not the wire's meaning, so nothing two v46 builds exchange
+changed. The rule is written as the narrowing rule's third clause at
+`PROTO_VER` (lib.rs) and in `goldens.rs`'s header, which now says which of
+the two reasons to regenerate takes a bump and which does not.
 
-Deliberately its own commit: widening the draw changes fixture bytes, and
-changing golden bytes for a reason unrelated to the version's meaning
-muddies the one signal wall 6 reads. It is a `PROTO_VER` judgement call —
-the answer may be that a golden's fuzz range is not part of the wire
-contract at all. Decide that first; it is the actual question. Same shape
-one level down: whether `decode_input` itself should narrow the unmeant
-bits is the protocol pass §5b still owes.
+`the_input_golden_fuzzes_the_whole_button_octet` reads the fixture BYTES
+(every bit set somewhere, and clear somewhere). Its measured job is the
+re-narrowing: with the draw wide a masking encoder already reddens the
+golden's round-trip, but a narrowed draw regenerates green everywhere else
+and this gate alone fails. `goldens.rs:894`'s `loc: next_bounded(4)` looked like
+the same defect and is not — four IS the deploy store's domain
+(`loc_max(true)`), a wider draw would be unencodable, and the piece lane
+already draws all ten; `the_loc_fuzz_covers_each_stores_whole_domain` says
+so rather than a comment.
 
 ## 5d · The agent player has a spec and no code *(systems lane)*
 
-`PLAYERS.md` landed 2026-08-05 — the verb set, the observation encoder, and
-four walls with their gates. Nothing under it is built. `sim-core/bots.rs`
-already drives deterministic synthetic input, so the missing piece is the
-intent layer above it, not a new client.
+`PLAYERS.md` landed 2026-08-05 — the verb set, the observation encoder, four
+walls. `bots.rs` already drives synthetic input; the intent layer is missing.
 
-Smallest useful slice, and it is not the API: **log the condition.** Every
-trust-bearing verb (door, TC authorize, container access, give) gains an
-event carrying whether the counterparty was online, landing inside
-`tests/event_roles.rs` with two causes per code in the same commit (§4's
-discipline). That field is the whole measurement `SUBSTRATE.md` §3 turns on,
-it is ordinary game state a human client already sees, and retrofitting it
-makes every shard-hour logged before it worthless. It is also independently
-useful: offline-raid telemetry is a thing the game wants anyway.
+**LANDED 2026-08-18 — the condition is logged.** `EV_TRUST` (code 39):
+a = actor, b = counterparty, c = `TRUST_*` << 8 | `PRESENCE_*`, pushed by
+`World::log_trust` from four sites — a leaf worked (`deploy::use_door`), a
+lock's code accepted (`lock_op`), a hearth crew seat taken (`crew_op`), a
+box/oven/bag moved through (`World::move_item`). It fires only when the
+record's owner is somebody else; `owner == actor`, `owner == 0` and a
+`mob::mob_id` are silent. Presence is three values, not a bool — awake,
+asleep, **gone** (the body left its slot). Sim-side only, so no wire byte
+moved and wall 6 is untouched. Six checks in `tests/event_roles.rs` — four
+causes, five silences, one ledger parse — and 15 mutants reproduced red
+before any of it was believed.
 
-Then the verb table, then an agent client that plays badly. Wall 1 (agent
-verbs ⊆ human verbs) wants its gate in the same commit as the table, not
-after — it is a subset assertion over two lists and cheap while both are
-small.
-
-Not this lane's call: what an agent pays to enter and what it earns
-(`ALPHA.md` + scry side).
+Remains, in order:
+- **Nothing reads it.** `ShardCore`'s drain hits `_ => {}`: a row is minted
+  and dropped, so no shard-hour is recorded until a server lane sinks it.
+- **A dropped row is gone** — it rides the 256-seat drop-newest ring, and
+  unlike every other event a resync cannot re-derive a fact about a moment.
+- `TRUST_GIVE` waits on the give verb; there is no player-to-player give.
+- Then the verb table, wall 1's subset gate in the same commit, then an agent
+  client that plays badly. Entry price and earnings are `ALPHA.md`.
 
 ## OP · the operator lane — a loop cannot pick any of these
 

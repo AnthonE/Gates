@@ -77,6 +77,7 @@ pub fn stream(
     time: Res<Time>,
     rig: Res<Rig>,
     net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
 ) {
     // Nothing is drawn until the rig has loaded. A body spawned before it
     // would get no scene and no player, and the bind below only ever runs on
@@ -141,6 +142,18 @@ pub fn stream(
                     // The clip choice, off state the sim already sent.
                     anim.observe(pos, time.delta_secs(), rs.sleeping);
                     anim.pitch = wire_pitch_to_radians(rs.pitch);
+                    // **The one thing the sim sends that state cannot
+                    // imply.** Everything else here is derived — the gait
+                    // comes out of two positions — but a swing is an input
+                    // fact, and a client never receives another player's
+                    // input frame. So it arrives as its own broadcast
+                    // (`EV_SWING`, wire v47) and is applied AFTER `observe`,
+                    // which resets nothing but the gait and would otherwise
+                    // eat a swing heard on the same frame the body started
+                    // moving.
+                    if feed.swings().contains(&id) {
+                        anim.swing();
+                    }
                 }
                 if was_sleeping != rs.sleeping {
                     // The shade lives on the scene's descendants now, so the
@@ -156,6 +169,12 @@ pub fn stream(
                 let mut anim = BodyAnim::default();
                 anim.observe(pos, 0.0, rs.sleeping);
                 anim.pitch = wire_pitch_to_radians(rs.pitch);
+                // A body that enters AOI on the same frame it swings still
+                // gets its arc; without this the first swing of every
+                // newly-visible raider is the one nobody sees.
+                if feed.swings().contains(&id) {
+                    anim.swing();
+                }
                 let entity = commands
                     .spawn((
                         super::WorldEntity,

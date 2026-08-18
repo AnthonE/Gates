@@ -36,8 +36,9 @@ use sim_core::limits::{
 use sim_core::research::{ResearchRow, NO_RECIPE};
 
 /// Longest event-lane message. Sized by the worst subtype (a full catalog
-/// batch ≈ 264 B, a full slot-sync batch ≈ 258 B) with headroom; the
-/// client-side framer refuses past it. Registered in DECISIONS.md §open.
+/// batch ≈ 280 B since v46's per-row `cond_max`, a full slot-sync batch
+/// ≈ 258 B) with headroom; the client-side framer refuses past it.
+/// Registered in DECISIONS.md §open.
 pub const MAX_EVENT_MSG_BYTES: usize = 320;
 
 /// Harvested cells one sync message carries (join sync is drip-fed, one
@@ -279,7 +280,14 @@ const SUB_BAGS: u32 = 50;
 /// stop test can answer (`ranged::SURF_*`); a fourth would be a new
 /// question asked on the hot path, not a spare code waiting here.
 const SUB_IMPACT: u32 = 51;
-const SUB_MAX: u32 = SUB_IMPACT;
+/// A body swung, and every client drawing that body needs to know.
+///
+/// One `u32` and nothing else — no position, because every body's place is
+/// already in the snapshot, and no outcome, because the arm moves whether
+/// or not the swing found anything. `SUB_SHOT` is the shape this copies:
+/// a broadcast cosmetic fact about someone else's hands.
+const SUB_SWING: u32 = 52;
+const SUB_MAX: u32 = SUB_SWING;
 /// Width of `SUB_IMPACT`'s surface field, and how many values it may say.
 ///
 /// **`SURF_KINDS` is derived from the sim's own last kind rather than
@@ -349,6 +357,17 @@ const _: () = assert!(
 /// Consume-refusal reason width (`survival::REFUSE_C_*`: three codes
 /// today, and zero is reserved as "no reason", which the codec refuses).
 const REFUSE_C_BITS: u32 = 4;
+/// **Derived, never restated** — `DEATH_CAUSE_MAX`'s posture, for the same
+/// reason: a literal here is a copy of a fact that lives in `survival.rs`,
+/// and both the encoder and the decoder bound the reason against this, so
+/// a copy that drifted would refuse a refusal the sim actually issued.
+const REFUSE_C_MAX: u32 = sim_core::survival::REFUSE_C_MAX;
+const _: () = assert!(
+    REFUSE_C_MAX < (1 << REFUSE_C_BITS),
+    "survival::REFUSE_C_MAX no longer fits REFUSE_C_BITS — a new consume \
+     refusal needs the field widened, PROTO_VER bumped and the goldens \
+     regenerated in this same commit (CLAUDE.md wall 6)"
+);
 /// Gather-refusal reason width (`gather::REFUSE_G_*`: two codes today,
 /// zero reserved as "no reason", refused at both ends — `REFUSE_C_BITS`'s
 /// posture exactly).
@@ -437,8 +456,18 @@ const _: () = assert!(
 /// than by the width — 31..63 are forgeable and refuse, the way `SUB_INV`
 /// refuses a count past `INV_SLOTS`.
 const CONT_COUNT_BITS: u32 = 6;
-/// Why a bag left: `sim_core::backpack::BAG_GONE_*`, three values today.
+/// Why a bag left: `sim_core::backpack::BAG_GONE_*`, three values today,
+/// so the fourth pattern the width holds is forgeable and both ends
+/// refuse it against the derived bound below.
 const BAG_GONE_BITS: u32 = 2;
+/// **Derived, never restated** — `REFUSE_C_MAX`'s posture exactly.
+const BAG_GONE_MAX: u32 = sim_core::backpack::BAG_GONE_MAX;
+const _: () = assert!(
+    BAG_GONE_MAX < (1 << BAG_GONE_BITS),
+    "backpack::BAG_GONE_MAX no longer fits BAG_GONE_BITS — a new bag-gone \
+     reason needs the field widened, PROTO_VER bumped and the goldens \
+     regenerated in this same commit (CLAUDE.md wall 6)"
+);
 
 /// One changed inventory slot on the wire.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -450,10 +479,18 @@ pub struct InvSlot {
 /// The item-index → display-name table (the mapping `content::bake`
 /// promises the wire ships). Server bakes it at boot; the client fills
 /// its copy from catalog messages. Fixed storage, `MAX_ITEM_DEFS` rows.
+///
+/// v46 added `cond_max` — the item's condition ceiling in the same u16
+/// hundredths `ItemStack::cond` rides the container lanes in — because the
+/// client held condition with nothing to divide it by (NOW.md §0dur.1: the
+/// catalog dripped names only, no def table carried a ceiling, and the
+/// client links no content crate). 0 means the item carries no condition,
+/// the same convention `content` and the sim use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemCatalog {
     pub names: [[u8; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
     pub lens: [u8; MAX_ITEM_DEFS],
+    pub cond_max: [u16; MAX_ITEM_DEFS],
     pub count: u16,
 }
 
@@ -461,18 +498,23 @@ impl ItemCatalog {
     pub const EMPTY: Self = Self {
         names: [[0; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
         lens: [0; MAX_ITEM_DEFS],
+        cond_max: [0; MAX_ITEM_DEFS],
         count: 0,
     };
 
-    /// Install one name. Refuses empty, oversize, or out-of-table — the
-    /// server's bake path turns this into a refused boot.
-    pub fn set(&mut self, idx: usize, name: &[u8]) -> Result<(), WireError> {
+    /// Install one row. Refuses empty, oversize, or out-of-table — the
+    /// server's bake path turns this into a refused boot. `cond_max` is a
+    /// parameter rather than a second setter so the compiler refuses a row
+    /// installed without its ceiling (the omission that kept the column
+    /// off the wire for four versions).
+    pub fn set(&mut self, idx: usize, name: &[u8], cond_max: u16) -> Result<(), WireError> {
         if idx >= MAX_ITEM_DEFS || name.is_empty() || name.len() > MAX_ITEM_NAME_BYTES {
             return Err(WireError::Range);
         }
         self.names[idx][..name.len()].copy_from_slice(name);
         self.names[idx][name.len()..].fill(0);
         self.lens[idx] = name.len() as u8;
+        self.cond_max[idx] = cond_max;
         Ok(())
     }
 
@@ -481,6 +523,16 @@ impl ItemCatalog {
             &self.names[idx][..self.lens[idx] as usize]
         } else {
             &[]
+        }
+    }
+
+    /// The condition ceiling for one item index; 0 out of table, matching
+    /// the 0-means-no-condition convention in table.
+    pub fn cond_max(&self, idx: usize) -> u16 {
+        if idx < MAX_ITEM_DEFS {
+            self.cond_max[idx]
+        } else {
+            0
         }
     }
 }
@@ -520,12 +572,16 @@ pub enum EventMsg {
         count: u8,
     },
     /// Item display names `first..first+count` of a `total`-row table.
+    /// Each row carries its condition ceiling too (v46) — the number
+    /// `pip_fraction` divides a container lane's `cond` by; 0 means the
+    /// item carries no condition.
     Catalog {
         total: u8,
         first: u8,
         count: u8,
         names: [[u8; MAX_ITEM_NAME_BYTES]; CATALOG_BATCH],
         lens: [u8; CATALOG_BATCH],
+        cond_max: [u16; CATALOG_BATCH],
     },
     /// Own weak-spot mark after a landed hit (swinger-only): the node's
     /// cell, the next mark heading (u8 over the shared 256-entry yaw LUT,
@@ -778,6 +834,15 @@ pub enum EventMsg {
     /// mark in the world is the same mark whoever made it, and the client
     /// that wants to know whose arrow it was already heard the shot.
     Impact { qx: i32, qy: i32, qz: i32, surf: u8 },
+    /// A body swung (wire v47). The swinger's entity id and nothing else:
+    /// the receiver already knows where that body is and which way it
+    /// faces, and what it could not know is that the arm moved, because a
+    /// client never receives another player's input frame.
+    ///
+    /// Outcome-free on purpose — it fires on a whiff as well as a hit, and
+    /// the whiff is the commoner of the two. `EV_HIT` is the hit fact and
+    /// is unicast to the attacker.
+    Swing { swinger: u32 },
     /// The feed ack: the hearth's stock rows after the transfer, aligned
     /// to the baked upkeep-material list (item index, units).
     Stock {
@@ -1068,6 +1133,7 @@ pub fn encode_event_catalog(
         for &b in name {
             w.write(b as u32, 8)?;
         }
+        w.write(catalog.cond_max(idx) as u32, 16)?;
     }
     Ok((w.finish(), count))
 }
@@ -1915,6 +1981,16 @@ pub fn encode_event_impact(
     Ok(w.finish())
 }
 
+/// One swing, as the wire carries it: who. Thirty-two bits, the same width
+/// `Shot` spends on its shooter, because an entity id is an entity id and a
+/// narrower field here would be a second opinion about how many bodies
+/// there can be.
+pub fn encode_event_swing(swinger: u32, buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = begin(buf, SUB_SWING)?;
+    w.write(swinger, 32)?;
+    Ok(w.finish())
+}
+
 /// The attacker's hitmarker: `damage` landed on `victim`.
 /// One standing backpack as the wire carries it: identity and where it
 /// is, nothing else. Owner, expiry and contents stay sim-side — the
@@ -2048,8 +2124,14 @@ pub fn encode_event_cont_sync(
     Ok(w.finish())
 }
 
+/// The bag's exit, with its `backpack::BAG_GONE_*` reason. Bounded by the
+/// sim's ledger and not by the width — the posture every refusal encoder
+/// here takes (`REFUSE_M_MAX`, `REFUSE_G_MAX`, `REFUSE_C_MAX`). It checked
+/// only the width until 2026-08-17, which left `why == 3` — a value the
+/// ledger has no name for — encodable; nothing ever sent it (the sim
+/// cannot emit one), so closing it moves no golden.
 pub fn encode_event_bag_removed(id: u32, why: u8, buf: &mut [u8]) -> Result<usize, WireError> {
-    if (why as u32) >= (1 << BAG_GONE_BITS) {
+    if (why as u32) > BAG_GONE_MAX {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_BAG_REMOVED)?;
@@ -2192,7 +2274,7 @@ pub fn encode_event_consumed(item: u16, slot: u8, buf: &mut [u8]) -> Result<usiz
 /// end; both are refused at the encoder, the posture every other refusal
 /// encoder here already takes (`REFUSE_M_MAX`, `REFUSE_G_MAX`).
 pub fn encode_event_consume_refused(reason: u8, buf: &mut [u8]) -> Result<usize, WireError> {
-    if reason == 0 || (reason as u32) > sim_core::survival::REFUSE_C_MAX {
+    if reason == 0 || (reason as u32) > REFUSE_C_MAX {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_CONSUME_REFUSED)?;
@@ -2348,6 +2430,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             let mut names = [[0u8; MAX_ITEM_NAME_BYTES]; CATALOG_BATCH];
             let mut lens = [0u8; CATALOG_BATCH];
+            let mut cond_max = [0u16; CATALOG_BATCH];
             for i in 0..count {
                 let len = r.read(NAME_LEN_BITS)? as usize;
                 if len == 0 || len > MAX_ITEM_NAME_BYTES {
@@ -2357,6 +2440,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     *b = r.read(8)? as u8;
                 }
                 lens[i] = len as u8;
+                cond_max[i] = r.read(16)? as u16;
             }
             EventMsg::Catalog {
                 total: total as u8,
@@ -2364,6 +2448,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 count: count as u8,
                 names,
                 lens,
+                cond_max,
             }
         }
         SUB_WEAK_MARK => EventMsg::WeakMark {
@@ -2827,6 +2912,9 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             m
         }
+        SUB_SWING => EventMsg::Swing {
+            swinger: r.read(32)?,
+        },
         SUB_IMPACT => {
             let qx = r.read(POS_XZ_BITS)? as i32;
             let qy = r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS;
@@ -2936,9 +3024,14 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             EventMsg::Consumed { item, slot }
         }
+        // Zero is "no reason" and 4..=15 name nothing in the sim's ledger
+        // — both are refused, not passed through. Narrowed 2026-08-17 with
+        // **no version turn**: see the narrowing rule at `PROTO_VER`
+        // (lib.rs) — the encoder never let these values out, so no
+        // compliant peer's bytes change meaning.
         SUB_CONSUME_REFUSED => {
             let reason = r.read(REFUSE_C_BITS)? as u8;
-            if reason == 0 {
+            if reason == 0 || (reason as u32) > REFUSE_C_MAX {
                 return Err(WireError::Malformed);
             }
             EventMsg::ConsumeRefused { reason }
@@ -3073,10 +3166,19 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 count: count as u8,
             }
         }
-        SUB_BAG_REMOVED => EventMsg::BagRemoved {
-            id: r.read(32)?,
-            why: r.read(BAG_GONE_BITS)? as u8,
-        },
+        // The width's fourth value names no `BAG_GONE_*` and is refused —
+        // `SUB_CONSUME_REFUSED`'s narrowing, same date, same no-bump
+        // reasoning (the narrowing rule at `PROTO_VER`, lib.rs). Until
+        // then a forged `why == 3` decoded intact and reached the HUD as
+        // a value no rule owns.
+        SUB_BAG_REMOVED => {
+            let id = r.read(32)?;
+            let why = r.read(BAG_GONE_BITS)? as u8;
+            if (why as u32) > BAG_GONE_MAX {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::BagRemoved { id, why }
+        }
         _ => return Err(WireError::Malformed),
     };
     expect_zero_padding(&mut r)?;
@@ -3207,9 +3309,11 @@ mod tests {
         let mut cat = ItemCatalog::EMPTY;
         cat.count = 11;
         for i in 0..11usize {
-            // Worst-width names so the cap check is honest.
+            // Worst-width names so the cap check is honest; ceilings mix
+            // zero (no condition) with the full u16 corner.
             let name = [b'a' + (i as u8 % 26); MAX_ITEM_NAME_BYTES];
-            cat.set(i, &name).unwrap();
+            let cond_max = if i % 2 == 0 { 0 } else { u16::MAX - i as u16 };
+            cat.set(i, &name, cond_max).unwrap();
         }
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
@@ -3222,9 +3326,13 @@ mod tests {
                 count,
                 names,
                 lens,
+                cond_max,
             } => {
                 assert_eq!((total, first, count), (11, 0, CATALOG_BATCH as u8));
                 assert_eq!(&names[0][..lens[0] as usize], cat.name(0));
+                for (i, &cm) in cond_max.iter().enumerate().take(CATALOG_BATCH) {
+                    assert_eq!(cm, cat.cond_max(i), "ceiling column drifted at row {i}");
+                }
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -4310,12 +4418,11 @@ mod wire_domains {
     /// so a later reader does not "tidy" one into the other. `PLACE_*`
     /// saturates its two bits exactly (0..=3, all live), so no value is
     /// forgeable and the decoder needs no domain check. `REFUSE_C_*` and
-    /// `BAG_GONE_*` do **not** saturate, and neither bounds its upper end
-    /// against the domain — values above the live set round-trip intact.
-    /// That is a forgery slack rather than the drift this gate catches
-    /// (the sim can never emit one), and it is written up as its own
-    /// `NOW.md` item rather than fixed here, because narrowing what
-    /// decodes is a wire act and this pass is a gate.
+    /// `BAG_GONE_*` do **not** saturate — and since 2026-08-17 both ends
+    /// refuse the slack against the sim's own `*_MAX` (the wire act
+    /// NOW.md §5b owed; `the_refusal_slack_refuses_at_both_ends` is the
+    /// gate, and the narrowing rule at `PROTO_VER` is why no version
+    /// turned for it).
     const DOMAINS: &[Domain] = &[
         Domain {
             what: "death cause",
@@ -4351,7 +4458,13 @@ mod wire_domains {
             home: "survival.rs",
             prefix: "pub const REFUSE_C_",
             ty: ": u32 = ",
-            exempt: &[],
+            // `REFUSE_C_MAX` names the ledger rather than sitting in it.
+            // It is a literal upstream only because this exempt row did
+            // not exist when it landed (`survival.rs` says so); with the
+            // row here, `sim-core` is free to alias it like `DEATH_BY_MAX`,
+            // and this module reads the constant itself — not the scrape —
+            // wherever it bounds the field.
+            exempt: &["MAX"],
             min_members: 3,
             bits: REFUSE_C_BITS,
             live_max: 3,
@@ -4525,7 +4638,9 @@ mod wire_domains {
             home: "backpack.rs",
             prefix: "pub const BAG_GONE_",
             ty: ": u32 = ",
-            exempt: &[],
+            // The ledger's name, not a member — the consume-refusal row's
+            // note in full.
+            exempt: &["MAX"],
             min_members: 3,
             bits: BAG_GONE_BITS,
             live_max: 2,
@@ -4905,6 +5020,85 @@ mod wire_domains {
                 Err(WireError::Range),
                 "cause {forged} is not a live death and the encoder let it \
                  through — the domain is no longer closed"
+            );
+        }
+    }
+
+    /// The two non-saturating refusal domains refuse their slack at BOTH
+    /// ends (NOW.md §5b, decode side). `BAG_GONE_*` tops out at 2 in a
+    /// 2-bit field and `REFUSE_C_*` at 3 in a 4-bit one, so `why == 3` and
+    /// `reason` 4..=15 fit the width while naming nothing in the sim's
+    /// ledger. Until 2026-08-17 the decoder passed them through intact —
+    /// a value no rule owns, handed to the HUD — and `encode_event_bag_
+    /// removed` checked only the width. Both bounds now derive from the
+    /// sim's own `*_MAX` (`the_highest_live_death_cause_encodes`' posture),
+    /// and the forged patterns are `Malformed`, which the client's pump
+    /// counts and drops (`ClientCore::on_stream`) — never a panic, never a
+    /// disconnect. Forged by hand because the encoder refuses them.
+    #[test]
+    fn the_refusal_slack_refuses_at_both_ends() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+
+        // Every live bag-removal reason still round-trips…
+        for why in 0..=sim_core::backpack::BAG_GONE_MAX {
+            let len = encode_event_bag_removed(11, why as u8, &mut buf).unwrap();
+            match decode_event(&buf[..len]).unwrap() {
+                EventMsg::BagRemoved { id: 11, why: got } => assert_eq!(got as u32, why),
+                other => panic!("why {why} decoded as {other:?}"),
+            }
+        }
+        // …the encoder refuses the first pattern past the ledger (it fits
+        // the width, which is exactly why the check must be the domain)…
+        let forged_why = sim_core::backpack::BAG_GONE_MAX + 1;
+        const { assert!(sim_core::backpack::BAG_GONE_MAX + 1 < (1 << BAG_GONE_BITS)) };
+        assert_eq!(
+            encode_event_bag_removed(11, forged_why as u8, &mut buf),
+            Err(WireError::Range),
+            "why {forged_why} names no BAG_GONE_* and the encoder let it through"
+        );
+        // …and the decoder refuses it off the wire, because a client that
+        // trusted the encoder's checks would be trusting a server it has
+        // no reason to.
+        let mut w = BitWriter::new(&mut buf);
+        w.write(KIND_EVENT, KIND_BITS).unwrap();
+        w.write(SUB_BAG_REMOVED, SUB_BITS).unwrap();
+        w.write(11, 32).unwrap();
+        w.write(forged_why, BAG_GONE_BITS).unwrap();
+        let len = w.finish();
+        assert_eq!(
+            decode_event(&buf[..len]),
+            Err(WireError::Malformed),
+            "a forged why == {forged_why} must be refused, not passed through"
+        );
+
+        // The consume refusal: every value the width holds past the
+        // ledger — the whole 4..=15 forgery range — is `Malformed`.
+        for reason in (sim_core::survival::REFUSE_C_MAX + 1)..(1 << REFUSE_C_BITS) {
+            let mut w = BitWriter::new(&mut buf);
+            w.write(KIND_EVENT, KIND_BITS).unwrap();
+            w.write(SUB_CONSUME_REFUSED, SUB_BITS).unwrap();
+            w.write(reason, REFUSE_C_BITS).unwrap();
+            let len = w.finish();
+            assert_eq!(
+                decode_event(&buf[..len]),
+                Err(WireError::Malformed),
+                "reason {reason} names no REFUSE_C_* and decoded anyway"
+            );
+        }
+        // The encoder half already held (`encode_event_consume_refused`);
+        // pinned here so the two ends are asserted side by side.
+        assert_eq!(
+            encode_event_consume_refused((sim_core::survival::REFUSE_C_MAX + 1) as u8, &mut buf),
+            Err(WireError::Range)
+        );
+        // And the live set still crosses.
+        for reason in 1..=sim_core::survival::REFUSE_C_MAX {
+            let len = encode_event_consume_refused(reason as u8, &mut buf).unwrap();
+            assert_eq!(
+                decode_event(&buf[..len]).unwrap(),
+                EventMsg::ConsumeRefused {
+                    reason: reason as u8
+                }
             );
         }
     }

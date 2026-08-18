@@ -46,6 +46,23 @@ use sim_core::oven::{CookContent, CookRow};
 use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
 
+/// Container name → baked `loot::LOOT_*` index, for exactly the containers
+/// the sim owns an open verb for: a barrel is smashed (`gather::smash`) and
+/// a crate or a cache is opened (`worldcont::open`, world containers v0,
+/// 2026-08-14). One authority on purpose — `bake_loot` resolves through it
+/// and `validate`'s reachability set widens by it — so "which containers a
+/// verb opens" cannot drift between the two the way a hand-kept list would
+/// (the CLAUDE.md mirror trap). `ci/haven_prize.mjs` greps this match for
+/// the literal `"<container>" => LOOT_*` arms, so keep them spelled bare.
+pub fn container_index(name: &str) -> Option<usize> {
+    Some(match name {
+        "barrel" => LOOT_BARREL,
+        "crate" => LOOT_CRATE,
+        "cache" => LOOT_CACHE,
+        _ => return None,
+    })
+}
+
 /// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
 fn node_slot(a: NodeArchetype) -> usize {
     match a {
@@ -1090,17 +1107,12 @@ impl Content {
         }
         let mut lc = LootContent::EMPTY;
         for l in &self.loot_tables {
-            let which = match l.container.as_str() {
-                "barrel" => LOOT_BARREL,
-                "crate" => LOOT_CRATE,
-                "cache" => LOOT_CACHE,
-                other => {
-                    return Err(format!(
-                        "bake: loot `{}` names container `{other}`, which the sim has no verb for",
-                        l.id
-                    ))
-                }
-            };
+            let which = container_index(&l.container).ok_or_else(|| {
+                format!(
+                    "bake: loot `{}` names container `{}`, which the sim has no verb for",
+                    l.id, l.container
+                )
+            })?;
             if l.entries.len() > MAX_LOOT_ENTRIES {
                 return Err(format!(
                     "bake: loot `{}` has {} rows, past the sim's {MAX_LOOT_ENTRIES}",

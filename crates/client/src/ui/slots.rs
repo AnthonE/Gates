@@ -400,6 +400,41 @@ pub fn count_badge(count: u16) -> Option<String> {
     (count > 1).then(|| format!("x{count}"))
 }
 
+/// The durability pip's fill fraction, or `None` when no pip is drawn
+/// (`NOW.md` §0dur item 1) — [`count_badge`]'s shape for the other number a
+/// cell carries.
+///
+/// The reference's rule, and all three states are it: a thin bar under the
+/// icon, **visible only when the item is worn**. An item that carries no
+/// condition (`cond_max == 0` — wood, stone, every stackable) never draws
+/// one; a pristine tool (`cond >= cond_max`, and `>` only off a smuggled
+/// save) draws none either, because a full bar under every fresh tool is a
+/// screen of bars; a worn tool draws `cond / cond_max`, and a dead one
+/// (`cond == 0` under a nonzero ceiling) draws the bar EMPTY — the warning
+/// `REFUSE_G_BROKEN` otherwise gives only at the moment the swing bounces.
+///
+/// **The ceiling arrives now** (wire v46, 2026-08-17): the catalog drip
+/// carries `cond_max` beside every name, so a panel's call is
+/// `pip_fraction(stack.cond, core.catalog.cond_max(stack.item as usize))`.
+/// Until that bump this function had no possible caller — the client held
+/// `cond` per stack (wire v42) and NO ceiling to divide by, because the
+/// catalog was names-only and the client links no content crate. A
+/// session-learned ceiling (max `cond` seen per item) was considered and
+/// REFUSED on the way: a tool looted half-worn would read pristine, which
+/// is the exact lie the pip exists to prevent; and hardcoding the per-item
+/// table here is wall 7's business.
+///
+/// **Drawn since 2026-08-17** by all three cells that hold a stack — the
+/// hotbar (`render::hud`), the inventory and container grids and the drag
+/// ghost (`render::panels::inv`) — and by nothing else, which is a property
+/// of call sites rather than of this value, so `tests/ui.rs` §Q scans for
+/// them. The colours and the bar's height are
+/// `render::panels::{PIP_FILL, PIP_TROUGH, PIP_H_PX}`; this function decides
+/// only whether there is a bar and how full it is.
+pub fn pip_fraction(cond: u16, cond_max: u16) -> Option<f32> {
+    (cond < cond_max).then(|| cond as f32 / cond_max as f32)
+}
+
 /// Where the thing in your hand is drawn, given the cursor and the tile's
 /// edge: **centred on the pointer**, which is what every game this client's
 /// players arrive from does.

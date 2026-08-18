@@ -4,10 +4,17 @@
 //! produces them byte-for-byte. Content is deterministic (sim-core Pcg32,
 //! fixed seeds), so "regenerate" is reproducible on any box.
 //!
-//! Regenerating fixtures is only ever legitimate alongside a `PROTO_VER`
-//! bump in the same commit (CLAUDE.md wall 6). A diff here without a bump
-//! is the wire drifting by accident — the exact thing the gate exists to
-//! catch.
+//! Regenerating fixtures is legitimate for exactly two reasons, the diff
+//! looks the same either way, and that is why each takes its own commit.
+//! **The encoder moved** — a layout or a meaning change — takes a
+//! `PROTO_VER` bump in the same commit (CLAUDE.md wall 6); a diff here
+//! without one is the wire drifting by accident, the exact thing the gate
+//! exists to catch. **The fixture's INPUT moved** — a fuzz draw widened, a
+//! deliberate value pinned — takes no bump, because a constructor in this
+//! module is the test's coverage and not a fact about the wire
+//! (`PROTO_VER`'s own doc carries that rule, decided 2026-08-18 under
+//! NOW.md §5c). Never both at once: the bytes would then move for two
+//! reasons and no reader afterwards can tell which byte answers to which.
 
 use crate::{
     ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, Nudge, Refuse,
@@ -29,129 +36,130 @@ use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 95] = [
-    "v45_input_acks_only.bin",
-    "v45_input_full.bin",
-    "v45_snapshot_keyframe.bin",
-    "v45_snapshot_delta.bin",
-    "v45_snapshot_cap.bin",
-    "v45_hello.bin",
-    "v45_welcome.bin",
-    "v45_refuse_full.bin",
-    "v45_event_gather.bin",
-    "v45_event_inv.bin",
-    "v45_event_slot_harvested.bin",
-    "v45_event_slot_respawned.bin",
-    "v45_event_slot_sync.bin",
-    "v45_event_catalog.bin",
-    "v45_event_weak_mark.bin",
-    "v45_event_craft_q.bin",
-    "v45_event_craft_done.bin",
-    "v45_event_craft_refused.bin",
-    "v45_event_recipes.bin",
-    "v45_action_craft.bin",
-    "v45_action_cancel.bin",
-    "v45_action_place.bin",
-    "v45_event_piece_placed.bin",
-    "v45_event_piece_sync.bin",
-    "v45_event_build_refused.bin",
-    "v45_event_piece_defs.bin",
-    "v45_action_deploy.bin",
-    "v45_action_feed.bin",
-    "v45_event_deploy_placed.bin",
-    "v45_event_deploy_sync.bin",
-    "v45_event_deploy_refused.bin",
-    "v45_event_deploy_defs.bin",
-    "v45_event_piece_removed.bin",
-    "v45_event_deploy_removed.bin",
-    "v45_event_stock.bin",
-    "v45_action_use.bin",
-    "v45_action_access.bin",
-    "v45_event_door.bin",
-    "v45_action_upgrade.bin",
-    "v45_chat.bin",
-    "v45_event_chat.bin",
-    "v45_event_hit.bin",
-    "v45_event_health.bin",
-    "v45_event_death.bin",
-    "v45_action_loot.bin",
-    "v45_event_bag_dropped.bin",
-    "v45_event_bag_sync.bin",
-    "v45_event_bag_removed.bin",
-    "v45_event_struct_hit_piece.bin",
-    "v45_event_struct_hit_deploy.bin",
-    "v45_event_vitals.bin",
-    "v45_event_consumed.bin",
-    "v45_event_consume_refused.bin",
-    "v45_action_consume.bin",
-    "v45_event_drank.bin",
-    "v45_action_drink.bin",
-    "v45_event_respawn.bin",
-    "v45_action_respawn.bin",
-    "v45_action_move.bin",
-    "v45_event_moved.bin",
-    "v45_event_move_refused.bin",
-    "v45_action_move_box.bin",
-    "v45_action_container.bin",
-    "v45_action_container_close.bin",
-    "v45_event_cont_sync.bin",
-    "v45_event_cont_close.bin",
-    "v45_action_repair_piece.bin",
-    "v45_action_repair_deploy.bin",
-    "v45_event_piece_repaired_piece.bin",
-    "v45_event_piece_repaired_deploy.bin",
-    "v45_action_throw_piece.bin",
-    "v45_action_throw_deploy.bin",
-    "v45_event_charge_placed_piece.bin",
-    "v45_event_charge_placed_deploy.bin",
-    "v45_challenge.bin",
-    "v45_auth.bin",
-    "v45_event_oven_lit.bin",
-    "v45_event_oven_out.bin",
+pub const FIXTURES: [&str; 96] = [
+    "v47_input_acks_only.bin",
+    "v47_input_full.bin",
+    "v47_snapshot_keyframe.bin",
+    "v47_snapshot_delta.bin",
+    "v47_snapshot_cap.bin",
+    "v47_hello.bin",
+    "v47_welcome.bin",
+    "v47_refuse_full.bin",
+    "v47_event_gather.bin",
+    "v47_event_inv.bin",
+    "v47_event_slot_harvested.bin",
+    "v47_event_slot_respawned.bin",
+    "v47_event_slot_sync.bin",
+    "v47_event_catalog.bin",
+    "v47_event_weak_mark.bin",
+    "v47_event_craft_q.bin",
+    "v47_event_craft_done.bin",
+    "v47_event_craft_refused.bin",
+    "v47_event_recipes.bin",
+    "v47_action_craft.bin",
+    "v47_action_cancel.bin",
+    "v47_action_place.bin",
+    "v47_event_piece_placed.bin",
+    "v47_event_piece_sync.bin",
+    "v47_event_build_refused.bin",
+    "v47_event_piece_defs.bin",
+    "v47_action_deploy.bin",
+    "v47_action_feed.bin",
+    "v47_event_deploy_placed.bin",
+    "v47_event_deploy_sync.bin",
+    "v47_event_deploy_refused.bin",
+    "v47_event_deploy_defs.bin",
+    "v47_event_piece_removed.bin",
+    "v47_event_deploy_removed.bin",
+    "v47_event_stock.bin",
+    "v47_action_use.bin",
+    "v47_action_access.bin",
+    "v47_event_door.bin",
+    "v47_action_upgrade.bin",
+    "v47_chat.bin",
+    "v47_event_chat.bin",
+    "v47_event_hit.bin",
+    "v47_event_health.bin",
+    "v47_event_death.bin",
+    "v47_action_loot.bin",
+    "v47_event_bag_dropped.bin",
+    "v47_event_bag_sync.bin",
+    "v47_event_bag_removed.bin",
+    "v47_event_struct_hit_piece.bin",
+    "v47_event_struct_hit_deploy.bin",
+    "v47_event_vitals.bin",
+    "v47_event_consumed.bin",
+    "v47_event_consume_refused.bin",
+    "v47_action_consume.bin",
+    "v47_event_drank.bin",
+    "v47_action_drink.bin",
+    "v47_event_respawn.bin",
+    "v47_action_respawn.bin",
+    "v47_action_move.bin",
+    "v47_event_moved.bin",
+    "v47_event_move_refused.bin",
+    "v47_action_move_box.bin",
+    "v47_action_container.bin",
+    "v47_action_container_close.bin",
+    "v47_event_cont_sync.bin",
+    "v47_event_cont_close.bin",
+    "v47_action_repair_piece.bin",
+    "v47_action_repair_deploy.bin",
+    "v47_event_piece_repaired_piece.bin",
+    "v47_event_piece_repaired_deploy.bin",
+    "v47_action_throw_piece.bin",
+    "v47_action_throw_deploy.bin",
+    "v47_event_charge_placed_piece.bin",
+    "v47_event_charge_placed_deploy.bin",
+    "v47_challenge.bin",
+    "v47_auth.bin",
+    "v47_event_oven_lit.bin",
+    "v47_event_oven_out.bin",
     // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
-    "v45_event_knock.bin",
-    "v45_event_auth.bin",
-    "v45_action_access_crew.bin",
-    "v45_action_demolish.bin",
-    "v45_event_shot.bin",
+    "v47_event_knock.bin",
+    "v47_event_auth.bin",
+    "v47_action_access_crew.bin",
+    "v47_action_demolish.bin",
+    "v47_event_shot.bin",
     // World containers v0 (v37): the fourth container kind. Three
     // fixtures and not one, because `action_move_box`'s own doc records
     // what happens otherwise — the third kind crossed the wire for a
     // whole version with only the *open* pinned, so the bytes that mean
     // "take it out of the box" were checked by nothing. Kind 3 gets its
     // open, its move and its sync in the commit that legalises it.
-    "v45_action_container_world.bin",
-    "v45_action_move_world.bin",
-    "v45_event_cont_sync_world.bin",
+    "v47_action_container_world.bin",
+    "v47_action_move_world.bin",
+    "v47_event_cont_sync_world.bin",
     // The bench ladder + tech tree (v38): the unlock action and the
     // research-rows drip, plus the three research-lane events that had
     // ridden unpinned since v32 — the role gate checked their payloads
     // and nothing checked their bytes, which is the exact seat the v37
     // world-container note called out as empty.
-    "v45_action_unlock.bin",
-    "v45_event_research_rows.bin",
-    "v45_event_research.bin",
-    "v45_event_research_refused.bin",
-    "v45_event_known.bin",
+    "v47_action_unlock.bin",
+    "v47_event_research_rows.bin",
+    "v47_event_research.bin",
+    "v47_event_research_refused.bin",
+    "v47_event_known.bin",
     // The table verb's own action, pinned by the local branch and kept
     // through the 2026-08-15 integration: `encode_action_research` is
     // still live (the client's `verbs.rs` calls it), so
     // `every_encoder_has_a_golden` requires these bytes.
-    "v45_action_research.bin",
+    "v47_action_research.bin",
     // The gather refusal (v42) — appended, because the manifest is
     // positional and a name in the middle silently renumbers every
     // writer after it.
-    "v45_event_gather_refused.bin",
+    "v47_event_gather_refused.bin",
     // Bag choice v0 (v43): the own-fact bag list the death screen shapes
     // itself around. Appended for the same positional reason.
-    "v45_event_bags.bin",
+    "v47_event_bags.bin",
     // Surface marks v0 (v45): where an arrow stopped, and on what.
     // Appended, like the two above — `gen_goldens` writes this list by
     // INDEX, so inserting anywhere but the end silently re-points every
     // fixture after the insertion at another message's bytes.
-    "v45_event_impact.bin",
+    "v47_event_impact.bin",
+    "v47_event_swing.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -326,17 +334,47 @@ pub fn input_acks_only() -> InputDatagram {
 
 /// A full input datagram: `MAX_INPUT_FRAMES` consecutive frames with
 /// varied field content, seq run crossing the u16 wrap.
+///
+/// **`buttons` is drawn across the whole octet, and it was drawn from
+/// `next_bounded(4)` until 2026-08-18** — so from v0 to v46 the only
+/// fixture that carries a button pinned bits 0–1 and nothing else.
+/// `BTN_PRIMARY` and `BTN_JUMP` were outside the draw, and so was every
+/// unmeant bit. Nothing on the wire was wrong: the field is eight bits
+/// wide either way and the layout was pinned. What no fixture could see is
+/// an encoder that masks or reorders the high nibble on its way out —
+/// `decode_input`'s doc calls a silently narrowed octet the one wrong
+/// answer, and the golden was blind to precisely that.
+///
+/// The draw is the **wire width**, not `BTN_MASK`: bits 4–7 name no button
+/// and the codec carries them whole on purpose, so a fixture that stopped
+/// at the mask would re-open half the hole. The seed happens to cover all
+/// eight bits set and all eight clear across the ten frames — happens to,
+/// so `the_input_golden_fuzzes_the_whole_button_octet` checks it off the
+/// fixture bytes rather than trusting it. If a future draw change loses a
+/// bit, set it deliberately on a named frame (`rng_entity`'s `sleeping`
+/// precedent) rather than rerolling until it comes back.
+///
+/// Widening it changed this fixture's bytes and **turned no `PROTO_VER`**:
+/// what a test feeds an encoder is the test's coverage, not the wire's
+/// meaning (`PROTO_VER`'s narrowing-rule section, third clause).
 pub fn input_full() -> InputDatagram {
     let mut rng = Pcg32::new(0x0047_4154_4553, 11);
     let mut dg = InputDatagram::new(0x0102, 0xFFFF_FFFF, 0xFFFF_FFFE);
     for i in 0..MAX_INPUT_FRAMES as u16 {
         let f = InputFrame {
             seq: 0xFFFC_u16.wrapping_add(i),
-            buttons: rng.next_bounded(4) as u8,
+            buttons: rng.next_bounded(0x100) as u8,
             yaw: rng.next_bounded(0x1_0000) as u16,
             pitch: rng.next_bounded(0x100) as u8,
             move_x: rng.next_bounded(255) as i32 as i8,
             move_z: (rng.next_bounded(255) as i32 - 127) as i8,
+            // 6 is `HOTBAR_SLOTS`, i.e. the whole encodable domain and not
+            // a narrowed one: `encode_input` refuses 6–7 and `decode_input`
+            // refuses them back, so a wider draw here would make the
+            // fixture unencodable rather than better covered. Read that
+            // beside `buttons` above, where the same-looking bound WAS the
+            // defect — the two differ because the codec is total over
+            // `sel` and deliberately not over `buttons`.
             sel: rng.next_bounded(6) as u8,
         };
         dg.push(f).expect("golden construction is in-cap by design");
@@ -576,25 +614,28 @@ pub fn event_weak_mark() -> (u16, u16, u8, bool) {
 }
 
 /// A catalog whose first batch is exactly `CATALOG_BATCH` names of mixed
-/// length — the fixture encodes the batch at `first = 0`.
+/// length — the fixture encodes the batch at `first = 0`. The ceilings
+/// (v46) mix 0 (no condition) with real values and the u16 corner so the
+/// golden pins the column's width and order, not just its presence.
 pub fn event_catalog() -> ItemCatalog {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = 11;
-    let names: [&[u8]; 11] = [
-        b"Wood",
-        b"Stone",
-        b"Metal Ore",
-        b"Sulfur Ore",
-        b"Cloth",
-        b"Animal Fat",
-        b"Charcoal",
-        b"Fixture Name Of Width 24",
-        b"Sulfur",
-        b"Gunpowder",
-        b"Low Grade Fuel",
+    let rows: [(&[u8], u16); 11] = [
+        (b"Wood", 0),
+        (b"Stone", 0),
+        (b"Metal Ore", 0),
+        (b"Sulfur Ore", 0),
+        (b"Cloth", 0),
+        (b"Animal Fat", 0),
+        (b"Charcoal", 40_000),
+        (b"Fixture Name Of Width 24", u16::MAX),
+        (b"Sulfur", 0),
+        (b"Gunpowder", 1),
+        (b"Low Grade Fuel", 0),
     ];
-    for (i, n) in names.iter().enumerate() {
-        cat.set(i, n).expect("golden names are in-cap by design");
+    for (i, (n, cm)) in rows.iter().enumerate() {
+        cat.set(i, n, *cm)
+            .expect("golden names are in-cap by design");
     }
     cat
 }
@@ -882,6 +923,18 @@ pub fn event_deploy_placed() -> DeployRec {
 }
 
 /// A full deploy-sync batch with the reset bit set.
+///
+/// `loc`'s `next_bounded(4)` **looks like `input_full`'s old button draw
+/// and is not the same thing** (checked 2026-08-18, NOW.md §5c). The
+/// deployable store lives on the plane and the two straight edges, so its
+/// whole domain is `0..=LOC_EDGE_ZLO` — `loc_max(true)`, which
+/// `encode_event_deploy_sync` enforces — and a wider draw would make this
+/// fixture *unencodable*, not better covered. The field's own width is
+/// four bits since v40 and its top two are pinned elsewhere:
+/// `event_piece_sync` draws `next_bounded(10)`, the piece store's whole
+/// domain including the diagonals. So the octet-shaped hole does not exist
+/// here; every value either store can send appears in some fixture, and
+/// `the_loc_fuzz_covers_each_stores_whole_domain` is what says so.
 pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 19);
     let recs = core::array::from_fn(|_| DeployRec {
@@ -1316,6 +1369,17 @@ pub fn event_shot() -> (u32, u16, u8, u16, u16) {
 /// instead of on a value the refusal would have caught for free.
 pub fn event_impact() -> (i32, i32, i32, u8) {
     (0x0000_A179, -312, 0x0000_58A3, 1)
+}
+
+/// The swinger of the broadcast swing fact (wire v47).
+///
+/// Distinguishable in **both** 16-bit halves and in all four bytes, and
+/// neither zero nor a small index: a field read one bit narrow or wide, or
+/// a decoder that swapped the halves, cannot coincide with the right
+/// answer. The same reasoning `event_shot`'s shooter is picked under —
+/// this lane's failures are positional, not arithmetic.
+pub fn event_swing() -> u32 {
+    0x5A3C_91E7
 }
 
 /// Opening a **world container** (wire v37) — the fourth kind, and the

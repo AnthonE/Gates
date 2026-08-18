@@ -763,8 +763,10 @@ which is neither.
   `burnt_meat.png`, is **ours** and the CC BY notice does not cover it;
   `CREDITS.md` keeps the two in separate tables so the line is written down
   rather than inferred. CC BY is a *notice* licence — `assets/icons/
-  CREDITS.md` names the four authors whose work ships (lorc, delapouite,
-  carl-olsen, john-redman) and `tests/ui.rs` §G fails if it stops travelling
+  CREDITS.md` names the authors whose work ships — **three since
+  2026-08-18**, when `rock` moved off `john-redman/rock` and he stopped
+  shipping here; the file is the list, not this line — and `tests/ui.rs` §G
+  fails if it stops travelling
   or if the baked set and `ui::icons::STEMS` drift apart. **Nothing is traced from the reference game**: an icon set
   anyone may redistribute with credit is not the IP rail's business, and the
   rail is what forbids copying Rust's own art.
