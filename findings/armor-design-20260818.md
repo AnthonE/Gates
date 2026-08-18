@@ -432,3 +432,37 @@ the commit rather than letting it be discovered.
 `gather.rs`), **then the 25 % broken floor**, **then `move_penalty_pct`** (no
 consumer exists anywhere in `movement.rs`; its non-stacking rule is a combining
 rule a content file cannot state and a knob must — `ARMOR.md` §9.5 item 4).
+
+---
+
+## Addendum, verified 2026-08-18 by the parent session
+
+§2's claim that there are **seven** routes into a player's hp was checked
+rather than trusted, with a grep for every write to `Player::hp` across
+`crates/sim-core/src/`. **The enumeration holds** — all six damage sites are
+where §2 says (`combat.rs:537`, `ranged.rs:458`, `charge.rs:540`,
+`world.rs:3369`, `survival.rs:315`, `survival.rs:573`), and route 7 resolves as
+described: `deploy.rs:1980` calls `lock::shock(&mut p.hp, shock)`, which writes
+`*hp -= took` at `lock.rs:517` with `took = amount.min(hp.saturating_sub(1))` —
+the floor at 1 hp, exactly as `lock.rs:57` claims.
+
+**Three writes §2 does not list, and the funnel gate must allowlist each with a
+reason or it will fail on day one:**
+
+| site | what it is | why it is not a damage route |
+|---|---|---|
+| `survival.rs:334` | `p.hp = (p.hp + give).min(max)` | a **heal**, a gain rather than a loss — and it is already guarded by `if !died` so a heal cannot outrun a death in the same tick |
+| `world.rs:1996` and `world.rs:2130` | `let hp = self.combat.player_hp` then a full write | spawn and respawn resets to max — a body being created, not hurt |
+| `persist.rs:350`, `worldsave.rs:810/855` | `let hp = u16_at(18)` etc. | **load**, not damage. These are the one non-command path into `World` (`CLAUDE.md`'s save trap), which is its own argument for why they must be named rather than skipped |
+
+So the allowlist is seven damage routes plus three non-damage classes, and the
+gate's failure mode should be *"a write to `Player::hp` this gate cannot
+classify"* rather than a hardcoded count — `CLAUDE.md`'s `pop_*` entry is
+explicit that a hand-kept mirror of another file's surface goes stale, and a
+count is the most brittle mirror there is.
+
+**One encouraging thing the grep turned up.** `lock.rs:405` already carries a
+comment about *"what keeps the one hp write in the..."* — the module reasoned
+its way to a single-write discipline on its own, for one damage source, before
+anybody proposed a funnel. That is the shape S1 generalises, and it means the
+idea has a precedent in the tree rather than only in this note.
