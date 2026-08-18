@@ -199,6 +199,11 @@ pub const WATCHED: &[&str] = &[
     "sleepers_evicted",
     "admin_kicked",
     "admin_refused",
+    // A client naming a snapshot older than the sent ring can corroborate
+    // (`stats.rs`, `AIM_STALE_CEILING_TICKS`). Watched because it is the
+    // only counter in the aim-staleness set that accuses somebody: the
+    // other five are load, and this one is a forged or wildly-wrong ack.
+    "aim_stale_refused",
 ];
 
 /// The previous tick's reading of every watched counter, so the sweep can

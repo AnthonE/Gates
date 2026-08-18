@@ -203,14 +203,28 @@ backpack → bag respawn, the kill feed, and since v48 a corpse that falls
    it from content), and applying armor reddens **no** anchor, because
    every anchor reads `content/` and armor changes no content number —
    `WORLD.md` §8.2's ward collision arriving through a scheduled system.
-5. **No lag compensation.** `NETCODE.md` §8 designs the rewind ring at
-   length and `grep -rn rewind crates/` finds a bit-writer and nothing
-   else — both `strike` and the arrow resolve on present server state, so
-   a fight is led rather than aimed. Planned:
-   `findings/lagcomp-design-20260818.md`, which also carries **nine
-   errata against §8** — it is wrong about this tree, not merely unbuilt.
-   No wire bump is owed at any slice: §8 asks the server to track a
-   "varying" interp delay that is a `const 4.0` both ends already share.
+5. **No lag compensation — but the shard can now say how stale an aim is.**
+   Slice 1 of `findings/lagcomp-design-20260818.md` §7 landed 2026-08-18,
+   `crates/server/` only: each buffered input frame is stamped with the
+   `snapshot_ack` its first datagram carried, and raw **`T − S`** is folded
+   into `ShardStats` (samples/sum/max/unacked/refused + an 8-bucket
+   histogram) and published on `/status.json`. **Measured, not derived**:
+   100 bots × 60 s on loopback, **mean 1.107 ticks (36.9 ms), max 3, and
+   nothing at or past 4** — inside §0.1's prediction, but the reading of it
+   changes, because loopback RTT is ~0 and the number is still 1.1 ticks.
+   Raw staleness is the input buffer plus snapshot age, **not RTT**: a floor
+   no network improvement removes. Numbers and load conditions in
+   `DECISIONS.md` §open ("aim staleness v0"); gate
+   `crates/server/tests/lagcomp_measure.rs`, six mutants proven red.
+   **What remains is slices 2–5**: the ring in `sim-core` (four constants
+   into `limits.rs`, and `INTERP_DELAY_TICKS` moving there is why the
+   published number is raw — do not double-count it), `Command::Input`
+   carrying `favour`, `strike` rewinding, and the server minting it. Both
+   `strike` and the arrow still resolve on present server state, so a fight
+   is still led rather than aimed. No wire bump is owed at any slice.
+   ⚠ The design note's §2.2 claim that `push_frame` "drops a frame it has
+   already seen" is **wrong** — it overwrites an unexecuted one, so
+   keep-first had to be written.
 6. **Nothing has fought at population.** `raid_storm.rs:516` says so in
    its own source — *"nobody swings"* — so wall 4's caps are gated one
    site at a time on every combat path, and `EV_SWING`'s AOI-free fan-out

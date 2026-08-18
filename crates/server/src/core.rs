@@ -694,15 +694,28 @@ impl ShardCore {
     }
 
     /// One decoded input datagram from this client: acks first (they ride
-    /// every datagram), then the frame tail into the seq buffer.
+    /// every datagram), then the frame tail into the seq buffer, each frame
+    /// stamped with the ack this datagram carried.
+    ///
+    /// **The stamp is `None` until the client has acked a snapshot this
+    /// shard actually sent**, and `newest_acked` is the test rather than
+    /// `snapshot_ack != 0`. `on_acks` runs first and only credits ticks out
+    /// of the server's own sent ring, so it is a server-verified fact that
+    /// this connection has ever seen a world — where the ack field is a
+    /// client claim, and before the first snapshot lands
+    /// `ClientView::ack_fields` returns a flat `(0, 0)` that would measure
+    /// the shard's entire uptime as one player's lag. Ordering matters and
+    /// is the point of the two lines being adjacent: acking first means the
+    /// very first datagram carrying a real ack is measured, not the second.
     pub fn push_input(&mut self, slot: usize, dg: &InputDatagram) {
         let c = &mut self.clients[slot];
         if !c.connected {
             return;
         }
         c.on_acks(dg.snapshot_ack, dg.ack_bits);
+        let view = c.newest_acked.map(|_| dg.snapshot_ack);
         for f in dg.frames() {
-            c.push_frame(*f);
+            c.push_frame(*f, view);
         }
     }
 
@@ -771,12 +784,26 @@ impl ShardCore {
         let mut n = self.queued_len;
         self.cmd_buf[..n].copy_from_slice(&self.queued[..n]);
         self.queued_len = 0;
+        // The tick this loop's frames are about to be executed at — `T` in
+        // the aim-staleness measurement (`stats::record_aim_stale`), read
+        // before the loop because `World::tick` and `clients` are two
+        // fields of the same `self` and the loop borrows one of them. Low
+        // 16 bits, because `snapshot_ack` is: the subtraction is wrapping
+        // and belongs to that method, not here.
+        let now = self.world.tick as u16;
         for slot in 0..MAX_PLAYERS {
             let c = &mut self.clients[slot];
             if !c.connected {
                 continue;
             }
-            if let Some(frame) = c.consume_input() {
+            if let Some((frame, view)) = c.consume_input() {
+                // Measured on the frame the throttle CHOSE to execute (the
+                // newer of two, when it consumed two), and measured before
+                // the command-buffer check on purpose: dropping the sample
+                // exactly on the ticks that ran out of command room would
+                // bias the distribution toward the quiet ticks, which is
+                // the reverse of what a lag measurement is for.
+                stats.record_aim_stale(now, view);
                 if n < MAX_COMMANDS_PER_TICK {
                     self.cmd_buf[n] = Command::Input { id: c.id, frame };
                     n += 1;
