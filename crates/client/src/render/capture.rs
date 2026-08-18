@@ -166,8 +166,16 @@ enum Verb {
     },
     /// In reach and swinging, since frame `_`.
     Swing { since: u32 },
-    /// Swung; waiting for the mark to arrive, then shooting it.
-    Settle { since: u32 },
+    /// Swung; holding the camera on the point the sim said was struck,
+    /// then shooting it.
+    ///
+    /// **The aim point is the impact's own coordinates**, dequantized from
+    /// the wire — not the quarry's centre and not a guess. `render::decal`
+    /// places the mark from exactly these numbers, so a camera pointed here
+    /// is pointed at the mark if there is one, and photographs its absence
+    /// honestly if there is not. Shooting a fixed bearing instead is how
+    /// the first cut of this produced a frame of empty grass.
+    Settle { since: u32, at: Vec3 },
     /// Over, either shot or honestly skipped.
     Done,
 }
@@ -532,20 +540,51 @@ fn verb_pass(
             // moment there is a decal worth photographing — and the moment
             // after which every further swing is spent destroying the
             // surface it is drawn on.
-            if !feed.impacts().is_empty() {
+            if let Some(&(qx, qy, qz, surf)) = feed.impacts().first() {
+                let at = Vec3::new(
+                    qx as f32 * sim_core::movement::POS_XZ_Q,
+                    qy as f32 * sim_core::movement::POS_Y_Q,
+                    qz as f32 * sim_core::movement::POS_XZ_Q,
+                );
+                println!(
+                    "capture: mark at {:.2},{:.2},{:.2} (surf {surf}) — eye at \
+                     {:.2},{:.2},{:.2}, {:.2} m away",
+                    at.x,
+                    at.y,
+                    at.z,
+                    eye.pos.x,
+                    eye.pos.y,
+                    eye.pos.z,
+                    at.distance(eye.pos)
+                );
                 cap.intent = Some(Intent::default());
-                cap.verb = Verb::Settle { since: cap.frame };
+                cap.verb = Verb::Settle {
+                    since: cap.frame,
+                    at,
+                };
             } else if cap.frame - since > SWING_FRAMES {
                 eprintln!(
                     "capture: swung for {SWING_FRAMES} frames and heard no impact — \
                      shooting anyway, but this frame is evidence of nothing."
                 );
                 cap.intent = Some(Intent::default());
-                cap.verb = Verb::Settle { since: cap.frame };
+                cap.verb = Verb::Settle {
+                    since: cap.frame,
+                    at: eye.pos,
+                };
             }
         }
-        Verb::Settle { since } => {
+        Verb::Settle { since, at } => {
             cap.intent = Some(Intent::default());
+            // Point the camera AT the mark. Melee ignores pitch, so aiming
+            // down here cannot change what the sim would have done — the
+            // swing is already spent.
+            let (dx, dy, dz) = (at.x - eye.pos.x, at.y - eye.pos.y, at.z - eye.pos.z);
+            let flat = (dx * dx + dz * dz).sqrt();
+            if flat > 0.01 {
+                look.yaw = bearing_to(dx, dz);
+                look.pitch = dy.atan2(flat);
+            }
             if cap.frame - since > MARK_SETTLE_FRAMES {
                 let path = cap.dir.join(format!("{}-swing.png", VANTAGES.len()));
                 println!("capture: {}", path.display());
