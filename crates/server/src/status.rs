@@ -11,8 +11,13 @@
 //! (`stats.rs` L5: diagnostics are numbers, not strings):
 //!
 //! ```json
-//! {"players":3,"max_players":100,"tick":123456}
+//! {"players":3,"max_players":100,"tick":123456,
+//!  "dg_out_bytes":0,"dg_out_pkts":0,"dg_in_bytes":0,"dg_in_pkts":0,
+//!  "stream_out_bytes":0,"stream_out_frames":0,
+//!  "stream_in_bytes":0,"stream_in_frames":0}
 //! ```
+//!
+//! (one line on the wire; wrapped here to fit)
 //!
 //! - `players` — bodies with a live connection, off the `players` gauge the
 //!   sim loop mirrors from `ShardCore::connected` each tick. A gauge and
@@ -24,6 +29,13 @@
 //!   a lie the player discovers at a refused join).
 //! - `tick` — `stats.current_tick`, which doubles as a liveness check: a
 //!   number that stops moving is a shard that stopped ticking.
+//! - the eight **lane byte** counters, straight off `ShardStats` (see the
+//!   lane-bytes block in `stats.rs` for why they are four pairs). They are
+//!   monotonic totals since boot, so a rate is two polls and a subtraction,
+//!   and a **per-client** rate is that divided by `players` — which is why
+//!   they live beside it rather than in a second document. This is the half
+//!   `NOW.md` §0q item 4 was missing: the soak's 16.5 kB/s/client was a
+//!   ceiling derived from budgets because nothing counted a byte.
 //!
 //! ## What this thread is allowed to touch
 //!
@@ -161,10 +173,22 @@ fn answer(mut stream: TcpStream, stats: &ShardStats) -> std::io::Result<()> {
     // cleverness (the fixed-buffer alternative buys nothing measurable
     // against a poller that asks every few seconds).
     let body = format!(
-        "{{\"players\":{},\"max_players\":{},\"tick\":{}}}",
+        "{{\"players\":{},\"max_players\":{},\"tick\":{},\
+         \"dg_out_bytes\":{},\"dg_out_pkts\":{},\
+         \"dg_in_bytes\":{},\"dg_in_pkts\":{},\
+         \"stream_out_bytes\":{},\"stream_out_frames\":{},\
+         \"stream_in_bytes\":{},\"stream_in_frames\":{}}}",
         ShardStats::get(&stats.players),
         sim_core::limits::MAX_PLAYERS,
         ShardStats::get(&stats.current_tick),
+        ShardStats::get(&stats.net_dg_out_bytes),
+        ShardStats::get(&stats.net_dg_out_count),
+        ShardStats::get(&stats.net_dg_in_bytes),
+        ShardStats::get(&stats.net_dg_in_count),
+        ShardStats::get(&stats.net_stream_out_bytes),
+        ShardStats::get(&stats.net_stream_out_frames),
+        ShardStats::get(&stats.net_stream_in_bytes),
+        ShardStats::get(&stats.net_stream_in_frames),
     );
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
