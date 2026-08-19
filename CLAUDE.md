@@ -277,6 +277,50 @@ do not rediscover)
   something that already knows where the world is**, before the finding earns a
   gate and a doc paragraph. `sim-core/tests/relief.rs` holds the retraction and
   a gate on the window itself.
+- **A "naive rebuild" that calls the function under test is a rebuild of
+  nothing, and the gate is green for the wrong reason.** The house pattern for
+  an optimization is a second implementation of the law compared field by field
+  on `to_bits()` — `client/tests/ground.rs` does it for the mesh. On 2026-08-19
+  `sim-core/tests/lattice.rs` did it for `clutter_fill` and its naive side
+  called `terrain::clutter_rich_cell` for the per-cell law, so **both sides
+  carried the mutant**: moving the new early-out's threshold by one — refusing
+  a cell whose roll is `RICH_ACCEPT_MAX - 1` over ground rich enough to accept
+  it, which is 36% of land at 1-in-256 rolls, so hundreds of cells in the swept
+  block — passed all ten assertions in the file. The fix is to rebuild the law
+  from PUBLISHED parts (`clutter_rich_draw`, `clutter_kind_at`,
+  `clutter_richness_at` are `pub` for this and for nothing else), and the
+  published part returns a **named struct** rather than a tuple of bytes, so
+  the gate reads the bit layout instead of re-deriving it — the
+  positional-payload trap two entries down, in a test. The general rule: after
+  writing a gate for an optimization, **run the mutant**. Ours found two
+  worthless assertions out of ten. A test that shares any code path with what
+  it is checking is checking that path against itself, and "I compared the fast
+  path with the slow path" is only evidence when the slow path is *yours*.
+  ⚠ **And gate the optimization's EFFECT, not only its correctness** — the
+  same day's second surprise, from `client/tests/water_carry.rs`. The sea now
+  carries its last sweep across a `SNAP_M` crossing instead of re-tapping the
+  ground; the suite walks the grid and compares it against a freshly built
+  one, which is the right correctness test and is **satisfied by never
+  carrying anything**. A mutant that derives the index shift wrong makes every
+  index fail the guard, so the sweep rebuilds — correct output, no saving, ten
+  green tests. A safety check that turns a bug into a fallback makes that bug
+  invisible to every assertion about values, and the optimization can then be
+  deleted by accident with the gate still green. The fix is one observable
+  count (`Sea::carried`) asserted as a floor on a one-cell snap and as zero on
+  a diagonal — a count of VERTICES, not a time, so the no-clock rule is
+  untouched.
+- **A cheap counter is not a free counter, and one was left in the tree.**
+  `crates/sim-core/src/perfcount.rs` sat untracked in this branch's working
+  tree — its own first line reading *"TEMPORARY measurement scaffold (not for
+  merge)"* — putting a shared `static AtomicU64` `fetch_add` inside
+  `terrain::height`, `noise2` AND `cell_hash`. One `height` call is 61
+  contended atomic RMWs on two cache lines: measured, **1.85 ms of a 6.10 ms
+  `water::stream` sweep was the instrument**, ~30% on every terrain timing in
+  two crates. The first baseline of the 2026-08-19 perf pass was taken on it
+  and read `clutter_fill` at 2.912 ms against a true 2.870 — close enough to
+  look right and not the same measurement. **`git status` before quoting a
+  timing**, and if a counter has to exist, put it behind a cargo feature so the
+  default build has no atomic in the hot path.
 - **A judge names the symptom; fix the cause.** Optimizing the judge's
   literal sentence is how a loop circles for three passes — elsewhere,
   "untextured" was really diffuse contrast crushed by an earlier fix for

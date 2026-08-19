@@ -934,13 +934,21 @@ impl Plugin for GatesRenderPlugin {
                     // other things that read it are.
                     water::stream,
                     props::stream,
-                    props::harvest,
+                    // The full sweep is `fellables x harvested_len` with a
+                    // linear-scan membership test, so it runs on the frames
+                    // the wire moved the set; `harvest_new` is the half a
+                    // bit cannot cover, and costs an empty query otherwise.
+                    props::harvest.run_if(props::harvest_changed),
+                    props::harvest_new,
                     // After `harvest`, which owns the discrete transition and
                     // arms the topple this integrates. Reversed, a tree would
                     // spend one frame at the pose the previous chop left it.
                     props::fall,
                     clutter::stream,
-                    structures::stream,
+                    // Reconciles the whole piece/deploy/bag mirror, which is
+                    // the right shape and the wrong cadence: it now runs only
+                    // on frames the wire said something about what it draws.
+                    structures::stream.run_if(structures::structures_changed),
                     // **`.after(feed::drain)`, like every other reader of a
                     // drained fact.** A swing lives for exactly the frame it
                     // was drained on, so a body that streams before the

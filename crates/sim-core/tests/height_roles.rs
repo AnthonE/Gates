@@ -235,6 +235,17 @@ fn sources() -> Vec<(&'static str, &'static str)> {
 
 /// A raw-terrain read: `terrain::height(`, `height(seed`, and the `slope` twins,
 /// in any of the paths the tree writes them (`crate::`, `sim_core::`, bare).
+///
+/// **The `_memo` and `_in` spellings count, and forgetting them silently
+/// disarmed this gate for one commit.** The lattice memo (`terrain::Lattice`)
+/// gave every noise reader a second public entry point — `height_memo`,
+/// `slope_memo` — and a private generic implementation, `height_in`, that the
+/// public form delegates to. That moved `ground`'s raw read from the literal
+/// text `height(seed` to `height_in(c, seed`, and the scrape stopped seeing
+/// four of its own listed rows. It reported that as a STALE LIST, which is the
+/// gate working: the failure said the names meant nothing, and they did.
+/// A consumer reaching for `terrain::height_memo` is exactly the mistake this
+/// file exists to catch, so the memo spelling is a raw read like any other.
 fn is_raw_read(line: &str) -> bool {
     let t = line.trim_start();
     if t.starts_with("//") {
@@ -245,20 +256,31 @@ fn is_raw_read(line: &str) -> bool {
         "terrain::height(",
         "crate::terrain::height(",
         "sim_core::terrain::height(",
+        "terrain::height_memo(",
+        "crate::terrain::height_memo(",
+        "sim_core::terrain::height_memo(",
         "terrain::slope(",
         "crate::terrain::slope(",
         "sim_core::terrain::slope(",
+        "terrain::slope_memo(",
+        "crate::terrain::slope_memo(",
+        "sim_core::terrain::slope_memo(",
     ] {
         if line.contains(pat) {
             return true;
         }
     }
-    // Bare, inside terrain.rs itself.
-    if line.contains("height(seed") && !line.contains("ground_height(") {
-        return true;
+    // Bare, inside terrain.rs itself — the definition line and every internal
+    // call, in all three spellings the memo split left behind.
+    for pat in ["height(seed", "height_in(c, seed", "height_in(co, seed"] {
+        if line.contains(pat) && !line.contains("ground_height(") {
+            return true;
+        }
     }
-    if line.contains("slope(seed") && !line.contains("ground_slope(") {
-        return true;
+    for pat in ["slope(seed", "slope_in(c, seed", "slope_in(co, seed"] {
+        if line.contains(pat) && !line.contains("ground_slope") {
+            return true;
+        }
     }
     false
 }
@@ -268,6 +290,12 @@ fn is_raw_read(line: &str) -> bool {
 /// Refuses to guess: a raw read it cannot attribute is a loud failure, never a
 /// skip, for the reason `tests/sound.rs` gives about its own scrape — the floor
 /// has slack and a silently dropped case is always the newest one.
+/// The `_in` and `_memo` suffixes are stripped, so the list below stays a list
+/// of the PUBLISHED laws rather than of an implementation split. `ground` and
+/// `ground_in` are one function with one reason; naming both would double every
+/// row and make the reason column say "see the row above". A function genuinely
+/// named `foo_in` that read raw terrain would be attributed to `foo` — accepted,
+/// because the suffix is this file's own convention and nothing else uses it.
 fn enclosing_fn<'a>(lines: &[&'a str], i: usize) -> &'a str {
     for j in (0..=i).rev() {
         let l = lines[j];
@@ -284,7 +312,11 @@ fn enclosing_fn<'a>(lines: &[&'a str], i: usize) -> &'a str {
             "const fn ",
         ] {
             if let Some(rest) = t.strip_prefix(pre) {
-                return rest.split(['(', '<', ' ']).next().unwrap_or("?");
+                let name = rest.split(['(', '<', ' ']).next().unwrap_or("?");
+                return match name.strip_suffix("_in") {
+                    Some(base) => base,
+                    None => name.strip_suffix("_memo").unwrap_or(name),
+                };
             }
         }
     }
@@ -380,8 +412,18 @@ fn the_load_bearing_consumers_read_the_carved_ground() {
             .iter()
             .find(|(n, _)| n == file)
             .unwrap_or_else(|| panic!("{file} is not in the scrape — re-aim this gate"));
+        // **The `_memo` spelling counts here too**, and this is the second
+        // gate the lattice memo turned red: `terrain_mesh.rs` reads the carved
+        // ground through `ground_memo` now, which is the same function with a
+        // caller-owned hash cache in front of it. The distinction this gate
+        // exists to hold is `height` against `ground` — raw against carved —
+        // and the memo is orthogonal to it.
         assert!(
-            text.contains("ground(seed") || text.contains("terrain::ground("),
+            text.contains("ground(seed")
+                || text.contains("terrain::ground(")
+                || text.contains("terrain::ground_memo(")
+                || text.contains("ground_in(c, seed")
+                || text.contains("ground_memo(&mut lat"),
             "{file} is {what} and does not read `terrain::ground` anywhere. \
              Either the carve has been reverted there, or it now reads some third \
              surface — both are the failure this gate exists for."

@@ -882,9 +882,25 @@ than work: `water::animate` resolved its wave field three times a vertex
 (1.01 → 0.38 ms **every frame**), and one 65² ground chunk cost 28 ms to build
 — a whole dropped frame, one per streaming frame — of which mikktspace was 12
 and duplicated `terrain::height` taps most of the rest (now 5.4 ms).
-`NOW.md` §0pf carries the ranked remainder and the method; the numbers are
-release, on the gate box, and no GPU has ever run this client, which is why
-they sit here as a note rather than as rows in the table.
+
+**The ranked remainder was taken on 2026-08-19** and the shape of the answer
+changed the paragraph above rather than extending it: the largest remaining
+costs were not arithmetic to sharpen but work to refuse or to move.
+`clutter_fill` is 2.87 → 1.02 ms a tile (a caller-owned lattice memo, plus a
+stratum that now refuses on its own hash before resolving the ground it would
+be tested against); the far mesh's ~190 ms `Loading` frame is off the main
+thread entirely (`AsyncComputeTaskPool`); the sea carries its last sweep across
+a snap instead of re-tapping it; and two per-frame systems that reconciled a
+whole mirror now run on a `Feed::applied` bit. Every one is bit-identical or
+non-numeric — `sim-core/tests/lattice.rs`, `client/tests/ground_async.rs` and
+`client/tests/water_carry.rs` are the evidence, and the last two exist because
+`tests/ground.rs` and `tests/water.rs` call the pure functions directly and can
+see nothing about when or on which thread a system calls them.
+
+`NOW.md` §0pf carries what is left and `findings/client-frame-20260819.md` the
+method; the numbers are release, on the gate box, and **no GPU has ever run
+this client**, which is why they sit here as a note rather than as rows in the
+table.
 
 The first thing to actually press on the triangle ceiling is the generated
 conifer: a full 328-tree scatter ring at 5.9 k tris a tree is 1.9 M.

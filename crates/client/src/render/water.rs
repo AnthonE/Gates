@@ -808,6 +808,17 @@ pub struct Sea {
     /// The ripple layer's scroll, wrapped into one tile so it cannot drift
     /// into the range where an `f32` UV loses its low bits.
     drift: Vec2,
+    /// Vertices the last sweep carried instead of re-tapping ([`Carry`]).
+    ///
+    /// **Recorded because the carry is otherwise invisible to a gate, and a
+    /// mutant proved it.** `tests/water_carry.rs` compares a walked grid
+    /// against a freshly built one — so an implementation that never carried
+    /// anything would pass every assertion in it, and one that derived its
+    /// index shift WRONG does exactly that: `carry_of` refuses the shift, the
+    /// sweep rebuilds, the output is right and the saving is gone. Deriving
+    /// the shift wrong is the most likely real bug in this whole seam, and it
+    /// was undetectable until this field existed.
+    carried: usize,
 }
 
 impl Sea {
@@ -819,6 +830,40 @@ impl Sea {
     pub fn centre(&self) -> Option<Vec2> {
         self.cell
             .map(|(cx, cz)| Vec2::new(cx as f32 * SNAP_M, cz as f32 * SNAP_M))
+    }
+
+    // ── The five caches, read-only, for the gate ──────────────────────────
+    //
+    // `stream` carries most of them across a snap instead of re-tapping the
+    // ground ([`Carry`]), and the only honest evidence for that is a walked
+    // grid compared with a freshly built one, value by value. A digest would
+    // say *that* they differ; these say *where*, which is what a failure has
+    // to hand back. Read-only by construction — the caches are `stream`'s to
+    // write and `animate`'s to read.
+    pub fn depth(&self) -> &[f32] {
+        &self.depth
+    }
+    pub fn base(&self) -> &[[f32; 4]] {
+        &self.base
+    }
+    pub fn shore(&self) -> &[f32] {
+        &self.shore
+    }
+    pub fn shoal(&self) -> &[f32] {
+        &self.shoal
+    }
+    pub fn reach(&self) -> &[f32] {
+        &self.reach
+    }
+    /// The snapped grid centre in cells — `None` until the first sweep.
+    pub fn cell(&self) -> Option<(i32, i32)> {
+        self.cell
+    }
+    /// How many vertices the last sweep carried rather than re-tapped. See
+    /// the field's own note: this is the only thing that separates a working
+    /// carry from a correct rebuild.
+    pub fn carried(&self) -> usize {
+        self.carried
     }
 }
 
@@ -948,6 +993,110 @@ pub fn teardown(mut sea: ResMut<Sea>) {
     *sea = Sea::default();
 }
 
+/// A re-centre the coordinate table lets the last sweep answer.
+///
+/// **The core IS a shared lattice across a snap, and `NOW.md` §0pf said it was
+/// not.** That item reads "the sea's axis is non-uniform, so there is no
+/// half-lattice left to share — off-thread or coarser, not cleverer", and the
+/// first half is true of the SKIRT and false of the core: [`SNAP_M`] is 8 m,
+/// [`STEP_M`] is 2 m, and 8 is an exact multiple of 2, so a one-cell step
+/// along one axis slides every core coordinate onto the coordinate four slots
+/// away. The world position is then the same `f32` — not close, the same
+/// bits — because `ox` is an exact multiple of 8 and a core coordinate is an
+/// exact multiple of 2, both far under 2²⁴.
+///
+/// So a snap does not have to re-tap the ground it just tapped. What it has to
+/// re-tap is the skirt (whose coordinates are geometric and slide onto
+/// nothing), the four columns that entered the core, and everything if the
+/// player moved diagonally or teleported.
+///
+/// **Every one of those claims is CHECKED rather than argued** — the shape
+/// `terrain_mesh::heightfield`'s `share_x` guard already uses, for the same
+/// reason: they are `f32` identities that hold for the table we ship and need
+/// not hold for a table nobody has written yet. A table that fails any of them
+/// falls back to the full sweep and the sea is unchanged.
+#[derive(Clone, Copy)]
+struct Carry {
+    /// New index `i` in `lo..=hi` reads the last sweep's index `i + s`.
+    lo: usize,
+    hi: usize,
+    s: isize,
+    /// Which axis moved. The other one's coordinates did not change at all,
+    /// so every line across it carries.
+    on_x: bool,
+}
+
+/// What of the last sweep this one can carry, or `None` for a full rebuild.
+///
+/// Four conditions per index, and the last two are why this is a scan and not
+/// an arithmetic range:
+///
+///  - the world coordinate is the same `f32`: `coords[i + s] == coords[i] + off`;
+///  - the LOCAL SPACING is the same, because `reach` is a function of it and
+///    of nothing else that moves — the outermost core coordinate's spacing is
+///    the first skirt gap, not `STEP_M`, so this excludes it;
+///  - both coordinates are inside [`DEPTH_R_M`], so the deep-by-fiat flag is
+///    decided by the *other* axis on both sides and therefore agrees;
+///  - the surviving set is contiguous, checked rather than assumed.
+fn carry_of(coords: &[f32], spacing: &[f32], from: (i32, i32), to: (i32, i32)) -> Option<Carry> {
+    let (dx, dz) = (to.0 - from.0, to.1 - from.1);
+    let (d, on_x) = match (dx, dz) {
+        (0, 0) => return None,
+        (d, 0) => (d, true),
+        (0, d) => (d, false),
+        // A diagonal snap slides both axes, and a vertex would have to read a
+        // slot that moved in x AND in z — which is a different index in a
+        // different row, not a shift. Rebuild.
+        _ => return None,
+    };
+    let n = coords.len();
+    let off = d as f32 * SNAP_M;
+    // The candidate shift, derived from the two constants and then CHECKED.
+    let s = (d as isize) * (SNAP_M / STEP_M) as isize;
+    let ok = |i: usize| {
+        let j = i as isize + s;
+        if j < 0 || j as usize >= n {
+            return false;
+        }
+        let j = j as usize;
+        coords[j] == coords[i] + off
+            && spacing[j] == spacing[i]
+            && coords[i].abs() <= DEPTH_R_M
+            && coords[j].abs() <= DEPTH_R_M
+    };
+    let lo = (0..n).find(|i| ok(*i))?;
+    let hi = (0..n).rev().find(|i| ok(*i))?;
+    if !(lo..=hi).all(ok) {
+        return None;
+    }
+    Some(Carry { lo, hi, s, on_x })
+}
+
+impl Carry {
+    /// Whether this vertex was answered by the last sweep.
+    #[inline]
+    fn holds(&self, ix: usize, iz: usize) -> bool {
+        let i = if self.on_x { ix } else { iz };
+        i >= self.lo && i <= self.hi
+    }
+
+    /// Slide one cache into place. Rows for a z-snap, a run per row for an
+    /// x-snap; `copy_within` handles the overlap either way.
+    fn slide<T: Copy>(&self, v: &mut [T], n: usize) {
+        let (lo, hi, s) = (self.lo, self.hi, self.s);
+        if self.on_x {
+            for iz in 0..n {
+                let base = iz * n;
+                let src = base + (lo as isize + s) as usize..base + (hi as isize + s) as usize + 1;
+                v.copy_within(src, base + lo);
+            }
+        } else {
+            let src = ((lo as isize + s) as usize) * n..((hi as isize + s) as usize + 1) * n;
+            v.copy_within(src, lo * n);
+        }
+    }
+}
+
 /// Re-centre the grid on the eye and rebuild everything that is a function of
 /// *where* rather than of *when*.
 ///
@@ -972,10 +1121,18 @@ pub fn stream(
     let Some(mesh) = meshes.get_mut(&handle) else {
         return;
     };
+    let prev = sea.cell;
     sea.cell = Some(cell);
     let (ox, oz) = (cell.0 as f32 * SNAP_M, cell.1 as f32 * SNAP_M);
     let seed = world.seed;
     let n = sea.coords.len();
+
+    // One memo for the whole sweep. The grid is walked row-major at 2 m in the
+    // core, so consecutive taps are neighbours and share every lattice corner
+    // above the finest octave — the same share `heightfield` takes, on the
+    // same function, for the same reason. It changes no depth by a bit
+    // (`sim-core/tests/lattice.rs`), only how many hashes the sweep draws.
+    let mut lat = terrain::Lattice::new();
 
     // Split the borrows: the caches are read and written while the mesh's UV
     // buffer is written, and both live behind `&mut`.
@@ -990,8 +1147,24 @@ pub fn stream(
         ..
     } = &mut *sea;
 
+    // Slide what the last sweep already answered, then sweep only the rest.
+    let carry = prev.and_then(|p| carry_of(coords, spacing, p, cell));
+    let carried = carry.map_or(0, |c| (c.hi - c.lo + 1) * n);
+    if let Some(c) = carry {
+        c.slide(depth, n);
+        c.slide(base, n);
+        c.slide(shore, n);
+        c.slide(shoal_cache, n);
+        // `reach` too: it is `f(spacing) * shoal(depth)`, and `carry_of`
+        // refuses any index whose spacing moved, so both factors slid.
+        c.slide(reach, n);
+    }
+
     for iz in 0..n {
         for ix in 0..n {
+            if carry.is_some_and(|c| c.holds(ix, iz)) {
+                continue;
+            }
             let i = iz * n + ix;
             let x = ox + coords[ix];
             let z = oz + coords[iz];
@@ -1003,7 +1176,7 @@ pub fn stream(
                 // curve here while keeping the arithmetic ordinary.
                 DEEP_SENTINEL_M
             } else {
-                SEA_LEVEL - terrain::height(seed, x, z)
+                SEA_LEVEL - terrain::height_memo(&mut lat, seed, x, z)
             };
             depth[i] = d;
 
@@ -1025,12 +1198,18 @@ pub fn stream(
             // vertex outside the plain band can still be inside the displaced
             // one.
             shore[i] = if d > -FOAM_JITTER_M && d < FOAM_DEPTH_M + FOAM_JITTER_M {
-                shore_foam(d, terrain::slope(seed, x, z), foam_noise(x, z))
+                shore_foam(
+                    d,
+                    terrain::slope_memo(&mut lat, seed, x, z),
+                    foam_noise(x, z),
+                )
             } else {
                 0.0
             };
         }
     }
+
+    sea.carried = carried;
 
     if let Some(VertexAttributeValues::Float32x2(uv)) = mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0) {
         for iz in 0..n {

@@ -1546,48 +1546,64 @@ looking, which was "boot the game on a machine with a GPU" and is now a
 command on this box. Still owed from §0p2 item 3: the panels, which need the
 camera pointed at a screen rather than at a place.
 
-## 0pf · The client's CPU frame — two paid for, four measured and open *(client lane)*
+## 0pf · The client's CPU frame — the ranked five are landed *(client lane)*
 
-Landed 2026-08-11. `water::animate` resolved `wave_field` **three times a
-vertex** — once inside each `attribute_mut` borrow, throwing two answers away
-— and now resolves it once into `Sea::field`: **1.01 → 0.38 ms, every frame**,
-the largest steady-state cost the client had. `terrain_mesh::heightfield` —
-one chunk a frame, so its cost IS a dropped frame — went **28 → 5.4 ms** (the
-257² far mesh 485 → 186) on two halves: nine `terrain::height` taps a vertex
-became three where adjacent vertices were already sampling each other's
-points (bit-identical, three shares each checked at the origin rather than
-assumed), and the tangent is now written in closed form instead of solved by
-mikktspace, which was 12 ms of the remaining 17. Gated by `tests/ground.rs`
-(4, four mutants run red) and `tests/water.rs` (28). CPU-only, release, this
-box; no GPU has ever run this client, so `§0u` is still the other half.
+Landed 2026-08-11 (`water::animate` 1.01 → 0.38 ms; `terrain_mesh::heightfield`
+28 → 5.4 ms) and **2026-08-19, which took the remaining four of the five**.
+Measurements and the method: `findings/client-frame-20260819.md`. Headline, all
+release on this box:
 
-Found on the way: **`ci/gates.sh` named its renderer-tier suites one at a
-time and had never named two of them**, so `tests/water.rs` (skipped by
-`required-features`) and `tests/greybox.rs` (built empty without the feature,
-passing on zero tests) had never once run under it. The enumeration is gone —
-every test target the crate has now runs.
+- `clutter_fill` **2.87 → 1.01 ms a tile** (one tile a frame), the 5×5 ring
+  74.1 → 27.7 ms. Three bit-identical cuts: a caller-owned lattice memo
+  (`terrain::Lattice`), the rich stratum refusing on its own roll before
+  resolving the ground it would be tested against (42% of a tile's `height`
+  bill), and one `splat_from` feeding both the acceptance rate and the kind.
+- **`water::stream` 3.31 → 0.97 ms on a walking snap.** `SNAP_M` is 4 ×
+  `STEP_M`, so a one-axis step slides every core coordinate onto the same
+  `f32` — the sweep carries what it already answered and re-taps only the
+  skirt and the columns that entered. Item 2's "no half-lattice left to share"
+  was true of the skirt and false of the core.
+- **The far mesh is off the frame.** `heightfield` runs on
+  `AsyncComputeTaskPool`; the ~190 ms `Loading` frame with the session pump
+  inside it is one `meshes.add` now. Near chunks too, so a ring advance costs
+  no build. Its own arithmetic moved least of anything here (203 → 153 ms far,
+  5.9 → 5.2 ms near) — it already shared its taps, and the win is the thread.
+- Per-frame: `structures::stream` and `props::harvest` run on a `Feed::applied`
+  bit rather than every frame (up to 117 µs and 2.34 ms of scanning at the
+  caps); `decal::fade` and `ghost::track` no longer allocate per frame; a
+  stationary body no longer re-propagates its 55-node skeleton.
 
-Remaining, in the order the measurement ranks them:
+Gates: `sim-core/tests/lattice.rs` (11), `client/tests/ground_async.rs` (4),
+`client/tests/water_carry.rs` (8), `client/tests/frame_gates.rs` (4) — each
+carries its own mutant table, and two of them are there because a first draft
+was green under a mutant it was written to catch.
 
-1. **`clutter_fill` + `skirt_fill` is 2.8 ms a tile**, one tile a frame —
-   now the largest cost on a streaming frame. It is `sim-core`, so wall 1
-   binds and the fix is not a memo. Its `Soup` is also freshly allocated per
-   tile; a `Local` would reuse it.
-2. **`water::stream` is 2.2 ms every 8 m walked** (5,929 `terrain::height`
-   taps on the `SNAP_M` crossing). The sea's axis is non-uniform, so there is
-   no half-lattice left to share — off-thread or coarser, not cleverer.
-3. **The far mesh is one ~180 ms frame during `Loading`**, with the session
-   pump inside it. `heightfield` is pure and touches no ECS, so
-   `AsyncComputeTaskPool` is the shape; that would also retire item 1's
-   frame cost without touching `sim-core`.
-4. **`terrain::height` is 502 ns** — ~12 `noise2`, four hashes each — and
-   every number above is a count of it. Nearby vertices re-hash the same
-   lattice corners at the low octaves; a memo is sim-core's to refuse.
-5. **The sea's tangent `w` and mikktspace's disagree.** `water.rs` writes
-   `-1` for a planar XZ UV set; mikktspace answers `+1` for the identical
-   parameterisation on the ground (now asserted, `tests/ground.rs`). One of
-   them flips the ripple map's green channel. Which is right is a question
-   about how that map was authored — boot the game and look, do not guess.
+Still open, and item 5 is unchanged:
+
+1. **`ground_slope`'s four taps are ~80% of what a tile now spends** and the
+   stencil is not takeable — it moves every splat byte, so it is a design
+   change with a golden behind it, not an optimisation.
+2. **`water::animate` clones ~677 KiB into the render world every frame**
+   (`Assets::get_mut` marks the mesh modified; a `MAIN_WORLD` mesh is deep-
+   cloned on every modification). No flag fixes it; the fix is the vertex
+   shader `render/water.rs` §57 already names. Its own doc says "no
+   allocation" and that is true of the system body, not of the frame.
+3. **The per-frame leftovers, all measured and all small.** `verbs::resolve`
+   scans the piece mirror twice a frame (25.7 µs at the 8,192 cap, ~3.5 µs at
+   512) and wants the 3×3 cell neighbourhood `ColIndex` already maintains;
+   `bodies::stream` and `mobs::stream` re-find each interpolator slot by linear
+   scan after `ids()` already knew it (~15 µs at a full shard); `audio::fell`
+   fetches a `GlobalTransform` for every fellable to test `is_changed()` where
+   a `Changed<>` filter would do; `hud::update` builds 10–16 strings a frame,
+   most identical to the last frame's; the three ring streamers retain and
+   probe a full map every frame even when the eye has not left its cell. Under
+   50 µs together on a normal frame — listed so the next pass does not have to
+   re-measure them, not because they are worth a slice.
+4. **The sea's tangent `w` and mikktspace's disagree.** `water.rs` writes `-1`
+   for a planar XZ UV set; mikktspace answers `+1` for the identical
+   parameterisation on the ground (asserted, `tests/ground.rs`). One of them
+   flips the ripple map's green channel. Which is right is a question about how
+   that map was authored — boot the game and look, do not guess.
 
 ## 0bd · The barrel is the measured drum — LANDED 2026-08-18, one residual *(client+sim lane)*
 
