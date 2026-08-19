@@ -191,10 +191,21 @@ backpack → bag respawn, the kill feed, and since v48 a corpse that falls
    just wrote, so the sound and the arc cannot disagree.
    **Nobody has heard it.** A positional *hit* sound is not in this: it
    needs a flesh-impact waveform `synth.rs` does not generate.
-3. **`weapons.toml` prices a revolver nothing can fire.** `bake_combat`
-   drops every row that is not melee, throwable or bow, so the firearm is
-   data that looks armed. `combat.rs`'s header claimed the same of the
-   *bow* until 2026-08-18, which is why this line names a file and a rule.
+3. **The revolver is a progression dead end, not just unread data** — and
+   this item undersold it until 2026-08-19. `bake_combat` drops every row
+   that is not melee, throwable or bow (`content/bake.rs:566`) and no
+   hitscan path exists in `sim-core`, but the gun is not sitting inertly
+   in a table: it is a **rare barrel drop** (`loot.toml:55`, weight 1), it
+   has a **recipe** (`recipes.toml:404`), it is **on the research ladder**
+   behind gunpowder (`research.toml:82`), and `item.pistol_ammo` both
+   drops (weight 8) and crafts (`recipes.toml:417`). So a player can spend
+   scrap on the research, spend materials on the gun, spend more on ammo,
+   and pull the trigger on nothing. That is a charged dead end, which is
+   worse than a number nobody reads.
+   **Probably the cheapest of the four remaining**: `WeaponKind::Firearm`
+   is already in the schema, `bake_ammo` already bakes rounds, and
+   `ranged.rs` already owns launch → flight → hit, so hitscan is that path
+   with the flight skipped. Unscoped — no findings note yet.
 4. **Armor is priced and unread — but there is now ONE place to apply it.**
    S1 of `findings/armor-design-20260818.md` §7 landed 2026-08-19,
    `crates/sim-core/` only, no behaviour change: all seven damage routes
