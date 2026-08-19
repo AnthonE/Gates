@@ -1200,12 +1200,23 @@ pub fn stream(
                 .id();
             // A 64 m chunk is exactly 8 scatter cells a side (CELL_SIZE 8 m).
             let cells = (CHUNK_M / terrain::CELL_SIZE) as i32;
+            // One memo for the chunk's 64 cells: each is a `ground` tap and a
+            // four-tap slope fan inside 8 m, so they share nearly every corner.
+            // Bit-identical — `sim-core/tests/lattice.rs` holds the two forms
+            // of `scatter` equal field for field.
+            let mut lat = terrain::Lattice::new();
             for iz in 0..cells {
                 for ix in 0..cells {
                     let cell_x = key.0 * cells + ix;
                     let cell_z = key.1 * cells + iz;
-                    let slot =
-                        terrain::scatter(world.seed, &world.table, &world.haven, cell_x, cell_z);
+                    let slot = terrain::scatter_memo(
+                        &mut lat,
+                        world.seed,
+                        &world.table,
+                        &world.haven,
+                        cell_x,
+                        cell_z,
+                    );
                     if slot.occupant == Occupant::None {
                         continue;
                     }
@@ -1393,6 +1404,62 @@ pub fn harvest(
     apply_fell(q, &|key| core.harvested.contains(key));
 }
 
+/// The bit that means the harvested set moved — the only thing [`harvest`]
+/// reads, and the only thing that can change its answer for a prop already in
+/// the ring.
+///
+/// `client_core::core` raises it at every place that writes `harvested`, and
+/// that is a GATED claim rather than a read of the file: its own
+/// `stream_tracks_the_harvested_set` drives an insert, a remove, a reset and a
+/// re-insert through `on_stream` and asserts the returned word each time. So a
+/// frame without this bit is a frame where the sweep below is guaranteed to
+/// change nothing for a prop already in the ring.
+pub const HARVEST_APPLIED: u32 = client_core::core::APPLIED_SLOTS;
+
+/// Run condition for [`harvest`]: the wire moved the harvested set.
+///
+/// **`HarvestedSet::contains` is a linear scan**, so the sweep is
+/// `fellables × harvested_len` and it ran unconditionally: measured at the
+/// caps that `sim_core::limits` actually permits, 1,500 props against a full
+/// 16,384-entry set is 2.34 ms of comparing on a frame where nothing changed —
+/// on its own, under 60 fps. A denser ring is the case that gets worse, and
+/// the ring is what this pass is making denser.
+///
+/// The `Added` half below is what keeps this exact: a prop streaming into a
+/// cell that was harvested before the player arrived gets no bit of its own.
+pub fn harvest_changed(feed: Res<super::feed::Feed>) -> bool {
+    feed.applied & HARVEST_APPLIED != 0
+}
+
+/// The same swap, for props that arrived THIS frame.
+///
+/// Runs unconditionally and costs one query over an empty set on almost every
+/// frame. It is the half [`harvest_changed`] cannot cover: the harvested set is
+/// seeded at join and topped up by the change slice, so a tree spawned by
+/// `stream` into a cell that was already felled sees no `APPLIED_SLOTS` bit of
+/// its own and would stand until the next unrelated harvest anywhere on the
+/// shard. `apply_fell` is idempotent — it compares against `Fellable::felled`
+/// and returns early when nothing moved — so an entity caught by both systems
+/// on one frame is swapped once and touched twice.
+pub fn harvest_new(
+    net: NonSend<Net>,
+    q: Query<
+        (
+            &mut Fellable,
+            Option<&mut Topple>,
+            &mut Transform,
+            &mut Visibility,
+        ),
+        Added<Fellable>,
+    >,
+) {
+    if q.is_empty() {
+        return;
+    }
+    let core = &net.session.core;
+    apply_fell_added(q, &|key| core.harvested.contains(key));
+}
+
 /// Half a metre of stump lift: the mesh is centred on its own axis while the
 /// slot's `y` is the ground. `web/src/props.js` ships the same 0.17.
 pub const STUMP_LIFT_M: f32 = 0.17;
@@ -1481,12 +1548,43 @@ pub fn fall(time: Res<Time>, mut q: Query<(&Fellable, &mut Topple, &mut Transfor
 /// standing one. What used to be a mesh swap on one entity is now a pose on
 /// the trunk and a `Visibility` on a stump that was spawned with it.
 pub fn apply_fell(
-    mut q: Query<(
+    q: Query<(
         &mut Fellable,
         Option<&mut Topple>,
         &mut Transform,
         &mut Visibility,
     )>,
+    harvested: &dyn Fn(u32) -> bool,
+) {
+    apply_fell_in(q, harvested);
+}
+
+/// [`apply_fell`] over the `Added<Fellable>` query — same body, one filter.
+pub fn apply_fell_added(
+    q: Query<
+        (
+            &mut Fellable,
+            Option<&mut Topple>,
+            &mut Transform,
+            &mut Visibility,
+        ),
+        Added<Fellable>,
+    >,
+    harvested: &dyn Fn(u32) -> bool,
+) {
+    apply_fell_in(q, harvested);
+}
+
+fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
+    mut q: Query<
+        (
+            &mut Fellable,
+            Option<&mut Topple>,
+            &mut Transform,
+            &mut Visibility,
+        ),
+        F,
+    >,
     harvested: &dyn Fn(u32) -> bool,
 ) {
     for (mut f, top, mut t, mut vis) in q.iter_mut() {

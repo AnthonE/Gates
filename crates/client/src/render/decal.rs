@@ -530,9 +530,17 @@ pub fn fade(
     )>,
 ) {
     let dt = time.delta_secs();
-    let entities = pool.entities.clone();
+    // Destructure once for disjoint field borrows rather than cloning the
+    // entity list to dodge them. The clone was a heap allocation on every
+    // frame of the game, which is the one thing the client's hot-path
+    // discipline names outright (`CLAUDE.md` traps) — and `structures::stream`
+    // and `water::stream` already use exactly this reborrow for exactly this
+    // reason, so it is the house pattern rather than a new one.
+    let Marks {
+        slots, entities, ..
+    } = &mut *pool;
     for (ix, entity) in entities.iter().enumerate() {
-        let m = pool.slots[ix];
+        let m = slots[ix];
         if m.left <= 0.0 {
             continue;
         }
@@ -545,18 +553,18 @@ pub fn fade(
         // how long the frame took. Released the moment the pipeline can
         // have specialized.
         if m.warm > 0 {
-            pool.slots[ix].warm += 1;
-            if pool.slots[ix].warm > PREWARM_FRAMES {
-                pool.slots[ix] = Mark::default();
+            slots[ix].warm += 1;
+            if slots[ix].warm > PREWARM_FRAMES {
+                slots[ix] = Mark::default();
                 *vis = Visibility::Hidden;
             }
             continue;
         }
 
         let left = m.left - dt;
-        pool.slots[ix].left = left;
+        slots[ix].left = left;
         if left <= 0.0 {
-            pool.slots[ix] = Mark::default();
+            slots[ix] = Mark::default();
             *vis = Visibility::Hidden;
             continue;
         }
@@ -567,7 +575,7 @@ pub fn fade(
         if step == m.step {
             continue;
         }
-        pool.slots[ix].step = step;
+        slots[ix].step = step;
         if let Some(asset) = materials.get_mut(&mat.0) {
             asset.base.base_color = asset.base.base_color.with_alpha(step as f32 / ALPHA_STEPS);
         }

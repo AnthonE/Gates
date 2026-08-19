@@ -323,16 +323,20 @@ pub fn track(
     } else {
         // Same shape, so the verdict colour can have moved — and for a
         // foundation, the footing's depth with the aimed cell.
-        let kids: Vec<Entity> = children
-            .get(root)
-            .map(|c| c.iter().collect())
-            .unwrap_or_default();
-        for k in kids {
-            commands.entity(k).insert(MeshMaterial3d(mat.clone()));
-            if let Some(part) = footing {
-                commands
-                    .entity(k)
-                    .insert(part.transform().with_scale(part.size));
+        //
+        // Iterated in place rather than collected into a `Vec`: the collect
+        // was a heap allocation on every frame the build plan is held, which
+        // is the client's one stated hot-path rule (`CLAUDE.md` traps). The
+        // borrow it was dodging is `children` against `commands`, and those
+        // are two different system parameters — nothing needed dodging.
+        if let Ok(kids) = children.get(root) {
+            for k in kids.iter() {
+                commands.entity(k).insert(MeshMaterial3d(mat.clone()));
+                if let Some(part) = footing {
+                    commands
+                        .entity(k)
+                        .insert(part.transform().with_scale(part.size));
+                }
             }
         }
     }

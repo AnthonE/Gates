@@ -59,6 +59,16 @@ name = "modelview"
 path = "src/bin/modelview.rs"
 required-features = ["render"]
 
+# The CPU cost probe (`examples/frame_cost.rs`): what a streaming frame spends
+# on the ground, the population and the sea. Not a gate and never will be — it
+# reports elapsed time, and a gate that waits on a clock is not a gate on this
+# box. It exists so `findings/client-frame-20260819.md`'s numbers can be
+# re-run rather than trusted, which is that directory's one rule.
+[[example]]
+name = "frame_cost"
+path = "examples/frame_cost.rs"
+required-features = ["render"]
+
 # The fell gate needs the render module, so it carries the same requirement
 # the binary does — and therefore runs in the renderer tier, not the code one.
 # The conifer's bounds gate: pure geometry, headless, no GPU — but it imports
@@ -80,6 +90,26 @@ required-features = ["render"]
 [[test]]
 name = "fell"
 path = "tests/fell.rs"
+required-features = ["render"]
+
+# The ground streamer's move onto `AsyncComputeTaskPool`: that the loading
+# bar's flag still means "the island is in the world" and that a chunk is
+# never queued twice. Runs `terrain_mesh::stream` on a bare `App` with
+# `MinimalPlugins` — no window, no GPU, no socket — so it is `tests/music.rs`'
+# shape applied to the streamer, and it carries the feature for the same
+# reason every other renderer-tier suite does.
+[[test]]
+name = "ground_async"
+path = "tests/ground_async.rs"
+required-features = ["render"]
+
+# The two run conditions that stopped a per-frame sweep, held against
+# `client_core`'s own published `APPLIED*` surface rather than against a
+# hand-kept copy of it. Pure text and arithmetic — no App, no GPU — but it
+# imports `render::structures` and `render::props`, so it carries the feature.
+[[test]]
+name = "frame_gates"
+path = "tests/frame_gates.rs"
 required-features = ["render"]
 
 # The player rig against what `render/anim.rs` assumes about it: the clip names
@@ -120,6 +150,15 @@ required-features = ["render"]
 [[test]]
 name = "water"
 path = "tests/water.rs"
+required-features = ["render"]
+
+# The sea's snap carry: that sliding the last sweep's answers across a
+# `SNAP_M` crossing produces the same grid, bit for bit, as building one from
+# scratch there. Runs `water::stream` on a bare `App` — no window, no GPU, no
+# socket — and is the evidence for a claim `NOW.md` §0pf item 2 got backwards.
+[[test]]
+name = "water_carry"
+path = "tests/water_carry.rs"
 required-features = ["render"]
 
 # The sky fill's arithmetic: that it is a hemisphere rather than the

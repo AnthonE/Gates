@@ -1245,6 +1245,49 @@ fn build_kit(
     }
 }
 
+/// Every `Feed::applied` bit that can change what this system draws.
+///
+/// The reconcile-the-whole-mirror shape above is right and stays — it is what
+/// makes an upgrade, a raid band and a swap-remove all one code path. What was
+/// wrong is that it ran on every frame including the ~99% where the wire said
+/// nothing about a piece, a deployable or a bag: 8,192 pieces at the cap is
+/// 117 µs of hashing and comparing to conclude that nothing moved.
+///
+/// `feed::drain` runs `.after(input::place_eye).before(Stream)`, so this word
+/// is THIS frame's news — the pump raised it and the drain took word and rings
+/// in one move.
+///
+/// A bit missing from this list is a base that does not redraw, and it
+/// produces no error — so the list is not hand-kept: `client/tests/
+/// frame_gates.rs` reads every `APPLIED*` constant `client_core` publishes,
+/// takes the ones whose NAME says piece, deploy, bag or struct, and fails on
+/// any that is not here. It also fails on a mirror-shaped flag landing in
+/// `client_core`'s SECOND applied word, which this condition does not read —
+/// writing that check is what turned up `APPLIED2_BAGS` and sent someone to
+/// find out whether it was the world's bag store (it is the player's own list,
+/// for the death screen).
+pub const STRUCT_APPLIED: u32 = client_core::core::APPLIED_PIECES
+    | client_core::core::APPLIED_PIECE_RESET
+    | client_core::core::APPLIED_PIECE_REMOVED
+    | client_core::core::APPLIED_PIECE_DEFS
+    | client_core::core::APPLIED_STRUCT_HIT
+    | client_core::core::APPLIED_DEPLOYS
+    | client_core::core::APPLIED_DEPLOY_RESET
+    | client_core::core::APPLIED_DEPLOY_REMOVED
+    | client_core::core::APPLIED_DEPLOY_DEFS
+    | client_core::core::APPLIED_BAGS;
+
+/// Run condition for [`stream`]: the wire said something about what it draws,
+/// or the ring has not been built yet.
+///
+/// The second half is not optional. The first frames of a world arrive with
+/// the kit unbuilt and the mirrors already seeded by the join drip, and a
+/// condition that only watched the news would leave the base a player logged
+/// out inside undrawn until someone hit it.
+pub fn structures_changed(ring: Res<StructRing>, feed: Res<super::feed::Feed>) -> bool {
+    ring.kit.is_none() || feed.applied & STRUCT_APPLIED != 0
+}
+
 /// Reconcile all three stores against the core's mirrors.
 pub fn stream(
     mut commands: Commands,

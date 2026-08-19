@@ -25,6 +25,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::pbr::ExtendedMaterial;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
+use bevy::tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use sim_core::terrain::{self, SEA_LEVEL};
 
 use super::ground_splat::{GroundMaterial, GroundSplat};
@@ -44,10 +45,25 @@ pub const FAR_STEP: f32 = 8.0;
 /// How far the far mesh sits below the near ring so the boundary cannot
 /// z-fight, metres.
 pub const FAR_DROP: f32 = 0.15;
-/// Chunks built per frame, and chunks torn down per frame. Stream-in AND
+/// Chunks QUEUED per frame, and chunks torn down per frame. Stream-in AND
 /// stream-out are budgeted: the teardown spike is the half everyone forgets
 /// (`CLAUDE.md` traps).
+///
+/// ⚠ **It used to mean "built" and it does not any more.** The build is on
+/// `AsyncComputeTaskPool` now, so this bounds how fast work is HANDED to the
+/// pool, not how much of the frame it costs — the frame's share is
+/// [`CHUNK_LANDS_PER_FRAME`] below. The two are kept at 1 apiece rather than
+/// raised: a wider queue would fill the pool with chunks the player has
+/// already walked past, and this budget is what the sibling ring streamers
+/// (`props`, `clutter`) are also rationed against.
 pub const CHUNK_BUILDS_PER_FRAME: usize = 1;
+/// Finished chunks taken into the world per frame.
+///
+/// A landing is not free even though the meshing is off-thread: `meshes.add`
+/// hands ~400 KB to the renderer and the upload is the frame's. Bounding it
+/// keeps the trade honest — the point of the pool was to stop paying a 5.4 ms
+/// build on the frame, not to pay twenty-five uploads on one instead.
+pub const CHUNK_LANDS_PER_FRAME: usize = 1;
 
 /// The four ground identities' albedo, LINEAR, in the order `terrain::splat`
 /// returns them: sand · grass · forest litter · rock.
@@ -306,10 +322,34 @@ pub struct Static;
 /// What the ring has built. A `HashMap` here is fine and would not be in
 /// `sim-core`: the no-`HashMap`-iteration wall is about the deterministic
 /// tick, and nothing in this file feeds one.
+///
+/// **Three of these fields exist because the build is off the main thread.**
+/// `heightfield` is pure — it reads `sim_core::terrain`, touches no ECS and
+/// allocates only what it returns — so it runs on `AsyncComputeTaskPool` and
+/// this resource holds what is in flight. Two things had to be split when it
+/// moved, and both were flags that were honest only while the build finished
+/// inside the statement that started it:
+///
+///  - `far_started` guards the spawn; `far_done` is set when the mesh has
+///    actually reached the world. `far_done` is what `far_ready` reports to
+///    the loading bar, and a bar that read the OLD flag would end the loading
+///    screen on the frame the work was queued — a player dropped into a world
+///    with no island in it.
+///  - `near_tasks` is the same guard for the ring. `built` was the only test
+///    for "is this chunk handled", and it is written when the mesh exists, so
+///    an async build leaves a window in which a key is neither built nor
+///    skipped and the loop re-queues it every frame.
+///
+/// Dropping a `Task` cancels it, so `retain` sweeping `near_tasks` by the same
+/// predicate as `built` is the whole teardown for a chunk that left the ring
+/// before it finished.
 #[derive(Resource, Default)]
 pub struct Ring {
     built: HashMap<(i32, i32), Entity>,
+    near_tasks: HashMap<(i32, i32), Task<Mesh>>,
     ground: Option<Handle<GroundMaterial>>,
+    far_task: Option<Task<Mesh>>,
+    far_started: bool,
     far_done: bool,
 }
 
@@ -325,8 +365,15 @@ impl Ring {
         self.built.is_empty()
     }
     /// The far mesh is up and every near chunk is resident.
+    ///
+    /// Counts `built`, never `near_tasks`: a queued chunk is not a resident
+    /// one, and the capture probe settles on this.
     pub fn is_full(&self) -> bool {
         self.far_done && self.built.len() >= RING_CHUNKS
+    }
+    /// Builds in flight — for a test that has to say "one task per chunk, ever".
+    pub fn in_flight(&self) -> usize {
+        self.near_tasks.len() + usize::from(self.far_task.is_some())
     }
     /// The far mesh alone. Read by the loading screen, which reports the near
     /// ring as a fraction and this as the bit it is: the whole island at 8 m
@@ -526,6 +573,15 @@ pub fn heightfield(
     step: f32,
     drop: f32,
 ) -> Mesh {
+    // One memo for the whole patch. Every tap this function takes sits inside
+    // the patch it is building, and the coarsest lattice `terrain::height`
+    // reads is 1,200 m across — so a 64 m chunk resolves under a hundred
+    // distinct corner quads and draws them thirteen thousand times. It is a
+    // stack local rather than a parameter because the entry point is what
+    // `tests/ground.rs` calls with seven arguments and the win is inside one
+    // call, not across calls (measured: sharing one table across a whole tile
+    // ring bought nothing over one table per unit of work).
+    let mut lat = terrain::Lattice::new();
     let count = n * n;
     let mut positions = Vec::with_capacity(count);
     let mut normals = Vec::with_capacity(count);
@@ -576,13 +632,15 @@ pub fn heightfield(
             vz(j - 1)
         }
     };
-    let fill_row = |dst: &mut Vec<f32>, j: usize| {
+    // `&mut Lattice` as a parameter rather than a capture: the closure is
+    // called between other borrows of the same table.
+    let fill_row = |lat: &mut terrain::Lattice, dst: &mut Vec<f32>, j: usize| {
         dst.clear();
         let z = row_z(j);
         for k in 0..stride {
             // The border columns are only ever read on the `grid_slope` path.
             dst.push(if grid_slope || (k > 0 && k < stride - 1) {
-                terrain::ground(seed, haven, col_x(k), z)
+                terrain::ground_memo(lat, seed, haven, col_x(k), z)
             } else {
                 0.0
             });
@@ -593,9 +651,9 @@ pub fn heightfield(
     let mut hcur: Vec<f32> = Vec::with_capacity(stride);
     let mut hnext: Vec<f32> = Vec::with_capacity(stride);
     if grid_slope {
-        fill_row(&mut hprev, 0);
+        fill_row(&mut lat, &mut hprev, 0);
     }
-    fill_row(&mut hcur, 1);
+    fill_row(&mut lat, &mut hcur, 1);
     // The normal's arms: `hxm[k]` is `x_k − d` (and `hxm[n]` the last `+ d`);
     // `hzp` is this row's `+ d`, which becomes the next row's `hzm`.
     let mut hxm = vec![0.0f32; n + 1];
@@ -605,23 +663,23 @@ pub fn heightfield(
     for iz in 0..n {
         let z = vz(iz);
         if grid_slope {
-            fill_row(&mut hnext, iz + 2);
+            fill_row(&mut lat, &mut hnext, iz + 2);
         }
         if share_x {
             for (k, slot) in hxm.iter_mut().enumerate() {
                 let sx = if k == n { vx(n - 1) + d } else { vx(k) - d };
-                *slot = terrain::ground(seed, haven, sx, z);
+                *slot = terrain::ground_memo(&mut lat, seed, haven, sx, z);
             }
         }
         if share_z && iz > 0 {
             core::mem::swap(&mut hzm, &mut hzp);
         } else {
             for (ix, slot) in hzm.iter_mut().enumerate() {
-                *slot = terrain::ground(seed, haven, vx(ix), z - d);
+                *slot = terrain::ground_memo(&mut lat, seed, haven, vx(ix), z - d);
             }
         }
         for (ix, slot) in hzp.iter_mut().enumerate() {
-            *slot = terrain::ground(seed, haven, vx(ix), z + d);
+            *slot = terrain::ground_memo(&mut lat, seed, haven, vx(ix), z + d);
         }
 
         for ix in 0..n {
@@ -633,7 +691,8 @@ pub fn heightfield(
             let hx = if share_x {
                 hxm[ix + 1] - hxm[ix]
             } else {
-                terrain::ground(seed, haven, x + d, z) - terrain::ground(seed, haven, x - d, z)
+                terrain::ground_memo(&mut lat, seed, haven, x + d, z)
+                    - terrain::ground_memo(&mut lat, seed, haven, x - d, z)
             };
             let hz = hzp[ix] - hzm[ix];
             let n_v = Vec3::new(-hx, 2.0 * d, -hz).normalize();
@@ -666,13 +725,13 @@ pub fn heightfield(
                 let sz = (hnext[ix + 1] - hprev[ix + 1]) * 0.5;
                 (sx * sx + sz * sz).sqrt()
             } else {
-                terrain::ground_slope(seed, haven, x, z)
+                terrain::ground_slope_memo(&mut lat, seed, haven, x, z)
             };
 
             // `splat_from` rather than `splat` because the height and the
             // slope are the ones this vertex just resolved; `splat` would
             // sample both again.
-            let w = terrain::splat_from(y, terrain::moisture(seed, x, z), sl);
+            let w = terrain::splat_from(y, terrain::moisture_memo(&mut lat, seed, x, z), sl);
             // The gradient the normal was just built from, as a rise/run — the
             // waterline band is a horizontal distance and this is what converts
             // it. Free: `hx` and `hz` are already in hand.
@@ -692,7 +751,7 @@ pub fn heightfield(
             core::mem::swap(&mut hprev, &mut hcur);
             core::mem::swap(&mut hcur, &mut hnext);
         } else if iz + 1 < n {
-            fill_row(&mut hcur, iz + 2);
+            fill_row(&mut lat, &mut hcur, iz + 2);
         }
     }
 
@@ -756,33 +815,80 @@ pub fn stream(
         .ground
         .get_or_insert_with(|| ground_material(&mut materials, &maps))
         .clone();
+    let pool = AsyncComputeTaskPool::get();
+    let (seed, haven) = (world.seed, world.haven);
 
-    // The far mesh, once. It is 66 k vertices and it is the whole island, so
-    // it is built on the first streaming frame rather than in `Startup` —
-    // that keeps the window up and the session pumping while it happens.
-    if !ring.far_done {
-        ring.far_done = true;
-        let mesh = heightfield(
-            world.seed,
-            &world.haven,
-            0.0,
-            0.0,
-            FAR_N,
-            FAR_STEP,
-            FAR_DROP,
-        );
-        commands.spawn((
-            WorldEntity,
-            Static,
-            Mesh3d(meshes.add(mesh)),
-            MeshMaterial3d(ground.clone()),
-            Transform::IDENTITY,
-        ));
-        return;
+    // ── Land whatever finished ────────────────────────────────────────────
+    //
+    // Polled at the TOP, so a mesh that completed while the last frame was
+    // drawn reaches the world on this one rather than a frame later.
+    if let Some(task) = ring.far_task.as_mut() {
+        if let Some(mesh) = block_on(future::poll_once(task)) {
+            ring.far_task = None;
+            commands.spawn((
+                WorldEntity,
+                Static,
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(ground.clone()),
+                Transform::IDENTITY,
+            ));
+            // Only NOW. `far_ready` is what ends the loading screen.
+            ring.far_done = true;
+        }
+    }
+
+    // The far mesh, once. It is 66 k vertices and it is the whole island —
+    // one ~190 ms build, which used to be one ~190 ms FRAME with the session
+    // pump inside it. It is queued on the first streaming frame and landed
+    // whenever it finishes; the window stays up and the shard stays pumped
+    // because neither is on the thread doing the work any more.
+    if !ring.far_started {
+        ring.far_started = true;
+        ring.far_task =
+            Some(pool.spawn(async move {
+                heightfield(seed, &haven, 0.0, 0.0, FAR_N, FAR_STEP, FAR_DROP)
+            }));
     }
 
     let cx = (eye.pos.x / CHUNK_M).floor() as i32;
     let cz = (eye.pos.z / CHUNK_M).floor() as i32;
+
+    // Near chunks that finished. Bounded per frame for the same reason the
+    // BUILDS are: `meshes.add` uploads a chunk and a frame that landed
+    // twenty-five of them would trade the build spike for an upload one.
+    // Found rather than collected: the budget is one, and a `Vec` here would
+    // be a per-frame heap allocation — the exact thing the rest of this pass
+    // took out of `decal::fade` and `ghost::track`.
+    for _ in 0..CHUNK_LANDS_PER_FRAME {
+        let Some(key) = ring
+            .near_tasks
+            .iter()
+            .find(|(_, t)| t.is_finished())
+            .map(|(k, _)| *k)
+        else {
+            break;
+        };
+        let Some(mut task) = ring.near_tasks.remove(&key) else {
+            break;
+        };
+        let Some(mesh) = block_on(future::poll_once(&mut task)) else {
+            // `is_finished` said yes and the poll said no — put it back rather
+            // than dropping it, because dropping a `Task` CANCELS the work,
+            // and this loop would then look for the same chunk again forever.
+            ring.near_tasks.insert(key, task);
+            break;
+        };
+        let e = commands
+            .spawn((
+                WorldEntity,
+                Chunk(key.0, key.1),
+                Mesh3d(meshes.add(mesh)),
+                MeshMaterial3d(ground.clone()),
+                Transform::IDENTITY,
+            ))
+            .id();
+        ring.built.insert(key, e);
+    }
 
     // Stream out first: a ring that grows before it shrinks peaks at both
     // rings resident, which is the teardown spike in its other form.
@@ -797,32 +903,35 @@ pub fn stream(
         commands.entity(*e).despawn();
         false
     });
+    // A chunk that left the ring before its build finished. Dropping the
+    // `Task` cancels it, which is the whole teardown — and it is not optional:
+    // without it a player walking a straight line accumulates one dead task
+    // per chunk crossed, each still holding the pool.
+    ring.near_tasks
+        .retain(|(bx, bz), _| (*bx - cx).abs() <= NEAR_RADIUS && (*bz - cz).abs() <= NEAR_RADIUS);
 
-    let mut built = 0usize;
+    let mut queued = 0usize;
     for dz in -NEAR_RADIUS..=NEAR_RADIUS {
         for dx in -NEAR_RADIUS..=NEAR_RADIUS {
-            if built >= CHUNK_BUILDS_PER_FRAME {
+            if queued >= CHUNK_BUILDS_PER_FRAME {
                 return;
             }
             let key = (cx + dx, cz + dz);
-            if ring.built.contains_key(&key) {
+            // BOTH, and the second half is what stops the storm: `built` is
+            // written when the mesh exists, so between the queue and the land
+            // a key is in neither map and the loop would re-queue it on every
+            // frame of that window.
+            if ring.built.contains_key(&key) || ring.near_tasks.contains_key(&key) {
                 continue;
             }
             let ox = key.0 as f32 * CHUNK_M;
             let oz = key.1 as f32 * CHUNK_M;
             let step = CHUNK_M / (NEAR_N - 1) as f32;
-            let mesh = heightfield(world.seed, &world.haven, ox, oz, NEAR_N, step, 0.0);
-            let e = commands
-                .spawn((
-                    WorldEntity,
-                    Chunk(key.0, key.1),
-                    Mesh3d(meshes.add(mesh)),
-                    MeshMaterial3d(ground.clone()),
-                    Transform::IDENTITY,
-                ))
-                .id();
-            ring.built.insert(key, e);
-            built += 1;
+            ring.near_tasks.insert(
+                key,
+                pool.spawn(async move { heightfield(seed, &haven, ox, oz, NEAR_N, step, 0.0) }),
+            );
+            queued += 1;
         }
     }
 }

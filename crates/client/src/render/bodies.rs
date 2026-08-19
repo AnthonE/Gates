@@ -137,8 +137,19 @@ pub fn stream(
         match known {
             Some((entity, was_sleeping)) => {
                 if let Ok((_, mut t, mut anim)) = q.get_mut(entity) {
-                    t.translation = pos;
-                    t.rotation = facing;
+                    // Compared before written, and the guard is not a micro-
+                    // optimisation: a `Transform` written through `DerefMut`
+                    // is MARKED CHANGED whether or not the value moved, and a
+                    // changed root re-propagates its whole skeleton — 55 nodes
+                    // for this rig. A camp of sleepers, a corpse, or anyone
+                    // standing still costs that every frame for a value that
+                    // is bit-identical to the one already there.
+                    if t.translation != pos {
+                        t.translation = pos;
+                    }
+                    if t.rotation != facing {
+                        t.rotation = facing;
+                    }
                     // The clip choice, off state the sim already sent.
                     // `dead` is the v48 bit: a corpse keeps its slot until
                     // its owner leaves the death screen, so without it a
