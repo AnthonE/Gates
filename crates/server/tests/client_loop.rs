@@ -430,3 +430,111 @@ fn the_correction_offset_does_not_accumulate_over_a_long_lossy_session() {
         );
     }
 }
+
+/// **A body that has been killed says so on the wire** — the `dead` bit,
+/// v48, seen from the far end exactly as the sleeper above is.
+///
+/// The defect this gate exists for is a drawing one with a netcode cause. A
+/// corpse keeps its slot, its position, its facing and its interest entry
+/// until its owner leaves the death screen (`sim-core/world.rs` `die` — the
+/// screen is waiting on the body), and until v48 not one bit of that record
+/// said the person was out of the fight. So the client drew a killed player
+/// standing at idle, and "is that player still coming for me" was
+/// answerable only from the kill feed, which names ids and not the body in
+/// front of you.
+///
+/// The kill is `DEATH_BY_CLOCK` rather than a swing, and that is on
+/// purpose: what is under test is the *record*, not the weapon. Starving
+/// the body reaches `World::die` — the one function that sets the flag —
+/// through the shortest honest path, with no combat content to arm and no
+/// second player's aim to place. Any other cause writes the same bit.
+#[test]
+fn a_killed_body_is_marked_dead_on_the_wire() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    pin_together(&mut core);
+    assert!(core.connect(0, id_of(0)));
+    assert!(core.connect(1, id_of(1)));
+    let mut clients = vec![
+        (0usize, ClientCore::new(SEED, id_of(0), 0)),
+        (1usize, ClientCore::new(SEED, id_of(1), 0)),
+    ];
+    let mut rng = Pcg32::new(SEED, 23);
+    let mut yaws = [0u16, 9000u16];
+    for _ in 0..120u32 {
+        for (i, (_, c)) in clients.iter_mut().enumerate() {
+            steer(c, &mut rng, &mut yaws[i], true);
+        }
+        pump(&mut core, &stats, &mut clients, || false);
+    }
+
+    let watcher = 0usize;
+    let victim_id = id_of(1);
+    let mut rs = client_core::interp::RemoteState::default();
+    assert!(
+        clients[watcher]
+            .1
+            .interp
+            .sample(victim_id, clients[watcher].1.render_tick(), &mut rs),
+        "the two bodies are not in each other's interest set — this gate \
+         cannot see anything about how one of them is drawn"
+    );
+    assert!(
+        !rs.dead,
+        "a living player is already marked dead, so the assertion below \
+         would pass without the kill"
+    );
+
+    // Arm the clock and empty the victim. `probe_fixture`'s starve and
+    // dehydrate rates are set to kill inside a counted window, which is
+    // exactly what this needs — no wall-clock anywhere, only ticks.
+    core.world.survival = sim_core::survival::SurvivalContent::probe_fixture();
+    {
+        let p = core
+            .world
+            .players
+            .iter_mut()
+            .find(|p| p.active && p.id == victim_id)
+            .expect("the victim is in the world");
+        p.food = 0;
+        p.water = 0;
+        p.hp = 1;
+    }
+    // Both clients keep pumping. The victim is on the death screen, not
+    // gone — they are still connected and the server still owes them
+    // snapshots, which is the difference between this and the sleeper case
+    // above and is the whole point: nobody left.
+    for _ in 0..90u32 {
+        for (i, (_, c)) in clients.iter_mut().enumerate() {
+            steer(c, &mut rng, &mut yaws[i], false);
+        }
+        pump(&mut core, &stats, &mut clients, || false);
+    }
+    assert!(
+        core.world
+            .players
+            .iter()
+            .any(|p| p.active && p.id == victim_id && p.dead),
+        "the victim never died — the arrangement, not the wire, is what \
+         failed"
+    );
+
+    assert!(
+        clients[watcher].1.interp.ids().any(|id| id == victim_id),
+        "the corpse left the interest set — a death is not a removal, the \
+         body stays until its owner leaves the death screen"
+    );
+    assert!(
+        clients[watcher]
+            .1
+            .interp
+            .sample(victim_id, clients[watcher].1.render_tick(), &mut rs),
+        "the corpse is in the set but has no samples to draw from"
+    );
+    assert!(
+        rs.dead,
+        "the body is still drawn as a live player — the wire's `dead` bit \
+         is not arriving, so a killer cannot tell from the body in front of \
+         them that the fight is over"
+    );
+}

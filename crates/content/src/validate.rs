@@ -412,8 +412,33 @@ pub fn structural(c: &Content) -> Result<(), String> {
                     .as_deref()
                     .filter(|a| !a.is_empty())
                     .ok_or_else(|| format!("weapon `{}`: firearms need ammo", w.id))?;
+                // The bow's check, inverted, and it is the load-bearing
+                // half of this file's header contract: a bow's round
+                // carries ballistics and a firearm's does not, because a
+                // firearm is hitscan and there is no flight for a speed to
+                // describe. Both halves are refused so the pairing can
+                // never be ambiguous — a round that owned an `[[ammo]]` row
+                // *and* armed a gun would leave "which of the two is this"
+                // to whichever reader asked, and `RangedDef::hitscan` is
+                // baked off the kind precisely so nothing has to ask.
                 for id in rounds {
                     item_exists(id, &format!("weapon `{}` ammo", w.id))?;
+                    if c.ammo.iter().any(|a| &a.id == id) {
+                        return Err(format!(
+                            "weapon `{}`: round `{id}` has an [[ammo]] row, so it is a \
+                             projectile — a firearm is hitscan and its rounds carry no \
+                             ballistics",
+                            w.id
+                        ));
+                    }
+                }
+                // A duplicate is a silently dead entry here for the same
+                // reason it is on a bow: preference order is the whole of
+                // the ammo policy until a switch verb exists.
+                for (i, id) in rounds.iter().enumerate() {
+                    if rounds[..i].contains(id) {
+                        return Err(format!("weapon `{}`: round `{id}` listed twice", w.id));
+                    }
                 }
             }
             WeaponKind::Melee | WeaponKind::Throwable => {

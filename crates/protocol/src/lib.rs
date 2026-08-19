@@ -624,7 +624,25 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// at you was a body standing perfectly still (`NOW.md` §0sw). A new
 /// subtype is a layout change and takes the bump; the 95 existing fixtures
 /// re-key and one is appended.
-pub const PROTO_VER: u16 = 47;
+///
+/// **v48 (2026-08-18): one more bit on `EntityState`, `dead`.** v26's
+/// change exactly, one state over, and it is here for the same kind of
+/// reason. A killed player keeps their slot, their position and their
+/// facing until they leave the death screen (`sim-core/world.rs` `die`
+/// says why: the screen is waiting on the body), and not one bit of that
+/// record said so — so the client drew a corpse standing at idle, and the
+/// single most important thing to be able to read in a fight, *is that
+/// person still in it*, was answerable only from the kill feed. Written
+/// unconditionally in both encoders beside `sleeping`.
+///
+/// The failure a stale client suffers is v26's, one bit further along:
+/// everything from `dead` onward reads short, so velocity and facing
+/// become garbage while position survives — it decodes, so nothing
+/// reports an error. That is the drift wall 6 converts into a handshake
+/// refusal. All 96 fixtures re-key; the three snapshot cases are the only
+/// ones whose bytes carry an entity record, and the hello carries the
+/// version itself.
+pub const PROTO_VER: u16 = 48;
 
 /// This game's slug in the scry catalog.
 ///
@@ -2305,6 +2323,26 @@ pub struct EntityState {
     /// state the decoder could get out of step on; unconditional is one
     /// bit, always right, and reads the same in both encoders.
     pub sleeping: bool,
+    /// **This body has been killed and has not respawned yet.** One bit,
+    /// sent on every record beside [`Self::sleeping`] and for the same
+    /// reason at one remove: a corpse keeps its slot, its position and its
+    /// facing until its owner leaves the death screen (`sim-core/world.rs`
+    /// `die` — the screen is waiting on it), so without this bit a client
+    /// draws a killed player standing idle. The one thing a fight has to
+    /// be able to read is whether the person in front of you is still in
+    /// it, and every other fact on this record says "yes".
+    ///
+    /// Unconditional rather than delta-gated, exactly as `sleeping` is: it
+    /// flips twice per death, so a change flag would spend a bit to save a
+    /// bit and add a state the decoder could fall out of step on.
+    ///
+    /// **A corpse is not a target and that is what makes it safe to draw
+    /// lying down.** `combat::strike`, `ranged` and `charge`'s blast all
+    /// skip `hp == 0`, and players do not collide with each other, so the
+    /// pose the client picks for this bit cannot disagree with any volume
+    /// the server tests — which is the objection that keeps a *sleeper*
+    /// standing (`client/render/anim.rs`).
+    pub dead: bool,
     pub yaw: u16,
     pub pitch: u8,
 }
@@ -2526,6 +2564,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w.write_bit(look_changed)?;
         self.w.write_bit(e.grounded)?;
         self.w.write_bit(e.sleeping)?;
+        self.w.write_bit(e.dead)?;
         if pos_changed {
             self.w
                 .write((dx + DPOS_XZ_BIAS as i64) as u32, DPOS_XZ_BITS)?;
@@ -2551,6 +2590,7 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.w.write(e.qz as u32, POS_XZ_BITS)?;
         self.w.write_bit(e.grounded)?;
         self.w.write_bit(e.sleeping)?;
+        self.w.write_bit(e.dead)?;
         self.write_vel(e.qvy)?;
         self.w.write(e.yaw as u32, 16)?;
         self.w.write(e.pitch as u32, 8)?;
@@ -2702,6 +2742,7 @@ fn decode_entity(
         let qz = r.read(POS_XZ_BITS)? as i32;
         let grounded = r.read_bit()?;
         let sleeping = r.read_bit()?;
+        let dead = r.read_bit()?;
         let qvy = read_vel(r)?;
         return Ok(EntityState {
             id,
@@ -2711,6 +2752,7 @@ fn decode_entity(
             qvy,
             grounded,
             sleeping,
+            dead,
             yaw: r.read(16)? as u16,
             pitch: r.read(8)? as u8,
         });
@@ -2728,6 +2770,7 @@ fn decode_entity(
     let look_changed = r.read_bit()?;
     e.grounded = r.read_bit()?;
     e.sleeping = r.read_bit()?;
+    e.dead = r.read_bit()?;
     if pos_changed {
         // wrapping: baseline values are the decoder's own prior state, but
         // totality on arbitrary bytes must hold regardless.
@@ -2789,6 +2832,7 @@ mod tests {
             qvy: 0,
             grounded: true,
             sleeping: false,
+            dead: false,
             yaw: 0x1234,
             pitch: 7,
         }
@@ -2881,15 +2925,16 @@ mod tests {
         let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &baseline).expect("begin");
         for b in &baseline {
             // Identical to its baseline record: a found delta writes the id
-            // plus six flag bits and nothing else.
+            // plus seven flag bits and nothing else — six until v48 added
+            // `dead` beside `sleeping`.
             assert_eq!(enc.add_entity(b), Ok(()), "entity {} did not fit", b.id);
         }
         let len = enc.finish().expect("finish");
-        // 64 entities × (32 id bits + 6 delta bits) plus the header; an
-        // absolute record is 32 + 66 bits, so a single missed lookup adds
+        // 64 entities × (32 id bits + 7 delta bits) plus the header; an
+        // absolute record is 32 + 67 bits, so a single missed lookup adds
         // 60 bits and this bound catches it.
         let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + COUNT_BITS * 2;
-        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 38).div_ceil(8);
+        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 39).div_ceil(8);
         assert_eq!(
             len, want,
             "the encoder wrote {len} B where {want} B is every entity delta-coded \

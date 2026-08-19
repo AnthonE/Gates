@@ -9,7 +9,7 @@
 //! the cap) rather than by waiting out its read timeout.
 
 use server::core::ShardCore;
-use server::stats::ShardStats;
+use server::stats::{ShardStats, AIM_STALE_BUCKETS};
 use server::status::{spawn_status, STATUS_REQUEST_CAP};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -88,6 +88,52 @@ fn serves_the_lane_bytes_each_from_its_own_counter() {
             "`{name}` is not reading its own counter"
         );
     }
+}
+
+/// The aim-staleness readings reach the document (lag-compensation slice
+/// 1). Same argument as the lane bytes one row up: a counter that never
+/// leaves `ShardStats` is a measurement nobody takes, and the whole point
+/// of this slice is that the number can be read off a running shard.
+/// Distinct values per field so a transposed pair fails.
+#[test]
+fn serves_the_aim_staleness_readings_and_its_histogram() {
+    let stats = Arc::new(ShardStats::default());
+    let scalars: [(&str, &std::sync::atomic::AtomicU64, u64); 5] = [
+        ("aim_stale_samples", &stats.aim_stale_samples, 111),
+        ("aim_stale_sum", &stats.aim_stale_sum, 222),
+        ("aim_stale_max", &stats.aim_stale_max, 33),
+        ("aim_stale_unacked", &stats.aim_stale_unacked, 44),
+        ("aim_stale_refused", &stats.aim_stale_refused, 5),
+    ];
+    for (_, counter, v) in scalars {
+        ShardStats::set(counter, v);
+    }
+    // Each bucket a different value, so the array's ORDER is asserted and
+    // not just its length — the histogram is only useful if index n means
+    // n ticks.
+    for (i, b) in stats.aim_stale_hist.iter().enumerate() {
+        ShardStats::set(b, (i as u64 + 1) * 7);
+    }
+    let addr = start(stats.clone());
+
+    let resp = exchange(addr, b"GET /status.json HTTP/1.1\r\nHost: t\r\n\r\n");
+    let text = String::from_utf8(resp).expect("the response is text");
+    let body = text.split("\r\n\r\n").nth(1).expect("a body after headers");
+    for (name, _, v) in scalars {
+        assert_eq!(
+            field(body, name),
+            v,
+            "`{name}` is not reading its own counter"
+        );
+    }
+    let want: Vec<String> = (0..AIM_STALE_BUCKETS)
+        .map(|i| ((i as u64 + 1) * 7).to_string())
+        .collect();
+    let want = format!("\"aim_stale_hist\":[{}]", want.join(","));
+    assert!(
+        body.contains(&want),
+        "the histogram is not `{want}` in `{body}`"
+    );
 }
 
 #[test]

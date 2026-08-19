@@ -1777,14 +1777,31 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
         let idx = c.item_index(&w.id).expect("weapon arms an item") as usize;
         let baked = cc.ranged[idx];
         if w.kind != content::schema::WeaponKind::Bow {
+            // A firearm shares this table and is the one row in it that is
+            // NOT a projectile: `hitscan` is what separates them, and it is
+            // asserted both ways here so a bake that set the flag on
+            // everything would fail rather than read as covered.
+            if w.kind == content::schema::WeaponKind::Firearm {
+                assert!(
+                    baked.hitscan,
+                    "`{}` is a firearm and must bake as hitscan",
+                    w.id
+                );
+                continue;
+            }
             assert_eq!(
                 baked.damage, 0,
-                "`{}` is not a bow and must not be armed in the ranged table",
+                "`{}` is neither a bow nor a firearm and must not be armed in the ranged table",
                 w.id
             );
             continue;
         }
         bows += 1;
+        assert!(
+            !baked.hitscan,
+            "`{}` is a bow — its arrow flies, so it must not bake as hitscan",
+            w.id
+        );
         assert_eq!(baked.damage as u32, w.damage, "`{}` damage", w.id);
         assert_eq!(
             baked.rate_ticks as u32,
@@ -1879,6 +1896,140 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
         }
     }
     assert_eq!(bows, 2, "the alpha data ships a bow and a crossbow");
+}
+
+/// The revolver reaches the sim, armed, and kills inside the band
+/// `balance.toml` declares for a firearm.
+///
+/// **This is the gate on a charged dead end rather than on a number.**
+/// Until 2026-08-19 `bake_combat` dropped every row that was not melee,
+/// throwable or bow, and the revolver was not inert data while it sat
+/// there: it is a barrel drop at weight 1 (`the_shipped_loot_tables_bake`),
+/// it has a recipe, it is on the research ladder behind gunpowder, and its
+/// round both drops and crafts. So a player could spend scrap on the
+/// research, materials on the gun and more on ammo, and pull the trigger on
+/// nothing. What this asserts is the whole chain out of that: the row bakes,
+/// it bakes as hitscan, its round is the one it names, its reach is
+/// traceable at the sampler's spacing, and the hits it takes to kill is the
+/// number the band already gates.
+#[test]
+fn the_firearm_reaches_the_sim_and_kills_in_the_band_it_declares() {
+    use sim_core::gather::NO_ITEM;
+    use sim_core::limits::{ARROW_STEP_MM, MAX_HITSCAN_SAMPLES, TICK_HZ};
+
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped weapons must bake");
+    let [lo, hi] = c.balance.bands.ttk_firearm;
+
+    let mut guns = 0;
+    for w in &c.weapons {
+        if w.kind != content::schema::WeaponKind::Firearm {
+            continue;
+        }
+        guns += 1;
+        let idx = c.item_index(&w.id).expect("weapon arms an item") as usize;
+        let baked = cc.ranged[idx];
+        assert!(baked.hitscan, "`{}` must bake as hitscan", w.id);
+        assert_eq!(baked.damage as u32, w.damage, "`{}` damage", w.id);
+        assert_eq!(
+            baked.rate_ticks as u32,
+            TICK_HZ * 60 / w.rate_per_min,
+            "`{}` ticks between shots",
+            w.id
+        );
+        assert_eq!(
+            baked.range_mm,
+            w.range_m * 1000,
+            "`{}` reach in millimetres",
+            w.id
+        );
+
+        // The rounds, in declared order and `NO_ITEM`-padded — the bow's
+        // rule, because it is the same field and the same policy.
+        let rounds = w
+            .ammo
+            .as_ref()
+            .expect("validate refuses a firearm without one");
+        for (slot, id) in rounds.iter().enumerate() {
+            assert_eq!(
+                baked.ammo[slot],
+                c.item_index(id).expect("round is an item"),
+                "`{}` round {slot} is the one it names",
+                w.id
+            );
+            // And it is a round with no ballistics, which is what makes it
+            // hitscan rather than a projectile nobody baked a speed for.
+            assert!(
+                cc.ammo_def(c.item_index(id).expect("round is an item"))
+                    .is_none(),
+                "`{}` round `{id}` carries ballistics — it would be a projectile",
+                w.id
+            );
+        }
+        for slot in rounds.len()..baked.ammo.len() {
+            assert_eq!(
+                baked.ammo[slot], NO_ITEM,
+                "`{}` pads unused round slots rather than repeating one",
+                w.id
+            );
+        }
+
+        // The hitscan sampler wall, on the shipped row rather than only on
+        // the refusal path: a reach sitting exactly on the ceiling would be
+        // traced by one sample per step and nothing would say so.
+        let taps = baked.range_mm as usize / ARROW_STEP_MM as usize + 1;
+        assert!(
+            taps <= MAX_HITSCAN_SAMPLES,
+            "`{}` needs {taps} collision samples for its {} m, past the {MAX_HITSCAN_SAMPLES} \
+             one shot may take",
+            w.id,
+            w.range_m
+        );
+
+        // Hits to kill, computed the way the sim computes it — the melee
+        // test's arithmetic against the firearm band.
+        let mut hp = cc.player_hp;
+        let mut hits = 0u32;
+        while hp > 0 {
+            hp -= baked.damage.min(hp);
+            hits += 1;
+        }
+        assert!(
+            (lo..=hi).contains(&hits),
+            "`{}` kills in {hits} shots, outside the declared firearm TTK band {lo}..={hi}",
+            w.id
+        );
+    }
+    assert_eq!(guns, 1, "the alpha data ships exactly one firearm");
+}
+
+/// A firearm reaching further than one shot can be sampled is refused at
+/// boot, not clamped at tick time — the round's sampler wall, one clock
+/// over. A clamped reach is a gun that shoots through cover past some
+/// distance the data never admits to.
+#[test]
+fn a_firearm_that_outreaches_the_collision_sampler_is_refused() {
+    refuses_bake(
+        "weapons.toml",
+        "range_m = 50",
+        "range_m = 500",
+        "shoot through cover",
+    );
+}
+
+/// A firearm whose round carries `[[ammo]]` ballistics is refused at boot.
+///
+/// The bow's refusal inverted, and the reason is the same one: the pairing
+/// is what tells a projectile from a hitscan, so a round that is both would
+/// leave the question to whichever reader asked it.
+#[test]
+fn a_firearm_whose_round_has_ballistics_is_refused() {
+    refuses(
+        "weapons.toml",
+        "ammo = [\"item.pistol_ammo\"]",
+        "ammo = [\"item.arrow_wood\"]",
+        "it is a projectile",
+    );
 }
 
 /// A muzzle speed the collision sampler cannot trace is refused at boot,
@@ -2851,5 +3002,187 @@ fn the_hash_moves_with_the_ladder() {
         base.hash(),
         moved.hash(),
         "two contents whose tech tree differs canonicalise identically"
+    );
+}
+
+/// **`content/armor.toml` reaches the sim.** Every row lands at its item's
+/// index carrying the percent and the slot the file declares — the assertion
+/// that stopped this file being priced, validated, hashed, balance-anchored
+/// and *unread* from M1 to 2026-08-19 (`reference/ARMOR.md` §9.1).
+///
+/// Slot-checked as well as valued, because the slot is not decoration:
+/// `Player::worn` is indexed by it, so a bake that keyed the head piece to
+/// the body row would put a headwrap in a slot that never pays.
+#[test]
+fn bake_combat_arms_the_armor_the_data_prices() {
+    use content::schema::ArmorSlot;
+    use sim_core::combat::{WEAR_BODY, WEAR_HEAD, WEAR_NONE};
+
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped armor must bake");
+    assert!(
+        c.armors.len() >= 3,
+        "the shipped set prices {} armor rows — fewer than the three this \
+         test was written against, so it is now proving less than it says",
+        c.armors.len()
+    );
+    for a in &c.armors {
+        let idx = c.item_index(&a.id).expect("armor arms an item") as usize;
+        let baked = cc.armor[idx];
+        assert_eq!(
+            baked.reduction_pct as u32, a.reduction_pct,
+            "`{}` reduction did not survive the bake",
+            a.id
+        );
+        assert_eq!(
+            baked.slot,
+            match a.slot {
+                ArmorSlot::Head => WEAR_HEAD,
+                ArmorSlot::Body => WEAR_BODY,
+            },
+            "`{}` was baked into the wrong wear slot",
+            a.id
+        );
+    }
+    // And the table is not simply full: an item nobody armors stays inert,
+    // so `slot == WEAR_NONE` still means "not wearable".
+    let rock = c.item_index("item.rock").expect("the rock is an item") as usize;
+    assert_eq!(
+        cc.armor[rock].slot, WEAR_NONE,
+        "a rock is wearable — the bake filled rows it was never given"
+    );
+}
+
+/// **A body in the shipped burlap shirt takes six rock hits instead of
+/// five**, computed through the sim's own reducer against the shipped
+/// numbers. The one sentence this whole slice is for, in the crate that
+/// owns the numbers.
+#[test]
+fn the_shipped_burlap_shirt_costs_an_attacker_a_swing() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped content must bake");
+    let rock = c
+        .weapons
+        .iter()
+        .find(|w| w.id == "item.rock")
+        .expect("the rock is a weapon");
+    let shirt = c
+        .armors
+        .iter()
+        .find(|a| a.id == "item.armor_burlap_body")
+        .expect("the burlap shirt is priced");
+
+    // Hits to kill, swung rather than divided: the loop `bake_combat_plays_
+    // the_band_the_data_declares` already uses, with the reduction the sim
+    // applies inserted where the sim applies it.
+    let swings = |pct: u32| {
+        let mut hp = cc.player_hp;
+        let mut hits = 0u32;
+        let per = sim_core::combat::reduce(rock.damage as u16, pct);
+        assert!(per > 0, "a rock that deals nothing never kills");
+        while hp > 0 {
+            hp -= per.min(hp);
+            hits += 1;
+        }
+        hits
+    };
+    assert_eq!(swings(0), 5, "a naked body and a rock");
+    assert_eq!(
+        swings(shirt.reduction_pct),
+        6,
+        "the shipped burlap shirt ({} %) changed nothing about a rock \
+         fight — it is craftable for 20 cloth and must buy the wearer a \
+         swing",
+        shirt.reduction_pct
+    );
+}
+
+/// **The band's arithmetic and the sim's are one function, not two that
+/// agree by luck.**
+///
+/// `balance::hits_to_kill` divides `player_hp` by the exact rational
+/// `damage × (100 − pct) / 100`; the sim computes
+/// `combat::reduce(damage, pct)` once — an integer floor — and subtracts it
+/// every swing. Those are different functions, and where they disagree the
+/// band describes a fight nobody has (`findings/armor-design-20260818.md`
+/// §5). They agree on every pair we ship; this is what says so, and it
+/// covers the *set* percentages too, which no band currently reaches.
+#[test]
+fn the_band_and_the_sim_kill_in_the_same_number_of_hits() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let hp = c.balance.globals.player_hp;
+
+    // Every single piece, plus every legal pairing of one head and one
+    // body — which is what `Player::worn` can actually hold, and what
+    // `combat::worn_pct` sums.
+    let mut sets: Vec<u32> = vec![0];
+    for a in &c.armors {
+        sets.push(a.reduction_pct);
+    }
+    for h in c
+        .armors
+        .iter()
+        .filter(|a| a.slot == content::schema::ArmorSlot::Head)
+    {
+        for b in c
+            .armors
+            .iter()
+            .filter(|a| a.slot == content::schema::ArmorSlot::Body)
+        {
+            sets.push(h.reduction_pct + b.reduction_pct);
+        }
+    }
+    assert!(
+        sets.len() >= 6,
+        "only {} protection values to check — the shipped armor set shrank \
+         and this pin is now guarding almost nothing",
+        sets.len()
+    );
+
+    let mut pairs = 0;
+    for w in &c.weapons {
+        if w.kind == content::schema::WeaponKind::Throwable {
+            continue; // structure damage, no TTK
+        }
+        for &pct in &sets {
+            let banded = content::balance::hits_to_kill(hp, w.damage, pct);
+            let per = sim_core::combat::reduce(w.damage as u16, pct);
+            assert!(per > 0, "`{}` under {pct}% deals nothing a hit", w.id);
+            let mut left = hp as u16;
+            let mut played = 0u32;
+            while left > 0 {
+                left -= per.min(left);
+                played += 1;
+            }
+            assert_eq!(
+                banded, played,
+                "`{}` against {pct}% armor: the band computes {banded} hits \
+                 and the sim plays {played}. The two arithmetics have \
+                 drifted, so `armor_extra_hits_max` is now describing a \
+                 fight nobody has",
+                w.id
+            );
+            pairs += 1;
+        }
+    }
+    assert!(
+        pairs >= 20,
+        "only {pairs} (weapon, armor) pairs were checked — the loop is \
+         guarding nothing"
+    );
+}
+
+/// An armor row the sim cannot represent never reaches it. A zero
+/// reduction is the interesting one: `validate` has no opinion about it
+/// (it only refuses over 90), but zero **is** the sim's "not armor"
+/// sentinel, so a piece declaring no protection would silently become an
+/// unwearable item rather than a useless one.
+#[test]
+fn an_armor_row_that_cannot_work_never_reaches_the_sim() {
+    refuses_bake(
+        "armor.toml",
+        "reduction_pct = 15",
+        "reduction_pct = 0",
+        "protects from nothing",
     );
 }

@@ -1,7 +1,26 @@
-# Gates · content/armor.toml — worn protection (CONTENT.md §1). Reduction
-# applies to hits on that slot; the band (balance.toml) asserts any single
-# piece adds at most +2 hits-to-kill against every banded weapon
-# (CONTENT §4 anchor 2).
+# Gates · content/armor.toml — worn protection (CONTENT.md §1).
+#
+# **Read since 2026-08-19** (armor reduction v0): `bake_combat` installs
+# these rows into `CombatContent::armor` keyed by item index, and
+# `combat::hurt` subtracts them from every hit that is a hit. Until that
+# day this file was priced, validated, hashed and balance-anchored with
+# nothing in the sim reading a row of it.
+#
+# ⚠ **`slot` does not yet select which hits a piece answers.** Aim is
+# planar and there are no hit areas (`combat.rs`), so the worn SET is one
+# number and both slots sum — a headwrap pays against a body blow. What
+# `slot` does do is index `Player::worn`, so a piece pays in one slot only
+# and two body plates cannot stack. Hit areas are a later slice; when they
+# land, this line is the one that changes.
+#
+# ⚠ **The band below is known-misleading and it is not a lie this file
+# can fix.** `balance.toml`'s `armor_extra_hits_max` asserts any SINGLE
+# piece adds at most +2 hits-to-kill against every banded weapon (CONTENT
+# §4 anchor 2) — but the anchor loops every row against a *body* TTK, so
+# it credits a head piece against body hits, it has no floor, and it
+# cannot see a set: head 10 % + roadsign 25 % is **+3** on four weapons.
+# Re-speaking the band is an operator act (`DECISIONS.md` §open, "armor
+# reduction v0").
 #
 # **These three numbers are OURS, and as of 2026-08-18 that is a written
 # block rather than an unexamined gap** (`reference/RIPLIST.md` §1h).

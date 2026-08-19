@@ -80,7 +80,7 @@ const ARROW: u16 = 4;
 const STANDOFF_M: f32 = 4.0;
 
 /// A bow whose numbers are the real `content/weapons.toml` bow converted the
-/// way `bake_bow` converts it: 40 m/s and 20 m/s² at 30 Hz. Written out
+/// way `bake_ranged` converts it: 40 m/s and 20 m/s² at 30 Hz. Written out
 /// rather than loaded so this suite gates the *flight*, and a content edit
 /// cannot quietly turn a red here into a green.
 fn bow_fixture() -> CombatContent {
@@ -90,6 +90,7 @@ fn bow_fixture() -> CombatContent {
         damage: 30,
         ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
         rate_ticks: 60,
+        hitscan: false,
         // 60 m, the real bow's reach. `ranged::draw` divides this by the
         // round's speed for the flight, which at 1333 mm/tick is the 45
         // ticks this fixture used to state as a constant.
@@ -266,6 +267,7 @@ fn shoot_through(
             hv(seed),
             &cols,
             occ,
+            &cc,
             &mut arrows,
             &mut players,
             &mut events,
@@ -388,6 +390,7 @@ fn an_arrow_in_the_open_lands_and_is_announced() {
             hv(seed),
             &cols,
             &mut sc.occupants(),
+            &cc,
             &mut arrows,
             &mut players,
             &mut events,
@@ -431,6 +434,7 @@ fn four_arrows_kill_and_the_kill_names_the_bow() {
             hv(seed),
             &cols,
             &mut sc.occupants(),
+            &cc,
             &mut arrows,
             &mut players,
             &mut events,
@@ -724,6 +728,7 @@ fn an_arrow_never_hits_its_owner() {
             hv(seed),
             &cols,
             &mut sc.occupants(),
+            &bow_fixture(),
             &mut arrows,
             &mut players,
             &mut events,
@@ -764,6 +769,7 @@ fn the_ground_stops_an_arrow_and_the_store_drains() {
                 hv(seed),
                 &cols,
                 &mut sc.occupants(),
+                &bow_fixture(),
                 &mut arrows,
                 &mut players,
                 &mut events,
@@ -809,6 +815,7 @@ fn the_same_shot_flies_the_same_path_twice() {
                 hv(seed),
                 &cols,
                 &mut sc.occupants(),
+                &bow_fixture(),
                 &mut arrows,
                 &mut players,
                 &mut events,

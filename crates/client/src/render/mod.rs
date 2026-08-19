@@ -1038,6 +1038,9 @@ impl Plugin for GatesRenderPlugin {
                 // Everyone else's, off the interpolated bodies `Stream`
                 // just moved — positional, culled by the mixer's falloff.
                 audio::remote_steps,
+                // …and their arms. Same slice `bodies::stream` animates
+                // from, same transform it just wrote.
+                audio::remote_swings,
                 audio::fell,
                 // The herd's voices, off the animals `mobs::stream` just
                 // moved — a snort, a howl or a growl, by species and range.

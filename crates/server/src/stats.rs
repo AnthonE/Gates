@@ -3,7 +3,57 @@
 //! tests, the smoke gate, and later the status page. Integer-only by
 //! design (L5: diagnostics are numbers, not strings).
 
+use sim_core::limits::{INPUT_BUFFER_CAP, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS, TICK_HZ};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+/// Buckets in [`ShardStats::aim_stale_hist`]: one per tick for `0..=6`, and
+/// index 7 is **7 or more**.
+///
+/// Eight and not ten or sixteen, because seven is the number the later
+/// slices turn on: `findings/lagcomp-design-20260818.md` §1.4 proposes
+/// `REWIND_MAX_TICKS = 7` (250 ms of favouring, floored to whole ticks at
+/// 30 Hz), so the top bucket answers exactly one question — **what fraction
+/// of aims a 7-tick rewind would fail to reach** — and the six below it say
+/// how much of the ring is actually used. A mean cannot answer either; that
+/// is why this exists beside `aim_stale_sum` rather than instead of it
+/// (`stats.rs`'s own argument for the lane-byte pairs, one level out).
+pub const AIM_STALE_BUCKETS: usize = 8;
+
+/// Raw staleness a sample may carry before it is refused as unbelievable
+/// rather than folded into the distribution — **derived, not picked**.
+///
+/// `snapshot_ack` is a client claim (`reference/DOORS.md` §9's posture:
+/// clamp it, never trust it), and one hostile datagram naming a snapshot
+/// from an hour ago would own `aim_stale_max` and drag the mean with it.
+/// The ceiling is the oldest ack the server could still *corroborate*: its
+/// sent-snapshot ring holds `SENT_SNAPSHOT_RING` snapshots at
+/// `SNAPSHOT_INTERVAL_TICKS` apart (64 ticks of history), and a frame may
+/// then wait up to `INPUT_BUFFER_CAP` ticks in the input buffer before the
+/// tick that executes it. **80 ticks, 2.67 s at `TICK_HZ`.**
+///
+/// Overflow policy: **refuse and count** — the sample does not reach
+/// `aim_stale_samples`, `aim_stale_sum`, `aim_stale_max` or the histogram,
+/// and `aim_stale_refused` says how many were dropped. Refusing silently
+/// would let a forger make the distribution look clean, which is the same
+/// failure as counting him.
+///
+/// **Typed rather than written as its own derivation, and the gate is why**:
+/// `ci/knob_registry.mjs` pins every named constant against its
+/// `DECISIONS.md` §open row and can only read a literal. The derivation is
+/// not lost — the `assert!` below is the same expression, checked at
+/// compile time, so a change to either limit fails the build here instead
+/// of silently widening what this shard will believe.
+pub const AIM_STALE_CEILING_TICKS: u16 = 80;
+
+/// The derivation, enforced.
+const _: () = assert!(
+    AIM_STALE_CEILING_TICKS as u64
+        == SENT_SNAPSHOT_RING as u64 * SNAPSHOT_INTERVAL_TICKS + INPUT_BUFFER_CAP as u64
+);
+/// Sanity: the ceiling is well clear of the u16 wrap in both directions, so
+/// `wrapping_sub` cannot alias a real sample onto a refused one.
+const _: () = assert!(AIM_STALE_CEILING_TICKS > TICK_HZ as u16);
+const _: () = assert!(AIM_STALE_CEILING_TICKS < u16::MAX / 2);
 
 #[derive(Default)]
 pub struct ShardStats {
@@ -450,6 +500,67 @@ pub struct ShardStats {
     /// logging its own overflow is the one line guaranteed to make the
     /// overflow worse.
     pub anomaly_dropped: AtomicU64,
+
+    // ── Aim staleness (findings/lagcomp-design-20260818.md §7 slice 1) ──
+    //
+    // **How far behind the world a fight actually is, measured instead of
+    // computed.** `combat::strike` resolves a swing against present server
+    // positions and nothing anywhere said how stale the aim was when it was
+    // taken — so every constant in `NETCODE.md` §8's rewind design was a
+    // doc's arithmetic (RTT + interp delay, off a table of assumed RTTs).
+    // These six counters are the arithmetic's replacement.
+    //
+    // **What is measured, exactly.** An input datagram arriving with
+    // `snapshot_ack = S` is the client saying *"the newest world I had
+    // applied when I made these frames is server tick S"*; the frame is
+    // then executed at server tick `T`. `T − S`, in ticks, is the whole
+    // number: it folds RTT, the input-buffer depth and the client's own
+    // scheduling together, and it contains no clock (`CLAUDE.md`: a gate
+    // that waits on a clock is not a gate — and a *statistic* on a clock
+    // is not a statistic either, on a box whose load nobody recorded).
+    //
+    // **This is the RAW number and it deliberately omits one term.** §2.2's
+    // favour formula is `(T − S) + INTERP_DELAY_TICKS − REWIND_ACK_BIAS_TICKS`.
+    // `INTERP_DELAY_TICKS` is a compile-time `4.0` in
+    // `client-core/src/interp.rs` and moving it to `limits.rs` is slice 2's
+    // `sim-core` change, so adding it here would mean this crate mirroring
+    // another crate's constant by hand — the `props.js` drift `CLAUDE.md`
+    // opens with. Adding a constant to a measured number is arithmetic
+    // anybody can do later; measuring the part **only the server knows** is
+    // not. So: read these as raw `T − S`, and add the two constants at the
+    // moment they have one home. **Do not double-count them here.**
+    //
+    // **Aggregate, not per-client**, for the reason the lane-byte block
+    // above gives: the per-client half already exists on the other end
+    // (`botclient::BotReport`), and a per-client table here would be a
+    // structure invented for a counter.
+    /// Frames executed whose staleness was measurable and believed.
+    /// `aim_stale_sum / this` is the mean, in ticks, and neither half means
+    /// anything alone — which is why the pair is a pair.
+    pub aim_stale_samples: AtomicU64,
+    /// Total staleness over those samples, in ticks.
+    pub aim_stale_sum: AtomicU64,
+    /// Worst staleness since boot, in ticks — `fetch_max`, a high-water
+    /// mark. A mean over 100 clients has no single worst case; this does,
+    /// and a rewind depth is chosen against the tail, never the middle.
+    pub aim_stale_max: AtomicU64,
+    /// Frames executed whose staleness was **not** measurable: the client
+    /// had not yet acked a snapshot this shard sent, so its `snapshot_ack`
+    /// is the `0` `ClientView::ack_fields` returns before the first
+    /// snapshot lands. Counted rather than skipped, because a silent skip
+    /// and a zero-staleness sample are indistinguishable in a mean, and the
+    /// honest reading of "the shard's uptime, in ticks, as one player's
+    /// lag" is *no measurement* rather than an enormous one.
+    pub aim_stale_unacked: AtomicU64,
+    /// Frames whose measured staleness exceeded [`AIM_STALE_CEILING_TICKS`]
+    /// — a client naming a snapshot older than the server's own sent ring
+    /// can corroborate. See that constant for the derivation and the
+    /// refuse-and-count policy.
+    pub aim_stale_refused: AtomicU64,
+    /// The distribution: index `n` counts samples of exactly `n` ticks for
+    /// `n < AIM_STALE_BUCKETS − 1`, and the last index counts everything at
+    /// or above it. See [`AIM_STALE_BUCKETS`] for why the top edge is 7.
+    pub aim_stale_hist: [AtomicU64; AIM_STALE_BUCKETS],
 }
 
 impl ShardStats {
@@ -479,6 +590,39 @@ impl ShardStats {
 
     pub fn get(field: &AtomicU64) -> u64 {
         field.load(Ordering::Relaxed)
+    }
+
+    /// Fold one executed input frame into the aim-staleness distribution.
+    ///
+    /// `now` is the low 16 bits of the server tick the frame is about to be
+    /// executed at; `view` is the stamp `ClientNetState::consume_input`
+    /// returned — the snapshot ack the frame's first datagram carried, or
+    /// `None` for a client that has not yet acked anything.
+    ///
+    /// **The subtraction is 16-bit and wrapping, and that is the whole
+    /// point of it being here rather than at the call site.** `World::tick`
+    /// is a `u64` and `snapshot_ack` is the tick's low 16 bits, so a shard
+    /// crosses the u16 boundary every 65 536 ticks — **36 minutes and 24
+    /// seconds at `TICK_HZ`** — and a widening subtraction would report
+    /// ~65 500 ticks of staleness for every fight for the rest of the
+    /// wipe. `on_acks` already reads the field this way (`client.rs`: the
+    /// ring holds far under the u16 ambiguity window) and this agrees with
+    /// it. Gated by `lagcomp_measure.rs`, across the boundary specifically.
+    pub fn record_aim_stale(&self, now: u16, view: Option<u16>) {
+        let Some(ack) = view else {
+            Self::bump(&self.aim_stale_unacked);
+            return;
+        };
+        let raw = now.wrapping_sub(ack);
+        if raw > AIM_STALE_CEILING_TICKS {
+            Self::bump(&self.aim_stale_refused);
+            return;
+        }
+        Self::bump(&self.aim_stale_samples);
+        Self::add(&self.aim_stale_sum, raw as u64);
+        self.aim_stale_max.fetch_max(raw as u64, Ordering::Relaxed);
+        self.aim_stale_hist[(raw as usize).min(AIM_STALE_BUCKETS - 1)]
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Publish a gauge — a number that is *read off* the world each tick
@@ -549,6 +693,7 @@ impl ShardStats {
             "sleepers_evicted" => &self.sleepers_evicted,
             "admin_kicked" => &self.admin_kicked,
             "admin_refused" => &self.admin_refused,
+            "aim_stale_refused" => &self.aim_stale_refused,
             _ => return None,
         })
     }

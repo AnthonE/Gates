@@ -140,7 +140,10 @@ pub fn stream(
                     t.translation = pos;
                     t.rotation = facing;
                     // The clip choice, off state the sim already sent.
-                    anim.observe(pos, time.delta_secs(), rs.sleeping);
+                    // `dead` is the v48 bit: a corpse keeps its slot until
+                    // its owner leaves the death screen, so without it a
+                    // killed player is drawn standing at idle.
+                    anim.observe(pos, time.delta_secs(), rs.sleeping, rs.dead);
                     anim.pitch = wire_pitch_to_radians(rs.pitch);
                     // **The one thing the sim sends that state cannot
                     // imply.** Everything else here is derived — the gait
@@ -153,6 +156,17 @@ pub fn stream(
                     // moving.
                     if feed.swings().contains(&id) {
                         anim.swing();
+                    }
+                    // **And the blow you just landed on them** — the other
+                    // fact no amount of interpolated state can imply.
+                    // Attacker-only, because `EV_HIT` is unicast to the
+                    // attacker: `Clip::Flinch`'s doc comment and the
+                    // `DECISIONS.md` row carry the asymmetry in full.
+                    // After the swing, so a body hit on the same frame it
+                    // swung flinches — `BodyAnim::flinch` is the newest of
+                    // the two transients here and clears the other.
+                    if feed.hit_victims().contains(&id) {
+                        anim.flinch();
                     }
                 }
                 if was_sleeping != rs.sleeping {
@@ -167,13 +181,18 @@ pub fn stream(
             }
             None => {
                 let mut anim = BodyAnim::default();
-                anim.observe(pos, 0.0, rs.sleeping);
+                anim.observe(pos, 0.0, rs.sleeping, rs.dead);
                 anim.pitch = wire_pitch_to_radians(rs.pitch);
                 // A body that enters AOI on the same frame it swings still
                 // gets its arc; without this the first swing of every
                 // newly-visible raider is the one nobody sees.
                 if feed.swings().contains(&id) {
                     anim.swing();
+                }
+                // Same for the blow: a body that enters AOI on the frame
+                // your arrow reaches it still flinches.
+                if feed.hit_victims().contains(&id) {
+                    anim.flinch();
                 }
                 let entity = commands
                     .spawn((

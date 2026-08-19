@@ -226,6 +226,23 @@ pub const MAX_SPAWN_KIT: usize = INV_SLOTS;
 /// Inventory slots per player: 6 hotbar + 24 backpack (ALPHA.md §1).
 pub const INV_SLOTS: usize = 30;
 
+/// Worn-equipment slots per player (`Player::worn`) — one head, one body,
+/// in that order, and the array is **indexed by the slot** rather than
+/// appended to.
+///
+/// Two because `content/armor.toml`'s `ArmorSlot` has exactly two variants
+/// and every row in the shipped set is one of them. It is not a guess at a
+/// future roster: a legs or boots rung is a content schema change and a
+/// widening here, in one commit, exactly as a new container kind is.
+///
+/// Overflow policy: **there is none, by construction.** Nothing is ever
+/// pushed — a piece goes into the slot its baked row names (`ArmorDef::slot`,
+/// one-based) and replaces whatever was there, so the only way to exceed the
+/// cap is to name a slot the array does not have, which `combat::worn_pct`
+/// refuses by ignoring the stack. Wall 4 wants the cap stated; this is it.
+/// Proposed default, DECISIONS.md §open ("armor reduction v0").
+pub const WEAR_SLOTS: usize = 2;
+
 /// Hotbar width — the first `HOTBAR_SLOTS` inventory slots, the only ones
 /// the held-item selector may name (ALPHA.md §1). The wire carries the
 /// selector in 3 bits and refuses 6–7; a non-wire command with an invalid
@@ -723,6 +740,62 @@ pub const ARROW_STEP_MM: i32 = 170;
 /// clamp from ever binding at tick time.
 /// Proposed default, DECISIONS.md §open (ranged v0).
 pub const MAX_ARROW_SUBSTEPS: usize = 16;
+
+/// Collision samples one **hitscan** shot may take, over its whole reach
+/// (`ranged::hitscan`). A bullet has no flight: the trace that an arrow
+/// spreads over forty ticks at `MAX_ARROW_SUBSTEPS` a tick, a firearm pays
+/// in one, so the two caps are the same idea against different clocks and
+/// neither can be the other.
+///
+/// With `ARROW_STEP_MM` this is a **content wall**, exactly as
+/// `MAX_ARROW_SUBSTEPS` is for a round's muzzle speed: a firearm whose
+/// `range_m` exceeds `ARROW_STEP_MM * MAX_HITSCAN_SAMPLES` (54.4 m) cannot
+/// be traced at the spacing a trunk needs, and `bake_combat` refuses it at
+/// boot rather than shipping a gun that shoots through cover past some
+/// distance nothing writes down. The revolver is 50 m — 295 samples — so it
+/// sits inside this with room and nothing else in `content/` is a firearm.
+///
+/// Overflow policy: **none reachable at tick time** — the bake refusal is
+/// what keeps the clamp from ever binding, the same posture
+/// `MAX_ARROW_SUBSTEPS` states.
+///
+/// The per-tick bound this leaves is **derived rather than declared**, which
+/// is why there is no separate shots-per-tick cap: one player fires at most
+/// one shot a tick (`RangedDef::rate_ticks` gates it and the pass reads one
+/// slot once), so the shard-wide worst case is `MAX_PLAYERS *
+/// MAX_HITSCAN_SAMPLES` samples and it is already bounded by a cap that
+/// exists. A queue would be the wrong shape here anyway: a hitscan shot
+/// leaves no entity behind to store, so there is nothing to overflow.
+/// Proposed default, DECISIONS.md §open (hitscan v0).
+pub const MAX_HITSCAN_SAMPLES: usize = 320;
+
+/// How far past the shooter a **missed** shot still marks the world, in
+/// samples of `ARROW_STEP_MM` — 64 of them, 10.9 m.
+///
+/// This is a *cosmetic* bound and it is the only number here that admits to
+/// being one, so it is worth saying exactly what it buys. `ranged::hitscan`
+/// walks the world only as far as the nearest body in the line, because
+/// nothing past that body can change who was hit; a shot with nobody in
+/// front of it therefore owes no walk at all, and the only reason to take
+/// one is `EV_IMPACT` — the puff of dirt where the bullet landed.
+///
+/// Measured, and this is why the bound exists: the walk is a
+/// `terrain::ground` evaluation per sample at ~370 ns, so a hundred players
+/// holding the trigger at open sky on one tick is **~20 ms of a 33 ms
+/// tick** at the full 320 (`DECISIONS.md` §open, hitscan v0). A decal must
+/// not own the tick. At 64 it is ~2.4 ms, and what is lost is the mark on a
+/// hillside more than eleven metres away — which is the mark nobody is
+/// standing close enough to read.
+///
+/// It does **not** bound a shot that hits: where the trace was already owed
+/// for the hit decision, the mark is free and is emitted wherever the stop
+/// fell. So the rule is *the mark is free where the walk was already paid
+/// for, and bounded where it would otherwise be the reason for one*.
+///
+/// Overflow policy: none — a shot past it is a miss with no decal, never a
+/// shot that stops early. Nothing about a hit reads this.
+/// Proposed default, DECISIONS.md §open (hitscan v0).
+pub const MAX_HITSCAN_MARK_SAMPLES: usize = 64;
 
 /// Live animals one shard simulates, hard cap and roster length
 /// (`mob.rs`). Not a queue: the roster is a fixed array of slots, each

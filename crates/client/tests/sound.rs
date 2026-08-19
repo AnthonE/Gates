@@ -537,6 +537,163 @@ fn a_remote_step_is_the_same_boot_on_the_same_ground() {
     assert_eq!(remote(Cue::Swing), Cue::Swing);
 }
 
+/// The swing has a remote twin on the footsteps' rule: same waveform, and
+/// what differs is exactly what should.
+///
+/// **The radius is the interesting assertion.** `Cue::Swing` has carried
+/// `radius_m = 20.0` since the table was written and nothing has ever read
+/// it — a non-positional cue has no distance — so the remote row is where
+/// that number becomes true. Tying the two means a swing cannot carry one
+/// distance in your hands and another in somebody else's.
+#[test]
+fn a_remote_swing_is_the_same_arm_heard_where_the_body_is() {
+    let (l, f) = (Cue::Swing.def(), Cue::RemoteSwing.def());
+    assert_eq!(
+        synth::wav(Cue::Swing),
+        synth::wav(Cue::RemoteSwing),
+        "RemoteSwing is not Swing's own waveform - what makes a swing remote \
+         is its def, not its sound"
+    );
+    assert!(
+        f.positional,
+        "RemoteSwing is an own-fact - it must be a place"
+    );
+    assert!(!l.positional, "Swing grew a position");
+    assert_eq!(
+        f.radius_m, l.radius_m,
+        "the two swing rows drifted on how far an arm carries"
+    );
+    assert_eq!(f.gain, l.gain, "the two swing rows drifted on gain");
+    assert!(
+        f.priority > l.priority,
+        "another player's swing is the sound that decides fights - it must \
+         outrank your own arm"
+    );
+    assert!(
+        f.cooldown_ms < l.cooldown_ms,
+        "the cooldown is per-CUE and therefore shared across every swinger in \
+         earshot - the local swing rate would let one raider mask his crew"
+    );
+    assert!(
+        Cue::RemoteSwing.pitch_var() > 0.0,
+        "RemoteSwing is diegetic and must vary"
+    );
+}
+
+/// The cull is the one falloff law, exactly as it is for a remote step: a
+/// swing is heard at the body, quieter than the table gain, and past the
+/// radius it is no voice at all rather than a quiet one.
+#[test]
+fn a_remote_swing_is_heard_at_the_body_and_culled_by_distance() {
+    let mix = Mix::default();
+    let mut m = Mixer::new();
+    m.push(Request::at(Cue::RemoteSwing, [8.0, 0.0, 0.0]));
+    let starts: Vec<_> = m.tick(16.0, AT_ORIGIN, 0, &mix).to_vec();
+    assert_eq!(starts.len(), 1, "a nearby remote swing was not heard");
+    assert_eq!(
+        starts[0].at,
+        Some([8.0, 0.0, 0.0]),
+        "the swing did not play at the body"
+    );
+    assert!(
+        starts[0].gain < Cue::RemoteSwing.def().gain,
+        "8 m away did not attenuate"
+    );
+
+    let mut m = Mixer::new();
+    m.push(Request::at(
+        Cue::RemoteSwing,
+        [Cue::RemoteSwing.def().radius_m + 1.0, 0.0, 0.0],
+    ));
+    assert!(
+        m.tick(16.0, AT_ORIGIN, 0, &mix).is_empty(),
+        "a swing past its radius was heard"
+    );
+    assert_eq!(m.starved, 0, "a culled swing was counted as starvation");
+}
+
+/// **The cooldown is what one raider costs the rest of his crew**, and that
+/// is the whole reason the remote row does not inherit the local 120 ms.
+///
+/// ⚠ **A first draft of this test asserted two swingers in one frame are two
+/// voices, and that is false** — `a_cooldown_binds_within_one_frame` above
+/// proves the clock binds inside a frame, so a per-CUE cooldown is a hard
+/// rate limit over every swinger in earshot at once, not a per-emitter one.
+/// So the property that actually distinguishes 40 from 120 is the RATE: at
+/// 40 ms a second raider swinging three frames later is heard, and at the
+/// local swing rate he is not.
+#[test]
+fn a_second_swinger_is_not_locked_out_by_the_first() {
+    let mix = Mix::default();
+    let mut m = Mixer::new();
+    m.push(Request::at(Cue::RemoteSwing, [4.0, 0.0, 0.0]));
+    assert_eq!(m.tick(16.0, AT_ORIGIN, 0, &mix).len(), 1);
+
+    // 48 ms later — three frames at 60 Hz — a second raider swings.
+    m.push(Request::at(Cue::RemoteSwing, [-4.0, 0.0, 6.0]));
+    let starts: Vec<_> = m.tick(48.0, AT_ORIGIN, 0, &mix).to_vec();
+    assert_eq!(
+        starts.len(),
+        1,
+        "the second raider was still locked out 64 ms after the first"
+    );
+    assert_eq!(
+        starts[0].at,
+        Some([-4.0, 0.0, 6.0]),
+        "the wrong body was heard"
+    );
+    // And the local row would have refused him: this is the number the
+    // remote row exists to not inherit.
+    assert!(
+        (Cue::Swing.def().cooldown_ms as f32) > 64.0,
+        "Swing's cooldown is no longer long enough for this test to be about \
+         anything - the two rows have converged"
+    );
+}
+
+/// **A cue with no producer is a table row that ships silence**, and every
+/// gate above this one would stay green over it: the def is right, the
+/// waveform is right, the mixer would play it correctly if anybody asked.
+/// Nobody asking is the defect, and it is a missing call site rather than a
+/// wrong value — `CLAUDE.md`'s single-drain trap, one layer out.
+///
+/// Text, because the producer is behind `--features render`.
+#[test]
+fn the_remote_swing_has_a_producer_and_the_local_one_is_not_it() {
+    const AUDIO: &str = include_str!("../src/render/audio.rs");
+    const REGISTER: &str = include_str!("../src/render/mod.rs");
+    const INPUT: &str = include_str!("../src/render/input.rs");
+
+    assert!(
+        AUDIO.contains("Cue::RemoteSwing,"),
+        "render/audio.rs asks for no RemoteSwing - the row is silent"
+    );
+    assert!(
+        REGISTER.contains("audio::remote_swings,"),
+        "render/mod.rs no longer schedules audio::remote_swings - the system \
+         exists and never runs, which is the same silence with a longer fuse"
+    );
+
+    // And the local row stays the local player's. Reusing `Cue::Swing` for a
+    // remote is the exact defect `NOW.md` §0sw named: non-positional means
+    // full gain at both ears with no pan, so every swing on the island would
+    // arrive as if it were in your hands.
+    assert!(
+        INPUT.contains("Cue::Swing"),
+        "the local swing lost its producer"
+    );
+    for (name, src) in [("render/audio.rs", AUDIO)] {
+        for line in src.lines() {
+            assert!(
+                !line.contains("Request::at(Cue::Swing")
+                    && !line.contains("Request::own(Cue::Swing"),
+                "{name} plays the LOCAL swing cue: {}",
+                line.trim()
+            );
+        }
+    }
+}
+
 /// The mixer hears a remote step where the body is and not past the radius:
 /// the one falloff law is the cull, exactly as it is for the falling tree.
 #[test]

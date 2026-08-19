@@ -49,6 +49,7 @@ fn ent(id: u32) -> EntityState {
         qvy: 0,
         grounded: true,
         sleeping: false,
+        dead: false,
         yaw: 0,
         pitch: 0,
     }

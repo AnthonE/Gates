@@ -73,6 +73,40 @@ pub enum Clip {
     /// needs to read is the wind-up, and another player's arm was perfectly
     /// still (`NOW.md` §0sw).
     Swing,
+    /// **A body taking a blow.** The second one-shot, and the shortest
+    /// clip this client plays: `Hit_Chest` runs 0.333 s in the shipped
+    /// file (see [`FLINCH_CLIP_S`]).
+    ///
+    /// ⚠ **Only the attacker sees it, and that is a wire fact rather than
+    /// a choice made here.** `EV_HIT` is unicast to the attacker
+    /// (`sim_core::world`'s `EV_HIT` doc line; `server/src/core.rs` routes
+    /// it by `a`), so the id that reaches this client is the body *your*
+    /// blow landed on and no other. A flinch everybody could see would be
+    /// a second broadcast on the hottest path in a fight, one per landed
+    /// blow per player with no AOI filter — priced in `NOW.md` §0pvp and
+    /// deliberately not taken. The asymmetry is recorded as a PROPOSED row
+    /// in `DECISIONS.md` §open ("attacker-side flinch v0") so it can be
+    /// reversed by a word rather than by archaeology.
+    Flinch,
+    /// A killed body, falling and then staying down. **The second
+    /// non-looping clip, and the only one that is a STATE rather than a
+    /// transient** — which is the whole reason it needed a wire bit
+    /// (`dead`, v48) where the swing needed an event.
+    ///
+    /// A corpse keeps its slot until its owner leaves the death screen, so
+    /// before v48 the client drew a killed player standing at idle: you
+    /// could not tell from the body whether the person in front of you was
+    /// still in the fight. It outranks everything, including `Sleep` — a
+    /// sleeper who is killed is a corpse, and the sim agrees (`die` carries
+    /// `sleeping` forward but `hp == 0` is what every weapon tests).
+    ///
+    /// **Laying this body down is safe in a way `Sleep`'s is not**, which
+    /// is why the pose argument that keeps a sleeper standing does not
+    /// reach here: `combat::strike`, `ranged` and the blast all skip
+    /// `hp == 0`, and players do not collide with each other, so a corpse
+    /// is inside no volume the server tests. There is nothing left for the
+    /// drawn pose to disagree with.
+    Death,
 }
 
 impl Clip {
@@ -116,19 +150,51 @@ impl Clip {
             // right one was retimed onto the cadence instead
             // (`ci/retarget_anim.py --retime`).
             Clip::Swing => "Sword_Attack",
+            // Plays once and **holds its last pose** — the omitted
+            // `.repeat()` in `drive`, and `RepeatAnimation::default()` is
+            // `Never`, so the body falls and stays fallen for as long as
+            // the corpse is on the wire. 2.375 s in the shipped file,
+            // against a death screen a player sits on for as long as they
+            // like, so there is no cadence for it to fit inside the way
+            // the swing has one.
+            //
+            // **Measured off the shipped file rather than assumed** (the
+            // `ANIM_RIG_H_M` habit): sampling the clip's last keyframe
+            // through the joint chain puts `Head` at **y 0.107 m** where it
+            // starts at 1.229, `Hips` at 0.052, and both feet within 1 cm of
+            // the ground — so it ends genuinely prone and not merely
+            // slumped. It also carries ~0.95 m of baked root motion
+            // backwards along the body's own Z, which means the drawn corpse
+            // settles about a metre from the point the wire names. That is
+            // cosmetic and stays: nothing in the sim tests a corpse's volume
+            // (`combat::strike`, `ranged` and the blast all skip `hp == 0`),
+            // so there is no second opinion for it to disagree with — but it
+            // is the reason a *loot bag* must keep coming from the wire's
+            // position and never from where the body is drawn.
+            // **`Hit_Chest` and not `Hit_Head`**, which is the only other
+            // candidate the file has (`Hit_Head`, 0.417 s). Nothing on this
+            // wire says where a blow landed — `EV_HIT` carries a victim and
+            // a damage and no body part — so picking the head clip would be
+            // the renderer asserting a fact the sim never sent, which is
+            // the one thing `RENDER.md` §1 forbids it. The chest is the
+            // honest reading of "you were hit".
+            Clip::Flinch => "Hit_Chest",
+            Clip::Death => "Death01",
         }
     }
 
     /// Public because the asset gate reads it: `tests/rig_asset.rs` walks this
     /// list against the shipped file, and a gate holding its own copy would be
     /// checking itself rather than the client.
-    pub const ALL: [Clip; 6] = [
+    pub const ALL: [Clip; 8] = [
         Clip::Idle,
         Clip::Walk,
         Clip::Jog,
         Clip::Sprint,
         Clip::Sleep,
         Clip::Swing,
+        Clip::Flinch,
+        Clip::Death,
     ];
 
     fn slot(self) -> usize {
@@ -139,6 +205,8 @@ impl Clip {
             Clip::Sprint => 3,
             Clip::Sleep => 4,
             Clip::Swing => 5,
+            Clip::Flinch => 6,
+            Clip::Death => 7,
         }
     }
 }
@@ -173,6 +241,39 @@ impl Clip {
 /// round to just past it, and `tests/anim.rs` asks for a strict inequality for
 /// that reason.
 pub const SWING_CLIP_S: f32 = 1.05333;
+
+/// How long the one-shot flinch runs, seconds.
+///
+/// **Measured off the shipped file, not chosen** — the `ANIM_RIG_H_M`
+/// habit. `Hit_Chest`'s longest sampler input maxes at 0.33333 s, and
+/// `tests/rig_asset.rs::the_flinch_clip_is_the_length_the_client_thinks_it_is`
+/// re-reads the file and fails if the two ever disagree. Unlike
+/// [`SWING_CLIP_S`] there is nothing to fit it inside: the sim has no
+/// cadence on being hit — three arrows can land in a second — so the clip
+/// is taken at the length it was authored and the transient rule
+/// ([`BodyAnim::flinch`]) is what stops two of them fighting.
+pub const FLINCH_CLIP_S: f32 = 0.33333;
+
+/// How long the flinch takes to cross-fade IN, seconds. Shorter than
+/// [`ANIM_BLEND_S`], and derived rather than dialled.
+///
+/// The clip's own build-up is what sets it. Sampling every rotation channel
+/// of `Hit_Chest` against its first keyframe, the largest joint deviation
+/// climbs 0.04° → 19.92° and peaks at **t = 0.16667 s**, then settles back to
+/// 14.32° and holds there to the end. So the pose is fully struck a sixth of
+/// a second in, and a blend that has not finished by then draws the apex at
+/// partial weight — the body is *most* bent at the one moment it is *least*
+/// visible. The general blend is 0.18 s, which is past that peak, so reusing
+/// it would damp the only frame of this clip that carries the information.
+///
+/// Blending in exactly AT the apex is the loosest bound that still holds the
+/// property, and it is the file's own number rather than a taste call.
+/// `tests/rig_asset.rs::the_flinch_blend_lands_on_the_clips_own_apex`
+/// re-measures it out of the binary chunk and fails if the clip is re-cut.
+///
+/// The blend back OUT is [`ANIM_BLEND_S`] like everything else — a recovery
+/// is allowed to be softer than an impact.
+pub const FLINCH_BLEND_S: f32 = 0.16667;
 
 /// Speed thresholds, m/s, and the band around each that a body must cross to
 /// change its mind. Derived speed is noisy — a packet arriving a millisecond
@@ -230,7 +331,7 @@ pub struct Rig {
     /// on a one-shot means the first time anybody swings near you.
     /// `tests/anim.rs` counts them against `Clip::ALL` as text for exactly
     /// that reason.
-    nodes: [AnimationNodeIndex; 6],
+    nodes: [AnimationNodeIndex; 8],
     /// Uniform scale that puts the rig at [`ANIM_BODY_H_M`]. A constant ratio
     /// of two measured heights, not a runtime fit — see [`ANIM_RIG_H_M`].
     pub scale: f32,
@@ -301,7 +402,7 @@ pub fn load(
         gltf: assets.load("models/stumpy.glb"),
         scene: None,
         graph: None,
-        nodes: [AnimationNodeIndex::default(); 6],
+        nodes: [AnimationNodeIndex::default(); 8],
         arms: AnimationNodeIndex::default(),
         scale: ANIM_BODY_H_M / ANIM_RIG_H_M,
         missing: Vec::new(),
@@ -383,7 +484,7 @@ pub fn build(
 
     let mut graph = AnimationGraph::new();
     let root = graph.root;
-    let mut nodes = [AnimationNodeIndex::default(); 6];
+    let mut nodes = [AnimationNodeIndex::default(); 8];
     let mut missing = Vec::new();
     for clip in Clip::ALL {
         match gltf.named_animations.get(clip.name()) {
@@ -446,11 +547,21 @@ pub struct BodyAnim {
     /// so a one-shot written there would be stomped the next one — the
     /// transient has to live in a field nothing else recomputes.
     pub swing_s: f32,
-    /// Bumped once per swing heard. `drive` compares it against what it
-    /// last started, so a second swing arriving while the first arc is
-    /// still playing restarts the stroke instead of being swallowed by the
-    /// `playing == want` guard.
-    pub swing_seq: u32,
+    /// Seconds left of a one-shot flinch. Beside the gait for
+    /// [`BodyAnim::swing_s`]'s reason, and beside the SWING because the two
+    /// are one slot: see [`BodyAnim::flinch`].
+    pub flinch_s: f32,
+    /// Bumped once per transient heard — a swing **or** a flinch. `drive`
+    /// compares it against what it last started, so a second one arriving
+    /// while the first is still playing restarts the clip instead of being
+    /// swallowed by the `playing == want` guard.
+    ///
+    /// **One counter for both, because there is only ever one transient.**
+    /// A counter each would let a flinch that follows a swing be read as
+    /// "the same transient still running" by the sequence compare while
+    /// being a different clip by the `want` compare, which is two half-true
+    /// answers to one question.
+    pub transient_seq: u32,
 }
 
 impl BodyAnim {
@@ -459,12 +570,13 @@ impl BodyAnim {
     /// The low pass is on the SPEED and not on the position: smoothing the
     /// position would fight the interpolator, which is already the authority
     /// on where the body is (`bodies.rs` header).
-    pub fn observe(&mut self, pos: Vec3, dt: f32, sleeping: bool) {
+    pub fn observe(&mut self, pos: Vec3, dt: f32, sleeping: bool, dead: bool) {
         // The one-shot's clock, run here because this is the one function
         // every live body passes through every frame with a `dt` in hand.
         // `bodies::stream` calls this BEFORE it hears the frame's swings,
         // so a swing heard this frame gets its whole span.
         self.swing_s = (self.swing_s - dt).max(0.0);
+        self.flinch_s = (self.flinch_s - dt).max(0.0);
         if let (Some(last), true) = (self.last, dt > 0.0) {
             // Horizontal only. A body riding terrain up a hill is walking, not
             // climbing, and counting the vertical would read a slope as speed.
@@ -477,6 +589,17 @@ impl BodyAnim {
         }
         self.last = Some(pos);
 
+        // **Death outranks everything, including sleep and including a
+        // swing in flight.** A body that is killed mid-stroke stops
+        // swinging; the one-shot's clock is still running above, and
+        // `drive` prefers this over it while `dead` holds, so the arc is
+        // abandoned rather than finished by a corpse. `Sleep` is below it
+        // for the same reason the sim puts `hp == 0` above `sleeping`: a
+        // sleeper who is killed is a corpse, not a sleeper.
+        if dead {
+            self.clip = Some(Clip::Death);
+            return;
+        }
         if sleeping {
             self.clip = Some(Clip::Sleep);
             return;
@@ -506,10 +629,85 @@ impl BodyAnim {
         self.clip = Some(want);
     }
 
+    /// Which clip this body should be playing right now — the gait
+    /// [`BodyAnim::observe`] chose, or the transient that outranks it.
+    /// `None` until `observe` has run once.
+    ///
+    /// **The gait is read first, because one of its values outranks every
+    /// transient.** A body killed mid-stroke must stop swinging and must
+    /// not flinch — a corpse does neither — and `observe` has already
+    /// written `Clip::Death`, so the whole transient lane is switched off
+    /// under it. That is the only ordering that does not draw a dead man
+    /// finishing his punch, and it is why the two clocks are deliberately
+    /// left running underneath: death is a state that can end (the bit
+    /// clears when its owner leaves the death screen) and a transient that
+    /// had been *cleared* by a corpse could not be told from one that had
+    /// expired.
+    ///
+    /// Below the corpse the two transients do NOT rank against each other
+    /// here, and that is deliberate: they are mutually exclusive by
+    /// construction, because [`BodyAnim::flinch`] and [`BodyAnim::swing`]
+    /// each clear the other's clock — that doc comment is the whole
+    /// argument, including why a bare priority compare here would be a bug.
+    pub fn wants(&self) -> Option<Clip> {
+        let gait = self.clip?;
+        if gait == Clip::Death {
+            return Some(Clip::Death);
+        }
+        if self.flinch_s > 0.0 {
+            return Some(Clip::Flinch);
+        }
+        if self.swing_s > 0.0 {
+            return Some(Clip::Swing);
+        }
+        Some(gait)
+    }
+
     /// Start a one-shot swing on this body.
+    ///
+    /// Clears any flinch — see [`BodyAnim::flinch`] for why the two
+    /// transients are one slot and why the newest wins.
     pub fn swing(&mut self) {
         self.swing_s = SWING_CLIP_S;
-        self.swing_seq = self.swing_seq.wrapping_add(1);
+        self.flinch_s = 0.0;
+        self.transient_seq = self.transient_seq.wrapping_add(1);
+    }
+
+    /// Start a one-shot flinch on this body: it just took a blow of yours.
+    ///
+    /// ## The two transients are one slot, and the newest wins
+    ///
+    /// A body has one `AnimationPlayer` and one clip at a time, so a flinch
+    /// arriving mid-swing is a ranking question. This clears the swing
+    /// rather than deferring to it, and the swing clears the flinch, for
+    /// three reasons — the third being the one that is not obvious.
+    ///
+    /// **1. Deferring would hide the flinch in the one situation it exists
+    /// for.** The sim allows a swing every `SWING_INTERVAL_TICKS / TICK_HZ`
+    /// = 1.267 s and [`SWING_CLIP_S`] runs 1.053 s of that, so a duelling
+    /// body's arm is at rest for 0.213 s in every 1.267 — 17%. Ranking the
+    /// swing above the flinch would drop ~83% of flinches in a melee fight,
+    /// which is exactly the fight this feedback is for.
+    ///
+    /// **2. Truncating the arc removes no sim fact.** `EV_SWING` is pushed
+    /// from `gather::swing`'s cadence gate *after* the swing has already
+    /// resolved, so the drawn arc is a replay and not a wind-up: cutting it
+    /// short predicts nothing and cancels nothing. (What it does cost is
+    /// stated plainly in `DECISIONS.md` — the attacker sees a shortened arc
+    /// where everyone else sees a whole one, which is a second asymmetry on
+    /// top of the flinch's own.)
+    ///
+    /// **3. The loser's clock has to be stopped, not just outranked.** If
+    /// the swing's countdown kept running under a flinch, `wants` would see
+    /// `swing_s > 0` again the moment the flinch expired and `drive` would
+    /// play the swing **from frame zero** — an arc that shows its first
+    /// tenth of a second, vanishes for a third of a second, and then starts
+    /// over. That is worse than either ordering, and it is what a bare
+    /// priority compare without this line produces.
+    pub fn flinch(&mut self) {
+        self.flinch_s = FLINCH_CLIP_S;
+        self.swing_s = 0.0;
+        self.transient_seq = self.transient_seq.wrapping_add(1);
     }
 }
 
@@ -777,7 +975,18 @@ pub fn head_look(mut bodies: Query<(&BodyAnim, &mut HeadBone)>, mut bones: Query
         };
         // Remove last frame's delta before composing this one — see `applied`.
         let base = head.applied.inverse() * t.rotation;
-        let want = anim.pitch.clamp(-ANIM_HEAD_PITCH_MAX, ANIM_HEAD_PITCH_MAX);
+        // **A corpse is not looking at anything.** The wire keeps carrying
+        // the pitch a body died holding — a dead player's record is frozen,
+        // not cleared — so composing it onto `Death01`'s fallen pose cranks
+        // the head of a body lying on the ground. The look is dropped to
+        // level rather than frozen at its last value, and dropped through
+        // the same `applied` bookkeeping so the delta it already wrote is
+        // still removed.
+        let want = if matches!(anim.clip, Some(Clip::Death)) {
+            0.0
+        } else {
+            anim.pitch.clamp(-ANIM_HEAD_PITCH_MAX, ANIM_HEAD_PITCH_MAX)
+        };
         let delta = Quat::from_axis_angle(head.axis, want);
         t.rotation = delta * base;
         head.applied = delta;
@@ -837,6 +1046,19 @@ pub fn bind(
 }
 
 /// Cross-fade each player to whatever its body wants.
+/// How long a cross-fade INTO `want` takes, seconds.
+///
+/// One value for everything except the flinch, whose blend is derived from
+/// its own clip rather than shared — [`FLINCH_BLEND_S`] says why. Written
+/// as a function rather than folded into the call site so the two constants
+/// stay the only numbers in the decision.
+fn blend(want: Clip) -> f32 {
+    match want {
+        Clip::Flinch => FLINCH_BLEND_S,
+        _ => ANIM_BLEND_S,
+    }
+}
+
 pub fn drive(
     rig: Res<Rig>,
     anims: Query<&BodyAnim>,
@@ -854,34 +1076,36 @@ pub fn drive(
         let Ok(anim) = anims.get(owner.0) else {
             continue;
         };
-        // The one-shot outranks the gait while it is running, and the
-        // sequence number is what lets a second swing restart the stroke:
-        // without it the `playing == want` guard below would swallow every
-        // swing after the first for as long as the body kept swinging.
-        let swinging = anim.swing_s > 0.0;
-        let want = if swinging {
-            Clip::Swing
-        } else {
-            let Some(c) = anim.clip else { continue };
-            c
-        };
-        let restart = swinging && playing.1 != anim.swing_seq;
+        // The ranking lives on `BodyAnim` (see [`BodyAnim::wants`]) rather
+        // than here, so a headless test can assert it without a `World`:
+        // the copy of it that used to sit in this loop was mirrored by hand
+        // into `death_stops_a_swing_in_flight`, which is a gate checking its
+        // own copy of the rule.
+        //
+        // The sequence number is what lets the next transient restart the
+        // clip: without it the `playing == want` guard below would swallow
+        // every swing after the first for as long as the body kept swinging.
+        let Some(want) = anim.wants() else { continue };
+        let transient = matches!(want, Clip::Swing | Clip::Flinch);
+        let restart = transient && playing.1 != anim.transient_seq;
         if playing.0 == Some(want) && !restart {
             continue;
         }
         playing.0 = Some(want);
-        playing.1 = anim.swing_seq;
+        playing.1 = anim.transient_seq;
         let active = transitions.play(
             &mut player,
             rig.node(want),
-            Duration::from_secs_f32(ANIM_BLEND_S),
+            Duration::from_secs_f32(blend(want)),
         );
-        // **`.repeat()` for a gait and nothing for the swing.**
-        // `RepeatAnimation::default()` is `Never`, so the one-shot is an
-        // omission rather than a feature — and the return to the gait needs
-        // no completion callback either, because `swing_s` runs out and the
-        // next frame's `want` is the gait again.
-        if want != Clip::Swing {
+        // **`.repeat()` for a gait and nothing for the three one-shots.**
+        // `RepeatAnimation::default()` is `Never`, so the swing, the flinch
+        // and the death are omissions rather than features — and none needs
+        // a completion callback. The two transients' clocks run out and the
+        // next frame's `want` is the gait again; the death simply never
+        // stops being wanted, so Bevy holds its final pose and the body
+        // stays down for as long as the corpse is on the wire.
+        if !matches!(want, Clip::Swing | Clip::Flinch | Clip::Death) {
             active.repeat();
         }
     }
@@ -897,7 +1121,7 @@ mod tests {
         let mut p = a.last.unwrap_or(Vec3::ZERO);
         for _ in 0..frames {
             p.x += speed * dt;
-            a.observe(p, dt, false);
+            a.observe(p, dt, false, false);
         }
     }
 
@@ -938,7 +1162,7 @@ mod tests {
             let wobble = if i % 2 == 0 { 0.2 } else { -0.2 };
             p.x += (ANIM_JOG_MPS + wobble) * dt;
             let before = a.clip;
-            a.observe(p, dt, false);
+            a.observe(p, dt, false, false);
             if a.clip != before {
                 changes += 1;
             }
@@ -951,8 +1175,169 @@ mod tests {
     fn a_sleeper_is_a_sleeper_whatever_its_speed() {
         let mut a = BodyAnim::default();
         step(&mut a, 6.0, 60);
-        a.observe(a.last.unwrap(), 1.0 / 60.0, true);
+        a.observe(a.last.unwrap(), 1.0 / 60.0, true, false);
         assert_eq!(a.clip, Some(Clip::Sleep));
+    }
+
+    #[test]
+    fn a_corpse_is_a_corpse_whatever_else_is_true() {
+        // The defect this exists for: before wire v48 nothing on a remote's
+        // record said it had been killed, so a body that a player had just
+        // shot went on jogging or standing at idle until its owner left the
+        // death screen. Death has to outrank BOTH the gait and the sleeper
+        // flag — a sleeper who is killed is a corpse, which is the order the
+        // sim itself takes (`hp == 0` is what every weapon tests, and `die`
+        // carries `sleeping` forward untouched).
+        for (mps, sleeping) in [(0.0, false), (6.0, false), (0.0, true), (6.0, true)] {
+            let mut a = BodyAnim::default();
+            let dt = 1.0 / 60.0;
+            let mut p = a.last.unwrap_or(Vec3::ZERO);
+            for _ in 0..120 {
+                p.x += mps * dt;
+                a.observe(p, dt, sleeping, true);
+            }
+            assert_eq!(
+                a.clip,
+                Some(Clip::Death),
+                "at {mps} m/s with sleeping={sleeping}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_body_that_respawns_walks_again() {
+        // The other half, and the one a `dead` latch would have broken: the
+        // bit clears when the player leaves the death screen and the body is
+        // theirs again. A corpse that stayed a corpse would be a player
+        // sliding around the island face-down.
+        let mut a = BodyAnim::default();
+        let dt = 1.0 / 60.0;
+        let mut p = Vec3::ZERO;
+        for _ in 0..60 {
+            a.observe(p, dt, false, true);
+        }
+        assert_eq!(a.clip, Some(Clip::Death));
+        for _ in 0..120 {
+            p.x += 4.0 * dt;
+            a.observe(p, dt, false, false);
+        }
+        assert_eq!(a.clip, Some(Clip::Jog));
+    }
+
+    #[test]
+    fn death_stops_a_swing_in_flight() {
+        // `wants` reads the gait first for this: a body killed mid-stroke
+        // has a one-shot still running (`swing_s` counts down on a clock
+        // nothing else resets), and the only ordering that does not draw a
+        // dead man finishing his punch is death over swing over gait.
+        let mut a = BodyAnim::default();
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false);
+        a.swing();
+        assert!(a.swing_s > 0.0);
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, true);
+        assert_eq!(a.clip, Some(Clip::Death));
+        // The clock is still running — the point is that the ranking prefers
+        // the corpse anyway. **This is the real function `drive` calls**, not
+        // a copy of its logic: the copy is what this test used to be.
+        assert!(a.swing_s > 0.0, "the swing clock is not what death clears");
+        assert_eq!(a.wants(), Some(Clip::Death), "a corpse was drawn swinging");
+    }
+
+    #[test]
+    fn a_corpse_does_not_flinch() {
+        // The other half of the same rule, for the second transient: a body
+        // that takes a posthumous arrow is still a corpse. `EV_HIT` on a
+        // dead body is a live case rather than a hypothetical — `combat`
+        // and `ranged` skip `hp == 0`, but a blow already in flight when
+        // the victim died lands on the same tick the corpse appears.
+        let mut a = BodyAnim::default();
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, true);
+        a.flinch();
+        assert!(a.flinch_s > 0.0, "the flinch clock was not started");
+        assert_eq!(a.wants(), Some(Clip::Death), "a corpse flinched");
+    }
+
+    #[test]
+    fn a_flinch_outranks_a_swing_and_stops_its_clock() {
+        // The ranking argument is in `BodyAnim::flinch`'s doc comment; this
+        // is the arithmetic half of it. The clock-stopping is the part that
+        // is not about taste: a swing left counting down under a flinch is
+        // replayed FROM FRAME ZERO the moment the flinch expires, which is
+        // an arc that shows its first tenth of a second, disappears for a
+        // third of one, and then starts over.
+        let mut a = BodyAnim::default();
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false);
+        a.swing();
+        let seq = a.transient_seq;
+        a.flinch();
+        assert_eq!(a.wants(), Some(Clip::Flinch));
+        assert_eq!(a.swing_s, 0.0, "the interrupted arc will restart");
+        assert_ne!(a.transient_seq, seq, "the clip will not restart");
+
+        // Run the flinch out: the gait comes back, not the swing.
+        for _ in 0..(60.0 * FLINCH_CLIP_S) as usize + 2 {
+            a.observe(Vec3::ZERO, 1.0 / 60.0, false, false);
+        }
+        assert_eq!(a.wants(), Some(Clip::Idle), "the dead arc came back");
+    }
+
+    #[test]
+    fn a_swing_after_a_flinch_wins_the_slot() {
+        // Symmetric, and it has to be: a swing is a fact every client on
+        // the shard is told about, so an attacker whose flinch swallowed it
+        // for a third of a second would be watching a different fight from
+        // everyone else. Newest wins.
+        let mut a = BodyAnim::default();
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false);
+        a.flinch();
+        a.swing();
+        assert_eq!(a.wants(), Some(Clip::Swing));
+        assert_eq!(a.flinch_s, 0.0, "the flinch clock kept running");
+    }
+
+    #[test]
+    fn a_flinch_expires_on_its_own_clock() {
+        // No completion callback anywhere: the clip stops being wanted
+        // because `observe` counted its clock down, which is the same shape
+        // the swing uses and the reason neither needs `.repeat()`.
+        let mut a = BodyAnim::default();
+        a.observe(Vec3::ZERO, 1.0 / 60.0, false, false);
+        a.flinch();
+        let frames = (FLINCH_CLIP_S * 60.0).ceil() as usize;
+        for i in 0..frames {
+            assert_eq!(a.wants(), Some(Clip::Flinch), "flinch ended at frame {i}");
+            a.observe(Vec3::ZERO, 1.0 / 60.0, false, false);
+        }
+        assert_eq!(a.wants(), Some(Clip::Idle), "the flinch outlived its clip");
+    }
+
+    #[test]
+    fn a_sleeper_flinches() {
+        // A sleeper is a gait (`Clip::Sleep`), so a transient outranks it —
+        // and this is the one place that matters most: hitting a sleeping
+        // body is otherwise the least legible attack in the game, because
+        // nothing about the target changes at all.
+        let mut a = BodyAnim::default();
+        a.observe(Vec3::ZERO, 1.0 / 60.0, true, false);
+        assert_eq!(a.clip, Some(Clip::Sleep));
+        a.flinch();
+        assert_eq!(a.wants(), Some(Clip::Flinch));
+    }
+
+    #[test]
+    fn the_flinch_blends_in_faster_than_anything_else() {
+        // `FLINCH_BLEND_S`'s reason, as a rule rather than as a paragraph:
+        // the clip is 0.333 s long and the general 0.18 s cross-fade would
+        // still be running at its apex. `tests/rig_asset.rs` is where the
+        // number is checked against the file; this is where the ordering is.
+        assert!(blend(Clip::Flinch) < blend(Clip::Swing));
+        assert!(blend(Clip::Flinch) < FLINCH_CLIP_S);
+        for c in Clip::ALL {
+            assert!(
+                blend(c) >= blend(Clip::Flinch),
+                "{c:?} blends in faster than the flinch"
+            );
+        }
     }
 
     #[test]

@@ -190,11 +190,28 @@ pub enum Cue {
     /// which is what the two vocalizations *are*, whatever the animal is
     /// currently deciding.
     Growl,
+    /// Another player's swing: [`Cue::Swing`] heard at THEIR body.
+    ///
+    /// The remote-footstep argument, one verb over — whether a cue is
+    /// positional is the def's fact and the mixer's one distance law hangs
+    /// off it, so the local arm (an own-fact at the listener, fired off a
+    /// keystroke you already knew about) and someone else's arm (a place in
+    /// the world) cannot be one row. The waveform is the local one's byte
+    /// for byte (`synth::render` delegates): what makes a swing remote is
+    /// its def, never its sound.
+    ///
+    /// **Reusing `Cue::Swing` for both would have been worse than silence**
+    /// — non-positional means straight to both ears at full gain with no
+    /// pan and no falloff, so every swing on the island would arrive as if
+    /// it were in your hands, which is a lie about where a threat is rather
+    /// than a missing sound. Appended after `Growl`, the enum's
+    /// append-order rule.
+    RemoteSwing,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 40;
+pub const CUE_COUNT: usize = 41;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -243,6 +260,7 @@ impl Cue {
         Cue::MusicCloseCombat,
         Cue::Howl,
         Cue::Growl,
+        Cue::RemoteSwing,
     ];
 
     /// Is this cue a piece of music?
@@ -313,6 +331,7 @@ impl Cue {
             | Cue::RemoteStepRock
             | Cue::RemoteStepWater => 0.10,
             Cue::Swing
+            | Cue::RemoteSwing
             | Cue::ImpactWood
             | Cue::ImpactStone
             | Cue::ImpactMetal
@@ -446,7 +465,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // TIMBRE, which is `synth`'s job, not in how far they carry.
     STEP, STEP, STEP, STEP, STEP,
     // Swing: yours, so non-positional, and the cooldown is the swing rate.
-    row(GAME, 20.0, 0.45, 120, 3, false),
+    SWING,
     // Impacts happen at a thing, so they carry and they pan.
     row(GAME, 40.0, 0.70,  40, 4, true),   // wood
     row(GAME, 40.0, 0.70,  40, 4, true),   // stone
@@ -547,7 +566,46 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // Priority 5: above the impacts, below the hitmarker — a growl at this
     // range is information a player's life turns on.
     row(GAME, 14.0, 0.65, 200, 5, true),   // growl
+    // Another player's swing — see RSWING.
+    RSWING,
 ];
+
+/// Your own arm. Named rather than written inline so [`RSWING`] can read its
+/// numbers off it instead of restating them — [`STEP`]/[`RSTEP`]'s shape.
+const SWING: CueDef = row(GAME, 20.0, 0.45, 120, 3, false);
+
+/// Another player's swing (`DECISIONS.md` §open, "remote swing v0").
+///
+/// Radius and gain come off [`SWING`] rather than being restated: the 20 m
+/// that row has always carried was written for exactly this positional half
+/// and **was never read at all** — `positional: false` makes `radius_m` dead
+/// (see [`CueDef::radius_m`]) — so this is where the number becomes true
+/// rather than a new one being invented beside it.
+///
+/// What differs is deliberate, and it is [`RSTEP`]'s list verbatim because
+/// it is the same argument:
+///
+/// - **positional** — the whole point; the cue is at the body, panned, and
+///   culled by the one falloff law.
+/// - **priority 4**, above your own arm's 3, because another player's swing
+///   is information your life turns on and your own is a keystroke you just
+///   pressed. That puts it level with the impacts, which is the register it
+///   belongs in; ties break on distance, so the nearer swing wins.
+/// - **a 40 ms cooldown** rather than the local 120 ms — [`RSTEP`]'s value,
+///   taken for [`RSTEP`]'s reason. The cooldown is per-CUE and therefore
+///   shared across every swinger in earshot, and ⚠ **it binds inside a
+///   frame** (`tests/sound.rs::a_cooldown_binds_within_one_frame`), so it is
+///   a hard rate limit over the whole crew rather than a stagger on one arm.
+///   At 40 ms a second raider swinging three frames later is heard; at the
+///   local swing rate he waits an eighth of a second.
+const RSWING: CueDef = CueDef {
+    bus: Bus::Game,
+    radius_m: SWING.radius_m,
+    gain: SWING.gain,
+    cooldown_ms: 40,
+    priority: 4,
+    positional: true,
+};
 
 /// The five footsteps share every number but their timbre — see [`CUES`].
 const STEP: CueDef = CueDef {

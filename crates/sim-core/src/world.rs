@@ -15,7 +15,7 @@ use crate::input::InputFrame;
 use crate::inventory;
 use crate::limits::{
     BOX_SLOTS, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ARROWS, MAX_COMMANDS_PER_TICK,
-    MAX_EVENTS_PER_TICK, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
+    MAX_EVENTS_PER_TICK, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL, WEAR_SLOTS,
 };
 use crate::loot::{LootContent, LOOT_BARREL};
 use crate::mob;
@@ -576,11 +576,28 @@ pub const DEATH_BY_CLOCK: u8 = 1;
 /// player *pressed a key for* is a different sentence from one that
 /// happened to them.
 pub const DEATH_BY_SALT: u8 = 2;
-/// An arrow (ranged.rs). Its own cause and not `DEATH_BY_HAND`'s for the
-/// same reason `DEATH_BY_SALT` is not the clock's: the sentence the death
-/// screen builds is "who, with what, from how far", and 34 m is a
-/// different fact about a fight from 1.6 m. `death_item` is the bow, not
-/// the arrow — the weapon is what the killer held.
+/// A shot (ranged.rs) — an arrow, and since hitscan v0 a bullet too. Its
+/// own cause and not `DEATH_BY_HAND`'s for the same reason `DEATH_BY_SALT`
+/// is not the clock's: the sentence the death screen builds is "who, with
+/// what, from how far", and 34 m is a different fact about a fight from
+/// 1.6 m. `death_item` is the bow or the gun, never the round — the weapon
+/// is what the killer held, and it is what makes the shared sentence exact
+/// ("shot you with the revolver" / "shot you with the bow").
+///
+/// **The name is the arrow's because the value is, and a firearm sharing
+/// it is a deliberate refusal rather than an oversight.** A seventh cause
+/// would fit `DEATH_CAUSE_BITS` (3 bits, six values spent) and move no
+/// layout, and it is still a **wire change**: an eighth bit pattern both
+/// ends currently refuse as forged would become a live fact, so an old
+/// client and a new server would disagree about a packet whose bytes are
+/// identical. `protocol`'s `every_domain_fits_its_wire_field` pins
+/// `live_max` for exactly that and says so in its own failure — it was
+/// what refused `DEATH_BY_BULLET` when hitscan v0 tried to add one. The
+/// bump, the goldens and the pin land together or not at all (wall 6), and
+/// this slice does not bump. Renaming this constant is refused for a
+/// different reason: `event_roles.rs` and `protocol/src/event.rs` narrate
+/// the 2026-08-05 failure by this name, and a rename would falsify three
+/// histories to tidy one word.
 pub const DEATH_BY_ARROW: u8 = 3;
 /// An animal's bite (mob.rs — the pig that fights back). `death_by` is
 /// the roster slot's **tagged** id (`mob::mob_id`), which is how the
@@ -738,6 +755,21 @@ pub struct Player {
     /// 6 hotbar + 24 backpack (ALPHA.md §1). A join starts empty — the
     /// naked spawn punches its first resources (gatherables' hand rows).
     pub inv: [ItemStack; INV_SLOTS],
+    /// Worn equipment, **indexed by slot**: `[0]` is the head and `[1]` the
+    /// body (`combat::WEAR_HEAD`/`WEAR_BODY`, one-based in the baked row).
+    /// A piece in the wrong index protects nobody — `combat::worn_pct`
+    /// checks the baked slot against the array index rather than trusting
+    /// the placement — which is what holds "one piece per slot" up before
+    /// any verb exists to enforce it.
+    ///
+    /// **Nothing in the sim writes this yet, and that is the honest state
+    /// of it** (2026-08-19). Wearing is a container move into a
+    /// `CONT_WEAR` kind, and all four values of the wire's 2-bit container
+    /// field are spent (`inventory.rs`), so equipping costs a
+    /// `CONT_KIND_BITS` widening and a `PROTO_VER` bump — a wire slice, not
+    /// this one. Until it lands, the only writers are tests and a save.
+    /// Reduction is real; reachability is not.
+    pub worn: [ItemStack; WEAR_SLOTS],
     /// Tick the next swing is allowed at (gather.rs cadence).
     pub next_swing: u64,
     /// Weak-spot chase: the cell this player last landed a hit on
@@ -841,6 +873,7 @@ impl Default for Player {
             body: Body::default(),
             frame: InputFrame::default(),
             inv: [ItemStack::default(); INV_SLOTS],
+            worn: [ItemStack::default(); WEAR_SLOTS],
             next_swing: 0,
             ws_cell: NO_CELL,
             ws_hits: 0,
@@ -1934,6 +1967,29 @@ impl World {
             known: body.known,
             ..Player::default()
         };
+        // **What it was wearing goes into the bag with what it was
+        // carrying**, and that is the decision `tests/persist.rs`'s field
+        // ledger forces into a test rather than into a reviewer's
+        // attention. Armor as loot is what makes killing an armored player
+        // worth doing; a corpse that keeps its plates is a body nobody
+        // fights for. So `worn` is *not* named in the literal above —
+        // `..Player::default()` clears it, exactly as it clears `inv` —
+        // and this is where it lands instead.
+        //
+        // Through `drain_spill` rather than by widening `drop_for`'s
+        // buffer, and the difference is whether an item can be destroyed.
+        // A bag holds `INV_SLOTS`, a full pocket plus two plates is
+        // `INV_SLOTS + WEAR_SLOTS`, and merging into the array `drop_for`
+        // copies wholesale would drop whatever did not fit. `spill_at`
+        // merges into the bag standing in reach — the one the line above
+        // just stood up, at distance zero — and stands a second one up for
+        // the remainder, so the pack being full costs the killer a walk
+        // and never an item. It is the same drain the six existing
+        // producers use; this is the seventh, and it is named here for the
+        // reason `backpack.rs`'s header names the others.
+        let mut shed = [ItemStack::default(); INV_SLOTS];
+        shed[..WEAR_SLOTS].copy_from_slice(&body.worn);
+        self.drain_spill(slot, &mut shed);
     }
 
     /// The other half: you wake up naked **on your own bag if you asked for
@@ -2189,6 +2245,10 @@ impl World {
                     active: true,
                     body: s.body,
                     inv: s.inv,
+                    // You log off in your armor, you log in in your armor
+                    // — `hp`'s sentence, and the alternative would make
+                    // closing the game a way to lose a plate.
+                    worn: s.worn,
                     jobs: s.jobs,
                     known: s.known,
                     hp: s.hp,
@@ -3307,7 +3367,7 @@ impl World {
             &self.haven,
             &self.build,
             &self.deploy,
-            self.combat.player_hp,
+            &self.combat,
             &mut self.charges,
             &mut self.pieces,
             &mut self.deploys,
@@ -3354,24 +3414,24 @@ impl World {
         );
         // The bites land after the whole roster stepped, so every animal
         // decided against one consistent tick — the borrow split `Bites`'
-        // own doc names. `combat::strike`'s exact damage liturgy: hp, the
-        // deaths counter, EV_HEALTH to the victim, EV_DEATH broadcast, and
-        // `die` lays the body down with the cause the wire just widened
-        // for. No EV_HIT — a hitmarker is an attacker's fact and a pig has
-        // no screen to draw one on.
+        // own doc names. The hp and the deaths counter go through
+        // `combat::hurt`, the one debit (this loop used to hand-copy
+        // "`combat::strike`'s exact damage liturgy" and said so); what
+        // stays here is the half the funnel deliberately does not own —
+        // EV_HEALTH to the victim, EV_DEATH broadcast, and `die` laying
+        // the body down with the cause the wire widened for. Still no
+        // EV_HIT: a hitmarker is an attacker's fact and a pig has no
+        // screen to draw one on.
         for b in bites.entries() {
             let victim = b.victim as usize;
             let v = &mut self.players[victim];
             if !v.active || v.hp == 0 {
                 continue; // died to something else since the roster looked
             }
-            let died = b.damage >= v.hp;
-            v.hp -= b.damage.min(v.hp);
-            let left = v.hp;
+            // The funnel, reduced: a bite is a hit.
+            let crate::combat::Hurt { left, died, .. } =
+                crate::combat::hurt(&self.combat, v, b.damage);
             let victim_id = v.id;
-            if died {
-                v.deaths = v.deaths.saturating_add(1);
-            }
             self.events.push(
                 EV_HEALTH,
                 victim_id,
@@ -3394,6 +3454,35 @@ impl World {
         // mutably. `removals` is not spent here — an arrow does not chip a
         // wall in v0, it stops on one.
         let mut kills = [ranged::Kill::default(); MAX_ARROWS];
+        // A firearm resolves here rather than in the loop above, for the
+        // arrow's two reasons — final positions, and no dependence on the
+        // shooter's slot index — and it goes **first** because it is the
+        // only shot on this tick that was fired on it. An arrow in the
+        // store was launched on an earlier one and has a tick of flight to
+        // spend before it can reach anybody, so resolving the instant shot
+        // ahead of it is the chronology, not a preference. `kills` is
+        // reused rather than doubled: this pass writes at most one entry
+        // per player, the array is drained before `step` fills it again,
+        // and `ranged.rs`'s const assert holds `MAX_PLAYERS <= MAX_ARROWS`.
+        let n_shot = ranged::hitscan(
+            seed,
+            &self.haven,
+            self.pieces.cols(),
+            &mut crate::occupy::Occupants {
+                table: &self.scatter,
+                haven: &self.haven,
+                harvested: &self.slot_lives,
+                cache: &mut self.slot_cache,
+            },
+            tick,
+            &self.combat,
+            &mut self.players,
+            &mut self.events,
+            &mut kills,
+        );
+        for k in kills.iter().take(n_shot) {
+            self.die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm);
+        }
         let n_kills = ranged::step(
             seed,
             &self.haven,
@@ -3404,6 +3493,7 @@ impl World {
                 harvested: &self.slot_lives,
                 cache: &mut self.slot_cache,
             },
+            &self.combat,
             &mut self.arrows,
             &mut self.players,
             &mut self.events,
@@ -3567,6 +3657,30 @@ impl World {
                 sb[2..4].copy_from_slice(&s.count.to_le_bytes());
                 sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
                 h.update(&sb);
+            }
+            // What this body is wearing (armor v0), in its own loop
+            // appended after the inventory rather than folded into it.
+            // Two reasons and both are load-bearing. It is sim state — a
+            // worn piece changes what every hit takes off, so two shards
+            // that disagreed about it would disagree about a fight and
+            // then about a death — and it is a **separate array**, so
+            // widening the inventory's loop to cover it would make one
+            // digest out of two stores and hide the next widening of
+            // either.
+            //
+            // This is what moved `GOLDEN_FINAL_HASH` on 2026-08-19, and
+            // it moved it deliberately: `worn` is per-player and always
+            // present, so unlike `world.rs`'s store loops there is no
+            // length prefix to fold zeroes into, and the digest changes
+            // the moment the field exists whether or not anything is in
+            // it. The hash is behavioural now — it says the sim carries
+            // worn equipment — where before it said nothing at all.
+            for s in p.worn.iter() {
+                let mut wb = [0u8; 6];
+                wb[0..2].copy_from_slice(&s.item.to_le_bytes());
+                wb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                wb[4..6].copy_from_slice(&s.cond.to_le_bytes());
+                h.update(&wb);
             }
             let mut cb = [0u8; 16 + CRAFT_QUEUE * 4];
             cb[0..8].copy_from_slice(&p.craft_done_at.to_le_bytes());

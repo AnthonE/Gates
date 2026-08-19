@@ -55,12 +55,13 @@
 //! [`LOCKOUT_TICKS`].
 //!
 //! **The shock never kills** — it floors at 1 hp. That is a deliberate
-//! divergence and the reason is structural rather than kind: this crate
-//! keeps one kill site per module that can kill (`combat`'s and
-//! `survival::died_by_the_world`), because a death is a count, an event,
-//! a backpack and a respawn, and a third site is a third chance for those
-//! four to disagree. A door that maims is a deterrent; a door that kills
-//! is a third kill site.
+//! divergence and the reason is structural rather than kind: a death is a
+//! count, an event, a backpack and a respawn, and every site that can
+//! produce one is another chance for those four to disagree. A door that
+//! maims is a deterrent; a door that kills is another kill site. (The
+//! count itself is `combat::debit`'s for the whole crate since 2026-08-19
+//! — this paragraph said "one kill site per module", which was the shape
+//! before the funnel; the floor is why the question never reaches it.)
 //!
 //! The counters live **on the lock**, not per player per lock: the door is
 //! what is under attack, and a per-player table is unbounded (§9.6).
@@ -508,14 +509,23 @@ fn enter(locks: &mut Locks, i: usize, id: u32, code: u16, tick: u64) -> Outcome 
     Outcome::Authorized { grant: want }
 }
 
-/// Take a shock off a body without ever taking the last point. The floor
-/// is the whole reason this is a function and not a subtraction: see the
-/// module header — a door may maim, and a third kill site is worse than
-/// the divergence.
-pub fn shock(hp: &mut u16, amount: u16) -> u16 {
-    let took = amount.min(hp.saturating_sub(1));
-    *hp -= took;
-    took
+/// How much of a shock a body at `hp` may actually be charged — never the
+/// last point. The floor is the whole reason this is a function and not a
+/// subtraction: see the module header — a door may maim, and a third kill
+/// site is worse than the divergence.
+///
+/// ⚠ **It computes the amount and does not write it.** It used to take
+/// `&mut u16` and subtract, which made this the one place outside
+/// `combat` that debited a player's hp — through a bare `&mut u16`, so
+/// nothing about the type said "player". The write is `deploy::lock_op`'s
+/// now, through `combat::hurt_unreduced`, and this module still never
+/// learns what a player is beyond an id (the header's claim, kept). The
+/// floor is unchanged, so the shock still cannot kill, and
+/// `hurt_unreduced` cannot make it kill either: `took < hp` whenever the
+/// body has anything to lose, and 0 when it does not, so the funnel's
+/// `died` is false by arithmetic rather than by policy.
+pub fn shock_amount(hp: u16, amount: u16) -> u16 {
+    amount.min(hp.saturating_sub(1))
 }
 
 /// Give the lock item back to a hand that took its lock off. Returns what
@@ -703,13 +713,13 @@ mod tests {
             "and a *correct* code is refused while it is shut"
         );
 
-        // The floor. A body at 1 hp cannot be finished by a keypad.
-        let mut low = 1u16;
-        assert_eq!(shock(&mut low, 40), 0);
-        assert_eq!(low, 1);
-        let mut some = 12u16;
-        assert_eq!(shock(&mut some, 40), 11);
-        assert_eq!(some, 1);
+        // The floor. A body at 1 hp cannot be finished by a keypad, and a
+        // body at 12 is charged 11 and no more. The subtraction itself is
+        // `combat::hurt_unreduced`'s now (`deploy::lock_op` is the caller),
+        // so what is asserted here is the door's rule: the amount.
+        assert_eq!(shock_amount(1, 40), 0);
+        assert_eq!(shock_amount(12, 40), 11);
+        assert_eq!(shock_amount(0, 40), 0, "a body already down owes nothing");
     }
 
     #[test]

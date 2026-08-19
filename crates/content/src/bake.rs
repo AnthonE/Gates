@@ -8,8 +8,8 @@
 //! in this module runs on the sim thread.
 
 use crate::schema::{
-    Ammo, CookStation, DeployArchetype, Material, NodeArchetype, Placement, Shape, Station, Weapon,
-    WeaponKind,
+    Ammo, Armor, ArmorSlot, CookStation, DeployArchetype, Material, NodeArchetype, Placement,
+    Shape, Station, Weapon, WeaponKind,
 };
 use crate::Content;
 use sim_core::backpack::BackpackContent;
@@ -18,7 +18,10 @@ use sim_core::build::{
     SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
     SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
-use sim_core::combat::{AmmoDef, CombatContent, MeleeDef, RangedDef, ThrowDef};
+use sim_core::combat::{
+    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, WEAR_BODY, WEAR_HEAD,
+    WEAR_NONE,
+};
 use sim_core::craft::{
     CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2,
     STATION_WORKBENCH3,
@@ -34,9 +37,9 @@ use sim_core::inventory::SpawnKit;
 use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
     ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
-    MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS, MAX_LOOT_TABLES,
-    MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS,
-    MAX_WEAPON_AMMO, TICK_HZ,
+    MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
+    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
+    MAX_RESEARCH_ROWS, MAX_WEAPON_AMMO, TICK_HZ,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
@@ -516,13 +519,15 @@ impl Content {
     /// weapon that silently cannot raid is the bug the column exists to
     /// prevent.
     ///
-    /// Melee, **bow** and throwable cross. Firearm rows are still
-    /// deliberately dropped rather than half-baked, on the rule this
-    /// comment has carried since melee v0: a projectile the sim can read
-    /// but not fire is a number that looks armed and is not. The revolver
-    /// is hitscan in the content (no `ballistic` block at all,
-    /// CONTENT.md §1) and a hitscan shot wants the rewound raycast that is
-    /// M2's lag-comp work.
+    /// **Every kind crosses now.** Firearm rows were dropped here until
+    /// 2026-08-19, on the rule this comment carried since melee v0 — a
+    /// projectile the sim can read but not fire is a number that looks
+    /// armed and is not — and the rule was right while `sim-core` had no
+    /// hitscan path. What made it stop being right is that the revolver
+    /// was not inert data: it is a barrel drop with a recipe, a research
+    /// rung and a craftable round, so a player could pay three times over
+    /// for a gun that could not shoot. `ranged::hitscan` is the path, and
+    /// a firearm bakes through the same `bake_ranged` a bow does.
     ///
     /// The throwable stopped being one of those the tick `charge.rs`
     /// landed — its `structure` is what the raid ratio divides wall hp by,
@@ -558,9 +563,12 @@ impl Content {
         for a in &self.ammo {
             self.bake_ammo(a, &mut cc)?;
         }
+        for a in &self.armors {
+            self.bake_armor(a, &mut cc)?;
+        }
         for w in &self.weapons {
-            if w.kind == WeaponKind::Bow {
-                self.bake_bow(w, &mut cc)?;
+            if w.kind == WeaponKind::Bow || w.kind == WeaponKind::Firearm {
+                self.bake_ranged(w, &mut cc)?;
                 continue;
             }
             if w.kind != WeaponKind::Melee && w.kind != WeaponKind::Throwable {
@@ -654,22 +662,33 @@ impl Content {
         Ok(cc)
     }
 
-    /// One `kind = "bow"` row into the sim's ranged table.
+    /// One `kind = "bow"` or `kind = "firearm"` row into the sim's ranged
+    /// table. **One function for both, and the difference is one flag.**
     ///
-    /// `validate.rs` has already refused a bow without a `ballistic` block
-    /// or without an ammo item that exists, so both unwraps below are
-    /// re-checks rather than the first check — kept because a bake that
-    /// trusts a validator it does not call is one refactor away from
-    /// panicking at boot.
+    /// The two kinds are the same row — damage, a preference-ordered round
+    /// list, a cadence and a reach — differing only in when the shot
+    /// resolves: a bow stands an arrow up and the flight decides, a firearm
+    /// decides on the tick the trigger is pulled. `RangedDef::hitscan`
+    /// carries that and nothing else does, so the sim never re-derives it
+    /// from whether a round happens to own ballistics.
     ///
-    /// The refusal that is genuinely new here is the **sampler wall**. An
-    /// arrow is traced by point samples `ARROW_STEP_MM` apart, at most
-    /// `MAX_ARROW_SUBSTEPS` of them in a tick, so a muzzle speed past their
-    /// product cannot be traced honestly — it would fly through a wall
-    /// between two taps. Content that fast is refused at boot rather than
-    /// shipped and silently clamped, because a clamped projectile is a
+    /// `validate.rs` has already refused a bow whose round has no
+    /// `[[ammo]]` row, a firearm whose round *has* one, and either without
+    /// an ammo item that exists, so the lookups below are re-checks rather
+    /// than the first check — kept because a bake that trusts a validator
+    /// it does not call is one refactor away from panicking at boot.
+    ///
+    /// The refusals that are genuinely new here are the two **sampler
+    /// walls**, one per kind, and they are the same wall against different
+    /// clocks. An arrow is traced by point samples `ARROW_STEP_MM` apart,
+    /// at most `MAX_ARROW_SUBSTEPS` of them in a tick, so a muzzle speed
+    /// past their product cannot be traced honestly — that one lives in
+    /// `bake_ammo`, on the round. A bullet pays its whole reach in one
+    /// tick, so the same spacing bounds `range_m` instead, at
+    /// `MAX_HITSCAN_SAMPLES`. Content past either is refused at boot rather
+    /// than shipped and silently clamped, because a clamped shot is a
     /// weapon whose reach is a lie the data does not admit to.
-    fn bake_bow(&self, w: &Weapon, cc: &mut CombatContent) -> Result<(), String> {
+    fn bake_ranged(&self, w: &Weapon, cc: &mut CombatContent) -> Result<(), String> {
         let idx = self
             .item_index(&w.id)
             .ok_or_else(|| format!("bake: weapon `{}` arms no item", w.id))?
@@ -678,34 +697,63 @@ impl Content {
             .ammo
             .as_deref()
             .filter(|a| !a.is_empty())
-            .ok_or_else(|| format!("bake: bow `{}` names no ammo", w.id))?;
+            .ok_or_else(|| format!("bake: ranged weapon `{}` names no ammo", w.id))?;
         // Refused, never truncated: a list past the cap silently losing its
         // tail is a bow that stops firing when its first rounds run out,
         // which reads as a bug in the quiver rather than in the table.
         if round_ids.len() > MAX_WEAPON_AMMO {
             return Err(format!(
-                "bake: bow `{}` lists {} rounds, past the {MAX_WEAPON_AMMO} a weapon may carry",
+                "bake: ranged weapon `{}` lists {} rounds, past the {MAX_WEAPON_AMMO} a weapon \
+                 may carry",
                 w.id,
                 round_ids.len()
             ));
         }
         let mut ammo = [NO_ITEM; MAX_WEAPON_AMMO];
         for (slot, id) in ammo.iter_mut().zip(round_ids) {
-            *slot = self
-                .item_index(id)
-                .ok_or_else(|| format!("bake: bow `{}` ammo `{id}` is not an item", w.id))?;
+            *slot = self.item_index(id).ok_or_else(|| {
+                format!("bake: ranged weapon `{}` ammo `{id}` is not an item", w.id)
+            })?;
         }
 
         let damage = u16::try_from(w.damage)
             .map_err(|_| format!("bake: `{}` damage {} overflows u16", w.id, w.damage))?;
         if damage == 0 {
-            return Err(format!("bake: bow `{}` deals no damage", w.id));
+            return Err(format!("bake: ranged weapon `{}` deals no damage", w.id));
         }
         if w.rate_per_min == 0 {
-            return Err(format!("bake: bow `{}` never fires (rate 0)", w.id));
+            return Err(format!(
+                "bake: ranged weapon `{}` never fires (rate 0)",
+                w.id
+            ));
         }
         let rate_ticks = u16::try_from((TICK_HZ * 60 / w.rate_per_min).max(1))
-            .map_err(|_| format!("bake: bow `{}` rate overflows u16 ticks", w.id))?;
+            .map_err(|_| format!("bake: ranged weapon `{}` rate overflows u16 ticks", w.id))?;
+        // A reach of zero would be a weapon that fires into its own muzzle:
+        // an arrow whose derived life is one tick, or a hitscan segment with
+        // no length. Refused here rather than left to read as a strange
+        // weapon, because both are silent — neither errors, and neither can
+        // ever hit anything.
+        if w.range_m == 0 {
+            return Err(format!("bake: ranged weapon `{}` has no reach", w.id));
+        }
+        let hitscan = w.kind == WeaponKind::Firearm;
+        if hitscan {
+            // The hitscan sampler wall. `ranged::hitscan` walks the reach at
+            // `ARROW_STEP_MM`, and a gun that needs more taps than
+            // `MAX_HITSCAN_SAMPLES` cannot be traced at the spacing a trunk
+            // needs — it would shoot through cover past some distance
+            // nothing writes down.
+            let taps = w.range_m as usize * 1000 / ARROW_STEP_MM as usize + 1;
+            if taps > MAX_HITSCAN_SAMPLES {
+                return Err(format!(
+                    "bake: firearm `{}` reaches {} m, which is {taps} collision samples, past \
+                     the {MAX_HITSCAN_SAMPLES} one hitscan shot may take ({ARROW_STEP_MM} mm \
+                     apart); it would shoot through cover",
+                    w.id, w.range_m
+                ));
+            }
+        }
 
         if cc.ranged[idx].damage != 0 {
             return Err(format!("bake: duplicate weapon row for `{}`", w.id));
@@ -714,6 +762,7 @@ impl Content {
             damage,
             ammo,
             rate_ticks,
+            hitscan,
             // Reach in millimetres. Flight time is no longer derived here
             // because it is no longer the weapon's to derive: with the
             // speed on the round, `range_m` over *which* speed? The sim
@@ -766,6 +815,61 @@ impl Content {
         cc.ammo[idx] = AmmoDef {
             speed_mmpt,
             drop_mmpt2,
+        };
+        Ok(())
+    }
+
+    /// One `content/armor.toml` row into the sim's worn-protection table.
+    ///
+    /// **This is the function that stopped `armor.toml` from being priced,
+    /// validated, hashed, balance-anchored and unread** (2026-08-19). Every
+    /// column it does *not* carry across is a deliberate omission with a
+    /// consumer that does not exist: `move_penalty_pct` reaches no line of
+    /// `movement.rs`, and there is no damage-type vector because the
+    /// reference's own Protection tables put Projectile and Melee at the
+    /// same value on all three pieces we ship (`reference/RIPLIST.md` §1h).
+    ///
+    /// The slot crosses too, and it is not decoration: `Player::worn` is
+    /// indexed *by* slot, so this is what makes a head piece protect from
+    /// the head slot and nowhere else. Baked one-based
+    /// (`combat::WEAR_HEAD`/`WEAR_BODY`) so that a zeroed table is an inert
+    /// one — item index 0 is a real item, and a zero *slot* has to mean
+    /// "not armor" rather than "a headpiece".
+    ///
+    /// The two refusals are the pattern `bake_ammo` set: a duplicate row
+    /// (validation catches it upstream; this catches a table that was
+    /// filled twice by a future caller) and a row the sim cannot represent.
+    /// A zero reduction is refused here rather than at validation because
+    /// the sentinel is the sim's — a zero row *is* "not armor" in
+    /// `CombatContent`, so content that declares a piece protecting nothing
+    /// would silently become an unwearable item rather than a useless one.
+    fn bake_armor(&self, a: &Armor, cc: &mut CombatContent) -> Result<(), String> {
+        let idx = self
+            .item_index(&a.id)
+            .ok_or_else(|| format!("bake: armor `{}` arms no item", a.id))?
+            as usize;
+        if cc.armor[idx].slot != WEAR_NONE {
+            return Err(format!("bake: duplicate armor row for `{}`", a.id));
+        }
+        if a.reduction_pct == 0 {
+            return Err(format!("bake: armor `{}` protects from nothing", a.id));
+        }
+        // `validate` already refuses a row over 90, so this cannot fail on
+        // shipped content — it is here because the sim's field is a `u8`
+        // and a bake that truncated would hand back a *lower* protection
+        // than the data declares, which is the silent-wrong class.
+        let reduction_pct = u8::try_from(a.reduction_pct).map_err(|_| {
+            format!(
+                "bake: armor `{}` reduction {} overflows the sim's u8 percent",
+                a.id, a.reduction_pct
+            )
+        })?;
+        cc.armor[idx] = ArmorDef {
+            reduction_pct,
+            slot: match a.slot {
+                ArmorSlot::Head => WEAR_HEAD,
+                ArmorSlot::Body => WEAR_BODY,
+            },
         };
         Ok(())
     }

@@ -49,7 +49,9 @@
 
 use crate::craft::CraftJob;
 use crate::gather::ItemStack;
-use crate::limits::{CRAFT_COUNT_MAX, CRAFT_QUEUE, INV_SLOTS, MAX_ITEM_DEFS, MAX_RECIPES};
+use crate::limits::{
+    CRAFT_COUNT_MAX, CRAFT_QUEUE, INV_SLOTS, MAX_ITEM_DEFS, MAX_RECIPES, WEAR_SLOTS,
+};
 use crate::movement::{self, Body};
 use crate::terrain::ISLAND_SIZE;
 use crate::world::Player;
@@ -60,8 +62,13 @@ use crate::world::Player;
 /// file's `record_len` against it at boot).
 ///
 /// An inventory slot is **6 bytes since `SAVE_FORMAT` 3** (item durability
-/// v0): item, count, condition. 196 → 256.
-pub const PLAYER_SAVE_BYTES: usize = SCALARS_BYTES + CRAFT_QUEUE * 4 + INV_SLOTS * 6;
+/// v0): item, count, condition. 196 → 256. A worn slot is the same six
+/// bytes and there are `WEAR_SLOTS` of them since `SAVE_FORMAT` 4 (armor
+/// v0): 256 → 268. You log off in your armor, you log in in your armor —
+/// the same sentence `hp` gets, and the alternative (a naked wake) would
+/// make logging out a way to lose a plate.
+pub const PLAYER_SAVE_BYTES: usize =
+    SCALARS_BYTES + CRAFT_QUEUE * 4 + INV_SLOTS * 6 + WEAR_SLOTS * 6;
 
 /// The fixed head of the record: body, meters, heal, counters and the
 /// blueprint mask. 52 → 60 at research v0, which took `SAVE_FORMAT` with
@@ -169,6 +176,19 @@ pub struct PlayerSave {
     pub dead: bool,
     /// The 6 hotbar + 24 backpack rows (ALPHA.md §1), canonical-empty.
     pub inv: [ItemStack; INV_SLOTS],
+    /// What the body was wearing, indexed by slot (`combat::WEAR_HEAD`,
+    /// `WEAR_BODY`). Canonical-empty like the inventory, and validated the
+    /// same way — the item index is bounded and an empty stack is all
+    /// zeroes, because `state_hash` reads these bytes and a record that
+    /// said "0 of item 7" would hash differently from the same body the sim
+    /// produced.
+    ///
+    /// **Not checked against the baked slot here, deliberately.** `persist`
+    /// cannot see `CombatContent` and must not learn to: a record naming a
+    /// body plate in the head slot is refused *at the read that matters* —
+    /// `combat::worn_pct` ignores a stack whose baked row names another
+    /// slot — so a forged record buys nothing a bound here would prevent.
+    pub worn: [ItemStack; WEAR_SLOTS],
     /// The craft queue, dense with the head at 0. Saved because its inputs
     /// were already spent at enqueue: dropping it would eat a player's
     /// materials for closing the game, and refunding it would need a
@@ -231,6 +251,11 @@ impl PlayerSave {
             count: 0,
             cond: 0,
         }; INV_SLOTS],
+        worn: [ItemStack {
+            item: 0,
+            count: 0,
+            cond: 0,
+        }; WEAR_SLOTS],
         jobs: [CraftJob {
             recipe: 0,
             remaining: 0,
@@ -259,6 +284,7 @@ impl PlayerSave {
             body: p.body,
             dead: p.dead,
             inv: p.inv,
+            worn: p.worn,
             jobs: p.jobs,
             known: p.known,
             hp: p.hp,
@@ -305,7 +331,7 @@ impl PlayerSave {
             out[at + 2..at + 4].copy_from_slice(&j.remaining.to_le_bytes());
             at += 4;
         }
-        for s in self.inv.iter() {
+        for s in self.inv.iter().chain(self.worn.iter()) {
             out[at..at + 2].copy_from_slice(&s.item.to_le_bytes());
             out[at + 2..at + 4].copy_from_slice(&s.count.to_le_bytes());
             out[at + 4..at + 6].copy_from_slice(&s.cond.to_le_bytes());
@@ -375,7 +401,13 @@ impl PlayerSave {
         }
 
         let mut inv = [ItemStack::default(); INV_SLOTS];
-        for s in inv.iter_mut() {
+        let mut worn = [ItemStack::default(); WEAR_SLOTS];
+        // One loop over both arrays: a worn slot is an inventory slot in
+        // every respect the decoder cares about — same six bytes, same
+        // canonical-empty rule, same bound — and giving it a second loop
+        // with the same three checks would be two places for the rule to
+        // drift apart.
+        for s in inv.iter_mut().chain(worn.iter_mut()) {
             *s = ItemStack {
                 item: u16_at(at),
                 count: u16_at(at + 2),
@@ -404,6 +436,7 @@ impl PlayerSave {
             body,
             dead,
             inv,
+            worn,
             jobs,
             hp,
             hp_max,
@@ -441,6 +474,7 @@ mod tests {
             },
             dead: false,
             inv: [ItemStack::default(); INV_SLOTS],
+            worn: [ItemStack::default(); WEAR_SLOTS],
             jobs: [CraftJob::default(); CRAFT_QUEUE],
             // Distinct in every byte, like everything else here: a mask of
             // all-ones or all-zeros could not catch a codec that wrote the
@@ -486,6 +520,21 @@ mod tests {
             count: 42,
             cond: 0x2233,
         };
+        // The worn slots, distinct from each other and from every
+        // inventory stack, so the codec cannot pass by writing the
+        // inventory twice or by transposing head and body. They sit at the
+        // very end of the record, which is exactly where a stride mistake
+        // stops being caught by the `debug_assert_eq!(at, …)`.
+        s.worn[0] = ItemStack {
+            item: 9,
+            count: 1,
+            cond: 0x4455,
+        };
+        s.worn[1] = ItemStack {
+            item: 11,
+            count: 1,
+            cond: 0x6677,
+        };
         s
     }
 
@@ -498,14 +547,16 @@ mod tests {
     }
 
     /// The format's own size, asserted rather than trusted. It is derived
-    /// from `INV_SLOTS` and `CRAFT_QUEUE`, so widening either moves it —
-    /// and that is a format change, which is the sentence this test is
-    /// here to make somebody read (`store.rs` `SAVE_FORMAT`).
+    /// from `INV_SLOTS`, `CRAFT_QUEUE` and `WEAR_SLOTS`, so widening any of
+    /// them moves it — and that is a format change, which is the sentence
+    /// this test is here to make somebody read (`store.rs` `SAVE_FORMAT`).
+    /// 256 → 268 at `SAVE_FORMAT` 4: two worn stacks (armor v0).
     #[test]
     fn the_record_is_the_size_the_format_declares() {
-        assert_eq!(PLAYER_SAVE_BYTES, 256, "the on-disk record size moved");
+        assert_eq!(PLAYER_SAVE_BYTES, 268, "the on-disk record size moved");
         assert_eq!(INV_SLOTS, 30);
         assert_eq!(CRAFT_QUEUE, 4);
+        assert_eq!(WEAR_SLOTS, 2);
     }
 
     /// A byte golden over the fixture. Not decoration: `write_le` is 20
@@ -555,6 +606,26 @@ mod tests {
             &buf[80..82],
             &0x2233u16.to_le_bytes(),
             "inv[0].cond at 80 — the slot stride is 6 since format 3"
+        );
+        // The worn slots close the record (format 4), and they are pinned
+        // here rather than left to the round trip for this block's stated
+        // reason twice over: they are the LAST thing written, so a stride
+        // mistake anywhere earlier lands on them, and `write_le`/`read_le`
+        // walk them with one shared `.chain()` — which means the two halves
+        // agree about a wrong offset by construction and only an
+        // independent decoder can say so.
+        assert_eq!(&buf[256..258], &9u16.to_le_bytes(), "worn[0].item at 256");
+        assert_eq!(&buf[258..260], &1u16.to_le_bytes(), "worn[0].count at 258");
+        assert_eq!(
+            &buf[260..262],
+            &0x4455u16.to_le_bytes(),
+            "worn[0].cond at 260"
+        );
+        assert_eq!(&buf[262..264], &11u16.to_le_bytes(), "worn[1].item at 262");
+        assert_eq!(
+            &buf[266..268],
+            &0x6677u16.to_le_bytes(),
+            "worn[1].cond at 266 — and 268 is the whole record"
         );
     }
 

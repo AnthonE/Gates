@@ -1977,7 +1977,12 @@ pub fn lock_op(
             return Some(owner);
         }
         Outcome::Wrong { shock, shut } => {
-            lock::shock(&mut p.hp, shock);
+            // The funnel, **unreduced**: the shock's whole job is to cost
+            // tries, and an armored raider immune to it is a keypad with
+            // no ladder. `lock::shock_amount` still owns the floor at 1 hp
+            // — it is the door's rule, not the funnel's.
+            let took = lock::shock_amount(p.hp, shock);
+            crate::combat::hurt_unreduced(p, took);
             // Absolute, like every other health reading (`EV_HEALTH`'s own
             // doc): a client that misses this one hears the whole truth
             // from the next.

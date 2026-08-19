@@ -141,7 +141,11 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// **3 — an inventory slot carries its condition** (item durability v0):
 /// `PlayerSave`'s slot stride 4 → 6 B, 196 → 256 per record, and the
 /// canonical-empty rule widens with it (`persist.rs`).
-pub const SAVE_FORMAT: u16 = 3;
+/// **4 — a body saves what it is wearing** (armor v0): `PlayerSave` grew
+/// `worn`, `WEAR_SLOTS` stacks at the inventory's own six-byte stride, so
+/// the record went 256 → 268 per player. The layout moved and nothing on
+/// disk announces it, which is the whole reason this number exists.
+pub const SAVE_FORMAT: u16 = 4;
 
 /// Header size. Fixed so record `i` is at a computable offset.
 pub const SAVE_HEADER_BYTES: usize = 48;
@@ -856,8 +860,9 @@ mod tests {
         assert_eq!(REC_SUM + 8, SAVE_RECORD_BYTES);
         assert_eq!(REC_SAVE, 64, "the save body's offset moved");
         // 268 → 328 at SAVE_FORMAT 3: the save body grew 60 bytes (an
-        // inventory slot is six bytes since item durability v0).
-        assert_eq!(SAVE_RECORD_BYTES, 328);
+        // inventory slot is six bytes since item durability v0). 328 → 340
+        // at SAVE_FORMAT 4: two worn slots at the same stride (armor v0).
+        assert_eq!(SAVE_RECORD_BYTES, 340);
         let head = encode_header(7, 0xdead_beef);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,

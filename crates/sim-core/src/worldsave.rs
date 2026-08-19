@@ -124,7 +124,14 @@ use crate::worldcont::WorldContRec;
 /// refused beside `count == 0 && item != 0`, or a slot emptied by a path
 /// that forgot to zero `cond` would hash differently from the sim's own
 /// empty (wall 5's failure mode, named where the old rule was).
-pub const WORLD_SAVE_FORMAT: u16 = 7;
+///
+/// **8 — a body carries what it is wearing** (armor v0): `PlayerSave`
+/// grew `worn`, `WEAR_SLOTS` stacks at the same six-byte stride, so a
+/// player record goes 308 → 320 and the whole player section with it. It
+/// is in `state_hash` for the same reason `facing` is — a hit's price
+/// reads it — so a world resumed without it would stand every body up
+/// naked and change every fight in it.
+pub const WORLD_SAVE_FORMAT: u16 = 8;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
 /// the next bag id, and the ten section counts.
@@ -761,6 +768,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             craft_done_at,
             body: save.body,
             inv: save.inv,
+            worn: save.worn,
             jobs: save.jobs,
             known: save.known,
             hp: save.hp,
@@ -1310,8 +1318,10 @@ mod tests {
     #[test]
     fn the_ceiling_is_what_the_caps_add_up_to() {
         assert_eq!(PLAYER_TAIL_BYTES, 52);
+        // 308 → 320 at format 8: `PlayerSave` carries `WEAR_SLOTS` worn
+        // stacks at the inventory's six-byte stride (armor v0).
         assert_eq!(
-            PLAYER_BYTES, 308,
+            PLAYER_BYTES, 320,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -1322,7 +1332,7 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 56                    // head
-            + 100 * 308                     // players (a slot is 6 B at format 7)
+            + 100 * 320                     // players (6 B a stack, + 2 worn at format 8)
             + 8_192 * 19                    // pieces + placement tick
             + 1_024 * 33                    // deploys + bag_ready + placed
             + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
@@ -1359,8 +1369,11 @@ mod tests {
         // is six bytes (item durability v0) — 100 inventories, 256 bags,
         // 256 boxes and 64 world containers all widened together, because
         // one shared `stack` writer is what they all go through.
+        // Moved 612_872 → 614_072 at format 8: a player record carries two
+        // worn stacks (armor v0) — 100 × 12 bytes, and only the player
+        // section, because nothing else wears anything.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 612_872,
+            WORLD_SAVE_MAX_BYTES, 614_072,
             "the world save ceiling moved"
         );
     }

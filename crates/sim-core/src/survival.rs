@@ -312,10 +312,10 @@ pub fn step(sc: &SurvivalContent, p: &mut Player, events: &mut EventQueue) -> St
             } else {
                 dmg as u16
             };
-            p.hp = p.hp.saturating_sub(dmg);
-            if p.hp == 0 {
-                died = true;
-            }
+            // The funnel, **unreduced**: a clock is not a hit, so armor
+            // must never blunt it. `crate::combat::hurt_unreduced`'s doc
+            // carries the three reasons; the name is the choice.
+            died = crate::combat::hurt_unreduced(p, dmg).died;
         }
     }
 
@@ -350,23 +350,24 @@ pub fn step(sc: &SurvivalContent, p: &mut Player, events: &mut EventQueue) -> St
     Step::Quiet
 }
 
-/// The module's one kill site: a body the world itself finished off, by
-/// starving, by drying out, or by a mouthful of salt water. **One place**,
-/// so the two ways this module can kill cannot disagree about what a death
-/// is — a bug in the count would otherwise exist twice.
+/// The module's one death **announcement**: a body the world itself
+/// finished off, by starving, by drying out, or by a mouthful of salt
+/// water. **One place**, so the two ways this module can kill cannot
+/// disagree about what a death is — a bug would otherwise exist twice.
 ///
-/// A death is counted where it happens — the same rule `combat` keeps at
-/// its own kill site. Without it a clock death is invisible to
-/// `spawn_pos_n(id, deaths)`, so a body that starved is put back on the
-/// *identical* beach to starve on the same ground; the count is also what
-/// the scoreboard and the wire's `deaths` field read.
+/// ⚠ **The count is no longer taken here.** It moved into
+/// `combat::hurt_unreduced`, which is where both of this module's debits
+/// now go, so the rule this doc used to state locally — a death is counted
+/// where it happens, or it is invisible to `spawn_pos_n(id, deaths)` — is
+/// stated once for every route in the crate instead of once per module.
+/// Both of its callers fire on a `died` the funnel just returned, so the
+/// count and the announcement still cannot come apart.
 ///
 /// Self-inflicted by the world: victim and killer are the same id, which
 /// `EV_DEATH`'s own doc comment already anticipated ("equal to `a` if that
 /// ever becomes possible"). This is that.
 #[inline]
-fn died_by_the_world(p: &mut Player, events: &mut EventQueue) {
-    p.deaths = p.deaths.saturating_add(1);
+fn died_by_the_world(p: &Player, events: &mut EventQueue) {
     events.push(EV_DEATH, p.id, p.id, 0);
 }
 
@@ -569,14 +570,16 @@ pub fn drink(sc: &SurvivalContent, seed: u64, p: &mut Player, events: &mut Event
     let before = p.water;
     p.water = p.water.saturating_add(sc.drink_water).min(sc.max_water);
     let restored = p.water - before;
-    let cost = sc.drink_hp_cost.min(p.hp);
-    p.hp -= cost;
-    events.push(EV_DRANK, p.id, restored as u32, cost as u32);
+    // The funnel, **unreduced**: the hp *is* the price of the drink, and a
+    // helmet is not a desalinator. `dealt` rather than the raw cost, so
+    // `EV_DRANK` reports what the body actually paid.
+    let took = crate::combat::hurt_unreduced(p, sc.drink_hp_cost);
+    events.push(EV_DRANK, p.id, restored as u32, took.dealt as u32);
     announce(sc, p, events);
-    // `cost > 0` and not `p.hp == 0` alone: a body already at zero is one
-    // the caller has not walked to its respawn yet, and counting a second
-    // death for it would be this module's own kill site lying.
-    if cost > 0 && p.hp == 0 {
+    // The "a body already at zero is not killed twice" guard this line
+    // used to spell out by hand now lives in `combat::debit`, which is the
+    // one place that can state it once for every route.
+    if took.died {
         died_by_the_world(p, events);
         return Step::Died;
     }

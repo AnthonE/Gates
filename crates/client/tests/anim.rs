@@ -34,6 +34,12 @@ const ANIM: &str = include_str!("../src/render/anim.rs");
 /// mannequin by retarget, so the old check could never have caught the one
 /// thing it existed to catch — a clip missing from the file the game opens.
 const RIG_GLB: &[u8] = include_bytes!("../../../assets/models/stumpy.glb");
+/// The two files that carry the flinch from the wire to the body. Text,
+/// because both are behind `--features render` and this suite is not — the
+/// same hop `the_swing_clip_fits_between_two_swings` makes for its
+/// constants.
+const BODIES: &str = include_str!("../src/render/bodies.rs");
+const FEED: &str = include_str!("../src/render/feed.rs");
 
 /// Every `Clip` name in the match arms, scraped as text.
 fn clip_names() -> Vec<String> {
@@ -174,5 +180,48 @@ fn the_swing_clip_fits_between_two_swings() {
          allows a swing every {cadence:.3} s — every arc would be cut off by \
          the next one and no body would finish a stroke. The clip is cut to \
          fit at import; re-cut it with ci/retarget_anim.py --retime."
+    );
+}
+
+/// **The flinch is three call sites and every one of them is a deletion
+/// away from a silently correct-looking client.**
+///
+/// `client-core` proves the victim survives the wire and `anim.rs`'s units
+/// prove the ranking, but between them sit two lines in `bodies.rs` and one
+/// filter in `feed.rs` — and dropping any of them leaves a build that
+/// compiles, boots, plays every other animation, and simply never flinches.
+/// That is the shape `CLAUDE.md`'s single-drain trap warns about: a defect
+/// that is a missing call site rather than a wrong value.
+///
+/// A text scrape because both files are behind `--features render`. The
+/// anti-vacuity assertions are the point of the shape — a scrape that
+/// stopped matching would otherwise report success.
+#[test]
+fn the_flinch_is_wired_from_the_feed_to_the_body() {
+    // Both arms of `bodies::stream`: the body already drawn, and the body
+    // entering AOI on the same frame the blow lands on it. One is easy to
+    // forget and it is the one that matters in a fight, because a raider
+    // who has just come over the wall is exactly a body that entered AOI.
+    let calls = BODIES.matches("feed.hit_victims()").count();
+    assert_eq!(
+        calls, 2,
+        "render/bodies.rs asks the feed for hit victims {calls} time(s) and \
+         `stream` has two arms - the missing one is a body that flinches only \
+         if it was already on screen"
+    );
+    assert_eq!(
+        BODIES.matches("anim.flinch()").count(),
+        2,
+        "a hit victim is looked up and then not flinched"
+    );
+
+    // And the sentinel stops at the drain. `EV_STRUCT_HIT` shares the
+    // hitmarker ring and carries `NO_VICTIM`; handing it on would put an id
+    // no body can hold into a list `bodies::stream` searches every frame —
+    // harmless today and a trap the moment anything else reads it.
+    assert!(
+        FEED.contains("NO_VICTIM"),
+        "render/feed.rs no longer filters the struct-hit sentinel out of the \
+         victim list - a wall is not a body"
     );
 }

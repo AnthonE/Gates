@@ -81,10 +81,31 @@ axis.
 What is left:
 
 1. **The clips outrun the states that would play them.** `bodies.rs` knows a
-   remote's position, yaw, pitch and sleeping flag — that is the whole input,
-   so `Death01`, `Jump_Loop`, `Swim_Fwd_Loop` and the crouch pair sit in the
-   file unplayable. Each needs a fact on the wire or derivable from it. That
-   is the next slice and it is a sim/wire question, not an art one.
+   remote's position, yaw, pitch, sleeping flag and — since wire v48 —
+   `dead`, so `Jump_Loop`, `Swim_Fwd_Loop` and the crouch pair sit in the
+   file unplayable. Each needs a fact on the wire or derivable from it: a
+   sim/wire question, not an art one.
+
+   **`Death01` came off this list 2026-08-18** and it is the worked example.
+   A corpse keeps its slot until its owner leaves the death screen, so a
+   killed player was drawn standing at idle and the one thing a fight has to
+   read — *is that person still in it* — was answerable only from the kill
+   feed. The fact is one unconditional bit beside `sleeping`
+   (`DECISIONS.md`, "remote death fact v0"), and the clip is the second
+   non-looping one in `anim.rs`: a STATE rather than a transient, which is
+   why it needed a bit where the swing needed an event. Gated
+   (`server/tests/client_loop.rs::a_killed_body_is_marked_dead_on_the_wire`,
+   proven red with the fill removed; three `anim.rs` units, proven red).
+   ⚠ **Nothing has seen the pose**, exactly like the swing below: the wire is
+   gated end to end and `Death01` playing on a real body has never been on a
+   screen. Boot the game and kill something.
+
+   **`Hit_Chest` came off this list 2026-08-18 too, and it took the cheap
+   half.** `pop_hit` no longer drops the victim id, so the flinch is drawn
+   for the ATTACKER only, off a field that was already on the wire.
+   The broadcast version (everyone sees the recoil) is still unpriced and
+   still the same fan-out §0sw owes a soak; §0pvp item 1 and the
+   `DECISIONS.md` row carry the asymmetry.
 
 **First-person arms landed 2026-08-17, and are in a captured game frame.**
 The claim that "hide everything but the arms is not achievable on this asset"
@@ -138,6 +159,129 @@ What is left on the arms:
    into the output.
 
 ---
+
+## 0pvp · What a fight still cannot do — the readiness audit *(systems lane)*
+
+Taken 2026-08-18 against the tree rather than against the docs, and every
+line below is a command somebody ran. **What works end to end**: melee
+player-vs-player (`combat::strike`, TTK 3–5 by band), the bow (`ranged.rs`,
+server-simulated, integer ballistics), the satchel's blast, death →
+backpack → bag respawn, the kill feed, and since v48 a corpse that falls
+(§0chr). Six gaps, cheapest first:
+
+1. ~~A hit body does not flinch.~~ **Landed 2026-08-18, attacker-side, no
+   wire byte.** `pop_hit` carries `(victim, damage)` now — the field was
+   already there — and `Clip::Flinch` plays `Hit_Chest`. Two knobs, both
+   measured off the file: `FLINCH_CLIP_S` is its length and
+   `FLINCH_BLEND_S` is its **apex** (0.16667 s, where the pose peaks at
+   19.92° off rest), because the general 0.18 s blend finishes *after*
+   that and would draw the apex at partial weight. The flinch and the
+   swing are one slot with the newest winning; death outranks both.
+   ⚠ **The asymmetry is real and is a PROPOSED row** (`DECISIONS.md`,
+   "attacker-side flinch v0"): `EV_HIT` is unicast, so the recoil happens
+   on one screen in the world. Reverse it by saying so — the symmetric
+   version is a new broadcast, not an edit. **Nobody has seen the pose.**
+2. ~~A remote's swing is silent.~~ **Landed 2026-08-18.**
+   `Cue::RemoteSwing` — positional, appended after `Growl`, the local
+   swing's own waveform by delegation, radius and gain read off the local
+   row (20 m / 0.45: numbers that row has carried and nothing has ever
+   read, because a non-positional cue has no distance). 40 ms cooldown,
+   not the local 120: it is per-CUE, so it is the crew's stagger.
+   Produced from `feed.swings()` against the transform `bodies::stream`
+   just wrote, so the sound and the arc cannot disagree.
+   **Nobody has heard it.** A positional *hit* sound is not in this: it
+   needs a flesh-impact waveform `synth.rs` does not generate.
+3. ~~The revolver is a charged dead end.~~ **Landed 2026-08-19 — it
+   fires, and it kills in five.** `bake_combat` no longer drops firearm
+   rows: a bow and a gun bake through one `bake_ranged`, differing by
+   `RangedDef::hitscan`, and `validate` refuses **both** halves of the
+   pairing that decides it (a bow's round must own `[[ammo]]` ballistics,
+   a firearm's must not) so the sim never re-derives which it holds.
+   `ranged::hitscan` is `ranged::step` with the flight deleted — the same
+   `world_stop` then `nearest_body`, so a bullet and an arrow cannot
+   disagree about a trunk — run after the player loop for the arrow's two
+   reasons. **No content edit, no `PROTO_VER` bump, and `test_replay`'s
+   hash did not move** (the probe fixture arms no hitscan row). Gate:
+   `sim-core/tests/gun.rs`, 10 checks, all ten proven red, plus three in
+   `content/tests/content.rs`; `damage_routes.rs` needed no new row and
+   caught a direct `v.hp -=` when it was tried.
+   ⚠ **A gun has no muzzle flash, no crack and no tracer.** `EV_SHOT`
+   carries a speed and a drop the client re-flies, and zeroes would hang a
+   still tracer at the muzzle for four seconds — so a firearm speaks only
+   through `EV_IMPACT` and `EV_HIT`. A voice is a new event or a spoken
+   reading of `EV_SHOT`'s spare patterns.
+   ⚠ **A firearm death reports `DEATH_BY_ARROW`**, whose name now lies.
+   `DEATH_BY_BULLET` was built and reverted: protocol's
+   `every_domain_fits_its_wire_field` refuses a seventh cause as a wire
+   change even though 3 bits hold it, and it is right. The screen reads
+   correctly anyway — the weapon is a wire field.
+   ⚠ **Priced** (`findings/hitscan-cost-20260819.md`): 295 terrain taps a
+   shot against an arrow's 16, so 100 aligned shots cost 20 ms of a 33 ms
+   tick until the walk was cut at the nearest body and a *miss*'s bounded
+   at `MAX_HITSCAN_MARK_SAMPLES` (10.9 m, cosmetic). Now 1.2 ms in a
+   gunfight, 6.5 ms spraying at sky.
+
+4. **Armor reduces damage. Landed 2026-08-19 — the burlap shirt turns a
+   rock's five hits into six.** `bake_combat` installs `content/armor.toml`
+   and `combat::hurt` reads it off `Player::worn` (`WEAR_SLOTS = 2`,
+   indexed **by** slot; a piece pays only in the slot its baked row names).
+   The four hit routes are blunted, the three metabolic/keypad ones still
+   call `hurt_unreduced`. **The set is one number and both slots sum** —
+   aim is planar, so crediting only the body piece would leave
+   `armor_burlap_head` charged and dead. A corpse sheds its plates into the
+   death bag via `drain_spill`, so a full pocket costs the killer a walk,
+   never an item. `PLAYER_SAVE_BYTES` 256 → 268, `SAVE_FORMAT` 3 → 4,
+   `WORLD_SAVE_FORMAT` 7 → 8. **`test_replay` moved deliberately,
+   `0xDFFD…47C6` → `0xE6C1…FB21`** — deleting the `worn` loop from
+   `state_hash` returns it bit for bit, so those twelve bytes are the only
+   cause. 17 gates, all proven red. One scalar, not damage types —
+   `DECISIONS.md` §open "armor reduction v0" argues it against our data.
+   ⚠ **Nothing can EQUIP it — an operator call, three exits.** (a) the wire
+   (`CONT_WEAR`: `CONT_KIND_BITS` 2 → 3, `PROTO_VER` 48 → 49, 96 goldens —
+   `findings/armor-design-20260818.md` §4 prices it); (b) a spoken
+   spawn-wear default; (c) auto-protect from the inventory, a different game.
+   ⚠ **The balance anchor is known-misleading and was left so.**
+   `balance.rs:117` credits a head piece against *body* hits, has no floor
+   and cannot see a set: head 10 % + roadsign 25 % is **+3** on four weapons
+   against `armor_extra_hits_max = 2` — and applying armor moves no content
+   number, so `test_content` stays green while its meaning rots. The fix
+   needs the band re-spoken or the ladder re-priced: operator, not loop.
+   What landed instead moves no band — `hits_to_kill` pinned against
+   `combat::reduce` for every (weapon, set) pair, which caught the design
+   note's own proposed arithmetic disagreeing (6 vs 7 on `hatchet_stone`
+   at 35 %). Still open: types, hit areas, condition, `move_penalty_pct`.
+5. **No lag compensation — but the shard can now say how stale an aim is.**
+   Slice 1 of `findings/lagcomp-design-20260818.md` §7 landed 2026-08-18,
+   `crates/server/` only: each buffered input frame is stamped with the
+   `snapshot_ack` its first datagram carried, and raw **`T − S`** is folded
+   into `ShardStats` (samples/sum/max/unacked/refused + an 8-bucket
+   histogram) and published on `/status.json`. **Measured, not derived**:
+   100 bots × 60 s on loopback, **mean 1.107 ticks (36.9 ms), max 3, and
+   nothing at or past 4** — inside §0.1's prediction, but the reading of it
+   changes, because loopback RTT is ~0 and the number is still 1.1 ticks.
+   Raw staleness is the input buffer plus snapshot age, **not RTT**: a floor
+   no network improvement removes. Numbers and load conditions in
+   `DECISIONS.md` §open ("aim staleness v0"); gate
+   `crates/server/tests/lagcomp_measure.rs`, six mutants proven red.
+   **What remains is slices 2–5**: the ring in `sim-core` (four constants
+   into `limits.rs`, and `INTERP_DELAY_TICKS` moving there is why the
+   published number is raw — do not double-count it), `Command::Input`
+   carrying `favour`, `strike` rewinding, and the server minting it. Both
+   `strike` and the arrow still resolve on present server state, so a fight
+   is still led rather than aimed. No wire bump is owed at any slice.
+   ⚠ The design note's §2.2 claim that `push_frame` "drops a frame it has
+   already seen" is **wrong** — it overwrites an unexecuted one, so
+   keep-first had to be written.
+6. **Nothing has fought at population.** `raid_storm.rs:516` says so in
+   its own source — *"nobody swings"* — so wall 4's caps are gated one
+   site at a time on every combat path, and `EV_SWING`'s AOI-free fan-out
+   is still unpriced (§0sw). Planned:
+   `findings/combat-soak-design-20260818.md`. Two findings worth the read
+   before anything else: **`EVENT_RING_CAP` (64) is smaller than
+   `MAX_PLAYERS` (100)**, so 65 simultaneous swingers resync every client
+   at once and a resync re-drips seven cursors; and the **cheapest slice
+   is no code at all** — `bots.rs:53-60` already presses `BTN_PRIMARY`
+   1-in-3, so re-running the 100-bot soak prices the fan-out today.
 
 ## 0dsc · Discord presence is built, detailed and dark *(operator — one act)*
 
@@ -249,8 +393,8 @@ Bind each **in the commit that gives it a verb**, never before.
 
 1. **Reload (`R`).** No magazine, loaded state or reload verb exists in any
    crate. Firing spends an arrow straight out of the inventory
-   (`ranged::draw`), and `bake_ammo` skips `WeaponKind::Firearm` entirely, so
-   `weapons.toml`'s revolver has no sim behaviour at all. Needs a loaded-round
+   (`ranged::draw`), and `ranged::hitscan` spends a round the same way, so
+   the revolver fires but is never *loaded*. Needs a loaded-round
    state on the weapon stack — which is `0dur`'s per-instance `ItemStack` field
    question wearing a different hat, so **read that row first; the two should
    probably land together or agree on a shape.** `R` is repair until then.
@@ -416,11 +560,13 @@ Two things remain, and the first needs a word rather than work. **The clip
 is `Punch_Cross` and the ask was a rock swing** — arithmetic, not taste:
 the sim allows a swing every 1.267 s and `Sword_Attack` is 1.5 s, 1.68 s
 with the blend, so every arc would be cut off by the next. Accept the
-punch or shorten the sword clip (`DECISIONS.md` §open). **And the swing is
-silent for a remote**: `Cue::Swing` is non-positional with a 120 ms
-cooldown because it is the local player's, so reusing it would play every
-island swing at full volume with no pan. A positional cue is its own slice.
-The lane now exists for `Death01` and `Hit_Chest` too.
+punch or shorten the sword clip (`DECISIONS.md` §open).
+~~And the swing is silent for a remote.~~ **Closed 2026-08-18** — `Cue::RemoteSwing`, positional, §0pvp item 2.
+The lane now exists for `Death01` and `Hit_Chest` too — **and neither used
+it**: a death is a condition rather than an instant, so it landed as a wire
+bit (v48, §0chr), and `Hit_Chest` landed attacker-side off `EV_HIT`'s
+already-present victim id (§0pvp item 1) rather than as a broadcast. So the
+unpriced fan-out above is still `EV_SWING`'s alone.
 
 ## 0die · Two questions to re-take, no defect left *(operator)*
 
@@ -2474,8 +2620,8 @@ crate-wide, but its *contiguity* claim is file-local.
   lands. Then `headshot_mult`, armed-and-unread since the content crate
   (§9.4) — §7 says take the most significant body part, never the first
   intersection.
-- **The revolver still cannot fire.** Hitscan wants M2's rewound raycast, so
-  `bake_combat` drops firearm rows deliberately, not by omission.
+- ~~**The revolver still cannot fire.**~~ **Landed 2026-08-19** — hitscan
+  did not want the rewound raycast after all (§0pvp item 3).
 - ~~**Dropped loot should land somewhere you can find, not inside the
   floor**~~ — **landed 2026-08-14.** Six producers call `inv_add_spilling`
   (`gather`, `craft`, `build`, `deploy`, `lock`) and `World::drain_spill`

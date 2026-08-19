@@ -383,7 +383,7 @@ pub fn tick_fuses(
     haven: &crate::terrain::Haven,
     bc: &BuildContent,
     dc: &DeployContent,
-    player_hp: u16,
+    cc: &crate::combat::CombatContent,
     charges: &mut Charges,
     pieces: &mut Pieces,
     deploys: &mut Deploys,
@@ -401,7 +401,7 @@ pub fn tick_fuses(
             continue;
         }
         detonate(
-            seed, haven, bc, dc, player_hp, &c, pieces, deploys, players, budget, kills, events,
+            seed, haven, bc, dc, cc, &c, pieces, deploys, players, budget, kills, events,
         );
         // Swap-remove without advancing: the entry now at `i` is the one
         // that was last, and it has not been tested yet.
@@ -421,7 +421,7 @@ fn detonate(
     haven: &crate::terrain::Haven,
     bc: &BuildContent,
     dc: &DeployContent,
-    player_hp: u16,
+    cc: &crate::combat::CombatContent,
     c: &ChargeRec,
     pieces: &mut Pieces,
     deploys: &mut Deploys,
@@ -521,6 +521,7 @@ fn detonate(
     // the oldest lesson the reference's raiders learn. Sleepers are hit
     // too — a body is a body, and a wall-adjacent sleeper in a raid was
     // always going to be part of the bill.
+    let player_hp = cc.player_hp;
     if c.damage == 0 || player_hp == 0 {
         return; // a wall-only charge, or unarmed combat content
     }
@@ -536,13 +537,10 @@ fn detonate(
         if scaled == 0 {
             continue;
         }
-        let died = scaled >= p.hp;
-        p.hp -= scaled.min(p.hp);
-        let left = p.hp;
+        // The funnel, reduced. No `EV_HIT`: a blast has no hitmarker to
+        // draw, which is why the funnel does not own the event set.
+        let crate::combat::Hurt { left, died, .. } = crate::combat::hurt(cc, p, scaled);
         let victim_id = p.id;
-        if died {
-            p.deaths = p.deaths.saturating_add(1);
-        }
         events.push(
             crate::world::EV_HEALTH,
             victim_id,
