@@ -62,6 +62,13 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog) -> String {
         // shooter (`tests/shoot.rs: an_arrow_never_hits_its_owner`), so a
         // branch for it here would be unreachable code asserting a rule
         // that is already a wall one crate down.
+        //
+        // A bullet arrives here too (hitscan v0) and needs no arm of its
+        // own, because the sentence was already exact: the weapon is a wire
+        // field, so this reads "shot you with the revolver from 12.4 m"
+        // and "shot you with the bow from 34.0 m" off one branch. Whether
+        // a firearm should be its own *cause* is a wire question, and
+        // `world.rs`'s `DEATH_BY_ARROW` carries the answer.
         DEATH_BY_ARROW => {
             let weapon = match item_name(catalog, d.item) {
                 Some(n) => format!(" with {n}"),

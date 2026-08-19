@@ -1777,14 +1777,31 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
         let idx = c.item_index(&w.id).expect("weapon arms an item") as usize;
         let baked = cc.ranged[idx];
         if w.kind != content::schema::WeaponKind::Bow {
+            // A firearm shares this table and is the one row in it that is
+            // NOT a projectile: `hitscan` is what separates them, and it is
+            // asserted both ways here so a bake that set the flag on
+            // everything would fail rather than read as covered.
+            if w.kind == content::schema::WeaponKind::Firearm {
+                assert!(
+                    baked.hitscan,
+                    "`{}` is a firearm and must bake as hitscan",
+                    w.id
+                );
+                continue;
+            }
             assert_eq!(
                 baked.damage, 0,
-                "`{}` is not a bow and must not be armed in the ranged table",
+                "`{}` is neither a bow nor a firearm and must not be armed in the ranged table",
                 w.id
             );
             continue;
         }
         bows += 1;
+        assert!(
+            !baked.hitscan,
+            "`{}` is a bow — its arrow flies, so it must not bake as hitscan",
+            w.id
+        );
         assert_eq!(baked.damage as u32, w.damage, "`{}` damage", w.id);
         assert_eq!(
             baked.rate_ticks as u32,
@@ -1879,6 +1896,140 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
         }
     }
     assert_eq!(bows, 2, "the alpha data ships a bow and a crossbow");
+}
+
+/// The revolver reaches the sim, armed, and kills inside the band
+/// `balance.toml` declares for a firearm.
+///
+/// **This is the gate on a charged dead end rather than on a number.**
+/// Until 2026-08-19 `bake_combat` dropped every row that was not melee,
+/// throwable or bow, and the revolver was not inert data while it sat
+/// there: it is a barrel drop at weight 1 (`the_shipped_loot_tables_bake`),
+/// it has a recipe, it is on the research ladder behind gunpowder, and its
+/// round both drops and crafts. So a player could spend scrap on the
+/// research, materials on the gun and more on ammo, and pull the trigger on
+/// nothing. What this asserts is the whole chain out of that: the row bakes,
+/// it bakes as hitscan, its round is the one it names, its reach is
+/// traceable at the sampler's spacing, and the hits it takes to kill is the
+/// number the band already gates.
+#[test]
+fn the_firearm_reaches_the_sim_and_kills_in_the_band_it_declares() {
+    use sim_core::gather::NO_ITEM;
+    use sim_core::limits::{ARROW_STEP_MM, MAX_HITSCAN_SAMPLES, TICK_HZ};
+
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped weapons must bake");
+    let [lo, hi] = c.balance.bands.ttk_firearm;
+
+    let mut guns = 0;
+    for w in &c.weapons {
+        if w.kind != content::schema::WeaponKind::Firearm {
+            continue;
+        }
+        guns += 1;
+        let idx = c.item_index(&w.id).expect("weapon arms an item") as usize;
+        let baked = cc.ranged[idx];
+        assert!(baked.hitscan, "`{}` must bake as hitscan", w.id);
+        assert_eq!(baked.damage as u32, w.damage, "`{}` damage", w.id);
+        assert_eq!(
+            baked.rate_ticks as u32,
+            TICK_HZ * 60 / w.rate_per_min,
+            "`{}` ticks between shots",
+            w.id
+        );
+        assert_eq!(
+            baked.range_mm,
+            w.range_m * 1000,
+            "`{}` reach in millimetres",
+            w.id
+        );
+
+        // The rounds, in declared order and `NO_ITEM`-padded — the bow's
+        // rule, because it is the same field and the same policy.
+        let rounds = w
+            .ammo
+            .as_ref()
+            .expect("validate refuses a firearm without one");
+        for (slot, id) in rounds.iter().enumerate() {
+            assert_eq!(
+                baked.ammo[slot],
+                c.item_index(id).expect("round is an item"),
+                "`{}` round {slot} is the one it names",
+                w.id
+            );
+            // And it is a round with no ballistics, which is what makes it
+            // hitscan rather than a projectile nobody baked a speed for.
+            assert!(
+                cc.ammo_def(c.item_index(id).expect("round is an item"))
+                    .is_none(),
+                "`{}` round `{id}` carries ballistics — it would be a projectile",
+                w.id
+            );
+        }
+        for slot in rounds.len()..baked.ammo.len() {
+            assert_eq!(
+                baked.ammo[slot], NO_ITEM,
+                "`{}` pads unused round slots rather than repeating one",
+                w.id
+            );
+        }
+
+        // The hitscan sampler wall, on the shipped row rather than only on
+        // the refusal path: a reach sitting exactly on the ceiling would be
+        // traced by one sample per step and nothing would say so.
+        let taps = baked.range_mm as usize / ARROW_STEP_MM as usize + 1;
+        assert!(
+            taps <= MAX_HITSCAN_SAMPLES,
+            "`{}` needs {taps} collision samples for its {} m, past the {MAX_HITSCAN_SAMPLES} \
+             one shot may take",
+            w.id,
+            w.range_m
+        );
+
+        // Hits to kill, computed the way the sim computes it — the melee
+        // test's arithmetic against the firearm band.
+        let mut hp = cc.player_hp;
+        let mut hits = 0u32;
+        while hp > 0 {
+            hp -= baked.damage.min(hp);
+            hits += 1;
+        }
+        assert!(
+            (lo..=hi).contains(&hits),
+            "`{}` kills in {hits} shots, outside the declared firearm TTK band {lo}..={hi}",
+            w.id
+        );
+    }
+    assert_eq!(guns, 1, "the alpha data ships exactly one firearm");
+}
+
+/// A firearm reaching further than one shot can be sampled is refused at
+/// boot, not clamped at tick time — the round's sampler wall, one clock
+/// over. A clamped reach is a gun that shoots through cover past some
+/// distance the data never admits to.
+#[test]
+fn a_firearm_that_outreaches_the_collision_sampler_is_refused() {
+    refuses_bake(
+        "weapons.toml",
+        "range_m = 50",
+        "range_m = 500",
+        "shoot through cover",
+    );
+}
+
+/// A firearm whose round carries `[[ammo]]` ballistics is refused at boot.
+///
+/// The bow's refusal inverted, and the reason is the same one: the pairing
+/// is what tells a projectile from a hitscan, so a round that is both would
+/// leave the question to whichever reader asked it.
+#[test]
+fn a_firearm_whose_round_has_ballistics_is_refused() {
+    refuses(
+        "weapons.toml",
+        "ammo = [\"item.pistol_ammo\"]",
+        "ammo = [\"item.arrow_wood\"]",
+        "it is a projectile",
+    );
 }
 
 /// A muzzle speed the collision sampler cannot trace is refused at boot,

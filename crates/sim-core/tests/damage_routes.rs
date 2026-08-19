@@ -161,7 +161,13 @@ const CONSTRUCTIONS: &[(&str, &str, &str)] = &[
 /// either one fails — a new damage route needs a person to say which it is.
 const ROUTES: &[(&str, bool, &str)] = &[
     ("combat.rs", true, "melee — a swing that landed on a person"),
-    ("ranged.rs", true, "an arrow"),
+    (
+        "ranged.rs",
+        true,
+        "an arrow, and since hitscan v0 a bullet — one file, one row, because \
+         this table keys by the file that reaches the funnel and both shots \
+         are the same module's",
+    ),
     ("charge.rs", true, "a blast"),
     ("world.rs", true, "a mob bite"),
     (

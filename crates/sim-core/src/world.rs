@@ -576,11 +576,28 @@ pub const DEATH_BY_CLOCK: u8 = 1;
 /// player *pressed a key for* is a different sentence from one that
 /// happened to them.
 pub const DEATH_BY_SALT: u8 = 2;
-/// An arrow (ranged.rs). Its own cause and not `DEATH_BY_HAND`'s for the
-/// same reason `DEATH_BY_SALT` is not the clock's: the sentence the death
-/// screen builds is "who, with what, from how far", and 34 m is a
-/// different fact about a fight from 1.6 m. `death_item` is the bow, not
-/// the arrow — the weapon is what the killer held.
+/// A shot (ranged.rs) — an arrow, and since hitscan v0 a bullet too. Its
+/// own cause and not `DEATH_BY_HAND`'s for the same reason `DEATH_BY_SALT`
+/// is not the clock's: the sentence the death screen builds is "who, with
+/// what, from how far", and 34 m is a different fact about a fight from
+/// 1.6 m. `death_item` is the bow or the gun, never the round — the weapon
+/// is what the killer held, and it is what makes the shared sentence exact
+/// ("shot you with the revolver" / "shot you with the bow").
+///
+/// **The name is the arrow's because the value is, and a firearm sharing
+/// it is a deliberate refusal rather than an oversight.** A seventh cause
+/// would fit `DEATH_CAUSE_BITS` (3 bits, six values spent) and move no
+/// layout, and it is still a **wire change**: an eighth bit pattern both
+/// ends currently refuse as forged would become a live fact, so an old
+/// client and a new server would disagree about a packet whose bytes are
+/// identical. `protocol`'s `every_domain_fits_its_wire_field` pins
+/// `live_max` for exactly that and says so in its own failure — it was
+/// what refused `DEATH_BY_BULLET` when hitscan v0 tried to add one. The
+/// bump, the goldens and the pin land together or not at all (wall 6), and
+/// this slice does not bump. Renaming this constant is refused for a
+/// different reason: `event_roles.rs` and `protocol/src/event.rs` narrate
+/// the 2026-08-05 failure by this name, and a rename would falsify three
+/// histories to tidy one word.
 pub const DEATH_BY_ARROW: u8 = 3;
 /// An animal's bite (mob.rs — the pig that fights back). `death_by` is
 /// the roster slot's **tagged** id (`mob::mob_id`), which is how the
@@ -3393,6 +3410,35 @@ impl World {
         // mutably. `removals` is not spent here — an arrow does not chip a
         // wall in v0, it stops on one.
         let mut kills = [ranged::Kill::default(); MAX_ARROWS];
+        // A firearm resolves here rather than in the loop above, for the
+        // arrow's two reasons — final positions, and no dependence on the
+        // shooter's slot index — and it goes **first** because it is the
+        // only shot on this tick that was fired on it. An arrow in the
+        // store was launched on an earlier one and has a tick of flight to
+        // spend before it can reach anybody, so resolving the instant shot
+        // ahead of it is the chronology, not a preference. `kills` is
+        // reused rather than doubled: this pass writes at most one entry
+        // per player, the array is drained before `step` fills it again,
+        // and `ranged.rs`'s const assert holds `MAX_PLAYERS <= MAX_ARROWS`.
+        let n_shot = ranged::hitscan(
+            seed,
+            &self.haven,
+            self.pieces.cols(),
+            &mut crate::occupy::Occupants {
+                table: &self.scatter,
+                haven: &self.haven,
+                harvested: &self.slot_lives,
+                cache: &mut self.slot_cache,
+            },
+            tick,
+            &self.combat,
+            &mut self.players,
+            &mut self.events,
+            &mut kills,
+        );
+        for k in kills.iter().take(n_shot) {
+            self.die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm);
+        }
         let n_kills = ranged::step(
             seed,
             &self.haven,

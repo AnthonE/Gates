@@ -191,21 +191,36 @@ backpack → bag respawn, the kill feed, and since v48 a corpse that falls
    just wrote, so the sound and the arc cannot disagree.
    **Nobody has heard it.** A positional *hit* sound is not in this: it
    needs a flesh-impact waveform `synth.rs` does not generate.
-3. **The revolver is a progression dead end, not just unread data** — and
-   this item undersold it until 2026-08-19. `bake_combat` drops every row
-   that is not melee, throwable or bow (`content/bake.rs:566`) and no
-   hitscan path exists in `sim-core`, but the gun is not sitting inertly
-   in a table: it is a **rare barrel drop** (`loot.toml:55`, weight 1), it
-   has a **recipe** (`recipes.toml:404`), it is **on the research ladder**
-   behind gunpowder (`research.toml:82`), and `item.pistol_ammo` both
-   drops (weight 8) and crafts (`recipes.toml:417`). So a player can spend
-   scrap on the research, spend materials on the gun, spend more on ammo,
-   and pull the trigger on nothing. That is a charged dead end, which is
-   worse than a number nobody reads.
-   **Probably the cheapest of the four remaining**: `WeaponKind::Firearm`
-   is already in the schema, `bake_ammo` already bakes rounds, and
-   `ranged.rs` already owns launch → flight → hit, so hitscan is that path
-   with the flight skipped. Unscoped — no findings note yet.
+3. ~~The revolver is a charged dead end.~~ **Landed 2026-08-19 — it
+   fires, and it kills in five.** `bake_combat` no longer drops firearm
+   rows: a bow and a gun bake through one `bake_ranged`, differing by
+   `RangedDef::hitscan`, and `validate` refuses **both** halves of the
+   pairing that decides it (a bow's round must own `[[ammo]]` ballistics,
+   a firearm's must not) so the sim never re-derives which it holds.
+   `ranged::hitscan` is `ranged::step` with the flight deleted — the same
+   `world_stop` then `nearest_body`, so a bullet and an arrow cannot
+   disagree about a trunk — run after the player loop for the arrow's two
+   reasons. **No content edit, no `PROTO_VER` bump, and `test_replay`'s
+   hash did not move** (the probe fixture arms no hitscan row). Gate:
+   `sim-core/tests/gun.rs`, 10 checks, all ten proven red, plus three in
+   `content/tests/content.rs`; `damage_routes.rs` needed no new row and
+   caught a direct `v.hp -=` when it was tried.
+   ⚠ **A gun has no muzzle flash, no crack and no tracer.** `EV_SHOT`
+   carries a speed and a drop the client re-flies, and zeroes would hang a
+   still tracer at the muzzle for four seconds — so a firearm speaks only
+   through `EV_IMPACT` and `EV_HIT`. A voice is a new event or a spoken
+   reading of `EV_SHOT`'s spare patterns.
+   ⚠ **A firearm death reports `DEATH_BY_ARROW`**, whose name now lies.
+   `DEATH_BY_BULLET` was built and reverted: protocol's
+   `every_domain_fits_its_wire_field` refuses a seventh cause as a wire
+   change even though 3 bits hold it, and it is right. The screen reads
+   correctly anyway — the weapon is a wire field.
+   ⚠ **Priced** (`findings/hitscan-cost-20260819.md`): 295 terrain taps a
+   shot against an arrow's 16, so 100 aligned shots cost 20 ms of a 33 ms
+   tick until the walk was cut at the nearest body and a *miss*'s bounded
+   at `MAX_HITSCAN_MARK_SAMPLES` (10.9 m, cosmetic). Now 1.2 ms in a
+   gunfight, 6.5 ms spraying at sky.
+
 4. **Armor is priced and unread — but there is now ONE place to apply it.**
    S1 of `findings/armor-design-20260818.md` §7 landed 2026-08-19,
    `crates/sim-core/` only, no behaviour change: all seven damage routes
@@ -374,8 +389,8 @@ Bind each **in the commit that gives it a verb**, never before.
 
 1. **Reload (`R`).** No magazine, loaded state or reload verb exists in any
    crate. Firing spends an arrow straight out of the inventory
-   (`ranged::draw`), and `bake_ammo` skips `WeaponKind::Firearm` entirely, so
-   `weapons.toml`'s revolver has no sim behaviour at all. Needs a loaded-round
+   (`ranged::draw`), and `ranged::hitscan` spends a round the same way, so
+   the revolver fires but is never *loaded*. Needs a loaded-round
    state on the weapon stack — which is `0dur`'s per-instance `ItemStack` field
    question wearing a different hat, so **read that row first; the two should
    probably land together or agree on a shape.** `R` is repair until then.
@@ -2601,8 +2616,8 @@ crate-wide, but its *contiguity* claim is file-local.
   lands. Then `headshot_mult`, armed-and-unread since the content crate
   (§9.4) — §7 says take the most significant body part, never the first
   intersection.
-- **The revolver still cannot fire.** Hitscan wants M2's rewound raycast, so
-  `bake_combat` drops firearm rows deliberately, not by omission.
+- ~~**The revolver still cannot fire.**~~ **Landed 2026-08-19** — hitscan
+  did not want the rewound raycast after all (§0pvp item 3).
 - ~~**Dropped loot should land somewhere you can find, not inside the
   floor**~~ — **landed 2026-08-14.** Six producers call `inv_add_spilling`
   (`gather`, `craft`, `build`, `deploy`, `lock`) and `World::drain_spill`

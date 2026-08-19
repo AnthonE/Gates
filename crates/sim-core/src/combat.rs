@@ -48,13 +48,14 @@
 //!
 //! ⚠ **"No ranged of any kind" stood here after it stopped being true**,
 //! which is `CLAUDE.md`'s dead-citation trap in the present tense: bows
-//! are baked (`content/bake.rs` — `WeaponKind::Bow` takes `bake_bow` and
-//! the `[[ammo]]` rows go first) and fired (`ranged.rs`), so an arrow has
-//! killed a player since well before this line was re-read on 2026-08-18.
-//! What `bake_combat` still drops is the **firearm** rows: anything that
-//! is not melee, throwable or bow falls through the loop, so
-//! `weapons.toml`'s revolver is priced and unarmed. That half of the
-//! sentence is the live half.
+//! are baked (`content/bake.rs` — `WeaponKind::Bow` takes `bake_ranged`
+//! and the `[[ammo]]` rows go first) and fired (`ranged.rs`), so an arrow
+//! had killed a player well before that line was re-read on 2026-08-18.
+//! **The live half of it died a day later.** It said `bake_combat` still
+//! dropped the firearm rows, and that was true until 2026-08-19: the
+//! revolver now bakes through the same `bake_ranged` a bow does and fires
+//! through `ranged::hitscan`, which is `ranged::step` with the flight
+//! deleted. Nothing in `weapons.toml` is priced and unarmed any more.
 //!
 //! Three clauses that used to stand here have since landed and are named
 //! rather than deleted, because each is a place this module's shape was
@@ -180,6 +181,22 @@ pub struct RangedDef {
     /// melee cadence: `SWING_INTERVAL_TICKS` is one shared number and a
     /// 30/min bow is not a 47/min club.
     pub rate_ticks: u16,
+    /// **Whether the shot resolves on the tick the trigger is pulled.**
+    /// `false` is a bow: the launch stands an `Arrow` up and the flight
+    /// resolves it over the following ticks. `true` is a firearm: there is
+    /// no projectile, and `ranged::hitscan` traces the whole reach in one
+    /// pass after the player loop.
+    ///
+    /// It is a field rather than an inference, and the inference was
+    /// available: a bow's rounds carry `[[ammo]]` ballistics and a
+    /// firearm's do not (`content/weapons.toml`'s header states exactly
+    /// that contract), so `ammo_def` returning `None` for every listed
+    /// round would have said the same thing. The trouble is what it says
+    /// when content is wrong — a bow whose arrow lost its `[[ammo]]` row
+    /// would quietly become a hitscan rifle rather than fail to load.
+    /// `content/validate.rs` refuses that pairing at boot and this field
+    /// records the answer once, at bake, so the sim never re-derives it.
+    pub hitscan: bool,
     /// The weapon's reach in **millimetres**, from `range_m`.
     ///
     /// Flight time used to be baked here as `life_ticks` and cannot be any
@@ -206,6 +223,7 @@ impl Default for RangedDef {
             damage: 0,
             ammo: [NO_ITEM; MAX_WEAPON_AMMO],
             rate_ticks: 0,
+            hitscan: false,
             range_mm: 0,
         }
     }
@@ -270,6 +288,7 @@ impl CombatContent {
             damage: 0,
             ammo: [NO_ITEM; MAX_WEAPON_AMMO],
             rate_ticks: 0,
+            hitscan: false,
             range_mm: 0,
         }; MAX_ITEM_DEFS],
         ammo: [AmmoDef {

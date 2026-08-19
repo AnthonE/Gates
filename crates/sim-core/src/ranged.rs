@@ -1,4 +1,14 @@
 //! Ranged v0 — the bow fires, the arrow flies, the trunk stops it.
+//! **Hitscan v0 (2026-08-19) is the same module with the flight deleted**:
+//! a firearm resolves its whole reach on the tick the trigger is pulled,
+//! through the same two questions in the same order (`world_stop`, then
+//! `nearest_body`), so a bullet and an arrow cannot disagree about what a
+//! trunk is. Until it landed the revolver was a **charged dead end** — a
+//! rare barrel drop with a recipe, a research rung and a craftable round,
+//! all of which a player could pay for before pulling the trigger on
+//! nothing, because `bake_combat` dropped every row that was not melee,
+//! throwable or bow. See `hitscan` for what it deliberately still does not
+//! do (no `EV_SHOT`, so no tracer and no muzzle flash).
 //!
 //! Until this module `combat.rs` exposed `strike` and `raid` and nothing
 //! else, so every fight on the island was a walk-up club fight while
@@ -55,7 +65,8 @@ use crate::craft::{inv_count, inv_take};
 use crate::gather::NO_ITEM;
 use crate::input::BTN_PRIMARY;
 use crate::limits::{
-    ARROW_STEP_MM, MAX_ARROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_PLAYERS,
+    ARROW_STEP_MM, MAX_ARROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_HITSCAN_MARK_SAMPLES,
+    MAX_HITSCAN_SAMPLES, MAX_PLAYERS,
 };
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
@@ -218,8 +229,8 @@ impl Default for Arrows {
     }
 }
 
-/// Draw, and fire if everything is in hand. Returns whether the **bow took
-/// the arm** — not whether an arrow left it.
+/// Draw, and fire if everything is in hand. Returns whether the **weapon
+/// took the arm** — not whether an arrow left it.
 ///
 /// That distinction is the point of the return value. A drawn bow does not
 /// swing at anything: `gather::swing` scans the 3×3 cell ring for a node
@@ -227,7 +238,8 @@ impl Default for Arrows {
 /// exactly where an archer stands. So `World::tick` asks this first and
 /// skips the gather-and-melee path entirely when it answers `true`, whether
 /// the shot was refused for cadence, for an empty quiver or for a full
-/// store.
+/// store — and, since hitscan v0, whether it was a shot this function
+/// resolves at all.
 pub fn draw(
     tick: u64,
     cc: &CombatContent,
@@ -240,6 +252,20 @@ pub fn draw(
     };
     // From here the answer is `true` on every path: the hand holds a bow,
     // so nothing below hands the arm back to the club.
+    //
+    // **A firearm takes the arm here and fires somewhere else.** A hitscan
+    // shot resolves against every body on the shard, and this function
+    // holds exactly one of them — the shooter — because it is called from
+    // inside `World::tick`'s player loop with that slot borrowed. So the
+    // gun is answered by `hitscan` after the loop, on the same tick, and
+    // all this does is refuse to hand the arm to `gather::swing`: without
+    // it a revolver would chop the tree the shooter is standing next to,
+    // which is the same defect the bow's `true` was written to prevent.
+    // The cadence and the round are paid there, once, so nothing here may
+    // charge for a shot it is not resolving.
+    if def.hitscan {
+        return true;
+    }
     if p.frame.buttons & BTN_PRIMARY == 0 || tick < p.next_swing {
         return true;
     }
@@ -378,78 +404,13 @@ pub fn step(
         // answered, because that is the difference between a puff of dirt,
         // a chip of bark and a splintered plank, and it is knowable here
         // and nowhere else (`SURF_*`).
-        let mut stop_t = 1.0f32;
-        let mut surf: Option<u8> = None;
-        let mut prev = (ox / MM_PER_M, oz / MM_PER_M);
-        for k in 1..=n {
-            let t = k as f32 / n as f32;
-            let px = (ox + sx * t) / MM_PER_M;
-            let py = (oy + sy * t) / MM_PER_M;
-            let pz = (oz + sz * t) / MM_PER_M;
-            // `ground`, not `height`: an arrow stops on the surface a player
-            // stands on, and on an authored site that is the carved floor. A
-            // raw read here puts the impact — and now the decal main added
-            // with it — several metres under the pad.
-            let what = if py <= terrain::ground(seed, haven, px, pz) {
-                Some(SURF_GROUND)
-            } else if occ.blocks_volume(seed, px, pz, py, ARROW_R_M, ARROW_R_M) {
-                Some(SURF_WORLD)
-            } else if collide::shot_blocked(
-                seed, haven, cols, prev.0, prev.1, px, pz, py, ARROW_R_M,
-            ) {
-                Some(SURF_BUILT)
-            } else {
-                None
-            };
-            if what.is_some() {
-                stop_t = t;
-                surf = what;
-                break;
-            }
-            prev = (px, pz);
-        }
+        let (stop_t, surf) = world_stop(seed, haven, cols, occ, (ox, oy, oz), (sx, sy, sz), n, n);
 
         // Pass two: the nearest body whose closest approach to the segment
         // comes at or before the world's stop. Solved rather than sampled,
         // so a body is never missed between two taps — and compared against
         // `stop_t`, so a body behind a trunk is never reached.
-        let mut best: Option<(f32, usize)> = None;
-        let planar2 = sx * sx + sz * sz;
-        for (j, v) in players.iter().enumerate() {
-            if !v.active || v.dead || v.hp == 0 || v.id == a.owner {
-                continue;
-            }
-            let (bx, by, bz) = (
-                v.body.qx as f32 * POS_XZ_Q,
-                v.body.qy as f32 * POS_Y_Q,
-                v.body.qz as f32 * POS_XZ_Q,
-            );
-            let (ax, ay, az) = (ox / MM_PER_M, oy / MM_PER_M, oz / MM_PER_M);
-            let (ux, uy, uz) = (sx / MM_PER_M, sy / MM_PER_M, sz / MM_PER_M);
-            // Closest approach in the plane, clamped to the segment. A
-            // degenerate (purely vertical) shot pins to its start.
-            let t = if planar2 <= 0.0 {
-                0.0
-            } else {
-                (((bx - ax) * ux + (bz - az) * uz) / (ux * ux + uz * uz)).clamp(0.0, 1.0)
-            };
-            if t > stop_t {
-                continue;
-            }
-            let (cx, cy, cz) = (ax + ux * t, ay + uy * t, az + uz * t);
-            let (ddx, ddz) = (cx - bx, cz - bz);
-            // A cylinder, exactly like `terrain::slot_blocks` — the house
-            // shape. No headshot, so the whole body is one target.
-            if ddx * ddx + ddz * ddz > CAPSULE_RADIUS_M * CAPSULE_RADIUS_M {
-                continue;
-            }
-            if cy < by || cy > by + CAPSULE_HEIGHT_M {
-                continue;
-            }
-            if best.is_none_or(|(bt, _)| t < bt) {
-                best = Some((t, j));
-            }
-        }
+        let best = nearest_body(players, (ox, oy, oz), (sx, sy, sz), stop_t, a.owner);
 
         if let Some((t, j)) = best {
             let range_cm = ((a.flown as f32 + len_mm * t) / 10.0) as u16;
@@ -515,6 +476,329 @@ pub fn step(
         a.flown = a.flown.saturating_add(len_mm as u32);
         a.life -= 1;
         arrows.a[ix] = a;
+    }
+    n_kills
+}
+
+/// How far along `s` from `o` the **world** stops a shot, and what stopped
+/// it — the ground, an occupant, or a built piece, asked in that order.
+///
+/// Point samples `1/n` of the segment apart; `1.0` and `None` mean nothing
+/// did. Both ends are millimetres, because both callers hold millimetres and
+/// the metre conversion the collision queries want happens once per sample
+/// here rather than twice in two copies.
+///
+/// **`n` is the spacing and `upto` is how far to walk**, and they are two
+/// parameters rather than one because a caller may know that nothing past
+/// some fraction of the segment can change its answer. Shortening the walk
+/// by shrinking `n` would move every sample; shortening it with `upto`
+/// leaves the ones it does take exactly where they were, which is what makes
+/// the truncation invisible to the result rather than a second sampler.
+///
+/// **Shared by the arrow and the bullet on purpose.** A tick of flight and
+/// a whole hitscan reach are the same question over a different segment,
+/// and two copies of this ladder would be two chances for a bullet and an
+/// arrow to disagree about what a trunk is — the shape `CLAUDE.md`'s
+/// event-payload trap warns about, one crate over.
+#[allow(clippy::too_many_arguments)]
+fn world_stop(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    o: (f32, f32, f32),
+    s: (f32, f32, f32),
+    n: usize,
+    upto: usize,
+) -> (f32, Option<u8>) {
+    let (ox, oy, oz) = o;
+    let (sx, sy, sz) = s;
+    let mut stop_t = 1.0f32;
+    let mut surf: Option<u8> = None;
+    let mut prev = (ox / MM_PER_M, oz / MM_PER_M);
+    for k in 1..=upto.min(n) {
+        let t = k as f32 / n as f32;
+        let px = (ox + sx * t) / MM_PER_M;
+        let py = (oy + sy * t) / MM_PER_M;
+        let pz = (oz + sz * t) / MM_PER_M;
+        // `ground`, not `height`: a shot stops on the surface a player
+        // stands on, and on an authored site that is the carved floor. A
+        // raw read here puts the impact — and the decal drawn from it —
+        // several metres under the pad.
+        let what = if py <= terrain::ground(seed, haven, px, pz) {
+            Some(SURF_GROUND)
+        } else if occ.blocks_volume(seed, px, pz, py, ARROW_R_M, ARROW_R_M) {
+            Some(SURF_WORLD)
+        } else if collide::shot_blocked(seed, haven, cols, prev.0, prev.1, px, pz, py, ARROW_R_M) {
+            Some(SURF_BUILT)
+        } else {
+            None
+        };
+        if what.is_some() {
+            stop_t = t;
+            surf = what;
+            break;
+        }
+        prev = (px, pz);
+    }
+    (stop_t, surf)
+}
+
+/// The nearest body whose closest approach to the segment `o + s·t` comes at
+/// or before `stop_t`, skipping the shooter. Solved rather than sampled, so
+/// a body is never missed between two taps — and compared against the
+/// world's stop, so a body behind a trunk is never reached.
+fn nearest_body(
+    players: &[Player; MAX_PLAYERS],
+    o: (f32, f32, f32),
+    s: (f32, f32, f32),
+    stop_t: f32,
+    owner: u32,
+) -> Option<(f32, usize)> {
+    let (ox, oy, oz) = o;
+    let (sx, sy, sz) = s;
+    let mut best: Option<(f32, usize)> = None;
+    let planar2 = sx * sx + sz * sz;
+    for (j, v) in players.iter().enumerate() {
+        if !v.active || v.dead || v.hp == 0 || v.id == owner {
+            continue;
+        }
+        let (bx, by, bz) = (
+            v.body.qx as f32 * POS_XZ_Q,
+            v.body.qy as f32 * POS_Y_Q,
+            v.body.qz as f32 * POS_XZ_Q,
+        );
+        let (ax, ay, az) = (ox / MM_PER_M, oy / MM_PER_M, oz / MM_PER_M);
+        let (ux, uy, uz) = (sx / MM_PER_M, sy / MM_PER_M, sz / MM_PER_M);
+        // Closest approach in the plane, clamped to the segment. A
+        // degenerate (purely vertical) shot pins to its start.
+        let t = if planar2 <= 0.0 {
+            0.0
+        } else {
+            (((bx - ax) * ux + (bz - az) * uz) / (ux * ux + uz * uz)).clamp(0.0, 1.0)
+        };
+        if t > stop_t {
+            continue;
+        }
+        let (cx, cy, cz) = (ax + ux * t, ay + uy * t, az + uz * t);
+        let (ddx, ddz) = (cx - bx, cz - bz);
+        // A cylinder, exactly like `terrain::slot_blocks` — the house
+        // shape. No headshot, so the whole body is one target.
+        if ddx * ddx + ddz * ddz > CAPSULE_RADIUS_M * CAPSULE_RADIUS_M {
+            continue;
+        }
+        if cy < by || cy > by + CAPSULE_HEIGHT_M {
+            continue;
+        }
+        if best.is_none_or(|(bt, _)| t < bt) {
+            best = Some((t, j));
+        }
+    }
+    best
+}
+
+/// A hitscan kill fits the arrow's kill array because there are never more
+/// of them than there are players, and one shot is one body at most.
+/// Asserted rather than assumed: `World::tick` hands both passes the same
+/// `[Kill; MAX_ARROWS]`, and the day `MAX_PLAYERS` outgrows `MAX_ARROWS`
+/// that array stops being a container and becomes an overflow.
+const _: () = assert!(
+    MAX_PLAYERS <= MAX_ARROWS,
+    "the hitscan pass writes at most one Kill per player into the arrow \
+     store's kill array — widen MAX_ARROWS or give the pass its own"
+);
+
+/// Every firearm on the shard fires, resolves and is paid for, once, on the
+/// tick its trigger is down. Returns how many entries of `kills` were
+/// written.
+///
+/// # Why this is not `draw`
+///
+/// `draw` runs inside `World::tick`'s player loop with one slot borrowed,
+/// which is enough for a bow — a launch touches the shooter and nobody else
+/// — and is not enough for a hitscan, whose whole resolution is a question
+/// about every other body. So the gun is answered here, after the loop, for
+/// the two reasons the arrow's flight is: every body has already taken its
+/// step, so a shot resolves against final positions rather than positions
+/// that are final for the low slots and stale for the high ones; and
+/// nothing about a hit may depend on the shooter's slot index.
+///
+/// # A bullet is an arrow with the flight deleted
+///
+/// The segment is the weapon's whole reach in one pass instead of one
+/// tick's velocity, and the two questions asked over it are the *same two
+/// functions* the arrow asks — `world_stop` and `nearest_body`, with the
+/// same constants — so a bullet and an arrow cannot disagree about what a
+/// trunk is. They are asked in the **opposite order**, and only because
+/// this segment is 295 taps where the arrow's is sixteen; the comment at
+/// the call site has the argument and why the answer is identical. There
+/// is no `Arrow` record, no slot, and no `MAX_ARROWS` claim — a hitscan
+/// shot is not a sim entity, so there is nothing to store and nothing to
+/// refuse for lack of room. What bounds the work is
+/// `MAX_HITSCAN_SAMPLES` per shot and one shot per player per tick.
+///
+/// A kill it reports is laid down as `DEATH_BY_ARROW` (`world.rs`), whose
+/// name is the only thing about it that is wrong: a seventh cause is a
+/// wire change and that constant's doc carries the refusal.
+///
+/// # What it does not do
+///
+/// **No `EV_SHOT`.** That event's payload is a muzzle speed and a drop in
+/// mm/tick, and the client re-flies exactly those integers
+/// (`render/tracer.rs`); a hitscan has neither, and a zero in both fields
+/// would hang a motionless tracer at the muzzle for four seconds. So a
+/// firearm announces itself by what it *reaches* — `EV_IMPACT` where the
+/// world stopped it, `EV_HIT` on a body — and the muzzle flash, the crack
+/// and the beam are a follow-up that needs either a new event or a spoken
+/// reading of `EV_SHOT`'s spare bit patterns. Neither is invented here.
+///
+/// No structure damage (an arrow does not chip a wall either), no falloff
+/// (`content/weapons.toml` has no curve to read), and no headshot.
+#[allow(clippy::too_many_arguments)]
+pub fn hitscan(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    tick: u64,
+    cc: &CombatContent,
+    players: &mut [Player; MAX_PLAYERS],
+    events: &mut EventQueue,
+    kills: &mut [Kill; MAX_ARROWS],
+) -> usize {
+    let mut n_kills = 0usize;
+    for i in 0..MAX_PLAYERS {
+        let p = &players[i];
+        // A corpse and a sleeper do not shoot. `World::tick`'s player loop
+        // has already refused them the arm; this pass runs outside that
+        // loop, so it restates the rule rather than inheriting it.
+        if !p.active || p.dead || p.sleeping || p.hp == 0 {
+            continue;
+        }
+        let item = held_item(p);
+        let Some(def) = cc.held_ranged(item) else {
+            continue;
+        };
+        if !def.hitscan {
+            continue;
+        }
+        if p.frame.buttons & BTN_PRIMARY == 0 || tick < p.next_swing {
+            continue;
+        }
+        // The sampler backstop, `step`'s in a different clock: a reach this
+        // pass cannot sample at `ARROW_STEP_MM` cannot be honest about what
+        // it hits, so the weapon does not fire rather than firing untraced.
+        // `bake_combat` refuses such content at boot, so this is unreachable
+        // with anything shipped — which is what lets the spacing be a
+        // guarantee instead of a hope. Checked before anything is spent.
+        let n = def.range_mm as usize / ARROW_STEP_MM as usize + 1;
+        if n > MAX_HITSCAN_SAMPLES {
+            continue;
+        }
+        // The first round in the weapon's preference order the shooter is
+        // carrying — `draw`'s rule, minus the ballistics lookup, because a
+        // hitscan round has no flight to look up. Read before the cadence
+        // is paid so that ordering stays visible, spent after it.
+        let round = def
+            .ammo
+            .iter()
+            .copied()
+            .take_while(|&a| a != NO_ITEM)
+            .find(|&a| inv_count(&p.inv, a) > 0);
+        let (id, yaw, pitch) = (p.id, p.frame.yaw, p.frame.pitch);
+        let (qx, qy, qz) = (p.body.qx, p.body.qy, p.body.qz);
+        // The cadence is the weapon's and it is paid on the pull, not on
+        // the hit — `draw`'s rule, for `draw`'s reason: a refused shot must
+        // not be re-attempted every tick.
+        players[i].next_swing = tick + def.rate_ticks.max(1) as u64;
+        let Some(round) = round else {
+            continue;
+        };
+        inv_take(&mut players[i].inv, round, 1);
+
+        let (fx, fz) = yaw_dir(yaw);
+        let (ch, sv) = pitch_dir(pitch);
+        // Millimetres, and the same eye the bow leaves from — a gun fired
+        // from the navel would clear cover the shooter cannot see over.
+        let (ox, oy, oz) = (
+            (qx * (POS_XZ_Q * MM_PER_M) as i32) as f32,
+            (qy * (POS_Y_Q * MM_PER_M) as i32 + ARROW_EYE_MM) as f32,
+            (qz * (POS_XZ_Q * MM_PER_M) as i32) as f32,
+        );
+        // The whole reach as one segment. The two LUTs give a unit
+        // direction, so its length is `range_mm` and the sample count above
+        // is the spacing `ARROW_STEP_MM` names.
+        let reach = def.range_mm as f32;
+        let (sx, sy, sz) = (fx * ch * reach, sv * reach, fz * ch * reach);
+
+        // **The cheap question first, which is the opposite of the arrow's
+        // order, and the reason is length.** `step` asks the world first
+        // because a tick of flight is 1.3 m and at most sixteen taps, so
+        // asking anything else first saves nothing. A bullet's segment is
+        // its whole reach — 295 taps for the shipped revolver, each one a
+        // terrain evaluation — while the body solve is a hundred compares
+        // and no noise at all. So the body is found over the *whole*
+        // segment, and the world is then walked only as far as that body:
+        // past it, nothing the world could stop changes who was hit.
+        //
+        // It is a truncation and not a different rule. `nearest_body` picks
+        // the **minimum** `t`, so if that one falls past where the world
+        // stopped then no body is inside the stop, and the single compare
+        // below is exactly what passing the real `stop_t` in would have
+        // computed. With no body in the line the walk is the full one,
+        // because then the only thing left to find is where the shot marked
+        // the world — and that last walk is the one bounded by
+        // `MAX_HITSCAN_MARK_SAMPLES`, because a decal must not own the
+        // tick. Measured, at 100 shooters all firing on one tick: 20 ms
+        // when every trace runs its full 50 m, 2.1 ms when a body
+        // truncates it (`DECISIONS.md` §open, hitscan v0).
+        let seen = nearest_body(players, (ox, oy, oz), (sx, sy, sz), 1.0, id);
+        let upto = match seen {
+            Some((t, _)) => (t * n as f32) as usize + 1,
+            None => MAX_HITSCAN_MARK_SAMPLES,
+        };
+        let (stop_t, surf) =
+            world_stop(seed, haven, cols, occ, (ox, oy, oz), (sx, sy, sz), n, upto);
+        let best = seen.filter(|&(t, _)| t <= stop_t);
+
+        if let Some((t, j)) = best {
+            let range_cm = (reach * t / 10.0) as u16;
+            let v = &mut players[j];
+            // The funnel, reduced: a bullet is a hit like any other, and
+            // armor will blunt it the day armor lands.
+            let h = crate::combat::hurt(v, def.damage);
+            let died = h.died;
+            let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
+            events.push(EV_HIT, id, vid, def.damage as u32);
+            events.push(EV_HEALTH, vid, left, vmax);
+            if died {
+                events.push(EV_DEATH, vid, id, 0);
+                kills[n_kills] = Kill {
+                    victim: j,
+                    by: id,
+                    item,
+                    range_cm,
+                };
+                n_kills += 1;
+            }
+            continue;
+        }
+
+        if let Some(kind) = surf {
+            // Where it landed, in the body's own quanta — `step`'s
+            // arithmetic and `step`'s reason for the units. Reached only
+            // when no body was hit, so a decal is never drawn for a shot
+            // that found flesh.
+            let qx = crate::fmath::floor_i32((ox + sx * stop_t) / (POS_XZ_Q * MM_PER_M));
+            let qy = crate::fmath::floor_i32((oy + sy * stop_t) / (POS_Y_Q * MM_PER_M));
+            let qz = crate::fmath::floor_i32((oz + sz * stop_t) / (POS_XZ_Q * MM_PER_M));
+            events.push(
+                EV_IMPACT,
+                (kind as u32) << 24 | qx as u32,
+                qz as u32,
+                qy as u32,
+            );
+        }
     }
     n_kills
 }
