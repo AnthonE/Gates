@@ -1,8 +1,28 @@
 # hitscan v0 — what a bullet costs, measured
 
 *Systems lane, 2026-08-19. Every number here comes from
-`cargo run -p sim-core --release --example shot_cost` on this box (8 cores).
+`cargo run -p sim-core --release --example shot_cost` on this box.
 Re-run it rather than trusting the digits.*
+
+⚠ **The provenance line said "8 cores" and this box has 4** — corrected
+2026-08-19 by the parent session, which is the same class of defect this
+directory exists to avoid: a note whose whole claim is *measured here* has to
+be right about where here is. `nproc` and `/proc/cpuinfo` both say 4. The
+likely source is `CLAUDE.md`'s own "Eight cores here", which describes the box
+the loop runs on and not this container — so **that line is not wrong, it is
+about a different machine**, and the lesson is to ask the box rather than the
+doc.
+
+**Independently re-run before the slice was published**, on 4 cores at load
+average 1.14 — a contended box, unlike the original run:
+
+    100 shooters, a body 3 m down every barrel:
+    40 firing ticks, mean 1.08 ms, worst 1.35 ms
+
+against §2's 1.15 / 1.41 for the same row. **It reproduces**, slightly faster
+under more load, which is the direction that says the measurement is dominated
+by arithmetic rather than by scheduling. The headline holds: a gunfight costs
+about a thirtieth of the tick.
 
 ## 0. Why there is a note at all
 
