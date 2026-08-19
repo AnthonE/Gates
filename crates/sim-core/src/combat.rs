@@ -446,6 +446,110 @@ pub fn held_item(p: &Player) -> u16 {
     }
 }
 
+/// What one debit took off a body.
+///
+/// `left` is read back rather than recomputed by the caller: `EV_HEALTH`
+/// is absolute (its own doc), so every route that announces reads the
+/// post-debit hp, and handing it back is what stops four call sites from
+/// each deciding when to sample it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hurt {
+    /// What actually came off — `min(raw, hp before)`. Never more than the
+    /// body had, so a 40-damage blow on a 12-hp body reports 12.
+    pub dealt: u16,
+    /// The hp left standing after the debit.
+    pub left: u16,
+    /// The body reached zero **on this debit**. A body that was already at
+    /// zero is not killed again, which is what stops a second route in the
+    /// same tick from counting a death the first one already counted.
+    pub died: bool,
+}
+
+/// **The one place a player loses hp.** Every damage route in this crate
+/// debits through here, and `tests/damage_routes.rs` is the gate that says
+/// so — a write to a player's `hp` anywhere else is a site that test
+/// cannot classify, and it fails naming the line.
+///
+/// Why one place: armor has been priced, validated, hashed and
+/// balance-anchored in `content/armor.toml` since M1 and nothing in this
+/// crate reads a row of it (`reference/ARMOR.md` §9.1). Reduction is an
+/// arm inside *this* function when it lands, so it cannot be added to
+/// three routes and forgotten on the fourth — which is the shape the
+/// reference ecosystem's payload bugs actually took.
+///
+/// **What the funnel owns is the body, and nothing else.** Two writes: the
+/// hp and the death count. It does not push an event and it does not lay
+/// the corpse down, because neither is uniform across the routes and
+/// pretending otherwise would ship a bug every test would pass:
+///
+/// * `EV_HIT` is an **attacker's** fact — a hitmarker. `strike` and an
+///   arrow push it; a blast and a pig deliberately do not (`world.rs`'s
+///   bite loop says why: a pig has no screen to draw one on). A funnel
+///   with a fixed event set gives pigs hitmarkers.
+/// * `EV_HEALTH` differs in its ceiling by route (`cc.player_hp` at the
+///   melee and bite sites, `hp_max` at the arrow and the shock) and
+///   `survival` announces it packed beside `EV_VITALS` through its own
+///   `announce`, only when something moved. Emitting it here would
+///   double-announce every drink.
+/// * `EV_DEATH` and `World::die` need the whole world — backpacks, the
+///   player slot, the event ring — and this takes one `&mut Player`. So
+///   the funnel *reports* the death and the caller performs it, which is
+///   the shape all five kill sites already had.
+///
+/// Wall 1: `min`, `saturating_add` and one `u16` subtraction that cannot
+/// underflow because `dealt <= before`. No float, no clock, no allocation.
+#[inline]
+pub fn hurt(v: &mut Player, raw: u16) -> Hurt {
+    debit(v, raw)
+}
+
+/// The same debit, for the routes that armor must **never** reduce. The
+/// name is the choice, made visible in a diff rather than left as an
+/// omission that is invisible by construction — the three of them:
+///
+/// * **starve / dehydrate** (`survival::step`) — metabolic, not a hit. A
+///   chest plate does not feed you, and farming in armor must not cost a
+///   repair bill.
+/// * **salt water** (`survival::drink`) — the hp *is* the price of the
+///   drink. Reducing it would make a helmet a desalinator.
+/// * **the keypad shock** (`deploy::lock_op`) — it floors at 1 hp and
+///   never kills (`lock.rs`'s header). Reducing it would make an armored
+///   raider immune to a mechanic whose entire job is to cost tries.
+///
+/// It is deliberately the same body as [`hurt`]: the difference is which
+/// number arrives, never how a body takes it.
+#[inline]
+pub fn hurt_unreduced(v: &mut Player, raw: u16) -> Hurt {
+    debit(v, raw)
+}
+
+/// The debit itself. Private, so `hurt`/`hurt_unreduced` are the only
+/// doors and the choice between them is always written down at the call.
+#[inline]
+fn debit(v: &mut Player, raw: u16) -> Hurt {
+    let before = v.hp;
+    let dealt = raw.min(before);
+    // `before > 0` and not `dealt >= before` alone: a body already at zero
+    // is one the caller has not walked to its respawn yet, and counting a
+    // second death for it would be the kill site lying — `survival`'s salt
+    // route reasoned its way to exactly this guard before there was a
+    // funnel to hold it.
+    let died = before > 0 && raw >= before;
+    v.hp = before - dealt;
+    if died {
+        // A death is counted where it happens. Without it a death is
+        // invisible to `spawn_pos_n(id, deaths)`, so a body goes back to
+        // the identical beach; the count is also what the scoreboard and
+        // the wire's `deaths` field read.
+        v.deaths = v.deaths.saturating_add(1);
+    }
+    Hurt {
+        dealt,
+        left: v.hp,
+        died,
+    }
+}
+
 /// What one swing found. `Missed` is the only outcome that hands the arm
 /// on to `raid` — a swing that landed on a person does not also land on
 /// the wall behind them.
@@ -533,12 +637,8 @@ pub fn strike(
 
     let v = &mut players[victim];
     let victim_id = v.id;
-    let died = def.damage >= v.hp;
-    v.hp -= def.damage.min(v.hp);
-    let left = v.hp;
-    if died {
-        v.deaths = v.deaths.saturating_add(1);
-    }
+    // The funnel, reduced: a swing is the route armor exists to blunt.
+    let Hurt { left, died, .. } = hurt(v, def.damage);
     events.push(EV_HIT, attacker_id, victim_id, def.damage as u32);
     events.push(EV_HEALTH, victim_id, left as u32, cc.player_hp as u32);
     if died {

@@ -454,12 +454,10 @@ pub fn step(
         if let Some((t, j)) = best {
             let range_cm = ((a.flown as f32 + len_mm * t) / 10.0) as u16;
             let v = &mut players[j];
-            let died = a.damage >= v.hp;
-            v.hp -= a.damage.min(v.hp);
-            let (vid, left, vmax) = (v.id, v.hp as u32, v.hp_max as u32);
-            if died {
-                v.deaths = v.deaths.saturating_add(1);
-            }
+            // The funnel, reduced: an arrow is a hit like any other.
+            let h = crate::combat::hurt(v, a.damage);
+            let died = h.died;
+            let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
             events.push(EV_HIT, a.owner, vid, a.damage as u32);
             events.push(EV_HEALTH, vid, left, vmax);
             if died {

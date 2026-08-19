@@ -195,14 +195,31 @@ backpack → bag respawn, the kill feed, and since v48 a corpse that falls
    drops every row that is not melee, throwable or bow, so the firearm is
    data that looks armed. `combat.rs`'s header claimed the same of the
    *bow* until 2026-08-18, which is why this line names a file and a rule.
-4. **Armor is priced and unread.** `grep -rn armor crates/sim-core/src`
-   returns **two lines** — one sentence, and this item said "one" until
-   2026-08-18, when the sentence itself was widened. Planned in full:
-   `findings/armor-design-20260818.md`. Headline: the smallest useful
-   slice needs **no wire bump** (bake the table, add `Player::worn`, fill
-   it from content), and applying armor reddens **no** anchor, because
-   every anchor reads `content/` and armor changes no content number —
-   `WORLD.md` §8.2's ward collision arriving through a scheduled system.
+4. **Armor is priced and unread — but there is now ONE place to apply it.**
+   S1 of `findings/armor-design-20260818.md` §7 landed 2026-08-19,
+   `crates/sim-core/` only, no behaviour change: all seven damage routes
+   debit through `combat::hurt` (melee, arrow, blast, bite — armor will
+   blunt these) or `combat::hurt_unreduced` (starve/dehydrate, salt water,
+   keypad shock — armor must never touch these; the name at the call site
+   is the choice, visible in a diff). The funnel owns **the body only** —
+   the hp and the deaths count — because the events are not uniform
+   (`EV_HIT` is an attacker's fact, so a pig would get hitmarkers;
+   `EV_HEALTH`'s ceiling differs by route and `survival` announces it
+   packed) and `die` needs the whole `World`. `lock::shock` no longer
+   writes: it is `shock_amount`, and the door still owns the floor at 1 hp.
+   **The proof is that `test_replay`'s `GOLDEN_FINAL_HASH`
+   (`0xDFFD_AE59_3232_47C6`) and all nine `probe` digests did not move.**
+   Gate: `crates/sim-core/tests/damage_routes.rs` — a derived scrape of
+   `src/` (directory read, not an `include_str!` list) that fails on *a
+   write to a player's hp it cannot classify*, never on a count; proven red
+   two ways. **S2 owes damage types** — they exist nowhere, so
+   `weapons.toml` gets a column and `armor.toml`'s `reduction_pct` becomes
+   the per-type vector in the SAME content rewrite. **S3 owes the
+   reduction**: `bake_combat::armor` + `wear_slot` (nothing baked reads
+   `armor.toml`), `Player::worn` (walls 4/5 — `limits.rs`, `state_hash`,
+   `PLAYER_SAVE_BYTES`, `SAVE_FORMAT`), and `charge::tick_fuses` taking
+   `&CombatContent` rather than a bare `player_hp`. The hash moves at S3,
+   deliberately; applying armor still reddens **no** anchor.
 5. **No lag compensation — but the shard can now say how stale an aim is.**
    Slice 1 of `findings/lagcomp-design-20260818.md` §7 landed 2026-08-18,
    `crates/server/` only: each buffered input frame is stamped with the

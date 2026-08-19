@@ -536,13 +536,10 @@ fn detonate(
         if scaled == 0 {
             continue;
         }
-        let died = scaled >= p.hp;
-        p.hp -= scaled.min(p.hp);
-        let left = p.hp;
+        // The funnel, reduced. No `EV_HIT`: a blast has no hitmarker to
+        // draw, which is why the funnel does not own the event set.
+        let crate::combat::Hurt { left, died, .. } = crate::combat::hurt(p, scaled);
         let victim_id = p.id;
-        if died {
-            p.deaths = p.deaths.saturating_add(1);
-        }
         events.push(
             crate::world::EV_HEALTH,
             victim_id,

@@ -3354,24 +3354,23 @@ impl World {
         );
         // The bites land after the whole roster stepped, so every animal
         // decided against one consistent tick — the borrow split `Bites`'
-        // own doc names. `combat::strike`'s exact damage liturgy: hp, the
-        // deaths counter, EV_HEALTH to the victim, EV_DEATH broadcast, and
-        // `die` lays the body down with the cause the wire just widened
-        // for. No EV_HIT — a hitmarker is an attacker's fact and a pig has
-        // no screen to draw one on.
+        // own doc names. The hp and the deaths counter go through
+        // `combat::hurt`, the one debit (this loop used to hand-copy
+        // "`combat::strike`'s exact damage liturgy" and said so); what
+        // stays here is the half the funnel deliberately does not own —
+        // EV_HEALTH to the victim, EV_DEATH broadcast, and `die` laying
+        // the body down with the cause the wire widened for. Still no
+        // EV_HIT: a hitmarker is an attacker's fact and a pig has no
+        // screen to draw one on.
         for b in bites.entries() {
             let victim = b.victim as usize;
             let v = &mut self.players[victim];
             if !v.active || v.hp == 0 {
                 continue; // died to something else since the roster looked
             }
-            let died = b.damage >= v.hp;
-            v.hp -= b.damage.min(v.hp);
-            let left = v.hp;
+            // The funnel, reduced: a bite is a hit.
+            let crate::combat::Hurt { left, died, .. } = crate::combat::hurt(v, b.damage);
             let victim_id = v.id;
-            if died {
-                v.deaths = v.deaths.saturating_add(1);
-            }
             self.events.push(
                 EV_HEALTH,
                 victim_id,
