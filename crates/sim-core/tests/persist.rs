@@ -728,9 +728,18 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 25] = [
+    pub const RE_DERIVED: [&str; 26] = [
         "body",
         "inv",
+        // **The corpse does not keep its plates.** `worn` is here rather
+        // than on `CARRIED` because a death is where armor becomes loot:
+        // `World::die` sheds it into the death bag through `drain_spill`
+        // (the same drain the six spill producers use), so a killer gets
+        // the burlap shirt that just cost them two extra swings. A body
+        // that kept its armor through a death would make killing an
+        // armored player pay less than killing a naked one, which is the
+        // wrong way round.
+        "worn",
         "next_swing",
         "ws_cell",
         "ws_hits",

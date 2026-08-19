@@ -354,6 +354,7 @@ pub fn step(
     haven: &terrain::Haven,
     cols: &ColIndex,
     occ: &mut Occupants,
+    cc: &CombatContent,
     arrows: &mut Arrows,
     players: &mut [Player; MAX_PLAYERS],
     events: &mut EventQueue,
@@ -416,7 +417,7 @@ pub fn step(
             let range_cm = ((a.flown as f32 + len_mm * t) / 10.0) as u16;
             let v = &mut players[j];
             // The funnel, reduced: an arrow is a hit like any other.
-            let h = crate::combat::hurt(v, a.damage);
+            let h = crate::combat::hurt(cc, v, a.damage);
             let died = h.died;
             let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
             events.push(EV_HIT, a.owner, vid, a.damage as u32);
@@ -765,8 +766,9 @@ pub fn hitscan(
             let range_cm = (reach * t / 10.0) as u16;
             let v = &mut players[j];
             // The funnel, reduced: a bullet is a hit like any other, and
-            // armor will blunt it the day armor lands.
-            let h = crate::combat::hurt(v, def.damage);
+            // armor blunts it (armor v0, 2026-08-19 — this said "the day
+            // armor lands" for exactly one day).
+            let h = crate::combat::hurt(cc, v, def.damage);
             let died = h.died;
             let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
             events.push(EV_HIT, id, vid, def.damage as u32);

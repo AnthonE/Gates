@@ -8,8 +8,8 @@
 //! in this module runs on the sim thread.
 
 use crate::schema::{
-    Ammo, CookStation, DeployArchetype, Material, NodeArchetype, Placement, Shape, Station, Weapon,
-    WeaponKind,
+    Ammo, Armor, ArmorSlot, CookStation, DeployArchetype, Material, NodeArchetype, Placement,
+    Shape, Station, Weapon, WeaponKind,
 };
 use crate::Content;
 use sim_core::backpack::BackpackContent;
@@ -18,7 +18,10 @@ use sim_core::build::{
     SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
     SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
-use sim_core::combat::{AmmoDef, CombatContent, MeleeDef, RangedDef, ThrowDef};
+use sim_core::combat::{
+    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, WEAR_BODY, WEAR_HEAD,
+    WEAR_NONE,
+};
 use sim_core::craft::{
     CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2,
     STATION_WORKBENCH3,
@@ -560,6 +563,9 @@ impl Content {
         for a in &self.ammo {
             self.bake_ammo(a, &mut cc)?;
         }
+        for a in &self.armors {
+            self.bake_armor(a, &mut cc)?;
+        }
         for w in &self.weapons {
             if w.kind == WeaponKind::Bow || w.kind == WeaponKind::Firearm {
                 self.bake_ranged(w, &mut cc)?;
@@ -809,6 +815,61 @@ impl Content {
         cc.ammo[idx] = AmmoDef {
             speed_mmpt,
             drop_mmpt2,
+        };
+        Ok(())
+    }
+
+    /// One `content/armor.toml` row into the sim's worn-protection table.
+    ///
+    /// **This is the function that stopped `armor.toml` from being priced,
+    /// validated, hashed, balance-anchored and unread** (2026-08-19). Every
+    /// column it does *not* carry across is a deliberate omission with a
+    /// consumer that does not exist: `move_penalty_pct` reaches no line of
+    /// `movement.rs`, and there is no damage-type vector because the
+    /// reference's own Protection tables put Projectile and Melee at the
+    /// same value on all three pieces we ship (`reference/RIPLIST.md` §1h).
+    ///
+    /// The slot crosses too, and it is not decoration: `Player::worn` is
+    /// indexed *by* slot, so this is what makes a head piece protect from
+    /// the head slot and nowhere else. Baked one-based
+    /// (`combat::WEAR_HEAD`/`WEAR_BODY`) so that a zeroed table is an inert
+    /// one — item index 0 is a real item, and a zero *slot* has to mean
+    /// "not armor" rather than "a headpiece".
+    ///
+    /// The two refusals are the pattern `bake_ammo` set: a duplicate row
+    /// (validation catches it upstream; this catches a table that was
+    /// filled twice by a future caller) and a row the sim cannot represent.
+    /// A zero reduction is refused here rather than at validation because
+    /// the sentinel is the sim's — a zero row *is* "not armor" in
+    /// `CombatContent`, so content that declares a piece protecting nothing
+    /// would silently become an unwearable item rather than a useless one.
+    fn bake_armor(&self, a: &Armor, cc: &mut CombatContent) -> Result<(), String> {
+        let idx = self
+            .item_index(&a.id)
+            .ok_or_else(|| format!("bake: armor `{}` arms no item", a.id))?
+            as usize;
+        if cc.armor[idx].slot != WEAR_NONE {
+            return Err(format!("bake: duplicate armor row for `{}`", a.id));
+        }
+        if a.reduction_pct == 0 {
+            return Err(format!("bake: armor `{}` protects from nothing", a.id));
+        }
+        // `validate` already refuses a row over 90, so this cannot fail on
+        // shipped content — it is here because the sim's field is a `u8`
+        // and a bake that truncated would hand back a *lower* protection
+        // than the data declares, which is the silent-wrong class.
+        let reduction_pct = u8::try_from(a.reduction_pct).map_err(|_| {
+            format!(
+                "bake: armor `{}` reduction {} overflows the sim's u8 percent",
+                a.id, a.reduction_pct
+            )
+        })?;
+        cc.armor[idx] = ArmorDef {
+            reduction_pct,
+            slot: match a.slot {
+                ArmorSlot::Head => WEAR_HEAD,
+                ArmorSlot::Body => WEAR_BODY,
+            },
         };
         Ok(())
     }

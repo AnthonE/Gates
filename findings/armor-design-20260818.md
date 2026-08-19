@@ -466,3 +466,61 @@ comment about *"what keeps the one hp write in the..."* — the module reasoned
 its way to a single-write discipline on its own, for one damage source, before
 anybody proposed a funnel. That is the shape S1 generalises, and it means the
 idea has a precedent in the tree rather than only in this note.
+
+---
+
+## Addendum 2, 2026-08-19 — what the S3 slice actually did, and where it
+## departed from this note
+
+Written by the lane that built it, because two things in §7 are now claims
+about a decision that was made the other way, and a plan read as a plan is
+worse than a plan read as history.
+
+**§7's ordering was deliberately not taken: S3 landed WITHOUT S2.** One
+scalar `reduction_pct`, no damage types, no `weapons.toml` column. Three
+reasons, all against our data rather than the reference's model in the
+abstract — and §3's own citation is the first of them. (1)
+`reference/RIPLIST.md` §1h read their Protection tables at page tier for all
+three pieces we ship and found **Projectile and Melee equal on every row**,
+so one scalar expresses theirs exactly and `BALANCE.md` §6 is satisfied by
+*taking*. (2) The weapon-side half of a type column — which of
+slash/blunt/stab each of twenty `weapons.toml` rows is — is in no source
+anybody here has read, so types-first means inventing twenty numbers.
+(3) §7's stated benefit for the ordering is *one content rewrite, not two*,
+and that benefit was already spent: `armor.toml` is scheduled for a rewrite
+by equipment v0 and blocked on §1h's take regardless.
+
+**§2's arithmetic is wrong, and it was measured rather than argued.** This
+note proposes `dealt = raw - (raw as u32 * pct / 100) as u16`. That floors
+the *absorption*; `balance.rs`'s `hits_to_kill` divides by the exact
+rational, whose per-hit number is `damage × (100 − pct) / 100` — floored on
+the *damage*. They are different functions, and the note's form
+**disagrees with the band on `item.hatchet_stone` at 35 %**: 6 hits played
+against 7 banded. The sim ships the second form, and §5's fourth item (the
+one asking for them to be asserted equal) is built —
+`content/tests/content.rs::the_band_and_the_sim_kill_in_the_same_number_of_hits`,
+over every (weapon, single piece, legal head+body set) triple.
+
+**§5(a)'s open question is answered: the model sums both slots.** A worn set
+is one number and a head piece pays against a body blow, because aim is
+planar and there is nothing to key coverage on. The alternative shipped
+`item.armor_burlap_head` as craftable, priced and protecting nobody on the
+day armor started working — the audit repeating itself one level in, which
+§5(a) predicted.
+
+**§4's `PLAYER_SAVE_BYTES` arithmetic was right (256 → 268 at two slots) and
+its `tests/persist.rs:506` pointer was not** — 256 is pinned in
+`src/persist.rs`'s own unit test, and `worldsave.rs` carries two more
+derived pins nobody had listed (`PLAYER_BYTES` 308 → 320,
+`WORLD_SAVE_MAX_BYTES` 612 872 → 614 072, `WORLD_SAVE_FORMAT` 7 → 8).
+
+**§4's death recommendation was taken with one change of mechanism.** Worn
+goes into the death bag, but through `World::drain_spill` rather than by
+merging into the buffer `drop_for` copies wholesale: a bag holds
+`INV_SLOTS`, a full pocket plus two plates is `INV_SLOTS + WEAR_SLOTS`, and
+the merge would have destroyed the overflow. `die` is the seventh producer
+on that drain.
+
+**Still true and still unbuilt:** all of §4's wire pricing (nothing can
+equip armor), §5's three bands (the anchor is now *known*-misleading and
+`NOW.md` §0pvp item 4 says so), §6, and S6/S7.

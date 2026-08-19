@@ -6,6 +6,13 @@
 //!
 //! ## Why a funnel needs a gate at all
 //!
+//! ⚠ **This header's "the day reduction lands" is 2026-08-19 and it has
+//! landed.** `combat::hurt` reads a baked `ArmorDef` per item off
+//! `Player::worn`; nothing below changed, which is the point — the funnel
+//! was built so that reduction would be one arm inside one function, and
+//! it was. What this gate now guards is the *next* damage source, which is
+//! born reduced or born on the exempt list, and never born forgotten.
+//!
 //! Before this, seven routes took hp off a body and four of them hand-copied
 //! the same five-step liturgy — the debit, the deaths counter, `EV_HEALTH`,
 //! `EV_DEATH`, the `die` call. `world.rs`'s bite loop said so in its own
@@ -156,9 +163,11 @@ const CONSTRUCTIONS: &[(&str, &str, &str)] = &[
 ];
 
 /// Which files may call the funnel, and by which name. The name is the
-/// choice: `hurt` is a hit and armor will blunt it, `hurt_unreduced` is a
-/// cost that armor must never touch. A file absent from this table calling
-/// either one fails — a new damage route needs a person to say which it is.
+/// choice: `hurt` is a hit and armor **does** blunt it (armor v0,
+/// 2026-08-19 — this line said "will" until the day it stopped being true),
+/// `hurt_unreduced` is a cost that armor must never touch. A file absent
+/// from this table calling either one fails — a new damage route needs a
+/// person to say which it is.
 const ROUTES: &[(&str, bool, &str)] = &[
     ("combat.rs", true, "melee — a swing that landed on a person"),
     (

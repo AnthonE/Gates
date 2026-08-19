@@ -221,31 +221,35 @@ backpack → bag respawn, the kill feed, and since v48 a corpse that falls
    at `MAX_HITSCAN_MARK_SAMPLES` (10.9 m, cosmetic). Now 1.2 ms in a
    gunfight, 6.5 ms spraying at sky.
 
-4. **Armor is priced and unread — but there is now ONE place to apply it.**
-   S1 of `findings/armor-design-20260818.md` §7 landed 2026-08-19,
-   `crates/sim-core/` only, no behaviour change: all seven damage routes
-   debit through `combat::hurt` (melee, arrow, blast, bite — armor will
-   blunt these) or `combat::hurt_unreduced` (starve/dehydrate, salt water,
-   keypad shock — armor must never touch these; the name at the call site
-   is the choice, visible in a diff). The funnel owns **the body only** —
-   the hp and the deaths count — because the events are not uniform
-   (`EV_HIT` is an attacker's fact, so a pig would get hitmarkers;
-   `EV_HEALTH`'s ceiling differs by route and `survival` announces it
-   packed) and `die` needs the whole `World`. `lock::shock` no longer
-   writes: it is `shock_amount`, and the door still owns the floor at 1 hp.
-   **The proof is that `test_replay`'s `GOLDEN_FINAL_HASH`
-   (`0xDFFD_AE59_3232_47C6`) and all nine `probe` digests did not move.**
-   Gate: `crates/sim-core/tests/damage_routes.rs` — a derived scrape of
-   `src/` (directory read, not an `include_str!` list) that fails on *a
-   write to a player's hp it cannot classify*, never on a count; proven red
-   two ways. **S2 owes damage types** — they exist nowhere, so
-   `weapons.toml` gets a column and `armor.toml`'s `reduction_pct` becomes
-   the per-type vector in the SAME content rewrite. **S3 owes the
-   reduction**: `bake_combat::armor` + `wear_slot` (nothing baked reads
-   `armor.toml`), `Player::worn` (walls 4/5 — `limits.rs`, `state_hash`,
-   `PLAYER_SAVE_BYTES`, `SAVE_FORMAT`), and `charge::tick_fuses` taking
-   `&CombatContent` rather than a bare `player_hp`. The hash moves at S3,
-   deliberately; applying armor still reddens **no** anchor.
+4. **Armor reduces damage. Landed 2026-08-19 — the burlap shirt turns a
+   rock's five hits into six.** `bake_combat` installs `content/armor.toml`
+   and `combat::hurt` reads it off `Player::worn` (`WEAR_SLOTS = 2`,
+   indexed **by** slot; a piece pays only in the slot its baked row names).
+   The four hit routes are blunted, the three metabolic/keypad ones still
+   call `hurt_unreduced`. **The set is one number and both slots sum** —
+   aim is planar, so crediting only the body piece would leave
+   `armor_burlap_head` charged and dead. A corpse sheds its plates into the
+   death bag via `drain_spill`, so a full pocket costs the killer a walk,
+   never an item. `PLAYER_SAVE_BYTES` 256 → 268, `SAVE_FORMAT` 3 → 4,
+   `WORLD_SAVE_FORMAT` 7 → 8. **`test_replay` moved deliberately,
+   `0xDFFD…47C6` → `0xE6C1…FB21`** — deleting the `worn` loop from
+   `state_hash` returns it bit for bit, so those twelve bytes are the only
+   cause. 17 gates, all proven red. One scalar, not damage types —
+   `DECISIONS.md` §open "armor reduction v0" argues it against our data.
+   ⚠ **Nothing can EQUIP it — an operator call, three exits.** (a) the wire
+   (`CONT_WEAR`: `CONT_KIND_BITS` 2 → 3, `PROTO_VER` 48 → 49, 96 goldens —
+   `findings/armor-design-20260818.md` §4 prices it); (b) a spoken
+   spawn-wear default; (c) auto-protect from the inventory, a different game.
+   ⚠ **The balance anchor is known-misleading and was left so.**
+   `balance.rs:117` credits a head piece against *body* hits, has no floor
+   and cannot see a set: head 10 % + roadsign 25 % is **+3** on four weapons
+   against `armor_extra_hits_max = 2` — and applying armor moves no content
+   number, so `test_content` stays green while its meaning rots. The fix
+   needs the band re-spoken or the ladder re-priced: operator, not loop.
+   What landed instead moves no band — `hits_to_kill` pinned against
+   `combat::reduce` for every (weapon, set) pair, which caught the design
+   note's own proposed arithmetic disagreeing (6 vs 7 on `hatchet_stone`
+   at 35 %). Still open: types, hit areas, condition, `move_penalty_pct`.
 5. **No lag compensation — but the shard can now say how stale an aim is.**
    Slice 1 of `findings/lagcomp-design-20260818.md` §7 landed 2026-08-18,
    `crates/server/` only: each buffered input frame is stamped with the

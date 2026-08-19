@@ -395,7 +395,35 @@ const TICKS: u64 = 900;
 /// Read off a run of the merged tree; both determinism equalities were green
 /// on it and `test_terrain_golden` did not move, which is the check that
 /// matters, because a radius is read by collision and never by worldgen.
-const GOLDEN_FINAL_HASH: u64 = 0xDFFD_AE59_3232_47C6;
+///
+/// **Regenerated 2026-08-19 for `Player::worn` (armor v0), and this one is
+/// a shape none of the entries above are: no verb changed and no body took
+/// a different path — a FIELD entered the digest.** `state_hash` grew a
+/// sibling loop over the two worn stacks after the inventory's, so the
+/// hash moved the instant the field existed, before anything could put
+/// anything in it. Every body in this script is naked and stays naked;
+/// what changed is that the digest now says the sim carries worn
+/// equipment, where before it said nothing at all.
+///
+/// That makes the usual evidence *necessary and not sufficient*, so both
+/// halves were checked. The usual half: `hashes_a == hashes_b` and
+/// `final_a == final_b` were green on the run this value was read off, the
+/// failure was at the pin line alone, and `test_terrain_golden` did not
+/// move (worn equipment is not worldgen). The half this shape needs: the
+/// twelve bytes are the only cause, which is checkable by arithmetic
+/// rather than by trust — `worn` is per-player and always present, so
+/// unlike every store loop in `state_hash` there is no length prefix to
+/// fold zeroes into, and `world.rs:3620` already records what that
+/// distinction cost once (a store hashed unconditionally moved this pin
+/// and eight zero bytes were the whole of it). **Measured rather than
+/// argued**: deleting the `worn` loop from `state_hash` and running this
+/// suite returns the digest to `0xDFFD_AE59_3232_47C6` bit for bit, so the
+/// twelve bytes are not merely *a* cause, they are the only one.
+///
+/// `0xDFFD_AE59_3232_47C6` is the value before, and it is left written
+/// here on purpose: the next reader's question is *which change moved it*,
+/// and a pin that only ever shows its current value cannot answer that.
+const GOLDEN_FINAL_HASH: u64 = 0xE6C1_8463_97AE_FB21;
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`

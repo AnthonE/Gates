@@ -3004,3 +3004,185 @@ fn the_hash_moves_with_the_ladder() {
         "two contents whose tech tree differs canonicalise identically"
     );
 }
+
+/// **`content/armor.toml` reaches the sim.** Every row lands at its item's
+/// index carrying the percent and the slot the file declares — the assertion
+/// that stopped this file being priced, validated, hashed, balance-anchored
+/// and *unread* from M1 to 2026-08-19 (`reference/ARMOR.md` §9.1).
+///
+/// Slot-checked as well as valued, because the slot is not decoration:
+/// `Player::worn` is indexed by it, so a bake that keyed the head piece to
+/// the body row would put a headwrap in a slot that never pays.
+#[test]
+fn bake_combat_arms_the_armor_the_data_prices() {
+    use content::schema::ArmorSlot;
+    use sim_core::combat::{WEAR_BODY, WEAR_HEAD, WEAR_NONE};
+
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped armor must bake");
+    assert!(
+        c.armors.len() >= 3,
+        "the shipped set prices {} armor rows — fewer than the three this \
+         test was written against, so it is now proving less than it says",
+        c.armors.len()
+    );
+    for a in &c.armors {
+        let idx = c.item_index(&a.id).expect("armor arms an item") as usize;
+        let baked = cc.armor[idx];
+        assert_eq!(
+            baked.reduction_pct as u32, a.reduction_pct,
+            "`{}` reduction did not survive the bake",
+            a.id
+        );
+        assert_eq!(
+            baked.slot,
+            match a.slot {
+                ArmorSlot::Head => WEAR_HEAD,
+                ArmorSlot::Body => WEAR_BODY,
+            },
+            "`{}` was baked into the wrong wear slot",
+            a.id
+        );
+    }
+    // And the table is not simply full: an item nobody armors stays inert,
+    // so `slot == WEAR_NONE` still means "not wearable".
+    let rock = c.item_index("item.rock").expect("the rock is an item") as usize;
+    assert_eq!(
+        cc.armor[rock].slot, WEAR_NONE,
+        "a rock is wearable — the bake filled rows it was never given"
+    );
+}
+
+/// **A body in the shipped burlap shirt takes six rock hits instead of
+/// five**, computed through the sim's own reducer against the shipped
+/// numbers. The one sentence this whole slice is for, in the crate that
+/// owns the numbers.
+#[test]
+fn the_shipped_burlap_shirt_costs_an_attacker_a_swing() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped content must bake");
+    let rock = c
+        .weapons
+        .iter()
+        .find(|w| w.id == "item.rock")
+        .expect("the rock is a weapon");
+    let shirt = c
+        .armors
+        .iter()
+        .find(|a| a.id == "item.armor_burlap_body")
+        .expect("the burlap shirt is priced");
+
+    // Hits to kill, swung rather than divided: the loop `bake_combat_plays_
+    // the_band_the_data_declares` already uses, with the reduction the sim
+    // applies inserted where the sim applies it.
+    let swings = |pct: u32| {
+        let mut hp = cc.player_hp;
+        let mut hits = 0u32;
+        let per = sim_core::combat::reduce(rock.damage as u16, pct);
+        assert!(per > 0, "a rock that deals nothing never kills");
+        while hp > 0 {
+            hp -= per.min(hp);
+            hits += 1;
+        }
+        hits
+    };
+    assert_eq!(swings(0), 5, "a naked body and a rock");
+    assert_eq!(
+        swings(shirt.reduction_pct),
+        6,
+        "the shipped burlap shirt ({} %) changed nothing about a rock \
+         fight — it is craftable for 20 cloth and must buy the wearer a \
+         swing",
+        shirt.reduction_pct
+    );
+}
+
+/// **The band's arithmetic and the sim's are one function, not two that
+/// agree by luck.**
+///
+/// `balance::hits_to_kill` divides `player_hp` by the exact rational
+/// `damage × (100 − pct) / 100`; the sim computes
+/// `combat::reduce(damage, pct)` once — an integer floor — and subtracts it
+/// every swing. Those are different functions, and where they disagree the
+/// band describes a fight nobody has (`findings/armor-design-20260818.md`
+/// §5). They agree on every pair we ship; this is what says so, and it
+/// covers the *set* percentages too, which no band currently reaches.
+#[test]
+fn the_band_and_the_sim_kill_in_the_same_number_of_hits() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let hp = c.balance.globals.player_hp;
+
+    // Every single piece, plus every legal pairing of one head and one
+    // body — which is what `Player::worn` can actually hold, and what
+    // `combat::worn_pct` sums.
+    let mut sets: Vec<u32> = vec![0];
+    for a in &c.armors {
+        sets.push(a.reduction_pct);
+    }
+    for h in c
+        .armors
+        .iter()
+        .filter(|a| a.slot == content::schema::ArmorSlot::Head)
+    {
+        for b in c
+            .armors
+            .iter()
+            .filter(|a| a.slot == content::schema::ArmorSlot::Body)
+        {
+            sets.push(h.reduction_pct + b.reduction_pct);
+        }
+    }
+    assert!(
+        sets.len() >= 6,
+        "only {} protection values to check — the shipped armor set shrank \
+         and this pin is now guarding almost nothing",
+        sets.len()
+    );
+
+    let mut pairs = 0;
+    for w in &c.weapons {
+        if w.kind == content::schema::WeaponKind::Throwable {
+            continue; // structure damage, no TTK
+        }
+        for &pct in &sets {
+            let banded = content::balance::hits_to_kill(hp, w.damage, pct);
+            let per = sim_core::combat::reduce(w.damage as u16, pct);
+            assert!(per > 0, "`{}` under {pct}% deals nothing a hit", w.id);
+            let mut left = hp as u16;
+            let mut played = 0u32;
+            while left > 0 {
+                left -= per.min(left);
+                played += 1;
+            }
+            assert_eq!(
+                banded, played,
+                "`{}` against {pct}% armor: the band computes {banded} hits \
+                 and the sim plays {played}. The two arithmetics have \
+                 drifted, so `armor_extra_hits_max` is now describing a \
+                 fight nobody has",
+                w.id
+            );
+            pairs += 1;
+        }
+    }
+    assert!(
+        pairs >= 20,
+        "only {pairs} (weapon, armor) pairs were checked — the loop is \
+         guarding nothing"
+    );
+}
+
+/// An armor row the sim cannot represent never reaches it. A zero
+/// reduction is the interesting one: `validate` has no opinion about it
+/// (it only refuses over 90), but zero **is** the sim's "not armor"
+/// sentinel, so a piece declaring no protection would silently become an
+/// unwearable item rather than a useless one.
+#[test]
+fn an_armor_row_that_cannot_work_never_reaches_the_sim() {
+    refuses_bake(
+        "armor.toml",
+        "reduction_pct = 15",
+        "reduction_pct = 0",
+        "protects from nothing",
+    );
+}

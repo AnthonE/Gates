@@ -204,8 +204,8 @@ built from the content side:
 
 | does not exist | evidence |
 |---|---|
-| any sim reader of any of it | `grep -rn armor crates/sim-core` → one comment |
-| a wear container, a wear slot, an equip verb | nothing |
+| ~~any sim reader of any of it~~ | **closed 2026-08-19** — see below |
+| a wear container, a wear slot, an equip verb | ~~nothing~~ · a wear *slot* exists (`Player::worn`); the container and the verb do not |
 | a wire field | nothing |
 | a client surface | nothing |
 
@@ -214,6 +214,24 @@ deliberately does not do. So this is `NOW.md`'s own recurring shape — *fully
 built and gated and paid nobody* — and the balance anchor is the sharp end:
 `balance.rs` is today asserting a TTK relationship for armor that cannot
 affect a single hit.
+
+⚠ **The first row and that last paragraph are HISTORY as of 2026-08-19, and
+the distinction matters because only one half closed.** `bake_combat` bakes
+an `ArmorDef` per item and `combat::hurt` reads it, so the shipped burlap
+shirt turns a rock's five hits into six and the audit above is answered:
+`grep -rn armor crates/sim-core/src` is no longer one comment. Two things
+did **not** move and are the live half of this section. **Nothing can put
+armor on** — §9.2's container move is unbuilt, so `Player::worn` is written
+only by a save and by tests, and reachability waits on the wire bump §9.2
+prices. **And the balance anchor is still asserting a relationship it cannot
+see**, one level in rather than not at all: it is slot-blind, it is a
+ceiling with no floor, and it cannot see a *set*, which is exactly the
+sharp end this paragraph named — `DECISIONS.md` §open "armor reduction v0"
+carries the +3-against-a-band-of-2 arithmetic and why re-speaking it is an
+operator act. Read §9.3 next with one correction: **the ordering it
+recommends was deliberately not taken** (one scalar shipped, types deferred),
+on the ground that `reference/RIPLIST.md` §1h found their Projectile and
+Melee cells equal on all three pieces we own.
 
 ### 9.2 Equip is a container move — do not add an equip verb
 

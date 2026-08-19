@@ -34,12 +34,8 @@
 //! **What v0 deliberately does not do**, all of it registered in
 //! `DECISIONS.md` §open ("melee combat v0" and "piece damage v0"): no
 //! headshots (aim is planar until M2's rewound raycasts, so there is no
-//! head to hit), no armor reduction — and that one is a *gap* rather than
-//! a choice now, because `content/armor.toml` has been priced, validated,
-//! hashed and balance-anchored since M1 while nothing in this crate reads
-//! a row of it (`reference/ARMOR.md` §9.1 is the audit) — no per-weapon
-//! cadence (every swing rides gather's one interval, which is the melee
-//! rows' own rate), and no corpse: death drops what you carried into a
+//! head to hit), no per-weapon cadence (every swing rides gather's one
+//! interval, which is the melee rows' own rate), and no corpse: death drops what you carried into a
 //! backpack where you fell. That last clause is about the SIM and stays
 //! true — there is no lootable body entity, only a bag — while the client
 //! has drawn a fallen one since wire v48 (`render/anim.rs` `Clip::Death`).
@@ -66,6 +62,18 @@
 //! fifteen wire versions, which is the gap that made the raid ratio in
 //! `balance.toml` a ratio of nothing).
 //!
+//! ⚠ **"No armor reduction" stood in that list until 2026-08-19 and does
+//! not any more.** `content/armor.toml` had been priced, validated, hashed
+//! and balance-anchored since M1 with nothing in this crate reading a row
+//! (`reference/ARMOR.md` §9.1 was the audit); `bake_combat` installs the
+//! table now and `hurt` reads it, so a burlap shirt turns a rock's five
+//! hits into six. What is still *not* here is named rather than implied:
+//! no damage types (one scalar — `ArmorDef`'s doc has the argument and its
+//! source), no hit areas (the set is one number, `worn_pct`), no condition
+//! on a worn piece, no `move_penalty_pct` consumer, and — the one a player
+//! notices — **no way to put armor on**, because that is `CONT_WEAR` and a
+//! wire bump (`findings/armor-design-20260818.md` §4).
+//!
 //! The throwable's damage does not flow through this module's swing arm at
 //! all, and that is the design rather than an omission: a charge resolves
 //! on the tick its fuse runs out, not on the tick a button was pressed, so
@@ -82,7 +90,7 @@ use crate::deploy::{damage_deploy, damage_piece, DeployContent, Deploys};
 use crate::fmath::fabs;
 use crate::gather::{CONE_COS, DY_MAX_M, NO_ITEM, POINT_BLANK_M2};
 use crate::limits::{
-    MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS, MAX_PLAYERS, MAX_WEAPON_AMMO,
+    MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS, MAX_PLAYERS, MAX_WEAPON_AMMO, WEAR_SLOTS,
 };
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT};
@@ -245,6 +253,54 @@ pub struct AmmoDef {
     pub drop_mmpt2: u16,
 }
 
+/// **Not wearable.** `ArmorDef::slot` is one-based so that a zeroed table
+/// is an inert one: item index 0 is a real item, and a zero *slot* has to
+/// mean "this is not armor" rather than "this is a headpiece".
+pub const WEAR_NONE: u8 = 0;
+/// `Player::worn[0]`.
+pub const WEAR_HEAD: u8 = 1;
+/// `Player::worn[1]`.
+pub const WEAR_BODY: u8 = 2;
+
+/// The most a whole worn set may take off one hit, in percent.
+///
+/// Deliberately **the same 90 `content/validate.rs` already refuses a
+/// single row past**, and for the same reason one level up: a body that
+/// takes no damage is not a body, and a set is where per-row ceilings stop
+/// being enough. Not a new knob — the number is the one the content rail
+/// has enforced since M1, applied to the sum rather than to a term.
+pub const ARMOR_MAX_PCT: u32 = 90;
+
+/// One item's armor row — `content/armor.toml`, baked by item index like
+/// every other table in `CombatContent`.
+///
+/// `slot == WEAR_NONE` ⇒ the item is not wearable, so the whole table
+/// starts inert exactly as `MeleeDef::damage == 0` does. The two columns
+/// travel together on purpose: a reduction with no slot protects
+/// everything and a slot with no reduction protects nothing, and both are
+/// content bugs the bake refuses rather than shapes the sim has to guard.
+///
+/// **One scalar, not a per-damage-type vector, and that is a decision with
+/// a source.** `reference/RIPLIST.md` §1h read the reference game's own
+/// Protection tables for all three pieces we ship and found its Projectile
+/// and Melee cells **equal on every row** — so one number expresses theirs
+/// exactly for every piece that exists here. The columns a vector would add
+/// (Bite, Radiation, Cold) key mechanics we either do not ship or have no
+/// number for, and the weapon-side half of a type column — which of
+/// slash/blunt/stab each of our twenty weapons is — is not in any source
+/// anybody here has read. `DECISIONS.md` §open ("armor reduction v0")
+/// carries the argument; the vector is the next slice, and it changes
+/// numbers rather than the funnel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ArmorDef {
+    /// Percent of an incoming hit this piece takes off. `content/validate.rs`
+    /// refuses a row past 90, so a `u8` cannot be overrun by content.
+    pub reduction_pct: u8,
+    /// Which of `WEAR_SLOTS` this piece occupies, **one-based**:
+    /// `WEAR_NONE`, `WEAR_HEAD` or `WEAR_BODY`.
+    pub slot: u8,
+}
+
 /// The whole combat ruleset the sim knows. Construction input like the
 /// seed and the gather table; the WAL pins the content hash it was baked
 /// from (CONTENT.md §0).
@@ -264,6 +320,13 @@ pub struct CombatContent {
     /// weapon's (`reference/PROJECTILES.md` §9.3). A stack of arrows in a
     /// pocket has a row here; the bow that fires them does not.
     pub ammo: [AmmoDef; MAX_ITEM_DEFS],
+    /// Worn protection, indexed the same way — the row of the item, not of
+    /// the body wearing it. Every entry inert until the bake installs
+    /// `content/armor.toml`, which is what it did for the first time on
+    /// 2026-08-19: the file had been priced, validated, hashed and
+    /// balance-anchored since M1 with nothing in this crate reading a row
+    /// (`reference/ARMOR.md` §9.1 is the audit).
+    pub armor: [ArmorDef; MAX_ITEM_DEFS],
     /// Max player hp — `content/balance.toml` `globals.player_hp`. Zero is
     /// the inert default and disarms the module entirely: no hp is granted
     /// at join, so no damage is applied and nobody can die.
@@ -294,6 +357,10 @@ impl CombatContent {
         ammo: [AmmoDef {
             speed_mmpt: 0,
             drop_mmpt2: 0,
+        }; MAX_ITEM_DEFS],
+        armor: [ArmorDef {
+            reduction_pct: 0,
+            slot: WEAR_NONE,
         }; MAX_ITEM_DEFS],
         player_hp: 0,
     };
@@ -335,6 +402,20 @@ impl CombatContent {
             fuse_ticks: 4,
             reach_cm: 200,
             blast_cm: 1,
+        };
+        // Two armor rows, on items 4 and 5 — deliberately *above* the four
+        // weapon rows, so no fixture item is both a weapon and a piece of
+        // armor and a test cannot accidentally arm what it meant to wear.
+        // Nothing in the counted gates wears anything, so these change no
+        // probe digest; they exist so `tests/armor.rs` reads a table the
+        // fixture declares instead of poking one it built itself.
+        c.armor[4] = ArmorDef {
+            reduction_pct: 10,
+            slot: WEAR_HEAD,
+        };
+        c.armor[5] = ArmorDef {
+            reduction_pct: 20,
+            slot: WEAR_BODY,
         };
         c
     }
@@ -489,12 +570,14 @@ pub struct Hurt {
 /// so — a write to a player's `hp` anywhere else is a site that test
 /// cannot classify, and it fails naming the line.
 ///
-/// Why one place: armor has been priced, validated, hashed and
-/// balance-anchored in `content/armor.toml` since M1 and nothing in this
-/// crate reads a row of it (`reference/ARMOR.md` §9.1). Reduction is an
-/// arm inside *this* function when it lands, so it cannot be added to
-/// three routes and forgotten on the fourth — which is the shape the
-/// reference ecosystem's payload bugs actually took.
+/// Why one place: armor had been priced, validated, hashed and
+/// balance-anchored in `content/armor.toml` since M1 with nothing in this
+/// crate reading a row of it (`reference/ARMOR.md` §9.1). Reduction is an
+/// arm inside *this* function — one line, added on 2026-08-19 and reaching
+/// all four hit routes at once, which is the whole of what the funnel was
+/// built to buy. It could not be added to three routes and forgotten on
+/// the fourth, which is the shape the reference ecosystem's payload bugs
+/// actually took.
 ///
 /// **What the funnel owns is the body, and nothing else.** Two writes: the
 /// hp and the death count. It does not push an event and it does not lay
@@ -518,8 +601,69 @@ pub struct Hurt {
 /// Wall 1: `min`, `saturating_add` and one `u16` subtraction that cannot
 /// underflow because `dealt <= before`. No float, no clock, no allocation.
 #[inline]
-pub fn hurt(v: &mut Player, raw: u16) -> Hurt {
-    debit(v, raw)
+pub fn hurt(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
+    debit(v, reduce(raw, worn_pct(cc, v)))
+}
+
+/// What a worn set takes off every hit, in percent — the sum over the
+/// slots, clamped at [`ARMOR_MAX_PCT`].
+///
+/// **The sum, not the slot that was hit, and that is a v0 decision rather
+/// than an oversight.** Aim is planar and there is no head to hit
+/// (`combat.rs`'s header, still true), so a coverage model has nothing to
+/// key on: crediting only the body piece would ship
+/// `item.armor_burlap_head` as *charged* dead content — craftable, priced,
+/// and protecting nobody — on the very day armor started working, which is
+/// the same defect this slice exists to remove. Until hit areas land
+/// (`findings/armor-design-20260818.md` §7 S6) a worn set is one number and
+/// every piece in it contributes. `content/balance.rs`'s anchor already
+/// reads armor this way, slot-blind, so this makes the two agree rather
+/// than adding a second model.
+///
+/// A stack only pays in the slot its **baked row** names, one-based. That
+/// is what stops two body plates from being worn at once before any wear
+/// verb exists to refuse it: the array is indexed by slot, and a piece in
+/// the wrong index is ignored rather than counted.
+///
+/// Wall 1: `+` and `min` over `u32`, one bounded loop of `WEAR_SLOTS`.
+/// Wall 2: no allocation.
+#[inline]
+pub fn worn_pct(cc: &CombatContent, v: &Player) -> u32 {
+    let mut pct = 0u32;
+    let mut i = 0usize;
+    while i < WEAR_SLOTS {
+        let s = v.worn[i];
+        if s.count > 0 && (s.item as usize) < MAX_ITEM_DEFS {
+            let a = cc.armor[s.item as usize];
+            if a.slot as usize == i + 1 {
+                pct += a.reduction_pct as u32;
+            }
+        }
+        i += 1;
+    }
+    pct.min(ARMOR_MAX_PCT)
+}
+
+/// What gets through `pct` percent of protection.
+///
+/// **The floor lands on the damage, not on the absorption**, and the two are
+/// not the same function under integer division: 25 damage against 35 %
+/// is 16 here and 17 the other way round. This form is the one
+/// `content/balance.rs`'s `hits_to_kill` divides by — its per-hit number is
+/// `damage × (100 − pct) / 100` — so the band the data declares and the
+/// fight the sim plays are one arithmetic rather than two that agree by
+/// luck. `crates/content/tests/content.rs` pins them equal for every
+/// (weapon, armor) pair we ship.
+///
+/// A hit small enough to round to zero deals zero. That is not new
+/// behaviour: `charge::falloff` already returns zero at the edge of a blast
+/// and the site skips it, and `debit` treats a zero as the no-op it is.
+///
+/// Wall 1: `×`, `÷`, `min` on `u32`. No float, no libm.
+#[inline]
+pub fn reduce(raw: u16, pct: u32) -> u16 {
+    let pct = pct.min(ARMOR_MAX_PCT);
+    ((raw as u32 * (100 - pct)) / 100) as u16
 }
 
 /// The same debit, for the routes that armor must **never** reduce. The
@@ -541,6 +685,10 @@ pub fn hurt(v: &mut Player, raw: u16) -> Hurt {
 pub fn hurt_unreduced(v: &mut Player, raw: u16) -> Hurt {
     debit(v, raw)
 }
+
+// Note the shapes: `hurt` takes the content table because reduction is a
+// lookup, `hurt_unreduced` deliberately does not take it at all. A route
+// that cannot reach the armor table cannot accidentally consult it.
 
 /// The debit itself. Private, so `hurt`/`hurt_unreduced` are the only
 /// doors and the choice between them is always written down at the call.
@@ -657,7 +805,7 @@ pub fn strike(
     let v = &mut players[victim];
     let victim_id = v.id;
     // The funnel, reduced: a swing is the route armor exists to blunt.
-    let Hurt { left, died, .. } = hurt(v, def.damage);
+    let Hurt { left, died, .. } = hurt(cc, v, def.damage);
     events.push(EV_HIT, attacker_id, victim_id, def.damage as u32);
     events.push(EV_HEALTH, victim_id, left as u32, cc.player_hp as u32);
     if died {

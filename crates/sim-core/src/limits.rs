@@ -226,6 +226,23 @@ pub const MAX_SPAWN_KIT: usize = INV_SLOTS;
 /// Inventory slots per player: 6 hotbar + 24 backpack (ALPHA.md §1).
 pub const INV_SLOTS: usize = 30;
 
+/// Worn-equipment slots per player (`Player::worn`) — one head, one body,
+/// in that order, and the array is **indexed by the slot** rather than
+/// appended to.
+///
+/// Two because `content/armor.toml`'s `ArmorSlot` has exactly two variants
+/// and every row in the shipped set is one of them. It is not a guess at a
+/// future roster: a legs or boots rung is a content schema change and a
+/// widening here, in one commit, exactly as a new container kind is.
+///
+/// Overflow policy: **there is none, by construction.** Nothing is ever
+/// pushed — a piece goes into the slot its baked row names (`ArmorDef::slot`,
+/// one-based) and replaces whatever was there, so the only way to exceed the
+/// cap is to name a slot the array does not have, which `combat::worn_pct`
+/// refuses by ignoring the stack. Wall 4 wants the cap stated; this is it.
+/// Proposed default, DECISIONS.md §open ("armor reduction v0").
+pub const WEAR_SLOTS: usize = 2;
+
 /// Hotbar width — the first `HOTBAR_SLOTS` inventory slots, the only ones
 /// the held-item selector may name (ALPHA.md §1). The wire carries the
 /// selector in 3 bits and refuses 6–7; a non-wire command with an invalid

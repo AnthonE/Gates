@@ -15,7 +15,7 @@ use crate::input::InputFrame;
 use crate::inventory;
 use crate::limits::{
     BOX_SLOTS, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ARROWS, MAX_COMMANDS_PER_TICK,
-    MAX_EVENTS_PER_TICK, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
+    MAX_EVENTS_PER_TICK, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL, WEAR_SLOTS,
 };
 use crate::loot::{LootContent, LOOT_BARREL};
 use crate::mob;
@@ -755,6 +755,21 @@ pub struct Player {
     /// 6 hotbar + 24 backpack (ALPHA.md §1). A join starts empty — the
     /// naked spawn punches its first resources (gatherables' hand rows).
     pub inv: [ItemStack; INV_SLOTS],
+    /// Worn equipment, **indexed by slot**: `[0]` is the head and `[1]` the
+    /// body (`combat::WEAR_HEAD`/`WEAR_BODY`, one-based in the baked row).
+    /// A piece in the wrong index protects nobody — `combat::worn_pct`
+    /// checks the baked slot against the array index rather than trusting
+    /// the placement — which is what holds "one piece per slot" up before
+    /// any verb exists to enforce it.
+    ///
+    /// **Nothing in the sim writes this yet, and that is the honest state
+    /// of it** (2026-08-19). Wearing is a container move into a
+    /// `CONT_WEAR` kind, and all four values of the wire's 2-bit container
+    /// field are spent (`inventory.rs`), so equipping costs a
+    /// `CONT_KIND_BITS` widening and a `PROTO_VER` bump — a wire slice, not
+    /// this one. Until it lands, the only writers are tests and a save.
+    /// Reduction is real; reachability is not.
+    pub worn: [ItemStack; WEAR_SLOTS],
     /// Tick the next swing is allowed at (gather.rs cadence).
     pub next_swing: u64,
     /// Weak-spot chase: the cell this player last landed a hit on
@@ -858,6 +873,7 @@ impl Default for Player {
             body: Body::default(),
             frame: InputFrame::default(),
             inv: [ItemStack::default(); INV_SLOTS],
+            worn: [ItemStack::default(); WEAR_SLOTS],
             next_swing: 0,
             ws_cell: NO_CELL,
             ws_hits: 0,
@@ -1951,6 +1967,29 @@ impl World {
             known: body.known,
             ..Player::default()
         };
+        // **What it was wearing goes into the bag with what it was
+        // carrying**, and that is the decision `tests/persist.rs`'s field
+        // ledger forces into a test rather than into a reviewer's
+        // attention. Armor as loot is what makes killing an armored player
+        // worth doing; a corpse that keeps its plates is a body nobody
+        // fights for. So `worn` is *not* named in the literal above —
+        // `..Player::default()` clears it, exactly as it clears `inv` —
+        // and this is where it lands instead.
+        //
+        // Through `drain_spill` rather than by widening `drop_for`'s
+        // buffer, and the difference is whether an item can be destroyed.
+        // A bag holds `INV_SLOTS`, a full pocket plus two plates is
+        // `INV_SLOTS + WEAR_SLOTS`, and merging into the array `drop_for`
+        // copies wholesale would drop whatever did not fit. `spill_at`
+        // merges into the bag standing in reach — the one the line above
+        // just stood up, at distance zero — and stands a second one up for
+        // the remainder, so the pack being full costs the killer a walk
+        // and never an item. It is the same drain the six existing
+        // producers use; this is the seventh, and it is named here for the
+        // reason `backpack.rs`'s header names the others.
+        let mut shed = [ItemStack::default(); INV_SLOTS];
+        shed[..WEAR_SLOTS].copy_from_slice(&body.worn);
+        self.drain_spill(slot, &mut shed);
     }
 
     /// The other half: you wake up naked **on your own bag if you asked for
@@ -2206,6 +2245,10 @@ impl World {
                     active: true,
                     body: s.body,
                     inv: s.inv,
+                    // You log off in your armor, you log in in your armor
+                    // — `hp`'s sentence, and the alternative would make
+                    // closing the game a way to lose a plate.
+                    worn: s.worn,
                     jobs: s.jobs,
                     known: s.known,
                     hp: s.hp,
@@ -3324,7 +3367,7 @@ impl World {
             &self.haven,
             &self.build,
             &self.deploy,
-            self.combat.player_hp,
+            &self.combat,
             &mut self.charges,
             &mut self.pieces,
             &mut self.deploys,
@@ -3386,7 +3429,8 @@ impl World {
                 continue; // died to something else since the roster looked
             }
             // The funnel, reduced: a bite is a hit.
-            let crate::combat::Hurt { left, died, .. } = crate::combat::hurt(v, b.damage);
+            let crate::combat::Hurt { left, died, .. } =
+                crate::combat::hurt(&self.combat, v, b.damage);
             let victim_id = v.id;
             self.events.push(
                 EV_HEALTH,
@@ -3449,6 +3493,7 @@ impl World {
                 harvested: &self.slot_lives,
                 cache: &mut self.slot_cache,
             },
+            &self.combat,
             &mut self.arrows,
             &mut self.players,
             &mut self.events,
@@ -3612,6 +3657,30 @@ impl World {
                 sb[2..4].copy_from_slice(&s.count.to_le_bytes());
                 sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
                 h.update(&sb);
+            }
+            // What this body is wearing (armor v0), in its own loop
+            // appended after the inventory rather than folded into it.
+            // Two reasons and both are load-bearing. It is sim state — a
+            // worn piece changes what every hit takes off, so two shards
+            // that disagreed about it would disagree about a fight and
+            // then about a death — and it is a **separate array**, so
+            // widening the inventory's loop to cover it would make one
+            // digest out of two stores and hide the next widening of
+            // either.
+            //
+            // This is what moved `GOLDEN_FINAL_HASH` on 2026-08-19, and
+            // it moved it deliberately: `worn` is per-player and always
+            // present, so unlike `world.rs`'s store loops there is no
+            // length prefix to fold zeroes into, and the digest changes
+            // the moment the field exists whether or not anything is in
+            // it. The hash is behavioural now — it says the sim carries
+            // worn equipment — where before it said nothing at all.
+            for s in p.worn.iter() {
+                let mut wb = [0u8; 6];
+                wb[0..2].copy_from_slice(&s.item.to_le_bytes());
+                wb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                wb[4..6].copy_from_slice(&s.cond.to_le_bytes());
+                h.update(&wb);
             }
             let mut cb = [0u8; 16 + CRAFT_QUEUE * 4];
             cb[0..8].copy_from_slice(&p.craft_done_at.to_le_bytes());

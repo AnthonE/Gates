@@ -49,7 +49,15 @@ pub struct Anchors {
 
 /// Body hits to kill: ceil(hp / damage), integer-exact. `reduction_pct`
 /// is the armor's cut of every body hit.
-fn hits_to_kill(hp: u32, damage: u32, reduction_pct: u32) -> u32 {
+///
+/// **Public since armor v0, and only so it can be pinned.** This divides by
+/// the exact rational `damage × (100 − pct) / 100`; the sim floors that
+/// number once and subtracts it (`sim_core::combat::reduce`), and the two
+/// are not the same function. They agree on every (weapon, armor) pair we
+/// ship — `crates/content/tests/content.rs` asserts it rather than assuming
+/// it — and the day they stop agreeing, the band describes a fight nobody
+/// has.
+pub fn hits_to_kill(hp: u32, damage: u32, reduction_pct: u32) -> u32 {
     let effective = damage * (100 - reduction_pct);
     let scaled_hp = hp * 100;
     scaled_hp.div_ceil(effective)
@@ -99,6 +107,35 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
 
     // Anchor 2 — TTK per weapon kind, body hits, no armor; then every
     // single armor piece may add at most `armor_extra_hits_max` hits.
+    //
+    // ⚠ **Known-misleading since armor v0 (2026-08-19), deliberately left
+    // standing, and it is not a bug that a green run hides — it is the
+    // green run that is the problem.** Applying armor changes no content
+    // number, so this anchor cannot go red for it; what it says just stops
+    // being true. Three ways, and each is one somebody will otherwise
+    // rediscover:
+    //
+    // 1. **Slot-blind.** The loop below runs every armor row against a
+    //    *body* hits-to-kill, so `item.armor_burlap_head` — a head piece —
+    //    is credited with reducing body hits. The sim happens to agree
+    //    today (`combat::worn_pct` sums both slots because aim is planar),
+    //    so this is right by coincidence and wrong the day hit areas land.
+    // 2. **A ceiling with no floor.** A worn set adding *zero* hits
+    //    satisfies `armor_extra_hits_max` perfectly, so armor could be
+    //    entirely decorative with every gate green.
+    // 3. **It cannot see a set.** The band is per piece, by its own
+    //    comment, and `Player::worn` holds one head plus one body: burlap
+    //    head 10 % + roadsign 25 % is **+3 hits** on rock, spear_wood,
+    //    revolver and the stone tools, against a band of 2.
+    //
+    // Fixing (3) reddens the run, which is why it is not fixed here:
+    // `armor_extra_hits_max` has to be re-spoken (2 → 3) or the ladder
+    // re-priced, and both are operator acts (`DECISIONS.md` §open, "armor
+    // reduction v0"; `NOW.md` §0pvp item 4). What DID land is the half
+    // that moves no band — `hits_to_kill` and the sim's own reducer are
+    // pinned equal for every (weapon, set) pair in
+    // `crates/content/tests/content.rs`, because two arithmetics that
+    // disagree describe a fight nobody has.
     for w in &c.weapons {
         let band = match w.kind {
             WeaponKind::Melee => bands.ttk_melee,
