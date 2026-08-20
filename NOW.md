@@ -694,14 +694,21 @@ gates `client/tests/pieces.rs` + `sim-core/build.rs` §tests:
 
 Remaining, ranked:
 
-1. **Nobody has looked at either, and the probe still cannot stage it.**
-   The capture harness can walk to a world node and swing at it now
-   (2026-08-18), which is what §0mk needed, but it cannot BUILD — a piece
-   is a verb behind a wheel and a material cost, so "build a row and hit
-   it" is still a person at a keyboard. Landing that in the probe is the
-   next slice if this item is picked up; the swing pass is the shape to
-   copy. ⚠ And see §0mk: no decal renders under lavapipe at all, so a
-   headless run cannot check surfaces that carry marks either.
+1. ~~Nobody has looked at either, and the probe still cannot stage it~~ —
+   **half struck 2026-08-20: pieces are photographed now, by somebody else.**
+   The probe still cannot build (a piece is a verb behind a wheel and a
+   material cost), and it turned out not to need to: `population = N` already
+   seats bots that build a twig base over the real wire, `dev_spawn` makes
+   them the camera's neighbours, and `dev_spawn_kit` pays for the wood. The
+   capture harness grew a scene pass that finds the nearest base and the
+   nearest body and points the camera at them (`7-player.png`,
+   `8-build.png`); `ci/scene.sh` is the rig. Measured: eight foundations and
+   floors up a hillside, from 4.8 m, on seed 20260731.
+   **What is left** is the staged half — one row of one material, hit a known
+   number of times, photographed at each band. The population builds what it
+   likes, so damage bands are still luck. ⚠ And see §0mk: no decal renders
+   under lavapipe at all, so a headless run cannot check surfaces that carry
+   marks either.
 2. **The catalogue is 11 shapes against the reference's 20** (`BUILDING.md`
    §7b.1) — no half/low wall, floor frame, steps, ramp, 3 of 4 stairs. Rule 6
    is silhouette before surface, so this outranks more material work.
