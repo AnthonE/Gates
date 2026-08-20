@@ -1,7 +1,7 @@
 {
  "scry": 1,
  "game": "gates",
- "version": "0.4.0",
+ "version": "0.5.0",
  "_version": "The workspace version in Cargo.toml. scry never copies this onto the store row \u2014 it serves it beside the version actually published in its depot and flags the gap, so a tag ahead of a build shows up as a gap instead of vanishing. ci/scry_manifest.py --self-test keeps this equal to Cargo.toml, the same check release.yml already makes against a tag.",
  "listing": {
   "kind": "survival \u2014 100-player shards",
@@ -20,6 +20,12 @@
  },
  "_listing": "These fields are now THIS REPO's to write: whatever is here wins on the next pull, so editing them at scry's store desk is temporary and editing them here is permanent. Seeded byte-for-byte from the row as it stood 2026-08-11, so wiring this up changed no copy. Fields deliberately NOT claimed: state and play_url (the house decides when a title reads live), and capsule/hero/media (art is uploaded, not committed \u2014 a manifest is text and cannot ship bytes). band/hidden/placeholder/lane/note are the house's and a manifest may not write them at all.",
  "updates": [
+  {
+   "id": "v0.5.0",
+   "kind": "release",
+   "title": "0.5.0 \u2014 the revolver fires, bodies fall, and a hit tells you where",
+   "body": "The revolver was a dead end you could pay for: it dropped from barrels, it had a recipe, it sat on the research ladder behind gunpowder, and its rounds both dropped and crafted \u2014 and pulling the trigger did nothing. It fires now. Five shots to a kill, resolved on the server through the same path the bow already used, so what the shard says happened is what happened. There is no tracer yet.\n\nA fight reads better. A killed body falls over instead of standing there. A hit body flinches, and a remote's swing is audible where it happened rather than at your ear. Arrows and swings leave marks on what they hit. A swing lands at the waist of anything shorter than you, which is what a stone hatchet against a boar should always have done. And the shard now tells the client how stale your aim was, in ticks, so a trade that felt wrong is something you can read instead of argue about.\n\nYou have a body: a face, hands you can see, and 53 clips behind them. First-person arms are the same mesh split by skin weight, not a camera trick. The streaming client stops paying for ground it already resolved, input is latched between sim ticks, and the frame is capped rather than spinning.\n\nThe wire is v48 and the save format moved with it, so this release wipes the public shard and an older client is refused at the door rather than quietly misread. Armor is priced and the sim blunts a hit with it, but nothing can put a piece on yet \u2014 that is the next thing."
+  },
   {
    "id": "v0.4.0",
    "kind": "release",
