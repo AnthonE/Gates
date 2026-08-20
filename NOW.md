@@ -42,6 +42,32 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0pw · Every material is drawn once before it is needed *(client lane)*
+
+LANDED 2026-08-20, and it corrects the trap it closes. `CLAUDE.md` said a
+native pipeline compile is *"a bigger stall"* than the WebGL link it inherited
+the fear from; `synchronous_pipeline_compilation` is **false** by default, so
+Bevy builds on a task pool and SKIPS a draw that is not ready. **The native
+failure is a pop, not a hitch** — and you look for it differently.
+
+Most of it was already covered by a good accident: `world_running` includes
+`Screen::Loading`, so the world draws while the bar fills and everything
+streamed specializes there. What was left is the event-driven half — a tracer,
+a build ghost, a highlight, a mob, a held item. `render/prewarm.rs` warms every
+`StandardMaterial` off `AssetEvent::Added` rather than from a list, because a
+hand-kept list is the drift `CLAUDE.md` names twice elsewhere.
+
+**Still open, and named in the module**: skinned meshes are a different
+pipeline key and nothing warms them, so the first remote player to walk into
+view still specializes on arrival. And the measure is still a COUNT with no
+gate — `PipelineCache::pipelines()` is public but lives in the render world and
+needs a GPU.
+
+Knob: `DECISIONS.md` §open, pipeline prewarm v0. Gates: `tests/prewarm.rs` (5),
+five mutants caught. Two things the first cut got wrong: the warm draw was
+0.374 px on a 4K panel at the narrowest fov, and it was sized in the vertices
+rather than as a transform scale — a mikktspace panic waiting to happen.
+
 ## 0gq · The renderer has a budget knob — LANDED 2026-08-20, unlooked-at *(client lane)*
 
 There was no graphics setting at all: the GRAPHICS tab held a field of view
@@ -1645,6 +1671,14 @@ Still open, and item 5 is unchanged:
    cloned on every modification). No flag fixes it; the fix is the vertex
    shader `render/water.rs` §57 already names. Its own doc says "no
    allocation" and that is true of the system body, not of the frame.
+   **MEASURED 2026-08-20 rather than quoted** (`examples/frame_cost.rs`): the
+   sea is **7,921 vertices / 676.6 KiB**, and stream+animate on a still frame
+   is 0.69 ms. So the whole prize is ~0.7 ms of CPU plus a 677 KiB memcpy and
+   upload — real, and **not obviously worth the slice it costs**: the port
+   moves four waves, their analytic gradients, the shoal attenuation and two
+   foam terms into WGSL, and nothing on this box can run WGSL, so it would
+   land unvalidated on the most visual surface in the game. Recommend it
+   AFTER someone can boot the client on a GPU, not before.
 3. **The per-frame leftovers, all measured and all small.** `verbs::resolve`
    scans the piece mirror twice a frame (25.7 µs at the 8,192 cap, ~3.5 µs at
    512) and wants the 3×3 cell neighbourhood `ColIndex` already maintains;
