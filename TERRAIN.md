@@ -440,8 +440,12 @@ says "worker", read "off the main schedule" for the native path.
   times past its own Nyquist and reached the image as its alias.
 - **Scatter rendering**: per chunk, one `InstancedMesh` per archetype
   filled from the slot list (minus harvested), frustum-culled per chunk.
-  Trees get two LODs (mesh / billboard cross) **(knob: distances)**; each
-  archetype carries an authored PBR response, baked vertex colours and a
+  Trees get two LODs **(knob: distances — `DECISIONS.md` §open, tree LOD v0)**:
+  the near one is the generated pair and the far one is an opaque hull lathed
+  through its own vertices, **not** the billboard cross this line has always
+  said. The cross is still the cheaper end and is still unbuilt; the hull is
+  what landed 2026-08-20, because it needed no bake and no second material.
+  Each archetype carries an authored PBR response, baked vertex colours and a
   per-instance tint hashed from its own cell, so variation costs no draw
   calls (materials v0).
   Grass: cheap camera-ring patches, purely cosmetic, off on low tier

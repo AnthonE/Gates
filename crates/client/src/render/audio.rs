@@ -468,7 +468,13 @@ pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound
         let cue = match f.part {
             super::props::FellPart::Trunk => Cue::TreeFall,
             super::props::FellPart::Vanish => Cue::ImpactStone,
-            super::props::FellPart::Canopy | super::props::FellPart::Stump => continue,
+            // …and `Far` with them: the hull is the trunk at a distance, so
+            // a chop that felled both would play `TreeFall` twice on one
+            // frame at one position — the exact defect this match was
+            // written to end.
+            super::props::FellPart::Canopy
+            | super::props::FellPart::Stump
+            | super::props::FellPart::Far => continue,
         };
         let p = t.translation();
         sound.play(Request::at(cue, [p.x, p.y, p.z]));
@@ -605,9 +611,10 @@ pub fn bed(
     // localized-emitter slice (`reference/AUDIO.md` §9.3), not this one.
     //
     // **What it must count is SLOTS, and a slot is more than one entity.** A
-    // tree is three `Fellable`s (trunk, canopy, stump) and every other slot is
-    // one, so counting entities would score a pine wood 3× a boulder field of
-    // the same density — and `COVER_FULL` was calibrated when a tree was two.
+    // tree is four `Fellable`s (trunk, canopy, stump, far hull) and every
+    // other slot is one, so counting entities would score a pine wood 4× a
+    // boulder field of the same density — and `COVER_FULL` was calibrated
+    // when a tree was two.
     // Counting the parts that are one-per-slot fixes the units. This is the
     // second thing felling v0 found by adding a part: `Fellable` is not a
     // slot, it is a piece of one.
