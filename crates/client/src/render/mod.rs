@@ -73,6 +73,8 @@ pub mod mobs;
 // player sees instead of the world, `panels` is what they see on top of it.
 pub mod panels;
 pub mod pause;
+pub mod prewarm;
+pub mod quality;
 // Discord rich presence: which screen means what, and the handoff to the
 // worker. The model — socket, framing, payloads, copy — is `crate::discord`,
 // which is pure and unconditional. Dark unless `GATES_DISCORD_APP_ID` is set.
@@ -509,8 +511,12 @@ impl Plugin for GatesRenderPlugin {
                 // The mark pool, for the same reason plus one more: the
                 // materials it builds here are what the prewarm draw
                 // specializes, and a pipeline compiled mid-fight is the
-                // stall `decal.rs`'s `PREWARM_FRAMES` exists to avoid.
+                // pop `decal.rs`'s `PREWARM_FRAMES` exists to avoid.
                 decal::setup,
+                // The shared warm mesh. Before anything that could create a
+                // material, so `prewarm::warm` never sees an `Added` it has
+                // no mesh to draw against.
+                prewarm::setup,
                 // The menu's footage. Wanted on the first screen after the
                 // splash, so it warms while everything else does.
                 ui::load_backdrop,
@@ -710,8 +716,26 @@ impl Plugin for GatesRenderPlugin {
                     settings::apply_view,
                     settings::apply_window,
                     settings::save_on_change,
+                    // The graphics tier, and it belongs beside the other two
+                    // appliers rather than in the world schedule: a player
+                    // can move it from the intro screen, so it must run
+                    // wherever `Settings` can change and not only in a world.
+                    // Both halves are guarded on `is_changed()`, so a frame
+                    // nobody touched the settings on costs two resource
+                    // reads. `reband_trees` after `apply`, which is what
+                    // writes the resource it watches.
+                    quality::apply,
+                    quality::reband_trees.after(quality::apply),
+                    // Every material gets one tiny in-frustum draw when it is
+                    // created, so the pipeline it needs is specialized before
+                    // the event that first shows it. `retire` after `warm`,
+                    // or a material created and warmed on the same frame
+                    // would lose a frame of its own life to the counter.
+                    prewarm::warm,
+                    prewarm::retire.after(prewarm::warm),
                 ),
             )
+            .init_resource::<tree::TreeLod>()
             // **The frame cap, and it must be `Last` and unconditional.**
             // `Last` because a cap has to be the final thing a frame does —
             // registered in `Update` it would sleep before the render it is

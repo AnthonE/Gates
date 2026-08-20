@@ -42,6 +42,62 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0pw · Every material is drawn once before it is needed *(client lane)*
+
+LANDED 2026-08-20, and it corrects the trap it closes. `CLAUDE.md` said a
+native pipeline compile is *"a bigger stall"* than the WebGL link it inherited
+the fear from; `synchronous_pipeline_compilation` is **false** by default, so
+Bevy builds on a task pool and SKIPS a draw that is not ready. **The native
+failure is a pop, not a hitch** — and you look for it differently.
+
+Most of it was already covered by a good accident: `world_running` includes
+`Screen::Loading`, so the world draws while the bar fills and everything
+streamed specializes there. What was left is the event-driven half — a tracer,
+a build ghost, a highlight, a mob, a held item. `render/prewarm.rs` warms every
+`StandardMaterial` off `AssetEvent::Added` rather than from a list, because a
+hand-kept list is the drift `CLAUDE.md` names twice elsewhere.
+
+**Still open, and named in the module**: skinned meshes are a different
+pipeline key and nothing warms them, so the first remote player to walk into
+view still specializes on arrival. And the measure is still a COUNT with no
+gate — `PipelineCache::pipelines()` is public but lives in the render world and
+needs a GPU.
+
+Knob: `DECISIONS.md` §open, pipeline prewarm v0. Gates: `tests/prewarm.rs` (5),
+five mutants caught. Two things the first cut got wrong: the warm draw was
+0.374 px on a 4K panel at the narrowest fov, and it was sized in the vertices
+rather than as a transform scale — a mikktspace panic waiting to happen.
+
+## 0gq · The renderer has a budget knob — LANDED 2026-08-20, unlooked-at *(client lane)*
+
+There was no graphics setting at all: the GRAPHICS tab held a field of view
+and three `Row::Fact`s saying the rest was fixed, so a player whose GPU could
+not hold the frame had one lever and it was the fps cap. `config::Quality` is
+LOW/MEDIUM/HIGH now and `render/quality.rs` is the table — AO, SMAA, bloom,
+shadow cascades with their reach and map size, and the tree LOD swap distance.
+Knob: `DECISIONS.md` §open, graphics tiers v0.
+
+**HIGH is the frame that shipped, exactly**, and `tests/quality.rs` holds that
+column against the literals `rig.rs` used to carry. That is the whole safety
+argument for landing it unlooked-at: the default frame did not move.
+
+**Nobody has seen LOW or MEDIUM**, which is the residual. The ladder's ORDER
+is arithmetic — a cascade re-rasterizes every caster, and the swap distance
+decides how much forest that is — but where each rung sits is a judgement, and
+the visual gate here is a person. Walk the knob down and see whether MEDIUM is
+still the game.
+
+**A render scale is the biggest lever and is not here**: Bevy renders to the
+window surface, so a scaled path is an off-screen target and a blit, its own
+slice. Same for the clutter and prop rings, which decide which tiles exist
+rather than how they draw (`ART.md` rule 4 is a floor a tier may not cross).
+
+Gates: `tests/quality.rs` (5, new). Eight mutants caught, and two gates needed
+a second draft: the clamp one passed a wrap, because five steps on a three-rung
+ladder lands right anyway; and the applier REACTED to a settings change, so a
+tier chosen last session never reached a camera that spawns several frames
+after the file loads. It reconciles on `Added<EyeCam>` now.
+
 ## 0lod · The far forest is a hull — LANDED 2026-08-20, unlooked-at *(client lane)*
 
 The ring's triangle debt is paid: **1,935,200 → 509,630 tris** at the prop
@@ -1615,6 +1671,14 @@ Still open, and item 5 is unchanged:
    cloned on every modification). No flag fixes it; the fix is the vertex
    shader `render/water.rs` §57 already names. Its own doc says "no
    allocation" and that is true of the system body, not of the frame.
+   **MEASURED 2026-08-20 rather than quoted** (`examples/frame_cost.rs`): the
+   sea is **7,921 vertices / 676.6 KiB**, and stream+animate on a still frame
+   is 0.69 ms. So the whole prize is ~0.7 ms of CPU plus a 677 KiB memcpy and
+   upload — real, and **not obviously worth the slice it costs**: the port
+   moves four waves, their analytic gradients, the shoal attenuation and two
+   foam terms into WGSL, and nothing on this box can run WGSL, so it would
+   land unvalidated on the most visual surface in the game. Recommend it
+   AFTER someone can boot the client on a GPU, not before.
 3. **The per-frame leftovers, all measured and all small.** `verbs::resolve`
    scans the piece mirror twice a frame (25.7 µs at the 8,192 cap, ~3.5 µs at
    512) and wants the 3×3 cell neighbourhood `ColIndex` already maintains;

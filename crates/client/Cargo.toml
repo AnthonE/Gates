@@ -87,6 +87,21 @@ name = "tree_lod"
 path = "tests/tree_lod.rs"
 required-features = ["render"]
 
+# The graphics ladder: its top rung against the frame that shipped, the rungs
+# against each other, and one headless run of the applier that proves the
+# table reaches the ECS.
+[[test]]
+name = "quality"
+path = "tests/quality.rs"
+required-features = ["render"]
+
+# The pipeline prewarm: that every material gets a draw, that the draw wears
+# the layout the game wears, that it is under a pixel, and that it leaves.
+[[test]]
+name = "prewarm"
+path = "tests/prewarm.rs"
+required-features = ["render"]
+
 # The build ghost's doorway against the sim's own `doorway_solid_at`. Pure
 # arithmetic and no GPU, but it imports `render::structures` for the shared
 # geometry constants, so it carries the feature and runs in the renderer tier.

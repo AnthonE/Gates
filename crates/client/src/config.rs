@@ -49,13 +49,68 @@ use std::path::{Path, PathBuf};
 /// header. `DECISIONS.md` §open, "settings v0".
 pub const SETTINGS_VERSION: u32 = 1;
 
-/// The eight values that survive a restart. A plain struct rather than the
+/// How much the renderer is asked to do. **The one setting on this screen
+/// that is a budget rather than a preference.**
+///
+/// It lives here rather than in `render/quality.rs` — which owns what each
+/// tier actually *means* in Bevy components — for this module's own stated
+/// reason: parse and serialize are pure arithmetic and must build without
+/// Bevy, and a settings file that wrote `quality = 2` would be a file nobody
+/// can hand-edit. The names are the file format; the table is the renderer's.
+///
+/// **[`Quality::High`] is what the client shipped before tiers existed**, so
+/// the default frame did not move on the day this landed —
+/// `crates/client/tests/quality.rs` holds that against the literal values.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Quality {
+    /// Everything off that can be off: no ambient occlusion, no bloom, no
+    /// anti-aliasing, two short shadow cascades at half the map size, and
+    /// trees that become hulls at 35 m.
+    Low,
+    /// The middle: cheap ambient occlusion, the post chain intact, three
+    /// cascades.
+    Medium,
+    /// What ships. Four cascades to 200 m, SSAO medium, SMAA, bloom.
+    #[default]
+    High,
+}
+
+impl Quality {
+    /// The file's spelling, and the screen's.
+    pub fn name(self) -> &'static str {
+        match self {
+            Quality::Low => "low",
+            Quality::Medium => "medium",
+            Quality::High => "high",
+        }
+    }
+
+    /// The inverse. `None` for anything else — a hand-typed `quality = ultra`
+    /// keeps the default rather than guessing which end of the ladder was
+    /// meant, which is `flag`'s posture one type over.
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "low" => Some(Quality::Low),
+            "medium" => Some(Quality::Medium),
+            "high" => Some(Quality::High),
+            _ => None,
+        }
+    }
+
+    /// The ladder, cheapest first. The screen steps along it and
+    /// `tests/quality.rs` walks it to check the tiers only ever get cheaper.
+    pub const LADDER: [Quality; 3] = [Quality::Low, Quality::Medium, Quality::High];
+}
+
+/// The values that survive a restart. A plain struct rather than the
 /// render module's `Settings` because that type also carries UI state (the
 /// selected rail row, where Esc returns to) that has no business on disk —
 /// and because this module must build without Bevy.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Persisted {
     pub fov_deg: f32,
+    /// How much the renderer is asked to do; see [`Quality`].
+    pub quality: Quality,
     pub sensitivity: f32,
     pub invert_look: bool,
     pub vsync: bool,
@@ -145,6 +200,14 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
                 }
             }
             "fov_deg" => num(&mut v.fov_deg, value),
+            // A NAME, not an index: a file is something a person may open.
+            // An unrecognised one keeps the default and is not preserved,
+            // which is what every known-key-bad-value does here.
+            "quality" => {
+                if let Some(q) = Quality::from_name(value) {
+                    v.quality = q;
+                }
+            }
             "sensitivity" => num(&mut v.sensitivity, value),
             "invert_look" => flag(&mut v.invert_look, value),
             "vsync" => flag(&mut v.vsync, value),
@@ -234,6 +297,7 @@ pub fn serialize(v: &Persisted, version: u32, favourites: &[String], unknown: &[
     s.push_str("# not know is kept as it is, not dropped.\n");
     s.push_str(&format!("version = {}\n", version.max(SETTINGS_VERSION)));
     s.push_str(&format!("fov_deg = {}\n", v.fov_deg));
+    s.push_str(&format!("quality = \"{}\"\n", v.quality.name()));
     s.push_str(&format!("sensitivity = {}\n", v.sensitivity));
     s.push_str(&format!("invert_look = {}\n", v.invert_look));
     s.push_str(&format!("vsync = {}\n", v.vsync));
@@ -341,6 +405,9 @@ mod tests {
         // are owned by `render/settings.rs` and asserted there.
         Persisted {
             fov_deg: 75.0,
+            // Not the shipped default, for this fixture's stated reason: a
+            // parser that read nothing would return `High` and pass.
+            quality: Quality::Low,
             sensitivity: 1.0,
             invert_look: false,
             vsync: true,
@@ -358,6 +425,7 @@ mod tests {
     fn changed() -> Persisted {
         Persisted {
             fov_deg: 90.0,
+            quality: Quality::Medium,
             sensitivity: 0.55,
             invert_look: true,
             vsync: false,
@@ -369,6 +437,36 @@ mod tests {
             vol_music: 0.45,
             discord_presence: true,
             discord_share_server: false,
+        }
+    }
+
+    /// The one key on this file that is a NAME rather than a number, so the
+    /// two failure modes a number cannot have are worth pinning: a spelling
+    /// nobody ships, and a case nobody typed.
+    #[test]
+    fn quality_is_a_name_and_an_unknown_one_keeps_the_default() {
+        for q in Quality::LADDER {
+            let mut want = defaults();
+            want.quality = q;
+            let text = serialize(&want, SETTINGS_VERSION, &[], &[]);
+            assert!(
+                text.contains(&format!("quality = \"{}\"", q.name())),
+                "a settings file must spell the tier out; {q:?} wrote:\n{text}"
+            );
+            assert_eq!(parse(&text, defaults()).values.quality, q);
+        }
+        // Unknown, mis-cased and empty all keep the default rather than
+        // guessing which end of the ladder was meant.
+        for bad in ["ultra", "HIGH", "", "2", "lo"] {
+            let got = parse(&format!("quality = {bad}"), defaults())
+                .values
+                .quality;
+            assert_eq!(
+                got,
+                defaults().quality,
+                "`quality = {bad}` resolved to {got:?} rather than keeping the \
+                 default — a name this build does not know must not be guessed"
+            );
         }
     }
 

@@ -1208,6 +1208,7 @@ pub fn stream(
     maps: Res<super::textures::PropMaps>,
     world: Res<WorldId>,
     eye: Res<Eye>,
+    lod: Res<tree::TreeLod>,
 ) {
     let a = store.get_or_insert_with(|| assets(&mut meshes, &mut materials, &mut images, &maps));
 
@@ -1263,7 +1264,7 @@ pub fn stream(
                     // copy: the client's mirror is keyed by it and a renderer
                     // that packed its own would silently never match.
                     let key = cell_key(cell_x as u16, cell_z as u16);
-                    spawn_slot(&mut commands, parent, a, &slot, key);
+                    spawn_slot(&mut commands, parent, a, &slot, key, &lod);
                 }
             }
             ring.built.insert(key, parent);
@@ -1290,6 +1291,7 @@ pub fn spawn_slot(
     a: &PropAssets,
     slot: &terrain::Slot,
     key: u32,
+    lod: &tree::TreeLod,
 ) {
     let yaw = slot.yaw as f32 / 256.0 * std::f32::consts::TAU;
     // Which mesh, which material, and how far the mesh's own origin sits
@@ -1351,10 +1353,6 @@ pub fn spawn_slot(
         part,
         felled: false,
     };
-    // The two LOD bands, from one place so they cannot stop being contiguous
-    // (`tree::lod_ranges`). Resolved for every slot and used by trees only —
-    // a boulder is 1,280 triangles and its hull would be one of those.
-    let (near_lod, far_lod) = tree::lod_ranges();
     let mut e = commands.entity(parent);
     // Three spawn shapes, split rather than merged with a conditional
     // component: only a tree topples, so only a tree carries a [`Topple`],
@@ -1367,7 +1365,7 @@ pub fn spawn_slot(
             Topple { t: -1.0 },
             Mesh3d(mesh),
             MeshMaterial3d(material),
-            near_lod.clone(),
+            lod.near.clone(),
             transform,
         ));
     } else if harvestable {
@@ -1423,7 +1421,7 @@ pub fn spawn_slot(
             Topple { t: -1.0 },
             Mesh3d(a.needles[variant].clone()),
             MeshMaterial3d(a.needle.clone()),
-            near_lod,
+            lod.near.clone(),
             transform,
         ));
     }
@@ -1447,7 +1445,7 @@ pub fn spawn_slot(
             Topple { t: -1.0 },
             Mesh3d(a.impostors[variant].clone()),
             MeshMaterial3d(a.foliage.clone()),
-            far_lod,
+            lod.far.clone(),
             transform,
         ));
     }

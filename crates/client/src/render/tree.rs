@@ -794,31 +794,75 @@ pub const IMPOSTOR_MAX_TRIS: usize = IMPOSTOR_BANDS * IMPOSTOR_SIDES * 2;
 /// The two [`VisibilityRange`]s a tree's parts carry: the near pair (trunk and
 /// canopy) and the far hull.
 ///
-/// **One function because the two are one claim.** Bevy's own documentation
+/// **One type because the two are one claim.** Bevy's own documentation
 /// states the requirement — *"the `end_margin` of a higher LOD is always
 /// identical to the `start_margin` of the next lower LOD; this is important
 /// for the crossfade effect to function properly"* — and two ranges written at
 /// two spawn sites is exactly how that stops being true. `tests/tree.rs` holds
 /// the pair contiguous.
-pub fn lod_ranges() -> (VisibilityRange, VisibilityRange) {
-    let fade_end = TREE_LOD_SWAP_M + TREE_LOD_FADE_M;
-    (
-        VisibilityRange {
-            // No near margin: a tree you are standing in is its own geometry.
-            start_margin: 0.0..0.0,
-            end_margin: TREE_LOD_SWAP_M..fade_end,
-            use_aabb: false,
-        },
-        VisibilityRange {
-            start_margin: TREE_LOD_SWAP_M..fade_end,
-            // `use_aabb` stays false on BOTH, which is Bevy's own note about
-            // crossfading: the two LODs have different AABBs and a fade needs
-            // one distance, so the distance is the shared origin — which is
-            // the same `transform` `spawn_slot` gives every part of a tree.
-            end_margin: TREE_LOD_REACH_M..(TREE_LOD_REACH_M + TREE_LOD_FADE_M),
-            use_aabb: false,
-        },
-    )
+///
+/// **A resource because the swap distance is a graphics tier** (`config::
+/// Quality`, `render/quality.rs`): `props::stream` reads it when a chunk
+/// streams in and `quality::reband_trees` rewrites the trees already standing,
+/// so both halves come from this one value.
+/// `Debug` is deliberately absent: `VisibilityRange` does not implement it,
+/// so a derive here would be a wrapper around a type that cannot print. The
+/// two `Range<f32>`s inside it print perfectly well and the gates name them
+/// individually.
+#[derive(Resource, Clone, PartialEq)]
+pub struct TreeLod {
+    pub near: VisibilityRange,
+    pub far: VisibilityRange,
+}
+
+impl Default for TreeLod {
+    /// [`TREE_LOD_SWAP_M`] — the shipped distance, and `Quality::High`'s.
+    fn default() -> Self {
+        Self::at(TREE_LOD_SWAP_M)
+    }
+}
+
+impl TreeLod {
+    /// The pair for a given swap distance. The fade width and the reach do
+    /// not move with it: the fade is how long a crossfade takes to walk
+    /// through and the reach is the prop ring's diagonal, and neither is a
+    /// function of where the swap happens.
+    pub fn at(swap_m: f32) -> Self {
+        let fade_end = swap_m + TREE_LOD_FADE_M;
+        Self {
+            near: VisibilityRange {
+                // No near margin: a tree you stand in is its own geometry.
+                start_margin: 0.0..0.0,
+                end_margin: swap_m..fade_end,
+                use_aabb: false,
+            },
+            far: VisibilityRange {
+                start_margin: swap_m..fade_end,
+                // `use_aabb` stays false on BOTH, which is Bevy's own note
+                // about crossfading: the two LODs have different AABBs and a
+                // fade needs one distance, so the distance is the shared
+                // origin — the same `transform` `spawn_slot` gives every part
+                // of a tree.
+                end_margin: TREE_LOD_REACH_M..(TREE_LOD_REACH_M + TREE_LOD_FADE_M),
+                use_aabb: false,
+            },
+        }
+    }
+
+    /// Which band a tree part belongs in, or `None` for a part that carries
+    /// no range at all.
+    ///
+    /// **The stump is the `None`, and it is stated here rather than assumed
+    /// at the two call sites.** It is a few dozen triangles that only exist
+    /// after a cut, so it draws at any distance; a `_ => near` default would
+    /// have quietly banded it the first time somebody added a part.
+    pub fn for_part(&self, part: super::props::FellPart) -> Option<&VisibilityRange> {
+        match part {
+            super::props::FellPart::Far => Some(&self.far),
+            super::props::FellPart::Trunk | super::props::FellPart::Canopy => Some(&self.near),
+            super::props::FellPart::Stump | super::props::FellPart::Vanish => None,
+        }
+    }
 }
 
 /// The far LOD for a conifer pair: an opaque lathe through the tree's own

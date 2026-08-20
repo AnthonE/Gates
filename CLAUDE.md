@@ -197,16 +197,31 @@ do not rediscover)
   nonzero in CI — a pass it didn't earn is the worst bug class.
 - Never start a line of a commit body with `Operator, YYYY-MM-DD:` unless
   the same commit updates `DECISIONS.md`.
-- **Median fps hides shader-compile stalls.** A static benchmark can read
-  90+ fps while lazy WebGL program links cost 700 ms+ worst-frames in real
-  play. Prewarm every program at boot; the measure is a COUNT of links after
-  the world is up, never a frame-time threshold. **The mechanism survives the
-  port and is arguably worse natively**: Bevy specializes a pipeline lazily on
-  first use, and a native pipeline compile is a bigger stall than a WebGL
-  link. The gate that asserted it (`browser_smoke`) went with the browser and
-  **has no native replacement** — so this is a live trap with nothing watching
-  it. If a hitch shows up on first look at a new material, this is the first
-  suspect. `RENDER.md` §2 carries the design across.
+- **Median fps hides shader-compile stalls, and natively the symptom is not
+  a stall.** A static benchmark can read 90+ fps while lazy WebGL program
+  links cost 700 ms+ worst-frames in real play. The MECHANISM survives the
+  port — Bevy specializes a pipeline lazily, on the first frame a material is
+  actually drawn — but this entry said the native version was *"a bigger
+  stall"* and that was wrong, checked 2026-08-20:
+  `RenderPlugin::synchronous_pipeline_compilation` defaults to **false**, so
+  the pipeline is built on a task pool and a draw whose pipeline is not ready
+  is SKIPPED rather than waited for. The native failure is therefore a **pop**
+  — a tracer, a bullet mark or another player's body arriving a few frames
+  after the thing that caused it — and looking for a hitch is looking for the
+  wrong shape.
+  ✅ **Mostly closed, two ways.** The loading screen draws the world as it
+  streams in (`loading.rs`, and `world_running` includes `Screen::Loading`),
+  so terrain, water, clutter, trees and every scatter prop specialize while
+  the bar fills; `decal.rs` hand-rolled the same idea for its own material;
+  and `render/prewarm.rs` now does it for **every** `StandardMaterial`, off
+  `AssetEvent::Added` rather than a list, because a hand-kept list of
+  materials-that-need-warming is the drift this file warns about twice
+  elsewhere. What is still open is named in that module: **skinned meshes are
+  a different pipeline key and nothing warms them**, and a driver may still
+  finalize on first real use. The measure remains a COUNT (`PipelineCache::
+  pipelines()` is public) and it still has no gate, because that resource
+  lives in the render world and needs a GPU. `RENDER.md` §2 carries the
+  design; `crates/client/tests/prewarm.rs` gates what reaches the ECS.
 - **A clean merge is not a correct merge, and a destructive read is where
   that bites.** `ClientCore`'s own-fact rings (`pop_hit`, `pop_toast`, the
   refusals) hand each fact over exactly once. On 2026-08-06 two lanes each

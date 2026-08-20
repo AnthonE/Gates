@@ -823,6 +823,16 @@ pub struct Sea {
 
 impl Sea {
     /// Vertices along one axis.
+    /// The sea's mesh, for a probe that wants to weigh it.
+    ///
+    /// Read-only and used by nothing in the client: `examples/frame_cost.rs`
+    /// measures what one `Assets::get_mut` re-clones, so the size in
+    /// `NOW.md` §0pf is a number that can be re-run rather than one that was
+    /// quoted once.
+    pub fn mesh(&self) -> Option<&Handle<Mesh>> {
+        self.mesh.as_ref()
+    }
+
     pub fn n(&self) -> usize {
         self.coords.len()
     }

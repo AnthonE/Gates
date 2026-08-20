@@ -236,10 +236,16 @@ that rediscovers one of these has failed, not learned.
   chroma or luma neutrality, and a featureless wash satisfies all three.
   **Structural assertions run BEFORE any statistic** (§5), and a ranked visual
   gap is not evidence about shading until someone has looked at the frame.
-- **Median fps hides shader-compile stalls.** Lazy pipeline specialization is
-  Bevy's version of the lazy WebGL program link that cost 700 ms+ worst-frames
-  while the benchmark read 90 fps. The gate is a **COUNT** — no new pipelines
-  created after the world is up — never a frame-time threshold.
+- **Median fps hides shader-compile stalls, and the native symptom is a POP.**
+  Lazy pipeline specialization is Bevy's version of the lazy WebGL program link
+  that cost 700 ms+ worst-frames while the benchmark read 90 fps — but
+  `synchronous_pipeline_compilation` is false by default, so a draw whose
+  pipeline is not ready is skipped rather than waited for (measured 2026-08-20;
+  `CLAUDE.md`'s trap entry said "a bigger stall" and was corrected). The gate is
+  still a **COUNT** — no new pipelines created after the world is up — never a
+  frame-time threshold, and it still needs a GPU. `render/prewarm.rs` closes
+  most of it by drawing every `StandardMaterial` once, tiny, when it is
+  created; skinned meshes are a different key and are not covered.
 - **A gate that waits on a clock is not a gate on this box.** Assert on
   observable state (`inWorld`, `snapshots > n`, frames rendered), never on
   elapsed milliseconds. Under lavapipe this is not a nicety: a CPU rasterizer
@@ -869,7 +875,7 @@ never a number quietly edited into this table.
 |---|---|---|
 | triangles | < 1.5 M | `DESIGN.md` §9 — **browser-era, not re-derived** |
 | draw calls | < 300 | `DESIGN.md` §9 — **browser-era, not re-derived** |
-| frame | 60 fps on a mid laptop iGPU | `DESIGN.md` §9 — survives the move; **measured on a GPU, never on the gate box** |
+| frame | 60 fps on a mid laptop iGPU | `DESIGN.md` §9 — survives the move; **measured on a GPU, never on the gate box**. Since 2026-08-20 there is a mechanism under it rather than only a hope: `render/quality.rs`'s LOW/MEDIUM/HIGH ladder, whose top rung is this table's frame exactly (`DECISIONS.md` §open, graphics tiers v0) |
 | texture payload | < 12 MB before compression | `ART.md` §7 — **retired**: it was a first-visit download, and a depot install is not one |
 | clutter ring | 5×5 tiles of 16 m, 721 elements/tile peak | `sim-core::terrain`, and it is frame-budget-bound, not design-bound |
 | eye height | 1.6 m | `DECISIONS.md` §open, client cosmetics |

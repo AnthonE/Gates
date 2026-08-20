@@ -25,7 +25,7 @@ use bevy::anti_alias::smaa::Smaa;
 use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::core_pipeline::Skybox;
-use bevy::light::{light_consts::lux, CascadeShadowConfigBuilder, EnvironmentMapLight, SunDisk};
+use bevy::light::{light_consts::lux, EnvironmentMapLight, SunDisk};
 use bevy::pbr::{Atmosphere, AtmosphereSettings, ScatteringMedium, ScreenSpaceAmbientOcclusion};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
@@ -134,6 +134,19 @@ pub const AIR_DENSITY: f32 = 1.6;
 /// The camera, and the only camera.
 #[derive(Component)]
 pub struct EyeCam;
+
+/// The cascade split's shape — how the sun's shadow distance is divided, as
+/// opposed to how far it reaches or how many pieces it is cut into.
+///
+/// **Named here because `render/quality.rs` builds the same config at three
+/// tiers and these three do not move between them.** The count and the
+/// maximum distance are a budget; where the resolution steps is a look, and a
+/// tier that re-split it would be changing the picture rather than its cost.
+pub const CASCADE_MIN_M: f32 = 0.2;
+/// See [`CASCADE_MIN_M`].
+pub const CASCADE_FIRST_M: f32 = 12.0;
+/// See [`CASCADE_MIN_M`].
+pub const CASCADE_OVERLAP: f32 = 0.2;
 
 /// The sun, and the only directional light.
 #[derive(Component)]
@@ -264,8 +277,21 @@ pub fn setup(
         //
         // Medium, not the `High` default: this renders on a CPU rasterizer in
         // the gate and High is 18 samples per pixel.
+        // …and Medium is now `Quality::High`'s row rather than a literal
+        // here. `rig::setup` spawns the DEFAULT tier, so a fresh boot draws
+        // exactly what it drew before tiers existed and `quality::apply`
+        // writes nothing until a player moves the knob.
         ScreenSpaceAmbientOcclusion {
-            quality_level: bevy::pbr::ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+            // **The DEFAULT tier, not the player's** — a bundle is static
+            // and the LOW rung carries no such component at all, so a rig
+            // that tried to spawn the current tier could express two of the
+            // three rungs and not the third. `quality::apply` reconciles on
+            // the frame this camera appears (it watches `Added<EyeCam>` for
+            // exactly this), so a persisted LOW is corrected before the first
+            // frame is drawn rather than being a bundle shape.
+            quality_level: super::quality::tier(crate::config::Quality::default())
+                .ssao
+                .expect("the default tier carries ambient occlusion"),
             ..default()
         },
         // SMAA rather than FXAA (blurrier) or TAA (needs motion vectors and a
@@ -295,16 +321,12 @@ pub fn setup(
             shadows_enabled: true,
             ..default()
         },
-        CascadeShadowConfigBuilder {
-            num_cascades: 4,
-            minimum_distance: 0.2,
-            // The near ring is 5×5 chunks of 64 m — 160 m from the player to
-            // its corner. Shadows past the ring have nothing standing in them.
-            maximum_distance: 200.0,
-            first_cascade_far_bound: 12.0,
-            overlap_proportion: 0.2,
-        }
-        .build(),
+        // Four cascades to 200 m — the near ring is 5×5 chunks of 64 m, so
+        // 160 m from the player to its corner and shadows past the ring have
+        // nothing standing in them. **Both numbers are `Quality::High`'s row
+        // now**, and the shape of the split ([`CASCADE_MIN_M`] and its two
+        // neighbours) is what does not move between tiers.
+        super::quality::tier(crate::config::Quality::default()).cascades(),
         // The disk in the sky. It renders by default through the atmosphere
         // (`SunDisk::EARTH` is what an absent component resolves to), and it
         // is stated explicitly here for two reasons: it is a member of the

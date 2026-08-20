@@ -199,4 +199,45 @@ fn main() {
     row("a cold sweep (teleport — nothing carried)", cold);
     row("a one-cell snap (walking — the core carried)", warm);
     println!("  {:<46} {:9.2}x", "ratio", cold / warm);
+
+    // ── water::animate — what a frame that moves NOTHING still pays ────────
+    //
+    // `NOW.md` §0pf item 2 says the sea clones ~677 KiB into the render world
+    // every frame: `Assets::get_mut` marks the mesh modified, and a mesh with
+    // `MAIN_WORLD` usage is deep-cloned on every modification. That number was
+    // quoted rather than derived, and the whole point of this file is that a
+    // finding can be re-run — so it is measured here, off the mesh the sweep
+    // above actually built.
+    println!();
+    println!("water::animate — the per-frame cost of a sea that is not moving");
+    app.add_systems(Update, water::animate);
+    app.insert_resource(Time::<()>::default());
+    let anim = best(16, || {
+        app.update();
+    });
+    let (verts, bytes) = {
+        let sea = app.world().resource::<Sea>();
+        let meshes = app.world().resource::<Assets<Mesh>>();
+        match sea.mesh().and_then(|h| meshes.get(h)) {
+            Some(m) => {
+                let v = m.count_vertices();
+                // What one modification hands the extractor: every attribute
+                // buffer plus the index buffer.
+                let per_vertex = m
+                    .attributes()
+                    .map(|(_, values)| values.get_bytes().len())
+                    .sum::<usize>();
+                let idx = m.indices().map_or(0, |i| i.len() * 4);
+                (v, per_vertex + idx)
+            }
+            None => (0, 0),
+        }
+    };
+    println!("  {:<46} {:9}", "the sea's vertices", verts);
+    println!(
+        "  {:<46} {:8.1} KiB",
+        "…and the bytes one modification re-clones",
+        bytes as f32 / 1024.0
+    );
+    row("stream + animate on a still frame", anim);
 }
