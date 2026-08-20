@@ -170,9 +170,28 @@ What is left on the arms:
   built: a second camera has to duplicate exposure, tonemap and atmosphere,
   and `CLAUDE.md`'s trap list says that coupled set has exactly one owner.
   The held item has had the same flaw since it existed.
-- **The hand reads large and the fingers are splayed rather than gripping.**
-  Tuning, and it needs a GPU — `--bin modelview <file> --eye --hide
-  char1_body` previews the same geometry.
+- **The hand reads large and the fingers are splayed rather than gripping,
+  and no clip can fix the second half.** The skeleton is 24 joints with no
+  finger bones at all, so every hand in every clip is the bind pose forever.
+  That is a mesh property; a re-import or a sculpted grip is the only lever.
+  `--bin modelview <file> --eye --hide char1_body` previews the geometry.
+
+**The off hand is gone, 2026-08-20** (operator: *"our models hands are a bit
+crossed?"*). `Pistol_Idle_Loop` is the rig's only two-handed hold that loops,
+which is why it was picked, and a two-handed grip on a one-handed rock puts
+the support palm **62–66 mm** from the hold hand and **31 mm nearer the eye**,
+so it drew in front of the item — the tightest of all 46 (clip × hold hand)
+pairs in the rig's 53 clips, and the left arm crosses the midline to get
+there. `VIEWMODEL_HIDDEN_ARM` collapses `LeftShoulder` in `dress_arms`, which
+takes the whole chain with it to a point at ndc y ≈ −1.8. Hiding beat swapping
+clips because **every one-handed idle this rig owns presents its LEFT hand**
+(torch, spell, shield), so a swap moves the item into the wrong hand, re-derives
+the one placement measured in a running client, and points away from
+`Sword_Attack` — item 2 below, which swings the right arm. One arm is also
+what the reference draws for a one-handed tool. `tests/viewmodel_arms.rs` is
+the gate, and it holds the derivation `VIEWMODEL_ARMS` only ever printed at
+runtime. **Nobody has looked at it yet** — that is owed.
+
 2. **The gather swing is `Sword_Attack`** (operator, 2026-08-17 — the
    reference game swings one animation at everything). No asset is owed; the
    blocker is item 1, a fact on the wire.

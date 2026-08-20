@@ -455,11 +455,15 @@ pub struct Fallback;
 ///
 /// ## What made this possible, and what nearly made it impossible
 ///
-/// A viewmodel needs the arms and **nothing else**, and the obvious way to get
-/// that does not work on this character: the body is one mesh with one
-/// material, so `Visibility` (per entity) has no limb to reach, and the only
-/// lever that does — collapsing a joint to zero scale — inherits down the
-/// hierarchy, so hiding the torso hides the arms hanging off it. That was
+/// A viewmodel needs the arms and **nothing else** — and, it turned out,
+/// only ONE of them: the hold clip is a two-handed grip and the support hand
+/// tangles with the item, so [`VIEWMODEL_HIDDEN_ARM`] collapses the other arm
+/// and carries that whole argument. What follows is about the body.
+///
+/// The obvious way to hide the body does not work on this character: it is one
+/// mesh with one material, so `Visibility` (per entity) has no limb to reach,
+/// and the only lever that does — collapsing a joint to zero scale — inherits
+/// down the hierarchy, so hiding the torso hides the arms hanging off it. That was
 /// reported as "not reachable on this asset", and the report was wrong in a
 /// useful way: what was missing was not a trick but **something to hide**.
 /// `ci/split_arms.py` makes one, splitting the mesh by skin weight into
@@ -501,6 +505,68 @@ pub struct ViewArms {
 /// `(0.082, -0.423, -0.279)`. So the hand lands on the hold point by
 /// construction rather than by taste.
 pub const VIEWMODEL_ARMS: Vec3 = Vec3::new(0.238, -1.477, -0.241);
+
+/// The arm the first-person view does **not** draw, by bone name.
+///
+/// ## Why an arm is deleted rather than posed
+///
+/// [`super::anim::ARMS_HOLD_CLIP`] is `Pistol_Idle_Loop`, and it was chosen
+/// because it is the rig's only **two-handed** hold that loops. That is the
+/// right property for a pistol and the wrong one for everything this game puts
+/// in a hand: a two-handed grip is a support hand clamped onto a weapon that
+/// is not there, so the second hand lands on top of the first with nothing
+/// between them. Measured off the shipped file across the whole 1.667 s loop,
+/// with [`VIEWMODEL_ARMS`] applied:
+///
+///   · the hands stay **62–66 mm apart** for the whole loop — the tightest of
+///     the rig's 22 looping clips by a factor of 2.9 (`Swim_Fwd_Loop` is next,
+///     at 181 mm), and beaten across all 53 only by `Pistol_Aim_Up`,
+///     `Pistol_Aim_Down`, `Pistol_Reload` and `Pistol_Shoot` — the same
+///     two-handed grip, none of which loops;
+///   · the left hand sits **31 mm NEARER the eye** than the right, so the open
+///     support palm draws in FRONT of the held item;
+///   · the left arm crosses the body's midline to get there — its shoulder is
+///     on +X, its hand on −X, which on this rig (right = −X, proven by the
+///     T-pose and by which hand `Punch_Cross` throws) is the far side.
+///
+/// That is the tangle the operator reported as *"our models hands are a bit
+/// crossed?"* (2026-08-20), and it is a property of the POSE, so no offset
+/// fixes it. Two things could: pick a one-handed clip, or stop drawing the
+/// hand that is not holding anything.
+///
+/// **Hiding won, and the reason is the other half of the file.** Every
+/// one-handed idle this rig owns presents its LEFT hand (`Idle_Torch_Loop`,
+/// `Spell_Simple_Idle_Loop`, `Sword_Idle` — the torch, the spell and the
+/// off-hand shield are all on +X), so switching clips moves the item into the
+/// wrong hand: it re-derives [`VIEWMODEL_ARMS`] away from the one placement
+/// that has been measured in a running client, it puts a left hand's chirality
+/// at the lower right of every frame, and it points the hold away from
+/// `Sword_Attack`, which is the operator's spoken gather swing (2026-08-17)
+/// and swings the RIGHT arm. Hiding costs none of that, and one arm is what
+/// the reference game draws for a one-handed tool anyway.
+///
+/// **Collapsing the shoulder is the mechanism**, not `Visibility`: both arms
+/// are one node, one material and one index array (`ci/split_arms.py`), so
+/// there is no entity to hide. A joint scaled to nothing takes every vertex
+/// weighted to it — and its whole child chain — onto its own origin, which for
+/// this bone sits at ndc y ≈ −1.8, comfortably under the bottom of the frame,
+/// and further out still under the swing's push. `--bin modelview --hide` is
+/// the same trick and its doc comment carries the same limit.
+///
+/// ⚠ **The write is one-shot, and that is only safe because this clip carries
+/// no scale channel.** `Pistol_Idle_Loop` animates rotation on 22 joints and
+/// translation on the hips, nothing else, so nothing overwrites the collapse
+/// after [`dress_arms`] runs. `Idle_Loop` DOES animate scale, on all 24 — so a
+/// future clip swap here would pop the arm back with no compile error and no
+/// log line. `tests/viewmodel_arms.rs` gates exactly that, which is what buys
+/// the zero per-frame cost.
+pub const VIEWMODEL_HIDDEN_ARM: &str = "LeftShoulder";
+
+/// What a collapsed joint is scaled to. Not zero: a zero-scale skinning matrix
+/// is a degenerate basis, and every normal derived through it is a division by
+/// nothing. At 1e-4 a vertex half a metre out lands 50 µm from the origin,
+/// which is the same picture with arithmetic that stays finite.
+pub const VIEWMODEL_HIDDEN_SCALE: f32 = 1e-4;
 
 /// Spawn the arms once the rig's glTF is in.
 ///
@@ -553,6 +619,7 @@ pub fn dress_arms(
     children: Query<&Children>,
     names: Query<&Name>,
     mut vis: Query<&mut Visibility>,
+    mut xf: Query<&mut Transform>,
     players: Query<Entity, With<AnimationPlayer>>,
     meshes: Query<(), With<Mesh3d>>,
     item: Query<Entity, With<HeldItem>>,
@@ -567,6 +634,7 @@ pub fn dress_arms(
     let mut stack = vec![root];
     let mut seen = 0usize;
     let (mut body_half, mut hand, mut player) = (None, None, None);
+    let mut off_arm = None;
     let mut drawn = Vec::new();
     while let Some(e) = stack.pop() {
         seen += 1;
@@ -580,6 +648,7 @@ pub fn dress_arms(
             match n.as_str() {
                 super::anim::BODY_NODE => body_half = Some(e),
                 "RightHand" => hand = Some(e),
+                VIEWMODEL_HIDDEN_ARM => off_arm = Some(e),
                 _ => {}
             }
         }
@@ -590,7 +659,14 @@ pub fn dress_arms(
             stack.extend(kids.iter());
         }
     }
-    let (Some(body_half), Some(hand), Some(player)) = (body_half, hand, player) else {
+    // Required, not optional, and `body_half` is the precedent: the dressing
+    // is one atomic step, so a name the asset stopped carrying leaves the
+    // whole viewmodel undressed and loudly wrong rather than half-applied.
+    // `tests/viewmodel_arms.rs` is what stops that reaching a build — it
+    // resolves every name here against the shipped file.
+    let (Some(body_half), Some(hand), Some(player), Some(off_arm)) =
+        (body_half, hand, player, off_arm)
+    else {
         return;
     };
 
@@ -621,6 +697,15 @@ pub fn dress_arms(
         *v = Visibility::Hidden;
     }
 
+    // The arm that is not holding anything — see [`VIEWMODEL_HIDDEN_ARM`] for
+    // the measurement and for why this is a scale and not a `Visibility`.
+    // Scale is the one channel of the three that `Pistol_Idle_Loop` never
+    // writes, so this survives every frame the clip plays without a system to
+    // re-apply it.
+    if let Ok(mut t) = xf.get_mut(off_arm) {
+        t.scale = Vec3::splat(VIEWMODEL_HIDDEN_SCALE);
+    }
+
     if let Some(graph) = rig.graph.clone() {
         let mut transitions = AnimationTransitions::new();
         let mut p = AnimationPlayer::default();
@@ -643,7 +728,7 @@ pub fn dress_arms(
 
     arms.hand = Some(hand);
     arms.dressed = true;
-    info!("viewmodel: arms up, body half hidden");
+    info!("viewmodel: arms up, body half hidden, {VIEWMODEL_HIDDEN_ARM} collapsed");
 }
 
 /// Say where the hand actually ended up, once, in VIEW space.
