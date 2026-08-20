@@ -869,7 +869,7 @@ never a number quietly edited into this table.
 |---|---|---|
 | triangles | < 1.5 M | `DESIGN.md` §9 — **browser-era, not re-derived** |
 | draw calls | < 300 | `DESIGN.md` §9 — **browser-era, not re-derived** |
-| frame | 60 fps on a mid laptop iGPU | `DESIGN.md` §9 — survives the move; **measured on a GPU, never on the gate box** |
+| frame | 60 fps on a mid laptop iGPU | `DESIGN.md` §9 — survives the move; **measured on a GPU, never on the gate box**. Since 2026-08-20 there is a mechanism under it rather than only a hope: `render/quality.rs`'s LOW/MEDIUM/HIGH ladder, whose top rung is this table's frame exactly (`DECISIONS.md` §open, graphics tiers v0) |
 | texture payload | < 12 MB before compression | `ART.md` §7 — **retired**: it was a first-visit download, and a depot install is not one |
 | clutter ring | 5×5 tiles of 16 m, 721 elements/tile peak | `sim-core::terrain`, and it is frame-budget-bound, not design-bound |
 | eye height | 1.6 m | `DECISIONS.md` §open, client cosmetics |

@@ -9,8 +9,11 @@
 //!
 //! **What is NOT copied is the row count.** The reference's GRAPHICS tab lists
 //! shadow cascades, anisotropic filtering, parallax mapping and a dozen more
-//! because it has a renderer with those switches. Ours has nine settings that
-//! do something, and this screen shows nine settings. A category with nothing
+//! because it has a renderer with those switches. Ours has ten settings that
+//! do something, and this screen shows ten settings — and the tenth is a
+//! LADDER rather than a panel: `render/quality.rs` states the case for one
+//! knob, which is that six independent toggles is six ways to build a frame
+//! nobody has ever looked at. A category with nothing
 //! behind it says so in a sentence instead of drawing greyed rows that imply
 //! a feature exists — the same rule the HUD already obeys, where "a 0-max
 //! meter is undrawn, not drawn empty", and the same rule the intro screen
@@ -42,7 +45,8 @@
 use bevy::prelude::*;
 use bevy::window::{PresentMode, PrimaryWindow, WindowMode};
 
-use crate::config::{self, Persisted};
+use super::quality;
+use crate::config::{self, Persisted, Quality};
 use crate::ui::servers::Favourites;
 
 use super::menu::Screen;
@@ -78,6 +82,9 @@ pub const CATEGORIES: [&str; 7] = [
 #[derive(Resource)]
 pub struct Settings {
     pub fov_deg: f32,
+    /// How much the renderer is asked to do — `render/quality.rs` is the
+    /// table, `config::Quality` is the ladder and the file format.
+    pub quality: Quality,
     /// A multiplier on `input::MOUSE_RAD_PER_PX`, not a replacement for it.
     pub sensitivity: f32,
     pub invert_look: bool,
@@ -117,6 +124,10 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             fov_deg: FOV_DEG,
+            // The frame the client drew before tiers existed. Anything else
+            // as a default would be a visual change nobody asked for,
+            // arriving as a side effect of a performance feature.
+            quality: Quality::default(),
             sensitivity: 1.0,
             invert_look: false,
             vsync: true,
@@ -184,6 +195,7 @@ impl Default for Settings {
 /// match rather than five queries.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Knob {
+    Quality,
     DiscordPresence,
     DiscordShareServer,
     Vsync,
@@ -207,6 +219,19 @@ impl Settings {
     /// reach a different clamp than the mouse path.
     pub fn adjust(&mut self, knob: Knob, delta: i32) {
         match knob {
+            // Steps along `Quality::LADDER` and STOPS at each end rather than
+            // wrapping. A wrap would put a player who clicked once too often
+            // on the far end of the ladder from where they were looking —
+            // which for this knob means the frame changing completely on a
+            // click that was meant to nudge it.
+            Knob::Quality => {
+                let at = Quality::LADDER
+                    .iter()
+                    .position(|q| *q == self.quality)
+                    .unwrap_or(Quality::LADDER.len() - 1) as i32;
+                let want = (at + delta.signum()).clamp(0, Quality::LADDER.len() as i32 - 1);
+                self.quality = Quality::LADDER[want as usize];
+            }
             Knob::Vsync => self.vsync = !self.vsync,
             Knob::MaxFps => self.max_fps = step_fps(self.max_fps, delta),
             Knob::Fullscreen => self.fullscreen = !self.fullscreen,
@@ -254,6 +279,7 @@ impl Settings {
     /// What the control on this row currently reads.
     fn value(&self, knob: Knob) -> String {
         match knob {
+            Knob::Quality => self.quality.name().to_uppercase(),
             Knob::Vsync => on_off(self.vsync),
             Knob::MaxFps => {
                 if self.max_fps == 0 {
@@ -281,6 +307,7 @@ impl Settings {
     fn persisted(&self) -> Persisted {
         Persisted {
             fov_deg: self.fov_deg,
+            quality: self.quality,
             sensitivity: self.sensitivity,
             invert_look: self.invert_look,
             vsync: self.vsync,
@@ -305,6 +332,11 @@ impl Settings {
         let step = |v: f32, s: f32| (v / s).round() * s;
         Self {
             fov_deg: p.fov_deg.clamp(FOV_MIN_DEG, FOV_MAX_DEG),
+            // No clamp owed: the parser only produces a value that is on the
+            // ladder (`Quality::from_name` refuses anything else and keeps
+            // the default), so unlike every numeric row above there is no
+            // out-of-range state to sanitize here.
+            quality: p.quality,
             sensitivity: step(p.sensitivity, SENS_STEP).clamp(SENS_MIN, SENS_MAX),
             invert_look: p.invert_look,
             vsync: p.vsync,
@@ -499,6 +531,11 @@ enum Row {
     /// A read-only row: a label and a value nobody can change here. The
     /// keybind list is all of these, and so is anything the client fixes.
     Fact(&'static str, &'static str),
+    /// A read-only row whose value is DERIVED from the settings rather than
+    /// written beside them — what a knob one row up actually resolves to.
+    /// A function pointer rather than a string so the screen cannot state a
+    /// consequence the renderer does not have.
+    FactOf(&'static str, fn(&Settings) -> String),
     /// A sentence, for a category with nothing in it.
     Note(&'static str),
 }
@@ -531,14 +568,52 @@ fn rows(cat: usize) -> Vec<Row> {
             Row::Number("FPS LIMIT", Knob::MaxFps, "frames per second"),
             Row::Toggle("FULLSCREEN", Knob::Fullscreen),
         ],
+        // **The readout is DERIVED, not written out beside the knob.** Three
+        // of these rows used to be `Row::Fact`s reading "SMAA, always on",
+        // "SSAO medium, always on" and a fixed render distance — true when
+        // nothing could change them and false the moment a tier could. A
+        // screen that states what a setting does has to read the same table
+        // the renderer does, or it becomes the most confidently wrong thing
+        // in the game.
         "GRAPHICS" => vec![
+            Row::Number("QUALITY", Knob::Quality, "the renderer's budget"),
+            Row::FactOf("  ambient occlusion", |s| {
+                match quality::tier(s.quality).ssao {
+                    Some(q) => format!("SSAO {q:?}").to_lowercase(),
+                    None => "off".to_string(),
+                }
+            }),
+            Row::FactOf("  anti-aliasing", |s| {
+                if quality::tier(s.quality).smaa {
+                    "SMAA".to_string()
+                } else {
+                    "off".to_string()
+                }
+            }),
+            Row::FactOf("  bloom", |s| {
+                on_off(quality::tier(s.quality).bloom).to_string()
+            }),
+            Row::FactOf("  shadows", |s| {
+                let t = quality::tier(s.quality);
+                format!(
+                    "{} cascades to {:.0} m at {}px",
+                    t.cascades, t.shadow_m, t.shadow_map_px
+                )
+            }),
+            Row::FactOf("  far trees", |s| {
+                format!(
+                    "one hull past {:.0} m",
+                    quality::tier(s.quality).tree_lod_swap_m
+                )
+            }),
             Row::Number("FIELD OF VIEW", Knob::Fov, "vertical degrees"),
+            // Still fixed, and still a fact: the rings decide which tiles
+            // EXIST, so moving one is a streaming change rather than a draw
+            // change — and `ART.md` rule 4 is a floor a tier may not cross.
             Row::Fact(
                 "RENDER DISTANCE",
                 "160 m near ring, 2 km far mesh - fixed by the streaming budget",
             ),
-            Row::Fact("ANTI-ALIASING", "SMAA, always on"),
-            Row::Fact("AMBIENT OCCLUSION", "SSAO medium, always on"),
         ],
         "CONTROLS" => vec![
             Row::Number("MOUSE SENSITIVITY", Knob::Sensitivity, "x base"),
@@ -819,6 +894,19 @@ fn spawn_row(
                 children![
                     ui::strong(*label, 15.0, ui::TEXT),
                     ui::label(*value, 13.0, ui::FAINT),
+                ],
+            ));
+        }
+        // The same row, with the value resolved against the settings the
+        // pane was built from. `rebuild` re-spawns the pane on every change
+        // (`Settings::dirty`), so these follow the knob above them.
+        Row::FactOf(label, of) => {
+            pane.spawn((
+                frame(),
+                BackgroundColor(ui::ROW_IDLE),
+                children![
+                    ui::strong(*label, 15.0, ui::TEXT),
+                    ui::label(of(settings), 13.0, ui::FAINT),
                 ],
             ));
         }

@@ -42,6 +42,36 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0gq · The renderer has a budget knob — LANDED 2026-08-20, unlooked-at *(client lane)*
+
+There was no graphics setting at all: the GRAPHICS tab held a field of view
+and three `Row::Fact`s saying the rest was fixed, so a player whose GPU could
+not hold the frame had one lever and it was the fps cap. `config::Quality` is
+LOW/MEDIUM/HIGH now and `render/quality.rs` is the table — AO, SMAA, bloom,
+shadow cascades with their reach and map size, and the tree LOD swap distance.
+Knob: `DECISIONS.md` §open, graphics tiers v0.
+
+**HIGH is the frame that shipped, exactly**, and `tests/quality.rs` holds that
+column against the literals `rig.rs` used to carry. That is the whole safety
+argument for landing it unlooked-at: the default frame did not move.
+
+**Nobody has seen LOW or MEDIUM**, which is the residual. The ladder's ORDER
+is arithmetic — a cascade re-rasterizes every caster, and the swap distance
+decides how much forest that is — but where each rung sits is a judgement, and
+the visual gate here is a person. Walk the knob down and see whether MEDIUM is
+still the game.
+
+**A render scale is the biggest lever and is not here**: Bevy renders to the
+window surface, so a scaled path is an off-screen target and a blit, its own
+slice. Same for the clutter and prop rings, which decide which tiles exist
+rather than how they draw (`ART.md` rule 4 is a floor a tier may not cross).
+
+Gates: `tests/quality.rs` (5, new). Eight mutants caught, and two gates needed
+a second draft: the clamp one passed a wrap, because five steps on a three-rung
+ladder lands right anyway; and the applier REACTED to a settings change, so a
+tier chosen last session never reached a camera that spawns several frames
+after the file loads. It reconciles on `Added<EyeCam>` now.
+
 ## 0lod · The far forest is a hull — LANDED 2026-08-20, unlooked-at *(client lane)*
 
 The ring's triangle debt is paid: **1,935,200 → 509,630 tris** at the prop

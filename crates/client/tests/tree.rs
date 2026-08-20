@@ -23,9 +23,8 @@ use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use client::render::terrain_mesh::{CHUNK_M, NEAR_RADIUS};
 use client::render::tree::{
-    bounds, conifer, impostor_of, lod_ranges, min_y, needle_image, species_of, tris,
-    CONIFER_MAX_TRIS, CONIFER_POOL, IMPOSTOR_MAX_TRIS, SPECIES, TREE_LOD_FADE_M, TREE_LOD_SWAP_M,
-    TREE_MAX_R,
+    bounds, conifer, impostor_of, min_y, needle_image, species_of, tris, TreeLod, CONIFER_MAX_TRIS,
+    CONIFER_POOL, IMPOSTOR_MAX_TRIS, SPECIES, TREE_LOD_FADE_M, TREE_LOD_SWAP_M, TREE_MAX_R,
 };
 
 /// Trees inside the client's 5×5×64 m prop ring, p90 over 100 eye positions
@@ -397,7 +396,8 @@ fn the_impostor_is_cheap() {
 /// cost this slice exists to avoid, paid twice.
 #[test]
 fn the_two_lod_bands_meet_and_the_far_one_outlasts_the_ring() {
-    let (near, far) = lod_ranges();
+    let lod = TreeLod::default();
+    let (near, far) = (&lod.near, &lod.far);
     assert_eq!(
         near.end_margin, far.start_margin,
         "the near LOD fades out over {:?} and the far one fades in over {:?} — \

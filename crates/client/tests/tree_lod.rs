@@ -27,7 +27,7 @@ use bevy::camera::visibility::VisibilityRange;
 use bevy::prelude::*;
 use client::render::props::{assets, spawn_slot, FellPart, Fellable, PropAssets};
 use client::render::textures::{MapSet, PropMaps};
-use client::render::tree::{lod_ranges, TREE_LOD_FADE_M, TREE_LOD_SWAP_M};
+use client::render::tree::{TreeLod, TREE_LOD_FADE_M, TREE_LOD_SWAP_M};
 use sim_core::terrain::{Occupant, Slot};
 
 /// The cell this fixture's slot claims. Any key works — the LOD does not read
@@ -84,7 +84,7 @@ fn spawned(app: &mut App, a: &PropAssets, s: &Slot) -> (Entity, Vec<Entity>) {
         .id();
     {
         let mut commands = app.world_mut().commands();
-        spawn_slot(&mut commands, parent, a, s, KEY);
+        spawn_slot(&mut commands, parent, a, s, KEY, &TreeLod::default());
     }
     app.world_mut().flush();
     let kids = app
@@ -112,7 +112,8 @@ fn a_spawned_tree_carries_both_lod_bands() {
         kids.len()
     );
 
-    let (near, far) = lod_ranges();
+    let lod = TreeLod::default();
+    let (near, far) = (&lod.near, &lod.far);
     let variant = YAW as usize % a.pine_variants();
     let want_far = a.impostor_mesh(variant).clone();
     let want_trunk = a.pine_mesh(variant).clone();
@@ -134,7 +135,7 @@ fn a_spawned_tree_carries_both_lod_bands() {
         if mesh == want_far {
             seen_hull = true;
             assert!(
-                range == Some(&far),
+                range == Some(far),
                 "the far hull must carry the far band ({:?}..{:?}), or it \
                  draws at every distance and the LOD is a fourth tree",
                 far.start_margin,
@@ -143,7 +144,7 @@ fn a_spawned_tree_carries_both_lod_bands() {
         } else if mesh == want_trunk {
             seen_trunk = true;
             assert!(
-                range == Some(&near),
+                range == Some(near),
                 "the trunk must carry the near band ({:?}..{:?}), or 6 k \
                  triangles survive past the swap and the hull is drawn on top \
                  of them",
@@ -153,7 +154,7 @@ fn a_spawned_tree_carries_both_lod_bands() {
         } else if mesh == want_canopy {
             seen_canopy = true;
             assert!(
-                range == Some(&near),
+                range == Some(near),
                 "the canopy must carry the near band — it is the alpha-masked \
                  half, which is the expensive one in every pass"
             );
@@ -298,7 +299,8 @@ fn only_a_tree_carries_a_visibility_range() {
 /// and exactly the kind of thing no arithmetic gate in this repo would notice.
 #[test]
 fn the_swap_actually_crossfades() {
-    let (near, far) = lod_ranges();
+    let lod = TreeLod::default();
+    let (near, far) = (&lod.near, &lod.far);
     // Bevy's own predicate rather than a read of `TREE_LOD_FADE_M`: the
     // component is what the renderer acts on, and a fade constant that never
     // reaches it is the failure this is looking for.

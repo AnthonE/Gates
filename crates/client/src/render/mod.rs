@@ -73,6 +73,7 @@ pub mod mobs;
 // player sees instead of the world, `panels` is what they see on top of it.
 pub mod panels;
 pub mod pause;
+pub mod quality;
 // Discord rich presence: which screen means what, and the handoff to the
 // worker. The model — socket, framing, payloads, copy — is `crate::discord`,
 // which is pure and unconditional. Dark unless `GATES_DISCORD_APP_ID` is set.
@@ -710,8 +711,19 @@ impl Plugin for GatesRenderPlugin {
                     settings::apply_view,
                     settings::apply_window,
                     settings::save_on_change,
+                    // The graphics tier, and it belongs beside the other two
+                    // appliers rather than in the world schedule: a player
+                    // can move it from the intro screen, so it must run
+                    // wherever `Settings` can change and not only in a world.
+                    // Both halves are guarded on `is_changed()`, so a frame
+                    // nobody touched the settings on costs two resource
+                    // reads. `reband_trees` after `apply`, which is what
+                    // writes the resource it watches.
+                    quality::apply,
+                    quality::reband_trees.after(quality::apply),
                 ),
             )
+            .init_resource::<tree::TreeLod>()
             // **The frame cap, and it must be `Last` and unconditional.**
             // `Last` because a cap has to be the final thing a frame does —
             // registered in `Update` it would sleep before the render it is
