@@ -705,6 +705,53 @@ Both are fixed and both directions are measured: exit 1 with a frame missing,
 exit 0 with six verified on disk. A gate reading that exit code would have
 called the first one a pass.
 
+**The probe photographs a scene now, not just terrain** (2026-08-20). One
+process is the whole population, so every frame the harness had ever taken was
+a picture of ground — and the two things anybody actually asks to see, another
+player and a building, were the two it could not reach. Nothing new was
+needed in the sim: `population = N` seats bots that build a twig base over the
+shard's own wire, `dev_spawn` makes them the camera's neighbours instead of
+scattering them round the coast by id hash, and `dev_spawn_kit` pays for the
+wood a foundation costs. `render/capture.rs` grew a **scene pass** after the
+verb pass — nearest body at eye height as `7-player.png`, nearest base
+(centroid of one cluster, from `BUILD_STANDOFF_M` back) as `8-build.png` —
+and `ci/scene.sh` arranges both halves. Both shots are conditional and skip
+loudly; the tail check verifies them beside the vantages.
+
+Four things it cost, and three of them are already-paid traps re-collected:
+
+- **Animals are on the body lane.** The first run of the scene pass, against a
+  shard with a population of ZERO, reported *"player at 67.3 m"* and
+  photographed a wolf — `bodies.rs`'s own scar (`mob::slot_of_id`), reproduced
+  exactly, in the file next to it.
+- **The probe dies in the pile.** `dev_spawn` puts every body on one point,
+  which is what makes the scene and also what puts the camera inside six bots.
+  Measured: dead at frame 32 with the HUD reading `CHARGE · 2s · N 11M`. So
+  the rig does not arm the raiders by default, and lets the world run first —
+  the bots walk continuously and are spread within a couple of minutes.
+- **`world_running` is true for a corpse**, so a dead probe used to shoot six
+  vantages of the death wash and exit 0. It now says so and exits nonzero.
+  This is the §"wolves kill it" failure below, finally made loud.
+- **Aiming at a body is not seeing one, and it took four runs to believe it.**
+  Bodies at 9.9 m, 25.9 m and 5.6 m were each aimed at correctly and each
+  photographed as foliage or a wall — which reads exactly like "remote bodies
+  do not render", and is not. The camera now RANKS candidates by whether the
+  line to them is clear (`sight_is_clear`), and the fifth run put three
+  mannequins in frame with one at the crosshair. Two things worth keeping:
+  a tree's `occupant_volume` radius is **0.2398 m — the bark, not the
+  canopy**, so a sight test against it passes straight through a tree that
+  fills the frame (the proxy is trunk-to-line distance at `CANOPY_CLEAR_M`);
+  and a piece is a blocker only when `loc != LOC_PLANE`, because the
+  horizontal one is the floor the body is standing on.
+
+⚠ **`live` is never true for a remote body under lavapipe** — 20 of 20, 17 of
+17, every run. The probe renders at about 1 fps while the shard ticks at 30,
+so every sample is a clamp. It is recorded and printed, never obeyed:
+`bodies::stream` reads the same interpolator with no `live` check, so it draws
+the mannequin at the clamp, and a camera that skipped stale bodies would
+refuse to photograph one that is on screen. An early cut of this filtered on
+it and skipped every body on the island.
+
 **Landed: the harness and the measurement. NOT landed: the assertions.**
 `gates --capture <dir>` settles on observable state (all three rings full —
 25 chunks, 25 scatter parents, 25 clutter tiles, reported at the frame it

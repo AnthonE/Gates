@@ -93,6 +93,82 @@ pub const SWING_FRAMES: u32 = 45;
 /// swing produced has crossed the wire and been drawn.
 pub const MARK_SETTLE_FRAMES: u32 = 12;
 
+/// Frames the scene pass may wait for a subject to turn up before it gives
+/// up and says so.
+///
+/// A frame count for the reason every other budget here is one, and generous
+/// for a reason of its own: **the subjects are produced by another process.**
+/// A body and a wall both arrive over the wire from a shard's `population`
+/// bots, which dial in, spawn, walk and build on their own schedule — so this
+/// waits on somebody else's progress rather than on ours. Under lavapipe a
+/// frame is about a second, so this is a minute and a half: long enough for a
+/// twig foundation to go up beside the probe, short enough that a shard
+/// seated with nobody at all reports an empty island instead of hanging.
+pub const SUBJECT_FRAMES: u32 = 90;
+/// Frames to hold a subject in the middle of the view before the shutter, so
+/// the aim has been where it is for a frame and the body's animation has
+/// ticked. The vantages' [`FRAMES_PER_SHOT`] reasoning, for a moving target.
+pub const SUBJECT_SETTLE_FRAMES: u32 = 4;
+/// How far back the probe wants to stand from a base before photographing it.
+///
+/// **A wall at arm's length is a texture swatch, not a picture of a
+/// building**, and the probe spawns where the builders spawn: `dev_spawn`
+/// puts every body on one point, which is exactly what makes a base reachable
+/// and exactly what puts the camera inside it. Nine metres frames a
+/// foundation and the two levels above it at this rig's field of view.
+///
+/// It is a WANT, never a requirement — the pass shoots from wherever it
+/// actually got to and prints the distance, because a frame taken at 3 m is
+/// evidence about a wall and a frame not taken is evidence about nothing.
+pub const BUILD_STANDOFF_M: f32 = 9.0;
+/// Furthest a body may be and still be worth walking to.
+///
+/// A bound with a reason rather than a taste: past this a standing figure is
+/// a few pixels, and every metre of it is more scatter for the sight test
+/// below to walk. Sixty metres is well inside AOI, so the candidates are
+/// bodies the server is still describing.
+pub const SUBJECT_MAX_M: f32 = 60.0;
+/// Metres a tree trunk may sit from the line of sight before the canopy is
+/// assumed to be across it.
+///
+/// **The trunk is the handle; the canopy is what actually hides a body.**
+/// `terrain::occupant_volume` gives a tree a 0.2398 m radius, which is the
+/// bark — a sight test against that number passes cleanly through a tree
+/// whose foliage fills the frame, which is exactly the picture the first
+/// three runs of this pass produced. A canopy is centred on its trunk, so
+/// trunk-to-line distance is the cheap proxy for it, and two metres is a
+/// conifer's drawn spread at the height a body stands.
+pub const CANOPY_CLEAR_M: f32 = 2.0;
+/// How close the probe wants to be to another player before photographing
+/// them.
+///
+/// **The base is what blocks this shot**, which is the irony of the rig: the
+/// bots build a sprawl of twig foundations around the point everybody spawned
+/// on, and then the camera cannot see anyone through it. Measured — a body
+/// reported 9.9 m away, and again at 25.9 m, both behind a wall the probe was
+/// standing inside. Walking at the subject the way the verb pass walks at a
+/// quarry puts the camera round the wall more often than not, and six metres
+/// frames a standing body head to foot.
+pub const PORTRAIT_M: f32 = 6.0;
+/// Radius around the nearest piece whose pieces are averaged into the aim
+/// point, so the camera frames a BASE rather than one plank of it.
+///
+/// Two bots build two bases and the mean of all pieces on the island is the
+/// empty ground between them — which is the shot this constant exists to
+/// refuse. Twelve metres is three building cells: one base, not two.
+pub const BUILD_CLUSTER_M: f32 = 12.0;
+/// Frames the probe may spend walking to a subject's framing distance.
+/// [`WALK_FRAMES`]'s reasoning at a third of the distance.
+pub const RANGE_FRAMES: u32 = 60;
+/// Conditional shots the tail verifies beside the vantages.
+///
+/// The swing and the two scene subjects. Each one is *conditional* — an
+/// island with no quarry, no neighbour or no base honestly skips it — so
+/// these cannot join [`VANTAGES`] in the required list, and a shot that was
+/// spawned still has to be proven to have reached disk for the reason the
+/// tail check exists at all.
+pub const EXTRA_SHOTS: usize = 3;
+
 /// `(label, yaw radians, pitch radians)`.
 ///
 /// ⚠ **`1` and `3` SWAPPED LABELS on 2026-08-15 and kept their yaws**
@@ -180,6 +256,63 @@ enum Verb {
     Done,
 }
 
+/// The two things a probe alone on an island cannot photograph.
+#[derive(Clone, Copy, PartialEq)]
+enum Subject {
+    /// Another player's body, aimed at eye height — the shot a solo capture
+    /// can never take, because the only body in the world is the one the
+    /// camera is inside.
+    Player,
+    /// Something somebody built, aimed at the middle of one base.
+    Build,
+}
+
+impl Subject {
+    /// The shot's name on disk, and its index. The numbers continue the
+    /// vantages' and the swing's, so a directory listing reads in the order
+    /// the frames were taken.
+    fn label(self) -> (usize, &'static str) {
+        match self {
+            Subject::Player => (VANTAGES.len() + 1, "player"),
+            Subject::Build => (VANTAGES.len() + 2, "build"),
+        }
+    }
+}
+
+/// How far the probe has got through the scene pass. Ordered, and each arm
+/// ends by naming the next.
+#[derive(Clone, Copy, PartialEq)]
+enum Scene {
+    /// Nothing found yet for this subject; scanning every frame since `_`.
+    Hunt { subject: Subject, since: u32 },
+    /// Walking to `want` metres of `at`, since frame `_`, with the best
+    /// distance reached so far and the frame it last improved on.
+    ///
+    /// One state for both directions, because they are one problem: a body is
+    /// usually too FAR to be a portrait and a base is usually too CLOSE to be
+    /// a building, and either way the probe wants to stand at a named
+    /// distance from a fixed point. **Facing the subject throughout**, so the
+    /// frame the shutter reads is the view the walk was aimed by, and so an
+    /// obstacle behind the probe shows up as a stall rather than as a camera
+    /// swinging round.
+    Range {
+        subject: Subject,
+        at: Vec3,
+        want: f32,
+        since: u32,
+        best: f32,
+        improved: u32,
+    },
+    /// Holding the camera on `at` since frame `_`, shooting when it settles.
+    Hold {
+        subject: Subject,
+        since: u32,
+        at: Vec3,
+    },
+    /// Over, either shot or honestly skipped.
+    Done,
+}
+
 #[derive(Resource)]
 pub struct Capture {
     pub dir: PathBuf,
@@ -193,6 +326,12 @@ pub struct Capture {
     /// only looking (which is every frame of the vantage pass).
     pub intent: Option<Intent>,
     verb: Verb,
+    scene: Scene,
+    /// Conditional shots that actually reached [`Screenshot`], verified at
+    /// the tail beside the vantages. `taken` counts entities SPAWNED, which
+    /// is the number the tail check exists because it cannot trust.
+    extra: [Option<PathBuf>; EXTRA_SHOTS],
+    n_extra: usize,
 }
 
 impl Capture {
@@ -206,7 +345,51 @@ impl Capture {
             frame: 0,
             intent: None,
             verb: Verb::Hunt,
+            scene: Scene::Hunt {
+                subject: Subject::Player,
+                since: 0,
+            },
+            extra: std::array::from_fn(|_| None),
+            n_extra: 0,
         }
+    }
+
+    /// Take a shot and remember it for the tail check.
+    ///
+    /// Every shutter in this file goes through here, so `taken` and the
+    /// verified set cannot drift apart — the vantages are verified from
+    /// [`VANTAGES`] by name and everything else is conditional, so an
+    /// unrecorded conditional shot would be one nothing ever proves landed.
+    /// Over the cap the shot is still taken and simply unverified, which is
+    /// wall 4's bounded-with-a-stated-policy in its mildest form: the cap is
+    /// the number of conditional shots this file can take.
+    fn shoot(&mut self, commands: &mut Commands, path: PathBuf, extra: bool) {
+        println!("capture: {}", path.display());
+        if extra {
+            if self.n_extra < EXTRA_SHOTS {
+                self.extra[self.n_extra] = Some(path.clone());
+                self.n_extra += 1;
+            } else {
+                eprintln!(
+                    "capture: over {EXTRA_SHOTS} conditional shots — {} is unverified",
+                    path.display()
+                );
+            }
+        }
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(path));
+        self.taken += 1;
+    }
+
+    /// The verb pass is over; the scene pass begins. Every terminal arm of
+    /// [`verb_pass`] ends here rather than at `finished_at`, which is what
+    /// keeps the two passes in one order instead of racing.
+    fn begin_scene(&mut self) {
+        self.scene = Scene::Hunt {
+            subject: Subject::Player,
+            since: self.frame,
+        };
     }
 }
 
@@ -229,9 +412,42 @@ pub fn drive(
     ring: Res<Ring>,
     props: Res<PropRing>,
     clutter: Res<ClutterRing>,
+    // `Option`, and not because it might legitimately be absent: `WorldId`
+    // and `Net` are inserted from one command buffer and land together, so
+    // `world_running` implies this. A missing non-send resource is a PANIC
+    // rather than a skip, though, and a panicking probe writes no frames and
+    // no diagnosis — the same "worst bug class" the tail check below exists
+    // for, arriving as a crash instead of an empty directory.
+    net: Option<NonSend<super::Net>>,
+    screen: Res<State<super::menu::Screen>>,
 ) {
     cap.frame += 1;
     look.frozen = true;
+
+    // **The probe is a player, and things kill it** (`RENDER.md`: three of
+    // four runs carrying a heavy change died where none of two baseline runs
+    // did, and it was diagnosed as everything else first). A dead body still
+    // streams the world behind the death wash, so `world_running` is true
+    // here and every check below would pass — the run would shoot six
+    // vantages of a red screen and exit 0. Worse, `input::gather` stands down
+    // for a corpse, so the verb and scene passes would spend their whole
+    // budgets walking nowhere and then photograph that.
+    //
+    // Loud, and nonzero: the frames already on disk are real and stay, and
+    // the ones that did not happen are named as a death rather than left to
+    // be read as a slow build. A shard seated with `population` makes this
+    // likelier, not less — a raider's charge does not check who is standing
+    // beside the base.
+    if *screen.get() == super::menu::Screen::Dead {
+        eprintln!(
+            "capture: the probe DIED at frame {} — {} frame(s) written, the rest are \
+             not coming. Nothing below this line is evidence about a build. Pin \
+             `dev_spawn` somewhere the mob roster has not homed on (RENDER.md).",
+            cap.frame, cap.taken
+        );
+        exit.write(AppExit::error());
+        return;
+    }
 
     // **Nothing is built until the server says where.** The welcome carries a
     // seed and no position, so the streamers stand down until the first
@@ -297,6 +513,15 @@ pub fn drive(
                     _ => missing.push(path),
                 }
             }
+            // The conditional shots, by the paths actually spawned. A
+            // skipped subject recorded nothing and is therefore not missed —
+            // absence is honest here, a spawned shot that never landed is not.
+            for path in cap.extra[..cap.n_extra].iter().flatten() {
+                match std::fs::metadata(path) {
+                    Ok(m) if m.is_file() && m.len() > 0 => {}
+                    _ => missing.push(path.clone()),
+                }
+            }
             if missing.is_empty() {
                 println!(
                     "capture: {} frame(s) written to {}",
@@ -309,9 +534,9 @@ pub fn drive(
                     eprintln!("capture: MISSING or empty: {}", p.display());
                 }
                 eprintln!(
-                    "capture: {} of {} vantages did not reach disk",
+                    "capture: {} of {} frames did not reach disk",
                     missing.len(),
-                    VANTAGES.len()
+                    VANTAGES.len() + cap.n_extra
                 );
                 exit.write(AppExit::error());
             }
@@ -327,13 +552,30 @@ pub fn drive(
         // mark it leaves. `NOW.md` §0ps item 1 — *nobody has looked at
         // either* — is a standing item precisely because the probe could
         // only ever stand still and turn its head.
-        verb_pass(
+        // Two passes, in order, and the order is the reason the scene pass
+        // runs second. The verb pass WALKS — up to `QUARRY_CELLS` of cells
+        // away, at a rock — so by the time it is done the probe is standing
+        // back from the spot every body spawned on, which is the standoff the
+        // scene pass would otherwise have to walk for.
+        if cap.verb != Verb::Done {
+            verb_pass(
+                &mut commands,
+                &mut cap,
+                &mut look,
+                &eye,
+                &world,
+                &feed,
+                time.delta_secs(),
+            );
+            return;
+        }
+        scene_pass(
             &mut commands,
             &mut cap,
             &mut look,
             &eye,
             &world,
-            &feed,
+            net.as_deref(),
             time.delta_secs(),
         );
         return;
@@ -347,11 +589,7 @@ pub fn drive(
     // have been at this bearing for a frame before the frame is worth reading.
     if phase == FRAMES_PER_SHOT - 1 {
         let path = cap.dir.join(format!("{idx}-{label}.png"));
-        println!("capture: {}", path.display());
-        commands
-            .spawn(Screenshot::primary_window())
-            .observe(save_to_disk(path));
-        cap.taken += 1;
+        cap.shoot(&mut commands, path, false);
     }
 }
 
@@ -451,7 +689,7 @@ fn verb_pass(
                         eye.pos.x, eye.pos.z
                     );
                     cap.verb = Verb::Done;
-                    cap.finished_at = Some(cap.frame);
+                    cap.begin_scene();
                 }
             }
         }
@@ -488,7 +726,7 @@ fn verb_pass(
                 );
                 cap.intent = None;
                 cap.verb = Verb::Done;
-                cap.finished_at = Some(cap.frame);
+                cap.begin_scene();
             } else if cap.frame - since > WALK_FRAMES {
                 eprintln!(
                     "capture: SKIPPED the verb pass — {WALK_FRAMES} frames of walking \
@@ -496,7 +734,7 @@ fn verb_pass(
                 );
                 cap.intent = None;
                 cap.verb = Verb::Done;
-                cap.finished_at = Some(cap.frame);
+                cap.begin_scene();
             } else {
                 // Throttle so one frame's travel lands ON the target rather
                 // than past it. `dt` is the probe's own frame, which under a
@@ -587,17 +825,443 @@ fn verb_pass(
             }
             if cap.frame - since > MARK_SETTLE_FRAMES {
                 let path = cap.dir.join(format!("{}-swing.png", VANTAGES.len()));
-                println!("capture: {}", path.display());
-                commands
-                    .spawn(Screenshot::primary_window())
-                    .observe(save_to_disk(path));
-                cap.taken += 1;
+                cap.shoot(commands, path, true);
                 cap.intent = None;
                 cap.verb = Verb::Done;
-                cap.finished_at = Some(cap.frame);
+                cap.begin_scene();
             }
         }
         Verb::Done => {}
+    }
+}
+
+/// Point the camera at another player, and at something somebody built.
+///
+/// **This is the half a probe alone on an island cannot reach.** Every frame
+/// the vantage pass takes is a photograph of terrain, because terrain is the
+/// only thing in the world when one client is the whole population — and the
+/// two questions anybody actually asks of a build ("what does another player
+/// look like from here", "do the pieces line up") need a subject this process
+/// does not produce. The subject comes from a shard seated with `population`:
+/// bots that dial the real wire, spawn where `dev_spawn` puts everyone, and
+/// build. `ci/scene.sh` is the rig that arranges both halves.
+///
+/// **It photographs what is there and says so when nothing is**, which is the
+/// verb pass's posture and for the verb pass's reason: an absent frame with
+/// no line printed is indistinguishable from a broken renderer.
+fn scene_pass(
+    commands: &mut Commands,
+    cap: &mut Capture,
+    look: &mut Look,
+    eye: &super::Eye,
+    world: &super::WorldId,
+    net: Option<&super::Net>,
+    dt: f32,
+) {
+    let Some(net) = net else {
+        // Unreachable by the argument at the call site, and handled rather
+        // than asserted anyway: this is the one path that could end a run
+        // with no frames and no reason printed.
+        if !matches!(cap.scene, Scene::Done) {
+            eprintln!("capture: SKIPPED the scene pass — no session to read bodies from.");
+            cap.scene = Scene::Done;
+            cap.finished_at = Some(cap.frame);
+        }
+        return;
+    };
+    let core = &net.session.core;
+
+    match cap.scene {
+        Scene::Hunt { subject, since } => {
+            let found = match subject {
+                // The interpolator, not the predictor: a remote body is
+                // somebody else's input and predicting it would draw the
+                // camera at a place the server never put them (`bodies.rs`).
+                Subject::Player => {
+                    let at = core.render_tick();
+                    let mut rs = client_core::interp::RemoteState::default();
+                    // Nearest body with nothing across the line of sight,
+                    // and — as the fallback — nearest body at all. Ranked
+                    // rather than filtered for the reason `sight_is_clear`
+                    // gives: a clear answer is a heuristic and a blocked one
+                    // is only about trees, so refusing to shoot on it would
+                    // trade a shot of a body behind a canopy for no shot.
+                    let mut best: Option<(Vec3, f32)> = None;
+                    let mut any: Option<(Vec3, f32)> = None;
+                    let mut stale = 0usize;
+                    for id in core.interp.ids() {
+                        if id == core.player_id {
+                            continue;
+                        }
+                        // **Animals are on this lane too, and they are not
+                        // people.** `bodies.rs` carries the long version and
+                        // the scar: an animal is the same class-D record a
+                        // player is, separated only by the high bit of the id,
+                        // and the last thing to forget this drew a humanoid
+                        // rig standing inside every pig. This pass forgot it
+                        // too — the first run of it, against a shard with a
+                        // population of ZERO, reported "player at 67.3 m" and
+                        // photographed a wolf. `mobs::stream` takes the half
+                        // this skips and the two are exact complements.
+                        if sim_core::mob::slot_of_id(id).is_some() {
+                            continue;
+                        }
+                        if !core.interp.sample(id, at, &mut rs) {
+                            continue;
+                        }
+                        // Eye height, so the shot is one player looking at
+                        // another rather than at their boots. `rs` is feet,
+                        // `eye.pos` is already `+ EYE_HEIGHT` (`input.rs`).
+                        let p = Vec3::new(rs.x, rs.y + super::EYE_HEIGHT, rs.z);
+                        let d2 = (p.x - eye.pos.x).powi(2) + (p.z - eye.pos.z).powi(2);
+                        // Too far to be a picture of anybody. Bounded here
+                        // rather than after the scan, so the sight test below
+                        // never walks a 400 m line of cells.
+                        if d2 > SUBJECT_MAX_M * SUBJECT_MAX_M {
+                            continue;
+                        }
+                        // **`live` is recorded, not obeyed, and the reason is
+                        // that this camera has to agree with the RENDERER
+                        // rather than with the server.** A body whose updates
+                        // stopped — walked out of AOI, shift ended — samples
+                        // as a clamp at its last known place, and
+                        // `bodies::stream` reads the same interpolator with no
+                        // `live` check at all, so it draws a mannequin at
+                        // exactly that clamp. Aiming anywhere else would miss
+                        // a body that is on screen.
+                        if !rs.live {
+                            stale += 1;
+                        }
+                        if any.is_none_or(|b| d2 < b.1) {
+                            any = Some((p, d2));
+                        }
+                        if sight_is_clear(world, core, eye.pos, p) && best.is_none_or(|b| d2 < b.1)
+                        {
+                            best = Some((p, d2));
+                        }
+                    }
+                    // Falling back is loud, because the frame that comes
+                    // out of it is a different kind of evidence: the camera
+                    // is pointed at a body that a tree is probably standing
+                    // in front of, which is a photograph of the tree.
+                    if best.is_none() && any.is_some() {
+                        eprintln!(
+                            "capture: every body in range has a tree or a wall across it — \
+                             shooting the nearest anyway. The aim is right; expect something \
+                             in front of it."
+                        );
+                    }
+                    if stale > 0 && best.or(any).is_some() {
+                        println!(
+                            "capture: {stale} of the bodies in range are clamps (their updates \
+                             stopped); they are drawn where they are aimed."
+                        );
+                    }
+                    best.or(any)
+                }
+                // The piece mirror is the renderer's truth (`core.rs`), so
+                // this frames what is actually drawn rather than what the
+                // sim would draw if the defs had arrived.
+                Subject::Build => {
+                    let mut near: Option<(Vec3, f32)> = None;
+                    for rec in core.pieces.entries() {
+                        let t = super::structures::base_transform(
+                            world.seed,
+                            &world.haven,
+                            (rec.cx, rec.cz, rec.level, rec.loc),
+                        );
+                        let p = t.translation;
+                        let d2 = (p.x - eye.pos.x).powi(2) + (p.z - eye.pos.z).powi(2);
+                        if near.is_none_or(|b| d2 < b.1) {
+                            near = Some((p, d2));
+                        }
+                    }
+                    // Average the pieces around the nearest one, so the aim
+                    // is the middle of ONE base. Averaging every piece on the
+                    // island puts the camera on the empty ground between two
+                    // of them, which is the shot `BUILD_CLUSTER_M` refuses.
+                    near.map(|(seed_piece, _)| {
+                        let (mut sum, mut n) = (Vec3::ZERO, 0.0f32);
+                        for rec in core.pieces.entries() {
+                            let t = super::structures::base_transform(
+                                world.seed,
+                                &world.haven,
+                                (rec.cx, rec.cz, rec.level, rec.loc),
+                            );
+                            if t.translation.distance(seed_piece) <= BUILD_CLUSTER_M {
+                                sum += t.translation;
+                                n += 1.0;
+                            }
+                        }
+                        // A metre up off the centroid: a lone foundation's
+                        // centre is the ground, and a camera pointed at the
+                        // ground photographs the dirt in front of it.
+                        let c = sum / n.max(1.0) + Vec3::Y;
+                        let d2 = (c.x - eye.pos.x).powi(2) + (c.z - eye.pos.z).powi(2);
+                        (c, d2)
+                    })
+                }
+            };
+
+            match found {
+                Some((at, d2)) => {
+                    let d = d2.sqrt();
+                    let (_, label) = subject.label();
+                    println!(
+                        "capture: {label} at {:.1},{:.1},{:.1} — {d:.1} m off",
+                        at.x, at.y, at.z
+                    );
+                    // Each subject has a distance it reads well at, and
+                    // they miss it in opposite directions: a base is usually
+                    // too close (the probe spawned inside it) and a body is
+                    // usually too far and behind a wall of it. Walk either
+                    // way; already at the right range is the third case and
+                    // needs no walk at all.
+                    let want = match subject {
+                        Subject::Player => PORTRAIT_M,
+                        Subject::Build => BUILD_STANDOFF_M,
+                    };
+                    cap.scene = if (d - want).abs() > 1.0 {
+                        Scene::Range {
+                            subject,
+                            at,
+                            want,
+                            since: cap.frame,
+                            best: (d - want).abs(),
+                            improved: cap.frame,
+                        }
+                    } else {
+                        Scene::Hold {
+                            subject,
+                            since: cap.frame,
+                            at,
+                        }
+                    };
+                }
+                None if cap.frame - since > SUBJECT_FRAMES => {
+                    let (_, label) = subject.label();
+                    eprintln!(
+                        "capture: SKIPPED the {label} shot — {SUBJECT_FRAMES} frames and no \
+                         {} in the world. Seat a shard with `population` (see ci/scene.sh); \
+                         a probe alone on an island has nothing to photograph.",
+                        match subject {
+                            Subject::Player => "other body",
+                            Subject::Build => "placed piece",
+                        }
+                    );
+                    advance(cap, subject);
+                }
+                None => {}
+            }
+        }
+
+        Scene::Range {
+            subject,
+            at,
+            want,
+            since,
+            best,
+            improved,
+        } => {
+            // Face the subject the whole way, whichever direction the feet
+            // are going: the frame the shutter reads is then the view the walk
+            // was aimed by, and an obstacle reads as a stall rather than as a
+            // camera swinging round to look at it.
+            let (dx, dz) = (at.x - eye.pos.x, at.z - eye.pos.z);
+            look.yaw = bearing_to(dx, dz);
+            look.pitch = 0.0;
+            let d = (dx * dx + dz * dz).sqrt();
+            let gap = d - want;
+            let stalled = cap.frame - improved > STALL_FRAMES;
+            let out_of_frames = cap.frame - since > RANGE_FRAMES;
+
+            if gap.abs() <= 0.5 || stalled || out_of_frames {
+                if gap.abs() > 1.0 {
+                    // Loud, and then shoot anyway: a frame taken from the
+                    // wrong distance is evidence about the thing, and a frame
+                    // not taken is evidence about nothing. Which of the two
+                    // stopped the walk matters — "something is in the way" and
+                    // "this was always going to take longer" are different
+                    // reads of the same distance.
+                    let (_, label) = subject.label();
+                    eprintln!(
+                        "capture: stopped {d:.1} m from the {label}, wanting {want:.0} m ({}). \
+                         Shooting from here.",
+                        if stalled {
+                            "something is in the way"
+                        } else {
+                            "out of frames"
+                        }
+                    );
+                }
+                cap.intent = Some(Intent::default());
+                cap.scene = Scene::Hold {
+                    subject,
+                    since: cap.frame,
+                    at,
+                };
+            } else {
+                // `Verb::Walk`'s throttle and its measured reason: the axis is
+                // ANALOG, the sim divides it by 127, and one probe frame under
+                // lavapipe is ~3 m at full throttle — so the request is "cover
+                // this much ground", not "hold W". The first cut of the verb
+                // pass held W and oscillated past a 2.3 m quarry forever.
+                // `gap` is signed, so backing away from a base and closing on
+                // a body are the same line of arithmetic.
+                let full = sim_core::movement::WALK_SPEED * dt.max(1.0 / 240.0);
+                let throttle = (gap.abs() / full).clamp(0.10, 1.0) * gap.signum();
+                cap.intent = Some(Intent {
+                    move_x: 0,
+                    move_z: (throttle * 127.0) as i8,
+                    buttons: 0,
+                });
+                // Progress is measured against the GAP, not the distance:
+                // closing and backing away both count, and neither reads as a
+                // stall while it is still happening.
+                let (best, improved) = if gap.abs() < best - 0.05 {
+                    (gap.abs(), cap.frame)
+                } else {
+                    (best.min(gap.abs()), improved)
+                };
+                cap.scene = Scene::Range {
+                    subject,
+                    at,
+                    want,
+                    since,
+                    best,
+                    improved,
+                };
+            }
+        }
+
+        Scene::Hold { subject, since, at } => {
+            cap.intent = Some(Intent::default());
+            let (dx, dy, dz) = (at.x - eye.pos.x, at.y - eye.pos.y, at.z - eye.pos.z);
+            let flat = (dx * dx + dz * dz).sqrt();
+            if flat > 0.01 {
+                look.yaw = bearing_to(dx, dz);
+                look.pitch = dy.atan2(flat);
+            }
+            if cap.frame - since > SUBJECT_SETTLE_FRAMES {
+                let (idx, label) = subject.label();
+                let path = cap.dir.join(format!("{idx}-{label}.png"));
+                cap.shoot(commands, path, true);
+                advance(cap, subject);
+            }
+        }
+
+        Scene::Done => {}
+    }
+}
+
+/// Squared distance from `(px, pz)` to the segment `(ax, az) → (bx, bz)`, in
+/// the ground plane.
+///
+/// Flat on purpose: what hides a standing body is a trunk beside the line,
+/// and a canopy's height is not what decides that. Clamped to the segment, so
+/// a tree BEHIND the camera or beyond the subject is not counted as being in
+/// the way — the unclamped form (distance to the infinite line) rejects half
+/// the island.
+fn seg_dist2(px: f32, pz: f32, ax: f32, az: f32, bx: f32, bz: f32) -> f32 {
+    let (vx, vz) = (bx - ax, bz - az);
+    let (wx, wz) = (px - ax, pz - az);
+    let len2 = vx * vx + vz * vz;
+    let t = if len2 > 0.0 {
+        ((wx * vx + wz * vz) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (dx, dz) = (wx - vx * t, wz - vz * t);
+    dx * dx + dz * dz
+}
+
+/// Would a body at `to` be visible from `from`, or is the world in the way?
+///
+/// **Two blockers, from two different places, and neither is a real
+/// raycast.** Trees come from shared worldgen — no snapshot carries one, so
+/// the client resolves them exactly as the verb pass resolves its quarry —
+/// and walls come from the piece mirror the renderer draws from. Both are
+/// tested the same cheap way: distance from the thing's centre to the sight
+/// SEGMENT, against a radius.
+///
+/// **Walls, not floors**, and `loc` is what separates them: `LOC_PLANE` is
+/// the horizontal piece a body STANDS on, so counting it would reject
+/// everybody in the base as hidden by the ground under their feet. An edge
+/// address is a vertical piece, and that is the one across the view.
+///
+/// It stays a heuristic and says so: a clear answer means "no trunk and no
+/// wall near the line", never "you will see them". The caller ranks with it
+/// and falls back loudly rather than refusing to shoot on it.
+fn sight_is_clear(
+    world: &super::WorldId,
+    core: &client_core::core::ClientCore,
+    from: Vec3,
+    to: Vec3,
+) -> bool {
+    for rec in core.pieces.entries() {
+        if rec.loc == sim_core::build::LOC_PLANE {
+            continue;
+        }
+        let t = super::structures::base_transform(
+            world.seed,
+            &world.haven,
+            (rec.cx, rec.cz, rec.level, rec.loc),
+        );
+        let c = t.translation;
+        // Vertically out of the way: a wall two storeys up is not between
+        // two people standing on the ground. The eye and the subject are
+        // both around 1.6 m, so a span either side of the line's height
+        // covers what could be across it.
+        let span = super::structures::piece_span();
+        if (c.y - (from.y + to.y) * 0.5).abs() > span {
+            continue;
+        }
+        let r = span * 0.5;
+        if seg_dist2(c.x, c.z, from.x, from.z, to.x, to.z) < r * r {
+            return false;
+        }
+    }
+    let pad = CANOPY_CLEAR_M + terrain::CELL_SIZE;
+    let cell = |v: f32| (v / terrain::CELL_SIZE).floor() as i32;
+    let (cx0, cx1) = (cell(from.x.min(to.x) - pad), cell(from.x.max(to.x) + pad));
+    let (cz0, cz1) = (cell(from.z.min(to.z) - pad), cell(from.z.max(to.z) + pad));
+    for cz in cz0..=cz1 {
+        for cx in cx0..=cx1 {
+            let sl = terrain::scatter(world.seed, &world.table, &world.haven, cx, cz);
+            let (r, h) = terrain::occupant_volume(sl.occupant);
+            // Only things tall enough to hide a standing body. A boulder is
+            // 1.5 m and the camera is at 1.6 m, so it is scenery in front of
+            // somebody rather than a wall across them.
+            if h < 2.0 {
+                continue;
+            }
+            let clear = r.max(CANOPY_CLEAR_M);
+            if seg_dist2(sl.x, sl.z, from.x, from.z, to.x, to.z) < clear * clear {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Move the scene pass on to the next subject, or end the run.
+///
+/// One place, so a shot and a skip leave the pass in the same state — the
+/// four call sites above are two of each, and a skip that forgot to advance
+/// would hang the probe on a subject it had already given up on.
+fn advance(cap: &mut Capture, done: Subject) {
+    match done {
+        Subject::Player => {
+            cap.scene = Scene::Hunt {
+                subject: Subject::Build,
+                since: cap.frame,
+            }
+        }
+        Subject::Build => {
+            cap.intent = None;
+            cap.scene = Scene::Done;
+            cap.finished_at = Some(cap.frame);
+        }
     }
 }
 
@@ -643,5 +1307,111 @@ mod tests {
         let cap = Capture::new(PathBuf::from("/nonexistent"));
         assert!(cap.intent.is_none());
         assert!(cap.verb == Verb::Hunt);
+    }
+
+    /// **No two shots may claim one filename**, and the failure would be
+    /// silent: the second `save_to_disk` overwrites the first, the tail check
+    /// finds a non-empty file at every path it asks about, and the run
+    /// reports a full set having thrown a frame away. The swing is
+    /// `VANTAGES.len()` and the subjects continue from it, so adding a
+    /// vantage moves all three together — which is the property this asserts
+    /// rather than the three numbers themselves.
+    #[test]
+    fn every_shot_has_its_own_name() {
+        let mut names: Vec<String> = (0..VANTAGES.len())
+            .map(|i| format!("{i}-{}", VANTAGES[i].1))
+            .collect();
+        names.push(format!("{}-swing", VANTAGES.len()));
+        for s in [Subject::Player, Subject::Build] {
+            let (idx, label) = s.label();
+            names.push(format!("{idx}-{label}"));
+        }
+        let n = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(n, names.len(), "two shots share a filename: {names:?}");
+
+        // Indices are dense from zero, so a listing reads in shooting order
+        // and a gap means a shot lost its number.
+        let mut idx: Vec<usize> = (0..VANTAGES.len()).collect();
+        idx.push(VANTAGES.len());
+        idx.extend([Subject::Player, Subject::Build].map(|s| s.label().0));
+        idx.sort();
+        assert!(
+            idx.iter().enumerate().all(|(i, &n)| i == n),
+            "shot indices are not dense from 0: {idx:?}"
+        );
+    }
+
+    /// **The tail check can only verify what it has room to remember.**
+    /// `EXTRA_SHOTS` bounds the conditional shots (wall 4 wants a cap and a
+    /// stated policy), and the policy is "shoot it, say it is unverified" —
+    /// so a cap set below the number of conditional shots this file actually
+    /// takes would be a permanent complaint on every full run. The swing,
+    /// plus one per subject.
+    #[test]
+    fn the_conditional_shots_all_fit() {
+        assert_eq!(EXTRA_SHOTS, 1 + [Subject::Player, Subject::Build].len());
+    }
+
+    /// **A skipped subject must leave the pass where a shot one does.** Both
+    /// call `advance`, and the failure mode if one forgot to is not a missing
+    /// frame — it is a probe that hunts a subject it has already given up on
+    /// until the process is killed, which writes nothing and explains
+    /// nothing. Asserted as the two transitions plus the ending.
+    #[test]
+    fn every_subject_hands_over_or_ends_the_run() {
+        let mut cap = Capture::new(PathBuf::from("/nonexistent"));
+        cap.frame = 7;
+        advance(&mut cap, Subject::Player);
+        assert!(
+            matches!(
+                cap.scene,
+                Scene::Hunt {
+                    subject: Subject::Build,
+                    since: 7
+                }
+            ),
+            "the player shot did not hand over to the build shot"
+        );
+        assert!(cap.finished_at.is_none(), "the run ended a subject early");
+
+        advance(&mut cap, Subject::Build);
+        assert!(matches!(cap.scene, Scene::Done));
+        assert_eq!(
+            cap.finished_at,
+            Some(7),
+            "the last subject did not end the run — the probe would hang"
+        );
+        assert!(cap.intent.is_none(), "the probe was left driving");
+    }
+
+    /// **The sight test is clamped to the SEGMENT, and the unclamped form is
+    /// the bug it is written against.** Distance to the infinite line rejects
+    /// a tree standing behind the camera or well past the subject, which on a
+    /// wooded island is most of them — the pass would then report every body
+    /// as blocked and never prefer anything. Asserted at both ends and in the
+    /// middle, with the perpendicular case as the one that must still fire.
+    #[test]
+    fn only_what_is_between_the_two_counts() {
+        // Line from the origin to (10, 0).
+        let d2 = |px, pz| seg_dist2(px, pz, 0.0, 0.0, 10.0, 0.0);
+        // Beside the middle: in the way.
+        assert!(d2(5.0, 1.0) - 1.0 < 1e-4, "{}", d2(5.0, 1.0));
+        // On the line but BEHIND the camera, and the same distance PAST the
+        // subject: both are 5 m away from the segment, not 0.
+        assert!(
+            (d2(-5.0, 0.0) - 25.0).abs() < 1e-3,
+            "behind: {}",
+            d2(-5.0, 0.0)
+        );
+        assert!(
+            (d2(15.0, 0.0) - 25.0).abs() < 1e-3,
+            "past: {}",
+            d2(15.0, 0.0)
+        );
+        // Degenerate segment (subject at the eye) is a point distance, not a
+        // divide by zero.
+        assert!((seg_dist2(3.0, 4.0, 1.0, 1.0, 1.0, 1.0) - 13.0).abs() < 1e-3);
     }
 }
