@@ -902,12 +902,27 @@ method; the numbers are release, on the gate box, and **no GPU has ever run
 this client**, which is why they sit here as a note rather than as rows in the
 table.
 
-The first thing to actually press on the triangle ceiling is the generated
-conifer: a full 328-tree scatter ring at 5.9 k tris a tree is 1.9 M.
-`crates/client/tests/tree.rs` asserts the affordable ~80 m band and *prints*
-the ring rather than asserting it, precisely because 1.5 M is the number this
-table is unsure of. The billboard LOD (`TERRAIN.md` §4) closes it either way;
-which of the two is the real fix is a measurement nobody has taken.
+The first thing to actually press on the triangle ceiling was the generated
+conifer: a full 328-tree scatter ring at 5.9 k tris a tree is 1.9 M, and
+`crates/client/tests/tree.rs` *printed* the ring rather than asserting it,
+precisely because 1.5 M is the number this table is unsure of.
+
+**It fits now — 1.94 M → 510 k, landed 2026-08-20** (`DECISIONS.md` §open,
+tree LOD v0). Past `TREE_LOD_SWAP_M` a tree is one opaque hull lathed through
+its own vertices (`tree::impostor_of`, 105 tris) instead of a 5.9 k bark mesh
+plus an alpha-masked canopy, swapped by `VisibilityRange` with a 15 m dithered
+crossfade. The gate asserts the fit and asserts it would NOT fit without the
+swap, so an impostor that quietly became a copy of the tree goes red.
+
+Two notes that outlive the number. **The triangle count is the smaller half of
+the win**: SSAO carries `#[require(DepthPrepass, NormalPrepass)]`, so the same
+geometry is rasterized in two prepasses, the main pass and each of §R5's four
+shadow cascades — and `bevy_light`'s `check_dir_light_mesh_visibility` consults
+`VisibleEntityRanges` exactly as the camera's own check does, so the swap is
+paid back in every one of them. **And none of it is measured on a GPU** (the
+paragraph above), so this is counts × passes like every other budget here.
+The billboard (`TERRAIN.md` §4) is still unbuilt and is still the cheaper end;
+the hull is the step that needed no new material, no bake and no render target.
 
 Every constant this path invents beyond these is **PROPOSED** and goes to
 `DECISIONS.md` §open in the commit that ships it — as a `` `NAME = value` ``

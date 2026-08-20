@@ -10,11 +10,16 @@
 //! below.** That file carries the argument; the short version is the one
 //! `web/src/props.js` reached after three passes of stacking cones: a
 //! conifer's canopy is made of alpha cards and an opaque hull cannot get there
-//! from any amount of geometry. `pine_mesh` stays because the far LOD still
-//! wants a cheap opaque silhouette to bake a billboard from. (This used to
-//! add that `ci/pine_shape.mjs` "still scores the browser's copy of it" — the
-//! gate and the copy both went with the browser client, so nothing scores this
-//! silhouette now; `crates/client/tests/tree.rs` is the shape that survived.)
+//! from any amount of geometry. `pine_mesh` stays because a billboard bake
+//! still wants a cheap opaque silhouette to render from — but it is **no
+//! longer the far LOD's starting point**, which it was until 2026-08-20:
+//! `tree::impostor_of` lathes that hull out of the generated tree's own
+//! vertices instead, per variant and per species, so it cannot drift from the
+//! tree it replaces and a broadleaf does not wear a conifer's cone. (This used
+//! to add that `ci/pine_shape.mjs` "still scores the browser's copy of it" —
+//! the gate and the copy both went with the browser client, so nothing scores
+//! that silhouette now; `crates/client/tests/tree.rs` is the shape that
+//! survived, and it measures the hull rather than the cone.)
 //!
 //! The one thing not carried across yet is the per-instance colour tint. The
 //! browser had it per instance because it drew through an `InstancedMesh`
@@ -111,6 +116,13 @@ pub struct PropAssets {
     /// `StandardMaterial` has one `alpha_mode`. The browser reached the same
     /// split for the same reason and also pays two draw calls a variant.
     needles: Vec<Handle<Mesh>>,
+    /// The far LOD, index for index with `pines` — one opaque hull lathed
+    /// through each variant's own vertices (`tree::impostor_of`). Past
+    /// `tree::TREE_LOD_SWAP_M` this ONE mesh stands in for both halves above,
+    /// which is the "hierarchical" in HLOD: two draws of ~6 k triangles
+    /// become one of ~105, in the depth prepass, the normal prepass, the main
+    /// pass and all four shadow cascades alike.
+    impostors: Vec<Handle<Mesh>>,
     blob: Handle<Mesh>,
     boulder: Handle<Mesh>,
     stump: Handle<Mesh>,
@@ -228,6 +240,21 @@ pub enum FellPart {
     Canopy,
     /// The stump, hidden until the cut lands.
     Stump,
+    /// The far LOD's hull — the whole tree as one mesh, past
+    /// `tree::TREE_LOD_SWAP_M`. It falls exactly as the trunk does and is
+    /// silent, counts for nothing and speaks for nothing, because the trunk
+    /// standing at the same metre is already all of those.
+    ///
+    /// **It is a part of its own rather than a second `Trunk`, and that is a
+    /// bug this repo has already paid for twice.** `audio.rs` states the rule
+    /// in its own words — *"one cue per SLOT, not one per entity"* — and both
+    /// of the places it reads `FellPart` key on `Trunk` to mean "this entity
+    /// speaks for the whole slot": the fell cue, which would otherwise play
+    /// `TreeFall` twice on one chop, and the ambience bed's cover count,
+    /// whose `COVER_FULL` was re-derived 14 → 7 the last time a tree quietly
+    /// became one more entity than the units assumed. A variant makes every
+    /// consumer say what it wants instead of inheriting an answer.
+    Far,
 }
 
 /// What the scatter ring has spawned, one parent entity per chunk.
@@ -442,6 +469,14 @@ impl Soup {
 /// `PINE_MAX_R` is the right starting point. `props.js` kept its cone builder
 /// for the same role and `ci/pine_shape.mjs` scored that one; both went with
 /// the browser client, so this silhouette is ungated.
+///
+/// ⚠ **It is not what the shipped far LOD draws, and the difference is a
+/// species.** `tree::impostor_of` lathes its hull through the generated
+/// tree's own vertices, so it fits a 5.4 m broadleaf dome and a 6.6 m conifer
+/// spire alike; this builder is a conifer, authored from `PINE_*`. Kept for
+/// the bake, which wants one silhouette per species and would rather render
+/// an authored one — but a second caller of this function is almost certainly
+/// reaching for the wrong hull.
 #[allow(
     dead_code,
     reason = "the far-LOD silhouette, per TERRAIN.md §4; see above"
@@ -1062,17 +1097,21 @@ pub fn assets(
             ..default()
         })
     };
-    // One generated conifer per pool entry, split into its two halves.
-    let conifers: Vec<(Handle<Mesh>, Handle<Mesh>)> = (0..tree::CONIFER_POOL)
+    // One generated conifer per pool entry, split into its two halves — and
+    // its far hull, built from the pair BEFORE the meshes are handed to the
+    // asset server, because the hull is a measurement of them.
+    let conifers: Vec<(Handle<Mesh>, Handle<Mesh>, Handle<Mesh>)> = (0..tree::CONIFER_POOL)
         .map(|v| {
             let (bark, needles) = tree::conifer(v);
-            (meshes.add(bark), meshes.add(needles))
+            let far = tree::impostor_of(&bark, &needles, v);
+            (meshes.add(bark), meshes.add(needles), meshes.add(far))
         })
         .collect();
     let needle_map = images.add(tree::needle_image());
     PropAssets {
-        pines: conifers.iter().map(|(b, _)| b.clone()).collect(),
-        needles: conifers.iter().map(|(_, n)| n.clone()).collect(),
+        pines: conifers.iter().map(|(b, _, _)| b.clone()).collect(),
+        needles: conifers.iter().map(|(_, n, _)| n.clone()).collect(),
+        impostors: conifers.iter().map(|(_, _, f)| f.clone()).collect(),
         // Subdivision levels are picked per role against how close a player
         // gets and how many stand in a ring, not uniformly. 20·4^sub
         // triangles: the boulder is 1,280, the nodes 320, the bush 320.
@@ -1234,7 +1273,18 @@ pub fn stream(
     }
 }
 
-fn spawn_slot(
+/// Draw one scatter slot as a child of its chunk.
+///
+/// **Public because the LOD is a spawn-site claim.** Every gate in this repo
+/// that touches a tree measures a mesh, and a mesh cannot say whether the
+/// entity carrying it was given a [`VisibilityRange`] — drop that component
+/// and the impostor is simply a fourth tree drawn on top of the first, with
+/// `tests/tree.rs` still green because the arithmetic it checks never
+/// changed. `tests/tree_lod.rs` drives this function instead, which is the
+/// only way to assert what actually reaches the ECS. `CLAUDE.md`'s trap list
+/// says it in one line: a spawn is not type-checked, so a bundle is a claim
+/// you have to run.
+pub fn spawn_slot(
     commands: &mut Commands,
     parent: Entity,
     a: &PropAssets,
@@ -1301,6 +1351,10 @@ fn spawn_slot(
         part,
         felled: false,
     };
+    // The two LOD bands, from one place so they cannot stop being contiguous
+    // (`tree::lod_ranges`). Resolved for every slot and used by trees only —
+    // a boulder is 1,280 triangles and its hull would be one of those.
+    let (near_lod, far_lod) = tree::lod_ranges();
     let mut e = commands.entity(parent);
     // Three spawn shapes, split rather than merged with a conditional
     // component: only a tree topples, so only a tree carries a [`Topple`],
@@ -1313,6 +1367,7 @@ fn spawn_slot(
             Topple { t: -1.0 },
             Mesh3d(mesh),
             MeshMaterial3d(material),
+            near_lod.clone(),
             transform,
         ));
     } else if harvestable {
@@ -1368,6 +1423,31 @@ fn spawn_slot(
             Topple { t: -1.0 },
             Mesh3d(a.needles[variant].clone()),
             MeshMaterial3d(a.needle.clone()),
+            near_lod,
+            transform,
+        ));
+    }
+    // The far half of the pair: one opaque hull standing in for both of the
+    // entities above past `tree::TREE_LOD_SWAP_M`.
+    //
+    // **It topples with the trunk and is otherwise nobody**, which is what
+    // `FellPart::Far` is for: it shares the trunk's pivot and bearing because
+    // it carries the same `transform` and the same cell key, and it is
+    // excluded by name everywhere `Trunk` means "the entity that speaks for
+    // this slot" (the fell cue, the ambience bed's cover count). The stump is
+    // deliberately left at full detail: it is a few dozen triangles and it
+    // only exists after a cut.
+    //
+    // The material is `foliage` — untextured, white, vertex-coloured — which
+    // is what the hull's own colours want and what makes the far forest ONE
+    // material at six meshes. The bush already banks on that shader path.
+    if is_tree {
+        e.with_child((
+            fellable(FellPart::Far),
+            Topple { t: -1.0 },
+            Mesh3d(a.impostors[variant].clone()),
+            MeshMaterial3d(a.foliage.clone()),
+            far_lod,
             transform,
         ));
     }
@@ -1612,7 +1692,7 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
                     Visibility::Hidden
                 };
             }
-            FellPart::Trunk | FellPart::Canopy => {
+            FellPart::Trunk | FellPart::Canopy | FellPart::Far => {
                 // `Option` because only these two parts carry a [`Topple`].
                 // A missing one is a spawn-site bug rather than a state to
                 // handle, so it leaves the pose alone instead of guessing.
@@ -1649,6 +1729,9 @@ impl PropAssets {
     /// would panic the client rather than wrap if that ever stopped holding.
     pub fn needle_mesh(&self, variant: usize) -> &Handle<Mesh> {
         &self.needles[variant % self.needles.len()]
+    }
+    pub fn impostor_mesh(&self, variant: usize) -> &Handle<Mesh> {
+        &self.impostors[variant % self.impostors.len()]
     }
     pub fn wood_material(&self) -> &Handle<StandardMaterial> {
         &self.wood

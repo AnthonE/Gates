@@ -79,6 +79,14 @@ name = "tree"
 path = "tests/tree.rs"
 required-features = ["render"]
 
+# The tree LOD's spawn-site gate: it drives `props::spawn_slot` against a real
+# `World` and reads back what reached the ECS, which is the one thing a mesh
+# measurement cannot see. Same tier and same requirement as the suite above.
+[[test]]
+name = "tree_lod"
+path = "tests/tree_lod.rs"
+required-features = ["render"]
+
 # The build ghost's doorway against the sim's own `doorway_solid_at`. Pure
 # arithmetic and no GPU, but it imports `render::structures` for the shared
 # geometry constants, so it carries the feature and runs in the renderer tier.

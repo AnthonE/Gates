@@ -42,6 +42,33 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0lod · The far forest is a hull — LANDED 2026-08-20, unlooked-at *(client lane)*
+
+The ring's triangle debt is paid: **1,935,200 → 509,630 tris** at the prop
+ring's p90 of 328 trees (printed by `tests/tree.rs`, not quoted). Past
+`TREE_LOD_SWAP_M` (80 m — the affordable row of that suite's own band table) a
+tree is one 105-triangle opaque hull instead of a 5.9 k bark mesh plus an
+alpha-masked canopy, crossfaded over 15 m by `VisibilityRange`. The hull is
+**lathed through the generated tree's own vertices**, so it cannot drift from
+what it replaces and a broadleaf dome does not wear a conifer's cone. Knob:
+`DECISIONS.md` §open, tree LOD v0.
+
+Triangles are the smaller half: SSAO forces a depth and a normal prepass,
+`rig.rs` runs four cascades, and `bevy_light` honours the same ranges the
+camera does — so the swap pays back about seven times over, on paper.
+
+**On paper is the residual, and it is the next action.** No GPU has ever run
+this client (`RENDER.md` §6) and **nobody has looked at the far forest**. The
+hull is opaque where a canopy is mostly air, so it will read denser than the
+near tree. Walk to 80 m and look at the swap band.
+
+Gates: `tests/tree.rs` (13), `tests/tree_lod.rs` (5, new — it drives the real
+`spawn_slot`). Eight mutants caught, two only after a first draft missed them:
+the winding gate asserted normals, which `Soup::tri` blends toward the volume
+so an inside-out hull still shades outward; and the hull first carried
+`FellPart::Trunk`, the variant `audio.rs` reads as *speaks for the slot* — one
+chop would have played `TreeFall` twice and doubled every tree's cover count.
+
 ## 0chr · The player is a stick-man now — what the seven clips cannot cover *(client lane)*
 
 Landed 2026-08-17: `stumpy.glb` replaces the mannequin as every drawn body.
