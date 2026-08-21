@@ -57,10 +57,12 @@ each blocked on something outside this tree.
    is still sha-pinned against `scry-forge`. When the launcher's rename lands,
    `cp` + re-pin + check the CALL SITES — `Overlay::title` and `play_message`
    both changed shape under us before while everything compiled.
-3. **The tickers are a redeploy, not an edit.** `/api/onchain` names SCRY, OBOL
-   and MYRRH. `marketing/` is frozen at those three with a header saying why;
-   whether to redeploy under ELO/JUNK/ORBS is unspoken and is `scry-forge`'s
-   act, not this repo's.
+3. **The coins are being redeployed and are not out yet** (operator,
+   2026-08-21), and **the listing copy left the tree with them** — `marketing/`
+   is deleted, so there is nothing here to keep in step. `/api/onchain` naming
+   SCRY, OBOL and MYRRH is the outgoing deployment, not drift. No number for
+   the new coins may be typed in this repo: that copy is `scry-forge`'s, where
+   the contracts and pool seeds are.
 4. **`elo-shardlist-v1` is emitted and unread.** `ci/shardlist.py` writes the
    new kind; the live served document carries no `kind` field at all, so
    nothing breaks today — but the launcher should accept it before the next
@@ -474,9 +476,9 @@ behind two settings under `SOCIAL` — `discord_presence` (on) and
    URL scheme in the portal (`elo://` or `gates://`). That path is
    `deeplink.rs` and needs no code. The already-running path is built.
 3. Optional: upload a 512×512 or 1024×1024 image under the asset key
-   `gates`. **There is no Gates mark in this repo** — `marketing/` holds only
-   the JUNK and ORBS coin marks, which are the economy's and not the
-   game's. Without one Discord simply draws no image.
+   `gates`. **There is no Gates mark in this repo** — and since `marketing/`
+   was deleted there are no coin marks either. Without one Discord simply
+   draws no image.
 
 ⚠ The detectable-list submission stays **unverified** — self-serve game
 selling is deprecated and no current form was found. A question for Discord,
