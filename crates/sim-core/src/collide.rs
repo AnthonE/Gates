@@ -79,6 +79,23 @@ pub const WINDOW_HEAD_M: f32 = 2.2;
 /// (`RENDER.md` §8), and a painted jamb a body ghosts through is that lie.
 /// Proposed default, DECISIONS.md §open ("wall frame v0").
 pub const FRAME_RIM_M: f32 = 0.15;
+/// How thick a plane piece is under its walk surface, metres — the slab a
+/// floor or a roof hangs below the level plane, and the band its FLANK stops
+/// a body in ([`plane_blocked`]).
+///
+/// **Sim truth, and the renderer's `SLAB_T` is this number** rather than a
+/// second 0.3 beside it. It was render-only for the reason [`PIECE_LIFT_M`]
+/// was: nothing collided with it, so nothing else needed to know. A flank is
+/// a collision, so the drawn thickness and the blocked thickness are one
+/// number or they are a crack.
+///
+/// A **foundation** (level 0) is not this thick: it is solid from its walk
+/// surface down to the ground, which is exactly what the drawn skirt fills
+/// (`render/structures.rs` `foundation_part`). [`plane_blocked`] says so.
+///
+/// Proposed default, DECISIONS.md §open ("piece flanks v0").
+pub const PLANE_THICKNESS_M: f32 = 0.3;
+
 /// The doorway opening's height, metres above the storey base — the
 /// lintel's underside. The client has always drawn the lintel at
 /// 2.1..3.0 (`render/structures.rs` derives it from `LINTEL_H_M`); the
@@ -757,6 +774,135 @@ pub fn deploy_blocked(
         let ez = z - czm - qz;
         if ex * ex + ez * ez < CAPSULE_RADIUS_M * CAPSULE_RADIUS_M {
             return true;
+        }
+    }
+    false
+}
+
+/// Whether a PLANE piece's flank stops a capsule standing at (`x`, `z`) with
+/// its feet at `feet_y` — the side of a foundation, a floor or a roof.
+///
+/// **Planes had no sides at all until 2026-08-21**, and that is what put the
+/// camera inside people's bases: [`blocked`] walks edges and diagonals,
+/// [`deploy_blocked`] walks solid deployables, and a plane was ground and
+/// nothing else. So a body walked straight into the flank of a foundation and
+/// stood inside the slab and the drawn skirt under it, looking at the world
+/// from within a wall of earth (`NOW.md` §0bl item 4). Build plate v1 made it
+/// worse rather than better: a stilted base carries up to a storey of leg, and
+/// every centimetre of that leg was walk-through.
+///
+/// Three tests, and each one earns its place:
+///
+/// 1. **A top within `STEP_UP` of the feet is a step, not a wall** —
+///    [`deploy_blocked`]'s rule verbatim, and it is what keeps a base walkable:
+///    the plate you are standing on and every neighbour at your own level
+///    short-circuit here. Without it a base would be a set of cells you could
+///    not walk between.
+/// 2. **A slab above the head is passed under.** A floor or a roof is
+///    [`PLANE_THICKNESS_M`] thick with open air below it, so walking under a
+///    first storey stays possible. A **foundation** (level 0) is exempt: it is
+///    solid to the ground, because the skirt that draws it is.
+/// 3. **The footprint is the cell, at the capsule's radius** — the same
+///    clamp-to-rectangle circle distance [`deploy_blocked`] uses, for its
+///    reason: growing the rectangle by the radius rounds the corners the wrong
+///    way. A triangle adds its own half test at the point, so its hypotenuse
+///    blocks on the diagonal rather than 0.4 m out from it; the two halves of
+///    one cell are otherwise a body's width apart and neither is enterable.
+///
+/// A **destination** test like [`deploy_blocked`], and the caller lifts its
+/// veto the same way (`movement::step`): a foundation can be placed around a
+/// standing body, so being inside one must never be absorbing — walking out is
+/// the only escape a capsule has.
+///
+/// The **shot** walk deliberately does not consult this. An arrow through a
+/// floor is its own open item with its own answer (`NOW.md` §0ar), and the
+/// lintel precedent applies: a body and an arrow may disagree about what is
+/// solid, but only where somebody has decided that they should.
+pub fn plane_blocked(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    feet_y: f32,
+) -> bool {
+    let r = CAPSULE_RADIUS_M;
+    // **Up to FOUR cells, not one, and that is the difference from
+    // [`deploy_blocked`].** That function is complete over the candidate's own
+    // cell because `deploy::DEPLOY_VOL`'s const block proves no volume,
+    // inflated by the capsule, reaches past the half-cell. A plane IS the
+    // cell, so inflated by the capsule it reaches past every boundary — the
+    // first draft looked only at `build_cell_of(x, z)` and let a body stand a
+    // finger's width from a stilted plate, because the point was in the empty
+    // cell NEXT to it. A 3 m cell against a 0.4 m radius means the reach is at
+    // most one cell each way, so the corners `x ± r` and `z ± r` name every
+    // cell that can matter and the pair collapses to one when the point is
+    // not near a boundary.
+    let (x0, x1) = (
+        crate::build::build_cell_of(x - r),
+        crate::build::build_cell_of(x + r),
+    );
+    let (z0, z1) = (
+        crate::build::build_cell_of(z - r),
+        crate::build::build_cell_of(z + r),
+    );
+    let head = feet_y + CAPSULE_HEIGHT_M;
+    let half = BUILD_CELL_M * 0.5;
+    for bx in x0..=x1 {
+        for bz in z0..=z1 {
+            if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
+                continue;
+            }
+            let m = cols.get(bx as u16, bz as u16);
+            let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
+            if m.planes == 0 && tris == 0 {
+                continue;
+            }
+            // The cell, at the capsule's radius: the clamp-to-rectangle circle
+            // distance [`deploy_blocked`] uses, for its reason — growing the
+            // rectangle by the radius rounds the corners the wrong way.
+            let (cxm, czm) = (
+                bx as f32 * BUILD_CELL_M + half,
+                bz as f32 * BUILD_CELL_M + half,
+            );
+            let ex = x - cxm - (x - cxm).clamp(-half, half);
+            let ez = z - czm - (z - czm).clamp(-half, half);
+            if ex * ex + ez * ez >= r * r {
+                continue;
+            }
+            let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
+            let dx = x - bx as f32 * BUILD_CELL_M;
+            let dz = z - bz as f32 * BUILD_CELL_M;
+            // `piece_ground`'s own half tests, boundary-inclusive on both
+            // sides for its reason: the seam of a NW+SE pair must read the
+            // same from either.
+            let in_half = |loc: u8| match loc {
+                LOC_TRI_XLO_ZLO => dx + dz <= BUILD_CELL_M,
+                LOC_TRI_XHI_ZHI => dx + dz >= BUILD_CELL_M,
+                LOC_TRI_XHI_ZLO => dz <= dx,
+                _ => dz >= dx,
+            };
+            for level in 0..MAX_BUILD_LEVELS {
+                let bit = 1u8 << level;
+                let here = m.planes & bit != 0
+                    || (m.tri_xlo_zlo & bit != 0 && in_half(LOC_TRI_XLO_ZLO))
+                    || (m.tri_xhi_zlo & bit != 0 && in_half(LOC_TRI_XHI_ZLO))
+                    || (m.tri_xlo_zhi & bit != 0 && in_half(LOC_TRI_XLO_ZHI))
+                    || (m.tri_xhi_zhi & bit != 0 && in_half(LOC_TRI_XHI_ZHI));
+                if !here {
+                    continue;
+                }
+                let top = base + level as f32 * LEVEL_H_M;
+                if feet_y + STEP_UP >= top {
+                    continue; // a step, not a wall
+                }
+                // Level 0 is a foundation and is solid to the ground; anything
+                // above it is a slab with air under it.
+                if level > 0 && head <= top - PLANE_THICKNESS_M {
+                    continue; // passed under
+                }
+                return true;
+            }
         }
     }
     false

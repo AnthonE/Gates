@@ -54,10 +54,17 @@ use sim_core::terrain;
 use super::textures::MapSet;
 use super::{Net, WorldId};
 
-/// Plane-piece thickness, metres. Cosmetic — the sim's plane is a surface
-/// height and not a slab (`collide.rs`), so this is how thick we *draw* it
-/// and nothing stands on the underside.
-pub const SLAB_T: f32 = 0.3;
+/// Plane-piece thickness, metres — **the sim's number, not a second one**
+/// (`collide::PLANE_THICKNESS_M`).
+///
+/// It said "cosmetic — the sim's plane is a surface height and not a slab, so
+/// this is how thick we *draw* it and nothing stands on the underside", and
+/// every word of that was true until piece flanks v0 (2026-08-21). A plane
+/// has sides now: `collide::plane_blocked` stops a body in exactly this band
+/// below the walk surface. A drawn thickness that disagreed with it would be
+/// a slab you can see and walk through, or one you cannot see and cannot pass
+/// — which is the drawn-vs-collided split this whole lane exists to close.
+pub const SLAB_T: f32 = sim_core::collide::PLANE_THICKNESS_M;
 
 /// The seam a drawn piece leaves at its cell boundary, metres. Without it,
 /// two abutting floors z-fight along their shared edge for the whole length

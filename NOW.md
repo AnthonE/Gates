@@ -882,8 +882,22 @@ instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
    The plate makes this RARE rather than fixing it: inside one base every
    column shares a floor, so the slit is now only at the seam where two
    separately-started bases meet.
-4. **The skirt draws and does not block** — walking into it from downhill
-   clips through. Piece side collision is its own slice.
+4. ~~**The skirt draws and does not block**~~ — **LANDED 2026-08-21**
+   (`DECISIONS.md` §open "piece flanks v0"), asked for by the operator off a
+   screenshot: *"can we prevent the camera from popping into bases"*.
+   `collide::plane_blocked` gives a plane sides — a step within `STEP_UP` is
+   still a step, a slab above the head is still passed under, a foundation is
+   solid to the ground because the skirt is. Measured with it off: a body
+   sprinting at a 3 m-stilted plate walks **clean through and out the far
+   side**. The footprint is the cell at the capsule's radius, which holds the
+   eye 0.42 m off the drawn face against a 0.1 m near plane. Third veto-lift
+   in `movement::step`, so a base built over you is something you walk out of.
+   Both replay goldens moved and are regenerated. Gate
+   `sim-core/tests/flank.rs` (5, six mutants proven red — including one that
+   found the first draft's endpoint-only assertion was green on the bug).
+   Still open: the **shot** walk does not consult it (an arrow through a floor
+   is §0ar's), and whether `place` should refuse a piece whose cell a body is
+   standing in.
 
 
 

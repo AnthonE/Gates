@@ -423,7 +423,14 @@ const TICKS: u64 = 900;
 /// `0xDFFD_AE59_3232_47C6` is the value before, and it is left written
 /// here on purpose: the next reader's question is *which change moved it*,
 /// and a pin that only ever shows its current value cannot answer that.
-const GOLDEN_FINAL_HASH: u64 = 0xE6C1_8463_97AE_FB21;
+///
+/// **Moved `0xE6C1_8463_97AE_FB21` → `0x3DF4_80D5_22B1_FEAD` at piece flanks
+/// v0** (2026-08-21). A plane grew sides (`collide::plane_blocked`), so bodies
+/// that used to walk through the foundations this script places now stop at
+/// them, and where a hundred bodies are standing at tick 900 is most of what
+/// this digest is. Deliberate, and the regeneration is in the same commit as
+/// the change that caused it — which is the whole of what this pin is for.
+const GOLDEN_FINAL_HASH: u64 = 0x3DF4_80D5_22B1_FEAD;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -450,7 +457,13 @@ const GOLDEN_FINAL_HASH: u64 = 0xE6C1_8463_97AE_FB21;
 /// questions and a reader who finds one moved wants to know whether the other
 /// did: the final hash says the world ENDED somewhere else, the trace says it
 /// went somewhere else on the way.
-const GOLDEN_TRACE_HASH: u64 = 0xCF27_5417_7837_CB31;
+///
+/// Both moved at piece flanks v0 (2026-08-21) and both for one reason — a
+/// plane grew sides, so bodies stop at foundations they used to walk through.
+/// It was `0xCF27_5417_7837_CB31` at the tick this pin was written, which was
+/// the same commit's earlier half; that value pinned a world where planes had
+/// no flanks and is kept here for the reason above.
+const GOLDEN_TRACE_HASH: u64 = 0x8B76_54B6_583A_A95D;
 
 /// Fold a stamped trace into one number.
 ///
