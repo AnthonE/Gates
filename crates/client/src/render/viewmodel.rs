@@ -64,7 +64,6 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::prelude::*;
 
 use super::feed::Feed;
-use super::props::{tint1, Soup};
 use super::rig::EyeCam;
 use super::textures::PropMaps;
 use super::Eye;
@@ -75,6 +74,19 @@ use super::Net;
 /// leaving frame at the bottom, and a first cut near centre at arm's length
 /// read as a prop floating in the world rather than as something carried.
 pub const VIEWMODEL_HOLD: Vec3 = Vec3::new(0.32, -0.30, -0.52);
+
+/// Wrist-to-palm correction, in the held item's own (tilted) frame, metres.
+///
+/// The grip point lands on the `RightHand` BONE, and a hand bone's origin is
+/// the WRIST: the palm channel — where a rod actually crosses a fist — sits
+/// a few centimetres beyond it toward the fingers. Without this, every item
+/// rode low and right of the open palm and read as floating beside the hand
+/// (operator, 2026-08-21: *"its not in the hand though?"*). Judged off
+/// capture frames rather than derived: left and up into the finger curl, and
+/// a touch DEEPER than the palm so the bind pose's open fingers draw in
+/// front of the shaft — occlusion is what sells a grip on a rig whose hand
+/// has no finger bones to close (`NOW.md` §0chr).
+pub const VIEWMODEL_PALM: Vec3 = Vec3::new(-0.040, 0.030, -0.015);
 
 /// The item's resting orientation in view space, YXZ Euler radians.
 ///
@@ -146,11 +158,12 @@ pub struct HeldModel {
 /// format convention, and merging them makes the next asset's fix ambiguous.
 const MODEL_UPRIGHT_TO_HELD: f32 = -std::f32::consts::FRAC_PI_2;
 
-// The grip is per item and lives in `ui::hold::HeldModelDef::grip_offset_m`.
-// **One shared offset was the first cut and it does not survive the set**: a
-// 0.20 m rock and a 1.80 m spear are a factor of nine apart, so an offset that
-// seats the rock puts the spear's butt through the camera. `swap` writes it
-// when the model changes.
+// The grip is per item and lives in `ui::hold::HeldModelDef::grip_m` — a
+// point up the model's own +Y that `swap` rotates with the pose and lands on
+// the fist. **One shared offset was the first cut and it does not survive the
+// set**: a 0.20 m rock and a 1.80 m spear are a factor of nine apart, so an
+// offset that seats the rock puts the spear's butt through the camera. `swap`
+// writes it when the model changes.
 
 /// The motion state. A resource rather than a component: there is exactly one
 /// held item, and this keeps `animate` one cheap system that queries only the
@@ -175,169 +188,6 @@ pub struct Motion {
     /// mouse button into a chop at the sim's cadence instead of a blur at
     /// the frame rate. See [`crate::ui::swing`].
     cadence: crate::ui::swing::SwingCadence,
-}
-
-/// Emit an axis-aligned box into a soup. `c` is the centre, `h` the
-/// half-extent, `tint` a mean-1 colour over whatever photograph the material
-/// carries (`props::tint1`).
-fn boxed(s: &mut Soup, c: Vec3, h: Vec3, tint: [f32; 3]) {
-    let v = |sx: f32, sy: f32, sz: f32| c + Vec3::new(h.x * sx, h.y * sy, h.z * sz);
-    // Per-face value break-up, small: the photograph carries the variation and
-    // a second source of it is the patchwork `blob_mesh` used to be.
-    let faces = [
-        (
-            [
-                v(-1., -1., 1.),
-                v(1., -1., 1.),
-                v(1., 1., 1.),
-                v(-1., 1., 1.),
-            ],
-            1.00,
-        ),
-        (
-            [
-                v(1., -1., -1.),
-                v(-1., -1., -1.),
-                v(-1., 1., -1.),
-                v(1., 1., -1.),
-            ],
-            0.93,
-        ),
-        (
-            [
-                v(1., -1., 1.),
-                v(1., -1., -1.),
-                v(1., 1., -1.),
-                v(1., 1., 1.),
-            ],
-            0.97,
-        ),
-        (
-            [
-                v(-1., -1., -1.),
-                v(-1., -1., 1.),
-                v(-1., 1., 1.),
-                v(-1., 1., -1.),
-            ],
-            0.95,
-        ),
-        (
-            [
-                v(-1., 1., 1.),
-                v(1., 1., 1.),
-                v(1., 1., -1.),
-                v(-1., 1., -1.),
-            ],
-            1.02,
-        ),
-        (
-            [
-                v(-1., -1., -1.),
-                v(1., -1., -1.),
-                v(1., -1., 1.),
-                v(-1., -1., 1.),
-            ],
-            0.90,
-        ),
-    ];
-    for (q, shade) in faces {
-        let col = move |_: Vec3| [tint[0] * shade, tint[1] * shade, tint[2] * shade, 1.0];
-        s.tri(q[0], q[1], q[2], col, None, 0.0);
-        s.tri(q[0], q[2], q[3], col, None, 0.0);
-    }
-}
-
-/// Emit a hexahedron from eight corners: `back` then `front`, each wound
-/// counter-clockwise seen from outside its own face. A box cannot taper and a
-/// blade must, so this is the shape the axe bit needs and `boxed` cannot make.
-fn hexa(s: &mut Soup, back: [Vec3; 4], front: [Vec3; 4], tint: [f32; 3]) {
-    let quad = |s: &mut Soup, q: [Vec3; 4], shade: f32| {
-        let col = move |_: Vec3| [tint[0] * shade, tint[1] * shade, tint[2] * shade, 1.0];
-        s.tri(q[0], q[1], q[2], col, None, 0.0);
-        s.tri(q[0], q[2], q[3], col, None, 0.0);
-    };
-    quad(s, front, 1.00);
-    quad(s, [back[3], back[2], back[1], back[0]], 0.90);
-    quad(s, [back[0], back[1], front[1], front[0]], 0.97);
-    quad(s, [back[1], back[2], front[2], front[1]], 1.03);
-    quad(s, [back[2], back[3], front[3], front[2]], 0.95);
-    quad(s, [back[3], back[0], front[0], front[3]], 0.99);
-}
-
-/// The handle: a long box down the view's forward axis.
-///
-/// **One tool, and the client cannot yet know which one.** `ClientCore`
-/// mirrors which hotbar CELL is selected but not what is in it — `RENDER.md`
-/// §6 records the same gap for the hotbar's own icons — so drawing the actual
-/// held item needs an inventory surface that does not exist yet. A hatchet is
-/// the starter tool; when that surface lands this becomes a lookup and none of
-/// the motion above changes.
-fn handle_mesh() -> Mesh {
-    // Tiles per metre, and deliberately dense: a haft is ~0.5 m and the plank
-    // map is authored for a wall, so at 1.0 the handle shows one blurred
-    // plank rather than grain.
-    let mut s = Soup::tiling(3.0);
-    let grain = tint1(0x8a6f4a);
-    boxed(
-        &mut s,
-        Vec3::new(0.0, 0.0, 0.0),
-        Vec3::new(0.016, 0.019, 0.25),
-        grain,
-    );
-    s.mesh()
-}
-
-/// The head: an eye around the haft and a bit swept out to one side.
-///
-/// **The tiling here is 1.1 and the first cut was 9.0, which is the boulder's
-/// mistake in miniature.** `CorrugatedSteel009` is photoscanned RIBBED SHEET;
-/// at nine tiles per metre a 10 cm head samples a dozen full rib periods and
-/// resolves into a stack of pale stripes — it read as a paperback on a stick.
-/// At 1.1 the head samples roughly a tenth of the map, so what reaches the
-/// frame is the broad tonal variation of worn steel rather than its corrugation.
-/// The rule the two share: **match the tile rate to the scale the map was
-/// photographed at, not to the size of the object.** A map whose own features
-/// are wrong for the identity cannot be fixed by either — that is a sourcing
-/// gap, and a plain steel albedo is the entry `MANIFEST.md` is missing.
-fn head_mesh() -> Mesh {
-    // Tiling is irrelevant to this mesh's own material, which carries no map —
-    // see `spawn_item`. Kept sane so the UVs are well-formed for tangents.
-    let mut s = Soup::tiling(1.0);
-    let steel = tint1(0x9aa0a6);
-    // The eye, wrapped around the haft.
-    boxed(
-        &mut s,
-        Vec3::new(-0.004, 0.014, -0.238),
-        Vec3::new(0.024, 0.040, 0.030),
-        steel,
-    );
-    // The bit, TAPERED — thick and short where it meets the eye, thin and
-    // flared at the cutting edge. Two earlier cuts made this out of boxes
-    // (one, then three) and both read as a cluster of blocks rather than a
-    // blade: at 10 cm the silhouette is the whole of what the eye gets, and a
-    // rectangle is not an axe. The flare in Y and the taper in Z are what
-    // make the outline read.
-    let (zb, zf) = (0.022f32, 0.004f32);
-    let (yb, yf) = (0.040f32, 0.060f32);
-    let (xb, xf) = (-0.020f32, -0.098f32);
-    let y0 = 0.018f32;
-    hexa(
-        &mut s,
-        [
-            Vec3::new(xb, y0 - yb, zb),
-            Vec3::new(xb, y0 + yb, zb),
-            Vec3::new(xb, y0 + yb, -zb),
-            Vec3::new(xb, y0 - yb, -zb),
-        ],
-        [
-            Vec3::new(xf, y0 - yf, zf),
-            Vec3::new(xf, y0 + yf, zf),
-            Vec3::new(xf, y0 + yf, -zf),
-            Vec3::new(xf, y0 - yf, -zf),
-        ],
-        steel,
-    );
-    s.mesh()
 }
 
 /// Spawn the held item under the camera, once.
@@ -415,13 +265,15 @@ pub fn spawn_item(
             // model of its own. It is NOT what an empty hand draws — see
             // `swap` — it is what a revolver draws until a revolver is made.
             item.spawn((
-                Mesh3d(meshes.add(handle_mesh())),
+                Mesh3d(meshes.add(super::heldgen::handle_mesh())),
                 MeshMaterial3d(wood.clone()),
+                Transform::from_translation(VIEWMODEL_PALM),
                 Fallback,
             ));
             item.spawn((
-                Mesh3d(meshes.add(head_mesh())),
+                Mesh3d(meshes.add(super::heldgen::head_mesh())),
                 MeshMaterial3d(steel.clone()),
+                Transform::from_translation(VIEWMODEL_PALM),
                 Fallback,
             ));
             // The model in hand. Spawned empty and filled by `swap`, which is
@@ -816,12 +668,30 @@ pub fn swap(
         if held.shown != want {
             match want {
                 Some(i) => {
+                    let def = &crate::ui::hold::HELD_MODELS[i];
                     mesh.0 = models.mesh[i].clone();
                     mat.0 = models.mat[i].clone();
-                    // Slide the model down its own axis so the grip is at the
-                    // hand. Written here and not at spawn because it is a
-                    // property of the ITEM, and the item changes.
-                    tf.translation.y = crate::ui::hold::HELD_MODELS[i].grip_offset_m();
+                    // The whole pose is a property of the ITEM, so all of it
+                    // is written here and none at spawn: lay a tool forward,
+                    // keep a carried thing upright, then slide the model so
+                    // its grip point — `grip_m` up its own +Y — lands on this
+                    // entity's origin, which is where the fist is. The grip
+                    // vector is rotated WITH the model; writing it on a fixed
+                    // axis is the bug this replaces, which hung every tool
+                    // `grip_m` below the hand (63 cm, for the spear).
+                    let lay = if def.lay_forward {
+                        Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)
+                    } else {
+                        Quat::IDENTITY
+                    };
+                    // The presentation yaw composes in the hand's frame, so
+                    // it turns the item about the fist rather than about its
+                    // own foot, and the grip point below stays in the palm
+                    // under any yaw.
+                    let rot = Quat::from_rotation_y(def.pose_yaw) * lay;
+                    tf.rotation = rot;
+                    tf.translation = VIEWMODEL_PALM - (rot * (Vec3::Y * def.grip_m()));
+                    tf.scale = Vec3::splat(def.scale);
                 }
                 None => {
                     mesh.0 = Handle::default();
@@ -854,31 +724,46 @@ pub struct Models {
     mat: Vec<Handle<StandardMaterial>>,
 }
 
-/// Load every held model once at startup. Same `Primitive`/`Material` pair
-/// `structures::build_kit` uses, and for the same reason: these are
-/// single-primitive assets, so the label lands in an ordinary handle and no
-/// scene hierarchy is spawned. `tests/held_assets.rs` is what keeps that true.
-pub fn load_models(mut commands: Commands, assets: Res<AssetServer>) {
+/// Load every held model once at startup. For the `.glb` rows, the same
+/// `Primitive`/`Material` pair `structures::build_kit` uses, and for the same
+/// reason: these are single-primitive assets, so the label lands in an
+/// ordinary handle and no scene hierarchy is spawned. `tests/held_assets.rs`
+/// is what keeps that true. The generated rows are built here, once — the
+/// same startup, the same vectors, so `swap` cannot tell the sources apart.
+pub fn load_models(
+    mut commands: Commands,
+    assets: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
     let (mut mesh, mut mat) = (Vec::new(), Vec::new());
     for m in &crate::ui::hold::HELD_MODELS {
-        mesh.push(
-            assets.load(
-                GltfAssetLabel::Primitive {
-                    mesh: 0,
-                    primitive: 0,
-                }
-                .from_asset(m.path),
-            ),
-        );
-        mat.push(
-            assets.load(
-                GltfAssetLabel::Material {
-                    index: 0,
-                    is_scale_inverted: false,
-                }
-                .from_asset(m.path),
-            ),
-        );
+        match m.src {
+            crate::ui::hold::HeldSrc::Glb(path) => {
+                mesh.push(
+                    assets.load(
+                        GltfAssetLabel::Primitive {
+                            mesh: 0,
+                            primitive: 0,
+                        }
+                        .from_asset(path),
+                    ),
+                );
+                mat.push(
+                    assets.load(
+                        GltfAssetLabel::Material {
+                            index: 0,
+                            is_scale_inverted: false,
+                        }
+                        .from_asset(path),
+                    ),
+                );
+            }
+            crate::ui::hold::HeldSrc::Gen(name) => {
+                mesh.push(meshes.add(super::heldgen::mesh(name)));
+                mat.push(materials.add(super::heldgen::material(name)));
+            }
+        }
     }
     commands.insert_resource(Models { mesh, mat });
 }
@@ -1057,15 +942,5 @@ mod tests {
         let d = wrap_pi(-3.13 - 3.13);
         assert!(d.abs() < 0.03, "wrapped delta was {d}");
         assert!((wrap_pi(0.2) - 0.2).abs() < 1e-6);
-    }
-
-    #[test]
-    fn the_tool_meshes_carry_uvs_and_tangents() {
-        // A normal map without tangents is silently ignored — the failure that
-        // looks like "the texture did not load" and reports nothing.
-        for m in [handle_mesh(), head_mesh()] {
-            assert!(m.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
-            assert!(m.attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
-        }
     }
 }

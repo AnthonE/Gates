@@ -1,7 +1,7 @@
 //! Gate: the held-item models exist, load the way `viewmodel` loads them, and
 //! answer to names `content/items.toml` actually uses.
 //!
-//! **The third assertion is the one that catches a real rename.** Items are
+//! **The name assertion is the one that catches a real rename.** Items are
 //! resolved by normalised display name and by nothing else, because the wire
 //! carries no content id (`ui::hold`'s header argues it). That is cheap and it
 //! has one failure mode: rename `"Stone Hatchet"` in content and the lookup
@@ -12,10 +12,19 @@
 //! The structural half mirrors `tests/deploy_assets.rs`: `viewmodel::swap`
 //! loads `Primitive { mesh: 0, primitive: 0 }`, which draws a fraction of a
 //! multi-primitive model with no error anywhere.
+//!
+//! **Two sources, one law.** `HeldSrc::Glb` rows are gated off their file;
+//! `HeldSrc::Gen` rows are BUILT here — the same constructors the client runs
+//! at startup — and measured the same way, so a generated row whose geometry
+//! drifts from its table entry is exactly as red as a regenerated asset
+//! nobody re-measured. A `Gen` name with no generator panics right here,
+//! which is this gate reaching the boot-time panic before a boot does.
 
 #![cfg(feature = "render")]
 
-use client::ui::hold::HELD_MODELS;
+use bevy::mesh::VertexAttributeValues;
+use client::render::heldgen;
+use client::ui::hold::{HeldSrc, HELD_MODELS};
 use client::ui::icons::stem;
 
 fn asset_path(rel: &str) -> std::path::PathBuf {
@@ -29,10 +38,17 @@ fn glb_json(path: &std::path::Path) -> serde_json::Value {
     serde_json::from_slice(&raw[20..20 + len]).expect("GLB JSON chunk")
 }
 
+/// The `.glb` rows, which are the ones with a file to hold to.
+fn glb_rows() -> impl Iterator<Item = (&'static str, &'static str)> {
+    HELD_MODELS.iter().filter_map(|m| match m.src {
+        HeldSrc::Glb(path) => Some((m.key, path)),
+        HeldSrc::Gen(_) => None,
+    })
+}
+
 #[test]
 fn every_held_model_ships() {
-    for m in &HELD_MODELS {
-        let (key, rel) = (m.key, m.path);
+    for (key, rel) in glb_rows() {
         assert!(
             asset_path(rel).exists(),
             "{key} declares {rel} and it is not in the tree — the item would \
@@ -43,8 +59,7 @@ fn every_held_model_ships() {
 
 #[test]
 fn each_held_model_is_the_single_primitive_the_viewmodel_loads() {
-    for m in &HELD_MODELS {
-        let (key, rel) = (m.key, m.path);
+    for (key, rel) in glb_rows() {
         let g = glb_json(&asset_path(rel));
         let prims: usize = g["meshes"]
             .as_array()
@@ -73,8 +88,12 @@ fn nothing_held_glows() {
     // the spear here measured a 0.53 peak before the import stripped it.
     // Nothing a player carries emits light. A torch would be the first, and
     // it would need this list to grow rather than this test to go.
-    for m in &HELD_MODELS {
-        let (key, rel) = (m.key, m.path);
+    //
+    // This is also why `fire.glb` — reused for the other deployables' rows —
+    // has NO row of its own: the world's fire pit is lit and bakes a full
+    // emissive, and a carried unlit one must not glow. Point a row at it and
+    // this test is the one that goes red.
+    for (key, rel) in glb_rows() {
         let g = glb_json(&asset_path(rel));
         for m in g["materials"].as_array().into_iter().flatten() {
             let lit = m
@@ -87,6 +106,23 @@ fn nothing_held_glows() {
                  `--emissive` is passed, so the import skipped a step."
             );
         }
+    }
+}
+
+#[test]
+fn nothing_generated_glows_either() {
+    // The generated rows' half of `nothing_held_glows`: the material is code,
+    // so the assertion runs on the very value the client will register.
+    for m in &HELD_MODELS {
+        let HeldSrc::Gen(name) = m.src else { continue };
+        let mat = heldgen::material(name);
+        let e = mat.emissive;
+        assert!(
+            e.red <= 1e-6 && e.green <= 1e-6 && e.blue <= 1e-6,
+            "{} (generated {name:?}) has emissive {e:?} — nothing a player \
+             carries emits light",
+            m.key
+        );
     }
 }
 
@@ -108,46 +144,69 @@ fn every_model_answers_to_an_item_that_exists() {
         names.len()
     );
     for m in &HELD_MODELS {
-        let (key, rel) = (m.key, m.path);
+        let key = m.key;
         assert!(
             names.iter().any(|n| n == key),
-            "{rel} answers to {key:?} and no item in content/items.toml \
+            "a held row answers to {key:?} and no item in content/items.toml \
              normalises to that. Either the item was renamed — in which case \
              the model silently stopped drawing — or the key is a typo."
         );
     }
 }
 
+/// The longest edge of a built mesh's positions, for the generated rows.
+fn mesh_longest(mesh: &bevy::prelude::Mesh) -> f32 {
+    let Some(VertexAttributeValues::Float32x3(pos)) =
+        mesh.attribute(bevy::prelude::Mesh::ATTRIBUTE_POSITION)
+    else {
+        panic!("a generated held mesh has no Float32x3 POSITION attribute");
+    };
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for p in pos {
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    (0..3).map(|k| hi[k] - lo[k]).fold(0.0f32, f32::max)
+}
+
 #[test]
 fn the_declared_length_is_the_models_own_length() {
-    // The grip is `-length_m * grip_frac`, so `length_m` being a *restatement*
-    // of what the file measures is the whole assumption. Regenerate an asset
-    // at a different size, forget this table, and the hand silently moves to
-    // the wrong place along the haft — no error, just a spear held by its
-    // point. This is the gate for that.
+    // The grip is a fraction of `length_m`, so `length_m` being a
+    // *restatement* of what the geometry measures is the whole assumption.
+    // Regenerate an asset at a different size, forget this table, and the
+    // hand silently moves to the wrong place along the haft — no error, just
+    // a spear held by its point. This is the gate for that, and it holds the
+    // generated rows to the same number their table line declares.
     for m in &HELD_MODELS {
-        let g = glb_json(&asset_path(m.path));
-        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-        for p in g["meshes"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|x| x["primitives"].as_array())
-            .flatten()
-        {
-            let a = &g["accessors"][p["attributes"]["POSITION"].as_u64().unwrap() as usize];
-            for k in 0..3 {
-                lo[k] = lo[k].min(a["min"][k].as_f64().unwrap() as f32);
-                hi[k] = hi[k].max(a["max"][k].as_f64().unwrap() as f32);
+        let longest = match m.src {
+            HeldSrc::Glb(rel) => {
+                let g = glb_json(&asset_path(rel));
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for p in g["meshes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| x["primitives"].as_array())
+                    .flatten()
+                {
+                    let a = &g["accessors"][p["attributes"]["POSITION"].as_u64().unwrap() as usize];
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(a["min"][k].as_f64().unwrap() as f32);
+                        hi[k] = hi[k].max(a["max"][k].as_f64().unwrap() as f32);
+                    }
+                }
+                (0..3).map(|k| hi[k] - lo[k]).fold(0.0f32, f32::max)
             }
-        }
-        let longest = (0..3).map(|k| hi[k] - lo[k]).fold(0.0f32, f32::max);
+            HeldSrc::Gen(name) => mesh_longest(&heldgen::mesh(name)),
+        };
         let err = (longest - m.length_m).abs() / m.length_m;
         assert!(
             err < 0.02,
-            "{} declares length_m = {:.3} and the file measures {:.3} ({:+.0}%). \
-             The grip offset is derived from that number, so the hand is now \
-             {:.3} m off along the haft.",
+            "{} declares length_m = {:.3} and the geometry measures {:.3} \
+             ({:+.0}%). The grip offset is derived from that number, so the \
+             hand is now {:.3} m off along the haft.",
             m.key,
             m.length_m,
             longest,
@@ -167,13 +226,18 @@ fn every_grip_is_on_the_object() {
             m.key,
             m.grip_frac
         );
-        // Negative by construction, and worth asserting because the sign is
-        // what puts the model below the hand rather than above it.
+        // A viewmodel may shrink a world-sized object into the hand; nothing
+        // is ever drawn LARGER than it was authored, and zero would collapse
+        // the mesh while `swap` still pointed a handle at it.
         assert!(
-            m.grip_offset_m() <= 0.0,
-            "{} grip offset is positive",
-            m.key
+            m.scale > 0.0 && m.scale <= 1.0,
+            "{} draws at scale {} — a held model shrinks or ships as-is",
+            m.key,
+            m.scale
         );
+        // Positive by construction: the point `swap` lands on the fist is
+        // measured up the model from its own foot.
+        assert!(m.grip_m() >= 0.0, "{} grip point is below the foot", m.key);
     }
 }
 

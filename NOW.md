@@ -292,6 +292,29 @@ runtime. **Nobody has looked at it yet** — that is owed.
 
 ---
 
+## 0hand · Swapping items swaps the hand now — what is still stand-in *(client lane)*
+
+Landed 2026-08-21 (operator: *"it doesnt look right in these builds"*): the
+grip offset was applied on the parent's Y after the model had been
+quarter-turned onto −Z, so every glb tool hung `grip_m` BELOW the fist —
+12.5 cm for the hatchet, 63 cm for the spear — and the hand gripped air.
+`viewmodel::swap` now rotates the grip point with the pose. And the table
+grew: revolver and torch are generated meshes (`render/heldgen.rs`), the
+boxes, bag, workbench and hearth reuse their own `models/deploy/*.glb`
+scaled into the hand, and the bow stands upright at the riser instead of
+lying flat. `tests/held_assets.rs` holds generated rows to the same
+length/grip/no-glow laws as files. Still drawing the generic stand-in:
+
+1. **Metal hatchet/pickaxe/spear** — no asset (`WANTED.md`), and reusing the
+   stone glb would need a second material to not lie about the head.
+2. **Fire pit** — `fire.glb` bakes a LIT emissive; a carried unlit one would
+   glow, and `nothing_held_glows` refuses it. Needs an unlit variant or a
+   generated row.
+3. **Resources, ammo, bandage, lock** — no models; the stand-in covers them.
+4. **The swing still pitches the item and not the arm** (0chr item 1's
+   parent-to-hand follow-up), so a mid-swing frame shows the fist behind the
+   arc. Same fix as 0chr: parent the item to `ViewArms::hand`, retune, look.
+
 ## 0pvp · What a fight still cannot do — the readiness audit *(systems lane)*
 
 Taken 2026-08-18 against the tree rather than against the docs, and every

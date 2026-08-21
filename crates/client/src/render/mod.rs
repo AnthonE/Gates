@@ -59,6 +59,9 @@ pub mod tracer;
 // The launcher-backed nav entries: the title manifest's fetch, and the click
 // that hands NEWS / ITEM STORE / WORKSHOP to the launcher's own window. The
 // model is `crate::ui::hub`.
+// Generated held-item geometry: the meshes behind `ui::hold::HeldSrc::Gen`
+// rows and the viewmodel's two-primitive stand-in tool.
+pub mod heldgen;
 pub mod hub;
 pub mod hud;
 pub mod input;
