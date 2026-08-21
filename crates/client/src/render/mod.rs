@@ -86,6 +86,10 @@ pub mod settings;
 // this is a player pressing F12 at a moment they chose, so it settles
 // nothing and never touches the view. `crate::shot` is the arithmetic half.
 pub mod shot;
+// The report key: `F7`, one line of typing, two files beside the screenshots.
+// `crate::report` owns what goes in them; this owns nodes, keys and the live
+// facts. Beside `shot` because they share a directory and a keypress.
+pub mod report;
 pub mod sky;
 // What players built. Distinct from `props`, which is the world the seed
 // makes: this is the world other players made, and it arrives on the wire.
@@ -1106,6 +1110,14 @@ impl Plugin for GatesRenderPlugin {
             // has to remember the rules for.
             app.init_resource::<shot::Shots>()
                 .add_systems(Update, shot::take);
+
+            // ---- the report key --------------------------------------
+            // **Not on a capture run either**, and for the screenshot key's
+            // reason exactly: filing a report shoots the frame, and a probe
+            // harness with a second writer of the same frame is a gate whose
+            // frames depend on which key was pressed. Registered after it so
+            // the two systems are declared where a reader expects the pair.
+            report::register(app);
 
             // ---- discord rich presence -------------------------------
             // **Not on a capture run either**, and this one is the

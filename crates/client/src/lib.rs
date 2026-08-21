@@ -51,6 +51,13 @@ pub mod shardlist;
 // two Linux conventions), and a test behind `--features render` runs in the
 // renderer tier where nobody looks at it. `render/shot.rs` is the Bevy half.
 pub mod shot;
+// What a player's bug report IS — the document, its bounds, and the rule that
+// a stranger's prose is evidence rather than instructions. Unconditional for
+// `shot`'s reason exactly: every rule in it is arithmetic over strings, it is
+// the half that has to be right on a box nobody here owns, and the untrusted
+// input it bounds is the one input in this crate a stranger writes.
+// `render/report.rs` is the Bevy half (one keypress, the live facts, one file).
+pub mod report;
 // The audio model — which sound, how loud, how many at once, and the
 // generated bank itself. NOT feature-gated, for `ui`'s reason exactly: it is
 // pure, a mixer is where "Bevy plays, it does not decide" is easiest to break,

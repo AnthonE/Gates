@@ -114,6 +114,15 @@ $NICE python3 ci/shardlist.py --self-test || fail "shard list"
 echo "== gate: scry manifest (the repo desk, GAME-REPO.md)"
 $NICE python3 ci/scry_manifest.py --self-test || fail "scry manifest"
 
+# The other end of the bug-report key. `report.rs` writes one `.json` per
+# report and this folds a directory of them onto their fingerprints — which is
+# the claim that two reports sharing one are ONE piece of work, and the only
+# place that arithmetic lives. Two failures it exists to catch, both silent:
+# a fold that drops a report, and a file it cannot read being skipped instead
+# of named. No network and no client; it builds reports in a temp directory.
+echo "== gate: report board (a pile of reports is a worklist, crates/client/src/report.rs)"
+$NICE python3 ci/reports.py --self-test || fail "report board"
+
 echo "== gate: rustfmt"
 $NICE cargo fmt --all --check || fail "rustfmt"
 

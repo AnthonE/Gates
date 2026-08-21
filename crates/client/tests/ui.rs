@@ -3151,7 +3151,7 @@ fn the_readout_gate_can_see_a_reader_go_away() {
 ///
 /// An empty list means the row is not a discrete button — `LOOK` is mouse
 /// motion — and is exempt by name rather than by falling through.
-const BIND_IDENTS: [(&str, &[&str]); 17] = [
+const BIND_IDENTS: [(&str, &[&str]); 19] = [
     ("MOVE", &["KeyW", "KeyA", "KeyS", "KeyD"]),
     ("SPRINT", &["ShiftLeft"]),
     ("CROUCH", &["ControlLeft"]),
@@ -3170,6 +3170,8 @@ const BIND_IDENTS: [(&str, &[&str]); 17] = [
     ("EAT / DRINK", &["KeyJ", "KeyH"]),
     ("BUILD", &["MouseButton::Right"]),
     ("REPAIR / UPGRADE", &["KeyR", "KeyU"]),
+    ("SCREENSHOT", &["F12"]),
+    ("REPORT A BUG", &["F7"]),
     ("MENU", &["Escape"]),
     ("QUIT", &["Escape"]),
 ];
@@ -3283,23 +3285,33 @@ fn the_bind_gate_covers_every_row() {
 ///
 /// A gate nobody has watched fail is a gate nobody knows the polarity of.
 /// This feeds `unread_binds` a row naming a key the client genuinely does not
-/// read and asserts it is caught; `F7` qualifies because `F12` is the only
-/// function key this client binds (`render/shot.rs` says so and the claim is
-/// re-checked here rather than trusted).
+/// read and asserts it is caught.
+///
+/// ⚠ **The dead key is FOUND, not named**, and it is written that way because
+/// the hardcoded one stopped being dead. This proof said `F7` — true while
+/// `F12` was the only function key bound — and it went red the day the report
+/// key landed, correctly, with nothing wrong except the canary. A named canary
+/// is the hand-kept mirror `CLAUDE.md` complains about, in a test, so the
+/// candidates are swept and the first unbound one is used. All of them bound
+/// is a loud failure rather than a skip: this gate has no proof left at that
+/// point, and it must say so rather than quietly pass.
 #[test]
 fn the_bind_gate_can_see_a_dead_key() {
     let haystack = render_text();
-    assert!(
-        !haystack.contains("KeyCode::F7"),
-        "this proof needs a key nothing reads, and F7 stopped being one"
-    );
-    let doctored: [(&str, &[&str]); 1] = [("MADE UP", &["F7"])];
+    let dead = ["F1", "F2", "F4", "F5", "F6", "F8", "F9", "F10", "F11"]
+        .into_iter()
+        .find(|k| !haystack.contains(&format!("KeyCode::{k}")))
+        .expect(
+            "every candidate function key is bound now, so this proof has no \
+             canary left — pick an unbound key and add it to the sweep",
+        );
+    let doctored: [(&str, &[&str]); 1] = [("MADE UP", &[dead])];
     let caught = unread_binds(&haystack, &doctored);
     assert_eq!(
         caught.len(),
         1,
-        "the bind gate cannot see a row naming a key nothing reads, so it is \
-         not a gate"
+        "the bind gate cannot see a row naming `{dead}`, which nothing reads, \
+         so it is not a gate"
     );
 }
 
