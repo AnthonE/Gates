@@ -838,9 +838,14 @@ ghost), and the ghost aimed by the LOOK ray (`place::aim_from_look`)
 instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
 `client/tests/ghost.rs` §footing, `place.rs` §aim. Remaining, ranked:
 
-1. **Nobody has looked at it.** Every claim is arithmetic; the screenshots
-   that opened this deserve their counter-shot. Boot, build a row on the
-   same hillside, look. **The arithmetic half is swept now** (2026-08-21,
+1. ~~**Nobody has looked at it.**~~ **Looked at, 2026-08-21**:
+   `./ci/scene.sh --population 8 --settle 200` on seed 20260731 — eight bots
+   built a twig base over the real wire and the probe photographed it.
+   `8-build.png` is the counter-shot the 2026-08-15 screenshots were owed:
+   the wall run holds ONE level line the length of the base while the hill
+   beside it climbs, and `0-design.png`, taken from inside, shows the floor
+   as one flat plate on a regular grid with a box and a locked keypad on it.
+   **The arithmetic half is swept too** (2026-08-21,
    `client/tests/lattice_geom.rs`): the drawn surface is the walked surface
    for every plane, triangle and riser, `base_transform` lands on
    `build::anchor`, and a storey is one cube. It found the **stairs 0.212 m
