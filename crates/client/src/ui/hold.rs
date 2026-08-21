@@ -112,6 +112,22 @@ pub fn held_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> Held {
     held(catalog, inv[i])
 }
 
+/// Where a held row's geometry comes from.
+///
+/// Data only, deliberately: this module is the headless arithmetic tier, so
+/// a generated row carries a NAME and `render::heldgen` owns the mesh behind
+/// it. An unknown name there is a panic at boot and a red render-tier test
+/// (`tests/held_assets.rs`), never a silent empty hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeldSrc {
+    /// A `.glb` under the asset root: single primitive, single material,
+    /// authored standing (+Y up, feet at y = 0) — `ci/import_meshy.py`'s
+    /// convention, gated per file by `tests/held_assets.rs`.
+    Glb(&'static str),
+    /// Built at startup by `render::heldgen`, same authoring convention.
+    Gen(&'static str),
+}
+
 /// The viewmodel a held item draws, keyed by the same normalised name the
 /// icons and the mouse modality key off.
 ///
@@ -125,60 +141,149 @@ pub fn held_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> Held {
 ///
 /// Order is the model-handle order `render::viewmodel` loads, so an index
 /// here is an index there. Paths are relative to the asset root.
-pub const HELD_MODELS: [HeldModelDef; 7] = [
+///
+/// **The deployables reuse the world's own `models/deploy/*.glb`**, scaled
+/// down — holding a box shows the box you would place, out of assets already
+/// shipped. Absent on purpose: the fire pit (`fire.glb` bakes a lit
+/// `emissiveFactor` and a carried unlit one must not glow —
+/// `tests/held_assets.rs::nothing_held_glows`), and every greybox archetype
+/// (furnace, workbench 2/3, research table, lock), because a scaled cuboid in
+/// the hand tells the player less than the stand-in tool does.
+pub const HELD_MODELS: [HeldModelDef; 14] = [
     // A stone is gripped around its middle — there is no handle to hold.
-    HeldModelDef::new("rock", "models/held/rock.glb", 0.20, 0.50),
+    HeldModelDef::tool("rock", "models/held/rock.glb", 0.20, 0.50),
     // A hafted tool is held near the butt, far from the head. A quarter up
     // the haft is where a hand actually sits on an axe.
-    HeldModelDef::new("stone_hatchet", "models/held/stone_hatchet.glb", 0.50, 0.25),
-    HeldModelDef::new("stone_pickaxe", "models/held/stone_pickaxe.glb", 0.60, 0.22),
-    HeldModelDef::new("hammer", "models/held/hammer.glb", 0.35, 0.25),
+    HeldModelDef::tool("stone_hatchet", "models/held/stone_hatchet.glb", 0.50, 0.25),
+    HeldModelDef::tool("stone_pickaxe", "models/held/stone_pickaxe.glb", 0.60, 0.22),
+    HeldModelDef::tool("hammer", "models/held/hammer.glb", 0.35, 0.25),
     // A rolled document is carried in the middle, like the rock.
-    HeldModelDef::new("building_plan", "models/held/building_plan.glb", 0.30, 0.50),
+    HeldModelDef::tool("building_plan", "models/held/building_plan.glb", 0.30, 0.50),
     // **The spear is the reason this table has a fraction at all.** At 1.8 m
     // it is nine times the rock, and one shared offset put its butt through
-    // the camera. A third back from the point is a carry, not a thrust.
-    HeldModelDef::new("wooden_spear", "models/held/wooden_spear.glb", 1.80, 0.35),
-    // A bow is held at the riser, dead centre between the limbs.
-    HeldModelDef::new("hunting_bow", "models/held/hunting_bow.glb", 1.20, 0.50),
+    // the camera. A third back from the point is a carry, not a thrust; the
+    // butt behind the grip leaves the frame at the near plane, which is what
+    // every first-person spear does.
+    HeldModelDef::tool("wooden_spear", "models/held/wooden_spear.glb", 1.80, 0.35),
+    // A bow is held at the riser, dead centre between the limbs — and held
+    // UPRIGHT, which is what a bow looks like in a hand and what laying it
+    // flat never did. Drawn at 0.8: a viewmodel's scale cheat, so the top
+    // limb stays inside the frame instead of leaving it at the hold's depth.
+    HeldModelDef::upright(
+        "hunting_bow",
+        "models/held/hunting_bow.glb",
+        1.20,
+        0.50,
+        0.80,
+    ),
+    // The two generated rows — `render::heldgen` owns the geometry, this
+    // table owns where the hand goes, same split as the glb rows.
+    // A torch stays upright: its whole read is the head above the fist.
+    HeldModelDef {
+        key: "torch",
+        src: HeldSrc::Gen("torch"),
+        length_m: 0.455,
+        grip_frac: 0.35,
+        scale: 1.0,
+        lay_forward: false,
+    },
+    // A revolver is authored barrel-up so the shared quarter-turn points it
+    // forward, and gripped low, at the handle.
+    HeldModelDef {
+        key: "revolver",
+        src: HeldSrc::Gen("revolver"),
+        length_m: 0.261,
+        grip_frac: 0.19,
+        scale: 1.0,
+        lay_forward: true,
+    },
+    // The deployables, palmed level. `length_m` restates each FILE's longest
+    // axis (the gate measures it); the grip fraction is chosen so the palm
+    // lands near mid-HEIGHT, which for these is a fraction of the long axis.
+    HeldModelDef::upright("small_box", "models/deploy/box.glb", 1.127, 0.27, 0.26),
+    HeldModelDef::upright("large_box", "models/deploy/box.glb", 1.127, 0.27, 0.34),
+    HeldModelDef::upright("sleeping_bag", "models/deploy/bag.glb", 1.896, 0.08, 0.16),
+    HeldModelDef::upright(
+        "workbench",
+        "models/deploy/workbench.glb",
+        1.333,
+        0.30,
+        0.22,
+    ),
+    HeldModelDef::upright("hearth", "models/deploy/hearth.glb", 1.00, 0.45, 0.28),
 ];
 
-/// One held model: the item it answers to, the file, and where the hand goes.
+/// One held model: the item it answers to, its geometry source, and how the
+/// hand carries it.
 ///
 /// **The pose lives here rather than in `render` for this crate's standing
 /// rule** — arithmetic in `crate::ui`, headless and gated; nodes and handles
 /// in `render`. A grip offset is arithmetic in the sense that matters: it can
 /// be silently wrong, and being wrong puts the butt of a spear through the
-/// player's eye.
+/// player's eye — or, as shipped for a while, hangs every tool `grip_m` BELOW
+/// the fist, because the offset was applied on the parent's Y after the model
+/// had been quarter-turned onto −Z. The offset is now a point (`grip_m` up
+/// the model's own +Y) and `render::viewmodel::swap` rotates it with the
+/// model, so the axis cannot be wrong twice.
 pub struct HeldModelDef {
     /// The normalised display name this draws for.
     pub key: &'static str,
-    /// Asset path, relative to the asset root.
-    pub path: &'static str,
-    /// The model's long axis in metres — the size `ci/import_meshy.py` gave
-    /// it, restated so the grip can be a fraction rather than seven separate
-    /// hand-tuned offsets that drift when an asset is regenerated.
+    /// Where the geometry comes from — a shipped `.glb` or a generated mesh.
+    pub src: HeldSrc,
+    /// The model's longest axis in metres — the size `ci/import_meshy.py`
+    /// gave it (or `render::heldgen` builds), restated so the grip can be a
+    /// fraction rather than hand-tuned offsets that drift when an asset is
+    /// regenerated. `tests/held_assets.rs` holds both kinds to the file.
     pub length_m: f32,
-    /// Where along that axis the hand sits, from the foot: 0.0 is the butt,
-    /// 1.0 the tip, 0.5 the middle.
+    /// Where along the model's own +Y the hand sits, as a fraction of
+    /// `length_m`: 0.0 is the foot, 1.0 the tip.
     pub grip_frac: f32,
+    /// Uniform in-hand scale. 1.0 for the tools, which are modelled at hand
+    /// size; below 1.0 for the deployables, which are modelled at WORLD size
+    /// and would fill the frame — the ordinary viewmodel scale cheat.
+    pub scale: f32,
+    /// `true` lays the model forward (+Y → −Z, the quarter-turn a swung tool
+    /// wants); `false` keeps it upright, for the things a hand carries level
+    /// — a bow at the riser, a torch, a box.
+    pub lay_forward: bool,
 }
 
 impl HeldModelDef {
-    const fn new(key: &'static str, path: &'static str, length_m: f32, grip_frac: f32) -> Self {
+    /// A swung tool: full scale, laid forward.
+    const fn tool(key: &'static str, path: &'static str, length_m: f32, grip_frac: f32) -> Self {
         Self {
             key,
-            path,
+            src: HeldSrc::Glb(path),
             length_m,
             grip_frac,
+            scale: 1.0,
+            lay_forward: true,
         }
     }
 
-    /// How far to slide the model DOWN its own long axis so the grip lands at
-    /// the hand, metres. Negative by construction: the asset is authored with
-    /// its foot at zero, so the hand is always somewhere above that.
-    pub fn grip_offset_m(&self) -> f32 {
-        -self.length_m * self.grip_frac
+    /// A carried object: stays upright, drawn at `scale`.
+    const fn upright(
+        key: &'static str,
+        path: &'static str,
+        length_m: f32,
+        grip_frac: f32,
+        scale: f32,
+    ) -> Self {
+        Self {
+            key,
+            src: HeldSrc::Glb(path),
+            length_m,
+            grip_frac,
+            scale,
+            lay_forward: false,
+        }
+    }
+
+    /// How far up the model's own +Y the grip point sits once scaled, metres.
+    /// `swap` rotates this with the model's pose and slides the model so the
+    /// point lands in the fist — the one place the item is attached to.
+    pub fn grip_m(&self) -> f32 {
+        self.length_m * self.scale * self.grip_frac
     }
 }
 
@@ -349,10 +454,14 @@ mod tests {
 
     #[test]
     fn an_item_with_no_model_is_none_and_not_a_default() {
-        let c = catalog_with(&["Revolver"]);
+        // The revolver used to be this test's example and then grew a model,
+        // which is the point of the table. The metal hatchet is the honest
+        // example now: `reference/ARMOR.md`'s shape of gap — content priced
+        // and validated with no picture behind it.
+        let c = catalog_with(&["Metal Hatchet"]);
         // `None` here means "wear the generic stand-in", which is a different
         // picture from an empty hand and from a modelled item. Returning
-        // `Some(0)` would put a rock in the player's hand instead of a gun.
+        // `Some(0)` would put a rock in the player's hand instead of a tool.
         assert_eq!(
             held_model(
                 &c,
