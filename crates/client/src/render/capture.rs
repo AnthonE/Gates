@@ -969,6 +969,7 @@ fn scene_pass(
                             world.seed,
                             &world.haven,
                             (rec.cx, rec.cz, rec.level, rec.loc),
+                            rec.plate,
                         );
                         let p = t.translation;
                         let d2 = (p.x - eye.pos.x).powi(2) + (p.z - eye.pos.z).powi(2);
@@ -987,6 +988,7 @@ fn scene_pass(
                                 world.seed,
                                 &world.haven,
                                 (rec.cx, rec.cz, rec.level, rec.loc),
+                                rec.plate,
                             );
                             if t.translation.distance(seed_piece) <= BUILD_CLUSTER_M {
                                 sum += t.translation;
@@ -1206,6 +1208,7 @@ fn sight_is_clear(
             world.seed,
             &world.haven,
             (rec.cx, rec.cz, rec.level, rec.loc),
+            rec.plate,
         );
         let c = t.translation;
         // Vertically out of the way: a wall two storeys up is not between

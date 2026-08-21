@@ -64,17 +64,38 @@ const SEED: u64 = 20260731;
 const CX: u16 = 341;
 const CZ: u16 = 341;
 
-/// How far a drawn surface may sit from the collided one, metres. Not a
-/// tolerance for drift — a bisection's own resolution, 32 halvings of a 6 m
-/// bracket, plus f32 slack on a rotated transform. A real disagreement is
-/// centimetres (the stair bug was 212 mm); this is 0.1 mm.
-const EPS: f32 = 1.0e-4;
+/// The plates every sweep here runs over: flat on its own ground, mid-stilt,
+/// the stilt ceiling, and cut into the hill (build plate v1,
+/// `build::plate_for`). A base's floor is a stored CHOICE now, so a gate that
+/// only ever asked about plate 0 would be asking about the one case the
+/// feature does not change.
+const PLATES: [i8; 4] = [
+    0,
+    3,
+    sim_core::build::PLATE_RISE_MAX_BANDS as i8,
+    -(sim_core::build::PLATE_SINK_MAX_BANDS as i8),
+];
+
+/// How far a drawn surface may sit from the collided one, metres.
+///
+/// **Not a tolerance for drift — an f32's own resolution at this cell.** The
+/// sweep runs at world x ≈ 1024 m, where one ulp is 2⁻¹³ ≈ 1.2·10⁻⁴ m, and
+/// the drawn side reaches its answer through a matrix inverse and a 45°
+/// rotation while the sim's reaches it by adding two terms. A couple of ulp
+/// apart is the two paths agreeing, not disagreeing: 1e-4 was the first draft
+/// and the stilted sweeps sat exactly on it.
+///
+/// A millimetre still leaves the gate its whole point — the stair defect it
+/// was written from was 212 mm, and every mutant in this file's own sweep is
+/// centimetres. A tolerance is only dangerous when it is near the size of the
+/// bug class it is meant to catch.
+const EPS: f32 = 1.0e-3;
 
 /// The parts a shape draws at an address, foundations included — the
 /// per-address skirt is a different emit from the per-shape table and
 /// `spawn_piece` picks between them, so a gate that only read the table would
 /// be blind to the shape the game actually spawns most of.
-fn parts_at(shape: u8, cx: u16, cz: u16) -> Vec<Part> {
+fn parts_at(shape: u8, cx: u16, cz: u16, plate: i8) -> Vec<Part> {
     if matches!(shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION) {
         return vec![foundation_part(
             SEED,
@@ -82,6 +103,7 @@ fn parts_at(shape: u8, cx: u16, cz: u16) -> Vec<Part> {
             cx,
             cz,
             shape == SHAPE_TRI_FOUNDATION,
+            plate,
         )];
     }
     let (parts, n) = shape_parts(shape);
@@ -89,9 +111,9 @@ fn parts_at(shape: u8, cx: u16, cz: u16) -> Vec<Part> {
 }
 
 /// Is world point `p` inside anything the client draws for this piece?
-fn drawn_solid(shape: u8, addr: (u16, u16, u8, u8), p: Vec3) -> bool {
-    let root = base_transform(SEED, hv(SEED), addr);
-    parts_at(shape, addr.0, addr.1).iter().any(|part| {
+fn drawn_solid(shape: u8, addr: (u16, u16, u8, u8), plate: i8, p: Vec3) -> bool {
+    let root = base_transform(SEED, hv(SEED), addr, plate);
+    parts_at(shape, addr.0, addr.1, plate).iter().any(|part| {
         let l = (root * part.transform())
             .to_matrix()
             .inverse()
@@ -108,12 +130,19 @@ fn drawn_solid(shape: u8, addr: (u16, u16, u8, u8), p: Vec3) -> bool {
 /// nothing over that spot. Bisection rather than a march: a march's answer is
 /// its own step size, and the defect this file exists to catch was 212 mm —
 /// two orders above any step worth taking, but the NEXT one may not be.
-fn drawn_top(shape: u8, addr: (u16, u16, u8, u8), x: f32, z: f32, from_y: f32) -> Option<f32> {
+fn drawn_top(
+    shape: u8,
+    addr: (u16, u16, u8, u8),
+    plate: i8,
+    x: f32,
+    z: f32,
+    from_y: f32,
+) -> Option<f32> {
     let (mut air, mut solid) = (from_y, from_y);
     // Walk down in slab-sized bites until we are inside something.
     let mut y = from_y;
     while y > from_y - 6.0 {
-        if drawn_solid(shape, addr, Vec3::new(x, y, z)) {
+        if drawn_solid(shape, addr, plate, Vec3::new(x, y, z)) {
             solid = y;
             break;
         }
@@ -125,7 +154,7 @@ fn drawn_top(shape: u8, addr: (u16, u16, u8, u8), x: f32, z: f32, from_y: f32) -
     }
     for _ in 0..32 {
         let mid = (air + solid) * 0.5;
-        if drawn_solid(shape, addr, Vec3::new(x, mid, z)) {
+        if drawn_solid(shape, addr, plate, Vec3::new(x, mid, z)) {
             solid = mid;
         } else {
             air = mid;
@@ -136,9 +165,9 @@ fn drawn_top(shape: u8, addr: (u16, u16, u8, u8), x: f32, z: f32, from_y: f32) -
 
 /// A column index holding exactly this one piece — the sim's own derived
 /// collision state, built by the sim's own `add`.
-fn cols_with(cx: u16, cz: u16, level: u8, loc: u8, shape: u8) -> ColIndex {
+fn cols_with(cx: u16, cz: u16, level: u8, loc: u8, shape: u8, plate: i8) -> ColIndex {
     let mut c = ColIndex::new();
-    c.add(cx, cz, level, loc, shape);
+    c.add(cx, cz, level, loc, shape, plate);
     c
 }
 
@@ -218,39 +247,49 @@ fn the_drawn_surface_is_the_surface_the_sim_stands_you_on() {
         ("tri floor", SHAPE_TRI_FLOOR, 1, LOC_TRI_XHI_ZHI),
     ];
     for (name, shape, level, loc) in cases {
-        let cols = cols_with(CX, CZ, level, loc, shape);
-        let base = level_base_y(SEED, hv(SEED), CX, CZ, level);
-        // Feet on the storey: `piece_ground`'s step rule refuses a surface
-        // more than STEP_UP above the feet, and a rider on the ramp is at
-        // the ramp's own height, so probe from the top of the storey.
-        let mut checked = 0;
-        for (x, z) in inside_cell(CX, CZ, loc, 16) {
-            let feet = base + LEVEL_H_M;
-            let sim = piece_ground(SEED, hv(SEED), &cols, x, z, feet);
-            let drawn = drawn_top(shape, (CX, CZ, level, loc), x, z, base + LEVEL_H_M + 2.0);
-            match (sim == NO_SURFACE, drawn) {
-                // Off the piece's own half (a triangle) — both must say so.
-                (true, None) => {}
-                (false, Some(d)) => {
-                    assert!(
-                        (d - sim).abs() <= EPS,
-                        "{name}: at ({x:.3},{z:.3}) the sim stands you at {sim:.4} and the \
+        for plate in PLATES {
+            let name = &format!("{name} @plate {plate}");
+            let cols = cols_with(CX, CZ, level, loc, shape, plate);
+            let base = level_base_y(SEED, hv(SEED), CX, CZ, level, plate);
+            // Feet on the storey: `piece_ground`'s step rule refuses a surface
+            // more than STEP_UP above the feet, and a rider on the ramp is at
+            // the ramp's own height, so probe from the top of the storey.
+            let mut checked = 0;
+            for (x, z) in inside_cell(CX, CZ, loc, 16) {
+                let feet = base + LEVEL_H_M;
+                let sim = piece_ground(SEED, hv(SEED), &cols, x, z, feet);
+                let drawn = drawn_top(
+                    shape,
+                    (CX, CZ, level, loc),
+                    plate,
+                    x,
+                    z,
+                    base + LEVEL_H_M + 2.0,
+                );
+                match (sim == NO_SURFACE, drawn) {
+                    // Off the piece's own half (a triangle) — both must say so.
+                    (true, None) => {}
+                    (false, Some(d)) => {
+                        assert!(
+                            (d - sim).abs() <= EPS,
+                            "{name}: at ({x:.3},{z:.3}) the sim stands you at {sim:.4} and the \
 client draws {d:.4} — off by {:.4} m",
-                        d - sim
-                    );
-                    checked += 1;
-                }
-                (true, Some(d)) => panic!(
-                    "{name}: at ({x:.3},{z:.3}) the client draws a surface at {d:.4} and the \
+                            d - sim
+                        );
+                        checked += 1;
+                    }
+                    (true, Some(d)) => panic!(
+                        "{name}: at ({x:.3},{z:.3}) the client draws a surface at {d:.4} and the \
 sim has none"
-                ),
-                (false, None) => panic!(
-                    "{name}: at ({x:.3},{z:.3}) the sim stands you at {sim:.4} and the client \
+                    ),
+                    (false, None) => panic!(
+                        "{name}: at ({x:.3},{z:.3}) the sim stands you at {sim:.4} and the client \
 draws nothing"
-                ),
+                    ),
+                }
             }
+            assert!(checked > 100, "{name}: only {checked} samples landed on it");
         }
-        assert!(checked > 100, "{name}: only {checked} samples landed on it");
     }
 }
 
@@ -268,38 +307,44 @@ draws nothing"
 /// plate begins, so the boundary is where the tread has to be.
 #[test]
 fn the_ramp_meets_the_plate_at_both_ends() {
-    let cols = cols_with(CX, CZ, 0, LOC_RISER, SHAPE_STAIRS);
-    let base = level_base_y(SEED, hv(SEED), CX, CZ, 0);
-    let next = level_base_y(SEED, hv(SEED), CX, CZ, 1);
-    let x = CX as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
-    let z0 = CZ as f32 * BUILD_CELL_M;
-    let nick = 0.001f32;
-    let slope = LEVEL_H_M / BUILD_CELL_M;
-    for (label, zr, plate) in [("foot", nick, base), ("head", BUILD_CELL_M - nick, next)] {
-        let z = z0 + zr;
-        let sim = piece_ground(SEED, hv(SEED), &cols, x, z, base + LEVEL_H_M);
-        assert!(
-            (sim - (base + zr * slope)).abs() <= EPS,
-            "{label}: the sim's ramp reads {sim:.4} at z+{zr}"
-        );
-        assert!(
-            (sim - plate).abs() <= nick * slope + EPS,
-            "{label}: the sim's ramp is {:.4} m off the plate it meets",
-            (sim - plate).abs()
-        );
-        let drawn = drawn_top(
-            SHAPE_STAIRS,
-            (CX, CZ, 0, LOC_RISER),
-            x,
-            z,
-            base + LEVEL_H_M + 2.0,
-        )
-        .unwrap_or_else(|| panic!("{label}: the ramp draws nothing at z+{zr} of its own cell"));
-        assert!(
-            (drawn - sim).abs() <= EPS,
-            "{label}: the tread is drawn at {drawn:.4} and walked at {sim:.4} — off by {:.4} m",
-            drawn - sim
-        );
+    for plate in PLATES {
+        let cols = cols_with(CX, CZ, 0, LOC_RISER, SHAPE_STAIRS, plate);
+        let base = level_base_y(SEED, hv(SEED), CX, CZ, 0, plate);
+        let next = level_base_y(SEED, hv(SEED), CX, CZ, 1, plate);
+        let x = CX as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
+        let z0 = CZ as f32 * BUILD_CELL_M;
+        let nick = 0.001f32;
+        let slope = LEVEL_H_M / BUILD_CELL_M;
+        for (label, zr, meets) in [("foot", nick, base), ("head", BUILD_CELL_M - nick, next)] {
+            let z = z0 + zr;
+            let sim = piece_ground(SEED, hv(SEED), &cols, x, z, base + LEVEL_H_M);
+            assert!(
+                (sim - (base + zr * slope)).abs() <= EPS,
+                "{label} @plate {plate}: the sim's ramp reads {sim:.4} at z+{zr}"
+            );
+            assert!(
+                (sim - meets).abs() <= nick * slope + EPS,
+                "{label} @plate {plate}: the sim's ramp is {:.4} m off the plate it meets",
+                (sim - meets).abs()
+            );
+            let drawn = drawn_top(
+                SHAPE_STAIRS,
+                (CX, CZ, 0, LOC_RISER),
+                plate,
+                x,
+                z,
+                base + LEVEL_H_M + 2.0,
+            )
+            .unwrap_or_else(|| {
+                panic!("{label} @plate {plate}: the ramp draws nothing at z+{zr} of its own cell")
+            });
+            assert!(
+                (drawn - sim).abs() <= EPS,
+                "{label} @plate {plate}: the tread is drawn at {drawn:.4} and walked at \
+{sim:.4} — off by {:.4} m",
+                drawn - sim
+            );
+        }
     }
 }
 
@@ -317,38 +362,47 @@ fn the_ramp_meets_the_plate_at_both_ends() {
 /// storey term that has stopped being a multiple.
 #[test]
 fn every_storey_is_one_cube_tall_on_both_sides() {
-    let base0 = level_base_y(SEED, hv(SEED), CX, CZ, 0);
-    assert_eq!(
-        base0,
-        column_floor_y(SEED, hv(SEED), CX, CZ),
-        "level 0 is the column's own floor, not a copy of the rule"
-    );
-    for level in 0..8u8 {
-        let base = level_base_y(SEED, hv(SEED), CX, CZ, level);
+    for plate in PLATES {
+        let base0 = level_base_y(SEED, hv(SEED), CX, CZ, 0, plate);
         assert_eq!(
-            base,
-            base0 + level as f32 * LEVEL_H_M,
-            "level {level} is not {level} storeys over level 0"
+            base0,
+            column_floor_y(SEED, hv(SEED), CX, CZ, plate),
+            "level 0 is the column's own floor, not a copy of the rule"
         );
-        // The wall at this level: base point at the storey base, top face at
-        // the next storey's base.
-        let (parts, n) = shape_parts(SHAPE_WALL);
-        assert_eq!(n, 1, "a wall is one part");
-        let w = parts[0];
-        assert_eq!(w.size.y, LEVEL_H_M, "a wall is not one storey tall");
+        // The plate is a whole number of quanta off the column's own ground,
+        // exactly — a stilt is a lattice step, not a float.
         assert_eq!(
-            w.offset.y - w.size.y * 0.5,
-            0.0,
-            "a wall's foot is not on its own storey base"
+            base0 - column_floor_y(SEED, hv(SEED), CX, CZ, 0),
+            plate as f32 * sim_core::build::BUILD_BASE_Q_M,
+            "plate {plate} is not a whole number of bands off the terrain rule"
         );
-        if level + 1 < 8 {
-            let next = level_base_y(SEED, hv(SEED), CX, CZ, level + 1);
+        for level in 0..8u8 {
+            let base = level_base_y(SEED, hv(SEED), CX, CZ, level, plate);
             assert_eq!(
-                base + w.offset.y + w.size.y * 0.5,
-                next,
-                "the wall at level {level} does not reach level {}",
-                level + 1
+                base,
+                base0 + level as f32 * LEVEL_H_M,
+                "level {level} is not {level} storeys over level 0 (plate {plate})"
             );
+            // The wall at this level: base point at the storey base, top face
+            // at the next storey's base.
+            let (parts, n) = shape_parts(SHAPE_WALL);
+            assert_eq!(n, 1, "a wall is one part");
+            let w = parts[0];
+            assert_eq!(w.size.y, LEVEL_H_M, "a wall is not one storey tall");
+            assert_eq!(
+                w.offset.y - w.size.y * 0.5,
+                0.0,
+                "a wall's foot is not on its own storey base"
+            );
+            if level + 1 < 8 {
+                let next = level_base_y(SEED, hv(SEED), CX, CZ, level + 1, plate);
+                assert_eq!(
+                    base + w.offset.y + w.size.y * 0.5,
+                    next,
+                    "the wall at level {level} does not reach level {}",
+                    level + 1
+                );
+            }
         }
     }
 }
@@ -385,24 +439,26 @@ fn the_build_lattice_is_cubic() {
 /// the storey's clear headroom is the whole `LEVEL_H_M` minus the slab above.
 #[test]
 fn a_plane_hangs_under_its_own_plate() {
-    for shape in [
-        SHAPE_FLOOR,
-        SHAPE_ROOF,
-        SHAPE_TRI_FLOOR,
-        SHAPE_TRI_ROOF,
-        SHAPE_FOUNDATION,
-        SHAPE_TRI_FOUNDATION,
-    ] {
-        for part in parts_at(shape, CX, CZ) {
-            let top = part.offset.y + part.size.y * 0.5;
-            assert!(
-                top.abs() <= EPS,
-                "shape {shape}: the plane's top is {top:.4} off its own plate"
-            );
-            assert!(
-                part.size.y > 0.0,
-                "shape {shape}: a plane with no thickness"
-            );
+    for plate in PLATES {
+        for shape in [
+            SHAPE_FLOOR,
+            SHAPE_ROOF,
+            SHAPE_TRI_FLOOR,
+            SHAPE_TRI_ROOF,
+            SHAPE_FOUNDATION,
+            SHAPE_TRI_FOUNDATION,
+        ] {
+            for part in parts_at(shape, CX, CZ, plate) {
+                let top = part.offset.y + part.size.y * 0.5;
+                assert!(
+                    top.abs() <= EPS,
+                    "shape {shape}: the plane's top is {top:.4} off its own plate"
+                );
+                assert!(
+                    part.size.y > 0.0,
+                    "shape {shape}: a plane with no thickness"
+                );
+            }
         }
     }
 }
@@ -433,7 +489,7 @@ fn the_transform_anchors_where_the_sim_anchors() {
         LOC_TRI_XLO_ZHI,
         LOC_TRI_XHI_ZHI,
     ] {
-        let t = base_transform(SEED, hv(SEED), (CX, CZ, 0, loc));
+        let t = base_transform(SEED, hv(SEED), (CX, CZ, 0, loc), 0);
         let (ax, az) = anchor(CX, CZ, loc);
         // A triangle's anchor is its CENTROID (thirds) and its drawn root is
         // the cell centre it is turned about — the one loc family where the
@@ -449,8 +505,8 @@ fn the_transform_anchors_where_the_sim_anchors() {
             // the half that is drawn, which is the claim that actually binds
             // the two together.
             assert!(
-                drawn_solid(SHAPE_TRI_FLOOR, (CX, CZ, 1, loc), {
-                    let y = level_base_y(SEED, hv(SEED), CX, CZ, 1) - SLAB_T * 0.5;
+                drawn_solid(SHAPE_TRI_FLOOR, (CX, CZ, 1, loc), 0, {
+                    let y = level_base_y(SEED, hv(SEED), CX, CZ, 1, 0) - SLAB_T * 0.5;
                     Vec3::new(ax, y, az)
                 }),
                 "tri {loc}: the sim's anchor is not inside the drawn half"
@@ -471,7 +527,7 @@ fn the_transform_anchors_where_the_sim_anchors() {
 /// boundary the sim canonicalises them to: half the slab either side of it.
 #[test]
 fn an_edge_piece_straddles_its_own_boundary() {
-    let base = level_base_y(SEED, hv(SEED), CX, CZ, 0);
+    let base = level_base_y(SEED, hv(SEED), CX, CZ, 0, 0);
     let mid = base + LEVEL_H_M * 0.5;
     let half = WALL_THICKNESS_M * 0.5;
     let (x0, z0) = (CX as f32 * BUILD_CELL_M, CZ as f32 * BUILD_CELL_M);
@@ -483,16 +539,59 @@ fn an_edge_piece_straddles_its_own_boundary() {
         let at = |d: f32| Vec3::new(x0, mid, z0) + on * d + off * centre;
         for d in [-half + 1e-3, -half * 0.5, 0.0, half * 0.5, half - 1e-3] {
             assert!(
-                drawn_solid(SHAPE_WALL, (CX, CZ, 0, loc), at(d)),
+                drawn_solid(SHAPE_WALL, (CX, CZ, 0, loc), 0, at(d)),
                 "loc {loc}: no wall drawn {d:.3} m off its boundary"
             );
         }
         for d in [-half - 1e-2, half + 1e-2] {
             assert!(
-                !drawn_solid(SHAPE_WALL, (CX, CZ, 0, loc), at(d)),
+                !drawn_solid(SHAPE_WALL, (CX, CZ, 0, loc), 0, at(d)),
                 "loc {loc}: wall drawn {d:.3} m off its boundary, past its thickness"
             );
         }
+    }
+}
+
+/// A foundation stilted to the sim's ceiling is still buried by its own
+/// skirt — the cross-crate inequality `build::PLATE_RISE_MAX_BANDS` states in
+/// prose and neither crate can state in a `const`.
+///
+/// **The two halves live in two crates and nothing else joins them.** The sim
+/// decides how far a plate may stand over its ground; `render/structures.rs`
+/// decides how deep the drawn skirt goes and caps it at `SKIRT_MAX_M`. Raise
+/// the stilt past that cap and the sim keeps taking placements the renderer
+/// draws as a plank floating in the air, with every gate in both crates green
+/// — the shape of the doc-claims-a-gate failure `CLAUDE.md`'s header is about.
+/// Asserted at the address rather than in arithmetic, so it reads the emit
+/// the game actually spawns.
+#[test]
+fn the_skirt_reaches_the_stilt_the_sim_allows() {
+    use client::render::structures::{SKIRT_MAX_M, SKIRT_SINK_M};
+    let rise = sim_core::build::PLATE_RISE_MAX_BANDS as f32 * sim_core::build::BUILD_BASE_Q_M;
+    assert!(
+        rise + SKIRT_SINK_M <= SKIRT_MAX_M,
+        "a plate may stilt {rise} m and the skirt stops at {SKIRT_MAX_M} m"
+    );
+    // And measured on the emit: at the ceiling plate, the skirt's bottom is
+    // still under every ground sample of its own cell.
+    let plate = sim_core::build::PLATE_RISE_MAX_BANDS as i8;
+    let part = foundation_part(SEED, hv(SEED), CX, CZ, false, plate);
+    let top = level_base_y(SEED, hv(SEED), CX, CZ, 0, plate);
+    let bottom = top + part.offset.y - part.size.y * 0.5;
+    let x0 = CX as f32 * BUILD_CELL_M;
+    let z0 = CZ as f32 * BUILD_CELL_M;
+    for (px, pz) in [
+        (x0, z0),
+        (x0 + BUILD_CELL_M, z0),
+        (x0, z0 + BUILD_CELL_M),
+        (x0 + BUILD_CELL_M, z0 + BUILD_CELL_M),
+        (x0 + BUILD_CELL_M * 0.5, z0 + BUILD_CELL_M * 0.5),
+    ] {
+        let ground = sim_core::terrain::ground(SEED, hv(SEED), px, pz);
+        assert!(
+            bottom <= ground,
+            "at the stilt ceiling the skirt's bottom {bottom:.3} floats over ground {ground:.3}"
+        );
     }
 }
 
@@ -522,7 +621,7 @@ fn the_drawn_insets_are_the_pinned_ones() {
     // blocks (`collide`'s `DIAG_LEN_M`, the cell's diagonal).
     let sim_len = BUILD_CELL_M * std::f32::consts::SQRT_2;
     for loc in [LOC_DIAG_A, LOC_DIAG_B] {
-        let root = base_transform(SEED, hv(SEED), (CX, CZ, 0, loc));
+        let root = base_transform(SEED, hv(SEED), (CX, CZ, 0, loc), 0);
         let (parts, _) = shape_parts(SHAPE_WALL);
         let m = (root * parts[0].transform()).to_matrix();
         let h = parts[0].size.z * 0.5;

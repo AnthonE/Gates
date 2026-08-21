@@ -851,14 +851,32 @@ instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
    from `BUILD_CELL_M`/`LEVEL_H_M`; six mutants proven red, and the first
    draft of the run assertion sampled a seam inside each end, which the
    short ramp reaches — so it passed the bug it was written for.
-2. **The stored plate is the real v1** — the reference's model: first
-   foundation pins a height, neighbours latch to it, too-high/too-low
-   refusals, stilts past one band. Costs a wire field + save bump + mirror
-   change (§open row prices it). Until then a slope steps every `q/slope`
-   metres and the player cannot choose where.
+2. ~~**The stored plate is the real v1**~~ — **LANDED 2026-08-21**
+   (`DECISIONS.md` §open "build plate v1"). `build::plate_for`: the first
+   foundation pins the floor, orthogonal neighbours latch to it, and the
+   two limits refuse by name. Wire v49 (4 bits on the piece record), save
+   format 9, `state_hash` 12 → 13 bytes a piece — all three as this row
+   priced them. Measured before: **11.5% of buildable 4×4 footprints were
+   flat**; after, a connected base is one floor by construction and 86.7%
+   of starts take a whole 4×4. Gates `sim-core/tests/plate.rs` (7, four
+   mutants proven red) + `client/tests/lattice_geom.rs`. Still open, and
+   both are the operator's: the sink limit of 2 bands is what decides how
+   much of the island a base can cover, and whether a placement should be
+   able to *decline* the latch the way the reference's socket aim does.
+   ⚠ **It also found a hole in wall 5's own gate.** `test_replay` drives
+   `Command::Place` from tick 0 and its world ends with **zero pieces** —
+   everything enters as twig, twig is never upkept, 900 ticks rots all of
+   it — so `GOLDEN_FINAL_HASH` folds an empty piece store and has never
+   covered one. Proven: mutating `buf[4] = r.level` in `state_hash`'s piece
+   loop left the pin bit-identical. Closed by `GOLDEN_TRACE_HASH`, a fold
+   of every stamped hash rather than the last, which goes red under all
+   three piece-field mutants.
 3. **A band-boundary wall bases on its canonical cell** — it can hang one
    band over the lower plate (an arrow-sized slit under it). The lower of
    its two columns is the honest base; needs `collide` + render together.
+   The plate makes this RARE rather than fixing it: inside one base every
+   column shares a floor, so the slit is now only at the seam where two
+   separately-started bases meet.
 4. **The skirt draws and does not block** — walking into it from downhill
    clips through. Piece side collision is its own slice.
 

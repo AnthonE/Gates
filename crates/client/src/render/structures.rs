@@ -353,6 +353,17 @@ struct Live {
     /// forever: this loop redraws on a CHANGE, and a change nobody records
     /// is a change nobody notices.
     dmg: u8,
+    /// The plate it was drawn at (build plate v1).
+    ///
+    /// **It is redraw state for the DEPLOY store and not for the piece one**,
+    /// and the asymmetry is the wire's. A piece record carries its own plate
+    /// (`protocol::event::write_piece_rec`), so a piece can never be drawn
+    /// before the plate that places it. A deployable's does not — it reads its
+    /// column's plate out of the piece mirror — so a deploy sync that lands
+    /// before its column's pieces would draw a furnace on the terrain the base
+    /// is stilted over and, without this, keep it there: the loop redraws on a
+    /// change, and the plate was not one of the things it compared.
+    plate: i8,
 }
 
 /// Shared meshes and materials, built once on first use. A base is hundreds
@@ -424,8 +435,23 @@ impl StructRing {
 /// silently drawn every floor off the surface the sim walks players on. It
 /// calls the sim's one implementation now; the storey term is the only
 /// arithmetic left here.
-pub fn level_base_y(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, level: u8) -> f32 {
-    sim_core::build::column_floor_y(seed, haven, cx, cz) + level as f32 * LEVEL_H_M
+///
+/// **`plate` is the column's stored floor offset** (build plate v1,
+/// `build::plate_for`), and it is a parameter rather than a lookup for the
+/// reason every emit in this file takes its address: the caller knows which
+/// column it is drawing and where its plate came from — a standing piece
+/// carries it on the record, and the ghost asks `plate_for` for the one a
+/// placement WOULD get. A lookup here would make a preview impossible to
+/// draw, because the column it previews does not exist yet.
+pub fn level_base_y(
+    seed: u64,
+    haven: &terrain::Haven,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    plate: i8,
+) -> f32 {
+    sim_core::build::column_floor_y(seed, haven, cx, cz, plate) + level as f32 * LEVEL_H_M
 }
 
 /// The world XZ of a cell's centre.
@@ -832,9 +858,16 @@ pub fn skirt_step(raw: f32) -> (usize, f32) {
 /// its base and the volume below it blocks nothing (`NOW.md` carries the
 /// residual). The top face is unmoved, so nothing about where a player
 /// stands changed with the skirt's depth.
-pub fn foundation_part(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, tri: bool) -> Part {
+pub fn foundation_part(
+    seed: u64,
+    haven: &terrain::Haven,
+    cx: u16,
+    cz: u16,
+    tri: bool,
+    plate: i8,
+) -> Part {
     let span = piece_span();
-    let (_, depth) = footing_of(seed, haven, cx, cz);
+    let (_, depth) = footing_of(seed, haven, cx, cz, plate);
     Part {
         size: Vec3::new(span, depth, span),
         offset: Vec3::new(0.0, -depth * 0.5, 0.0),
@@ -858,8 +891,8 @@ pub fn foundation_part(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, tri:
 /// surfaces — a foundation that floats or buries itself on an authored site.
 /// That is why this function grew a `haven`: the split above arrived on main
 /// in the same window the carve landed here, and each half is correct alone.
-pub fn footing_of(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16) -> (usize, f32) {
-    let base = sim_core::build::column_floor_y(seed, haven, cx, cz);
+pub fn footing_of(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, plate: i8) -> (usize, f32) {
+    let base = sim_core::build::column_floor_y(seed, haven, cx, cz, plate);
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
     // The lowest ground under the cell: four corners and the centre. Five
@@ -1096,9 +1129,14 @@ fn tri_prism_mesh(size: Vec3) -> Mesh {
 /// edge carries. Shared with the build ghost for the reason the parts are:
 /// the ghost and the piece it becomes must be the same object in the same
 /// pose, and edge canonicalisation written twice is how they stop being.
-pub fn base_transform(seed: u64, haven: &terrain::Haven, (cx, cz, level, loc): Addr) -> Transform {
+pub fn base_transform(
+    seed: u64,
+    haven: &terrain::Haven,
+    (cx, cz, level, loc): Addr,
+    plate: i8,
+) -> Transform {
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, SQRT_2};
-    let base_y = level_base_y(seed, haven, cx, cz, level);
+    let base_y = level_base_y(seed, haven, cx, cz, level, plate);
     let (cxm, czm) = cell_center(cx, cz);
     // Triangles and diagonals are one drawn object each under a turn of
     // the root (triangles v0): the four halves are the NW prism at 0,
@@ -1382,7 +1420,7 @@ pub fn stream(
             // An upgrade keeps the address and changes the row; a raid keeps
             // both and changes the band. Both are redraws, and the band is
             // the one that moves while the player is standing there.
-            if live.row == rec.row && live.dmg == rec.dmg {
+            if live.row == rec.row && live.dmg == rec.dmg && live.plate == rec.plate {
                 continue;
             }
             commands.entity(live.entity).despawn();
@@ -1398,6 +1436,7 @@ pub fn stream(
             def.shape,
             def.material,
             rec.dmg,
+            rec.plate,
         );
         ring.pieces.insert(
             key,
@@ -1408,6 +1447,7 @@ pub fn stream(
                 open: false,
                 locked: false,
                 dmg: rec.dmg,
+                plate: rec.plate,
             },
         );
     }
@@ -1426,6 +1466,11 @@ pub fn stream(
             continue;
         }
         let key = (rec.cx, rec.cz, rec.level, rec.loc);
+        // The column's plate, from the piece mirror the predictor already
+        // keeps — a deployable's own record does not carry one
+        // (`protocol::event::write_deploy_rec` says why). An unbuilt column
+        // is a ground placement and answers 0, the terrain rule.
+        let plate = core.pieces.cols().plate(rec.cx, rec.cz).unwrap_or(0);
         if let Some(live) = ring.deploys.get_mut(&key) {
             live.seen = gen;
             // A door swing and a lock are both redraws at one address.
@@ -1438,14 +1483,18 @@ pub fn stream(
             // this store either way — that is the wire's doing, not the
             // renderer's. When deployables get a damage response, this line
             // and `Live::dmg` below change together.
-            if live.row == rec.row && live.open == rec.open && live.locked == rec.locked {
+            if live.row == rec.row
+                && live.open == rec.open
+                && live.locked == rec.locked
+                && live.plate == plate
+            {
                 continue;
             }
             commands.entity(live.entity).despawn();
             ring.deploys.remove(&key);
         }
         let arch = core.deploy_defs.defs[rec.row as usize].arch;
-        let entity = spawn_deploy(&mut commands, kit, seed, haven, rec, arch);
+        let entity = spawn_deploy(&mut commands, kit, seed, haven, rec, arch, plate);
         ring.deploys.insert(
             key,
             Live {
@@ -1455,6 +1504,7 @@ pub fn stream(
                 open: rec.open,
                 locked: rec.locked,
                 dmg: 0,
+                plate,
             },
         );
     }
@@ -1497,6 +1547,9 @@ pub fn stream(
                 open: false,
                 locked: false,
                 dmg: 0,
+                // A bag carries a quantized world position, so it has no
+                // column and no plate to be drawn against.
+                plate: 0,
             },
         );
     }
@@ -1519,6 +1572,7 @@ fn spawn_piece(
     shape: u8,
     material: u8,
     dmg: u8,
+    plate: i8,
 ) -> Entity {
     // Clamped, not `.min(2)`: the table covers every material the sim has
     // (`N_TIERS`, gated in `tests/pieces.rs` §A), so this only catches a
@@ -1531,7 +1585,7 @@ fn spawn_piece(
     // boundary — canonical, so one physical edge is never addressable twice
     // (`build.rs`) — and the parts are the shared table's, so this and the
     // build ghost are the same object in the same pose.
-    let root = base_transform(seed, haven, addr);
+    let root = base_transform(seed, haven, addr, plate);
 
     // A foundation's one part is per-address — the terrain-following skirt
     // ([`foundation_part`], the shared emit the ghost also draws) — so it
@@ -1542,11 +1596,18 @@ fn spawn_piece(
         shape,
         sim_core::build::SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION
     ) {
-        let part = foundation_part(seed, haven, addr.0, addr.1, shape == SHAPE_TRI_FOUNDATION);
+        let part = foundation_part(
+            seed,
+            haven,
+            addr.0,
+            addr.1,
+            shape == SHAPE_TRI_FOUNDATION,
+            plate,
+        );
         // The mesh is picked by the same call that sized the part, and it is
         // already true-size — so the transform carries NO scale, which is
         // what lets the skirt wear a metre-scaled texture at all.
-        let (step, _) = footing_of(seed, haven, addr.0, addr.1);
+        let (step, _) = footing_of(seed, haven, addr.0, addr.1, plate);
         let mesh = kit.footing[step][usize::from(part.kind == PartKind::Tri)].clone();
         return commands
             .spawn((
@@ -1607,11 +1668,12 @@ pub fn deploy_transform(
     addr: Addr,
     arch: u8,
     open: bool,
+    plate: i8,
 ) -> Transform {
     let idx = (arch as usize).min(DEPLOY.len() - 1);
     let [_, h, d] = DEPLOY[idx].0;
     let (cx, cz, level, loc) = addr;
-    let base_y = level_base_y(seed, haven, cx, cz, level);
+    let base_y = level_base_y(seed, haven, cx, cz, level, plate);
     let (cxm, czm) = cell_center(cx, cz);
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
@@ -1632,6 +1694,7 @@ pub fn deploy_transform(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_deploy(
     commands: &mut Commands,
     kit: &Kit,
@@ -1639,6 +1702,7 @@ fn spawn_deploy(
     haven: &terrain::Haven,
     rec: &DeployRec,
     arch: u8,
+    plate: i8,
 ) -> Entity {
     let idx = (arch as usize).min(DEPLOY.len() - 1);
     let transform = deploy_transform(
@@ -1647,6 +1711,7 @@ fn spawn_deploy(
         (rec.cx, rec.cz, rec.level, rec.loc),
         arch,
         rec.open,
+        plate,
     );
 
     let mat = if arch == ARCH_DOOR && rec.locked {

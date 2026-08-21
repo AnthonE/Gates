@@ -1429,9 +1429,15 @@ impl Default for Deploys {
 /// had already drifted: it sampled raw terrain with no lift and no
 /// lattice, so the bag sat 0.3 m inside the slab it claimed to land on —
 /// the exact hand-kept-mirror failure `column_floor_y` exists to close.
+///
+/// It takes the piece index for the same reason `collide::col_base_y` does
+/// (build plate v1): the floor a box stands on is the column's stored plate,
+/// and a bag dropped from a stilted base would otherwise fall to the terrain
+/// the base is standing over.
 pub fn box_drop_pos(
     seed: u64,
     haven: &terrain::Haven,
+    cols: &crate::collide::ColIndex,
     cx: u16,
     cz: u16,
     level: u8,
@@ -1439,7 +1445,8 @@ pub fn box_drop_pos(
     let (x, z) = cell_center(cx, cz);
     (
         x,
-        crate::build::column_floor_y(seed, haven, cx, cz) + level as f32 * LEVEL_H_M,
+        crate::build::column_floor_y(seed, haven, cx, cz, cols.plate(cx, cz).unwrap_or(0))
+            + level as f32 * LEVEL_H_M,
         z,
     )
 }

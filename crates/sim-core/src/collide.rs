@@ -5,10 +5,14 @@
 //! prediction through a doorway holds bit for bit (skew is bounded by the
 //! one in-flight placement event, the same bound the slot store accepts).
 //!
-//! Geometry: a piece's vertical base is `build::column_floor_y(cell) +
+//! Geometry: a piece's vertical base is `build::column_floor_y(cell, plate) +
 //! level·LEVEL_H_M` — cell-center terrain snapped to the build lattice
-//! (`BUILD_BASE_Q_M`) plus the lift, one implementation shared with the
-//! renderer. Planes (foundation/floor/roof) are walkable
+//! (`BUILD_BASE_Q_M`) plus the lift, offset by the column's STORED plate
+//! (build plate v1), one implementation shared with the renderer. The plate is
+//! why every walk here takes a `ColIndex` to ask for a height: the floor of a
+//! base is a choice its first foundation made, not a function of the ground,
+//! and `ColMasks::plate` is where that choice lives. Planes
+//! (foundation/floor/roof) are walkable
 //! surfaces at their base; stairs are a ramp rising toward +Z through the
 //! storey; walls block their edge for the storey they span; doorways
 //! block only their posts (the 1.2 m opening passes; the lintel never
@@ -143,6 +147,18 @@ pub struct ColMasks {
     /// `deploy::DEPLOY_VOL`'s row; only archetypes that table gives a
     /// height ever land here.
     pub solid: u32,
+    /// The column's **plate**: how many `build::BUILD_BASE_Q_M` bands its
+    /// level-0 floor stands above the band its own terrain would give it
+    /// (build plate v1, `build::plate_for`). Zero is the old rule exactly —
+    /// the column sits on its own ground.
+    ///
+    /// **Not occupancy, and deliberately outside [`ColMasks::is_empty`]**:
+    /// it is a property of the column rather than of any level, every piece
+    /// in the column carries the same value (`build::place` enforces it),
+    /// and a column whose last piece is gone leaves the table entirely, so
+    /// a rebuilt foundation re-derives from terrain rather than inheriting
+    /// a plate nothing stands on any more.
+    pub plate: i8,
 }
 
 impl Default for ColMasks {
@@ -172,6 +188,7 @@ impl ColMasks {
         shut_xlo: 0,
         shut_zlo: 0,
         solid: SOLID_NONE,
+        plate: 0,
     };
 
     fn is_empty(&self) -> bool {
@@ -195,6 +212,40 @@ impl ColMasks {
             | self.shut_zlo)
             == 0
             && self.solid == SOLID_NONE
+    }
+
+    /// Does a PIECE stand in this column — as opposed to a deployable
+    /// standing on bare ground?
+    ///
+    /// The distinction exists for `build::plate_for` (build plate v1) and is
+    /// load-bearing there: `set_solid` opens a column slot for a box dropped
+    /// on open terrain, and a slot is what `ColIndex::plate` answers from. A
+    /// column with a box and no floor has no plate to latch to — and latching
+    /// to it would pin the next foundation to the box's ground instead of its
+    /// own, so a crate left uphill would refuse a base with "the hill is in
+    /// the way" for a reason no player could see.
+    ///
+    /// The shut and solid masks are excluded for that reason; everything else
+    /// here is a piece.
+    #[inline]
+    pub fn has_piece(&self) -> bool {
+        (self.planes
+            | self.stairs
+            | self.walls_xlo
+            | self.walls_zlo
+            | self.doors_xlo
+            | self.doors_zlo
+            | self.wins_xlo
+            | self.wins_zlo
+            | self.frames_xlo
+            | self.frames_zlo
+            | self.tri_xlo_zlo
+            | self.tri_xhi_zlo
+            | self.tri_xlo_zhi
+            | self.tri_xhi_zhi
+            | self.diag_a
+            | self.diag_b)
+            != 0
     }
 
     /// The solid archetype standing at `level`, or `None`.
@@ -309,7 +360,18 @@ impl ColIndex {
     /// Set the piece's occupancy bit. A full table refuses (unreachable
     /// while callers enforce MAX_PIECES; the movement queries just see
     /// one piece less — the same bounded staleness a dropped event has).
-    pub fn add(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shape: u8) {
+    /// Set the piece's occupancy bit and record the column's `plate`
+    /// (`ColMasks::plate` — build plate v1).
+    ///
+    /// **The plate is written on every add, not only on the first.** Every
+    /// piece in a column carries the same one by construction (`build::place`
+    /// adopts it from the column before it inserts, and `plate_for` is the
+    /// only source), so the last write is the same value as the first — and
+    /// writing it unconditionally is what makes `Pieces::restore` correct
+    /// whatever order the save hands the records back in. A first-write-wins
+    /// rule would make the rebuilt index depend on record order, which is the
+    /// one thing a derived-state rebuild must never do.
+    pub fn add(&mut self, cx: u16, cz: u16, level: u8, loc: u8, shape: u8, plate: i8) {
         if self.len as usize >= COL_INDEX_SLOTS - 1 {
             return;
         }
@@ -327,11 +389,37 @@ impl ColIndex {
             }
             i = (i + 1) & (COL_INDEX_SLOTS - 1);
         }
+        self.masks[i].plate = plate;
         if let Some(m) = self.masks[i].field(shape, loc) {
             *m |= 1 << level;
         } else if self.masks[i].is_empty() {
             // A no-footprint shape opened this slot: take it back.
             self.remove_slot(i);
+        }
+    }
+
+    /// The plate of a column that holds a **piece**, or `None`.
+    ///
+    /// `get` cannot answer this: it returns `ColMasks::EMPTY` for a column
+    /// that is not in the table, and `EMPTY.plate` is 0 — which is a real
+    /// plate value (the column sits on its own ground). The distinction is
+    /// the whole of `build::plate_for`'s first question, so it needs the
+    /// presence and not the value.
+    ///
+    /// **A slot is not enough** ([`ColMasks::has_piece`]): a deployable on
+    /// open ground opens one, and a column with no floor has no plate.
+    pub fn plate(&self, cx: u16, cz: u16) -> Option<i8> {
+        let key = Self::key(cx, cz);
+        let mut i = Self::home(key);
+        loop {
+            let k = self.keys[i];
+            if k == 0 {
+                return None;
+            }
+            if k == key {
+                return self.masks[i].has_piece().then_some(self.masks[i].plate);
+            }
+            i = (i + 1) & (COL_INDEX_SLOTS - 1);
         }
     }
 
@@ -500,10 +588,28 @@ impl Default for ColIndex {
 /// A column's level-0 base — `build::column_floor_y`, the one
 /// implementation of the height rule (quantized to `BUILD_BASE_Q_M` so
 /// neighbouring columns in one terrain band are bit-equal flush; its doc
-/// carries the derivation). No piece height ever rides the wire.
+/// carries the derivation).
+///
+/// **It takes the index, because since build plate v1 the height is stored.**
+/// A column's floor is its terrain band plus the plate its first piece
+/// latched (`ColMasks::plate`), so the answer is no longer a pure function of
+/// (seed, cell) and every collision walk must read the same store the placer
+/// wrote. An unoccupied column has no plate and answers the terrain rule
+/// unchanged, which is what keeps `deploy_blocked` and the ground walks
+/// correct over bare land.
+///
+/// Only the plate rides the wire, never the height itself: the client
+/// recomputes the terrain band from (seed, cell) exactly as before, so a
+/// float height still never crosses the network.
 #[inline]
-pub(crate) fn col_base_y(seed: u64, haven: &crate::terrain::Haven, cx: u16, cz: u16) -> f32 {
-    crate::build::column_floor_y(seed, haven, cx, cz)
+pub(crate) fn col_base_y(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    cx: u16,
+    cz: u16,
+) -> f32 {
+    crate::build::column_floor_y(seed, haven, cx, cz, cols.plate(cx, cz).unwrap_or(0))
 }
 
 /// The highest built surface under (x, z) the capsule at `feet_y` may
@@ -529,7 +635,7 @@ pub fn piece_ground(
     if m.planes == 0 && m.stairs == 0 && tris == 0 && m.solid == SOLID_NONE {
         return NO_SURFACE;
     }
-    let base = col_base_y(seed, haven, bx as u16, bz as u16);
+    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
     let lid = feet_y + STEP_UP;
     let mut best = NO_SURFACE;
     // A triangle plane is ground over its own half of the cell and air
@@ -615,7 +721,7 @@ pub fn deploy_blocked(
     if m.solid == SOLID_NONE {
         return false;
     }
-    let base = col_base_y(seed, haven, bx as u16, bz as u16);
+    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
     let head = feet_y + CAPSULE_HEIGHT_M;
     let (cxm, czm) = (
         bx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
@@ -768,7 +874,7 @@ fn cell_edges_block(
         if walls | doors | frames == 0 {
             continue;
         }
-        let base = col_base_y(seed, haven, ecx as u16, ecz as u16);
+        let base = col_base_y(seed, haven, cols, ecx as u16, ecz as u16);
         for level in 0..MAX_BUILD_LEVELS {
             let bit = 1u8 << level;
             let has_wall = walls & bit != 0;
@@ -887,7 +993,7 @@ fn cell_diags_block(
     if m.diag_a | m.diag_b == 0 {
         return false;
     }
-    let base = col_base_y(seed, haven, bx as u16, bz as u16);
+    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
     for level in 0..MAX_BUILD_LEVELS {
         let bit = 1u8 << level;
         if (m.diag_a | m.diag_b) & bit == 0 {
@@ -1099,7 +1205,7 @@ fn cell_edges_stop_shot(
         if walls | doors | wins | frames == 0 {
             continue;
         }
-        let base = col_base_y(seed, haven, ecx as u16, ecz as u16);
+        let base = col_base_y(seed, haven, cols, ecx as u16, ecz as u16);
         for level in 0..MAX_BUILD_LEVELS {
             let bit = 1u8 << level;
             if (walls | doors | wins | frames) & bit == 0 {
@@ -1376,7 +1482,7 @@ mod tests {
         let bc = free_table();
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
-        let base = col_base_y(SEED, hv(), CX, CZ);
+        let base = col_base_y(SEED, hv(), &ColIndex::new(), CX, CZ);
 
         // Standing in the cell snaps up onto the slab (lift ≤ step-up)…
         let mut b = body_at(1024.5, 1024.5);
@@ -1442,7 +1548,7 @@ mod tests {
         let mut pieces = Pieces::new();
         put(&bc, &mut pieces, CX, CZ, 0, LOC_PLANE, 0);
         put(&bc, &mut pieces, CX, CZ, 0, LOC_RISER, 4);
-        let base = col_base_y(SEED, hv(), CX, CZ);
+        let base = col_base_y(SEED, hv(), &ColIndex::new(), CX, CZ);
 
         // Walk +Z up the ramp: feet rise monotonically to base + storey.
         let mut b = body_at(1024.5, CZ as f32 * BUILD_CELL_M + 0.2);
@@ -1514,7 +1620,7 @@ mod tests {
         );
 
         // The same edge, to a shot: the storey base is the column's own.
-        let base = col_base_y(SEED, hv(), CX, CZ);
+        let base = col_base_y(SEED, hv(), &ColIndex::new(), CX, CZ);
         let (z_open, z_jamb) = (
             CZ as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5, // mid-opening
             CZ as f32 * BUILD_CELL_M + 0.4,                // inside a jamb
@@ -1716,7 +1822,7 @@ mod tests {
             crate::build::LOC_TRI_XLO_ZLO,
             7,
         );
-        let base = col_base_y(SEED, hv(), CX, CZ);
+        let base = col_base_y(SEED, hv(), &ColIndex::new(), CX, CZ);
         let x0 = CX as f32 * BUILD_CELL_M;
         let z0 = CZ as f32 * BUILD_CELL_M;
 
@@ -1835,7 +1941,7 @@ mod tests {
                 .position(|e| e.0 == cx && e.1 == cz && e.2 == level && e.3 == loc);
             match at {
                 None if rng.next_bounded(5) < 3 => {
-                    idx.add(cx, cz, level, loc, shape);
+                    idx.add(cx, cz, level, loc, shape, 0);
                     shadow.push((cx, cz, level, loc, shape));
                 }
                 Some(i) if rng.next_bounded(5) >= 3 => {

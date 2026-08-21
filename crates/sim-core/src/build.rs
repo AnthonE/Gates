@@ -241,6 +241,15 @@ pub const REFUSE_B_UNPRICED: u32 = 10;
 pub const REFUSE_B_WINDOW: u32 = 11;
 /// The address holds nothing to take down.
 pub const REFUSE_B_EMPTY: u32 = 12;
+/// The plate the neighbouring base carries would stand more than
+/// [`PLATE_RISE_MAX_BANDS`] over this column's own ground — the land fell
+/// away faster than a leg can follow (build plate v1). Build a storey and
+/// come back over the top, or start a new plate lower down.
+pub const REFUSE_B_PLATE_HIGH: u32 = 13;
+/// The plate the neighbouring base carries would sit more than
+/// [`PLATE_SINK_MAX_BANDS`] under this column's own ground — the hill rises
+/// into the floor (build plate v1). Terrace: start a new plate higher up.
+pub const REFUSE_B_PLATE_LOW: u32 = 14;
 
 /// Build cell size in meters (v0: one foundation spans one cell).
 /// Proposed default, DECISIONS.md §open ("build grid v0").
@@ -301,7 +310,20 @@ pub const BUILD_BASE_Q_M: f32 = 0.5;
 /// `PIECE_LIFT_M ± q/2` — `tests/base_lattice.rs` holds both ends against
 /// `movement::STEP_UP`.
 #[inline]
-pub fn column_floor_y(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16) -> f32 {
+pub fn column_floor_y(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, plate: i8) -> f32 {
+    band_y(terrain_band(seed, haven, cx, cz) + plate as i32)
+}
+
+/// The band a column's level-0 floor takes with **nothing built on it** —
+/// cell-centre terrain plus [`crate::collide::PIECE_LIFT_M`], snapped to
+/// [`BUILD_BASE_Q_M`] round-to-nearest, as an integer count of quanta.
+///
+/// An integer, and that is the point: a band is what the plate is measured in
+/// (`plate_for`), what the wire carries, and what makes flushness an identity
+/// rather than a comparison. Pure in (seed, cx, cz) — no plate, no store —
+/// which is what lets the client recompute it and receive only the offset.
+#[inline]
+pub fn terrain_band(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16) -> i32 {
     let half = BUILD_CELL_M * 0.5;
     let h = terrain::ground(
         seed,
@@ -309,7 +331,132 @@ pub fn column_floor_y(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16) -> f3
         cx as f32 * BUILD_CELL_M + half,
         cz as f32 * BUILD_CELL_M + half,
     );
-    floor_i32((h + crate::collide::PIECE_LIFT_M) / BUILD_BASE_Q_M + 0.5) as f32 * BUILD_BASE_Q_M
+    floor_i32((h + crate::collide::PIECE_LIFT_M) / BUILD_BASE_Q_M + 0.5)
+}
+
+/// The world y of band `b` — the lattice's only multiplication, so two
+/// callers cannot disagree about where a band is.
+#[inline]
+pub fn band_y(b: i32) -> f32 {
+    b as f32 * BUILD_BASE_Q_M
+}
+
+/// How many bands a plate may stand ABOVE its own column's ground: the stilt
+/// limit, and the answer to "how far can a base carry its floor downhill".
+///
+/// **One storey, and the number is not free.** Three things bound it and the
+/// tightest wins. (1) The drawn skirt has to reach the ground it is stilted
+/// over or the foundation reads as a floating plank — `render/structures.rs`
+/// caps it at `SKIRT_MAX_M` 4.0 m and sinks it `SKIRT_SINK_M` 0.35 m, so
+/// `6 · 0.5 + 0.35 = 3.35 m` fits with margin and 7 bands would not
+/// (`client/tests/lattice_geom.rs` holds that inequality, because the two
+/// constants live in two crates). (2) A storey is the unit a player already
+/// reasons in: past one, build a level instead of a longer leg. (3) It is a
+/// fall — a plate carried further out than this is a drop nothing catches.
+///
+/// Proposed default, `DECISIONS.md` §open ("build plate v1").
+pub const PLATE_RISE_MAX_BANDS: i32 = 6;
+
+/// How many bands a plate may sit BELOW its own column's ground — how far a
+/// base may cut into a rising hill before it must terrace.
+///
+/// Tight where the rise is generous, and asymmetric on purpose: a plate over
+/// its ground is a leg, which is drawable and standable; a plate under its
+/// ground is the hill coming up through the floor, which nothing hides.
+///
+/// **Two, and the number was measured rather than picked.** It is the knob
+/// that decides how much of the island a base can cover, and the rise is
+/// almost inert beside it — swept over 1 598 buildable starts on the shipped
+/// seed, moving the rise 6 → 8 does not change a single whole footprint,
+/// where the sink 1 → 2 takes a whole 4×4 from 74.3% of starts to 86.7%, a
+/// 6×6 from 55.9% to 74.7%, and an 8×8 from 44.5% to 62.1%. Mean cell
+/// coverage is 95–98% at 2, so a refusal is a cell or two at an edge rather
+/// than a spot you cannot use. Going further buys less and costs more: 3
+/// only reaches 91.9/83.4/74.7 and by 6 the far cell is 3 m inside the hill,
+/// which is a room made of dirt.
+///
+/// Proposed default, `DECISIONS.md` §open ("build plate v1").
+pub const PLATE_SINK_MAX_BANDS: i32 = 2;
+
+/// The plate a piece placed at (cx, cz) must adopt, or the refusal.
+///
+/// **This is the whole of "when the foundation is down, everything builds
+/// relative to it"** (build plate v1, `NOW.md` §0bl item 2 — the reference's
+/// model). Three cases, in order:
+///
+/// 1. The column already holds something → its plate, always. Every piece in
+///    a column shares one floor by construction, so a wall can never base
+///    itself a band off the floor it stands on.
+/// 2. Nothing here, but an orthogonal neighbour is built → **latch to it**:
+///    take the neighbour's ABSOLUTE band and express it against this column's
+///    own terrain. That is what makes a base a plate instead of a staircase.
+/// 3. Nothing anywhere near → band 0, this column's own ground. A base starts
+///    where the first foundation is put down, which is the only place the
+///    terrain gets a vote.
+///
+/// **Which neighbour, when they disagree.** Inside one base they cannot — a
+/// connected component is one plate by construction — so this is the case
+/// where two separately-started bases grow into each other. The scan is a
+/// fixed axis order and takes the HIGHEST absolute band among the built
+/// neighbours. Order first, because determinism is wall 5 and "whichever one
+/// the player was looking at" is not a fact the sim has. Highest second,
+/// because the two limits are asymmetric for a physical reason: a plate above
+/// this column's ground is a LEG, which the foundation skirt draws and a body
+/// walks under, and a plate below it is the hill coming up through the floor,
+/// which nothing hides. Given the choice, stilt.
+///
+/// Measured on the shipped seed over 1 598 buildable starts, highest against
+/// lowest leaves the whole-footprint rate identical (the first cell's plate
+/// dominates) and lifts mean cell coverage — an 8×8's worst case goes 59.4%
+/// → 65.6%. So the argument is the physical one and the numbers do not
+/// contradict it.
+///
+/// Pure in (index, seed, cell): the client's ghost calls it against its own
+/// mirror to preview the height a placement will get, which is the only way a
+/// preview can tell the truth about a stilt.
+pub fn plate_for(
+    cols: &crate::collide::ColIndex,
+    seed: u64,
+    haven: &terrain::Haven,
+    cx: u16,
+    cz: u16,
+) -> Result<i8, u32> {
+    if let Some(p) = cols.plate(cx, cz) {
+        return Ok(p);
+    }
+    let here = terrain_band(seed, haven, cx, cz);
+    let mut best: Option<i32> = None;
+    // Checked both ways. The upper bound is range-checked below, but the
+    // ADDITION is not — this is called from the client's ghost too, on an
+    // address a look ray produced, and `u16::MAX + 1` is a debug panic on a
+    // path a player can aim at.
+    for (nx, nz) in [
+        (cx.checked_sub(1), Some(cz)),
+        (cx.checked_add(1), Some(cz)),
+        (Some(cx), cz.checked_sub(1)),
+        (Some(cx), cz.checked_add(1)),
+    ] {
+        let (Some(nx), Some(nz)) = (nx, nz) else {
+            continue;
+        };
+        if (nx as usize) >= MAX_BUILD_COORD || (nz as usize) >= MAX_BUILD_COORD {
+            continue;
+        }
+        let Some(np) = cols.plate(nx, nz) else {
+            continue;
+        };
+        let abs = terrain_band(seed, haven, nx, nz) + np as i32;
+        best = Some(best.map_or(abs, |b: i32| b.max(abs)));
+    }
+    let Some(abs) = best else { return Ok(0) };
+    let plate = abs - here;
+    if plate > PLATE_RISE_MAX_BANDS {
+        return Err(REFUSE_B_PLATE_HIGH);
+    }
+    if plate < -PLATE_SINK_MAX_BANDS {
+        return Err(REFUSE_B_PLATE_LOW);
+    }
+    Ok(plate as i8)
 }
 
 /// One baked piece row. `hp == 0` ⇒ inert (the empty-table row).
@@ -501,10 +648,29 @@ pub struct PieceRec {
     /// does not exist apart from it.
     ///
     /// It is deliberately **absent from `state_hash`**, which walks an
-    /// explicit 12-byte field list rather than the struct — so this field
-    /// cannot move a hash, and a shard that never fills it is bit-identical
-    /// to one that does.
+    /// explicit field list rather than the struct — so this field cannot move
+    /// a hash, and a shard that never fills it is bit-identical to one that
+    /// does.
     pub dmg: u8,
+    /// The **plate**: how many [`BUILD_BASE_Q_M`] bands this piece's column
+    /// stands above the band its own terrain would give it (build plate v1,
+    /// [`plate_for`]). Zero is the pre-plate rule exactly.
+    ///
+    /// ⚠ **A property of the COLUMN, carried on the piece.** Every record in
+    /// one column holds the same value — `place` adopts it from the column
+    /// before inserting and `plate_for` is its only source — so this is a
+    /// redundant copy on purpose, and the redundancy is what pays for
+    /// itself three times: the wire needs no second sync lane and no removal
+    /// message (a column's plate arrives with its pieces and leaves with its
+    /// last one), the save format needs no second store, and
+    /// `Pieces::restore` rebuilds `ColIndex` from the records alone.
+    ///
+    /// Unlike [`dmg`], it IS sim truth and IS hashed: it decides where every
+    /// collision surface in the column is, so two shards that disagree about
+    /// it disagree about where players stand.
+    ///
+    /// [`dmg`]: PieceRec::dmg
+    pub plate: i8,
 }
 
 /// The placed-piece store: dense, insertion-ordered (command order, so
@@ -655,6 +821,10 @@ impl Pieces {
             hp: bc.pieces[row as usize].hp,
             uh: 0,
             dmg: 0,
+            // The fixture stands on bare ground by construction (it takes no
+            // neighbour into account), which is plate 0 — the pre-plate rule,
+            // so every gate written before build plate v1 keeps its numbers.
+            plate: 0,
         };
         assert!(
             self.insert(rec, bc.pieces[row as usize].shape, 0),
@@ -669,7 +839,8 @@ impl Pieces {
         self.entries[self.len] = rec;
         self.placed[self.len] = tick;
         self.len += 1;
-        self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
+        self.cols
+            .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
         self.gen += 1;
         true
     }
@@ -741,7 +912,8 @@ impl Pieces {
             // `piece_count`; this index is the one `worldsave.rs`
             // `BadContentRow` exists to make safe.
             let shape = bc.pieces[rec.row as usize].shape;
-            self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
+            self.cols
+                .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
         }
     }
 }
@@ -1394,6 +1566,17 @@ pub fn place(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TERRAIN, 0);
         return;
     }
+    // The column's floor, decided BEFORE support and cost so a refusal about
+    // height is told as one (build plate v1). A piece in a built column takes
+    // that column's plate; the first piece of a base latches to whatever it
+    // touches, or takes its own ground.
+    let plate = match plate_for(pieces.cols(), seed, haven, cx, cz) {
+        Ok(p) => p,
+        Err(why) => {
+            events.push(EV_BUILD_REFUSED, p.id, why, 0);
+            return;
+        }
+    };
     if !supported(pieces, def.shape, cx, cz, level, loc) {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
         return;
@@ -1422,6 +1605,7 @@ pub fn place(
         uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
         // Wire-only; the store never maintains it (`PieceRec::dmg`).
         dmg: 0,
+        plate,
     };
     if !pieces.insert(rec, def.shape, tick) {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_FULL, 0);
@@ -2686,6 +2870,7 @@ mod tests {
                     hp: 1,
                     uh: 0,
                     dmg: 0,
+                    plate: 0,
                 },
                 SHAPE_FOUNDATION,
                 0
@@ -3839,6 +4024,7 @@ mod tests {
                 hp: 100,
                 uh: 0,
                 dmg: 0,
+                plate: 0,
             },
             shape,
             0,
