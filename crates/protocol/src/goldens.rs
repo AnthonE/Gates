@@ -21,7 +21,9 @@ use crate::{
     SnapshotHeader, Welcome, WireBag, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH, PIECE_SYNC_BATCH,
     SLOT_SYNC_BATCH,
 };
-use sim_core::build::{BuildContent, PieceDef, PieceRec};
+use sim_core::build::{
+    BuildContent, PieceDef, PieceRec, PLATE_RISE_MAX_BANDS, PLATE_SINK_MAX_BANDS,
+};
 use sim_core::craft::{
     CraftContent, CraftJob, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
     STATION_WORKBENCH2, STATION_WORKBENCH3,
@@ -848,6 +850,13 @@ pub fn event_piece_placed() -> PieceRec {
         // (wire v39) the way the defs fixture pins shape 7 — a bit that
         // never carries a 1 is a bit nothing gates.
         facing: 1,
+        // And the plate NEGATIVE (build plate v1, wire v49), for the same
+        // rule one line up and one turn sharper: `plate` is the only signed
+        // field on this record, it is written biased, and every way of
+        // getting a bias wrong — the wrong constant, an unsigned read, a
+        // width one short — agrees with a correct encoder on zero. A fixture
+        // carrying 0 would pin bytes that cannot tell the two apart.
+        plate: -1,
         ..PieceRec::default()
     }
 }
@@ -856,7 +865,7 @@ pub fn event_piece_placed() -> PieceRec {
 /// message at its cap.
 pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 18);
-    let recs = core::array::from_fn(|_| PieceRec {
+    let recs = core::array::from_fn(|i| PieceRec {
         cx: rng.next_bounded(1024) as u16,
         cz: rng.next_bounded(1024) as u16,
         level: rng.next_bounded(8) as u8,
@@ -865,6 +874,21 @@ pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
         loc: rng.next_bounded(10) as u8,
         row: rng.next_bounded(32) as u8,
         facing: rng.next_bounded(2) as u8,
+        // The whole legal band, both signs — the batch is where a width is
+        // pinned across many records, so it covers the range rather than a
+        // value (`event_piece_placed` pins the single deliberate one).
+        //
+        // **Cycled off the index, deliberately NOT drawn from `rng`.** Every
+        // field above shares one stream, so an extra draw per record shifts
+        // every later one — and the first version of this line did draw,
+        // which slid the `loc` sequence far enough that one of the ten
+        // addresses stopped appearing in the batch at all.
+        // `the_loc_fuzz_covers_each_stores_whole_domain` caught it, which is
+        // that gate's whole reason for existing. A cycle also beats a draw
+        // here on the merits: it pins EVERY legal plate rather than whichever
+        // subset a seed happens to land on.
+        plate: (i as i32 % (PLATE_RISE_MAX_BANDS + PLATE_SINK_MAX_BANDS + 1) - PLATE_SINK_MAX_BANDS)
+            as i8,
         ..PieceRec::default()
     });
     (true, recs)

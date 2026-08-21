@@ -1937,6 +1937,50 @@ fn the_input_golden_fuzzes_the_whole_button_octet() {
 /// rather than as a bound copied from the generator, so it stays true if a
 /// store gains a loc: the day `LOC_DIAG_B` is not the top, this goes red
 /// on the fixture that no longer reaches it rather than on the constant.
+/// The piece goldens carry a LIVE plate — both signs in the batch, a negative
+/// one in the single placement (build plate v1, wire v49).
+///
+/// `the_loc_fuzz_covers_each_stores_whole_domain`'s argument, applied to the
+/// record's only signed field. `plate` is written biased, and every way of
+/// getting a bias wrong — the wrong constant, an unsigned read, a width one
+/// bit short — produces bytes identical to a correct encoder's **on zero**.
+/// A fixture set that only ever carried 0 would pin the field's existence and
+/// nothing about its meaning, which is the byte-golden hole this whole file's
+/// header is about.
+#[test]
+fn the_piece_goldens_carry_a_live_plate() {
+    use sim_core::build::{PLATE_RISE_MAX_BANDS, PLATE_SINK_MAX_BANDS};
+
+    match decode_event(GOLDEN[fixture_index("_event_piece_placed.bin")])
+        .expect("piece placed decodes")
+    {
+        EventMsg::PiecePlaced { rec } => assert!(
+            rec.plate < 0,
+            "the placed golden carries plate {}, so its bytes cannot tell a              dropped sign from a correct one",
+            rec.plate
+        ),
+        other => panic!("the piece-placed fixture decoded as {other:?}"),
+    }
+
+    let mut seen = [false; 32];
+    match decode_event(GOLDEN[fixture_index("_event_piece_sync.bin")]).expect("piece sync decodes")
+    {
+        EventMsg::PieceSync { recs, count, .. } => {
+            for rec in recs.iter().take(count as usize) {
+                seen[(rec.plate as i32 + PLATE_SINK_MAX_BANDS) as usize] = true;
+            }
+        }
+        other => panic!("the piece-sync fixture decoded as {other:?}"),
+    }
+    for band in -PLATE_SINK_MAX_BANDS..=PLATE_RISE_MAX_BANDS {
+        assert!(
+            seen[(band + PLATE_SINK_MAX_BANDS) as usize],
+            "no piece in the sync golden carries plate {band}, so that value's              bytes are pinned by nothing — the sim can produce              {}..={PLATE_RISE_MAX_BANDS}",
+            -PLATE_SINK_MAX_BANDS
+        );
+    }
+}
+
 #[test]
 fn the_loc_fuzz_covers_each_stores_whole_domain() {
     use sim_core::build::{LOC_DIAG_B, LOC_EDGE_ZLO};
