@@ -840,7 +840,17 @@ instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
 
 1. **Nobody has looked at it.** Every claim is arithmetic; the screenshots
    that opened this deserve their counter-shot. Boot, build a row on the
-   same hillside, look.
+   same hillside, look. **The arithmetic half is swept now** (2026-08-21,
+   `client/tests/lattice_geom.rs`): the drawn surface is the walked surface
+   for every plane, triangle and riser, `base_transform` lands on
+   `build::anchor`, and a storey is one cube. It found the **stairs 0.212 m
+   out** — the ramp slab was centred on the storey's mid-height, so its
+   top face, the one a player sees, sat `SLAB_T/(2 cos θ)` above the line
+   `piece_ground` walks them up, for the whole climb. The run was a typed
+   4.15 m against the cell's 4.2426 diagonal too. Both fixed and derived
+   from `BUILD_CELL_M`/`LEVEL_H_M`; six mutants proven red, and the first
+   draft of the run assertion sampled a seam inside each end, which the
+   short ramp reaches — so it passed the bug it was written for.
 2. **The stored plate is the real v1** — the reference's model: first
    foundation pins a height, neighbours latch to it, too-high/too-low
    refusals, stilts past one band. Costs a wire field + save bump + mirror

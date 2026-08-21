@@ -436,10 +436,61 @@ pub fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
     )
 }
 
-/// How far a stairs ramp runs in Z, metres. Shared with the build ghost for
-/// the same reason the doorway numbers are: a preview the wrong length is a
-/// preview of a different piece.
-pub const STAIRS_RUN_M: f32 = 4.15;
+/// The stair ramp's pitch, radians — the slope of the surface the sim
+/// actually stands a player on, derived rather than typed.
+///
+/// **This was `FRAC_PI_4` until 2026-08-21 and it was right by coincidence.**
+/// `collide::piece_ground` walks a rider up `floor + frac·LEVEL_H_M` across
+/// `BUILD_CELL_M` of z, so the sim's ramp rises `LEVEL_H_M` per `BUILD_CELL_M`
+/// — 45° only while those two numbers are equal, which they are today and
+/// which nothing enforces. A literal 45° here is the hand-kept mirror
+/// `CLAUDE.md` warns about twice: move the storey height and the drawn tread
+/// silently stops being the walked one, with every gate in the repo green.
+pub fn stairs_pitch() -> f32 {
+    LEVEL_H_M.atan2(BUILD_CELL_M)
+}
+
+/// How far a stairs ramp runs along its own slope, metres — the cell's
+/// diagonal, so the tread's z extent is exactly the cell and its rise is
+/// exactly the storey.
+///
+/// Shared with the build ghost for the same reason the doorway numbers are: a
+/// preview the wrong length is a preview of a different piece. It was a typed
+/// 4.15 m, which is 0.09 m short of the diagonal — so the drawn tread stopped
+/// 0.066 m below the storey it delivers you to.
+pub fn stairs_run() -> f32 {
+    (BUILD_CELL_M * BUILD_CELL_M + LEVEL_H_M * LEVEL_H_M).sqrt()
+}
+
+/// Where the ramp slab's centre goes, relative to the piece's base point, so
+/// that the slab's **top face** is the line the sim walks a player up: the
+/// storey's mid-point, pushed half a thickness along the ramp's own DOWNWARD
+/// normal.
+///
+/// **This is the 0.212 m the stairs were wrong by** (measured 2026-08-21,
+/// `tests/lattice_geom.rs` §A). The part was centred on the storey's
+/// mid-height, which puts the ramp's *centre plane* on the sim's surface and
+/// its top face `SLAB_T / (2·cos θ)` above it — a uniform 21 cm of tread the
+/// player's feet were inside for the whole climb. A slab has a thickness and
+/// the sim's ramp has none, so which of the slab's faces is the surface is a
+/// decision rather than a detail: it is the top one, because that is the face
+/// a player sees themselves standing on.
+///
+/// **Half a thickness DOWN-NORMAL, not half a thickness down.** Dropping the
+/// centre vertically puts the top face on the right line and slides it
+/// `(SLAB_T/2)·sin θ` down that line — the tread then overhangs the cell
+/// below by 0.106 m and stops 0.106 m short of the storey it delivers you to.
+/// The normal offset moves the face onto the line and leaves it spanning
+/// exactly `z ∈ [0, BUILD_CELL_M]`, `y ∈ [0, LEVEL_H_M]`, which is exactly
+/// what `collide::piece_ground` ramps over.
+pub fn stairs_offset() -> Vec3 {
+    let (sin, cos) = stairs_pitch().sin_cos();
+    Vec3::new(
+        0.0,
+        LEVEL_H_M * 0.5 - SLAB_T * 0.5 * cos,
+        SLAB_T * 0.5 * sin,
+    )
+}
 
 /// The doorway's lintel: how tall it is, and how far its centre sits below the
 /// piece's own mid-height.
@@ -598,9 +649,9 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                 // always rises toward +Z (cosmetic v0 — the browser's choice
                 // too), pitched the way the standing piece has always been.
                 Part {
-                    size: Vec3::new(span, SLAB_T, STAIRS_RUN_M),
-                    offset: Vec3::new(0.0, LEVEL_H_M * 0.5, 0.0),
-                    x_rot: -std::f32::consts::FRAC_PI_4,
+                    size: Vec3::new(span, SLAB_T, stairs_run()),
+                    offset: stairs_offset(),
+                    x_rot: -stairs_pitch(),
                     kind: PartKind::Box,
                 },
                 none,
