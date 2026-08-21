@@ -198,19 +198,24 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         lay_forward: true,
     },
     // The deployables, palmed level. `length_m` restates each FILE's longest
-    // axis (the gate measures it); the grip fraction is chosen so the palm
-    // lands near mid-HEIGHT, which for these is a fraction of the long axis.
-    HeldModelDef::upright("small_box", "models/deploy/box.glb", 1.127, 0.27, 0.26),
-    HeldModelDef::upright("large_box", "models/deploy/box.glb", 1.127, 0.27, 0.34),
-    HeldModelDef::upright("sleeping_bag", "models/deploy/bag.glb", 1.896, 0.08, 0.16),
+    // axis (the gate measures it); the grip fraction puts the palm near the
+    // TOP of the shown object — carried by an upper edge, hanging below the
+    // fist — which for these is a fraction of the long axis, not of height.
+    // Scales are small on purpose and were judged off a capture: the first
+    // cut at 0.26 put a 29 cm crate at 43 cm from the eye and it ate a
+    // quarter of the frame — a held deployable is a token of the thing, and
+    // the placement ghost at the reticle is the actual size claim.
+    HeldModelDef::upright("small_box", "models/deploy/box.glb", 1.127, 0.45, 0.16),
+    HeldModelDef::upright("large_box", "models/deploy/box.glb", 1.127, 0.44, 0.22),
+    HeldModelDef::upright("sleeping_bag", "models/deploy/bag.glb", 1.896, 0.13, 0.12),
     HeldModelDef::upright(
         "workbench",
         "models/deploy/workbench.glb",
         1.333,
-        0.30,
-        0.22,
+        0.50,
+        0.15,
     ),
-    HeldModelDef::upright("hearth", "models/deploy/hearth.glb", 1.00, 0.45, 0.28),
+    HeldModelDef::upright("hearth", "models/deploy/hearth.glb", 1.00, 0.80, 0.20),
 ];
 
 /// One held model: the item it answers to, its geometry source, and how the
