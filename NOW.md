@@ -42,6 +42,35 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0rep · A player can file a report; three things upstream of it cannot *(client lane + operator)*
+
+Landed 2026-08-20. `F7` writes `gates-report-<stamp>-<fp>.md`, a `.json`
+beside it and a `.png` of the frame, into the screenshot directory:
+build (`VERSION`/`GIT_SHA`/`PROTO_VER`), the seed, position, the netcode
+counters `ClientCore` already kept, and a stranger's line quoted in a fence it
+cannot escape. `crates/client/tests/report.rs` is the gate — 23 assertions, the
+five carrying the untrusted-prose rule each proven red under their own mutant.
+A panic writes the same document, chained ahead of the default hook.
+`DECISIONS.md` §open, bug reports v0, has the four bounds.
+
+What it does NOT do, in the order the value drops:
+
+1. **Nothing reads them.** A directory of `.json` files is the contract for a
+   page listing open reports and what fixing one pays — `Report::json` writes
+   `fingerprint`, `issue_title` and `read_first` into the document precisely so
+   a consumer never re-derives them. No such page exists. **(operator: where.)**
+2. **No intake, deliberately.** The client opens no socket; the player decides
+   what happens to the file. An endpoint behind a prompt is a separate slice.
+3. **The `report` signing family does not exist in the launcher** — shipping
+   set is `play`/`review`/`vow`/`hive`/`braid`/`store` (`scry-broker`'s
+   `signer.rs`). `Report::sign_text` is built to `sdk/PROTOCOL.md`'s rules and
+   is refused today, which is the correct failure. Upstream, in `scry-forge`.
+4. **Does a report pay, and whom?** `AGENTS.md` §the deal is one payment per
+   accepted PR; a report is not a PR. A one-click path from annoyance to payout
+   is a farm. **(operator: a number, or a no.)**
+
+---
+
 ## 0pw · Every material is drawn once before it is needed *(client lane)*
 
 LANDED 2026-08-20, and it corrects the trap it closes. `CLAUDE.md` said a

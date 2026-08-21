@@ -104,6 +104,25 @@ pub fn stamp(secs: u64) -> String {
     )
 }
 
+/// `YYYY-MM-DDTHH:MM:SSZ` — the same instant [`stamp`] names, in the form a
+/// document is read in rather than the form a filename needs.
+///
+/// Here rather than in `crate::report` so this crate holds exactly one civil-
+/// date implementation. Two would be two things to keep right, and the one
+/// that is wrong would be the one nobody runs — which is this repo's standing
+/// complaint about hand-kept mirrors, applied before the mirror exists.
+pub fn iso(secs: u64) -> String {
+    let days = secs / 86_400;
+    let rem = secs % 86_400;
+    let (y, m, d) = civil_from_days(days);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3_600,
+        (rem % 3_600) / 60,
+        rem % 60
+    )
+}
+
 /// Days since the Unix epoch to `(year, month, day)`, UTC.
 ///
 /// Howard Hinnant's `civil_from_days`, in the unsigned form the epoch allows:
