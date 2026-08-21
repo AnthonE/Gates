@@ -1,5 +1,5 @@
 # Gates · content/research.toml — the blueprint table (CONTENT.md §1,
-# research). The sink OBOL exists for: you find the thing, you take it to a
+# research). The sink JUNK exists for: you find the thing, you take it to a
 # table with a fistful of coin, and from then on you can make it yourself.
 # The sim's side is `sim-core/research.rs`; every number here is a knob with
 # this file as its documented default (DECISIONS.md §open, "research v0").
@@ -7,11 +7,11 @@
 # **What research is paid in, named here rather than assumed in code.**
 # `sim-core` receives an item index and never learns it is currency —
 # `DESIGN.md` §3.1's coin stays out of `crates/` the same way every other
-# number does. And to be clear about which OBOL this is: the carried,
+# number does. And to be clear about which JUNK this is: the carried,
 # item-stack kind, which is scrap (operator, 2026-08-10). Nothing in this
 # file touches a wallet, a ledger or a chain.
 [coin]
-item = "item.obol"
+item = "item.junk"
 
 # --- what may be learned ------------------------------------------------
 #
@@ -49,10 +49,10 @@ item = "item.obol"
 # carry. That reason read: theirs are 75/125/250/500 pre-Oct-2025 and
 # 15/30/60/120 post-cut (`reference/RIPLIST.md` §2 row 7, page tier
 # 2026-08-14), "both priced against a ~10-scrap barrel where ours pays
-# ~0.85 obol, so neither lands raw". **The ~10 was never measured and is
+# ~0.85 junk, so neither lands raw". **The ~10 was never measured and is
 # wrong**: their barrel pays ~2.42 scrap (§1f — 2 direct at 100 % plus a
 # 1.4 % gear roll recycled), and taking their recycler yields the same day
-# put ours at 2.727 obol a barrel. One obol now buys about what one scrap
+# put ours at 2.727 junk a barrel. One junk now buys about what one scrap
 # buys. Priced in barrels over the four researchable items we both have —
 # their Research Table column, page-read 2026-08-18: HV arrow 15,
 # revolver 30, satchel 60, gunpowder 120 — **this ladder cost 2.66× theirs
@@ -67,7 +67,7 @@ item = "item.obol"
 # nobody has opened it (`reference/RIPLIST.md` §2 row 1g); until then
 # this ladder still reads reachable, a session, a project, and it still
 # moves with the faucet counts or the ratio breaks (DECISIONS.md §open,
-# "OBOL faucet v0").
+# "JUNK faucet v0").
 #
 # **`requires` is the tech tree** (tech tree v0 — spoken 2026-08-14, the
 # pre-Oct-2025 era 2026-08-15). Two verbs read this table: the research

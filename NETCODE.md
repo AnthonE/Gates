@@ -80,7 +80,7 @@ already reach past the wrapper for it — `QuicTransportConfig` and
 `IpBindConfig` in `net.rs` are quinn's own types. What WebTransport still
 adds is the **HTTP/3 session layer**: an extended-CONNECT handshake
 (`endpoint.accept()` → `IncomingSession` → `request.accept()`), a
-`https://{addr}` URL shape that `scry-shardlist-v1` bakes into every
+`https://{addr}` URL shape that `elo-shardlist-v1` bakes into every
 published row, and a per-datagram session-id prefix against the 1 100-byte
 budget.
 

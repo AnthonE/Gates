@@ -141,7 +141,7 @@ const DAMAGE: u32 = 34;
 const FIXTURE_HP: u32 = 100;
 /// A fixture item with no weapon row, used where a stack must be
 /// distinguishable from a player id and from its own count.
-const JUNK: u16 = 7;
+const FILLER: u16 = 7;
 const JUNK_COUNT: u16 = 3;
 
 /// The attacker and the victim, by id. Kept apart on purpose — an event
@@ -345,7 +345,7 @@ fn arm_victim_with_junk(w: &mut World) {
         *s = ItemStack::default();
     }
     w.players[1].inv[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: JUNK_COUNT,
         cond: 0,
     };
@@ -832,7 +832,7 @@ fn gather_names_the_player_then_item_over_count() {
     assert_eq!(got.a, ATTACKER, "EV_GATHER.a is who gained the items");
     assert_eq!(
         got.b >> 16,
-        JUNK as u32,
+        FILLER as u32,
         "EV_GATHER.b's HIGH half is the item index"
     );
     assert_eq!(
@@ -858,7 +858,7 @@ fn gather_names_the_player_then_item_over_count() {
 /// (1, 7, 2) in the three seats — all pairwise distinct.
 ///
 /// The arrangement mutates the fixture the way every arrangement here
-/// does: the junk item is given a condition ceiling so a zero-condition
+/// does: the filler item is given a condition ceiling so a zero-condition
 /// stack of it reads as DEAD (`gather::swing`'s Q4 guard), and the tree's
 /// hand row is zeroed so the fallback pays nothing — the shipped content's
 /// own shape since 2026-08-15.
@@ -924,14 +924,14 @@ fn gather_refused_names_the_player_then_item_over_reason() {
         n.weak_pct = 0;
         n.hand_yield = 0;
     }
-    // The junk item gains a ceiling so a zero-condition stack of it is a
+    // The filler item gains a ceiling so a zero-condition stack of it is a
     // DEAD tool rather than a mere non-tool. 123 is distinct from every
     // other value in the check.
-    w.gather.cond_max[JUNK as usize] = 123;
+    w.gather.cond_max[FILLER as usize] = 123;
     w.dev_spawn = Some((px, pz));
     w.tick(&[Command::Join { id: BODY }]);
     w.players[0].inv[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 1,
         cond: 0,
     };
@@ -973,7 +973,7 @@ fn gather_refused_names_the_player_then_item_over_reason() {
     assert_eq!(got.a, BODY, "EV_GATHER_REFUSED.a is who swung");
     assert_eq!(
         got.b >> 16,
-        JUNK as u32,
+        FILLER as u32,
         "EV_GATHER_REFUSED.b's HIGH half is the HELD item — the sentence \
          names the torch, never bare hands"
     );
@@ -2614,7 +2614,7 @@ fn deploy_removed_names_the_cell_and_the_deploy_row_not_the_piece_under_it() {
 fn moved_names_the_address_and_what_moved() {
     let mut w = duel_world();
     w.players[0].inv[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 30,
         cond: 0,
     };
@@ -2657,7 +2657,7 @@ fn moved_names_the_address_and_what_moved() {
     assert_eq!(e.b & 0xff, TO_SLOT as u32, "b[7:0] is the to slot");
     distinct_halves(e.c, "EV_MOVED.c");
     assert_eq!(e.c >> 16, COUNT as u32, "c's high half is the count");
-    assert_eq!(e.c & 0xffff, JUNK as u32, "c's low half is the item");
+    assert_eq!(e.c & 0xffff, FILLER as u32, "c's low half is the item");
     // And the world actually did it — a role check against an event whose
     // cause did nothing is a check on a lie.
     assert_eq!(w.players[0].inv[TO_SLOT as usize].count, COUNT);
@@ -3136,7 +3136,7 @@ fn bag_removed_names_the_bag_then_why() {
     until(&mut w, EV_BAG_DROPPED);
     let first_bag = w.backpacks.next_id() - 1;
 
-    // Cause one: the timer. JUNK is item 7, the fixture ladder's
+    // Cause one: the timer. FILLER is item 7, the fixture ladder's
     // short-lived half, so the despawn fits the quiet-step bound.
     until_quiet(&mut w, EV_BAG_REMOVED);
     let gone = only(&w, EV_BAG_REMOVED);
@@ -3884,7 +3884,7 @@ fn research_refused_names_the_player_then_why() {
 /// second thing this checks. `wake` rebuilds the record from
 /// `Player::default()` and names what a body carries through; until
 /// 2026-08-15 `known` was not on that list, so every death deleted every
-/// blueprint the player had bought with OBOL. The clock kills the body
+/// blueprint the player had bought with FILLER. The clock kills the body
 /// here — `starve` is the same real cause `respawn_names_the_player…`
 /// uses — and the mask has to come back out the other side intact.
 #[test]
@@ -3929,7 +3929,7 @@ fn known_names_the_holder_then_the_mask_low_half_first() {
     // the mask but announced the old one would satisfy every check above.
     assert_eq!(
         w.players[0].known, WIDE,
-        "a real death erased blueprints bought with OBOL — `wake` is not \
+        "a real death erased blueprints bought with FILLER — `wake` is not \
          carrying `known` across"
     );
 }
@@ -4194,7 +4194,7 @@ fn trust_names_a_container_opened_while_its_owner_watches() {
         bi,
         0,
         ItemStack {
-            item: JUNK,
+            item: FILLER,
             count: JUNK_COUNT,
             cond: 0,
         },
@@ -4325,7 +4325,7 @@ fn trust_is_silent_for_your_own_door_and_for_an_animals_bag() {
         let b = w.players[0].body;
         let mut items = [ItemStack::default(); INV_SLOTS];
         items[0] = ItemStack {
-            item: JUNK,
+            item: FILLER,
             count: JUNK_COUNT,
             cond: 0,
         };

@@ -7,7 +7,7 @@
 //! this file owns nodes, keys, and the live facts.
 //!
 //! **Why a key rather than a website.** `AGENTS.md` §the deal has paid a flat
-//! 100,000 SCRY for any accepted pull request since 2026-08-09 and `NOW.md`
+//! 100,000 ELO for any accepted pull request since 2026-08-09 and `NOW.md`
 //! §0gh records the ledger as `[]` — the loop works and nothing has ever
 //! walked through it. The distance between *a player noticing a bug* and *a
 //! report anybody can act on* is the whole gap, and every step in it (find the

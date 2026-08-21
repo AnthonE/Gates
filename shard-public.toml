@@ -11,7 +11,7 @@
 #             (opened for WebRTC DataChannels; 50000/55000/60000 all arrived),
 #             so the shard lives there. 4433/4434/4455 are taken by thrml-ws,
 #             the live MMO game-server and its wt-gateway.
-#   cert_pem  a REAL Let's Encrypt chain for game.moreright.xyz (which is an
+#   cert_pem  a REAL Let's Encrypt chain for game.elopros.com (which is an
 #             A record onto this box, DNS-only — a Cloudflare-proxied name
 #             cannot carry WebTransport, which is QUIC over UDP). With a
 #             trusted chain a validating client needs no
@@ -72,14 +72,14 @@ world_file = "/home/master/gates-data/island.world"
 # `domain` is what goes in the signed message and it MUST be the host players
 # dial — that is the whole of the domain binding, and a mismatch refuses
 # every login rather than failing quietly.
-domain = "game.moreright.xyz"
+domain = "game.elopros.com"
 
 # The status endpoint (crates/server/src/status.rs): GET /status.json,
 # integers only, read off the shard's counters and never touching the sim.
 # It is what lights the `players` column in the shard list.
 #
 # **LOOPBACK, AND FRONTED BY NGINX** (operator, 2026-08-11). The published
-# url is `https://game.moreright.xyz/gates/status.json`, which is a
+# url is `https://game.elopros.com/gates/status.json`, which is a
 # `location` in the vhost this box already serves on 443. Three reasons this
 # beat binding it publicly, and the first is the one that decided it:
 #
@@ -114,11 +114,11 @@ status_addr = "127.0.0.1:8431"
 # a network round trip per join to learn nothing.
 #
 # ⚠ **THE DAY THE TICKET IS ARMED, THIS LINE IS THE WHOLE ENFORCEMENT.** The
-# depot gate is off by default and deliberately so — scry's `tickets.py` says
+# depot gate is off by default and deliberately so — elo's `tickets.py` says
 # it in its own words, *"downloads ship open — the servers are the wall"*,
 # because the game is open source and the bytes were never the secret. So the
 # official servers are not one enforcement point among several; they are the
-# only one, and this key is how one exists. scry's `TICKET.md` §8b step 8 is
+# only one, and this key is how one exists. elo's `TICKET.md` §8b step 8 is
 # the same instruction from the other side, and
 # `deploy/launch_preflight.py --shard-config <this file>` grades it.
 #
@@ -135,4 +135,4 @@ status_addr = "127.0.0.1:8431"
 # `entitle_unknown` in the stats — armed and climbing means the door is open
 # and nobody can see it.
 #
-# entitle_origin = "https://scry.moreright.xyz"
+# entitle_origin = "https://elopros.com"

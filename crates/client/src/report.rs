@@ -2,8 +2,8 @@
 //! that a stranger's prose is evidence rather than instructions.
 //!
 //! **Why this module exists at all.** This repo already pays for a fix:
-//! `AGENTS.md` §the deal is a standing 100,000 SCRY on any accepted pull
-//! request, funded through scry's Great Work board, live end to end since
+//! `AGENTS.md` §the deal is a standing 100,000 ELO on any accepted pull
+//! request, funded through elo's Great Work board, live end to end since
 //! 2026-08-09. What it has never had is *supply* — `NOW.md` §0gh records the
 //! board's paid ledger as `[]`, no outside fork having opened a PR. The
 //! missing half is not the money and not the merge; it is that a player who
@@ -57,7 +57,7 @@
 //!   changing bytes. Those are removed outright by [`sane`], because unlike
 //!   prose they have no honest use in a sentence about a game.
 //!
-//! This is the same instinct the scry SDK already applies one seam over:
+//! This is the same instinct the elo SDK already applies one seam over:
 //! `sdk/PROTOCOL.md` strips newlines from a game's `why` string because *"a
 //! `why` that could add lines could forge the launcher's own words in the
 //! launcher's own window"*. Same defect, one level out.
@@ -418,7 +418,7 @@ pub struct Report {
     pub crash: Option<Crash>,
     /// The address the launcher reported, if one was running.
     ///
-    /// ⚠ **A claim, not authentication** — `scry.rs` says this in as many
+    /// ⚠ **A claim, not authentication** — `elo.rs` says this in as many
     /// words and the rendered document repeats it, because a wallet printed
     /// without that sentence beside it reads as a proven identity. What makes
     /// it provable is a signature over [`Report::sign_text`], which is a
@@ -468,7 +468,7 @@ impl Report {
     /// FNV-1a because it is four lines, has no dependency and is not
     /// load-bearing for anything but grouping — this is not a digest anybody
     /// verifies, and `CLAUDE.md`'s rule about second implementations of a
-    /// notarized number is about `scry digest`, not about a grouping key.
+    /// notarized number is about `elo digest`, not about a grouping key.
     pub fn fingerprint(&self) -> u64 {
         let mut h: u64 = 0xcbf2_9ce4_8422_2325;
         let mut eat = |s: &str| {
@@ -697,7 +697,7 @@ impl Report {
             "- The doc that owns this: `{}`\n\
              - Reproduce the build: `git checkout {}` (release {})\n\
              - Every gate must be green before it merges: `./ci/gates.sh`\n\
-             - **This pays.** Any accepted pull request is 100,000 SCRY, flat, standing —\n  \
+             - **This pays.** Any accepted pull request is 100,000 ELO, flat, standing —\n  \
              `AGENTS.md` §the deal. There is nothing to claim and nobody ahead of you.\n\
              - Name this in the PR so the reporter is paid too:\n  \
              `Closes reports: {}`\n\n",
@@ -742,7 +742,7 @@ impl Report {
                 "Reporter: **anonymous** — no launcher was running and no `--identity` was \
                  given, which is a normal way to play. Nothing about this report is worth \
                  less for it; there is simply no address to pay if it leads to a fix. \
-                 Start the game through the scry launcher, or with `--identity 0x…`, and \
+                 Start the game through the elo launcher, or with `--identity 0x…`, and \
                  the next one carries a wallet.\n\n",
             ),
         }
@@ -776,12 +776,12 @@ impl Report {
         serde_json::to_string_pretty(&v).unwrap_or_else(|_| "{}".into())
     }
 
-    /// The EIP-191 text the scry launcher signs to bind this report to a
+    /// The EIP-191 text the elo launcher signs to bind this report to a
     /// wallet — the reason a report can be *paid for* rather than merely
     /// received.
     ///
     /// Built to `sdk/PROTOCOL.md`'s rules, which are not negotiable and which
-    /// a hand-rolled string gets wrong: the first line is `scry <family>`, the
+    /// a hand-rolled string gets wrong: the first line is `elo <family>`, the
     /// address is **lowercase** (a checksummed address is different bytes and
     /// verifies differently), and the day is UTC, so a signature is good for
     /// that day only.
@@ -799,7 +799,7 @@ impl Report {
     /// this can be written before the other side is.
     pub fn sign_text(&self, wallet: &str, day: &str) -> String {
         format!(
-            "scry report\naction: gates-bug\nwallet: {}\nday: {day}\ndetail: {} — {}",
+            "elo report\naction: gates-bug\nwallet: {}\nday: {day}\ndetail: {} — {}",
             wallet.to_ascii_lowercase(),
             self.kind.slug(),
             self.fingerprint_hex(),

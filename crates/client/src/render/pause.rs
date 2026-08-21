@@ -111,7 +111,7 @@ pub fn setup(mut commands: Commands, connecting: NonSend<Connecting>) {
     // form is written, so what is on screen is what the parser accepts.
     //
     // **A link is only as good as the address it carries**, and a loopback one
-    // is not shareable — a friend who follows `scry://join/gates/127.0.0.1:4433`
+    // is not shareable — a friend who follows `elo://join/gates/127.0.0.1:4433`
     // arrives at their own machine. Say nothing rather than offer a link that
     // is wrong for everyone but the person reading it.
     let invite = match connecting.addr.split_once(':').map(|(h, _)| h) {
@@ -322,7 +322,7 @@ mod tests {
             assert!(!is_shareable(mine), "{mine:?} is not shareable");
         }
         for theirs in [
-            "game.moreright.xyz",
+            "game.elopros.com",
             "10.0.0.4",
             "192.168.1.20",
             "203.0.113.7",
@@ -339,12 +339,12 @@ mod tests {
     fn the_drawn_invite_is_a_link_the_parser_accepts() {
         // The screen and the parser must not be able to disagree about the
         // shareable form — this is what keeps `link_for` the single writer.
-        let link = crate::deeplink::link_for("game.moreright.xyz:61234");
+        let link = crate::deeplink::link_for("game.elopros.com:61234");
         assert_eq!(
             crate::deeplink::parse(&link)
                 .expect("drawn link parses")
                 .addr,
-            "game.moreright.xyz:61234"
+            "game.elopros.com:61234"
         );
     }
 

@@ -1,4 +1,4 @@
-//! Reaching the scry launcher — identity and signatures, with no key in this
+//! Reaching the elo launcher — identity and signatures, with no key in this
 //! process and no crate added to the tree.
 //!
 //! `scry_overlay.rs` beside this file is **vendored byte-for-byte** from
@@ -25,12 +25,12 @@
 //! for days while the vendored copy sat 326 lines behind the source: no
 //! Windows transport (the file `use`d `std::os::unix::net::UnixStream`
 //! unconditionally, so a Windows build of this client could not compile at
-//! all), no `prove`, no `profile`. Upstream's own gate — scry's
+//! all), no `prove`, no `profile`. Upstream's own gate — elo's
 //! `crates/scry-broker/tests/sdk_parity.rs` — compiles `sdk/rust/…` and calls
 //! it *"what Gates has compiled into its binary byte-for-byte"*, which was a
 //! claim about a file in another repo that nothing checked. So the drift check
 //! is a **command somebody runs**, not a gate either repo owns, and it is one
-//! line against a number scry publishes beside the SDK:
+//! line against a number elo publishes beside the SDK:
 //!
 //! ```text
 //! sha256sum crates/client/src/scry_overlay.rs
@@ -114,7 +114,7 @@ pub mod overlay;
 
 pub use overlay::{play_message, Overlay, Proof, SignError, Signature};
 
-/// This game's slug in the scry catalog — the key its manifest, its depot and
+/// This game's slug in the elo catalog — the key its manifest, its depot and
 /// its shard list are all filed under.
 ///
 /// Re-exported from `protocol` rather than declared here: it also reaches the
@@ -165,42 +165,42 @@ impl Player {
     /// learned, because "signed in" and "typed a number" must not look alike.
     pub fn line(&self) -> String {
         match self {
-            Player::Anonymous => "playing anonymously — no scry launcher".into(),
+            Player::Anonymous => "playing anonymously — no elo launcher".into(),
             Player::Declared(a) => format!("identity {a} (declared, unverified)"),
             Player::Launcher {
                 address: Some(a),
                 signer,
-            } => format!("identity {a} via the scry launcher (signer: {signer}, unverified)"),
+            } => format!("identity {a} via the elo launcher (signer: {signer}, unverified)"),
             Player::Launcher {
                 address: None,
                 signer,
-            } => format!("scry launcher connected, no address set (signer: {signer})"),
+            } => format!("elo launcher connected, no address set (signer: {signer})"),
         }
     }
 }
 
 /// The connected launcher, if one answered. Held so a later slice can ask for
 /// a signature; dropped with the game.
-pub struct Scry {
+pub struct Elo {
     pub player: Player,
     pub servers_url: Option<String>,
     overlay: Option<Overlay>,
 }
 
-impl Scry {
+impl Elo {
     /// Ask the launcher who is playing. Runs ONCE, before the window opens.
     ///
     /// `declared` is `--identity` if the player passed one. It wins over the
     /// launcher's answer, because a player who names an address on the command
     /// line has said something more specific than their launcher's default —
     /// and both are unverified, so nothing is being trusted more.
-    pub fn discover(declared: Option<&str>, version: &str) -> Scry {
+    pub fn discover(declared: Option<&str>, version: &str) -> Elo {
         match Overlay::connect(SLUG, version) {
             Ok(mut ov) => {
                 let signer = ov.signer();
                 let servers_url = ov.servers_url(SLUG);
                 let address = declared.map(str::to_string).or_else(|| ov.address());
-                Scry {
+                Elo {
                     player: Player::Launcher { address, signer },
                     servers_url,
                     overlay: Some(ov),
@@ -209,7 +209,7 @@ impl Scry {
             // Not an error path. `why` is logged at most once and the game
             // proceeds — a launcher that is not running is the majority case
             // and must never read as a fault.
-            Err(_why) => Scry {
+            Err(_why) => Elo {
                 player: match declared {
                     Some(a) => Player::Declared(a.to_string()),
                     None => Player::Anonymous,
@@ -229,7 +229,7 @@ impl Scry {
     pub fn sign(&mut self, text: &str, why: &str) -> Result<Signature, SignError> {
         match self.overlay.as_mut() {
             Some(ov) => ov.sign(text, why),
-            None => Err(SignError::NoLauncher("no scry launcher is running".into())),
+            None => Err(SignError::NoLauncher("no elo launcher is running".into())),
         }
     }
 
@@ -253,7 +253,7 @@ impl Scry {
     ) -> Result<Proof, SignError> {
         match self.overlay.as_mut() {
             Some(ov) => ov.prove_at(server, nonce, issued_at),
-            None => Err(SignError::NoLauncher("no scry launcher is running".into())),
+            None => Err(SignError::NoLauncher("no elo launcher is running".into())),
         }
     }
 
@@ -306,7 +306,7 @@ impl Scry {
 mod tests {
     use super::*;
 
-    /// The drift gate. The vendored file is the scry SDK's, byte-for-byte, and
+    /// The drift gate. The vendored file is the elo SDK's, byte-for-byte, and
     /// a local edit is the failure this catches: it would fix Gates and leave
     /// every other game on the broken copy.
     #[test]
@@ -320,7 +320,7 @@ mod tests {
             "crates/client/src/scry_overlay.rs has been edited. It is VENDORED from \
              AnthonE/scry-forge sdk/rust/scry_overlay.rs — fix it there and re-vendor, or \
              every other game keeps the broken version. If this IS a re-vendor, \
-             update scry::VENDORED_SHA256 in the same commit."
+             update elo::VENDORED_SHA256 in the same commit."
         );
     }
 
@@ -328,15 +328,15 @@ mod tests {
     fn no_launcher_is_a_normal_state_and_yields_a_playable_game() {
         // The socket env is pointed at nothing, which is what a machine with
         // no launcher looks like.
-        std::env::set_var("SCRY_LAUNCHER_SOCKET", "/nonexistent/scry-gates-test.sock");
-        let s = Scry::discover(None, "0.1.0");
+        std::env::set_var("SCRY_LAUNCHER_SOCKET", "/nonexistent/elo-gates-test.sock");
+        let s = Elo::discover(None, "0.1.0");
         assert_eq!(s.player, Player::Anonymous);
         assert!(!s.connected());
         assert!(s.player.address().is_none());
         assert!(s.player.line().contains("anonymously"));
 
         // ...and --identity still works with no launcher at all.
-        let s = Scry::discover(Some("0xabc"), "0.1.0");
+        let s = Elo::discover(Some("0xabc"), "0.1.0");
         assert_eq!(s.player, Player::Declared("0xabc".into()));
         assert_eq!(s.player.address(), Some("0xabc"));
         assert!(s.player.line().contains("unverified"));
@@ -445,8 +445,8 @@ mod tests {
 /// padded signature recovers a *different* address, and the failure would
 /// present as "the shard says I am somebody else".
 pub fn sign_siwe(domain: &str, nonce: &str, issued_at: u64) -> Option<protocol::Signature> {
-    let mut scry = Scry::discover(None, env!("CARGO_PKG_VERSION"));
-    let proof = scry
+    let mut elo = Elo::discover(None, env!("CARGO_PKG_VERSION"));
+    let proof = elo
         .prove_at(domain, nonce, i64::try_from(issued_at).ok())
         .ok()?;
     // The echoed `message` is deliberately ignored. The SDK says it is for

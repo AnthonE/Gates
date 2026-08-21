@@ -12,15 +12,15 @@
 //! `--capture <dir>` runs the probe harness instead of a player: settle on
 //! observable state, warm the pipelines, shoot a fixed vantage list, exit.
 //!
-//! `--server` and `--identity` are how the **scry launcher** starts this
+//! `--server` and `--identity` are how the **elo launcher** starts this
 //! binary — a depot's launch block names them (`ci/depot.py`). Parsing lives
 //! in `client::args` so the two binaries cannot disagree about a flag.
 
 use bevy::prelude::*;
 use client::args::{self, Parsed};
+use client::elo::Player;
 use client::render::boot::Who;
 use client::render::{GatesRenderPlugin, Net, Rt, Start, WorldId};
-use client::scry::Player;
 use client::{client_endpoint, Session};
 
 fn main() -> AppExit {
@@ -94,7 +94,7 @@ fn main() -> AppExit {
                 eprintln!("gates: {e}");
                 std::process::exit(1);
             });
-            Session::connect(&endpoint, &server, address, client::scry::sign_siwe)
+            Session::connect(&endpoint, &server, address, client::elo::sign_siwe)
                 .await
                 .unwrap_or_else(|e| {
                     eprintln!("gates: {e}");

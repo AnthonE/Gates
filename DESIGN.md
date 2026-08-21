@@ -16,17 +16,17 @@
 
 A survival game in the Rust (Facepunch) tradition: wake with nothing on a
 hostile island, gather, craft, build a base, raid, lose it all, wipe, again.
-100 players a shard. OBOL is the working coin you earn and risk in the world;
-SCRY and MYRRH buy skins and nothing else. Backend in Rust (the language), a
+100 players a shard. JUNK is the working coin you earn and risk in the world;
+ELO and ORBS buy skins and nothing else. Backend in Rust (the language), a
 **native Rust desktop client** (Bevy), transport QUIC via WebTransport.
 **The v1 deliverable is the skeleton** — netcode, determinism, and the server
 discipline laws — built so every later system (content, monuments, vehicles,
 AI) is data and systems plugged into a frame that already doesn't blip.
 
-This is a **separate product in its own repo**. It orbits scry (sold through
-the Great Work board as quest `munus-first-sale`, settled in SCRY, coins from
-the scry economy) but imports none of its code and none of its rules except
-the ones restated here. Tickers are bare: SCRY, OBOL, MYRRH — never a `$`.
+This is a **separate product in its own repo**. It orbits elo (sold through
+the Great Work board as quest `munus-first-sale`, settled in ELO, coins from
+the elo economy) but imports none of its code and none of its rules except
+the ones restated here. Tickers are bare: ELO, JUNK, ORBS — never a `$`.
 
 ---
 
@@ -37,7 +37,7 @@ the ones restated here. Tickers are bare: SCRY, OBOL, MYRRH — never a `$`.
    frame is right, the game grows for years; if it's wrong, no amount of
    content saves it.
 2. **One native client, and the game is sold.** A Rust desktop binary on
-   Bevy (`RENDER.md` owns its path), delivered as a scry depot the launcher
+   Bevy (`RENDER.md` owns its path), delivered as an elo depot the launcher
    installs (`ci/depot.py`). This pillar read *"browser-native, zero
    install — three.js + WebTransport"* until 2026-08-05, and **both halves
    were repudiated, not merely outgrown**: the operator retired instant
@@ -52,11 +52,11 @@ the ones restated here. Tickers are bare: SCRY, OBOL, MYRRH — never a `$`.
    degradation ladder instead of an emergent freeze.
 4. **The economy is honest.** Coins are earned in play and risked in play.
    The house sells appearance only. Settlement happens on RH-Chain through
-   the same claim pattern scry already uses; the game server holds no keys
+   the same claim pattern elo already uses; the game server holds no keys
    and mints nothing.
 5. **The core is deterministic.** Same build + same seed + same input log →
    same world, hash-checkable. That buys drift-free prediction, one-file bug
-   repros, and a played round the scry board can machine-verify.
+   repros, and a played round the elo board can machine-verify.
 
 ## 2 · The game, v1 loop
 
@@ -69,7 +69,7 @@ The Rust loop, cut to what a skeleton must prove:
   **faster** — the node's payout is fixed, so skill buys time, not riches;
   and a share of it is withheld until the felling blow, so walking away
   from a half-cut tree costs you), and **salvage barrels** along
-  roads/shore (the loot tension source; they drop components and OBOL
+  roads/shore (the loot tension source; they drop components and JUNK
   salvage, §3).
 - **Craft**: tier ladder. T0 rock/torch/spear → workbench → T1 bow, stone
   tools, furnace, metal fragments → T2 revolver, metal tools, armor. Guns
@@ -94,7 +94,7 @@ The Rust loop, cut to what a skeleton must prove:
   **BP survival did not move with it**, which makes the blueprint rule
   materially more generous at this cadence than it was at the old one. New
   seed, fresh island. What survives a wipe is exactly: blueprints (per schedule),
-  banked OBOL, and skins. Nothing else.
+  banked JUNK, and skins. Nothing else.
 
 Out of scope for v1, by design (the skeleton must not wait on them):
 vehicles, farming, ~~animal AI~~, electricity, teams UI (informal groups
@@ -114,9 +114,9 @@ on RH-Chain, so **the pools are the exchange** — the game never posts a
 rate between coins, never converts in-game, never runs its own market
 between them. A player holding any coin is one swap from any other.
 
-### 3.1 · OBOL — the working coin (the scrap)
+### 3.1 · JUNK — the working coin (the scrap)
 
-OBOL plays the role scrap plays in Rust: the ground-truth currency of grind,
+JUNK plays the role scrap plays in Rust: the ground-truth currency of grind,
 trade, and progression — earned by play, spent in play, lootable in play.
 
 **Two states, and they are two different things wearing one name — read
@@ -131,18 +131,18 @@ conflating them once already shipped an inert currency for a day:
 | **carried** | an item stack in your inventory, like any loot | yes — dropped on death, lost on wipe, raidable in your base |
 | **banked** | your wallet's row in the shard ledger, written only at the haven's bank terminal | no — survives death and wipes, claimable on-chain |
 
-Carried OBOL is what makes the game a survival game: the hoard in your base
-is a raid target, the run to the haven with 300 OBOL on you is the tensest
-walk in the game. Banked OBOL is what makes the economy real: a file-ledger
+Carried JUNK is what makes the game a survival game: the hoard in your base
+is a raid target, the run to the haven with 300 JUNK on you is the tensest
+walk in the game. Banked JUNK is what makes the economy real: a file-ledger
 balance keyed to your wallet, exported at wipe (and on a posted cadence) as
-a merkle root for the scry claim rail — the same play-accrues-off-chain,
+a merkle root for the elo claim rail — the same play-accrues-off-chain,
 settles-by-claim shape the town already uses (`ONCHAIN-LINE.md`). The game
 server holds no keys, mints nothing, and the on-chain supply it draws from
-is an operator-funded allotment on the scry side **(knob: allotment size and
+is an operator-funded allotment on the elo side **(knob: allotment size and
 claim cadence — an operator act, not a game mechanic)**.
 
 **Faucets** (all in-world): salvage from barrels; the recycler (feed it
-components → OBOL); a trickle from monument crates. **Built**
+components → JUNK); a trickle from monument crates. **Built**
 (`content/cooking.toml`, recycler v0) — the recycler is a placeable
 machine rather than a haven fixture for now, which is the one thing that
 paragraph promises and the world does not yet do.
@@ -162,14 +162,14 @@ your pocket, and only the bank terminal's fee touches a ledger.
   house never earns from the game loop.
 
 **Player-to-player is free.** Players may trade anything for anything,
-including OBOL for a rifle. That is players trading with players — the
+including JUNK for a rifle. That is players trading with players — the
 survival economy working. The wall is only ever about the **house**: §3.3.
 
-### 3.2 · SCRY and MYRRH — the skin counter
+### 3.2 · ELO and ORBS — the skin counter
 
 The haven's vendor sells **appearance only**: weapon and clothing skins,
-building cosmetics, dyes. Standard catalog priced in SCRY; limited/seasonal
-drops priced in MYRRH (the scarcer, capped coin — that scarcity IS the
+building cosmetics, dyes. Standard catalog priced in ELO; limited/seasonal
+drops priced in ORBS (the scarcer, capped coin — that scarcity IS the
 seasonal story) **(knob: final split and prices — posted at ship, never
 invented here)**.
 
@@ -178,7 +178,7 @@ Purchase flow, v1 — custody zero, verification three-valued:
 1. The catalog posts each skin's price and the shard's **till address**.
 2. The buyer's wallet sends the exact amount on RH-Chain (chain 4663).
 3. The game backend verifies the transfer against the explorer the same way
-   scry's board verifies receipts: match on recipient, token, exact string
+   elo's board verifies receipts: match on recipient, token, exact string
    amount; `true` unlocks, `false` says which field mismatched, and
    *explorer unreachable* is `null`/retry — never treated as false, never
    silently unlocked. x402 is the later upgrade path, not a v1 dependency.
@@ -315,7 +315,7 @@ an honest "degraded" badge) stays a **(knob: later)**, not skeleton. Dev
 certs use `serverCertificateHashes` (ECDSA P-256, <14-day validity,
 Firefox ≥ 125) so localhost works without a CA; production terminates on
 its own UDP port with an ordinary ACME cert on the game's own subdomain —
-the game never sits behind scry's nginx. The deep transport spec, config
+the game never sits behind elo's nginx. The deep transport spec, config
 of record, and all netcode detail live in `NETCODE.md`, which supersedes
 this section where they differ.
 
@@ -457,7 +457,7 @@ Rules that make it true, all enforced in `sim-core`:
 `state_hash` (xxh3 over canonical entity state) computed every 32 ticks,
 logged, and stamped into the WAL. A `replay` binary re-simulates a recorded
 WAL and must reproduce every stamped hash. This is also the bridge back to
-the scry board: a played round's `(seed, WAL, final hash)` is
+the elo board: a played round's `(seed, WAL, final hash)` is
 machine-checkable by recomputation — the one honest auto-verify shape — so
 a later quest can gate on a real played round with no human in the loop.
 
@@ -495,7 +495,7 @@ built:
   double buffer (bounded copy cost, measured in the tick budget); the
   storage thread serializes and rotates. Restart = snapshot + WAL tail.
 - **Wipe**: archive the final WAL + hash chain (the shard's provable
-  history), export the banked-OBOL ledger as a merkle root for the claim
+  history), export the banked-JUNK ledger as a merkle root for the claim
   rail, post the root, roll the seed, clean world. Blueprints per the
   cadence knob; skins are wallet-side and untouched.
 
@@ -556,7 +556,7 @@ evidence about the budget, not automatically a defect. Re-deriving them is
   `session{guest_uuid}` path in §9's handshake is unchanged and is what
   unarmed community, training, and demo shards run on. Binding a
   wallet = signing one EIP-191 message (`gates join <shard> <nonce>`) —
-  same pattern as every scry game action; the wallet then owns banked OBOL,
+  same pattern as every elo game action; the wallet then owns banked JUNK,
   skins, and the character slot. One live session per wallet. The desktop
   launcher carries a self-custody wallet that signs this same message and
   nothing new (`DECISIONS.md` 2026-08-04): encrypted keystore on the
@@ -569,7 +569,7 @@ evidence about the budget, not automatically a defect. Re-deriving them is
 - **The armed set is the perimeter** (`DECISIONS.md` 2026-08-04). Economy
   arming is an operator-only act (§3, `ALPHA.md` §2), so protection scales
   with stake by construction: **official shards** are operator-run, armed,
-  and OBOL-redeemable; **community and training shards** run unarmed and
+  and JUNK-redeemable; **community and training shards** run unarmed and
   stay open to self-hosting and to agent players. An unarmed shard has
   nothing worth cheating for, which is what keeps agent play and any
   anti-cheat posture from competing — they are not on the same shard.
@@ -610,7 +610,7 @@ strangers can fight over a base with bows.
 **M2 — combat true.** Lag-comp ring + rewound raycasts, ballistic
 projectile step, T2 firearm + satchel, damage model by material tier.
 Exit: the netem profile (150 ms / 5% loss) feels fair on both ends.
-**M3 — OBOL.** Salvage → recycler and the BP research sink are **done**
+**M3 — JUNK.** Salvage → recycler and the BP research sink are **done**
 (2026-08-10), which is the carried half of this milestone: the coin is
 earned and spent in world, on shards nobody has to arm. What is left is
 the claim rail and everything that touches it — carried/banked split, bank
@@ -624,7 +624,7 @@ second class was given (`DECISIONS.md` 2026-08-05). **That job no longer
 exists**: the browser client is cut (`DECISIONS.md` 2026-08-06), and with it
 the only artifact a board visitor could click and play. What replaces it is
 `DECISIONS.md` §open ("the board's playable link") and is unanswered — the
-candidates are the depot behind the scry launcher, a recorded round played
+candidates are the depot behind the elo launcher, a recorded round played
 back off the WAL, or a board delivery of repo + replay hash with no link at
 all. Until one is spoken this clause names a thing that is not built.
 
@@ -662,15 +662,15 @@ tick p99, byte counts — and none of that is in the sim-core gate, which
 speaks to no socket and times nothing. Two gates, one name; check which
 before citing either.
 
-## 13 · How it ships through scry
+## 13 · How it ships through elo
 
 Separate repo, separate brand, orbiting the town: the operator's own agent
 claims `munus-first-sale` on the Great Work board, builds here, and puts
 the delivery on the record (`POST /munus/{id}/claim` → build → `POST
 /munus/{id}/submit` — both wallet-signed; the board's record is part of the
 deliverable). Coins integrate as designed in §3; code never crosses either
-way; scry docs are cited like any external source. Settlement for the quest
-is scry's standing rule: the operator's eye and a public SCRY transfer.
+way; elo docs are cited like any external source. Settlement for the quest
+is elo's standing rule: the operator's eye and a public ELO transfer.
 
 ## 14 · Open knobs (each needs the operator's word, none blocks M0–M2)
 
@@ -684,9 +684,9 @@ is scry's standing rule: the operator's eye and a public SCRY transfer.
 | wipe cadence + BP survival | **weekly** map (operator, 2026-08-10), BPs survive one cycle |
 | hunger/thirst depth | minimal timer-drain v1 |
 | bank deposit fee | 2%, burns |
-| OBOL allotment + claim cadence | unset — scry-side operator act |
-| skin catalog, prices, SCRY/MYRRH split | unpriced until posted |
+| JUNK allotment + claim cadence | unset — elo-side operator act |
+| skin catalog, prices, ELO/ORBS split | unpriced until posted |
 | skin proceeds: fiscus vs burn split | 100% fiscus, 0% burn |
 | queue priority for sale | never (flipping it is a sentence) |
 | WebSocket fallback lane (for iOS < 26.4 — Safari 26.4+ has WebTransport) | not in alpha |
-| game domain + hosting box | its own subdomain + UDP port, own cert, never behind scry's nginx |
+| game domain + hosting box | its own subdomain + UDP port, own cert, never behind elo's nginx |

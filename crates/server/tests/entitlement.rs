@@ -22,14 +22,14 @@ fn cfg(extra: &str) -> Result<server::config::ShardConfig, String> {
 
 #[test]
 fn a_ticket_door_over_an_open_door_refuses_to_boot() {
-    let err = cfg("entitle_origin = \"https://scry.example\"\n")
+    let err = cfg("entitle_origin = \"https://elo.example\"\n")
         .expect_err("an armed door with require_auth off must not boot");
     assert!(
         err.contains("require_auth"),
         "the error has to name the key that fixes it, got {err:?}"
     );
 
-    let ok = cfg("entitle_origin = \"https://scry.example\"\nrequire_auth = true\n")
+    let ok = cfg("entitle_origin = \"https://elo.example\"\nrequire_auth = true\n")
         .expect("armed over require_auth is the shipping pairing");
     assert!(ok.entitle.armed());
 }
@@ -50,7 +50,7 @@ fn the_default_shard_checks_nothing() {
 
 #[test]
 fn an_origin_with_no_scheme_is_refused() {
-    let err = cfg("entitle_origin = \"scry.moreright.xyz\"\nrequire_auth = true\n")
+    let err = cfg("entitle_origin = \"elopros.com\"\nrequire_auth = true\n")
         .expect_err("a bare host is not a URL and would build a garbage path");
     assert!(err.contains("scheme"), "got {err:?}");
 }
@@ -67,10 +67,10 @@ fn an_empty_origin_is_refused_rather_than_read_as_off() {
 
 #[test]
 fn a_trailing_slash_does_not_reach_the_url_builder() {
-    let c = cfg("entitle_origin = \"https://scry.example/\"\nrequire_auth = true\n").unwrap();
+    let c = cfg("entitle_origin = \"https://elo.example/\"\nrequire_auth = true\n").unwrap();
     assert_eq!(
         c.entitle.origin.as_deref(),
-        Some("https://scry.example"),
+        Some("https://elo.example"),
         "a trailing slash would build …//api/… , which some origins 404"
     );
 }
@@ -78,7 +78,7 @@ fn a_trailing_slash_does_not_reach_the_url_builder() {
 #[test]
 fn a_timeout_longer_than_its_sweep_is_refused_at_boot() {
     let err = cfg(
-        "entitle_origin = \"https://scry.example\"\nrequire_auth = true\n\
+        "entitle_origin = \"https://elo.example\"\nrequire_auth = true\n\
          entitle_timeout_secs = 60\nentitle_sweep_secs = 30\n",
     )
     .expect_err("a round must finish before the next is due");
@@ -88,7 +88,7 @@ fn a_timeout_longer_than_its_sweep_is_refused_at_boot() {
 #[test]
 fn the_knobs_read_the_way_they_are_written() {
     let c = cfg(
-        "entitle_origin = \"https://scry.example\"\nrequire_auth = true\n\
+        "entitle_origin = \"https://elo.example\"\nrequire_auth = true\n\
          entitle_slug = \"gates-staging\"\nentitle_timeout_secs = 3\n\
          entitle_sweep_secs = 45\n",
     )
@@ -103,7 +103,7 @@ fn a_typo_in_a_ticket_key_is_refused_like_every_other_key() {
     // `config.rs`'s standing rule, re-asserted at this seam because a typo
     // here is the failure mode that runs an UNARMED shard while its operator
     // reads the file and believes otherwise.
-    let err = cfg("entitle_orgin = \"https://scry.example\"\n").expect_err("a typo must not run");
+    let err = cfg("entitle_orgin = \"https://elo.example\"\n").expect_err("a typo must not run");
     assert!(err.contains("unknown key"), "got {err:?}");
 }
 
@@ -114,9 +114,9 @@ fn the_server_and_the_client_agree_on_this_title_s_slug() {
     // Two copies on purpose — `client` must never depend on `server` and the
     // reverse would ship the sim in the client — so the agreement is pinned
     // rather than shared. They index the same catalog: a drift means the
-    // shard asks scry about one title while the launcher installs another,
+    // shard asks elo about one title while the launcher installs another,
     // and both halves look correct alone.
-    assert_eq!(server::ENTITLE_SLUG, client::scry::SLUG);
+    assert_eq!(server::ENTITLE_SLUG, client::elo::SLUG);
     assert_eq!(server::ENTITLE_SLUG, "gates");
 }
 

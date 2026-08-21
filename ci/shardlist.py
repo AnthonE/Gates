@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Write the `scry-shardlist-v1` document — the list of shards players join.
+"""Write the `elo-shardlist-v1` document — the list of shards players join.
 
     ./ci/shardlist.py                   write target/servers.json from shards.toml
     ./ci/shardlist.py --out -           write it to stdout
     ./ci/shardlist.py --self-test       the gate: no network, no cargo
 
-**The shard list is the game's to serve.** That is scry's rule, not ours
+**The shard list is the game's to serve.** That is elo's rule, not ours
 (`docs/LAUNCHER.md` §6): the launcher reads `manifest.servers.url`, fetches it,
 and renders the rows — it "does not invent, cache or rank them", and its broker
 refuses even to proxy the fetch. So this file is Gates' end of a seam whose
@@ -45,7 +45,7 @@ discovers at a refused join. Override it per row only to publish something
 **It does not publish.** Publishing is an operator act (`CLAUDE.md`): serving
 this document is what makes the shards findable, and the address it advertises
 is a live game server. This prints the command and performs neither it nor the
-manifest edit on scry's side that points at the result.
+manifest edit on elo's side that points at the result.
 """
 from __future__ import annotations
 
@@ -58,21 +58,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-KIND = "scry-shardlist-v1"
+KIND = "elo-shardlist-v1"
 
 # Where the document is served from once it is on the origin's disk.
 #
-# ⚠ This used to print `https://scry.moreright.xyz/depot/gates/servers.json`
+# ⚠ This used to print `https://elopros.com/depot/gates/servers.json`
 # and **that url could never have worked**: `/depot/` is not a location on
 # that origin — depot bytes have always come through the meter — so the one
 # act this script told an operator to perform ended at a 404, and
 # `manifest.servers.url` stayed null for days while the public shard was up
-# and both readers drew "no shards published". scry built the route rather
-# than the nginx alias (`GET /api/launcher/servers/{slug}`, scry
+# and both readers drew "no shards published". elo built the route rather
+# than the nginx alias (`GET /api/launcher/servers/{slug}`, elo
 # `docs/client/LAUNCHER.md` §6), serving `$SCRY_DEPOTS_DIR/<slug>/servers.json`
 # byte-for-byte. The scp destination below was always right; only the url the
 # manifest points at was wrong.
-PUBLISH_URL = "https://scry.moreright.xyz/api/launcher/servers/gates"
+PUBLISH_URL = "https://elopros.com/api/launcher/servers/gates"
 
 # The client's caps, from `crates/client/src/shardlist.rs`. Restated rather
 # than imported because that is Rust; `--self-test` is what keeps them honest,
@@ -104,7 +104,7 @@ def check_addr(addr: str) -> None:
     """The same shape check `shardlist::check_addr` makes, and for the reason.
 
     A NAME is the normal case: the public shard's certificate is issued for
-    `game.moreright.xyz` and the transport needs that name for SNI, so an
+    `game.elopros.com` and the transport needs that name for SNI, so an
     address here is never parsed as an IP:port pair.
     """
     if not addr or addr.strip() != addr:
@@ -269,10 +269,10 @@ def self_test() -> int:
     ok(f'"{KIND}"' in rs, "the client names the same document kind")
 
     doc = build_doc(
-        [{"id": "eu-1", "name": "Gates EU 1", "addr": "game.moreright.xyz:61234",
+        [{"id": "eu-1", "name": "Gates EU 1", "addr": "game.elopros.com:61234",
           "map": "island"}], cap)
     row = doc["servers"][0]
-    ok(row["addr"] == "game.moreright.xyz:61234", "a hostname survives as a hostname")
+    ok(row["addr"] == "game.elopros.com:61234", "a hostname survives as a hostname")
     ok(row["max_players"] == cap, "max_players defaults to the sim's own cap")
     # The load-bearing one: an unmeasured count must be ABSENT, not zero.
     ok("players" not in row, "no player count is invented")
@@ -283,15 +283,15 @@ def self_test() -> int:
     # `status_url` — the field that makes the count live. Optional, and the
     # row above proves its absence is fine.
     lit = build_doc(
-        [{"id": "eu-1", "name": "Gates EU 1", "addr": "game.moreright.xyz:61234",
-          "status_url": "https://game.moreright.xyz:8080/status.json"}], cap)["servers"][0]
-    ok(lit["status_url"] == "https://game.moreright.xyz:8080/status.json",
+        [{"id": "eu-1", "name": "Gates EU 1", "addr": "game.elopros.com:61234",
+          "status_url": "https://game.elopros.com:8080/status.json"}], cap)["servers"][0]
+    ok(lit["status_url"] == "https://game.elopros.com:8080/status.json",
        "a row may name where its live count is polled from")
     # Still no baked count beside it: naming the endpoint is not claiming a
     # number, and a reader that cannot reach it must draw `?`.
     ok("players" not in lit, "naming a status endpoint does not invent a count")
 
-    for bad in ("game.moreright.xyz:8080/status.json", "ftp://h/status.json",
+    for bad in ("game.elopros.com:8080/status.json", "ftp://h/status.json",
                 "https://", "https:///status.json", "https://h/ status.json",
                 "", "  https://h/s.json"):
         refuses([{"id": "a", "name": "n", "addr": "h:1", "status_url": bad}], cap,
@@ -302,7 +302,7 @@ def self_test() -> int:
 
     ok(build_doc([], cap) == {"servers": []}, "an empty list is a valid document")
 
-    refuses([{"id": "a", "name": "n", "addr": "game.moreright.xyz"}], cap, "no port")
+    refuses([{"id": "a", "name": "n", "addr": "game.elopros.com"}], cap, "no port")
     refuses([{"id": "a", "name": "n", "addr": "https://h:1"}], cap, "a url")
     refuses([{"id": "a", "name": "n", "addr": "h:1", "max_players": cap + 1}], cap,
             "a cap over the sim's")
@@ -351,7 +351,7 @@ def main() -> int:
     print()
     print("Publishing is an operator act. To serve it:")
     print(f"  scp {out} <origin>:/data/apps/scry-data/depots/gates/servers.json")
-    print("...and point scry's Gates manifest at it, once:")
+    print("...and point elo's Gates manifest at it, once:")
     print(f'  "servers": {{"url": "{PUBLISH_URL}",')
     print(f'               "kind": "{KIND}"}}')
     print("Until that field is set, the launcher's Servers window stays dark by design.")

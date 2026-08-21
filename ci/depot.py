@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package a desktop build as a scry depot.
+"""Package a desktop build as an elo depot.
 
     ./ci/depot.py                       build + stage + write the depot index
     ./ci/depot.py --platform win-x86_64 the Windows depot (x86_64-pc-windows-gnu)
@@ -17,19 +17,19 @@ hides a shipped capability.** The finding is `fix/us-east-shard`'s (2026-08-12)
 and sat unmerged on a branch, which is its own version of the same lesson.
 
 A **depot** is one build of one game: a flat list of files each with a sha256,
-plus the single command that starts it. The scry launcher installs it by
+plus the single command that starts it. The elo launcher installs it by
 fetching every file, hashing it, and only then moving the whole thing into
 place — so a killed or corrupted install leaves nothing behind. The format and
-its rules are `docs/LAUNCHER.md` §3 in the scry repo; this script is Gates' end
+its rules are `docs/LAUNCHER.md` §3 in the elo repo; this script is Gates' end
 of that seam and the launcher needs no knowledge of this game whatsoever.
 
 ## Three things this deliberately does NOT do
 
 **It does not compute the depot digest.** The digest is the bytes32 that gets
 notarized on chain, and `scrylauncher.depot.digest()` is its one implementation
-— a second one here would be exactly the bug scry's invariant 3 is about, with
+— a second one here would be exactly the bug elo's invariant 3 is about, with
 the added charm that the two would only disagree on some file nobody thought to
-test. If a `scry` binary is on PATH this script shells out to `scry digest`;
+test. If an `elo` binary is on PATH this script shells out to `elo digest` (or `scry digest`, the same binary's former name);
 otherwise it prints the command and stops short of guessing.
 
 **It does not publish.** Publishing is an operator act (`CLAUDE.md`): a build
@@ -142,7 +142,7 @@ TARGETS = {
 # ⚠ **`{platform}` is in the path, and that is the fix for a real collision.**
 # A build id carries no platform, so the origin's old `<slug>/<build>/` was one
 # directory for two platforms: the second publish overwrote the first and a
-# linux player was handed the windows build. scry keys by (build, platform)
+# linux player was handed the windows build. elo keys by (build, platform)
 # since 2026-08-14 and this is the packager's half of it.
 #
 # Because `root` is inside the digest, changing this line changes the number
@@ -150,12 +150,12 @@ TARGETS = {
 # depots published BEFORE it keep the old two-segment url forever. The origin
 # still serves that shape; a published depot's location is part of what was
 # sealed on chain, so it can never be moved.
-DEFAULT_ROOT = ("https://scry.moreright.xyz/api/launcher/depot"
+DEFAULT_ROOT = ("https://elopros.com/api/launcher/depot"
                 "/{slug}/{build}/{platform}/files")
 
 # The launcher fills these. `{server}` is the shard to join, `{wallet}` the
 # address the player asked their launcher to watch, `{servers}` the url of the
-# shard LIST — scry's manifest `servers.url`, the same document its Servers
+# shard LIST — elo's manifest `servers.url`, the same document its Servers
 # window reads. All three arrive as an empty string when the launcher has
 # nothing to put there, which `crates/client/src/args.rs` reads as absence —
 # that is the normal anonymous launch, not an error.
@@ -261,7 +261,7 @@ def needed_libs(binary: Path, platform: str = PLATFORM) -> tuple[list[str], str]
     Measured with whichever of objdump/readelf is present, and an empty list
     is NOT reported as "needs nothing" — a build tool that is missing and a
     binary that is genuinely static are different facts, and collapsing them
-    is the trap scry's CLAUDE.md names (`reachable` is not `empty`).
+    is the trap elo's CLAUDE.md names (`reachable` is not `empty`).
 
     ⚠ **This is LINK-TIME only, and the list is therefore incomplete.** The
     depot says so in `requires.complete: false` rather than letting a player
@@ -554,7 +554,7 @@ def stage_build(out: Path, *, platform: str, do_build: bool,
     # could have caught it — which is why the rule has to be structural rather
     # than a check. `.gitignore` is already the single author of what is not
     # ours to ship; reading it here means the packager cannot disagree with it.
-    # scry's `deploy/publish_scryward.py` makes the same choice for the same
+    # elo's `deploy/publish_scryward.py` makes the same choice for the same
     # reason, and states it as the trap it has paid for seven times.
     #
     # It also has teeth beyond size: the candidates are *unvetted* licence
@@ -977,15 +977,22 @@ def main() -> int:
     else:
         print(f"   shared libraries NOT measured — {requires['why']}")
 
-    # The digest is scry's to compute, not ours. One implementation, and this
-    # is not it (scry CLAUDE.md invariant 3).
+    # The digest is elo's to compute, not ours. One implementation, and this
+    # is not it (elo CLAUDE.md invariant 3).
     print()
-    if shutil.which("scry"):
-        digest = sh("scry", "digest", str(index), check=False)
+    # `scry` is the same binary under its former name. The rename landed in
+    # this repo before it landed in the launcher, so a box that installed the
+    # CLI last week has `scry` on PATH and nothing else — and the failure mode
+    # if we only looked for `elo` is a printed instruction to run a command
+    # that is not installed, which reads as "notarize it by hand" and is
+    # silently wrong. Prefer the new name; take the old one.
+    cli = shutil.which("elo") and "elo" or (shutil.which("scry") and "scry")
+    if cli:
+        digest = sh(cli, "digest", str(index), check=False)
         print(f"   digest {digest}" if digest else
-              "   `scry digest` produced nothing — run it by hand")
+              f"   `{cli} digest` produced nothing — run it by hand")
     else:
-        print(f"   digest: run `scry digest {index}` (no `scry` on PATH here).")
+        print(f"   digest: run `elo digest {index}` (no `elo` or `scry` on PATH here).")
         print("   This script does NOT compute it — one implementation, and it lives "
               "in the launcher.")
 

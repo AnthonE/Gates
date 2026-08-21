@@ -17,7 +17,7 @@
 //! point from the other side — an id is `generation << 8 | slot`, minted
 //! per connection and meaningless across two of them.
 //!
-//! Nor is anything scry owns. A player's profile, coins and items live in
+//! Nor is anything elo owns. A player's profile, coins and items live in
 //! the launcher's world, not this one; a shard that tried to cache them
 //! would be a second, stale copy of somebody else's ledger. What a shard
 //! knows is where your body stood and what was in its hands.

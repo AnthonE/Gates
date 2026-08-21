@@ -125,7 +125,7 @@ pub fn build_screen(
                     },
                 ));
                 h.spawn((
-                    Text::new(format!("{coin_have} obol")),
+                    Text::new(format!("{coin_have} junk")),
                     font_bold(15.0),
                     TextColor(TEXT),
                 ));
@@ -357,7 +357,7 @@ fn sidebar(row: &mut ChildSpawnerCommands, core: &ClientCore, ui: &Ui, placed: &
             TextColor(BADGE),
         ));
         side.spawn((
-            Text::new(format!("{} obol", node.cost)),
+            Text::new(format!("{} junk", node.cost)),
             font(13.0),
             TextColor(if node.state == NodeState::Short {
                 TEXT_SHORT
@@ -368,7 +368,7 @@ fn sidebar(row: &mut ChildSpawnerCommands, core: &ClientCore, ui: &Ui, placed: &
         let total = techtree::path_total(&core.research, core.known(), node.recipe);
         if node.state != NodeState::Known {
             side.spawn((
-                Text::new(format!("TOTAL REQUIRED   {total} obol")),
+                Text::new(format!("TOTAL REQUIRED   {total} junk")),
                 font(12.0),
                 TextColor(TEXT_DIM),
             ));
@@ -386,7 +386,7 @@ fn sidebar(row: &mut ChildSpawnerCommands, core: &ClientCore, ui: &Ui, placed: &
             }
             NodeState::Short => {
                 side.spawn((
-                    Text::new("NEED OBOL"),
+                    Text::new("NEED JUNK"),
                     font_bold(13.0),
                     TextColor(TEXT_SHORT),
                 ));
@@ -407,7 +407,7 @@ fn sidebar(row: &mut ChildSpawnerCommands, core: &ClientCore, ui: &Ui, placed: &
                 ))
                 .with_children(|b| {
                     b.spawn((
-                        Text::new(format!("UNLOCK · {} OBOL", node.cost)),
+                        Text::new(format!("UNLOCK · {} JUNK", node.cost)),
                         font_bold(13.0),
                         TextColor(LINE_HOT),
                         Pickable::IGNORE,

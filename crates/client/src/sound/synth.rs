@@ -7,7 +7,7 @@
 //!    bird recordings whose `README.txt` cites xeno-canto and *states no
 //!    licence per file*, and `Eanpa-Sky`'s four recordings are CC BY-NC-SA —
 //!    NC does not survive a sold product. Audio is the single worst-labelled
-//!    asset class on the internet, and a game sold through scry's board
+//!    asset class on the internet, and a game sold through elo's board
 //!    cannot carry a sample whose provenance is a forum post.
 //! 2. **The IP rail.** `DECISIONS.md` 2026-07-31 puts exactly two things on
 //!    it, and one of them is *no asset copied verbatim*. A recording of the

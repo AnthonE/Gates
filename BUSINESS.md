@@ -47,4 +47,4 @@ Say it, it goes in `DECISIONS.md` the same day, this file changes. Nothing in
 ## Housekeeping
 
 - Economy stages (A1/A2/A3) arm only by operator act — `ALPHA.md`.
-- Tickers are bare: SCRY, OBOL, MYRRH. Never a `$` prefix.
+- Tickers are bare: ELO, JUNK, ORBS. Never a `$` prefix.

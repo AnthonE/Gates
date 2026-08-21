@@ -69,7 +69,7 @@ pub struct ShardConfig {
     ///
     /// `false` (the shipping default) is a shard that takes guests: a player
     /// with no wallet and no launcher plays anyway, which is the same posture
-    /// `scry::Player::Anonymous` has always taken on the client. `true`
+    /// `elo::Player::Anonymous` has always taken on the client. `true`
     /// refuses a joiner who offers no address, or whose SIWE signature does
     /// not verify, with `REFUSE_AUTH` (`auth::verify`).
     ///
@@ -557,7 +557,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 if !value.starts_with("https://") && !value.starts_with("http://") {
                     return Err(format!(
                         "shard.toml line {}: entitle_origin needs a scheme, e.g. \
-                         https://scry.moreright.xyz",
+                         https://elopros.com",
                         n + 1
                     ));
                 }

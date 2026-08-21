@@ -1,7 +1,7 @@
-//! `scry-shardlist-v1` — the document a title serves so its shards can be
-//! found, and the one the scry launcher's Servers window renders.
+//! `elo-shardlist-v1` — the document a title serves so its shards can be
+//! found, and the one the elo launcher's Servers window renders.
 //!
-//! **The shard list is the game's to serve.** That is scry's rule, not ours
+//! **The shard list is the game's to serve.** That is elo's rule, not ours
 //! (`docs/LAUNCHER.md` §6 in `AnthonE/scry`): the launcher reads
 //! `manifest.servers.url`, fetches it, and renders the rows — it "does not
 //! invent, cache or rank them", and its broker refuses to proxy the fetch
@@ -20,7 +20,7 @@
 //! Two things about it are load-bearing here and neither is obvious:
 //!
 //! - **`addr` is `host:port`, not an address.** The public shard's cert is
-//!   for `game.moreright.xyz` and a WebTransport client needs that name for
+//!   for `game.elopros.com` and a WebTransport client needs that name for
 //!   SNI, so a row carrying `65.108.x.x:61234` would connect and then be
 //!   unable to say who it is talking to. `wtransport` resolves the name
 //!   itself and uses it as the server name, which is why `Shard::url` hands
@@ -36,7 +36,7 @@
 //!
 //! A row may carry `status_url`, naming where *that shard* answers
 //! `GET /status.json` (`crates/server/src/status.rs`). It is an additive,
-//! optional field — the kind stays `scry-shardlist-v1` and every reader that
+//! optional field — the kind stays `elo-shardlist-v1` and every reader that
 //! predates it ignores it — and it exists because the alternative is worse.
 //!
 //! **A baked count is stale the moment the file is written.** `ci/shardlist.py`
@@ -48,7 +48,7 @@
 //! by a slower road. So the generator stays a pure generator, the row names
 //! where the live number lives, and **each reader polls that endpoint itself.**
 //!
-//! That also keeps scry's rule intact rather than bending it: the launcher
+//! That also keeps elo's rule intact rather than bending it: the launcher
 //! "does not invent, cache or rank" the list and its broker refuses to proxy
 //! the fetch, so a launcher reading a shard's own status endpoint directly is
 //! the same posture one layer down. Nothing proxies; everyone measures.
@@ -96,7 +96,7 @@ pub const MAX_DOC_BYTES: usize = 64 * 1024;
 
 /// The `kind` a manifest declares for this document. Carried so a future
 /// `-v2` can be told apart from a truncated `-v1`.
-pub const KIND: &str = "scry-shardlist-v1";
+pub const KIND: &str = "elo-shardlist-v1";
 
 /// One row of the list — one shard a player may join.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -238,7 +238,7 @@ struct Doc {
     servers: Vec<Shard>,
 }
 
-/// Parse a `scry-shardlist-v1` document.
+/// Parse a `elo-shardlist-v1` document.
 ///
 /// Every refusal names what was wrong, because this string is drawn in the
 /// menu where a player reads it — "the shard list did not parse" tells
@@ -364,10 +364,10 @@ pub fn check_addr(addr: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// The shape as `docs/LAUNCHER.md` §6 writes it, verbatim. If scry
+    /// The shape as `docs/LAUNCHER.md` §6 writes it, verbatim. If elo
     /// changes the document, this is the test that should go red first.
     const SPEC: &str = r#"{"servers": [{"id": "eu-1", "name": "Gates EU 1",
-        "addr": "game.moreright.xyz:61234", "players": 47, "max_players": 100,
+        "addr": "game.elopros.com:61234", "players": 47, "max_players": 100,
         "map": "island", "ping_ms": 31}]}"#;
 
     /// What `ci/shardlist.py` actually writes, verbatim, for a two-shard
@@ -384,12 +384,12 @@ mod tests {
     const GENERATED: &str = r#"{
   "servers": [
     {
-      "addr": "game.moreright.xyz:61234",
+      "addr": "game.elopros.com:61234",
       "id": "eu-1",
       "map": "island 20260731",
       "max_players": 100,
       "name": "Gates EU 1",
-      "status_url": "https://game.moreright.xyz:8080/status.json"
+      "status_url": "https://game.elopros.com:8080/status.json"
     },
     {
       "addr": "127.0.0.1:4433",
@@ -412,10 +412,10 @@ mod tests {
         assert_eq!(rows[0].population(), "?/100");
         assert_eq!(
             rows[0].status_url.as_deref(),
-            Some("https://game.moreright.xyz:8080/status.json")
+            Some("https://game.elopros.com:8080/status.json")
         );
         // The name survives to the transport unresolved — the SNI property.
-        assert_eq!(rows[0].url(), "https://game.moreright.xyz:61234");
+        assert_eq!(rows[0].url(), "https://game.elopros.com:61234");
 
         // A shard with no endpoint stays `?`, which is correct and permanent.
         assert_eq!(rows[1].status_url, None);
@@ -428,12 +428,12 @@ mod tests {
         assert_eq!(rows.len(), 1);
         let s = &rows[0];
         assert_eq!(s.id, "eu-1");
-        assert_eq!(s.addr, "game.moreright.xyz:61234");
+        assert_eq!(s.addr, "game.elopros.com:61234");
         assert_eq!(s.players, Some(47));
         assert_eq!(s.population(), "47/100");
         // The name survives to the transport unresolved — this is the SNI
         // property the module docs explain, pinned.
-        assert_eq!(s.url(), "https://game.moreright.xyz:61234");
+        assert_eq!(s.url(), "https://game.elopros.com:61234");
     }
 
     #[test]
@@ -489,7 +489,7 @@ mod tests {
     fn addresses_are_shapes_not_socket_addrs() {
         // The regression this whole module exists around: a hostname is the
         // NORMAL case, and `SocketAddr::from_str` refuses every one of them.
-        check_addr("game.moreright.xyz:61234").expect("a hostname is an address");
+        check_addr("game.elopros.com:61234").expect("a hostname is an address");
         check_addr("127.0.0.1:4433").expect("so is a literal");
         check_addr("[::1]:4433").expect("so is a bracketed v6");
 

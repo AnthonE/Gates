@@ -6,10 +6,22 @@ about: "OBOL's listing copy — the short and long token-info blurbs for an expl
 ---
 # OBOL — listing copy
 
+> ⚠ **The product name is JUNK; the on-chain symbol is still `OBOL`, and this
+> file follows the chain.** The 2026-08-21 rename (scry → Elo, OBOL → JUNK,
+> MYRRH → ORBS) moved the game's words, not the deployment: `/api/onchain`,
+> read that day, names SCRY, OBOL and MYRRH and does not know ELO, JUNK or
+> ORBS. An ERC-20's `symbol()` is fixed at deploy, so **renaming a ticker is a
+> redeploy** — new address, new pool, new listing — which is an on-chain
+> operator act performed in `scry-forge` and pasted here. Until it happens
+> every ticker and address below is correct as written and **must not be
+> swept**: paste-ready copy that disagrees with the contract is worse than
+> copy carrying an old name.
+
+
 > **Moved here from `scry-forge/watchtower/marketing/` on 2026-08-11.** OBOL is
 > **Gates' coin, not the platform's** (operator, 2026-08-07: *"scry only has
 > SCRY! myrrh and obol are actually gates now"*), so its listing copy belongs in
-> this repo — scry's rule is that nothing about a game lives there except its
+> this repo — elo's rule is that nothing about a game lives there except its
 > listing row. Nothing moved on chain; the contract, the pool and the address
 > are untouched.
 >
@@ -27,7 +39,7 @@ paste**, and never retype a figure from here into another page.
 
 ## Short — ~50 words, for a token-info field
 
-> **OBOL** is the working coin of Gates, the survival game on scry — a
+> **OBOL** is the working coin of Gates, the survival game on elo — a
 > curated, open-source game platform on RH-Chain. Play mints it under a
 > distributor-only grant; the game's own sinks burn it; it pairs against
 > SCRY, the platform's reserve. There is no public faucet.
@@ -42,7 +54,7 @@ paste**, and never retype a figure from here into another page.
 
 > **OBOL is the working coin of Gates.**
 >
-> scry (`scry.moreright.xyz`) is a curated, open-source game platform on
+> elo (`elopros.com`) is a curated, open-source game platform on
 > RH-Chain — games built by agents in public, played by humans and agents,
 > settled on chain. Gates, an open-source survival game, is the first title,
 > and it runs two coins: OBOL the elastic one you earn by playing, MYRRH the
@@ -92,13 +104,13 @@ Both pools are protocol-owned and open at genesis, so OBOL is one swap from
 The MYRRH/OBOL pool costs no `SCRY`: both sides are house-minted.
 
 Because the house mints both sides, **the MYRRH/OBOL price is never an oracle
-for any scry system.**
+for any elo system.**
 
 ## What OBOL is not
 
 - **Not a governance token.** No token on the platform carries governance
   weight.
-- **Not the platform's coin.** scry has exactly one coin — SCRY, the reserve.
+- **Not the platform's coin.** elo has exactly one coin — SCRY, the reserve.
   OBOL and MYRRH are Gates' (`SENTENCES.md` 2026-08-07); every listed title
   brings its own coins, and they all pair against SCRY.
 - **Not a yield instrument.** Nothing here promises a return, and the
@@ -126,10 +138,10 @@ contract from *written* to *deployed*.
 
 | | |
 |---|---|
-| site | `https://scry.moreright.xyz` |
-| the store | `https://scry.moreright.xyz/` |
-| pools + fees, live | `https://scry.moreright.xyz/api/pools` |
-| on-chain card | `https://scry.moreright.xyz/api/onchain` |
+| site | `https://elopros.com` |
+| the store | `https://elopros.com/` |
+| pools + fees, live | `https://elopros.com/api/pools` |
+| on-chain card | `https://elopros.com/api/onchain` |
 | icon | `watchtower/marketing/obol-icon.svg` · flat: `obol-flat.svg` |
 
 ---

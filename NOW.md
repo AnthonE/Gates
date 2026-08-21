@@ -42,6 +42,37 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0rn · The rename's six loose ends *(operator, mostly)*
+
+The 2026-08-21 row in `DECISIONS.md` has what moved. These are what could not,
+each blocked on something outside this tree.
+
+1. **(operator, wallet)** `scry.json` needs a re-sign at seq 6. Its `_next`
+   points at `scry.moreright.xyz/api/library/GAME-REPO.md`, which is **410
+   Gone**, and `_version` cites `ci/scry_manifest.py`, which is
+   `ci/elo_manifest.py` now. Both are inside the signed bytes, so nothing here
+   may touch them — the key is on morr. Filenames and the `"scry": 1` key stay
+   whatever `/api/library/GAME-REPO.md` says on the day it is signed.
+2. **The SDK is re-vendored, never renamed.** `crates/client/src/scry_overlay.rs`
+   is still sha-pinned against `scry-forge`. When the launcher's rename lands,
+   `cp` + re-pin + check the CALL SITES — `Overlay::title` and `play_message`
+   both changed shape under us before while everything compiled.
+3. **The tickers are a redeploy, not an edit.** `/api/onchain` names SCRY, OBOL
+   and MYRRH. `marketing/` is frozen at those three with a header saying why;
+   whether to redeploy under ELO/JUNK/ORBS is unspoken and is `scry-forge`'s
+   act, not this repo's.
+4. **`elo-shardlist-v1` is emitted and unread.** `ci/shardlist.py` writes the
+   new kind; the live served document carries no `kind` field at all, so
+   nothing breaks today — but the launcher should accept it before the next
+   publish.
+5. **The junk icon is a picture of two coins.** `assets/icons/junk.png` is
+   still `delapouite/two-coins`, which was right for a coin and is wrong for
+   scrap. An art call, on the CC-BY rail.
+6. **`fix/us-east-shard` is unmerged and already true.** The published list
+   says `us-east-1` / "Gates US East 1"; `shards.toml` still says `eu-1`. That
+   branch carries the fix plus two DECISIONS rows written on the origin and
+   never landed here.
+
 ## 0rep · A player can file a report; four things around it cannot *(client lane + operator)*
 
 Landed 2026-08-20. `F7` writes `gates-report-<stamp>-<fp>.md`, a `.json`
@@ -440,11 +471,11 @@ behind two settings under `SOCIAL` — `discord_presence` (on) and
    `Gates`** — the portal's application name is the word drawn after
    "Playing", which is what retires the lowercase `gates`.
 2. For Ask-to-Join on a friend who is *not* running the game, register the
-   URL scheme in the portal (`scry://` or `gates://`). That path is
+   URL scheme in the portal (`elo://` or `gates://`). That path is
    `deeplink.rs` and needs no code. The already-running path is built.
 3. Optional: upload a 512×512 or 1024×1024 image under the asset key
    `gates`. **There is no Gates mark in this repo** — `marketing/` holds only
-   the OBOL and MYRRH coin marks, which are the economy's and not the
+   the JUNK and ORBS coin marks, which are the economy's and not the
    game's. Without one Discord simply draws no image.
 
 ⚠ The detectable-list submission stays **unverified** — self-serve game
@@ -505,7 +536,7 @@ Unmeasured, same class: the GitHub **release** zip is msvc, not mingw, and
 nobody has checked whether it needs the VC++ redist. Its notes list Linux's
 three `-dev` packages and say nothing for Windows.
 
-Also stale and **not ours to fix**: scry's own launcher manifest
+Also stale and **not ours to fix**: elo's own launcher manifest
 (`/data/apps/scry-forge/data/launcher/gates.manifest.json` on morr) still
 tells a player the Windows row bundles nothing and has never been run. A
 player reads that row.
@@ -995,7 +1026,7 @@ What remains, in order:
 3. ~~Twelve other tables threaded positionally~~ — done, `net::SimTables`.
 4. ~~The mask was lost at four doors and unreadable at the fifth~~ — done
    2026-08-15. `die`/`wake`/`seat` cleared `known` via `..Player::default()`
-   (dying and reconnecting each deleted every blueprint bought with OBOL),
+   (dying and reconnecting each deleted every blueprint bought with JUNK),
    and `SUB_RESEARCH`/`SUB_RESEARCH_REFUSED`/`SUB_KNOWN` had encoders,
    `EventMsg` variants and `ClientCore` handlers but **no `decode_event`
    arms** — every research frame the server ever sent decoded `Malformed`.
@@ -1530,7 +1561,7 @@ The seam is thin — client `connect`, server `accept`, a handful of config
 types, `tls_posture.rs`, `botclient.rs`, `Shard::url`. **The cost is not the
 code, it is the flag-day**: the handshake itself changes, so nothing
 negotiates and an old client just fails. Two depots and a public shard are
-live, and `scry-shardlist-v1` publishes the url shape.
+live, and `elo-shardlist-v1` publishes the url shape.
 
 So: **not its own pass.** Bundle it with the next `min_client` floor raise,
 which is already a flag-day, or with the next touch of the wtransport pin
@@ -1826,11 +1857,11 @@ left of that thread, in order:
    *real* reasons ("protection is per damage type") when their projectile
    and melee cells are **equal** on all three pieces we own — retracted,
    and the retraction lands even though the numbers are blocked.
-   And two files priced obol against "a ~10-scrap barrel" that was never
+   And two files priced junk against "a ~10-scrap barrel" that was never
    measured; the page says 2.42. Detail in `RIPLIST.md` §1f/§1h.
 
 Closed 2026-08-11 by the operator, all three: the rock **is** craftable
-(15 → 10 stone, and the tier-4 source beat my prior — §1c says so), OBOL
+(15 → 10 stone, and the tier-4 source beat my prior — §1c says so), JUNK
 **is** scrap so the research table takes its 20 (my refusal answered
 itself), and the cupboard is **stronger** here on purpose — hp 500 →
 1,000, the metal rung, so taking a base's privilege costs one more wall.
@@ -1883,7 +1914,7 @@ the release.
    which is a tester's question and not CI's.
 2. ~~No `LICENSE` file~~ — **done 2026-08-11** (MIT, © MoreRight DAO;
    `DECISIONS.md`). `LICENSE` + `NOTICE` ship in both the release archive and
-   the scry depot, gated by `ci/depot.py --self-test`.
+   the elo depot, gated by `ci/depot.py --self-test`.
 3. **The draft is drafted and nobody has published it.** That is the one
    operator act left on the release itself: open it, read what is attached,
    publish. Until then the tag exists and the download does not.
@@ -1913,20 +1944,20 @@ What remains, in order:
    the `nightly` job failed at "gates first", at 08:50Z, which is before the
    toolchain pin merged that evening, so it is the same red every `gates`
    run had that day and should be green on the next fire. And **neither
-   publish act can happen from this box**: `scry.moreright.xyz` is a
+   publish act can happen from this box**: `elopros.com` is a
    different host (Cloudflare-fronted, not 5.161.193.186) and there is no
-   `scry` binary on PATH, so `scry digest` — the one implementation of the
+   `elo` binary on PATH, so `elo digest` — the one implementation of the
    number that gets notarized — is not runnable here by construction.
 2. **The shard list is written, generated, and not yet served.**
    `shards.toml` exists now and `./ci/shardlist.py` writes the one-row
-   document; `manifest.servers.url` on scry's side is still `null`, so the
+   document; `manifest.servers.url` on elo's side is still `null`, so the
    launcher's Servers window and our own menu stay dark for the same missing
-   file. scry's serving half is confirmed live rather than assumed —
+   file. elo's serving half is confirmed live rather than assumed —
    `GET /api/launcher/servers/gates` answers **404**, its documented
    "publishes none", not the 503 it reserves for "could not look".
    Everything downstream of that one publish exists: live counts via
    `status_url` (answering now), and join links
-   (`scry://join/gates/host:port`, `deeplink.rs`). Registering the scheme
+   (`elo://join/gates/host:port`, `deeplink.rs`). Registering the scheme
    with the desktop is the launcher's installer, and is not done.
 3. **`prove` has no call site** — and this is now the *only* thing left in
    the identity seam, because the ticket door landed on the handshake we
@@ -1952,7 +1983,7 @@ What remains, in order:
 5. **The public shard is up and no one has ever joined it** (2026-08-11).
    Boot, persistence, the SIGTERM flush and the status endpoint are all
    measured; the join is not, and **the tools here cannot measure it**:
-   `bots` takes a `SocketAddr`, so it cannot dial `game.moreright.xyz` by
+   `bots` takes a `SocketAddr`, so it cannot dial `game.elopros.com` by
    name at all — which is the half that matters, because the certificate is
    issued for the name and the client validates against the platform root
    store on a non-loopback address (`tls_posture.rs`) — and it carries no
@@ -1965,7 +1996,7 @@ What remains, in order:
 ## 0ad · The ticket door is armed but nobody has sold a copy *(platform lane)*
 
 Landed 2026-08-11 (`crates/server/src/entitle.rs`). A shard with
-`entitle_origin` set asks scry `GET /api/ticket/gates/of/<wallet>` at join
+`entitle_origin` set asks elo `GET /api/ticket/gates/of/<wallet>` at join
 and `POST …/check` for the whole roster every `entitle_sweep_secs`, refusing
 with `REFUSE_TICKET` and kicking on a **definite on-chain zero only** — a
 failed read admits and bumps `entitle_unknown`, because an RPC outage that
@@ -1976,10 +2007,10 @@ shard runs (`DECISIONS.md` 2026-08-04: one build, two populations).
 What is left, in order:
 
 1. **Nothing has been driven against a real ticket contract**, because
-   `ScryGameTicket:GATES` is not deployed — scry's `deployments.json` has no
+   `ScryGameTicket:GATES` is not deployed — elo's `deployments.json` has no
    address, so `/of/<wallet>` answers `ticketed: false, entitled: true` for
    everyone and the door is a pass-through by design. Every branch is unit-
-   tested against the response shapes scry actually serves (`tickets.py`),
+   tested against the response shapes elo actually serves (`tickets.py`),
    and none has met the live route. **First real check is the day the
    contract is deployed**, and the honest way to run it is one wallet that
    owns a copy and one that does not.
@@ -1997,7 +2028,7 @@ Spoken 2026-08-14 (*"we should copy the tech tree ui thing too"* —
 `DECISIONS.md` has the row): their two-system model — research what you
 loot at the table, tech-tree the gaps at the bench — plus the workbench
 tech-tree UI. What exists: `research.rs` + `research.toml` (powder era
-only, deliberately), `item.workbench` (tier 1), OBOL-is-scrap, and since
+only, deliberately), `item.workbench` (tier 1), JUNK-is-scrap, and since
 2026-08-15 the dependency EDGE (`requires`, §0tree) — so what this item
 still owns is the BENCH half. What is
 missing is the whole ladder: no workbench 2/3, nothing above
@@ -2410,7 +2441,7 @@ Landed 2026-08-09/10 over two passes. `Screen::Boot` is the splash (the
 launcher handshake and connect are states now, so a dead shard lands on the
 server list instead of `exit(1)`). `render/ui.rs` owns the shell the five
 reference frames share. PLAY GAME is the reference's table. NEWS / ITEM
-STORE / WORKSHOP are the scry-works launcher's and hand off to it
+STORE / WORKSHOP are the elo launcher's and hand off to it
 (`ui/hub.rs` + `manifest.rs`), and the backdrop is **footage** under a scrim,
 not a live scene — the operator's correction, and the cheap way round.
 Three seams that were computed and dropped are now read: the claimed
@@ -2455,15 +2486,15 @@ failed connect returns with the reason, settings persist (`crate::config`,
 `DECISIONS.md` §open "settings v0"), and `Screen::Disconnected` latches a
 hangup through the menu's own teardown. Remaining:
 
-1. **The document exists now; the two acts that serve it are on scry's
+1. **The document exists now; the two acts that serve it are on elo's
    box.** `shards.toml` is written and `./ci/shardlist.py` produces
-   `target/servers.json` — one row, `game.moreright.xyz:61234`, carrying a
+   `target/servers.json` — one row, `game.elopros.com:61234`, carrying a
    `status_url`. What is left is exactly what it always was and no more:
    copy the document into `$SCRY_DEPOTS_DIR/gates/`, **then** set
    `servers.url`. In that order — `servers.url` pointing at a file that is
    not there is an error dialog on a game that is running fine, which is
    worse than the honest "no shards published" both readers draw now.
-   ⚠ **scry's half is confirmed live, not assumed**: `GET
+   ⚠ **elo's half is confirmed live, not assumed**: `GET
    /api/launcher/servers/gates` answers **404** as of 2026-08-11, which is
    its documented "publishes none" and is a different answer from the 503 it
    reserves for "could not look". The route is built and waiting for bytes.
@@ -2475,7 +2506,7 @@ hangup through the menu's own teardown. Remaining:
    in `shard-public.toml` and the url is in `shards.toml`. The third step
    was "open that TCP port (the cloud firewall too)" and it was **not taken,
    on purpose**: the endpoint binds LOOPBACK and nginx fronts it on the 443
-   this box already serves, so `https://game.moreright.xyz/gates/status.json`
+   this box already serves, so `https://game.elopros.com/gates/status.json`
    needs no console act, carries the same certificate as everything else we
    publish, and puts a buffer in front of a status thread that answers
    serially by design. It answers `{"players":0,"max_players":100,"tick":T}`
@@ -2698,7 +2729,7 @@ session, input, terrain, lighting, scatter, HUD, panels, depot packaging —
 R0–R6 plus R8 — all landed, and the browser client is deleted. Left:
 
 - **Publishing and notarizing the depot are operator acts and are NOT
-  done.** The build ships as a scry depot (`ci/depot.py`, gated by
+  done.** The build ships as an elo depot (`ci/depot.py`, gated by
   `--self-test`); the depot ships `assets/`, not just the binary.
 - **The visual gaps, ranked by measurement** (`RENDER.md` §8 carries the
   list): the hemisphere fill (§0w item 1 — the top gap, coupled-lighting
@@ -2806,9 +2837,9 @@ crate-wide, but its *contiguity* claim is file-local.
   still hunger and thirst alone), no moon or stars in the night sky, and
   no set-time admin verb — moving the clock means moving the tick, so
   that one wants the wire field this slice deliberately did not spend.
-- **The coin loop is closed and the tech TREE is not.** OBOL is paid by
+- **The coin loop is closed and the tech TREE is not.** JUNK is paid by
   the recycler and burned at the research table (research v0, and the
-  operator's 2026-08-10 call that OBOL is scrap — what stages is the claim
+  operator's 2026-08-10 call that JUNK is scrap — what stages is the claim
   rail). What research does NOT have is depth: a row unlocks one recipe
   and depends on nothing, so there is no ladder, no tier, no "unlocks the
   next". The reference has a research table *and* a tech tree and they are
@@ -2846,7 +2877,7 @@ was fixed in the same merge window.
 ## 7 · Milestones — the arc is `DESIGN.md` §11; this is what the queue adds
 
 **Read the arc there, not here.** M0 (landed) → M1 survival verbs → M2
-combat true → M3 OBOL → M4 the counter and the door, with each one's exit
+combat true → M3 JUNK → M4 the counter and the door, with each one's exit
 condition. `ALPHA.md` §6 folds into the same section, and this list used to
 restate it under a second numbering — two lists, one arc, drifting apart.
 Struck 2026-08-11; nothing was lost, because everything struck was a
@@ -2879,7 +2910,7 @@ And two items the arc does not carry, which stay real work:
     is still ours** is the seam: `crates/client/src/scry_overlay.rs` stays
     byte-identical to the SDK upstream (`CLAUDE.md` §vendored), and
     `ci/shardlist.py` writes the document the launcher's Servers window
-    reads. Derive the launcher's real state from scry, never from this
+    reads. Derive the launcher's real state from elo, never from this
     line.
 
 Standing rule: anything a playtest breaks jumps this queue; anything a wall
@@ -2971,7 +3002,7 @@ operator's.
 What was wrong: the public shard is up and its list is served
 (`/api/launcher/servers/gates`, `servers.url` set), and the in-game browser
 was still empty on every launch that did not come through the launcher's
-Servers window — nothing on the argv could carry the url. scry gained a
+Servers window — nothing on the argv could carry the url. elo gained a
 `{servers}` placeholder; `ci/depot.py`'s `LAUNCH_ARGS` now asks for it.
 `shards.toml` also said `eu-1` while the served document said `us-east-1`,
 so the next regeneration would have re-published a row key nobody's
@@ -2986,7 +3017,7 @@ whole launch:
    (scry-forge, `launcher-rs`).
 2. **Re-publish Gates' depot document**, so `launch.args` carries
    `--servers {servers}`. `python3 ci/depot.py`, then the depot ceremony in
-   scry `docs/client/LAUNCHER.md` §8.
+   elo `docs/client/LAUNCHER.md` §8.
 
 Until (2), the fix is inert and the browser stays empty — `--servers <url>`
 on the command line is the workaround, and joining from the Servers window
@@ -3027,7 +3058,7 @@ the register early, build it late.**
 
 Assessed 2026-08-11; the write-up is scry-forge `docs/builders/GITHUB-JOBS.md`.
 Built already: `AGENTS.md` §the deal, the PR template's submit line, `gates`
-CI on every code PR, 100,000 SCRY standing on scry's board (`DECISIONS.md`
+CI on every code PR, 100,000 ELO standing on elo's board (`DECISIONS.md`
 2026-08-09). The board's paid ledger is `[]`; no outside fork has opened a PR.
 
 - **(operator, GitHub)** Branch protection on `main` requiring the `gates`
@@ -3036,17 +3067,17 @@ CI on every code PR, 100,000 SCRY standing on scry's board (`DECISIONS.md`
   gate is policy. Caveat: the workflow path-filters, so a docs-only PR
   reports no check; the fix is a same-named instant no-op for those paths.
 - **(operator, wallet)** Sign `scry.sig.json` seq 1 — and the tooling is
-  already here, so **no key is ever pasted**: `./ci/scry_manifest.py
+  already here, so **no key is ever pasted**: `./ci/elo_manifest.py
   --print` shows the exact text, sign it in whatever holds the steward
-  key, then `./ci/scry_manifest.py --sign --seq 1 --signature 0x…
-  --wallet 0x…`. Unsigned, scry applies nothing — the store row and
+  key, then `./ci/elo_manifest.py --sign --seq 1 --signature 0x…
+  --wallet 0x…`. Unsigned, elo applies nothing — the store row and
   update feed are wired and inert. **It now buys more than the row:**
-  scry's manifest standard grew a `jobs` block (`GAME-REPO.md` §4b), so
+  elo's manifest standard grew a `jobs` block (`GAME-REPO.md` §4b), so
   once signed, this repo posts its own board lane's picked work from
-  `scry.json` — guidance rows, never a price — and the six rows scry
+  `scry.json` — guidance rows, never a price — and the six rows elo
   currently keeps house-side move here.
 - **(operator, once)** Settle `gates-pr` end to end on the next accepted
-  PR: pay by public transfer, append the row scry-side — the board's
+  PR: pay by public transfer, append the row elo-side — the board's
   `settled_to_a_worker` stops being zero in public.
 - **(operator, GitHub)** The repo description still says "three.js
   frontend" — stale since the browser cut, and it is the first line a

@@ -382,7 +382,7 @@ fn skin_stat_field_refused() {
     let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
     skins.1 = String::from(
         "[[skin]]\nid = \"skin.wood_gilt\"\ncovers = \"item.hatchet_stone\"\n\
-         coin = \"SCRY\"\nprice = 10\nseason = \"alpha\"\n",
+         coin = \"ELO\"\nprice = 10\nseason = \"alpha\"\n",
     );
     build(&srcs).expect("a plain appearance row must parse");
     let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
@@ -393,12 +393,12 @@ fn skin_stat_field_refused() {
 
 #[test]
 fn dollar_ticker_refused() {
-    // Tickers are bare (CLAUDE.md wall 8): `$SCRY` is not a coin.
+    // Tickers are bare (CLAUDE.md wall 8): `$ELO` is not a coin.
     let mut srcs = sources();
     let skins = srcs.iter_mut().find(|(n, _)| *n == "skins.toml").unwrap();
     skins.1 = String::from(
         "[[skin]]\nid = \"skin.wood_gilt\"\ncovers = \"item.hatchet_stone\"\n\
-         coin = \"$SCRY\"\nprice = 10\nseason = \"alpha\"\n",
+         coin = \"$ELO\"\nprice = 10\nseason = \"alpha\"\n",
     );
     assert!(build(&srcs).is_err(), "$-prefixed ticker was accepted");
 }

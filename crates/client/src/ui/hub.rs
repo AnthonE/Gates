@@ -68,7 +68,7 @@ impl Section {
         match self {
             Section::News => {
                 "Patch notes, wipe announcements and what the community is \
-                 posting - published on scry-works and shared by every game \
+                 posting - published on Elo and shared by every game \
                  on it."
             }
             Section::Store => {
@@ -174,7 +174,7 @@ impl Status {
     /// it existed, applied to a different document.
     pub fn line(&self) -> String {
         match self {
-            Status::NoLauncher => "the scry launcher is not running - start the game from it \
+            Status::NoLauncher => "the elo launcher is not running - start the game from it \
                                    to reach this"
                 .to_string(),
             Status::Fetching => "asking the launcher where this lives...".to_string(),
@@ -241,7 +241,7 @@ mod tests {
             ..Hub::default()
         };
         let empty = with("{}");
-        let ready = with(r#"{"news":{"url":"https://scry.works/gates/news"}}"#);
+        let ready = with(r#"{"news":{"url":"https://elopros.com/gates/news"}}"#);
 
         let s = Section::News;
         let lines: Vec<String> = [&no_launcher, &fetching, &failed, &empty, &ready]
@@ -258,7 +258,7 @@ mod tests {
         // Only one of them is openable, and it is the only one carrying a url.
         assert_eq!(
             s.status(&ready).url(),
-            Some("https://scry.works/gates/news")
+            Some("https://elopros.com/gates/news")
         );
         for h in [&no_launcher, &fetching, &failed, &empty] {
             assert_eq!(s.status(h).url(), None);

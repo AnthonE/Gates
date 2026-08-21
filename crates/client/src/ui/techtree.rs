@@ -292,7 +292,7 @@ pub fn state_label(state: NodeState) -> &'static str {
     match state {
         NodeState::Known => "KNOWN",
         NodeState::Ready => "UNLOCK",
-        NodeState::Short => "NEED OBOL",
+        NodeState::Short => "NEED JUNK",
         NodeState::Blocked => "LOCKED",
     }
 }

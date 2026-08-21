@@ -2360,7 +2360,7 @@ fn a_declared_identity_reaches_the_wire_by_either_route() {
     // The command-line half, which is what the pre-window connect used.
     let from_args = args.address().expect("a well-formed identity parses");
     // The `Who` half, which is what every screen-driven connect uses now.
-    let player = client::scry::Player::Declared(ID.to_string());
+    let player = client::elo::Player::Declared(ID.to_string());
     let from_who =
         protocol::Address::from_hex(player.address().expect("declared carries one").as_bytes())
             .expect("the same string parses the same way");
@@ -2377,7 +2377,7 @@ fn a_declared_identity_reaches_the_wire_by_either_route() {
         other => panic!("expected Run, got {other:?}"),
     };
     assert_eq!(bare.address().unwrap(), protocol::Address::GUEST);
-    assert_eq!(client::scry::Player::Anonymous.address(), None);
+    assert_eq!(client::elo::Player::Anonymous.address(), None);
 }
 
 /// The other half, and a grep — because the defect is a call site.

@@ -94,7 +94,7 @@ const SPAWN: (f32, f32) = (1024.0, 1024.0);
 /// positional payload with (slot, item, count) triples in it, which is the
 /// shape `reference/FINDINGS.md` §1 counts ~27 shipped defects in.
 const SPEAR: u16 = 0;
-const JUNK: u16 = 7;
+const FILLER: u16 = 7;
 const OTHER: u16 = 11;
 const THIRD: u16 = 19;
 /// Slots inside a bag, spread rather than bunched so an off-by-one in the
@@ -248,7 +248,7 @@ fn bag_from_a_kill(
     };
     core.world.players[w1].inv = [ItemStack::default(); INV_SLOTS];
     core.world.players[w1].inv[SLOT_A] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: COUNT_A,
         cond: 0,
     };
@@ -348,7 +348,7 @@ fn only_the_opener_is_shown_a_container() {
             (
                 SLOT_A as u8,
                 ItemStack {
-                    item: JUNK,
+                    item: FILLER,
                     count: COUNT_A,
                     cond: 0,
                 }
@@ -378,7 +378,7 @@ fn only_the_opener_is_shown_a_container() {
     assert_eq!(
         c0.cont[SLOT_A],
         ItemStack {
-            item: JUNK,
+            item: FILLER,
             count: COUNT_A,
             cond: 0,
         }
@@ -701,7 +701,7 @@ fn a_box_opens_by_its_packed_address() {
         0,
         SLOT_A,
         ItemStack {
-            item: JUNK,
+            item: FILLER,
             count: COUNT_A,
             cond: 0,
         },
@@ -723,7 +723,7 @@ fn a_box_opens_by_its_packed_address() {
         &vec![(
             SLOT_A as u8,
             ItemStack {
-                item: JUNK,
+                item: FILLER,
                 count: COUNT_A,
                 cond: 0,
             }
@@ -829,7 +829,7 @@ fn a_corpse_is_shown_no_container() {
         0,
         SLOT_A,
         ItemStack {
-            item: JUNK,
+            item: FILLER,
             count: COUNT_A,
             cond: 0,
         },
@@ -852,7 +852,7 @@ fn a_corpse_is_shown_no_container() {
         &vec![(
             SLOT_A as u8,
             ItemStack {
-                item: JUNK,
+                item: FILLER,
                 count: COUNT_A,
                 cond: 0,
             }
@@ -1060,7 +1060,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         0,
         SLOT_A,
         ItemStack {
-            item: JUNK,
+            item: FILLER,
             count: COUNT_A,
             cond: 0,
         },
@@ -1130,7 +1130,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         &vec![(
             SLOT_A as u8,
             ItemStack {
-                item: JUNK,
+                item: FILLER,
                 count: COUNT_A,
                 cond: 0,
             }
@@ -1168,7 +1168,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         &vec![(
             SLOT_A as u8,
             ItemStack {
-                item: JUNK,
+                item: FILLER,
                 count: COUNT_A,
                 cond: 0,
             }

@@ -251,7 +251,7 @@ was the other, and it went the other way — see §1c-b below.
 | **hp** workbench 1 | 400 | 500 |
 | **hp** research table | 400 | 200 |
 | rock | 15 stone | 10 stone *(2026-08-11)* |
-| research table | *(+ nothing)* | **+ 20 obol** — their 20 scrap *(2026-08-11)* |
+| research table | *(+ nothing)* | **+ 20 junk** — their 20 scrap *(2026-08-11)* |
 
 ### What was refused, and why each is a real reason
 
@@ -270,11 +270,11 @@ None of these is a cost wearing principle's clothes (§6.2); each is a
   respectively, unchanged, which is more evidence for §1 above.
 - ~~**research table's 20 scrap**~~ — **RETRACTED 2026-08-11, and it was
   never a real reason.** I refused it saying "we have no scrap, our
-  currency is `item.obol` on purpose", which is a sentence that answers
-  itself: **OBOL *is* scrap**, said in three places in this tree —
-  `DESIGN.md` §3.1 is titled "OBOL — the working coin (the scrap)",
+  currency is `item.junk` on purpose", which is a sentence that answers
+  itself: **JUNK *is* scrap**, said in three places in this tree —
+  `DESIGN.md` §3.1 is titled "JUNK — the working coin (the scrap)",
   `research.toml` and `cooking.toml` both carry the operator's own
-  2026-08-10 quote. The row is now 200 frags + **20 obol**, whole. This is
+  2026-08-10 quote. The row is now 200 frags + **20 junk**, whole. This is
   §6.2's failure mode caught in the act: not a mechanism difference, an
   item I did not recognise under our own name for it.
 - **recycler** — not craftable there at all; it is a monument fixture.
@@ -366,7 +366,7 @@ No band or anchor reads a stack size, so nothing re-priced.
 
 wood · stone · metal ore · sulfur ore · metal frags (all 1000 — §4.4 had
 these already) · cloth 1000 (§1) · **low grade fuel 500** · **satchel
-charge 10** · **obol = their scrap, 1000**. The §1 pattern again: rows
+charge 10** · **junk = their scrap, 1000**. The §1 pattern again: rows
 nobody was trying to match that agree anyway. Everything that stacks 1
 here stacks 1 there (tools, weapons, wearables, deployables) — trivially
 matched, uncited.
@@ -454,11 +454,11 @@ case.
 | row | ours before | theirs, taken |
 |---|---|---|
 | gears → metal fragments | 8 | **15** |
-| gears → obol *(their scrap)* | 2 | **12** |
+| gears → junk *(their scrap)* | 2 | **12** |
 | rope → cloth | 5 | **18** |
 | tarp → cloth | 8 | **60** |
-| rope → obol | 1 | **row deleted** — theirs returns cloth and no scrap |
-| tarp → obol | 1 | **row deleted** — same |
+| rope → junk | 1 | **row deleted** — theirs returns cloth and no scrap |
+| tarp → junk | 1 | **row deleted** — same |
 
 The two deletions are the take, not a trim: a cook row paying 0 is inert
 and `validate::structural` refuses one, so "theirs pays no scrap here" can
@@ -483,20 +483,20 @@ this** (`NOW.md` §0b): `Content::load_dir(…)` then `.anchors()`.
 ### The finding, and it is bigger than the four cells
 
 The faucet's own arithmetic, off `loot.toml` × `cooking.toml`: our barrel
-paid **0.848** obol across the three components and now pays **2.727** on
+paid **0.848** junk across the three components and now pays **2.727** on
 the gear alone — a 3.2× faucet. Theirs pays **~2.42 scrap a barrel** (2
 direct at 100 %, plus a 2–3 gear roll at 1.4 % recycled at 12). So after
-this take **one obol buys about what one scrap buys, within 13 %**.
+this take **one junk buys about what one scrap buys, within 13 %**.
 
 Which retires a figure that is cited as a *reason* in two content files.
-`research.toml` and `recipes.toml` both justify our own obol prices
-against *"a ~10-scrap barrel where ours pays ~0.85 obol, so neither lands
+`research.toml` and `recipes.toml` both justify our own junk prices
+against *"a ~10-scrap barrel where ours pays ~0.85 junk, so neither lands
 raw"*. The 0.85 is right and **the ~10 was never measured and is wrong**.
 
 Priced in barrels over the four researchable items we both have — their
 **Research Table** column, read at the page the same hour:
 
-| | theirs, scrap | theirs, barrels | ours, obol | ours before | ours after |
+| | theirs, scrap | theirs, barrels | ours, junk | ours before | ours after |
 |---|---|---|---|---|---|
 | metal arrow *(their HV arrow)* | 15 | 6.2 | 20 | 23.6 | 7.3 |
 | revolver | 30 | 12.4 | 75 | 88.4 | 27.5 |
@@ -657,7 +657,7 @@ it is for: when you take a row, look for the column beside it.
 | 1d | ~~**`deployables.toml` hp**~~ | ✅ **TAKEN 2026-08-10**, in the same commit as 1c by design | 7 of 12 moved, 2 already matched, 3 refused. The one that matters: **sheet metal door 800 → 250 hp**, which is what makes the door the breach point their design intends rather than a second wall. Wooden door 200 and small box 150 were already theirs. Not taken: the code lock (their lock has no standalone hp — it is not independently destructible, which is a mechanism difference from `lock.rs`), the recycler (no equivalent — theirs is a monument fixture, ours is craftable by design, `DECISIONS.md` "recycler v0"), and the **tool cupboard's own hp**, where the source declined to answer and one earlier search summary said 100 against our 500. That last one is the largest open cell on this list. |
 | 1e | **the files with no coverage at all** — ~~`items.toml` stack sizes~~ ✅ **TAKEN 2026-08-11** (§1e) | `READY` (research not started on the rest) | ~~`cooking.toml`~~ ✅ **its recycler column TAKEN 2026-08-18** (§1f, page tier — and that pass re-probed egress **open**, which retires the "a browser is the only route" note this row carried). ~~`armor.toml`~~ and ~~`loot.toml`~~ **both researched 2026-08-18 and both blocked** — rows **1j** (a fixture anchor) and **1i** (a schema field), each with its numbers written down at page tier. So **this row is closed**: all four files have coverage, two as takes (§1e/§1f) and two as blocks nobody has to research again. `research.toml`'s prices now carry a measured reason instead of a wrong one (§1f). **The §4.1 reason this row predicted for `armor.toml` — per-damage-type vs our flat % — turned out not to be one**: their projectile and melee cells are equal on all three pieces we own, which are the only two damage classes we have. Row 1b's lesson holds in a third form: absence from this list was not a decision, and neither was a reason nobody had checked. The stack-size half is **done** (§1e-b, 2026-08-14): the 12 open cells were read at the page — six taken, the rest confirmed matches — so what remains of this row is exactly the four uncovered files. |
 | 1g | **the research ladder's per-item ordering** | `READY` (page tier, and the pages are open) | Opened by §1f, which took the faucet and made the comparison possible for the first time. The **total** matched by accident — our four shared blueprints cost 0.83× theirs in barrels once the recycler pays what theirs pays — but the **shape** is ours: their spread is 8× (HV arrow 15 → gunpowder 120) against our 3.75× (20 → 75), and they disagree on the ordering, not just the scale. Gunpowder is their most expensive early blueprint and our middle rung; their revolver is cheap at 30 where ours is 75. Costs one `Research Table` cell per item page and one `research.toml` edit; **no band reads a research price**, so `test_content` will not argue either way — which makes the citation at the row the only record, and §6's requirement the whole gate. ⚠ Their column is the *current* era and our bench ladder sits under a spoken pre-Oct-2025 one (§1f's era note): settle that before taking the numbers, not after. |
-| 1i | **`loot.toml` — the container ladder** | `NEEDS-MECHANISM` (a schema field, and it is in `crates/`) | **Researched 2026-08-18 at page tier and deliberately NOT taken.** Their whole ladder is denominated in a **guaranteed** scrap payout — barrel 2, basic crate 3, brown/tools 5, military 8, elite 25, every one at **100 %** — and `LootEntry` has `item`/`weight`/`count_min`/`count_max` with `loot::roll` picking `rolls` entries by weight. **A certain drop is not expressible**, so the single number their ladder is built on cannot land here without a `guaranteed` column (schema + bake + `loot::roll` + a cap check). The arithmetic for why the rest must wait on it: their barrel's coin is **83 % that guaranteed 2**, and the components carry the other 17 % at rates far below ours — gears appear in **1.4 %** of their barrels against ~10 % of ours. Take the component rates alone and our barrel pays **0.30 obol against their 2.42 — 0.12×**, where today it pays 2.727 and sits at **1.13×**; the research economy §1f just measured at 0.83× theirs would jump to ~7.5×. **The half-take is nine times worse than leaving it alone**, which is row 1b's lesson with a number on it. Second finding, free: **raw materials are not container loot there at all** — cloth, animal fat, sulfur, gunpowder and metal fragments have no barrel or crate source on their pages (fragments come from Loot Trash, mine crates and minecarts), where ours put 60 of the barrel's 99 weight on exactly those. That is a shape difference nobody had recorded, and it is the more interesting half. |
+| 1i | **`loot.toml` — the container ladder** | `NEEDS-MECHANISM` (a schema field, and it is in `crates/`) | **Researched 2026-08-18 at page tier and deliberately NOT taken.** Their whole ladder is denominated in a **guaranteed** scrap payout — barrel 2, basic crate 3, brown/tools 5, military 8, elite 25, every one at **100 %** — and `LootEntry` has `item`/`weight`/`count_min`/`count_max` with `loot::roll` picking `rolls` entries by weight. **A certain drop is not expressible**, so the single number their ladder is built on cannot land here without a `guaranteed` column (schema + bake + `loot::roll` + a cap check). The arithmetic for why the rest must wait on it: their barrel's coin is **83 % that guaranteed 2**, and the components carry the other 17 % at rates far below ours — gears appear in **1.4 %** of their barrels against ~10 % of ours. Take the component rates alone and our barrel pays **0.30 junk against their 2.42 — 0.12×**, where today it pays 2.727 and sits at **1.13×**; the research economy §1f just measured at 0.83× theirs would jump to ~7.5×. **The half-take is nine times worse than leaving it alone**, which is row 1b's lesson with a number on it. Second finding, free: **raw materials are not container loot there at all** — cloth, animal fat, sulfur, gunpowder and metal fragments have no barrel or crate source on their pages (fragments come from Loot Trash, mine crates and minecarts), where ours put 60 of the barrel's 99 weight on exactly those. That is a shape difference nobody had recorded, and it is the more interesting half. |
 | 1j | **`armor.toml` — the protection column** | `NEEDS-MECHANISM` (one fixture string, and it is in `crates/`) | **Researched and applied 2026-08-18, gates-checked, reverted, filed** (§1h). Theirs at page tier: burlap headwrap **15**, burlap shirt **10**, road sign jacket **20**, and no movement penalty on any of them. Two things this row settles that outlast it. **(1) §4.1's reason was not a reason** — their Projectile and Melee cells are equal on all three, and those are the only damage classes we have, so the flat-percentage "mismatch" costs nothing; retracted in `BALANCE.md` §4.1 whether or not the numbers ever land. **(2) The band does not object** — the take was run through the content crate and `armor_extra_hits_max` holds with no re-speak, because the set gets *weaker*. What blocks it is `band_breaks_refused`, which anchors on the shipped `reduction_pct = 25` to mutate it into a band break; that is a one-string re-anchor and §5 step 4 puts it in the same commit as the numbers. **Best landed inside equipment v0** (spoken 2026-08-17), which replaces the scalar with a per-type vector and has to touch the same fixture — §1h carries all five of their columns so that slice need not re-fetch. |
 | 2 | **per-material damage resistance** | `READY` (mechanism build, not a lookup) | The biggest *model* gap, and `BALANCE.md` §4.1 calls it a build: a schema column plus a sim multiply. Their stone wall takes 4 satchels and their sheet metal 23; ours takes 8 because one `structure` column serves every material. Until this exists, their raid numbers above stone cannot be taken at all — the ladder has nowhere to go. |
 | 3 | **smelt rates** ✅ · **craft-time rebate** | smelt: ✅ **TAKEN 2026-08-10** · rebate: `NEEDS-MECHANISM` | Smelt landed via §6.3's ladder — rung 3 picked metal 2.5 / sulfur 2.5 over metal 3.3 / sulfur 1.7, and **the shape was the real win**: theirs smelt alike where ours had sulfur at half of metal, so sulfur went 1 → 2. Both rows sit at 2 because `seconds` is integer (row 3a). The mechanism half already matched — their furnace is parallel per slot and `oven::sweep` is too. **The rebate (50% one tier up, 75% two) unblocked 2026-08-15**: the ladder landed (row 7), so this is now the lookup it was waiting to be — `craft::enqueue` knows the recipe's rung and `bench_near` could answer "best rung in reach" instead of a bool. `NOW.md` §0tt residual 1. |

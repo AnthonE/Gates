@@ -162,7 +162,7 @@ def board(groups: list[dict], bad: list[tuple[str, str]], total: int) -> str:
         out.append(
             "Each row is one piece of work: reports sharing a fingerprint are the same "
             "bug seen by different people. **Fixing any of them pays** — any accepted "
-            "pull request is 100,000 SCRY, flat and standing (`AGENTS.md` §the deal). "
+            "pull request is 100,000 ELO, flat and standing (`AGENTS.md` §the deal). "
             "There is nothing to claim and nobody is ahead of you.\n"
         )
         out.append(
@@ -269,7 +269,7 @@ def self_test() -> int:
             "`aaa`" in text and "close with" in text,
             "the fingerprint is what a PR names, so the board has to show it",
         )
-        check("100,000 SCRY" in text, "the board says what fixing one pays")
+        check("100,000 ELO" in text, "the board says what fixing one pays")
         check("Not readable as a report" in text, "unreadable files are named on the board")
 
         # An empty directory is a normal answer, not a crash.

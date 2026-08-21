@@ -32,7 +32,7 @@ pub mod look;
 // values in it is handed to the launcher to OPEN on the player's desktop, so
 // the scheme allowlist is the part that most needs a test in the code tier.
 pub mod manifest;
-// Join links — `scry://join/gates/host:port`. Unconditional for the reason
+// Join links — `elo://join/gates/host:port`. Unconditional for the reason
 // `shardlist` is: it parses a string a stranger wrote and handed to a friend,
 // which is the input in this client that most needs a test in the code tier.
 pub mod deeplink;
@@ -43,7 +43,7 @@ pub mod deeplink;
 // `render/presence.rs` is the Bevy half (the `Screen` mapping and the
 // once-per-change handoff). Dark unless `GATES_DISCORD_APP_ID` is set.
 pub mod discord;
-pub mod scry;
+pub mod elo;
 pub mod shardlist;
 // Where a player's screenshot goes and what it is called. Unconditional for
 // `config`'s reason exactly: a path rule and a filename rule are pure, they
@@ -217,7 +217,7 @@ pub fn client_endpoint(server: &str, cert_hash: Option<&str>) -> Result<Endpoint
     // report both failures if neither binds.
     //
     // Confirmed against the packaged desktop build on 2026-08-05: the depot
-    // the scry launcher installed died here at startup, before any address
+    // the elo launcher installed died here at startup, before any address
     // was parsed, on a container with IPv6 off.
     let build = |ip: IpBindConfig| {
         let roots = ClientConfig::builder().with_bind_config(ip);
@@ -437,7 +437,7 @@ impl Session {
     /// (`shard-public.toml`), which is why the shard list carries names too.
     /// `address` is who the player claims to be ([`Address::GUEST`] for a
     /// guest), and `sign` is asked to sign the shard's SIWE challenge with
-    /// the key behind it — in practice a call into the scry launcher, which
+    /// the key behind it — in practice a call into the elo launcher, which
     /// holds the key and shows the player a consent prompt. Returning `None`
     /// connects as a guest, which is what a declined prompt or an absent
     /// launcher should do rather than failing the connection.
@@ -505,7 +505,7 @@ impl Session {
             // **This process no longer composes the message, and that is the
             // fix.** It used to build the SIWE text here and hand it to the
             // launcher's `sign`, which refused every one: `sign` classifies a
-            // message by its first line (`scry <family>`) and EIP-4361 begins
+            // message by its first line (`elo <family>`) and EIP-4361 begins
             // with a domain. The refusal became `None`, `None` means "connect
             // as a guest", and a `require_auth` shard answered REFUSE_AUTH —
             // so every login failed as if the signature were wrong, when the
@@ -722,7 +722,7 @@ mod tests {
         }
         for no in [
             "192.0.2.2:4433",
-            "game.moreright.xyz:61234",
+            "game.elopros.com:61234",
             "0.0.0.0:4433",             // reachable from off-box, not loopback
             "127.0.0.1.evil.test:4433", // a NAME that merely starts like one
             "localhost.evil.test:4433", // ...and the other spelling of it

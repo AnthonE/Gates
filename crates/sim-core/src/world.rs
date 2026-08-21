@@ -352,7 +352,7 @@ pub const EV_SHOT: u8 = 35;
 ///
 /// The whole mask, never a delta, and the reason is the one `SUB_KNOWN`
 /// was already written for: a dropped increment would grey a recipe the
-/// player has paid OBOL for, with no later event able to correct it. A
+/// player has paid JUNK for, with no later event able to correct it. A
 /// full statement of the fact is self-healing — the next one repairs
 /// every loss before it.
 ///
@@ -2053,7 +2053,7 @@ impl World {
         // `known` is the fifth thing a body carries through a death, and
         // it is carried for the same reason `deaths` is: both are ledgers
         // of what the player *did*, not of what they were holding when
-        // they fell. A blueprint is bought with OBOL, and OBOL is the
+        // they fell. A blueprint is bought with JUNK, and JUNK is the
         // scarcest thing on the shard.
         //
         // **It was not carried until 2026-08-15, so dying deleted every
@@ -2062,7 +2062,7 @@ impl World {
         // `worldsave.rs`, and the `..Player::default()` below answered
         // "no, a body does not keep that" without anybody deciding it —
         // the spread's silence is the whole defect. Death is the most
-        // common event in the game, so this was the OBOL sink emptying
+        // common event in the game, so this was the JUNK sink emptying
         // itself on a timer. The gates are `research.rs`'s
         // `a_blueprint_survives_a_death`, `persist.rs`'s
         // `the_carried_decisions_survive_a_real_death`, and
@@ -2224,7 +2224,7 @@ impl World {
                 // the blueprint mask correctly, the codec round-tripped it,
                 // and the spread then quietly answered `known: 0` — so a
                 // keyed player reconnecting after a restart lost every
-                // blueprint they had paid OBOL for, with `test_replay`
+                // blueprint they had paid JUNK for, with `test_replay`
                 // blind to it (its stream has no `JoinAs`) and
                 // `a_blueprint_survives_a_save_and_a_load` blind to it too
                 // (it exercises the codec and never seats a world).

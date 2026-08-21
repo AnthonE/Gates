@@ -142,7 +142,7 @@ slot = "none"
 #
 # **This row is not the redeemable thing** (operator, 2026-08-10: *"this
 # isnt the same as the crypto coin u can cash out as"*). Two states share
-# the name and only the other one is a token: *banked* OBOL is a ledger
+# the name and only the other one is a token: *banked* JUNK is a ledger
 # balance keyed to a wallet, with a merkle export and an on-chain claim,
 # and THAT is what `ALPHA.md` §2 arms in stages. An item stack in a save
 # file cannot be cashed out, so there was never anything here to gate —
@@ -156,8 +156,8 @@ slot = "none"
 # nerve. Confirmed 2026-08-11: their scrap stacks 1000 too (RIPLIST §1e),
 # so the hoard call and the reference agree.
 [[item]]
-id = "item.obol"
-name = "Obol"
+id = "item.junk"
+name = "Junk"
 stack = 1000
 tier = 0
 rarity = "rare"

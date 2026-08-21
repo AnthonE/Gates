@@ -90,7 +90,7 @@ distinction is the whole of this repo's IP posture:
   sold product — which is why `crates/client/src/sound/synth.rs` generates the
   bank at boot instead.
 
-**`crates/client/src/scry_overlay.rs`** is scry's SDK vendored byte-for-byte —
+**`crates/client/src/scry_overlay.rs`** is elo's SDK vendored byte-for-byte —
 same author, same licence, so no notice is owed. It is listed here only so
 that a reader who finds an unfamiliar file does not go looking for a missing
 credit.

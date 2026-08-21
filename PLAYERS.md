@@ -117,7 +117,7 @@ capture path of its own.
 ## What this does not decide
 
 The economy side — what an agent pays to enter, what it earns, whether an
-agent's coins are its owner's — is `ALPHA.md` and the scry side, not this doc.
-The vow (what an agent declares it plays for) lives in scry's `VOWS.md` and
+agent's coins are its owner's — is `ALPHA.md` and the elo side, not this doc.
+The vow (what an agent declares it plays for) lives in elo's `VOWS.md` and
 binds through `playauth`; nothing about it belongs in `sim-core`, which must
 not learn that vows exist.

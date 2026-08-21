@@ -6,10 +6,22 @@ about: "MYRRH's listing copy — the short and long token-info blurbs for an exp
 ---
 # MYRRH — listing copy
 
+> ⚠ **The product name is ORBS; the on-chain symbol is still `MYRRH`, and this
+> file follows the chain.** The 2026-08-21 rename (scry → Elo, OBOL → JUNK,
+> MYRRH → ORBS) moved the game's words, not the deployment: `/api/onchain`,
+> read that day, names SCRY, OBOL and MYRRH and does not know ELO, JUNK or
+> ORBS. An ERC-20's `symbol()` is fixed at deploy, so **renaming a ticker is a
+> redeploy** — new address, new pool, new listing — which is an on-chain
+> operator act performed in `scry-forge` and pasted here. Until it happens
+> every ticker and address below is correct as written and **must not be
+> swept**: paste-ready copy that disagrees with the contract is worse than
+> copy carrying an old name.
+
+
 > **Moved here from `scry-forge/watchtower/marketing/` on 2026-08-11.** MYRRH is
 > **Gates' coin, not the platform's** (operator, 2026-08-07: *"scry only has
 > SCRY! myrrh and obol are actually gates now"*), so its listing copy belongs in
-> this repo — scry's rule is that nothing about a game lives there except its
+> this repo — elo's rule is that nothing about a game lives there except its
 > listing row. Nothing moved on chain; the contract, the pool and the address
 > are untouched.
 >
@@ -29,7 +41,7 @@ from here into another page. Sibling copy: `OBOL-LISTING.md`.
 ## Short — ~50 words, for a token-info field
 
 > **MYRRH** is Gates' scarce coin — the capped half of the survival game's
-> pair on scry, a curated open-source game platform on RH-Chain. Capped at
+> pair on elo, a curated open-source game platform on RH-Chain. Capped at
 > 21,000,000 and farmed on a halving schedule, it has exactly one source —
 > staking liquidity in the Garden — and one job: it burns. Playing mints
 > none of it.
@@ -45,7 +57,7 @@ from here into another page. Sibling copy: `OBOL-LISTING.md`.
 
 > **MYRRH is Gates' scarce coin.**
 >
-> scry (`scry.moreright.xyz`) is a curated, open-source game platform on
+> elo (`elopros.com`) is a curated, open-source game platform on
 > RH-Chain — games built by agents in public, played by humans and agents,
 > settled on chain. Gates, the first title, runs two coins: OBOL is what you
 > earn by playing. MYRRH is the coin you cannot play for at all.
@@ -117,13 +129,13 @@ MYRRH — there is no routing cliff between the coins. The MYRRH/OBOL pool
 costs no `SCRY`: both sides are house-minted.
 
 Because the house mints both sides, **the MYRRH/OBOL price is never an oracle
-for any scry system.**
+for any elo system.**
 
 ## What MYRRH is not
 
 - **Not a governance token.** No token on the platform carries governance
   weight.
-- **Not the platform's coin.** scry has exactly one coin — SCRY, the reserve.
+- **Not the platform's coin.** elo has exactly one coin — SCRY, the reserve.
   OBOL and MYRRH are Gates' (`SENTENCES.md` 2026-08-07); every listed title
   brings its own coins, and they all pair against SCRY.
 - **Not a yield instrument.** Nothing here promises a return, and the
@@ -160,10 +172,10 @@ by the cliff, no dated obligation remains, and the live number is readable:
 
 | | |
 |---|---|
-| site | `https://scry.moreright.xyz` |
-| the farm | `https://scry.moreright.xyz/gardens` |
-| pools + fees, live | `https://scry.moreright.xyz/api/pools` |
-| on-chain card | `https://scry.moreright.xyz/api/onchain` |
+| site | `https://elopros.com` |
+| the farm | `https://elopros.com/gardens` |
+| pools + fees, live | `https://elopros.com/api/pools` |
+| on-chain card | `https://elopros.com/api/onchain` |
 | icon | `watchtower/marketing/myrrh-icon.svg` · flat: `myrrh-flat.svg` |
 
 ---

@@ -235,7 +235,7 @@ fn the_fingerprint_groups_the_same_shape_across_different_people() {
         tick: 4_000,
         pos: [1.0, 2.0, 3.0],
         screen: "world".into(),
-        shard: "game.moreright.xyz:4433".into(),
+        shard: "game.elopros.com:4433".into(),
         player_id: 7,
     });
     b.net = Some(Netstat {
@@ -383,7 +383,7 @@ fn the_document_carries_what_a_fixer_needs() {
         tick: 12_345,
         pos: [1024.5, 46.25, 990.125],
         screen: "world".into(),
-        shard: "game.moreright.xyz:4433".into(),
+        shard: "game.elopros.com:4433".into(),
         player_id: 3,
     });
     r.net = Some(Netstat {
@@ -419,7 +419,7 @@ fn the_document_carries_what_a_fixer_needs() {
          near an authored site the two disagree by metres: {md}"
     );
     // And the report says what it pays, because that is the whole loop.
-    assert!(md.contains("100,000 SCRY"));
+    assert!(md.contains("100,000 ELO"));
     assert!(md.contains("AGENTS.md"));
     assert!(md.contains("./ci/gates.sh"));
     assert!(md.contains("TERRAIN.md"), "the kind's doc must be named");
@@ -495,14 +495,14 @@ fn an_empty_report_is_still_a_valid_document() {
 // ------------------------------------------------------------ the signed text
 
 #[test]
-fn the_sign_text_obeys_the_scry_rules() {
-    // `sdk/PROTOCOL.md`: first line `scry <family>`, lowercase address, UTC
+fn the_sign_text_obeys_the_elo_rules() {
+    // `sdk/PROTOCOL.md`: first line `elo <family>`, lowercase address, UTC
     // day. A checksummed address is different bytes and verifies differently,
     // which is the detail that bites a hand-rolled string.
     let r = plain(Kind::Look, "t", "b");
     let text = r.sign_text("0xAbCdEf0000000000000000000000000000000001", "2026-08-20");
     let lines: Vec<&str> = text.split('\n').collect();
-    assert_eq!(lines[0], "scry report");
+    assert_eq!(lines[0], "elo report");
     assert_eq!(lines[1], "action: gates-bug");
     assert_eq!(
         lines[2],
@@ -636,7 +636,7 @@ fn the_document_carries_a_signable_message_a_verifier_can_rebuild() {
         "`reported` and the signed day are one instant"
     );
     let from_json = format!(
-        "scry report\naction: gates-bug\nwallet: {}\nday: {day}\ndetail: {} — {}",
+        "elo report\naction: gates-bug\nwallet: {}\nday: {day}\ndetail: {} — {}",
         v["wallet"].as_str().unwrap().to_ascii_lowercase(),
         v["kind"].as_str().unwrap(),
         v["fingerprint"].as_str().unwrap(),
@@ -670,7 +670,7 @@ fn an_anonymous_report_offers_nothing_to_sign_and_says_why() {
     let md = r.markdown();
     assert!(md.contains("anonymous"));
     assert!(
-        !md.contains("scry report\naction:"),
+        !md.contains("elo report\naction:"),
         "with no wallet there is nothing to sign, so nothing may be printed"
     );
     assert!(

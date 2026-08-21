@@ -175,7 +175,7 @@ ITEMS = {
     "research_table": "lorc/scroll-unfurled",
     # The coin that pays the ferryman (DESIGN.md §3.1). Two coins rather
     # than one because a single disc at 44 px reads as a full stop.
-    "obol": "delapouite/two-coins",
+    "junk": "delapouite/two-coins",
     "door_wood": "delapouite/door",
     "building_plan": "delapouite/notebook",
     "hammer": "lorc/claw-hammer",

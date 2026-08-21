@@ -216,10 +216,10 @@ pub struct Auth {
 /// `domain` is the shard's own name, and it is what stops a signature
 /// collected by one server being replayed at another.
 ///
-/// ⚠ **These bytes are the scry launcher's, not ours, and that is the point.**
+/// ⚠ **These bytes are the elo launcher's, not ours, and that is the point.**
 /// This used to be a message Gates composed and asked the launcher to `sign`;
 /// the launcher refused every one of them, because `sign` classifies a message
-/// by its first line (`scry <family>`) and an EIP-4361 message begins with a
+/// by its first line (`elo <family>`) and an EIP-4361 message begins with a
 /// domain. The refusal became `None`, `None` means "connect as a guest", and a
 /// shard with `require_auth` answered `REFUSE_AUTH` — a login that looked like
 /// a signing failure and was really a message nothing would ever sign.
@@ -467,7 +467,7 @@ mod tests {
             &mut buf,
         );
         let text = core::str::from_utf8(&buf[..n]).expect("the message is utf-8");
-        // **This is scry's format, transcribed.** It must equal what
+        // **This is elo's format, transcribed.** It must equal what
         // `scry_broker::protocol::prove_message` writes for the same inputs;
         // the launcher signs THAT, and a shard that recomputes anything else
         // rejects every honest login. Changing a byte here is changing what

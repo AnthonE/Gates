@@ -161,7 +161,7 @@ pub(crate) struct Seen {
     pub recipes_have: u16,
     pub pieces_have: u16,
     /// The blueprint mask (tech tree v0). Without it a node clicked to
-    /// `Known` only redraws because the obol left `inv` — and a FREE
+    /// `Known` only redraws because the junk left `inv` — and a FREE
     /// node, which content permits, would not redraw at all.
     pub known: u64,
     /// The research drip's watermark, `recipes_have`'s reason exactly.

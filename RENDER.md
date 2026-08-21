@@ -126,7 +126,7 @@ The path a player walks before any of the slices below draw a pixel:
 ```
 
 **`Boot` exists because a double-click used to show nothing.** On the launcher
-path the client did a blocking scry handshake and a blocking QUIC connect
+path the client did a blocking elo handshake and a blocking QUIC connect
 *before the window existed*, and `exit(1)`'d on failure — into a terminal a
 double-clicked game does not have. Both are states now (`render/boot.rs`), so
 the window is the first thing that happens and everything slow is drawn while

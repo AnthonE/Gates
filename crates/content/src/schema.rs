@@ -537,13 +537,13 @@ pub struct Mob {
     pub drops: Vec<Stack>,
 }
 
-/// Bare tickers only (CLAUDE.md wall 8) — the enum cannot spell `$SCRY`.
+/// Bare tickers only (CLAUDE.md wall 8) — the enum cannot spell `$ELO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum Coin {
-    #[serde(rename = "SCRY")]
-    Scry,
-    #[serde(rename = "MYRRH")]
-    Myrrh,
+    #[serde(rename = "ELO")]
+    Elo,
+    #[serde(rename = "ORBS")]
+    Orbs,
 }
 
 /// Appearance only: no stat field exists to write (DESIGN.md §3.3).

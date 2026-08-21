@@ -25,7 +25,7 @@ name: release
 #
 #   git tag -a v0.1.0 -m "..." && git push --no-verify origin v0.1.0
 #
-# The scry depot path (`nightly.yml`'s `depot` job) is NOT this and is not
+# The elo depot path (`nightly.yml`'s `depot` job) is NOT this and is not
 # replaced by it: a depot is how the launcher installs a build, this is how a
 # person downloads one. Both key on the same `<version>-g<sha>` build id, so
 # a bug report names something both can find.

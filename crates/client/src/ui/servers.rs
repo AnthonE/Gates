@@ -6,7 +6,7 @@
 //! box, a couple of filter groups, CLEAR FILTERS and REFRESH at the bottom,
 //! and on the right a *table* — `SERVER NAME` / `PLAYERS` / `PING`, a
 //! favourite star on every row, and a dim second line carrying the map. Ours
-//! is that shape against the fields `scry-shardlist-v1` actually publishes,
+//! is that shape against the fields `elo-shardlist-v1` actually publishes,
 //! and no others.
 //!
 //! **What is deliberately not copied, and why.** The reference's rail reads
@@ -99,7 +99,7 @@ impl Listing {
         }
     }
 
-    /// A row off the fetched `scry-shardlist-v1` document.
+    /// A row off the fetched `elo-shardlist-v1` document.
     ///
     /// The id falls back to the address, because the favourite set keys on it
     /// and a document that omitted one would otherwise give every such row

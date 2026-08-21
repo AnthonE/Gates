@@ -93,7 +93,7 @@ pub const STEMS: [&str; 72] = [
     "gears",
     "rope",
     "tarp",
-    "obol",
+    "junk",
     "rock",
     "torch",
     "wooden_spear",

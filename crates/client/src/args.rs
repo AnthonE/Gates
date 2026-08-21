@@ -1,7 +1,7 @@
 //! The client's command line — shared by the headless `client` binary and the
 //! windowed `gates` one, so a flag can never mean two things.
 //!
-//! This exists because of the depot. A scry depot's launch block names an argv
+//! This exists because of the depot. A elo depot's launch block names an argv
 //! with placeholders the launcher fills:
 //!
 //! ```json
@@ -40,7 +40,7 @@ gates — the Gates desktop client
   ADDR                 shard address, host:port (default 127.0.0.1:4433).
                        A NAME is normal — the public shard's certificate is
                        issued for one, and the transport resolves it.
-                       A join link (scry://join/gates/host:port) may be given
+                       A join link (elo://join/gates/host:port) may be given
                        here too — that is how the OS hands one to this binary
   --server ADDR        the same, named. Wins over the positional form.
                        Given, the client joins it straight away; absent, it
@@ -48,7 +48,7 @@ gates — the Gates desktop client
   --join LINK          a join link, named. Equivalent to --server with the
                        address the link carries — a link is a way of spelling
                        an address, never a second way to connect
-  --servers URL        where to fetch the scry-shardlist-v1 document the menu
+  --servers URL        where to fetch the elo-shardlist-v1 document the menu
                        lists. Absent, the menu offers the default shard only
                        and says why the rest of it is empty
   --cert-hash SHA256   trust ONLY the shard certificate with this SHA-256,
@@ -71,7 +71,7 @@ gates — the Gates desktop client
                        is not footage. Refused without --capture: a HUD-less
                        client a player could walk around in is a different
                        thing nobody asked for
-  --no-launcher        do not look for a scry launcher, even if one is running
+  --no-launcher        do not look for an elo launcher, even if one is running
   --help               this
 
 F12 takes a screenshot, on any screen, and the game reads its own frame to do
@@ -81,7 +81,7 @@ They land in ~/Pictures/gates (%USERPROFILE%\\Pictures\\gates on Windows,
 $XDG_PICTURES_DIR/gates where the session sets one); GATES_SHOTS_DIR overrides
 that verbatim. The name is gates-YYYYMMDD-HHMMSS.png, UTC, so it sorts by time.
 
-The scry launcher fills --server and --identity from a depot's launch block;
+The elo launcher fills --server and --identity from a depot's launch block;
 running without one is a normal, supported state. A player who joined from the
 launcher's own Servers window arrives with --server already chosen, which is
 why that flag suppresses the menu rather than pre-selecting a row in it.";
@@ -90,14 +90,14 @@ why that flag suppresses the menu rather than pre-selecting a row in it.";
 pub struct Args {
     /// `host:port`, shape-checked and NOT resolved — see `shardlist::
     /// check_addr`. A `SocketAddr` here used to refuse every hostname,
-    /// including `game.moreright.xyz`, which is the name the public shard's
+    /// including `game.elopros.com`, which is the name the public shard's
     /// certificate is issued for and the name the transport needs for SNI.
     pub server: String,
     /// Whether `server` was asked for or is just the default. The menu turns
     /// on this: an address the launcher chose must not be second-guessed by
     /// a screen asking the player to choose again.
     pub server_given: bool,
-    /// `--servers URL`: the `scry-shardlist-v1` document. `None` is normal
+    /// `--servers URL`: the `elo-shardlist-v1` document. `None` is normal
     /// and is a *stated* empty menu, never a silent one.
     pub servers_url: Option<String>,
     /// `None` when absent OR empty — see the module docs; the launcher's
@@ -219,7 +219,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Parsed {
     //
     // Checked BEFORE `check_addr` so a malformed link is refused as a bad
     // *link*, naming the shape a link should have; falling through would
-    // report `"scry://join/gates/nonsense" is a url, not a host:port`, which
+    // report `"elo://join/gates/nonsense" is a url, not a host:port`, which
     // names the wrong mistake to someone who was handed a link by a friend.
     let raw = if crate::deeplink::is_link(&raw) {
         match crate::deeplink::parse(&raw) {
@@ -348,13 +348,13 @@ mod tests {
             "--identity",
             "0xAbC",
             "--servers",
-            "https://scry.moreright.xyz/api/launcher/servers/gates",
+            "https://elopros.com/api/launcher/servers/gates",
         ]);
         assert_eq!(x.server, "10.0.0.4:4433");
         assert_eq!(x.identity.as_deref(), Some("0xAbC"));
         assert_eq!(
             x.servers_url.as_deref(),
-            Some("https://scry.moreright.xyz/api/launcher/servers/gates")
+            Some("https://elopros.com/api/launcher/servers/gates")
         );
     }
 
@@ -411,8 +411,8 @@ mod tests {
         // public shard is reached by the name its certificate is issued for,
         // and `SocketAddr::from_str` refused every one of them.
         assert_eq!(
-            run(&["--server", "game.moreright.xyz:61234"]).server,
-            "game.moreright.xyz:61234"
+            run(&["--server", "game.elopros.com:61234"]).server,
+            "game.elopros.com:61234"
         );
         assert_eq!(run(&["[::1]:4433"]).server, "[::1]:4433");
         // Still shape-checked, though — a typo must not become a DNS lookup
@@ -458,12 +458,12 @@ mod tests {
         // clicked a friend's link has chosen a shard exactly as firmly as one
         // who picked a row.
         for argv in [
-            vec!["scry://join/gates/game.moreright.xyz:61234"],
-            vec!["--join", "scry://join/gates/game.moreright.xyz:61234"],
-            vec!["gates://game.moreright.xyz:61234"],
+            vec!["elo://join/gates/game.elopros.com:61234"],
+            vec!["--join", "elo://join/gates/game.elopros.com:61234"],
+            vec!["gates://game.elopros.com:61234"],
         ] {
             let x = run(&argv);
-            assert_eq!(x.server, "game.moreright.xyz:61234", "{argv:?}");
+            assert_eq!(x.server, "game.elopros.com:61234", "{argv:?}");
             assert!(x.server_given, "{argv:?} must skip the menu");
         }
     }
@@ -473,14 +473,14 @@ mod tests {
         // The message names the mistake the player actually made. Falling
         // through to `check_addr` would report "is a url, not a host:port" to
         // someone who was handed a url on purpose.
-        let why = match a(&["scry://join/some-other-game/h:1"]) {
+        let why = match a(&["elo://join/some-other-game/h:1"]) {
             Parsed::Bad(why) => why,
             other => panic!("expected Bad, got {other:?}"),
         };
         assert!(why.contains("some-other-game"), "{why}");
         assert!(!why.contains("bad address"), "{why}");
 
-        assert!(matches!(a(&["scry://join/gates/nonsense"]), Parsed::Bad(_)));
+        assert!(matches!(a(&["elo://join/gates/nonsense"]), Parsed::Bad(_)));
         assert!(matches!(a(&["--join", "not-a-link"]), Parsed::Bad(_)));
         assert!(matches!(a(&["--join"]), Parsed::Bad(_)));
     }
@@ -488,9 +488,9 @@ mod tests {
     #[test]
     fn an_explicit_address_still_beats_a_link() {
         // Precedence, pinned: --server > --join > positional.
-        let x = run(&["--join", "scry://join/gates/h:1", "--server", "5.6.7.8:2"]);
+        let x = run(&["--join", "elo://join/gates/h:1", "--server", "5.6.7.8:2"]);
         assert_eq!(x.server, "5.6.7.8:2");
-        let x = run(&["scry://join/gates/h:1", "--join", "scry://join/gates/h:2"]);
+        let x = run(&["elo://join/gates/h:1", "--join", "elo://join/gates/h:2"]);
         assert_eq!(x.server, "h:2");
         // An unfilled --join is absence, the same rule every other flag here
         // follows — it must not become "no server" when a positional exists.

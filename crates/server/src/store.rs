@@ -4,18 +4,18 @@
 //! A shard that forgets you on every disconnect cannot be authenticated
 //! into meaning anything: you could prove who you are perfectly and still
 //! lose everything when your connection drops. So this is the slice that
-//! had to come first, and it needs nothing from scry to land.
+//! had to come first, and it needs nothing from elo to land.
 //!
 //! ## The key is opaque, and that is the point
 //!
 //! A save is filed under a [`PlayerKey`]: bytes the admission seam returned
 //! (`auth::verify`), which this module never interprets. Whether they come
-//! from a SIWE signature, a scry player id or a dev flag is that seam's
+//! from a SIWE signature, an elo player id or a dev flag is that seam's
 //! business — change it and nothing here moves. The debate about *which*
 //! identity scheme wins was therefore never a blocker for persistence; it
 //! is one function's return type, and SIWE won (`DECISIONS.md` 2026-08-07).
 //!
-//! ## What this stores, and what scry stores
+//! ## What this stores, and what elo stores
 //!
 //! This holds where your body stood and what was in its hands. It holds no
 //! profile, no balance, no item entitlement: those live in the launcher's
@@ -62,7 +62,7 @@ use xxhash_rust::xxh3::xxh3_64;
 ///
 /// Covers every identity anyone has proposed for this game with room over:
 /// a lowercase `0x…` Ethereum address (42 bytes — what `auth::verify`
-/// actually returns), a 32-byte scry player id, a UUID, or a dev shard's
+/// actually returns), a 32-byte elo player id, a UUID, or a dev shard's
 /// bare name. Deliberately too small to hold a self-describing credential —
 /// a key is a lookup handle, and a store that could hold a JWT would invite
 /// somebody to read claims out of one.
@@ -71,7 +71,7 @@ use xxhash_rust::xxh3::xxh3_64;
 /// today, so a cap under 42 would leave every verified player unnameable —
 /// persistence silently doing nothing for everybody, with every gate green.
 /// It stays at 48 rather than shrinking to 42 because the key is
-/// deliberately opaque to everything but `auth.rs` — the day scry maps an
+/// deliberately opaque to everything but `auth.rs` — the day elo maps an
 /// address to a player id, that id lands here and nothing else moves.
 /// Proposed default, DECISIONS.md §open ("player persistence v0").
 pub const PLAYER_KEY_MAX_BYTES: usize = 48;

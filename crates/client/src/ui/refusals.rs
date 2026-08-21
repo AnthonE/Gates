@@ -64,7 +64,7 @@ pub const RESEARCH: [&str; 7] = [
     "nothing in that slot",
     "that cannot be researched",
     "already known",
-    "not enough obol",
+    "not enough junk",
     "unlock the node before it first",
     "no workbench of that level in reach",
 ];

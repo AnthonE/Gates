@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""publish_depot.py — package one platform's build and put it live on scry's origin.
+"""publish_depot.py — package one platform's build and put it live on elo's origin.
 
     ./ci/publish_depot.py --platform linux-x86_64            build, upload, publish
     ./ci/publish_depot.py --platform win-x86_64 --no-build   package what is compiled
@@ -12,7 +12,7 @@ quietly when it is skipped. Four of them exist only because doing this by hand
 went wrong at least once.
 
 **It does not compute the depot digest and it does not package.** `ci/depot.py`
-packages and `scry digest` computes the number that gets notarized — a second
+packages and `elo digest` computes the number that gets notarized — a second
 implementation of either is the failure both of those files are shaped to
 refuse. This script is the ORDER, the refusals, and the checks between.
 
@@ -37,7 +37,7 @@ refuse. This script is the ORDER, the refusals, and the checks between.
    keyed one, so the notarized depot would quietly stop being served. That is
    a decision, not a default, so it refuses.
 
-   **Do not "fix" any of this with a platform suffix on the id** — scry's
+   **Do not "fix" any of this with a platform suffix on the id** — elo's
    `meter/gamerepo.py::version_of` strips `-g[0-9a-f]+…$` anchored at `$`, so
    `0.2.0-gsha-win-x86_64` stops parsing back to `0.2.0` and the store's
    declared-vs-published check goes permanently red.
@@ -77,7 +77,7 @@ TARGETS = depot_mod.TARGETS
 
 DEFAULT_HOST = "morr"
 DEFAULT_DEPOTS = "/data/apps/scry-data/depots"
-DEFAULT_API = "https://scry.moreright.xyz/api"
+DEFAULT_API = "https://elopros.com/api"
 NOTARY = "0x0C15fA7829458118e3d26229F58FE0443f8b792c"  # ScryNotary, chain 4663
 NOTARY_CHAIN = 4663
 
@@ -108,7 +108,7 @@ def require_clean_tree() -> str:
 def refuse_legacy_collision(host: str, depots: str, build: str, platform: str) -> None:
     """Would this upload land on top of a depot published under the OLD layout?
 
-    scry keys by (build, platform) since 2026-08-14, so `<build>/<platform>/` is
+    elo keys by (build, platform) since 2026-08-14, so `<build>/<platform>/` is
     this platform's own directory and two platforms from one commit no longer
     collide — that is the whole point and it is why this function no longer
     refuses the ordinary case.
@@ -312,7 +312,8 @@ def main() -> int:
     ap.add_argument("--no-build", action="store_true", help="package what is compiled")
     ap.add_argument("--dry-run", action="store_true", help="every check, no writes")
     ap.add_argument("--notarize", action="store_true", help="seal the digest on chain")
-    ap.add_argument("--scry", default=None, help="path to a `scry` binary for --notarize")
+    ap.add_argument("--elo", "--scry", dest="elo", default=None,
+                    help="path to an `elo` binary (formerly `scry`) for --notarize")
     ap.add_argument("--host", default=DEFAULT_HOST, help="origin box (ssh alias)")
     ap.add_argument("--depots", default=DEFAULT_DEPOTS, help="depot root on the origin")
     ap.add_argument("--api", default=DEFAULT_API, help="public API base to confirm against")
@@ -333,16 +334,16 @@ def main() -> int:
 
     if a.notarize:
         local = None
-        if a.scry:
-            local = run([a.scry, "digest", str(stage / "depot.json")]).stdout.strip()
+        if a.elo:
+            local = run([a.elo, "digest", str(stage / "depot.json")]).stdout.strip()
             if digest and local != digest:
                 sys.exit(
-                    f"publish: `scry digest` says {local} and the origin serves {digest}.\n"
+                    f"publish: `elo digest` says {local} and the origin serves {digest}.\n"
                     "         Notarizing either would seal a number nobody can reproduce."
                 )
         seal = local or digest
         if not seal:
-            sys.exit("publish: no digest to notarize (--dry-run, or pass --scry)")
+            sys.exit("publish: no digest to notarize (--dry-run, or pass --elo)")
         notarize(a.host, a.depots, build, seal, f"{SLUG}-{a.platform}",
                  f"{SLUG} {build} {a.platform} depot", a.dry_run)
 

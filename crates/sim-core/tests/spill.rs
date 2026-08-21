@@ -61,7 +61,7 @@ const SEED: u64 = 20_260_731;
 
 /// A fixture item with the short 90-tick lifetime and no tool row, used to
 /// wall off every inventory slot. Not the tree's output.
-const JUNK: u16 = 7;
+const FILLER: u16 = 7;
 const STACK_MAX: u16 = 100;
 
 /// A gatherable slot, the walkable point 1.2 m west of it, and the yaw
@@ -139,7 +139,7 @@ fn hold_primary(yaw: u16, seq: u16) -> Command {
 }
 
 /// Player 1 at `pos`, gather and backpack fixtures armed, and every one of
-/// the 30 inventory slots walled off with junk at the ceiling — so the
+/// the 30 inventory slots walled off with filler at the ceiling — so the
 /// very first swing has nowhere to pay. Boxed for the reason
 /// `tests/gather.rs` states: a `World` through a test frame overflows the
 /// default test-thread stack.
@@ -158,7 +158,7 @@ fn full_pack_world(pos: (f32, f32)) -> Box<World> {
     w.tick(&[Command::Join { id: 1 }]);
     for s in w.players[0].inv.iter_mut() {
         *s = ItemStack {
-            item: JUNK,
+            item: FILLER,
             count: STACK_MAX,
             cond: 0,
         };
@@ -214,7 +214,7 @@ fn a_node_that_pays_twice_spills_twice_and_announces_both() {
     let (pos, yaw) = find_isolated(SEED, Occupant::Tree);
     let mut w = full_pack_world(pos);
     let tree = w.gather.nodes[0];
-    // Any item that is neither the primary nor the junk walling the pack
+    // Any item that is neither the primary nor the filler walling the pack
     // off; the fixture stacks everything to 100, so none of it fits either.
     let sec: u16 = if tree.output == 5 { 6 } else { 5 };
     let sec_units: u16 = 3;
@@ -300,7 +300,7 @@ fn a_merge_never_pulls_a_partly_looted_bag_s_clock_in() {
     let mut bp = Backpacks::new();
     let mut ev = EventQueue::default();
 
-    // A bag holding one rare item (360 ticks) and one junk (90).
+    // A bag holding one rare item (360 ticks) and one filler (90).
     let mut held = [ItemStack::default(); INV_SLOTS];
     held[0] = ItemStack {
         item: 0,
@@ -308,7 +308,7 @@ fn a_merge_never_pulls_a_partly_looted_bag_s_clock_in() {
         cond: 0,
     };
     held[1] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 1,
         cond: 0,
     };
@@ -322,11 +322,11 @@ fn a_merge_never_pulls_a_partly_looted_bag_s_clock_in() {
     bp.set_slot(0, 0, ItemStack::default());
     assert_eq!(bp.entries()[0].expires, 460);
 
-    // Now spill junk into it. Recomputed from scratch this would be
+    // Now spill filler into it. Recomputed from scratch this would be
     // 200 + 90 = 290, a quarter of an hour early at 30 Hz.
     let mut spill = [ItemStack::default(); INV_SLOTS];
     spill[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 5,
         cond: 0,
     };
@@ -341,7 +341,7 @@ fn a_merge_never_pulls_a_partly_looted_bag_s_clock_in() {
         460,
         "the clock must stand, never be recomputed downward"
     );
-    assert_eq!(inv_count(&bp.entries()[0].items, JUNK), 6, "1 + 5 merged");
+    assert_eq!(inv_count(&bp.entries()[0].items, FILLER), 6, "1 + 5 merged");
     assert!(
         spill.iter().all(|s| s.count == 0),
         "the caller's buffer is drained by what the bag took"
@@ -360,7 +360,7 @@ fn a_spill_out_of_reach_stands_its_own_bag_up() {
 
     let mut held = [ItemStack::default(); INV_SLOTS];
     held[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 1,
         cond: 0,
     };
@@ -370,7 +370,7 @@ fn a_spill_out_of_reach_stands_its_own_bag_up() {
     let far_q = ((LOOT_REACH_M * 2.0) / POS_XZ_Q) as i32;
     let mut spill = [ItemStack::default(); INV_SLOTS];
     spill[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 3,
         cond: 0,
     };
@@ -380,7 +380,7 @@ fn a_spill_out_of_reach_stands_its_own_bag_up() {
     assert_ne!(made, near, "a second bag, not the first one moved");
     assert_eq!(bp.len(), 2);
     assert_eq!(
-        inv_count(&bp.entries()[0].items, JUNK),
+        inv_count(&bp.entries()[0].items, FILLER),
         1,
         "the far bag is untouched"
     );
@@ -544,7 +544,7 @@ fn only_a_full_pack_makes_the_gather_event_say_zero() {
 // bag.qz)` against the body directly rather than asking `in_reach`, which
 // at max range cannot tell the two apart.
 
-/// Ballast for the give-back cases, and **not `JUNK`**: item 7 is the
+/// Ballast for the give-back cases, and **not `FILLER`**: item 7 is the
 /// fixture's code lock, so walling the pack off with it would make the
 /// lock-removal assertion read against 3 000 of the item it is trying to
 /// count. Item 1 is paid by none of the four give-backs (it is a lock
@@ -923,7 +923,7 @@ fn a_minted_bag_leaves_the_caller_s_buffer_empty() {
 
     let mut buf = [ItemStack::default(); INV_SLOTS];
     buf[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 5,
         cond: 0,
     };
@@ -944,7 +944,7 @@ fn a_minted_bag_leaves_the_caller_s_buffer_empty() {
         "no second bag: there was nothing left to spill"
     );
     assert_eq!(
-        inv_count(&bp.entries()[0].items, JUNK),
+        inv_count(&bp.entries()[0].items, FILLER),
         5,
         "and the world still holds five, not ten"
     );
@@ -968,7 +968,7 @@ fn an_inert_ladder_does_not_even_merge_into_a_bag_already_standing() {
 
     let mut held = [ItemStack::default(); INV_SLOTS];
     held[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 1,
         cond: 0,
     };
@@ -977,7 +977,7 @@ fn an_inert_ladder_does_not_even_merge_into_a_bag_already_standing() {
 
     let mut buf = [ItemStack::default(); INV_SLOTS];
     buf[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 5,
         cond: 0,
     };
@@ -994,12 +994,12 @@ fn an_inert_ladder_does_not_even_merge_into_a_bag_already_standing() {
     );
     assert!(made.is_none(), "an inert ladder catches nothing");
     assert_eq!(
-        inv_count(&bp.entries()[0].items, JUNK),
+        inv_count(&bp.entries()[0].items, FILLER),
         1,
         "the standing bag took none of it — the guard runs before the merge"
     );
     assert_eq!(
-        inv_count(&buf, JUNK),
+        inv_count(&buf, FILLER),
         5,
         "and the buffer still holds it, for the caller to destroy as the \
          pre-spill world did"
@@ -1020,7 +1020,7 @@ fn a_looted_slot_zeroes_its_condition_with_its_item() {
     let mut bp = Backpacks::new();
     let mut ev = EventQueue::default();
 
-    // A bag holding a worn tool and one junk.
+    // A bag holding a worn tool and one filler.
     let mut held = [ItemStack::default(); INV_SLOTS];
     held[0] = ItemStack {
         item: 0,
@@ -1028,7 +1028,7 @@ fn a_looted_slot_zeroes_its_condition_with_its_item() {
         cond: 123,
     };
     held[1] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 1,
         cond: 0,
     };
@@ -1036,7 +1036,7 @@ fn a_looted_slot_zeroes_its_condition_with_its_item() {
         .expect("the fixture ladder is armed");
 
     // A looter who can hold the tool and nothing else: slot 0 open, every
-    // other slot capped on an item the bag does not hold — so the junk
+    // other slot capped on an item the bag does not hold — so the filler
     // stays behind and the bag survives its own emptied slot.
     let mut p = Player::default();
     for s in 1..INV_SLOTS {
@@ -1079,7 +1079,7 @@ fn a_spilled_slot_that_merged_away_zeroes_its_condition() {
 
     // A standing bag with exactly one open slot.
     let mut held = [ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: STACK_MAX,
         cond: 0,
     }; INV_SLOTS];

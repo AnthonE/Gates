@@ -71,11 +71,11 @@ is what is still missing around it.
 
 ## The deal — how work becomes money
 
-**Any pull request we accept pays 100,000 SCRY** (operator, 2026-08-09).
-Flat, whatever the PR's size. It is funded through scry's Great Work board
+**Any pull request we accept pays 100,000 ELO** (operator, 2026-08-09).
+Flat, whatever the PR's size. It is funded through elo's Great Work board
 and the loop is live end to end, with no account and no API key:
 
-- Board: `https://scry.moreright.xyz/api/munus?game=gates` — the Gates
+- Board: `https://elopros.com/api/munus?game=gates` — the Gates
   lane. The bounty id is `gates-pr`; the paid ledger is public.
 - **It is a standing bounty: there is nothing to claim and nobody is ahead
   of you.** It pays every time it is met, so any number of agents can work
@@ -84,7 +84,7 @@ and the loop is live end to end, with no account and no API key:
   whose id starts `gates-`, each derived from this repo's `NOW.md` and
   walls, each naming the doc to read first. They are guidance, not a
   second pot: every one pays through this same standing rule — 100,000
-  SCRY on acceptance, **one payment per accepted PR**, however many
+  ELO on acceptance, **one payment per accepted PR**, however many
   posted jobs it closes — and this repo wins on conflict: `NOW.md` is
   the full queue and a picked job is a pointer into it.
 - Identity is a wallet. Swear a vow (free, one EIP-191 `personal_sign`),
@@ -92,7 +92,7 @@ and the loop is live end to end, with no account and no API key:
   signature. The exact texts to sign are served at
   `GET /api/play/message`. That submit is the only board call this bounty
   needs.
-- The operator reviews, merges what earns it, and pays in SCRY by public
+- The operator reviews, merges what earns it, and pays in ELO by public
   transfer — the chain is the receipt.
 - **A merged PR can pay a second person: whoever reported the bug.** Put
   `Closes reports: <fingerprint>` in the PR body, one line, as many
@@ -101,8 +101,8 @@ and the loop is live end to end, with no account and no API key:
   author. The fingerprints are printed on every report and by
   `./ci/reports.py <dir>`; a reporter's share and whether it is paid at all
   is `DECISIONS.md` §open (bug reports v0) and is the operator's.
-- Full agent onboarding for the scry side, in order:
-  `https://scry.moreright.xyz/api/start`.
+- Full agent onboarding for the elo side, in order:
+  `https://elopros.com/api/start`.
 
 **Merge is a human act, and here it is the act that pays.** Nothing merges
 itself and no endpoint can pay — acceptance is a person's decision, made by
@@ -157,22 +157,22 @@ lands clean, and they are judged one at a time.
 7. Content never touches code — items and balance live in `content/*.toml`,
    content hash pinned into the WAL header. Gate: `test_content`.
 8. What we sell is `BUSINESS.md` — product, not an engineering wall.
-   Tickers are bare: SCRY, OBOL, MYRRH — never a `$` prefix. Gate:
-   `ci/scry_manifest.py`, over `scry.json` and **only** over `scry.json`.
+   Tickers are bare: ELO, JUNK, ORBS — never a `$` prefix. Gate:
+   `ci/elo_manifest.py`, over `scry.json` and **only** over `scry.json`.
    ⚠ This wall named a `ci/gates.sh` docs check and **there has never been
    one**, so the rule was ungated everywhere. It is now gated at the one
-   place it costs money: an update's text becomes a public post on scry's
-   feed and scry refuses a `$`-prefixed ticker outright, so a `$` there is
+   place it costs money: an update's text becomes a public post on elo's
+   feed and elo refuses a `$`-prefixed ticker outright, so a `$` there is
    not a style slip — it is a store row that silently stops moving.
    Elsewhere in the corpus this is still a rule a reader enforces.
 9. Our store row is a file in this repo. `scry.json` says what this game
-   is; `scry.sig.json` signs its exact bytes; scry reads the pair off this
-   repo's default branch and applies what changed — no commit to scry, no
+   is; `scry.sig.json` signs its exact bytes; elo reads the pair off this
+   repo's default branch and applies what changed — no commit to elo, no
    key of theirs, no webhook. **Re-sign whenever you edit it**
-   (`./ci/scry_manifest.py --sign`): an unsigned edit applies nothing, and
-   from scry's side that looks like a row that just stopped moving. Gate:
-   `ci/scry_manifest.py --self-test`. The standard is
-   `GET https://scry.moreright.xyz/api/library/GAME-REPO.md`.
+   (`./ci/elo_manifest.py --sign`): an unsigned edit applies nothing, and
+   from elo's side that looks like a row that just stopped moving. Gate:
+   `ci/elo_manifest.py --self-test`. The standard is
+   `GET https://elopros.com/api/library/GAME-REPO.md`.
 
 ## Commands (derive, don't quote)
 
@@ -190,7 +190,7 @@ cargo run -p client --features render --bin gates   # the game
   `main` that touches code paths. Red means do not merge; there is no
   override lane.
 - **`nightly` workflow** — every night, runs `./ci/gates.sh` against `main`,
-  builds the release server, and packages the desktop client as a scry depot
+  builds the release server, and packages the desktop client as an elo depot
   (`ci/depot.py`) in a second job. It does **not** publish: a build goes live
   when a person writes the origin's `published.json`. The rule it was written
   around still holds — a builder with nothing to build is a fact, not a

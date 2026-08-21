@@ -1,4 +1,4 @@
-//! Research (research v0) — the sink OBOL exists for.
+//! Research (research v0) — the sink JUNK exists for.
 //!
 //! Four things have to hold and the rest of the verb is arithmetic over
 //! them:
@@ -645,7 +645,7 @@ fn the_fresh_door_states_an_empty_mask_out_loud() {
 /// `wake` rebuilt the record from `Player::default()` and named the five
 /// fields a respawn keeps; `known` was not among them, so every death
 /// refunded nothing and deleted every blueprint the player had bought.
-/// Death is the most common event in the game, so the OBOL sink emptied
+/// Death is the most common event in the game, so the JUNK sink emptied
 /// itself faster than it filled.
 ///
 /// **Every step here is a real cause**, and the first cut of this test is
@@ -683,7 +683,7 @@ fn a_blueprint_survives_a_death() {
 
     assert_eq!(
         w.players[0].known, mask,
-        "the respawn erased a blueprint bought with OBOL"
+        "the respawn erased a blueprint bought with JUNK"
     );
     assert!(
         !blueprint_blocks(&mut w, PLAYER),

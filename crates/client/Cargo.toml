@@ -346,7 +346,7 @@ bevy = { version = "0.18", optional = true, features = [
     "basis-universal",
     "zstd_rust",
 ] }
-# The shard list (`scry-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/scry).
+# The shard list (`elo-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/scry).
 # `rustls` rather than a system TLS: the same reason wtransport carries its
 # own — one trust store the build controls, on a box that may have no
 # OpenSSL. Blocking on purpose; the menu fetches on a thread, never a frame.

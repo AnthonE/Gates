@@ -111,7 +111,7 @@ if [ "$GO" = 1 ]; then
   if [ "$ok" = 1 ]; then
     echo "  active, bound on 61234/udp, status answering:"
     curl -fsS -m 3 http://127.0.0.1:8431/status.json; echo
-    echo "  public: $(curl -fsS -m 5 https://game.moreright.xyz/gates/status.json 2>&1 || echo 'NOT REACHABLE — is the nginx location installed?')"
+    echo "  public: $(curl -fsS -m 5 https://game.elopros.com/gates/status.json 2>&1 || echo 'NOT REACHABLE — is the nginx location installed?')"
   else
     echo "  !! did not come up. journalctl -u $UNIT -n 50 --no-pager"
     sudo -n journalctl -u "$UNIT" -n 30 --no-pager

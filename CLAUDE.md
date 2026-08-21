@@ -9,7 +9,7 @@ here is wrong, fix the claim; history goes in `DECISIONS.md`.
 
 A survival game (Rust-the-game tradition): Rust-language authoritative
 server, **a native Rust desktop client** (Bevy; operator, 2026-08-05),
-WebTransport/QUIC. A separate product that orbits scry — sold through its
+WebTransport/QUIC. A separate product that orbits elo — sold through its
 Great Work board, coins from its economy — importing none of its code.
 **The skeleton is the product**: determinism, netcode, and the hot-path
 laws outrank every feature.
@@ -94,15 +94,15 @@ pays the same doors and earns the same coins as a human.
 | `reference/PROJECTILES.md` | how the reference game does **bows and arrows**: there is no `Bow` class (a bow is a one-round-magazine `BaseProjectile`, the same class as every gun), the projectile is **client-simulated** and audited by a thirteen-convar tolerance budget rather than a predicate, ballistics live on the **ammo** (`ItemModProjectile`) so one bow fires four different arrows, the arrow is an item three times over (~15 % break, 10 s lodge), hit detection takes the **most significant** body part not the first intersection, and **§9 what it means for us** | **owns nothing** — research, not law. Read it before touching `crates/sim-core/src/ranged.rs`. §9.1 is why our server-simulated arrow stays server-simulated; §9.3 is the one schema change it argues for (`[weapon.ballistic]` belongs on the ammo row), and it gets harder every arrow we add first |
 | `reference/MONUMENTS.md` | how the reference game decides **where a large authored place goes**: placement as a solve rather than a guess (three rewrites in ten years, still moving), the collision list every worldgen system after monuments produced — rivers, cliffs, ice lakes, roads, ring roads, rails — terrain blending as authored per-monument masks rather than a flattened circle, the 2015 client-worldgen checksum mismatch they had to stop kicking for, vertical AOI layers, per-class interest ranges, what one moving monument actually costs, and **§9 what it means for us** | **owns nothing** — research, not law, and **the weakest provenance in this directory: §0 says so in full.** It is a summary of sources nobody here has opened (an operator briefing, 2026-08-10), so no number in it may reach `content/`. Its value is the ORDER, which is checkable against our tree. §9.2 is built (`SiteFootprint` / `site_sweep`); §9.3 is the real gap — our solver is two hand-written tiers |
 | `reference/ANIMALS.md` | how survival games do animal mobs: the reference game's baked navmesh (100% CPU at boot) and the fixed think rate and dormancy it settled on, Valheim's ring spawners and two caps, Minecraft's mob cap and 1-in-800 despawn roll, and **§9 what it means for us** | **owns nothing** — research, not law, and `AUDIO.md`'s clean-source posture (devblogs, convar lists, wikis; nothing decompiled). The operator un-cut animals off it (`DECISIONS.md` 2026-08-08), so §9 is a landed design: read it before touching `crates/sim-core/src/mob.rs` |
-| `WORLD.md` | the proposed register: **Gates as a threshold dimension** (the name is the fiction — it explains respawn, the wipe cadence and why banked OBOL leaves and carried OBOL does not), an ancient obsidian/lapis/gold civilization, the coast→interior gradient, the monument catalogue, **extraction** as a server-opened window at the haven's bank terminal, world states whose **default is broken** so a wipe cycle is a repair project, and an optional **ward** | **DESIGN — unspoken, none of it built, and a roadmap rather than a v1 spec** (operator, 2026-08-10: *"paths over time"*, and *"i think this is the max deviation"* — it is a ceiling, not a floor). Owns the fiction and nothing in `crates/`. Its §8 is the useful half: five collisions with live gates, two of them real — the visual rubric scores an obsidian world as a defect by construction, and a ward would invalidate `CONTENT.md` §4's TTK anchor *without reddening `test_content`*. §9.1 is the one piece of timing advice: **decide the register early, build it late**, because art made for the wrong register is remade |
+| `WORLD.md` | the proposed register: **Gates as a threshold dimension** (the name is the fiction — it explains respawn, the wipe cadence and why banked JUNK leaves and carried JUNK does not), an ancient obsidian/lapis/gold civilization, the coast→interior gradient, the monument catalogue, **extraction** as a server-opened window at the haven's bank terminal, world states whose **default is broken** so a wipe cycle is a repair project, and an optional **ward** | **DESIGN — unspoken, none of it built, and a roadmap rather than a v1 spec** (operator, 2026-08-10: *"paths over time"*, and *"i think this is the max deviation"* — it is a ceiling, not a floor). Owns the fiction and nothing in `crates/`. Its §8 is the useful half: five collisions with live gates, two of them real — the visual rubric scores an obsidian world as a defect by construction, and a ward would invalidate `CONTENT.md` §4's TTK anchor *without reddening `test_content`*. §9.1 is the one piece of timing advice: **decide the register early, build it late**, because art made for the wrong register is remade |
 | `reference/PLANTS.md` | how games grow a forest: the five-layer forest structure and which two of ours are empty, space colonization vs L-systems (and that we already ship the solver), Deussen's ecosystem sim as the reference for *placement*, octahedral impostors, and **§6 what it means for us** | **owns nothing** — research, not law, `AUDIO.md`'s clean source posture (a SIGGRAPH paper, four MIT repos, and our own dependency's source; `docs.rs` was proxy-blocked so the crate API came off `raw.githubusercontent.com`). Written because "are our trees good" has an arithmetic answer: **one species at three seeds, on a uniform 8 m scatter lattice that `ART.md` rule 7 forbids**. Read it before buying any foliage — §4 is why a mesh generator is the wrong tool — and before touching `render/tree.rs` or `terrain::scatter` |
 | `reference/SOURCES.md` | the research **reading list**: which document settles which question, in priority order, with tiers 1–3 marked ANSWERED, tier 4 (the threat/logistics decomposition) half-closed 2026-08-14 — the violence paper is read at primary tier (`RIPLIST.md` §5.6, and it settles threat *shape*, not the magnitude; the session numbers stay open) — and **§3b the systems queue** (logistics by wipe stage, events, progression, clans, industry, moderation, trade) as the standing research worklist | **owns nothing** — a worklist for research the way `RIPLIST.md` is one for numbers. ⚠ Its §0 header is the load-bearing part and has been rewritten **in both directions**: reachability is a property of the container, not of the hosts, so *probe* rather than trusting either the "every Rust domain 403s" claim or the "they are open" one — both were honest measurements, on different boxes, days apart |
 | `assets/models/WANTED.md` | the 3D object inventory: 63 meshes and 6 texture sets with sizes read off the code, the glTF/origin/ORM pipeline rules, and what is already covered | **owns nothing** — a sourcing worklist, `RIPLIST.md`'s shape. `MANIFEST.md` records what ships; this records what does not exist yet |
 | `assets/textures/CANDIDATES.md` | the texture sourcing queue for the six foliage/bark sets: 84 candidate rows (80 CC0, 4 CC-BY) with licence, fetch mode and the measurement columns still empty, plus `fetch_gates_texture_candidates.py`, the csv/xlsx it reads and `CANDIDATES_CC_BY.md`'s draft notices | **owns nothing** — `WANTED.md`'s shape for pixels rather than meshes, and the measurement still decides (`ART.md` §7's estimator, never the fetcher's). The 1.3 GB it downloads is gitignored; `assets/textures/MANIFEST.md` records what ships |
 | `assets/sound/WANTED.md` | the SFX inventory: every cue the client plays with its length, character and delivery spec, the ElevenLabs prompt sheet, the open-source candidates with their licences, and the score's composer brief | **owns nothing** — `WANTED.md`'s shape for audio. The enum (`sound/mod.rs::Cue`) is the authority and the bank stays generated (`sound/synth.rs`) until a file lands with a manifest row; `DECISIONS.md` 2026-08-11 (ElevenLabs, paid plan) and 2026-08-07 (CC0/CC-BY, NC/SA refused) are the rail |
 | `assets/models/MANIFEST.md` | what **ships** in `assets/models/`: vendor, mode, prompt, task id and date per mesh, the KTX2/UASTC-at-1024 texture rule and its VRAM reason, and what the client actually loads | **owns the licence rail's audit trail**, which is the one thing here that is not just a note: `DECISIONS.md` 2026-08-07 is CC0 preferred, CC-BY with a `NOTICE` entry, **NC and SA refused** because the game is sold. Recording the provenance per file is what makes that rail auditable after the fact rather than a promise. `WANTED.md` is the inverse — what does not exist yet |
-| `PLAYERS.md` | the agent player: the verb set, the observation encoder, and the four walls that keep agent play measurable | **DESIGN — none of it built.** The research half is scry's `SUBSTRATE.md`; this owns only what an agent may do here |
-| `marketing/` | what a stranger reads about **OBOL and MYRRH** somewhere that is not this repo — an explorer's token-info field, a DEX listing, a wallet's coin row — plus the four marks | **owns nothing in `crates/`**, and it is here because the coins are ours: scry has exactly one coin and it is SCRY (operator, 2026-08-07), so its repo keeps only our listing row. ⚠ **Every number in it is derived in `scry-forge`**, where the contracts and pool seeds live — re-derive there, paste here |
+| `PLAYERS.md` | the agent player: the verb set, the observation encoder, and the four walls that keep agent play measurable | **DESIGN — none of it built.** The research half is elo's `SUBSTRATE.md`; this owns only what an agent may do here |
+| `marketing/` | what a stranger reads about **JUNK and ORBS** somewhere that is not this repo — an explorer's token-info field, a DEX listing, a wallet's coin row — plus the four marks | **owns nothing in `crates/`**, and it is here because the coins are ours: elo has exactly one coin and it is ELO (operator, 2026-08-07), so its repo keeps only our listing row. ⚠ **Every number in it is derived in `scry-forge`**, where the contracts and pool seeds live — re-derive there, paste here |
 | `BRANCH-NOTES.md` | a **transient** handoff note, written on a branch by the loop's builder when it lands a partial slice (`gates-loop/GOAL.md` §the partial rule) — what landed, what is measured, what remains | **owns nothing and is not a queue.** It describes whatever branch wrote it last, so read the heading before trusting a word of it; the current one says it carries no handoff. Not deleted because the loop is paused, not retired, and its builder recreates this file by protocol |
 | `NOW.md` | what next | **the only list that answers that** |
 
@@ -169,7 +169,7 @@ one. That direction of error is the cheaper one and it is still an error:
    `content/*.toml` only, validated at boot, content hash pinned into the
    WAL header (a replay replays the content it was played under). →
    `test_content`.
-## Traps already paid for (learned from research or scry production —
+## Traps already paid for (learned from research or elo production —
 do not rediscover)
 
 - **wtransport must be pinned ≥ commit `0f7609a`** (or a release
@@ -421,7 +421,7 @@ do not rediscover)
   (measured elsewhere: three parallel rounds worsened visual defects
   60→66; one sequential owner over the coupled set cut them to 26). The
   lighting gap, when attacked, is a single iteration's single ownership.
-- **A depot build id has no platform in it, and scry's origin keys by build id
+- **A depot build id has no platform in it, and elo's origin keys by build id
   alone.** `ci/depot.py`'s `build_id()` is `<version>-g<sha>` (plus a
   content-keyed `-dirty` marker); the origin stores
   `$SCRY_DEPOTS_DIR/<slug>/<build>/depot.json` and `published.json` maps
@@ -432,7 +432,7 @@ do not rediscover)
   destination for both. It has never fired only because the two builds
   published 2026-08-10 happened to be cut at different commits, which is luck
   wearing a design's clothes. **Do not fix it with a platform suffix on the
-  id**: scry's `meter/gamerepo.py::version_of` strips `-g[0-9a-f]+…$` anchored
+  id**: elo's `meter/gamerepo.py::version_of` strips `-g[0-9a-f]+…$` anchored
   at `$`, so `0.2.0-g<sha>-win-x86_64` stops parsing back to `0.2.0` and the
   store row's declared-vs-published gap goes permanently red; a fake-hex sha
   parses and lies about the commit.
@@ -465,7 +465,7 @@ do not rediscover)
   with draft notices. The fix is structural rather than a check: stage from
   `git ls-files` and refuse to fall back, so `.gitignore` stays the single
   author of what is not ours to ship and the packager cannot disagree with it.
-  scry's `deploy/publish_scryward.py` chose `git archive` over a walk for this
+  elo's `deploy/publish_scryward.py` chose `git archive` over a walk for this
   exact reason and says it has paid for it seven times; we now have our own.
   **The general shape: a build step that enumerates by walking is only as
   correct as the tidiness of the box it runs on, which is not a property
@@ -745,14 +745,14 @@ which is neither.
 
 ## Vendored, and not to be edited here
 
-- `crates/client/src/scry_overlay.rs` is **scry's SDK, byte-for-byte**
+- `crates/client/src/scry_overlay.rs` is **elo's SDK, byte-for-byte**
   (`sdk/rust/scry_overlay.rs` in **`AnthonE/scry-forge`** — this line said
   `AnthonE/scry` until 2026-08-14, which is a different repo). It is how this game reaches
-  a running scry launcher for identity and signatures with no key in the game
-  process and no crate added to the tree. `scry::VENDORED_SHA256` pins it and
+  a running elo launcher for identity and signatures with no key in the game
+  process and no crate added to the tree. `elo::VENDORED_SHA256` pins it and
   a test fails on any local edit — **fix it upstream and re-vendor**, because
   a patch applied here fixes Gates and leaves every other game on the broken
-  copy. `crates/client/src/scry.rs` is our wrapper and is ours to change.
+  copy. `crates/client/src/elo.rs` is our wrapper and is ours to change.
   Not third-party: same author, same licence, no notice owed.
   ⚠ **The pin catches a local edit and is blind to upstream moving**, and the
   two are not the same failure. Found 2026-08-09: the copy sat 326 lines
@@ -762,7 +762,7 @@ which is neither.
   gates a file in another repo, so the check is a command you run when you
   touch this seam: `sha256sum crates/client/src/scry_overlay.rs` must appear
   in `sdk/SHA256SUMS` upstream. Re-vendoring is `cp` + re-pin + `cargo test
-  -p client --lib scry`, and check the CALL SITES, not just the compile —
+  -p client --lib elo`, and check the CALL SITES, not just the compile —
   `Overlay::title` changed shape under us and only luck kept it uncalled.
   ⚠ **Run that check against `scry-forge` and nothing else — there are two
   repos with an `sdk/` and the other one lies.** `AnthonE/scryward` is the
@@ -773,13 +773,13 @@ which is neither.
   That re-vendor also proved the call-site rule twice over: `play_message`
   changed the bytes a wallet signs (`vow:` → lowercased `wallet:`, upstream
   2026-08-12), which two sides can disagree about while both compile. It is
-  re-exported by `scry.rs` and called nowhere, so again nothing broke, and
+  re-exported by `elo.rs` and called nowhere, so again nothing broke, and
   again that was luck. The trees are on morr: `/data/apps/scry-forge`
   (`launcher-rs/`, `sdk/`) is the one that is edited and built from.
 - The depot the launcher installs is written by `ci/depot.py`, gated by
   `--self-test` in `ci/gates.sh`. It deliberately does **not** compute the
-  depot digest — `scry digest` does, and a second implementation of the number
-  that gets notarized is scry's invariant 3 with money attached.
+  depot digest — `elo digest` does, and a second implementation of the number
+  that gets notarized is elo's invariant 3 with money attached.
 
 ## Third-party credit
 

@@ -92,7 +92,7 @@ $NICE node ci/haven_prize.mjs || fail "haven prize"
 # produces a game that installs perfectly and never starts — on a player's
 # machine, which is the only place it would be noticed. No compiler needed:
 # it stages fakes and asserts the rules in about a second.
-echo "== gate: depot packaging (the scry launcher's seam, docs/LAUNCHER.md §3)"
+echo "== gate: depot packaging (the elo launcher's seam, docs/LAUNCHER.md §3)"
 $NICE python3 ci/depot.py --self-test || fail "depot packaging"
 
 # The other half of that seam. A shard list is the one document where a wrong
@@ -100,19 +100,19 @@ $NICE python3 ci/depot.py --self-test || fail "depot packaging"
 # the client cannot parse, a cap above the sim's own MAX_PLAYERS, or a player
 # count nobody measured. It also reads the client parser's constants, so the
 # generator and the game cannot drift apart on what they will accept.
-echo "== gate: shard list (scry-shardlist-v1, docs/LAUNCHER.md §6)"
+echo "== gate: shard list (elo-shardlist-v1, docs/LAUNCHER.md §6)"
 $NICE python3 ci/shardlist.py --self-test || fail "shard list"
 
-# The third seam onto scry, and the only one where this repo is the AUTHOR
+# The third seam onto elo, and the only one where this repo is the AUTHOR
 # rather than the source of a build. `scry.json` is our store row and our
-# community feed; `scry.sig.json` signs its exact bytes, and scry applies the
+# community feed; `scry.sig.json` signs its exact bytes, and elo applies the
 # pair or neither. The failure this catches is the ordinary one — edit the
-# manifest, forget to re-sign — which scry refuses silently as far as we can
+# manifest, forget to re-sign — which elo refuses silently as far as we can
 # see from here: the row simply stops moving. Local properties only (the
 # signature covers these bytes; the version equals the workspace's), so it
-# needs no key, no network, and no copy of scry's schema to drift from.
-echo "== gate: scry manifest (the repo desk, GAME-REPO.md)"
-$NICE python3 ci/scry_manifest.py --self-test || fail "scry manifest"
+# needs no key, no network, and no copy of elo's schema to drift from.
+echo "== gate: elo manifest (the repo desk, GAME-REPO.md)"
+$NICE python3 ci/elo_manifest.py --self-test || fail "elo manifest"
 
 # The other end of the bug-report key. `report.rs` writes one `.json` per
 # report and this folds a directory of them onto their fingerprints — which is

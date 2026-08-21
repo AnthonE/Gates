@@ -96,7 +96,7 @@ properly. The short version:
   ⚠ The BENCH tier (workbench 2/3, the tree UI) is a different system and
   is unbuilt — `NOW.md` §0tt, and the era is a spoken knob.
 - **loot_table**: container archetype → weighted entries + count range
-- **skin**: id, covers (item id), price (SCRY or MYRRH — one coin per
+- **skin**: id, covers (item id), price (ELO or ORBS — one coin per
   row, bare tickers), season — the catalog is content too (dark until A3)
 
 ## 1.5 · The spawn kit

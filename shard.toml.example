@@ -157,7 +157,7 @@ seed = 20260731
 # community or training shard runs unarmed and open, and has nothing worth
 # cheating for.
 #
-# Armed, this shard asks scry two questions, both one `balanceOf` underneath:
+# Armed, this shard asks elo two questions, both one `balanceOf` underneath:
 # `GET /api/ticket/<slug>/of/<wallet>` at join, and
 # `POST /api/ticket/<slug>/check` for the whole roster every sweep — because
 # a player can sell the ticket and stay logged in.
@@ -171,9 +171,9 @@ seed = 20260731
 #
 # Needs require_auth = true and the shard REFUSES TO BOOT without it — a
 # guest has no wallet, so a ticket door over an open door checks nobody.
-# entitle_origin = "https://scry.moreright.xyz"
+# entitle_origin = "https://elopros.com"
 
-# This title's slug in scry's catalog. Defaults to "gates"; set it only if a
+# This title's slug in elo's catalog. Defaults to "gates"; set it only if a
 # staging origin files this game under another name.
 # entitle_slug = "gates"
 

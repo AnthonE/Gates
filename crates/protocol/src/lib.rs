@@ -644,14 +644,14 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// version itself.
 pub const PROTO_VER: u16 = 48;
 
-/// This game's slug in the scry catalog.
+/// This game's slug in the elo catalog.
 ///
 /// It lives here rather than only in the client because it reaches the
 /// **signed bytes**: the launcher takes the name from the SDK's `hello` and
 /// writes it into the SIWE statement, so the shard has to spell it the same
 /// way to recompute what it verifies. Two constants would be two chances to
 /// disagree, and the symptom of disagreeing is every login failing while both
-/// sides look right. `client::scry::SLUG` re-exports this one.
+/// sides look right. `client::elo::SLUG` re-exports this one.
 pub const SLUG: &str = "gates";
 
 /// Datagram kind field width.
@@ -876,9 +876,9 @@ pub fn refuse_text(code: u8) -> Option<&'static str> {
     Some(match code {
         REFUSE_VERSION => "this shard runs a different build — update the game",
         REFUSE_FULL => "this shard is full",
-        REFUSE_AUTH => "this shard needs a signed identity — sign in through the scry launcher",
+        REFUSE_AUTH => "this shard needs a signed identity — sign in through the elo launcher",
         REFUSE_TICKET => {
-            "this shard checks copies and this wallet holds none — buy a copy on scry, \
+            "this shard checks copies and this wallet holds none — buy a copy on elo, \
              or play a community shard"
         }
         REFUSE_BUILD => "this shard runs a newer release — update the game",

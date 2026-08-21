@@ -90,18 +90,18 @@ official wiki's own **Recycle** table). Four cells and two deletions:
 | | reference | ours before | ours now |
 |---|---|---|---|
 | gears → metal fragments | 15 | 8 | **15** |
-| gears → scrap *(our OBOL)* | 12 | 2 | **12** |
+| gears → scrap *(our JUNK)* | 12 | 2 | **12** |
 | rope → cloth | 18 | 5 | **18** |
 | tarp → cloth | 60 | 8 | **60** |
 | rope / tarp → scrap | none | 1 each | **rows deleted** |
 
 **No band moved and no anchor moved** — `balance::check` reads no cook row,
 so this take had nothing to argue with. What it did move is a *reason*.
-`research.toml` and `recipes.toml` each justified holding our own obol
-prices against "a ~10-scrap barrel where ours pays ~0.85 obol". The 0.85
+`research.toml` and `recipes.toml` each justified holding our own junk
+prices against "a ~10-scrap barrel where ours pays ~0.85 junk". The 0.85
 was derived from our own tables and right; **the ~10 was never measured**,
 and the page puts their barrel at ~2.42 scrap. Taking the faucet puts ours
-at 2.727 obol. Priced in barrels over the four researchable items we both
+at 2.727 junk. Priced in barrels over the four researchable items we both
 have (§1f's table), **our research economy cost 2.66× theirs before the
 take and 0.83× after it — with no price moved.** The prices were never the
 half that was wrong. Their *ordering* still is: an 8× spread against our

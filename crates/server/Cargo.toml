@@ -35,7 +35,7 @@ rtrb = "0.3"
 # already in the tree rather than a new one.
 socket2 = "0.6"
 # The entitlement check (`entitle.rs`): does this player own a copy? One GET
-# at join and one POST per roster sweep, against scry's ticket routes.
+# at join and one POST per roster sweep, against elo's ticket routes.
 #
 # `rustls` rather than a system TLS, and the reason is the client's reason
 # next door: one trust store the build controls, on a box that may have no

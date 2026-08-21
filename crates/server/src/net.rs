@@ -614,7 +614,7 @@ async fn accept_loop(
     //
     // Results come back through a channel rather than being awaited inline,
     // because this loop is also the accept path: a blocked sweep would be a
-    // shard that stops taking players while scry is slow. `in_flight` is the
+    // shard that stops taking players while elo is slow. `in_flight` is the
     // no-stacking rule — one round at a time, whatever the origin does, the
     // same refusal `status.rs`'s poller makes.
     // Handshakes started and not yet finished. The admission gate's only
@@ -631,7 +631,7 @@ async fn accept_loop(
                 // Admission, before any crypto (NETCODE.md §2.2). Every
                 // refusal we had before this fired *after* a completed
                 // handshake — QUIC, TLS, CONNECT, SIWE, and an entitlement
-                // round trip to scry — so a full shard was an amplifier and
+                // round trip to elo — so a full shard was an amplifier and
                 // a spoofed source cost us more than it cost the attacker.
                 //
                 // Order matters: refuse is the harder answer and is checked

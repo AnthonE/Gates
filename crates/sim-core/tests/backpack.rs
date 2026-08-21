@@ -53,7 +53,7 @@ const SEED: u64 = 20260802;
 /// It is also one of the fixture's long-lived items (360 ticks).
 const SPEAR: u16 = 0;
 /// A fixture item with no weapon row and the short 90-tick lifetime.
-const JUNK: u16 = 7;
+const FILLER: u16 = 7;
 /// Every fixture item stacks to 100 (`GatherContent::probe_fixture`).
 const STACK_MAX: u16 = 100;
 
@@ -130,7 +130,7 @@ fn a_kill_leaves_what_the_body_carried_on_the_ground() {
     let mut w = duel_world();
     // Give the victim something worth taking, past the spear in slot 0.
     w.players[1].inv[1] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 42,
         cond: 0,
     };
@@ -151,7 +151,7 @@ fn a_kill_leaves_what_the_body_carried_on_the_ground() {
         .filter(|s| s.count > 0)
         .map(|s| (s.item, s.count))
         .collect();
-    assert_eq!(held, vec![(SPEAR, 1), (JUNK, 42)]);
+    assert_eq!(held, vec![(SPEAR, 1), (FILLER, 42)]);
     assert!(
         w.players[1].inv.iter().all(|s| s.count == 0),
         "and the body itself wakes up naked"
@@ -162,7 +162,7 @@ fn a_kill_leaves_what_the_body_carried_on_the_ground() {
 fn the_kill_is_announced_as_a_bag_the_whole_shard_can_see() {
     let mut w = duel_world();
     w.players[1].inv[1] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 3,
         cond: 0,
     };
@@ -179,7 +179,7 @@ fn the_kill_is_announced_as_a_bag_the_whole_shard_can_see() {
 fn the_killer_takes_it_and_the_bag_is_gone() {
     let mut w = duel_world();
     w.players[1].inv[1] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 42,
         cond: 0,
     };
@@ -197,7 +197,7 @@ fn the_killer_takes_it_and_the_bag_is_gone() {
         .collect();
     assert_eq!(
         mine,
-        vec![(SPEAR, 2), (JUNK, 42)],
+        vec![(SPEAR, 2), (FILLER, 42)],
         "the killer's own spear topped up, the rest landed beside it"
     );
     let ev = ev_codes(&w);
@@ -215,7 +215,7 @@ fn the_killer_takes_it_and_the_bag_is_gone() {
 fn a_bag_out_of_reach_stays_shut() {
     let mut w = duel_world();
     w.players[1].inv[1] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 42,
         cond: 0,
     };
@@ -229,7 +229,7 @@ fn a_bag_out_of_reach_stays_shut() {
     w.tick(&[Command::Loot { id: 1 }]);
     assert_eq!(w.backpacks.len(), 1, "the bag is untouched");
     assert_eq!(w.backpacks.entries()[0].items[1].count, 42);
-    assert!(w.players[0].inv.iter().all(|s| s.item != JUNK));
+    assert!(w.players[0].inv.iter().all(|s| s.item != FILLER));
 
     // And one step inside it opens.
     let near = bag.qx as f32 * POS_XZ_Q + LOOT_REACH_M - 0.5;
@@ -245,7 +245,7 @@ fn a_bag_out_of_reach_stays_shut() {
 fn what_does_not_fit_stays_in_the_bag() {
     let mut w = duel_world();
     w.players[1].inv[1] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 42,
         cond: 0,
     };
@@ -264,7 +264,7 @@ fn what_does_not_fit_stays_in_the_bag() {
     w.tick(&[Command::Loot { id: 1 }]);
     assert_eq!(w.backpacks.len(), 1, "a bag with anything left stands");
     let left = w.backpacks.find(bag_id).expect("still there");
-    assert_eq!(left.items[1].count, 42, "the junk had nowhere to go");
+    assert_eq!(left.items[1].count, 42, "the filler had nowhere to go");
     assert_eq!(
         w.players[0].inv[0],
         ItemStack {
@@ -283,9 +283,9 @@ fn what_does_not_fit_stays_in_the_bag() {
 #[test]
 fn a_bag_despawns_on_the_ladder_the_content_declares() {
     let mut w = duel_world();
-    // Junk only: the fixture's short 90-tick lifetime, not the spear's.
+    // Filler only: the fixture's short 90-tick lifetime, not the spear's.
     w.players[1].inv[0] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 5,
         cond: 0,
     };
@@ -295,7 +295,7 @@ fn a_bag_despawns_on_the_ladder_the_content_declares() {
     assert_eq!(
         bag.expires,
         killed_at + 90,
-        "an all-junk bag rides the fixture's base"
+        "an all-filler bag rides the fixture's base"
     );
 
     while w.tick < bag.expires {
@@ -311,7 +311,7 @@ fn a_bag_despawns_on_the_ladder_the_content_declares() {
 fn one_long_lived_item_keeps_the_whole_bag_standing() {
     let mut w = duel_world();
     w.players[1].inv[1] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 5,
         cond: 0,
     };
@@ -329,7 +329,7 @@ fn an_inert_ladder_destroys_exactly_as_it_did_before() {
     let mut w = duel_world();
     w.backpack = BackpackContent::EMPTY;
     w.players[1].inv[1] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count: 42,
         cond: 0,
     };
@@ -379,7 +379,7 @@ fn looting_nothing_is_not_an_error() {
 fn hash_after_a_kill_carrying(count: u16) -> (u64, usize) {
     let mut w = duel_world();
     w.players[1].inv[1] = ItemStack {
-        item: JUNK,
+        item: FILLER,
         count,
         cond: 0,
     };

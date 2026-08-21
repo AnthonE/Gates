@@ -1,5 +1,5 @@
 #!/bin/bash
-# Certbot deploy hook: refresh the copies of game.moreright.xyz's chain that
+# Certbot deploy hook: refresh the copies of game.elopros.com's chain that
 # the Gates shard reads, and restart it so the new one is served.
 #
 #   sudo cp ops/certbot-deploy-hook.sh \
@@ -36,7 +36,7 @@
 # in the directory, so two files is the supported shape and not a workaround.
 set -e
 
-DOMAIN=game.moreright.xyz
+DOMAIN=game.elopros.com
 LIVE=/etc/letsencrypt/live/$DOMAIN
 DEST=/home/master/gates-certs
 

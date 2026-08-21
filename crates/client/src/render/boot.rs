@@ -3,7 +3,7 @@
 //! **The gap this closes was measured off the code, not guessed.** On the
 //! launcher path (`--server`, which is what a depot's launch block passes —
 //! `ci/depot.py`) everything below used to happen before a single pixel
-//! existed: a blocking `Scry::discover` round trip over a local socket, a
+//! existed: a blocking `Elo::discover` round trip over a local socket, a
 //! blocking QUIC connect whose failure arm was `exit(1)`, wgpu adapter
 //! enumeration and window creation, then — inside plugin build and `Startup`
 //! — the generated sound bank, ten rasterised wheel rings, two TTF parses,
@@ -20,7 +20,7 @@
 //! 1. The window is up in the time it takes wgpu to pick an adapter, and
 //!    everything after that is drawn.
 //! 2. The identity handshake runs on a thread and is *reported* — the
-//!    `Scry::discover` call is the same one, moved off the pre-window path.
+//!    `Elo::discover` call is the same one, moved off the pre-window path.
 //! 3. **A failed launcher connect is survivable.** It lands on the server
 //!    list with its reason, because this screen hands off to
 //!    `Screen::Connecting` — which already owns a timeout, an Esc, and a
@@ -43,7 +43,7 @@ use bevy::prelude::*;
 
 use super::menu::{Connecting, Menu, Screen};
 use super::{hub, icons, ui};
-use crate::scry::{Player, Scry};
+use crate::elo::{Elo, Player};
 use crate::ui::boot::{Boot, Next};
 
 /// Who the launcher says is playing.
@@ -71,11 +71,11 @@ pub struct Warmup {
     pub boot: Boot,
     /// The launcher handshake, or `None` once collected.
     ///
-    /// **The whole `Scry` comes back, not just the `Player`.** The first cut
+    /// **The whole `Elo` comes back, not just the `Player`.** The first cut
     /// sent the player and dropped the connection, which closed the socket
     /// that could sign a challenge, name a shard list and open a page — three
     /// seams the SDK is vendored for. It is held now (`Launcher`).
-    greet: Option<tokio::sync::mpsc::UnboundedReceiver<Scry>>,
+    greet: Option<tokio::sync::mpsc::UnboundedReceiver<Elo>>,
     /// What `--identity` declared, held so the thread can answer without
     /// reaching back into the app.
     declared: Option<String>,
@@ -109,7 +109,7 @@ pub struct BootBar;
 
 /// Ask the launcher who is playing, on a thread.
 ///
-/// `Scry::discover` opens a unix socket and waits for an answer. Run inside a
+/// `Elo::discover` opens a unix socket and waits for an answer. Run inside a
 /// system that would be a frozen first frame — the exact defect this whole
 /// module exists to remove, reintroduced one layer in — so it goes to a
 /// thread and the frame loop only ever `try_recv`s, which is
@@ -127,7 +127,7 @@ pub fn begin_greet(mut warm: ResMut<Warmup>) {
     let declared = warm.declared.clone();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     std::thread::spawn(move || {
-        let _ = tx.send(Scry::discover(
+        let _ = tx.send(Elo::discover(
             declared.as_deref(),
             env!("CARGO_PKG_VERSION"),
         ));
@@ -212,10 +212,10 @@ pub fn update(
     // ---- wait 2: who is playing? --------------------------------------
     if let Some(rx) = &mut warm.greet {
         match rx.try_recv() {
-            Ok(scry) => {
+            Ok(elo) => {
                 warm.greet = None;
                 warm.boot.greeted = true;
-                land(&mut commands, &mut who, &mut menu, &mut state, scry);
+                land(&mut commands, &mut who, &mut menu, &mut state, elo);
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
             // The thread died without answering. Anonymous is the correct
@@ -252,9 +252,9 @@ pub fn update(
 /// computed and then dropped on the floor, with nothing failing.
 ///
 /// 1. **The player** — the only one that was already used.
-/// 2. **The shard list url.** `Scry::discover` has always asked the launcher
+/// 2. **The shard list url.** `Elo::discover` has always asked the launcher
 ///    for it (`Overlay::servers_url`) and stored it in a field nothing read,
-///    so a player who started the game from scry-works still got *"no shard
+///    so a player who started the game from elo still got *"no shard
 ///    list to fetch - pass --servers URL"* on a menu the launcher had just
 ///    told us how to fill. `--servers` still wins, because a flag typed by
 ///    hand is more specific than a default.
@@ -269,22 +269,22 @@ fn land(
     who: &mut Who,
     menu: &mut Menu,
     state: &mut hub::HubState,
-    mut scry: Scry,
+    mut elo: Elo,
 ) {
-    who.0 = scry.player.clone();
+    who.0 = elo.player.clone();
     info!("gates: {}", who.0.line());
 
     if menu.servers_url.is_none() {
-        if let Some(url) = scry.servers_url.clone() {
+        if let Some(url) = elo.servers_url.clone() {
             info!("gates: the launcher names a shard list - {url}");
             menu.status = format!("fetching the shard list from {url}");
             menu.servers_url = Some(url);
         }
     }
 
-    state.hub.launcher = scry.connected();
+    state.hub.launcher = elo.connected();
     if state.hub.launcher {
-        match scry.title_url() {
+        match elo.title_url() {
             Some(url) => hub::begin_fetch(state, url),
             // The launcher is up and does not know this title. A real answer,
             // and one a player can act on (reinstall from the launcher), so it
@@ -297,7 +297,7 @@ fn land(
     }
 
     commands.queue(move |world: &mut World| {
-        world.insert_non_send_resource(scry);
+        world.insert_non_send_resource(elo);
     });
 }
 
