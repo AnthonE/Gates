@@ -923,14 +923,4 @@ mod tests {
         assert!(d.abs() < 0.03, "wrapped delta was {d}");
         assert!((wrap_pi(0.2) - 0.2).abs() < 1e-6);
     }
-
-    #[test]
-    fn the_tool_meshes_carry_uvs_and_tangents() {
-        // A normal map without tangents is silently ignored — the failure that
-        // looks like "the texture did not load" and reports nothing.
-        for m in [handle_mesh(), head_mesh()] {
-            assert!(m.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
-            assert!(m.attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
-        }
-    }
 }

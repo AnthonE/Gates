@@ -318,3 +318,21 @@ pub fn material(name: &str) -> StandardMaterial {
         _ => panic!("HeldSrc::Gen({name:?}) has no material in render::heldgen"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_generated_mesh_carries_uvs_and_tangents() {
+        // A normal map without tangents is silently ignored — the failure that
+        // looks like "the texture did not load" and reports nothing. Only the
+        // stand-in handle actually wears a map today, but the four meshes
+        // share one emitter and one law is cheaper than remembering which
+        // rows are allowed to regress.
+        for m in [handle_mesh(), head_mesh(), mesh("torch"), mesh("revolver")] {
+            assert!(m.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
+            assert!(m.attribute(Mesh::ATTRIBUTE_TANGENT).is_some());
+        }
+    }
+}
