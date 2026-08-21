@@ -344,18 +344,38 @@ pub fn band_y(b: i32) -> f32 {
 /// How many bands a plate may stand ABOVE its own column's ground: the stilt
 /// limit, and the answer to "how far can a base carry its floor downhill".
 ///
-/// **One storey, and the number is not free.** Three things bound it and the
-/// tightest wins. (1) The drawn skirt has to reach the ground it is stilted
-/// over or the foundation reads as a floating plank — `render/structures.rs`
-/// caps it at `SKIRT_MAX_M` 4.0 m and sinks it `SKIRT_SINK_M` 0.35 m, so
-/// `6 · 0.5 + 0.35 = 3.35 m` fits with margin and 7 bands would not
-/// (`client/tests/lattice_geom.rs` holds that inequality, because the two
-/// constants live in two crates). (2) A storey is the unit a player already
-/// reasons in: past one, build a level instead of a longer leg. (3) It is a
-/// fall — a plate carried further out than this is a drop nothing catches.
+/// **Half a storey, which is the reference game's number** — Devblog 187
+/// (Dec 2017): *"I started by allowing foundations to snap to each other at a
+/// vertical offset of half a wall."* Their wall is 3 m and so is our storey,
+/// so half a wall is `LEVEL_H_M / 2` = 3 bands. `BALANCE.md` §6's default
+/// applies and needs no case; what follows is why keeping our own 6 would
+/// have needed one it does not have.
+///
+/// **They tried the bigger allowance and reverted it.** Devblog 85 proposed a
+/// three-metre gradient for `foundation.steps` so *"you did not end up with
+/// walls ending at different heights as soon as you built on uneven terrain"*
+/// — our exact problem — and the test result was *"while it worked perfectly
+/// for mountain bases where slope angle reach 45 degrees easily, building on
+/// flat became harder"*. A generous vertical allowance degrades the common
+/// case to serve the rare one.
+///
+/// **Measured here, and their setting wins on our island too.** Swept over
+/// 1 598 buildable starts on the shipped seed, symmetric ±3 against our first
+/// draft's 6 up / 2 down: a whole 4×4 goes 86.7% → **91.3%** of starts, a 6×6
+/// 74.7% → **81.7%**, an 8×8 62.1% → **70.8%** — and the deepest leg any base
+/// carries halves, 3.0 m → 1.5 m. It reads backwards until you notice which
+/// knob binds: [`PLATE_SINK_MAX_BANDS`] is the one that decides how much
+/// island a base covers, the rise is nearly inert beside it, and a symmetric
+/// pair buys a third band of sink at the price of three bands of rise nobody
+/// was using.
+///
+/// The drawn skirt still bounds it from the other side and now with room to
+/// spare: `3 · 0.5 + SKIRT_SINK_M = 1.85 m ≤ SKIRT_MAX_M` 4.0 m, held by
+/// `client/tests/lattice_geom.rs` because the two constants live in two
+/// crates.
 ///
 /// Proposed default, `DECISIONS.md` §open ("build plate v1").
-pub const PLATE_RISE_MAX_BANDS: i32 = 6;
+pub const PLATE_RISE_MAX_BANDS: i32 = 3;
 
 /// How many bands a plate may sit BELOW its own column's ground — how far a
 /// base may cut into a rising hill before it must terrace.
@@ -364,19 +384,28 @@ pub const PLATE_RISE_MAX_BANDS: i32 = 6;
 /// its ground is a leg, which is drawable and standable; a plate under its
 /// ground is the hill coming up through the floor, which nothing hides.
 ///
-/// **Two, and the number was measured rather than picked.** It is the knob
-/// that decides how much of the island a base can cover, and the rise is
-/// almost inert beside it — swept over 1 598 buildable starts on the shipped
-/// seed, moving the rise 6 → 8 does not change a single whole footprint,
-/// where the sink 1 → 2 takes a whole 4×4 from 74.3% of starts to 86.7%, a
-/// 6×6 from 55.9% to 74.7%, and an 8×8 from 44.5% to 62.1%. Mean cell
-/// coverage is 95–98% at 2, so a refusal is a cell or two at an edge rather
-/// than a spot you cannot use. Going further buys less and costs more: 3
-/// only reaches 91.9/83.4/74.7 and by 6 the far cell is 3 m inside the hill,
-/// which is a room made of dirt.
+/// **Three, and it is [`PLATE_RISE_MAX_BANDS`]'s twin** — the reference's
+/// offset is one symmetric half-wall, not a pair of numbers, so this is that
+/// number seen from the other side (`LEVEL_H_M / 2`).
+///
+/// **It is also the knob that binds.** Swept over 1 598 buildable starts on
+/// the shipped seed: moving the RISE 6 → 8 does not change a single whole
+/// footprint, where moving this one 1 → 2 takes a whole 4×4 from 74.3% of
+/// starts to 86.7% and 2 → 3 takes it to 91.3%. Mean cell coverage is 96–98%,
+/// so a refusal is a cell or two at an edge rather than a spot you cannot
+/// use. The reason for the asymmetry in the FIRST draft — that a plate over
+/// its ground is a leg and a plate under it is the hill through the floor —
+/// is a true statement about what the two look like and was the wrong reason
+/// to price them differently: the leg was buying nothing and the cut was
+/// buying most of the island.
+///
+/// Going further does keep paying (6/6 reaches 95.8/92.4/85.9) and that is
+/// exactly what Devblog 85 warns about: at six bands the far cell is 3 m
+/// inside the hill, which is a room made of dirt, and *"building on flat
+/// became harder"* is the cost their own test measured.
 ///
 /// Proposed default, `DECISIONS.md` §open ("build plate v1").
-pub const PLATE_SINK_MAX_BANDS: i32 = 2;
+pub const PLATE_SINK_MAX_BANDS: i32 = 3;
 
 /// The plate a piece placed at (cx, cz) must adopt, or the refusal.
 ///

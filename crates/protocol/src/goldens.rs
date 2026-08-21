@@ -19,11 +19,9 @@
 use crate::{
     ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, Nudge, Refuse,
     SnapshotHeader, Welcome, WireBag, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH, PIECE_SYNC_BATCH,
-    SLOT_SYNC_BATCH,
+    PLATE_BIAS, PLATE_BITS, SLOT_SYNC_BATCH,
 };
-use sim_core::build::{
-    BuildContent, PieceDef, PieceRec, PLATE_RISE_MAX_BANDS, PLATE_SINK_MAX_BANDS,
-};
+use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::craft::{
     CraftContent, CraftJob, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
     STATION_WORKBENCH2, STATION_WORKBENCH3,
@@ -874,9 +872,20 @@ pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
         loc: rng.next_bounded(10) as u8,
         row: rng.next_bounded(32) as u8,
         facing: rng.next_bounded(2) as u8,
-        // The whole legal band, both signs — the batch is where a width is
-        // pinned across many records, so it covers the range rather than a
-        // value (`event_piece_placed` pins the single deliberate one).
+        // The whole FIELD, both signs — the batch is where a width is pinned
+        // across many records, so it covers the range rather than a value
+        // (`event_piece_placed` pins the single deliberate one).
+        //
+        // **The wire's range, not the sim's knobs.** `PLATE_BITS` is
+        // deliberately wider than `build::PLATE_RISE_MAX_BANDS` and
+        // `PLATE_SINK_MAX_BANDS`, and its own doc says why: those two are
+        // balance knobs, and a wire field sized to today's knob is a
+        // `PROTO_VER` bump for every balance pass. A fixture cycled off the
+        // knobs has the same defect one layer up, and it fired the day it was
+        // written — adopting the reference's ±half-a-wall offset moved every
+        // byte of this golden for a reason that has nothing to do with the
+        // wire. The field's own width pins what the LAYOUT can carry, which
+        // is what a wire golden is for, and it stays put while balance moves.
         //
         // **Cycled off the index, deliberately NOT drawn from `rng`.** Every
         // field above shares one stream, so an extra draw per record shifts
@@ -884,11 +893,8 @@ pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
         // which slid the `loc` sequence far enough that one of the ten
         // addresses stopped appearing in the batch at all.
         // `the_loc_fuzz_covers_each_stores_whole_domain` caught it, which is
-        // that gate's whole reason for existing. A cycle also beats a draw
-        // here on the merits: it pins EVERY legal plate rather than whichever
-        // subset a seed happens to land on.
-        plate: (i as i32 % (PLATE_RISE_MAX_BANDS + PLATE_SINK_MAX_BANDS + 1) - PLATE_SINK_MAX_BANDS)
-            as i8,
+        // that gate's whole reason for existing.
+        plate: (i as i32 % (1 << PLATE_BITS) - PLATE_BIAS) as i8,
         ..PieceRec::default()
     });
     (true, recs)

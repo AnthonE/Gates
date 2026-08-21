@@ -1962,23 +1962,34 @@ fn the_piece_goldens_carry_a_live_plate() {
         other => panic!("the piece-placed fixture decoded as {other:?}"),
     }
 
-    let mut seen = [false; 32];
+    // The batch covers the FIELD's range, not the sim's knobs — `PLATE_BITS`
+    // is deliberately wider, and a golden keyed on a balance knob moves every
+    // time balance does (`goldens.rs` says so where the fixture is built).
+    let width = 1usize << protocol::PLATE_BITS;
+    let mut seen = vec![false; width];
     match decode_event(GOLDEN[fixture_index("_event_piece_sync.bin")]).expect("piece sync decodes")
     {
         EventMsg::PieceSync { recs, count, .. } => {
             for rec in recs.iter().take(count as usize) {
-                seen[(rec.plate as i32 + PLATE_SINK_MAX_BANDS) as usize] = true;
+                seen[(rec.plate as i32 + protocol::PLATE_BIAS) as usize] = true;
             }
         }
         other => panic!("the piece-sync fixture decoded as {other:?}"),
     }
-    for band in -PLATE_SINK_MAX_BANDS..=PLATE_RISE_MAX_BANDS {
+    for (i, hit) in seen.iter().enumerate() {
+        let band = i as i32 - protocol::PLATE_BIAS;
         assert!(
-            seen[(band + PLATE_SINK_MAX_BANDS) as usize],
-            "no piece in the sync golden carries plate {band}, so that value's              bytes are pinned by nothing — the sim can produce              {}..={PLATE_RISE_MAX_BANDS}",
-            -PLATE_SINK_MAX_BANDS
+            hit,
+            "no piece in the sync golden carries plate {band}, so that value's \
+             bytes are pinned by nothing — the field is {width} values wide"
         );
     }
+    // ...and the field is wider than what the sim can produce. Narrower would
+    // be a plate a base can latch and the wire cannot carry.
+    assert!(
+        (width as i32) > PLATE_RISE_MAX_BANDS + PLATE_SINK_MAX_BANDS,
+        "the wire is narrower than the plates the sim can produce"
+    );
 }
 
 #[test]

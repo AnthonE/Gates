@@ -378,15 +378,26 @@ fn an_emptied_column_forgets_its_plate() {
     );
 }
 
-/// The stilt ceiling is exactly one storey — the derivation
-/// `PLATE_RISE_MAX_BANDS` states, held against the two constants it is
-/// derived from rather than against the number it currently is.
+/// The stilt ceiling is exactly HALF a storey, and the sink limit is its
+/// twin — the reference's one symmetric offset (Devblog 187, *"a vertical
+/// offset of half a wall"*), held against the constants it is derived from
+/// rather than against the numbers it currently is.
+///
+/// **Symmetric, and that is the claim.** A first pass shipped 6 up / 2 down,
+/// reasoning that a plate over its ground is a leg and a plate under it is
+/// the hill through the floor. True about how they look, wrong as a price:
+/// swept over 1 598 buildable starts, the asymmetric pair covered LESS island
+/// than the symmetric one and carried twice the leg.
 #[test]
-fn the_stilt_ceiling_is_one_storey() {
+fn the_stilt_ceiling_is_half_a_storey_each_way() {
+    assert_eq!(
+        PLATE_RISE_MAX_BANDS, PLATE_SINK_MAX_BANDS,
+        "the plate offset stopped being symmetric; the reference's is one number"
+    );
     assert_eq!(
         PLATE_RISE_MAX_BANDS as f32 * BUILD_BASE_Q_M,
-        sim_core::build::LEVEL_H_M,
-        "the stilt ceiling stopped being a storey"
+        sim_core::build::LEVEL_H_M * 0.5,
+        "the stilt ceiling stopped being half a storey"
     );
     // ...and a plate is measured in the same quanta the lattice steps in,
     // so a stilt lands on a band a neighbouring plate could also land on.

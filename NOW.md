@@ -841,6 +841,12 @@ instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
 1. ~~**Nobody has looked at it.**~~ **Looked at, 2026-08-21**:
    `./ci/scene.sh --population 8 --settle 200` on seed 20260731 — eight bots
    built a twig base over the real wire and the probe photographed it.
+   ⚠ **and its own frames sent the next slice**: the operator looked at the
+   design vantage and asked *"can we prevent the camera from popping into
+   bases"*. Two answers, both landed — piece flanks v0 for the game (a plane
+   had no sides), and a **clearance walk** before the vantages for the probe,
+   because standing ON a plate is not being inside one and six fixed bearings
+   from the middle of somebody's floor are six pictures of a wall.
    `8-build.png` is the counter-shot the 2026-08-15 screenshots were owed:
    the wall run holds ONE level line the length of the base while the hill
    beside it climbs, and `0-design.png`, taken from inside, shows the floor
@@ -864,10 +870,16 @@ instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
    priced them. Measured before: **11.5% of buildable 4×4 footprints were
    flat**; after, a connected base is one floor by construction and 86.7%
    of starts take a whole 4×4. Gates `sim-core/tests/plate.rs` (7, four
-   mutants proven red) + `client/tests/lattice_geom.rs`. Still open, and
-   both are the operator's: the sink limit of 2 bands is what decides how
-   much of the island a base can cover, and whether a placement should be
-   able to *decline* the latch the way the reference's socket aim does.
+   mutants proven red) + `client/tests/lattice_geom.rs`.
+   **The offset is the reference's** (2026-08-21, `reference/BUILDING.md`
+   §7c): ±3 bands, one symmetric half-storey, taken under `BALANCE.md` §6 and
+   better on our island too — against the 6/2 this first shipped with it
+   moves a whole 4×4 from 86.7% of starts to 91.3%, an 8×8 from 62.1% to
+   70.8%, and halves the deepest leg. Still open, both the operator's:
+   **freehand** (a placement that declines the latch — they have it, we have
+   no bit for it, and it is where their advanced base tech lives) and the
+   **half wall**, their answer to the gap a half-storey offset leaves on the
+   floors above it.
    ⚠ **It also found a hole in wall 5's own gate.** `test_replay` drives
    `Command::Place` from tick 0 and its world ends with **zero pieces** —
    everything enters as twig, twig is never upkept, 900 ticks rots all of

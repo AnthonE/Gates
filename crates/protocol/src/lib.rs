@@ -1214,10 +1214,15 @@ pub(crate) const DMG_BAND_BITS: u32 = 3;
 /// is read (`worldsave.rs`). Every value the width can carry is legal here
 /// for `DMG_BAND_BITS`' reason: the sim's own clamp, not the decoder's, is
 /// what a forged plate meets.
-pub(crate) const PLATE_BITS: u32 = 4;
+///
+/// `pub` for `build::anchor`'s reason, one layer over: the golden suite
+/// asserts that the sync fixture covers the FIELD rather than today's knobs,
+/// and a check that re-derived the width from the knobs would be exactly the
+/// coupling this constant exists to refuse.
+pub const PLATE_BITS: u32 = 4;
 /// What is added to a plate before it is written, so the four bits carry
 /// `[-PLATE_BIAS, PLATE_BIAS - 1]`.
-pub(crate) const PLATE_BIAS: i32 = 8;
+pub const PLATE_BIAS: i32 = 8;
 /// The upgrade action's target material (build.rs `MAT_*`: wood, stone,
 /// metal). Three values in two bits, so the fourth is forgeable and the
 /// decoder refuses it — the same posture as the hotbar selector.
