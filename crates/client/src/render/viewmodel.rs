@@ -75,6 +75,19 @@ use super::Net;
 /// read as a prop floating in the world rather than as something carried.
 pub const VIEWMODEL_HOLD: Vec3 = Vec3::new(0.32, -0.30, -0.52);
 
+/// Wrist-to-palm correction, in the held item's own (tilted) frame, metres.
+///
+/// The grip point lands on the `RightHand` BONE, and a hand bone's origin is
+/// the WRIST: the palm channel — where a rod actually crosses a fist — sits
+/// a few centimetres beyond it toward the fingers. Without this, every item
+/// rode low and right of the open palm and read as floating beside the hand
+/// (operator, 2026-08-21: *"its not in the hand though?"*). Judged off
+/// capture frames rather than derived: left and up into the finger curl, and
+/// a touch DEEPER than the palm so the bind pose's open fingers draw in
+/// front of the shaft — occlusion is what sells a grip on a rig whose hand
+/// has no finger bones to close (`NOW.md` §0chr).
+pub const VIEWMODEL_PALM: Vec3 = Vec3::new(-0.040, 0.030, -0.015);
+
 /// The item's resting orientation in view space, YXZ Euler radians.
 ///
 /// **Its absence was a real defect and the capture caught it.** The old
@@ -254,11 +267,13 @@ pub fn spawn_item(
             item.spawn((
                 Mesh3d(meshes.add(super::heldgen::handle_mesh())),
                 MeshMaterial3d(wood.clone()),
+                Transform::from_translation(VIEWMODEL_PALM),
                 Fallback,
             ));
             item.spawn((
                 Mesh3d(meshes.add(super::heldgen::head_mesh())),
                 MeshMaterial3d(steel.clone()),
+                Transform::from_translation(VIEWMODEL_PALM),
                 Fallback,
             ));
             // The model in hand. Spawned empty and filled by `swap`, which is
@@ -664,13 +679,18 @@ pub fn swap(
                     // vector is rotated WITH the model; writing it on a fixed
                     // axis is the bug this replaces, which hung every tool
                     // `grip_m` below the hand (63 cm, for the spear).
-                    let rot = if def.lay_forward {
+                    let lay = if def.lay_forward {
                         Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)
                     } else {
                         Quat::IDENTITY
                     };
+                    // The presentation yaw composes in the hand's frame, so
+                    // it turns the item about the fist rather than about its
+                    // own foot, and the grip point below stays in the palm
+                    // under any yaw.
+                    let rot = Quat::from_rotation_y(def.pose_yaw) * lay;
                     tf.rotation = rot;
-                    tf.translation = -(rot * (Vec3::Y * def.grip_m()));
+                    tf.translation = VIEWMODEL_PALM - (rot * (Vec3::Y * def.grip_m()));
                     tf.scale = Vec3::splat(def.scale);
                 }
                 None => {

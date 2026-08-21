@@ -186,6 +186,7 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         grip_frac: 0.35,
         scale: 1.0,
         lay_forward: false,
+        pose_yaw: 0.0,
     },
     // A revolver is authored barrel-up so the shared quarter-turn points it
     // forward, and gripped low, at the handle.
@@ -196,6 +197,7 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         grip_frac: 0.19,
         scale: 1.0,
         lay_forward: true,
+        pose_yaw: -0.65,
     },
     // The deployables, palmed level. `length_m` restates each FILE's longest
     // axis (the gate measures it); the grip fraction puts the palm near the
@@ -251,6 +253,11 @@ pub struct HeldModelDef {
     /// wants); `false` keeps it upright, for the things a hand carries level
     /// — a bow at the riser, a torch, a box.
     pub lay_forward: bool,
+    /// Extra presentation yaw about the fist, radians, composed onto the
+    /// pose. Zero for almost everything; the revolver turns so the frame
+    /// shows its PROFILE — seen from dead behind, a gun is a stack of
+    /// blocks, and the L-shape is the whole read.
+    pub pose_yaw: f32,
 }
 
 impl HeldModelDef {
@@ -263,6 +270,7 @@ impl HeldModelDef {
             grip_frac,
             scale: 1.0,
             lay_forward: true,
+            pose_yaw: 0.0,
         }
     }
 
@@ -281,6 +289,7 @@ impl HeldModelDef {
             grip_frac,
             scale,
             lay_forward: false,
+            pose_yaw: 0.0,
         }
     }
 
