@@ -151,12 +151,12 @@ def board(groups: list[dict], bad: list[tuple[str, str]], total: int) -> str:
     if not groups:
         out.append("Nothing readable in that directory.\n")
     else:
-        out.append("| reports | what | since | read first | title |")
-        out.append("|---:|---|---|---|---|")
+        out.append("| reports | what | since | read first | close with | title |")
+        out.append("|---:|---|---|---|---|---|")
         for g in groups:
             out.append(
                 f"| {g['count']} | `{g['kind']}` | {g['first_reported'][:10]} "
-                f"| `{g['read_first']}` | {g['title']} |"
+                f"| `{g['read_first']}` | `{g['fingerprint']}` | {g['title']} |"
             )
         out.append("")
         out.append(
@@ -164,6 +164,11 @@ def board(groups: list[dict], bad: list[tuple[str, str]], total: int) -> str:
             "bug seen by different people. **Fixing any of them pays** — any accepted "
             "pull request is 100,000 SCRY, flat and standing (`AGENTS.md` §the deal). "
             "There is nothing to claim and nobody is ahead of you.\n"
+        )
+        out.append(
+            "**Close with** is the line to put in the pull request — `Closes reports: "
+            "<fingerprint>`. It is not bookkeeping: it is what says which reporters "
+            "the merge owes, and a fix that names none pays only its author.\n"
         )
     if bad:
         out.append("## Not readable as a report\n")
@@ -260,6 +265,10 @@ def self_test() -> int:
 
         text = board(g, bad, len(good))
         check("| 3 |" in text, "the count is the ranking and must be drawn")
+        check(
+            "`aaa`" in text and "close with" in text,
+            "the fingerprint is what a PR names, so the board has to show it",
+        )
         check("100,000 SCRY" in text, "the board says what fixing one pays")
         check("Not readable as a report" in text, "unreadable files are named on the board")
 

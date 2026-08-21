@@ -42,32 +42,33 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
-## 0rep · A player can file a report; three things upstream of it cannot *(client lane + operator)*
+## 0rep · A player can file a report; four things around it cannot *(client lane + operator)*
 
 Landed 2026-08-20. `F7` writes `gates-report-<stamp>-<fp>.md`, a `.json`
 beside it and a `.png` of the frame, into the screenshot directory:
 build (`VERSION`/`GIT_SHA`/`PROTO_VER`), the seed, position, the netcode
 counters `ClientCore` already kept, and a stranger's line quoted in a fence it
-cannot escape. `crates/client/tests/report.rs` is the gate — 23 assertions, the
-five carrying the untrusted-prose rule each proven red under their own mutant.
+cannot escape. `crates/client/tests/report.rs` is the gate, and every assertion
+carrying the untrusted-prose rule was proven red under its own mutant.
 A panic writes the same document, chained ahead of the default hook.
 `DECISIONS.md` §open, bug reports v0, has the four bounds.
 
 What it does NOT do, in the order the value drops:
 
-1. **Nothing reads them.** A directory of `.json` files is the contract for a
-   page listing open reports and what fixing one pays — `Report::json` writes
-   `fingerprint`, `issue_title` and `read_first` into the document precisely so
-   a consumer never re-derives them. No such page exists. **(operator: where.)**
-2. **No intake, deliberately.** The client opens no socket; the player decides
-   what happens to the file. An endpoint behind a prompt is a separate slice.
+1. **Nothing reads them but `ci/reports.py`**, which folds a directory onto its
+   fingerprints and prints the board. No page serves it. **(operator: where.)**
+2. **No intake, deliberately** — the client opens no socket and the player
+   decides what happens to the file. An endpoint is its own slice.
 3. **The `report` signing family does not exist in the launcher** — shipping
    set is `play`/`review`/`vow`/`hive`/`braid`/`store` (`scry-broker`'s
    `signer.rs`). `Report::sign_text` is built to `sdk/PROTOCOL.md`'s rules and
    is refused today, which is the correct failure. Upstream, in `scry-forge`.
-4. **Does a report pay, and whom?** `AGENTS.md` §the deal is one payment per
-   accepted PR; a report is not a PR. A one-click path from annoyance to payout
-   is a farm. **(operator: a number, or a no.)**
+4. **A report pays its reporter** (operator, 2026-08-21) and the rail is built:
+   a PR carries `Closes reports: <fingerprint>`, so the merge that pays its
+   author says which reporters it owes. **Two things left, both operator:** how
+   much against the PR's 100,000, and whether it pays on the merge or earlier —
+   `DECISIONS.md` §open has the trade. Nothing pays until (3) lands either way:
+   an unsigned wallet is a claim, and paying a claim pays whoever typed it.
 
 ---
 

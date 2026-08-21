@@ -497,6 +497,16 @@ impl Report {
         format!("{:016x}", self.fingerprint())
     }
 
+    /// The UTC day this was reported, `yyyy-mm-dd`.
+    ///
+    /// Its own accessor because it is what [`sign_text`](Self::sign_text) puts
+    /// in the signed bytes, and a verifier has to be able to rebuild that text
+    /// from the document alone — `reported` in the JSON carries the same
+    /// instant, so the two can never disagree about which day was signed.
+    pub fn day(&self) -> String {
+        crate::shot::iso(self.at)[..10].to_string()
+    }
+
     /// `gates-report-20260820-140311-a1b2c3d4` — sortable by time, then
     /// distinguished by shape. Both halves earn their place: the stamp is
     /// what a player scans for ("the one I made just now") and the eight hex
@@ -688,21 +698,53 @@ impl Report {
              - Reproduce the build: `git checkout {}` (release {})\n\
              - Every gate must be green before it merges: `./ci/gates.sh`\n\
              - **This pays.** Any accepted pull request is 100,000 SCRY, flat, standing —\n  \
-             `AGENTS.md` §the deal. There is nothing to claim and nobody ahead of you.\n\n",
+             `AGENTS.md` §the deal. There is nothing to claim and nobody ahead of you.\n\
+             - Name this in the PR so the reporter is paid too:\n  \
+             `Closes reports: {}`\n\n",
             self.kind.read_first(),
             self.build.commit,
             self.build.version,
+            self.fingerprint_hex(),
         ));
 
+        s.push_str("## The reporter, and being paid for this\n\n");
         match &self.wallet {
-            Some(w) => s.push_str(&format!(
-                "Reporter: `{w}` — ⚠ a **claim**, not authentication. The launcher reports \
-                 the address a player asked it to watch; anything can say a number. What \
-                 makes it provable is a signature, which is a separate act.\n\n"
-            )),
-            None => {
-                s.push_str("Reporter: anonymous — no launcher was running, which is normal.\n\n")
+            Some(w) => {
+                s.push_str(&format!(
+                    "Reporter: `{w}` — ⚠ **a claim, not authentication.** The launcher \
+                     reports the address a player asked it to watch, and anything can say \
+                     a number, so nobody may pay this line on its own.\n\n\
+                     What makes it payable is a signature over these exact bytes, which is \
+                     a separate act by the person holding the wallet:\n\n"
+                ));
+                let text = self.sign_text(w, &self.day());
+                let fence = fence_for(&text);
+                s.push_str(&fence);
+                s.push_str("text\n");
+                s.push_str(&text);
+                s.push('\n');
+                s.push_str(&fence);
+                s.push_str(
+                    "\n\nAn EIP-191 `personal_sign` over that string, from any wallet. \
+                     Whoever pays recovers the signer and **recomputes the message from \
+                     what the report already says** — the kind, the fingerprint and \
+                     `reported`'s date — rather than trusting the copy above; that is \
+                     `scryward/docs/SIGN-IN.md` §0 step 4's rule and it is not optional. \
+                     The address is lowercased inside the bytes because a checksummed one \
+                     is different bytes and verifies differently.\n\n\
+                     **The signature proves consent, not scarcity** — a wallet is free to \
+                     make, so a signed report is not by itself worth money. What it buys \
+                     is that when this bug is fixed, there is an address to pay and a \
+                     proof it is the reporter's.\n\n",
+                );
             }
+            None => s.push_str(
+                "Reporter: **anonymous** — no launcher was running and no `--identity` was \
+                 given, which is a normal way to play. Nothing about this report is worth \
+                 less for it; there is simply no address to pay if it leads to a fix. \
+                 Start the game through the scry launcher, or with `--identity 0x…`, and \
+                 the next one carries a wallet.\n\n",
+            ),
         }
 
         s.push_str(&format!(

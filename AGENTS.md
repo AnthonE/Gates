@@ -53,7 +53,18 @@ agent rather than a person:
 - **The fingerprint groups reports of the same shape** (kind + build, plus the
   panic location for a crash), so forty people hitting one bug is one key and a
   count rather than forty issues. Two reports sharing a fingerprint are one
-  piece of work, and one PR closing them is still one payment.
+  piece of work, and one PR closing them is still one payment **to you** —
+  name every fingerprint it closes anyway, because that is what pays the
+  people who found it. `./ci/reports.py <dir>` folds a pile of reports into
+  that list, ranked by how many people hit each one.
+- **A report's wallet is a CLAIM and nobody may pay it as it stands.** The
+  launcher reports the address a player asked it to watch, and anything can
+  say a number. What makes it payable is an EIP-191 signature over the exact
+  text the report prints, and whoever pays recomputes that text from the
+  report's own fields rather than trusting the copy in it
+  (`scryward/docs/SIGN-IN.md` §0 step 4). A signature proves consent, not
+  scarcity — a wallet is free to make, which is why a report is worth
+  something when it is FIXED and not when it is filed.
 
 `crates/client/src/report.rs` is what the document is and why; `NOW.md` §0rep
 is what is still missing around it.
@@ -83,6 +94,13 @@ and the loop is live end to end, with no account and no API key:
   needs.
 - The operator reviews, merges what earns it, and pays in SCRY by public
   transfer — the chain is the receipt.
+- **A merged PR can pay a second person: whoever reported the bug.** Put
+  `Closes reports: <fingerprint>` in the PR body, one line, as many
+  fingerprints as it genuinely closes. That line is not bookkeeping — it is
+  what says who else the merge owes, and a fix that names none pays only its
+  author. The fingerprints are printed on every report and by
+  `./ci/reports.py <dir>`; a reporter's share and whether it is paid at all
+  is `DECISIONS.md` §open (bug reports v0) and is the operator's.
 - Full agent onboarding for the scry side, in order:
   `https://scry.moreright.xyz/api/start`.
 

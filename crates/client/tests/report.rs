@@ -452,7 +452,7 @@ fn a_wallet_is_printed_as_a_claim_or_not_at_all() {
     let md = named.markdown();
     assert!(md.contains("0xAbC0000000000000000000000000000000000001"));
     assert!(
-        md.contains("a **claim**, not authentication"),
+        md.contains("a claim, not authentication"),
         "an address without that sentence reads as a proven identity"
     );
 }
@@ -609,4 +609,92 @@ fn write_pair_refuses_rather_than_pretending() {
     let r = plain(Kind::Look, "t", "b");
     let err = client::report::write_pair(&blocker, &r).expect_err("a file is not a directory");
     assert!(!err.is_empty(), "the refusal must carry a sentence");
+}
+
+// --------------------------------------------------- the reporter, and paying
+
+#[test]
+fn the_document_carries_a_signable_message_a_verifier_can_rebuild() {
+    // The whole payment rail in one property: whoever pays must be able to
+    // recompute the signed bytes from the report's own fields rather than
+    // trusting the copy printed in it. If these two ever disagree, a valid
+    // signature verifies against the wrong string and nobody gets paid.
+    let mut r = plain(Kind::World, "rock in the wall", "north side");
+    r.wallet = Some("0xAbC0000000000000000000000000000000000001".into());
+    let rebuilt = r.sign_text(r.wallet.as_deref().unwrap(), &r.day());
+    assert!(
+        r.markdown().contains(&rebuilt),
+        "the printed message must be the one sign_text produces: {rebuilt}"
+    );
+    // And every part of it is derivable from the JSON alone — kind,
+    // fingerprint, wallet and the date of `reported`.
+    let v: serde_json::Value = serde_json::from_str(&r.json()).unwrap();
+    let day = v["reported"].as_str().unwrap()[..10].to_string();
+    assert_eq!(
+        day,
+        r.day(),
+        "`reported` and the signed day are one instant"
+    );
+    let from_json = format!(
+        "scry report\naction: gates-bug\nwallet: {}\nday: {day}\ndetail: {} — {}",
+        v["wallet"].as_str().unwrap().to_ascii_lowercase(),
+        v["kind"].as_str().unwrap(),
+        v["fingerprint"].as_str().unwrap(),
+    );
+    assert_eq!(
+        from_json, rebuilt,
+        "a verifier holding only the json must land here"
+    );
+}
+
+#[test]
+fn the_claim_is_shown_as_typed_and_signed_in_lowercase() {
+    // Two different jobs for one address: the human-readable claim keeps the
+    // checksum a player recognises, and the signed bytes are lowercased
+    // because a checksummed address verifies differently.
+    let mut r = plain(Kind::Look, "t", "b");
+    r.wallet = Some("0xAbCdEf0000000000000000000000000000000001".into());
+    let md = r.markdown();
+    assert!(md.contains("0xAbCdEf0000000000000000000000000000000001"));
+    assert!(md.contains("wallet: 0xabcdef0000000000000000000000000000000001"));
+    assert!(md.contains("a claim, not authentication"));
+    assert!(
+        md.contains("proves consent, not scarcity"),
+        "a signed report must not read as a thing that is owed money by itself"
+    );
+}
+
+#[test]
+fn an_anonymous_report_offers_nothing_to_sign_and_says_why() {
+    let r = plain(Kind::Look, "t", "b");
+    let md = r.markdown();
+    assert!(md.contains("anonymous"));
+    assert!(
+        !md.contains("scry report\naction:"),
+        "with no wallet there is nothing to sign, so nothing may be printed"
+    );
+    assert!(
+        md.contains("--identity"),
+        "and it must say how to have one next time"
+    );
+}
+
+#[test]
+fn the_document_tells_a_fixer_what_to_name_in_the_pr() {
+    // The reporter is paid because a merged PR named the fingerprint it
+    // closes. If the report does not carry that line, nothing links the two
+    // and the whole rail is a promise nobody can execute.
+    let r = plain(Kind::Numbers, "arrows cost too much", "3 wood?");
+    let md = r.markdown();
+    assert!(
+        md.contains(&format!("Closes reports: {}", r.fingerprint_hex())),
+        "the fingerprint must appear as the line a PR copies: {md}"
+    );
+}
+
+#[test]
+fn the_signed_day_is_the_day_it_was_reported() {
+    assert_eq!(plain(Kind::Look, "t", "b").day(), "2026-08-20");
+    let later = Report::new(Kind::Look, "t", "b", AT + 86_400, build());
+    assert_eq!(later.day(), "2026-08-21");
 }
