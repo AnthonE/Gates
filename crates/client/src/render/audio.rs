@@ -496,10 +496,28 @@ pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound
 /// The position is [`super::structures::base_transform`]'s — the same
 /// anchor the mesh stands at, edge canonicalisation included, so the sound
 /// cannot come from a different place than the wall appears in.
-pub fn place(feed: Res<super::feed::Feed>, world: Res<super::WorldId>, mut sound: ResMut<Sound>) {
+///
+/// **The plate is read out of the mirror, not off the event** (build plate
+/// v1): `feed.placed()` carries an address and the placement broadcast that
+/// raised it also inserted the record, so the column is in the piece mirror by
+/// the time this runs. A hammer blow is a point source at head height either
+/// way — but the column's floor is the one number here that can be a whole
+/// storey out, and a sound a storey off is a sound in the wrong room.
+pub fn place(
+    feed: Res<super::feed::Feed>,
+    world: Res<super::WorldId>,
+    net: NonSend<super::Net>,
+    mut sound: ResMut<Sound>,
+) {
     for &(cx, cz, level, loc, _deploy) in feed.placed() {
-        let p = super::structures::base_transform(world.seed, &world.haven, (cx, cz, level, loc))
-            .translation;
+        let plate = net.session.core.pieces.cols().plate(cx, cz).unwrap_or(0);
+        let p = super::structures::base_transform(
+            world.seed,
+            &world.haven,
+            (cx, cz, level, loc),
+            plate,
+        )
+        .translation;
         sound.play(Request::at(Cue::Place, [p.x, p.y, p.z]));
     }
 }

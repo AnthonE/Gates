@@ -328,7 +328,7 @@ mod tests {
         let mut cols = Box::new(ColIndex::new());
         for r in world.pieces.entries() {
             let shape = world.build.pieces[r.row as usize].shape;
-            cols.add(r.cx, r.cz, r.level, r.loc, shape);
+            cols.add(r.cx, r.cz, r.level, r.loc, shape, r.plate);
         }
 
         // The predictor collides with the same island the server does.

@@ -221,19 +221,20 @@ pub fn track(
     let [x, y, z] = core.predict.render_position();
     let aim = aim_point(world.seed, &world.haven, core, &look, [x, y, z]);
     let target = place::target_at(aim.0, aim.1, shape, ghost.level);
-    let verdict = place::verdict(
-        target,
-        row,
-        shape,
-        &Site {
-            seed: world.seed,
-            haven: &world.haven,
-            at: (x, z),
-            taken: core.pieces.entries(),
-            content: &core.piece_defs,
-            inv: &core.inv,
-        },
-    );
+    let site = Site {
+        seed: world.seed,
+        haven: &world.haven,
+        at: (x, z),
+        taken: core.pieces.entries(),
+        cols: core.pieces.cols(),
+        content: &core.piece_defs,
+        inv: &core.inv,
+    };
+    let verdict = place::verdict(target, row, shape, &site);
+    // The floor this placement would take (build plate v1) — the sim's own
+    // rule, so the preview stands where the piece will and a stilt is visible
+    // before the key is pressed rather than after.
+    let plate = place::ghost_plate(&site, target);
     ghost.target = target;
     ghost.verdict = verdict;
     ghost.row = Some(row);
@@ -246,6 +247,7 @@ pub fn track(
         world.seed,
         &world.haven,
         (target.cx, target.cz, target.level, target.loc),
+        plate,
     );
     let mat = if verdict.ok() {
         ghost.ok_mat.clone()
@@ -282,6 +284,7 @@ pub fn track(
             target.cx,
             target.cz,
             shape == SHAPE_TRI_FOUNDATION,
+            plate,
         )
     });
 
@@ -516,6 +519,10 @@ pub fn deploy_track(
         (t.cx, t.cz, t.level, t.loc),
         arch as u8,
         false,
+        // A deployable stands on what is already built, so the column's
+        // stored plate is the one to draw at — never a would-be one. A
+        // ground placement has no column and answers 0, the terrain rule.
+        core.pieces.cols().plate(t.cx, t.cz).unwrap_or(0),
     )
     .with_scale(size);
     let mat = if verdict.refused() {

@@ -404,8 +404,8 @@ fn a_real_footing_draws_at_its_cached_depth() {
     let mut buckets = std::collections::BTreeSet::new();
     for cx in (300..360).step_by(3) {
         for cz in (300..360).step_by(3) {
-            let p = foundation_part(SEED, &haven, cx, cz, false);
-            let (i, d) = footing_of(SEED, &haven, cx, cz);
+            let p = foundation_part(SEED, &haven, cx, cz, false, 0);
+            let (i, d) = footing_of(SEED, &haven, cx, cz, 0);
             assert!(i < SKIRT_STEPS, "cell ({cx},{cz}) indexed bucket {i}");
             assert_eq!(
                 d, p.size.y,

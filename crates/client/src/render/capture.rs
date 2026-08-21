@@ -53,6 +53,32 @@ pub const PLACE_FRAMES: u32 = 300;
 /// worst-frame in real play. Holding here means every shot is taken on warm
 /// pipelines rather than the first one paying for all of them.
 pub const WARM_FRAMES: u32 = 30;
+
+/// How many frames the probe may spend walking out of a base before it gives
+/// up and shoots anyway. Under lavapipe a frame is about a second and a body
+/// covers ~3 m of one, so this is a generous few base-widths.
+const CLEAR_FRAMES: u32 = 20;
+/// How far the probe looks for pieces when working out which way is out.
+const CLEAR_LOOK_M: f32 = 24.0;
+/// How far the probe wants to be from the nearest piece before it shoots the
+/// fixed vantages, metres.
+///
+/// **Standing on a base is not the same as being inside one, and the frames
+/// needed both rules.** `collide::plane_blocked` answers the second: it
+/// short-circuits the moment your feet are within `STEP_UP` of the floor,
+/// which is exactly the case where you are standing ON the plate rather than
+/// in it. That is a legitimate place for a body to be and a useless place for
+/// a camera — six fixed bearings from the middle of somebody's floor are six
+/// pictures of the inside of a wall, which is what the operator was looking
+/// at. Measured on the shot that prompted this: the probe stood on the plate
+/// with a wall 0.4 m away, the near plane at 0.1 m, and nothing clipping —
+/// the frame was wrong rather than broken.
+///
+/// Two thirds of [`BUILD_STANDOFF_M`], which is the range the scene pass
+/// already decided a base reads well at; the vantages want less because they
+/// are landscape frames that happen to have a base in them rather than
+/// portraits of one.
+const CLEAR_STANDOFF_M: f32 = BUILD_STANDOFF_M * 2.0 / 3.0;
 /// Frames between shots, so a vantage's first frame is never its own warmup.
 pub const FRAMES_PER_SHOT: u32 = 6;
 /// Frames to hold after the last shot so the async readback lands on disk.
@@ -332,6 +358,22 @@ pub struct Capture {
     /// is the number the tail check exists because it cannot trust.
     extra: [Option<PathBuf>; EXTRA_SHOTS],
     n_extra: usize,
+    /// Has the probe got clear of any base it spawned inside?
+    ///
+    /// **The vantages are shot from wherever the body is, and `ci/scene.sh`
+    /// puts the body where the base goes up.** `dev_spawn` co-locates every
+    /// body on one point on purpose — that is what makes the builders and the
+    /// camera neighbours rather than kilometres apart — and `--settle` runs
+    /// the world for minutes before the probe connects, so the probe arrives
+    /// standing in the middle of somebody's floor. Six fixed frames of the
+    /// inside of a wall is the result, and it is what the operator saw. An
+    /// empty island has no pieces, so this never fires on a plain `--capture`
+    /// run and the citable frames stay bit-identical.
+    cleared: bool,
+    /// Frames spent trying to get clear — the bound, so a probe wedged
+    /// somewhere the walk cannot fix shoots its vantages anyway rather than
+    /// burning the run. Wall 4's habit applied to a camera.
+    clearing: u32,
 }
 
 impl Capture {
@@ -351,6 +393,8 @@ impl Capture {
             },
             extra: std::array::from_fn(|_| None),
             n_extra: 0,
+            cleared: false,
+            clearing: 0,
         }
     }
 
@@ -487,6 +531,13 @@ pub fn drive(
         }
     }
 
+    // Step out of anything the probe spawned inside, BEFORE the vantage clock
+    // starts — `since_built` is what indexes the shots, so this holds it
+    // rather than spending it.
+    if !cap.cleared && !clear_of_a_base(&mut cap, &mut look, &eye, &world, net.as_deref()) {
+        return;
+    }
+
     cap.since_built += 1;
     if cap.since_built < WARM_FRAMES {
         return;
@@ -591,6 +642,97 @@ pub fn drive(
         let path = cap.dir.join(format!("{idx}-{label}.png"));
         cap.shoot(&mut commands, path, false);
     }
+}
+
+/// Walk the probe out of any base it is standing inside. `true` once it is
+/// clear (or has given up), `false` while it is still walking.
+///
+/// **The test is the sim's own** — `collide::plane_blocked` against the
+/// predictor's mirror of the piece store — rather than a distance to the
+/// nearest record. A body is "inside" exactly when the thing that stops
+/// bodies says so, and reproducing that judgement here would be the
+/// hand-kept mirror this repo keeps paying for. It is also why this could
+/// not be written before piece flanks v0: until a plane had sides, there was
+/// no function to ask.
+///
+/// The direction is away from the CENTROID of the nearby pieces rather than
+/// away from the nearest one: the nearest piece of a base you are standing in
+/// the middle of is behind you as often as in front, and a probe walking away
+/// from it would cross the base rather than leave it.
+fn clear_of_a_base(
+    cap: &mut Capture,
+    look: &mut Look,
+    eye: &super::Eye,
+    world: &super::WorldId,
+    net: Option<&super::Net>,
+) -> bool {
+    let Some(net) = net else { return true };
+    let core = &net.session.core;
+    let feet = eye.pos.y - super::EYE_HEIGHT;
+    let inside = sim_core::collide::plane_blocked(
+        world.seed,
+        &world.haven,
+        core.pieces.cols(),
+        eye.pos.x,
+        eye.pos.z,
+        feet,
+    );
+    let nearest = core
+        .pieces
+        .entries()
+        .iter()
+        .map(|rec| {
+            let (ax, az) = sim_core::build::anchor(rec.cx, rec.cz, rec.loc);
+            let (dx, dz) = (ax - eye.pos.x, az - eye.pos.z);
+            dx * dx + dz * dz
+        })
+        .fold(f32::INFINITY, f32::min);
+    if !inside && nearest >= CLEAR_STANDOFF_M * CLEAR_STANDOFF_M {
+        if cap.clearing > 0 {
+            println!(
+                "capture: walked clear of a base in {} frame(s) before the vantages",
+                cap.clearing
+            );
+        }
+        cap.cleared = true;
+        cap.intent = None;
+        return true;
+    }
+    cap.clearing += 1;
+    if cap.clearing > CLEAR_FRAMES {
+        eprintln!(
+            "capture: still inside a base after {CLEAR_FRAMES} frames — shooting the \
+             vantages from here, so they will show the inside of a wall."
+        );
+        cap.cleared = true;
+        cap.intent = None;
+        return true;
+    }
+    let (mut sx, mut sz, mut n) = (0.0f32, 0.0f32, 0.0f32);
+    for rec in core.pieces.entries() {
+        let (ax, az) = sim_core::build::anchor(rec.cx, rec.cz, rec.loc);
+        let (dx, dz) = (ax - eye.pos.x, az - eye.pos.z);
+        if dx * dx + dz * dz <= CLEAR_LOOK_M * CLEAR_LOOK_M {
+            sx += ax;
+            sz += az;
+            n += 1.0;
+        }
+    }
+    // Nothing near enough to walk away from, and yet `plane_blocked` says
+    // inside: hold still rather than sprinting at a bearing computed from
+    // nothing. The frame budget above is what ends this case.
+    if n == 0.0 {
+        return false;
+    }
+    let (dx, dz) = (eye.pos.x - sx / n, eye.pos.z - sz / n);
+    look.yaw = bearing_to(dx, dz);
+    look.pitch = 0.0;
+    cap.intent = Some(Intent {
+        move_x: 0,
+        move_z: 127,
+        buttons: 0,
+    });
+    false
 }
 
 /// Face `(dx, dz)` in the sim's own headings.
@@ -969,6 +1111,7 @@ fn scene_pass(
                             world.seed,
                             &world.haven,
                             (rec.cx, rec.cz, rec.level, rec.loc),
+                            rec.plate,
                         );
                         let p = t.translation;
                         let d2 = (p.x - eye.pos.x).powi(2) + (p.z - eye.pos.z).powi(2);
@@ -987,6 +1130,7 @@ fn scene_pass(
                                 world.seed,
                                 &world.haven,
                                 (rec.cx, rec.cz, rec.level, rec.loc),
+                                rec.plate,
                             );
                             if t.translation.distance(seed_piece) <= BUILD_CLUSTER_M {
                                 sum += t.translation;
@@ -1206,6 +1350,7 @@ fn sight_is_clear(
             world.seed,
             &world.haven,
             (rec.cx, rec.cz, rec.level, rec.loc),
+            rec.plate,
         );
         let c = t.translation;
         // Vertically out of the way: a wall two storeys up is not between

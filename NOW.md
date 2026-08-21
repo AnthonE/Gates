@@ -838,19 +838,78 @@ ghost), and the ghost aimed by the LOOK ray (`place::aim_from_look`)
 instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
 `client/tests/ghost.rs` §footing, `place.rs` §aim. Remaining, ranked:
 
-1. **Nobody has looked at it.** Every claim is arithmetic; the screenshots
-   that opened this deserve their counter-shot. Boot, build a row on the
-   same hillside, look.
-2. **The stored plate is the real v1** — the reference's model: first
-   foundation pins a height, neighbours latch to it, too-high/too-low
-   refusals, stilts past one band. Costs a wire field + save bump + mirror
-   change (§open row prices it). Until then a slope steps every `q/slope`
-   metres and the player cannot choose where.
+1. ~~**Nobody has looked at it.**~~ **Looked at, 2026-08-21**:
+   `./ci/scene.sh --population 8 --settle 200` on seed 20260731 — eight bots
+   built a twig base over the real wire and the probe photographed it.
+   ⚠ **and its own frames sent the next slice**: the operator looked at the
+   design vantage and asked *"can we prevent the camera from popping into
+   bases"*. Two answers, both landed — piece flanks v0 for the game (a plane
+   had no sides), and a **clearance walk** before the vantages for the probe,
+   because standing ON a plate is not being inside one and six fixed bearings
+   from the middle of somebody's floor are six pictures of a wall.
+   `8-build.png` is the counter-shot the 2026-08-15 screenshots were owed:
+   the wall run holds ONE level line the length of the base while the hill
+   beside it climbs, and `0-design.png`, taken from inside, shows the floor
+   as one flat plate on a regular grid with a box and a locked keypad on it.
+   **The arithmetic half is swept too** (2026-08-21,
+   `client/tests/lattice_geom.rs`): the drawn surface is the walked surface
+   for every plane, triangle and riser, `base_transform` lands on
+   `build::anchor`, and a storey is one cube. It found the **stairs 0.212 m
+   out** — the ramp slab was centred on the storey's mid-height, so its
+   top face, the one a player sees, sat `SLAB_T/(2 cos θ)` above the line
+   `piece_ground` walks them up, for the whole climb. The run was a typed
+   4.15 m against the cell's 4.2426 diagonal too. Both fixed and derived
+   from `BUILD_CELL_M`/`LEVEL_H_M`; six mutants proven red, and the first
+   draft of the run assertion sampled a seam inside each end, which the
+   short ramp reaches — so it passed the bug it was written for.
+2. ~~**The stored plate is the real v1**~~ — **LANDED 2026-08-21**
+   (`DECISIONS.md` §open "build plate v1"). `build::plate_for`: the first
+   foundation pins the floor, orthogonal neighbours latch to it, and the
+   two limits refuse by name. Wire v49 (4 bits on the piece record), save
+   format 9, `state_hash` 12 → 13 bytes a piece — all three as this row
+   priced them. Measured before: **11.5% of buildable 4×4 footprints were
+   flat**; after, a connected base is one floor by construction and 86.7%
+   of starts take a whole 4×4. Gates `sim-core/tests/plate.rs` (7, four
+   mutants proven red) + `client/tests/lattice_geom.rs`.
+   **The offset is the reference's** (2026-08-21, `reference/BUILDING.md`
+   §7c): ±3 bands, one symmetric half-storey, taken under `BALANCE.md` §6 and
+   better on our island too — against the 6/2 this first shipped with it
+   moves a whole 4×4 from 86.7% of starts to 91.3%, an 8×8 from 62.1% to
+   70.8%, and halves the deepest leg. Still open, both the operator's:
+   **freehand** (a placement that declines the latch — they have it, we have
+   no bit for it, and it is where their advanced base tech lives) and the
+   **half wall**, their answer to the gap a half-storey offset leaves on the
+   floors above it.
+   ⚠ **It also found a hole in wall 5's own gate.** `test_replay` drives
+   `Command::Place` from tick 0 and its world ends with **zero pieces** —
+   everything enters as twig, twig is never upkept, 900 ticks rots all of
+   it — so `GOLDEN_FINAL_HASH` folds an empty piece store and has never
+   covered one. Proven: mutating `buf[4] = r.level` in `state_hash`'s piece
+   loop left the pin bit-identical. Closed by `GOLDEN_TRACE_HASH`, a fold
+   of every stamped hash rather than the last, which goes red under all
+   three piece-field mutants.
 3. **A band-boundary wall bases on its canonical cell** — it can hang one
    band over the lower plate (an arrow-sized slit under it). The lower of
    its two columns is the honest base; needs `collide` + render together.
-4. **The skirt draws and does not block** — walking into it from downhill
-   clips through. Piece side collision is its own slice.
+   The plate makes this RARE rather than fixing it: inside one base every
+   column shares a floor, so the slit is now only at the seam where two
+   separately-started bases meet.
+4. ~~**The skirt draws and does not block**~~ — **LANDED 2026-08-21**
+   (`DECISIONS.md` §open "piece flanks v0"), asked for by the operator off a
+   screenshot: *"can we prevent the camera from popping into bases"*.
+   `collide::plane_blocked` gives a plane sides — a step within `STEP_UP` is
+   still a step, a slab above the head is still passed under, a foundation is
+   solid to the ground because the skirt is. Measured with it off: a body
+   sprinting at a 3 m-stilted plate walks **clean through and out the far
+   side**. The footprint is the cell at the capsule's radius, which holds the
+   eye 0.42 m off the drawn face against a 0.1 m near plane. Third veto-lift
+   in `movement::step`, so a base built over you is something you walk out of.
+   Both replay goldens moved and are regenerated. Gate
+   `sim-core/tests/flank.rs` (5, six mutants proven red — including one that
+   found the first draft's endpoint-only assertion was green on the bug).
+   Still open: the **shot** walk does not consult it (an arrow through a floor
+   is §0ar's), and whether `place` should refuse a piece whose cell a body is
+   standing in.
 
 
 

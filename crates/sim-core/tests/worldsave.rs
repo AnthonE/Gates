@@ -19,7 +19,8 @@
 //! the function movement actually calls.
 
 use sim_core::build::{
-    build_cell_of, foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_XLO, LOC_PLANE,
+    build_cell_of, foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_XLO, LOC_EDGE_ZLO,
+    LOC_PLANE,
 };
 use sim_core::combat::CombatContent;
 use sim_core::craft::CraftContent;
@@ -29,7 +30,9 @@ use sim_core::loot::LootContent;
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::survival::SurvivalContent;
 use sim_core::world::{Command, World};
-use sim_core::worldsave::{self, WorldSaveError, HEAD_BYTES, PLAYER_BYTES, WORLD_SAVE_MAX_BYTES};
+use sim_core::worldsave::{
+    self, WorldSaveError, HEAD_BYTES, PIECE_BYTES, PLAYER_BYTES, WORLD_SAVE_MAX_BYTES,
+};
 
 /// The solved authored sites for `seed` — what `terrain::ground` needs in order
 /// to know where the carve is.
@@ -65,6 +68,8 @@ const SEED: u64 = 20260807;
 /// fixture — read off `probe_fixture()` rather than guessed.
 const ROW_FOUNDATION: u16 = 0;
 const ROW_DOORWAY: u16 = 3;
+/// Row 1 of `BuildContent::probe_fixture` — a twig wall.
+const ROW_WALL: u16 = 1;
 const DEPLOY_HEARTH: u16 = 0;
 const DEPLOY_DOOR: u16 = 2;
 
@@ -621,12 +626,18 @@ fn forged_lock_bits_load_cleared_never_trusted() {
     blob.truncate(n);
 
     // Walk to the deploy section the way the corruption test above does:
-    // head + counts, players at `PLAYER_BYTES` each, pieces at 20 (12 —
-    // the facing byte joined at format 6 — plus the placement tick), then
-    // 25 per deploy record (17 + bag_ready) with `locked` at offset 16 of
-    // each.
+    // head + counts, players at `PLAYER_BYTES` each, pieces at `PIECE_BYTES`,
+    // then 25 per deploy record (17 + bag_ready) with `locked` at offset 16
+    // of each.
+    //
+    // **The piece stride was a literal 20 here until 2026-08-21**, beside a
+    // comment deriving it as "12 + the placement tick" — and `PIECE_BYTES`
+    // said 11 + 8. Both could not be right, and the literal was: the constant
+    // had missed `facing` since format 6, so the crate's own save ceiling was
+    // 8 KiB short at the piece cap. This reads the constant now, which is
+    // what `PLAYER_BYTES`' own doc says a byte-poking test must do.
     let players = w.players.iter().filter(|p| p.active).count();
-    let deploy0 = HEAD_BYTES + players * PLAYER_BYTES + w.pieces.len() * 20;
+    let deploy0 = HEAD_BYTES + players * PLAYER_BYTES + w.pieces.len() * PIECE_BYTES;
     let mut saw = (false, false);
     for (i, rec) in w.deploys.entries().iter().enumerate() {
         let at = deploy0 + i * 25;
@@ -766,5 +777,144 @@ fn a_worn_tool_survives_the_world_and_an_empty_slot_may_not_wear() {
             sim_core::persist::SaveError::BadItemStack
         )),
         "an empty slot carrying condition must refuse the whole record"
+    );
+}
+
+/// The piece stride on disk is what the ENCODER writes, measured, not what a
+/// constant claims.
+///
+/// **This is the gate the one-byte gap needed and did not have** (2026-08-21).
+/// `PIECE_BYTES` said `11 + 8` from format 6 to format 9 while the encoder
+/// wrote `12 + 8` — `facing` joined the record and the constant did not move
+/// with it. Every check on the number was blind by construction: the ceiling's
+/// `by_hand` sum and its pinned total were both re-derived from the same wrong
+/// constant, so all three agreed with each other and none of them with the
+/// file. `WORLD_SAVE_MAX_BYTES` was 8 KiB short at `MAX_PIECES`, which is a
+/// shard at the piece cap unable to save into a buffer sized by this crate's
+/// own published ceiling.
+///
+/// A difference of two encodes cannot share that blindness: it asks the writer.
+#[test]
+fn the_piece_stride_is_what_the_encoder_writes() {
+    let mut w = a_lived_in_world();
+    let mut blob = vec![0u8; WORLD_SAVE_MAX_BYTES];
+    let before_n = w.pieces.len();
+    let before = w.save_world(&mut blob).expect("encodes");
+
+    // One more piece, by the sim's own verb, on the base the fixture built.
+    let rec = *w
+        .pieces
+        .entries()
+        .first()
+        .expect("the fixture built a base");
+    w.tick(&[Command::Place {
+        id: 1,
+        row: ROW_WALL,
+        cx: rec.cx,
+        cz: rec.cz,
+        level: 0,
+        loc: LOC_EDGE_ZLO,
+    }]);
+    assert_eq!(
+        w.pieces.len(),
+        before_n + 1,
+        "the fixture placement was refused"
+    );
+    let after = w.save_world(&mut blob).expect("encodes");
+
+    assert_eq!(
+        after - before,
+        PIECE_BYTES,
+        "one more piece cost {} bytes on disk, and PIECE_BYTES says {PIECE_BYTES}",
+        after - before
+    );
+}
+
+/// A file whose column holds two plates is refused, not loaded.
+///
+/// **The invariant, arriving through the one door that is not a command**
+/// (build plate v1). `build::place` adopts a column's plate before it inserts,
+/// so the sim cannot produce this — but the two readers of a plate disagree
+/// under it in a way that is exactly the defect the plate exists to close:
+/// `render/structures.rs` draws each piece at its OWN plate (the record
+/// carries it) and every collision walk asks the COLUMN (`ColMasks::plate`,
+/// one value). A split column is therefore a base standing where you cannot
+/// walk.
+///
+/// Poked at the byte, so it is the DECODER under test and not a constructor.
+#[test]
+fn a_column_with_two_plates_is_refused() {
+    let mut w = a_lived_in_world();
+    // A second piece in the fixture's own column, so the file has a pair to
+    // disagree about.
+    let rec = *w
+        .pieces
+        .entries()
+        .first()
+        .expect("the fixture built a base");
+    w.tick(&[Command::Place {
+        id: 1,
+        row: ROW_WALL,
+        cx: rec.cx,
+        cz: rec.cz,
+        level: 0,
+        loc: LOC_EDGE_ZLO,
+    }]);
+    let two = w
+        .pieces
+        .entries()
+        .iter()
+        .filter(|p| p.cx == rec.cx && p.cz == rec.cz)
+        .count();
+    assert!(two >= 2, "the fixture needs two pieces in one column");
+
+    let mut blob = vec![0u8; WORLD_SAVE_MAX_BYTES];
+    let n = w.save_world(&mut blob).expect("encodes");
+    blob.truncate(n);
+    let players = w.players.iter().filter(|p| p.active).count();
+    let piece0 = HEAD_BYTES + players * PLAYER_BYTES;
+
+    // Anchor on the record's own address before bending anything — a wrong
+    // stride would forge noise (the byte-poking discipline one test up).
+    let (mut bent, mut which) = (false, 0usize);
+    for (k, p) in w.pieces.entries().iter().enumerate() {
+        let at = piece0 + k * PIECE_BYTES;
+        assert_eq!(
+            u16::from_le_bytes([blob[at], blob[at + 1]]),
+            p.cx,
+            "the piece stride drifted under this test"
+        );
+        if p.cx == rec.cx && p.cz == rec.cz && !bent {
+            // The plate byte sits after cx, cz, level, loc, row, facing, hp,
+            // uh — 12 bytes in.
+            //
+            // **Anchored on `hp`, which is not zero.** The first draft
+            // anchored on the plate itself at a mis-counted +11, and the
+            // assertion passed: +11 is `uh`'s high byte, `uh` is 0 in a fresh
+            // world and so is the plate, so the check compared 0 to 0 and the
+            // bend went into a field the loader does not read. An offset
+            // assertion whose two sides can both be zero is not an assertion.
+            assert_eq!(
+                u16::from_le_bytes([blob[at + 8], blob[at + 9]]),
+                p.hp,
+                "the piece field offsets drifted under this test"
+            );
+            assert!(p.hp != 0, "the anchor field must not be zero");
+            assert_eq!(blob[at + 12] as i8, p.plate, "the plate is not at +12");
+            blob[at + 12] = p.plate.wrapping_add(1) as u8;
+            bent = true;
+            which = k;
+        }
+    }
+    assert!(bent, "nothing was bent, so nothing is under test");
+    let _ = which;
+
+    let mut back = World::new(w.seed);
+    back.build = BuildContent::probe_fixture();
+    back.deploy = DeployContent::probe_fixture();
+    assert_eq!(
+        worldsave::decode_into(&mut back, &blob),
+        Err(WorldSaveError::PieceColumnPlateSplit),
+        "a column with two floors loaded instead of refusing"
     );
 }

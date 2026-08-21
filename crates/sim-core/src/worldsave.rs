@@ -131,7 +131,17 @@ use crate::worldcont::WorldContRec;
 /// is in `state_hash` for the same reason `facing` is — a hit's price
 /// reads it — so a world resumed without it would stand every body up
 /// naked and change every fight in it.
-pub const WORLD_SAVE_FORMAT: u16 = 8;
+///
+/// **9 — a piece carries its plate** (build plate v1): one byte after `uh`,
+/// the signed band offset `build::plate_for` latched when the piece went
+/// down, validated against the two stilt limits. This is the first piece
+/// field that is not derivable from (seed, cell) — a base's floor height is
+/// now a CHOICE the first foundation made, so a save without it would
+/// resume every stilted base flat on the terrain it was built over,
+/// dropping bases into hillsides and leaving others in the air. It is in
+/// `state_hash` for `facing`'s reason and more sharply: it decides where
+/// every collision surface in the column is.
+pub const WORLD_SAVE_FORMAT: u16 = 9;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
 /// the next bag id, and the ten section counts.
@@ -177,7 +187,24 @@ pub const PLAYER_BYTES: usize = PLAYER_SAVE_BYTES + PLAYER_TAIL_BYTES;
 /// array in the store (`build.rs` says why it is not on the record) and
 /// is written inline here for `DEPLOY_BYTES`' reason — a file has no
 /// parallel arrays worth having.
-const PIECE_BYTES: usize = 11 + 8;
+///
+/// ⚠ **This was 11 + 8 from format 6 until 2026-08-21, and the encoder wrote
+/// 12 + 8 the whole time.** `facing` joined the record and this constant did
+/// not move with it, so [`WORLD_SAVE_MAX_BYTES`] under-counted by one byte per
+/// piece — 8 KiB at the cap — and a shard holding `MAX_PIECES` would have
+/// failed to save, with `save_world` returning "too small" for a buffer
+/// sized by this crate's own published ceiling. Nothing caught it because the
+/// only two checks on the number were a `by_hand` sum and a pin, and both were
+/// re-derived from this same wrong constant; the byte-poking test in
+/// `tests/worldsave.rs` had the true stride typed as a literal 20 beside a
+/// comment saying 12 + 8, which is the disagreement that finally surfaced it.
+/// It is `pub` now, that test reads it instead of a literal, and
+/// `the_piece_stride_is_what_the_encoder_writes` measures it against two real
+/// encodes — so the next field to join gets a red test rather than a bigger
+/// silent gap.
+///
+/// 12 → 13 at format 9: the plate (build plate v1).
+pub const PIECE_BYTES: usize = 13 + 8;
 /// A deploy record plus its `bag_ready` cooldown, which lives in a parallel
 /// array in the store (`deploy.rs` says why it is not on the record) and is
 /// written inline here because a file has no parallel arrays worth having.
@@ -265,6 +292,18 @@ pub enum WorldSaveError {
     /// one that would panic the sim: `bc.pieces[row].shape` is indexed
     /// unchecked at every rebuild and every collapse.
     BadContentRow,
+    /// Two pieces in one build column claim different plates (build plate
+    /// v1). The sim cannot produce it — `build::place` adopts the column's
+    /// plate before it inserts — so a file that holds it was edited.
+    ///
+    /// **Refused rather than normalised, because the two readers disagree.**
+    /// The renderer draws each piece at its OWN plate (the record carries
+    /// it); every collision walk asks the COLUMN (`ColMasks::plate`, one
+    /// value, last write wins on rebuild). A column with two plates is
+    /// therefore a base you can see standing where you cannot walk — the
+    /// exact drawn-vs-collided split the plate exists to close, arriving
+    /// through the one door that is not a command.
+    PieceColumnPlateSplit,
     /// An item stack names an item past the table, or is not in the
     /// canonical empty form (`count == 0` ⇔ `item == 0`) — the same rule
     /// `PlayerSave` enforces, for the same state-hash reason.
@@ -306,6 +345,7 @@ impl WorldSaveError {
             Self::DuplicatePlayerId => "two bodies claim the same player id",
             Self::AddressOutOfRange => "a structure stands off the island",
             Self::BadContentRow => "a structure names a content row that does not exist",
+            Self::PieceColumnPlateSplit => "two pieces in one build column stand on two floors",
             Self::BadItemStack => "an item stack names an impossible item or count",
             Self::BadBackpackId => "a backpack id is zero, duplicated, or past the next id",
             Self::BadCharge => "a charge names an impossible structure",
@@ -445,6 +485,10 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u8(p.facing);
         o.u16(p.hp);
         o.u16(p.uh);
+        // The plate, as raw two's complement (format 9). Signed because a
+        // base can be stilted over its ground or cut a band into it, and
+        // the sign is the difference between a leg and a buried floor.
+        o.u8(p.plate as u8);
         o.u64(*placed);
     }
     for (d, ready) in w.deploys.entries().iter().zip(w.deploys.bag_ready()) {
@@ -808,7 +852,9 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     // --- pieces ---------------------------------------------------------
     let mut pieces = [PieceRec::default(); MAX_PIECES];
     let mut placed = crate::boxed_array::<u64, MAX_PIECES>(0);
-    for (i, p) in pieces.iter_mut().take(n_pieces).enumerate() {
+    // Indexed rather than `iter_mut`, because the plate check below has to
+    // read the records already decoded while this one is still being built.
+    for i in 0..n_pieces {
         let cx = r.u16()?;
         let cz = r.u16()?;
         let level = r.u8()?;
@@ -817,7 +863,26 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let facing = r.u8()?;
         let hp = r.u16()?;
         let uh = r.u16()?;
+        let plate = r.u8()? as i8;
         placed[i] = r.u64()?;
+        // One column, one plate — the invariant `plate_for` maintains and
+        // every collision walk reads. Linear over what has been read so far,
+        // bounded by `MAX_PIECES`, on the boot path.
+        if pieces[..i]
+            .iter()
+            .any(|p| p.cx == cx && p.cz == cz && p.plate != plate)
+        {
+            return Err(WorldSaveError::PieceColumnPlateSplit);
+        }
+        // A plate outside the stilt band is a hand-edited file, and it would
+        // flow straight into `state_hash` and into every collision query in
+        // the column — the `facing > 1` check's reason, on the field that
+        // moves geometry rather than price.
+        if (plate as i32) > crate::build::PLATE_RISE_MAX_BANDS
+            || (plate as i32) < -crate::build::PLATE_SINK_MAX_BANDS
+        {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
         if !build_addr_ok(cx, cz, level) {
             return Err(WorldSaveError::AddressOutOfRange);
         }
@@ -832,7 +897,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         if facing > 1 {
             return Err(WorldSaveError::AddressOutOfRange);
         }
-        *p = PieceRec {
+        pieces[i] = PieceRec {
             cx,
             cz,
             level,
@@ -847,6 +912,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             // read back, and no format bump. A loaded piece bands itself
             // correctly the first time it is encoded, off `hp`.
             dmg: 0,
+            plate,
         };
     }
 
@@ -1333,7 +1399,7 @@ mod tests {
         // re-derive is a constant nobody checks twice.
         let by_hand = 56                    // head
             + 100 * 320                     // players (6 B a stack, + 2 worn at format 8)
-            + 8_192 * 19                    // pieces + placement tick
+            + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 33                    // deploys + bag_ready + placed
             + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
             + 256 * 111                     // containers: 9 + 12 six-byte stacks + the oven's 30
@@ -1358,7 +1424,9 @@ mod tests {
         // Both stores grew eight bytes a record at demolish v1: the
         // placement tick is a parallel array in the store and inline
         // here, for `DEPLOY_BYTES`' stated reason.
-        assert_eq!(PIECE_BYTES, 19);
+        // 19 → 21: 20 is what the encoder has written since format 6 (the
+        // constant was a byte short — see `PIECE_BYTES`), plus the plate.
+        assert_eq!(PIECE_BYTES, 21);
         assert_eq!(DEPLOY_BYTES, 33);
         assert_eq!(WORLD_SAVE_MAX_BYTES, by_hand);
         // Moved 572_246 → 572_502 at format 4: a charge grew four bytes
@@ -1372,8 +1440,13 @@ mod tests {
         // Moved 612_872 → 614_072 at format 8: a player record carries two
         // worn stacks (armor v0) — 100 × 12 bytes, and only the player
         // section, because nothing else wears anything.
+        // Moved 614_072 → 630_456 at format 9, and TWO bytes a piece of that
+        // is one change: the plate (build plate v1), plus the byte `facing`
+        // has cost since format 6 that this ceiling never counted
+        // (`PIECE_BYTES`). Only the piece section moves — a deployable reads
+        // its column's plate out of the pieces rather than storing a copy.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 614_072,
+            WORLD_SAVE_MAX_BYTES, 630_456,
             "the world save ceiling moved"
         );
     }

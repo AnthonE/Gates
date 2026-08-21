@@ -1071,11 +1071,17 @@ missing it survivable.
      `piece_defs_have`**: an undripped row is `INERT`, whose shape is
      `SHAPE_FOUNDATION`, so an ungated read draws a foundation slab in mid-air
      where a wall belongs. Base height is resampled locally by calling
-     `sim_core::build::column_floor_y(seed, cx, cz) + level*3` — the sim's
-     one implementation (cell-center terrain snapped to `BUILD_BASE_Q_M`,
-     2026-08-15; this line restated the raw formula until then, and the day
-     the sim's rule changed is the day a restated copy would have drawn
-     every floor off the surface the sim walks) —
+     `sim_core::build::column_floor_y(seed, cx, cz, plate) + level*3` — the
+     sim's one implementation (cell-center terrain snapped to
+     `BUILD_BASE_Q_M`, 2026-08-15; this line restated the raw formula until
+     then, and the day the sim's rule changed is the day a restated copy
+     would have drawn every floor off the surface the sim walks) — where
+     **`plate` is the record's own** (build plate v1, 2026-08-21): a base's
+     floor is a stored choice its first foundation made, so it rides the
+     wire and only the terrain band under it is still derived from
+     (seed, cell). A deployable's record carries none and reads its column's
+     out of the piece mirror, which is why the deploy loop treats the plate
+     as redraw state —
      at the CELL CENTRE for every `loc`, including edge pieces, so the two
      cells an edge adjoins cannot disagree. A plane's slab hangs BELOW its
      walk surface (centre at `base_y - 0.15`, top at `base_y`); getting that

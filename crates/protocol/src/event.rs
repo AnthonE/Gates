@@ -16,7 +16,8 @@ use crate::chat::{read_text, write_text, ChatText};
 use crate::loc_max;
 use crate::{
     expect_zero_padding, BUILD_CELL_BITS, BUILD_LEVEL_BITS, BUILD_LOC_BITS, DEPLOY_ROW_BITS,
-    DMG_BAND_BITS, KIND_BITS, KIND_EVENT, PIECE_ROW_BITS, POS_XZ_BITS, POS_Y_BIAS, POS_Y_BITS,
+    DMG_BAND_BITS, KIND_BITS, KIND_EVENT, PIECE_ROW_BITS, PLATE_BIAS, PLATE_BITS, POS_XZ_BITS,
+    POS_Y_BIAS, POS_Y_BITS,
 };
 use sim_core::backpack::BackpackRec;
 use sim_core::build::{
@@ -1331,7 +1332,7 @@ pub fn encode_event_research_rows(
     Ok((w.finish(), count))
 }
 
-/// One placed-piece record on the wire: 34 bits, shared by the placed
+/// One placed-piece record on the wire: 38 bits, shared by the placed
 /// broadcast and the sync batches. Refuses an address outside the grid or
 /// a row outside the def table — this encoder only ever sees sim records.
 /// The trailing bit is the soft side's facing (hard/soft v0, wire v39):
@@ -1359,6 +1360,16 @@ fn write_piece_rec(w: &mut BitWriter, rec: &PieceRec) -> Result<(), WireError> {
     // the one place it builds these; `tests/protocol_golden.rs` §dmg holds
     // the round trip.
     w.write((rec.dmg & (DMG_BANDS - 1)) as u32, DMG_BAND_BITS)?;
+    // The column's plate (build plate v1, wire v49), biased into
+    // `PLATE_BITS`. Unlike `dmg` this IS sim state and the store maintains
+    // it — a record that arrives with the wrong plate draws the whole base
+    // on the wrong floor, which is why it rides every record rather than a
+    // per-column lane: a column's plate arrives with its pieces and leaves
+    // with its last one, so there is no third message to forget.
+    w.write(
+        (rec.plate as i32 + PLATE_BIAS).clamp(0, (1 << PLATE_BITS) - 1) as u32,
+        PLATE_BITS,
+    )?;
     Ok(())
 }
 
@@ -1376,6 +1387,7 @@ fn read_piece_rec(r: &mut BitReader) -> Result<PieceRec, WireError> {
         // Every one of the eight values `DMG_BAND_BITS` can carry is legal,
         // so this needs no range check — the width is the check.
         dmg: r.read(DMG_BAND_BITS)? as u8,
+        plate: (r.read(PLATE_BITS)? as i32 - PLATE_BIAS) as i8,
         ..rec
     };
     // Coord/level/facing widths are exact; the row — and, since v40's
@@ -1586,6 +1598,15 @@ fn write_deploy_rec(w: &mut BitWriter, rec: &DeployRec) -> Result<(), WireError>
     w.write_bit(rec.has_lock)?;
     // The damage band (wire v44) — `write_piece_rec`'s note applies here.
     w.write((rec.dmg & (DMG_BANDS - 1)) as u32, DMG_BAND_BITS)?;
+    // **No plate here, deliberately** (build plate v1). A deployable stands
+    // on a piece or on bare ground, and in the first case the piece record
+    // for its own column already carries the plate — so a second copy on
+    // this record would be a field two messages could disagree about, for a
+    // column the renderer can look up in the mirror it already keeps
+    // (`render/structures.rs` reads `ClientCore::cols`). The ordering hazard
+    // that buys — a deploy arriving before its column's pieces — is closed
+    // on the render side by treating the plate as redraw state, the way the
+    // door's own open bit is.
     Ok(())
 }
 
@@ -3525,6 +3546,62 @@ mod tests {
         );
     }
 
+    /// Every plate the sim can produce survives the wire, sign and all
+    /// (build plate v1, wire v49).
+    ///
+    /// **A signed field on a bit writer is where a round trip earns its
+    /// keep.** `plate` is written biased and read back by subtracting the
+    /// bias, and every way of getting that wrong — the wrong bias, an
+    /// unsigned read, a width one bit short — is silent on the value 0, which
+    /// is what every fixture in `goldens.rs` carries and what an untouched
+    /// column has. A base drawn a storey off the one it is walked on is what
+    /// a dropped sign looks like in play.
+    #[test]
+    fn a_plate_round_trips_through_its_whole_sign() {
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        for plate in -(sim_core::build::PLATE_SINK_MAX_BANDS as i8)
+            ..=sim_core::build::PLATE_RISE_MAX_BANDS as i8
+        {
+            let rec = PieceRec {
+                cx: 341,
+                cz: 682,
+                level: 3,
+                loc: LOC_EDGE_ZLO,
+                row: 17,
+                plate,
+                ..PieceRec::default()
+            };
+            let len = encode_event_piece_placed(&rec, &mut buf).unwrap();
+            assert_eq!(
+                decode_event(&buf[..len]).unwrap(),
+                EventMsg::PiecePlaced { rec },
+                "plate {plate} did not survive the wire"
+            );
+        }
+        // And the whole width, past the knobs: the field is deliberately
+        // wider than today's limits (`PLATE_BITS` says why), so the values
+        // between them and the width must not alias onto legal ones.
+        let mut seen = std::collections::BTreeSet::new();
+        for plate in -PLATE_BIAS as i8..PLATE_BIAS as i8 {
+            let rec = PieceRec {
+                cx: 1,
+                cz: 1,
+                row: 0,
+                plate,
+                ..PieceRec::default()
+            };
+            let len = encode_event_piece_placed(&rec, &mut buf).unwrap();
+            let EventMsg::PiecePlaced { rec: back } = decode_event(&buf[..len]).unwrap() else {
+                panic!("not a placement")
+            };
+            assert!(
+                seen.insert(back.plate),
+                "plate {plate} aliased onto another"
+            );
+        }
+        assert_eq!(seen.len(), 1 << PLATE_BITS);
+    }
+
     #[test]
     fn piece_sync_full_batch_fits_the_cap() {
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
@@ -4489,9 +4566,9 @@ mod wire_domains {
             prefix: "pub const REFUSE_B_",
             ty: ": u32 = ",
             exempt: &[],
-            min_members: 13,
+            min_members: 15,
             bits: REFUSE_B_BITS,
-            live_max: 12,
+            live_max: 14,
         },
         Domain {
             what: "container kind",

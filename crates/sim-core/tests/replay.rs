@@ -423,7 +423,62 @@ const TICKS: u64 = 900;
 /// `0xDFFD_AE59_3232_47C6` is the value before, and it is left written
 /// here on purpose: the next reader's question is *which change moved it*,
 /// and a pin that only ever shows its current value cannot answer that.
-const GOLDEN_FINAL_HASH: u64 = 0xE6C1_8463_97AE_FB21;
+///
+/// **Moved `0xE6C1_8463_97AE_FB21` → `0x3DF4_80D5_22B1_FEAD` at piece flanks
+/// v0** (2026-08-21). A plane grew sides (`collide::plane_blocked`), so bodies
+/// that used to walk through the foundations this script places now stop at
+/// them, and where a hundred bodies are standing at tick 900 is most of what
+/// this digest is. Deliberate, and the regeneration is in the same commit as
+/// the change that caused it — which is the whole of what this pin is for.
+const GOLDEN_FINAL_HASH: u64 = 0x3DF4_80D5_22B1_FEAD;
+
+/// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
+/// run, not just the last one.
+///
+/// **Written 2026-08-21 because the final hash does not cover the piece
+/// store, and never has.** The script drives `Command::Place` from tick 0 and
+/// the world ends with **zero pieces**: everything a player can place enters
+/// as twig (twig v0), twig is the one material `deploy::upkeep_sweep` never
+/// protects, and 900 ticks is long enough for all of it to rot. So the pinned
+/// end state has an empty piece store, and `state_hash`'s whole piece section
+/// folds nothing into it. Proven by mutant: `buf[4] = r.level.wrapping_add(1)`
+/// in `world.rs`'s piece loop — a field hashed since this gate was written —
+/// leaves `GOLDEN_FINAL_HASH` bit-identical.
+///
+/// The A-vs-B comparison below was never blind to it (both runs place and rot
+/// the same pieces, so a nondeterministic one still diverges), which is why
+/// this is a hole in the *golden* and not in the whole suite: what went
+/// unwatched is drift ACROSS BUILDS in anything that does not survive to the
+/// last tick. That is most of the build verb, most of decay, and every
+/// intermediate the sweeps walk.
+///
+/// Folding the trace costs one constant and covers all of it. It is a
+/// separate pin rather than a replacement, because the two answer different
+/// questions and a reader who finds one moved wants to know whether the other
+/// did: the final hash says the world ENDED somewhere else, the trace says it
+/// went somewhere else on the way.
+///
+/// Both moved at piece flanks v0 (2026-08-21) and both for one reason — a
+/// plane grew sides, so bodies stop at foundations they used to walk through.
+/// It was `0xCF27_5417_7837_CB31` at the tick this pin was written, which was
+/// the same commit's earlier half; that value pinned a world where planes had
+/// no flanks and is kept here for the reason above.
+const GOLDEN_TRACE_HASH: u64 = 0x8B76_54B6_583A_A95D;
+
+/// Fold a stamped trace into one number.
+///
+/// Deliberately the dumbest mixing that is order-sensitive and position-
+/// sensitive: a fold that summed, xor'd or otherwise commuted would pass a
+/// run that visited the same states in a different order, which is exactly
+/// the drift a trace pin exists to see.
+fn trace_of(hashes: &[u64]) -> u64 {
+    let mut acc = 0xcbf2_9ce4_8422_2325u64;
+    for (i, h) in hashes.iter().enumerate() {
+        acc ^= h.rotate_left((i % 64) as u32);
+        acc = acc.wrapping_mul(0x1000_0000_01b3);
+    }
+    acc
+}
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
@@ -1187,6 +1242,12 @@ fn test_replay() {
         final_a, GOLDEN_FINAL_HASH,
         "sim behavior drifted from the pinned replay golden; if intentional, \
          regenerate the golden in this same commit"
+    );
+    assert_eq!(
+        trace_of(&hashes_a),
+        GOLDEN_TRACE_HASH,
+        "the run took a different PATH to the same end state; if intentional, \
+         regenerate this golden in the same commit as the change"
     );
 
     // A different seed must actually change the world (guards against a

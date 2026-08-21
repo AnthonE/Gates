@@ -27,7 +27,7 @@
 //! avoid, so every check here is one the sim runs the same way.
 
 use sim_core::build::{
-    anchor, build_cell_of, foundation_terrain_ok, BuildContent, PieceRec, BUILD_CELL_M,
+    anchor, build_cell_of, foundation_terrain_ok, plate_for, BuildContent, PieceRec, BUILD_CELL_M,
     BUILD_REACH_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER,
     LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, SHAPE_DOORWAY,
     SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
@@ -285,6 +285,11 @@ pub struct Site<'a> {
     pub at: (f32, f32),
     /// Addresses already holding a piece.
     pub taken: &'a [sim_core::build::PieceRec],
+    /// The predictor's column index — the client's own mirror of the store
+    /// `build::place` reads. Here for the plate (build plate v1): the height
+    /// a placement takes is no longer a function of (seed, cell), so the
+    /// ghost has to ask the same question the sim will.
+    pub cols: &'a sim_core::collide::ColIndex,
     pub content: &'a BuildContent,
     pub inv: &'a [ItemStack; INV_SLOTS],
 }
@@ -316,11 +321,43 @@ pub fn verdict(t: Target, row: u16, shape: u8, site: &Site<'_>) -> Verdict {
         return Verdict::No("bad ground");
     }
 
+    // The plate (build plate v1), by the sim's own rule against the client's
+    // own mirror — after ground and before cost, which is `build::place`'s
+    // own order, so the sentence the ghost shows is the one the server would
+    // have said and not a later one.
+    //
+    // **Mirrored rather than left Unknown**, unlike the claim: the two plate
+    // refusals are computed from the piece index and the terrain, and the
+    // client holds both. Leaving them out would put a green ghost on the
+    // commonest refusal a hillside can produce.
+    if let Err(why) = plate_for(site.cols, site.seed, site.haven, t.cx, t.cz) {
+        // Indexed rather than formatted: `Verdict::No` carries a
+        // `&'static str`, and the table row IS that string — the same one
+        // the server's refusal would arrive with (`DeployVerdict`'s
+        // discipline, one table over). `plate_for` returns only these two
+        // codes, so an out-of-range index here is a loud bug and not a
+        // case to clamp away.
+        return Verdict::No(super::refusals::BUILD[why as usize]);
+    }
+
     if !affordable(site.content, row, site.inv) {
         return Verdict::No("missing materials");
     }
 
     Verdict::Ok
+}
+
+/// The plate a placement at `t` would take, or 0 where the rule refuses —
+/// what the GHOST draws at.
+///
+/// A refusal still has to draw something: the ghost's whole job on a hillside
+/// is to show you the base is too high or too low before you press, and a
+/// hidden ghost says nothing. Zero is the column's own ground, which is where
+/// an unlatched foundation would stand — so a red ghost on `too far below the
+/// floor` sits on the terrain under it with the base it could not reach
+/// visibly above, which is the picture that explains the refusal.
+pub fn ghost_plate(site: &Site<'_>, t: Target) -> i8 {
+    plate_for(site.cols, site.seed, site.haven, t.cx, t.cz).unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -726,13 +763,18 @@ mod tests {
             hp: 10,
             uh: 0,
             dmg: 0,
+            plate: 0,
         }];
         let (ax, az) = anchor(t.cx, t.cz, t.loc);
+        // Nothing built anywhere: `plate_for` answers 0 and refuses nothing,
+        // so these two tests keep asking exactly what they asked before.
+        let empty_cols = sim_core::collide::ColIndex::new();
         let site = Site {
             seed: 1,
             haven: &haven1,
             at: (ax, az),
             taken: &taken,
+            cols: &empty_cols,
             content: &content,
             inv: &inv,
         };
@@ -756,11 +798,13 @@ mod tests {
             loc: LOC_EDGE_XLO,
         };
         let (ax, az) = anchor(t.cx, t.cz, t.loc);
+        let empty_cols = sim_core::collide::ColIndex::new();
         let site_near = Site {
             seed: 1,
             haven: &haven1,
             at: (ax, az - BUILD_REACH_M + 0.2),
             taken: &[],
+            cols: &empty_cols,
             content: &content,
             inv: &inv,
         };
@@ -770,6 +814,7 @@ mod tests {
             haven: &haven1,
             at: (ax, az - BUILD_REACH_M - 0.2),
             taken: &[],
+            cols: &empty_cols,
             content: &content,
             inv: &inv,
         };
