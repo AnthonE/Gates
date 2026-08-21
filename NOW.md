@@ -894,6 +894,17 @@ instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
    The plate makes this RARE rather than fixing it: inside one base every
    column shares a floor, so the slit is now only at the seam where two
    separately-started bases meet.
+4b. **The flank costs 153 µs a tick and a memo would take most of it back.**
+   A/B on `bin/profile` (100 clients, 2 000 pieces, 600 ticks, bodies in the
+   piece block): `World::tick` 195 → 348 µs, 0.6% → 1.0% of budget.
+   Affordable, and the cause is exact: `collide::col_base_y` re-samples
+   terrain per cell per candidate and `plane_blocked` reads up to four cells,
+   so one movement step can cost twelve `terrain::ground` taps it did not
+   before. `terrain_band` is pure in (seed, cell), so a direct-mapped memo is
+   EXACT rather than approximate — `occupy::SlotCache`'s own argument, and it
+   is not sim state for the same reason. Not urgent; cheap; and the number is
+   here so nobody has to re-measure to decide.
+
 4. ~~**The skirt draws and does not block**~~ — **LANDED 2026-08-21**
    (`DECISIONS.md` §open "piece flanks v0"), asked for by the operator off a
    screenshot: *"can we prevent the camera from popping into bases"*.
