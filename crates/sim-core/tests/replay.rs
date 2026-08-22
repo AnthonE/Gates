@@ -705,6 +705,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz: cell(b.qz),
                     level: ((t / 106) % 2) as u8,
                     loc: ((t / 53 + id as u64) % 4) as u8,
+                    freehand: false,
                 });
             }
             // The deploy verb too: a bag and a workbench at the player's
@@ -884,6 +885,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: 0,
+                    freehand: false,
                 }),
                 151 => cmds.push(Command::PlaceDeploy {
                     id,
@@ -907,6 +909,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_XLO,
+                    freehand: false,
                 }),
                 153 => cmds.push(Command::PlaceDeploy {
                     id,
@@ -941,6 +944,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_ZLO,
+                    freehand: false,
                 }),
                 160 | 161 => cmds.push(Command::Upgrade {
                     id,

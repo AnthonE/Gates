@@ -136,6 +136,14 @@ fn tick_cmds(
                 cz: cell.1,
                 level,
                 loc,
+                // Alternates with the loc cycle so `plate_for`'s freehand
+                // early-out is a branch this gate actually walks (freehand
+                // placement v0). This covers what alloc_zero measures — the
+                // PATH — and deliberately claims nothing about the value:
+                // see `plate.rs` for the gate on what the bit means, and
+                // `NOW.md` §0bl item 5 for why replay and parity do not
+                // cover it.
+                freehand: loc % 2 == 0,
             }
         } else if i == MAX_PLAYERS + 3 {
             Command::Upgrade {

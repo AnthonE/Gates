@@ -1,153 +1,162 @@
-# Branch notes — `claude/base-math-server-client-4352ou`
+# Branch notes — `claude/building-placement-foundations-3gmwfk`
 
-**"Do research to see if the bases are showing up on client side like the
-serverside claims… make sure the math is mathing"** (operator, 2026-08-21),
-then two follow-ups off the frames it produced. Four commits, driven directly
-rather than by the loop harness. This replaces the
-`claude/recent-commits-review-t8ps2v` note.
+**Freehand placement.** The one item the previous branch's note called the
+operator's and unmeasurable — *"whether a placement may decline the latch
+changes what a base can be, and no measurement can answer it"* — was put to
+the operator, answered, and built. This replaces the
+`claude/base-math-server-client-4352ou` note.
 
-Read `NOW.md` §0bl first — every item below is a line there, and `DECISIONS.md`
-§open carries three new rows ("build plate v1", "piece flanks v0", and the
-amended "build base lattice v0").
+Read `NOW.md` §0bl item 5 first, and `DECISIONS.md` §spoken 2026-08-22 for
+the call itself. The §open row beside it prices the three numbers.
+
+## The call, and the half of it that was research
+
+The operator took **"any piece — full freehand"** off four options. Asked how
+the player *expresses* it — hold a key, a build-mode toggle, a ghost that
+cycles — they picked none of them and described the reference from memory
+instead: *"when i played rust i think when u didnt get near an existing pieces
+it was always freehand… u just aimed where u needed the piece"*, and *"can
+search to see how it works"*.
+
+**Searched, and the memory is right in a way that mattered.** The reference
+has **no freehand input at all**. Placement there is continuous and
+socket-based, a piece is *attracted* to a socket when your aim comes near one,
+and a freehand piece is one aimed where nothing catches it. That is why their
+own guides call the technique *"very tricky and non-intuitive, even to veteran
+Rust players"* and teach it with the logs on a twig foundation and the compass
+tics as visual references — a game with a freehand button would need none of
+that. `reference/BUILDING.md` §7c.3 said the sources "do not state the input
+consistently"; that was the misreading, and it is rewritten: the agreement is
+that there is none.
+
+**The mechanism does not port, and that is the finding.** Ours is
+address-based — `Place` carries a cell and `plate_for` latches on exact
+adjacency — so there is no "near" for a placement to miss and no room to be
+adjacent-but-not-snapped. The bit has to be explicit where theirs is emergent.
+
+**What ports is the aim.** `place::aim_from_look` already marches the look ray
+to a real `(f32, f32)` and `place::target_at` quantizes it away, so the
+sub-cell remainder was sitting there unused. It is the freehand input the
+model was missing: near the shared edge with a built neighbour the placement
+snaps, past `SNAP_BAND_FRAC` of the cell it declines, and the ghost's own
+height is the preview. No key and no mode, which is the property of theirs
+actually worth keeping.
 
 ## What landed
 
-**The answer to the question, first: it was never client/server drift.** Both
-sides call one `column_floor_y`, so they agreed perfectly — about a staircase.
-Of 5 726 buildable 4×4 footprints on the shipped island, **658 were flat**
-(11.5%); 45.8% stepped half a metre across themselves and the worst stepped
-10 m. The bases were showing up exactly as claimed. The claim was wrong.
+**`plate_for` gains a fourth case ahead of the neighbour scan.** With the bit
+set an empty column takes band 0 — its own ground — so the two plate refusals
+cannot fire for it, because band 0 is neither a stilt nor a cut. A refusal
+about height is now exactly a refusal about a latch the player asked for.
 
-**stairs** (3e8597b) — the one real drawn-vs-collided gap the sweep found. The
-ramp slab was centred on the storey's mid-height, so its top face sat
-`SLAB_T/(2·cos θ)` = **0.212 m** above the line `piece_ground` walks a rider
-up, for the whole climb. The run was a typed 4.15 m against the cell's
-4.2426 m diagonal and the 45° pitch was a literal that is right only while
-`LEVEL_H_M == BUILD_CELL_M`. All three derived now.
-`client/tests/lattice_geom.rs` is the gate, and it is new coverage rather than
-a tightening: `ghost.rs` works in a piece's own (t, y) frame, so every claim it
-makes is true of a piece drawn in the wrong cell — `base_transform` was the
-half nothing read.
+**Case 1 is deliberately not declinable.** A piece entering a column that
+already holds one still takes that column's plate, whatever the bit says. That
+is the invariant `plate.rs` and the ghost both lean on, and the reference keeps
+it too — their walls must still take a socket, so freehand there is a
+foundation-and-floor technique rather than a general licence.
 
-**build plate v1** (d63794f, 0179627) — `NOW.md` §0bl item 2, the v1 the
-lattice row deferred. A column's floor is stored: the first foundation pins it,
-orthogonal neighbours latch to the highest, and two limits refuse by name.
-Wire v49 (4 bits on the piece record), save format 9, `state_hash` 12 → 13
-bytes — the three costs that row priced. A connected base is one floor by
-construction.
-
-**piece flanks v0** (c804c63) — planes had no sides at all. A body walked into
-the flank of a foundation and stood inside the slab and the drawn skirt;
-measured with it off, a body sprinting at a 3 m-stilted plate **walks clean
-through and out the far side**. `collide::plane_blocked`, plus a third
-veto-lift in `movement::step` so a base built over you is something you walk
-out of.
-
-**the reference's offset, and the camera** (6c39343) — Devblog 187 fetched
-whole: their snap offset is **one symmetric half-wall**. Ours shipped 6 up /
-2 down that morning and was worse on our own island — ±3 moves a whole 4×4
-from 86.7% of starts to 91.3%, an 8×8 from 62.1% to 70.8%, and halves the
-deepest leg. Taken under `BALANCE.md` §6. `reference/BUILDING.md` §7c is the
-research; §9 items 16–19 are what it means here.
+**The bit crosses the wire because it cannot be re-derived.** Which neighbour
+is built is a fact the server already has; which floor the player *wanted* is
+one only the client holds. `PROTO_VER` 49 → 50.
 
 ## What is measured
 
-`./ci/gates.sh` → **ALL GATES GREEN, EXIT=0** on the pushed tip, 12 banners,
-including `test_protocol_golden`, `test_replay`, `test_alloc_zero`,
-`test_terrain_golden`, `test_content`, `test_parity_wasm` and the
-`--features render` tier. `node ci/knob_registry.mjs` → 377 declarations
-pinned, 1 511 checks.
+`./ci/gates.sh` → **ALL GATES GREEN, EXIT=0**, including
+`test_protocol_golden`, `test_replay`, `test_alloc_zero`, `test_terrain_golden`,
+`test_content`, `test_parity_wasm` and the `--features render` tier.
+`node ci/knob_registry.mjs` → 379 declarations pinned, 1 519 checks.
 
-**Three suites are new and every one was mutant-proven**, 15 mutants across
-them, and two of those mutants found assertions that were green on the bug
-they were written for. Both are written into the files rather than quietly
-fixed: `lattice_geom.rs`' ramp check sampled a *seam* inside each end, which a
-0.09 m-short ramp still reaches; `flank.rs` read only where the body finished,
-and without the flank the body ends up PAST the base rather than inside it.
+**Six new gates, all six mutant-proven** — three in
+`sim-core/tests/plate.rs` (what the bit MEANS) and three in
+`client/tests/freehand.rs` (whether an aim can reach it). Each mutant killed
+exactly its own gate: deleting the early-out kills the two behaviour gates and
+leaves the case-1 guard standing; letting freehand bypass case 1 kills the
+case-1 guard alone; inverting the snap comparison, returning freehand over
+open ground, and narrowing the band each kill one client gate.
 
-**`PROTO_VER` 48 → 49 and `WORLD_SAVE_FORMAT` 8 → 9**, goldens regenerated in
-the same commit as the layout change, and the fixture-input change that pins a
-live plate is its own commit — `goldens.rs`' header requires that split and
-this is the first time it has been exercised in both directions.
+**The golden fixture pins the bit `true`, and that was measured rather than
+chosen.** Pinned `false`, deleting the encoder's `w.write` leaves every byte
+identical and `test_protocol_golden` passes — run both ways, 13 green on the
+mutant. Pinned `true` it is red. A fixture whose new field carries the zero
+value cannot tell a live bit from a dropped one.
 
-**Both replay goldens moved at piece flanks v0 and are regenerated.** That is
-the honest signal: bodies stop where they used to pass.
+**96 goldens rekeyed `v50_*`, of which exactly two changed bytes** —
+`action_place` and the `hello` that carries the version. The other 94 are pure
+renames, which is the honest signature of a width bump and worth checking for
+on the next one.
 
-**Looked at, not only computed.** `./ci/scene.sh --population 8 --settle 200`
-on seed 20260731 — eight bots built a base over the real wire and the probe
-photographed it. `NOW.md` §0bl item 1 asked for that counter-shot and it is
-closed.
+**No save format moved.** The plate a freehand placement takes is an ordinary
+plate, so `WORLD_SAVE_FORMAT` stays 9 and neither replay golden moved.
 
-## Two pre-existing bugs surfaced on the way, both fixed here
+## Two gates that are weaker than they look, written down rather than papered over
 
-1. **`PIECE_BYTES` said `11 + 8` from format 6 while the encoder wrote
-   `12 + 8`** — `facing` joined the record and the constant did not move with
-   it, so `WORLD_SAVE_MAX_BYTES` was 8 KiB short at the piece cap and **a
-   shard at `MAX_PIECES` could not have saved**. Every check on the number was
-   re-derived from the same wrong constant; the gate takes a difference of two
-   real encodes now.
-2. **`test_replay`'s world ends with ZERO pieces** — everything enters as
-   twig, twig is never upkept, 900 ticks rots all of it — so
-   `GOLDEN_FINAL_HASH` has never covered the piece store. Proven by mutating a
-   field hashed since that gate was written and watching the pin hold.
-   `GOLDEN_TRACE_HASH` folds every stamped hash rather than the last and goes
-   red under all three piece-field mutants. **Wall 5's own gate had a hole in
-   it and nothing else would have found it.**
+**Freehand does not ride `test_replay` or `test_parity_wasm`, and I measured
+that instead of assuming it.** The house precedent is explicit — a verb that
+is merely *possible* inside those gates is not covered by them, and claiming
+otherwise was a judged failure once already (`DECISIONS.md`, repair v0). So I
+put the bit on all three surfaces, then ran the mutant: making `plate_for`'s
+early-out inert left every parity digest and both replay goldens
+**bit-identical**. Neither script ever places into an empty column with a
+built orthogonal neighbour whose band differs, which is the only shape where
+the bit can change a byte. A tick-167 foundation in the neighbour column was
+tried next — it *did* move both goldens, and the mutant *still* passed, so it
+was reverted rather than pay a wall-5 golden churn for coverage it does not
+buy. What stayed is `alloc_zero`, which walks the branch, which is exactly
+what that gate measures. The bit's behaviour is covered by `plate.rs`, over
+real terrain, mutant-proven three ways. Closing the rest means engineering
+`probe.rs`'s world script to construct the case; it is cheap there and is
+written into `NOW.md` §0bl item 5.
+
+## And one client gate weaker than it looks
+
+`the_bit_flips_where_the_snap_band_ends` measures the flip position against
+`SNAP_BAND_FRAC` itself, so narrowing the band moves the constant and the
+assertion together and it stays green — run and confirmed. That is correct
+(the band is a knob, not a law), but a reader who saw only that test would
+over-trust it. The law-like consequence of the two-thirds value — that bands
+measured from opposite sides *overlap*, so a cell wedged between two built
+columns can never decline — is held by
+`a_cell_between_two_columns_cannot_decline` with an explicit assert, and that
+one does go red. The split is noted in the test file.
 
 ## What remains
 
-None of it is a red gate. Ranked, and each is a line in `NOW.md` §0bl:
+Unchanged from the previous note except where freehand touched it. None of it
+is a red gate.
 
-1. **Freehand placement — the operator's, and the biggest.**
-   `Command::Place` carries a cell address and no way to say *do not latch*,
-   so a player cannot put a foundation at its own ground beside somebody
-   else's plate — the first thing anyone tries on a slope. The reference has
-   it and it is where their advanced base tech lives (bunkers, floor stacking,
-   bridge bases). Costs an action-lane bit plus a UI decision. It is a
-   **mechanic** question, so it wants a spoken call rather than a measurement.
-   `reference/BUILDING.md` §9 item 19.
-2. **The half wall.** Their answer to the gap a half-storey offset leaves on
-   the floors above a stepped plate. `§7b.1` listed it missing before this;
-   §7c.1 is why it matters more now. One shape code, and `SHAPE_BITS` is 4
-   with codes to spare. §9 item 17.
+1. **Nobody has played it.** The bit is *aimed*, so a placement's height
+   changes as you sweep the crosshair across one cell. Whether that reads as
+   control or as twitch is the one thing no gate here can score, and it is the
+   first thing to check on a hillside.
+2. **The half wall** — their answer to the gap a half-storey offset leaves on
+   the floors above a stepped plate, and it matters *more* now: freehand makes
+   deliberate steps reachable, so the gap it fills is one players will now
+   create on purpose. One shape code, `SHAPE_BITS` is 4 with codes to spare.
+   `reference/BUILDING.md` §9 item 17.
 3. **The stepped foundation, and DO NOT widen the plate limits instead.**
-   §7c.2 is a published, tested negative result on exactly the change that
-   will keep suggesting itself — they tried a three-metre gradient for our
-   problem and reverted it, because *"building on flat became harder"* and it
-   made door blocks clip. Ours would be a catalogue row plus a shape code.
+   §7c.2 is a published, tested negative result on exactly that change.
    §9 item 18.
-4. **The shot walk does not consult `plane_blocked`.** An arrow through a
-   floor is its own item with its own answer; the lintel precedent says a body
-   and an arrow may disagree only where somebody decided they should.
+4. **The shot walk does not consult `plane_blocked`** — an arrow through a
+   floor is its own item.
 5. **The flank costs 153 µs a tick and a memo takes most of it back.**
-   Measured A/B, `NOW.md` §0bl item 4b: `col_base_y` re-samples terrain per
-   cell per candidate. `terrain_band` is pure in (seed, cell) so a
-   direct-mapped memo is EXACT, not approximate — `occupy::SlotCache`'s own
-   argument. Cheap, not urgent, and the number is written down so nobody has
-   to re-measure to decide.
-6. **A band-boundary wall still bases on its canonical cell** (§0bl item 3).
-   The plate makes it rare rather than fixing it: inside one base every column
-   shares a floor, so the slit is now only where two separately-started bases
-   meet.
-7. **The diagonal wall's √2 root scale stretches its UVs.** Cosmetic, pinned
-   by `lattice_geom.rs` §D so it cannot grow, and `ART.md`'s business rather
-   than this lane's.
+   `col_base_y` re-samples terrain per cell per candidate; `terrain_band` is
+   pure in (seed, cell) so a direct-mapped memo is exact, not approximate.
+   Cheap, not urgent, number already written down.
+6. **A band-boundary wall still bases on its canonical cell.** The plate made
+   it rare, not fixed.
+7. **The diagonal wall's √2 root scale stretches its UVs.** Pinned so it
+   cannot grow; `ART.md`'s business.
 
 ## For the operator
 
-**One spoken call is worth more than the rest put together: freehand.**
-Everything else on that list is engineering with a known shape. Whether a
-placement may decline the latch changes what a base can be, and no
-measurement can answer it.
+**The mechanic is spoken and built; the three numbers under it are not.**
+`DECISIONS.md` §open, "freehand placement v0" — and `SNAP_BAND_FRAC` is the
+one to argue with, because it *is* the interface. Two thirds means snapping is
+what happens and freehand is what you do; below a half it stops being true
+that an interior cell of a base cannot decline, and a gate says so.
 
-Two knob rows are in `DECISIONS.md` §open and both ship a default: **"build
-plate v1"** (±3 bands, taken from the reference and measured against ours) and
-**"piece flanks v0"** (`PLANE_THICKNESS_M`, and the note that `place` still
-does not refuse a piece where a body stands — the reference does not either,
-and refusing is its own grief vector).
-
-**And one thing to look at rather than read.** The plate changes how every
-base sits on the ground and the flank changes what you can walk into. Boot the
-client on a hillside, put a row of foundations down, then try to walk into the
-side of it. `ci/scene.sh --play` boots a populated world if you want somebody
-else's base to try it on.
+**And the thing to do rather than read is the same as last time, one step
+further on.** Put a row of foundations on a hillside, walk to where the latch
+refuses, then aim at the far edge of the next cell and watch the ghost drop to
+its own ground. `ci/scene.sh --play` boots a populated world if you want
+somebody else's base to try it beside.

@@ -1489,6 +1489,7 @@ mod tests {
             cz,
             level,
             loc,
+            false,
             &mut ev,
         );
         let last = ev.entries()[ev.len() - 1];

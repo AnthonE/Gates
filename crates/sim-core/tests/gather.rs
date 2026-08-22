@@ -1085,6 +1085,7 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
                 cz: bz,
                 level: 0,
                 loc: LOC_PLANE,
+                freehand: false,
             }]);
             if w.pieces.len() != 1 {
                 continue 'candidates;
@@ -1096,6 +1097,7 @@ fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
                 cz: bz,
                 level: 0,
                 loc: LOC_EDGE_XLO,
+                freehand: false,
             }]);
             if w.pieces.len() != 2 {
                 continue 'candidates;

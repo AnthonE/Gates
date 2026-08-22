@@ -681,6 +681,7 @@ fn a_box_opens_by_its_packed_address() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     core.world.tick(&[Command::PlaceDeploy {
         id: id_of(0),
@@ -815,6 +816,7 @@ fn a_corpse_is_shown_no_container() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     core.world.tick(&[Command::PlaceDeploy {
         id: id_of(0),
@@ -1046,6 +1048,7 @@ fn a_locked_box_shows_a_stranger_nothing_until_it_unlocks() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     core.world.tick(&[Command::PlaceDeploy {
         id: id_of(0),

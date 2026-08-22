@@ -95,6 +95,7 @@ fn founded(cx: u16, cz: u16) -> Pieces {
         cz,
         0,
         LOC_PLANE,
+        false,
         &mut ev,
     );
     assert!(
@@ -278,6 +279,7 @@ fn a_plate_stays_walkable_end_to_end() {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         if ev.entries().iter().any(|e| e.code == EV_BUILD_REFUSED) {

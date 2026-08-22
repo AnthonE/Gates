@@ -419,17 +419,38 @@ away the wide gradient. Note the second sentence too: the failure was not only
 in feel — a 3 m gradient made *door blocks clip*, which is the geometry half
 and the one a gate could have caught.
 
-### 7c.3 Declining the snap is a mechanic, not an omission
+### 7c.3 Declining the snap is a mechanic, not an omission — and it is not an input
 
 Freehand placement — putting a block down without letting it take a socket —
 is a real and widely-taught Rust technique, and it is where most of their
 advanced base tech comes from: floor stacking, multi-TC layouts, bunkers,
-bridge bases. (Tier 3, guides and tutorials; the exact input is not something
-these sources state consistently, so this file does not.)
+bridge bases. (Tier 3, guides and tutorials.)
+
+**Re-asked 2026-08-22, because the answer turned out to matter to us**, and
+this paragraph used to end by saying the input was not consistently stated so
+this file would not state it. That was the wrong shape of gap. **There is no
+input.** Placement is continuous and socket-based (§7c.1): a piece is
+*attracted* to a socket when your aim comes near one, so a freehand piece is
+simply one aimed where no socket catches it. Nothing is held, nothing is
+toggled — which is exactly why the guides describe the technique as *"very
+tricky and non-intuitive, even to veteran Rust players"* and teach it with
+visual crutches instead of a keybind: study where the poles of normally-placed
+triangles sit, use the two logs on a twig foundation as a height reference for
+floor stacking, use the compass tics to turn 90 or 120 degrees. A game with a
+freehand *button* would need none of that.
+
+The corollary is the half worth carrying: **a wall still cannot go anywhere.**
+You cannot place one in mid-air; it must take a socket. So freehand there is a
+foundation-and-floor technique, not a general licence, and the socket rule is
+what keeps a wall on the floor it belongs to.
 
 What matters for us is the shape of the claim: a build system with one snap
 rule and no way out of it is strictly less expressive than theirs, and the
 players who care most about building are the ones who notice.
+
+⚠ **And the mechanism does not port — §9 item 20 is what we did instead.**
+Their freehand falls out of a continuous world for free; ours is
+address-based, so there is no "near" for a placement to miss.
 
 ## 8 · Sources
 
@@ -454,9 +475,14 @@ foundations and half height walls"*), which is useful for dating.
 
 Tier 3 for §7c: Rustafied's Building 3.0 write-up (the "not too high or low
 off the ground" phrasing, and the half wall's dimensions), and the community
-freehand-placement guides for §7c.3 — where the technique is well attested and
-the exact input is not stated consistently, so this file states the technique
-and not the input.
+freehand-placement guides for §7c.3 — Corrosion Hour's foundation-freehand
+guide and the floor-stacking / bridge-base tutorials beside it. **Search
+summaries, not fetched**: every direct fetch was blocked by this box's proxy
+on 2026-08-22, §0's ⚠ again. What they establish is consistent across all of
+them and is a NEGATIVE — no key, no toggle, alignment done by eye against
+logs and compass tics — which is why §7c.3 now states the input where the
+first draft declined to: "the sources do not agree on the input" was itself
+the misreading, and the agreement is that there is none.
 
 Tier 3 (community wikis, guides and decay calculators, **via search
 summary**): the 10-player list cap, the `E`/hold-`E` interaction, the 24
@@ -622,11 +648,31 @@ The rest of this section is **§7b's half**, added 2026-08-10.
     blocks clip. Our version of "a stepped shape" is a foundation whose
     top is a plate and whose footprint spans two bands, which is a
     catalogue row plus a shape code rather than a knob.
-19. **Freehand is the open one, and it is bigger than it sounds**
-    (§7c.3). Our `Command::Place` carries a cell address and no way to
-    say "do not latch" — so a player cannot put a foundation at its own
-    ground beside somebody else's plate, which is the first thing anyone
-    tries on a slope. The cost is an action-lane bit and a UI decision,
-    and the prize is the whole class of building their best players do.
-    It is a *mechanic* question rather than a balance one, so it wants
-    the operator rather than a measurement.
+19. ~~**Freehand is the open one, and it is bigger than it sounds**~~
+    — **SPOKEN AND BUILT 2026-08-22** (`DECISIONS.md`; the operator took
+    "any piece"). It was the one thing here that wanted a word rather
+    than a measurement, and it got one. What it cost is what this item
+    predicted: one bit on `ActionMsg::Place`, `PROTO_VER` 49 → 50, and a
+    UI decision — which is item 20, because the UI is where the research
+    stopped being a formality.
+20. **Their freehand is not an input, and that does not port** (§7c.3,
+    added 2026-08-22 by re-asking the question item 19 left open).
+    Theirs falls out of a continuous world for free: aim near a socket
+    and the piece is attracted to it, aim away and nothing catches it.
+    **Ours has no "near"** — `Place` carries a cell, and `plate_for`
+    latches on exact adjacency, so there is no room for a placement to
+    be adjacent-but-not-snapped. The bit therefore has to be explicit
+    where theirs is emergent, and the interesting question became how a
+    player sets it.
+    **What ports is the aim, not the mechanism.** `place::aim_from_look`
+    already marches the look ray to a real `(f32, f32)` and
+    `place::target_at` quantizes it away, so the sub-cell remainder was
+    sitting there unused: near the shared edge with a built neighbour it
+    snaps, past `SNAP_BAND_FRAC` of the cell it goes freehand, and the
+    ghost's own height is the preview. No key, no mode — which is the
+    property of theirs actually worth keeping.
+    **And their socket rule is why case 1 stays**: a wall must still
+    take a socket there, so a freehand wall floating a band off its own
+    floor is not a thing their system permits either. Ours refuses it in
+    `plate_for` rather than by geometry, and `plate.rs`'
+    `freehand_cannot_lift_a_piece_off_its_own_column` is the gate.

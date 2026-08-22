@@ -2729,6 +2729,7 @@ mod tests {
             cz,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2907,6 +2908,7 @@ mod tests {
             CZ,
             0,
             LOC_EDGE_XLO,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -3027,6 +3029,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(
@@ -3072,6 +3075,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -3090,6 +3094,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -3480,6 +3485,7 @@ mod tests {
             CZ,
             0,
             LOC_EDGE_XLO,
+            false,
             &mut ev,
         );
         assert_eq!(
@@ -3857,6 +3863,7 @@ mod tests {
             CZ,
             0,
             LOC_EDGE_XLO,
+            false,
             ev,
         );
         assert_eq!(last(ev).0, crate::world::EV_PIECE_PLACED, "doorway lands");
@@ -4011,6 +4018,7 @@ mod tests {
             CZ,
             0,
             LOC_EDGE_ZLO,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED, "the wall lands");
@@ -5483,6 +5491,7 @@ mod tests {
             CZ,
             0,
             LOC_EDGE_XLO,
+            false,
             &mut ev,
         );
         crate::build::place(
@@ -5498,6 +5507,7 @@ mod tests {
             CZ,
             1,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         // Commit both to stone. The foundation is already there
@@ -5858,6 +5868,7 @@ mod tests {
             CZ,
             0,
             LOC_EDGE_ZLO,
+            false,
             &mut ev,
         );
         assert_eq!(
@@ -5880,6 +5891,7 @@ mod tests {
             CZ,
             0,
             LOC_EDGE_ZLO,
+            false,
             &mut ev,
         );
         assert_eq!(
@@ -6046,6 +6058,7 @@ mod tests {
             CZ,
             0,
             LOC_EDGE_XLO,
+            false,
             &mut ev,
         );
         place_deploy(

@@ -218,6 +218,7 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
                 cz: cell.1,
                 level: 0,
                 loc: LOC_PLANE,
+                freehand: false,
             },
         );
         core.tick_bare(&stats, |_, _, _| true);
