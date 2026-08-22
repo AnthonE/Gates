@@ -21,7 +21,9 @@ final art pass — the point is that the renderer finally has real measured
 detail to sample. Replacing one is a file swap, not a code change.
 
 Fetched at 1K, re-encoded: albedo 1024 q82, normal 1024 q90, roughness and AO
-512 greyscale q80. **9 materials, 34 files, 6.5 MB total.**
+512 greyscale q80. **10 materials, 38 files, 7.1 MB total.** (`twig` is the
+tenth, 2026-08-22, encoded to that same spec — a file joining a documented set
+matches the set, and re-spec'ing is the separate call the ⚠ below describes.)
 
 ⚠ **That encode spec was chosen for a first-visit browser download and the
 constraint is gone** (the browser client was cut 2026-08-06; the client
@@ -122,7 +124,7 @@ is still gated as a file.
 
 | role | source | ao | bundled | note |
 |---|---|---|---|---|
-| `bark` | PH [bark_brown_02](https://polyhaven.com/a/bark_brown_02) | | ✓ | vertical fissures + moss — the reference asks for exactly this |
+| `bark` | PH [bark_brown_02](https://polyhaven.com/a/bark_brown_02) | | ✓ | vertical fissures + moss — the reference asks for exactly this, **on a tree**. It wore the twig building tier as well until 2026-08-22; see the `twig` row. Authored at 1000 mm, and the shared 0.55 drew it over 1.82 m, so a twig base was a photograph of a trunk at 1.8× life size. |
 | `grass` | PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01) | ✓ | ✓ | turf with dirt wear — matches ART §3 lit-grass band once tinted. Its AO is the strongest of the set (mean 0.477, sd 0.162) and it owns ~99% of the near ring. |
 | `gravel` | PH [bicolour_gravel](https://polyhaven.com/a/bicolour_gravel) | ✓ | | fine scree; slope/scree identity and path scuff |
 | `litter` | PH [brown_mud_leaves_01](https://polyhaven.com/a/brown_mud_leaves_01) | ✓ | ✓ | forest floor, red-leaning; forest identity |
@@ -131,7 +133,8 @@ is still gated as a file.
 | `sand` | PH [coast_sand_01](https://polyhaven.com/a/coast_sand_01) | ✓ | ✓ | fine coastal sand, close to ART §3's 42°/10% sample |
 | `stone` | aCG [Bricks089](https://ambientcg.com/view?id=Bricks089) | ✓ | ✓ | replaced `castle_brick_01` 2026-08-04. Photoscanned medieval stacked field stone — the identity ART asks for, not brick. sd 0.0947 → **0.1253**, anisotropy 1.34 → **1.09** (less row-banding). |
 | `ground_detail` | **derived** from `grass` (PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01)) | | ✓ | Rec.601 luma of the source's LINEAR albedo, re-encoded to sRGB greyscale, 1024 q88, 342 KB. The ground's near-field grain: `ART.md` §7 asks a modifier that sets a colour to multiply the surface's own **mean-1 luminance field**, and a luminance field has gain span **1.000 by construction** where the four colour sources measure 2.454 / 2.073 / 3.586 / 1.054 (grass / sand / litter / rock) against a ×1 ceiling. Linear luma mean 0.2464, sd 0.0762. Derived, never edited: the source stays pristine and swappable, and regenerating is a luma convert. |
-| `wood` | PH [brown_planks_03](https://polyhaven.com/a/brown_planks_03) | | ✓ | weathered grey planks; building tier 1 — **and it is that tier's map since 2026-08-16**, four days after this note was written as an intention. `stone` is tier 2, `metal` tier 3, and `bark` doubles as tier 0 (twig) at a ×1.6 scalar gain for want of a straw/lashed-pole set. `structures::TIER` |
+| `twig` | PH [bamboo_wall](https://polyhaven.com/a/bamboo_wall) | | ✓ | lashed vertical poles; building tier 0 — **the straw/lashed-pole set the `wood` row below had been waiting for since 2026-08-12**, landed 2026-08-22 because the tier nobody chooses is the tier everybody sees (`build.rs`: every piece enters the world as twig) and it was wearing a photograph of a living tree, moss and all. Authored at 2000 mm, so `structures::Tier::tiles_per_m` is 0.5 and its poles draw ~4 cm — a sapling. Linear mean rgb 0.242 0.153 0.091, luma **0.167**, sd 0.0551, measured on the shipped file: in `ALBEDO_LUMA_BAND` on its own, so it ships its colour whole at gain 1.0 and *is* the paler of the first two tiers without the ×1.6 `bark` needed to fake it. |
+| `wood` | PH [brown_planks_03](https://polyhaven.com/a/brown_planks_03) | | ✓ | weathered grey planks; building tier 1 — **and it is that tier's map since 2026-08-16**, four days after this note was written as an intention. `stone` is tier 2, `metal` tier 3. (⚠ This row also said `bark` doubled as tier 0 "for want of a straw/lashed-pole set". It did, for six days short of a fortnight; the `twig` row above is the want being filled, and `bark` is a tree's map again and nothing else's.) Authored at 1000 mm → `tiles_per_m` 1.0, which puts a plank at ~11 cm; it drew at 20 cm under the shared 0.55 every tier used until 2026-08-22. `structures::TIER` |
 
 **The three marginal picks are gone, and `rock` is why the others went with it.**
 `cliff_side` was layered sandstone standing in for granite. Its gain span was
@@ -167,17 +170,23 @@ When a better source is found, drop it in with the same name.
 against `ALBEDO_LUMA_BAND = [0.05, 0.55]`. A prop has one identity, so the map
 IS its colour and no mean-placing gain is applied; the gain is 1, so §7's
 "deviation may not be stretched more than ×1" is satisfied by construction
-rather than by a correction. All five clear the band off the raw file:
+rather than by a correction. All six clear the band off the raw file:
 
 | role | linear mean rgb | luma | albedo sd | gain span |
 |---|---|---|---|---|
 | `rock` | 0.273 0.269 0.259 | 0.269 | 0.0933 | 1.054 |
 | `bark` | 0.128 0.105 0.064 | 0.107 | 0.0676 | 2.000 |
+| `twig` | 0.242 0.153 0.091 | 0.167 | 0.0551 | 2.659 |
 | `wood` | 0.161 0.139 0.112 | 0.142 | 0.0661 | 1.442 |
 | `stone` | 0.237 0.202 0.106 | 0.203 | 0.1139 | 2.223 |
 | `metal` | 0.230 0.228 0.228 | 0.228 | 0.0689 | 1.009 |
 
-The span column is recorded but **not binding for these four**, because nothing
+(`twig` joined 2026-08-22, measured the same way and off the SHIPPED file. The
+five above it were re-derived at the same time as a check on the method rather
+than trusted: all five reproduce to the digit, span included — `max(mean_rgb) /
+min(mean_rgb)`, which is what `materials.js`'s `baseGainSpan` computes.)
+
+The span column is recorded but **not binding for any of these**, because nothing
 divides by their means — it is what the correction WOULD have cost had one been
 needed, and it is why the ground (which does need one) can only take `rock`.
 

@@ -33,6 +33,7 @@
 //! generation stamp instead of building a live-key set each frame and
 //! diffing it: mark what the mirror still holds, then `retain` the marked.
 
+use bevy::math::Affine2;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::build::{
@@ -86,8 +87,45 @@ pub fn piece_span() -> f32 {
 /// that disagreed with it is exactly what shipped for six days — see [`TIER`].
 pub const N_TIERS: usize = MAT_METAL as usize + 1;
 
+/// One tier's cosmetics: which photograph it wears, how densely that
+/// photograph is laid on a piece, and the two PBR scalars beside it.
+///
+/// **A named struct rather than the five-tuple this row was becoming.** It
+/// grew [`Tier::tiles_per_m`] when the UV density moved off the mesh, and
+/// `CLAUDE.md`'s positional-payload trap is exactly this shape: `gain`,
+/// `roughness`, `metallic` and `tiles_per_m` are four `f32` in a row, and
+/// every gate this file has — a length check against `MAT_METAL`, a band
+/// check per column — stays green when two of them swap places. A field name
+/// is the one thing that does not.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tier {
+    /// The role name under `assets/textures/`: `<role>_{albedo,normal,rough}.jpg`.
+    pub role: &'static str,
+    /// Scalar multiply on the photograph's albedo. 1.0 ships the map's
+    /// measured colour whole, which is what every row does since twig got a
+    /// map of its own — see the table.
+    pub gain: f32,
+    pub roughness: f32,
+    pub metallic: f32,
+    /// Tiles of this tier's photograph per metre of piece surface.
+    ///
+    /// **Per tier, because a photograph has an authored real-world size and
+    /// the four sources do not share one.** This was a single
+    /// `PIECE_UV_PER_M = 0.55` for every tier until 2026-08-22, which drew
+    /// `bark_brown_02` — a 1 m² patch of tree trunk — across 1.82 m of wall,
+    /// and that is most of why a twig base read as *carved out of a log*
+    /// rather than built: it was a photograph of a tree, at 1.8× life size.
+    ///
+    /// It lives on the material rather than in the mesh
+    /// ([`build_kit`] sets `uv_transform`) because the piece meshes are
+    /// deduplicated by `(kind, size)` and SHARED across all four tiers — a
+    /// per-tier density baked into UVs would be four times the meshes. The
+    /// mesh's UV is therefore literally metres ([`quad`]), and this scales it.
+    pub tiles_per_m: f32,
+}
+
 /// Twig, wood, stone, metal — the photograph each tier wears, a scalar gain
-/// over it, perceptual roughness, metallic.
+/// over it, perceptual roughness, metallic, and its tile density.
 ///
 /// **This table had THREE rows against the sim's four materials until
 /// 2026-08-16, and every piece in the game drew one rung off.** `spawn_piece`
@@ -105,32 +143,93 @@ pub const N_TIERS: usize = MAT_METAL as usize + 1;
 /// flat `base_color` — `props.rs` and `viewmodel.rs` have sampled these same
 /// already-shipped, already-manifested CC0 maps since 2026-08-11, and a wall
 /// is the largest flat thing a player ever stands in front of. Paths are
-/// `MapSet::load`'s, so the handles are the ones `PropMaps` already holds:
-/// the asset server keys on path plus settings, and these settings are the
-/// same, so wiring four tiers here costs zero extra residency.
+/// `MapSet::load`'s, so three of the four handles are ones `PropMaps` already
+/// holds: the asset server keys on path plus settings, and these settings are
+/// the same, so those cost zero extra residency.
+///
+/// **Twig wore `bark` until 2026-08-22, and that is the whole of why a base
+/// looked like logs** (operator, on a screenshot: *"we need to work on the
+/// foundation look its like logs or something?"*). `MAT_TWIG` is the state
+/// every piece is FIRST seen in (`build.rs`: *"every piece enters the world
+/// as twig and nothing else"*), so the tier nobody chooses is the tier
+/// everybody sees — and it was wearing `bark_brown_02`, a photograph of a
+/// living tree trunk, complete with moss in its fissures. It read as a tree
+/// because it was one. `MANIFEST.md` had said so as an intention since
+/// 2026-08-12: *"`bark` doubles as tier 0 (twig) … for want of a
+/// straw/lashed-pole set."* The want is filled — `twig` is Poly Haven
+/// `bamboo_wall` (CC0), lashed vertical poles, which is what the reference's
+/// twig tier actually is. `bark` stays, on trees.
 ///
 /// **The gain is scalar and that is what makes it legal.** `ART.md` §7 bounds
 /// a per-channel gain to stretching a source's colour deviation by at most
 /// ×1; a scalar has span **1.000 by construction**, the same argument
-/// `GROUND_DETAIL_GAIN` is built on. Only twig carries one: it wears `bark`,
-/// which is the literal surface of a stick but measures luma 0.107 — darker
-/// than `wood` at 0.141, where the reference reads a twig frame as the PALER
-/// of the two. ×1.6 lands it at 0.171, between wood and stone, and clips
-/// 0.004% of texels (measured on the shipped file, 2026-08-16). The other
-/// three ship their colour whole, `base_color` white, exactly as the props do.
+/// `GROUND_DETAIL_GAIN` is built on. **No row carries one now.** Twig was the
+/// only one that did, and its ×1.6 existed to drag `bark`'s luma 0.107 up to
+/// 0.171 so a twig frame would read as the PALER of the first two tiers, the
+/// way the reference has it. `bamboo_wall` measures **0.167** off the shipped
+/// file — pale of `wood`'s 0.141 on its own, with a gain of exactly 1.0. A
+/// number that had to be engineered stopped needing to be, which is the tell
+/// that the map was the wrong map and not the gain the wrong gain. All four
+/// tiers now ship their colour whole, `base_color` white, as the props do.
 ///
 /// Roughness stays a scalar for the reason `props.rs` states: the `_rough`
 /// files are greyscale jpgs and `metallic_roughness_texture` is a glTF-packed
 /// ORM slot whose B channel is metallic, so binding one here would make every
 /// wall a half-metal. That needs a packing step, not a slot assignment.
-const TIER: [(&str, f32, f32, f32); N_TIERS] = [
-    // twig · lashed poles and thatch. The roughest thing in the game.
-    ("bark", 1.6, 0.95, 0.0),
-    ("wood", 1.0, 0.88, 0.0),
-    ("stone", 1.0, 0.72, 0.0),
+/// **Every density below is the source's own published physical size, or
+/// says why it is not.** `tiles_per_m = 1000 / <the map's authored mm>` is a
+/// measurement of the file, not a taste call, and it is the number that makes
+/// a photograph read as the material it is a photograph of. Poly Haven
+/// publishes it per asset (`api.polyhaven.com/info/<slug>` → `dimensions`);
+/// ambientCG publishes it for some assets and not others, and the two rows
+/// that inherit the old 0.55 are the two it does not settle — each with the
+/// cross-check that says 0.55 is nonetheless the right size for that surface.
+const TIER: [Tier; N_TIERS] = [
+    // twig · lashed poles. The roughest thing in the game.
+    // `bamboo_wall` is authored at 2000 mm → 0.5. At that density its poles
+    // draw ~4 cm across, which is a sapling — a frame you could lash by hand,
+    // which is the read the tier wants.
+    Tier {
+        role: "twig",
+        gain: 1.0,
+        roughness: 0.95,
+        metallic: 0.0,
+        tiles_per_m: 0.5,
+    },
+    // wood · `brown_planks_03`, authored at 1000 mm → 1.0. That puts a plank
+    // at ~11 cm, against a real deck board's 10–15. At the old shared 0.55 it
+    // drew at 20 cm, which is a beam pretending to be a plank.
+    Tier {
+        role: "wood",
+        gain: 1.0,
+        roughness: 0.88,
+        metallic: 0.0,
+        tiles_per_m: 1.0,
+    },
+    // stone · `Bricks089`, published 2200 × 1100 mm — NOT square, and the
+    // file we ship is 1024², so the authored scale did not survive the fetch
+    // and there is no honest ratio to take. Keeping 0.55 is the measured
+    // answer anyway: it puts a course at ~23 cm over the map's ~8 courses,
+    // which is field-stone size.
+    Tier {
+        role: "stone",
+        gain: 1.0,
+        roughness: 0.72,
+        metallic: 0.0,
+        tiles_per_m: 0.55,
+    },
+    // metal · `CorrugatedSteel009` publishes no physical size at all
+    // (`dimensionX`/`Y` are 0). Counted instead: ~22 ribs across the map, so
+    // 0.55 lands the corrugation pitch at ~83 mm against a real profile's 76.
     // The one conductor: `ART.md` reads the reference's tier as *sheen* as
     // much as hue, and a tier told apart by colour alone reads as paint.
-    ("metal", 1.0, 0.38, 0.85),
+    Tier {
+        role: "metal",
+        gain: 1.0,
+        roughness: 0.38,
+        metallic: 0.85,
+        tiles_per_m: 0.55,
+    },
 ];
 
 /// How far through the damage response a band sits: 0 at untouched, 1 at the
@@ -140,30 +239,32 @@ pub fn damage_mix(band: u8) -> f32 {
     band.min(DMG_BANDS - 1) as f32 / (DMG_BANDS - 1) as f32
 }
 
-/// One tier's cosmetics: texture role, scalar gain, roughness, metallic.
+/// One tier's cosmetics.
 ///
 /// Public so `tests/pieces.rs` can gate the thing that actually broke — that
 /// every material the sim can send resolves to its OWN row, and that the role
 /// it names is a file that exists. A private table clamped by `.min(2)` is
 /// how four materials became three paints for six days.
-pub fn tier(material: u8) -> (&'static str, f32, f32, f32) {
+pub fn tier(material: u8) -> Tier {
     TIER[(material as usize).min(N_TIERS - 1)]
 }
 
-/// Tiles of a tier's photograph per metre of piece surface.
+/// What one unit of a piece mesh's UV is worth, in metres of surface: one.
 ///
 /// **A piece mesh carried 0..1 UVs per face until 2026-08-16**, which is one
 /// tile stretched over a 3 m wall — the failure `textures.rs` records for the
 /// terrain, where a map that does not repeat "reads as no texture at all
 /// rather than as an error, so nothing would say so".
 ///
-/// 0.5 is the authored structures' number (`props::authored`, the shelter and
-/// the canopy — the nearest thing in the tree to a built wall), and it puts a
-/// 1K map's texel at ~2 mm, well inside `ART.md` rule 1's < 5 cm near-field
-/// grain. It is deliberately NOT a whole number of tiles across a 3 m cell:
-/// at 0.5 a tile boundary would land exactly on every piece edge, which is
-/// rule 7's visible tiling drawn at the one place the eye is already looking.
-pub const PIECE_TILES_PER_M: f32 = 0.55;
+/// It then carried a shared `0.55` tiles/m for every tier until 2026-08-22,
+/// which is the constant this replaces. The density is a property of the
+/// PHOTOGRAPH — each has its own authored real-world size — so it belongs on
+/// the tier ([`Tier::tiles_per_m`], applied as the material's `uv_transform`),
+/// and what belongs in the mesh is the only thing all four tiers agree about:
+/// how big the surface is. So the UV is metres, this constant is 1.0, and it
+/// stays a named constant rather than a bare `1.0` because it is what
+/// `tests/pieces.rs` §B holds the two builders to — the unit is the claim.
+pub const PIECE_UV_PER_M: f32 = 1.0;
 
 /// The per-face albedo multipliers a piece mesh carries in its vertices: top,
 /// side, bottom. A mean-1 LUMINANCE field, so it modulates the photograph
@@ -926,7 +1027,7 @@ pub fn footing_of(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, plate: i8
 /// Both builders emit the four things a piece needs and none of which it had
 /// before 2026-08-16, each of which fails SILENTLY when absent:
 ///
-/// 1. **Metre-scaled UVs** ([`PIECE_TILES_PER_M`]) instead of 0..1 per face —
+/// 1. **Metre-scaled UVs** ([`PIECE_UV_PER_M`]) instead of 0..1 per face —
 ///    a stretched tile reads as no texture, not as an error.
 /// 2. **Per-face vertex tint** ([`FACE_TOP`] and friends), the mean-1 field
 ///    that separates a slab's top from its sides.
@@ -963,8 +1064,8 @@ fn quad(b: &mut Buffers, corners: [Vec3; 4], n: Vec3, tint: impl Fn(Vec3) -> f32
     // Edge lengths in metres, straight off the corners, so a face whose
     // extent is not axis-aligned (the prism's hypotenuse) is still measured
     // rather than assumed.
-    let du = (corners[1] - corners[0]).length() * PIECE_TILES_PER_M;
-    let dv = (corners[3] - corners[0]).length() * PIECE_TILES_PER_M;
+    let du = (corners[1] - corners[0]).length() * PIECE_UV_PER_M;
+    let dv = (corners[3] - corners[0]).length() * PIECE_UV_PER_M;
     for (i, c) in corners.iter().enumerate() {
         pos.push([c.x, c.y, c.z]);
         nor.push([n.x, n.y, n.z]);
@@ -1051,13 +1152,28 @@ fn box_mesh(size: Vec3) -> Mesh {
     let h = size * 0.5;
     let mut b = buffers(24);
     // (normal, u, v) with u × v = normal — see [`quad`].
+    //
+    // **v is UP on all four uprights, and it was not until 2026-08-22.** The
+    // old +x row was `(u = Y, v = Z)` and the old −z row `(u = Y, v = X)`, so
+    // those two faces carried the map turned a quarter-turn against the other
+    // two. Both rows satisfied `u × v = n` — the only thing stated here, and
+    // the only thing anything checked — so nothing was wrong except the
+    // picture: on a box wearing a DIRECTIONAL map, half a base's walls ran
+    // their grain vertically and half ran it horizontally. Invisible while
+    // every tier wore tree bark, which is directional but reads as noise;
+    // immediately visible on planks or lashed poles, which is what the tiers
+    // wear now. Gated by `tests/pieces.rs` §B.
+    //
+    // Solved rather than tried: fixing v = Y leaves u = ±(Y × n), which is
+    // −Z, +Z, +X, −X for +x, −x, +z, −z. The caps keep their own frame; a
+    // horizontal surface has no up to agree about.
     for (n, u, v) in [
         (Vec3::Y, Vec3::Z, Vec3::X),
         (Vec3::NEG_Y, Vec3::X, Vec3::Z),
-        (Vec3::X, Vec3::Y, Vec3::Z),
+        (Vec3::X, Vec3::NEG_Z, Vec3::Y),
         (Vec3::NEG_X, Vec3::Z, Vec3::Y),
         (Vec3::Z, Vec3::X, Vec3::Y),
-        (Vec3::NEG_Z, Vec3::Y, Vec3::X),
+        (Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y),
     ] {
         let c = n * h;
         let (hu, hv) = ((u * h).length(), (v * h).length());
@@ -1098,10 +1214,7 @@ fn tri_prism_mesh(size: Vec3) -> Mesh {
             pos.push([p.x, y, p.z]);
             nor.push([0.0, ny, 0.0]);
             col.push([t, t, t, 1.0]);
-            uv.push([
-                (p.x + h.x) * PIECE_TILES_PER_M,
-                (p.z + h.z) * PIECE_TILES_PER_M,
-            ]);
+            uv.push([(p.x + h.x) * PIECE_UV_PER_M, (p.z + h.z) * PIECE_UV_PER_M]);
         }
         if wind {
             idx.extend([base, base + 1, base + 2]);
@@ -1116,13 +1229,21 @@ fn tri_prism_mesh(size: Vec3) -> Mesh {
     for (p0, p1) in [(a, b), (c, a), (b, c)] {
         let e = p1 - p0;
         let n = Vec3::new(e.z, 0.0, -e.x).normalize();
+        // Corner 0 → 3 is the quad's v axis, and it runs UP — the same
+        // invariant `box_mesh`'s frame table states, held here by starting at
+        // the far foot rather than the near head. The rim used to run
+        // head-to-foot, which is v pointing DOWN: legal, correctly wound, and
+        // a quarter-turn's worth of the same disagreement `box_mesh` carried
+        // between its own faces — a prism roof drawing its poles upside down
+        // against the wall it meets. Starting at `p1` rather than `p0` is what
+        // keeps `u × v = n` with v flipped; see the winding note in [`quad`].
         quad(
             &mut buf,
             [
-                p0 + Vec3::Y * h.y,
-                p1 + Vec3::Y * h.y,
                 p1 - Vec3::Y * h.y,
                 p0 - Vec3::Y * h.y,
+                p0 + Vec3::Y * h.y,
+                p1 + Vec3::Y * h.y,
             ],
             n,
             |p| face_tint(n, p.y, -h.y, h.y),
@@ -1223,22 +1344,29 @@ fn build_kit(
     // hue — the map ships its own colour, and a coloured multiply here would
     // be the per-channel gain `ART.md` §7 bounds (see [`TIER`]).
     let tier = std::array::from_fn(|i| {
-        let (role, gain, perceptual_roughness, metallic) = TIER[i];
-        let map = MapSet::load(assets, role);
+        let t = TIER[i];
+        let map = MapSet::load(assets, t.role);
+        // The tile density, as a scale on every UV this material samples with
+        // — base colour AND normal AND roughness, which is what keeps the
+        // relief registered with the colour. Uniform, so the tangent frame
+        // `finish` generated is still the right one; a non-uniform scale here
+        // would shear it and the normal map would light wrong.
+        let uv_transform = Affine2::from_scale(Vec2::splat(t.tiles_per_m));
         // The maps are loaded ONCE per tier and cloned into all eight bands
         // — `MapSet::load` inside the band loop would be eight identical
         // paths and eight identical settings, which the asset server would
         // dedupe anyway, but relying on that to avoid eight loads is
         // relying on a cache for correctness of cost.
         std::array::from_fn(|band| {
-            let t = damage_mix(band as u8);
-            let g = gain * (1.0 + (DMG_DARKEST - 1.0) * t);
+            let hurt = damage_mix(band as u8);
+            let g = t.gain * (1.0 + (DMG_DARKEST - 1.0) * hurt);
             materials.add(StandardMaterial {
                 base_color: Color::linear_rgb(g, g, g),
                 base_color_texture: Some(map.albedo.clone()),
                 normal_map_texture: Some(map.normal.clone()),
-                perceptual_roughness: (perceptual_roughness + DMG_ROUGHEN * t).min(1.0),
-                metallic,
+                perceptual_roughness: (t.roughness + DMG_ROUGHEN * hurt).min(1.0),
+                metallic: t.metallic,
+                uv_transform,
                 ..default()
             })
         })
