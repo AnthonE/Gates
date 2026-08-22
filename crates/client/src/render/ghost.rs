@@ -121,6 +121,12 @@ pub struct Ghost {
     pub verdict: Verdict,
     pub row: Option<u16>,
     pub shape: u8,
+    /// Whether this placement declines the plate latch (freehand placement
+    /// v0). Latched beside `target` for the same reason `target` is: it is
+    /// aimed, so it changes as the crosshair sweeps the cell, and `place_key`
+    /// must send the bit that was DRAWN rather than re-derive one from an aim
+    /// taken a frame later.
+    pub freehand: bool,
     /// The deploy ghost's own latched pair, for the same rule: `deploy_key`
     /// sends the address that was drawn, and the HUD says the reason the
     /// drawing is red. Defaults are the empty address and `Unknown` —
@@ -230,15 +236,21 @@ pub fn track(
         content: &core.piece_defs,
         inv: &core.inv,
     };
-    let verdict = place::verdict(target, row, shape, &site);
+    // Does this aim decline the latch (freehand placement v0)? Off the
+    // sub-cell remainder `target_at` discards, so the answer moves with the
+    // crosshair inside one cell and the ghost's own height is the preview of
+    // it — there is no key and no mode.
+    let freehand = place::freehand_from_aim(&site, target, aim);
+    let verdict = place::verdict(target, row, shape, &site, freehand);
     // The floor this placement would take (build plate v1) — the sim's own
     // rule, so the preview stands where the piece will and a stilt is visible
     // before the key is pressed rather than after.
-    let plate = place::ghost_plate(&site, target);
+    let plate = place::ghost_plate(&site, target, freehand);
     ghost.target = target;
     ghost.verdict = verdict;
     ghost.row = Some(row);
     ghost.shape = shape;
+    ghost.freehand = freehand;
 
     // The same base point and quarter-turn `structures::spawn_piece` gives
     // the real thing, from the same function, so the ghost and the piece it
@@ -389,7 +401,7 @@ pub fn place_key(
     // there to stop the player wasting the press, not to veto it.
     let t = ghost.target;
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
-    match protocol::encode_action_place(row, t.cx, t.cz, t.level, t.loc, &mut buf) {
+    match protocol::encode_action_place(row, t.cx, t.cz, t.level, t.loc, ghost.freehand, &mut buf) {
         Ok(len) => match net.session.send_action(&buf[..len]) {
             Ok(()) => {
                 if let Verdict::No(why) = ghost.verdict {

@@ -67,6 +67,30 @@ impl Rig {
     /// Drive the sim's own verb from a body standing at the address, with a
     /// full purse. `Err(code)` on a refusal.
     fn place(&mut self, row: u16, cx: u16, cz: u16, level: u8, loc: u8) -> Result<(), u32> {
+        self.place_with(row, cx, cz, level, loc, false)
+    }
+
+    /// The same verb with the latch declined (freehand placement v0).
+    fn place_freehand(
+        &mut self,
+        row: u16,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+    ) -> Result<(), u32> {
+        self.place_with(row, cx, cz, level, loc, true)
+    }
+
+    fn place_with(
+        &mut self,
+        row: u16,
+        cx: u16,
+        cz: u16,
+        level: u8,
+        loc: u8,
+        freehand: bool,
+    ) -> Result<(), u32> {
         let (ax, az) = sim_core::build::anchor(cx, cz, loc);
         let mut p = Player {
             id: 7,
@@ -95,6 +119,7 @@ impl Rig {
             cz,
             level,
             loc,
+            freehand,
             &mut ev,
         );
         match ev.entries().iter().find(|e| e.code == EV_BUILD_REFUSED) {
@@ -252,7 +277,7 @@ fn the_ground_running_away_refuses_by_name() {
                 }
                 let (nx, nz) = (next as u16, sz);
                 // What the rule WANTS here, before the verb is asked.
-                let want = plate_for(r.pieces.cols(), SEED, hv(SEED), nx, nz);
+                let want = plate_for(r.pieces.cols(), SEED, hv(SEED), nx, nz, false);
                 match r.place(ROW_FOUNDATION, nx, nz, 0, LOC_PLANE) {
                     Ok(()) => {
                         assert!(want.is_ok(), "the verb took a placement the rule refused");
@@ -372,7 +397,7 @@ fn an_emptied_column_forgets_its_plate() {
     let mut empty = Pieces::new();
     core::mem::swap(&mut r.pieces, &mut empty);
     assert_eq!(
-        plate_for(r.pieces.cols(), SEED, hv(SEED), nx, nz),
+        plate_for(r.pieces.cols(), SEED, hv(SEED), nx, nz, false),
         Ok(0),
         "an empty column still remembers a plate"
     );
@@ -402,4 +427,206 @@ fn the_stilt_ceiling_is_half_a_storey_each_way() {
     // ...and a plate is measured in the same quanta the lattice steps in,
     // so a stilt lands on a band a neighbouring plate could also land on.
     assert_eq!(sim_core::build::LEVEL_H_M % BUILD_BASE_Q_M, 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Freehand: declining the latch (freehand placement v0, `DECISIONS.md`
+// 2026-08-22)
+// ---------------------------------------------------------------------------
+//
+// The operator's call, and the one thing on `NOW.md` §0bl item 2 no
+// measurement could settle: a placement may decline the plate latch and take
+// its own ground. Everything here drives `place` with the bit set, for the
+// module header's reason — the rule is worth nothing if the verb ignores it.
+//
+// **What each of these would look like under the obvious mutant.** Delete the
+// `if freehand { return Ok(0) }` early-out in `plate_for` and all three go
+// red; widen it to bypass case 1 as well and
+// `freehand_cannot_lift_a_piece_off_its_own_column` goes red alone. Both were
+// run.
+
+/// An adjacent pair of buildable cells whose terrain bands disagree — the
+/// fixture the latch has something to do on.
+///
+/// Adjacent on purpose, unlike [`neighbour_stepping`]: freehand is about the
+/// cell you put down NEXT TO the base, so a fixture that walked out to a
+/// distant cell would be testing a different thing (`the_ground_running_away`
+/// learned that the other way round, and its doc says so).
+fn adjacent_disagreeing_pair() -> Option<(u16, u16)> {
+    (CX..CX + 400)
+        .find(|&x| {
+            let (a, b) = (
+                terrain_band(SEED, hv(SEED), x, CZ),
+                terrain_band(SEED, hv(SEED), x + 1, CZ),
+            );
+            if a == b {
+                return false;
+            }
+            [x, x + 1].iter().all(|&c| {
+                let (ax, az) = sim_core::build::anchor(c, CZ, LOC_PLANE);
+                sim_core::build::foundation_terrain_ok(SEED, hv(SEED), ax, az)
+            })
+        })
+        .map(|x| (x, x + 1))
+}
+
+/// **The whole feature, stated as a contrast.** One fixture, two placements:
+/// latched, the second foundation takes the first's floor; freehand, it takes
+/// its own ground. Asserting both halves in one test is deliberate — the
+/// freehand half alone would pass on a seed where the two cells happened to
+/// agree, and the latched half is what proves they do not.
+#[test]
+fn freehand_declines_the_latch_and_takes_its_own_ground() {
+    let Some((ax, bx)) = adjacent_disagreeing_pair() else {
+        panic!("the fixture needs an adjacent pair the terrain steps across")
+    };
+
+    // Latched — the behaviour build plate v1 shipped.
+    let mut latched = Rig::new();
+    latched
+        .place(ROW_FOUNDATION, ax, CZ, 0, LOC_PLANE)
+        .expect("first");
+    latched
+        .place(ROW_FOUNDATION, bx, CZ, 0, LOC_PLANE)
+        .expect("second");
+    assert_eq!(
+        latched.floor_at(bx, CZ),
+        latched.floor_at(ax, CZ),
+        "the latched neighbour is not flush with the base it joined"
+    );
+    assert_ne!(
+        latched.plate_at(bx, CZ),
+        Some(0),
+        "the fixture's cells must disagree about terrain, or the contrast below proves nothing"
+    );
+
+    // Freehand — the same two cells, the same order, one bit different.
+    let mut free = Rig::new();
+    free.place(ROW_FOUNDATION, ax, CZ, 0, LOC_PLANE)
+        .expect("first");
+    free.place_freehand(ROW_FOUNDATION, bx, CZ, 0, LOC_PLANE)
+        .expect("freehand second");
+    assert_eq!(
+        free.plate_at(bx, CZ),
+        Some(0),
+        "a freehand placement took a plate, so it latched to something"
+    );
+    assert_eq!(
+        free.floor_at(bx, CZ),
+        sim_core::build::band_y(terrain_band(SEED, hv(SEED), bx, CZ)),
+        "a freehand placement is not standing on its own ground"
+    );
+    assert_ne!(
+        free.floor_at(bx, CZ),
+        free.floor_at(ax, CZ),
+        "freehand and latched produced the same floor, so the bit did nothing"
+    );
+}
+
+/// **Case 1 is not declinable.** A piece entering a column that already holds
+/// one takes that column's plate whatever the bit says, so a wall can never
+/// base itself a band off the floor it stands on.
+///
+/// This is the invariant the whole plate rests on and the reference keeps it
+/// too — freehand there is a foundation and floor technique because their
+/// walls must still take a socket (`reference/BUILDING.md` §7c.3). Without
+/// this the feature would retire `a_wall_stands_on_the_floor_under_it`, one
+/// screen up, rather than extending it.
+#[test]
+fn freehand_cannot_lift_a_piece_off_its_own_column() {
+    let Some((ax, bx)) = adjacent_disagreeing_pair() else {
+        panic!("the fixture needs an adjacent pair the terrain steps across")
+    };
+    let mut r = Rig::new();
+    r.place(ROW_FOUNDATION, ax, CZ, 0, LOC_PLANE)
+        .expect("first");
+    r.place(ROW_FOUNDATION, bx, CZ, 0, LOC_PLANE)
+        .expect("second");
+    let floor = r.floor_at(bx, CZ);
+    let plate = r
+        .plate_at(bx, CZ)
+        .expect("the second foundation is in the store");
+    assert_ne!(
+        plate, 0,
+        "the fixture's second cell must be latched to prove anything"
+    );
+
+    // A wall into that column, asking for freehand. The column has a floor;
+    // the bit is not allowed to argue with it.
+    r.place_freehand(ROW_WALL, bx, CZ, 0, LOC_EDGE_XLO)
+        .expect("a freehand wall on a built column");
+    let wall = r
+        .pieces
+        .entries()
+        .iter()
+        .find(|p| p.cx == bx && p.cz == CZ && p.loc == LOC_EDGE_XLO)
+        .expect("the wall is in the store");
+    assert_eq!(
+        wall.plate, plate,
+        "a freehand wall took a different plate from the floor it stands on"
+    );
+    assert_eq!(
+        sim_core::build::column_floor_y(SEED, hv(SEED), bx, CZ, wall.plate),
+        floor,
+        "the freehand wall bases itself somewhere other than the floor under it"
+    );
+}
+
+/// **The player's actual story**: march a base along a hill until the latch
+/// runs out of leg and refuses by name, then put the next foundation down
+/// freehand and start a fresh plate beside it. That is the move `NOW.md` §0bl
+/// called "the first thing anyone tries on a slope", and before the bit it
+/// was unreachable — the refusal was the end of the sentence.
+///
+/// The plate limits cannot fire for a freehand placement at all, because band
+/// 0 is neither a stilt nor a cut. So this asserts the refusal is REPLACED
+/// rather than merely survived.
+#[test]
+fn freehand_is_the_answer_to_a_latch_that_ran_out_of_leg() {
+    let mut proved = 0u32;
+    for start in [CX, CX + 40, CX - 40, CX + 90, CX - 90] {
+        for dir in [1i32, -1] {
+            let (ax, az) = sim_core::build::anchor(start, CZ, LOC_PLANE);
+            if !sim_core::build::foundation_terrain_ok(SEED, hv(SEED), ax, az) {
+                continue;
+            }
+            let mut r = Rig::new();
+            if r.place(ROW_FOUNDATION, start, CZ, 0, LOC_PLANE).is_err() {
+                continue;
+            }
+            let mut at = start as i32;
+            loop {
+                let next = at + dir;
+                if !(0..1024).contains(&next) {
+                    break;
+                }
+                let (nx, nz) = (next as u16, CZ);
+                match r.place(ROW_FOUNDATION, nx, nz, 0, LOC_PLANE) {
+                    Ok(()) => at = next,
+                    Err(e) if e == REFUSE_B_PLATE_HIGH || e == REFUSE_B_PLATE_LOW => {
+                        // The same address, the same rig, one bit different.
+                        r.place_freehand(ROW_FOUNDATION, nx, nz, 0, LOC_PLANE)
+                            .expect("freehand still refused where the latch ran out");
+                        assert_eq!(
+                            r.plate_at(nx, nz),
+                            Some(0),
+                            "the freehand rescue latched anyway"
+                        );
+                        assert_eq!(
+                            r.floor_at(nx, nz),
+                            sim_core::build::band_y(terrain_band(SEED, hv(SEED), nx, nz)),
+                            "the freehand rescue is not on its own ground"
+                        );
+                        proved += 1;
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+    assert!(
+        proved > 0,
+        "no march on the shipped island reached a plate refusal, so this proves nothing"
+    );
 }

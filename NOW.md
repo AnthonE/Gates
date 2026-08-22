@@ -898,11 +898,9 @@ instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
    §7c): ±3 bands, one symmetric half-storey, taken under `BALANCE.md` §6 and
    better on our island too — against the 6/2 this first shipped with it
    moves a whole 4×4 from 86.7% of starts to 91.3%, an 8×8 from 62.1% to
-   70.8%, and halves the deepest leg. Still open, both the operator's:
-   **freehand** (a placement that declines the latch — they have it, we have
-   no bit for it, and it is where their advanced base tech lives) and the
-   **half wall**, their answer to the gap a half-storey offset leaves on the
-   floors above it.
+   70.8%, and halves the deepest leg. **Freehand is spoken and landed**
+   (2026-08-22, item 5 below); the **half wall** is still open — their answer
+   to the gap a half-storey offset leaves on the floors above it.
    ⚠ **It also found a hole in wall 5's own gate.** `test_replay` drives
    `Command::Place` from tick 0 and its world ends with **zero pieces** —
    everything enters as twig, twig is never upkept, 900 ticks rots all of
@@ -927,6 +925,39 @@ instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
    EXACT rather than approximate — `occupy::SlotCache`'s own argument, and it
    is not sim state for the same reason. Not urgent; cheap; and the number is
    here so nobody has to re-measure to decide.
+
+5. ~~**Freehand — the operator's, and the biggest**~~ — **SPOKEN AND LANDED
+   2026-08-22** (`DECISIONS.md` §spoken; the operator took *"any piece"*).
+   `plate_for` takes a `freehand` bit ahead of the neighbour scan: an empty
+   column then takes band 0, its own ground, so a foundation goes down beside
+   somebody else's plate and starts a fresh one. Case 1 is untouched, so a
+   piece entering a built column still takes that column's floor.
+   **The UI is the half the research changed.** Asked for a key, the operator
+   described proximity instead — and the reference turns out to have **no
+   freehand input at all** (`reference/BUILDING.md` §7c.3, re-asked and
+   rewritten): a piece is attracted to a socket when you aim near one, and
+   freehand is aiming where nothing catches it. That does not port — ours is
+   address-based and has no "near" — but the aim does: `aim_from_look`
+   already produces a continuous point `target_at` discards, so the bit is
+   set by where in the cell you aimed and the ghost's height previews it.
+   `SNAP_BAND_FRAC = 2/3`, so snapping is what happens and freehand is what
+   you do. Costs: 1 bit on `Place`, `PROTO_VER` 49 → 50, 96 goldens rekeyed
+   of which **two changed bytes**. Gates `sim-core/tests/plate.rs` (3 new)
+   + `client/tests/freehand.rs` (3), six mutants proven red.
+   ⚠ **It does NOT ride `test_replay` or `test_parity_wasm`, and that was
+   measured rather than assumed.** Making the early-out inert leaves both
+   bit-identical: neither script ever places into an EMPTY column that has a
+   BUILT orthogonal neighbour whose band differs, which is the only shape
+   where the bit can change a byte. A tick-167 foundation in the neighbour
+   column was tried — it moved both goldens (so it is real coverage of the
+   place verb) and the mutant still passed, so it was reverted rather than
+   pay a golden churn for a claim it does not support. `alloc_zero` does walk
+   the branch, which is what alloc measures. **Closing it means engineering
+   the probe's world script to construct the case** — worth doing next time
+   somebody touches `probe.rs`, and cheap there because bots already build.
+   Still open: **nobody has played it.** The bit is aimed, and whether a
+   height that changes as you sweep one cell reads as control or as twitch
+   is not something any of these gates can score.
 
 4. ~~**The skirt draws and does not block**~~ — **LANDED 2026-08-21**
    (`DECISIONS.md` §open "piece flanks v0"), asked for by the operator off a

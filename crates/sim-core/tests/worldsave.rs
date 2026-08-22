@@ -182,6 +182,7 @@ fn a_lived_in_world() -> Box<World> {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     w.tick(&[Command::Place {
         id: 1,
@@ -190,6 +191,7 @@ fn a_lived_in_world() -> Box<World> {
         cz,
         level: 0,
         loc: LOC_EDGE_XLO,
+        freehand: false,
     }]);
     w.tick(&[Command::PlaceDeploy {
         id: 1,
@@ -814,6 +816,7 @@ fn the_piece_stride_is_what_the_encoder_writes() {
         cz: rec.cz,
         level: 0,
         loc: LOC_EDGE_ZLO,
+        freehand: false,
     }]);
     assert_eq!(
         w.pieces.len(),
@@ -859,6 +862,7 @@ fn a_column_with_two_plates_is_refused() {
         cz: rec.cz,
         level: 0,
         loc: LOC_EDGE_ZLO,
+        freehand: false,
     }]);
     let two = w
         .pieces

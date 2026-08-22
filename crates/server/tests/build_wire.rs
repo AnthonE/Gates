@@ -129,6 +129,7 @@ fn build_rides_the_wire() {
             cz: CZ,
             level: 0,
             loc: LOC_PLANE,
+            freehand: false,
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);
@@ -163,6 +164,7 @@ fn build_rides_the_wire() {
             cz: CZ,
             level: 0,
             loc: LOC_EDGE_XLO,
+            freehand: false,
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);
@@ -179,6 +181,7 @@ fn build_rides_the_wire() {
             cz: CZ,
             level: 0,
             loc: LOC_PLANE,
+            freehand: false,
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);
@@ -261,6 +264,7 @@ fn upgrade_rides_the_wire() {
                 cz: CZ,
                 level: 0,
                 loc,
+                freehand: false,
             },
         );
         pump(&mut core, &stats, &mut clients);

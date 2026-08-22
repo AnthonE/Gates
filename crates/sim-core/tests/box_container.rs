@@ -158,6 +158,7 @@ fn box_world() -> (World, u32, u16, u16) {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     assert_eq!(w.pieces.len(), 1, "the fixture needs its foundation");
     w.tick(&[Command::PlaceDeploy {

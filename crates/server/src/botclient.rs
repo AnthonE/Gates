@@ -190,8 +190,9 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
             cz,
             level,
             loc,
+            freehand,
             ..
-        } => encode_action_place(row, cx, cz, level, loc, buf),
+        } => encode_action_place(row, cx, cz, level, loc, freehand, buf),
         Command::PlaceDeploy {
             row,
             cx,

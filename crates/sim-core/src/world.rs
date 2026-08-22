@@ -1064,6 +1064,11 @@ pub enum Command {
     /// Place baked building-piece row `row` at grid address (cx, cz,
     /// level, loc) (build.rs validates and refuses by event, never by
     /// panic).
+    ///
+    /// `freehand` declines the plate latch — see [`build::plate_for`]. It
+    /// rides the command rather than being re-derived because the server
+    /// knows which neighbour is built and cannot know which floor the
+    /// player wanted (freehand placement v0).
     Place {
         id: u32,
         row: u16,
@@ -1071,6 +1076,7 @@ pub enum Command {
         cz: u16,
         level: u8,
         loc: u8,
+        freehand: bool,
     },
     /// Place baked deployable row `row` at grid address (deploy.rs
     /// validates and refuses by event, never by panic).
@@ -2724,6 +2730,7 @@ impl World {
                 cz,
                 level,
                 loc,
+                freehand,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     build::place(
@@ -2739,6 +2746,7 @@ impl World {
                         cz,
                         level,
                         loc,
+                        freehand,
                         &mut self.events,
                     );
                 }

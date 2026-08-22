@@ -236,6 +236,7 @@ fn fill_pieces(core: &mut ShardCore, want: usize) -> usize {
                 cz,
                 level: 0,
                 loc: LOC_PLANE,
+                freehand: false,
             });
             let before = core.world.pieces.len();
             core.world.tick(&cmds);
