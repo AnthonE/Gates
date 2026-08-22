@@ -36,7 +36,7 @@ use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use client::render::structures::{
     damage_mix, footing_of, foundation_part, part_mesh, skirt_step, tier, Part, PartKind,
-    DMG_DARKEST, FACE_BOTTOM, N_TIERS, PIECE_TILES_PER_M, SIDE_FOOT, SKIRT_MAX_M, SKIRT_STEPS,
+    DMG_DARKEST, FACE_BOTTOM, N_TIERS, PIECE_UV_PER_M, SIDE_FOOT, SKIRT_MAX_M, SKIRT_STEPS,
     SKIRT_STEP_M, SLAB_T,
 };
 use sim_core::build::DMG_BANDS;
@@ -70,11 +70,11 @@ fn every_material_has_its_own_tier() {
     for (i, &a) in all.iter().enumerate() {
         for &b in &all[i + 1..] {
             assert_ne!(
-                tier(a).0,
-                tier(b).0,
+                tier(a).role,
+                tier(b).role,
                 "materials {a} and {b} share the texture role {:?} — the \
                  `.min(2)` clamp is back",
-                tier(a).0
+                tier(a).role
             );
         }
     }
@@ -89,7 +89,8 @@ fn every_material_has_its_own_tier() {
 #[test]
 fn every_tier_names_maps_that_exist() {
     for m in 0..N_TIERS as u8 {
-        let (role, gain, rough, metallic) = tier(m);
+        let t = tier(m);
+        let (role, gain, rough, metallic) = (t.role, t.gain, t.roughness, t.metallic);
         for map in ["albedo", "normal", "rough"] {
             let p = asset_path(&format!("textures/{role}_{map}.jpg"));
             assert!(
@@ -106,6 +107,35 @@ fn every_tier_names_maps_that_exist() {
             "material {m} gain {gain} is outside the measured band"
         );
         assert!((0.0..=1.0).contains(&rough) && (0.0..=1.0).contains(&metallic));
+    }
+}
+
+/// Every tier lays its photograph at a density that is a real size.
+///
+/// The band, not the values: naming 0.5/1.0/0.55/0.55 here would be a second
+/// copy of the table, and `every_material_has_its_own_tier` says above why
+/// that catches nothing. What a band catches is the two ways a per-tier
+/// density fails once it is a per-tier density — a row left at `0.0`, which
+/// collapses every UV onto one texel and draws the flat wall §B exists to
+/// prevent, and a row given a pixel count or a millimetre count instead of a
+/// reciprocal-metres, which lands orders of magnitude outside it.
+///
+/// 0.25..=4.0 tiles/m is 4 m down to 25 cm of surface per tile. The far end
+/// is `ART.md` rule 1's near-field grain — a 1K map over 4 m is a 3.9 mm
+/// texel, still inside 5 cm; the near end is a tile small enough that the
+/// repeat itself becomes the pattern, which is rule 7.
+#[test]
+fn every_tier_lays_its_map_at_a_real_size() {
+    for m in 0..N_TIERS as u8 {
+        let t = tier(m);
+        assert!(
+            t.tiles_per_m.is_finite() && (0.25..=4.0).contains(&t.tiles_per_m),
+            "material {m} ({}) tiles at {} per metre — that is {} m of wall \
+             per tile, which is not a size a photograph was taken at",
+            t.role,
+            t.tiles_per_m,
+            1.0 / t.tiles_per_m
+        );
     }
 }
 
@@ -217,7 +247,7 @@ fn a_part_mesh_tiles_by_the_metre() {
                 PartKind::Box => size.max_element(),
                 PartKind::Tri => size.y.max(size.x.hypot(size.z)),
             };
-            let want = longest * PIECE_TILES_PER_M;
+            let want = longest * PIECE_UV_PER_M;
             assert!(
                 (span - want).abs() < 0.05,
                 "{kind:?} {size:?}: uv span {span} against {want} tiles — \
@@ -295,6 +325,77 @@ fn the_whole_kit_builds() {
         }
     }
     assert!(built > 20, "the kit sweep built only {built} meshes");
+}
+
+/// **Every upright face runs its texture the same way up.**
+///
+/// The invariant is `d(position)/dv` pointing at world +y on any face whose
+/// normal is horizontal — i.e. the map's "up" is up. Both builders broke it
+/// and neither could be caught by anything that existed: `box_mesh` gave its
+/// +x and −z faces `(u = Y, v = Z)` and `(u = Y, v = X)`, a quarter-turn
+/// against their opposite numbers, and `tri_prism_mesh` walked its sides
+/// head-to-foot, which is v pointing down. All of it satisfied `u × v = n`,
+/// which is the only thing those tables ever stated, and all of it was
+/// correctly wound, correctly tinted and correctly tiled — the whole defect
+/// is which way the picture faces, and until 2026-08-22 every tier wore tree
+/// bark, whose grain reads as noise. Give the tiers planks and lashed poles
+/// and it becomes the first thing you see: half a base's walls with the grain
+/// running across them.
+///
+/// Solved from positions and UVs rather than read off `ATTRIBUTE_TANGENT`,
+/// because mikktspace's handedness convention is a second thing to be wrong
+/// about and the mapping is the claim.
+#[test]
+fn an_upright_face_runs_its_texture_up() {
+    for kind in [PartKind::Box, PartKind::Tri] {
+        for size in [
+            Vec3::new(2.96, 3.0, 0.2),
+            Vec3::new(2.96, 0.3, 2.96),
+            Vec3::new(0.2, 3.0, 0.9),
+        ] {
+            let m = part_mesh(&part(size, kind));
+            let (Some(VertexAttributeValues::Float32x3(pos)), Some(idx)) =
+                (m.attribute(Mesh::ATTRIBUTE_POSITION), m.indices())
+            else {
+                panic!("{kind:?} has no positions or no indices");
+            };
+            let Some(VertexAttributeValues::Float32x2(uv)) = m.attribute(Mesh::ATTRIBUTE_UV_0)
+            else {
+                panic!("{kind:?} uv0 is not float2");
+            };
+            let mut uprights = 0;
+            let tri: Vec<u32> = idx.iter().map(|i| i as u32).collect();
+            for t in tri.chunks_exact(3) {
+                let p: Vec<Vec3> = t.iter().map(|&i| Vec3::from(pos[i as usize])).collect();
+                let w: Vec<Vec2> = t.iter().map(|&i| Vec2::from(uv[i as usize])).collect();
+                let n = (p[1] - p[0]).cross(p[2] - p[0]).normalize();
+                if n.y.abs() > 0.5 {
+                    continue; // a cap has no up to agree about
+                }
+                uprights += 1;
+                let (e1, e2) = (p[1] - p[0], p[2] - p[0]);
+                let (d1, d2) = (w[1] - w[0], w[2] - w[0]);
+                let det = d1.x * d2.y - d2.x * d1.y;
+                assert!(
+                    det.abs() > 1e-9,
+                    "{kind:?} {size:?}: a face's uv is degenerate ({det})"
+                );
+                // The world direction of increasing v.
+                let bitangent = ((e2 * d1.x - e1 * d2.x) / det).normalize();
+                assert!(
+                    bitangent.y > 0.99,
+                    "{kind:?} {size:?}: an upright face (normal {n:?}) sends \
+                     +v to {bitangent:?} — its texture is turned against the \
+                     faces that send +v to +y"
+                );
+            }
+            assert!(
+                uprights >= 6,
+                "{kind:?} {size:?}: only {uprights} upright triangles found — \
+                 the test walked past the faces it exists to check"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
