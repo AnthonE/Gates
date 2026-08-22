@@ -301,10 +301,10 @@ fn a_wall_stops_the_shot_and_the_body_behind_it_lives() {
     let fx = (cx as f32 + 0.5) * BUILD_CELL_M;
     let plane_z = cz as f32 * BUILD_CELL_M;
     // Inside the wall's own storey, half way up it.
-    let shot_y = build::column_floor_y(SEED, hv(SEED), cx, cz) + 1.5;
+    let shot_y = build::column_floor_y(SEED, hv(SEED), cx, cz, 0) + 1.5;
 
     let mut walled = Box::new(ColIndex::new());
-    walled.add(cx, cz, 0, LOC_EDGE_ZLO, SHAPE_WALL);
+    walled.add(cx, cz, 0, LOC_EDGE_ZLO, SHAPE_WALL, 0);
 
     for (cols, expect_hp, what) in [
         (&*walled, 100u16, "walled"),

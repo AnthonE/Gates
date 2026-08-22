@@ -437,7 +437,8 @@ impl PieceSet {
                         self.cols.del(rec.cx, rec.cz, rec.level, rec.loc, shape);
                     }
                     if let Some(shape) = shape_of(defs, have, rec.row) {
-                        self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
+                        self.cols
+                            .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
                     }
                 }
                 return true;
@@ -449,7 +450,8 @@ impl PieceSet {
         self.recs[self.len] = rec;
         self.len += 1;
         if let Some(shape) = shape_of(defs, have, rec.row) {
-            self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
+            self.cols
+                .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
         }
         true
     }
@@ -490,7 +492,7 @@ impl PieceSet {
         self.cols.clear();
         for r in self.recs[..self.len].iter() {
             if let Some(shape) = shape_of(defs, have, r.row) {
-                self.cols.add(r.cx, r.cz, r.level, r.loc, shape);
+                self.cols.add(r.cx, r.cz, r.level, r.loc, shape, r.plate);
             }
         }
     }

@@ -246,6 +246,7 @@ mod tests {
             hp,
             uh: 0,
             dmg: damage_band(hp, 500),
+            plate: 0,
         }
     }
 

@@ -286,6 +286,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 cz: own_cell.1,
                 level: ((t / 32) % 2) as u8,
                 loc: ((t / 16) % 4) as u8,
+                freehand: false,
             };
             // Bot 2 pokes the deploy verb at its own feet: loc/level
             // cycle, so placements AND every deploy refusal reason ride

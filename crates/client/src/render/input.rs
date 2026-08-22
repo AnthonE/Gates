@@ -94,6 +94,7 @@ pub fn gather(
     // Same shape as `ui`, and the same reason it is optional: a capture run
     // registers neither.
     chat: Option<Res<super::chat::Chat>>,
+    reports: Option<Res<super::report::Reports>>,
     // The inverse of the two above: present ONLY on a capture run, absent in
     // every player's client. `capture::drive` runs `.before` this system, so
     // the intent read here was decided this frame and not last one.
@@ -119,7 +120,8 @@ pub fn gather(
     // the inventory. A text field is a text field whether it is inside a
     // panel or floating over the world.
     let panel_open = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false)
-        || chat.map(|c| c.open()).unwrap_or(false);
+        || chat.map(|c| c.open()).unwrap_or(false)
+        || reports.map(|r| r.open).unwrap_or(false);
 
     // **Free look: the head turns and the body does not.** Held `Left Alt`
     // parks the wire angles where they are and spends the mouse on a camera

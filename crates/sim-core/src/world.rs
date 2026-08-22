@@ -1064,6 +1064,11 @@ pub enum Command {
     /// Place baked building-piece row `row` at grid address (cx, cz,
     /// level, loc) (build.rs validates and refuses by event, never by
     /// panic).
+    ///
+    /// `freehand` declines the plate latch — see [`build::plate_for`]. It
+    /// rides the command rather than being re-derived because the server
+    /// knows which neighbour is built and cannot know which floor the
+    /// player wanted (freehand placement v0).
     Place {
         id: u32,
         row: u16,
@@ -1071,6 +1076,7 @@ pub enum Command {
         cz: u16,
         level: u8,
         loc: u8,
+        freehand: bool,
     },
     /// Place baked deployable row `row` at grid address (deploy.rs
     /// validates and refuses by event, never by panic).
@@ -2724,6 +2730,7 @@ impl World {
                 cz,
                 level,
                 loc,
+                freehand,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     build::place(
@@ -2739,6 +2746,7 @@ impl World {
                         cz,
                         level,
                         loc,
+                        freehand,
                         &mut self.events,
                     );
                 }
@@ -3556,7 +3564,14 @@ impl World {
         // that decayed with nothing in it.
         for i in 0..self.deploys.box_spill_len() {
             let bx = self.deploys.box_spill_at(i);
-            let (x, y, z) = deploy::box_drop_pos(seed, &self.haven, bx.cx, bx.cz, bx.level);
+            let (x, y, z) = deploy::box_drop_pos(
+                seed,
+                &self.haven,
+                self.pieces.cols(),
+                bx.cx,
+                bx.cz,
+                bx.level,
+            );
             let mut items = [ItemStack::default(); INV_SLOTS];
             items[..BOX_SLOTS].copy_from_slice(&bx.items);
             self.backpacks.stand_up(
@@ -3718,7 +3733,7 @@ impl World {
             h.update(&t.to_le_bytes());
         }
         for r in self.pieces.entries() {
-            let mut buf = [0u8; 12];
+            let mut buf = [0u8; 13];
             buf[0..2].copy_from_slice(&r.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&r.cz.to_le_bytes());
             buf[4] = r.level;
@@ -3730,6 +3745,13 @@ impl World {
             // spare byte: it prices a swing, so two shards disagreeing
             // about it disagree about a raid.
             buf[11] = r.facing;
+            // The column's plate (build plate v1), which widened this
+            // buffer from 12 — the first piece field that is a CHOICE
+            // rather than a function of (seed, cell). Two shards that
+            // disagree about it disagree about where every surface in the
+            // column is, which is further than a raid's price: it is
+            // whether a body is standing or falling.
+            buf[12] = r.plate as u8;
             h.update(&buf);
         }
         // Arrows in the air, and deliberately on the **player** idiom

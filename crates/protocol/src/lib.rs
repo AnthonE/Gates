@@ -642,7 +642,25 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// refusal. All 96 fixtures re-key; the three snapshot cases are the only
 /// ones whose bytes carry an entity record, and the hello carries the
 /// version itself.
-pub const PROTO_VER: u16 = 48;
+///
+/// **v49 (2026-08-21): four more bits on the piece record, `plate`** (build
+/// plate v1). A column's level-0 floor stopped being a pure function of
+/// (seed, cell): the first foundation of a base pins a height and its
+/// neighbours latch to it, so the offset from the column's own terrain band
+/// is a CHOICE and has to cross. It rides `write_piece_rec` rather than a
+/// per-column lane, because a column's plate arrives with its pieces and
+/// leaves with its last one — there is no third message to forget, and no
+/// removal broadcast to write. The deploy record deliberately does NOT carry
+/// it (`write_deploy_rec` says why): the piece record for the same column
+/// already does.
+///
+/// The failure a stale client suffers is the family's usual one, and it is
+/// the loud kind rather than the quiet kind: everything after `dmg` reads
+/// short, so the record's tail is garbage, and — worse than garbage — a
+/// client that decoded a v49 stream as v48 would put every base back on the
+/// terrain it was stilted over, dropping half of them into hillsides. All 96
+/// fixtures re-key; every one carrying a piece record moves bytes.
+pub const PROTO_VER: u16 = 50;
 
 /// This game's slug in the scry catalog.
 ///
@@ -1182,6 +1200,29 @@ pub(crate) const DEPLOY_ROW_BITS: u32 = 4;
 /// field a hostile client can set, and it is why the band is 8 rather than a
 /// rounder 10.
 pub(crate) const DMG_BAND_BITS: u32 = 3;
+/// The piece's **plate** on the wire (build plate v1, wire v49): the signed
+/// band offset `build::plate_for` latched, carried biased so the writer needs
+/// no zig-zag.
+///
+/// **Four bits, and the width is deliberately wider than the sim's own
+/// limits.** `PLATE_RISE_MAX_BANDS` and `PLATE_SINK_MAX_BANDS` are knobs —
+/// they live in `DECISIONS.md` §open and the operator may move them — and a
+/// wire field sized exactly to today's knob is a `PROTO_VER` bump for every
+/// balance pass. Sixteen values give the whole `[-8, 7]` band range room, so
+/// the layout is a fact about the wire and the limit stays a fact about the
+/// sim, checked where it is decided (`build::place`) and again where a file
+/// is read (`worldsave.rs`). Every value the width can carry is legal here
+/// for `DMG_BAND_BITS`' reason: the sim's own clamp, not the decoder's, is
+/// what a forged plate meets.
+///
+/// `pub` for `build::anchor`'s reason, one layer over: the golden suite
+/// asserts that the sync fixture covers the FIELD rather than today's knobs,
+/// and a check that re-derived the width from the knobs would be exactly the
+/// coupling this constant exists to refuse.
+pub const PLATE_BITS: u32 = 4;
+/// What is added to a plate before it is written, so the four bits carry
+/// `[-PLATE_BIAS, PLATE_BIAS - 1]`.
+pub const PLATE_BIAS: i32 = 8;
 /// The upgrade action's target material (build.rs `MAT_*`: wood, stone,
 /// metal). Three values in two bits, so the fourth is forgeable and the
 /// decoder refuses it — the same posture as the hotbar selector.
@@ -1190,6 +1231,12 @@ const BUILD_MAT_BITS: u32 = 2;
 /// bits hold it and the two forgeable values above it refuse at decode,
 /// the same posture as the hotbar selector.
 const ACTION_SLOT_BITS: u32 = 5;
+
+/// The freehand flag's width on `ActionMsg::Place` (freehand placement
+/// v0). One, and named rather than a literal `1` so the write and the read
+/// cannot drift apart — the `a`/`b` positional-payload trap in CLAUDE.md is
+/// the same defect one field over.
+const PLACE_FREEHAND_BITS: u32 = 1;
 
 /// One decoded C→S action. The wire enforces shape (recipe inside the
 /// sim's table, a live index, a nonzero count); meaning — does the recipe
@@ -1205,12 +1252,28 @@ pub enum ActionMsg {
     /// loc). Shape here too: address inside the grid, row inside the
     /// table; support/terrain/cost are the sim's verdict, delivered as a
     /// build-refused event.
+    ///
+    /// `freehand` declines the plate latch (freehand placement v0,
+    /// `DECISIONS.md` 2026-08-22): the column takes its OWN terrain band
+    /// instead of adopting a built orthogonal neighbour's floor. It has to
+    /// cross the wire and cannot be re-derived — which neighbour is built
+    /// is a fact about the store the server already has, but whether the
+    /// player WANTED that floor is a fact only the client holds. One bit,
+    /// because the alternative is the server guessing an intent.
+    ///
+    /// It cannot lift a piece off a floor its column already holds
+    /// (`build::plate_for` case 1 is untouched), so a wall still cannot
+    /// base itself a band off the floor it stands on. Declining is about
+    /// starting a NEW plate beside an old one, which is the reference's
+    /// own shape — their walls take a socket too
+    /// (`reference/BUILDING.md` §7c.3).
     Place {
         row: u16,
         cx: u16,
         cz: u16,
         level: u8,
         loc: u8,
+        freehand: bool,
     },
     /// Place baked deployable row `row` at the grid address. Same
     /// contract: the wire enforces shape, the sim delivers meaning as a
@@ -1572,6 +1635,7 @@ pub fn encode_action_place(
     cz: u16,
     level: u8,
     loc: u8,
+    freehand: bool,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
     if row as usize >= sim_core::limits::MAX_PIECE_DEFS
@@ -1590,6 +1654,9 @@ pub fn encode_action_place(
     w.write(cz as u32, BUILD_CELL_BITS)?;
     w.write(level as u32, BUILD_LEVEL_BITS)?;
     w.write(loc as u32, BUILD_LOC_BITS)?;
+    // Width-exact: a bool has two values and the field has two, so unlike
+    // the row and the loc above there is nothing here to forge.
+    w.write(freehand as u32, PLACE_FREEHAND_BITS)?;
     Ok(w.finish())
 }
 
@@ -1866,6 +1933,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             // Coord/level widths are exact; the row and — since the loc
             // field widened past its ten live values (v40) — the loc can
             // both be forged.
+            let freehand = r.read(PLACE_FREEHAND_BITS)? != 0;
             if row as usize >= sim_core::limits::MAX_PIECE_DEFS || loc > loc_max(false) {
                 return Err(WireError::Malformed);
             }
@@ -1875,6 +1943,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
                 cz,
                 level,
                 loc,
+                freehand,
             }
         }
         ACT_DEPLOY => {

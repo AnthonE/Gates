@@ -24,6 +24,15 @@ use client::scry::Player;
 use client::{client_endpoint, Session};
 
 fn main() -> AppExit {
+    // **First, before anything can panic.** A crash writes the same document
+    // a player's `F7` writes, into the same directory, and then hands off to
+    // the hook it displaced so the message and the backtrace still print —
+    // `render::report::install_panic_hook` explains why it chains rather than
+    // replaces. Installed on a capture run too, unlike every other key and
+    // socket this client owns: this one writes no frame and opens nothing, and
+    // a probe that dies is exactly when the file is worth having.
+    client::render::report::install_panic_hook();
+
     let a = match args::parse(std::env::args().skip(1)) {
         Parsed::Run(a) => a,
         Parsed::Help => {

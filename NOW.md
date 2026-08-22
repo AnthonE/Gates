@@ -42,6 +42,36 @@ An item is ≤ ~25 lines (`CLAUDE.md` §loop discipline); detail belongs in
 
 ---
 
+## 0rep · A player can file a report; four things around it cannot *(client lane + operator)*
+
+Landed 2026-08-20. `F7` writes `gates-report-<stamp>-<fp>.md`, a `.json`
+beside it and a `.png` of the frame, into the screenshot directory:
+build (`VERSION`/`GIT_SHA`/`PROTO_VER`), the seed, position, the netcode
+counters `ClientCore` already kept, and a stranger's line quoted in a fence it
+cannot escape. `crates/client/tests/report.rs` is the gate, and every assertion
+carrying the untrusted-prose rule was proven red under its own mutant.
+A panic writes the same document, chained ahead of the default hook.
+`DECISIONS.md` §open, bug reports v0, has the four bounds.
+
+What it does NOT do, in the order the value drops:
+
+1. **Nothing reads them but `ci/reports.py`**, which folds a directory onto its
+   fingerprints and prints the board. No page serves it. **(operator: where.)**
+2. **No intake, deliberately** — the client opens no socket and the player
+   decides what happens to the file. An endpoint is its own slice.
+3. **The `report` signing family does not exist in the launcher** — shipping
+   set is `play`/`review`/`vow`/`hive`/`braid`/`store` (`scry-broker`'s
+   `signer.rs`). `Report::sign_text` is built to `sdk/PROTOCOL.md`'s rules and
+   is refused today, which is the correct failure. Upstream, in `scry-forge`.
+4. **A report pays its reporter** (operator, 2026-08-21) and the rail is built:
+   a PR carries `Closes reports: <fingerprint>`, so the merge that pays its
+   author says which reporters it owes. **Two things left, both operator:** how
+   much against the PR's 100,000, and whether it pays on the merge or earlier —
+   `DECISIONS.md` §open has the trade. Nothing pays until (3) lands either way:
+   an unsigned wallet is a claim, and paying a claim pays whoever typed it.
+
+---
+
 ## 0pw · Every material is drawn once before it is needed *(client lane)*
 
 LANDED 2026-08-20, and it corrects the trap it closes. `CLAUDE.md` said a
@@ -226,9 +256,28 @@ What is left on the arms:
   built: a second camera has to duplicate exposure, tonemap and atmosphere,
   and `CLAUDE.md`'s trap list says that coupled set has exactly one owner.
   The held item has had the same flaw since it existed.
-- **The hand reads large and the fingers are splayed rather than gripping.**
-  Tuning, and it needs a GPU — `--bin modelview <file> --eye --hide
-  char1_body` previews the same geometry.
+- **The hand reads large and the fingers are splayed rather than gripping,
+  and no clip can fix the second half.** The skeleton is 24 joints with no
+  finger bones at all, so every hand in every clip is the bind pose forever.
+  That is a mesh property; a re-import or a sculpted grip is the only lever.
+  `--bin modelview <file> --eye --hide char1_body` previews the geometry.
+
+**The off hand is gone, 2026-08-20** (operator: *"our models hands are a bit
+crossed?"*). `Pistol_Idle_Loop` is the rig's only two-handed hold that loops,
+which is why it was picked, and a two-handed grip on a one-handed rock puts
+the support palm **62–66 mm** from the hold hand and **31 mm nearer the eye**,
+so it drew in front of the item — the tightest of all 46 (clip × hold hand)
+pairs in the rig's 53 clips, and the left arm crosses the midline to get
+there. `VIEWMODEL_HIDDEN_ARM` collapses `LeftShoulder` in `dress_arms`, which
+takes the whole chain with it to a point at ndc y ≈ −1.8. Hiding beat swapping
+clips because **every one-handed idle this rig owns presents its LEFT hand**
+(torch, spell, shield), so a swap moves the item into the wrong hand, re-derives
+the one placement measured in a running client, and points away from
+`Sword_Attack` — item 2 below, which swings the right arm. One arm is also
+what the reference draws for a one-handed tool. `tests/viewmodel_arms.rs` is
+the gate, and it holds the derivation `VIEWMODEL_ARMS` only ever printed at
+runtime. **Nobody has looked at it yet** — that is owed.
+
 2. **The gather swing is `Sword_Attack`** (operator, 2026-08-17 — the
    reference game swings one animation at everything). No asset is owed; the
    blocker is item 1, a fact on the wire.
@@ -242,6 +291,29 @@ What is left on the arms:
    into the output.
 
 ---
+
+## 0hand · Swapping items swaps the hand now — what is still stand-in *(client lane)*
+
+Landed 2026-08-21 (operator: *"it doesnt look right in these builds"*): the
+grip offset was applied on the parent's Y after the model had been
+quarter-turned onto −Z, so every glb tool hung `grip_m` BELOW the fist —
+12.5 cm for the hatchet, 63 cm for the spear — and the hand gripped air.
+`viewmodel::swap` now rotates the grip point with the pose. And the table
+grew: revolver and torch are generated meshes (`render/heldgen.rs`), the
+boxes, bag, workbench and hearth reuse their own `models/deploy/*.glb`
+scaled into the hand, and the bow stands upright at the riser instead of
+lying flat. `tests/held_assets.rs` holds generated rows to the same
+length/grip/no-glow laws as files. Still drawing the generic stand-in:
+
+1. **Metal hatchet/pickaxe/spear** — no asset (`WANTED.md`), and reusing the
+   stone glb would need a second material to not lie about the head.
+2. **Fire pit** — `fire.glb` bakes a LIT emissive; a carried unlit one would
+   glow, and `nothing_held_glows` refuses it. Needs an unlit variant or a
+   generated row.
+3. **Resources, ammo, bandage, lock** — no models; the stand-in covers them.
+4. **The swing still pitches the item and not the arm** (0chr item 1's
+   parent-to-hand follow-up), so a mid-swing frame shows the fist behind the
+   arc. Same fix as 0chr: parent the item to `ViewArms::hand`, retune, look.
 
 ## 0pvp · What a fight still cannot do — the readiness audit *(systems lane)*
 
@@ -750,14 +822,21 @@ gates `client/tests/pieces.rs` + `sim-core/build.rs` §tests:
 
 Remaining, ranked:
 
-1. **Nobody has looked at either, and the probe still cannot stage it.**
-   The capture harness can walk to a world node and swing at it now
-   (2026-08-18), which is what §0mk needed, but it cannot BUILD — a piece
-   is a verb behind a wheel and a material cost, so "build a row and hit
-   it" is still a person at a keyboard. Landing that in the probe is the
-   next slice if this item is picked up; the swing pass is the shape to
-   copy. ⚠ And see §0mk: no decal renders under lavapipe at all, so a
-   headless run cannot check surfaces that carry marks either.
+1. ~~Nobody has looked at either, and the probe still cannot stage it~~ —
+   **half struck 2026-08-20: pieces are photographed now, by somebody else.**
+   The probe still cannot build (a piece is a verb behind a wheel and a
+   material cost), and it turned out not to need to: `population = N` already
+   seats bots that build a twig base over the real wire, `dev_spawn` makes
+   them the camera's neighbours, and `dev_spawn_kit` pays for the wood. The
+   capture harness grew a scene pass that finds the nearest base and the
+   nearest body and points the camera at them (`7-player.png`,
+   `8-build.png`); `ci/scene.sh` is the rig. Measured: eight foundations and
+   floors up a hillside, from 4.8 m, on seed 20260731.
+   **What is left** is the staged half — one row of one material, hit a known
+   number of times, photographed at each band. The population builds what it
+   likes, so damage bands are still luck. ⚠ And see §0mk: no decal renders
+   under lavapipe at all, so a headless run cannot check surfaces that carry
+   marks either.
 2. **The catalogue is 11 shapes against the reference's 20** (`BUILDING.md`
    §7b.1) — no half/low wall, floor frame, steps, ramp, 3 of 4 stairs. Rule 6
    is silhouette before surface, so this outranks more material work.
@@ -782,19 +861,120 @@ ghost), and the ghost aimed by the LOOK ray (`place::aim_from_look`)
 instead of `feet + yaw·3.5`. Gates: `sim-core/tests/base_lattice.rs`,
 `client/tests/ghost.rs` §footing, `place.rs` §aim. Remaining, ranked:
 
-1. **Nobody has looked at it.** Every claim is arithmetic; the screenshots
-   that opened this deserve their counter-shot. Boot, build a row on the
-   same hillside, look.
-2. **The stored plate is the real v1** — the reference's model: first
-   foundation pins a height, neighbours latch to it, too-high/too-low
-   refusals, stilts past one band. Costs a wire field + save bump + mirror
-   change (§open row prices it). Until then a slope steps every `q/slope`
-   metres and the player cannot choose where.
+1. ~~**Nobody has looked at it.**~~ **Looked at, 2026-08-21**:
+   `./ci/scene.sh --population 8 --settle 200` on seed 20260731 — eight bots
+   built a twig base over the real wire and the probe photographed it.
+   ⚠ **and its own frames sent the next slice**: the operator looked at the
+   design vantage and asked *"can we prevent the camera from popping into
+   bases"*. Two answers, both landed — piece flanks v0 for the game (a plane
+   had no sides), and a **clearance walk** before the vantages for the probe,
+   because standing ON a plate is not being inside one and six fixed bearings
+   from the middle of somebody's floor are six pictures of a wall.
+   `8-build.png` is the counter-shot the 2026-08-15 screenshots were owed:
+   the wall run holds ONE level line the length of the base while the hill
+   beside it climbs, and `0-design.png`, taken from inside, shows the floor
+   as one flat plate on a regular grid with a box and a locked keypad on it.
+   **The arithmetic half is swept too** (2026-08-21,
+   `client/tests/lattice_geom.rs`): the drawn surface is the walked surface
+   for every plane, triangle and riser, `base_transform` lands on
+   `build::anchor`, and a storey is one cube. It found the **stairs 0.212 m
+   out** — the ramp slab was centred on the storey's mid-height, so its
+   top face, the one a player sees, sat `SLAB_T/(2 cos θ)` above the line
+   `piece_ground` walks them up, for the whole climb. The run was a typed
+   4.15 m against the cell's 4.2426 diagonal too. Both fixed and derived
+   from `BUILD_CELL_M`/`LEVEL_H_M`; six mutants proven red, and the first
+   draft of the run assertion sampled a seam inside each end, which the
+   short ramp reaches — so it passed the bug it was written for.
+2. ~~**The stored plate is the real v1**~~ — **LANDED 2026-08-21**
+   (`DECISIONS.md` §open "build plate v1"). `build::plate_for`: the first
+   foundation pins the floor, orthogonal neighbours latch to it, and the
+   two limits refuse by name. Wire v49 (4 bits on the piece record), save
+   format 9, `state_hash` 12 → 13 bytes a piece — all three as this row
+   priced them. Measured before: **11.5% of buildable 4×4 footprints were
+   flat**; after, a connected base is one floor by construction and 86.7%
+   of starts take a whole 4×4. Gates `sim-core/tests/plate.rs` (7, four
+   mutants proven red) + `client/tests/lattice_geom.rs`.
+   **The offset is the reference's** (2026-08-21, `reference/BUILDING.md`
+   §7c): ±3 bands, one symmetric half-storey, taken under `BALANCE.md` §6 and
+   better on our island too — against the 6/2 this first shipped with it
+   moves a whole 4×4 from 86.7% of starts to 91.3%, an 8×8 from 62.1% to
+   70.8%, and halves the deepest leg. **Freehand is spoken and landed**
+   (2026-08-22, item 5 below); the **half wall** is still open — their answer
+   to the gap a half-storey offset leaves on the floors above it.
+   ⚠ **It also found a hole in wall 5's own gate.** `test_replay` drives
+   `Command::Place` from tick 0 and its world ends with **zero pieces** —
+   everything enters as twig, twig is never upkept, 900 ticks rots all of
+   it — so `GOLDEN_FINAL_HASH` folds an empty piece store and has never
+   covered one. Proven: mutating `buf[4] = r.level` in `state_hash`'s piece
+   loop left the pin bit-identical. Closed by `GOLDEN_TRACE_HASH`, a fold
+   of every stamped hash rather than the last, which goes red under all
+   three piece-field mutants.
 3. **A band-boundary wall bases on its canonical cell** — it can hang one
    band over the lower plate (an arrow-sized slit under it). The lower of
    its two columns is the honest base; needs `collide` + render together.
-4. **The skirt draws and does not block** — walking into it from downhill
-   clips through. Piece side collision is its own slice.
+   The plate makes this RARE rather than fixing it: inside one base every
+   column shares a floor, so the slit is now only at the seam where two
+   separately-started bases meet.
+4b. **The flank costs 153 µs a tick and a memo would take most of it back.**
+   A/B on `bin/profile` (100 clients, 2 000 pieces, 600 ticks, bodies in the
+   piece block): `World::tick` 195 → 348 µs, 0.6% → 1.0% of budget.
+   Affordable, and the cause is exact: `collide::col_base_y` re-samples
+   terrain per cell per candidate and `plane_blocked` reads up to four cells,
+   so one movement step can cost twelve `terrain::ground` taps it did not
+   before. `terrain_band` is pure in (seed, cell), so a direct-mapped memo is
+   EXACT rather than approximate — `occupy::SlotCache`'s own argument, and it
+   is not sim state for the same reason. Not urgent; cheap; and the number is
+   here so nobody has to re-measure to decide.
+
+5. ~~**Freehand — the operator's, and the biggest**~~ — **SPOKEN AND LANDED
+   2026-08-22** (`DECISIONS.md` §spoken; the operator took *"any piece"*).
+   `plate_for` takes a `freehand` bit ahead of the neighbour scan: an empty
+   column then takes band 0, its own ground, so a foundation goes down beside
+   somebody else's plate and starts a fresh one. Case 1 is untouched, so a
+   piece entering a built column still takes that column's floor.
+   **The UI is the half the research changed.** Asked for a key, the operator
+   described proximity instead — and the reference turns out to have **no
+   freehand input at all** (`reference/BUILDING.md` §7c.3, re-asked and
+   rewritten): a piece is attracted to a socket when you aim near one, and
+   freehand is aiming where nothing catches it. That does not port — ours is
+   address-based and has no "near" — but the aim does: `aim_from_look`
+   already produces a continuous point `target_at` discards, so the bit is
+   set by where in the cell you aimed and the ghost's height previews it.
+   `SNAP_BAND_FRAC = 2/3`, so snapping is what happens and freehand is what
+   you do. Costs: 1 bit on `Place`, `PROTO_VER` 49 → 50, 96 goldens rekeyed
+   of which **two changed bytes**. Gates `sim-core/tests/plate.rs` (3 new)
+   + `client/tests/freehand.rs` (3), six mutants proven red.
+   ⚠ **It does NOT ride `test_replay` or `test_parity_wasm`, and that was
+   measured rather than assumed.** Making the early-out inert leaves both
+   bit-identical: neither script ever places into an EMPTY column that has a
+   BUILT orthogonal neighbour whose band differs, which is the only shape
+   where the bit can change a byte. A tick-167 foundation in the neighbour
+   column was tried — it moved both goldens (so it is real coverage of the
+   place verb) and the mutant still passed, so it was reverted rather than
+   pay a golden churn for a claim it does not support. `alloc_zero` does walk
+   the branch, which is what alloc measures. **Closing it means engineering
+   the probe's world script to construct the case** — worth doing next time
+   somebody touches `probe.rs`, and cheap there because bots already build.
+   Still open: **nobody has played it.** The bit is aimed, and whether a
+   height that changes as you sweep one cell reads as control or as twitch
+   is not something any of these gates can score.
+
+4. ~~**The skirt draws and does not block**~~ — **LANDED 2026-08-21**
+   (`DECISIONS.md` §open "piece flanks v0"), asked for by the operator off a
+   screenshot: *"can we prevent the camera from popping into bases"*.
+   `collide::plane_blocked` gives a plane sides — a step within `STEP_UP` is
+   still a step, a slab above the head is still passed under, a foundation is
+   solid to the ground because the skirt is. Measured with it off: a body
+   sprinting at a 3 m-stilted plate walks **clean through and out the far
+   side**. The footprint is the cell at the capsule's radius, which holds the
+   eye 0.42 m off the drawn face against a 0.1 m near plane. Third veto-lift
+   in `movement::step`, so a base built over you is something you walk out of.
+   Both replay goldens moved and are regenerated. Gate
+   `sim-core/tests/flank.rs` (5, six mutants proven red — including one that
+   found the first draft's endpoint-only assertion was green on the bug).
+   Still open: the **shot** walk does not consult it (an arrow through a floor
+   is §0ar's), and whether `place` should refuse a piece whose cell a body is
+   standing in.
 
 
 
