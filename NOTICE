@@ -1,0 +1,117 @@
+Gates — third-party notices
+===========================
+
+`LICENSE` (MIT, © 2026 MoreRight DAO) covers **the code in this repository**.
+It does not, and cannot, cover everything in the tree: some of what ships is
+somebody else's work carried under its own terms, and several of those terms
+are *notice* licences — the credit IS the condition, so a missing line here is
+a licence breach rather than a cosmetic gap.
+
+This file is the credit. `CLAUDE.md` §"Third-party credit" is the working
+record behind it and is where a new entry gets argued; this is the copy that
+travels with a build.
+
+
+What ships, and under what
+--------------------------
+
+**game-icons.net icons** — CC BY 3.0 Unported.
+**64 of the 65** white-on-transparent PNGs in `assets/icons/`, rasterised from
+the project's public SVG archive by `ci/bake_icons.py`. The four authors whose
+work ships are **lorc**, **delapouite**, **carl-olsen** and **john-redman**.
+The 65th, `burnt_meat.png`, is ours (authored in `ci/icons/`) and **this CC BY
+notice does not cover it** — the split is stated rather than inferred, and
+`assets/icons/CREDITS.md` keeps the two in separate tables for that reason.
+Full per-file mapping and the licence URL are in that file, which ships beside
+the icons. `crates/client/tests/ui.rs` §G fails if it stops travelling or if
+the baked set and `ui::icons::STEMS` drift apart.
+https://game-icons.net · https://creativecommons.org/licenses/by/3.0/
+
+**Roboto Condensed** — Apache-2.0, © 2011 Google Inc.
+`crates/client/fonts/RobotoCondensed-{Regular,Bold}.ttf`, compiled into the
+client binary with `include_bytes!`. The notice that must travel with them is
+`crates/client/fonts/LICENSE-ROBOTO.txt`; `crates/client/tests/ui.rs` §F fails
+if it stops travelling.
+
+**bevy_procedural_tree** — MIT OR Apache-2.0.
+A dependency whose code ships: the native client's conifer generator.
+It is `@dgreenheck/ez-tree`'s algorithm (MIT, © Daniel Greenheck) ported to
+Rust and Bevy. https://github.com/Affinator/bevy_procedural_tree
+
+**Quaternius — Universal Animation Library** — CC0 1.0.
+`assets/models/mannequin.gltf` + `.bin`. CC0 asks for nothing; recorded here
+because a reader auditing the tree should not have to re-derive it.
+https://quaternius.com/
+
+**Generated 3D assets** — commissioned output, not licensed work.
+Meshes under `assets/models/` produced with Meshy carry rights from a vendor
+contract rather than a licence. `assets/models/MANIFEST.md` records vendor,
+mode, prompt, task id and date for each one, which is what makes the rule
+auditable after the fact rather than a promise.
+
+**MinGW-w64 runtime** — *Windows builds only.*
+`libstdc++-6.dll` and `libgcc_s_seh-1.dll` — GCC, GPLv3 with the
+**GCC Runtime Library Exception** 3.1 — and `libwinpthread-1.dll` (winpthreads,
+MIT/Expat with BSD-3-clause and public-domain parts, © 2011–2016 the mingw-w64
+project). Reached through `basis-universal-sys`, Bevy's KTX2/Basis transcoder.
+They ride beside `gates.exe` in the Windows depot because Windows does not
+provide them and the build cannot start without them; the notice that must
+travel with them is `LICENSE-MINGW-RUNTIME.txt`, staged into every Windows
+depot by `ci/depot.py`, which refuses to package one without it.
+**The Runtime Library Exception is what the "nothing derives from GPL work"
+line below relies on** for these two files: it permits conveying the runtime
+alongside output of an unmodified GCC, so no part of Gates' own source becomes
+subject to the GPL. Stated rather than assumed, because it is the single place
+in this tree where a GPL-licensed artifact ships.
+
+**Rust dependencies.** Everything else linked into these binaries comes from
+crates.io and carries its own licence, overwhelmingly MIT OR Apache-2.0.
+`Cargo.lock` is the exact list for any given build; `cargo about` or
+`cargo deny` will render it if a full manifest is ever required.
+
+
+What does NOT ship, and therefore owes nothing here
+---------------------------------------------------
+
+Recorded because "we read it" and "we shipped it" are different facts, and the
+distinction is the whole of this repo's IP posture:
+
+- **`.claude/skills/threejs-*`** — the Three.js graphics skill pack, MIT,
+  © 2026 Scott Sun. Guidance only; no code from the pack is in this repo.
+- **`reference/rust-systems.txt`** — facts (hook names, class names,
+  signatures, categories) extracted from OxideMod/Oxide.Rust (MIT,
+  © 2013–2020 Oxide Team and Contributors). Carbon.Hooks (GPL-3.0) is cited as
+  a coverage cross-check and deliberately never extracted from, so nothing
+  committed here derives from GPL work. Nothing in `reference/` ships.
+- **SeedThree**, **Eanpa-Sky** (both MIT, © 2026 SkyeShark) and
+  **Claude-of-Duty** (MIT, © 2026 mshumer) — read for technique. No code from
+  any of them ships. Their audio is out of bounds on separate grounds: the
+  bird recordings are CC BY-NC-SA or licence-unstated, and neither survives a
+  sold product — which is why `crates/client/src/sound/synth.rs` generates the
+  bank at boot instead.
+
+**`crates/client/src/scry_overlay.rs`** is scry's SDK vendored byte-for-byte —
+same author, same licence, so no notice is owed. It is listed here only so
+that a reader who finds an unfamiliar file does not go looking for a missing
+credit.
+
+
+Nothing here is traced from Rust (Facepunch)
+--------------------------------------------
+
+No proper noun and no asset of theirs is in this repository. Where a number or
+a technique of theirs is used, it is cited as a measurement in `reference/`,
+which is a fact about a target rather than a copy of a work.
+
+**This became true on 2026-08-11, and had been false before that** — recorded
+here rather than quietly corrected, because the sentence above is the kind a
+reader is entitled to check. Eighteen screenshots of their game were carried in
+`Rust Images/` from the first commits: the evidence base `ART.md` measures the
+visual bar off. They were never packaged into a release build, but this
+repository is public, and hosting them here was redistribution regardless of
+what was shipped. They were removed; `ART.md` §0 states the posture and holds
+the measurements, which are statistics rather than images and stay. Anyone
+re-deriving the bar points `GATES_REFERENCE_DIR` at their own copy.
+
+The general rule the removal encodes: **a measurement off a work may live here;
+the work may not.**

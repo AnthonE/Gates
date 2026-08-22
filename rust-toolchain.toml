@@ -1,0 +1,39 @@
+# **The compiler is part of "same build".**
+#
+# Wall 5 is `same build + seed + WAL -> same state hashes`, and until
+# 2026-08-11 nothing in this repo said which compiler that was. CI installed
+# whatever `stable` happened to be on the day a run fired; this box was on
+# whatever it last updated to. On 2026-08-11 those were **1.94.1 (March)** and
+# **1.97.1 (July)** — three releases apart — and the result is the failure this
+# file exists to end: `ci/gates.sh` was green locally and **the `gates`
+# workflow had been red on every run for days**, including every PR merged
+# through it, because 1.97 added `clippy::manual_option_zip` and the gate runs
+# `-D warnings`. Nobody noticed, because everybody ran the gates locally and
+# they passed.
+#
+# That is the cheap version of the failure. The expensive version is the one
+# wall 5 is about: a compiler is free to change float codegen between
+# releases, `test_replay` and `test_terrain_golden` pin state hashes, and two
+# machines on two compilers can disagree about a number while both believe
+# they are running the same build. Pinning is what makes the walls' promise
+# checkable rather than aspirational.
+#
+# **Raising it is a deliberate act, not a background one.** Bump the version
+# here, run `./ci/gates.sh`, and expect new lints — that is the point: they
+# arrive on a commit somebody is looking at, rather than on whichever unlucky
+# run happens after a release lands. If a golden moves when this moves, stop:
+# that is wall 5 telling you the compiler changed an arithmetic result, and it
+# is a finding rather than a fixture to regenerate.
+[toolchain]
+channel = "1.97.1"
+# `minimal` plus exactly what the gates shell out to. `ci/gates.sh` runs
+# rustfmt and clippy directly, so a toolchain without them is a gate that
+# cannot run.
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+# Wall 1's enforcement. `sim-core` compiles to a second target so
+# `test_parity_wasm` can diff its state hashes against native byte for byte —
+# which is worth the same with no browser in existence (`CLAUDE.md`). Listed
+# here so it installs with the toolchain instead of being a step every
+# workflow and every fresh box has to remember.
+targets = ["wasm32-unknown-unknown"]

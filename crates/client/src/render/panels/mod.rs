@@ -15,7 +15,7 @@
 //!
 //! | screen | key | reference frame |
 //! |---|---|---|
-//! | inventory + crafting | `Tab` | `Rust Images/inventory.jpeg`, `crafting.png` |
+//! | inventory + crafting | `Tab` toggles; `I`/`Q` open; `Esc` closes | the reference `inventory.jpeg`, `crafting.png` |
 //! | container | opens itself when the sim says one is open | `storageandtoolchest.jpeg` |
 //! | build wheel | hold right, building plan in hand | the radial in the operator's second frame |
 //! | hammer wheel | hold right, hammer in hand | the reference's second radial ("right click when equipped for more options") |
@@ -38,12 +38,16 @@
 
 use bevy::prelude::*;
 
+// Both search boxes share one cap — see `crate::ui::MAX_QUERY_CHARS`.
+use crate::ui::MAX_QUERY_CHARS;
+
 use crate::ui::craft::{Cat, Facts};
 use crate::ui::slots::Drag;
 
 pub mod craft;
 pub mod inv;
 pub mod ring;
+pub mod tech;
 pub mod wheel;
 
 /// Which menu is up. One at a time: the wheel is a hold and the inventory
@@ -63,6 +67,10 @@ pub enum Panel {
     /// Latches nothing: releasing **fires** the hovered verb (`keys`),
     /// which is the two wheels' one deliberate difference.
     Hammer,
+    /// The tech tree, opened by `E` at a workbench (tech tree v0). A
+    /// toggle like the inventory, closed by Escape; Tab swaps to the
+    /// inventory rather than stacking on it.
+    Tech,
 }
 
 impl Panel {
@@ -117,6 +125,13 @@ pub struct Ui {
     /// what the release fires, which is why `keys` reads it before
     /// `wheel::track` clears it.
     pub hover: Option<usize>,
+    /// The tech tree's selected node — a recipe index, the sidebar's
+    /// subject (tech tree v0).
+    pub tech_sel: Option<u16>,
+    /// The rung of the bench the tree was opened at — the header's LEVEL
+    /// badge. Display only: the sim re-derives the demanded rung per
+    /// node, so a stale badge can mislabel nothing.
+    pub tech_tier: u8,
     /// Rebuild the panel's node tree on the next frame.
     pub dirty: bool,
     /// Change detection against the core. A menu that rebuilt every frame
@@ -130,14 +145,27 @@ pub struct Ui {
 /// changes and not otherwise.
 #[derive(Default)]
 pub(crate) struct Seen {
-    pub inv: [(u16, u16); sim_core::limits::INV_SLOTS],
-    pub cont: [(u16, u16); sim_core::limits::INV_SLOTS],
+    /// `(item, count, cond)` per slot. **Condition is in the key**, and it
+    /// was not until the durability pip landed: a panel that redraws on
+    /// `(item, count)` alone cannot see a tool wear, so the bar it drew
+    /// would keep claiming a condition the stack no longer has. Nothing
+    /// wears while this screen is open in v0 — you cannot swing through it
+    /// — so this is not a defect being fixed but the door being shut before
+    /// repair or wear-on-hit walks through it.
+    pub inv: [(u16, u16, u16); sim_core::limits::INV_SLOTS],
+    pub cont: [(u16, u16, u16); sim_core::limits::INV_SLOTS],
     pub cont_kind: u8,
     pub cont_handle: u32,
     pub jobs: [(u8, u8); sim_core::limits::CRAFT_QUEUE],
     pub jobs_count: u8,
     pub recipes_have: u16,
     pub pieces_have: u16,
+    /// The blueprint mask (tech tree v0). Without it a node clicked to
+    /// `Known` only redraws because the obol left `inv` — and a FREE
+    /// node, which content permits, would not redraw at all.
+    pub known: u64,
+    /// The research drip's watermark, `recipes_have`'s reason exactly.
+    pub research_have: u16,
 }
 
 impl Default for Ui {
@@ -154,6 +182,8 @@ impl Default for Ui {
             facts: Facts::default(),
             shape: 0,
             hover: None,
+            tech_sel: None,
+            tech_tier: 1,
             dirty: false,
             seen: Seen::default(),
         }
@@ -231,6 +261,29 @@ pub const VITAL_FOOD: Color = Color::srgb(0.765, 0.435, 0.212);
 /// The trough a vital bar sits in.
 pub const VITAL_TROUGH: Color = Color::srgba(0.106, 0.098, 0.086, 0.72);
 
+// ---- the durability pip (`NOW.md` §0dur item 1) ----------------------------
+//
+// A cell's second number, drawn as a bar rather than a digit: a fraction of a
+// maximum, which is the same statement the vitals stack makes, so it is drawn
+// in the same two colours rather than in a third pair nobody measured.
+// `ui::slots::pip_fraction` owns *whether* there is a bar; these own what it
+// looks like. Proposed defaults (`DECISIONS.md` §open, "durability pip v0").
+//
+// **One colour, no threshold tier.** A green-to-red ramp at some fraction is
+// the obvious embellishment and it would be an invented knob: nothing in
+// `reference/DURABILITY.md` sources a warning band, and the state that
+// actually matters — a dead tool — is already distinct without one, because a
+// pristine item draws no bar at all and a dead one draws the trough empty.
+/// The durability pip's fill.
+pub const PIP_FILL: Color = VITAL_HP;
+/// The trough it sits in — the vitals' own, so an empty bar reads as empty
+/// rather than as a cell with a dark edge.
+pub const PIP_TROUGH: Color = VITAL_TROUGH;
+/// The pip's height, px. Thin on purpose: at [`CELL_PX`] the bar shares the
+/// bottom edge with the count badge, and anything taller starts competing
+/// with the icon for the cell it is annotating.
+pub const PIP_H_PX: f32 = 3.0;
+
 /// Grid cell edge, px. Proposed default, same `DECISIONS.md` row.
 ///
 /// **Sized against 720p, which is the constraint that decides it.** Bevy's
@@ -275,6 +328,8 @@ pub fn register(app: &mut App) {
                 inv::drag_pointer,
                 craft::clicks,
                 craft::scroll,
+                tech::clicks,
+                tech::scroll,
                 wheel::track,
                 sync_refusals,
                 rebuild,
@@ -355,7 +410,29 @@ pub fn keys(
     let holding_wheel = hand.opens_a_wheel() && mouse.pressed(MouseButton::Right);
     let was_inventory = ui.panel == Panel::Inventory;
 
-    if keyboard.just_pressed(KeyCode::Tab) {
+    // **Three keys, one panel, and that is the honest mapping rather than a
+    // convenience.** The reference separates inventory (`Tab`/`I`) from a
+    // crafting menu (`Q`); this client draws crafting *inside* the inventory
+    // screen — `inv::build_screen` calls `craft::build_browser` and
+    // `craft::build_detail`, and every craft system self-gates on
+    // `Panel::Inventory` — so there is no second panel for `Q` to open and
+    // inventing one to justify the key would be the tail wagging the dog.
+    // Pointing all three at the screen that actually holds both means a
+    // player who reaches for `Q` to craft arrives at the crafting UI, which
+    // is the whole of what the binding promises.
+    //
+    // **`Tab` toggles; `I` and `Q` only ever OPEN, and the asymmetry is
+    // forced rather than chosen.** This screen has a search box, and it
+    // captures every printable key the whole time it is up (below, and it has
+    // no focus concept to check). So a letter that also closed the panel
+    // would close it mid-word: type "iron" into the search field and the `i`
+    // shuts the screen you are searching. `Tab` and `Esc` are safe as closers
+    // precisely because neither is a character — which is why they remain the
+    // only two, and why this is not the toggle the binding list implies.
+    let open_inventory = keyboard.just_pressed(KeyCode::Tab)
+        || ((keyboard.just_pressed(KeyCode::KeyI) || keyboard.just_pressed(KeyCode::KeyQ))
+            && ui.panel != Panel::Inventory);
+    if open_inventory {
         ui.panel = match ui.panel {
             Panel::Inventory => Panel::None,
             _ => Panel::Inventory,
@@ -387,10 +464,10 @@ pub fn keys(
         super::verbs::close_container(&net, &mut toast);
     }
 
-    // The wheel wins over nothing and loses to the inventory screen: a
-    // player with the inventory open who brushes the button is not asking
-    // for a wheel on top of it.
-    if ui.panel != Panel::Inventory {
+    // The wheel wins over nothing and loses to the two toggle screens: a
+    // player with the inventory (or the tree) open who brushes the button
+    // is not asking for a wheel on top of it.
+    if !matches!(ui.panel, Panel::Inventory | Panel::Tech) {
         let want = if holding_wheel {
             // One wheel per item (`crate::ui::hold`'s table). Opening the
             // OTHER item's wheel would place with the wrong verb, which is
@@ -469,10 +546,6 @@ pub fn keys(
     let _ = &net;
 }
 
-/// The longest search a player can type. Not a knob worth a row: it exists
-/// because an unbounded string fed by a keyboard is an unbounded string.
-pub const MAX_QUERY_CHARS: usize = 32;
-
 /// Put the sim's own refusals on the status line.
 ///
 /// `last_move` is a counter the core bumps on every answered move and
@@ -511,10 +584,10 @@ pub fn rebuild(
 
     // Change detection against the core's authoritative view.
     if ui.panel != Panel::None {
-        let inv: [(u16, u16); sim_core::limits::INV_SLOTS] =
-            std::array::from_fn(|i| (core.inv[i].item, core.inv[i].count));
-        let cont: [(u16, u16); sim_core::limits::INV_SLOTS] =
-            std::array::from_fn(|i| (core.cont[i].item, core.cont[i].count));
+        let inv: [(u16, u16, u16); sim_core::limits::INV_SLOTS] =
+            std::array::from_fn(|i| (core.inv[i].item, core.inv[i].count, core.inv[i].cond));
+        let cont: [(u16, u16, u16); sim_core::limits::INV_SLOTS] =
+            std::array::from_fn(|i| (core.cont[i].item, core.cont[i].count, core.cont[i].cond));
         if inv != ui.seen.inv
             || cont != ui.seen.cont
             || core.cont_kind != ui.seen.cont_kind
@@ -523,6 +596,8 @@ pub fn rebuild(
             || core.jobs_count != ui.seen.jobs_count
             || core.recipes_have != ui.seen.recipes_have
             || core.piece_defs_have != ui.seen.pieces_have
+            || core.known() != ui.seen.known
+            || core.research_have != ui.seen.research_have
         {
             // The def tables drip in over the first seconds of a session, so
             // the derived category facts are rebuilt with them.
@@ -537,6 +612,8 @@ pub fn rebuild(
             ui.seen.jobs_count = core.jobs_count;
             ui.seen.recipes_have = core.recipes_have;
             ui.seen.pieces_have = core.piece_defs_have;
+            ui.seen.known = core.known();
+            ui.seen.research_have = core.research_have;
             ui.dirty = true;
         }
     }
@@ -569,6 +646,11 @@ pub fn rebuild(
             let fallback = super::icons::Icons::default();
             let icons = icons.as_deref().unwrap_or(&fallback);
             wheel::build_hammer_screen(&mut commands, &ui, icons)
+        }
+        Panel::Tech => {
+            let fallback = super::icons::Icons::default();
+            let icons = icons.as_deref().unwrap_or(&fallback);
+            tech::build_screen(&mut commands, &ui, core, icons)
         }
     }
 }

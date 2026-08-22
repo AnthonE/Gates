@@ -82,6 +82,67 @@ The anchors that came out the other side: raid ratio **0.69 / 1.38 / 2.77**
 (wood/stone/metal, band [1.0, 3.0] on stone), door breach **50** swings,
 wall breach **63 / 125 / 250**, TTK 4–5 across every melee row.
 
+### 3a · The recycler, 2026-08-18 — and a reason of ours that turned out to be a bad measurement
+
+`reference/RIPLIST.md` §1f has the row and the provenance (page tier, the
+official wiki's own **Recycle** table). Four cells and two deletions:
+
+| | reference | ours before | ours now |
+|---|---|---|---|
+| gears → metal fragments | 15 | 8 | **15** |
+| gears → scrap *(our OBOL)* | 12 | 2 | **12** |
+| rope → cloth | 18 | 5 | **18** |
+| tarp → cloth | 60 | 8 | **60** |
+| rope / tarp → scrap | none | 1 each | **rows deleted** |
+
+**No band moved and no anchor moved** — `balance::check` reads no cook row,
+so this take had nothing to argue with. What it did move is a *reason*.
+`research.toml` and `recipes.toml` each justified holding our own obol
+prices against "a ~10-scrap barrel where ours pays ~0.85 obol". The 0.85
+was derived from our own tables and right; **the ~10 was never measured**,
+and the page puts their barrel at ~2.42 scrap. Taking the faucet puts ours
+at 2.727 obol. Priced in barrels over the four researchable items we both
+have (§1f's table), **our research economy cost 2.66× theirs before the
+take and 0.83× after it — with no price moved.** The prices were never the
+half that was wrong. Their *ordering* still is: an 8× spread against our
+3.75×, gunpowder their top rung and our middle one. That is an outstanding
+row, and it was invisible until the faucet was right.
+
+That is §6.2's failure mode in its least obvious costume. Not effort, not a
+band, not source uncertainty — **an arithmetic reason nobody had checked**,
+which reads as a mechanism difference right up until someone reads the
+page. The check is the same one §6.3 rung 1 already prescribes for
+choosing between sources: score it on a cell you can verify. Apply it to
+your own stated reasons too.
+
+### 3b · The armour column, 2026-08-18 — sourced, not moved
+
+| | reference (projectile = melee) | ours |
+|---|---|---|
+| burlap headwrap | 15 % | 10 % |
+| burlap shirt | 10 % | 15 % |
+| road sign jacket | 20 % | 25 % |
+| road sign `move_penalty_pct` | none — their only movement cost is the 40 % *heavy category*, a rung we lack | 5 % |
+
+**Nothing in this table moved, and the reason is worth the row.** The take
+was applied and run: it validates, and `armor_extra_hits_max` holds with
+no re-speak because the set gets *weaker*. It is blocked on one string —
+`band_breaks_refused` anchors on the shipped `reduction_pct = 25` to
+mutate it into a band break — which lives in `crates/` and so outside the
+content lane that found it (`RIPLIST.md` §1h, filed as row 1j).
+
+**What lands regardless is the retraction below**, because §4.1's claim is
+about *their* data rather than ours: their Projectile and Melee cells are
+equal on all three pieces we own. `RIPLIST.md` §1h has the full
+five-column table for equipment v0 to key against when it lands.
+
+**Both of this pass's findings are the same shape and it is worth naming**
+(§3a is the other): a *reason of ours* that nobody had scored against the
+source — an arithmetic one there, a model one here. §6.2 lists three
+costumes a cost wears; this is a fourth, and it is the hardest to see,
+because a reason that sounds like a mechanism reads as admissible under
+§6.2 rather than as something to check.
+
 ## 4 · What has NOT moved — separated into real reasons and excuses
 
 Rewritten 2026-08-08 after the operator asked the right question: *"explain
@@ -103,8 +164,21 @@ which is worse than plainly differing.
   `hp ÷ structure`, so our metal wall takes 8. Ordering right, early game
   right, ladder above stone compressed. **This is the biggest one and it is
   a build, not a decision**: a schema column plus a sim multiply.
-- **The armour ladder.** Their protection is per damage type; ours is a flat
-  percentage. Copying their percentages onto our model would mislead.
+- ~~**The armour ladder.**~~ **RETRACTED 2026-08-18, and it was never a
+  real reason.** It read: "their protection is per damage type; ours is a
+  flat percentage; copying their percentages onto our model would
+  mislead." True of their model in the abstract and **false for every
+  piece we own** — their **Projectile and Melee cells are equal** on the
+  burlap headwrap, the burlap shirt and the road sign jacket, and those
+  two are the only damage classes our combat has, so one scalar expresses
+  theirs exactly. The columns we cannot key against (Bite, Radiation,
+  Cold) are mechanics we do not ship. Taken at `RIPLIST.md` §1h — and it
+  found our ladder *inverted*, the headwrap weaker than the shirt where
+  theirs is the reverse. The numbers themselves are blocked on a test
+  fixture and are filed as `RIPLIST.md` row 1j — **this retraction does
+  not wait on them**, because it is a claim about their data and reading
+  the page settles it. **Nobody had read the page**, which is the point: a
+  model claim is a claim, and §6.3 rung 1's test works turned inward.
 - **Upkeep and decay.** Their tool cupboard consumes resources scaled by
   building privilege radius. Ours is a different mechanism, not a different
   rate.
@@ -131,7 +205,13 @@ which is worse than plainly differing.
 
 ### 4.3 · Deferred with a stated cost, which is not the same as a reason
 
-- **Gather yields and node totals.** Theirs: a tree is ~460 wood over ~16
+- ~~**Gather yields and node totals.**~~ **DONE 2026-08-10** — the scale
+  is theirs now (`RIPLIST.md` §1a, `DECISIONS.md` Spoken). What follows is
+  kept as it stood, because the paragraph after it is the finding that
+  survived and the prediction inside it turned out to be **wrong in an
+  instructive way**: moving the yields re-priced *no* anchor at all, since
+  every anchor is priced off `farm_per_min` and not off what a node pays.
+  Theirs: a tree is ~460 wood over ~16
   hits with a stone hatchet, a stone node 1000, sulfur 300. Ours are ~200
   over 10 hits and in the same *shape* but a different *scale*.
   ⚠ **The tree figure is misattributed and the correction is
@@ -199,14 +279,78 @@ point and it is correct: take more of the math now, tune later.
    entirely (`ALPHA.md` §5), listed so nobody reads their absence as a
    balance decision.
 
-## 6 · The standing instruction
+## 6 · The standing instruction (rewritten 2026-08-10)
 
-**When a number has an equivalent in the reference and no reason of ours to
-differ, take theirs and cite it at the row.** When we differ, the row says
-why. That is the whole rule, and the thing that keeps it from becoming
-"copy the spreadsheet" is the second half: `test_content`'s bands still
-decide whether a number may land, so a reference value that does not fit our
-sim is refused here exactly as an invented one would be.
+**Take theirs. That is the default and it does not need an argument.**
+Operator, 2026-08-10: *"I REALLY REALLY REALLY REALLY REALLY WANNA USE
+RUST NUMBERS."* The old wording — "no reason of ours to differ" — read as
+neutral and was not: it put the burden on the person taking the number,
+so every row needed a case made for it and any hesitation won by default.
+The burden is the other way round now.
+
+**6.1 · No case is needed to take. A case is needed to differ**, in the
+row, in one sentence.
+
+**6.2 · The only admissible reason to differ is that the MECHANISM
+differs.** Theirs scales damage by the material it hits and we have one
+`structure` column; theirs re-rolls population on death and ours is
+seeded. Those are real. These are not, and §4 caught all three wearing
+principle's clothes once already:
+
+- *"It would break a band of ours."* → §7. Look at the band; a band is
+  ours and can be the stale half.
+- *"The sources are not certain enough."* → §6.3. Uncertainty picks a
+  number, it does not defer one.
+- *"It is more than a lookup / nobody has built the thing yet."* → that
+  is a **cost**, and a cost gets a row in `RIPLIST.md` §2 with what it
+  costs. Writing it here as a reason is how a deferral becomes permanent.
+
+**6.3 · A split source is not a blocker, and "carry both" is not an
+outcome.** Every row ships exactly one number. Walk this ladder and stop
+at the first rung that separates the sources:
+
+1. **Score each source on the cells we can already check.** Whichever
+   gets the checkable cells right wins the cell we came for. This settled
+   sulfur 300-vs-200 in a single pass (`RIPLIST.md` §4.1) after two
+   passes of stalling — the page claiming 200 also called stone 750 and
+   metal 500, both wrong against figures we hold EXACT.
+2. **Source tier**: devblog primary text > wiki > SEO aggregator.
+3. **The more complete artifact**: a full table with consistent units
+   beats a single figure quoted in prose.
+4. **Recency.** The game moves, and the newer reading describes the game
+   a returning player just left.
+5. **Still tied? Take one anyway and ship it.** Note the loser in the row
+   so a later pass can flip it in one line. A tie is not a reason to keep
+   our own invented number, which is what deferring actually does.
+
+**6.5 · A band of ours yields to a number of theirs, by default.**
+Operator, 2026-08-10: *"i think we should lighten our own math and lean on
+them for now."* §7 below already said a band break is a reason to look at
+the band; this makes the default explicit and puts the burden on keeping
+our own arithmetic rather than on taking theirs — the same inversion §6
+itself went through, one level up. Our anchors and bands stay: they are
+the safety rail that catches a number our sim cannot express, and
+`test_content` still refuses content that breaks one. What changes is who
+wins a disagreement. **A band is ours, derived from our own declared
+inputs, and it is no longer evidence about their number** — re-speak it in
+`DECISIONS.md` and move on. `wood_wall_minutes` [5, 9] → [3, 5] is the
+first one taken this way, and §7's story is why the rule was needed: the
+band had been a fence around a number nobody had ever compared.
+
+The one thing this does **not** license is re-speaking a band to admit a
+number that our sim means differently — that is §6.2's mechanism test and
+it is unchanged. Lighten the arithmetic, not the model.
+
+**6.4 · What survives from the old rule, and it is the only part that was
+ever right: never average.** 80 and 150 do not make 115. That is a number
+nobody reported and no reading of the game supports, and false precision
+is worse than picking a side. Pick one, say which, keep the other written
+down.
+
+The thing that keeps all of this from becoming "copy the spreadsheet" is
+unchanged: `test_content`'s bands still decide whether a number may land,
+so a reference value that does not fit our sim is refused here exactly as
+an invented one would be — and then §7 asks which of the two is stale.
 
 The rails are unchanged and they were never about arithmetic: no traced
 art, no proper nouns, nothing decompiled (`ART.md` §7, `reference/README.md`).

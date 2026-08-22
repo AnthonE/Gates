@@ -32,6 +32,19 @@ fn wire_yaw_to_radians(q: f32) -> f32 {
     q * (std::f32::consts::TAU / 65536.0)
 }
 
+/// Wire pitch is a `u8` with **128 level and 255 straight up** — the exact
+/// inverse of `look::pitch_u8`, which is the one place the local client
+/// encodes it. Positive is up.
+///
+/// **Quantize both sides or it drifts** (`CLAUDE.md` traps). The wire carries
+/// 255 steps over π, so a head can only point at one of 255 angles and this
+/// says so rather than pretending to a precision the packet does not have —
+/// which is also why the value is interpolated as a float before it gets
+/// here (`interp::RemoteState::pitch`) and not rounded again.
+fn wire_pitch_to_radians(p: f32) -> f32 {
+    (p / 255.0 - 0.5) * std::f32::consts::PI
+}
+
 /// One networked body, keyed by the entity id the wire uses.
 #[derive(Component)]
 pub struct Body(pub u32);
@@ -64,6 +77,7 @@ pub fn stream(
     time: Res<Time>,
     rig: Res<Rig>,
     net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
 ) {
     // Nothing is drawn until the rig has loaded. A body spawned before it
     // would get no scene and no player, and the bind below only ever runs on
@@ -123,10 +137,48 @@ pub fn stream(
         match known {
             Some((entity, was_sleeping)) => {
                 if let Ok((_, mut t, mut anim)) = q.get_mut(entity) {
-                    t.translation = pos;
-                    t.rotation = facing;
+                    // Compared before written, and the guard is not a micro-
+                    // optimisation: a `Transform` written through `DerefMut`
+                    // is MARKED CHANGED whether or not the value moved, and a
+                    // changed root re-propagates its whole skeleton — 55 nodes
+                    // for this rig. A camp of sleepers, a corpse, or anyone
+                    // standing still costs that every frame for a value that
+                    // is bit-identical to the one already there.
+                    if t.translation != pos {
+                        t.translation = pos;
+                    }
+                    if t.rotation != facing {
+                        t.rotation = facing;
+                    }
                     // The clip choice, off state the sim already sent.
-                    anim.observe(pos, time.delta_secs(), rs.sleeping);
+                    // `dead` is the v48 bit: a corpse keeps its slot until
+                    // its owner leaves the death screen, so without it a
+                    // killed player is drawn standing at idle.
+                    anim.observe(pos, time.delta_secs(), rs.sleeping, rs.dead);
+                    anim.pitch = wire_pitch_to_radians(rs.pitch);
+                    // **The one thing the sim sends that state cannot
+                    // imply.** Everything else here is derived — the gait
+                    // comes out of two positions — but a swing is an input
+                    // fact, and a client never receives another player's
+                    // input frame. So it arrives as its own broadcast
+                    // (`EV_SWING`, wire v47) and is applied AFTER `observe`,
+                    // which resets nothing but the gait and would otherwise
+                    // eat a swing heard on the same frame the body started
+                    // moving.
+                    if feed.swings().contains(&id) {
+                        anim.swing();
+                    }
+                    // **And the blow you just landed on them** — the other
+                    // fact no amount of interpolated state can imply.
+                    // Attacker-only, because `EV_HIT` is unicast to the
+                    // attacker: `Clip::Flinch`'s doc comment and the
+                    // `DECISIONS.md` row carry the asymmetry in full.
+                    // After the swing, so a body hit on the same frame it
+                    // swung flinches — `BodyAnim::flinch` is the newest of
+                    // the two transients here and clears the other.
+                    if feed.hit_victims().contains(&id) {
+                        anim.flinch();
+                    }
                 }
                 if was_sleeping != rs.sleeping {
                     // The shade lives on the scene's descendants now, so the
@@ -140,7 +192,19 @@ pub fn stream(
             }
             None => {
                 let mut anim = BodyAnim::default();
-                anim.observe(pos, 0.0, rs.sleeping);
+                anim.observe(pos, 0.0, rs.sleeping, rs.dead);
+                anim.pitch = wire_pitch_to_radians(rs.pitch);
+                // A body that enters AOI on the same frame it swings still
+                // gets its arc; without this the first swing of every
+                // newly-visible raider is the one nobody sees.
+                if feed.swings().contains(&id) {
+                    anim.swing();
+                }
+                // Same for the blow: a body that enters AOI on the frame
+                // your arrow reaches it still flinches.
+                if feed.hit_victims().contains(&id) {
+                    anim.flinch();
+                }
                 let entity = commands
                     .spawn((
                         super::WorldEntity,

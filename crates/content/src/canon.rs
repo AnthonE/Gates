@@ -17,15 +17,6 @@ impl Canon {
     fn u(&mut self, v: u32) {
         self.0.update(&v.to_le_bytes());
     }
-    fn opt_s(&mut self, v: Option<&str>) {
-        match v {
-            None => self.u(0),
-            Some(s) => {
-                self.u(1);
-                self.s(s);
-            }
-        }
-    }
     fn stacks(&mut self, v: &[Stack]) {
         self.u(v.len() as u32);
         for s in v {
@@ -52,6 +43,12 @@ pub fn hash(c: &Content) -> u64 {
         h.u(i.tier);
         h.u(i.rarity.canon());
         h.u(i.slot as u32);
+        // The condition ceiling reaches the sim (`bake_gather`'s
+        // `cond_max`), so it walks — a value the sim reads and the digest
+        // cannot see lets two contents whose tools die at different rates
+        // canonicalise identically, and a WAL then replays under a wear
+        // table it was not played under (item durability v0).
+        h.u(i.condition_max);
     }
 
     h.s("gatherables");
@@ -66,6 +63,13 @@ pub fn hash(c: &Content) -> u64 {
         for (tool, per_hit) in &g.yield_per_hit {
             h.s(tool);
             h.u(*per_hit);
+        }
+        // The wear table walks for `condition_max`'s reason: it reaches
+        // `NodeDef::wear` and prices every landed hit.
+        h.u(g.condition_loss.len() as u32);
+        for (tool, loss) in &g.condition_loss {
+            h.s(tool);
+            h.u(*loss);
         }
         // The side payout is hashed like everything else the sim reads. A
         // value that reaches the sim and not the hash lets two contents
@@ -89,6 +93,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(r.count);
         h.u(r.station as u32);
         h.u(r.seconds);
+        h.u(r.blueprint as u32);
         h.stacks(&r.inputs);
     }
 
@@ -110,15 +115,22 @@ pub fn hash(c: &Content) -> u64 {
         h.u(w.headshot_mult);
         h.u(w.rate_per_min);
         h.u(w.range_m);
-        match w.ballistic {
+        // The round list walks in **declared order, not sorted**, and that
+        // is deliberate: order is the ammo policy (the sim spends the first
+        // round the shooter carries), so two bows differing only in which
+        // arrow they prefer play differently and must digest differently.
+        // Sorting here would be the same defect the `[survival]` comment
+        // above describes, one level down.
+        match w.ammo.as_deref() {
             None => h.u(0),
-            Some(b) => {
+            Some(rounds) => {
                 h.u(1);
-                h.u(b.speed_mps);
-                h.u(b.drop_mps2);
+                h.u(rounds.len() as u32);
+                for id in rounds {
+                    h.s(id);
+                }
             }
         }
-        h.opt_s(w.ammo.as_deref());
         // The fuse walks here for the reason the `[survival]` and
         // `[backpack]` comments above give: a field that reaches the sim
         // and not the digest lets two contents that play differently
@@ -141,6 +153,18 @@ pub fn hash(c: &Content) -> u64 {
                 h.u(b);
             }
         }
+    }
+
+    // The ballistics, on the object they belong to. These reach
+    // `AmmoDef` (bake.rs) and decide where every arrow lands, so two
+    // contents whose arrows fly differently must not digest the same.
+    // Sorted, unlike the round list above: this table is a keyed lookup
+    // and its file order means nothing.
+    h.s("ammo");
+    for a in sorted(&c.ammo, |a| &a.id) {
+        h.s(&a.id);
+        h.u(a.speed_mps);
+        h.u(a.drop_mps2);
     }
 
     h.s("armor");
@@ -199,8 +223,13 @@ pub fn hash(c: &Content) -> u64 {
         h.u(m.walk_pct);
         h.u(m.flee_pct);
         h.u(m.flee_seconds);
+        h.u(m.attack);
+        h.u(m.attack_range_m);
+        h.u(m.attack_seconds);
+        h.u(m.brave_pct);
         h.u(m.roam_m);
         h.u(m.spook_m);
+        h.u(m.night_spook_m);
         h.u(m.respawn_seconds);
         h.stacks(&m.drops);
     }
@@ -292,8 +321,30 @@ pub fn hash(c: &Content) -> u64 {
     for k in cooks {
         h.s(&k.input);
         h.s(&k.output);
+        h.u(k.count);
         h.u(k.seconds);
         h.u(k.station as u32);
+    }
+
+    // The research table, whole, and for `cooking`'s reason one block up:
+    // every field here reaches the sim (`bake_research`), so a price the
+    // digest cannot see would let two contents that charge different
+    // amounts for the same blueprint canonicalise identically. Rows sort
+    // by item id, which `validate::structural` refuses to repeat.
+    h.s("research");
+    h.s(&c.research_coin.item);
+    h.u(c.research.len() as u32);
+    let mut research: Vec<&Research> = c.research.iter().collect();
+    research.sort_by(|a, b| a.item.cmp(&b.item));
+    for r in research {
+        h.s(&r.item);
+        h.u(r.cost);
+        // The tree edge (tech tree v0). An absent parent hashes as the
+        // empty string rather than being skipped: skipping would make
+        // `requires = "x"` on the LAST row and no requires at all
+        // canonicalise identically-prefixed streams, and the empty
+        // string is a value no item id can be.
+        h.s(r.requires.as_deref().unwrap_or(""));
     }
 
     let sv = &c.balance.survival;

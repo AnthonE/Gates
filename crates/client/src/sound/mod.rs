@@ -23,7 +23,13 @@
 //! - **Buses before effects.** The reference moved to Unity 5's audio mixer —
 //!   groups you can balance and snapshots you can fade between — before it had
 //!   occlusion or reverb. [`Bus`] is that, at the size ours can be honest
-//!   about: two groups, mirroring `audio.game` and `audio.ambience`.
+//!   about: three groups, mirroring `audio.game`, `audio.ambience` and
+//!   `audio.musicvolume`.
+//! - **Music is a gap-and-intensity system, not a soundtrack.** Four to eight
+//!   minutes of silence between songs; a theme divided into sections; each
+//!   section holding clips of differing intensity; the tier read only at a
+//!   section boundary so the music never lurches. [`music`] is that design,
+//!   whole, and the pieces are cues like everything else here.
 //! - **Occlusion is a knob and it shipped OFF.** The reference gated its first
 //!   pass behind `audio.occlusion` for a week, and a later build was still
 //!   fixing excess DSP from it on surround setups. There is no occlusion in
@@ -34,14 +40,22 @@
 //! anything, and the module says so rather than implying a tuning pass that
 //! did not happen.
 
+// The forest layer — sparse bird calls over the beds. `reference/AUDIO.md`
+// §3's *layers*, as distinct from its beds.
+pub mod birds;
 pub mod mixer;
-// When a pig speaks. Pure cadence — the render half reads the drawn herd.
-pub mod pig;
+// When a song plays and which piece it is. `reference/AUDIO.md` §8 is the
+// design; this is the whole of it.
+pub mod music;
 pub mod steps;
 pub mod synth;
 // What water sounds like from where you are standing. `reference/WATER.md` §7
 // is the research; this is the model, and `render/audio.rs` plays it.
 pub mod water;
+// When an animal speaks. Pure cadence — the render half reads the drawn herd,
+// asks it what the species in that roster slot says at that range, and plays
+// exactly the cue it is handed back.
+pub mod voice;
 
 /// The mixer's output sample rate, Hz.
 ///
@@ -54,16 +68,21 @@ pub const SAMPLE_RATE: u32 = 44_100;
 /// Which group a cue is balanced in. The reference's mixer groups, at the
 /// size ours can be honest about.
 ///
-/// **There is no `Music` bus and no `Voice` bus**, because there is no music
-/// and no voice chat. A bus with nothing on it is the greyed-out settings row
-/// `render/settings.rs` refuses to draw, one layer down.
+/// **There is still no `Voice` bus**, because there is no voice chat — and a
+/// bus with nothing on it is the greyed-out settings row
+/// `render/settings.rs` refuses to draw, one layer down. [`Bus::Music`]
+/// stopped being one of those when `music::Director` landed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Bus {
     /// Everything the player or the world did: steps, swings, impacts, the
     /// interface. The reference's `audio.game`.
     Game,
-    /// The bed. The reference's `audio.ambience`.
+    /// The beds and the layers over them. The reference's `audio.ambience`.
     Ambience,
+    /// The score. The reference's `audio.musicvolume`, whose default is
+    /// **0.2** — music is the one bus that does not open at full, there and
+    /// here (see [`Mix::default`]).
+    Music,
 }
 
 /// Every sound this client can make, as an integer code.
@@ -127,11 +146,72 @@ pub enum Cue {
     RemoteStepLitter,
     RemoteStepRock,
     RemoteStepWater,
+    /// A bird, somewhere in the trees. `sound::birds` is the cadence; the
+    /// perch is a drawn prop, so the layer cannot call from an empty sky.
+    Bird,
+    /// The nine music pieces: three sections of the theme, three intensity
+    /// clips each (`sound::music::PIECES` is the table, and it is the only
+    /// place the mapping is written). They are cues so that they get the one
+    /// bank, the one gain table, the one WAV dump and the whole of
+    /// `tests/sound.rs`'s structural gates for free — and, like the beds,
+    /// the mixer refuses to start one ([`Cue::is_music`]): music must not
+    /// compete with an axe for a voice out of `VOICE_CAP`.
+    ///
+    /// Appended after the remote steps — the enum's append-order rule, which
+    /// is not cosmetic: every cue's noise is seeded off its own discriminant
+    /// (`synth::render`), so inserting mid-enum regenerates waveforms that
+    /// have nothing to do with the change.
+    MusicOpenCalm,
+    MusicOpenTense,
+    MusicOpenCombat,
+    MusicTurnCalm,
+    MusicTurnTense,
+    MusicTurnCombat,
+    MusicCloseCalm,
+    MusicCloseTense,
+    MusicCloseCombat,
+    /// The wolf's far voice: a contact call, heard from further than any
+    /// other diegetic cue but the falling tree. Appended after the score —
+    /// the enum's append-order rule, for the reason `Snort` states.
+    ///
+    /// The pair with [`Cue::Growl`] is **two registers of one animal, chosen
+    /// by distance**, and the distance is not a third number: it is this
+    /// cue's sibling's own [`CueDef::radius_m`]. See [`crate::sound::voice`].
+    Howl,
+    /// The wolf's near voice: the threat, at the short end.
+    ///
+    /// ⚠ **It means "a wolf is close", not "a wolf is hunting you"** — the
+    /// client cannot see that. `Mob::roused_until` and `MobDef::brave_pct`
+    /// are sim-side only (`sim-core/src/mob.rs`), the snapshot carries
+    /// `EntityState` and no mob state or def lane exists on the wire, and
+    /// duplicating a content radius into client code would be wall 7. So
+    /// the register is the honest half of the encounter: a growl is a
+    /// close-range threat call and a howl is a long-range contact call,
+    /// which is what the two vocalizations *are*, whatever the animal is
+    /// currently deciding.
+    Growl,
+    /// Another player's swing: [`Cue::Swing`] heard at THEIR body.
+    ///
+    /// The remote-footstep argument, one verb over — whether a cue is
+    /// positional is the def's fact and the mixer's one distance law hangs
+    /// off it, so the local arm (an own-fact at the listener, fired off a
+    /// keystroke you already knew about) and someone else's arm (a place in
+    /// the world) cannot be one row. The waveform is the local one's byte
+    /// for byte (`synth::render` delegates): what makes a swing remote is
+    /// its def, never its sound.
+    ///
+    /// **Reusing `Cue::Swing` for both would have been worse than silence**
+    /// — non-positional means straight to both ears at full gain with no
+    /// pan and no falloff, so every swing on the island would arrive as if
+    /// it were in your hands, which is a lie about where a threat is rather
+    /// than a missing sound. Appended after `Growl`, the enum's
+    /// append-order rule.
+    RemoteSwing,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 28;
+pub const CUE_COUNT: usize = 41;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -168,7 +248,38 @@ impl Cue {
         Cue::RemoteStepLitter,
         Cue::RemoteStepRock,
         Cue::RemoteStepWater,
+        Cue::Bird,
+        Cue::MusicOpenCalm,
+        Cue::MusicOpenTense,
+        Cue::MusicOpenCombat,
+        Cue::MusicTurnCalm,
+        Cue::MusicTurnTense,
+        Cue::MusicTurnCombat,
+        Cue::MusicCloseCalm,
+        Cue::MusicCloseTense,
+        Cue::MusicCloseCombat,
+        Cue::Howl,
+        Cue::Growl,
+        Cue::RemoteSwing,
     ];
+
+    /// Is this cue a piece of music?
+    ///
+    /// The same rule [`Cue::is_bed`] states, for the same reason and one
+    /// system over: the mixer refuses to start one ([`mixer::Mixer::push`]),
+    /// because `render/audio.rs`'s music systems own exactly one voice at a
+    /// time and a second copy started as a one-shot would play the same
+    /// phrase over itself. Derived from `music::piece_of` rather than from a
+    /// remembered list, so a tenth piece cannot be forgotten from it.
+    pub fn is_music(self) -> bool {
+        music::piece_of(self).is_some()
+    }
+
+    /// May the mixer start this cue? False for the beds and the music, which
+    /// are voices the render layer holds rather than events it fires.
+    pub fn mixer_started(self) -> bool {
+        !self.is_bed() && !self.is_music()
+    }
 
     /// Is this cue a looping bed?
     ///
@@ -220,6 +331,7 @@ impl Cue {
             | Cue::RemoteStepRock
             | Cue::RemoteStepWater => 0.10,
             Cue::Swing
+            | Cue::RemoteSwing
             | Cue::ImpactWood
             | Cue::ImpactStone
             | Cue::ImpactMetal
@@ -228,7 +340,22 @@ impl Cue {
             | Cue::Splash
             | Cue::TreeFall
             | Cue::Snort
+            | Cue::Growl
             | Cue::Hurt => 0.07,
+            // Wider than any diegetic cue but the bird, and for the bird's
+            // reason turned up one notch: a howl is the most *exposed* tonal
+            // call in the bank — a near-pure pitched tone held for seconds,
+            // where a growl hides its repetition under noise. Two wolves
+            // answering each other at the same pitch is a chorus in unison,
+            // which is the machine-gun tell this knob exists for, and unison
+            // is what a real chorus is specifically not.
+            Cue::Howl => 0.12,
+            // The forest layer's variation is the whole of it: one recording
+            // of one bird, retriggered every few seconds at exactly its own
+            // pitch, is the machine-gun tell this knob exists for, and a
+            // layer is heard for minutes on end where a footstep is heard for
+            // a stride. The widest in the table on purpose.
+            Cue::Bird => 0.16,
             Cue::CraftDone
             | Cue::Refused
             | Cue::Hit
@@ -237,6 +364,27 @@ impl Cue {
             | Cue::BedWind
             | Cue::BedSurf
             | Cue::BedUnder => 0.0,
+            // **Zero, and it is not the signal-cue argument.** A piece played
+            // at 1.03× is a piece in a different key, and the next piece
+            // would be in a third — the tail that covers a join would be
+            // covering a modulation. Music is the one family where varying
+            // the rate is not variation, it is being out of tune.
+            //
+            // Spelled out rather than caught by a `_` arm: this match is
+            // exhaustive on purpose, so that adding a cue is a compile error
+            // until somebody decides what it should do. `CLAUDE.md`'s
+            // feature-gated-`match` trap is the same lesson from the other
+            // side — an arm you did not have to write is a decision you did
+            // not have to make.
+            Cue::MusicOpenCalm
+            | Cue::MusicOpenTense
+            | Cue::MusicOpenCombat
+            | Cue::MusicTurnCalm
+            | Cue::MusicTurnTense
+            | Cue::MusicTurnCombat
+            | Cue::MusicCloseCalm
+            | Cue::MusicCloseTense
+            | Cue::MusicCloseCombat => 0.0,
         }
     }
 }
@@ -317,7 +465,7 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // TIMBRE, which is `synth`'s job, not in how far they carry.
     STEP, STEP, STEP, STEP, STEP,
     // Swing: yours, so non-positional, and the cooldown is the swing rate.
-    row(GAME, 20.0, 0.45, 120, 3, false),
+    SWING,
     // Impacts happen at a thing, so they carry and they pan.
     row(GAME, 40.0, 0.70,  40, 4, true),   // wood
     row(GAME, 40.0, 0.70,  40, 4, true),   // stone
@@ -362,11 +510,102 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // the boar is identified by its snorting), so it carries past the
     // impacts but nowhere near a falling tree. Priority with the footsteps'
     // register: ambience, not signal. The cooldown is per-cue, so it is the
-    // herd's stagger, not one animal's — `sound::pig` spaces one animal.
+    // herd's stagger, not one animal's — `sound::voice` spaces one animal.
     row(GAME, 40.0, 0.55, 150, 2, true),   // snort
     // Remote footsteps: the STEP family heard at another body — see RSTEP.
     RSTEP, RSTEP, RSTEP, RSTEP, RSTEP,
+    // The forest layer. AMBIENCE, not game: it is scenery, and a player who
+    // turns the bed down means the birds too. Positional (it comes from a
+    // perch), quiet, and at the footsteps' priority — a bird must never be
+    // the reason an axe was refused a voice. The cooldown is per-CUE and so
+    // it is the whole flock's stagger, not one bird's, which is what
+    // `sound::birds` already spaces.
+    row(AMB,   44.0, 0.30, 700, 1, true),  // bird
+    // The nine music pieces: three sections down, three intensity tiers
+    // across. Non-positional (music is not anywhere), radius 0 (never culled
+    // — see `positional`), no cooldown and priority 0 because the mixer never
+    // starts one at all (`Cue::is_music`).
+    //
+    // **The tiers differ in GAIN and the sections do not**, which is this
+    // table's own law rather than a taste call: `synth::PEAK` normalizes every
+    // cue in the bank to one peak precisely so that `CueDef::gain` is the only
+    // thing deciding relative loudness — and that erases the level a denser
+    // arrangement would otherwise have had. A tier a player cannot hear
+    // arriving is a table nobody can hear, so the step back is taken here,
+    // where every other level in the client lives, instead of in the
+    // generator where the normalizer would eat it.
+    M_CALM, M_TENSE, M_COMBAT,
+    M_CALM, M_TENSE, M_COMBAT,
+    M_CALM, M_TENSE, M_COMBAT,
+    // The wolf, in two registers (`sound::voice`). Both GAME rather than
+    // AMBIENCE for the pig's reason: an animal is a thing in the world, not
+    // scenery, and a player who turns the bed down must not turn the
+    // predator down with it.
+    //
+    // **The howl is the second-furthest-carrying cue in the table**, behind
+    // only the falling tree that sets `MAX_AUDIBLE_M` — which is the point of
+    // it. The wolf notices a player at 30 m by day and 15 m at night
+    // (`content/mobs.toml`), so 88 m means the island tells you it has
+    // wolves, and roughly where, long before one of them can act on you. The
+    // cooldown is per-CUE and therefore the pack's stagger, not one animal's
+    // — `sound::voice` spaces one animal, as `sound::birds` does for a flock.
+    row(GAME, 88.0, 0.60, 900, 2, true),   // howl
+    // The growl's radius is doing a SECOND job and it is the load-bearing
+    // one: `sound::voice` picks the register by comparing the listener's
+    // distance against this very number (`CUES[Growl].radius_m`), so the two
+    // cannot disagree — a growl is never chosen and then culled by the
+    // mixer's falloff, and a howl is never chosen inside growl range. There
+    // is no third "switch distance" knob to drift.
+    //
+    // 14 m sits inside the wolf's *smallest* notice radius (15 m, at night),
+    // so in practice a wolf you can hear growl has already seen you. ⚠ **That
+    // relationship is a design intent and nothing enforces it** — the client
+    // has no mob-def lane on the wire and no dependency on the `content`
+    // crate, so the two numbers live in different worlds and a `mobs.toml`
+    // edit will not redden anything here. `NOW.md` §0pr carries the owed gate.
+    // Priority 5: above the impacts, below the hitmarker — a growl at this
+    // range is information a player's life turns on.
+    row(GAME, 14.0, 0.65, 200, 5, true),   // growl
+    // Another player's swing — see RSWING.
+    RSWING,
 ];
+
+/// Your own arm. Named rather than written inline so [`RSWING`] can read its
+/// numbers off it instead of restating them — [`STEP`]/[`RSTEP`]'s shape.
+const SWING: CueDef = row(GAME, 20.0, 0.45, 120, 3, false);
+
+/// Another player's swing (`DECISIONS.md` §open, "remote swing v0").
+///
+/// Radius and gain come off [`SWING`] rather than being restated: the 20 m
+/// that row has always carried was written for exactly this positional half
+/// and **was never read at all** — `positional: false` makes `radius_m` dead
+/// (see [`CueDef::radius_m`]) — so this is where the number becomes true
+/// rather than a new one being invented beside it.
+///
+/// What differs is deliberate, and it is [`RSTEP`]'s list verbatim because
+/// it is the same argument:
+///
+/// - **positional** — the whole point; the cue is at the body, panned, and
+///   culled by the one falloff law.
+/// - **priority 4**, above your own arm's 3, because another player's swing
+///   is information your life turns on and your own is a keystroke you just
+///   pressed. That puts it level with the impacts, which is the register it
+///   belongs in; ties break on distance, so the nearer swing wins.
+/// - **a 40 ms cooldown** rather than the local 120 ms — [`RSTEP`]'s value,
+///   taken for [`RSTEP`]'s reason. The cooldown is per-CUE and therefore
+///   shared across every swinger in earshot, and ⚠ **it binds inside a
+///   frame** (`tests/sound.rs::a_cooldown_binds_within_one_frame`), so it is
+///   a hard rate limit over the whole crew rather than a stagger on one arm.
+///   At 40 ms a second raider swinging three frames later is heard; at the
+///   local swing rate he waits an eighth of a second.
+const RSWING: CueDef = CueDef {
+    bus: Bus::Game,
+    radius_m: SWING.radius_m,
+    gain: SWING.gain,
+    cooldown_ms: 40,
+    priority: 4,
+    positional: true,
+};
 
 /// The five footsteps share every number but their timbre — see [`CUES`].
 const STEP: CueDef = CueDef {
@@ -397,6 +636,29 @@ const RSTEP: CueDef = CueDef {
     priority: 2,
     positional: true,
 };
+
+/// A music piece at intensity `gain`. The three tiers are the only thing that
+/// separates the nine rows — see [`CUES`].
+///
+/// The steps are ~5 dB and ~2 dB (`DECISIONS.md` §open, "music v0"), sized so
+/// that each tier is audibly above the one below it *after* the bank's peak
+/// normalization has flattened them, and so the top tier is the one that runs
+/// at the bus's full level rather than the middle one having headroom above
+/// it.
+const fn music_row(gain: f32) -> CueDef {
+    CueDef {
+        bus: Bus::Music,
+        radius_m: 0.0,
+        gain,
+        cooldown_ms: 0,
+        priority: 0,
+        positional: false,
+    }
+}
+
+const M_CALM: CueDef = music_row(0.55);
+const M_TENSE: CueDef = music_row(0.78);
+const M_COMBAT: CueDef = music_row(1.0);
 
 /// The furthest any cue carries, metres. Read by `render/audio.rs` to pick the
 /// spatial scale, and asserted against [`CUES`] in `tests/sound.rs` — the two
@@ -434,20 +696,32 @@ pub struct Mix {
     pub master: f32,
     pub game: f32,
     pub ambience: f32,
+    pub music: f32,
 }
 
 impl Default for Mix {
     fn default() -> Self {
-        // The reference ships master and game at 1 and its music at 0.2. Ours
-        // has no music; the bed sits under the game bus by its own cue gain
-        // rather than by a quieter bus, so both buses open at 1.
+        // **The reference ships master and game at 1 and its music at 0.2,
+        // and now that there is music, so do we.** The bed still sits under
+        // the game bus by its own cue gain rather than by a quieter bus,
+        // because a player who turns ambience down should be turning the
+        // wind down and not discovering the bed was already half off. Music
+        // is the opposite case and theirs is the evidence: a score at parity
+        // with footsteps is a score you fight over, so it opens at a fifth
+        // and the slider goes up from there.
         Self {
             master: 1.0,
             game: 1.0,
             ambience: 1.0,
+            music: MUSIC_DEFAULT,
         }
     }
 }
+
+/// What the music bus opens at. The reference's `audio.musicvolume` default,
+/// verbatim — `reference/BALANCE.md` §6: a case is owed for differing, not
+/// for taking.
+pub const MUSIC_DEFAULT: f32 = 0.2;
 
 impl Mix {
     /// The multiplier a cue on `bus` gets from the mix.
@@ -455,6 +729,7 @@ impl Mix {
         let g = match bus {
             Bus::Game => self.game,
             Bus::Ambience => self.ambience,
+            Bus::Music => self.music,
         };
         (self.master * g).clamp(0.0, 1.0)
     }
@@ -466,6 +741,7 @@ impl Mix {
             master: self.master,
             game: self.game * snap.game,
             ambience: self.ambience * snap.ambience,
+            music: self.music * snap.music,
         }
     }
 }
@@ -500,6 +776,14 @@ pub enum Snapshot {
 pub struct SnapshotDef {
     pub game: f32,
     pub ambience: f32,
+    /// **Flat in both states today, and that is the finding rather than an
+    /// oversight.** A snapshot is *a whole mixer state*, so every bus has to
+    /// appear in one or it can never be moved by one — but music is
+    /// non-diegetic, and water between you and a violin is not a thing to
+    /// model. The reference's own first use for this field is a cause we do
+    /// not have: their published snapshot example is fading music down *when
+    /// somebody speaks*, which needs voice chat.
+    pub music: f32,
     pub wind: f32,
     pub surf: f32,
     pub under: f32,
@@ -519,6 +803,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
     SnapshotDef {
         game: 1.0,
         ambience: 1.0,
+        music: 1.0,
         wind: 1.0,
         surf: 1.0,
         under: 0.0,
@@ -529,6 +814,7 @@ pub const SNAPSHOTS: [SnapshotDef; 2] = [
     SnapshotDef {
         game: 0.45,
         ambience: 1.0,
+        music: 1.0,
         wind: 0.0,
         surf: 0.22,
         under: 1.0,
@@ -591,6 +877,7 @@ impl Snapshots {
         SnapshotDef {
             game: mix(a.game, b.game),
             ambience: mix(a.ambience, b.ambience),
+            music: mix(a.music, b.music),
             wind: mix(a.wind, b.wind),
             surf: mix(a.surf, b.surf),
             under: mix(a.under, b.under),

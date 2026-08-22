@@ -30,9 +30,25 @@
 //! is not), no id-targeted loot (the pick is the nearest bag in reach,
 //! the same shape `gather::swing` and `combat::strike` use, so nothing
 //! spoofable crosses the wire), no bag hp and so no destroying one
-//! without opening it, and no ground drops from a full inventory —
-//! `gather::inv_add` still loses that overflow, and the drop-what-won't-
-//! fit lane is its own item.
+//! without opening it, and no player-initiated drop verb (there is no
+//! `Command::Drop` — putting a chosen stack on the ground is a different
+//! feature from catching one that had nowhere to go).
+//!
+//! **Ground drops from a full inventory landed 2026-08-14** and were the
+//! last line of that list: `spill_at` catches what `inv_add` used to
+//! destroy. It went in on the two paths that *pay* a player — a node's
+//! yield and a finished craft — and the four that *give one back* took the
+//! same lane later the same day: a demolish refund (`build.rs`), a
+//! deployable pick-up and a lock removal (`deploy.rs`, `lock.rs`) and a
+//! craft cancel's refund (`craft.rs`). **Six producers, one drain**
+//! (`World::drain_spill`), and nothing else may call `spill_at` — the
+//! owner is named in code because that is what `CLAUDE.md`'s clean-merge
+//! trap costs when it is named in a comment instead.
+//!
+//! So no path in the sim destroys an item because a pack was full. The
+//! two things still open are both about *telling* the player: a spill is
+//! silent (`EV_GATHER` honestly reports the zero that reached the hands)
+//! and the merge ignores ownership. `NOW.md` §0sp2 carries both.
 
 use crate::gather::{inv_add, GatherContent, ItemStack};
 use crate::limits::{INV_SLOTS, MAX_BACKPACKS, MAX_ITEM_DEFS};
@@ -166,7 +182,13 @@ impl BackpackRec {
 /// in-progress sync walk on any removal — the same contract the piece and
 /// deploy walks already carry.
 pub struct Backpacks {
-    entries: [BackpackRec; MAX_BACKPACKS],
+    /// Boxed via [`crate::boxed_array`], and it stopped being optional the
+    /// day `ItemStack` grew `cond`: 256 records × 30 six-byte stacks is
+    /// 53 248 B, past the line that turned `test_parity_wasm` into an
+    /// out-of-bounds read with every native test green (`CLAUDE.md`'s
+    /// shadow-stack trap — `Box::new(Backpacks::new())` materialised the
+    /// whole struct in a frame first).
+    entries: Box<[BackpackRec; MAX_BACKPACKS]>,
     len: usize,
     /// Next bag id. Sim state, hashed: two replays of the same WAL must
     /// name the same bag the same thing.
@@ -176,7 +198,7 @@ pub struct Backpacks {
 impl Backpacks {
     pub fn new() -> Self {
         Self {
-            entries: [BackpackRec::default(); MAX_BACKPACKS],
+            entries: crate::boxed_array(BackpackRec::default()),
             len: 0,
             next_id: 1,
         }
@@ -320,6 +342,124 @@ impl Backpacks {
         Some(id)
     }
 
+    /// Catch what an inventory could not hold. Merge into the nearest bag
+    /// already standing in reach of `(qx, qz)` first, then stand a new one
+    /// up for whatever still will not fit; `items` is left holding
+    /// whatever nothing took. Returns the bag that ended up with the last
+    /// of it, or `None` when nothing was caught.
+    ///
+    /// **`items` is cleared on the mint path too**, and that is a fix
+    /// rather than a detail (merge-gate judge, pass -08, ranked fix 2).
+    /// The sentence above was true of the merge and false of the mint:
+    /// `stand_up` takes `&[ItemStack; INV_SLOTS]` and copies `*items`
+    /// wholesale, so the buffer came back holding exactly what the new bag
+    /// had just taken. Harmless while one caller owned one fresh buffer
+    /// per player per tick — and this pass is the second caller, which is
+    /// the arrangement that turns it into items duplicated into the world.
+    /// A drain that runs twice, or a buffer reused across two verbs in one
+    /// tick, is now safe by the contract instead of by luck.
+    ///
+    /// **The merge is what makes this bounded**, and it is the whole
+    /// reason this is not just `stand_up`. A player swinging at a full
+    /// pack pays a swing every `SWING_INTERVAL_TICKS` — roughly 47 a
+    /// minute — and a bag per swing would churn `MAX_BACKPACKS` in five
+    /// minutes of one player farming, evicting other people's death bags
+    /// to do it. Merging first means standing still costs one bag however
+    /// long you swing, and the eviction ladder keeps meaning what it says.
+    ///
+    /// The radius is `LOOT_REACH_M` — not a new knob, and the same arm
+    /// that decides you may open a bag decides your spill can reach it.
+    /// The pick is nearest-first with ties to the lower index, exactly
+    /// `loot_nearest`'s rule, so it is a pure function of state.
+    ///
+    /// A bag that grows gets its expiry pushed out to what its new
+    /// contents ask for and never pulled in — otherwise dropping a common
+    /// item into a bag holding a rare one would shorten the rare one's
+    /// clock, which is the ladder paying backwards.
+    ///
+    /// An inert ladder (`base_ticks == 0`) catches nothing and the
+    /// overflow is destroyed exactly as it was before this lane existed —
+    /// the same disarm `stand_up` and `drop_for` honour, so content that
+    /// never armed the module still gets the pre-backpack world.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spill_at(
+        &mut self,
+        bc: &BackpackContent,
+        gc: &GatherContent,
+        qx: i32,
+        qy: i32,
+        qz: i32,
+        owner: u32,
+        items: &mut [ItemStack; INV_SLOTS],
+        tick: u64,
+        events: &mut EventQueue,
+    ) -> Option<u32> {
+        if bc.base_ticks == 0 {
+            return None; // inert content: the module is disarmed
+        }
+        if items.iter().all(|s| s.count == 0) {
+            return None; // nothing to catch
+        }
+        let px = qx as f32 * POS_XZ_Q;
+        let pz = qz as f32 * POS_XZ_Q;
+        let mut best: Option<(f32, usize)> = None;
+        for i in 0..self.len {
+            let dx = self.entries[i].qx as f32 * POS_XZ_Q - px;
+            let dz = self.entries[i].qz as f32 * POS_XZ_Q - pz;
+            let d2 = dx * dx + dz * dz;
+            if d2 > LOOT_REACH_M * LOOT_REACH_M {
+                continue;
+            }
+            if best.is_none_or(|(bd2, _)| d2 < bd2) {
+                best = Some((d2, i));
+            }
+        }
+        if let Some((_, i)) = best {
+            for stack in items.iter_mut() {
+                if stack.count == 0 {
+                    continue;
+                }
+                let cap = gc.stack_max_of(stack.item);
+                // The stack already exists, so its condition travels with
+                // it — minting at the ceiling here would mend a worn tool
+                // by dropping it into a bag.
+                let took = inv_add(
+                    &mut self.entries[i].items,
+                    stack.item,
+                    stack.count,
+                    cap,
+                    stack.cond,
+                );
+                if took == 0 {
+                    continue;
+                }
+                stack.count -= took;
+                if stack.count == 0 {
+                    // Canonical empty is ALL THREE fields — `stand_up`
+                    // copies this buffer verbatim into a world-saved store,
+                    // and format 7's reader refuses `count == 0 && cond != 0`.
+                    *stack = ItemStack::default();
+                }
+            }
+            let want = tick + bc.lifetime_ticks(&self.entries[i].items) as u64;
+            if want > self.entries[i].expires {
+                self.entries[i].expires = want;
+            }
+            if items.iter().all(|s| s.count == 0) {
+                return Some(self.entries[i].id);
+            }
+        }
+        let stood = self.stand_up(bc, qx, qy, qz, owner, items, tick, events);
+        if stood.is_some() {
+            // The new bag holds a copy of every stack in the buffer, so
+            // the buffer is now a duplicate and not a remainder. `None`
+            // deliberately leaves it alone: an inert ladder took nothing
+            // and the caller destroying it is the pre-backpack world.
+            *items = [ItemStack::default(); INV_SLOTS];
+        }
+        stood
+    }
+
     /// Retire every bag whose timer ran out. One pass over the live
     /// entries (≤ `MAX_BACKPACKS`), taken every tick; the swap-remove is
     /// why the index does not advance on a hit.
@@ -438,13 +578,18 @@ impl Backpacks {
             if cap == 0 {
                 continue; // an item the ladder cannot stack cannot be taken
             }
-            let took = inv_add(&mut p.inv, stack.item, stack.count, cap);
+            // An existing stack: its condition travels, or looting a bag
+            // would repair everything in it.
+            let took = inv_add(&mut p.inv, stack.item, stack.count, cap, stack.cond);
             if took == 0 {
                 continue;
             }
             self.entries[i].items[s].count -= took;
             if self.entries[i].items[s].count == 0 {
-                self.entries[i].items[s].item = 0; // canonical empty
+                // Canonical empty is ALL THREE fields — a looted-out slot
+                // that kept its condition is a record the world save's
+                // reader refuses at the next boot (`count == 0 && cond != 0`).
+                self.entries[i].items[s] = ItemStack::default();
             }
             events.push(
                 EV_GATHER,
@@ -480,7 +625,11 @@ mod tests {
     fn stacks(rows: &[(u16, u16)]) -> [ItemStack; INV_SLOTS] {
         let mut inv = [ItemStack::default(); INV_SLOTS];
         for (i, &(item, count)) in rows.iter().enumerate() {
-            inv[i] = ItemStack { item, count };
+            inv[i] = ItemStack {
+                item,
+                count,
+                cond: 0,
+            };
         }
         inv
     }

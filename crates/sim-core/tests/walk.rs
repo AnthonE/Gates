@@ -23,6 +23,35 @@ use sim_core::occupy::{Harvested, Occupants, Pristine, Scratch, SlotCache};
 use sim_core::terrain::{self, Occupant, ScatterTable, Slot, CELLS_PER_SIDE};
 use sim_core::yaw_dir;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 /// Seeds every search runs over — same set and same rule as `solid.rs`: a
 /// seed that fails is a bug in the generator, not a reroll.
 const SEEDS: [u64; 4] = [0, 1, 7, 12345];
@@ -93,10 +122,10 @@ fn charge_at(seed: u64, occ: &mut Occupants, s: &Slot, k: u16) -> Body {
     let yaw = (k * 64) << 8;
     let (fx, fz) = yaw_dir(yaw);
     // Start a standoff back along the bearing, aimed at the slot.
-    let mut b = Body::at(seed, s.x - fx * STANDOFF_M, s.z - fz * STANDOFF_M);
+    let mut b = Body::at(seed, hv(seed), s.x - fx * STANDOFF_M, s.z - fz * STANDOFF_M);
     let f = charge(yaw);
     for _ in 0..TICKS {
-        movement::step(seed, &cols, occ, &mut b, &f);
+        movement::step(seed, hv(seed), &cols, occ, &mut b, &f);
     }
     b
 }
@@ -143,17 +172,29 @@ fn a_body_stops_at_a_trunk_from_every_bearing() {
 }
 
 /// The widest scattered thing on the island stops a body too, and by more.
-/// `Rock` is 1.5 m where a trunk is 0.26, so a check that passed on a tree
-/// by accident of the quantum cannot pass here the same way.
+/// A boulder's collision radius is several times a trunk's, so a check that
+/// passed on a tree by accident of the quantum cannot pass here the same way.
+///
+/// **The fixture check below is DERIVED from the table, and it used to be the
+/// literal 1.5.** That literal was the boulder's *nominal* radius —
+/// "DodecahedronGeometry(1.5)" — and on 2026-08-10 the row became the mesh's
+/// measured bound (1.1145; `blob_mesh` displaces vertices inward, so the
+/// nominal was blocking 0.39 m of ground nobody could see). The literal went
+/// red, correctly: it was asserting a number that had stopped being true.
+/// Reading `occupant_volume` here says what the test actually means — this
+/// occupant is much wider than a trunk — and cannot go stale that way again.
 #[test]
 fn a_boulder_stops_a_body_at_its_own_radius() {
     for seed in SEEDS {
         let mut sc = Scratch::live(seed);
         let (_, _, rock) = find(seed, &sc.table, &sc.haven, Occupant::Rock);
         let stop = reach(&rock);
+        let (trunk_r, _) = terrain::occupant_volume(Occupant::Tree);
         assert!(
-            stop > 1.5,
-            "fixture check: a boulder should reach past 1.5 m"
+            stop > trunk_r * 3.0 + CAPSULE_RADIUS_M,
+            "fixture check: a boulder reaches {stop:.3} m, not comfortably \
+             past three trunk radii — this test would prove nothing a tree \
+             had not already proved"
         );
         for k in 0..4u16 {
             let b = charge_at(seed, &mut sc.occupants(), &rock, k);
@@ -297,7 +338,7 @@ fn a_body_caught_inside_an_occupant_can_walk_out() {
         let cols = ColIndex::new();
 
         // Dead centre of the boulder — the deepest a respawn could catch you.
-        let mut b = Body::at(seed, rock.x, rock.z);
+        let mut b = Body::at(seed, hv(seed), rock.x, rock.z);
         assert!(
             sc.occupants()
                 .blocks(seed, rock.x, rock.z, b.qy as f32 * movement::POS_Y_Q),
@@ -306,7 +347,7 @@ fn a_body_caught_inside_an_occupant_can_walk_out() {
 
         let f = charge(0);
         for _ in 0..TICKS {
-            movement::step(seed, &cols, &mut sc.occupants(), &mut b, &f);
+            movement::step(seed, hv(seed), &cols, &mut sc.occupants(), &mut b, &f);
         }
         let d = dist(&b, &rock);
         assert!(
@@ -343,10 +384,10 @@ fn the_shelter_walls_stop_a_body_and_the_door_does_not() {
         // its yaw points. Walk in along that bearing, from outside.
         let (dx, dz) = yaw_dir((yaw8 as u16) << 8);
         let door_yaw = ((yaw8 as u16) << 8).wrapping_add(0x8000); // face inward
-        let mut b = Body::at(seed, sx + dx * 9.0, sz + dz * 9.0);
+        let mut b = Body::at(seed, hv(seed), sx + dx * 9.0, sz + dz * 9.0);
         let f = charge(door_yaw);
         for _ in 0..TICKS {
-            movement::step(seed, &cols, &mut sc.occupants(), &mut b, &f);
+            movement::step(seed, hv(seed), &cols, &mut sc.occupants(), &mut b, &f);
         }
         let d = dist(&b, &shelter);
         assert!(
@@ -359,10 +400,10 @@ fn the_shelter_walls_stop_a_body_and_the_door_does_not() {
         // the building and walk the door's own bearing, which from there
         // points at the back wall.
         let (bx, bz) = yaw_dir(door_yaw);
-        let mut b = Body::at(seed, sx + bx * 9.0, sz + bz * 9.0);
+        let mut b = Body::at(seed, hv(seed), sx + bx * 9.0, sz + bz * 9.0);
         let f = charge((yaw8 as u16) << 8);
         for _ in 0..TICKS {
-            movement::step(seed, &cols, &mut sc.occupants(), &mut b, &f);
+            movement::step(seed, hv(seed), &cols, &mut sc.occupants(), &mut b, &f);
         }
         let d = dist(&b, &shelter);
         assert!(

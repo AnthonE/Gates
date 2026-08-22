@@ -58,6 +58,110 @@ const MAX_TICK_BACKLOG: u32 = 8;
 /// finishing. A shutdown that takes a second is a shutdown; one that hangs
 /// forever is a deploy that never completes.
 const SHUTDOWN_DRAIN_TRIES: u32 = 200;
+
+/// UDP socket buffer we ask the OS for, both directions
+/// (`NETCODE.md` §2.2). quinn's README is explicit that its one socket
+/// serves every connection and that the usual OS defaults (~208 KiB) are
+/// too small for that; this is the row that had been an intention in a
+/// table headed *config of record* since it was written.
+///
+/// **Asking is not getting**, which is why `bind_udp` reads the value back
+/// and `ShardStats` carries both numbers. Linux silently clamps the request
+/// to `net.core.rmem_max`/`wmem_max`, so on an un-tuned box this call
+/// succeeds and changes nothing — the failure mode is a shard that believes
+/// it has 8 MiB of headroom and has 208 KiB.
+const UDP_BUF_BYTES: usize = 8 * 1024 * 1024;
+
+/// In-flight handshakes past which an **unvalidated** address is answered
+/// with a QUIC Retry instead of a handshake (`NETCODE.md` §2.2's "~2× cap").
+/// Arithmetic over `MAX_PLAYERS`, not a knob of its own.
+///
+/// Under this, joining costs one round trip as before. Over it, a source
+/// that cannot receive at the address it claims — every spoofed packet in a
+/// reflection flood — is answered with a token and never seen again, while a
+/// real joiner pays one extra round trip during a rush and nothing at all
+/// the rest of the time.
+const ADMIT_RETRY_AT: usize = 2 * MAX_PLAYERS;
+
+/// In-flight handshakes past which a connection attempt is refused outright,
+/// before any crypto (`NETCODE.md` §2.2's "hard cap").
+///
+/// Deliberately **not** the polite refusal: `REFUSE_FULL` travels to a
+/// client that completed a handshake and tells it why, which is the right
+/// answer to a full shard and the wrong one to a flood. Four times the
+/// player cap means a shard can be entirely full, with a queue of the same
+/// size again waiting, before anybody is turned away silently.
+const ADMIT_REFUSE_AT: usize = 4 * MAX_PLAYERS;
+
+/// Writer polls between transport-telemetry samples. `WRITER_POLL` is 2 ms,
+/// so this is ~1 Hz per connection — cheap enough to leave on in production
+/// and often enough to catch a congestion episode that lasts a second.
+const NET_SAMPLE_EVERY: u32 = 500;
+
+// These three are **compile-time** rather than tests, which is the stronger
+// form and is available because every term is a constant: get one wrong and
+// the shard does not build, so there is no version of the tree where the
+// admission gate is inverted and a suite is merely red.
+//
+// 1. Retry must come before refuse. Inverted, a flood is refused before it
+//    is ever asked to validate its address and the Retry path — the only
+//    thing that separates a spoofed source from a busy one — is unreachable.
+// 2. Both must sit past a full shard, or an ordinary rush to join a popular
+//    server is answered as an attack.
+// 3. `writer_task` counts down from `NET_SAMPLE_EVERY`; at zero it
+//    underflows a `u32` on the first poll, which is a panic in every
+//    connection's writer.
+const _: () = assert!(ADMIT_RETRY_AT < ADMIT_REFUSE_AT);
+const _: () = assert!(ADMIT_RETRY_AT > MAX_PLAYERS);
+const _: () = assert!(NET_SAMPLE_EVERY > 0);
+
+/// Binds the shard's UDP socket with the buffer sizes §2.2 asks for, then
+/// **reads back what the OS actually granted** and records both.
+///
+/// The readback is the point. `setsockopt(SO_RCVBUF)` does not fail when the
+/// kernel decides you may not have that much — it clamps to `rmem_max` and
+/// returns success — so the only way to know what a shard is running on is
+/// to ask it afterwards. (Linux also reports back roughly double what it
+/// granted, its own bookkeeping overhead included; the number recorded here
+/// is what the OS reports, unadjusted, because inventing a halving would be
+/// a second guess layered on the first.)
+///
+/// A failure to set a buffer is **not** a boot failure: a shard that runs
+/// with a small socket is a shard that runs. A failure to *bind* is.
+fn bind_udp(addr: SocketAddr, stats: &ShardStats) -> std::io::Result<std::net::UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let domain = if addr.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
+    let sock = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+    // Dual-stack when bound to `[::]`, matching what `with_bind_address`
+    // did before this function existed — otherwise a v6 bind would stop
+    // accepting the v4 clients it used to.
+    if addr.is_ipv6() && addr.ip().is_unspecified() {
+        let _ = sock.set_only_v6(false);
+    }
+    // Before `bind`, which is where the kernel sizes the buffers.
+    let _ = sock.set_recv_buffer_size(UDP_BUF_BYTES);
+    let _ = sock.set_send_buffer_size(UDP_BUF_BYTES);
+    sock.bind(&addr.into())?;
+    sock.set_nonblocking(true)?;
+
+    stats
+        .net_rcvbuf_asked
+        .store(UDP_BUF_BYTES as u64, Ordering::Relaxed);
+    stats
+        .net_sndbuf_asked
+        .store(UDP_BUF_BYTES as u64, Ordering::Relaxed);
+    if let Ok(got) = sock.recv_buffer_size() {
+        stats.net_rcvbuf_bytes.store(got as u64, Ordering::Relaxed);
+    }
+    if let Ok(got) = sock.send_buffer_size() {
+        stats.net_sndbuf_bytes.store(got as u64, Ordering::Relaxed);
+    }
+    Ok(sock.into())
+}
 const SHUTDOWN_DRAIN_POLL: Duration = Duration::from_millis(5);
 
 /// Chat rate limit (ALPHA.md §1: "rate-limited server-side"), a token
@@ -124,12 +228,21 @@ pub struct ShardHandle {
 /// Bake the item-name catalog from validated content (the same
 /// index-is-sorted-rank mapping `bake_gather` uses). Boot path: a name
 /// the wire can't carry refuses the boot, same as any other bake error.
+/// Each row carries its condition ceiling (wire v46) in the u16 hundredths
+/// the sim runs on — the same conversion `bake::bake_gather` performs, and
+/// the same refusal when a `condition_max` overflows it.
 pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = content.items.len() as u16;
     for item in &content.items {
         let idx = content.item_index(&item.id).expect("own id resolves") as usize;
-        cat.set(idx, item.name.as_bytes()).map_err(|_| {
+        let cond_max = u16::try_from(item.condition_max).map_err(|_| {
+            format!(
+                "catalog: item `{}` condition_max {} overflows u16 hundredths",
+                item.id, item.condition_max
+            )
+        })?;
+        cat.set(idx, item.name.as_bytes(), cond_max).map_err(|_| {
             format!(
                 "catalog: item `{}` name `{}` is empty or over {} bytes",
                 item.id,
@@ -141,11 +254,63 @@ pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
     Ok(cat)
 }
 
+/// Every content table a shard runs on, in one value.
+///
+/// **This is a struct because it was thirteen positional arguments and one
+/// of them went missing for the whole life of the feature.** `bake_research`
+/// was written, validated, tested and never called: `sim_thread` installed
+/// eleven tables, `World::research` stayed `ResearchContent::EMPTY`, every
+/// `Command::Research` refused `REFUSE_R_ITEM`, and the six
+/// `blueprint = true` recipes were uncraftable by anyone on a live shard —
+/// with every gate in the tree green, because no gate boots a shard and
+/// asks what it installed. A twelfth positional argument threaded through
+/// two signatures and ten call sites is not a fix, it is the same
+/// conditions with one more chance to miss.
+///
+/// So: one struct, one constructor, and adding a table is a field the
+/// compiler makes every caller acknowledge. `tests/boot_tables.rs` holds
+/// the other half — that every `bake_*` the content crate exposes has a
+/// home here at all.
+pub struct SimTables {
+    pub gather: sim_core::gather::GatherContent,
+    pub craft: sim_core::craft::CraftContent,
+    pub build: sim_core::build::BuildContent,
+    pub deploy: sim_core::deploy::DeployContent,
+    pub combat: sim_core::combat::CombatContent,
+    pub backpack: sim_core::backpack::BackpackContent,
+    pub survival: sim_core::survival::SurvivalContent,
+    pub cook: sim_core::oven::CookContent,
+    pub spawn_kit: sim_core::inventory::SpawnKit,
+    pub loot: sim_core::loot::LootContent,
+    pub mobs: sim_core::mob::MobContent,
+    pub research: sim_core::research::ResearchContent,
+    pub catalog: ItemCatalog,
+}
+
+/// Bake every table a shard needs, or refuse the boot naming the one that
+/// failed. The single place the list of tables is written down.
+pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
+    Ok(SimTables {
+        gather: content.bake_gather()?,
+        craft: content.bake_craft()?,
+        build: content.bake_building()?,
+        deploy: content.bake_deployables()?,
+        combat: content.bake_combat()?,
+        backpack: content.bake_backpack()?,
+        survival: content.bake_survival()?,
+        cook: content.bake_cooking()?,
+        spawn_kit: content.bake_spawn_kit()?,
+        loot: content.bake_loot()?,
+        mobs: content.bake_mobs()?,
+        research: content.bake_research()?,
+        catalog: bake_catalog(content)?,
+    })
+}
+
 /// Boot a shard: bind, spawn the sim thread and the accept loop, return.
 /// The caller owns process lifetime; `shutdown` stops the sim thread.
-/// `gather`, `craft`, `build`, `deploy`, `combat`, and `catalog` are the
-/// content bake (CLAUDE.md wall 7) — data the world runs on, handed over
-/// before the first tick like the seed.
+/// `tables` is the content bake (CLAUDE.md wall 7) — data the world runs
+/// on, handed over before the first tick like the seed.
 ///
 /// `saves` is the player store, already opened and validated against this
 /// seed and content (`store::open`) — or `Saves::off()`, which is a shard
@@ -154,21 +319,9 @@ pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
 /// needs the *content hash*, which this function is never handed: the
 /// binary bakes content and therefore the binary opens the file, and a
 /// refusal lands before a port is bound.
-#[allow(clippy::too_many_arguments)]
 pub async fn spawn_shard(
     cfg: ShardConfig,
-    gather: sim_core::gather::GatherContent,
-    craft: sim_core::craft::CraftContent,
-    build: sim_core::build::BuildContent,
-    deploy: sim_core::deploy::DeployContent,
-    combat: sim_core::combat::CombatContent,
-    backpack: sim_core::backpack::BackpackContent,
-    survival: sim_core::survival::SurvivalContent,
-    cook: sim_core::oven::CookContent,
-    spawn_kit: sim_core::inventory::SpawnKit,
-    loot: sim_core::loot::LootContent,
-    mobs: sim_core::mob::MobContent,
-    catalog: ItemCatalog,
+    tables: SimTables,
     saves: Saves,
     world_boot: crate::worldfile::WorldBoot,
 ) -> Result<ShardHandle, String> {
@@ -198,12 +351,29 @@ pub async fn spawn_shard(
         .hash()
         .fmt(Sha256DigestFmt::DottedHex);
 
+    // Built before the endpoint, because the socket bind below records what
+    // the OS granted and needs somewhere to put it.
+    let stats = Arc::new(ShardStats::default());
+
     let mut transport = wtransport::config::QuicTransportConfig::default();
     // NETCODE.md §2.2: bound worst-case queued staleness; snapshots
     // replace, never accumulate.
     transport.datagram_send_buffer_size(64 * 1024);
+    // Congestion control, selectable because §2.1 names it as the real risk
+    // and §2.2 promised an A/B path that had never been built. CUBIC halves
+    // cwnd on loss and a collapsed window at 100 ms RTT can fall under our
+    // 30 Hz send rate; BBR is loss-insensitive and is labelled experimental
+    // in quinn, which is exactly why this is a shard flag and not a default.
+    // `net_congestion_events` is the reading that makes the A/B mean
+    // something.
+    if cfg.congestion == crate::config::Congestion::Bbr {
+        transport.congestion_controller_factory(Arc::new(
+            wtransport::quinn::congestion::BbrConfig::default(),
+        ));
+    }
+    let socket = bind_udp(cfg.bind, &stats).map_err(|e| format!("bind {}: {e}", cfg.bind))?;
     let server_config = ServerConfig::builder()
-        .with_bind_address(cfg.bind)
+        .with_bind_socket(socket)
         .with_custom_transport(identity, transport)
         .max_idle_timeout(Some(Duration::from_secs(30)))
         .map_err(|e| format!("idle timeout: {e}"))?
@@ -215,8 +385,6 @@ pub async fn spawn_shard(
     let local_addr = endpoint
         .local_addr()
         .map_err(|e| format!("local_addr: {e}"))?;
-
-    let stats = Arc::new(ShardStats::default());
     let shutdown = Arc::new(AtomicBool::new(false));
     let slots = Arc::new(SlotTable::new(MAX_PLAYERS));
 
@@ -235,6 +403,12 @@ pub async fn spawn_shard(
     // when the correct answer to a slow disk is to skip a save.
     let (world_tx, world_rx) = RingBuffer::<WorldMsg>::new(WORLD_RING_CAP);
     let (world_done_tx, world_done_rx) = RingBuffer::<WorldDone>::new(WORLD_RING_CAP);
+    // The admin path, sim → accept, one direction: a kick needs a socket
+    // and the sim thread holds none (`admin.rs`'s split). Shallow because
+    // an admin is a person typing — `CTRL_RING_CAP` is the same size for
+    // the same reason — and a full ring refuses the act out loud rather
+    // than queueing a kick nobody remembers ordering.
+    let (admin_tx, admin_rx) = RingBuffer::<crate::admin::AdminAct>::new(CTRL_RING_CAP);
     let crate::worldfile::WorldBoot {
         file: world_file,
         idents: world_idents,
@@ -242,30 +416,37 @@ pub async fn spawn_shard(
         interval_ticks: world_interval,
     } = world_boot;
 
+    // The anomaly log, opened before the sim thread that writes to it —
+    // and a failure to open is a **boot** failure, not a silent downgrade:
+    // an operator who configured a log and got none would be reading an
+    // empty file after the incident they wanted it for (`anomaly.rs`).
+    let log = match cfg.anomaly_file.as_deref() {
+        Some(path) => {
+            let (sink, _thread) = crate::anomaly::spawn(std::path::Path::new(path), stats.clone())
+                .map_err(|e| format!("anomaly log `{path}`: {e}"))?;
+            // The handle is deliberately dropped: the thread ends when the
+            // sim thread's `Sink` drops at shutdown, which is the signal
+            // that every record has been written — joining here would mean
+            // waiting for it before the shard has started.
+            sink
+        }
+        None => crate::anomaly::Sink::off(),
+    };
+
     {
         let stats = stats.clone();
         let shutdown = shutdown.clone();
         let slots = slots.clone();
         let seed = cfg.seed;
         let dev_spawn = cfg.dev_spawn;
+        let admins = cfg.admins.clone();
         std::thread::Builder::new()
             .name("sim".into())
             .spawn(move || {
                 sim_thread(
                     seed,
                     dev_spawn,
-                    gather,
-                    craft,
-                    build,
-                    deploy,
-                    combat,
-                    backpack,
-                    survival,
-                    cook,
-                    spawn_kit,
-                    loot,
-                    mobs,
-                    catalog,
+                    tables,
                     world_blob,
                     world_idents,
                     world_interval,
@@ -274,6 +455,9 @@ pub async fn spawn_shard(
                     save_tx,
                     world_tx,
                     world_done_rx,
+                    admin_tx,
+                    log,
+                    admins,
                     slots,
                     stats,
                     shutdown,
@@ -304,11 +488,14 @@ pub async fn spawn_shard(
             dev: cfg.dev_spawn.is_some(),
             require_auth: cfg.require_auth,
             domain: cfg.domain.clone(),
+            entitle: cfg.entitle.clone(),
+            min_client: cfg.min_client,
         },
         ctrl_tx,
         grave_rx,
         save_rx,
         write_tx,
+        admin_rx,
         saves.store,
         slots,
         stats.clone(),
@@ -339,6 +526,13 @@ struct ShardFacts {
     /// The SIWE domain: what this shard calls itself in the message players
     /// sign. Must be the host they dialled (`config.rs`).
     domain: String,
+    /// The ticket door (`entitle.rs`). `Config::off()` — the default — checks
+    /// nothing, which is what every test and every community shard runs.
+    entitle: crate::entitle::Config,
+    /// `shard.toml min_client`, packed. 0 — the default — admits every client
+    /// whose `PROTO_VER` already matched, which is every client that could
+    /// have got this far.
+    min_client: u32,
 }
 
 /// What a handshake task hands back once the client said a valid hello.
@@ -365,10 +559,21 @@ struct Handshaken {
 /// the slot, and this loop drains the ring before it installs anyone), and
 /// the id check is what makes it unreachable *by construction* rather than
 /// by argument.
-#[derive(Clone, Copy, Default)]
+///
+/// **`conn` is the roster sweep's only reach into a live connection.** A
+/// player who sells their copy mid-session is not doing anything the sim can
+/// see, so the kick cannot come from the sim thread — it comes from here,
+/// and this is the handle it closes. Held as an `Option` because a guest
+/// slot has no wallet to sweep and a freed slot has nothing at all.
+///
+/// No longer `Copy`: a `Connection` is refcounted and cloning it is a
+/// decision, not a memcpy. The two read sites take `.key` and `.id` by value
+/// as before.
+#[derive(Clone, Default)]
 struct KeySlot {
     key: Option<PlayerKey>,
     id: u32,
+    conn: Option<Connection>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -379,6 +584,7 @@ async fn accept_loop(
     mut grave_rx: rtrb::Consumer<Link>,
     mut save_rx: rtrb::Consumer<SaveMsg>,
     mut write_tx: rtrb::Producer<WriteMsg>,
+    mut admin_rx: rtrb::Consumer<crate::admin::AdminAct>,
     mut store: SaveStore,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
@@ -387,19 +593,79 @@ async fn accept_loop(
     // Net-side plumbing between handshake tasks and this loop; the sim
     // thread never touches it (L3 is about the sim thread, not tokio).
     let (done_tx, mut done_rx) = tokio::sync::mpsc::channel::<Handshaken>(MAX_PLAYERS);
-    let mut keys = [KeySlot::default(); MAX_PLAYERS];
+    // `[T; N]` initialiser syntax needs `Copy` and `KeySlot` stopped being
+    // `Copy` when it started holding a `Connection`. Built on the heap and
+    // converted, which is also the shape `boxed_array` uses next door for a
+    // different reason (wasm's shadow stack) — here it is simply the way to
+    // fill a fixed array with a clonable value.
+    let mut keys: [KeySlot; MAX_PLAYERS] = std::array::from_fn(|_| KeySlot::default());
+    // Wallets banned for this uptime (admin v0). Memory only, and
+    // `admin.rs`' header says why that is stated rather than hidden: a
+    // persisted ban wants its own file with its own format version.
+    let mut bans = crate::admin::Bans::new();
     let mut sweep = tokio::time::interval(Duration::from_millis(100));
+    // ---- the roster sweep -------------------------------------------------
+    //
+    // A join check alone is a door with no lock behind it: a player can sell
+    // the ticket and keep playing. This re-asks about everybody on an
+    // interval (`entitle::DEFAULT_SWEEP`), and the interval IS the security
+    // property — it is how long a sold copy can linger, which is a posted
+    // knob rather than a hole.
+    //
+    // Results come back through a channel rather than being awaited inline,
+    // because this loop is also the accept path: a blocked sweep would be a
+    // shard that stops taking players while scry is slow. `in_flight` is the
+    // no-stacking rule — one round at a time, whatever the origin does, the
+    // same refusal `status.rs`'s poller makes.
+    // Handshakes started and not yet finished. The admission gate's only
+    // input, and the reason it is a count rather than a rate: a rate needs a
+    // clock and a window, and what actually protects the shard is "how much
+    // unfinished crypto am I holding right now".
+    let in_flight = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (kick_tx, mut kick_rx) = tokio::sync::mpsc::channel::<Vec<(usize, u32)>>(1);
+    let mut entitle_sweep = tokio::time::interval(facts.entitle.sweep);
+    let mut sweep_in_flight = false;
     loop {
         tokio::select! {
             incoming = endpoint.accept() => {
+                // Admission, before any crypto (NETCODE.md §2.2). Every
+                // refusal we had before this fired *after* a completed
+                // handshake — QUIC, TLS, CONNECT, SIWE, and an entitlement
+                // round trip to scry — so a full shard was an amplifier and
+                // a spoofed source cost us more than it cost the attacker.
+                //
+                // Order matters: refuse is the harder answer and is checked
+                // first, so a flood past the hard cap is not merely retried
+                // forever.
+                let busy = in_flight.load(Ordering::Relaxed);
+                if busy >= ADMIT_REFUSE_AT {
+                    ShardStats::bump(&stats.admit_refused);
+                    incoming.refuse();
+                    continue;
+                }
+                // `retry()` PANICS if the address is already validated —
+                // wtransport's own doc comment says so, and it is the reason
+                // this reads as a guard rather than an optimisation. A
+                // validated address has already proved it can receive at the
+                // address it claims, which is the entire thing a Retry buys.
+                if busy >= ADMIT_RETRY_AT && !incoming.remote_address_validated() {
+                    ShardStats::bump(&stats.admit_retried);
+                    incoming.retry();
+                    continue;
+                }
+                in_flight.fetch_add(1, Ordering::Relaxed);
                 let stats = stats.clone();
                 let done_tx = done_tx.clone();
+                let in_flight = in_flight.clone();
                 tokio::spawn(handshake_task(
                     incoming,
                     done_tx,
                     stats,
                     facts.require_auth,
                     facts.domain.clone(),
+                    facts.entitle.clone(),
+                    facts.min_client,
+                    in_flight,
                 ));
             }
             Some(done) = done_rx.recv() => {
@@ -409,9 +675,125 @@ async fn accept_loop(
                 drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
                 install(done, &facts, &mut ctrl_tx, &mut keys, &store, &slots, &stats).await;
             }
+            _ = entitle_sweep.tick(), if facts.entitle.armed() && !sweep_in_flight => {
+                // Snapshot who to ask about, with the generation each answer
+                // must still match when it lands. A slot that turned over
+                // while the round was out is a DIFFERENT player, and kicking
+                // them on the previous tenant's verdict is the same class of
+                // bug the save path's `id` check exists to prevent.
+                let roster: Vec<(usize, u32, String)> = keys
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, ks)| {
+                        let k = ks.key.as_ref()?;
+                        let wallet = std::str::from_utf8(k.as_bytes()).ok()?.to_string();
+                        let gen = crate::slot::generation_of(slots.load(slot));
+                        Some((slot, gen, wallet))
+                    })
+                    .collect();
+                if !roster.is_empty() {
+                    sweep_in_flight = true;
+                    let cfg = facts.entitle.clone();
+                    let tx = kick_tx.clone();
+                    let stats2 = stats.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let wallets: Vec<String> =
+                            roster.iter().map(|(_, _, w)| w.clone()).collect();
+                        let verdicts = crate::entitle::check_many(&cfg, &wallets);
+                        let mut kicks = Vec::new();
+                        for ((slot, gen, _), v) in roster.iter().zip(verdicts) {
+                            match v {
+                                crate::entitle::Verdict::Nope => kicks.push((*slot, *gen)),
+                                crate::entitle::Verdict::Unknown => {
+                                    ShardStats::bump(&stats2.entitle_unknown);
+                                }
+                                crate::entitle::Verdict::Owns => {}
+                            }
+                        }
+                        // Send even when empty: it is what clears the
+                        // in-flight flag, so a quiet round cannot wedge the
+                        // sweep off permanently.
+                        let _ = tx.blocking_send(kicks);
+                    });
+                }
+            }
+            Some(kicks) = kick_rx.recv() => {
+                sweep_in_flight = false;
+                for (slot, gen) in kicks {
+                    // The generation guard: only kick the tenant we asked
+                    // about. A reconnect between the ask and the answer gets
+                    // its own join check, so nothing is skipped by waiting.
+                    if slot >= MAX_PLAYERS
+                        || crate::slot::generation_of(slots.load(slot)) != gen
+                        || crate::slot::state_of(slots.load(slot)) != crate::slot::SLOT_LIVE
+                    {
+                        continue;
+                    }
+                    ShardStats::bump(&stats.entitle_kicked);
+                    slots.mark_leaving(slot, gen);
+                    if let Some(conn) = keys[slot].conn.take() {
+                        // Closed with the refusal code rather than dropped,
+                        // so the player is told WHY by the same table a join
+                        // refusal uses. A silent close reads as a network
+                        // fault, and "my internet is broken" is the wrong
+                        // thing to believe when the fix is to buy a copy.
+                        conn.close(
+                            wtransport::VarInt::from_u32(protocol::REFUSE_TICKET as u32),
+                            protocol::refuse_text(protocol::REFUSE_TICKET)
+                                .unwrap_or("no copy")
+                                .as_bytes(),
+                        );
+                    }
+                }
+            }
             _ = sweep.tick() => {
                 while let Ok(link) = grave_rx.pop() {
                     drop(link); // net side deallocates, never the sim
+                }
+                // Admin kicks and bans, on the same cadence as the
+                // graveyard: an admin is a person typing, so 100 ms is
+                // immediate and the arm costs a pop on an empty ring.
+                while let Ok(act) = admin_rx.pop() {
+                    let (id, ban_key) = match act {
+                        crate::admin::AdminAct::Kick { id } => (id, None),
+                        crate::admin::AdminAct::Ban { id, key } => (id, Some(key)),
+                    };
+                    if let Some(key) = ban_key {
+                        // Recorded before the kick, so a full list refuses
+                        // the BAN rather than kicking and forgetting why.
+                        if !bans.insert(key) {
+                            ShardStats::bump(&stats.admin_refused);
+                            continue;
+                        }
+                    }
+                    // The slot is found by id rather than carried, because
+                    // the sim named a player and slots are the accept
+                    // loop's business — and a reconnect between the two
+                    // must not be kicked in the first one's name.
+                    let Some(slot) = (0..MAX_PLAYERS).find(|&s| keys[s].id == id && keys[s].key.is_some())
+                    else {
+                        ShardStats::bump(&stats.admin_refused);
+                        continue;
+                    };
+                    let word = slots.load(slot);
+                    if crate::slot::state_of(word) != crate::slot::SLOT_LIVE {
+                        ShardStats::bump(&stats.admin_refused);
+                        continue;
+                    }
+                    ShardStats::bump(&stats.admin_kicked);
+                    slots.mark_leaving(slot, crate::slot::generation_of(word));
+                    if let Some(conn) = keys[slot].conn.take() {
+                        // Closed with a posted reason, the entitle kick's
+                        // rule: a silent close reads as a network fault,
+                        // and "my internet broke" is the wrong thing for a
+                        // kicked player to believe.
+                        conn.close(
+                            wtransport::VarInt::from_u32(protocol::REFUSE_ADMIN as u32),
+                            protocol::refuse_text(protocol::REFUSE_ADMIN)
+                                .unwrap_or("kicked")
+                                .as_bytes(),
+                        );
+                    }
                 }
                 drain_saves(&mut save_rx, &mut write_tx, &mut store, &keys, &stats);
                 if shutdown.load(Ordering::Relaxed) {
@@ -666,13 +1048,30 @@ fn store_thread(
 /// Session + hello, off the accept loop so a slow client can't
 /// head-of-line-block accepts. Version gate lives here; the cap gate needs
 /// the slot table and lives in `install`.
+#[allow(clippy::too_many_arguments)]
 async fn handshake_task(
     incoming: IncomingSession,
     done_tx: tokio::sync::mpsc::Sender<Handshaken>,
     stats: Arc<ShardStats>,
     require_auth: bool,
     facts_domain: String,
+    entitle: crate::entitle::Config,
+    min_client: u32,
+    in_flight: Arc<std::sync::atomic::AtomicUsize>,
 ) {
+    // Decremented however this task leaves — the timeout arm, any of the
+    // refusal arms, or success. A guard rather than a line at the end,
+    // because `handshake_task` has more than one exit and a leaked count
+    // would ratchet the admission gate shut permanently: the shard would
+    // start refusing everyone and no counter would explain why.
+    struct InFlight(Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for InFlight {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    let _guard = InFlight(in_flight);
+
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let request = incoming.await.map_err(|_| ())?;
         let connection = request.accept().await.map_err(|_| ())?;
@@ -689,6 +1088,26 @@ async fn handshake_task(
     if hello.proto_ver != PROTO_VER {
         ShardStats::bump(&stats.refused_version);
         spawn_refusal(connection, send, REFUSE_VERSION);
+        return;
+    }
+    // The release floor, second because it is only meaningful once the two
+    // sides agree on what the bytes are — `hello.ver` is not a number until
+    // `proto_ver` says the layout it was read from is this one.
+    //
+    // `<`, never `!=`: a client NEWER than the shard is admitted. That is
+    // deliberate and it is the direction that keeps a release shippable — a
+    // player who updated first must not be locked out of a shard its operator
+    // has not restarted yet, and the wire compatibility that would actually
+    // break is `PROTO_VER`'s to refuse, one gate up.
+    if hello.ver < min_client {
+        // The counter is the whole record, and that is this crate's shape
+        // rather than a shortcut: there is no logger in `server`'s lib — the
+        // bins own every line of output — so a refusal is observable the way
+        // every other refusal here is, through `ShardStats`. The shard binary
+        // prints the floor and its own build at boot, which is the other half
+        // an operator needs to read this number.
+        ShardStats::bump(&stats.refused_build);
+        spawn_refusal(connection, send, protocol::REFUSE_BUILD);
         return;
     }
     // ---- SIWE, and the nonce never leaves this stack frame --------------
@@ -753,6 +1172,56 @@ async fn handshake_task(
         spawn_refusal(connection, send, protocol::REFUSE_AUTH);
         return;
     }
+
+    // ---- the ticket door ------------------------------------------------
+    //
+    // Asked only of a PROVED address, and after `require_auth`, because a
+    // guest has no wallet to ask about — `config.rs` refuses the armed-over-
+    // open pairing at boot so this cannot silently check nobody.
+    //
+    // On its own blocking thread rather than inline: `ureq` is synchronous
+    // and this task shares a tokio worker with every other handshake in
+    // flight, so a slow origin would stall strangers who are not waiting on
+    // it. `HANDSHAKE_TIMEOUT` already bounds the whole task above, and
+    // `entitle::Config::timeout` bounds the call itself.
+    //
+    // **`Unknown` admits.** The only value that refuses is a definite
+    // on-chain zero; an outage must not become a shard nobody can join.
+    // `entitle::Verdict::admits` is the one place that decision lives.
+    if entitle.armed() {
+        if let Some(k) = key.as_ref() {
+            // The key IS the wallet: `auth::key_of` builds it from
+            // `Address::to_hex`, which is ASCII `0x…` lowercase. Decoded
+            // rather than transmuted, and a key that somehow is not utf8
+            // becomes an empty string that `entitle::is_wallet` refuses —
+            // which is `Unknown`, which admits.
+            let wallet = std::str::from_utf8(k.as_bytes())
+                .unwrap_or_default()
+                .to_string();
+            let cfg = entitle.clone();
+            let verdict =
+                tokio::task::spawn_blocking(move || crate::entitle::check_one(&cfg, &wallet))
+                    .await
+                    // A panicked or cancelled blocking task is "we could not look",
+                    // and reaches the same door every other failure does.
+                    .unwrap_or(crate::entitle::Verdict::Unknown);
+
+            match verdict {
+                crate::entitle::Verdict::Nope => {
+                    ShardStats::bump(&stats.refused_ticket);
+                    spawn_refusal(connection, send, protocol::REFUSE_TICKET);
+                    return;
+                }
+                // Counted, not logged: the point of the counter is that a
+                // fail-open is VISIBLE to the operator. An address in a log
+                // line would be the other thing.
+                crate::entitle::Verdict::Unknown => {
+                    ShardStats::bump(&stats.entitle_unknown);
+                }
+                crate::entitle::Verdict::Owns => {}
+            }
+        }
+    }
     let _ = done_tx
         .send(Handshaken {
             connection,
@@ -803,7 +1272,14 @@ async fn install(
     // Who this connection is, for the whole of its life. Recorded before the
     // sim is told anything, so a record coming back from the very first tick
     // already has a key to be filed under.
-    keys[slot] = KeySlot { key, id };
+    keys[slot] = KeySlot {
+        key,
+        id,
+        // Cloned for the sweep. Every other clone of this handle lives in a
+        // reader/writer task; this one lives exactly as long as the slot
+        // does, and `install` overwrites it on the next tenant.
+        conn: Some(connection.clone()),
+    };
     // Does this shard remember them? A miss is the ordinary case and it is
     // not a failure: a guest, a first visit, or a shard with no save file.
     let save = key.and_then(|k| store.find(&k));
@@ -916,6 +1392,11 @@ fn accept_input(
     input_tx: &mut rtrb::Producer<protocol::InputDatagram>,
     stats: &ShardStats,
 ) {
+    // **First, before any verdict on it.** These bytes crossed the path
+    // whatever the decoder goes on to think of them, and a bandwidth number
+    // that only counted the datagrams we liked would read lowest exactly
+    // when a shard is being fed garbage (NOW.md §0q item 4).
+    ShardStats::add_msg(&stats.net_dg_in_count, &stats.net_dg_in_bytes, dg.len());
     let ok = peek_kind(dg).map(|k| k == KIND_INPUT).unwrap_or(false);
     if !ok {
         ShardStats::bump(&stats.input_dg_bad);
@@ -1016,6 +1497,13 @@ async fn action_reader_task(
         let Some((buf, len)) = read_frame(&mut recv).await else {
             break; // stream closed or oversize frame: the session is done
         };
+        // Before the demux: an action, a chat line and a chat line the
+        // limiter is about to refuse all cost the same bytes.
+        ShardStats::add_msg(
+            &stats.net_stream_in_frames,
+            &stats.net_stream_in_bytes,
+            FRAME_PREFIX_BYTES + len,
+        );
         if peek_kind(&buf[..len]) == Ok(KIND_CHAT) {
             accept_chat(
                 &buf[..len],
@@ -1062,11 +1550,62 @@ async fn writer_task(
 ) {
     let mut poll = tokio::time::interval(WRITER_POLL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Per-connection previous readings, so what reaches `ShardStats` is a
+    // delta. Local to the task on purpose: a shared table keyed by
+    // connection would be a map with a lifetime problem and a lock, to hold
+    // two numbers that only this task ever reads.
+    // **One, not `NET_SAMPLE_EVERY`**: the first poll samples. Starting a
+    // full period out would mean a connection that lives under a second
+    // contributes nothing at all — and a shard being hammered by clients
+    // that connect and die is exactly when the loss counters matter most.
+    // The first sample's `prev_*` are zero, so it correctly reports
+    // everything since the connection opened.
+    let mut sample_in = 1u32;
+    let (mut prev_lost, mut prev_sent, mut prev_cong, mut prev_holes) = (0u64, 0u64, 0u64, 0u64);
     loop {
         poll.tick().await;
         let word = slots.load(slot);
         if state_of(word) != SLOT_LIVE || generation_of(word) != generation {
             return; // slot moved on; sim (or reader) already knows
+        }
+        // Transport telemetry (NETCODE.md §2.2). Reads quinn's own counters
+        // through wtransport's passthrough — no wire field, no PROTO_VER,
+        // no golden: the numbers already exist and nothing was asking for
+        // them.
+        sample_in -= 1;
+        if sample_in == 0 {
+            sample_in = NET_SAMPLE_EVERY;
+            let s = connection.quic_connection().stats();
+            let p = s.path;
+            // `saturating_sub` rather than `-`: these are monotonic per
+            // connection, but a reset path or a stat that goes backwards
+            // under us must not underflow a u64 into billions.
+            ShardStats::add(
+                &stats.net_lost_packets,
+                p.lost_packets.saturating_sub(prev_lost),
+            );
+            ShardStats::add(
+                &stats.net_sent_packets,
+                p.sent_packets.saturating_sub(prev_sent),
+            );
+            ShardStats::add(
+                &stats.net_congestion_events,
+                p.congestion_events.saturating_sub(prev_cong),
+            );
+            ShardStats::add(
+                &stats.net_black_holes,
+                p.black_holes_detected.saturating_sub(prev_holes),
+            );
+            prev_lost = p.lost_packets;
+            prev_sent = p.sent_packets;
+            prev_cong = p.congestion_events;
+            prev_holes = p.black_holes_detected;
+            stats
+                .net_rtt_us_max
+                .fetch_max(p.rtt.as_micros() as u64, Ordering::Relaxed);
+            stats
+                .net_mtu_last
+                .store(p.current_mtu as u64, Ordering::Relaxed);
         }
         // Drain to the newest — snapshots replace, never accumulate.
         let mut newest: Option<SnapMsg> = None;
@@ -1081,8 +1620,13 @@ async fn writer_task(
                 ShardStats::bump(&stats.snap_send_errors);
                 continue;
             }
+            // Counted on `Ok` and nowhere else: the socket accepting the
+            // datagram is the event, not our intent to hand it one. The
+            // clamp above has already refused the oversize case into
+            // `snap_send_errors` without touching this pair.
+            let n = msg.bytes().len();
             match connection.send_datagram(msg.bytes()) {
-                Ok(()) => {}
+                Ok(()) => ShardStats::add_msg(&stats.net_dg_out_count, &stats.net_dg_out_bytes, n),
                 Err(SendDatagramError::NotConnected) => break,
                 Err(_) => ShardStats::bump(&stats.snap_send_errors),
             }
@@ -1113,11 +1657,17 @@ async fn event_writer_task(
             return; // slot moved on; sim (or reader) already knows
         }
         while let Ok(msg) = ev_rx.pop() {
+            let n = FRAME_PREFIX_BYTES + msg.bytes().len();
             if write_frame(&mut send, msg.bytes()).await.is_err() {
                 ShardStats::bump(&stats.ev_send_errors);
                 slots.mark_leaving(slot, generation);
                 return;
             }
+            // The prefix is on the wire, so it is in the count. A frame
+            // that failed half-written is not: `write_all` reports the
+            // failure and not how far it got, and a guessed byte is worse
+            // than a missing one.
+            ShardStats::add_msg(&stats.net_stream_out_frames, &stats.net_stream_out_bytes, n);
         }
     }
 }
@@ -1125,6 +1675,13 @@ async fn event_writer_task(
 // ---------------------------------------------------------------------------
 // Stream framing (u16 LE length prefix per message)
 // ---------------------------------------------------------------------------
+
+/// The length prefix every stream frame carries, in bytes. Named because
+/// the byte counters have to include it — it is on the wire — and a `+ 2`
+/// at four call sites is a magic number that silently lies the day the
+/// prefix widens.
+pub const FRAME_PREFIX_BYTES: usize = 2;
+const _: () = assert!(FRAME_PREFIX_BYTES == core::mem::size_of::<u16>());
 
 /// One length-prefixed message off a stream: `(buffer, len)`, or None on
 /// EOF/oversize (the caller drops the session). The 64 B cap is the
@@ -1216,6 +1773,12 @@ pub async fn client_handshake(
     let len = protocol::encode_hello(
         &protocol::Hello {
             proto_ver: PROTO_VER,
+            // The bots are this build, so they state this build — which is
+            // also what makes them a real exercise of the floor: a shard with
+            // `min_client` above this release refuses its own bot fleet, and
+            // that is the correct answer rather than a special case.
+            ver: protocol::version::VER,
+            build: protocol::version::BUILD,
         },
         &mut buf,
     )
@@ -1231,7 +1794,10 @@ pub async fn client_handshake(
     match peek_kind(&frame[..n]) {
         Ok(protocol::KIND_REFUSE) => {
             let r = protocol::decode_refuse(&frame[..n]).map_err(|e| format!("refuse: {e:?}"))?;
-            return Err(format!("refused: code {}", r.code));
+            return Err(match protocol::refuse_text(r.code) {
+                Some(why) => format!("refused: {why}"),
+                None => format!("refused: code {}", r.code),
+            });
         }
         Ok(protocol::KIND_CHALLENGE) => {}
         other => return Err(format!("expected a challenge, got {other:?}")),
@@ -1256,9 +1822,17 @@ pub async fn client_handshake(
         protocol::Auth::default()
     } else {
         let mut text = [0u8; protocol::SIWE_MESSAGE_MAX];
+        // Checksummed, because that is what the shard recomputes and what a
+        // real launcher signs — see `auth::checksum_hex`. A lowercase address
+        // here would differ from the server's text by up to 40 characters and
+        // land as `WrongSigner`, which is the same trap the comment above
+        // describes one field over.
+        let checksummed = crate::auth::checksum_hex(&address);
+        let addr = core::str::from_utf8(&checksummed).map_err(|_| "address hex".to_string())?;
         let tlen = protocol::siwe_message(
             domain,
-            &address,
+            addr,
+            protocol::SLUG,
             &challenge.nonce,
             challenge.issued_at,
             &mut text,
@@ -1283,7 +1857,10 @@ pub async fn client_handshake(
         }
         Ok(protocol::KIND_REFUSE) => {
             let r = protocol::decode_refuse(&frame[..n]).map_err(|e| format!("refuse: {e:?}"))?;
-            Err(format!("refused: code {}", r.code))
+            Err(match protocol::refuse_text(r.code) {
+                Some(why) => format!("refused: {why}"),
+                None => format!("refused: code {}", r.code),
+            })
         }
         other => Err(format!("unexpected handshake reply: {other:?}")),
     }
@@ -1304,18 +1881,7 @@ pub async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), ()
 fn sim_thread(
     seed: u64,
     dev_spawn: Option<(f32, f32)>,
-    gather: sim_core::gather::GatherContent,
-    craft: sim_core::craft::CraftContent,
-    build: sim_core::build::BuildContent,
-    deploy: sim_core::deploy::DeployContent,
-    combat: sim_core::combat::CombatContent,
-    backpack: sim_core::backpack::BackpackContent,
-    survival: sim_core::survival::SurvivalContent,
-    cook: sim_core::oven::CookContent,
-    spawn_kit: sim_core::inventory::SpawnKit,
-    loot: sim_core::loot::LootContent,
-    mobs: sim_core::mob::MobContent,
-    catalog: ItemCatalog,
+    tables: SimTables,
     world_blob: Vec<u8>,
     world_idents: crate::worldfile::Identities,
     world_interval: u64,
@@ -1324,12 +1890,33 @@ fn sim_thread(
     mut save_tx: rtrb::Producer<SaveMsg>,
     mut world_tx: rtrb::Producer<WorldMsg>,
     mut world_done_rx: rtrb::Consumer<WorldDone>,
+    mut admin_tx: rtrb::Producer<crate::admin::AdminAct>,
+    mut log: crate::anomaly::Sink,
+    admins: crate::admin::Admins,
     slots: Arc<SlotTable>,
     stats: Arc<ShardStats>,
     shutdown: Arc<AtomicBool>,
 ) {
     let mut core = ShardCore::new(seed);
     core.world.dev_spawn = dev_spawn;
+    // Destructured rather than field-by-field off `tables`, so that adding a
+    // table and forgetting to install it is a compile error naming the field
+    // — which is the whole reason this is a struct (`SimTables`).
+    let SimTables {
+        gather,
+        craft,
+        build,
+        deploy,
+        combat,
+        backpack,
+        survival,
+        cook,
+        spawn_kit,
+        loot,
+        mobs,
+        research,
+        catalog,
+    } = tables;
     core.world.gather = gather;
     core.world.craft = craft;
     core.world.build = build;
@@ -1341,7 +1928,11 @@ fn sim_thread(
     core.world.spawn_kit = spawn_kit;
     core.world.loot = loot;
     core.world.mob = mobs;
+    core.world.research = research;
     core.catalog = catalog;
+    core.install_admins(admins);
+    // The counter sweep's memory, beside the sink it feeds (`anomaly.rs`).
+    let mut watch = crate::anomaly::Watch::new();
     // **The load, and this is the only place it may happen**: after the
     // content tables above are installed — the decoder range-checks every
     // row against them — and before the first tick, because a loaded world
@@ -1501,8 +2092,15 @@ fn sim_thread(
                 &stats,
             );
         }
-        // Tick + publish.
-        core.tick(&stats, |lane, slot, bytes| {
+        // Tick + publish. `Ops` is the tick's three side channels (admin
+        // v0) — the anomaly log, the kick ring, and `/save`'s flag.
+        let mut save_now = false;
+        let mut ops = crate::core::Ops {
+            log: &mut log,
+            admin_tx: Some(&mut admin_tx),
+            save_now: &mut save_now,
+        };
+        core.tick(&stats, &mut ops, |lane, slot, bytes| {
             let Some(link) = links[slot].as_mut() else {
                 return false;
             };
@@ -1530,6 +2128,24 @@ fn sim_thread(
             }
         });
         ShardStats::bump(&stats.ticks);
+        // `/save` asked for the world now rather than at the cadence. Set
+        // the deadline to this tick and let the cadence check above take
+        // it on the next pass — the admin verb moves the deadline, it does
+        // not perform the write, so there is one world-save path and not
+        // two (`take_world_save` is still the only writer).
+        if save_now {
+            next_world_save = core.world.tick;
+        }
+        // The anomaly log's counter sweep, once a second rather than once a
+        // tick: a counter that moved is interesting to the second, and the
+        // sweep is ~30 atomic loads (`anomaly::Watch`).
+        if core
+            .world
+            .tick
+            .is_multiple_of(sim_core::limits::TICK_HZ as u64)
+        {
+            watch.sweep(core.world.tick, &stats, &mut log);
+        }
         stats.current_tick.store(core.world.tick, Ordering::Relaxed);
         // Three gauges, mirrored off the state rather than accumulated here:
         // the eviction policy lives in `World::seat` and nothing on this
@@ -1601,6 +2217,46 @@ fn sim_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The admission-gate ordering and the sample period are asserted at
+    // COMPILE time beside their constants (`const _: () = assert!(…)`), not
+    // here. They were tests until clippy pointed out that an assertion over
+    // constants is one the compiler can make — which is the better gate:
+    // a wrong constant fails the build rather than a suite.
+
+    /// **The readback is the feature, so the gate is on the readback.**
+    ///
+    /// It deliberately does NOT assert we got 8 MiB: on an un-tuned box
+    /// (this one, and CI) `net.core.rmem_max` clamps the request to ~208 KiB
+    /// and that is the honest answer. What must hold is that both numbers
+    /// are recorded, so an operator can see the gap rather than trusting
+    /// that a `setsockopt` which cannot fail did something. A test that
+    /// demanded 8 MiB would fail on every box that has not run the sysctl,
+    /// which is the "a wall that cannot run is not a wall" trap in reverse:
+    /// a wall that only passes on a tuned box teaches people to skip it.
+    #[test]
+    fn the_socket_buffer_records_what_it_got_not_what_it_asked() {
+        let stats = ShardStats::default();
+        let addr: SocketAddr = "127.0.0.1:0".parse().expect("static addr");
+        let sock = bind_udp(addr, &stats).expect("bind loopback");
+        assert!(sock.local_addr().is_ok(), "socket must be bound");
+
+        let asked = ShardStats::get(&stats.net_rcvbuf_asked);
+        let got = ShardStats::get(&stats.net_rcvbuf_bytes);
+        assert_eq!(
+            asked, UDP_BUF_BYTES as u64,
+            "asked-for size must be recorded"
+        );
+        assert!(
+            got > 0,
+            "granted receive buffer must be read back, got {got}"
+        );
+        assert!(
+            ShardStats::get(&stats.net_sndbuf_asked) == UDP_BUF_BYTES as u64
+                && ShardStats::get(&stats.net_sndbuf_bytes) > 0,
+            "the send side records both numbers too"
+        );
+    }
 
     /// The chat limiter is the only wall between one client and everyone
     /// else's screen, so its shape is pinned: a burst of `CHAT_BURST`
@@ -1703,6 +2359,100 @@ mod tests {
         let bad = [KIND_CHAT as u8 | 0x08, 0xff, 0xff];
         accept_chat(&bad, &mut fresh, t0, &mut tx, &stats);
         assert_eq!(ShardStats::get(&stats.chat_bad), 1);
+    }
+
+    /// **The bytes a lane counts are the bytes that crossed it, not the
+    /// bytes it approved of** (NOW.md §0q item 4, "real bytes").
+    ///
+    /// The naive place to count an arriving datagram is beside
+    /// `input_dg_ok`, which is one line lower and reads identically at a
+    /// glance — and it would produce a bandwidth number that falls when a
+    /// shard is fed garbage, i.e. lowest under exactly the load the number
+    /// exists to describe. So the pair is bumped *first*, and this asserts
+    /// the two properties that says: a malformed datagram still costs its
+    /// bytes, and the arrival count reconciles with the three verdict
+    /// counters that partition it.
+    #[test]
+    fn the_lane_counts_the_bytes_that_arrived_not_the_ones_it_liked() {
+        use protocol::{encode_input, InputDatagram};
+        use sim_core::input::InputFrame;
+
+        let stats = ShardStats::default();
+        let (mut tx, _rx) = RingBuffer::<InputDatagram>::new(INPUT_RING_CAP);
+
+        let mut dg = InputDatagram::new(0, 0, 0);
+        dg.push(InputFrame::default()).expect("one frame fits");
+        let mut buf = [0u8; 256];
+        let good = encode_input(&dg, &mut buf).expect("encodes");
+        accept_input(&buf[..good], &mut tx, &stats);
+        assert_eq!(ShardStats::get(&stats.net_dg_in_count), 1);
+        assert_eq!(
+            ShardStats::get(&stats.net_dg_in_bytes),
+            good as u64,
+            "the counter must carry the datagram's real length, not a \
+             budget, a header size, or a count of frames"
+        );
+
+        // Line noise: `peek_kind` refuses it. It crossed the path anyway.
+        let junk = [0xEEu8; 37];
+        accept_input(&junk, &mut tx, &stats);
+        assert_eq!(ShardStats::get(&stats.input_dg_bad), 1);
+        assert_eq!(
+            ShardStats::get(&stats.net_dg_in_bytes),
+            good as u64 + junk.len() as u64,
+            "a datagram the decoder refused still cost its bytes"
+        );
+
+        // A forged in-layout value: decodes, refused, and still counted.
+        let mut dg = InputDatagram::new(0, 0, 0);
+        dg.push(InputFrame {
+            buttons: BTN_MASK | 0x10,
+            ..InputFrame::default()
+        })
+        .expect("one frame fits");
+        let forged = encode_input(&dg, &mut buf).expect("encodes");
+        accept_input(&buf[..forged], &mut tx, &stats);
+        assert_eq!(ShardStats::get(&stats.input_dg_forged), 1);
+
+        // The reconciliation: every arrival lands in exactly one verdict
+        // counter, so the arrival count is their sum. A byte counter that
+        // agrees with nothing else is a number nobody can check.
+        assert_eq!(ShardStats::get(&stats.net_dg_in_count), 3);
+        assert_eq!(
+            ShardStats::get(&stats.net_dg_in_count),
+            ShardStats::get(&stats.input_dg_ok)
+                + ShardStats::get(&stats.input_dg_bad)
+                + ShardStats::get(&stats.input_dg_forged),
+            "the arrival count must partition into the verdict counters"
+        );
+        assert_eq!(
+            ShardStats::get(&stats.net_dg_in_bytes),
+            (good + junk.len() + forged) as u64
+        );
+    }
+
+    /// The stream lanes count the **prefix** too, because it is on the wire.
+    ///
+    /// A frame counter that reported `payload.len()` would understate the
+    /// event lane by two bytes per frame — and the event lane is the one
+    /// that sends many small frames, so the error is largest where the lane
+    /// is busiest. Pinned against `write_frame`'s own arithmetic rather
+    /// than against the literal 2.
+    #[test]
+    fn a_stream_frame_costs_its_prefix() {
+        assert_eq!(
+            FRAME_PREFIX_BYTES,
+            (0u16).to_le_bytes().len(),
+            "the byte counters add the prefix write_frame actually makes"
+        );
+        let stats = ShardStats::default();
+        ShardStats::add_msg(
+            &stats.net_stream_out_frames,
+            &stats.net_stream_out_bytes,
+            FRAME_PREFIX_BYTES + 7,
+        );
+        assert_eq!(ShardStats::get(&stats.net_stream_out_frames), 1);
+        assert_eq!(ShardStats::get(&stats.net_stream_out_bytes), 9);
     }
 
     /// NOW.md §5b: the wire carries `buttons` as a full octet and the sim

@@ -103,6 +103,24 @@ pub struct ClientNetState {
     // --- input buffer (NETCODE.md §4) ---
     in_frames: [InputFrame; INPUT_BUFFER_CAP],
     in_valid: [bool; INPUT_BUFFER_CAP],
+    /// **The aim-staleness stamp** (`findings/lagcomp-design-20260818.md`
+    /// §7 slice 1): for each buffered frame, the snapshot ack the datagram
+    /// that first delivered it carried — the client saying *"the newest
+    /// world I had applied when I made this frame is server tick S"*, as
+    /// the low 16 bits of a server tick. `None` means "not a measurement":
+    /// the client had not yet acked any snapshot this shard actually sent,
+    /// so its ack field is the `(0, 0)` `ClientView::ack_fields` returns
+    /// before the first snapshot lands, and subtracting it from the tick
+    /// would report the shard's whole uptime as one player's lag.
+    ///
+    /// **Cap and overflow policy:** exactly `INPUT_BUFFER_CAP`, indexed
+    /// identically to `in_frames` and `in_valid`, so it inherits their
+    /// policy without adding one — a stamp cannot outlive its frame and a
+    /// burst past the cap drops both together (drop-oldest, `push_frame`).
+    /// It is a parallel array and not a field on `InputFrame` because
+    /// `InputFrame` is the wire's type: this is a fact about the datagram
+    /// the frame *arrived in*, which the frame itself does not carry.
+    in_view: [Option<u16>; INPUT_BUFFER_CAP],
     pub last_executed: u16,
     got_input: bool,
     starve_ticks: u32,
@@ -130,22 +148,52 @@ pub struct ClientNetState {
     pub catalog_cursor: usize,
     /// Next recipe row the recipe drip sends.
     pub recipes_cursor: usize,
+    /// Next research row the tech-tree drip sends (tech tree v0).
+    pub research_cursor: usize,
     /// Next piece-def row the build-menu drip sends.
     pub piece_defs_cursor: usize,
-    /// Placed-piece walk: next `world.pieces` entry index to send. A
-    /// decay removal mid-walk restarts it (the store swap-removes).
+    /// Placed-piece walk: entries **still owed**, not the next index to
+    /// send. The walk reads `world.pieces` from the tail down, so
+    /// `[0, piece_sync_cursor)` is what this client has not been sent and
+    /// zero means the walk is finished. A removal does not restart it —
+    /// the entry a swap-remove moves is always one already sent — but it
+    /// can leave this count past the end of a store that shrank under it,
+    /// so `drip_client` clamps it where it reads it (`core.rs` carries the
+    /// argument, `deploy_wire.rs` the gate).
     pub piece_sync_cursor: usize,
     /// The next piece batch carries the reset bit (fresh join or
     /// event-lane resync): the client clears its piece set first.
     pub piece_sync_reset: bool,
+    /// Where this client's piece walk is **aimed**, in centimetres — the
+    /// player position the walk was armed at, not where the player is now
+    /// (class-S interest v0, `interest.rs` carries the argument).
+    ///
+    /// Fixed for a walk's duration on purpose. The filter has to answer the
+    /// same way for every batch of one walk, or "this client has been sent
+    /// everything within R" is a claim about a moving circle and means
+    /// nothing. It is also what the `EV_PIECE_PLACED` broadcast tests
+    /// against, so a piece placed after the walk finished is covered by the
+    /// identical arithmetic rather than by a second opinion.
+    pub piece_anchor_cm: (i64, i64),
+    /// False until this client has a body to aim from — a connection whose
+    /// join command is still queued has no position, and a walk aimed at
+    /// the origin would stream the wrong corner of the island. The walk
+    /// holds (it is owed a reset batch either way) and the placement
+    /// broadcast passes unfiltered for that window, which is one tick.
+    pub piece_anchor_valid: bool,
     /// Next deployable-def row the deploy-menu drip sends.
     pub deploy_defs_cursor: usize,
-    /// Placed-deployable walk cursor, restart semantics like the pieces'.
+    /// Placed-deployable walk: the next `world.deploys` entry index to
+    /// send, read upward, and a decay removal mid-walk restarts it (the
+    /// store swap-removes). **Not** the piece walk's semantics any more —
+    /// that one reads downward and never restarts, and this one is left as
+    /// it was until its own placement seam is proven (`core.rs`).
     pub deploy_sync_cursor: usize,
     /// The next deploy batch carries the reset bit.
     pub deploy_sync_reset: bool,
-    /// Standing-backpack walk cursor, restart semantics like the pieces'
-    /// — a bag looted or despawned mid-walk swap-removes under it.
+    /// Standing-backpack walk cursor, restart semantics like the
+    /// deployables' — a bag looted or despawned mid-walk swap-removes
+    /// under it.
     pub bag_sync_cursor: usize,
     /// The next bag batch carries the reset bit.
     pub bag_sync_reset: bool,
@@ -208,6 +256,7 @@ impl ClientNetState {
             m_unsent: [0; MAX_MOBS],
             in_frames: [InputFrame::default(); INPUT_BUFFER_CAP],
             in_valid: [false; INPUT_BUFFER_CAP],
+            in_view: [None; INPUT_BUFFER_CAP],
             last_executed: 0,
             got_input: false,
             starve_ticks: 0,
@@ -221,9 +270,12 @@ impl ClientNetState {
             sync_reset: true,
             catalog_cursor: 0,
             recipes_cursor: 0,
+            research_cursor: 0,
             piece_defs_cursor: 0,
             piece_sync_cursor: 0,
             piece_sync_reset: true,
+            piece_anchor_cm: (0, 0),
+            piece_anchor_valid: false,
             deploy_defs_cursor: 0,
             deploy_sync_cursor: 0,
             deploy_sync_reset: true,
@@ -251,9 +303,14 @@ impl ClientNetState {
         self.sync_reset = true;
         self.catalog_cursor = 0;
         self.recipes_cursor = 0;
+        self.research_cursor = 0;
         self.piece_defs_cursor = 0;
         self.piece_sync_cursor = 0;
         self.piece_sync_reset = true;
+        // The anchor is dropped with the walk it aimed: a resync re-arms
+        // from where the player is *now*, which is the only position the
+        // batch it is about to send can honestly claim to cover.
+        self.piece_anchor_valid = false;
         self.deploy_defs_cursor = 0;
         self.deploy_sync_cursor = 0;
         self.deploy_sync_reset = true;
@@ -412,11 +469,31 @@ impl ClientNetState {
 
     // --- input buffer -------------------------------------------------
 
-    /// Buffer one frame by seq. The first frame ever anchors the seq
+    /// Buffer one frame by seq, with the snapshot ack of the datagram it
+    /// rode in on (`in_view`; `None` when the client has not yet acked a
+    /// snapshot this shard sent). The first frame ever anchors the seq
     /// window; duplicates and stale seqs drop; a burst beyond the buffer
     /// cap skips the window forward (drop-oldest — the client got ahead of
     /// a server stall, and old inputs are the wrong thing to honor).
-    pub fn push_frame(&mut self, f: InputFrame) {
+    ///
+    /// **The stamp is keep-first and that had to be written, not
+    /// inherited.** `findings/lagcomp-design-20260818.md` §2.2 says
+    /// `push_frame` "drops a frame it has already seen", so the stamp
+    /// would be the first datagram's for free. It does not: the guard
+    /// below drops a frame already *executed* or ancient, and a frame that
+    /// is buffered-but-unexecuted is **overwritten** by the retransmit
+    /// tail of the next datagram. Left alone, the stamp would therefore
+    /// track the newest datagram to mention the frame — a fresher ack, so
+    /// a smaller `T − S`, so a systematic *understatement* of staleness on
+    /// every frame that waits a tick in the buffer, which is all of them
+    /// under the consume throttle. Keeping the first arrival makes the
+    /// stamp say what the client knew when it made the frame. The one
+    /// place it is still generous is a frame whose original datagram was
+    /// lost and which only ever arrives inside a retransmit tail: that one
+    /// is stamped too new and measures too little, which is the safe
+    /// direction (it under-favours the shooter on inputs that were already
+    /// lost) and is the half of §2.2's claim that survives.
+    pub fn push_frame(&mut self, f: InputFrame, view: Option<u16>) {
         if !self.got_input {
             self.got_input = true;
             self.last_executed = f.seq.wrapping_sub(1);
@@ -429,8 +506,14 @@ impl ClientNetState {
             self.last_executed = f.seq.wrapping_sub(INPUT_BUFFER_CAP as u16);
         }
         let slot = f.seq as usize % INPUT_BUFFER_CAP;
+        // A repeat of a seq already sitting in this slot keeps the stamp it
+        // arrived with; a different seq taking the slot takes the new one.
+        let repeat = self.in_valid[slot] && self.in_frames[slot].seq == f.seq;
         self.in_frames[slot] = f;
         self.in_valid[slot] = true;
+        if !repeat {
+            self.in_view[slot] = view;
+        }
     }
 
     fn buffered_depth(&self) -> usize {
@@ -446,13 +529,13 @@ impl ClientNetState {
         depth
     }
 
-    fn take_next(&mut self) -> Option<InputFrame> {
+    fn take_next(&mut self) -> Option<(InputFrame, Option<u16>)> {
         let want = self.last_executed.wrapping_add(1);
         let slot = want as usize % INPUT_BUFFER_CAP;
         if self.in_valid[slot] && self.in_frames[slot].seq == want {
             self.in_valid[slot] = false;
             self.last_executed = want;
-            return Some(self.in_frames[slot]);
+            return Some((self.in_frames[slot], self.in_view[slot].take()));
         }
         None
     }
@@ -480,8 +563,17 @@ impl ClientNetState {
     /// behind it jumps — 10-frame redundancy means a gap is a ≥ 10-datagram
     /// loss burst, not one missing packet. Returns the frame to execute
     /// this tick (`None` ⇒ reuse last, which the sim does by keeping
-    /// `Player::frame`) and refreshes the nudge.
-    pub fn consume_input(&mut self) -> Option<InputFrame> {
+    /// `Player::frame`) **with its aim-staleness stamp** (`in_view`), and
+    /// refreshes the nudge.
+    ///
+    /// The stamp rides the return rather than a field the caller reads
+    /// afterwards, because a second reader of a value handed over once is
+    /// the destructive-read defect `CLAUDE.md` keeps a trap entry for. Two
+    /// frames consumed in one tick (the throttle) report the stamp of the
+    /// one that **executes**, which is the newer of the two — the older
+    /// frame's aim never reaches the world, so measuring it would price a
+    /// swing nobody swung.
+    pub fn consume_input(&mut self) -> Option<(InputFrame, Option<u16>)> {
         if !self.got_input {
             self.nudge = Nudge::Ok;
             return None;
@@ -491,7 +583,7 @@ impl ClientNetState {
         } else {
             1
         };
-        let mut executed = None;
+        let mut executed: Option<(InputFrame, Option<u16>)> = None;
         for _ in 0..to_consume {
             if let Some(f) = self.take_next() {
                 executed = Some(f);
@@ -542,11 +634,11 @@ mod tests {
     fn input_buffer_executes_in_order_and_dedupes() {
         let mut c = ClientNetState::new();
         c.reset(1);
-        c.push_frame(frame(100));
-        c.push_frame(frame(101));
-        c.push_frame(frame(100)); // dup after anchor: stale, dropped
-        assert_eq!(c.consume_input().unwrap().seq, 100);
-        assert_eq!(c.consume_input().unwrap().seq, 101);
+        c.push_frame(frame(100), None);
+        c.push_frame(frame(101), None);
+        c.push_frame(frame(100), None); // dup after anchor: stale, dropped
+        assert_eq!(c.consume_input().unwrap().0.seq, 100);
+        assert_eq!(c.consume_input().unwrap().0.seq, 101);
         assert!(c.consume_input().is_none());
         assert_eq!(c.nudge, Nudge::Faster);
     }
@@ -556,10 +648,10 @@ mod tests {
         let mut c = ClientNetState::new();
         c.reset(1);
         for s in 0..10u16 {
-            c.push_frame(frame(s));
+            c.push_frame(frame(s), None);
         }
         // depth 10 > 6: two consumed, the newer executes.
-        assert_eq!(c.consume_input().unwrap().seq, 1);
+        assert_eq!(c.consume_input().unwrap().0.seq, 1);
         assert_eq!(c.nudge, Nudge::Slower);
     }
 
@@ -567,11 +659,11 @@ mod tests {
     fn gap_jumps_to_oldest_ahead() {
         let mut c = ClientNetState::new();
         c.reset(1);
-        c.push_frame(frame(5));
-        assert_eq!(c.consume_input().unwrap().seq, 5);
+        c.push_frame(frame(5), None);
+        assert_eq!(c.consume_input().unwrap().0.seq, 5);
         // 6..=9 lost forever; 10 arrives.
-        c.push_frame(frame(10));
-        assert_eq!(c.consume_input().unwrap().seq, 10);
+        c.push_frame(frame(10), None);
+        assert_eq!(c.consume_input().unwrap().0.seq, 10);
         assert_eq!(c.last_executed, 10);
     }
 

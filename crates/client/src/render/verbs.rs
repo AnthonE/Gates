@@ -1,4 +1,4 @@
-//! The in-world keys: what the crosshair is on, and what `E`, `G` and `H` do
+//! The in-world keys: what the crosshair is on, and what `E`, `J` and `H` do
 //! about it.
 //!
 //! **Twelve of the wire's sixteen action verbs had no key in this client.**
@@ -25,7 +25,7 @@
 //! world that rarely moves between the two.
 
 use bevy::prelude::*;
-use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF};
+use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WORLD};
 
 use crate::look::yaw_u16;
 use crate::ui::interact::{self, Aim, Pick, SwingAim, SwingPick, Verb};
@@ -77,8 +77,13 @@ pub struct Near(pub Option<Target>);
 /// server declines at the edge of the aim radius — the quantize-both-sides
 /// law (`CLAUDE.md`) applied to aiming, which is exactly what the browser's
 /// `aimDir` does for the same reason.
+/// `NonSendMut` rather than `NonSend` for one reason: the swing pick reads
+/// the island through `ClientCore`'s own `SlotCache` — the predictor's, warm
+/// with the very cells this frame's movement step just resolved — and a memo
+/// is written to. It costs no extra scheduling: `keys` below already takes
+/// the session mutably, so these two were serialized before this line changed.
 pub fn resolve(
-    net: NonSend<Net>,
+    mut net: NonSendMut<Net>,
     look: Res<Look>,
     mut aimed: ResMut<Aimed>,
     mut near: ResMut<Near>,
@@ -86,7 +91,7 @@ pub fn resolve(
     mut in_weak: ResMut<InWeak>,
     world: Option<Res<crate::render::WorldId>>,
 ) {
-    let core = &net.session.core;
+    let core = &mut net.session.core;
     let [x, y, z] = core.predict.render_position();
     let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
     aimed.0 = interact::resolve(
@@ -99,38 +104,72 @@ pub fn resolve(
     // The one field the resolver cannot fill: it is handed the deploy
     // records, and whether a fire is burning is deliberately not on one
     // (`client-core/core.rs`). Stamped here, where the core is in hand.
-    aimed.0.lit = aimed.0.verb == interact::Verb::Fire
-        && core.ovens().is_lit(aimed.0.cx, aimed.0.cz, aimed.0.level);
+    aimed.0.lit = matches!(
+        aimed.0.verb,
+        interact::Verb::Fire | interact::Verb::Recycler
+    ) && core.ovens().is_lit(aimed.0.cx, aimed.0.cz, aimed.0.level);
+    // The weak-spot chase, read before the island borrows the core mutably.
+    // Both are `Copy` scalars, so this is a read and not a hold.
+    let (mark_cell, mark8) = (core.mark_cell, core.mark8);
     // The scatter pick needs the island, which does not exist until the
     // welcome names a seed — so this is `Option` and stands down rather than
     // guessing one. `render::world_placed`'s discipline, applied to a verb.
-    swung.0 = match world.as_deref() {
-        Some(w) => interact::resolve_swing(
-            SwingAim { x, y, z, fx, fz },
-            interact::Island {
-                seed: w.seed,
-                table: &w.table,
-                haven: &w.haven,
-                harvested: &core.harvested,
-            },
-        ),
-        None => SwingPick::default(),
-    };
-    // The weak sector, but only for the node actually aimed at: the chase is
-    // per-node and the server restarts it when the player switches targets,
-    // so a mark for the tree behind you says nothing about this one.
-    in_weak.0 = match world.as_deref() {
-        Some(w) if interact::mark_is_for(core.mark_cell, &swung.0) => {
-            let s = sim_core::terrain::scatter(
-                w.seed,
-                &w.table,
-                &w.haven,
-                swung.0.cx as i32,
-                swung.0.cz as i32,
-            );
-            interact::in_weak_sector(x, z, s.x, s.z, core.mark8)
+    //
+    // The island comes from `ClientCore::island` rather than from `WorldId`,
+    // and the two are the same triple derived twice from the same seed. The
+    // core's copy is the one that owns the cache, and handing the cache a
+    // *second* seed would flush it every frame — see that method's header.
+    // `w` is still what says a world exists at all.
+    (swung.0, in_weak.0) = match world.as_deref() {
+        Some(_) => {
+            let (seed, occ) = core.island();
+            let mut island = interact::Island {
+                seed,
+                table: occ.table,
+                haven: occ.haven,
+                harvested: occ.harvested,
+                cache: occ.cache,
+            };
+            let pick = interact::resolve_swing(SwingAim { x, y, z, fx, fz }, &mut island);
+            // The open pick, on the same island borrow and the same aim.
+            // Folded into `aimed` rather than kept beside it, because to
+            // the player there is one `E` and one centre prompt — a
+            // second pick with its own key would teach two verbs for one
+            // gesture. It loses every tie to a deployable on purpose: a
+            // box placed against a waystation cache is a thing a player
+            // built and meant, and the authored container is not going
+            // anywhere.
+            if aimed.0.is_none() {
+                let open = interact::resolve_open(SwingAim { x, y, z, fx, fz }, &mut island);
+                if open.occupant != 0 {
+                    aimed.0 = interact::Pick {
+                        verb: interact::Verb::Crate,
+                        cx: open.cx,
+                        cz: open.cz,
+                        // The wire handle is the cell key — the same value
+                        // `EV_SLOT_HARVESTED` carries for this cell, and
+                        // the same one `worldcont::index_of` resolves.
+                        handle: sim_core::gather::cell_key(open.cx, open.cz),
+                        d2: open.d2,
+                        aimed: true,
+                        ..Default::default()
+                    };
+                }
+            }
+            // The weak sector, but only for the node actually aimed at: the
+            // chase is per-node and the server restarts it when the player
+            // switches targets, so a mark for the tree behind you says
+            // nothing about this one. The cell was just resolved by the scan
+            // above, so this read is a cache hit by construction.
+            let weak = if interact::mark_is_for(mark_cell, &pick) {
+                let s = island.slot(pick.cx as i32, pick.cz as i32);
+                interact::in_weak_sector(x, z, s.x, s.z, mark8)
+            } else {
+                false
+            };
+            (pick, weak)
         }
-        _ => false,
+        None => (SwingPick::default(), false),
     };
     near.0 = structure::nearest(
         (x, z),
@@ -143,7 +182,7 @@ pub fn resolve(
     );
 }
 
-/// `E`, `G`, `H`.
+/// `E`, `J`, `H`.
 ///
 /// Runs in `Screen::InWorld` only and stands down while a panel owns the
 /// pointer, for `input::gather`'s reason: every verb here spends something —
@@ -232,19 +271,25 @@ pub fn keys(
     if keys.just_pressed(KeyCode::Backspace) {
         demolish_near(&net, &near.0, &mut toast);
     }
-    if keys.just_pressed(KeyCode::KeyG) {
-        // Eat what is in the selected hotbar slot. `G` rather than a
+    if keys.just_pressed(KeyCode::KeyJ) {
+        // Eat what is in the selected hotbar slot. A key rather than a
         // right-click because the swing arm is already spoken for, and a
         // consume that shared it would fire every time you chopped a tree
         // holding berries. Whether the slot holds food is the sim's verdict,
         // announced back either way (`survival.rs`).
+        //
+        // **`J`, and it was `G` until 2026-08-16**, when `G` became the map
+        // (`DECISIONS.md`, the control scheme). What the old binding was
+        // chosen for survives the move intact: the reason was never the
+        // letter `G`, it was that eat and drink sit under one hand as a pair,
+        // and `J`–`H` are adjacent exactly as `G`–`H` were.
         let slot = net.sel;
         send(&net, &mut toast, "eat", |buf| {
             protocol::encode_action_consume(slot, buf)
         });
     }
     if keys.just_pressed(KeyCode::KeyH) {
-        // Drink from the water at your feet. `H` because `G` is the eat and
+        // Drink from the water at your feet. `H` because `J` is the eat and
         // the two are one gesture from the player's side — adjacent keys, one
         // hand. Payload-free: the sim reads the heightfield under the body,
         // so there is nothing to aim and no reach for the client to guess.
@@ -305,16 +350,79 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
                 open_panel(ui);
             }
         }
+        Verb::Recycler => {
+            // `E` opens it for the fire's reason exactly — the panel is
+            // where the salvage goes — and by the same action, because a
+            // recycler's contents ARE a box's (`deploy::holds_items`).
+            // The switch is `C` below.
+            let handle = pick.handle;
+            if send(net, toast, "open", |buf| {
+                protocol::encode_action_container(CONT_BOX, handle, buf)
+            }) {
+                open_panel(ui);
+            }
+        }
+        Verb::Research => {
+            // The one `E` that spends what is in your hand rather than
+            // opening what is at the address. The slot is the hotbar
+            // selection — the same `net.sel` the eat verb uses — because
+            // "the held item" is the only thing the prompt can honestly
+            // name, and the sim refuses a slot that holds the wrong thing
+            // with a sentence of its own.
+            let slot = net.sel;
+            send(net, toast, "research", |buf| {
+                protocol::encode_action_research(slot, buf)
+            });
+        }
         Verb::Hearth => {
             let (cx, cz, level) = (pick.cx, pick.cz, pick.level);
             send(net, toast, "feed", |buf| {
                 protocol::encode_action_feed(cx, cz, level, buf)
             });
         }
+        // A world container opens exactly the way a box does — the same
+        // `ACT_CONTAINER`, the same panel — and the only difference is
+        // which kind travels in two bits. That is the whole reason it was
+        // built as a container kind rather than as a verb of its own:
+        // there is no second screen and no second move path to keep in
+        // step with this one.
+        //
+        // Unlike a box, the open also reaches the sim, because a crate's
+        // contents do not exist until this arrives (`server/core.rs` on
+        // the `ActionMsg::Container` split). Nothing is predicted: the
+        // roll is the server's and the client has no seed to guess it
+        // with, so the panel opens on the `ContSync` that follows rather
+        // than on the keypress.
+        Verb::Crate => {
+            let handle = pick.handle;
+            if send(net, toast, "open crate", |buf| {
+                protocol::encode_action_container(CONT_WORLD, handle, buf)
+            }) {
+                open_panel(ui);
+            }
+        }
+        // The bench's `E` opens the tree and sends nothing (tech tree
+        // v0): the panel is drawn from tables already dripped, and the
+        // wire is only touched when a node is actually bought
+        // (`panels::tech::clicks`). No `open_panel` — that helper opens
+        // the INVENTORY, and this is the one verb that opens something
+        // else.
+        Verb::TechTree => {
+            if let Some(ui) = ui {
+                if ui.panel == Panel::None {
+                    ui.panel = Panel::Tech;
+                    // The header's LEVEL badge is the bench actually under
+                    // the crosshair — display only; the sim re-derives the
+                    // demanded rung per node.
+                    ui.tech_tier = sim_core::deploy::bench_tier(pick.arch).max(1);
+                    ui.dirty = true;
+                }
+            }
+        }
         // The honest answer, and the one a chain of `if`s could not give: the
         // browser's old dispatch reported "no hearth in reach" on an empty
         // island because the hearth happened to be the last link tried.
-        Verb::None => toast.say("nothing in reach"),
+        Verb::None => toast.warn("nothing in reach"),
     }
 }
 
@@ -329,8 +437,12 @@ fn use_aimed(net: &mut Net, pick: &Pick, toast: &mut Toast, ui: Option<&mut Ui>)
 /// on the press and taken back a tick later is worse than a flame that
 /// arrives a tick late.
 fn light_aimed(net: &Net, pick: &Pick, toast: &mut Toast) {
-    if pick.verb != Verb::Fire {
-        toast.say("no fire in reach");
+    // A recycler takes the same key and the same action: `ACT_USE` carries
+    // an address, and `oven::toggle` switches whatever converter stands
+    // there. The refusal that separates them is the sim's — a fire with
+    // nothing to burn answers `REFUSE_D_FUEL` and a recycler never does.
+    if !matches!(pick.verb, Verb::Fire | Verb::Recycler) {
+        toast.warn("nothing to switch in reach");
         return;
     }
     let (cx, cz, level, loc) = (pick.cx, pick.cz, pick.level, pick.loc);
@@ -386,14 +498,14 @@ fn access_aimed(net: &Net, pick: &Pick, pad: &mut Pad, toast: &mut Toast, leave:
     }
     match lock_target(pick) {
         LockTarget::Pad(cx, cz, level, loc) => pad.0.open(cx, cz, level, loc),
-        LockTarget::Bare => toast.say(format!(
+        LockTarget::Bare => toast.warn(format!(
             "no lock on that {} — deploy one",
             // "DOOR"/"BOX", said the toast's way. The label is never
             // empty here: a bare `lock_target` means the pick resolved a
             // real lockable archetype, and every verb of one has a noun.
             pick.verb.label().to_lowercase()
         )),
-        LockTarget::None => toast.say("nothing to authorize in reach"),
+        LockTarget::None => toast.warn("nothing to authorize in reach"),
     }
 }
 
@@ -463,7 +575,7 @@ fn keypad_keys(keys: &ButtonInput<KeyCode>, net: &Net, pad: &mut Pad, toast: &mu
         Needs::Code => match pad.0.code() {
             Some(c) => c,
             None => {
-                toast.say("four digits");
+                toast.warn("four digits");
                 return;
             }
         },
@@ -529,7 +641,7 @@ pub fn hammer_fire(net: &Net, near: &Option<Target>, seg: usize, toast: &mut Toa
                 protocol::encode_action_repair(deploy, cx, cz, level, loc, buf)
             });
         }
-        Act::Say(s) => toast.say(s),
+        Act::Say(s) => toast.warn(s),
     }
 }
 
@@ -546,7 +658,7 @@ pub fn hammer_fire(net: &Net, near: &Option<Target>, seg: usize, toast: &mut Toa
 /// it stopped being.
 fn demolish_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
     let Some(t) = near else {
-        toast.say("nothing to take down in reach");
+        toast.warn("nothing to take down in reach");
         return;
     };
     let (deploy, cx, cz, level, loc) = (t.store == Store::Deploy, t.cx, t.cz, t.level, t.loc);
@@ -563,18 +675,18 @@ fn demolish_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
 /// in front of me" is genuinely ambiguous at exactly one kind of spot.
 fn upgrade_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
     let Some(t) = near else {
-        toast.say("nothing to upgrade in reach");
+        toast.warn("nothing to upgrade in reach");
         return;
     };
     if t.store != Store::Piece {
-        toast.say("that is not a building piece");
+        toast.warn("that is not a building piece");
         return;
     }
     let core = &net.session.core;
     let Some(material) = structure::next_material(&core.piece_defs, core.piece_defs_have, t.row)
     else {
         // `REFUSE_B_TIER`'s own sentence, said before the round trip.
-        toast.say("nothing to upgrade into");
+        toast.warn("nothing to upgrade into");
         return;
     };
     let (cx, cz, level, loc) = (t.cx, t.cz, t.level, t.loc);
@@ -586,14 +698,14 @@ fn upgrade_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
 /// `R` — mend the nearest structure, either store.
 fn repair_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
     let Some(t) = near else {
-        toast.say("nothing to repair in reach");
+        toast.warn("nothing to repair in reach");
         return;
     };
     if !t.damaged() && t.hp_max > 0 {
         // `REFUSE_B_INTACT`'s sentence, said before the round trip. Guarded
         // on a known maximum: an undripped row reports 0 and the server is
         // the one that knows.
-        toast.say("not damaged");
+        toast.warn("not damaged");
         return;
     }
     let (deploy, cx, cz, level, loc) = (t.store.is_deploy(), t.cx, t.cz, t.level, t.loc);
@@ -615,7 +727,7 @@ fn repair_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
 /// disagrees with the charge.
 fn throw_near(net: &Net, near: &Option<Target>, toast: &mut Toast) {
     let Some(t) = near else {
-        toast.say("nothing to plant one on");
+        toast.warn("nothing to plant one on");
         return;
     };
     let (deploy, cx, cz, level, loc) = (t.store.is_deploy(), t.cx, t.cz, t.level, t.loc);
@@ -674,12 +786,12 @@ fn send(
         Ok(len) => match net.session.send_action(&buf[..len]) {
             Ok(()) => true,
             Err(e) => {
-                toast.say(e.to_string());
+                toast.warn(e.to_string());
                 false
             }
         },
         Err(e) => {
-            toast.say(format!("{what} would not encode ({e:?})"));
+            toast.warn(format!("{what} would not encode ({e:?})"));
             false
         }
     }

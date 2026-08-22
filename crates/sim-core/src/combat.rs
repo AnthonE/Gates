@@ -34,12 +34,24 @@
 //! **What v0 deliberately does not do**, all of it registered in
 //! `DECISIONS.md` §open ("melee combat v0" and "piece damage v0"): no
 //! headshots (aim is planar until M2's rewound raycasts, so there is no
-//! head to hit), no armor reduction, no per-weapon cadence (every swing
-//! rides gather's one interval, which is the melee rows' own rate), no
-//! ranged of any kind (`weapons.toml` prices a revolver and `bake_combat`
-//! still drops bow and firearm rows — a projectile the sim could read but
-//! not fire is a number that looks armed and is not), and no corpse:
-//! death drops what you carried into a backpack where you fell.
+//! head to hit), no per-weapon cadence (every swing rides gather's one
+//! interval, which is the melee rows' own rate), and no corpse: death drops what you carried into a
+//! backpack where you fell. That last clause is about the SIM and stays
+//! true — there is no lootable body entity, only a bag — while the client
+//! has drawn a fallen one since wire v48 (`render/anim.rs` `Clip::Death`).
+//! The two do not disagree: the drawn body is not a container and not a
+//! target, which is exactly why it was safe to lay it down.
+//!
+//! ⚠ **"No ranged of any kind" stood here after it stopped being true**,
+//! which is `CLAUDE.md`'s dead-citation trap in the present tense: bows
+//! are baked (`content/bake.rs` — `WeaponKind::Bow` takes `bake_ranged`
+//! and the `[[ammo]]` rows go first) and fired (`ranged.rs`), so an arrow
+//! had killed a player well before that line was re-read on 2026-08-18.
+//! **The live half of it died a day later.** It said `bake_combat` still
+//! dropped the firearm rows, and that was true until 2026-08-19: the
+//! revolver now bakes through the same `bake_ranged` a bow does and fires
+//! through `ranged::hitscan`, which is `ranged::step` with the flight
+//! deleted. Nothing in `weapons.toml` is priced and unarmed any more.
 //!
 //! Three clauses that used to stand here have since landed and are named
 //! rather than deleted, because each is a place this module's shape was
@@ -50,6 +62,18 @@
 //! fifteen wire versions, which is the gap that made the raid ratio in
 //! `balance.toml` a ratio of nothing).
 //!
+//! ⚠ **"No armor reduction" stood in that list until 2026-08-19 and does
+//! not any more.** `content/armor.toml` had been priced, validated, hashed
+//! and balance-anchored since M1 with nothing in this crate reading a row
+//! (`reference/ARMOR.md` §9.1 was the audit); `bake_combat` installs the
+//! table now and `hurt` reads it, so a burlap shirt turns a rock's five
+//! hits into six. What is still *not* here is named rather than implied:
+//! no damage types (one scalar — `ArmorDef`'s doc has the argument and its
+//! source), no hit areas (the set is one number, `worn_pct`), no condition
+//! on a worn piece, no `move_penalty_pct` consumer, and — the one a player
+//! notices — **no way to put armor on**, because that is `CONT_WEAR` and a
+//! wire bump (`findings/armor-design-20260818.md` §4).
+//!
 //! The throwable's damage does not flow through this module's swing arm at
 //! all, and that is the design rather than an omission: a charge resolves
 //! on the tick its fuse runs out, not on the tick a button was pressed, so
@@ -58,14 +82,16 @@
 //! allowance and both land through `deploy::damage_piece`.
 
 use crate::build::{
-    anchor, BuildContent, Pieces, BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE,
+    anchor, BuildContent, Pieces, BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
     LOC_RISER,
 };
 use crate::collide::{col_base_y, CAPSULE_HEIGHT_M};
 use crate::deploy::{damage_deploy, damage_piece, DeployContent, Deploys};
 use crate::fmath::fabs;
 use crate::gather::{CONE_COS, DY_MAX_M, NO_ITEM, POINT_BLANK_M2};
-use crate::limits::{MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS, MAX_PLAYERS};
+use crate::limits::{
+    MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS, MAX_PLAYERS, MAX_WEAPON_AMMO, WEAR_SLOTS,
+};
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT};
 use crate::yaw_lut::yaw_dir;
@@ -97,15 +123,18 @@ pub struct ThrowDef {
     /// to hurt. Zero is a legal row and means a charge that breaks walls
     /// and not people — the counted fixtures below rely on it.
     ///
-    /// **Carried, not applied**: no sim code reads it, so a charge hurts
-    /// nobody today.
+    /// **Applied since the blast grew a falloff**: `charge.rs:521` gates on
+    /// it (a zero row hurts nobody and skips the body scan outright) and
+    /// `:532` scales it by distance. This line said *"carried, not applied:
+    /// no sim code reads it"* through two judges who each checked.
     pub damage: u16,
     /// Damage the blast takes off the piece or deployable it was planted
     /// on — the same `structure` column the melee rows read, and the
     /// number `balance.toml`'s raid ratio divides wall hp by. It arrives
-    /// whole at the planted address, and today that is the ONLY address it
-    /// reaches: no neighbour takes anything, because nothing applies a
-    /// falloff yet.
+    /// whole at the planted address and **falls off linearly to zero at
+    /// `blast_cm`** for everything else in the volume (`charge::falloff`,
+    /// `:347`). This line said the planted address was the only one it
+    /// reached, which stopped being true when the falloff landed.
     pub structure: u16,
     /// Ticks between planting and the blast, baked from `fuse_s` against
     /// `TICK_HZ` so the sim never divides a content number itself. `u16`
@@ -118,15 +147,17 @@ pub struct ThrowDef {
     pub reach_cm: u16,
     /// Blast radius, `blast_m × 100`.
     ///
-    /// **Nothing reads this.** `charge.rs` has `place` and `tick_fuses`
-    /// and no falloff, so the radius is carried from content to the sim
-    /// and stops. It is landed ahead of its consumer deliberately: the
-    /// content boundary (schema · validate · canon · bake) is the half
-    /// that has gates, and the arithmetic is the half that does not exist.
-    /// When a falloff lands, both damage columns are meant to fall off
-    /// linearly to zero here and this becomes its divisor — which is why
-    /// `validate` and the bake already refuse a zero rather than leaving
-    /// the sim to guard one every tick.
+    /// **It is the falloff's divisor**, which is what it was landed ahead of:
+    /// `charge::falloff` (`:347-351`) scales both damage columns linearly to
+    /// zero at this radius, `:436` reads it off the live charge, and
+    /// `:277-279` copies all three off the row at plant time so a table swap
+    /// cannot change what an armed charge does. `validate` and the bake still
+    /// refuse a zero, which is why the sim does not guard one every tick.
+    ///
+    /// This line said *"nothing reads this"* through two judges. The
+    /// mechanism worth remembering is the one `CLAUDE.md` names: a doc that
+    /// claims a field is inert is read as *this is safe to change*, and
+    /// nothing in CI compares a doc comment to a call site.
     pub blast_cm: u16,
 }
 
@@ -139,29 +170,135 @@ pub struct ThrowDef {
 /// list) applied to a projectile: the sim integrates in exactly the integers
 /// it was handed, so an arrow's path has no rounding to accumulate and no
 /// per-tick float to drift between native and wasm.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RangedDef {
     /// Body damage on a hit. No falloff — `content/weapons.toml` has no
     /// falloff curve to read (CONTENT.md §1 describes one; the schema has
     /// never had the field).
     pub damage: u16,
-    /// Muzzle speed in **millimetres per tick**, from `ballistic.speed_mps`.
-    pub speed_mmpt: u16,
-    /// Gravity in **millimetres per tick²**, from `ballistic.drop_mps2`,
-    /// subtracted from the vertical velocity once per tick.
-    pub drop_mmpt2: u16,
-    /// Item index of the round this weapon spends, one per shot. The bake
-    /// resolves `weapons.toml`'s `ammo` id through the same sorted-rank
-    /// mapping every other item index uses.
-    pub ammo: u16,
+    /// Item indices of the rounds this weapon can spend, in **preference
+    /// order**, `NO_ITEM`-padded. The sim walks the list and spends the
+    /// first round the shooter is actually carrying.
+    ///
+    /// A list because the reference game's bow is a `BaseProjectile` that
+    /// can `SwitchAmmoTo` (`reference/PROJECTILES.md` §1) — one weapon,
+    /// several rounds. No switch verb exists here, so order is the whole
+    /// of the policy.
+    pub ammo: [u16; MAX_WEAPON_AMMO],
     /// Ticks between shots, from `rate_per_min`. A bow does not borrow the
     /// melee cadence: `SWING_INTERVAL_TICKS` is one shared number and a
     /// 30/min bow is not a 47/min club.
     pub rate_ticks: u16,
-    /// Ticks of flight before the arrow expires unspent, derived at bake
-    /// from `range_m` and the muzzle speed and clamped to
-    /// `MAX_ARROW_LIFE_TICKS`.
-    pub life_ticks: u16,
+    /// **Whether the shot resolves on the tick the trigger is pulled.**
+    /// `false` is a bow: the launch stands an `Arrow` up and the flight
+    /// resolves it over the following ticks. `true` is a firearm: there is
+    /// no projectile, and `ranged::hitscan` traces the whole reach in one
+    /// pass after the player loop.
+    ///
+    /// It is a field rather than an inference, and the inference was
+    /// available: a bow's rounds carry `[[ammo]]` ballistics and a
+    /// firearm's do not (`content/weapons.toml`'s header states exactly
+    /// that contract), so `ammo_def` returning `None` for every listed
+    /// round would have said the same thing. The trouble is what it says
+    /// when content is wrong — a bow whose arrow lost its `[[ammo]]` row
+    /// would quietly become a hitscan rifle rather than fail to load.
+    /// `content/validate.rs` refuses that pairing at boot and this field
+    /// records the answer once, at bake, so the sim never re-derives it.
+    pub hitscan: bool,
+    /// The weapon's reach in **millimetres**, from `range_m`.
+    ///
+    /// Flight time used to be baked here as `life_ticks` and cannot be any
+    /// more: with ballistics on the round (§9.3), one bow's fast arrow and
+    /// its slow arrow cross the same range in different numbers of ticks.
+    /// The sim divides this by the chosen round's speed at the moment of
+    /// the shot — integer division, once per shot, never per tick.
+    pub range_mm: u32,
+}
+
+/// **Hand-written rather than derived, and the reason is the ammo array.**
+/// `#[derive(Default)]` fills a `[u16; N]` with zeros, and zero is a valid
+/// item index — item 0 in the sorted-rank mapping is a real item — so a
+/// derived default would describe a weapon that fires four copies of
+/// whatever sorts first. The empty round slot is `NO_ITEM`, not 0.
+///
+/// Nothing constructs one this way today (`CombatContent::EMPTY`, the bake
+/// and the test fixture all fill every field), and `held_ranged` filters on
+/// `damage > 0` so an unarmed row is never handed out regardless. This
+/// exists so that stays true by construction rather than by coincidence.
+impl Default for RangedDef {
+    fn default() -> Self {
+        Self {
+            damage: 0,
+            ammo: [NO_ITEM; MAX_WEAPON_AMMO],
+            rate_ticks: 0,
+            hitscan: false,
+            range_mm: 0,
+        }
+    }
+}
+
+/// One round's ballistics — what used to be a `[weapon.ballistic]` block on
+/// the bow and is now the ammo's own (`reference/PROJECTILES.md` §9.3, the
+/// reference game's `ItemModProjectile`). Indexed by item index like every
+/// other table here.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AmmoDef {
+    /// Muzzle speed in **millimetres per tick**, from `speed_mps`. Zero is
+    /// the inert default and means "this item is not a round"; `validate`
+    /// refuses a zero in content, so a zero here is only ever an unarmed
+    /// slot and never a shipped value.
+    pub speed_mmpt: u16,
+    /// Gravity in **millimetres per tick squared**, from `drop_mps2`,
+    /// subtracted from the vertical velocity once per tick.
+    pub drop_mmpt2: u16,
+}
+
+/// **Not wearable.** `ArmorDef::slot` is one-based so that a zeroed table
+/// is an inert one: item index 0 is a real item, and a zero *slot* has to
+/// mean "this is not armor" rather than "this is a headpiece".
+pub const WEAR_NONE: u8 = 0;
+/// `Player::worn[0]`.
+pub const WEAR_HEAD: u8 = 1;
+/// `Player::worn[1]`.
+pub const WEAR_BODY: u8 = 2;
+
+/// The most a whole worn set may take off one hit, in percent.
+///
+/// Deliberately **the same 90 `content/validate.rs` already refuses a
+/// single row past**, and for the same reason one level up: a body that
+/// takes no damage is not a body, and a set is where per-row ceilings stop
+/// being enough. Not a new knob — the number is the one the content rail
+/// has enforced since M1, applied to the sum rather than to a term.
+pub const ARMOR_MAX_PCT: u32 = 90;
+
+/// One item's armor row — `content/armor.toml`, baked by item index like
+/// every other table in `CombatContent`.
+///
+/// `slot == WEAR_NONE` ⇒ the item is not wearable, so the whole table
+/// starts inert exactly as `MeleeDef::damage == 0` does. The two columns
+/// travel together on purpose: a reduction with no slot protects
+/// everything and a slot with no reduction protects nothing, and both are
+/// content bugs the bake refuses rather than shapes the sim has to guard.
+///
+/// **One scalar, not a per-damage-type vector, and that is a decision with
+/// a source.** `reference/RIPLIST.md` §1h read the reference game's own
+/// Protection tables for all three pieces we ship and found its Projectile
+/// and Melee cells **equal on every row** — so one number expresses theirs
+/// exactly for every piece that exists here. The columns a vector would add
+/// (Bite, Radiation, Cold) key mechanics we either do not ship or have no
+/// number for, and the weapon-side half of a type column — which of
+/// slash/blunt/stab each of our twenty weapons is — is not in any source
+/// anybody here has read. `DECISIONS.md` §open ("armor reduction v0")
+/// carries the argument; the vector is the next slice, and it changes
+/// numbers rather than the funnel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ArmorDef {
+    /// Percent of an incoming hit this piece takes off. `content/validate.rs`
+    /// refuses a row past 90, so a `u8` cannot be overrun by content.
+    pub reduction_pct: u8,
+    /// Which of `WEAR_SLOTS` this piece occupies, **one-based**:
+    /// `WEAR_NONE`, `WEAR_HEAD` or `WEAR_BODY`.
+    pub slot: u8,
 }
 
 /// The whole combat ruleset the sim knows. Construction input like the
@@ -179,6 +316,17 @@ pub struct CombatContent {
     /// exclusive in the type, but nothing in the alpha data is both, and
     /// `ranged::armed` reads this one first — a bow in hand does not swing.
     pub ranged: [RangedDef; MAX_ITEM_DEFS],
+    /// Ballistics, indexed by the **round's** item index rather than the
+    /// weapon's (`reference/PROJECTILES.md` §9.3). A stack of arrows in a
+    /// pocket has a row here; the bow that fires them does not.
+    pub ammo: [AmmoDef; MAX_ITEM_DEFS],
+    /// Worn protection, indexed the same way — the row of the item, not of
+    /// the body wearing it. Every entry inert until the bake installs
+    /// `content/armor.toml`, which is what it did for the first time on
+    /// 2026-08-19: the file had been priced, validated, hashed and
+    /// balance-anchored since M1 with nothing in this crate reading a row
+    /// (`reference/ARMOR.md` §9.1 is the audit).
+    pub armor: [ArmorDef; MAX_ITEM_DEFS],
     /// Max player hp — `content/balance.toml` `globals.player_hp`. Zero is
     /// the inert default and disarms the module entirely: no hp is granted
     /// at join, so no damage is applied and nobody can die.
@@ -201,11 +349,18 @@ impl CombatContent {
         }; MAX_ITEM_DEFS],
         ranged: [RangedDef {
             damage: 0,
+            ammo: [NO_ITEM; MAX_WEAPON_AMMO],
+            rate_ticks: 0,
+            hitscan: false,
+            range_mm: 0,
+        }; MAX_ITEM_DEFS],
+        ammo: [AmmoDef {
             speed_mmpt: 0,
             drop_mmpt2: 0,
-            ammo: 0,
-            rate_ticks: 0,
-            life_ticks: 0,
+        }; MAX_ITEM_DEFS],
+        armor: [ArmorDef {
+            reduction_pct: 0,
+            slot: WEAR_NONE,
         }; MAX_ITEM_DEFS],
         player_hp: 0,
     };
@@ -247,6 +402,20 @@ impl CombatContent {
             fuse_ticks: 4,
             reach_cm: 200,
             blast_cm: 1,
+        };
+        // Two armor rows, on items 4 and 5 — deliberately *above* the four
+        // weapon rows, so no fixture item is both a weapon and a piece of
+        // armor and a test cannot accidentally arm what it meant to wear.
+        // Nothing in the counted gates wears anything, so these change no
+        // probe digest; they exist so `tests/armor.rs` reads a table the
+        // fixture declares instead of poking one it built itself.
+        c.armor[4] = ArmorDef {
+            reduction_pct: 10,
+            slot: WEAR_HEAD,
+        };
+        c.armor[5] = ArmorDef {
+            reduction_pct: 20,
+            slot: WEAR_BODY,
         };
         c
     }
@@ -348,6 +517,16 @@ impl CombatContent {
         }
         Some(self.ranged[held as usize]).filter(|d| d.damage > 0)
     }
+
+    /// The ballistics of round `item`, or `None` when that item is not a
+    /// round. `held_ranged`'s bounds rule against the ammo table.
+    #[inline]
+    pub fn ammo_def(&self, item: u16) -> Option<AmmoDef> {
+        if item == NO_ITEM || item as usize >= MAX_ITEM_DEFS {
+            return None;
+        }
+        Some(self.ammo[item as usize]).filter(|a| a.speed_mmpt > 0)
+    }
 }
 
 impl Default for CombatContent {
@@ -364,6 +543,177 @@ pub fn held_item(p: &Player) -> u16 {
         p.inv[p.frame.sel as usize].item
     } else {
         NO_ITEM
+    }
+}
+
+/// What one debit took off a body.
+///
+/// `left` is read back rather than recomputed by the caller: `EV_HEALTH`
+/// is absolute (its own doc), so every route that announces reads the
+/// post-debit hp, and handing it back is what stops four call sites from
+/// each deciding when to sample it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hurt {
+    /// What actually came off — `min(raw, hp before)`. Never more than the
+    /// body had, so a 40-damage blow on a 12-hp body reports 12.
+    pub dealt: u16,
+    /// The hp left standing after the debit.
+    pub left: u16,
+    /// The body reached zero **on this debit**. A body that was already at
+    /// zero is not killed again, which is what stops a second route in the
+    /// same tick from counting a death the first one already counted.
+    pub died: bool,
+}
+
+/// **The one place a player loses hp.** Every damage route in this crate
+/// debits through here, and `tests/damage_routes.rs` is the gate that says
+/// so — a write to a player's `hp` anywhere else is a site that test
+/// cannot classify, and it fails naming the line.
+///
+/// Why one place: armor had been priced, validated, hashed and
+/// balance-anchored in `content/armor.toml` since M1 with nothing in this
+/// crate reading a row of it (`reference/ARMOR.md` §9.1). Reduction is an
+/// arm inside *this* function — one line, added on 2026-08-19 and reaching
+/// all four hit routes at once, which is the whole of what the funnel was
+/// built to buy. It could not be added to three routes and forgotten on
+/// the fourth, which is the shape the reference ecosystem's payload bugs
+/// actually took.
+///
+/// **What the funnel owns is the body, and nothing else.** Two writes: the
+/// hp and the death count. It does not push an event and it does not lay
+/// the corpse down, because neither is uniform across the routes and
+/// pretending otherwise would ship a bug every test would pass:
+///
+/// * `EV_HIT` is an **attacker's** fact — a hitmarker. `strike` and an
+///   arrow push it; a blast and a pig deliberately do not (`world.rs`'s
+///   bite loop says why: a pig has no screen to draw one on). A funnel
+///   with a fixed event set gives pigs hitmarkers.
+/// * `EV_HEALTH` differs in its ceiling by route (`cc.player_hp` at the
+///   melee and bite sites, `hp_max` at the arrow and the shock) and
+///   `survival` announces it packed beside `EV_VITALS` through its own
+///   `announce`, only when something moved. Emitting it here would
+///   double-announce every drink.
+/// * `EV_DEATH` and `World::die` need the whole world — backpacks, the
+///   player slot, the event ring — and this takes one `&mut Player`. So
+///   the funnel *reports* the death and the caller performs it, which is
+///   the shape all five kill sites already had.
+///
+/// Wall 1: `min`, `saturating_add` and one `u16` subtraction that cannot
+/// underflow because `dealt <= before`. No float, no clock, no allocation.
+#[inline]
+pub fn hurt(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
+    debit(v, reduce(raw, worn_pct(cc, v)))
+}
+
+/// What a worn set takes off every hit, in percent — the sum over the
+/// slots, clamped at [`ARMOR_MAX_PCT`].
+///
+/// **The sum, not the slot that was hit, and that is a v0 decision rather
+/// than an oversight.** Aim is planar and there is no head to hit
+/// (`combat.rs`'s header, still true), so a coverage model has nothing to
+/// key on: crediting only the body piece would ship
+/// `item.armor_burlap_head` as *charged* dead content — craftable, priced,
+/// and protecting nobody — on the very day armor started working, which is
+/// the same defect this slice exists to remove. Until hit areas land
+/// (`findings/armor-design-20260818.md` §7 S6) a worn set is one number and
+/// every piece in it contributes. `content/balance.rs`'s anchor already
+/// reads armor this way, slot-blind, so this makes the two agree rather
+/// than adding a second model.
+///
+/// A stack only pays in the slot its **baked row** names, one-based. That
+/// is what stops two body plates from being worn at once before any wear
+/// verb exists to refuse it: the array is indexed by slot, and a piece in
+/// the wrong index is ignored rather than counted.
+///
+/// Wall 1: `+` and `min` over `u32`, one bounded loop of `WEAR_SLOTS`.
+/// Wall 2: no allocation.
+#[inline]
+pub fn worn_pct(cc: &CombatContent, v: &Player) -> u32 {
+    let mut pct = 0u32;
+    let mut i = 0usize;
+    while i < WEAR_SLOTS {
+        let s = v.worn[i];
+        if s.count > 0 && (s.item as usize) < MAX_ITEM_DEFS {
+            let a = cc.armor[s.item as usize];
+            if a.slot as usize == i + 1 {
+                pct += a.reduction_pct as u32;
+            }
+        }
+        i += 1;
+    }
+    pct.min(ARMOR_MAX_PCT)
+}
+
+/// What gets through `pct` percent of protection.
+///
+/// **The floor lands on the damage, not on the absorption**, and the two are
+/// not the same function under integer division: 25 damage against 35 %
+/// is 16 here and 17 the other way round. This form is the one
+/// `content/balance.rs`'s `hits_to_kill` divides by — its per-hit number is
+/// `damage × (100 − pct) / 100` — so the band the data declares and the
+/// fight the sim plays are one arithmetic rather than two that agree by
+/// luck. `crates/content/tests/content.rs` pins them equal for every
+/// (weapon, armor) pair we ship.
+///
+/// A hit small enough to round to zero deals zero. That is not new
+/// behaviour: `charge::falloff` already returns zero at the edge of a blast
+/// and the site skips it, and `debit` treats a zero as the no-op it is.
+///
+/// Wall 1: `×`, `÷`, `min` on `u32`. No float, no libm.
+#[inline]
+pub fn reduce(raw: u16, pct: u32) -> u16 {
+    let pct = pct.min(ARMOR_MAX_PCT);
+    ((raw as u32 * (100 - pct)) / 100) as u16
+}
+
+/// The same debit, for the routes that armor must **never** reduce. The
+/// name is the choice, made visible in a diff rather than left as an
+/// omission that is invisible by construction — the three of them:
+///
+/// * **starve / dehydrate** (`survival::step`) — metabolic, not a hit. A
+///   chest plate does not feed you, and farming in armor must not cost a
+///   repair bill.
+/// * **salt water** (`survival::drink`) — the hp *is* the price of the
+///   drink. Reducing it would make a helmet a desalinator.
+/// * **the keypad shock** (`deploy::lock_op`) — it floors at 1 hp and
+///   never kills (`lock.rs`'s header). Reducing it would make an armored
+///   raider immune to a mechanic whose entire job is to cost tries.
+///
+/// It is deliberately the same body as [`hurt`]: the difference is which
+/// number arrives, never how a body takes it.
+#[inline]
+pub fn hurt_unreduced(v: &mut Player, raw: u16) -> Hurt {
+    debit(v, raw)
+}
+
+// Note the shapes: `hurt` takes the content table because reduction is a
+// lookup, `hurt_unreduced` deliberately does not take it at all. A route
+// that cannot reach the armor table cannot accidentally consult it.
+
+/// The debit itself. Private, so `hurt`/`hurt_unreduced` are the only
+/// doors and the choice between them is always written down at the call.
+#[inline]
+fn debit(v: &mut Player, raw: u16) -> Hurt {
+    let before = v.hp;
+    let dealt = raw.min(before);
+    // `before > 0` and not `dealt >= before` alone: a body already at zero
+    // is one the caller has not walked to its respawn yet, and counting a
+    // second death for it would be the kill site lying — `survival`'s salt
+    // route reasoned its way to exactly this guard before there was a
+    // funnel to hold it.
+    let died = before > 0 && raw >= before;
+    v.hp = before - dealt;
+    if died {
+        // A death is counted where it happens. Without it a death is
+        // invisible to `spawn_pos_n(id, deaths)`, so a body goes back to
+        // the identical beach; the count is also what the scoreboard and
+        // the wire's `deaths` field read.
+        v.deaths = v.deaths.saturating_add(1);
+    }
+    Hurt {
+        dealt,
+        left: v.hp,
+        died,
     }
 }
 
@@ -454,12 +804,8 @@ pub fn strike(
 
     let v = &mut players[victim];
     let victim_id = v.id;
-    let died = def.damage >= v.hp;
-    v.hp -= def.damage.min(v.hp);
-    let left = v.hp;
-    if died {
-        v.deaths = v.deaths.saturating_add(1);
-    }
+    // The funnel, reduced: a swing is the route armor exists to blunt.
+    let Hurt { left, died, .. } = hurt(cc, v, def.damage);
     events.push(EV_HIT, attacker_id, victim_id, def.damage as u32);
     events.push(EV_HEALTH, victim_id, left as u32, cc.player_hp as u32);
     if died {
@@ -478,6 +824,13 @@ pub fn strike(
 /// the ring one out covers every anchor a reach can touch; the reach test
 /// itself, not this radius, is what decides.
 const RAID_CELL_RING: i32 = 1;
+
+/// What a melee swing lands on the HARD side of an edge piece, whatever
+/// the tool (hard/soft v0). One, flat — the reference's rule as players
+/// meet it: the hard face is not a farm, and the number is small enough
+/// that "wrong side" reads instantly off the hit numbers. Proposed
+/// default, DECISIONS.md §open ("hard/soft v0"). Explosives ignore it.
+pub const HARD_SIDE_STRUCTURE: u16 = 1;
 
 /// Which store a raid swing found, and where.
 #[derive(Clone, Copy)]
@@ -514,6 +867,7 @@ enum Target {
 /// occupancy in one probe.
 #[allow(clippy::too_many_arguments)]
 pub fn raid(
+    haven: &crate::terrain::Haven,
     cc: &CombatContent,
     bc: &BuildContent,
     dc: &DeployContent,
@@ -562,7 +916,10 @@ pub fn raid(
         let Some(d2) = aimed_at_rec(&aimed_at, rec.cx, rec.cz, rec.loc) else {
             continue;
         };
-        if !storey_ok(col_base_y(seed, rec.cx, rec.cz), rec.level) {
+        if !storey_ok(
+            col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz),
+            rec.level,
+        ) {
             continue;
         }
         if best.is_none_or(|(bd2, _)| d2 < bd2) {
@@ -588,8 +945,20 @@ pub fn raid(
             for (loc, mask) in [
                 (LOC_PLANE, m.planes),
                 (LOC_RISER, m.stairs),
-                (LOC_EDGE_W, m.walls_w | m.doors_w),
-                (LOC_EDGE_N, m.walls_n | m.doors_n),
+                (
+                    LOC_EDGE_XLO,
+                    m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo,
+                ),
+                (
+                    LOC_EDGE_ZLO,
+                    m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo,
+                ),
+                (crate::build::LOC_TRI_XLO_ZLO, m.tri_xlo_zlo),
+                (crate::build::LOC_TRI_XHI_ZLO, m.tri_xhi_zlo),
+                (crate::build::LOC_TRI_XLO_ZHI, m.tri_xlo_zhi),
+                (crate::build::LOC_TRI_XHI_ZHI, m.tri_xhi_zhi),
+                (crate::build::LOC_DIAG_A, m.diag_a),
+                (crate::build::LOC_DIAG_B, m.diag_b),
             ] {
                 if mask == 0 {
                     continue;
@@ -599,7 +968,8 @@ pub fn raid(
                 if best.is_some_and(|(bd2, _)| d2 >= bd2) {
                     continue; // an equal or nearer target already stands
                 }
-                let base = *base.get_or_insert_with(|| col_base_y(seed, cx, cz));
+                let base =
+                    *base.get_or_insert_with(|| col_base_y(seed, haven, pieces.cols(), cx, cz));
                 for level in 0..MAX_BUILD_LEVELS as u8 {
                     if mask & (1 << level) == 0 || !storey_ok(base, level) {
                         continue;
@@ -627,7 +997,21 @@ pub fn raid(
             // by type and refusing beats indexing on a promise.
             match pieces.find_index(cx, cz, level, loc) {
                 Some(i) => {
-                    damage_piece(dc, bc, pieces, deploys, i, def.structure, budget, events);
+                    // Hard side and soft side (hard/soft v0,
+                    // `reference/BUILDING.md` §7b.5): a melee swing on an
+                    // edge piece's HARD face lands `HARD_SIDE_STRUCTURE`,
+                    // whatever the tool — the reference's own rule as a
+                    // raider meets it. Planes and risers have no sides;
+                    // the satchel does not care either (`charge.rs` — a
+                    // blast is a point, not a stance).
+                    let rec = pieces.entries()[i];
+                    let sided = crate::build::shape_has_facing(bc.pieces[rec.row as usize].shape);
+                    let amount = if sided && !crate::build::soft_side(&rec, px, pz) {
+                        HARD_SIDE_STRUCTURE
+                    } else {
+                        def.structure
+                    };
+                    damage_piece(dc, bc, pieces, deploys, i, amount, budget, events);
                     true
                 }
                 None => false,
@@ -653,7 +1037,7 @@ fn aimed_at_rec(
 mod tests {
     use super::*;
     use crate::gather::ItemStack;
-    use crate::limits::MAX_REMOVALS_PER_TICK;
+    use crate::limits::{INV_SLOTS, MAX_REMOVALS_PER_TICK};
 
     /// One tick's structural removal budget, as `World::tick` hands it
     /// out — these fixtures never approach it (build.rs owns the tests
@@ -666,11 +1050,23 @@ mod tests {
     use crate::world::{EV_DEPLOY_REMOVED, EV_PIECE_REMOVED, EV_STRUCT_HIT};
 
     const SEED: u64 = 20260731;
+
+    /// The solved authored sites for `SEED`, memoized.
+    ///
+    /// `terrain::haven` is a few thousand `height` taps and these cases call
+    /// the carved-ground path from nearly every assertion, so resolving it
+    /// once per suite is the difference between a fast test and a slow one.
+    /// It is a pure function of the seed, so caching it cannot change a result.
+    fn hv() -> &'static crate::terrain::Haven {
+        static HV: std::sync::OnceLock<crate::terrain::Haven> = std::sync::OnceLock::new();
+        HV.get_or_init(|| crate::terrain::haven(SEED))
+    }
     const CX: u16 = 341;
     const CZ: u16 = 341;
     /// Wire yaw facing +X — LUT index 64 of 256 (yaw_lut.rs: index 0 is
     /// +Z, increasing index rotates toward +X).
     const YAW_PLUS_X: u16 = 64 << 8;
+    const YAW_MINUS_X: u16 = 192 << 8;
 
     fn cc() -> CombatContent {
         CombatContent::probe_fixture()
@@ -697,10 +1093,15 @@ mod tests {
         let mut pieces = Pieces::new();
         let deploys = Deploys::new();
         let mut builder = raider(CX, CZ);
-        builder.inv[0] = ItemStack { item: 0, count: 99 };
+        builder.inv[0] = ItemStack {
+            item: 0,
+            count: 99,
+            cond: 0,
+        };
         let mut ev = EventQueue::default();
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -711,6 +1112,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(pieces.len(), 1, "the rig needs its foundation");
@@ -733,12 +1135,17 @@ mod tests {
             hp: 100,
             body: Body::at(
                 SEED,
+                hv(),
                 (cx as f32 + 0.5) * BUILD_CELL_M,
                 (cz as f32 + 0.5) * BUILD_CELL_M,
             ),
             ..Player::default()
         };
-        p.inv[0] = ItemStack { item: 0, count: 1 };
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+        };
         p
     }
 
@@ -755,6 +1162,7 @@ mod tests {
         for expect_left in [66u32, 32] {
             ev.clear();
             assert!(raid(
+                hv(),
                 &cc,
                 &bc,
                 &dc,
@@ -779,6 +1187,7 @@ mod tests {
 
         ev.clear();
         assert!(raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -800,6 +1209,7 @@ mod tests {
         // Nothing left to hit: the swing finds no target at all.
         ev.clear();
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -813,6 +1223,101 @@ mod tests {
         assert!(ev.is_empty());
     }
 
+    /// Hard/soft v0 (`reference/BUILDING.md` §7b.5): the same tool, the
+    /// same wall, two stances — full structure damage from the soft side,
+    /// `HARD_SIDE_STRUCTURE` from the hard one. The wall was placed from
+    /// inside the cell, so its soft face is the +x side the builder stood
+    /// on; the foundation (a plane) stays sideless and keeps taking full
+    /// damage from anywhere, which the base rig's own tests already pin.
+    #[test]
+    fn the_soft_side_pays_full_and_the_hard_side_pays_one() {
+        let (cc, bc, dc, mut pieces, mut deploys, _) = rig();
+        // The wall on the cell's west edge, placed by a builder standing
+        // at the cell centre — east of the edge, so soft faces east.
+        let mut builder = raider(CX, CZ);
+        builder.inv[0] = ItemStack {
+            item: 0,
+            count: 99,
+            cond: 0,
+        };
+        let mut ev = EventQueue::default();
+        crate::build::place(
+            SEED,
+            hv(),
+            &bc,
+            &deploys,
+            &mut pieces,
+            &mut builder,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            crate::build::LOC_EDGE_XLO,
+            false,
+            &mut ev,
+        );
+        let wall = pieces.find(CX, CZ, 0, crate::build::LOC_EDGE_XLO).unwrap();
+        assert_eq!(wall.facing, 1, "soft faces the builder's side (+x)");
+        let wall_hp = wall.hp;
+
+        let x0 = CX as f32 * BUILD_CELL_M;
+        let z0 = CZ as f32 * BUILD_CELL_M;
+        // Both attackers face +Z (default yaw) at the wall's anchor,
+        // 0.3 m to either side of the edge plane.
+        let mut soft = raider(CX, CZ);
+        soft.body = Body::at(SEED, hv(), x0 + 0.3, z0 + 0.5);
+        let mut hard = raider(CX, CZ);
+        hard.body = Body::at(SEED, hv(), x0 - 0.3, z0 + 0.5);
+
+        ev.clear();
+        assert!(raid(
+            hv(),
+            &cc,
+            &bc,
+            &dc,
+            SEED,
+            &soft,
+            &mut pieces,
+            &mut deploys,
+            &mut tick_budget(),
+            &mut ev
+        ));
+        let e = ev.entries()[0];
+        assert_eq!(e.code, EV_STRUCT_HIT);
+        assert_eq!(
+            e.c >> 16,
+            34,
+            "the soft side takes the tool's whole structure damage"
+        );
+
+        ev.clear();
+        assert!(raid(
+            hv(),
+            &cc,
+            &bc,
+            &dc,
+            SEED,
+            &hard,
+            &mut pieces,
+            &mut deploys,
+            &mut tick_budget(),
+            &mut ev
+        ));
+        let e = ev.entries()[0];
+        assert_eq!(e.code, EV_STRUCT_HIT);
+        assert_eq!(
+            e.c >> 16,
+            HARD_SIDE_STRUCTURE as u32,
+            "the hard side takes one, whatever the tool"
+        );
+        assert_eq!(
+            e.c & 0xFFFF,
+            (wall_hp - 34 - HARD_SIDE_STRUCTURE) as u32,
+            "both swings landed on the one wall"
+        );
+    }
+
     #[test]
     fn a_swing_out_of_reach_or_behind_you_breaks_nothing() {
         let (cc, bc, dc, mut pieces, mut deploys, _) = rig();
@@ -821,6 +1326,7 @@ mod tests {
         // Four cells away — 12 m, far past the fixture's 2 m reach.
         let far = raider(CX + 4, CZ);
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -832,11 +1338,12 @@ mod tests {
             &mut ev
         ));
 
-        // In reach but aimed away: one cell east (3 m; the anchor is 3 m
-        // west of them) facing +x, so the foundation is behind.
+        // In reach but aimed away: one cell at +x (3 m; the anchor is 3 m
+        // at −x of them) facing +x, so the foundation is behind.
         let mut turned = raider(CX + 1, CZ);
         turned.frame.yaw = 0;
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -859,10 +1366,19 @@ mod tests {
         // A hearth (fixture row 0, 100 hp) on the foundation — the same
         // address, so both are equidistant from the swing.
         let mut owner = raider(CX, CZ);
-        owner.inv[0] = ItemStack { item: 0, count: 99 };
-        owner.inv[1] = ItemStack { item: 2, count: 9 }; // the hearth's own item
+        owner.inv[0] = ItemStack {
+            item: 0,
+            count: 99,
+            cond: 0,
+        };
+        owner.inv[1] = ItemStack {
+            item: 2,
+            count: 9,
+            cond: 0,
+        }; // the hearth's own item
         crate::deploy::place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -881,6 +1397,7 @@ mod tests {
         for _ in 0..3 {
             ev.clear();
             assert!(raid(
+                hv(),
                 &cc,
                 &bc,
                 &dc,
@@ -907,6 +1424,7 @@ mod tests {
         // With the hearth gone the same swing reaches the foundation.
         ev.clear();
         assert!(raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -931,11 +1449,24 @@ mod tests {
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
         let mut owner = raider(CX, CZ);
-        owner.inv[0] = ItemStack { item: 0, count: 99 };
-        owner.inv[4] = ItemStack { item: 4, count: 9 };
-        owner.inv[5] = ItemStack { item: 7, count: 2 };
+        owner.inv[0] = ItemStack {
+            item: 0,
+            count: 99,
+            cond: 0,
+        };
+        owner.inv[4] = ItemStack {
+            item: 4,
+            count: 9,
+            cond: 0,
+        };
+        owner.inv[5] = ItemStack {
+            item: 7,
+            count: 2,
+            cond: 0,
+        };
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -946,10 +1477,12 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         crate::build::place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -959,12 +1492,14 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
+            false,
             &mut ev,
         );
         assert_eq!(pieces.len(), 2, "foundation + doorway");
         crate::deploy::place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -975,7 +1510,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(deploys.len(), 1, "the door hangs in the doorway");
@@ -983,6 +1518,7 @@ mod tests {
         // bare until somebody pays for the security.
         crate::deploy::place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -993,7 +1529,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         crate::deploy::lock_op(
@@ -1004,20 +1540,21 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             crate::deploy::ACCESS_OP_SET_CODE,
             1234,
             0,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert!(deploys.entries()[0].locked, "and it is locked");
         assert_ne!(
-            pieces.cols().get(CX, CZ).shut_w,
+            pieces.cols().get(CX, CZ).shut_xlo,
             0,
             "a shut door seals its edge"
         );
 
-        // A stranger outside, one cell west, facing the door: the lock
+        // A stranger outside, one cell at −x, facing the door: the lock
         // refuses the use verb…
         let mut foe = raider(CX - 1, CZ);
         foe.id = 9;
@@ -1031,7 +1568,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -1039,11 +1576,12 @@ mod tests {
             crate::deploy::REFUSE_D_OWNER,
             "the lock still holds against the use verb"
         );
-        assert_ne!(pieces.cols().get(CX, CZ).shut_w, 0, "still sealed");
+        assert_ne!(pieces.cols().get(CX, CZ).shut_xlo, 0, "still sealed");
 
         // …and the swing does not care. 60 hp, 34 a swing: two.
         ev.clear();
         assert!(raid(
+            hv(),
             &cc(),
             &bc,
             &dc,
@@ -1061,6 +1599,7 @@ mod tests {
         );
         assert_eq!(ev.entries()[0].c, (34 << 16) | 26);
         assert!(raid(
+            hv(),
             &cc(),
             &bc,
             &dc,
@@ -1073,16 +1612,32 @@ mod tests {
         ));
         assert!(deploys.is_empty(), "the door fell to force");
         assert_eq!(
-            pieces.cols().get(CX, CZ).shut_w,
+            pieces.cols().get(CX, CZ).shut_xlo,
             0,
             "and the edge is open — the raider can walk in"
         );
         assert_eq!(pieces.len(), 2, "the frame it hung in still stands");
 
         // The frame next, and it must not cascade a door that is gone.
+        // The raider walks IN through the edge the fallen door opened
+        // first: the doorway's soft face is the builder's side (hard/soft
+        // v0), and from the street its hard face pays `HARD_SIDE_STRUCTURE`
+        // a swing — the melee raid the rule exists to slow. Standing
+        // inside, aimed back out at the frame, the swings land whole.
+        // Just inside the edge, not the cell centre: the centre is the
+        // foundation's own anchor, and the nearest pick would hand the
+        // swings to the slab underfoot.
+        foe.body = Body::at(
+            SEED,
+            hv(),
+            CX as f32 * BUILD_CELL_M + 0.4,
+            (CZ as f32 + 0.5) * BUILD_CELL_M,
+        );
+        foe.frame.yaw = YAW_MINUS_X;
         ev.clear();
         for _ in 0..3 {
             raid(
+                hv(),
                 &cc(),
                 &bc,
                 &dc,
@@ -1110,6 +1665,7 @@ mod tests {
         let (cc, bc, dc, mut pieces, mut deploys, ground) = rig();
         let mut ev = EventQueue::default();
         assert!(raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1128,6 +1684,7 @@ mod tests {
         aloft.body.qy += 600;
         ev.clear();
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1148,6 +1705,7 @@ mod tests {
         let cc = CombatContent::EMPTY;
         let mut ev = EventQueue::default();
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1170,6 +1728,7 @@ mod tests {
         let mut dead = raider(CX, CZ);
         dead.hp = 0;
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1184,6 +1743,7 @@ mod tests {
         let mut empty = raider(CX, CZ);
         empty.inv[0] = ItemStack::default();
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1198,6 +1758,7 @@ mod tests {
         let mut gone = raider(CX, CZ);
         gone.active = false;
         assert!(!raid(
+            hv(),
             &cc,
             &bc,
             &dc,
@@ -1223,8 +1784,12 @@ mod tests {
             p.id = i as u32 + 1;
             p.active = true;
             p.hp = 100;
-            p.inv[0] = ItemStack { item: 0, count: 1 };
-            p.body = Body::at(SEED, 512.0, 512.0);
+            p.inv[0] = ItemStack {
+                item: 0,
+                count: 1,
+                cond: 0,
+            };
+            p.body = Body::at(SEED, hv(), 512.0, 512.0);
         }
         let mut ev = EventQueue::default();
         assert_eq!(strike(&cc, 0, &mut players, &mut ev), Strike::Hit);
@@ -1265,8 +1830,16 @@ mod tests {
     #[test]
     fn held_item_reads_the_selected_slot_only() {
         let mut p = Player::default();
-        p.inv[0] = ItemStack { item: 3, count: 1 };
-        p.inv[2] = ItemStack { item: 7, count: 5 };
+        p.inv[0] = ItemStack {
+            item: 3,
+            count: 1,
+            cond: 0,
+        };
+        p.inv[2] = ItemStack {
+            item: 7,
+            count: 5,
+            cond: 0,
+        };
         assert_eq!(held_item(&p), 3);
         p.frame.sel = 2;
         assert_eq!(held_item(&p), 7);
@@ -1282,7 +1855,11 @@ mod tests {
             p.id = i as u32 + 1;
             p.active = true;
             p.hp = 100;
-            p.inv[0] = ItemStack { item: 0, count: 1 };
+            p.inv[0] = ItemStack {
+                item: 0,
+                count: 1,
+                cond: 0,
+            };
         }
         let mut ev = EventQueue::default();
         assert_eq!(strike(&cc, 0, &mut players, &mut ev), Strike::Missed);

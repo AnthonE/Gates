@@ -30,7 +30,10 @@ const CH_LOOT: u32 = 99;
 /// invent a container the sim has no verb for.
 pub const LOOT_BARREL: usize = 0;
 /// Baked table index for `container = "crate"` — the haven pad's container
-/// (`terrain::Occupant::CrateSlot`). No verb opens one yet.
+/// (`terrain::Occupant::CrateSlot`). **Opened by `worldcont.rs`** since
+/// world containers v0; this line said "No verb opens one yet" for the
+/// whole time the pad stood there paying nobody, which is what the
+/// merge-gate judge eventually ranked first.
 pub const LOOT_CRATE: usize = 1;
 /// Baked table index for `container = "cache"` — the waystations', the tier
 /// between the road's barrel and the pad's crate
@@ -185,7 +188,15 @@ impl LootContent {
                 n += 1;
                 continue; // an item the ladder cannot stack cannot be held
             }
-            written = written.saturating_add(inv_add(out, e.item, count as u16, cap));
+            // A rolled item is a mint, so it arrives at its own ceiling —
+            // a barrel paying a dead tool would be a reward that is not one.
+            written = written.saturating_add(inv_add(
+                out,
+                e.item,
+                count as u16,
+                cap,
+                gc.cond_max_of(e.item),
+            ));
             n += 1;
         }
         written
@@ -227,7 +238,11 @@ mod tests {
     use crate::gather::cell_key as cell;
 
     fn empty() -> [ItemStack; INV_SLOTS] {
-        [ItemStack { item: 0, count: 0 }; INV_SLOTS]
+        [ItemStack {
+            item: 0,
+            count: 0,
+            cond: 0,
+        }; INV_SLOTS]
     }
 
     #[test]

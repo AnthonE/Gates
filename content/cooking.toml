@@ -58,3 +58,122 @@ input = "item.cooked_meat"
 output = "item.burnt_meat"
 station = "fire"
 seconds = 20
+
+# --- the recycler -------------------------------------------------------
+#
+# `station = "recycler"` is the third converter (recycler v0). It burns
+# nothing, so no fuel row applies to it, and it is the first thing on the
+# island that pays you for something you did not farm: the coast road's
+# barrels drop components, and until now a gear was a crafting reagent for
+# two recipes and dead weight otherwise.
+#
+# **Several rows may share one input and they all fire together**, off one
+# slot timer — which is how a gear pays a material AND a coin on one pass
+# (the OBOL block below). The bake holds such a set to one `seconds` and
+# refuses two rows paying the same output (`validate::structural`).
+#
+# **The yields are theirs as of 2026-08-18** (`reference/RIPLIST.md` §1f).
+# This block used to open "the yields are ours, and that is a gap rather
+# than a choice" — nobody had researched what their recycler pays. Someone
+# has now, at page tier: `wiki.facepunch.com/rust/item/{gears,rope,tarp}`
+# each carry a **Recycle** table, and every row below is that table's
+# `Recycler` column read whole. EXACT, and the same pages score 4/4 on
+# cells we already hold (the four stack sizes, taken off a different host
+# in §1e-b) — `BALANCE.md` §6.3 rung 1 on a source we came to for
+# something else.
+#
+# **Refused, and it is a missing tier rather than a preference**: each
+# page also lists a *Safe Zone Recycler* column at two thirds (gears
+# 10 + 8, rope 12, tarp 40). Ours is a craftable machine you own, which is
+# their full-rate one; there is no safe zone here to hold the other rate.
+#
+# What the old derivation feared has not happened. It priced the gear off
+# our own anchor — a component is 4 road-minutes (`balance.toml`
+# `component_minutes`) against metal ore at 30/min, so full farm parity
+# would be ~120 fragments — and refused parity because the road would beat
+# the ore node. Theirs pays **15**, an eighth of parity, so the gradient
+# the old number was protecting survives the take without being defended.
+# The tarp is the one that moved far: 60 cloth is 3.0 farm-minutes at
+# cloth's 20/min against its 4 road-minutes, so a tarp is now the richest
+# of the three by that measure, and the rope the poorest.
+#
+# 5 s each: fast enough that a full hopper clears while you sort the rest
+# of the run, slow enough that you put it down and do something else.
+[[cook]]
+input = "item.gears"
+output = "item.metal_frags"
+count = 15
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.rope"
+output = "item.cloth"
+count = 18
+station = "recycler"
+seconds = 5
+
+[[cook]]
+input = "item.tarp"
+output = "item.cloth"
+count = 60
+station = "recycler"
+seconds = 5
+
+# --- the OBOL faucet ------------------------------------------------------
+#
+# **OBOL is scrap** (operator, 2026-08-10: *"what the hell is obol turned off
+# for its just like scrap"*). It is an item you carry, drop on death and
+# spend at a research table — no wallet, no ledger, nothing redeemable. The
+# thing `ALPHA.md` §2 stages is the CLAIM RAIL (a banked balance keyed to a
+# wallet, and its merkle export), which is a different thing that shares a
+# name; an item stack in a save file cannot be cashed out, so there was
+# never a token risk here to gate against.
+#
+# This rides the SAME input as one of the three rows above, which is what
+# multi-row conversion is for: a gear becomes 15 fragments AND 12 obol on
+# one 5 s timer, rather than the player choosing which machine to feed. The
+# `seconds` must match the row it shares an input with — the bake refuses
+# otherwise.
+#
+# **Theirs too, and it is one row rather than three** (§1f). Their gears
+# return **12 scrap**; their rope and tarp return cloth and no scrap at
+# all, so the two coin rows that used to sit here are gone rather than
+# zeroed — a row paying nothing is an inert row and `validate::structural`
+# refuses one. Coin concentrating on the one component that was *crafted
+# out of* coin is their design, not an accident of the table: the gears
+# page prices a gear at 100 scrap and hands 12 of it back.
+#
+# **What this does to the faucet, derived off `loot.toml` rather than
+# asserted.** A barrel is 1–2 rolls over 99 weight; the three components
+# used to pay 0.848 obol a barrel between them and the gear alone now pays
+# **2.727**, a 3.2× faucet. Theirs pays ~2.42 scrap a barrel (2 direct at
+# 100 %, plus gears 2–3 at 1.4 % recycled) — so after this take **one obol
+# buys about what one scrap buys**, within 13 %.
+#
+# **Which is why no price in `research.toml` or `recipes.toml` moves, and
+# that is the surprising half.** Both files justify their own obol prices
+# against "a ~10-scrap barrel where ours pays ~0.85" — the 0.85 was right
+# and **the ~10 was never measured and is wrong**; the page says 2.42.
+# Priced in barrels against the four researchable items we both have
+# (their Research Table column, page-read the same day — HV arrow 15,
+# revolver 30, satchel 60, gunpowder 120), our ladder cost **2.66× theirs
+# before this take and 0.83× after it**. The faucet is what brought the
+# research economy into their range at all, and it did it without moving
+# a price. `DECISIONS.md` §open "OBOL faucet v0" carries the row; the
+# ratio clause it states ("move these with the research prices or the
+# ratio breaks") held, and this is what holding looks like.
+#
+# **What does NOT match is the shape, and it is the next question rather
+# than this row's.** Their spread is 8× (15 → 120) and ours is 3.75×
+# (20 → 75), and they disagree on which end gunpowder belongs at: it is
+# their most expensive blueprint and our middle rung, while their revolver
+# is cheap (30) against our 75. Ours is a compressed ladder over roughly
+# the right total — a `research.toml` row for a later pass, not a fallout
+# of this one.
+[[cook]]
+input = "item.gears"
+output = "item.obol"
+count = 12
+station = "recycler"
+seconds = 5

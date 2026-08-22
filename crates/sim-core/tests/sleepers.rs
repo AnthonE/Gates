@@ -44,6 +44,35 @@ use sim_core::survival::SurvivalContent;
 use sim_core::world::{Command, World};
 use sim_core::yaw_dir;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 20260807;
 /// The fixture's item 0: 34 damage, 2 m reach — three swings to kill.
 const SPEAR: u16 = 0;
@@ -63,6 +92,7 @@ fn duel_world() -> World {
         p.inv[0] = ItemStack {
             item: SPEAR,
             count: 1,
+            cond: 0,
         };
     }
     w
@@ -85,7 +115,7 @@ fn place_in_front(w: &mut World, attacker: usize, victim: usize, yaw: u16, dist:
     let (fx, fz) = yaw_dir(yaw);
     let a = w.players[attacker].body;
     let (ax, az) = (a.qx as f32 * POS_XZ_Q, a.qz as f32 * POS_XZ_Q);
-    w.players[victim].body = Body::at(SEED, ax + fx * dist, az + fz * dist);
+    w.players[victim].body = Body::at(SEED, hv(SEED), ax + fx * dist, az + fz * dist);
 }
 
 fn slot_of(w: &World, id: u32) -> usize {
@@ -254,6 +284,7 @@ fn a_return_takes_over_the_body_it_left() {
     w.players[slot].inv[3] = ItemStack {
         item: SPEAR,
         count: 7,
+        cond: 0,
     };
     let carried = w.players[slot].inv;
     let stood = w.players[slot].body;
@@ -323,6 +354,114 @@ fn waking_onto_a_corpse_beaches_you_alive() {
         p.inv,
         [ItemStack::default(); INV_SLOTS],
         "a corpse's inventory came back with it"
+    );
+}
+
+/// A two-entry kit of stand-in item ids, in `SpawnKit`'s own shape —
+/// `bag_respawn.rs`'s probe kit. Ids 8 and 9 are outside every table
+/// `duel_world` arms (the fixture spear is item 0), so the assertion below
+/// cannot be satisfied by anything the corpse was carrying.
+fn probe_kit() -> sim_core::inventory::SpawnKit {
+    let mut kit = sim_core::inventory::SpawnKit::EMPTY;
+    assert!(
+        kit.set(
+            0,
+            ItemStack {
+                item: 8,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "kit slot 0"
+    );
+    assert!(
+        kit.set(
+            1,
+            ItemStack {
+                item: 9,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "kit slot 1"
+    );
+    kit
+}
+
+/// **The third of `wake`'s three doors is paid too** (`NOW.md` §0kit
+/// remainder 1). A takeover of a dead body goes through `wake`, and `wake`
+/// is where a new body is built — so the victim of an offline raid logs
+/// back in holding the spawn kit. The test above proves this door beaches
+/// the body alive; with `duel_world`'s `spawn_kit` EMPTY, its
+/// inventory-is-empty assertion said nothing about the kit, and a refactor
+/// that early-returned around the grant stayed green on every suite. This
+/// is the door where a missed kit costs most: the raid already took
+/// everything else, so waking naked here is §0die's ended session exactly.
+///
+/// Proven red 2026-08-17, both ways, and the two mutations measure
+/// different things. Early-returning before the wake in `take_over`
+/// (`if self.players[slot].dead { return; }` in place of the `wake` call)
+/// fails this on "woke naked" — beside the beach gate above, which catches
+/// that skip on `!p.dead`. Deleting only `inventory::grant_kit` from
+/// `wake` fails this on the same line while **every pre-existing gate in
+/// this file stays green** — that narrower hole, a wake that stands the
+/// body up and forgets to arm it, is the coverage this test adds.
+#[test]
+fn a_takeover_of_a_dead_body_wakes_holding_the_spawn_kit() {
+    let mut w = duel_world();
+    // After the joins, deliberately: the fresh arm must not be the grantor
+    // this test observes. The kit reaches the body through `wake` or not
+    // at all.
+    w.spawn_kit = probe_kit();
+    let sleeper = slot_of(&w, 2);
+    let raider = slot_of(&w, 1);
+    let yaw = 0u16;
+    place_in_front(&mut w, raider, sleeper, yaw, 1.0);
+    w.tick(&[Command::Leave { id: 2 }]);
+    for seq in 0..200u16 {
+        if w.players[sleeper].dead {
+            break;
+        }
+        w.tick(&[Command::Input {
+            id: 1,
+            frame: swing_frame(seq, yaw),
+        }]);
+    }
+    assert!(w.players[sleeper].dead, "setup: the sleeper must be dead");
+
+    w.tick(&[Command::Wake {
+        id: 0x0202,
+        sleeper: 2,
+    }]);
+
+    let p = &w.players[sleeper];
+    assert!(!p.dead, "you came back as a corpse");
+    assert_eq!(
+        (p.inv[0], p.inv[1]),
+        (
+            ItemStack {
+                item: 8,
+                count: 1,
+                cond: 0
+            },
+            ItemStack {
+                item: 9,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "a raided sleeper's owner woke naked — the takeover door skipped the kit"
+    );
+    // …and only the kit: the spear the corpse carried went into the bag the
+    // raider is owed, so any fixture item beyond slots 0 and 1 means the
+    // grant is reading a survived inventory rather than paying a fresh one.
+    assert!(
+        p.inv[2..].iter().all(|s| *s == ItemStack::default()),
+        "a corpse's inventory came back beside the kit"
+    );
+    assert_eq!(
+        p.deaths, 1,
+        "the death count did not move — this wake did not go through `wake`"
     );
 }
 

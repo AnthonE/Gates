@@ -5,15 +5,52 @@ spent six consecutive visual passes discovering, one judge report at a time,
 rules that could have been written down once. A judge's ranked gap is now
 scored against *this file* rather than against an adjective.
 
-Every number here is either **measured** off `Rust Images/` (the eighteen
-checked-in reference frames — the style target per `DECISIONS.md` 2026-08-01,
-*"rip rust for now"*) or **observed** in them and labelled as such. Nothing is
-invented. When a number here and a shipped constant disagree, one of them is
-wrong and the disagreement is the finding — same discipline as the knob
-registry.
+Every number here is either **measured** off **the reference set** or
+**observed** in it and labelled as such — the style target per `DECISIONS.md`
+2026-08-01, *"rip rust for now"*. Nothing is invented. When a number here and a
+shipped constant disagree, one of them is wrong and the disagreement is the
+finding — same discipline as the knob registry.
+
+**The reference set is not in this repository, and that is deliberate**
+(operator, 2026-08-11). It is eighteen screenshots of the reference game:
+ten outdoor-daylight frames, thirteen containing ground, four UI screens and
+one top-down map render (13 + 4 + 1 = 18; the daylight ten are a subset of the
+thirteen). They are Facepunch's images. This repo is public and MIT, so
+carrying them in the tree is *redistributing* them — which the IP rail below
+does not cover and `NOTICE` explicitly disclaims. They lived in `Rust Images/`
+until 2026-08-11 and were removed; nothing about the bar changed with them.
+
+**What survives the removal is the whole of the bar**, because this file
+records the *measurement* and never depended on re-reading the pixels: §3's
+table, §6's chroma band and every number below are derived statistics, already
+computed, and they are what a pass is scored against. A frame you cannot open
+is not a bar you cannot meet.
+
+To re-derive rather than trust: put your own copy of the set in a directory
+outside this tree, point **`GATES_REFERENCE_DIR`** at it, and run
+`ci/native_bar.py`. Without that variable the tool says so loudly and exits
+nonzero — it does not quietly score against nothing. Frames are cited below by
+filename (`generichighview2.jpg`) because a filename is a *reference to* an
+image, not a copy of one.
+
+**The island under the camera is seed 20260731**, and this file did not contain
+the word "seed" until 2026-08-14 — which is worth a line, because on that day a
+pass concluded the frames were flat *because the island was*, and the operator
+was one command from wiping the public shard for it. The measurement was a
+quarter of the island (an origin-centred sweep window on a world centred at
+1024, 1024). Over the whole square this seed reaches 106.00 m, slope 2.665 and
+granite on 10.0% of its land — upper third of 44 — and within 300 m of the
+camera's own spawn it paints 8.9%, where the median island paints 0%. **So a
+frame with no granite in it is the renderer's to answer for, not the seed's.**
+The seed is still an instrument setting like a vantage bearing: changing it
+makes frames incomparable across the change, so it is named here rather than
+left to whichever `shard.toml` the probe happened to dial
+(`sim-core/tests/relief.rs`, `examples/seed_scan`).
 
 The IP rail (`DECISIONS.md`) is unchanged and narrow: no proper nouns, no
-traced assets. Statistics of light and colour are nobody's property.
+traced assets. Statistics of light and colour are nobody's property — and that
+is precisely the line the removal draws, because a screenshot is not a
+statistic.
 
 ---
 
@@ -72,7 +109,7 @@ set is unanimous. Breaking one is a finding, not a taste dispute.
 
 ## 3 · The measured bar
 
-Ten outdoor-daylight frames of `Rust Images/`, Rec.601 luma over the whole
+Ten outdoor-daylight frames of the reference set, Rec.601 luma over the whole
 frame, sky band = top 25% of rows, near band = bottom 35%:
 
 | statistic | reference median | range | ours, 2026-08-03 |
@@ -180,7 +217,7 @@ Authored albedo stays inside `ALBEDO_LUMA_BAND = [0.05, 0.55]` linear
   the sea and not of the slope.
 - **The sea**: cold, dark, desaturated blue-**green** — Atlantic or Baltic,
   never Caribbean. Unusually for this file the source is the reference
-  developer's own words rather than a measurement off `Rust Images/`: they
+  developer's own words rather than a measurement off the reference set: they
   retuned their ocean to "a more Atlantic/Baltic sea colour" so it would look
   less out of place across biomes (`reference/WATER.md` §2). Green is the
   channel that survives depth in coastal water, and a sea whose deep body is
@@ -216,7 +253,7 @@ about type until 2026-08-07 and the client had no typeface at all — every
 screen drew in Bevy's embedded debug mono, which is the interface equivalent
 of §2's flat-value rule and reads as a prototype for the same reason. The
 target is **Roboto Condensed**, and unusually for this file the source is not
-a measurement off `Rust Images/` but a fact in the reference's own public
+a measurement off the reference set but a fact in the reference's own public
 source: `Facepunch/Rust.Community`'s `CommunityEntity.UI.cs` defaults its UI
 text to `RobotoCondensed-Bold.ttf`. Two rules follow, and the second is the
 one that carries the look:
@@ -246,10 +283,19 @@ helps us. then we can replace later."*
 
 The rule that replaces it:
 
-- **CC0 / public-domain sources only** (Poly Haven, ambientCG). No attribution
-  burden, no license file to carry, and orthogonal to the Facepunch rail —
-  which is proper nouns and traced assets, not the existence of a texture.
-  Anything else needs the operator.
+- **Four bases, and the rail is orthogonal to the Facepunch rail** — which is
+  proper nouns and traced assets, not the existence of a texture. **CC0** stays
+  the default (Poly Haven, ambientCG, Quaternius): no attribution burden, no
+  licence file to carry. **CC-BY is accepted** at the price of one `NOTICE`
+  entry plus the manifest row (operator, 2026-08-07). **NC and SA are refused**,
+  not on open-source grounds but because `BUSINESS.md` prices an entry fee, so
+  non-commercial does not survive contact with the product and share-alike does
+  not survive a closed depot. **Generated assets are accepted** — Meshy for
+  meshes, ElevenLabs for audio (operator, 2026-08-11) — and they are a
+  *contract*, not a licence: both vendors restrict commercial use to a paid
+  plan, so anything that ships is generated under one. A generated asset's
+  prompt is subject to the Facepunch rail exactly as a mesh is: it describes
+  the thing, never the source.
 - **`assets/textures/MANIFEST.md` records every file's source and licence.** A
   texture with no manifest row does not ship.
 - **Hybrid, not replacement.** Real maps supply base albedo / normal /
@@ -311,7 +357,7 @@ The rule that replaces it:
   local mean colour (a surface lighter here, darker there — real detail, and
   what §3's 6.3 counts) versus orthogonal to it (the hue changed between
   neighbouring pixels). Measured over the near-ground band of the thirteen
-  `Rust Images/` frames that actually contain ground — the four UI screenshots
+  reference frames that actually contain ground — the four UI screenshots
   and the top-down map render cannot define a statistic about ground — the
   references run **0.077–0.193 chroma per unit luma, median 0.120**. Above that
   band the frame is aliasing, not texture, and no amount of extra blur or

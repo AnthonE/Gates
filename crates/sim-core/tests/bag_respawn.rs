@@ -23,6 +23,35 @@ use sim_core::limits::TICK_HZ;
 use sim_core::survival::SurvivalContent;
 use sim_core::world::{Command, World, EV_RESPAWN};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 20260803;
 
 /// Row 3 of `DeployContent::probe_fixture` is the ground-class bag, and it
@@ -52,7 +81,7 @@ fn buildable_cell_near(seed: u64, cx0: u16, cz0: u16, skip: usize) -> (u16, u16)
                 let cx = (cx0 as i32 + dx).clamp(0, 1023) as u16;
                 let cz = (cz0 as i32 + dz).clamp(0, 1023) as u16;
                 let (x, z) = cell_center(cx, cz);
-                if foundation_terrain_ok(seed, x, z) {
+                if foundation_terrain_ok(seed, hv(seed), x, z) {
                     if found == skip {
                         return (cx, cz);
                     }
@@ -85,7 +114,7 @@ fn lone_world() -> World {
 
 fn stand(w: &mut World, cx: u16, cz: u16) {
     let (x, z) = cell_center(cx, cz);
-    w.players[0].body = sim_core::movement::Body::at(w.seed, x, z);
+    w.players[0].body = sim_core::movement::Body::at(w.seed, &w.haven, x, z);
 }
 
 /// Stand on the cell and place a bag on it through the real verb — no
@@ -96,6 +125,7 @@ fn place_bag(w: &mut World, cx: u16, cz: u16) {
     w.players[0].inv[10] = ItemStack {
         item: BAG_ITEM,
         count: 1,
+        cond: 0,
     };
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
@@ -159,7 +189,7 @@ fn die_and_wake(w: &mut World, on_bag: bool) -> (i32, i32) {
 /// respawn must produce, computed the way the respawn computes it.
 fn body_on(w: &World, cx: u16, cz: u16) -> (i32, i32) {
     let (x, z) = cell_center(cx, cz);
-    let b = sim_core::movement::Body::at(w.seed, x, z);
+    let b = sim_core::movement::Body::at(w.seed, &w.haven, x, z);
     (b.qx, b.qz)
 }
 
@@ -215,7 +245,7 @@ fn no_bag_is_still_the_spawn_ring() {
     let mut w = lone_world();
     let woke = die_and_wake(&mut w, true);
     let (x, z) = w.spawn_pos_n(1, 1);
-    let b = sim_core::movement::Body::at(SEED, x, z);
+    let b = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
     assert_eq!(
         woke,
         (b.qx, b.qz),
@@ -252,7 +282,7 @@ fn a_second_death_inside_the_cooldown_falls_back_to_the_ring() {
          this test proves nothing at that speed"
     );
     let (x, z) = w.spawn_pos_n(1, 2);
-    let b = sim_core::movement::Body::at(SEED, x, z);
+    let b = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
     assert_eq!(
         woke,
         (b.qx, b.qz),
@@ -399,7 +429,7 @@ fn the_beach_button_refuses_a_ready_bag() {
     die(&mut w);
     let woke = wake(&mut w, false);
     let (x, z) = w.spawn_pos_n(1, 1);
-    let b = sim_core::movement::Body::at(SEED, x, z);
+    let b = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
     assert_eq!(
         woke,
         (b.qx, b.qz),
@@ -454,7 +484,7 @@ fn asking_for_a_bag_you_have_not_got_is_a_beach() {
     die(&mut w);
     let woke = wake(&mut w, true);
     let (x, z) = w.spawn_pos_n(1, 1);
-    let b = sim_core::movement::Body::at(SEED, x, z);
+    let b = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
     assert_eq!(woke, (b.qx, b.qz), "an unanswerable ask stranded the body");
     assert_eq!(
         respawn_event(&w),
@@ -472,6 +502,7 @@ fn a_corpse_cannot_act() {
     w.players[0].inv[0] = ItemStack {
         item: BAG_ITEM,
         count: 4,
+        cond: 0,
     };
     die(&mut w);
     // The backpack took the inventory with it; put something back by hand
@@ -479,6 +510,7 @@ fn a_corpse_cannot_act() {
     w.players[0].inv[0] = ItemStack {
         item: BAG_ITEM,
         count: 4,
+        cond: 0,
     };
     let hash_before = w.state_hash();
 
@@ -582,5 +614,210 @@ fn the_death_screen_is_hashed_state() {
         dead,
         w.state_hash(),
         "the death screen is not inside state_hash"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The spawn kit across a death (DECISIONS.md 2026-08-15; `NOW.md` §0die
+// mechanism 3)
+//
+// The kit was granted on the fresh-spawn arm of `World::seat` and nowhere
+// else, because `inventory::grant_kit`'s own doc said re-granting "would be
+// an item printer". That was true of a kit worth 900 wood, 500 stone and 100
+// metal frags. It is false of a rock and a torch, and what the old rule
+// bought instead was the compound §0die names: your inventory drops into a
+// bag where you fell, the bag despawns on its timer, and no kit ever comes
+// back — so one death ended a session for good.
+//
+// These gates are content-blind on purpose. They install a two-entry kit of
+// fixture item ids rather than the shipped rock and torch, because what
+// `wake` owes is a MECHANISM — "a fresh body gets the floor it needs" — and
+// the shipped kit's identity is `crates/server/tests/spawn_kit.rs`'s
+// question. A kit-shaped assertion here would redden on every content edit
+// and say nothing about the code that changed.
+
+/// A two-entry kit of hand-item stand-ins, in `SpawnKit`'s own shape.
+///
+/// Ids 8 and 9 are outside every fixture table's live range, so nothing else
+/// in this file can pay them into a pocket and make a re-grant look like a
+/// gather.
+fn probe_kit() -> sim_core::inventory::SpawnKit {
+    let mut kit = sim_core::inventory::SpawnKit::EMPTY;
+    assert!(
+        kit.set(
+            0,
+            ItemStack {
+                item: 8,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "kit slot 0"
+    );
+    assert!(
+        kit.set(
+            1,
+            ItemStack {
+                item: 9,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "kit slot 1"
+    );
+    kit
+}
+
+/// **A respawn re-grants the spawn kit.** The §0die fix, and the assertion
+/// this whole file exists to carry now: a body that wakes is a NEW body, and
+/// a new body is armed exactly as the first one was.
+///
+/// Proven red by deleting `inventory::grant_kit` from `World::wake`: the
+/// death empties the inventory (the bag takes it, or an inert backpack table
+/// destroys it, and either way `wake`'s `..Player::default()` zeroes the
+/// slots), so without the grant every slot below reads `ItemStack::default()`
+/// and the first assertion fails on slot 0.
+#[test]
+fn a_respawn_re_grants_the_spawn_kit() {
+    let mut w = World::new(SEED);
+    w.combat = CombatContent::probe_fixture();
+    w.survival = SurvivalContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.spawn_kit = probe_kit();
+    w.tick(&[Command::Join { id: 1 }]);
+
+    // The fresh arm still works — otherwise the test below could pass on a
+    // kit that was never granted at all.
+    assert_eq!(
+        (w.players[0].inv[0], w.players[0].inv[1]),
+        (
+            ItemStack {
+                item: 8,
+                count: 1,
+                cond: 0
+            },
+            ItemStack {
+                item: 9,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "the fresh spawn did not get the kit — nothing below proves anything"
+    );
+
+    // Something the player EARNED, in a slot the kit does not write. It must
+    // not survive the death: a respawn that kept your pockets would make the
+    // assertion below true for the wrong reason.
+    w.players[0].inv[6] = ItemStack {
+        item: 3,
+        count: 40,
+        cond: 0,
+    };
+
+    die(&mut w);
+    wake(&mut w, false);
+
+    assert_eq!(
+        (w.players[0].inv[0], w.players[0].inv[1]),
+        (
+            ItemStack {
+                item: 8,
+                count: 1,
+                cond: 0
+            },
+            ItemStack {
+                item: 9,
+                count: 1,
+                cond: 0
+            }
+        ),
+        "a respawned body woke naked — the kit is still fresh-arm only"
+    );
+    assert_eq!(
+        w.players[0].inv[6],
+        ItemStack::default(),
+        "the death did not take what the player was carrying, so this test \
+         proves nothing about the re-grant"
+    );
+}
+
+/// **Every** death re-grants, and each one grants exactly the kit. The test
+/// above proves the first death; this proves the rule is not "the first one".
+///
+/// Proven red by granting only on the first death (`if deaths <= 1` around
+/// the `wake` call): this fails on iteration 2 reading 0 carried items while
+/// the test above stays green — which is the whole reason it is a separate
+/// gate. It is red on the missing grant too, on iteration 1.
+///
+/// ⚠ **What it does NOT catch, measured rather than assumed.** The first
+/// draft of this doc claimed it was red under a *merging* `grant_kit`
+/// (`inv_add` per stack instead of a slot write) — "two deaths cannot leave
+/// four rocks". That was run, and it is false: **no test in this file can
+/// tell a merge from a write**, because both live call sites grant into an
+/// inventory that was zeroed one line earlier — `seat`'s fresh arm builds
+/// the `Player` from scratch and `wake` respreads `..Player::default()`.
+/// `grant_kit`'s write-not-merge shape is therefore currently unobservable
+/// from here, and what actually keeps the kit from printing is that the
+/// grant only ever fires where the pockets were just emptied. THAT is the
+/// gate below (`a_live_body_pressing_respawn_is_not_paid`), and it is the
+/// one to keep red if a future pass lets a body carry anything through a
+/// death. Left written down because a plausible-sounding red proof that was
+/// never run is exactly the kind of gate `CLAUDE.md` says is not one.
+#[test]
+fn every_death_re_grants_the_kit_and_never_more_than_it() {
+    let mut w = World::new(SEED);
+    w.combat = CombatContent::probe_fixture();
+    w.survival = SurvivalContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.spawn_kit = probe_kit();
+    w.tick(&[Command::Join { id: 1 }]);
+
+    for n in 1..=3u16 {
+        die(&mut w);
+        wake(&mut w, false);
+        assert_eq!(w.players[0].deaths, n, "the death count is the loop's own");
+        let carried: u32 = w.players[0]
+            .inv
+            .iter()
+            .filter(|s| s.item == 8 || s.item == 9)
+            .map(|s| s.count as u32)
+            .sum();
+        assert_eq!(
+            carried, 2,
+            "after {n} deaths the body carries {carried} kit items, not 2 — \
+             the re-grant is minting"
+        );
+    }
+}
+
+/// A **living** body pressing respawn gets nothing. The wake path is the
+/// only door the kit comes through, and `World` refuses the command outright
+/// for a body that is standing (`a_respawn_press_from_a_live_body_is_a_no_op`
+/// owns the position half of that; this owns the pocket half).
+///
+/// Proven red by moving the `grant_kit` call out of `wake` and into the
+/// `Command::Respawn` arm ahead of the `dead` check — the shape somebody
+/// reaching for "grant it where the command arrives" would write.
+#[test]
+fn a_live_body_pressing_respawn_is_not_paid() {
+    let mut w = World::new(SEED);
+    w.combat = CombatContent::probe_fixture();
+    w.survival = SurvivalContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.spawn_kit = probe_kit();
+    w.tick(&[Command::Join { id: 1 }]);
+    // Empty the hands the fresh arm filled, so a grant that fires here is
+    // visible as a refill rather than hidden under what is already there.
+    w.players[0].inv = Default::default();
+
+    w.tick(&[Command::Respawn {
+        id: 1,
+        on_bag: false,
+    }]);
+    assert!(!w.players[0].dead, "the fixture body was not standing");
+    assert_eq!(
+        w.players[0].inv[0],
+        ItemStack::default(),
+        "a live press paid out a spawn kit — the kit is a free action"
     );
 }

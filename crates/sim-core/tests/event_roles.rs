@@ -76,30 +76,63 @@
 
 use sim_core::backpack::{BackpackContent, BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
 use sim_core::build::{
-    foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE,
+    foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
     REFUSE_B_COST, REFUSE_B_PIECE,
 };
-use sim_core::combat::CombatContent;
+use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
 use sim_core::craft::{CraftContent, REFUSE_INPUTS, REFUSE_RECIPE};
 use sim_core::deploy::{box_key, DeployContent, REFUSE_D_KIND, REFUSE_D_SPOT};
-use sim_core::gather::{cell_key, weak_mark8, GatherContent, ItemStack};
+use sim_core::gather::{cell_key, weak_mark8, GatherContent, ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{self, CONT_SELF, REFUSE_M_EMPTY};
-use sim_core::limits::TICK_HZ;
+use sim_core::limits::{INV_SLOTS, TICK_HZ};
 use sim_core::loot::LootContent;
-use sim_core::movement::{Body, POS_XZ_Q};
+use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::oven::CookContent;
+use sim_core::ranged::SURF_GROUND;
 use sim_core::survival::{SurvivalContent, DRINK_REACH_M, REFUSE_C_NOT_FOOD, REFUSE_C_NO_WATER};
 use sim_core::terrain;
 use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_MAX, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_HEALTH, EV_HIT, EV_KNOCK, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN,
-    EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED, EV_RESPAWN, EV_SLOT_HARVESTED,
-    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_IMPACT, EV_KNOCK, EV_KNOWN,
+    EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
+    EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED,
+    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_TRUST, EV_VITALS, EV_WEAK_MARK,
+    PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
+    TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
 };
 use sim_core::yaw_dir;
+
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
 
 const SEED: u64 = 20260802;
 /// The fixture's item 0: 34 damage, 2 m reach — three swings to kill.
@@ -223,22 +256,22 @@ const NO_SUCH_ROW: u16 = 9999;
 /// `EV_PIECE_PLACED` and `EV_DEPLOY_PLACED` both pack `level << 16 | loc
 /// << 8 | row`, and a check is blind to any pair of those three being
 /// swapped when two of them hold the same number. The doorway *piece* is
-/// row 3, so it goes on the west edge (`LOC_EDGE_W` = 2) to read 0/2/3;
-/// the door *deployable* is row 2, so it goes on the north edge
-/// (`LOC_EDGE_N` = 3) to read 0/3/2. Same discipline as `distinct_halves`,
+/// row 3, so it goes on the low-x edge (`LOC_EDGE_XLO` = 2) to read 0/2/3;
+/// the door *deployable* is row 2, so it goes on the low-z edge
+/// (`LOC_EDGE_ZLO` = 3) to read 0/3/2. Same discipline as `distinct_halves`,
 /// one field wider — and it is why there are two doorways here rather
 /// than one.
 ///
 /// With the arrangement standing a storey (`UPPER`) the two triples read
 /// 1/2/3 and 1/3/2: three different numbers each, and no longer a level
 /// that is only ever its own zero.
-const PIECE_EDGE: u8 = LOC_EDGE_W;
-const DOOR_EDGE: u8 = LOC_EDGE_N;
+const PIECE_EDGE: u8 = LOC_EDGE_XLO;
+const DOOR_EDGE: u8 = LOC_EDGE_ZLO;
 
 /// Where a raider stands to swing at the arrangement, and which way it
-/// faces. One build cell west of the target column, looking back east —
+/// faces. One build cell at −x of the target column, looking back +x —
 /// `combat.rs`'s own raid rig in the same posture, because the target scan
-/// picks the nearest anchor it is aimed at, and the west edge of the cell
+/// picks the nearest anchor it is aimed at, and the low-x edge of the cell
 /// is what that resolves to from here. Yaw 64/256 of a turn is +x over the
 /// 256-entry LUT.
 const RAID_YAW: u16 = 64 << 8;
@@ -296,11 +329,12 @@ fn duel_world() -> World {
     w.players[0].inv[0] = ItemStack {
         item: SPEAR,
         count: 1,
+        cond: 0,
     };
     let (fx, fz) = yaw_dir(YAW);
     let a = w.players[0].body;
     let (ax, az) = (a.qx as f32 * POS_XZ_Q, a.qz as f32 * POS_XZ_Q);
-    w.players[1].body = Body::at(SEED, ax + fx * REACH_M, az + fz * REACH_M);
+    w.players[1].body = Body::at(SEED, hv(SEED), ax + fx * REACH_M, az + fz * REACH_M);
     w
 }
 
@@ -313,6 +347,7 @@ fn arm_victim_with_junk(w: &mut World) {
     w.players[1].inv[0] = ItemStack {
         item: JUNK,
         count: JUNK_COUNT,
+        cond: 0,
     };
 }
 
@@ -389,6 +424,221 @@ fn distinct3(e: SimEvent, what: &str) {
         e.c
     );
 }
+
+/// `EV_SHOT: a = shooter id, b = yaw << 8 | pitch, c = speed << 16 | drop`.
+///
+/// The two packed fields are the exposure here. `b` and `c` are each two
+/// numbers in one word, so a check that only asserted "b is nonzero" would
+/// survive the halves being swapped inside the word — which is the byte-
+/// golden hole this file exists for, one level inside a field. Both are
+/// unpacked and asserted by half, with a fixture whose halves cannot be
+/// mistaken for each other (a yaw that does not fit in a byte, a pitch that
+/// is not the level default, a speed and a drop two orders apart).
+///
+/// The ballistics come from the **round**, not the bow — `PROJECTILES.md`
+/// §9.3 — so arming the bow alone must leave the shot unfired, and the
+/// fixture below would fail loudly rather than quietly if `ammo_def` ever
+/// started answering for the weapon.
+#[test]
+fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
+    /// Deliberately past a byte, so a swap of the halves of `b` cannot
+    /// produce a value that still looks like a plausible yaw.
+    const SHOT_YAW: u16 = 4_097;
+    /// Not 128 (the level default), so a zeroed pitch fails the check.
+    const SHOT_PITCH: u8 = 200;
+    const BOW: u16 = 5;
+    const ARROW: u16 = 6;
+    const SPEED_MMPT: u16 = 1_333;
+    const DROP_MMPT2: u16 = 22;
+
+    let mut w = duel_world();
+    w.combat.ranged[BOW as usize] = RangedDef {
+        damage: 30,
+        ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 60,
+        hitscan: false,
+        range_mm: 60_000,
+    };
+    w.combat.ammo[ARROW as usize] = AmmoDef {
+        speed_mmpt: SPEED_MMPT,
+        drop_mmpt2: DROP_MMPT2,
+    };
+    w.players[0].inv[0] = ItemStack {
+        item: BOW,
+        count: 1,
+        cond: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: ARROW,
+        count: 5,
+        cond: 0,
+    };
+    w.tick(&[Command::Input {
+        id: ATTACKER,
+        frame: InputFrame {
+            seq: 1,
+            buttons: BTN_PRIMARY,
+            yaw: SHOT_YAW,
+            pitch: SHOT_PITCH,
+            move_x: 0,
+            move_z: 0,
+            sel: 0,
+        },
+    }]);
+
+    let shot = only(&w, EV_SHOT);
+    distinct3(shot, "EV_SHOT");
+    assert_eq!(
+        shot.a, ATTACKER,
+        "EV_SHOT.a is who fired, not who was aimed at"
+    );
+    assert_eq!(
+        shot.b >> 8,
+        SHOT_YAW as u32,
+        "EV_SHOT.b's high half is yaw — the halves are the wrong way round"
+    );
+    assert_eq!(
+        shot.b & 0xff,
+        SHOT_PITCH as u32,
+        "EV_SHOT.b's low byte is pitch"
+    );
+    assert_eq!(
+        shot.c >> 16,
+        SPEED_MMPT as u32,
+        "EV_SHOT.c's high half is speed — a tracer flown at the drop would \
+         cross the island in a tick"
+    );
+    assert_eq!(
+        shot.c & 0xffff,
+        DROP_MMPT2 as u32,
+        "EV_SHOT.c's low half is drop"
+    );
+}
+
+/// `EV_IMPACT: a = SURF_* << 24 | x, b = z, c = y` — all three in the
+/// entity lane's quanta, `c` signed.
+///
+/// **The sharpest positional payload in the lane, and the reason this
+/// file exists.** `a`'s low half and `b` are the same kind of number in
+/// the same units — two axes of one point — so a transposition at the
+/// `events.push` site produces a mark somewhere else on the island with
+/// every other gate green: the encoder is untouched (golden green), the
+/// event queue is not in `state_hash` (replay green), and both are `u32`
+/// (clippy green). That is `reference/FINDINGS.md` §1's trap exactly, and
+/// the only thing that can see it is an assertion that knows which axis
+/// is which.
+///
+/// So the fixture stands the shooter somewhere x and z **cannot be
+/// confused**, and asserts it: `distinct_axes` below fails loudly rather
+/// than letting the checks pass vacuously if the spawn ever moves to a
+/// diagonal.
+///
+/// Straight down (`pitch` 0) for the surface: an arrow dropped from the
+/// eye meets the ground under the shooter's own feet, which is a
+/// `SURF_GROUND` this test can predict without re-implementing the stop
+/// ladder. The other two kinds are `ranged.rs`'s to decide and the
+/// wire-domain table's to bound; what is checked here is the *roles*.
+#[test]
+fn impact_names_the_surface_then_x_then_z_then_y() {
+    /// Straight down. `pitch_dir(0)` is the bottom of the 256-entry table
+    /// — planar scale ~0, vertical −1 — so the arrow falls from the eye
+    /// rather than flying, and what it meets is the ground below.
+    const DOWN: u8 = 0;
+    const BOW: u16 = 5;
+    const ARROW: u16 = 6;
+
+    let mut w = duel_world();
+    w.combat.ranged[BOW as usize] = RangedDef {
+        damage: 30,
+        ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 60,
+        hitscan: false,
+        range_mm: 60_000,
+    };
+    w.combat.ammo[ARROW as usize] = AmmoDef {
+        speed_mmpt: 1_333,
+        drop_mmpt2: 22,
+    };
+    w.players[0].inv[0] = ItemStack {
+        item: BOW,
+        count: 1,
+        cond: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: ARROW,
+        count: 5,
+        cond: 0,
+    };
+    // The victim would be under the falling arrow otherwise, and a body
+    // resolves before the world does — `EV_HIT`, not this.
+    w.players[1].dead = true;
+    w.players[1].active = false;
+
+    let (want_x, want_z) = (w.players[0].body.qx, w.players[0].body.qz);
+    assert_ne!(
+        want_x, want_z,
+        "the shooter stands on a diagonal, so x and z carry the same \
+         number and every axis check below is blind to a swap. Move the \
+         fixture, not the assertion."
+    );
+
+    w.tick(&[Command::Input {
+        id: ATTACKER,
+        frame: InputFrame {
+            seq: 1,
+            buttons: BTN_PRIMARY,
+            yaw: YAW,
+            pitch: DOWN,
+            move_x: 0,
+            move_z: 0,
+            sel: 0,
+        },
+    }]);
+    until(&mut w, EV_IMPACT);
+    let im = only(&w, EV_IMPACT);
+
+    assert_eq!(
+        im.a >> 24,
+        SURF_GROUND as u32,
+        "EV_IMPACT.a's high byte is the surface kind, and an arrow dropped \
+         onto open ground met the ground"
+    );
+    // One quantum of slack an axis: the stop point is the sample the loop
+    // broke on, not the shooter's own cell, so it may land a quantum
+    // either side. Slack this tight still cannot absorb a swap — the two
+    // axes are thousands of quanta apart.
+    let (got_x, got_z) = ((im.a & 0x00FF_FFFF) as i32, im.b as i32);
+    assert!(
+        (got_x - want_x).abs() <= 1,
+        "EV_IMPACT.a's low 24 bits are the impact's X ({want_x}), got \
+         {got_x} — if this reads as the Z ({want_z}), the axes are \
+         transposed at the push site"
+    );
+    assert!(
+        (got_z - want_z).abs() <= 1,
+        "EV_IMPACT.b is the impact's Z ({want_z}), got {got_z} — if this \
+         reads as the X ({want_x}), the axes are transposed at the push site"
+    );
+
+    // `c` signed, which no other field on this lane is: the ground under
+    // the shooter may be below datum, and the whole point of carrying the
+    // two's-complement pattern is that such a mark still lands there.
+    let ground_q = (terrain::height(SEED, want_x as f32 * POS_XZ_Q, want_z as f32 * POS_XZ_Q)
+        / POS_Y_Q) as i32;
+    let got_y = im.c as i32;
+    assert!(
+        (got_y - ground_q).abs() <= ARROW_STEP_Q,
+        "EV_IMPACT.c is the impact's Y in POS_Y_Q quanta ({ground_q} is \
+         the ground here), got {got_y}. A y read off the wrong axis, or \
+         read unsigned where the ground is below datum, lands here."
+    );
+}
+
+/// One tick of a falling arrow, in `POS_Y_Q` quanta — the slack the Y
+/// check above allows, stated as the sample spacing rather than guessed.
+/// The stop point is the first sample *under* the surface, so it may sit
+/// up to one segment below it.
+const ARROW_STEP_Q: i32 = 200;
 
 /// `EV_HIT: a = attacker player id, b = victim player id, c = damage`.
 ///
@@ -491,7 +741,7 @@ fn slot_harvested_on_a_barrel_names_the_cell_then_the_occupant() {
     let mut w = duel_world();
     w.loot = LootContent::probe_fixture();
     let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::BarrelSlot);
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     until(&mut w, EV_SLOT_HARVESTED);
     let ev = only(&w, EV_SLOT_HARVESTED);
     assert_ne!(
@@ -522,7 +772,7 @@ fn slot_harvested_on_a_barrel_names_the_cell_then_the_occupant() {
 fn slot_harvested_on_a_node_names_the_occupant_not_the_table_row() {
     let mut w = duel_world();
     let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::Tree);
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     until(&mut w, EV_SLOT_HARVESTED);
     let ev = only(&w, EV_SLOT_HARVESTED);
     assert_eq!(
@@ -598,6 +848,143 @@ fn gather_names_the_player_then_item_over_count() {
     );
 }
 
+/// `EV_GATHER_REFUSED: a = player id, b = held item index << 16 |
+/// gather::REFUSE_G_* reason` (wire v42).
+///
+/// Driven through the dead-tool cause rather than the wrong-tool one, and
+/// that is discipline 2 at work: `REFUSE_G_TOOL` is 1 and the swinger's id
+/// is 1, so the wrong-tool arrangement packs the same number into `a` and
+/// `b`'s low half and is blind to that exchange. The broken cause puts
+/// (1, 7, 2) in the three seats — all pairwise distinct.
+///
+/// The arrangement mutates the fixture the way every arrangement here
+/// does: the junk item is given a condition ceiling so a zero-condition
+/// stack of it reads as DEAD (`gather::swing`'s Q4 guard), and the tree's
+/// hand row is zeroed so the fallback pays nothing — the shipped content's
+/// own shape since 2026-08-15.
+#[test]
+fn gather_refused_names_the_player_then_item_over_reason() {
+    use sim_core::gather::{REFUSE_G_BROKEN, SWING_INTERVAL_TICKS};
+
+    // A tree with a clear stand point, found the way `tests/gather.rs`
+    // finds one: scan the scatter for an isolated one.
+    let table = sim_core::terrain::ScatterTable::alpha_default();
+    let haven = terrain::haven(SEED);
+    let mut found = None;
+    'scan: for cz in 40..216i32 {
+        for cx in 40..216i32 {
+            let s = terrain::scatter(SEED, &table, &haven, cx, cz);
+            if s.occupant != sim_core::terrain::Occupant::Tree {
+                continue;
+            }
+            let (px, pz) = (s.x - 1.2, s.z);
+            let py = terrain::height(SEED, px, pz);
+            if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
+                continue;
+            }
+            let pcx = (px / sim_core::terrain::CELL_SIZE) as i32;
+            let pcz = (pz / sim_core::terrain::CELL_SIZE) as i32;
+            let mut rivals = 0;
+            for ddz in -1..=1i32 {
+                for ddx in -1..=1i32 {
+                    let n = terrain::scatter(SEED, &table, &haven, pcx + ddx, pcz + ddz);
+                    let aims = sim_core::gather::node_index(n.occupant).is_some()
+                        || n.occupant == sim_core::terrain::Occupant::BarrelSlot;
+                    if aims && (n.x != s.x || n.z != s.z) {
+                        let d2 = (n.x - px) * (n.x - px) + (n.z - pz) * (n.z - pz);
+                        if d2 <= 6.25 {
+                            rivals += 1;
+                        }
+                    }
+                }
+            }
+            if rivals > 0 {
+                continue;
+            }
+            let (dx, dz) = (s.x - px, s.z - pz);
+            let mut best_yaw = 0u16;
+            let mut best_dot = f32::MIN;
+            for hi in 0..=255u16 {
+                let (fx, fz) = yaw_dir(hi << 8);
+                let dot = fx * dx + fz * dz;
+                if dot > best_dot {
+                    best_dot = dot;
+                    best_yaw = hi << 8;
+                }
+            }
+            found = Some(((px, pz), best_yaw));
+            break 'scan;
+        }
+    }
+    let ((px, pz), yaw) = found.expect("the seed offers an isolated tree");
+
+    let mut w = World::new(SEED);
+    w.gather = GatherContent::probe_fixture();
+    for n in w.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+        n.hand_yield = 0;
+    }
+    // The junk item gains a ceiling so a zero-condition stack of it is a
+    // DEAD tool rather than a mere non-tool. 123 is distinct from every
+    // other value in the check.
+    w.gather.cond_max[JUNK as usize] = 123;
+    w.dev_spawn = Some((px, pz));
+    w.tick(&[Command::Join { id: BODY }]);
+    w.players[0].inv[0] = ItemStack {
+        item: JUNK,
+        count: 1,
+        cond: 0,
+    };
+
+    let mut seq = 1u16;
+    let mut steps = 0u32;
+    loop {
+        w.tick(&[Command::Input {
+            id: BODY,
+            frame: InputFrame {
+                seq,
+                buttons: BTN_PRIMARY,
+                yaw,
+                pitch: 0,
+                move_x: 0,
+                move_z: 0,
+                sel: 0,
+            },
+        }]);
+        seq = seq.wrapping_add(1);
+        if w.events
+            .entries()
+            .iter()
+            .any(|e| e.code == EV_GATHER_REFUSED)
+        {
+            break;
+        }
+        steps += 1;
+        assert!(
+            steps < SWING_INTERVAL_TICKS as u32 * 4,
+            "no EV_GATHER_REFUSED within four swing windows — the cause is \
+             broken, not slow"
+        );
+    }
+
+    let got = only(&w, EV_GATHER_REFUSED);
+    distinct3(got, "EV_GATHER_REFUSED");
+    distinct_halves(got.b, "EV_GATHER_REFUSED.b (item over reason)");
+    assert_eq!(got.a, BODY, "EV_GATHER_REFUSED.a is who swung");
+    assert_eq!(
+        got.b >> 16,
+        JUNK as u32,
+        "EV_GATHER_REFUSED.b's HIGH half is the HELD item — the sentence \
+         names the torch, never bare hands"
+    );
+    assert_eq!(
+        got.b & 0xffff,
+        REFUSE_G_BROKEN,
+        "EV_GATHER_REFUSED.b's LOW half is the reason, and a dead tool is \
+         REFUSE_G_BROKEN"
+    );
+}
+
 // ---------------------------------------------------------------------
 // The survival lane: EV_VITALS, EV_CONSUMED, EV_DRANK, EV_CONSUME_REFUSED.
 //
@@ -665,7 +1052,7 @@ fn stand_at_the_shore(w: &mut World) {
                     || terrain::height(SEED, x, z + r) < terrain::SEA_LEVEL
                     || terrain::height(SEED, x, z - r) < terrain::SEA_LEVEL)
             {
-                w.players[0].body = Body::at(SEED, x, z);
+                w.players[0].body = Body::at(SEED, hv(SEED), x, z);
                 return;
             }
             z += 4.0;
@@ -688,7 +1075,7 @@ fn stand_inland(w: &mut World) {
                 .into_iter()
                 .all(|(dx, dz)| terrain::height(SEED, x + dx, z + dz) >= terrain::BEACH_MAX_H);
             if dry {
-                w.players[0].body = Body::at(SEED, x, z);
+                w.players[0].body = Body::at(SEED, hv(SEED), x, z);
                 return;
             }
             z += 4.0;
@@ -781,6 +1168,7 @@ fn consumed_names_the_player_then_item_over_slot() {
     w.players[0].inv[FOOD_SLOT as usize] = ItemStack {
         item: FOOD_ITEM,
         count: 1,
+        cond: 0,
     };
     w.tick(&[Command::Consume {
         id: BODY,
@@ -974,6 +1362,7 @@ fn build_refused_names_the_player_then_why() {
         cz,
         level: GROUND,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     let bad_row = only(&w, EV_BUILD_REFUSED);
     refused(
@@ -998,6 +1387,7 @@ fn build_refused_names_the_player_then_why() {
         cz,
         level: GROUND,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     let broke = only(&w, EV_BUILD_REFUSED);
     refused(
@@ -1115,7 +1505,7 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                     (cx as f32 + 0.5) * BUILD_CELL_M,
                     (cz as f32 + 0.5) * BUILD_CELL_M,
                 );
-                if foundation_terrain_ok(seed, x, z) {
+                if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);
                 }
             }
@@ -1148,7 +1538,7 @@ fn builder_world(w: &mut World) -> (u16, u16) {
         (cx as f32 + 0.5) * BUILD_CELL_M,
         (cz as f32 + 0.5) * BUILD_CELL_M,
     );
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     // The fixture's costs: the wood pieces are paid in item 0, the stone
     // ones (the floor this arrangement's second storey stands on) in item
     // 1, the hearth in item 2, the door in item 4, the code lock in item 7.
@@ -1156,13 +1546,17 @@ fn builder_world(w: &mut World) -> (u16, u16) {
     // fixture's bug, not the sim's. Slot 4 is left free on purpose: the
     // oven test below stocks the fire's own item there.
     for (slot, item) in [(0usize, 0u16), (1, 1), (2, 2), (3, 4), (5, 7)] {
-        w.players[0].inv[slot] = ItemStack { item, count: 200 };
+        w.players[0].inv[slot] = ItemStack {
+            item,
+            count: 200,
+            cond: 0,
+        };
     }
     (cx, cz)
 }
 
 /// The storey the addressed checks read: a foundation on the ground, a wall
-/// on its west edge, and a floor on top of the wall — so `UPPER` is a real,
+/// on its low-x edge, and a floor on top of the wall — so `UPPER` is a real,
 /// supported level rather than a number the test asserts about an empty
 /// column. The wall is not decoration: `build.rs`'s support rule v0 carries
 /// a floor on *an edge piece under one of the cell's four sides*, so a
@@ -1171,7 +1565,7 @@ fn builder_world(w: &mut World) -> (u16, u16) {
 /// landed.
 fn stand_a_storey(w: &mut World, cx: u16, cz: u16) {
     place_piece(w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
-    place_piece(w, PIECE_WALL, cx, cz, GROUND, LOC_EDGE_W);
+    place_piece(w, PIECE_WALL, cx, cz, GROUND, LOC_EDGE_XLO);
     place_piece(w, PIECE_FLOOR, cx, cz, UPPER, LOC_PLANE);
 }
 
@@ -1185,6 +1579,7 @@ fn place_piece(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
         cz,
         level,
         loc,
+        freehand: false,
     }]);
     assert_eq!(
         w.pieces.len(),
@@ -1235,16 +1630,24 @@ fn place_deploy(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
     );
 }
 
+/// The raid stance: one cell west of the target column. Split out of
+/// [`raid_until`] so a fixture can also PLACE from it — a wall's soft side
+/// faces its placer (hard/soft v0), and a payload test that wants full
+/// damage landing must build the wall from where it will swing.
+fn stand_at_raid_stance(w: &mut World, cx: u16, cz: u16) {
+    let (x, z) = (
+        (cx as f32 + 0.5 - RAID_OFFSET_CELLS) * BUILD_CELL_M,
+        (cz as f32 + 0.5) * BUILD_CELL_M,
+    );
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+}
+
 /// Move the builder one cell west of the target column and face it, then
 /// swing until `code` lands. The raid posture: the target scan wants an
 /// anchor it is aimed at, and a body standing *inside* its own cell is not
 /// aiming at that cell's edges.
 fn raid_until(w: &mut World, cx: u16, cz: u16, code: u8) {
-    let (x, z) = (
-        (cx as f32 + 0.5 - RAID_OFFSET_CELLS) * BUILD_CELL_M,
-        (cz as f32 + 0.5) * BUILD_CELL_M,
-    );
-    w.players[0].body = Body::at(SEED, x, z);
+    stand_at_raid_stance(w, cx, cz);
     let mut seq = 0u16;
     for _ in 0..MAX_STEPS {
         w.tick(&[Command::Input {
@@ -1283,7 +1686,11 @@ fn oven_names_the_cell_then_its_state_then_who_lit_it() {
     // The fixture's fire costs item 0 to place and item 6 to hold; the
     // builder's kit above carries neither, so stock both here rather than
     // widening a fixture four other tests read.
-    w.players[0].inv[4] = ItemStack { item: 6, count: 4 };
+    w.players[0].inv[4] = ItemStack {
+        item: 6,
+        count: 4,
+        cond: 0,
+    };
     place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
 
     // Fuel goes in through the container the oven IS: one unit of item 0,
@@ -1291,8 +1698,15 @@ fn oven_names_the_cell_then_its_state_then_who_lit_it() {
     // refusal, not an announcement — which is itself asserted below.
     let key = box_key(cx, cz, GROUND);
     let i = w.deploys.box_index(key).expect("the fire is a container");
-    w.deploys
-        .set_box_slot(i, 0, ItemStack { item: 0, count: 2 });
+    w.deploys.set_box_slot(
+        i,
+        0,
+        ItemStack {
+            item: 0,
+            count: 2,
+            cond: 0,
+        },
+    );
 
     w.tick(&[Command::Use {
         id: BUILDER,
@@ -1738,7 +2152,7 @@ fn the_placement_and_the_feed_disagree_about_field_a_on_purpose() {
 /// draws a wall gaining health as it is beaten, and the fixture keeps the
 /// halves apart (34 dealt, 66 left) so this check can see it.
 ///
-/// The target is a wood wall on the *west edge* of the ground storey, which
+/// The target is a wood wall on the *low-x edge* of the ground storey, which
 /// is what makes `b` readable: a foundation would address 0/0/0 and a check
 /// against three zeroes is blind to every permutation of them.
 #[test]
@@ -1746,6 +2160,11 @@ fn struct_hit_names_the_cell_then_the_address_then_damage_over_hp_left() {
     let mut w = World::new(SEED);
     let (cx, cz) = builder_world(&mut w);
     place_piece(&mut w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    // Place the wall FROM the raid stance (hard/soft v0): a placement's
+    // soft side faces the placer, and this fixture's whole point is the
+    // full `STRUCT_DAMAGE` landing — the hard side pays 1 and would make
+    // the c-half assertion a test of the side rule instead of the payload.
+    stand_at_raid_stance(&mut w, cx, cz);
     place_piece(&mut w, PIECE_WALL, cx, cz, GROUND, PIECE_EDGE);
     raid_until(&mut w, cx, cz, EV_STRUCT_HIT);
 
@@ -2060,6 +2479,10 @@ fn piece_removed_names_the_cell_then_the_address_it_was_hit_at() {
     let mut w = World::new(SEED);
     let (cx, cz) = builder_world(&mut w);
     place_piece(&mut w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    // From the raid stance, so the swings meet the SOFT side and the wall
+    // actually falls inside the step budget (hard/soft v0 — the hard side
+    // pays 1 a swing, and this test is about the removal payload).
+    stand_at_raid_stance(&mut w, cx, cz);
     place_piece(&mut w, PIECE_WALL, cx, cz, GROUND, PIECE_EDGE);
     raid_until(&mut w, cx, cz, EV_STRUCT_HIT);
     let hit = only(&w, EV_STRUCT_HIT);
@@ -2196,6 +2619,7 @@ fn moved_names_the_address_and_what_moved() {
     w.players[0].inv[0] = ItemStack {
         item: JUNK,
         count: 30,
+        cond: 0,
     };
     w.players[0].inv[9] = ItemStack::default();
 
@@ -2313,6 +2737,7 @@ fn charge_placed_names_the_cell_then_the_address_then_the_fuse() {
     w.players[0].inv[CHARGE_SLOT as usize] = ItemStack {
         item: CHARGE_ITEM,
         count: 3,
+        cond: 0,
     };
     // Select the charge on its own tick. Buttons stay at zero throughout:
     // item 3 is also a melee row in this fixture, and a held primary would
@@ -2475,7 +2900,7 @@ fn weak_mark_names_the_swinger_then_the_cell_then_bit_over_heading() {
     let mut w = duel_world();
     let (x, z, cx, cz) = scanned_slot(&w, terrain::Occupant::Tree);
     let ck = cell_key(cx, cz);
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     until(&mut w, EV_WEAK_MARK);
     let first = only(&w, EV_WEAK_MARK);
     assert_eq!(first.a, ATTACKER, "EV_WEAK_MARK.a is the SWINGER");
@@ -2500,7 +2925,7 @@ fn weak_mark_names_the_swinger_then_the_cell_then_bit_over_heading() {
     // Stand where that heading points and face back at the node — the
     // sector the sim itself just named — then land the second hit.
     let (mx, mz) = yaw_dir((mark as u16) << 8);
-    w.players[0].body = Body::at(SEED, x + mx * WEAK_STAND_M, z + mz * WEAK_STAND_M);
+    w.players[0].body = Body::at(SEED, hv(SEED), x + mx * WEAK_STAND_M, z + mz * WEAK_STAND_M);
     let back = (((mark as u16) + 128) & 0xff) << 8;
     until_facing(&mut w, back, EV_WEAK_MARK);
     let second = only(&w, EV_WEAK_MARK);
@@ -2538,7 +2963,7 @@ fn slot_respawned_names_the_cell_that_stood_back_up() {
         "the scanned cell packs the same value into both halves of its \
          key, so this check cannot see the key pack reversed"
     );
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     until(&mut w, EV_SLOT_HARVESTED);
     let due = w
         .slot_lives
@@ -2605,8 +3030,16 @@ fn craft_done_names_the_crafter_then_item_over_units() {
     for s in w.players[0].inv.iter_mut() {
         *s = ItemStack::default();
     }
-    w.players[0].inv[0] = ItemStack { item: 1, count: 2 };
-    w.players[0].inv[1] = ItemStack { item: 2, count: 1 };
+    w.players[0].inv[0] = ItemStack {
+        item: 1,
+        count: 2,
+        cond: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: 2,
+        count: 1,
+        cond: 0,
+    };
     w.tick(&[Command::Craft {
         id: BODY,
         recipe: RECIPE_PAYS_ONE,
@@ -2637,6 +3070,7 @@ fn craft_done_names_the_crafter_then_item_over_units() {
         ItemStack {
             item: def.output,
             count: def.out_count,
+            cond: 0,
         },
         "and the inventory holds what the event announced"
     );
@@ -2645,11 +3079,16 @@ fn craft_done_names_the_crafter_then_item_over_units() {
     // stack the batch does not empty, every other slot is full of the
     // output at its own ceiling, and the doc's parenthetical is the law
     // under test: the loss is announced, never silent.
-    w.players[0].inv[0] = ItemStack { item: 0, count: 4 };
+    w.players[0].inv[0] = ItemStack {
+        item: 0,
+        count: 4,
+        cond: 0,
+    };
     for s in w.players[0].inv.iter_mut().skip(1) {
         *s = ItemStack {
             item: 2,
             count: 100,
+            cond: 0,
         };
     }
     w.tick(&[Command::Craft {
@@ -2743,7 +3182,7 @@ fn bag_removed_names_the_bag_then_why() {
     let (fx, fz) = yaw_dir(YAW);
     let a = w.players[0].body;
     let (ax, az) = (a.qx as f32 * POS_XZ_Q, a.qz as f32 * POS_XZ_Q);
-    w.players[1].body = Body::at(SEED, ax + fx * REACH_M, az + fz * REACH_M);
+    w.players[1].body = Body::at(SEED, hv(SEED), ax + fx * REACH_M, az + fz * REACH_M);
     arm_victim_with_junk(&mut w);
     until(&mut w, EV_BAG_DROPPED);
     let second_bag = w.backpacks.next_id() - 1;
@@ -2817,7 +3256,7 @@ fn respawn_names_the_player_then_which_anchor_answered() {
         (cx as f32 + 0.5) * BUILD_CELL_M,
         (cz as f32 + 0.5) * BUILD_CELL_M,
     );
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
 
     // Cause one: the beach button. No bag exists yet either, so both
     // reasons the ring can answer agree about what `b` must say.
@@ -2835,7 +3274,7 @@ fn respawn_names_the_player_then_which_anchor_answered() {
     );
     assert_eq!(beach.c, 0, "EV_RESPAWN states no role for c");
     let (rx, rz) = w.spawn_pos_n(SLEEPER, 1);
-    let ring = Body::at(SEED, rx, rz);
+    let ring = Body::at(SEED, hv(SEED), rx, rz);
     assert_eq!(
         (w.players[0].body.qx, w.players[0].body.qz),
         (ring.qx, ring.qz),
@@ -2844,10 +3283,11 @@ fn respawn_names_the_player_then_which_anchor_answered() {
 
     // Cause two: a bag of the body's own, placed through the real verb,
     // asked for by the button that wants one.
-    w.players[0].body = Body::at(SEED, x, z);
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
     w.players[0].inv[0] = ItemStack {
         item: BAG_PLACE_ITEM,
         count: 1,
+        cond: 0,
     };
     let before = w.deploys.len();
     w.tick(&[Command::PlaceDeploy {
@@ -2880,7 +3320,7 @@ fn respawn_names_the_player_then_which_anchor_answered() {
         "EV_RESPAWN.b is 1 when the body woke on its OWN bag"
     );
     assert_eq!(bagged.c, 0, "EV_RESPAWN states no role for c");
-    let on_bag = Body::at(SEED, x, z);
+    let on_bag = Body::at(SEED, hv(SEED), x, z);
     assert_eq!(
         (w.players[0].body.qx, w.players[0].body.qz),
         (on_bag.qx, on_bag.qz),
@@ -2969,6 +3409,59 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
     seen
 }
 
+/// **A swing is a swing whether or not it hit anything.** `EV_SWING` is
+/// pushed from `gather::swing`'s cadence gate, the only line in the tree
+/// that runs exactly once per swing regardless of outcome, so the case
+/// this drives is the hard one: a body swinging at empty air.
+///
+/// `EV_HIT` cannot stand in for it, and this test says so by construction —
+/// nothing is struck here, so a fact keyed on a hit would produce zero
+/// events and `only` would fail on the vacuity rather than on the role.
+///
+/// Two mutants, both proven: moving the push below the target scan (so
+/// only a landed swing announces) reddens this with zero events, and
+/// putting `p.id` in `b` reddens the `a` assertion. `b` and `c` are
+/// asserted zero rather than ignored — they are the room this fact has for
+/// a held item later, and a stray value in one now is the positional
+/// payload trap this whole suite exists to catch.
+#[test]
+fn swing_names_the_swinger_and_nothing_else() {
+    use sim_core::gather::SWING_INTERVAL_TICKS;
+    assert_ne!(BODY, 0, "a zero swinger id makes the role check vacuous");
+    let mut w = lone_world();
+    let mut seq = 1u16;
+    let mut steps = 0u32;
+    loop {
+        w.tick(&[Command::Input {
+            id: BODY,
+            frame: InputFrame {
+                seq,
+                buttons: BTN_PRIMARY,
+                yaw: 0,
+                pitch: 0,
+                move_x: 0,
+                move_z: 0,
+                sel: 0,
+            },
+        }]);
+        seq = seq.wrapping_add(1);
+        if count(&w, EV_SWING) > 0 {
+            break;
+        }
+        steps += 1;
+        assert!(
+            steps < SWING_INTERVAL_TICKS as u32 * 4,
+            "no EV_SWING within four swing windows — the cause is broken, \
+             not slow"
+        );
+    }
+
+    let got = only(&w, EV_SWING);
+    assert_eq!(got.a, BODY, "EV_SWING.a is who swung");
+    assert_eq!(got.b, 0, "EV_SWING.b is reserved and must stay zero");
+    assert_eq!(got.c, 0, "EV_SWING.c is reserved and must stay zero");
+}
+
 /// Coverage, stated rather than implied — and now earned rather than
 /// asserted.
 ///
@@ -2998,8 +3491,9 @@ fn declared_event_codes() -> Vec<(&'static str, u8)> {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 32] = [
+    const COVERED: [(&str, u8); 40] = [
         ("EV_GATHER", EV_GATHER),
+        ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
         ("EV_CRAFT_REFUSED", EV_CRAFT_REFUSED),
         ("EV_PIECE_PLACED", EV_PIECE_PLACED),
@@ -3031,6 +3525,13 @@ fn coverage_is_stated_not_implied() {
         ("EV_CRAFT_DONE", EV_CRAFT_DONE),
         ("EV_BAG_REMOVED", EV_BAG_REMOVED),
         ("EV_RESPAWN", EV_RESPAWN),
+        ("EV_RESEARCH", EV_RESEARCH),
+        ("EV_RESEARCH_REFUSED", EV_RESEARCH_REFUSED),
+        ("EV_SHOT", EV_SHOT),
+        ("EV_KNOWN", EV_KNOWN),
+        ("EV_IMPACT", EV_IMPACT),
+        ("EV_TRUST", EV_TRUST),
+        ("EV_SWING", EV_SWING),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next
@@ -3271,5 +3772,805 @@ fn death_causes_are_a_closed_ledger() {
             "the death causes are not 0..=DEATH_BY_MAX with no gaps: {:?}",
             seen
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Research (research v0) — `EV_RESEARCH` and `EV_RESEARCH_REFUSED`.
+//
+// Both are own-facts keyed on `a = the player`, which is what lets the
+// server route them with `client_slot_of`. `EV_RESEARCH` then carries two
+// small integers in `b` and `c` — the recipe and the coin burned — which is
+// exactly the positional payload a byte-golden cannot see swapped, since
+// each fits the other's field. The fixture's recipe is 2 and its cost is 5
+// so the swap is visible.
+
+/// A world with a placed research table (fixture row 7) and a player
+/// holding the sample (item 4) and the coin (item 3).
+fn table_world(w: &mut World) {
+    w.gather = GatherContent::probe_fixture();
+    w.build = BuildContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.craft = sim_core::craft::CraftContent::probe_fixture();
+    w.research = sim_core::research::ResearchContent::probe_fixture();
+    w.tick(&[Command::Join { id: BUILDER }]);
+    let (cx, cz) = buildable_cell(SEED);
+    let (x, z) = (
+        (cx as f32 + 0.5) * BUILD_CELL_M,
+        (cz as f32 + 0.5) * BUILD_CELL_M,
+    );
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    w.players[0].inv[0] = ItemStack {
+        item: 10,
+        count: 1,
+        cond: 0,
+    };
+    w.tick(&[Command::PlaceDeploy {
+        id: BUILDER,
+        row: 7,
+        cx,
+        cz,
+        level: 0,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(
+        w.deploys.len(),
+        1,
+        "the table has to stand or nothing fires"
+    );
+    w.players[0].inv[0] = ItemStack {
+        item: 4,
+        count: 1,
+        cond: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: 3,
+        count: 20,
+        cond: 0,
+    };
+}
+
+/// `EV_RESEARCH: a = player, b = recipe, c = coin burned`.
+#[test]
+fn research_names_the_player_then_the_recipe_then_the_price() {
+    let mut w = World::new(SEED);
+    table_world(&mut w);
+    w.tick(&[Command::Research {
+        id: BUILDER,
+        slot: 0,
+    }]);
+    let ev = only(&w, EV_RESEARCH);
+    assert_eq!(ev.a, BUILDER, "EV_RESEARCH.a is the LEARNER");
+    assert_eq!(ev.b, 2, "EV_RESEARCH.b is the RECIPE, not the cost");
+    assert_eq!(ev.c, 5, "EV_RESEARCH.c is the COST, not the recipe");
+    assert_ne!(
+        ev.b, ev.c,
+        "the fixture's two fields must differ or this check proves nothing"
+    );
+}
+
+/// `EV_RESEARCH_REFUSED: a = player, b = reason`.
+#[test]
+fn research_refused_names_the_player_then_why() {
+    let mut w = World::new(SEED);
+    table_world(&mut w);
+    // An empty slot: a refusal that needs nothing else arranged.
+    w.tick(&[Command::Research {
+        id: BUILDER,
+        slot: 9,
+    }]);
+    let ev = only(&w, EV_RESEARCH_REFUSED);
+    assert_eq!(ev.a, BUILDER, "EV_RESEARCH_REFUSED.a is the ASKER");
+    assert_eq!(
+        ev.b,
+        sim_core::research::REFUSE_R_SLOT,
+        "EV_RESEARCH_REFUSED.b is the REASON"
+    );
+    assert_ne!(
+        ev.a, ev.b,
+        "and they differ, so a swap shows here rather than passing"
+    );
+}
+
+/// `EV_KNOWN: a = the player who holds it, b = the mask's low 32 bits,
+/// c = its high 32 bits`.
+///
+/// A `u64` through two `u32` fields, which is this file's packed-field
+/// exposure at its widest: a check made with a small mask is blind to `b`
+/// and `c` being swapped, because the high half would be 0 either way and
+/// zero survives any permutation with itself. The fixture sets bit 3 and
+/// bit 40, so the halves are 8 and 256 — different from each other and
+/// from the player id, which is what makes the three assertions below able
+/// to fail.
+///
+/// **The cause is a real death, not a hand-set flag**, and that is the
+/// second thing this checks. `wake` rebuilds the record from
+/// `Player::default()` and names what a body carries through; until
+/// 2026-08-15 `known` was not on that list, so every death deleted every
+/// blueprint the player had bought with OBOL. The clock kills the body
+/// here — `starve` is the same real cause `respawn_names_the_player…`
+/// uses — and the mask has to come back out the other side intact.
+#[test]
+fn known_names_the_holder_then_the_mask_low_half_first() {
+    const HOLDER: u32 = 6;
+    // Bit 3 and bit 40: `KNOWN_MASK_BITS` is 64, so the high half is
+    // reachable, and these two put 8 in `b` and 256 in `c`.
+    const WIDE: u64 = 1 << 3 | 1 << 40;
+
+    let mut w = World::new(SEED);
+    w.combat = CombatContent::probe_fixture();
+    w.survival = SurvivalContent::probe_fixture();
+    w.deploy = DeployContent::probe_fixture();
+    w.tick(&[Command::Join { id: HOLDER }]);
+    // The join stated an empty mask, which is a fact and is checked in
+    // `research.rs`. Set the blueprints the body is about to die holding.
+    w.players[0].known = WIDE;
+
+    starve(&mut w);
+    w.tick(&[Command::Respawn {
+        id: HOLDER,
+        on_bag: false,
+    }]);
+
+    let ev = only(&w, EV_KNOWN);
+    distinct3(ev, "EV_KNOWN");
+    assert_eq!(ev.a, HOLDER, "EV_KNOWN.a is who holds the blueprints");
+    assert_eq!(
+        ev.b, WIDE as u32,
+        "EV_KNOWN.b is the LOW 32 bits — `encode_event_known` reassembles \
+         `b | c << 32`, so the halves reversed here would hand the client \
+         a mask naming recipes nobody bought"
+    );
+    assert_eq!(ev.c, (WIDE >> 32) as u32, "EV_KNOWN.c is the high 32 bits");
+    assert_eq!(
+        ev.b as u64 | (ev.c as u64) << 32,
+        WIDE,
+        "the two halves do not reassemble into the mask the body held"
+    );
+
+    // And the sim agrees with what it just announced: a death that dropped
+    // the mask but announced the old one would satisfy every check above.
+    assert_eq!(
+        w.players[0].known, WIDE,
+        "a real death erased blueprints bought with OBOL — `wake` is not \
+         carrying `known` across"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The trust ledger (`EV_TRUST`) — `PLAYERS.md` wall 3.
+//
+// The one event in this lane whose subject is a *pair of people*, and the
+// only one carrying whether the counterparty was online. Everything this
+// file's header says about role checks applies harder here: `a` and `b`
+// are both player ids, so a swap at an emit site turns "the stranger
+// worked the owner's door" into "the owner worked the stranger's" and no
+// other gate in this repo can see it — the encoder cannot, because nothing
+// encodes this event at all. `distinct3` refuses a fixture where the two
+// ids are the same number, and every cause below drives a *stranger*
+// against a *builder* so they never can be.
+//
+// `c` is two packed fields, which takes `distinct_halves`' discipline one
+// pack narrower: `verb << 8 | presence`, and a reading where the verb and
+// the presence carry the same number is blind to the pack reversed. The
+// three causes are paired as a derangement — door/asleep, auth/gone,
+// container/awake — so every value in both domains is driven, no reading
+// has verb == presence, and neither byte can be a constant across the
+// file. `distinct_pack8` fails loudly if a later edit lines a pair up.
+
+/// A stranger — a second body, joined into the builder's world and stood
+/// at the builder's feet so every reach check the verbs make is paid.
+///
+/// `BUILDER + 1` rather than a small number: `EV_TRUST` carries two player
+/// ids side by side and the whole point of this suite is that swapping
+/// them is visible, so the two must differ and neither may be 0 or 1 —
+/// which is what half the packed fields in this lane read as.
+const OUTSIDER: u32 = BUILDER + 1;
+
+fn stand_an_outsider(w: &mut World) {
+    assert_ne!(
+        OUTSIDER, BUILDER,
+        "the two bodies must be distinguishable or a swapped a/b reads green"
+    );
+    w.tick(&[Command::Join { id: OUTSIDER }]);
+    let slot = outsider_slot(w);
+    w.players[slot].body = w.players[0].body;
+}
+
+fn outsider_slot(w: &World) -> usize {
+    (0..8)
+        .find(|&i| w.players[i].active && w.players[i].id == OUTSIDER)
+        .expect("the outsider joined")
+}
+
+/// Put the builder's body to sleep through the real verb, and prove it — a
+/// `Leave` that silently did nothing would leave every presence assertion
+/// below reading `AWAKE` and passing for the wrong reason.
+fn put_the_builder_to_sleep(w: &mut World) {
+    w.tick(&[Command::Leave { id: BUILDER }]);
+    assert!(
+        w.players[0].sleeping,
+        "the builder is still awake after Leave — the fixture, not the \
+         mechanic"
+    );
+    assert!(
+        w.players[0].active,
+        "a sleeper keeps its slot (`Player::sleeping`). If it stopped doing \
+         so, the ASLEEP cause below is measuring GONE and naming it ASLEEP"
+    );
+}
+
+/// Take the sleeping builder's body out of the world through the real
+/// verb. `Command::Evict` is the second phase of the server's two-phase
+/// eviction and the only way a body ever vacates its slot (`world.rs`), so
+/// `PRESENCE_GONE` is proven against a cause the sim can actually produce
+/// rather than against a poked `active` flag.
+fn evict_the_builder(w: &mut World) {
+    put_the_builder_to_sleep(w);
+    w.tick(&[Command::Evict { id: BUILDER }]);
+    assert!(
+        !w.players.iter().any(|p| p.active && p.id == BUILDER),
+        "the eviction left the builder's body in the world — this cause is \
+         measuring ASLEEP and naming it GONE"
+    );
+}
+
+/// `distinct_halves`, one pack narrower: `EV_TRUST.c` is `verb << 8 |
+/// presence`, two byte fields rather than two halfwords, and a reading
+/// where they carry the same number cannot see the pack reversed.
+fn distinct_pack8(packed: u32, what: &str) {
+    assert!(
+        packed >> 8 != packed & 0xff,
+        "{what} packs {} into both bytes, so this check cannot see the pack \
+         reversed. Move the fixture, not the assertion.",
+        packed >> 8
+    );
+}
+
+/// `EV_TRUST: a = the player who acted, b = the counterparty, c = verb << 8
+/// | presence` — cause one: **a door, against an owner who is asleep.**
+///
+/// The offline raid, which is the row the whole ledger exists for. The
+/// leaf is bare on purpose: a door with no lock is anyone's
+/// (`reference/DOORS.md` §1), so nothing here is about a grant — it is a
+/// hand working a leaf somebody else placed, which is exactly the fact a
+/// raid record wants and exactly the fact no other event in this lane
+/// carries. `EV_DOOR` announces the leaf on the same tick and is asserted
+/// here, because the trust row deliberately carries no address and a
+/// reader joins the two by tick.
+#[test]
+fn trust_names_the_actor_the_owner_and_a_door_worked_while_they_slept() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
+    stand_an_outsider(&mut w);
+    put_the_builder_to_sleep(&mut w);
+
+    w.tick(&[Command::Use {
+        id: OUTSIDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+    }]);
+
+    let t = only(&w, EV_TRUST);
+    distinct3(t, "EV_TRUST");
+    distinct_pack8(t.c, "EV_TRUST.c");
+    assert_eq!(
+        t.a, OUTSIDER,
+        "EV_TRUST.a is the hand that ACTED, not whose door it was"
+    );
+    assert_eq!(
+        t.b, BUILDER,
+        "EV_TRUST.b is the COUNTERPARTY — the player whose record the verb \
+         answered to. Reading the actor here is the a/b swap this whole \
+         file exists to catch, committed on the one event where it rewrites \
+         who betrayed whom"
+    );
+    assert_eq!(
+        t.c >> 8,
+        TRUST_DOOR as u32,
+        "EV_TRUST.c's high byte is the VERB"
+    );
+    assert_eq!(
+        t.c & 0xff,
+        PRESENCE_ASLEEP as u32,
+        "EV_TRUST.c's low byte is the PRESENCE, and the owner is a sleeper"
+    );
+    // The address is not on this event and is not lost: the verb's own
+    // addressed announcement rides the same tick.
+    assert_eq!(
+        count(&w, EV_DOOR),
+        1,
+        "the trust row carries no address, so it is only readable joined to \
+         the verb's own event on the same tick — and there is no EV_DOOR here"
+    );
+    // And the verb actually happened. A role check against a cause that did
+    // nothing is a check on a lie.
+    assert!(
+        w.deploys
+            .entries()
+            .iter()
+            .any(|d| d.cx == cx && d.cz == cz && d.level == UPPER && d.open),
+        "the leaf never moved, so this row is about nothing"
+    );
+}
+
+/// Cause two: **a grant, against an owner whose body is gone.**
+///
+/// `knock_and_auth_name_the_door_then_the_player`'s fixture — a lock the
+/// outsider has never been on, a correct code — with the owner evicted
+/// first. Two things ride on the pairing. `PRESENCE_GONE` is its own value
+/// and not a shade of `ASLEEP`, so it needs its own cause; and this reading
+/// must differ from cause one's in *both* bytes, or neither byte is proven
+/// to be a channel.
+#[test]
+fn trust_names_a_grant_taken_on_the_lock_of_a_body_that_is_gone() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
+    bolt_lock(&mut w, cx, cz, UPPER, DOOR_EDGE);
+    w.tick(&[Command::Access {
+        id: BUILDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+        op: sim_core::deploy::ACCESS_OP_SET_CODE,
+        code: 1234,
+    }]);
+    stand_an_outsider(&mut w);
+    evict_the_builder(&mut w);
+
+    w.tick(&[Command::Access {
+        id: OUTSIDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+        op: sim_core::deploy::ACCESS_OP_ENTER,
+        code: 1234,
+    }]);
+
+    let t = only(&w, EV_TRUST);
+    distinct3(t, "EV_TRUST");
+    distinct_pack8(t.c, "EV_TRUST.c");
+    assert_eq!(t.a, OUTSIDER, "EV_TRUST.a is the hand that ACTED");
+    assert_eq!(
+        t.b, BUILDER,
+        "EV_TRUST.b is the lock's OWNER, not the hand it just remembered — \
+         and an evicted body is still a counterparty, which is the whole \
+         reason GONE is a value rather than a silence"
+    );
+    assert_eq!(
+        t.c >> 8,
+        TRUST_AUTH as u32,
+        "a code entered on a lock is TRUST_AUTH, not TRUST_DOOR — the two \
+         readings in this file must differ in this byte or it is a constant"
+    );
+    assert_eq!(
+        t.c & 0xff,
+        PRESENCE_GONE as u32,
+        "the owner's body left its slot, so the presence byte is GONE — not \
+         ASLEEP, which would claim a body was standing there to be raided"
+    );
+    assert_eq!(
+        count(&w, EV_AUTH),
+        1,
+        "the grant's own addressed event rides the same tick as its trust row"
+    );
+}
+
+/// Cause three: **a container, against an owner who is watching.**
+///
+/// The third verb and the third presence, and the one reading in this file
+/// taken while the counterparty is standing right there — which is the
+/// control the other two are measured against: the same act, logged
+/// differently only because somebody was home.
+///
+/// The container is the fixture's fire, which is a box as far as the move
+/// verb is concerned (`deploy::holds_items`): the probe fixture carries no
+/// plain box row, and the branch under test is `boxes()[ci].owner`, the
+/// same field for both.
+#[test]
+fn trust_names_a_container_opened_while_its_owner_watches() {
+    let mut w = World::new(SEED);
+    w.cook = CookContent::probe_fixture();
+    let (cx, cz) = builder_world(&mut w);
+    // The fixture's fire holds item 6 and costs item 0 to place; the
+    // builder's kit carries neither, and slot 4 is the one `builder_world`
+    // leaves free for exactly this.
+    w.players[0].inv[4] = ItemStack {
+        item: 6,
+        count: 4,
+        cond: 0,
+    };
+    place_deploy(&mut w, DEPLOY_FIRE, cx, cz, GROUND, LOC_PLANE);
+    let key = box_key(cx, cz, GROUND);
+    let bi = w.deploys.box_index(key).expect("the fire is a container");
+    w.deploys.set_box_slot(
+        bi,
+        0,
+        ItemStack {
+            item: JUNK,
+            count: JUNK_COUNT,
+            cond: 0,
+        },
+    );
+    stand_an_outsider(&mut w);
+    let os = outsider_slot(&w);
+    w.players[os].inv[0] = ItemStack::default();
+    assert!(
+        !w.players[0].sleeping,
+        "this cause wants the owner AWAKE; a sleeping one here would leave \
+         the presence byte with only two of its three values driven"
+    );
+
+    w.tick(&[Command::Move {
+        id: OUTSIDER,
+        cont: key,
+        from_kind: inventory::CONT_BOX,
+        from_slot: 0,
+        to_kind: CONT_SELF,
+        to_slot: 0,
+        count: JUNK_COUNT,
+    }]);
+
+    let t = only(&w, EV_TRUST);
+    distinct3(t, "EV_TRUST");
+    distinct_pack8(t.c, "EV_TRUST.c");
+    assert_eq!(t.a, OUTSIDER, "EV_TRUST.a is the hand that ACTED");
+    assert_eq!(t.b, BUILDER, "EV_TRUST.b is the container's OWNER");
+    assert_eq!(
+        t.c >> 8,
+        TRUST_CONT as u32,
+        "a hand in somebody's box is TRUST_CONT"
+    );
+    assert_eq!(
+        t.c & 0xff,
+        PRESENCE_AWAKE as u32,
+        "the owner is standing there, so the presence byte is AWAKE"
+    );
+    assert_eq!(
+        count(&w, EV_MOVED),
+        1,
+        "the move's own addressed event rides the same tick as its trust row"
+    );
+    assert_eq!(
+        w.players[os].inv[0].count, JUNK_COUNT,
+        "the withdrawal never landed, so this row is about nothing"
+    );
+}
+
+/// The two ids that are **not** counterparties, and the silence is the
+/// assertion.
+///
+/// A ledger that logs your own door buries its signal under ordinary play,
+/// and one that logs a boar carries rows about a player number that does
+/// not exist — `EV_BAG_DROPPED` puts a dead animal's tagged `mob::mob_id`
+/// where a player's id goes, so every skinned carcass would mint one. Both
+/// filters live in `World::log_trust` and both are driven here, because a
+/// filter with no cause is a claim.
+#[test]
+fn trust_is_silent_for_your_own_door_and_for_an_animals_bag() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_piece(&mut w, PIECE_DOORWAY, cx, cz, UPPER, DOOR_EDGE);
+    place_deploy(&mut w, DEPLOY_DOOR, cx, cz, UPPER, DOOR_EDGE);
+
+    // Your own door, worked by your own hand: the leaf moves, `EV_DOOR`
+    // announces it, and no trust relationship was exercised.
+    w.tick(&[Command::Use {
+        id: BUILDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+    }]);
+    assert_eq!(
+        count(&w, EV_DOOR),
+        1,
+        "the verb refused, so the silence below proves nothing"
+    );
+    assert_eq!(
+        count(&w, EV_TRUST),
+        0,
+        "opening your own door logged a trust row against yourself"
+    );
+
+    // A locked door, pressed by a hand the lock does not know. The row is
+    // a record of access *exercised*, never of access asked for — the
+    // knock is already the event for that, and a ledger that logged the
+    // ask would count every rattled handle as a betrayal.
+    bolt_lock(&mut w, cx, cz, UPPER, DOOR_EDGE);
+    w.tick(&[Command::Access {
+        id: BUILDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+        op: sim_core::deploy::ACCESS_OP_SET_CODE,
+        code: 1234,
+    }]);
+    stand_an_outsider(&mut w);
+    w.tick(&[Command::Use {
+        id: OUTSIDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: DOOR_EDGE,
+    }]);
+    assert_eq!(
+        count(&w, EV_KNOCK),
+        1,
+        "the press never reached the lock, so the silence below proves \
+         nothing"
+    );
+    assert_eq!(
+        count(&w, EV_TRUST),
+        0,
+        "a refused door logged a trust row — the leaf never moved and \
+         nothing was exercised"
+    );
+
+    // A bag a dead animal left. `stand_up` is the call `mob.rs` reaches
+    // through when a carcass drops one, with the same tagged id in `owner`;
+    // standing it here rather than hunting a pig keeps the cause to the one
+    // field under test.
+    w.backpack = BackpackContent::probe_fixture();
+    let carcass = {
+        let b = w.players[0].body;
+        let mut items = [ItemStack::default(); INV_SLOTS];
+        items[0] = ItemStack {
+            item: JUNK,
+            count: JUNK_COUNT,
+            cond: 0,
+        };
+        let tick = w.tick;
+        w.backpacks
+            .stand_up(
+                &w.backpack,
+                b.qx,
+                b.qy,
+                b.qz,
+                sim_core::mob::mob_id(0),
+                &items,
+                tick,
+                &mut w.events,
+            )
+            .expect("the carcass bag stood up")
+    };
+    w.players[0].inv[6] = ItemStack::default();
+    w.tick(&[Command::Move {
+        id: BUILDER,
+        cont: carcass,
+        from_kind: inventory::CONT_BAG,
+        from_slot: 0,
+        to_kind: CONT_SELF,
+        to_slot: 6,
+        count: JUNK_COUNT,
+    }]);
+    assert_eq!(
+        count(&w, EV_MOVED),
+        1,
+        "the loot refused, so the silence below proves nothing"
+    );
+    assert_eq!(
+        count(&w, EV_TRUST),
+        0,
+        "looting an animal's carcass logged a trust row against a mob id \
+         sitting in a player id's seat"
+    );
+}
+
+/// Cause four: **the same `TRUST_AUTH`, through the other store.**
+///
+/// `EV_AUTH` is one event for two rosters — a lock's remembered list and a
+/// hearth's crew — because "who may do this here" is one question
+/// (`reference/BUILDING.md` §1 fact 1), and `TRUST_AUTH` follows it for
+/// the same reason. Which means the verb has two emit sites, and a cause
+/// that only ever drives one of them leaves the other exactly as
+/// unwatched as it was before this file existed.
+///
+/// The path an outsider legitimately takes onto somebody else's crew is
+/// the one the rules already allow: the crew empties when its last member
+/// leaves, and an empty-crewed hearth is anyone's in reach
+/// (`deploy::crew_op`). So the builder steps off their own hearth and the
+/// outsider steps on — which is the moment a stranger acquires the right
+/// to build, upgrade and deploy inside another player's claim, with the
+/// owner standing right there.
+///
+/// The second half is the half the trust row exists for: a `CREW_LEAVE`
+/// pressed by a hand that was never on the list is a deliberate no-op
+/// (refusing it would tell a stranger whether the crew knew them), and it
+/// still announces. A row there would say a relationship moved when
+/// nothing did.
+#[test]
+fn trust_names_a_crew_seat_taken_on_someone_elses_hearth() {
+    let mut w = World::new(SEED);
+    let (cx, cz) = builder_world(&mut w);
+    stand_a_storey(&mut w, cx, cz);
+    place_deploy(&mut w, DEPLOY_HEARTH, cx, cz, UPPER, LOC_PLANE);
+    stand_an_outsider(&mut w);
+
+    // The no-op first, while the crew still holds only its owner: the
+    // outsider is not on it, so leaving it changes nothing.
+    w.tick(&[Command::Access {
+        id: OUTSIDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: LOC_PLANE,
+        op: sim_core::deploy::ACCESS_OP_CREW_LEAVE,
+        code: 0,
+    }]);
+    assert_eq!(
+        count(&w, EV_AUTH),
+        1,
+        "the op never reached the hearth, so the silence below proves nothing"
+    );
+    assert_eq!(
+        count(&w, EV_TRUST),
+        0,
+        "a crew op that moved no membership logged a trust row"
+    );
+
+    // The owner steps off their own hearth, which empties the crew.
+    w.tick(&[Command::Access {
+        id: BUILDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: LOC_PLANE,
+        op: sim_core::deploy::ACCESS_OP_CREW_LEAVE,
+        code: 0,
+    }]);
+    assert!(
+        w.deploys.hearths()[0].crew.is_empty(),
+        "the owner is still on the crew, so the join below is a refusal \
+         rather than the seat this cause is about"
+    );
+    assert_eq!(
+        count(&w, EV_TRUST),
+        0,
+        "leaving your OWN hearth's crew logged a trust row against yourself"
+    );
+
+    // And the outsider takes the seat.
+    w.tick(&[Command::Access {
+        id: OUTSIDER,
+        cx,
+        cz,
+        level: UPPER,
+        loc: LOC_PLANE,
+        op: sim_core::deploy::ACCESS_OP_CREW_JOIN,
+        code: 0,
+    }]);
+
+    let t = only(&w, EV_TRUST);
+    distinct3(t, "EV_TRUST");
+    distinct_pack8(t.c, "EV_TRUST.c");
+    assert_eq!(t.a, OUTSIDER, "EV_TRUST.a is the hand that ACTED");
+    assert_eq!(
+        t.b, BUILDER,
+        "EV_TRUST.b is the hearth's OWNER — the field `HearthRec` keeps for \
+         exactly this, and deliberately not the crew, which is now the \
+         actor alone"
+    );
+    assert_eq!(
+        t.c >> 8,
+        TRUST_AUTH as u32,
+        "a crew seat is TRUST_AUTH, the same value the lock's grant carries"
+    );
+    assert_eq!(
+        t.c & 0xff,
+        PRESENCE_AWAKE as u32,
+        "the owner is standing there watching it happen"
+    );
+    assert_eq!(
+        count(&w, EV_AUTH),
+        1,
+        "the crew op's own addressed event rides the same tick as its trust \
+         row — the trust row carries no address and is only readable joined \
+         to it"
+    );
+    assert!(
+        w.deploys.hearths()[0].crew.contains(OUTSIDER),
+        "the seat was never taken, so this row is about nothing"
+    );
+}
+
+/// `death_causes_are_a_closed_ledger`'s discipline, applied to `EV_TRUST`'s
+/// two value domains — and it is here for the *weaker* of the two reasons,
+/// which is worth being explicit about.
+///
+/// A stray `DEATH_BY_*` is caught eventually, by an encoder returning
+/// `Err(Range)` on a real death. Nothing encodes `EV_TRUST`, so a stray
+/// `TRUST_*` or `PRESENCE_*` is caught by nothing at all: it would ride the
+/// ring, reach whatever sink reads it, and become a column in the record
+/// with no name anywhere. This parse is the only thing between that and a
+/// silently widened log.
+#[test]
+fn trust_verbs_and_presences_are_closed_ledgers() {
+    const SRC: &str = include_str!("../src/world.rs");
+
+    for (prefix, bound) in [
+        ("pub const TRUST_", TRUST_VERB_MAX),
+        ("pub const PRESENCE_", PRESENCE_MAX),
+    ] {
+        // Borrowed out of `SRC`, never built — wall 3's `String` ban binds
+        // a test too, and the names here are `'static` slices already.
+        let mut seen: Vec<(&str, u8)> = Vec::new();
+        for line in SRC.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix(prefix) else {
+                continue;
+            };
+            let Some((name, value)) = rest.split_once(": u8 = ") else {
+                continue;
+            };
+            // The bound names the ledger; it is not in it. `VERB_MAX`
+            // rather than a bare `MAX` on the verb side because the two
+            // domains would otherwise share a stem the day a third lands.
+            if name == "VERB_MAX" || name == "MAX" {
+                continue;
+            }
+            let value = value.trim_end_matches(';');
+            let v: u8 = value.parse().unwrap_or_else(|_| {
+                panic!(
+                    "{prefix}{name} is declared as `{value}`, which is not a \
+                     literal — this parser reads the constant block in \
+                     `world.rs`, and a non-literal there makes the domain's \
+                     range unknowable"
+                )
+            });
+            seen.push((name, v));
+        }
+
+        // The parser's own liveness. Reflow the block and every
+        // `strip_prefix` misses, which passes while reading nothing — a
+        // gate that silently stops looking is worse than one that fails.
+        assert!(
+            seen.len() >= 3,
+            "only {} values parsed for {prefix}* out of world.rs — the \
+             constant block's shape changed and this gate is now reading \
+             nothing, which is worse than failing",
+            seen.len()
+        );
+
+        let highest = seen.iter().map(|(_, v)| *v).max().unwrap();
+        assert_eq!(
+            highest, bound,
+            "world.rs declares a {prefix}* value {highest} against a bound \
+             of {bound}. Nothing encodes EV_TRUST, so no wire check will \
+             ever notice: move the bound in the same commit as the value, \
+             and give the value a cause in this file."
+        );
+        // 1..=bound with no gaps. Zero is deliberately not a value in
+        // either domain (`world.rs` says why): `c` packs two bytes, and a
+        // zero in either reads the same as a byte nobody wrote.
+        let mut sorted: Vec<u8> = seen.iter().map(|(_, v)| *v).collect();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted.len(),
+            bound as usize,
+            "{prefix}* declares {} values against a bound of {bound} — the \
+             domain is 1..={bound} with no gaps and no duplicates",
+            sorted.len()
+        );
+        for (i, v) in sorted.iter().enumerate() {
+            assert_eq!(
+                *v,
+                i as u8 + 1,
+                "the {prefix}* values are not 1..={bound} with no gaps: {:?}",
+                seen
+            );
+        }
     }
 }

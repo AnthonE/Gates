@@ -16,6 +16,35 @@ use sim_core::world::{
 };
 use sim_core::yaw_dir;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 /// Arbitrary fixed seed; the tests derive everything else from it.
 const SEED: u64 = 20_260_731;
 
@@ -169,6 +198,10 @@ fn swing_pays_exhausts_and_replays() {
         ItemStack {
             item: tree.output,
             count: tree.hits * tree.hand_yield,
+            // Minted at the item's own ceiling (durability v0): the
+            // fixture's outputs double as tools, so a gathered stack
+            // arrives whole rather than dead.
+            cond: fixture.cond_max[tree.output as usize],
         },
         "yield stacked into the first slot"
     );
@@ -200,6 +233,9 @@ fn a_bush_pays_its_side_yield_flat_and_says_so() {
     w.players[0].inv[0] = ItemStack {
         item: fixture.nodes[0].tools[0].0,
         count: 1,
+        // Granted whole: a zero-condition tool is a dead tool since
+        // durability v0, and this test needs a LIVE one in hand.
+        cond: fixture.cond_max[fixture.nodes[0].tools[0].0 as usize],
     };
     w.tick(&[hold_primary(yaw, 0)]);
 
@@ -287,9 +323,12 @@ fn tool_in_slot0_outyields_hand() {
     let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
     let mut w = world_at(pos);
     let (tool, per_hit) = w.gather.nodes[0].tools[0];
+    let tool_cond = w.gather.cond_max[tool as usize];
     w.players[0].inv[0] = ItemStack {
         item: tool,
         count: 1,
+        // Whole, or the Q4 guard reads it as no tool at all.
+        cond: tool_cond,
     };
     w.tick(&[hold_primary(yaw, 0)]);
     let out = w.gather.nodes[0].output;
@@ -298,8 +337,15 @@ fn tool_in_slot0_outyields_hand() {
         ItemStack {
             item: out,
             count: per_hit,
+            cond: w.gather.cond_max[out as usize],
         },
         "held tool pays its row, stacked past the occupied slot 0"
+    );
+    // And the landed hit wore it by the tree's own rate for this tool.
+    assert_eq!(
+        w.players[0].inv[0].cond,
+        tool_cond - w.gather.nodes[0].wear_for(tool),
+        "a landed paying hit wears the held tool by the (tool, node) rate"
     );
 }
 
@@ -517,6 +563,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
     w.players[0].inv[3] = ItemStack {
         item: tool,
         count: 1,
+        cond: w.gather.cond_max[tool as usize],
     };
     w.tick(&[hold_sel(3)]);
     assert_eq!(
@@ -524,6 +571,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
         ItemStack {
             item: out,
             count: per_hit,
+            cond: w.gather.cond_max[out as usize],
         },
         "held tool in the selected slot pays its row"
     );
@@ -533,6 +581,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
     w2.players[0].inv[3] = ItemStack {
         item: tool,
         count: 1,
+        cond: w2.gather.cond_max[tool as usize],
     };
     w2.tick(&[hold_sel(7)]);
     assert_eq!(w2.players[0].frame.sel, 0, "invalid selector clamps to 0");
@@ -541,6 +590,7 @@ fn selected_slot_is_the_held_item_and_invalid_sel_falls_back() {
         ItemStack {
             item: out,
             count: w2.gather.nodes[0].hand_yield,
+            cond: w2.gather.cond_max[out as usize],
         },
         "fallback swings the hand row"
     );
@@ -698,4 +748,853 @@ fn the_finish_share_moves_when_yield_arrives_not_how_much() {
              nothing is being withheld for the finisher"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The wrong tool (DECISIONS.md 2026-08-15: bare hands gather nothing)
+//
+// Shipped content carries no `hand` row on any swung node, so `bake.rs`'s
+// `hand_yield: 0` is what a tree pays a fist. `NodeDef::yield_for` falls back
+// to that row for anything not in the tool table, so a torch, a hammer and an
+// empty hand all read 0 — and the refusal below is about the pair (node,
+// held), never about hands specifically.
+//
+// The fixture keeps its hand rows, because most of this file is *about* the
+// hand row; these two tests zero one node's row for the duration.
+
+/// A swing the node pays nothing for is refused, and **the node does not pay
+/// for the refusal.**
+///
+/// This is the half that is a correctness bug rather than a balance change.
+/// `gather::swing` spends the node's budget before it computes a yield, so
+/// with the guard removed a bare fist walks the whole `hits × HIT_UNIT`
+/// budget down, pays nothing, announces nothing, and arms the 20–45 minute
+/// respawn — a griefing hole against any node on the island, and a self-grief
+/// hole for the player who lost their rock.
+///
+/// Proven red by deleting the `def.yield_for(held) == 0` guard: four
+/// bare-hand swings then exhaust the fixture tree and the `EV_SLOT_HARVESTED`
+/// assertion inside the loop fires.
+#[test]
+fn a_swing_the_node_pays_nothing_for_is_refused_and_costs_the_node_nothing() {
+    let (pos, yaw, (cx, cz)) = find_isolated(SEED, Occupant::Tree);
+    let mut w = world_at(pos);
+    // The mark buys speed, so leaving it armed would make the swing count
+    // (and therefore this test's loop bound) a function of where the body
+    // happens to stand. Every other base-pay test in this file does the same.
+    for n in w.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+    }
+    // Content with no `hand` row — what `bake.rs` produces for the shipped
+    // gatherables since 2026-08-15.
+    w.gather.nodes[0].hand_yield = 0;
+    let tree = w.gather.nodes[0];
+    let (tool, per_hit) = tree.tools[0];
+    assert!(
+        tool != sim_core::gather::NO_ITEM && per_hit > 0,
+        "fixture rot: the tree has no tool row, so this test cannot tell a \
+         refusal from an empty node"
+    );
+
+    // Swing bare-handed for longer than the node could survive if the
+    // budget were being spent.
+    let mut seq = 0u16;
+    for _ in 0..SWING_INTERVAL_TICKS * (tree.hits as u64 + 2) {
+        w.tick(&[hold_primary(yaw, seq)]);
+        seq = seq.wrapping_add(1);
+        for e in w.events.entries() {
+            assert_ne!(
+                e.code, EV_GATHER,
+                "a bare-hand swing paid — the `hand` row is back, or the \
+                 refusal reads the wrong item"
+            );
+            assert_ne!(
+                e.code, EV_SLOT_HARVESTED,
+                "bare hands felled the tree without being paid for it — the \
+                 swing is spending the node's budget before the yield check"
+            );
+        }
+    }
+    assert!(
+        !w.slot_lives.is_harvested(cx as u16, cz as u16),
+        "the node is harvested after a bare-hand beating"
+    );
+    assert!(
+        w.players[0].inv.iter().all(|s| s.count == 0),
+        "bare hands filled a pocket"
+    );
+
+    // **The node is whole, not merely standing.** A guard that refused the
+    // pay and still charged the budget would pass everything above and fail
+    // here: the tool would collect a remainder instead of the full total.
+    w.players[0].inv[0] = ItemStack {
+        item: tool,
+        count: 1,
+        // Whole — a dead tool would be refused exactly like the bare hand
+        // and this phase exists to prove the RIGHT tool still collects.
+        cond: w.gather.cond_max[tool as usize],
+    };
+    let mut paid = 0u32;
+    let mut harvested = 0u32;
+    for _ in 0..SWING_INTERVAL_TICKS * (tree.hits as u64 + 2) {
+        w.tick(&[hold_primary(yaw, seq)]);
+        seq = seq.wrapping_add(1);
+        for e in w.events.entries() {
+            match e.code {
+                EV_GATHER => paid += e.b & 0xFFFF,
+                EV_SLOT_HARVESTED => harvested += 1,
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(harvested, 1, "the node never exhausted for the right tool");
+    assert_eq!(
+        paid,
+        tree.hits as u32 * per_hit as u32,
+        "the tool drew a partial node — the bare-hand swings spent budget"
+    );
+}
+
+/// The refusal is a **whiff, not an absorb**: the arm stays free, so the
+/// swing carries on to `combat::strike` exactly as a swing into empty air
+/// does (`world.rs`: node → player → structure).
+///
+/// This is what keeps the wrong tool a *weapon* while it is not a tool. It
+/// is not a hypothetical — the shipped rock is both, and a spear is neither
+/// a tree's tool nor a harmless thing to be swung at somebody standing in
+/// front of one. A guard that absorbed the swing would make a node into
+/// cover: stand behind a tree and the fight stops.
+///
+/// The fixture holds item 2, which `CombatContent::probe_fixture` arms as
+/// melee and which is **not** in the tree's tool row (that is item 1) — so
+/// `yield_for` falls through to the zeroed hand row and the guard fires,
+/// while the strike behind it has a live weapon to resolve.
+///
+/// Proven red twice, and the pair is the point:
+///
+/// - return `Swing::Absorbed` from the guard and the victim's hp never
+///   moves — the node ate a swing it was paid nothing for;
+/// - delete the guard entirely and the node absorbs the swing itself, which
+///   is the behaviour before 2026-08-15, and the victim's hp never moves
+///   either.
+#[test]
+fn a_refused_gather_swing_leaves_the_arm_free() {
+    let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
+    let mut w = Box::new(World::new(SEED));
+    w.gather = GatherContent::probe_fixture();
+    w.combat = sim_core::combat::CombatContent::probe_fixture();
+    for n in w.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+    }
+    w.gather.nodes[0].hand_yield = 0;
+    assert_ne!(
+        w.gather.nodes[0].tools[0].0, 2,
+        "fixture rot: item 2 became the tree's tool, so the swing below \
+         would be absorbed by the node and prove nothing"
+    );
+    // Both bodies on the same point: `dev_spawn` pins every join, so the
+    // victim is inside the weapon's reach without a walk.
+    w.dev_spawn = Some(pos);
+    w.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
+    let victim = w
+        .players
+        .iter()
+        .position(|p| p.active && p.id == 2)
+        .expect("the second body seated");
+    let hp_before = w.players[victim].hp;
+    assert!(hp_before > 0, "the combat fixture granted the victim no hp");
+
+    // A melee-armed item the tree pays nothing for.
+    w.players[0].inv[0] = ItemStack {
+        item: 2,
+        count: 1,
+        cond: 0,
+    };
+    let mut seq = 0u16;
+    for _ in 0..SWING_INTERVAL_TICKS * 3 {
+        w.tick(&[hold_primary(yaw, seq)]);
+        seq = seq.wrapping_add(1);
+    }
+    assert!(
+        w.players[victim].hp < hp_before,
+        "a swing the node refused was absorbed by it anyway — a tree is \
+         cover, and the arm never reached the body standing at it"
+    );
+}
+
+/// The refusal is a whiff for flesh and a **stop for structure**: a swing
+/// aimed at a node the held item cannot gather must not fall through
+/// `combat::raid` into the wall standing in the same cone. `raid` takes no
+/// owner or privilege filter (`combat.rs` says so in its own doc), so
+/// before `Swing::Refused` a stone hatchet aimed at a stone node inside
+/// your own base took structure off your own wall, silently, every swing
+/// (`NOW.md` §0kit item 1 — proven by fixture: hp fell at
+/// `hand_yield = 0`, not at 25).
+///
+/// Gated both ways, in one arrangement so the control proves the wall is
+/// genuinely reachable by the raid arm:
+///
+/// - **refused-node swing** — player at the tree's stand point, wall in
+///   the same aim cone, wrong tool in hand: piece hp does NOT fall;
+/// - **deliberate swing at the wall with no node in the way** — same
+///   wall, stood where the tree is out of gather reach: piece hp DOES
+///   fall.
+///
+/// Proven red against the un-fixed fall-through: with the gather guard
+/// returning `Swing::Free` (the pre-2026-08-15 shape restored) the first
+/// half fails — the wall takes `EV_STRUCT_HIT` damage from the refused
+/// swings.
+#[test]
+fn a_refused_swing_never_reaches_the_wall_behind_the_node() {
+    use sim_core::build::{anchor, build_cell_of, LOC_EDGE_XLO, LOC_PLANE};
+    use sim_core::world::EV_STRUCT_HIT;
+
+    let table = ScatterTable::alpha_default();
+    let haven = terrain::haven(SEED);
+    // The held item: melee-armed (25 body / 9 structure / 2 m reach,
+    // `CombatContent::probe_fixture`) and NOT the tree's tool, so the
+    // gather guard refuses it while the raid arm has a live weapon row.
+    const WRONG_TOOL: u16 = 2;
+    const REACH: f32 = 2.0;
+
+    'candidates: for cz in 40..216i32 {
+        for cx in 40..216i32 {
+            let s = terrain::scatter(SEED, &table, &haven, cx, cz);
+            if s.occupant != Occupant::Tree {
+                continue;
+            }
+            // The tree's own build cell must take a foundation, or there
+            // is no wall to protect.
+            let bcx = build_cell_of(s.x);
+            let bcz = build_cell_of(s.z);
+            if !(0..1024).contains(&bcx) || !(0..1024).contains(&bcz) {
+                continue;
+            }
+            let (bx, bz) = (bcx as u16, bcz as u16);
+            let (fx_c, fz_c) = (
+                (bcx as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
+                (bcz as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
+            );
+            if !sim_core::build::foundation_terrain_ok(SEED, hv(SEED), fx_c, fz_c) {
+                continue;
+            }
+            // Stand point: 1.2 m west of the tree, on ground near its own
+            // height (the `find_isolated` filter).
+            let (px, pz) = (s.x - 1.2, s.z);
+            let py = terrain::height(SEED, px, pz);
+            if (s.y - py).max(py - s.y) > 1.0 || py < 1.0 {
+                continue;
+            }
+            // The wall goes on the west edge of the tree's cell. Its
+            // anchor must sit inside the same aim cone as the tree, within
+            // the weapon's reach, so the raid arm WOULD hit it if handed
+            // the swing.
+            let (ax, az) = anchor(bx, bz, LOC_EDGE_XLO);
+            let (dax, daz) = (ax - px, az - pz);
+            let d2a = dax * dax + daz * daz;
+            if d2a > (REACH - 0.1) * (REACH - 0.1) {
+                continue;
+            }
+            // Best LUT heading toward the tree, and the anchor must be
+            // inside its cone with margin.
+            let (dx, dz) = (s.x - px, s.z - pz);
+            let mut yaw = 0u16;
+            let mut best = f32::MIN;
+            for hi in 0..=255u16 {
+                let (fx, fz) = yaw_dir(hi << 8);
+                let dot = fx * dx + fz * dz;
+                if dot > best {
+                    best = dot;
+                    yaw = hi << 8;
+                }
+            }
+            let (fx, fz) = yaw_dir(yaw);
+            if dax * fx + daz * fz <= 0.9 * d2a.sqrt() {
+                continue; // anchor too far off-axis — cone margin
+            }
+            // No OTHER swingable near either stand point: rivals eat the
+            // swing and turn both halves into tests of nothing. Barrels
+            // count — `target_index` aims at them even though
+            // `node_index` does not.
+            let (ctl_x, ctl_z) = (ax - 1.6, az);
+            let mut rivals = 0;
+            for &(sx, sz) in &[(px, pz), (ctl_x, ctl_z)] {
+                let pcx = (sx / CELL_SIZE) as i32;
+                let pcz = (sz / CELL_SIZE) as i32;
+                for ddz in -1..=1i32 {
+                    for ddx in -1..=1i32 {
+                        let n = terrain::scatter(SEED, &table, &haven, pcx + ddx, pcz + ddz);
+                        let aims = sim_core::gather::node_index(n.occupant).is_some()
+                            || n.occupant == Occupant::BarrelSlot;
+                        if aims && (n.x != s.x || n.z != s.z) {
+                            let d2 = (n.x - sx) * (n.x - sx) + (n.z - sz) * (n.z - sz);
+                            if d2 <= 6.25 {
+                                rivals += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            if rivals > 0 {
+                continue;
+            }
+            // The control point must have the tree OUT of gather reach, or
+            // the "no node in the way" half is a lie.
+            let dt2 = (s.x - ctl_x) * (s.x - ctl_x) + (s.z - ctl_z) * (s.z - ctl_z);
+            if dt2 <= (REACH + 0.3) * (REACH + 0.3) {
+                continue;
+            }
+
+            // ---- the arrangement ----
+            let mut w = Box::new(World::new(SEED));
+            w.gather = GatherContent::probe_fixture();
+            w.combat = sim_core::combat::CombatContent::probe_fixture();
+            w.build = sim_core::build::BuildContent::probe_fixture();
+            for n in w.gather.nodes.iter_mut() {
+                n.weak_pct = 0;
+            }
+            w.gather.nodes[0].hand_yield = 0;
+            assert_ne!(
+                w.gather.nodes[0].tools[0].0, WRONG_TOOL,
+                "fixture rot: item {WRONG_TOOL} became the tree's tool, so \
+                 the refusal below would never fire"
+            );
+            w.dev_spawn = Some((px, pz));
+            w.tick(&[Command::Join { id: 1 }]);
+            w.players[0].inv[0] = ItemStack {
+                item: WRONG_TOOL,
+                count: 1,
+                cond: 0,
+            };
+            w.players[0].inv[1] = ItemStack {
+                item: 0,
+                count: 200,
+                cond: 0,
+            };
+            w.players[0].inv[2] = ItemStack {
+                item: 1,
+                count: 200,
+                cond: 0,
+            };
+            // Foundation, then the wall on its west edge. A refusal here is
+            // this candidate's terrain, not the mechanic — try the next.
+            w.tick(&[Command::Place {
+                id: 1,
+                row: 0,
+                cx: bx,
+                cz: bz,
+                level: 0,
+                loc: LOC_PLANE,
+                freehand: false,
+            }]);
+            if w.pieces.len() != 1 {
+                continue 'candidates;
+            }
+            w.tick(&[Command::Place {
+                id: 1,
+                row: 1,
+                cx: bx,
+                cz: bz,
+                level: 0,
+                loc: LOC_EDGE_XLO,
+                freehand: false,
+            }]);
+            if w.pieces.len() != 2 {
+                continue 'candidates;
+            }
+            let hp0 = w
+                .pieces
+                .find(bx, bz, 0, LOC_EDGE_XLO)
+                .expect("the wall stands")
+                .hp;
+
+            // ---- refused-node swings: the wall must not move ----
+            let mut seq = 0u16;
+            let mut hit_while_refused = 0u32;
+            for _ in 0..SWING_INTERVAL_TICKS * 4 {
+                w.tick(&[hold_primary(yaw, seq)]);
+                seq = seq.wrapping_add(1);
+                for e in w.events.entries() {
+                    if e.code == EV_STRUCT_HIT {
+                        hit_while_refused += 1;
+                    }
+                }
+            }
+            let hp_after_refused = w
+                .pieces
+                .find(bx, bz, 0, LOC_EDGE_XLO)
+                .expect("the wall still stands")
+                .hp;
+
+            // ---- the control: same wall, no node in the way ----
+            w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), ctl_x, ctl_z);
+            let (cdx, cdz) = (ax - ctl_x, az - ctl_z);
+            let mut cyaw = 0u16;
+            let mut cbest = f32::MIN;
+            for hi in 0..=255u16 {
+                let (fx, fz) = yaw_dir(hi << 8);
+                let dot = fx * cdx + fz * cdz;
+                if dot > cbest {
+                    cbest = dot;
+                    cyaw = hi << 8;
+                }
+            }
+            let mut control_hit = false;
+            for _ in 0..SWING_INTERVAL_TICKS * 4 {
+                w.tick(&[hold_primary(cyaw, seq)]);
+                seq = seq.wrapping_add(1);
+                for e in w.events.entries() {
+                    if e.code == EV_STRUCT_HIT {
+                        control_hit = true;
+                    }
+                }
+            }
+            if !control_hit {
+                // The raid arm cannot reach this wall even deliberately —
+                // the arrangement (storey, terrain) is unusable here and
+                // proves nothing either way. Next candidate.
+                continue 'candidates;
+            }
+            let hp_after_control = w
+                .pieces
+                .find(bx, bz, 0, LOC_EDGE_XLO)
+                .expect("the wall survives the control chips")
+                .hp;
+
+            // The control proved the wall reachable, so the first half is
+            // now evidence: a refused swing that chipped it fell through.
+            assert_eq!(
+                hit_while_refused, 0,
+                "a swing the node refused fell through to combat::raid — \
+                 the wall behind the node took EV_STRUCT_HIT"
+            );
+            assert_eq!(
+                hp_after_refused, hp0,
+                "a refused gather swing took hp off the wall standing in \
+                 the same cone"
+            );
+            assert!(
+                hp_after_control < hp_after_refused,
+                "the deliberate control swing did not chip the wall — \
+                 raid should still work with no node in the way"
+            );
+            return;
+        }
+    }
+    panic!(
+        "seed {SEED:#x} offered no tree beside a buildable cell for this \
+         arrangement — the generator changed under this gate"
+    );
+}
+
+/// **A swing wears by the node's own rate for the tool, and not at all on
+/// a node whose table omits it** (item durability v0, gate 2). The wear
+/// key is **(tool, node)** — the reference's model, where a metal hatchet
+/// pays 0.3 on a tree and 1.0 on flesh — so the table IS the wrong-tool
+/// predicate and there is no predicate to port.
+///
+/// Proven red by making `wear_for` per-tool instead of per-(tool, node)
+/// (return a flat rate for any held tool): the omitted-table half fires,
+/// because a tool the node's table does not name wore anyway.
+#[test]
+fn wear_is_keyed_per_tool_and_node_not_per_tool() {
+    let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
+
+    // Half 1: the tree wears its tool by ITS OWN rate.
+    let mut w = world_at(pos);
+    for n in w.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+    }
+    let (tool, _) = w.gather.nodes[0].tools[0];
+    let rate = w.gather.nodes[0].wear_for(tool);
+    assert!(rate > 0, "fixture rot: the tree wears nothing");
+    let ceiling = w.gather.cond_max[tool as usize];
+    w.players[0].inv[0] = ItemStack {
+        item: tool,
+        count: 1,
+        cond: ceiling,
+    };
+    let mut seq = 0u16;
+    let mut landed = 0u16;
+    for _ in 0..SWING_INTERVAL_TICKS * 3 {
+        w.tick(&[hold_primary(yaw, seq)]);
+        seq = seq.wrapping_add(1);
+        for e in w.events.entries() {
+            if e.code == EV_GATHER {
+                landed += 1;
+            }
+        }
+    }
+    assert!(landed > 0, "no swing landed — the arrangement is broken");
+    assert_eq!(
+        w.players[0].inv[0].cond,
+        ceiling - landed * rate,
+        "the tool wore by something other than the node's own rate × hits"
+    );
+
+    // Half 2: the same tool on the same node with the wear TABLE emptied —
+    // the node still pays and the tool does not wear. This is the half a
+    // per-tool rate cannot pass: a rate keyed on the tool alone has no row
+    // to miss.
+    let mut w2 = world_at(pos);
+    for n in w2.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+    }
+    w2.gather.nodes[0].wear =
+        [(sim_core::gather::NO_ITEM, 0); sim_core::gather::MAX_TOOLS_PER_NODE];
+    w2.players[0].inv[0] = ItemStack {
+        item: tool,
+        count: 1,
+        cond: ceiling,
+    };
+    let mut seq = 0u16;
+    let mut landed2 = 0u16;
+    for _ in 0..SWING_INTERVAL_TICKS * 3 {
+        w2.tick(&[hold_primary(yaw, seq)]);
+        seq = seq.wrapping_add(1);
+        for e in w2.events.entries() {
+            if e.code == EV_GATHER {
+                landed2 += 1;
+            }
+        }
+    }
+    assert!(
+        landed2 > 0,
+        "the payout must land for the half to mean anything"
+    );
+    assert_eq!(
+        w2.players[0].inv[0].cond, ceiling,
+        "a node whose wear table omits the tool wore it anyway — the rate \
+         is keyed per tool, not per (tool, node)"
+    );
+}
+
+/// **A tool at zero gathers at the hand rate** (item durability v0, gate
+/// 3 — Q4, operator 2026-08-15: a dead tool stays in the hand and stops
+/// being a tool). The fixture's tree still has a hand row, so the
+/// fallback is visible as a RATE here; on the shipped content the hand
+/// rows are deleted and the same guard lands in the refusal instead
+/// (`a_dead_tool_is_refused_where_hands_are` below).
+///
+/// Proven red by deleting the `cond == 0` guard in `gather::swing`'s held
+/// read: the dead tool pays its tool row.
+#[test]
+fn a_dead_tool_gathers_at_the_hand_rate() {
+    let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
+    let mut w = world_at(pos);
+    for n in w.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+    }
+    let (tool, per_hit) = w.gather.nodes[0].tools[0];
+    let hand = w.gather.nodes[0].hand_yield;
+    assert!(
+        w.gather.cond_max[tool as usize] > 0,
+        "fixture rot: the tool carries no ceiling, so zero is not dead"
+    );
+    assert_ne!(
+        per_hit, hand,
+        "the two rates must differ or this sees nothing"
+    );
+    w.players[0].inv[0] = ItemStack {
+        item: tool,
+        count: 1,
+        cond: 0, // dead
+    };
+    w.tick(&[hold_primary(yaw, 0)]);
+    let paid: Vec<u32> = w
+        .events
+        .entries()
+        .iter()
+        .filter(|e| e.code == EV_GATHER)
+        .map(|e| e.b & 0xFFFF)
+        .collect();
+    assert_eq!(
+        paid,
+        vec![hand as u32],
+        "a tool at zero condition must gather at the HAND rate — it stays \
+         in the hand and stops being a tool"
+    );
+    // And it stays in the hand: nothing deleted or moved it.
+    assert_eq!(
+        w.players[0].inv[0],
+        ItemStack {
+            item: tool,
+            count: 1,
+            cond: 0,
+        },
+        "the dead tool must stay in the hand"
+    );
+}
+
+/// The dead tool on the SHIPPED shape — no hand row — is a refusal that
+/// names the broken tool, and the wall behind the node stays whole (the
+/// Q4 half of `Swing::Refused`'s contract: a dead hatchet swung at a node
+/// must not chew the wall behind it, which `world.rs` enforces by
+/// declining the raid arm for every `Refused` swing, dead-tool ones
+/// included).
+#[test]
+fn a_dead_tool_is_refused_where_hands_are() {
+    use sim_core::world::EV_GATHER_REFUSED;
+    let (pos, yaw, (cx, cz)) = find_isolated(SEED, Occupant::Tree);
+    let mut w = world_at(pos);
+    for n in w.gather.nodes.iter_mut() {
+        n.weak_pct = 0;
+        n.hand_yield = 0; // the shipped shape since 2026-08-15
+    }
+    let (tool, _) = w.gather.nodes[0].tools[0];
+    w.players[0].inv[0] = ItemStack {
+        item: tool,
+        count: 1,
+        cond: 0,
+    };
+    let mut seq = 0u16;
+    let mut refused = 0u32;
+    for _ in 0..SWING_INTERVAL_TICKS * 2 {
+        w.tick(&[hold_primary(yaw, seq)]);
+        seq = seq.wrapping_add(1);
+        for e in w.events.entries() {
+            assert_ne!(e.code, EV_GATHER, "a dead tool was paid");
+            if e.code == EV_GATHER_REFUSED {
+                assert_eq!(e.a, 1, "the swinger is named");
+                assert_eq!(
+                    e.b >> 16,
+                    tool as u32,
+                    "the refusal names the BROKEN TOOL, not bare hands"
+                );
+                assert_eq!(
+                    e.b & 0xffff,
+                    sim_core::gather::REFUSE_G_BROKEN,
+                    "a dead tool is REFUSE_G_BROKEN, not the wrong-tool reason"
+                );
+                refused += 1;
+            }
+        }
+    }
+    assert!(refused > 0, "the dead tool's swing was never announced");
+    assert!(
+        !w.slot_lives.is_harvested(cx as u16, cz as u16),
+        "a dead tool spent the node's budget"
+    );
+}
+
+/// **A landed swing scuffs the thing it hit.** Marks on the world were an
+/// arrow's privilege until 2026-08-18 (`NOW.md` §0mk item 1: *"a melee
+/// swing leaves nothing"*), and closing it needed no wire byte, because
+/// `EV_IMPACT` was never really an arrow's fact — it is *a surface was
+/// struck at this point*, already broadcast, already carrying a quantized
+/// point and a surface class, already drawn by `render/decal.rs`.
+///
+/// Three claims, and each one is the whole of a different bug:
+///   · the mark exists at all, and is `SURF_WORLD` — an occupant is not
+///     ground and not a built piece, so a wrong kind here would tint and
+///     orient it by the wrong rule at the far end;
+///   · it sits on the node's own collision skin rather than at its centre,
+///     because `decal::facing` derives the normal as the horizontal from
+///     the scatter slot's centre TO the impact — a mark at the centre is a
+///     zero vector and a decal facing nowhere;
+///   · it is on the side the swinger is standing, which is the half that
+///     makes the first two mean anything.
+///
+/// Red-proven three ways: pushing the slot centre instead of the skin
+/// point fails the radius assert, pushing `SURF_GROUND` fails the kind
+/// assert, and negating the offset direction fails the side assert.
+#[test]
+fn a_landed_swing_marks_the_node_on_the_side_it_was_hit_from() {
+    let (pos, yaw, (cx, cz)) = find_isolated(SEED, Occupant::Tree);
+    let table = ScatterTable::alpha_default();
+    let s = terrain::scatter(SEED, &table, hv(SEED), cx, cz);
+    let (r_m, top_m) = terrain::occupant_volume(s.occupant);
+    let (skin, top) = (r_m * s.scale, top_m * s.scale);
+    assert!(skin > 0.0, "a tree has a trunk or this test proves nothing");
+
+    let mut w = world_at(pos);
+    let mut marks = Vec::new();
+    for t in 0..SWING_INTERVAL_TICKS {
+        w.tick(&[hold_primary(yaw, t as u16)]);
+        for e in w.events.entries() {
+            if e.code == sim_core::world::EV_IMPACT {
+                marks.push((e.a, e.b, e.c));
+            }
+        }
+    }
+    assert_eq!(marks.len(), 1, "one landed swing leaves exactly one mark");
+
+    let (a, b, c) = marks[0];
+    assert_eq!(
+        (a >> 24) as u8,
+        sim_core::ranged::SURF_WORLD,
+        "a struck occupant is the world, not the ground under it"
+    );
+    let mx = (a & 0x00ff_ffff) as i32 as f32 * movement::POS_XZ_Q;
+    let mz = b as i32 as f32 * movement::POS_XZ_Q;
+    let my = c as i32 as f32 * movement::POS_Y_Q;
+
+    // On the skin: the planar distance from the slot centre is the
+    // occupant's own radius, to within the quantum the point crossed in.
+    let (dx, dz) = (mx - s.x, mz - s.z);
+    let d = (dx * dx + dz * dz).sqrt();
+    assert!(
+        (d - skin).max(skin - d) <= 2.0 * movement::POS_XZ_Q,
+        "mark {d:.3} m from the trunk centre, want its {skin:.3} m radius"
+    );
+    // On the swinger's side: the swinger stands 1.2 m west of the slot, so
+    // the mark's offset must point at them rather than through the trunk.
+    let (px, pz) = pos;
+    assert!(
+        dx * (px - s.x) + dz * (pz - s.z) > 0.0,
+        "mark landed on the far side of the trunk from the swinger"
+    );
+    // Within the occupant's own span, never floating above it.
+    assert!(
+        my >= s.y - movement::POS_Y_Q && my <= s.y + top + movement::POS_Y_Q,
+        "mark at y {my:.2} is outside the trunk's {:.2}..{:.2}",
+        s.y,
+        s.y + top
+    );
+}
+
+/// **A refusal scuffs nothing**, and this is the door shut before the
+/// obvious shortcut walks through it: the mark push sits below the tool
+/// refusal on purpose, so a torch swung at a tree says *your Torch cannot
+/// harvest this* (wire v42) and leaves the bark clean. Putting the push at
+/// the top of `swing` — where the cadence is paid and the swing is
+/// undeniably a swing — is the version of this that ships a chip out of
+/// every tree a new player waves a torch at.
+///
+/// Red-proven by moving the push above the `yield_for(held) == 0` arm.
+#[test]
+fn a_refused_swing_leaves_no_mark() {
+    let (pos, yaw, _) = find_isolated(SEED, Occupant::Tree);
+    let mut w = world_at(pos);
+    // Hand the swinger an item the fixture's tree pays nothing for, in the
+    // selected slot. The fixture's own outputs are its tools, so an item
+    // id past the table cannot be one.
+    let dud = (sim_core::limits::MAX_ITEM_DEFS - 1) as u16;
+    w.players[0].inv[0] = ItemStack {
+        item: dud,
+        count: 1,
+        cond: 0,
+    };
+    for n in w.gather.nodes.iter_mut() {
+        n.hand_yield = 0;
+    }
+    let mut marks = 0;
+    let mut refusals = 0;
+    for t in 0..SWING_INTERVAL_TICKS * 2 {
+        w.tick(&[hold_primary(yaw, t as u16)]);
+        for e in w.events.entries() {
+            match e.code {
+                sim_core::world::EV_IMPACT => marks += 1,
+                sim_core::world::EV_GATHER_REFUSED => refusals += 1,
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        refusals > 0,
+        "the swing must have been refused to prove this"
+    );
+    assert_eq!(marks, 0, "a refused swing marks nothing");
+}
+
+/// **The bush is the one swingable thing with no surface to mark.**
+/// `terrain::occupant_volume` gives it `(0.0, 0.0)` — it does not block a
+/// body and it has no skin — so `skin_point` refuses rather than putting a
+/// scuff at its centre, where `decal::facing` would read a zero-length
+/// normal. A gather still happens; only the mark is absent.
+///
+/// Red-proven by dropping `skin_point`'s `r <= 0.0` arm: the bush then
+/// marks its own centre and this goes red on the mark count.
+#[test]
+fn a_bush_pays_but_has_no_skin_to_mark() {
+    let (pos, yaw, _) = find_isolated(SEED, Occupant::Bush);
+    let mut w = world_at(pos);
+    let mut marks = 0;
+    let mut gathers = 0;
+    for t in 0..SWING_INTERVAL_TICKS {
+        w.tick(&[hold_primary(yaw, t as u16)]);
+        for e in w.events.entries() {
+            match e.code {
+                sim_core::world::EV_IMPACT => marks += 1,
+                EV_GATHER => gathers += 1,
+                _ => {}
+            }
+        }
+    }
+    assert!(
+        gathers > 0,
+        "the bush must have paid or this proves nothing"
+    );
+    assert_eq!(marks, 0, "a bush has no skin to scuff");
+}
+
+/// **The waist rule, pinned as a value** — the branch that added it shipped
+/// it entered by nothing.
+///
+/// `skin_point` takes the LOWER of the swinger's eye height and the
+/// occupant's own waist, and the eye arm is the one every existing test
+/// happens to exercise: `strike_y` is feet + 1.6 m, so the `.min` only
+/// bites when `top * STRIKE_WAIST_FRAC` is under that — a tree's is 2.85 m
+/// and never does. The rock beside the shipped seed's spawn is where it
+/// bites, and `a_landed_swing_marks_the_node…`'s y assertion cannot see it:
+/// that check allows the occupant's WHOLE span, which is twice as wide as
+/// this guarantee and would pass a mark pinned to the rim — which is
+/// exactly what the old code did.
+///
+/// Red-proven both ways: drop the `.min` and the short node's mark returns
+/// to eye height; drop the `.max` and a strike below a raised occupant's
+/// base goes under it.
+#[test]
+fn a_short_node_is_struck_at_its_waist_and_a_tall_one_at_the_eye() {
+    let (pos, yaw, (cx, cz)) = find_isolated(SEED, Occupant::StoneNode);
+    let table = ScatterTable::alpha_default();
+    let s = terrain::scatter(SEED, &table, hv(SEED), cx, cz);
+    let (_, top_m) = terrain::occupant_volume(s.occupant);
+    let top = top_m * s.scale;
+    let waist = s.y + top * sim_core::gather::STRIKE_WAIST_FRAC;
+
+    let mut w = world_at(pos);
+    // The probe fixture pays a bare hand on the tree and not necessarily on
+    // the stone node, so arm the row this test swings at — the geometry is
+    // what is being pinned here, not the payout table. (`Occupant::Rock` is
+    // NOT a gatherable at all — `node_index` calls it one of the two things
+    // a swing passes through — so the short node a player actually mines is
+    // this one.)
+    let ni = sim_core::gather::node_index(Occupant::StoneNode).expect("a stone node is a node");
+    w.gather.nodes[ni].hand_yield = 1;
+    w.gather.nodes[ni].weak_pct = 0;
+    assert!(
+        w.gather.nodes[ni].output != sim_core::gather::NO_ITEM,
+        "the fixture's stone row must pay something or the swing is refused"
+    );
+    let eye = w.players[0].body.qy as f32 * movement::POS_Y_Q + 1.6;
+    // The fixture must be the case this test is about, or it proves nothing
+    // about the arm it claims to pin.
+    assert!(
+        waist < eye,
+        "this node's waist {waist:.2} is above the eye {eye:.2}, so the \
+         .min arm is not taken and this test is vacuous — pick another node"
+    );
+
+    let mut marks = Vec::new();
+    for t in 0..SWING_INTERVAL_TICKS {
+        w.tick(&[hold_primary(yaw, t as u16)]);
+        for e in w.events.entries() {
+            if e.code == sim_core::world::EV_IMPACT {
+                marks.push(e.c as i32 as f32 * movement::POS_Y_Q);
+            }
+        }
+    }
+    assert_eq!(marks.len(), 1, "one landed swing leaves exactly one mark");
+    assert!(
+        (marks[0] - waist).max(waist - marks[0]) <= 2.0 * movement::POS_Y_Q,
+        "mark at y {:.2}, want the waist {waist:.2} — eye was {eye:.2}, so a \
+         mark up there is the pre-2026-08-18 rule with its rim problem",
+        marks[0]
+    );
+    assert!(
+        marks[0] < s.y + top - movement::POS_Y_Q,
+        "the mark is at the occupant's rim, where its own horizontal normal \
+         has nothing to lie against"
+    );
 }

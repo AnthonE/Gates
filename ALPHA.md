@@ -17,6 +17,15 @@
 - **Respawn flow**: death screen (who/what killed you — range and weapon,
   no map position), choose beach or a bag, spawn with nothing. No
   spawn protection anywhere, haven excepted.
+  ⚠ **The screen has a map on it since 2026-08-16 and "no map position"
+  still holds** (operator, `DECISIONS.md`; bag choice v0). The two are not
+  in conflict: the rule is about where *you fell* — a screen that said so
+  would hand the raider standing over your body a pin to the base they just
+  cleared — and what the map marks is **your own bags**, which are yours
+  already. No corpse marker, no player marker, and the bag row is not drawn
+  at all for a player who has none. `ui::map::no_wake_map_marks_the_corpse`
+  is the structural half, because the way this breaks is somebody helpfully
+  adding a "you died here" dot.
 - **First-person feel checklist** (client acceptance, not features):
   fixed-timestep-decoupled camera, ~10 Hz-to-60 fps interpolation never
   visible, sprint/crouch states in the input bitfield (already sized),
@@ -29,8 +38,14 @@
   the UI is allowed to be plain — clarity over chrome at alpha.
 - **Chat**: global text + 20 m local **(knob: local on/off)**, profanity
   untouched (survival chat is survival chat), rate-limited server-side,
-  on the bidi lane. No voice at alpha — a rabbit hole with its own
-  transport; revisit post-alpha **(knob)**.
+  on the bidi lane. No voice at alpha — **scope, and no longer "a rabbit
+  hole with its own transport"**, which is what this line said until
+  `reference/VOICE.md` was written: that rabbit hole is only reachable from
+  a P2P start, the reference fell into it and was forced out of it under
+  attack (Devblog 189), and we have no P2P anything. A voice radius sits
+  inside `AOI_ENTER_CM`, so the routing is one compare against a set the AOI
+  scan already produced (§9.2). Revisit post-alpha **(knob)**; §9.1 is the
+  one decision that is expensive later.
 - **Nametags**: crew-less alpha — names render only within 8 m and only
   when aimed at **(knob)**. Identity ambiguity is content in this genre.
 - **Day/night**: 45-min cycle **(knob)**, server clock in the G channel;
@@ -38,18 +53,29 @@
 
 ## 2 · Staged economy arming (do NOT launch coins into an unstable game)
 
-The coins are designed (DESIGN §3) but they arm in stages, each its own
-switch, so a netcode bug never becomes a token incident — and the
-break-things-freely privilege (which expires when the operator posts)
-is spent on A1, not A3:
+**What stages is the CLAIM RAIL, not the currency** (operator,
+2026-08-10). Two things share the name OBOL and only one of them is a
+token risk:
 
-- **A1 — pure survival** (first playtests): OBOL faucets OFF, salvage
-  drops components only, no bank terminal, skins vendor dark. The game
-  must be fun broke first.
-- **A2 — OBOL on, off-chain**: faucets/sinks live, carried/banked split
-  live, ledger accruing — **no merkle export yet**; balances are real but
-  unclaimable while wipe cadence and dupe-testing settle. Posted plainly
-  on the site: "banked OBOL becomes claimable at A3."
+- **Carried OBOL is an ordinary item** — paid by the recycler, dropped on
+  death, raidable, spent at the research table. That is scrap's job, it is
+  **live from A1**, and there is nothing to stage: an item stack in a save
+  file cannot be cashed out.
+- **The claim rail is the banked balance** — a ledger row keyed to a
+  wallet, its merkle export, redemption on-chain. That is what a netcode
+  bug could turn into a token incident, so that is what arms in stages,
+  each its own switch. The break-things-freely privilege (which expires
+  when the operator posts) is spent on A1, not A3:
+
+- **A1 — the survival economy, whole** (first playtests): OBOL is earned
+  and spent in world, no bank terminal, no ledger, skins vendor dark.
+  Everything a player touches is here; the game must be fun before a
+  balance is worth anything.
+- **A2 — the ledger, off-chain**: the bank terminal opens and the
+  carried/banked split goes live, balances accruing — **no merkle export
+  yet**; they are real and unclaimable while wipe cadence and dupe-testing
+  settle. Posted plainly on the site: "banked OBOL becomes claimable at
+  A3."
 - **A3 — the claim + the counter**: merkle export on the scry claim rail,
   skin catalog opens (SCRY/MYRRH), munus-first-sale delivery includes a
   recorded round. This is the moment that needs the operator's announce,
@@ -61,23 +87,30 @@ replay — the deterministic replay is the dupe investigation tool.
 
 ## 3 · Ops (the server is a service the moment one stranger joins)
 
-- **Admin lane**: wallet-allowlisted admin commands on the bidi stream —
-  kick, ban (wallet + IP), teleport, give, broadcast, save-now, wipe-now.
-  Every admin act is a WAL event (visible in replay; abuse of admin is
-  visible too, which is the scry-brand posture).
+- **Admin lane** — **built 2026-08-11** (admin v0, `DECISIONS.md` §open):
+  wallet-allowlisted, on the chat lane rather than a new message (no wire
+  change; `protocol/admin.rs` has the argument). `/kick` `/ban` `/say`
+  `/tp` `/give` `/save` — and `/tp`/`/give` are commands, so an admin act
+  IS in the stream a replay reads, which is what this line asked for.
+  Still owed: a ban that survives a restart (memory only today), IP
+  banning (only the wallet is banned — an IP is not proved by anything),
+  and `wipe-now`, which is §0q item 2's unscoped mechanism.
 - **Config**: one `shard.toml` — every knob in these four docs reads from
   it; a knob not in the file doesn't exist.
 - **Supervision**: systemd unit, restart-on-exit (DESIGN L7 contract),
   ulimits + the UDP sysctls from NETCODE §2.2 in the unit file.
 - **Backups**: snapshot + WAL shipped to object storage every 30 min and
   at wipe; a wipe archives (never deletes) the final state + hash chain.
-- **Observability**: a status JSON on localhost (tick p99, players,
-  entities by class, WAL lag, datagram loss estimate) + a tiny public
-  shard page (players online, wipe clock, uptime) — publish the real
-  numbers, zeros included; that's house style.
-- **Client error capture**: window.onerror + unhandledrejection POSTed
-  with build hash (no third-party SDK at alpha); server pairs it with the
-  anomaly log.
+- **Observability**: a status JSON on localhost — **built, and narrower
+  than this line** (`status.rs` serves players/max/tick; the other four
+  are counters nothing publishes yet) — plus the **anomaly log**, built
+  2026-08-11, which is what §6's "zero silent failures" is measured
+  against. Still owed: the tiny public shard page, and a reader that
+  turns a session's log into a verdict.
+- **Client error capture**: the browser shape of this is retired with the
+  browser client (`window.onerror` describes nothing that exists). A
+  native panic hook posting the build hash is the replacement and is
+  **not built**; the server half it would pair with now exists.
 - **Hosting**: one 4-core/8 GB VPS with UDP-tolerant DDoS filtering
   **(knob: provider)**, game subdomain + ACME cert, no CDN in front of
   the UDP port (there is nothing to CDN). Reference-hardware perf gates
@@ -128,11 +161,12 @@ haven (TERRAIN's pad carver is the hook) · skin trading/editions (A3
 sells; trading is its own later gate).
 
 **Animals are back in** (operator, 2026-08-08 — `DECISIONS.md`: *"let's get
-a pig in"*). The cut was written as "NPC/animal AI", and what actually
-landed is the first half only: a fixed 64-slot roster of pigs that wander,
-flee and pay fat and cloth when killed. There is still no AI system — nothing
-hunts, packs or fights back — so the expensive part of the original cut
-stands. It was cheap because the walls had already paid for it: the terrain
+a pig in"*). The cut was written as "NPC/animal AI", and what landed is a
+fixed 64-slot roster of pigs that wander, flee, pay fat and cloth when
+killed — and, since 2026-08-11, **fight back** (mob attack v0: a whole pig
+charges and bites, a hurt one flees, `DEATH_BY_MOB` on the wire). There is
+still no AI *system* — nothing hunts across the map or packs — so the
+expensive part of the original cut stands. It was cheap because the walls had already paid for it: the terrain
 is a pure function, so there is no navmesh to bake, and an animal drives the
 same `movement::step` a player does. `reference/ANIMALS.md` is the research
 and §9.5 lists what v0 does not have.

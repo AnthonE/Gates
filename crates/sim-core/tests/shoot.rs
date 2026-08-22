@@ -25,15 +25,44 @@
 #![allow(clippy::disallowed_macros)]
 
 use sim_core::collide::ColIndex;
-use sim_core::combat::{CombatContent, RangedDef};
-use sim_core::gather::ItemStack;
+use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
+use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{MAX_ARROWS, MAX_PLAYERS};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::occupy::{Barren, Occupants, Pristine, Scratch};
 use sim_core::ranged::{self, Arrows, Kill, ARROW_EYE_MM};
 use sim_core::terrain::{self, Occupant, ScatterTable, Slot, CELLS_PER_SIDE};
-use sim_core::world::{EventQueue, Player, EV_DEATH, EV_HIT};
+use sim_core::world::{EventQueue, Player, EV_DEATH, EV_HIT, EV_SHOT};
+
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
 
 /// Same set and same rule as `walk.rs`: a seed that fails is a bug in the
 /// generator, not a reroll.
@@ -51,7 +80,7 @@ const ARROW: u16 = 4;
 const STANDOFF_M: f32 = 4.0;
 
 /// A bow whose numbers are the real `content/weapons.toml` bow converted the
-/// way `bake_bow` converts it: 40 m/s and 20 m/s² at 30 Hz. Written out
+/// way `bake_ranged` converts it: 40 m/s and 20 m/s² at 30 Hz. Written out
 /// rather than loaded so this suite gates the *flight*, and a content edit
 /// cannot quietly turn a red here into a green.
 fn bow_fixture() -> CombatContent {
@@ -59,11 +88,19 @@ fn bow_fixture() -> CombatContent {
     c.player_hp = 100;
     c.ranged[BOW as usize] = RangedDef {
         damage: 30,
+        ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 60,
+        hitscan: false,
+        // 60 m, the real bow's reach. `ranged::draw` divides this by the
+        // round's speed for the flight, which at 1333 mm/tick is the 45
+        // ticks this fixture used to state as a constant.
+        range_mm: 60_000,
+    };
+    // The ballistics belong to the round now (`reference/PROJECTILES.md`
+    // §9.3), so the fixture arms the arrow rather than the bow.
+    c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,
         drop_mmpt2: 22,
-        ammo: ARROW,
-        rate_ticks: 60,
-        life_ticks: 45,
     };
     c
 }
@@ -87,10 +124,12 @@ fn archer(id: u32, x: f32, feet_y: f32, z: f32, yaw: u16, pitch: u8, ammo: u16) 
     p.inv[0] = ItemStack {
         item: BOW,
         count: 1,
+        cond: 0,
     };
     p.inv[7] = ItemStack {
         item: ARROW,
         count: ammo,
+        cond: 0,
     };
     p.frame = InputFrame {
         seq: 1,
@@ -207,7 +246,13 @@ fn shoot_through(
     let mut events;
     let cc = bow_fixture();
 
-    let took = ranged::draw(0, &cc, &mut arrows, &mut players[0]);
+    let took = ranged::draw(
+        0,
+        &cc,
+        &mut arrows,
+        &mut EventQueue::default(),
+        &mut players[0],
+    );
     assert!(took, "a bow in hand must take the arm");
     let fired = arrows.len();
 
@@ -219,8 +264,10 @@ fn shoot_through(
         events = EventQueue::default();
         ranged::step(
             seed,
+            hv(seed),
             &cols,
             occ,
+            &cc,
             &mut arrows,
             &mut players,
             &mut events,
@@ -326,7 +373,13 @@ fn an_arrow_in_the_open_lands_and_is_announced() {
     let mut arrows = Arrows::new();
     let mut events;
     let cc = bow_fixture();
-    ranged::draw(0, &cc, &mut arrows, &mut players[0]);
+    ranged::draw(
+        0,
+        &cc,
+        &mut arrows,
+        &mut EventQueue::default(),
+        &mut players[0],
+    );
 
     let mut kills = [Kill::default(); MAX_ARROWS];
     let mut hits = 0;
@@ -334,8 +387,10 @@ fn an_arrow_in_the_open_lands_and_is_announced() {
         events = EventQueue::default();
         ranged::step(
             seed,
+            hv(seed),
             &cols,
             &mut sc.occupants(),
+            &cc,
             &mut arrows,
             &mut players,
             &mut events,
@@ -367,11 +422,19 @@ fn four_arrows_kill_and_the_kill_names_the_bow() {
 
     for t in 0..400u64 {
         events = EventQueue::default();
-        ranged::draw(t, &cc, &mut arrows, &mut players[0]);
+        ranged::draw(
+            t,
+            &cc,
+            &mut arrows,
+            &mut EventQueue::default(),
+            &mut players[0],
+        );
         let n = ranged::step(
             seed,
+            hv(seed),
             &cols,
             &mut sc.occupants(),
+            &cc,
             &mut arrows,
             &mut players,
             &mut events,
@@ -410,7 +473,7 @@ fn an_empty_quiver_fires_nothing_and_still_takes_the_arm() {
     let mut p = archer(1, 0.0, 50.0, 0.0, 0, LEVEL, 0);
     p.inv[7] = ItemStack::default();
     assert!(
-        ranged::draw(0, &cc, &mut arrows, &mut p),
+        ranged::draw(0, &cc, &mut arrows, &mut EventQueue::default(), &mut p),
         "the bow keeps the arm"
     );
     assert_eq!(arrows.len(), 0, "no ammo, no arrow");
@@ -423,10 +486,26 @@ fn an_empty_hand_hands_the_arm_back() {
     let mut arrows = Arrows::new();
     let cc = bow_fixture();
     let mut p = archer(1, 0.0, 50.0, 0.0, 0, LEVEL, 10);
-    p.inv[0] = ItemStack { item: 9, count: 1 };
-    assert!(!ranged::draw(0, &cc, &mut arrows, &mut p));
+    p.inv[0] = ItemStack {
+        item: 9,
+        count: 1,
+        cond: 0,
+    };
+    assert!(!ranged::draw(
+        0,
+        &cc,
+        &mut arrows,
+        &mut EventQueue::default(),
+        &mut p
+    ));
     p.inv[0] = ItemStack::default();
-    assert!(!ranged::draw(0, &cc, &mut arrows, &mut p));
+    assert!(!ranged::draw(
+        0,
+        &cc,
+        &mut arrows,
+        &mut EventQueue::default(),
+        &mut p
+    ));
     assert_eq!(arrows.len(), 0);
 }
 
@@ -438,7 +517,7 @@ fn a_shot_spends_one_arrow_at_the_weapons_own_cadence() {
     let cc = bow_fixture();
     let mut p = archer(1, 0.0, 50.0, 0.0, 0, LEVEL, 10);
 
-    ranged::draw(0, &cc, &mut arrows, &mut p);
+    ranged::draw(0, &cc, &mut arrows, &mut EventQueue::default(), &mut p);
     assert_eq!(arrows.len(), 1);
     assert_eq!(p.inv[7].count, 9, "one shot, one arrow");
     assert_eq!(
@@ -448,13 +527,97 @@ fn a_shot_spends_one_arrow_at_the_weapons_own_cadence() {
 
     // Held down, every tick, until the cadence comes round.
     for t in 1..60u64 {
-        ranged::draw(t, &cc, &mut arrows, &mut p);
+        ranged::draw(t, &cc, &mut arrows, &mut EventQueue::default(), &mut p);
     }
     assert_eq!(arrows.len(), 1, "the cadence held the second shot");
     assert_eq!(p.inv[7].count, 9);
-    ranged::draw(60, &cc, &mut arrows, &mut p);
+    ranged::draw(60, &cc, &mut arrows, &mut EventQueue::default(), &mut p);
     assert_eq!(arrows.len(), 2, "and released it on the sixtieth tick");
     assert_eq!(p.inv[7].count, 8);
+}
+
+/// `EV_SHOT` announces exactly the arrows that exist, carrying the five
+/// numbers a tracer needs to redraw the sim's own arc.
+///
+/// **The pairing is the point, and it is `shoot_through`'s discipline one
+/// level down.** Asserting only that a shot emits an event would pass for a
+/// module that announced every button press, and a phantom tracer for a
+/// refused shot is worse than no tracer — it draws an arrow that does not
+/// exist and cannot hit anyone. So every refusal path is asserted silent in
+/// the same test that asserts the fire path speaks.
+#[test]
+fn every_arrow_is_announced_and_nothing_else_is() {
+    let cc = bow_fixture();
+    let (yaw, pitch) = (12_345u16, 200u8);
+
+    // A shot that lands in the store speaks, once, with the round's own
+    // ballistics rather than the weapon's — the §9.3 move, seen from the
+    // wire's end.
+    let mut arrows = Arrows::new();
+    let mut ev = EventQueue::default();
+    let mut p = archer(7, 0.0, 50.0, 0.0, yaw, pitch, 10);
+    ranged::draw(0, &cc, &mut arrows, &mut ev, &mut p);
+    assert_eq!(arrows.len(), 1, "the shot became an arrow");
+    let shots: Vec<_> = ev.entries().iter().filter(|e| e.code == EV_SHOT).collect();
+    assert_eq!(shots.len(), 1, "one arrow, one announcement");
+    assert_eq!(shots[0].a, 7, "a = the shooter");
+    assert_eq!(
+        shots[0].b,
+        (yaw as u32) << 8 | pitch as u32,
+        "b = yaw << 8 | pitch"
+    );
+    let ball = cc.ammo_def(ARROW).expect("the fixture arms the round");
+    assert_eq!(
+        shots[0].c,
+        (ball.speed_mmpt as u32) << 16 | ball.drop_mmpt2 as u32,
+        "c = the ROUND's speed and drop, so a tracer flies the arc the sim flew"
+    );
+
+    // Every path that returns without an arrow must say nothing. Cadence:
+    let mut ev = EventQueue::default();
+    ranged::draw(1, &cc, &mut arrows, &mut ev, &mut p);
+    assert_eq!(arrows.len(), 1, "the cadence held it");
+    assert!(
+        !ev.entries().iter().any(|e| e.code == EV_SHOT),
+        "a shot refused for cadence must not draw a tracer"
+    );
+
+    // An empty quiver:
+    let mut ev = EventQueue::default();
+    let mut empty = archer(8, 0.0, 50.0, 0.0, yaw, pitch, 0);
+    empty.inv[7] = ItemStack::default();
+    ranged::draw(0, &cc, &mut arrows, &mut ev, &mut empty);
+    assert!(
+        !ev.entries().iter().any(|e| e.code == EV_SHOT),
+        "an empty quiver must not draw a tracer"
+    );
+
+    // And a full store, which is the one refusal that happens *after* the
+    // cadence is paid, so it is the easiest to announce by accident.
+    let mut full = Arrows::new();
+    let mut stuffer = archer(9, 0.0, 50.0, 0.0, yaw, pitch, u16::MAX);
+    for t in 0..MAX_ARROWS as u64 {
+        ranged::draw(
+            t * 60,
+            &cc,
+            &mut full,
+            &mut EventQueue::default(),
+            &mut stuffer,
+        );
+    }
+    assert_eq!(full.len(), MAX_ARROWS, "the store is full");
+    let mut ev = EventQueue::default();
+    ranged::draw(
+        MAX_ARROWS as u64 * 60,
+        &cc,
+        &mut full,
+        &mut ev,
+        &mut stuffer,
+    );
+    assert!(
+        !ev.entries().iter().any(|e| e.code == EV_SHOT),
+        "a shot refused by a full store must not draw a tracer"
+    );
 }
 
 /// A full store refuses the shot and the ammo stays in the quiver. The
@@ -467,12 +630,12 @@ fn a_full_store_refuses_the_shot_and_keeps_the_ammo() {
 
     let mut t = 0u64;
     while arrows.len() < MAX_ARROWS {
-        ranged::draw(t, &cc, &mut arrows, &mut p);
+        ranged::draw(t, &cc, &mut arrows, &mut EventQueue::default(), &mut p);
         t += 60;
     }
     assert_eq!(arrows.len(), MAX_ARROWS);
     let ammo_before = p.inv[7].count;
-    ranged::draw(t, &cc, &mut arrows, &mut p);
+    ranged::draw(t, &cc, &mut arrows, &mut EventQueue::default(), &mut p);
     assert_eq!(
         arrows.len(),
         MAX_ARROWS,
@@ -494,14 +657,27 @@ fn pitch_aims_the_shot() {
     let mut up = Arrows::new();
     let mut level = Arrows::new();
     let mut down = Arrows::new();
-    ranged::draw(0, &cc, &mut up, &mut archer(1, 0.0, 50.0, 0.0, 0, 200, 5));
+    ranged::draw(
+        0,
+        &cc,
+        &mut up,
+        &mut EventQueue::default(),
+        &mut archer(1, 0.0, 50.0, 0.0, 0, 200, 5),
+    );
     ranged::draw(
         0,
         &cc,
         &mut level,
+        &mut EventQueue::default(),
         &mut archer(1, 0.0, 50.0, 0.0, 0, LEVEL, 5),
     );
-    ranged::draw(0, &cc, &mut down, &mut archer(1, 0.0, 50.0, 0.0, 0, 40, 5));
+    ranged::draw(
+        0,
+        &cc,
+        &mut down,
+        &mut EventQueue::default(),
+        &mut archer(1, 0.0, 50.0, 0.0, 0, 40, 5),
+    );
 
     let vy = |a: &Arrows| a.entries().next().unwrap().vy;
     assert!(vy(&up) > 500, "looking up must launch upward: {}", vy(&up));
@@ -538,13 +714,21 @@ fn an_arrow_never_hits_its_owner() {
     let mut arrows = Arrows::new();
     let mut events;
     let mut kills = [Kill::default(); MAX_ARROWS];
-    ranged::draw(0, &bow_fixture(), &mut arrows, &mut players[0]);
+    ranged::draw(
+        0,
+        &bow_fixture(),
+        &mut arrows,
+        &mut EventQueue::default(),
+        &mut players[0],
+    );
     for _ in 0..10 {
         events = EventQueue::default();
         ranged::step(
             seed,
+            hv(seed),
             &cols,
             &mut sc.occupants(),
+            &bow_fixture(),
             &mut arrows,
             &mut players,
             &mut events,
@@ -570,14 +754,22 @@ fn the_ground_stops_an_arrow_and_the_store_drains() {
         let mut arrows = Arrows::new();
         let mut events;
         let mut kills = [Kill::default(); MAX_ARROWS];
-        ranged::draw(0, &bow_fixture(), &mut arrows, &mut players[0]);
+        ranged::draw(
+            0,
+            &bow_fixture(),
+            &mut arrows,
+            &mut EventQueue::default(),
+            &mut players[0],
+        );
         assert_eq!(arrows.len(), 1);
         for _ in 0..60 {
             events = EventQueue::default();
             ranged::step(
                 seed,
+                hv(seed),
                 &cols,
                 &mut sc.occupants(),
+                &bow_fixture(),
                 &mut arrows,
                 &mut players,
                 &mut events,
@@ -608,14 +800,22 @@ fn the_same_shot_flies_the_same_path_twice() {
         let mut arrows = Arrows::new();
         let mut events;
         let mut kills = [Kill::default(); MAX_ARROWS];
-        ranged::draw(0, &bow_fixture(), &mut arrows, &mut players[0]);
+        ranged::draw(
+            0,
+            &bow_fixture(),
+            &mut arrows,
+            &mut EventQueue::default(),
+            &mut players[0],
+        );
         let mut out = Vec::new();
         for _ in 0..45 {
             events = EventQueue::default();
             ranged::step(
                 seed,
+                hv(seed),
                 &cols,
                 &mut sc.occupants(),
+                &bow_fixture(),
                 &mut arrows,
                 &mut players,
                 &mut events,
@@ -659,7 +859,13 @@ fn an_arrow_is_in_the_state_hash_only_while_it_is_in_the_air() {
     );
 
     let mut p = archer(1, 0.0, 50.0, 0.0, 0, LEVEL, 5);
-    ranged::draw(0, &bow_fixture(), &mut b.arrows, &mut p);
+    ranged::draw(
+        0,
+        &bow_fixture(),
+        &mut b.arrows,
+        &mut EventQueue::default(),
+        &mut p,
+    );
     assert_eq!(b.arrows.len(), 1, "the fixture shot did not spawn");
     assert_ne!(
         a.state_hash(),

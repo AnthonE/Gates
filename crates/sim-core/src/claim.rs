@@ -85,7 +85,23 @@ fn key(cx: u16, cz: u16) -> u32 {
 #[inline]
 fn built(pieces: &Pieces, cx: u16, cz: u16) -> bool {
     let m = pieces.cols().get(cx, cz);
-    m.planes | m.stairs | m.walls_w | m.walls_n | m.doors_w | m.doors_n != 0
+    m.planes
+        | m.stairs
+        | m.walls_xlo
+        | m.walls_zlo
+        | m.doors_xlo
+        | m.doors_zlo
+        | m.wins_xlo
+        | m.wins_zlo
+        | m.frames_xlo
+        | m.frames_zlo
+        | m.tri_xlo_zlo
+        | m.tri_xhi_zlo
+        | m.tri_xlo_zhi
+        | m.tri_xhi_zhi
+        | m.diag_a
+        | m.diag_b
+        != 0
 }
 
 /// The walk's scratch: one fixed array used as both the queue and the

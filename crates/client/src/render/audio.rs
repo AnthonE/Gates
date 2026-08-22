@@ -38,9 +38,11 @@ use bevy::audio::{
 };
 use bevy::prelude::*;
 
+use crate::sound::birds::{self, Birds};
 use crate::sound::mixer::{Mixer, Request, Start};
-use crate::sound::pig::Snorts;
+use crate::sound::music::{self, Director};
 use crate::sound::steps::Steps;
+use crate::sound::voice::Voices;
 use crate::sound::water::Waterline;
 use crate::sound::{
     synth, Cue, Mix, Snapshot, SnapshotDef, Snapshots, CUE_COUNT, MAX_AUDIBLE_M, VOICE_CAP,
@@ -99,9 +101,16 @@ pub struct Sound {
     pub steps: Steps,
     /// The waterline, as a thing the local body crosses.
     pub waterline: Waterline,
-    /// Each roster slot's snort clock (`sound::pig` — pure; [`pigs`] is
+    /// Each roster slot's voice clock (`sound::voice` — pure; [`voices`] is
     /// the producer that reads it against the drawn herd).
-    pub snorts: Snorts,
+    pub voices: Voices,
+    /// When a song plays and which piece it is (`sound::music`). Lives on
+    /// the resource rather than on a world entity because it runs on the
+    /// menus too, where there is no world.
+    pub music: Director,
+    /// The forest layer's clock (`sound::birds`), driven by [`bed`], which
+    /// already has the cover score and the props to perch on.
+    pub birds: Birds,
     /// Each bed's current gain, moving toward its target at
     /// [`BED_FADE_PER_S`]. Held rather than recomputed so the crossfade is
     /// state, not a function of a frame.
@@ -126,6 +135,41 @@ pub struct Voice;
 /// One looping bed, and which one.
 #[derive(Component)]
 pub struct Bed(pub Cue);
+
+/// A piece of music that is playing.
+///
+/// **Deliberately not a [`Voice`] and deliberately not a
+/// [`super::WorldEntity`]**, and both are load-bearing:
+///
+/// - Not a `Voice`, so music does not count against `VOICE_CAP` and cannot
+///   be the reason an axe was refused (`sound::mixer` refuses to start a
+///   music cue at all — `Cue::is_music`).
+/// - Not a `WorldEntity`, so leaving a world does not cut a piece off
+///   mid-phrase. A menu piece rings out over the loading screen, which is
+///   how music is supposed to carry a transition.
+#[derive(Component)]
+pub struct MusicVoice {
+    /// Which piece this is, so its level comes from the cue table like every
+    /// other level in the client rather than from a constant here.
+    cue: Cue,
+    /// The piece's own gain, 1 while it is playing normally and ramping to
+    /// zero once [`ending`](Self::ending) is set.
+    fade: f32,
+    /// Set when a screen change orphaned this piece: the director under it
+    /// has been reset, and something else is about to start on top of it.
+    ending: bool,
+}
+
+/// How long an orphaned piece takes to fade out, seconds.
+///
+/// **The one place music fades, and the reference's rule is not being
+/// broken.** `reference/AUDIO.md` §8 says pieces cut to each other *without*
+/// fading, and they still do — the tail covers that join. This is the other
+/// case: leaving a world starts the menu's music immediately, and two pieces
+/// playing over each other is not a join, it is two songs. Short enough not
+/// to be a swell, long enough not to click (`DECISIONS.md` §open,
+/// "music v0").
+pub const MUSIC_FADE_S: f32 = 1.2;
 
 /// Build the bank, at plugin-build time rather than in a schedule.
 ///
@@ -201,8 +245,10 @@ pub fn setup(mut commands: Commands, bank: Res<Bank>, cam: Query<Entity, With<Ey
 pub fn teardown(mut sound: ResMut<Sound>, mut last_hp: ResMut<LastHp>) {
     sound.steps.reset();
     // The herd's clocks too: a countdown carried into the next island would
-    // voice its pigs on this island's schedule.
-    sound.snorts.reset();
+    // voice its animals on this island's schedule. The forest layer's clock
+    // is the same rule and the same reason.
+    sound.voices.reset();
+    sound.birds.reset();
     sound.bed_gain = [0.0; BEDS.len()];
     sound.bed_target = [0.0; BEDS.len()];
     // The waterline and the snapshot go with it, and the second one is the
@@ -284,6 +330,48 @@ pub fn remote_steps(
     }
 }
 
+/// Another player's swing — the second sound that decides fights, and until
+/// this system nothing produced it: a remote's arm moved in silence.
+///
+/// **Off the same `feed.swings()` slice `bodies::stream` animates from**, so
+/// the sound and the arc cannot disagree about who swung, and off the
+/// TRANSFORM that system just wrote, so they cannot disagree about where. It
+/// runs after `Stream` for that reason, like [`remote_steps`] beside it.
+///
+/// Two properties fall out of querying the drawn bodies rather than the feed
+/// alone, and both are load-bearing:
+///
+/// - **Your own swing cannot reach here.** `bodies::stream` skips
+///   `core.player_id`, so no entity carries it — the local arm stays
+///   [`Cue::Swing`], non-positional, exactly once (`render::input`). Without
+///   that you would hear your own swing twice, once at each ear and once at
+///   your feet.
+/// - **A swinger outside AOI cannot either.** No body, no transform, no
+///   sound — which is the honest cull, because a position we do not have is
+///   not a position we may guess at.
+///
+/// "Only nearby" is then the mixer's own falloff at the cue's radius: the
+/// falling tree's pattern, and the remote footsteps' — push with a position
+/// and let the one distance law decide.
+pub fn remote_swings(
+    feed: Res<super::feed::Feed>,
+    bodies: Query<(&super::bodies::Body, &Transform)>,
+    mut sound: ResMut<Sound>,
+) {
+    if feed.swings().is_empty() {
+        return;
+    }
+    for (body, t) in bodies.iter() {
+        if !feed.swings().contains(&body.0) {
+            continue;
+        }
+        sound.play(Request::at(
+            Cue::RemoteSwing,
+            [t.translation.x, t.translation.y, t.translation.z],
+        ));
+    }
+}
+
 /// This frame's own-facts, as cues.
 ///
 /// **Reads [`super::feed::Feed`]; pops nothing.** It used to pop the core's
@@ -298,6 +386,11 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
     // three can be thrown away is work the queue does not need to do.
     if feed.hits > 0 {
         sound.play(Request::own(Cue::Hit));
+        // The middle bump. One per frame however many landed, for the same
+        // reason the marker is: the director reads its tier once a section,
+        // so four bumps in one frame and one bump in one frame are the same
+        // musical fact.
+        sound.music.bump(music::BUMP_HIT);
     }
     for &(victim, _killer) in feed.deaths() {
         // Someone else dying is not your own fact and has no position on this
@@ -313,10 +406,29 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
     for _ in feed.crafted() {
         sound.play(Request::own(Cue::CraftDone));
     }
-    // Three refusal kinds, one sound. A player does not need to hear the
+    // Every refusal kind, one sound. A player does not need to hear the
     // difference between a refused craft and a refused placement — the toast
     // already says which — they need to hear that the button did nothing.
+    //
+    // Deliberately not a count: this line said "three" while `Refused` held
+    // four, and then five when the consume verbs joined (2026-08-15). The
+    // predicate below is variant-agnostic, so a new refusal kind gets this
+    // cue for free the moment `feed.rs` pushes it — which is the property
+    // worth writing down, and a number here only ever goes stale against it.
     if feed.refusals().next().is_some() {
+        sound.play(Request::own(Cue::Refused));
+    }
+    // A spill borrows that cue rather than minting one, on the same
+    // argument one step out: the player is looking at the TREE, not at the
+    // toast line, so what they need from the ear is "that did not go the
+    // way you expected" — and the toast says which. It is not literally a
+    // refusal (the swing paid; the payment is in a bag at your feet), so a
+    // voice of its own is a fair later change; it would cost a `synth.rs`
+    // row and a bank entry, which is more than this fact is worth today.
+    //
+    // Not folded into the `if` above: these are separate arrays and a
+    // frame can hold both, but one buzz per frame per class is the point.
+    if !feed.spills().is_empty() {
         sound.play(Request::own(Cue::Refused));
     }
 }
@@ -341,14 +453,30 @@ pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound
             // minutes (`TERRAIN.md` §2) does not do so audibly.
             continue;
         }
-        let p = t.translation();
-        // A tree is the thing that stumps; everything else that retires is a
-        // rock or an ore node coming apart.
-        let cue = if f.stumps {
-            Cue::TreeFall
-        } else {
-            Cue::ImpactStone
+        // **One cue per SLOT, not one per entity — and this was already wrong
+        // before the tree could topple.** A tree has always been more than one
+        // `Fellable`: the canopy is a sibling carrying its own, so a chop fired
+        // `TreeFall` for the trunk *and* `ImpactStone` for the needles, at the
+        // same position on the same frame. Nothing caught it because both cues
+        // are real cues and the mix is the only place the pair is audible.
+        // Felling v0 would have made it three, which is what made it visible.
+        //
+        // `FellPart` names the parts, so the rule can be stated instead of
+        // inferred: the trunk speaks for the tree, a `Vanish` node speaks for
+        // itself, and the canopy and the stump are silent because they are
+        // parts of something that already made a sound.
+        let cue = match f.part {
+            super::props::FellPart::Trunk => Cue::TreeFall,
+            super::props::FellPart::Vanish => Cue::ImpactStone,
+            // …and `Far` with them: the hull is the trunk at a distance, so
+            // a chop that felled both would play `TreeFall` twice on one
+            // frame at one position — the exact defect this match was
+            // written to end.
+            super::props::FellPart::Canopy
+            | super::props::FellPart::Stump
+            | super::props::FellPart::Far => continue,
         };
+        let p = t.translation();
         sound.play(Request::at(cue, [p.x, p.y, p.z]));
     }
 }
@@ -368,43 +496,77 @@ pub fn fell(q: Query<(Ref<super::props::Fellable>, &GlobalTransform)>, mut sound
 /// The position is [`super::structures::base_transform`]'s — the same
 /// anchor the mesh stands at, edge canonicalisation included, so the sound
 /// cannot come from a different place than the wall appears in.
-pub fn place(feed: Res<super::feed::Feed>, world: Res<super::WorldId>, mut sound: ResMut<Sound>) {
+///
+/// **The plate is read out of the mirror, not off the event** (build plate
+/// v1): `feed.placed()` carries an address and the placement broadcast that
+/// raised it also inserted the record, so the column is in the piece mirror by
+/// the time this runs. A hammer blow is a point source at head height either
+/// way — but the column's floor is the one number here that can be a whole
+/// storey out, and a sound a storey off is a sound in the wrong room.
+pub fn place(
+    feed: Res<super::feed::Feed>,
+    world: Res<super::WorldId>,
+    net: NonSend<super::Net>,
+    mut sound: ResMut<Sound>,
+) {
     for &(cx, cz, level, loc, _deploy) in feed.placed() {
-        let p = super::structures::base_transform(world.seed, (cx, cz, level, loc)).translation;
+        let plate = net.session.core.pieces.cols().plate(cx, cz).unwrap_or(0);
+        let p = super::structures::base_transform(
+            world.seed,
+            &world.haven,
+            (cx, cz, level, loc),
+            plate,
+        )
+        .translation;
         sound.play(Request::at(Cue::Place, [p.x, p.y, p.z]));
     }
 }
 
-/// The pig's voice, off the drawn herd's interpolated positions.
+/// The herd's voices, off the drawn animals' interpolated positions.
 ///
-/// Dormancy-respecting by construction: a `Pig` entity exists only for a
+/// Dormancy-respecting by construction: an `Animal` entity exists only for a
 /// mob inside AOI (208 m), and every mob a client can see is awake —
 /// `MOB_WAKE_CM` (240 m) deliberately encloses AOI (`limits.rs`), so a
-/// voiced pig is always a simmed pig. "Only nearby" is then the mixer's own
-/// falloff at the cue's 40 m radius — the falling-tree pattern: push with a
+/// voiced animal is always a simmed animal. "Only nearby" is then the mixer's
+/// own falloff at the cue's radius — the falling-tree pattern: push with a
 /// position, let the one distance law cull.
 ///
-/// The cadence is `sound::pig`'s — hashed per roster slot and cycle, so it
-/// is deterministic (no OS randomness) and not a metronome. The snout
-/// height puts the emitter at the head rather than under the hooves.
-pub fn pigs(
-    herd: Query<(&super::mobs::Pig, &Transform)>,
+/// The cadence is `sound::voice`'s — hashed per roster slot and cycle, so it
+/// is deterministic (no OS randomness) and not a metronome. The head height
+/// puts the emitter at the snout rather than under the feet.
+///
+/// **This system does not know what a pig or a wolf is, and that is the fix
+/// it carries.** Until 2026-08-14 it was `pigs`, it played [`Cue::Snort`]
+/// unconditionally, and so every wolf on the island snorted. It now asks
+/// `voice::Voices::due` — which reads the species off the roster slot itself
+/// (`mob::kind_of`) — and plays whatever cue it is handed. Adding a third
+/// species is then a change to `sound::voice` and to nothing here.
+///
+/// The one thing this system decides is the **register**, because it is the
+/// only half that knows where the listener is: `near` is measured to the
+/// emitter point, the same point the mixer will then cull against, so the
+/// distance the register turns on and the distance the cue is audible to
+/// are the same arithmetic on the same two positions.
+pub fn voices(
+    herd: Query<(&super::mobs::Animal, &Transform)>,
+    eye: Res<Eye>,
     time: Res<Time>,
     mut sound: ResMut<Sound>,
 ) {
     let dt = time.delta_secs();
-    for (pig, t) in herd.iter() {
-        let Some(slot) = sim_core::mob::slot_of_id(pig.0) else {
+    let switch = crate::sound::voice::switch_m();
+    for (animal, t) in herd.iter() {
+        let Some(slot) = sim_core::mob::slot_of_id(animal.0) else {
             continue;
         };
-        if !sound.snorts.due(slot, dt) {
-            continue;
-        }
         let p = t.translation;
-        sound.play(Request::at(
-            Cue::Snort,
-            [p.x, p.y + super::mobs::PIG_H_M * 0.6, p.z],
-        ));
+        let at = [p.x, p.y + super::mobs::voice_h_of(slot), p.z];
+        let d = [at[0] - eye.pos.x, at[1] - eye.pos.y, at[2] - eye.pos.z];
+        let near = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= switch * switch;
+        let Some(cue) = sound.voices.due(slot, near, dt) else {
+            continue;
+        };
+        sound.play(Request::at(cue, at));
     }
 }
 
@@ -423,6 +585,11 @@ pub fn hurt(net: NonSend<Net>, mut last: ResMut<LastHp>, mut sound: ResMut<Sound
     // `last.0 == 0` is "we have never seen one", which a fresh world is.
     if last.0 > 0 && hp < last.0 {
         sound.play(Request::own(Cue::Hurt));
+        // **The biggest bump, and theirs is too** (`reference/AUDIO.md` §8's
+        // published order: a weapon in play < a bullet past your head <
+        // taking damage). Two of these inside two sections is what puts the
+        // score in its top tier.
+        sound.music.bump(music::BUMP_HURT);
     }
     last.0 = hp;
 }
@@ -436,6 +603,9 @@ pub fn hurt(net: NonSend<Net>, mut last: ResMut<LastHp>, mut sound: ResMut<Sound
 /// looping voice whose gain reads how many scatter props are drawn nearby —
 /// so the bed already answers to the world rather than being a constant, and
 /// it costs one query length per frame instead of an emitter set.
+/// The forest layer rides along: [`bed`] already walks the props and already
+/// scores the cover, so a bird costs a countdown and an index. See
+/// `sound::birds` for why a layer is not a bed turned down.
 // Seven: the mix state to write, where the ears are, which island this is, the
 // cover query, the clock, the player's sliders, and the sinks to move.
 #[allow(clippy::too_many_arguments)]
@@ -443,9 +613,11 @@ pub fn bed(
     mut sound: ResMut<Sound>,
     eye: Res<Eye>,
     world: Res<super::WorldId>,
-    props: Query<&GlobalTransform, With<super::props::Fellable>>,
+    props: Query<(&GlobalTransform, &super::props::Fellable)>,
     time: Res<Time>,
     settings: Res<super::Settings>,
+    feed: Res<super::feed::Feed>,
+    pin: Res<super::rig::DayPin>,
     mut sinks: Query<(&Bed, &mut AudioSink)>,
 ) {
     // How much cover is within earshot, 0..1. `COVER_FULL` scatter slots
@@ -453,17 +625,73 @@ pub fn bed(
     //
     // **It counts every gatherable slot, not only trees** — a boulder field
     // reads as cover here and a pine wood reads the same. That is a
-    // simplification and not a claim: the honest version needs the occupant
-    // kind, which `Fellable` carries only as `stumps`, and a bed that told
-    // rock from canopy is the localized-emitter slice (`reference/AUDIO.md`
-    // §9.3), not this one.
+    // simplification and not a claim: a bed that told rock from canopy is the
+    // localized-emitter slice (`reference/AUDIO.md` §9.3), not this one.
+    //
+    // **What it must count is SLOTS, and a slot is more than one entity.** A
+    // tree is four `Fellable`s (trunk, canopy, stump, far hull) and every
+    // other slot is one, so counting entities would score a pine wood 4× a
+    // boulder field of the same density — and `COVER_FULL` was calibrated
+    // when a tree was two.
+    // Counting the parts that are one-per-slot fixes the units. This is the
+    // second thing felling v0 found by adding a part: `Fellable` is not a
+    // slot, it is a piece of one.
+    //
+    // **So `COVER_FULL` moves 14 → 7, and that is a unit conversion rather
+    // than a retune.** It was tuned by ear in a pine wood, where every slot
+    // counted twice, so 14 entities WAS 7 trees. Leaving it at 14 in the
+    // corrected unit would silently double how much forest the bed needs and
+    // make the woods quieter — a tuning change nobody chose, arriving as a
+    // side effect of a bug fix, which is the worst way for one to arrive.
     const FOREST_R2: f32 = 22.0 * 22.0;
-    const COVER_FULL: f32 = 14.0;
+    const COVER_FULL: f32 = 7.0;
+    // The two halves of "is this a tree near me", as closures, because the
+    // bird layer below walks the same set for a perch and an index into a
+    // set that was filtered differently is an index into nothing.
+    let is_perch = |f: &super::props::Fellable| {
+        matches!(
+            f.part,
+            super::props::FellPart::Trunk | super::props::FellPart::Vanish
+        )
+    };
+    let near_eye = |p: Vec3| p.distance_squared(eye.pos) < FOREST_R2;
     let near = props
         .iter()
-        .filter(|t| t.translation().distance_squared(eye.pos) < FOREST_R2)
-        .count() as f32;
-    let cover = (near / COVER_FULL).clamp(0.0, 1.0);
+        .filter(|(t, f)| is_perch(f) && near_eye(t.translation()))
+        .count();
+    let cover = (near as f32 / COVER_FULL).clamp(0.0, 1.0);
+
+    // The forest layer. A second walk of the same query, and it runs on the
+    // one frame in a few hundred that a call actually lands — a buffer of
+    // candidate perches would cost every frame to save that one, and would
+    // cap how much forest the layer can see for nothing.
+    //
+    // Daylight only, now that a day exists (day/night v0): birds roost at
+    // night, and the cause is the server's own clock rather than one this
+    // layer invented — the refusal `birds.rs`' header recorded is repaid.
+    // Crickets are the night companion and still owed (`NOW.md` §0x).
+    //
+    // Through `world::is_night` rather than the open-coded comparison this
+    // used to carry: the sim reads the same boundary now (a predator's
+    // notice radius is the hour's), and two hand-written thresholds against
+    // one constant is how the birds and the wolves come to disagree about
+    // when dusk was.
+    //
+    // The tick comes through `DayPin` for the same reason one level up: on a
+    // `--capture` run the hour is pinned, and reading the raw estimate here
+    // would roost the birds at the box's hour while the sun stood at noon.
+    let is_day = !sim_core::world::is_night(pin.tick(feed.server_tick_est));
+    if is_day && sound.birds.due(cover, time.delta_secs()) && near > 0 {
+        let want = sound.birds.perch(near);
+        if let Some(p) = props
+            .iter()
+            .filter(|(t, f)| is_perch(f) && near_eye(t.translation()))
+            .map(|(t, _)| t.translation())
+            .nth(want)
+        {
+            sound.play(Request::at(Cue::Bird, [p.x, p.y + birds::PERCH_H_M, p.z]));
+        }
+    }
     // Open ground is windier than the inside of a forest, but a forest is not
     // silent — it is the same wind in the canopy. So the bed never drops
     // below half, and cover moves it rather than gating it.
@@ -521,6 +749,94 @@ pub fn water(net: NonSend<Net>, eye: Res<Eye>, time: Res<Time>, mut sound: ResMu
     let feet = net.session.core.predict.render_position()[1];
     if let Some(gain) = sound.waterline.sample(feet, dt) {
         sound.play(Request::own(Cue::Splash).with_gain(gain));
+    }
+}
+
+/// The score: tick the director, start the piece it asks for, and hold every
+/// sounding piece at the player's music level.
+///
+/// **Runs everywhere, unlike every other system in this file.** There is no
+/// `world_running`, no `Net` and no `Eye` in its arguments, because music
+/// plays on the menus too — `sound::music::Mode::Menu` is what makes that a
+/// different behaviour rather than a different code path.
+///
+/// Starting a piece is a spawn and nothing else: the previous piece is left
+/// alone to ring out under it, which is the whole of `reference/AUDIO.md`
+/// §8's transition design. `PlaybackMode::Despawn` collects it when its tail
+/// ends.
+pub fn music(
+    mut commands: Commands,
+    mut sound: ResMut<Sound>,
+    bank: Res<Bank>,
+    time: Res<Time>,
+    settings: Res<super::Settings>,
+    mut voices: Query<(Entity, &mut MusicVoice, &mut AudioSink)>,
+) {
+    let dt = time.delta_secs();
+    let mix = mix_of(&settings);
+    if let Some(piece) = sound.music.tick(dt) {
+        let def = piece.cue.def();
+        commands.spawn((
+            MusicVoice {
+                cue: piece.cue,
+                fade: 1.0,
+                ending: false,
+            },
+            AudioPlayer(bank.get(piece.cue)),
+            PlaybackSettings {
+                mode: PlaybackMode::Despawn,
+                // **Its real level, not silence.** A spawn is not queryable
+                // until the next flush, so the loop below cannot reach this
+                // voice this frame — starting it silent would put a step from
+                // zero to full one frame into every piece, which is the click
+                // `synth::edges` exists to prevent at the other end of the
+                // same sample. The loop's job is to FOLLOW the slider, not to
+                // set the opening level.
+                volume: Volume::Linear(def.gain * mix.bus_gain(def.bus)),
+                spatial: false,
+                ..default()
+            },
+        ));
+    }
+
+    let step = if MUSIC_FADE_S > 0.0 {
+        dt / MUSIC_FADE_S
+    } else {
+        1.0
+    };
+    for (e, mut voice, mut sink) in voices.iter_mut() {
+        if voice.ending {
+            voice.fade -= step;
+            if voice.fade <= 0.0 {
+                commands.entity(e).despawn();
+                continue;
+            }
+        }
+        let def = voice.cue.def();
+        sink.set_volume(Volume::Linear(
+            def.gain * mix.bus_gain(def.bus) * voice.fade,
+        ));
+    }
+}
+
+/// Put the director on a new screen's schedule.
+///
+/// Called on entering the menu and on entering a world, which are the only
+/// two transitions music has. One function because the rule is one rule, and
+/// it is stated in the condition rather than in the caller: **a sounding
+/// piece is ended only when the new mode is about to start one on top of
+/// it.** Leaving a world does (the menu has no gap), so the old piece fades;
+/// joining one does not (`music::FIRST_GAP_S` is half a minute), so the menu
+/// piece rings out over the loading screen, which is what music is for.
+pub fn music_mode(mode: music::Mode) -> impl Fn(ResMut<Sound>, Query<&mut MusicVoice>) {
+    move |mut sound: ResMut<Sound>, mut voices: Query<&mut MusicVoice>| {
+        sound.music.reset(mode);
+        if sound.music.next_in_s() > crate::sound::music::PIECE_S {
+            return;
+        }
+        for mut v in voices.iter_mut() {
+            v.ending = true;
+        }
     }
 }
 
@@ -614,6 +930,7 @@ fn mix_of(s: &super::Settings) -> Mix {
         master: s.vol_master,
         game: s.vol_game,
         ambience: s.vol_ambience,
+        music: s.vol_music,
     }
 }
 

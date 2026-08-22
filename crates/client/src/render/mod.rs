@@ -23,12 +23,22 @@ use crate::Session;
 // only by a windowed run with a sound card is a mixer with no gate.
 pub mod audio;
 pub mod bodies;
+// The boot splash. The window is the first thing a double-click gets now, and
+// the launcher handshake and connect happen behind it as states rather than
+// before it as preconditions.
+pub mod boot;
 pub mod capture;
 pub mod icons;
 // Chat. Not registered on a capture run, like the panels: a gate whose
 // frames depend on whether a composer is open is not a gate.
 pub mod chat;
 pub mod clutter;
+pub mod collider_debug;
+// The hemisphere sky fill. `rig.rs` owns the light; this owns the arithmetic
+// of what a sky-facing face and a ground-facing face each receive, because
+// Bevy's `AmbientLight` cannot tell them apart and `ART.md` §4 requires that
+// it can.
+pub mod fill;
 // This frame's own-facts, drained from the core ONCE. Every `pop_*` call in
 // the client lives in there — see its header for the merge that made that a
 // rule rather than a preference.
@@ -43,7 +53,16 @@ pub mod disconnected;
 // The build ghost: the cell being aimed at, and the click that commits it.
 pub mod ghost;
 // The blue wash over the piece a hammer is aimed at.
+pub mod decal;
 pub mod highlight;
+pub mod tracer;
+// The launcher-backed nav entries: the title manifest's fetch, and the click
+// that hands NEWS / ITEM STORE / WORKSHOP to the launcher's own window. The
+// model is `crate::ui::hub`.
+// Generated held-item geometry: the meshes behind `ui::hold::HeldSrc::Gen`
+// rows and the viewmodel's two-primitive stand-in tool.
+pub mod heldgen;
+pub mod hub;
 pub mod hud;
 pub mod input;
 pub mod loading;
@@ -57,15 +76,32 @@ pub mod mobs;
 // player sees instead of the world, `panels` is what they see on top of it.
 pub mod panels;
 pub mod pause;
+pub mod prewarm;
+pub mod quality;
+// Discord rich presence: which screen means what, and the handoff to the
+// worker. The model — socket, framing, payloads, copy — is `crate::discord`,
+// which is pure and unconditional. Dark unless `GATES_DISCORD_APP_ID` is set.
+pub mod presence;
 pub mod props;
 pub mod rig;
 pub mod settings;
+// The screenshot key. Distinct from `capture`, which is the probe harness:
+// this is a player pressing F12 at a moment they chose, so it settles
+// nothing and never touches the view. `crate::shot` is the arithmetic half.
+pub mod shot;
+// The report key: `F7`, one line of typing, two files beside the screenshots.
+// `crate::report` owns what goes in them; this owns nodes, keys and the live
+// facts. Beside `shot` because they share a directory and a keypress.
+pub mod report;
 pub mod sky;
 // What players built. Distinct from `props`, which is the world the seed
 // makes: this is the world other players made, and it arrives on the wire.
 pub mod structures;
 pub mod terrain_mesh;
 pub mod textures;
+// The ground's four identities, each with its own photograph. The first WGSL
+// in the tree (`RENDER.md` R4).
+pub mod ground_splat;
 pub mod tree;
 pub mod ui;
 // The sea: a graded volume with a swell on it. `reference/WATER.md` is the
@@ -183,7 +219,7 @@ pub fn world_running(state: Res<State<Screen>>, world: Option<Res<WorldId>>) -> 
     world.is_some()
         && !matches!(
             state.get(),
-            Screen::Menu | Screen::Connecting | Screen::Disconnected
+            Screen::Boot | Screen::Menu | Screen::Connecting | Screen::Disconnected
         )
 }
 
@@ -231,6 +267,7 @@ pub fn world_teardown(
     mut structures: ResMut<structures::StructRing>,
     mut ghost: ResMut<ghost::Ghost>,
     mut highlight: ResMut<highlight::Highlight>,
+    mut marks: ResMut<decal::Marks>,
     mut bodies: ResMut<bodies::Bodies>,
     mut herd: ResMut<mobs::Herd>,
     mut eye: ResMut<Eye>,
@@ -256,6 +293,10 @@ pub fn world_teardown(
     *ghost = ghost::Ghost::default();
     // Same reason, same shape: the hammer's wash holds an `Entity` too.
     highlight::forget_in(&mut highlight);
+    // And the mark pool, whose entities are NOT `WorldEntity` — spawned at
+    // `Startup`, so the despawn above walks past them and last shard's
+    // bullet holes would still be standing in the next world.
+    decal::forget_in(&mut commands, &mut marks);
     *bodies = bodies::Bodies::default();
     *herd = mobs::Herd::default();
     // The readout holds the LAST wall hit and charge clock — facts about
@@ -296,10 +337,26 @@ pub struct Start {
     pub direct: String,
     /// The shard list to fetch, if any.
     pub servers_url: Option<String>,
-    /// `gates.rs` already connected, so skip the server list and open on the
-    /// loading screen. The probe harness and a launcher join both arrive this
-    /// way: the first must not wait on a click, the second has already chosen.
+    /// `gates.rs` already connected before the window, so open on the loading
+    /// screen. **Only `--capture` arrives this way now**, and the module doc
+    /// on `boot` has the argument: a probe harness must not photograph a
+    /// half-finished handshake, so its connect stays a precondition, while a
+    /// launcher join became a state (`chosen`) so that a dead shard lands on
+    /// the server list instead of on a stderr nobody is reading.
     pub connected: bool,
+    /// A shard was named on the command line or by the launcher, and the
+    /// player must not be asked to pick again. The splash hands straight to
+    /// `Connecting` (`crate::ui::boot::Next`).
+    pub chosen: bool,
+    /// `--identity`, for the launcher handshake the splash now runs.
+    pub identity: Option<String>,
+    /// Nothing to ask a launcher — `--no-launcher`, or a start that already
+    /// resolved its player before the window.
+    pub no_launcher: bool,
+    /// `--no-hud`: a capture run that shoots a clean PLATE — no HUD, no
+    /// viewmodel, no compass. The menu backdrop is footage
+    /// (`ui::backdrop`), and a frame with a hotbar across it is not footage.
+    pub no_hud: bool,
 }
 
 pub struct GatesRenderPlugin {
@@ -310,7 +367,27 @@ pub struct GatesRenderPlugin {
 
 impl Plugin for GatesRenderPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Eye>()
+        // Copied out so the `run_if` closures below capture a `bool` rather
+        // than borrowing `self`, which does not outlive `build`.
+        let plate = self.start.no_hud;
+        // **The probe's hour is pinned; a player's is the server's.** Same
+        // rule as the windowed pin two fields down — a capture run takes the
+        // defaults wholesale except where the box would otherwise decide what
+        // the frame looks like, and until this landed the sun's height was a
+        // function of how long the build took (`rig::DayPin`).
+        let day_pin = if self.capture.is_some() {
+            rig::DayPin::capture()
+        } else {
+            rig::DayPin::default()
+        };
+        // The ground's splat material. `MaterialPlugin` is what registers the
+        // pipeline and the asset type; without it the ground draws with no
+        // material at all, which — as the asset-root trap in `bin/gates.rs`
+        // records — is not an error the image shows you.
+        app.add_plugins(MaterialPlugin::<ground_splat::GroundMaterial>::default());
+        app.insert_resource(day_pin)
+            .init_resource::<Eye>()
+            .init_resource::<collider_debug::ShowColliders>()
             .init_resource::<input::Look>()
             .init_resource::<terrain_mesh::Ring>()
             .init_resource::<props::PropRing>()
@@ -319,6 +396,9 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<bodies::Bodies>()
             .init_resource::<mobs::Herd>()
             .init_resource::<menu::Picked>()
+            .init_resource::<menu::Browse>()
+            .init_resource::<hub::HubState>()
+            .init_resource::<boot::Who>()
             .init_resource::<pause::Chosen>()
             .init_resource::<viewmodel::Motion>()
             .init_resource::<verbs::Aimed>()
@@ -331,6 +411,8 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<disconnected::Chosen>()
             .init_resource::<ghost::Ghost>()
             .init_resource::<highlight::Highlight>()
+            .init_resource::<tracer::Tracers>()
+            .init_resource::<decal::Marks>()
             .init_resource::<hud::Toast>()
             .init_resource::<hud::Readout>()
             .init_resource::<feed::Feed>()
@@ -347,37 +429,66 @@ impl Plugin for GatesRenderPlugin {
         // the defaults and gets no `Disk` — which is also what makes
         // `save_on_change` a no-op there.
         if self.capture.is_none() {
-            let (settings, disk) = settings::load();
+            let (settings, favourites, disk) = settings::load();
             app.insert_resource(settings);
+            // The starred shards come off the same file and land on the
+            // browser's own resource — a favourite is not a knob, and
+            // `settings::save_on_change` is the one writer for both.
+            app.insert_resource(menu::Browse {
+                favourites,
+                ..default()
+            });
             if let Some(disk) = disk {
                 app.insert_resource(disk);
             }
         } else {
-            app.init_resource::<Settings>();
+            app.insert_resource(Settings {
+                // The defaults, with ONE pinned: a capture run stays
+                // windowed however the shipping default moves. The probe's
+                // frame is the visual gate's unit, and
+                // `WindowMode::BorderlessFullscreen` would size it to
+                // whatever `Xvfb -screen` this box was started with — the
+                // same "a frame must not depend on the box" rule that makes
+                // the branch above load no file.
+                fullscreen: false,
+                ..default()
+            });
         }
 
         // `Menu` is inserted either way, because a system that reads it must
         // not care which door the app came through — and the disconnect that
         // returns to it is what `pause` now spends a verb on.
         //
-        // **A connected start opens on `Loading`, not `InWorld`**, and that
-        // includes `--capture`: the world's rings take ~25 frames to fill
-        // whoever asked for them, and the state that owns that interval is
-        // the one that owns the rig. A capture run entering `InWorld` on
-        // frame one would enter a state whose `OnEnter` no longer builds
-        // anything, and photograph an empty world.
+        // **Every start that is not a capture run opens on `Boot`.** The
+        // splash is the window a double-click gets, and what it hands off to
+        // is one bit — `chosen` — resolved in `crate::ui::boot` rather than
+        // here. A capture run still opens on `Loading`, because its connect
+        // happened before the window and its rings take ~25 frames to fill:
+        // entering `InWorld` on frame one would enter a state whose `OnEnter`
+        // no longer builds anything, and photograph an empty world.
         app.insert_state(if self.start.connected {
             Screen::Loading
         } else {
-            Screen::Menu
+            Screen::Boot
         })
         .insert_resource(Menu::new(
             &self.start.direct,
             self.start.servers_url.clone(),
+        ))
+        .insert_resource(boot::Direct(self.start.direct.clone()))
+        .insert_resource(boot::Warmup::new(
+            self.start.chosen,
+            self.start.identity.clone(),
+            // A capture run has already resolved its player and must not
+            // reach for a socket outside the repo — a gate whose result
+            // depends on what else is running on the box is not a gate.
+            self.start.no_launcher || self.start.connected,
         ));
         // The direct address is also what the loading and pause screens name,
-        // and on a `--server` start nothing has been "picked" — so the field
-        // those screens read is seeded here rather than left empty.
+        // and on a capture start nothing has been "picked" — so the field
+        // those screens read is seeded here rather than left empty. Every
+        // other start fills it in `boot::teardown` on the way out of the
+        // splash.
         if self.start.connected {
             if let Some(mut c) = app
                 .world_mut()
@@ -392,7 +503,31 @@ impl Plugin for GatesRenderPlugin {
         // player reads the menu is free time the old shape did not have.
         app.add_systems(
             Startup,
-            (textures::load, icons::load, anim::load, mobs::load),
+            (
+                textures::load,
+                icons::load,
+                anim::load,
+                mobs::load,
+                // The held-item models. Loaded once here rather than per
+                // swap: `AssetServer` dedups, but a `load` still walks and
+                // hashes a path, and `viewmodel::swap` runs every frame.
+                viewmodel::load_models,
+                // The tracer pool. Spawned once here so the frame path
+                // never spawns an entity for an arrow (`tracer.rs`).
+                tracer::setup,
+                // The mark pool, for the same reason plus one more: the
+                // materials it builds here are what the prewarm draw
+                // specializes, and a pipeline compiled mid-fight is the
+                // pop `decal.rs`'s `PREWARM_FRAMES` exists to avoid.
+                decal::setup,
+                // The shared warm mesh. Before anything that could create a
+                // material, so `prewarm::warm` never sees an `Added` it has
+                // no mesh to draw against.
+                prewarm::setup,
+                // The menu's footage. Wanted on the first screen after the
+                // splash, so it warms while everything else does.
+                ui::load_backdrop,
+            ),
         );
         // The sound bank is generated rather than loaded (`sound/synth.rs`)
         // and is built HERE, not at `Startup`. **`OnEnter(Screen::Loading)`
@@ -414,6 +549,13 @@ impl Plugin for GatesRenderPlugin {
         // has the whole argument for compiling them in.
         ui::build_fonts(app);
 
+        // ---- the boot splash -----------------------------------------
+        // The first screen a double-click gets. `update` is the only system
+        // that can leave it, and it leaves on observable state — see `boot`.
+        app.add_systems(OnEnter(Screen::Boot), (boot::begin_greet, boot::setup))
+            .add_systems(OnExit(Screen::Boot), boot::teardown)
+            .add_systems(Update, boot::update.run_if(in_state(Screen::Boot)));
+
         // ---- the menu ------------------------------------------------
         // `world_teardown` first: entering the menu from a live world is the
         // disconnect path, and the menu must not be built over a world that
@@ -427,16 +569,21 @@ impl Plugin for GatesRenderPlugin {
             Update,
             (
                 menu::poll_fetch,
+                // The title manifest, beside the shard list: both are
+                // documents a menu waits on, both raise a dirty flag, and
+                // `menu::rebuild` at the end of this chain is the one redraw.
+                hub::poll,
                 // The count half, after the list half: `poll_fetch` is what
-                // creates the rows a poll addresses by index, and both feed
-                // the one `rebuild_on_new_rows` below.
+                // creates the rows a poll addresses by index, and both raise
+                // the one `dirty` flag `rebuild` below acts on.
                 menu::begin_status_poll,
                 menu::poll_status,
-                menu::rebuild_on_new_rows,
-                menu::refresh_status,
                 menu::click,
                 menu::keys,
                 menu::take_pick,
+                // Last, so a click, a keystroke and a landed fetch all reach
+                // the screen on the frame they happen rather than the next.
+                menu::rebuild,
             )
                 .chain()
                 .run_if(in_state(Screen::Menu)),
@@ -514,7 +661,10 @@ impl Plugin for GatesRenderPlugin {
                 OnEnter(Screen::Disconnected),
                 water::teardown.after(world_teardown),
             )
-            .add_systems(OnEnter(Screen::Disconnected), map::forget)
+            .add_systems(
+                OnEnter(Screen::Disconnected),
+                (map::forget, viewmodel::forget),
+            )
             .add_systems(OnExit(Screen::Disconnected), disconnected::teardown)
             .add_systems(
                 Update,
@@ -524,9 +674,17 @@ impl Plugin for GatesRenderPlugin {
             );
 
         // ---- the map -------------------------------------------------
-        // `open` is registered after the panels and after chat, so `M` typed
-        // into a search box or a chat composer is theirs — both consume the
-        // press before this sees it.
+        // **Hold `G`.** `open` is ordered after the panels and after chat,
+        // and that ordering is necessary but was never sufficient — the claim
+        // here used to be that a letter typed into a search box or a composer
+        // is theirs because "both consume the press before this sees it", and
+        // only half of that was ever true. `chat::keys` does consume it: it
+        // clears the whole keyboard while the composer is up. `panels::keys`
+        // clears **only `Escape`**, and the inventory search box reads
+        // `KeyboardInput` messages rather than `ButtonInput`, so the press
+        // survives — which is why typing `m` into the crafting search used to
+        // open the map. `map::open` carries its own guard now and does not
+        // rely on being downstream of anything.
         app.init_resource::<map::Island>()
             .add_systems(OnEnter(Screen::Map), (map::enter, map::setup).chain())
             .add_systems(OnExit(Screen::Map), (map::teardown, map::leave))
@@ -542,7 +700,7 @@ impl Plugin for GatesRenderPlugin {
                     .after(pause::open)
                     .run_if(in_state(Screen::InWorld)),
             )
-            .add_systems(OnEnter(Screen::Menu), map::forget);
+            .add_systems(OnEnter(Screen::Menu), (map::forget, viewmodel::forget));
 
         // ---- settings ------------------------------------------------
         // The two `apply_*` systems are deliberately NOT gated on the screen
@@ -565,8 +723,36 @@ impl Plugin for GatesRenderPlugin {
                     settings::apply_view,
                     settings::apply_window,
                     settings::save_on_change,
+                    // The graphics tier, and it belongs beside the other two
+                    // appliers rather than in the world schedule: a player
+                    // can move it from the intro screen, so it must run
+                    // wherever `Settings` can change and not only in a world.
+                    // Both halves are guarded on `is_changed()`, so a frame
+                    // nobody touched the settings on costs two resource
+                    // reads. `reband_trees` after `apply`, which is what
+                    // writes the resource it watches.
+                    quality::apply,
+                    quality::reband_trees.after(quality::apply),
+                    // Every material gets one tiny in-frustum draw when it is
+                    // created, so the pipeline it needs is specialized before
+                    // the event that first shows it. `retire` after `warm`,
+                    // or a material created and warmed on the same frame
+                    // would lose a frame of its own life to the counter.
+                    prewarm::warm,
+                    prewarm::retire.after(prewarm::warm),
                 ),
-            );
+            )
+            .init_resource::<tree::TreeLod>()
+            // **The frame cap, and it must be `Last` and unconditional.**
+            // `Last` because a cap has to be the final thing a frame does —
+            // registered in `Update` it would sleep before the render it is
+            // pacing. Unconditional because the screen that wasted the most
+            // was the MENU: Bevy's focused update mode is `Continuous`, so
+            // with vsync off a still image was redrawn as fast as the
+            // hardware allowed, and a cap that only ran in-world would have
+            // left exactly that case uncapped.
+            .init_resource::<settings::FrameDeadline>()
+            .add_systems(Last, settings::limit_frames);
 
         // One hover handler for every screen that has buttons on it.
         app.add_systems(Update, ui::hover);
@@ -591,7 +777,16 @@ impl Plugin for GatesRenderPlugin {
         )
         // The HUD's viewmodel is parented to the camera, so it must be
         // built after the rig has spawned one.
-        .add_systems(OnEnter(Screen::Loading), hud::setup.after(rig::setup))
+        //
+        // **A plate run spawns none of it.** Every HUD system reads its
+        // entities through a guarded `single()`, so an absent HUD is a set of
+        // no-ops rather than a panic — which is what makes `--no-hud` two
+        // conditions here instead of a mode inside `capture.rs`. The harness
+        // itself is untouched, so the gate's own frames cannot move.
+        .add_systems(
+            OnEnter(Screen::Loading),
+            hud::setup.after(rig::setup).run_if(move || !plate),
+        )
         // Both in `Update` and NOT on the `Loading` transition — that
         // transition runs before `Startup`, so `PropMaps` does not exist yet
         // (see `viewmodel::spawn_item`). `animate` runs after `feed::drain`,
@@ -601,11 +796,36 @@ impl Plugin for GatesRenderPlugin {
             Update,
             (
                 viewmodel::spawn_item,
+                // The arms wait on the rig's glTF, so they cannot spawn beside
+                // the item — `dress_arms` then runs until the scene's own
+                // entities exist, which is a frame or two later again.
+                viewmodel::spawn_arms,
+                viewmodel::dress_arms,
+                viewmodel::arms_report,
                 viewmodel::animate
                     .after(feed::drain)
                     .after(viewmodel::spawn_item),
+                // What is in the hand. After the spawn for the obvious
+                // reason; it writes only handles and visibility where
+                // `animate` writes only a transform, so the two never
+                // contend for one entity and need no order between them.
+                viewmodel::swap.after(viewmodel::spawn_item),
+                // The tracer's two halves. `launch` reads the drained feed,
+                // so it must follow the drain for the swing's reason —
+                // the other order reacts a frame late. `fly` then advances
+                // whatever is live, including the shot just claimed, so a
+                // tracer's first frame already shows motion.
+                tracer::launch.after(feed::drain),
+                tracer::fly.after(tracer::launch),
+                // The mark's two halves, the tracer's shape exactly.
+                // `mark` reads the drained feed so it follows the drain;
+                // `fade` then ages everything including the mark just
+                // claimed, which is what releases the prewarm slot.
+                decal::mark.after(feed::drain),
+                decal::fade.after(decal::mark),
             )
-                .run_if(world_running),
+                .run_if(world_running)
+                .run_if(move || !plate),
         )
         // The rig. `build` runs until the glTF is in and then costs one
         // branch; `bind` catches every `AnimationPlayer` the scene spawner
@@ -616,15 +836,48 @@ impl Plugin for GatesRenderPlugin {
             (
                 anim::build,
                 anim::bind.after(Stream),
+                anim::bind_head.after(Stream),
                 anim::reshade.after(Stream),
                 anim::drive.after(anim::bind),
             )
+                .run_if(world_running),
+        )
+        // **The head override lives in `PostUpdate`, between the animation
+        // and the propagation, and that window is the whole reason it is
+        // cheap.** The clip has posed the skeleton and nothing has turned
+        // local transforms into world ones yet, so pointing one bone at the
+        // pitch the wire carried costs a quaternion multiply and no
+        // re-propagation. Scheduled anywhere in `Update` it would either be
+        // overwritten by the animation player or need the hierarchy walked
+        // again.
+        .add_systems(
+            PostUpdate,
+            anim::head_look
+                .after(bevy::app::AnimationSystems)
+                .before(bevy::transform::TransformSystems::Propagate)
                 .run_if(world_running),
         )
         // The cloud deck hangs on the camera, so it waits for the rig too.
         .add_systems(OnEnter(Screen::Loading), sky::setup.after(rig::setup))
         // The listener IS the camera, so the ears wait for the rig as well.
         .add_systems(OnEnter(Screen::Loading), audio::setup.after(rig::setup))
+        // **The score runs everywhere, which is why it is registered on its
+        // own and not with the audio block below.** `sound::music` is a
+        // gap-and-intensity director (`reference/AUDIO.md` §8) and the menus
+        // are one of the two places it runs: continuous there, four to eight
+        // minutes apart in a world. Nothing it touches belongs to a world —
+        // no `Net`, no `Eye`, no listener — so it needs no run condition at
+        // all, and a music voice is deliberately not a `WorldEntity` so a
+        // piece can ring out across the transition.
+        .add_systems(Update, audio::music)
+        .add_systems(
+            OnEnter(Screen::Menu),
+            audio::music_mode(crate::sound::music::Mode::Menu),
+        )
+        .add_systems(
+            OnEnter(Screen::Loading),
+            audio::music_mode(crate::sound::music::Mode::World),
+        )
         // Leaving a shard resets the step odometer and the bed's fade. The
         // bed entity itself is a `WorldEntity` and goes with the rest.
         .add_systems(OnEnter(Screen::Menu), audio::teardown.after(world_teardown))
@@ -635,14 +888,28 @@ impl Plugin for GatesRenderPlugin {
         // streamer, and a sea that froze while the Esc menu was up would
         // resume with a visible jump in every wave.
         .add_systems(Update, water::animate.run_if(world_running))
-        // Input is the one thing that is `InWorld` and nothing else: it is
-        // the only system that writes what the sim reads, and a player
+        // Input writes what the sim reads, so it runs on the two screens where
+        // the player is still *in* the world and nowhere else: a player
         // reading a settings pane must not be swinging an axe.
+        //
+        // **`Map` is the second screen, and it has to be.** The map is held
+        // rather than toggled now, so the player is running while it is up —
+        // and `ClientCore::set_input` is a LATCH that `advance` re-emits every
+        // tick. Stop feeding it and the body keeps walking on whatever keys
+        // were down when the map opened, forever, until the map closes. That
+        // was already a live bug on the `M` toggle (`pause::enter` and
+        // `death::enter` both zero the latch on their way in; `map::enter`
+        // never did) and a hold would have made it the common case instead of
+        // the odd one. Keeping `gather` alive fixes it at the source: the
+        // latch stays honest, and letting go of `W` stops the body.
+        //
+        // Only `gather`. `verbs::keys` and the ghost stay `InWorld`, so no
+        // door opens and nothing is placed while the map is up.
         .add_systems(
             Update,
             input::gather
                 .before(input::place_eye)
-                .run_if(in_state(Screen::InWorld)),
+                .run_if(in_state(Screen::InWorld).or(in_state(Screen::Map))),
         )
         // The in-world verbs. `InWorld` for the same reason `gather` is: every
         // one of them spends something, and a player reading a settings pane
@@ -698,10 +965,27 @@ impl Plugin for GatesRenderPlugin {
                     // other things that read it are.
                     water::stream,
                     props::stream,
-                    props::harvest,
+                    // The full sweep is `fellables x harvested_len` with a
+                    // linear-scan membership test, so it runs on the frames
+                    // the wire moved the set; `harvest_new` is the half a
+                    // bit cannot cover, and costs an empty query otherwise.
+                    props::harvest.run_if(props::harvest_changed),
+                    props::harvest_new,
+                    // After `harvest`, which owns the discrete transition and
+                    // arms the topple this integrates. Reversed, a tree would
+                    // spend one frame at the pose the previous chop left it.
+                    props::fall,
                     clutter::stream,
-                    structures::stream,
-                    bodies::stream,
+                    // Reconciles the whole piece/deploy/bag mirror, which is
+                    // the right shape and the wrong cadence: it now runs only
+                    // on frames the wire said something about what it draws.
+                    structures::stream.run_if(structures::structures_changed),
+                    // **`.after(feed::drain)`, like every other reader of a
+                    // drained fact.** A swing lives for exactly the frame it
+                    // was drained on, so a body that streams before the
+                    // drain reads last frame's swings and misses this
+                    // frame's — a dropped arc nothing would report.
+                    bodies::stream.after(feed::drain),
                     mobs::stream,
                     // The legs read the gait `mobs::stream` just advanced.
                     mobs::trot,
@@ -717,6 +1001,15 @@ impl Plugin for GatesRenderPlugin {
                     // (`feed.rs` — a reader borrows, only the drain pops).
                     hud::readout,
                     hud::prompt,
+                    // The netcode readout under the build stamp. Reads the
+                    // predictor's own counters, which until now were computed
+                    // every snapshot and displayed nowhere — see `NetLine`.
+                    hud::net_line,
+                    // F3: draw what the SIM blocks over what the client
+                    // draws. Not a gate and not a probe — it does nothing
+                    // until a person presses the key.
+                    collider_debug::toggle,
+                    collider_debug::draw,
                     // The keypad's small panel, beside the prompt that
                     // goes quiet while it is up. HUD, not `panels::` — it
                     // must not grab the pointer, so it runs on a capture
@@ -729,16 +1022,40 @@ impl Plugin for GatesRenderPlugin {
                 .chain()
                 .run_if(world_running),
         )
-        // **The one `pop_*` call site in the client, and it runs first.**
-        // `hud::feedback` (inside `Stream`) and `audio::feed` (after it) both
-        // want this frame's hits, toasts and refusals, and the core hands each
-        // fact over exactly ONCE — so when both popped, the HUD drained every
-        // ring and the game fell silent, with no conflict and no failing test
-        // to say so. `feed::drain` fills a resource both read immutably;
+        // **The one `pop_*` call site in the client.** `hud::feedback`
+        // (inside `Stream`) and `audio::feed` (after it) both want this
+        // frame's hits, toasts and refusals, and the core hands each fact
+        // over exactly ONCE — so when both popped, the HUD drained every ring
+        // and the game fell silent, with no conflict and no failing test to
+        // say so. `feed::drain` fills a resource both read immutably;
         // `render/feed.rs` has the account. It is gated on `world_running`
         // rather than `world_placed` because a ring nobody drains overflows,
         // which is the reason `hud::feedback` gives for its own placement.
-        .add_systems(Update, feed::drain.before(Stream).run_if(world_running))
+        //
+        // **Ordered against the pump explicitly, both edges.** `place_eye`
+        // pumps the session (rings filled, `applied` word raised), the drain
+        // takes word and rings in one move, `Stream`'s readers see one
+        // coherent frame. Until 2026-08-15 only `.before(Stream)` was stated
+        // and drain-after-pump held by insertion order alone; the other
+        // schedule splits the word from the facts across frames, and a
+        // reader latching a stale `applied` bit beside freshly-pumped state
+        // reports one fact twice — the consume rings took the data off the
+        // latch for exactly that collapse, and the latched facts that remain
+        // (`struct_hit`, `charge_placed`, `stock`, `last_drink`) still live
+        // on the word being the same frame's as the fields.
+        .add_systems(
+            Update,
+            feed::drain
+                .after(input::place_eye)
+                .before(Stream)
+                .run_if(world_running),
+        )
+        // The rig follows the server's clock (day/night v0). After the
+        // drain so it reads this frame's tick estimate, not last frame's.
+        .add_systems(
+            Update,
+            rig::day_night.after(feed::drain).run_if(world_running),
+        )
         // Audio runs AFTER the streamers and `pump` runs last of all: every
         // producer must have had its say before the mixer resolves the frame,
         // or a cue requested by a system scheduled later is heard a frame
@@ -760,9 +1077,13 @@ impl Plugin for GatesRenderPlugin {
                 // Everyone else's, off the interpolated bodies `Stream`
                 // just moved — positional, culled by the mixer's falloff.
                 audio::remote_steps,
+                // …and their arms. Same slice `bodies::stream` animates
+                // from, same transform it just wrote.
+                audio::remote_swings,
                 audio::fell,
-                // The pig's voice, off the herd `mobs::stream` just moved.
-                audio::pigs,
+                // The herd's voices, off the animals `mobs::stream` just
+                // moved — a snort, a howl or a growl, by species and range.
+                audio::voices,
                 audio::bed,
                 audio::pump,
             )
@@ -780,6 +1101,40 @@ impl Plugin for GatesRenderPlugin {
         if self.capture.is_none() {
             panels::register(app);
             chat::register(app);
+            // ---- the screenshot key ----------------------------------
+            // **Not on a capture run either**, and for the same reason one
+            // line up: the probe harness spawns its own `Screenshot`
+            // entities on a fixed schedule, and a second writer of the same
+            // frame is a gate whose frames depend on which key was pressed.
+            //
+            // No state gate, unlike almost everything else here. The menu,
+            // the map and the death screen are all worth photographing, and
+            // a key that works on four screens out of nine is a key a player
+            // has to remember the rules for.
+            app.init_resource::<shot::Shots>()
+                .add_systems(Update, shot::take);
+
+            // ---- the report key --------------------------------------
+            // **Not on a capture run either**, and for the screenshot key's
+            // reason exactly: filing a report shoots the frame, and a probe
+            // harness with a second writer of the same frame is a gate whose
+            // frames depend on which key was pressed. Registered after it so
+            // the two systems are declared where a reader expects the pair.
+            report::register(app);
+
+            // ---- discord rich presence -------------------------------
+            // **Not on a capture run either**, and this one is the
+            // strongest case of the three: the probe would open a socket to
+            // whatever Discord happens to be running on the box, which is a
+            // gate whose behaviour depends on who is logged in.
+            //
+            // Registers nothing at all unless `GATES_DISCORD_APP_ID` names
+            // an application — dark is the shipping default, because the
+            // application is an operator act and there is no id in this
+            // tree (`crate::discord`).
+            if presence::register(app) {
+                info!("discord presence: live");
+            }
         }
 
         if let Some(dir) = &self.capture {

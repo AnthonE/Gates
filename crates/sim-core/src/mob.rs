@@ -1,7 +1,28 @@
 //! Animals — the roster, the wander, and the kill (`reference/ANIMALS.md`).
 //!
-//! One species at v0 (the pig) and the whole file is written so a second
-//! costs a content row and nothing else.
+//! **Two species: prey and a predator.** This header said "one species at
+//! v0 and the whole file is written so a second costs a content row and
+//! nothing else" for three days, and adding the second is what measured the
+//! claim. It was two thirds right. The *behaviour* was genuinely free — a
+//! hunter is `brave_pct = 0` (courage that never runs out, so the rousing
+//! is always a charge) and a notice radius wide enough to start one across
+//! open ground, both numbers in `content/mobs.toml` and not one branch in
+//! this file. What was NOT free is the roster itself: `MOB_KINDS` was 1,
+//! `Mobs::new` wrote `MOB_PIG` into all 64 slots, and the bake matched one
+//! string. So the honest form of the old claim, which is now true, is: a
+//! third species costs a content row, a bake arm, and an ordinal — and no
+//! behaviour, unless it wants a mechanism these two do not have (packs,
+//! and a blind spot, are the two `ANIMALS.md` §9.5 still names).
+//!
+//! **What separates a predator from brave prey is the reaction, not the
+//! bite.** One rousing timer serves both and always did: a player inside
+//! the notice radius starts it, and `brave_pct` decides which way the
+//! animal then points. Which radius is the hour's — `spook_cm` by day and
+//! `night_spook_cm` after dusk (`MobDef::spook_at`, the sim's only reader
+//! of the world clock). A pig is whole-hearted at full health and a coward under half of
+//! it; a wolf's floor is zero, so the same state is a charge at 1 hp. The
+//! bite is `attack != 0` and neither species has a code path the other
+//! lacks.
 //!
 //! **There is no navmesh here and there is not going to be one**, which is
 //! the single biggest thing the research changed. The reference game bakes
@@ -54,10 +75,119 @@ use crate::yaw_lut::yaw_dir;
 
 /// Species ordinals. The wire does not carry one — a client reads the
 /// species off the roster slot the id names, because the roster's kinds are
-/// worldgen and worldgen is shared. One entry today; the array below is
-/// what makes a second a content row.
+/// worldgen and worldgen is shared.
 pub const MOB_PIG: u8 = 0;
-pub const MOB_KINDS: usize = 1;
+pub const MOB_WOLF: u8 = 1;
+pub const MOB_KINDS: usize = 2;
+
+/// One roster slot in this many is a predator (`DECISIONS.md` §open,
+/// "predator v0"). 64 slots at 1-in-4 is **16 wolves and 48 pigs**, exactly,
+/// on every seed.
+///
+/// A stride and not a hashed draw, which is the bounded form wall 4 wants:
+/// the predator count is a stated number a gate can count rather than a
+/// distribution a gate has to sample. What the seed still varies is *where*
+/// they live — `home_of` draws per slot — so two shards agree on how many
+/// wolves exist and on nothing else about them.
+const WOLF_SLOT_EVERY: usize = 4;
+
+/// Which species a roster slot holds.
+///
+/// **This function is why the wire carries no species field.** `protocol`
+/// v29 rejected a `kind` on `EntityState` on cost — bits on every record of
+/// every snapshot, for a value that never changes for the life of an
+/// entity — and the rejection is only affordable because the answer is
+/// derivable on both sides. A client masks a mob id down to its slot
+/// (`slot_of_id`) and asks here; the sim asks here at construction. There
+/// is no handshake field, no snapshot bit, and no way for the two sides to
+/// disagree about what is chasing you.
+///
+/// It takes no seed on purpose. It could — `home_of` does — but a species
+/// that varied per seed would be a fact the client cannot check against
+/// anything, and the roster's *positions* already carry all the per-seed
+/// variety a world needs.
+#[inline]
+pub const fn kind_of(slot: usize) -> u8 {
+    if slot.is_multiple_of(WOLF_SLOT_EVERY) {
+        MOB_WOLF
+    } else {
+        MOB_PIG
+    }
+}
+
+/// Guards standing at each authored site (`DECISIONS.md` §open, "site
+/// guards v0"). The pad and every live waystation get this many.
+const GUARDS_PER_SITE: usize = 2;
+
+/// Roster slots spent guarding, across every site. A stated number and not
+/// a hashed draw, for `WOLF_SLOT_EVERY`'s reason: a gate counts it instead
+/// of sampling it. One pad plus [`terrain::WAYSTATIONS`] at
+/// `GUARDS_PER_SITE` each is **6 of the 16 wolves**, leaving 10 hunting the
+/// island as before.
+pub const SITE_GUARDS: usize = (1 + terrain::WAYSTATIONS) * GUARDS_PER_SITE;
+
+const _: () = assert!(
+    SITE_GUARDS * WOLF_SLOT_EVERY <= MAX_MOBS,
+    "the guard slots run past the roster — every guard is a wolf slot, so \
+     SITE_GUARDS * WOLF_SLOT_EVERY is the last slot one can claim"
+);
+
+/// Which authored site a roster slot keeps, or `None` for the free roster.
+/// **Site 0 is the haven pad; 1..=`WAYSTATIONS` index [`Haven::minor`].**
+///
+/// Guards are drawn from the *predator* slots and are not a species: a
+/// guard is a wolf that lives at a destination, so `kind_of` still answers
+/// what is chasing you and the wire still carries no species field. That is
+/// deliberate and it is the reason this landed without a client change —
+/// every species match in the client is a `_ =>` fall-through to the pig
+/// (`render/mobs.rs`, `sound/voice.rs`, `ui/death.rs`), so a third *kind*
+/// would draw and sound as a pig until five separate arms were written.
+///
+/// Pure in the slot ordinal for `kind_of`'s reason: worldgen the two sides
+/// recompute rather than transmit. What the seed still varies is *where* on
+/// its site the guard stands.
+#[inline]
+pub const fn guard_site_of(slot: usize) -> Option<usize> {
+    if !slot.is_multiple_of(WOLF_SLOT_EVERY) {
+        return None;
+    }
+    let g = slot / WOLF_SLOT_EVERY;
+    if g >= SITE_GUARDS {
+        return None;
+    }
+    Some(g / GUARDS_PER_SITE)
+}
+
+/// The footprint a site presents — the same [`terrain::SiteFootprint`] the
+/// clutter sweep reads, picked by site index rather than by position, so a
+/// guard's leash costs no terrain probe.
+#[inline]
+fn footprint_of(site: usize) -> terrain::SiteFootprint {
+    if site == 0 {
+        terrain::HAVEN_FOOTPRINT
+    } else {
+        terrain::WAYSTATION_FOOTPRINT
+    }
+}
+
+/// A guard's leash in planar centimetres — **the site's scatter radius, not
+/// the species' `roam_cm`**. This is the whole of what makes a guard guard.
+///
+/// A wolf roams 90 m, which is five and a half pad radii: left on the
+/// species number a guard would spend most of its life somewhere else and
+/// the crates would be unattended exactly when someone walked up to them.
+/// Bound to `SiteFootprint::scatter_m` it holds the ground it was placed
+/// on, and the ground is the same disc the sweep already clears.
+///
+/// It does not shorten a chase. The leash is only consulted when the animal
+/// is *not* roused (see `think`), so a guard still charges a player it
+/// notices at the wolf's full spook radius and still commits for
+/// `flee_ticks` past the last moment they were close — it simply comes home
+/// afterwards instead of wandering off with the pad behind it.
+#[inline]
+pub fn guard_leash_cm(slot: usize) -> Option<i64> {
+    guard_site_of(slot).map(|s| (footprint_of(s).scatter_m * 100.0) as i64)
+}
 
 /// Item rows one species may drop. Structural cap, not a knob: the bake
 /// refuses a longer table rather than truncating one.
@@ -91,19 +221,72 @@ pub struct MobDef {
     /// `InputFrame::move_z` while roaming, `0..=127` — the fraction of
     /// `WALK_SPEED` this animal ambles at.
     pub gait: u8,
-    /// `move_z` while fleeing. The sprint button rides with it, so the
-    /// speed ceiling is `SPRINT_SPEED` rather than `WALK_SPEED`.
+    /// `move_z` while roused — fleeing *or* charging, one fast gait. The
+    /// sprint button rides with it, so the speed ceiling is `SPRINT_SPEED`
+    /// rather than `WALK_SPEED`.
     pub flee_gait: u8,
-    /// How long one fright lasts, in ticks.
+    /// How long one rousing lasts, in ticks — the fright's span and the
+    /// charge's commitment, one number.
     pub flee_ticks: u16,
+    /// Damage per bite. **Zero means this species never fights** — the
+    /// same inert door `hp == 0` is for the whole row, so a pacifist
+    /// animal is a content row and not a code path.
+    pub attack: u16,
+    /// Bite reach, planar centimetres.
+    pub attack_range_cm: i64,
+    /// Ticks between bites. The cooldown is phase-locked — a bite lands
+    /// on ticks where `tick % attack_ticks == slot % attack_ticks` — so
+    /// it needs no per-mob timer, no new hashed state, and replays for
+    /// free (the same trick `MOB_THINK_TICKS` plays with thinking).
+    pub attack_ticks: u16,
+    /// Percent of max hp at which courage runs out: at or above it a
+    /// roused animal charges, below it the same rousing is a flight.
+    /// Their boar's own rule — aggressive when whole, flees hurt.
+    ///
+    /// **Zero is the predator**, and it is the whole of what makes one: a
+    /// floor of zero is a floor no wound can go under, so every rousing is
+    /// a charge and the animal never breaks off. Prey and hunter differ by
+    /// this number and by how far away they notice you, and by nothing in
+    /// this file.
+    pub brave_pct: u8,
     /// Leash: planar centimetres from the home the seed chose. Past it the
     /// animal heads home instead of wandering — the reference game's own
     /// fix for animals that "ended up at the coast of the island"
     /// (`reference/ANIMALS.md` §2), and the reason nothing here needs to
     /// know how to swim.
     pub roam_cm: i64,
-    /// A player closer than this, planar centimetres, starts a flight.
+    /// A player closer than this, planar centimetres, is **noticed** — and
+    /// what the animal does about it is `brave_pct`'s business, not this
+    /// field's. On prey it reads as a fright radius, which is what it was
+    /// named for; on a predator the same number is the range it hunts from,
+    /// and the two are one field because they are one comparison. The
+    /// content validator gates `attack_range_m <= spook_m` on exactly this
+    /// reading: nothing bites what it has not noticed.
+    ///
+    /// Daylight only, since nocturnal senses: [`MobDef::spook_at`] picks
+    /// between this and `night_spook_cm` off the world clock.
     pub spook_cm: i64,
+    /// The same radius after dusk, planar centimetres — the first number in
+    /// this file that the *hour* decides.
+    ///
+    /// **It is a second radius rather than a multiplier, and it is not
+    /// required to be the smaller one**, because the direction is content's
+    /// call and not the sim's (wall 7). The shipped roster points it down:
+    /// the reference game's 2024 predator rework *reduced* wolf sight at
+    /// night, on the grounds that an animal that hunts you in pitch black
+    /// "feels a bit like a landmine" — night danger there is a problem of
+    /// what the *player* can see, and sharpening the animal on top of it
+    /// was the defect they were fixing. No game in the survey publishes a
+    /// day→night sense ratio above 1× for one creature; the one published
+    /// 2× is a night-only *variant*, which is a different row in this table
+    /// and not this field (`DECISIONS.md` §open, "nocturnal senses").
+    ///
+    /// A rousing already running is untouched by dusk falling across it —
+    /// `think` refreshes `roused_until` while you are inside the radius and
+    /// otherwise lets it run out, so a chase that starts in daylight ends
+    /// on `flee_ticks` and not on a boundary. That is the desirable shape
+    /// and it costs no code: it falls out of refresh-not-recheck.
+    pub night_spook_cm: i64,
     /// Ticks between a death and the same slot hatching again at the same
     /// home. **The same home**, which is where we and the reference part
     /// company on purpose: their refill re-samples the distribution and the
@@ -122,14 +305,38 @@ impl MobDef {
         gait: 0,
         flee_gait: 0,
         flee_ticks: 0,
+        attack: 0,
+        attack_range_cm: 0,
+        attack_ticks: 0,
+        brave_pct: 0,
         roam_cm: 0,
         spook_cm: 0,
+        night_spook_cm: 0,
         respawn_ticks: 0,
         loot: [ItemStack {
             item: NO_ITEM,
             count: 0,
+            cond: 0,
         }; MOB_LOOT_ROWS],
     };
+
+    /// The notice radius in force on `tick`, planar centimetres.
+    ///
+    /// The whole of the clock's reach into the sim. Everything downstream —
+    /// which way the animal points, whether it bites, how long it commits —
+    /// is `brave_pct`'s and `flee_ticks`' business exactly as before, so the
+    /// hour changes *when an encounter starts* and nothing about how it goes.
+    /// That is deliberately the smallest surface that makes the day
+    /// different from the night, and it keeps one comparison
+    /// (`world::is_night`) as the only new determinism input.
+    #[inline]
+    pub fn spook_at(&self, tick: u64) -> i64 {
+        if crate::world::is_night(tick) {
+            self.night_spook_cm
+        } else {
+            self.spook_cm
+        }
+    }
 }
 
 /// The baked species table (`content::Content::bake_mobs`).
@@ -144,11 +351,18 @@ impl MobContent {
         defs: [MobDef::INERT; MOB_KINDS],
     };
 
-    /// The fixture the probe and the sim tests run on — the alpha pig's
+    /// The fixture the probe and the sim tests run on — the alpha roster's
     /// shape without a content directory. Loot is deliberately `NO_ITEM`
     /// here: item *indices* are a property of the loaded set, and a
     /// fixture that invented them would be asserting against a table it
     /// made up.
+    ///
+    /// **Both species, because `Mobs::new` makes both.** A fixture that
+    /// armed only the pig would leave every wolf slot inert (`hp == 0`
+    /// never hatches), so a third of the roster would silently not exist
+    /// and every test here would be measuring a world the shipped content
+    /// does not produce — the shape of an assertion that passes for the
+    /// wrong reason.
     pub fn probe_fixture() -> Self {
         let mut c = Self::EMPTY;
         c.defs[MOB_PIG as usize] = MobDef {
@@ -156,12 +370,42 @@ impl MobContent {
             gait: 63,
             flee_gait: 127,
             flee_ticks: 90,
+            attack: 15,
+            attack_range_cm: 200,
+            attack_ticks: 60,
+            brave_pct: 50,
             roam_cm: 6_000,
             spook_cm: 1_200,
+            // Prey's flinch is not clock-keyed: the reference changed its
+            // predator's senses and said nothing about its boar's, and
+            // `reference/BALANCE.md` §6.2 refuses a difference with no
+            // mechanism behind it. Equal here is a statement, not a stub —
+            // `the_clock_moves_the_hunter_and_not_the_prey` reads it.
+            night_spook_cm: 1_200,
             respawn_ticks: 9_000,
             loot: [ItemStack {
                 item: NO_ITEM,
                 count: 0,
+                cond: 0,
+            }; MOB_LOOT_ROWS],
+        };
+        c.defs[MOB_WOLF as usize] = MobDef {
+            hp: 100,
+            gait: 69,
+            flee_gait: 107,
+            flee_ticks: 180,
+            attack: 20,
+            attack_range_cm: 200,
+            attack_ticks: 60,
+            brave_pct: 0,
+            roam_cm: 9_000,
+            spook_cm: 3_000,
+            night_spook_cm: 1_500,
+            respawn_ticks: 9_000,
+            loot: [ItemStack {
+                item: NO_ITEM,
+                count: 0,
+                cond: 0,
             }; MOB_LOOT_ROWS],
         };
         c
@@ -175,11 +419,14 @@ impl MobContent {
     }
 }
 
-/// One roster slot. Every field is sim state and every one of them is
-/// hashed — including `home_q*`, which never changes, because a shard that
-/// somehow disagreed about where an animal lives would disagree about every
-/// step it takes afterwards and the hash should say so on the first tick
-/// rather than the tenth.
+/// One roster slot. Every field a tick can move is hashed
+/// (`world.rs::state_hash`) — **`home_q*` and `homed` are not**, and this
+/// doc claimed the opposite until 2026-08-14. They are a pure function of
+/// the seed, recomputed identically by every build, so they are worldgen and
+/// `haven` one field over is excluded for the same reason. The consequence
+/// worth knowing: a disagreement about where an animal *lives* is not caught
+/// on the first tick by the hash — it is caught on the first tick the animal
+/// moves, because every position downstream of it is hashed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Mob {
     pub kind: u8,
@@ -202,7 +449,7 @@ pub struct Mob {
     /// grazing — standing still is a *state*, not the absence of one.
     pub gait: i8,
     /// Fleeing until this tick (0 = calm).
-    pub flee_until: u64,
+    pub roused_until: u64,
     /// Awake, as of the last think tick. Recomputed there and not per
     /// tick, so a dormant animal costs one comparison a tick.
     pub awake: bool,
@@ -234,7 +481,7 @@ impl Mobs {
             m: [Mob::default(); MAX_MOBS],
         };
         for (slot, mob) in mobs.m.iter_mut().enumerate() {
-            mob.kind = MOB_PIG;
+            mob.kind = kind_of(slot);
             let Some((x, z)) = home_of(seed, haven, slot) else {
                 continue;
             };
@@ -309,13 +556,17 @@ fn yaw_toward(dx: f32, dz: f32, current: u16) -> u16 {
 }
 
 /// The nearest player who could see this animal: planar distance² in
-/// centimetre² and the delta to them. Sleepers do not count — a body
-/// nobody is driving has no client watching, so it has no business keeping
-/// wildlife awake — but a body on the death screen does, because that
-/// player is still looking at the world.
-fn nearest_player(players: &[Player; MAX_PLAYERS], body: &Body) -> Option<(i64, i32, i32)> {
-    let mut best: Option<(i64, i32, i32)> = None;
-    for p in players.iter() {
+/// centimetre², the delta to them, and their slot. Sleepers do not count —
+/// a body nobody is driving has no client watching, so it has no business
+/// keeping wildlife awake — but a body on the death screen does, because
+/// that player is still looking at the world. **`hp == 0` is deliberately
+/// NOT filtered here**: under inert combat content every body reads zero
+/// hp, and an animal that went blind on an unarmed shard would freeze the
+/// wake/flee behaviour the roster tests pin. The *bite* checks hp at its
+/// own site — waking at a corpse is fine, worrying one is not.
+fn nearest_player(players: &[Player; MAX_PLAYERS], body: &Body) -> Option<(i64, i32, i32, usize)> {
+    let mut best: Option<(i64, i32, i32, usize)> = None;
+    for (slot, p) in players.iter().enumerate() {
         if !p.active || p.sleeping {
             continue;
         }
@@ -323,11 +574,71 @@ fn nearest_player(players: &[Player; MAX_PLAYERS], body: &Body) -> Option<(i64, 
         let dz = p.body.qz - body.qz;
         // 3 cm quanta into centimetres, in i64 — the AOI convention.
         let d2 = (dx as i64 * 3) * (dx as i64 * 3) + (dz as i64 * 3) * (dz as i64 * 3);
-        if best.is_none_or(|(bd2, _, _)| d2 < bd2) {
-            best = Some((d2, dx, dz));
+        if best.is_none_or(|(bd2, _, _, _)| d2 < bd2) {
+            best = Some((d2, dx, dz, slot));
         }
     }
     best
+}
+
+/// One landed bite, parked for `world::tick` to apply. The roster loop
+/// cannot write a player — it holds the array immutably so the whole
+/// roster reads one consistent tick — so a bite is a record here and a
+/// mutation there, the same split `BoxStore::spill` uses for the same
+/// borrow.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Bite {
+    pub mob_slot: u8,
+    pub victim: u8,
+    pub damage: u16,
+    pub range_cm: u16,
+}
+
+/// The tick's bites, bounded (wall 4). The cap is generous by construction:
+/// only a thinking animal can bite, so at most `MAX_MOBS / MOB_THINK_TICKS`
+/// (+1 rounding) land per tick. **Overflow drops the bite** — a full
+/// buffer is a merciful tick, never a panic and never a queue.
+pub struct Bites {
+    entries: [Bite; crate::limits::MAX_MOB_BITES_PER_TICK],
+    len: usize,
+}
+
+impl Default for Bites {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Bites {
+    pub const fn new() -> Self {
+        Self {
+            entries: [Bite {
+                mob_slot: 0,
+                victim: 0,
+                damage: 0,
+                range_cm: 0,
+            }; crate::limits::MAX_MOB_BITES_PER_TICK],
+            len: 0,
+        }
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    #[inline]
+    pub fn entries(&self) -> &[Bite] {
+        &self.entries[..self.len]
+    }
+
+    #[inline]
+    fn push(&mut self, b: Bite) {
+        if self.len < self.entries.len() {
+            self.entries[self.len] = b;
+            self.len += 1;
+        }
+    }
 }
 
 /// One tick of the whole roster.
@@ -338,13 +649,16 @@ fn nearest_player(players: &[Player; MAX_PLAYERS], body: &Body) -> Option<(i64, 
 #[allow(clippy::too_many_arguments)]
 pub fn step(
     seed: u64,
+    haven: &crate::terrain::Haven,
     tick: u64,
     mc: &MobContent,
     cols: &ColIndex,
     occ: &mut Occupants,
     mobs: &mut Mobs,
     players: &[Player; MAX_PLAYERS],
+    bites: &mut Bites,
 ) {
+    bites.clear();
     for slot in 0..MAX_MOBS {
         let mob = &mut mobs.m[slot];
         if !mob.homed {
@@ -357,7 +671,7 @@ pub fn step(
             // came back when somebody was standing there to watch would be
             // a shard whose population depends on who logged in.
             if def.hp > 0 && tick >= mob.respawn_at {
-                hatch(seed, mob, &def);
+                hatch(seed, haven, mob, &def);
             }
             continue;
         }
@@ -365,7 +679,7 @@ pub fn step(
         // The think tick, phase-offset by slot: `MAX_MOBS / MOB_THINK_TICKS`
         // animals decide on any given tick and the rest only integrate.
         if tick % MOB_THINK_TICKS == (slot as u64) % MOB_THINK_TICKS {
-            think(seed, tick, slot, &def, mob, players);
+            think(seed, tick, slot, &def, mob, players, bites);
         }
         if !mob.awake {
             continue;
@@ -374,15 +688,19 @@ pub fn step(
         let frame = InputFrame {
             yaw: mob.yaw,
             move_z: mob.gait,
-            buttons: if mob.flee_until > tick { BTN_SPRINT } else { 0 },
+            buttons: if mob.roused_until > tick {
+                BTN_SPRINT
+            } else {
+                0
+            },
             ..InputFrame::default()
         };
-        movement::step(seed, cols, occ, &mut mob.body, &frame);
+        movement::step(seed, haven, cols, occ, &mut mob.body, &frame);
     }
 }
 
 /// Stand the animal back up at its own home.
-fn hatch(seed: u64, mob: &mut Mob, def: &MobDef) {
+fn hatch(seed: u64, haven: &crate::terrain::Haven, mob: &mut Mob, def: &MobDef) {
     // `Body::at` puts the capsule on the heightfield — the same one the
     // home was chosen against at construction, so this lands standing.
     // Re-quantized from the stored quanta rather than kept as floats:
@@ -390,11 +708,11 @@ fn hatch(seed: u64, mob: &mut Mob, def: &MobDef) {
     // makes a hatch bit-identical to the construction that placed it.
     let x = mob.home_qx as f32 * POS_XZ_Q;
     let z = mob.home_qz as f32 * POS_XZ_Q;
-    mob.body = Body::at(seed, x, z);
+    mob.body = Body::at(seed, haven, x, z);
     mob.hp = def.hp;
     mob.alive = true;
     mob.gait = 0;
-    mob.flee_until = 0;
+    mob.roused_until = 0;
     mob.awake = false;
 }
 
@@ -407,9 +725,10 @@ fn think(
     def: &MobDef,
     mob: &mut Mob,
     players: &[Player; MAX_PLAYERS],
+    bites: &mut Bites,
 ) {
     let near = nearest_player(players, &mob.body);
-    mob.awake = near.is_some_and(|(d2, _, _)| d2 <= MOB_WAKE_CM * MOB_WAKE_CM);
+    mob.awake = near.is_some_and(|(d2, _, _, _)| d2 <= MOB_WAKE_CM * MOB_WAKE_CM);
     if !mob.awake {
         // A dormant animal keeps its heading and stops walking, so it does
         // not wake up mid-stride into a wall it never saw.
@@ -417,17 +736,77 @@ fn think(
         return;
     }
 
-    // A player inside the spook radius starts a flight, and refreshes one
-    // already running — which is what makes chasing a pig work: the fright
-    // lasts `flee_ticks` past the last moment you were close.
-    if let Some((d2, _, _)) = near {
-        if d2 <= def.spook_cm * def.spook_cm {
-            mob.flee_until = tick + def.flee_ticks as u64;
+    // A player inside the spook radius rouses the animal, and refreshes a
+    // rousing already running — which is what makes both halves work: a
+    // chase (either direction) lasts `flee_ticks` past the last moment you
+    // were close.
+    //
+    // The radius is the hour's (`MobDef::spook_at`), and this is the only
+    // line in the sim that reads the world clock. Because it refreshes
+    // rather than re-checks, dusk falling mid-chase does not call the chase
+    // off — it stops feeding it, and `flee_ticks` finishes what daylight
+    // started.
+    if let Some((d2, _, _, _)) = near {
+        let spook_cm = def.spook_at(tick);
+        if d2 <= spook_cm * spook_cm {
+            mob.roused_until = tick + def.flee_ticks as u64;
         }
     }
 
-    if mob.flee_until > tick {
-        if let Some((_, dx, dz)) = near {
+    if mob.roused_until > tick {
+        // Courage decides which way the same rousing points (their boar's
+        // own rule, `reference/ANIMALS.md` §7): whole, it charges the
+        // player; hurt below `brave_pct` of max, the identical state is a
+        // flight. A species with `attack == 0` never charges.
+        let brave =
+            def.attack > 0 && (mob.hp as u32) * 100 >= (def.hp as u32) * (def.brave_pct as u32);
+        if let Some((d2, dx, dz, victim)) = near {
+            if brave {
+                // Straight at them, on the same LUT the walk uses.
+                mob.yaw = yaw_toward(dx as f32 * POS_XZ_Q, dz as f32 * POS_XZ_Q, mob.yaw);
+                let in_reach = d2 <= def.attack_range_cm * def.attack_range_cm;
+                // **Closed: stand and bite.** A charge that keeps sprinting
+                // at a target it has already reached does not stop there —
+                // it runs past, turns on its next think, and runs back, and
+                // the result is an animal orbiting the player on a
+                // two-think (30-tick) cycle.
+                //
+                // That is worse than ugly, because the bite is phase-locked
+                // to `attack_ticks` (60) and 60 is a multiple of 30: the
+                // bite therefore samples the *same point* of the orbit
+                // forever. If that point is outside reach, that slot can
+                // never bite that player — not rarely, never. Slot 0's
+                // phase happened to land inside reach, which is why the pig
+                // bit anything at all and why `a_whole_pig_charges_and_bites`
+                // was green for three days; the first pig to hatch anywhere
+                // else (slot 1, once `kind_of` gave slot 0 to the wolf) had
+                // its bite locked out permanently. Two correct periods
+                // beating against each other, and the gate could not see it
+                // because the gate only ever hunted slot 0.
+                mob.gait = if in_reach {
+                    0
+                } else {
+                    def.flee_gait.min(127) as i8
+                };
+                // The bite: in reach, on this slot's phase (the doc on
+                // `attack_ticks` — a phase lock is a cooldown with no
+                // state). Recorded, not applied: the borrow is the reason
+                // `Bites` exists.
+                let period = def.attack_ticks.max(1) as u64;
+                if in_reach && players[victim].hp > 0 && tick % period == (slot as u64) % period {
+                    bites.push(Bite {
+                        mob_slot: slot as u8,
+                        victim: victim as u8,
+                        damage: def.attack,
+                        // isqrt on i64 is not on wall 1's float list, but
+                        // f32 sqrt is; the cast is the AOI convention run
+                        // backwards and the range is a sentence's worth of
+                        // precision, not a sim quantity.
+                        range_cm: ((d2 as f32).sqrt()) as u16,
+                    });
+                }
+                return;
+            }
             // Directly away, on the same LUT the walk uses.
             mob.yaw = yaw_toward(-(dx as f32) * POS_XZ_Q, -(dz as f32) * POS_XZ_Q, mob.yaw);
         }
@@ -444,8 +823,21 @@ fn think(
     let home_d2 = (hdx as i64 * 3) * (hdx as i64 * 3) + (hdz as i64 * 3) * (hdz as i64 * 3);
     let x = mob.body.qx as f32 * POS_XZ_Q;
     let z = mob.body.qz as f32 * POS_XZ_Q;
-    let beached = terrain::height(seed, x, z) <= terrain::BEACH_MAX_H;
-    if home_d2 > def.roam_cm * def.roam_cm || beached {
+    // A guard's radius is its site's, not its species' (`guard_leash_cm`),
+    // and its floor is the land line rather than the beach band for the
+    // reason `guard_home_of` states in full: a pad that sits inside the
+    // band — as seed 1's does — would otherwise leave its guard reading as
+    // beached while standing at its own post, steering home forever from
+    // home. The two facts travel together because they are one question:
+    // where does this animal belong. Everything else about the leash — that
+    // a rousing skips it entirely, so a chase is never shortened — is the
+    // same for both.
+    let (leash_cm, floor) = match guard_leash_cm(slot) {
+        Some(cm) => (cm, terrain::LAND_MIN_H),
+        None => (def.roam_cm, terrain::BEACH_MAX_H),
+    };
+    let beached = terrain::height(seed, x, z) <= floor;
+    if home_d2 > leash_cm * leash_cm || beached {
         mob.yaw = yaw_toward(hdx as f32 * POS_XZ_Q, hdz as f32 * POS_XZ_Q, mob.yaw);
         mob.gait = def.gait.min(127) as i8;
         return;
@@ -551,7 +943,7 @@ pub fn strike(
     mob.hp -= def.damage.min(mob.hp);
     // Hurt is the other way into a flight, and the only one that does not
     // need the attacker to be close: shot from range, the animal still runs.
-    mob.flee_until = tick + species.flee_ticks as u64;
+    mob.roused_until = tick + species.flee_ticks as u64;
     mob.awake = true;
     // EV_HIT is the attacker's own fact and the server routes it by `a`,
     // so a tagged mob id in `b` reaches the hand that swung and nothing
@@ -597,6 +989,10 @@ pub fn strike(
 /// but a handful of slots. What we do steal is the structure they got
 /// right: **sample cheaply and approximately, reject exactly.**
 fn home_of(seed: u64, haven: &Haven, slot: usize) -> Option<(f32, f32)> {
+    // A guard's home is the one place this function otherwise refuses.
+    if let Some(site) = guard_site_of(slot) {
+        return guard_home_of(seed, haven, slot, site);
+    }
     for attempt in 0..HOME_TRIES {
         let h = cell_hash(seed, slot as i32, attempt, CH_MOB_HOME);
         let x = ((h & 0xFFFF) as f32 / 65536.0) * terrain::ISLAND_SIZE;
@@ -614,6 +1010,76 @@ fn home_of(seed: u64, haven: &Haven, slot: usize) -> Option<(f32, f32)> {
         // free kill on a schedule, which is the opposite of what a
         // destination is for.
         if terrain::in_haven(haven, x, z) || terrain::in_waystation(haven, x, z) {
+            continue;
+        }
+        return Some((x, z));
+    }
+    None
+}
+
+/// Where a site guard stands: the **swept apron**, the annulus between its
+/// site's `swept_m` and `scatter_m`.
+///
+/// Both radii come from the site's own [`terrain::SiteFootprint`] and each
+/// is doing a job. The outer one is the leash, so a guard placed outside it
+/// would walk home on its first think. The inner one is the floor the
+/// clutter sweep already clears for the site's structures — the crate ring
+/// and the shelter — so drawing outside it is what keeps a guard from
+/// hatching inside a container it would then be shoved out of every tick.
+/// The apron is also simply where a guard belongs: between the road and the
+/// prize, with the crates at its back.
+///
+/// Uniform by *area*, which is why the draw is on r² and not on r; the
+/// straightforward version crowds every guard onto the inner edge. The
+/// bearing is the yaw LUT's, so no trigonometry enters wall 1's float list.
+///
+/// A waystation the solver never filled has no apron and no guard: the slot
+/// stays unhomed, which is the same honest empty a slot that found no land
+/// gets, and `step` skips it for the same reason.
+fn guard_home_of(seed: u64, haven: &Haven, slot: usize, site: usize) -> Option<(f32, f32)> {
+    let (sx, sz) = if site == 0 {
+        (haven.x, haven.z)
+    } else {
+        let w = &haven.minor[site - 1];
+        if !w.live {
+            return None;
+        }
+        (w.x, w.z)
+    };
+    let fp = footprint_of(site);
+    let lo2 = fp.swept_m * fp.swept_m;
+    let hi2 = fp.scatter_m * fp.scatter_m;
+    for attempt in 0..HOME_TRIES {
+        let h = cell_hash(seed, slot as i32, attempt, CH_MOB_HOME);
+        let t = (h & 0xFFFF) as f32 / 65536.0;
+        let r = (lo2 + t * (hi2 - lo2)).sqrt();
+        let (fx, fz) = yaw_dir((((h >> 16) & 0xFF) as u16) << 8);
+        let x = sx + fx * r;
+        let z = sz + fz * r;
+        // **The land line, not the beach band** — the one place a guard's
+        // walkability differs from a wanderer's, and it is not a loosened
+        // check, it is a different question.
+        //
+        // `BEACH_MAX_H` (sea + 2 m) is a *margin*: `home_of` keeps the free
+        // roster well clear of the water so a leash centre is never
+        // somewhere the go-home rule fires on, and so nothing has to learn
+        // to swim. But the haven is scored for low relief near the coast
+        // road, and on real seeds the pad lands inside that margin — seed
+        // 1's pad centre is at **1.28 m**, under the 2.0 band, with the
+        // crates and the shelter standing on it regardless. Rejecting the
+        // apron for that refuses to guard exactly the destinations the
+        // solver likes best; measured, seed 1 had **no** admissible bearing
+        // at any radius and seed 42 had roughly half.
+        //
+        // `LAND_MIN_H` (sea + 0.6 m) is the question actually being asked —
+        // terrain.rs calls it "the land line: ground below this is water's
+        // edge, not somewhere a thing stands or a road runs", and scatter
+        // and the coast road already share it. A guard stands where the
+        // road runs.
+        if terrain::height(seed, x, z) <= terrain::LAND_MIN_H {
+            continue;
+        }
+        if terrain::slope(seed, x, z) >= HOME_MAX_SLOPE {
             continue;
         }
         return Some((x, z));

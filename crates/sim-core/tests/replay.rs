@@ -16,6 +16,35 @@ use sim_core::rng::Pcg32;
 use sim_core::survival::SurvivalContent;
 use sim_core::world::{Command, World};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 0x0047_4154_4553; // "GATES"
 const TICKS: u64 = 900;
 
@@ -236,10 +265,220 @@ const TICKS: u64 = 900;
 /// cannot both be right about it, so it is read fresh off the merged
 /// tree.
 ///
+/// Regenerated again at **research v0**, and this time for two causes
+/// that both belong in the number. The craft probe fixture's row 2 is
+/// blueprint-gated now, so a script that used to enqueue it is refused —
+/// a real behaviour change, deliberately chosen so the gate covers the
+/// refusal. And `Player::known` joined `state_hash`, which it had to:
+/// a `Command::Research` mutates it and what it changes is which craft
+/// requests the sim honours from then on, so a mask outside the hash
+/// would let two replays of one WAL diverge on the first gated craft
+/// with every other field still matching — `[backpack]`'s defect one
+/// layer over.
+///
 /// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
 /// this value was read off, which is the check that keeps a regenerated
 /// golden evidence rather than a shrug.
-const GOLDEN_FINAL_HASH: u64 = 0x7278_55C8_AA9A_A6D4;
+///
+/// **Regenerated 2026-08-10 for `SPAWN_CLEAR_M` 4.0 → 4.5.** The tree pool
+/// gained a second, wider species, so the sim's spawn clearance rose to keep
+/// a fresh spawn standing clear of the widest canopy — and a larger clearance
+/// picks different beach cells, which moves every spawn position and therefore
+/// the whole run. **The drift is in the inputs, not the rules**: the diff that
+/// caused it is one constant in `world.rs` and the rest of that file's change
+/// is comments, `test_terrain_golden` did NOT move (worldgen is untouched, only
+/// which cleared cell a player is placed on), and both determinism assertions
+/// above were green on the run this value came off. That is the evidence;
+/// without those three the honest move would have been to find the bug instead.
+/// Operator, 2026-08-10: *"we have no worlds to wipe so thats fine"* — the
+/// regeneration is cheap because there is nothing live to invalidate.
+///
+/// **Regenerated 2026-08-11 for deploy collision v0**, and it is purely
+/// the first shape — a verb changing, no state widened. `movement::step`
+/// now consults the solid-deploy nibbles and stands bodies on occupant
+/// and deploy tops (`slot_ground` / `piece_ground`'s solid arm), so every
+/// walk in this script that passes near the placed box, the door's cell
+/// or a scattered rock can resolve to a different quantized position from
+/// that tick on. Nothing joined `state_hash` — the collision index is
+/// derived state and stays out of it — and `test_terrain_golden` did NOT
+/// move (worldgen untouched). `hashes_a == hashes_b` and
+/// `final_a == final_b` were green on the run this value was read off,
+/// which is what separates a landed verb from a drift.
+///
+/// **Regenerated 2026-08-14 for world containers v0**, and this one is the
+/// *other* shape — state widened, no verb changed. `World::world_conts`
+/// joined `state_hash`, and this script never opens a container, so what
+/// entered the digest is a length of **zero** and sixty-four records that
+/// do not exist. The run is byte-identical in every other respect: no
+/// command in the script is new, no existing rule moved, and
+/// `test_terrain_golden` did NOT move (worldgen untouched). That is the
+/// cheapest possible cause for a moved golden and also the easiest to
+/// wave through, so the evidence is the same as every entry above —
+/// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
+/// this value was read off, which is why the equality asserts sit *before*
+/// the pin rather than after it.
+///
+/// **Regenerated 2026-08-15 for item durability v0**, and it is both
+/// shapes at once, stated so nobody has to reconstruct it: state widened
+/// (`ItemStack` grew `cond`, so all four container loops in `state_hash`
+/// fold two more bytes per stack) AND the fixture's inputs moved (the
+/// gather probe fixture arms `cond_max` on items 0/1 and a wear row per
+/// node, and every minted stack now arrives at its item's ceiling, so the
+/// wear arithmetic runs inside this script's own farming). No command is
+/// new and `test_terrain_golden` did NOT move (worldgen untouched).
+/// `hashes_a == hashes_b` and `final_a == final_b` were green on the run
+/// this value was read off — the panic that produced it was at the pin
+/// line alone, with both determinism asserts above it already passed.
+///
+/// **Regenerated 2026-08-16 for the build base lattice** (`DECISIONS.md`
+/// §open "build base lattice v0"): `build::column_floor_y` snaps every
+/// column's base to the 0.5 m lattice, so every piece, solid-deploy
+/// volume and box-drop height this script produces moved by up to a
+/// quarter-quantum — positions the bodies then walk on, which is the
+/// whole surface. The same change made a solid top take the step rule
+/// (`collide::deploy_blocked`), so the bots' paths over the barrel beach
+/// shifted too. No verb changed; `test_terrain_golden` did NOT move
+/// (worldgen itself is untouched — the lattice reads terrain, it does
+/// not write it). Evidence as above: both determinism equalities were
+/// green on the run this value was read off, run twice.
+///
+/// **Regenerated 2026-08-16 a third time, and this one is neither shape —
+/// it is the MERGE of the two above.** Durability v0 and the build base
+/// lattice landed on separate branches, each regenerating this pin for
+/// its own cause, and each was right about its own tree. Neither hash
+/// describes the tree that has both, so the merge could not pick a side:
+/// `0x3151…` (durability) and `0x8A52…` (lattice) are both stale here.
+/// The value below was read off the merged tree, and the evidence is the
+/// same as every entry above and load-bearing precisely because a merge
+/// is where a golden is easiest to wave through — both determinism
+/// equalities green, `test_terrain_golden` unmoved, and the failure that
+/// produced it at the pin line alone.
+/// **Regenerated 2026-08-17 for `OCCUPANT_R_M`'s `Tree` row, 0.26 → 0.2398**,
+/// and it is purely the first shape: a rule changed, no state was added.
+/// The row was the bottom radius of the *browser* client's hand-authored
+/// `CylinderGeometry(0.13, 0.26)` — a mesh deleted with that client — while
+/// the native client draws a generated trunk measuring 0.2398 m at the base.
+/// Nothing re-measured it when the mesh was replaced, so the sim blocked a
+/// cylinder up to 0.11 m proud of the visible bark at chest height. It is the
+/// measurement now, held there by
+/// `client/tests/tree.rs::the_blocked_cylinder_is_the_trunk_the_client_draws`.
+///
+/// The script's bots walk a beach thick with scatter, so a 2 cm narrower
+/// trunk changes where bodies stop against trees and the whole run follows.
+/// Evidence, the same as every entry above: both determinism equalities were
+/// green on the run this value was read off — the failure was at the pin line
+/// alone — and `test_terrain_golden` did NOT move, which is the check that
+/// matters here specifically, because a radius is read by collision and never
+/// by worldgen. A tree stands in the same place; a body stops 2 cm nearer it.
+///
+/// **Regenerated 2026-08-18 for the barrel's measured proportions**
+/// (`DECISIONS.md` §open "barrel proportions v1"): `OCCUPANT_R_M` and
+/// `OCCUPANT_TOP_M` for `BarrelSlot` went from the deleted browser
+/// client's guess (0.45 / 0.975) to the measured 55-gallon drum
+/// (0.2925 / 0.88). That is a collision change and this script's bots
+/// walk a beach the road's barrels stand on, so every body that
+/// squeezed past one takes a different path from that tick onward —
+/// the first shape, a verb changing, with no state added and no field
+/// widened. `test_terrain_golden` did NOT move: worldgen places slots,
+/// it does not read their radii. Evidence as every entry above:
+/// `hashes_a == hashes_b` and `final_a == final_b` were both green on
+/// the run this value was read off, and the failure that produced it
+/// was at the pin line alone.
+///
+/// ⚠ **Regenerated a third time, at the merge of the two above, and the value
+/// is NEITHER of theirs.** Both entries are collision changes and both landed
+/// — the tree's radius on one side, the barrel's proportions on the other —
+/// so the script's bots walk past both and the run diverges from either
+/// branch's pin. This is the wire-version collision `protocol/src/lib.rs`
+/// records (v38–v40) in its determinism form: two branches each correctly
+/// claimed the next number, and the merge has to take one neither claimed.
+/// Read off a run of the merged tree; both determinism equalities were green
+/// on it and `test_terrain_golden` did not move, which is the check that
+/// matters, because a radius is read by collision and never by worldgen.
+///
+/// **Regenerated 2026-08-19 for `Player::worn` (armor v0), and this one is
+/// a shape none of the entries above are: no verb changed and no body took
+/// a different path — a FIELD entered the digest.** `state_hash` grew a
+/// sibling loop over the two worn stacks after the inventory's, so the
+/// hash moved the instant the field existed, before anything could put
+/// anything in it. Every body in this script is naked and stays naked;
+/// what changed is that the digest now says the sim carries worn
+/// equipment, where before it said nothing at all.
+///
+/// That makes the usual evidence *necessary and not sufficient*, so both
+/// halves were checked. The usual half: `hashes_a == hashes_b` and
+/// `final_a == final_b` were green on the run this value was read off, the
+/// failure was at the pin line alone, and `test_terrain_golden` did not
+/// move (worn equipment is not worldgen). The half this shape needs: the
+/// twelve bytes are the only cause, which is checkable by arithmetic
+/// rather than by trust — `worn` is per-player and always present, so
+/// unlike every store loop in `state_hash` there is no length prefix to
+/// fold zeroes into, and `world.rs:3620` already records what that
+/// distinction cost once (a store hashed unconditionally moved this pin
+/// and eight zero bytes were the whole of it). **Measured rather than
+/// argued**: deleting the `worn` loop from `state_hash` and running this
+/// suite returns the digest to `0xDFFD_AE59_3232_47C6` bit for bit, so the
+/// twelve bytes are not merely *a* cause, they are the only one.
+///
+/// `0xDFFD_AE59_3232_47C6` is the value before, and it is left written
+/// here on purpose: the next reader's question is *which change moved it*,
+/// and a pin that only ever shows its current value cannot answer that.
+///
+/// **Moved `0xE6C1_8463_97AE_FB21` → `0x3DF4_80D5_22B1_FEAD` at piece flanks
+/// v0** (2026-08-21). A plane grew sides (`collide::plane_blocked`), so bodies
+/// that used to walk through the foundations this script places now stop at
+/// them, and where a hundred bodies are standing at tick 900 is most of what
+/// this digest is. Deliberate, and the regeneration is in the same commit as
+/// the change that caused it — which is the whole of what this pin is for.
+const GOLDEN_FINAL_HASH: u64 = 0x3DF4_80D5_22B1_FEAD;
+
+/// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
+/// run, not just the last one.
+///
+/// **Written 2026-08-21 because the final hash does not cover the piece
+/// store, and never has.** The script drives `Command::Place` from tick 0 and
+/// the world ends with **zero pieces**: everything a player can place enters
+/// as twig (twig v0), twig is the one material `deploy::upkeep_sweep` never
+/// protects, and 900 ticks is long enough for all of it to rot. So the pinned
+/// end state has an empty piece store, and `state_hash`'s whole piece section
+/// folds nothing into it. Proven by mutant: `buf[4] = r.level.wrapping_add(1)`
+/// in `world.rs`'s piece loop — a field hashed since this gate was written —
+/// leaves `GOLDEN_FINAL_HASH` bit-identical.
+///
+/// The A-vs-B comparison below was never blind to it (both runs place and rot
+/// the same pieces, so a nondeterministic one still diverges), which is why
+/// this is a hole in the *golden* and not in the whole suite: what went
+/// unwatched is drift ACROSS BUILDS in anything that does not survive to the
+/// last tick. That is most of the build verb, most of decay, and every
+/// intermediate the sweeps walk.
+///
+/// Folding the trace costs one constant and covers all of it. It is a
+/// separate pin rather than a replacement, because the two answer different
+/// questions and a reader who finds one moved wants to know whether the other
+/// did: the final hash says the world ENDED somewhere else, the trace says it
+/// went somewhere else on the way.
+///
+/// Both moved at piece flanks v0 (2026-08-21) and both for one reason — a
+/// plane grew sides, so bodies stop at foundations they used to walk through.
+/// It was `0xCF27_5417_7837_CB31` at the tick this pin was written, which was
+/// the same commit's earlier half; that value pinned a world where planes had
+/// no flanks and is kept here for the reason above.
+const GOLDEN_TRACE_HASH: u64 = 0x8B76_54B6_583A_A95D;
+
+/// Fold a stamped trace into one number.
+///
+/// Deliberately the dumbest mixing that is order-sensitive and position-
+/// sensitive: a fold that summed, xor'd or otherwise commuted would pass a
+/// run that visited the same states in a different order, which is exactly
+/// the drift a trace pin exists to see.
+fn trace_of(hashes: &[u64]) -> u64 {
+    let mut acc = 0xcbf2_9ce4_8422_2325u64;
+    for (i, h) in hashes.iter().enumerate() {
+        acc ^= h.rotate_left((i % 64) as u32);
+        acc = acc.wrapping_mul(0x1000_0000_01b3);
+    }
+    acc
+}
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
@@ -334,13 +573,13 @@ fn walk_up_the_beach(world: &mut World, seed: u64, slot: usize) {
         let cz = sim_core::build::build_cell_of(z);
         let ax = (cx as f32 + 0.5) * sim_core::build::BUILD_CELL_M;
         let az = (cz as f32 + 0.5) * sim_core::build::BUILD_CELL_M;
-        if sim_core::build::foundation_terrain_ok(seed, ax, az) {
+        if sim_core::build::foundation_terrain_ok(seed, hv(seed), ax, az) {
             break;
         }
         x += dx * sim_core::build::BUILD_CELL_M;
         z += dz * sim_core::build::BUILD_CELL_M;
     }
-    world.players[slot].body = sim_core::movement::Body::at(seed, x, z);
+    world.players[slot].body = sim_core::movement::Body::at(seed, hv(seed), x, z);
 }
 
 fn run(seed: u64) -> (Vec<u64>, u64) {
@@ -466,6 +705,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz: cell(b.qz),
                     level: ((t / 106) % 2) as u8,
                     loc: ((t / 53 + id as u64) % 4) as u8,
+                    freehand: false,
                 });
             }
             // The deploy verb too: a bag and a workbench at the player's
@@ -566,7 +806,11 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         if t == 165 {
             hotbar_saved.copy_from_slice(&world.players[0].inv[..HOTBAR_SLOTS]);
             for slot in 0..HOTBAR_SLOTS {
-                world.players[0].inv[slot] = sim_core::gather::ItemStack { item: 3, count: 8 };
+                world.players[0].inv[slot] = sim_core::gather::ItemStack {
+                    item: 3,
+                    count: 8,
+                    cond: 0,
+                };
             }
         }
         if t == 167 {
@@ -590,7 +834,11 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     .iter()
                     .enumerate()
                     {
-                        world.players[w].inv[20 + k] = sim_core::gather::ItemStack { item, count };
+                        world.players[w].inv[20 + k] = sim_core::gather::ItemStack {
+                            item,
+                            count,
+                            cond: 0,
+                        };
                     }
                     walk_up_the_beach(&mut world, seed, w);
                 }
@@ -604,7 +852,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         // turn the landed-drink floor below into a coin flip.
         if t == 200 && world.players[20].active {
             let (x, z) = shoreline(seed);
-            world.players[20].body = sim_core::movement::Body::at(seed, x, z);
+            world.players[20].body = sim_core::movement::Body::at(seed, hv(seed), x, z);
         }
         // The smasher. Held on a scanned barrel rather than teleported once,
         // because a barrel wants two landed swings 38 ticks apart and a bot
@@ -616,7 +864,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         // and not just the slot bit.
         if world.players[30].active {
             let (x, z) = barrels[(t as usize / 200) % barrels.len()];
-            world.players[30].body = sim_core::movement::Body::at(seed, x, z);
+            world.players[30].body = sim_core::movement::Body::at(seed, hv(seed), x, z);
         }
         if t == 150 {
             let b = &world.players[0].body;
@@ -637,6 +885,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: 0,
+                    freehand: false,
                 }),
                 151 => cmds.push(Command::PlaceDeploy {
                     id,
@@ -646,7 +895,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     level: 0,
                     loc: 0,
                 }),
-                // A doorway on the same cell's west edge, a door in it,
+                // A doorway on the same cell's low-x edge, a door in it,
                 // then the door verbs' whole arc — placement seals the
                 // edge locked, its owner's toggles open and reseal it,
                 // and the lock verb rides both ways (a stranger's lock
@@ -659,7 +908,8 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
+                    freehand: false,
                 }),
                 153 => cmds.push(Command::PlaceDeploy {
                     id,
@@ -667,17 +917,17 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
                 }),
                 154 | 157 => cmds.push(Command::Use {
                     id,
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
                 }),
                 // Then the upgrade verb's own arc on a second wall: a
-                // wood wall at the north edge, climbed to the fixture's
+                // wood wall at the low-z edge, climbed to the fixture's
                 // stone rung, then asked back down (the tier refusal),
                 // then asked for by a second bot — which bounces on
                 // **reach**, not on the hearth's claim: the two have
@@ -693,14 +943,15 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_N,
+                    loc: sim_core::build::LOC_EDGE_ZLO,
+                    freehand: false,
                 }),
                 160 | 161 => cmds.push(Command::Upgrade {
                     id,
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_N,
+                    loc: sim_core::build::LOC_EDGE_ZLO,
                     material: if t == 160 {
                         sim_core::build::MAT_STONE
                     } else {
@@ -712,7 +963,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_N,
+                    loc: sim_core::build::LOC_EDGE_ZLO,
                     material: sim_core::build::MAT_METAL,
                 }),
                 // Lock v1's whole arc on the replayed surface: bolt the
@@ -727,14 +978,14 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
                 }),
                 156 | 158 => cmds.push(Command::Access {
                     id: if t == 156 { world.players[1].id } else { id },
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
                     op: if t == 156 {
                         sim_core::deploy::ACCESS_OP_ENTER
                     } else {
@@ -744,7 +995,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                 }),
                 // Then the repair verb, on the one address that names two
                 // things: the doorway placed at 152 and the door hung in
-                // it at 153 share `LOC_EDGE_W` exactly, so 163 and 164 are
+                // it at 153 share `LOC_EDGE_XLO` exactly, so 163 and 164 are
                 // the same four coordinates differing only in the bit that
                 // picks the store. The upkeep leaps above have been
                 // draining both by then, so these land as real payments
@@ -764,7 +1015,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: if t == 167 {
-                        sim_core::build::LOC_EDGE_N
+                        sim_core::build::LOC_EDGE_ZLO
                     } else {
                         sim_core::build::LOC_PLANE
                     },
@@ -775,7 +1026,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
                 }),
                 // The raid verb, on the addresses the repair arm above just
                 // mended. It belongs in *this* gate specifically because a
@@ -790,7 +1041,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cx,
                     cz,
                     level: 0,
-                    loc: sim_core::build::LOC_EDGE_W,
+                    loc: sim_core::build::LOC_EDGE_XLO,
                 }),
                 _ => cmds.push(Command::Feed {
                     id,
@@ -814,7 +1065,12 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
         if t == 160 {
             upgraded_seen = world
                 .pieces
-                .find(hearth_cell.0, hearth_cell.1, 0, sim_core::build::LOC_EDGE_N)
+                .find(
+                    hearth_cell.0,
+                    hearth_cell.1,
+                    0,
+                    sim_core::build::LOC_EDGE_ZLO,
+                )
                 .is_some_and(|p| p.row == 4);
         }
         for e in world.events.entries() {
@@ -990,6 +1246,12 @@ fn test_replay() {
         final_a, GOLDEN_FINAL_HASH,
         "sim behavior drifted from the pinned replay golden; if intentional, \
          regenerate the golden in this same commit"
+    );
+    assert_eq!(
+        trace_of(&hashes_a),
+        GOLDEN_TRACE_HASH,
+        "the run took a different PATH to the same end state; if intentional, \
+         regenerate this golden in the same commit as the change"
     );
 
     // A different seed must actually change the world (guards against a

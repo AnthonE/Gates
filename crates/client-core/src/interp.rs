@@ -6,7 +6,7 @@
 //! extrapolation likewise waits on wire velocity.
 
 use protocol::EntityState;
-use sim_core::limits::MAX_SNAPSHOT_ENTITIES;
+use sim_core::limits::{MAX_MOBS, MAX_PLAYERS};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 
 /// Default interpolation delay: 2 × the 66.7 ms snapshot interval
@@ -16,6 +16,30 @@ pub const INTERP_DELAY_TICKS: f64 = 4.0;
 /// Per-entity history depth: 16 samples ≈ 1 s at 15 Hz (proposed default,
 /// DECISIONS.md §open, client fill-ins). Overflow policy: drop oldest.
 const HISTORY: usize = 16;
+
+/// Entities this table can hold at once — **the world's size, not the
+/// wire's**, and the distinction is the whole reason the constant exists.
+///
+/// This table was sized `MAX_SNAPSHOT_ENTITIES` and is filled
+/// *cumulatively*: a zero-state snapshot clears it and every snapshot after
+/// that adds whatever ids it names, so what it holds is the union over many
+/// datagrams while `MAX_SNAPSHOT_ENTITIES` bounds one of them. The server
+/// now rank-caps the interest set to that same wire count
+/// (`limits::AOI_RANK_EXIT`), so the union is bounded too — but the client
+/// may not *depend* on that, because it cannot check it and because the day
+/// the cap is raised the failure is silent and permanent: `push` refuses
+/// the id, `ClientView` keeps it, and `render/bodies.rs` and
+/// `render/mobs.rs` spawn only what `ids()` reports. The body sits inside
+/// AOI, on the client's own map, and is never drawn.
+///
+/// So the client sizes for what the world can hold and lets the server's
+/// cap be the one that binds. `MAX_PLAYERS + MAX_MOBS` is every class-D
+/// entity a shard can have at once; nothing can be pushed that is not one
+/// of them, so overflow here is unreachable rather than merely unlikely —
+/// and it is still counted (`drops`), because wall 4 wants the policy
+/// stated and an unreachable branch that silently discards a body is how
+/// this bug got here in the first place.
+pub const INTERP_SLOTS: usize = MAX_PLAYERS + MAX_MOBS;
 
 #[derive(Clone, Copy, Default)]
 struct Sample {
@@ -43,6 +67,13 @@ pub struct RemoteState {
     /// awake to lerp to, and rounding one would make the flag flicker for a
     /// frame at every transition.
     pub sleeping: bool,
+    /// This body has been killed and has not respawned (`world.rs`
+    /// `Player::dead`). Taken from the newer sample for `sleeping`'s reason
+    /// — it is a fact, not a quantity — and in the same direction: a body
+    /// reads as a corpse for the interpolation window rather than as a
+    /// player for an extra ~100 ms after the server stopped treating it as
+    /// one.
+    pub dead: bool,
 }
 
 fn dequant(s: &Sample, out: &mut RemoteState) {
@@ -53,39 +84,72 @@ fn dequant(s: &Sample, out: &mut RemoteState) {
     out.yaw = s.e.yaw as f32;
     out.pitch = s.e.pitch as f32;
     out.sleeping = s.e.sleeping;
+    out.dead = s.e.dead;
 }
 
 pub struct Interp {
-    used: [bool; MAX_SNAPSHOT_ENTITIES],
-    ids: [u32; MAX_SNAPSHOT_ENTITIES],
-    hist: [[Sample; HISTORY]; MAX_SNAPSHOT_ENTITIES],
-    head: [u8; MAX_SNAPSHOT_ENTITIES],
-    len: [u8; MAX_SNAPSHOT_ENTITIES],
+    used: [bool; INTERP_SLOTS],
+    ids: [u32; INTERP_SLOTS],
+    /// The sample rings, one per slot — **boxed, and filled on the heap.**
+    /// At `INTERP_SLOTS × HISTORY` samples this is ~86 kB, and
+    /// `Box::new([[..]])` materialises the whole thing in the caller's
+    /// frame before moving it. That is the shadow-stack trap `sim-core`'s
+    /// `boxed_array` exists for (CLAUDE.md §traps, measured three times on
+    /// 2026-08-08), and while `client-core` compiles native-only today,
+    /// `ClientCore::new` is called from a Bevy startup system that has no
+    /// more frame to spare than a wasm one. `vec!` allocates and fills
+    /// where the allocation was going to happen anyway.
+    hist: Box<[[Sample; HISTORY]; INTERP_SLOTS]>,
+    head: [u8; INTERP_SLOTS],
+    len: [u8; INTERP_SLOTS],
+    /// Samples refused because the table was full — wall 4's stated
+    /// overflow policy, counted rather than silent. It must read zero on
+    /// any shard whose interest cap is honest; a non-zero reading is a body
+    /// the client knows about and cannot draw, which is exactly the defect
+    /// `tests/interp_capacity.rs` was written for.
+    pub drops: u64,
 }
 
 impl Interp {
     pub fn new() -> Self {
+        let Ok(hist) = vec![[Sample::default(); HISTORY]; INTERP_SLOTS]
+            .into_boxed_slice()
+            .try_into()
+        else {
+            unreachable!("the vec is INTERP_SLOTS long by construction")
+        };
         Self {
-            used: [false; MAX_SNAPSHOT_ENTITIES],
-            ids: [0; MAX_SNAPSHOT_ENTITIES],
-            hist: [[Sample::default(); HISTORY]; MAX_SNAPSHOT_ENTITIES],
-            head: [0; MAX_SNAPSHOT_ENTITIES],
-            len: [0; MAX_SNAPSHOT_ENTITIES],
+            used: [false; INTERP_SLOTS],
+            ids: [0; INTERP_SLOTS],
+            hist,
+            head: [0; INTERP_SLOTS],
+            len: [0; INTERP_SLOTS],
+            drops: 0,
         }
     }
 
     fn slot_of(&self, id: u32) -> Option<usize> {
-        (0..MAX_SNAPSHOT_ENTITIES).find(|&i| self.used[i] && self.ids[i] == id)
+        (0..INTERP_SLOTS).find(|&i| self.used[i] && self.ids[i] == id)
     }
 
     /// One snapshot sample. Ticks arrive monotonically (the view applies
-    /// only newer snapshots). A full table ignores new ids — it holds the
-    /// wire's own entity cap, so the server's removals free slots first.
+    /// only newer snapshots).
+    ///
+    /// A full table counts the id and drops it. It holds every class-D
+    /// entity a shard can have at once (`INTERP_SLOTS`), so nothing the
+    /// server can legally send fills it — the branch is a bound, not a
+    /// working path. It used to hold `MAX_SNAPSHOT_ENTITIES`, which is a
+    /// *per-datagram* count against a table filled across datagrams, and
+    /// the comment here claimed the server's removals would free slots
+    /// first. They do not: an entity that never leaves the interest set
+    /// never generates a removal, so the 65th distinct id since the last
+    /// zero-state was refused for the rest of the session.
     pub fn push(&mut self, tick: u32, e: &EntityState) {
         let slot = match self.slot_of(e.id) {
             Some(s) => s,
             None => {
-                let Some(s) = (0..MAX_SNAPSHOT_ENTITIES).find(|&i| !self.used[i]) else {
+                let Some(s) = (0..INTERP_SLOTS).find(|&i| !self.used[i]) else {
+                    self.drops += 1;
                     return;
                 };
                 self.used[s] = true;
@@ -114,12 +178,12 @@ impl Interp {
 
     /// Zero-state snapshot: the authoritative restart of the entity set.
     pub fn clear(&mut self) {
-        self.used = [false; MAX_SNAPSHOT_ENTITIES];
-        self.len = [0; MAX_SNAPSHOT_ENTITIES];
+        self.used = [false; INTERP_SLOTS];
+        self.len = [0; INTERP_SLOTS];
     }
 
     pub fn ids(&self) -> impl Iterator<Item = u32> + '_ {
-        (0..MAX_SNAPSHOT_ENTITIES)
+        (0..INTERP_SLOTS)
             .filter(|&i| self.used[i] && self.len[i] > 0)
             .map(|i| self.ids[i])
     }
@@ -188,6 +252,7 @@ impl Interp {
                 // an extra ~100 ms after the server stopped treating it as
                 // one.
                 out.sleeping = s1.e.sleeping;
+                out.dead = s1.e.dead;
                 out.live = true;
                 return true;
             }
@@ -215,6 +280,7 @@ mod tests {
             qvy: 0,
             grounded: true,
             sleeping: false,
+            dead: false,
             yaw,
             pitch: 100,
         }

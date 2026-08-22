@@ -22,7 +22,10 @@ use client::render::structures::{
     SEAM_M,
 };
 use sim_core::build::{BUILD_CELL_M, LEVEL_H_M};
-use sim_core::collide::{doorway_solid_at, DOOR_POST_W_M};
+use sim_core::collide::{
+    doorway_solid_at, frame_solid_at, window_solid_at, DOOR_POST_W_M, FRAME_RIM_M, WINDOW_HEAD_M,
+    WINDOW_SILL_M,
+};
 
 /// Where the two drawn posts span, as `t` along the edge.
 fn drawn_posts() -> [(f32, f32); 2] {
@@ -258,6 +261,89 @@ fn the_tables_lintel_caps_the_opening() {
     );
 }
 
+/// Drawn solidity of an edge shape's emitted parts at `(t, y)` — `t` metres
+/// along the edge, `y` metres above the storey base. The window and frame
+/// gates sample this against the sim's own `*_solid_at`, which is the
+/// doorway pair's discipline extended to the axis those two shapes
+/// actually vary on: height.
+fn table_solid_at(shape: u8, t: f32, y: f32) -> bool {
+    let (parts, n) = shape_parts(shape);
+    let mid = BUILD_CELL_M * 0.5;
+    parts[..n].iter().any(|p| {
+        let c = mid + p.offset.z;
+        t >= c - p.size.z * 0.5
+            && t <= c + p.size.z * 0.5
+            && y >= p.offset.y - p.size.y * 0.5
+            && y <= p.offset.y + p.size.y * 0.5
+    })
+}
+
+/// The emitted window agrees with `collide::window_solid_at` everywhere
+/// but the seam bands: sill solid, header solid, jambs solid, aperture
+/// open. This is the gate `collide.rs` promises in `window_solid_at`'s
+/// own doc — the drawn hole IS the hole an arrow threads.
+#[test]
+fn the_tables_window_is_the_sims_window() {
+    let t_seams = [
+        0.0,
+        DOOR_POST_W_M,
+        BUILD_CELL_M - DOOR_POST_W_M,
+        BUILD_CELL_M,
+    ];
+    let y_seams = [WINDOW_SILL_M, WINDOW_HEAD_M];
+    let mut checked = 0;
+    for i in 0..=150 {
+        let t = BUILD_CELL_M * (i as f32 / 150.0);
+        if t_seams.iter().any(|s| (t - s).abs() <= SEAM_M) {
+            continue;
+        }
+        for j in 0..150 {
+            let y = LEVEL_H_M * (j as f32 + 0.5) / 150.0;
+            if y_seams.iter().any(|s| (y - s).abs() <= SEAM_M) {
+                continue;
+            }
+            assert_eq!(
+                table_solid_at(sim_core::build::SHAPE_WINDOW, t, y),
+                window_solid_at(t, y),
+                "at (t={t}, y={y}): drawn-solid={} but sim-solid={}",
+                table_solid_at(sim_core::build::SHAPE_WINDOW, t, y),
+                window_solid_at(t, y)
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 15_000, "only {checked} samples were compared");
+}
+
+/// The emitted frame agrees with `collide::frame_solid_at`: rim jambs and
+/// top beam solid, the rest of the edge open — to bodies and arrows both.
+#[test]
+fn the_tables_frame_is_the_sims_frame() {
+    let t_seams = [0.0, FRAME_RIM_M, BUILD_CELL_M - FRAME_RIM_M, BUILD_CELL_M];
+    let mut checked = 0;
+    for i in 0..=150 {
+        let t = BUILD_CELL_M * (i as f32 / 150.0);
+        if t_seams.iter().any(|s| (t - s).abs() <= SEAM_M) {
+            continue;
+        }
+        for j in 0..150 {
+            let y = LEVEL_H_M * (j as f32 + 0.5) / 150.0;
+            if (y - (LEVEL_H_M - FRAME_RIM_M)).abs() <= SEAM_M {
+                continue;
+            }
+            assert_eq!(
+                table_solid_at(sim_core::build::SHAPE_FRAME, t, y),
+                frame_solid_at(t, y),
+                "at (t={t}, y={y}): drawn-solid={} but sim-solid={}",
+                table_solid_at(sim_core::build::SHAPE_FRAME, t, y),
+                frame_solid_at(t, y)
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 15_000, "only {checked} samples were compared");
+}
+
 /// Every shape the wire can name emits something drawable: at least one part,
 /// every part a real box, nothing above the piece's own top. Bounds, not
 /// layout — the layout tests are the two above.
@@ -324,7 +410,7 @@ fn only_the_stairs_carry_a_pitch_and_they_do_carry_one() {
 
 use client::render::structures::{deploy_size, deploy_transform, level_base_y};
 use client::ui::place::{deploy_verdict, DeploySite, DeployVerdict, Target};
-use sim_core::build::{BuildContent, Pieces, LOC_EDGE_W, LOC_PLANE};
+use sim_core::build::{BuildContent, Pieces, LOC_EDGE_XLO, LOC_PLANE};
 use sim_core::deploy::{
     place_deploy, DeployContent, DeployDef, Deploys, ARCH_BOX, ARCH_DOOR, BAG_CAP, PLACE_GROUND,
     REFUSE_D_BAG_CAP, REFUSE_D_CLAIM, REFUSE_D_COST, REFUSE_D_HAS_LOCK, REFUSE_D_KIND,
@@ -333,6 +419,30 @@ use sim_core::deploy::{
 use sim_core::gather::ItemStack;
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::world::{EventQueue, Player, EV_DEPLOY_REFUSED, EV_PIECE_PLACED};
+
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is. Memoized: `haven` is a few thousand `height`
+/// taps and it is a pure function of the seed, so caching cannot change a
+/// result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
 
 /// `deploy.rs`'s own fixture seed and cells — buildable ground, proven by
 /// the sim's own tests on the same numbers.
@@ -370,6 +480,7 @@ impl Rig {
         let mut ev = EventQueue::default();
         place_deploy(
             SEED,
+            hv(SEED),
             &self.dc,
             &self.bc,
             &mut self.pieces,
@@ -396,6 +507,7 @@ impl Rig {
             row as u8,
             &DeploySite {
                 seed: SEED,
+                haven: hv(SEED),
                 at: (p.body.qx as f32 * POS_XZ_Q, p.body.qz as f32 * POS_XZ_Q),
                 pieces: self.pieces.entries(),
                 piece_defs: &self.bc,
@@ -456,6 +568,7 @@ impl Rig {
         let mut ev = EventQueue::default();
         sim_core::build::place(
             SEED,
+            hv(SEED),
             &self.bc,
             &self.deploys,
             &mut self.pieces,
@@ -466,6 +579,7 @@ impl Rig {
             cz,
             0,
             loc,
+            false,
             &mut ev,
         );
         let last = ev.entries().last().expect("place answers");
@@ -483,13 +597,18 @@ fn player_at_cell(cx: u16, cz: u16, items: &[(u16, u16)]) -> Player {
         active: true,
         body: Body::at(
             SEED,
+            hv(SEED),
             (cx as f32 + 0.5) * BUILD_CELL_M,
             (cz as f32 + 0.5) * BUILD_CELL_M,
         ),
         ..Player::default()
     };
     for (i, &(item, count)) in items.iter().enumerate() {
-        p.inv[i] = ItemStack { item, count };
+        p.inv[i] = ItemStack {
+            item,
+            count,
+            cond: 0,
+        };
     }
     p
 }
@@ -559,18 +678,18 @@ fn needs_support_is_red_on_both_sides() {
     rig.agree_no(
         &mut p,
         ROW_DOOR,
-        at(CX, CZ, 0, LOC_EDGE_W),
+        at(CX, CZ, 0, LOC_EDGE_XLO),
         REFUSE_D_SUPPORT,
         "needs support",
     );
     // A wall is not a doorway — the shape check runs against the piece-def
     // table on both sides.
     rig.founded(&mut p, CX, CZ);
-    rig.piece(&mut p, 1, CX, CZ, LOC_EDGE_W); // row 1 = wood wall
+    rig.piece(&mut p, 1, CX, CZ, LOC_EDGE_XLO); // row 1 = wood wall
     rig.agree_no(
         &mut p,
         ROW_DOOR,
-        at(CX, CZ, 0, LOC_EDGE_W),
+        at(CX, CZ, 0, LOC_EDGE_XLO),
         REFUSE_D_SUPPORT,
         "needs support",
     );
@@ -605,7 +724,7 @@ fn bad_ground_is_red_on_both_sides() {
         .map(|k| (CX - k, CZ))
         .find(|&(cx, cz)| {
             let (ax, az) = sim_core::deploy::cell_center(cx, cz);
-            !sim_core::build::foundation_terrain_ok(SEED, ax, az)
+            !sim_core::build::foundation_terrain_ok(SEED, hv(SEED), ax, az)
         })
         .expect("an island has an edge");
     let mut swimmer = rich(unbuildable.0, unbuildable.1);
@@ -633,13 +752,13 @@ fn an_empty_pocket_is_red_on_both_sides() {
     // The lock's cost arm is its own path in the sim; same agreement.
     let mut rich_hand = rich(CX, CZ);
     rig.founded(&mut rich_hand, CX, CZ);
-    rig.piece(&mut rich_hand, 3, CX, CZ, LOC_EDGE_W); // row 3 = doorway
-    rig.agree_ok(&mut rich_hand, ROW_DOOR, at(CX, CZ, 0, LOC_EDGE_W));
+    rig.piece(&mut rich_hand, 3, CX, CZ, LOC_EDGE_XLO); // row 3 = doorway
+    rig.agree_ok(&mut rich_hand, ROW_DOOR, at(CX, CZ, 0, LOC_EDGE_XLO));
     let mut no_lock = player_at_cell(CX, CZ, &[(0, 9)]);
     rig.agree_no(
         &mut no_lock,
         ROW_LOCK,
-        at(CX, CZ, 0, LOC_EDGE_W),
+        at(CX, CZ, 0, LOC_EDGE_XLO),
         REFUSE_D_COST,
         "item not in inventory",
     );
@@ -668,7 +787,11 @@ fn a_bad_row_is_red_on_both_sides() {
         costs: [(0, 0); sim_core::limits::MAX_DEPLOY_COSTS],
     };
     rig.dc.def_count = 7;
-    p.inv[8] = ItemStack { item: 9, count: 1 };
+    p.inv[8] = ItemStack {
+        item: 9,
+        count: 1,
+        cond: 0,
+    };
     rig.agree_no(
         &mut p,
         6,
@@ -683,16 +806,16 @@ fn a_second_lock_is_red_on_both_sides() {
     let mut rig = Rig::new();
     let mut p = rich(CX, CZ);
     rig.founded(&mut p, CX, CZ);
-    rig.piece(&mut p, 3, CX, CZ, LOC_EDGE_W); // doorway
-    rig.agree_ok(&mut p, ROW_DOOR, at(CX, CZ, 0, LOC_EDGE_W));
+    rig.piece(&mut p, 3, CX, CZ, LOC_EDGE_XLO); // doorway
+    rig.agree_ok(&mut p, ROW_DOOR, at(CX, CZ, 0, LOC_EDGE_XLO));
     // The first lock bolts on (its success is EV_DOOR, not a placed ack).
-    rig.agree_ok(&mut p, ROW_LOCK, at(CX, CZ, 0, LOC_EDGE_W));
+    rig.agree_ok(&mut p, ROW_LOCK, at(CX, CZ, 0, LOC_EDGE_XLO));
     // The second is refused by the lock store — mirrored client-side as the
     // `has_lock` bit the wire keeps in lockstep with it.
     rig.agree_no(
         &mut p,
         ROW_LOCK,
-        at(CX, CZ, 0, LOC_EDGE_W),
+        at(CX, CZ, 0, LOC_EDGE_XLO),
         REFUSE_D_HAS_LOCK,
         "that door already has a lock",
     );
@@ -740,6 +863,7 @@ fn the_bag_cap_stays_neutral() {
     for k in 0..BAG_CAP as u16 {
         p.body = Body::at(
             SEED,
+            hv(SEED),
             (CX + k) as f32 * BUILD_CELL_M + 1.5,
             CZ as f32 * BUILD_CELL_M + 1.5,
         );
@@ -748,6 +872,7 @@ fn the_bag_cap_stays_neutral() {
     let k = BAG_CAP as u16;
     p.body = Body::at(
         SEED,
+        hv(SEED),
         (CX + k) as f32 * BUILD_CELL_M + 1.5,
         CZ as f32 * BUILD_CELL_M + 1.5,
     );
@@ -770,42 +895,51 @@ fn the_bag_cap_stays_neutral() {
 #[test]
 fn the_door_ghost_stands_in_the_doorway_edge() {
     let size = deploy_size(ARCH_DOOR as usize);
-    let base = level_base_y(SEED, CX, CZ, 0);
+    let base = level_base_y(SEED, hv(SEED), CX, CZ, 0, 0);
 
-    let west = deploy_transform(SEED, (CX, CZ, 0, LOC_EDGE_W), ARCH_DOOR, false);
-    assert!(
-        (west.translation.x - CX as f32 * BUILD_CELL_M).abs() < 1e-4,
-        "a west door's centre is not on the west boundary"
+    let xlo = deploy_transform(
+        SEED,
+        hv(SEED),
+        (CX, CZ, 0, LOC_EDGE_XLO),
+        ARCH_DOOR,
+        false,
+        0,
     );
     assert!(
-        (west.translation.z - (CZ as f32 + 0.5) * BUILD_CELL_M).abs() < 1e-4,
-        "a west door is not centred along its edge"
+        (xlo.translation.x - CX as f32 * BUILD_CELL_M).abs() < 1e-4,
+        "a low-x door's centre is not on the low-x boundary"
     );
     assert!(
-        (west.translation.y - (base + size.y * 0.5)).abs() < 1e-4,
+        (xlo.translation.z - (CZ as f32 + 0.5) * BUILD_CELL_M).abs() < 1e-4,
+        "a low-x door is not centred along its edge"
+    );
+    assert!(
+        (xlo.translation.y - (base + size.y * 0.5)).abs() < 1e-4,
         "the door does not stand on the level base"
     );
 
-    // The north edge is the same door under the quarter-turn — the edge
+    // The low-z edge is the same door under the quarter-turn — the edge
     // canonicalisation the grid uses everywhere else.
-    let north = deploy_transform(
+    let zlo = deploy_transform(
         SEED,
-        (CX, CZ, 0, sim_core::build::LOC_EDGE_N),
+        hv(SEED),
+        (CX, CZ, 0, sim_core::build::LOC_EDGE_ZLO),
         ARCH_DOOR,
         false,
+        0,
     );
     assert!(
-        (north.translation.z - CZ as f32 * BUILD_CELL_M).abs() < 1e-4,
-        "a north door's centre is not on the north boundary"
+        (zlo.translation.z - CZ as f32 * BUILD_CELL_M).abs() < 1e-4,
+        "a low-z door's centre is not on the low-z boundary"
     );
-    let turned = north.rotation * bevy::math::Vec3::X;
+    let turned = zlo.rotation * bevy::math::Vec3::X;
     assert!(
         (turned.z + 1.0).abs() < 1e-4,
-        "a north door does not carry the quarter-turn"
+        "a low-z door does not carry the quarter-turn"
     );
 
     // A body deployable keeps the cell body: the split is the door's alone.
-    let body = deploy_transform(SEED, (CX, CZ, 0, LOC_PLANE), ARCH_BOX, false);
+    let body = deploy_transform(SEED, hv(SEED), (CX, CZ, 0, LOC_PLANE), ARCH_BOX, false, 0);
     assert!(
         (body.translation.x - (CX as f32 + 0.5) * BUILD_CELL_M).abs() < 1e-4,
         "a box left the cell centre"
@@ -813,9 +947,16 @@ fn the_door_ghost_stands_in_the_doorway_edge() {
 
     // And an open door is drawn elsewhere than a closed one — the leaf
     // swings, exactly as the sim's collision reads it.
-    let open = deploy_transform(SEED, (CX, CZ, 0, LOC_EDGE_W), ARCH_DOOR, true);
+    let open = deploy_transform(
+        SEED,
+        hv(SEED),
+        (CX, CZ, 0, LOC_EDGE_XLO),
+        ARCH_DOOR,
+        true,
+        0,
+    );
     assert!(
-        (open.translation - west.translation).length() > 0.1,
+        (open.translation - xlo.translation).length() > 0.1,
         "an open door is drawn shut"
     );
 }
@@ -839,4 +980,88 @@ fn the_door_fits_the_opening_the_sim_leaves() {
         "the door leaf ({}) is taller than the opening ({opening_top})",
         size.y
     );
+}
+
+// ---------------------------------------------------------------------------
+// The foundation footing (build base lattice v0, 2026-08-15) — the
+// per-address skirt `structures::foundation_part` emits for BOTH the
+// standing piece and the build ghost, gated the way every shared part is:
+// against the sim's own surfaces, not against a copy of the arithmetic.
+// ---------------------------------------------------------------------------
+
+/// The footing's TOP is the level plane — the exact surface
+/// `collide::piece_ground` stands players on — at every sampled cell, and
+/// its bottom is buried below every ground sample under the cell (or the
+/// depth cap was hit, on ground steep enough to beat it). A skirt that
+/// moved the top would move where players stand with every gate green;
+/// a skirt that missed the ground is the floating-plank screenshot the
+/// part exists to close.
+#[test]
+fn the_footing_keeps_the_floor_and_buries_its_skirt() {
+    use client::render::structures::{
+        foundation_part, PartKind, SEAM_M, SKIRT_MAX_M, SKIRT_SINK_M, SLAB_T,
+    };
+    use sim_core::build::BUILD_CELL_M;
+
+    let mut checked = 0;
+    for cx in (CX - 30..CX + 30).step_by(3) {
+        for cz in (CZ - 30..CZ + 30).step_by(3) {
+            let part = foundation_part(SEED, hv(SEED), cx, cz, false, 0);
+            assert_eq!(part.kind, PartKind::Box);
+            // Top at the level plane, exactly: offset is the box centre.
+            let top = part.offset.y + part.size.y * 0.5;
+            assert!(
+                top.abs() < 1e-4,
+                "cell ({cx},{cz}): footing top {top} is off the level plane"
+            );
+            // Footprint: the shared slab span, so the ghost's footing and a
+            // neighbouring floor tile stay the same object family.
+            assert!(
+                (part.size.x - (BUILD_CELL_M - SEAM_M)).abs() < 1e-4
+                    && (part.size.z - (BUILD_CELL_M - SEAM_M)).abs() < 1e-4,
+                "cell ({cx},{cz}): footing footprint {:?}",
+                part.size
+            );
+            assert!(
+                part.size.y >= SLAB_T - 1e-4 && part.size.y <= SKIRT_MAX_M + 1e-4,
+                "cell ({cx},{cz}): footing depth {} out of band",
+                part.size.y
+            );
+            // The bottom is in the ground under every corner — unless the
+            // cap cut it, which only steep ground reaches.
+            let base = level_base_y(SEED, hv(SEED), cx, cz, 0, 0);
+            let bottom = base + part.offset.y - part.size.y * 0.5;
+            let x0 = cx as f32 * BUILD_CELL_M;
+            let z0 = cz as f32 * BUILD_CELL_M;
+            let mut lo = f32::MAX;
+            for (px, pz) in [
+                (x0, z0),
+                (x0 + BUILD_CELL_M, z0),
+                (x0, z0 + BUILD_CELL_M),
+                (x0 + BUILD_CELL_M, z0 + BUILD_CELL_M),
+                (x0 + BUILD_CELL_M * 0.5, z0 + BUILD_CELL_M * 0.5),
+            ] {
+                lo = lo.min(sim_core::terrain::height(SEED, px, pz));
+            }
+            let capped = (part.size.y - SKIRT_MAX_M).abs() < 1e-4;
+            assert!(
+                capped || bottom <= lo - SKIRT_SINK_M + 1e-3,
+                "cell ({cx},{cz}): skirt bottom {bottom} floats over ground {lo}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 400, "the sweep checked only {checked} cells");
+}
+
+/// The tri footing is the same rule in the prism — same depth, same top —
+/// so a diagonal draft is grounded exactly like a square one.
+#[test]
+fn the_tri_footing_matches_the_square_one() {
+    use client::render::structures::{foundation_part, PartKind};
+    let sq = foundation_part(SEED, hv(SEED), CX, CZ, false, 0);
+    let tri = foundation_part(SEED, hv(SEED), CX, CZ, true, 0);
+    assert_eq!(tri.kind, PartKind::Tri);
+    assert_eq!(tri.size, sq.size);
+    assert_eq!(tri.offset, sq.offset);
 }

@@ -19,6 +19,35 @@ use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::world::{Command, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_GATHER};
 use sim_core::yaw_dir;
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 20260802;
 /// The fixture's item 0: 34 damage, 2 m reach — three swings to kill.
 /// It is also one of the fixture's long-lived items (360 ticks).
@@ -39,6 +68,7 @@ fn duel_world() -> World {
         p.inv[0] = ItemStack {
             item: SPEAR,
             count: 1,
+            cond: 0,
         };
     }
     w
@@ -61,7 +91,7 @@ fn place_in_front(w: &mut World, a: usize, b: usize, yaw: u16, dist: f32) {
     let (fx, fz) = yaw_dir(yaw);
     let body = w.players[a].body;
     let (ax, az) = (body.qx as f32 * POS_XZ_Q, body.qz as f32 * POS_XZ_Q);
-    w.players[b].body = Body::at(SEED, ax + fx * dist, az + fz * dist);
+    w.players[b].body = Body::at(SEED, hv(SEED), ax + fx * dist, az + fz * dist);
 }
 
 /// Hold the swing on player 2 until they die. The button stays down —
@@ -102,6 +132,7 @@ fn a_kill_leaves_what_the_body_carried_on_the_ground() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 42,
+        cond: 0,
     };
     let victim_id = w.players[1].id;
     let (_, vx, vz) = kill_player_two(&mut w);
@@ -133,6 +164,7 @@ fn the_kill_is_announced_as_a_bag_the_whole_shard_can_see() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 3,
+        cond: 0,
     };
     let victim_id = w.players[1].id;
     kill_player_two(&mut w);
@@ -149,6 +181,7 @@ fn the_killer_takes_it_and_the_bag_is_gone() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 42,
+        cond: 0,
     };
     kill_player_two(&mut w);
     let bag_id = w.backpacks.entries()[0].id;
@@ -184,6 +217,7 @@ fn a_bag_out_of_reach_stays_shut() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 42,
+        cond: 0,
     };
     kill_player_two(&mut w);
     let bag = w.backpacks.entries()[0];
@@ -191,7 +225,7 @@ fn a_bag_out_of_reach_stays_shut() {
     // Step the looter just past the reach they share with every other
     // world interaction, along the axis the bag is not on.
     let far = bag.qx as f32 * POS_XZ_Q + LOOT_REACH_M + 0.5;
-    w.players[0].body = Body::at(SEED, far, bag.qz as f32 * POS_XZ_Q);
+    w.players[0].body = Body::at(SEED, hv(SEED), far, bag.qz as f32 * POS_XZ_Q);
     w.tick(&[Command::Loot { id: 1 }]);
     assert_eq!(w.backpacks.len(), 1, "the bag is untouched");
     assert_eq!(w.backpacks.entries()[0].items[1].count, 42);
@@ -199,7 +233,7 @@ fn a_bag_out_of_reach_stays_shut() {
 
     // And one step inside it opens.
     let near = bag.qx as f32 * POS_XZ_Q + LOOT_REACH_M - 0.5;
-    w.players[0].body = Body::at(SEED, near, bag.qz as f32 * POS_XZ_Q);
+    w.players[0].body = Body::at(SEED, hv(SEED), near, bag.qz as f32 * POS_XZ_Q);
     w.tick(&[Command::Loot { id: 1 }]);
     assert!(
         w.backpacks.is_empty(),
@@ -213,6 +247,7 @@ fn what_does_not_fit_stays_in_the_bag() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 42,
+        cond: 0,
     };
     // Fill the killer to the brim with something else, leaving one slot
     // that already holds the spear (which can still top up by 1).
@@ -220,6 +255,7 @@ fn what_does_not_fit_stays_in_the_bag() {
         *s = ItemStack {
             item: 1,
             count: STACK_MAX,
+            cond: 0,
         };
     }
     kill_player_two(&mut w);
@@ -233,7 +269,8 @@ fn what_does_not_fit_stays_in_the_bag() {
         w.players[0].inv[0],
         ItemStack {
             item: SPEAR,
-            count: 2
+            count: 2,
+            cond: 0,
         },
         "but the stack that could top up did"
     );
@@ -250,6 +287,7 @@ fn a_bag_despawns_on_the_ladder_the_content_declares() {
     w.players[1].inv[0] = ItemStack {
         item: JUNK,
         count: 5,
+        cond: 0,
     };
     let (killed_at, _, _) = kill_player_two(&mut w);
     let bag = w.backpacks.entries()[0];
@@ -275,6 +313,7 @@ fn one_long_lived_item_keeps_the_whole_bag_standing() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 5,
+        cond: 0,
     };
     let (killed_at, _, _) = kill_player_two(&mut w);
     // Slot 0 still holds the spear — a fixture "rare", 360 ticks.
@@ -292,6 +331,7 @@ fn an_inert_ladder_destroys_exactly_as_it_did_before() {
     w.players[1].inv[1] = ItemStack {
         item: JUNK,
         count: 42,
+        cond: 0,
     };
     kill_player_two(&mut w);
     assert!(
@@ -338,7 +378,11 @@ fn looting_nothing_is_not_an_error() {
 /// constructor's temporaries overflow a test thread's stack.
 fn hash_after_a_kill_carrying(count: u16) -> (u64, usize) {
     let mut w = duel_world();
-    w.players[1].inv[1] = ItemStack { item: JUNK, count };
+    w.players[1].inv[1] = ItemStack {
+        item: JUNK,
+        count,
+        cond: 0,
+    };
     kill_player_two(&mut w);
     let slots = w.backpacks.entries()[0].items.len();
     (w.state_hash(), slots)

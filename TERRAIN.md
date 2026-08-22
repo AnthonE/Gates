@@ -95,12 +95,33 @@ Stages, in order — each cheap, each deterministic:
    marched seaward to the *first* shoreline crossing and stepped back
    `ROAD_INLAND_M` — the road's own center-line definition inverted, so the
    site is on the ring by construction. Resolved at `World::new`, passed
-   into `scatter` rather than resolved there. **The exclusion zone is
-   built; the carve is not.** A carve writes to `height`, which has ~50
-   call sites in four crates, so it is a cross-lane change and not a
-   detail — v0 therefore *finds* a flat site rather than *making* one, and
-   `Haven::relief` publishes how flat it got (worst 3.76 m over a 32 m pad
-   across 16 seeds).
+   into `scatter` rather than resolved there. **The exclusion zone is built and
+   THE CARVE IS BUILT** — armed 2026-08-16 (operator), so stage 8 now MAKES its
+   flat pad instead of finding one. Measured over 128 seeds: every site fully
+   flat, worst floor spread 8.06 m → 0.000.
+   The split that carries it is by ROLE, not by call site — solvers (`haven`,
+   `road_band`, `spawn_pos`, the determinism probe) read `height`, consumers
+   (`movement`, `terrain_mesh`, `ranged`, `build`/`deploy`, the placement
+   ghost, and the `y` an authored object is seated at) read `terrain::ground`,
+   and `sim-core/tests/height_roles.rs` holds that rule as a scrape. The counts
+   this paragraph used to quote were wrong in both directions: 65 `height`
+   reads in all, 31 inside `terrain.rs`, ~18 consumers.
+   **The ramp is not bounded by the exclusion zone, and that is the part worth
+   carrying.** `SiteFootprint::blend_m` runs the blend `SITE_BLEND_M` = 12 m
+   PAST `scatter_m`, because a ramp confined to the mask has ~3.9 m to absorb
+   whatever height lies between the made floor and the hill — and over 128
+   seeds that built a **2.09 rise/run wall** around the waystations against a
+   1.19 cliff threshold. Nothing ever required the two radii to be equal: past
+   the floor the scatter grid should stand things, and vegetation growing over
+   the ramp is what stops the ramp being visible. `max_cut` clamps the cut to
+   what the ramp can carry. §7's `tests/carve.rs` holds both.
+   ⚠ **`Haven::relief` is not the number the carve fixes**, which this file
+   implied for months by quoting the two together. It is a rosette at
+   `HAVEN_RADIUS_M` — exactly `HAVEN_FOOTPRINT.scatter_m`, where the stamp
+   has faded to nothing by construction — so it stays near 3.76 m however
+   deep the cut is. The carve's own measure is the spread over the floor it
+   makes (`SiteFootprint::stamp_m`); `Haven::relief` still publishes how flat
+   the site was *found*, which is what the argmax selected on.
    **The scatter table — the third of the hook — is now built, and it is the
    part the carve does not block.** `HAVEN_CRATES = 5` containers stand on a
    `HAVEN_CRATE_R_M = 10.0` ring, at authored positions rather than drawn
@@ -121,7 +142,8 @@ Stages, in order — each cheap, each deterministic:
    construction, so `HAVEN_PHASE_TRIES = 16` rotations of the ring are tried
    and the site is refused if none is clear). `SPAWN.md` §5's placement-check
    chain, arrived at from the other direction: **refuse the position, never
-   patch the object.** The carve is still not built.
+   patch the object.** The carve is built and armed; see above and
+   `DECISIONS.md` 2026-08-16.
    **A greybox now stands on it, and it stands BESIDE the road rather than
    on it.** The clearing stopped being self-evidently made the moment stage 9
    gave the island natural clearings — 2.2–4.1% of forest windows are empty
@@ -309,6 +331,33 @@ claimed building's privilege volume — no farming your own living room.
 This is the same shape `NETCODE.md` §5 uses for buildings, which is the
 point: **terrain life is just chunk events over a generated backdrop.**
 
+### 2.1 · An authored site publishes masks, not a radius
+
+Landed 2026-08-10; research `reference/MONUMENTS.md` §3, knob row
+`DECISIONS.md` §open "site footprints v0".
+
+The haven pad and the waystations used to carry exactly one number each
+(`HAVEN_RADIUS_M`, `WAYSTATION_RADIUS_M`) answering exactly one question —
+*does the scatter grid stand anything here*. Every other world system either
+asked that same circle or was never told the sites exist. Ground clutter was
+the second kind: `clutter_fill` had no `Haven` parameter, so grass and litter
+grew straight across both tiers while the carriageway through them was
+correctly grit.
+
+`SiteFootprint` is now the site's published table — `scatter_m` (the grid
+veto, asserted equal to the radius it replaced) and `swept_m` (the made
+floor, derived as the container ring plus one clutter cell). Between them
+`site_sweep` is a **smoothstep profile, not a circle**: consumers dither each
+element against it with a hash byte they had already drawn, so the edge of a
+destination is a thinning population rather than a ring on the ground. That
+distinction is the whole of `MONUMENTS.md` §3 — the reference game shipped
+monuments on visible circular plateaus for a decade because a footprint was a
+radius — and `tests/clutter.rs` §S refuses a hard circle explicitly.
+
+Rows this struct gains when a reader exists: build-block (open for the
+operator), a height stamp (there is no carve — §1 stage 8 finds flat ground
+rather than making it), nav, water.
+
 ## 3 · Collision (server truth, client prediction — same code)
 
 - Ground: bilinear height sample under the capsule; walkable up to the
@@ -391,8 +440,12 @@ says "worker", read "off the main schedule" for the native path.
   times past its own Nyquist and reached the image as its alias.
 - **Scatter rendering**: per chunk, one `InstancedMesh` per archetype
   filled from the slot list (minus harvested), frustum-culled per chunk.
-  Trees get two LODs (mesh / billboard cross) **(knob: distances)**; each
-  archetype carries an authored PBR response, baked vertex colours and a
+  Trees get two LODs **(knob: distances — `DECISIONS.md` §open, tree LOD v0)**:
+  the near one is the generated pair and the far one is an opaque hull lathed
+  through its own vertices, **not** the billboard cross this line has always
+  said. The cross is still the cheaper end and is still unbuilt; the hull is
+  what landed 2026-08-20, because it needed no bake and no second material.
+  Each archetype carries an authored PBR response, baked vertex colours and a
   per-instance tint hashed from its own cell, so variation costs no draw
   calls (materials v0).
   Grass: cheap camera-ring patches, purely cosmetic, off on low tier
@@ -593,32 +646,60 @@ client (`DECISIONS.md` 2026-08-06), so nothing photographs this at all now.
   site rather than making one (§1 stage 8), so this suite measures the
   generator's best natural ground, and the 3.76 m is the argument for the
   carve rather than evidence it happened.
+- `tests/clutter.rs` §S: the authored sites sweep their own floor, measured
+  against the same seed rendered with the site list parked offshore, so all
+  three claims are exact rather than statistical — the floor is grit and
+  carries no understory, **the wilderness is bit-identical**, and the band
+  between the two masks contains both outcomes. Each is proven red under its
+  own mutant (sweep disabled · sweep as a hard circle · the band collapsed to
+  zero width). §2.1 has the design.
 - Chunk-build time and instancing counts ride the client perf harness.
 
-### 7.1 · ⚠ The greybox mirror lost its gate, and the two halves have drifted
+### 7.1 · The greybox mirror: one list now, and a gate over the rest
 
-**Measured 2026-08-09, while sweeping the browser out of the docs.** The two
-authored structures are declared twice — once as the volume the sim blocks,
-once as the mesh the client draws — and the gate that held the two lists
-equal was `ci/haven_shelter.mjs` + `ci/waystation_canopy.mjs`, both deleted
-with the browser client. **Nothing replaced them**, and the lists no longer
-agree:
+**Was a live defect; fixed 2026-08-10.** The two authored structures were
+declared twice — once in `terrain.rs` as the volume the sim blocks, once in
+`render/props.rs` as the mesh the client draws — and the gate that held the
+lists equal was `ci/haven_shelter.mjs` + `ci/waystation_canopy.mjs`, both
+deleted with the browser client. Nothing replaced them and they had drifted:
 
-| | sim blocks (`terrain.rs`, centre + **full size**) | client draws (`render/props.rs`, centre + **half extent**) |
+| | sim blocked (centre + **full size**) | client drew (centre + **half extent**) |
 |---|---|---|
-| haven shelter | `SHELTER_BOXES`, **14 rows** | `shelter`, **9 rows** |
-| waystation canopy | `WAYSTATION_CANOPY_BOXES`, **9 rows**, finial top **4.1 m**, eave half-width 2.8 m | `canopy`, **6 rows**, top **2.09 m**, plate half-width 1.9 m |
+| haven shelter | `SHELTER_BOXES`, 14 rows, peak 9.2 m | 9 rows, peak 5.6 m — no corner posts, no tower-cap |
+| waystation canopy | `WAYSTATION_CANOPY_BOXES`, 9 rows, finial 4.1 m | 6 rows, top 2.09 m |
 
-The canopy is the loud one: the drawn structure is **about half the blocked
-one in both height and width**, and `scale: 1.0` is authored on that slot
-(`terrain.rs`, "Authored, not drawn"), so no instance transform reconciles
-them. A player is stopped ~0.7 m outside the posts they can see. Note the
-two tables are also in **different units** — full size against half extent —
-which is exactly the transcription hazard the deleted gate existed to cover.
+A player was stopped ~0.7 m outside posts they could see. Note the units: full
+size against half extent, which is the transcription hazard the deleted gate
+existed to cover.
 
-**This is not fixed here** — which list is authoritative is a design call
-(the sim's numbers are the ones `ART.md` §6 and the tier-silhouette argument
-were written against), and this pass is a doc sweep. What is owed is the
-native gate, and `CLAUDE.md` already says its shape: *what may be gated about
-a frame is arithmetic — the mesh fits the volume the sim blocks, in Rust, the
-shape of `crates/client/tests/tree.rs`*. `NOW.md` carries the item.
+**The design call the old text left open is made: the sim's list is
+authoritative** — `ART.md` §6 and the tier-silhouette argument were written
+against those numbers, `OCCUPANT_R_M`/`OCCUPANT_TOP_M` are *defined* as the
+tables' own bounds, and the drawn list was the one that had lost rows.
+
+**And the fix is derivation rather than a second gate.** `props::authored`
+builds the mesh from the sim's rows, converting full size to half extent in
+one place against a length the type system pins; only the colours are the
+client's. There is one list, so this particular drift cannot recur.
+
+What `crates/client/tests/greybox.rs` gates is what derivation cannot make
+true by construction, and it reaches further than the two structures:
+
+- the unit conversion, row for row, on bit patterns;
+- every row reaching the mesh, by vertex count (36 a box, measured);
+- the authored pair's drawn bounds **equalling** the published broad phase in
+  both directions — a gap either way means the scalar and the table came apart;
+- **every other archetype fitting the volume the sim blocks**, which closes
+  `OCCUPANT_R_M`'s own admission that "nothing in the Rust workspace can see a
+  triangle, so the asserts below prove only that this file agrees with itself";
+- a coverage check, so a new occupant arrives measured or explicitly excused.
+
+**Closed the same day, on the operator's call**: the *generated* props blocked
+wider than they drew — a boulder reaching 1.1145 m inside a 1.5 m blocked
+cylinder, because `blob_mesh` displaces vertices inward from its nominal
+radius and the row had been written off the nominal. `OCCUPANT_R_M` and
+`OCCUPANT_TOP_M` carry the measured bounds now (rounded outward at four
+decimals) and the gate's ratchet is an equality check at a one-millimetre
+rounding allowance. Prop skirts tightened with it for free, because
+`skirt_base_r` already reached off `occupant_volume`. `DECISIONS.md`
+2026-08-10 has the call and what it touched.

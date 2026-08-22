@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use sim_core::backpack::{BackpackContent, BAG_GONE_EMPTIED};
 use sim_core::bots::bot_frame;
 use sim_core::build::{
-    BuildContent, LOC_EDGE_N, LOC_EDGE_W, LOC_PLANE, MAT_METAL, MAT_STONE, MAT_WOOD,
+    BuildContent, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, MAT_METAL, MAT_STONE, MAT_WOOD,
 };
 use sim_core::combat::CombatContent;
 use sim_core::craft::CraftContent;
@@ -18,6 +18,36 @@ use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{INV_SLOTS, MAX_PLAYERS};
 use sim_core::rng::Pcg32;
 use sim_core::survival::{SurvivalContent, REFUSE_C_NO_WATER};
+
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 use sim_core::world::{
     Command, World, EV_BAG_DROPPED, EV_BAG_REMOVED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_DEATH,
     EV_DRANK, EV_PIECE_REMOVED, EV_RESPAWN, EV_STRUCT_HIT,
@@ -32,7 +62,7 @@ use sim_core::world::{
 /// so the place and upgrade requests are always inside the 5 m reach and
 /// the write paths — the store insert, the cost payment, the re-row — are
 /// what gets counted, not a reach refusal. The place cycles an 8-tick
-/// figure: a foundation, a wall on its west edge, a doorway on its north,
+/// figure: a foundation, a wall on its low-x edge, a doorway on its low-z,
 /// a floor above, then four requests shaped to be refused (a row past the
 /// table, a foundation off the ground, a wall in a plane slot, a floor at
 /// ground level). The upgrade rides the wall's address with the material
@@ -91,8 +121,8 @@ fn tick_cmds(
         } else if i == MAX_PLAYERS + 2 {
             let (row, level, loc) = match t % 8 {
                 0 => (0, 0, LOC_PLANE),
-                1 => (1, 0, LOC_EDGE_W),
-                2 => (3, 0, LOC_EDGE_N),
+                1 => (1, 0, LOC_EDGE_XLO),
+                2 => (3, 0, LOC_EDGE_ZLO),
                 3 => (2, 1, LOC_PLANE),
                 4 => (5, 0, LOC_PLANE), // past the table
                 5 => (0, 1, LOC_PLANE), // a foundation off the ground
@@ -106,6 +136,14 @@ fn tick_cmds(
                 cz: cell.1,
                 level,
                 loc,
+                // Alternates with the loc cycle so `plate_for`'s freehand
+                // early-out is a branch this gate actually walks (freehand
+                // placement v0). This covers what alloc_zero measures — the
+                // PATH — and deliberately claims nothing about the value:
+                // see `plate.rs` for the gate on what the bit means, and
+                // `NOW.md` §0bl item 5 for why replay and parity do not
+                // cover it.
+                freehand: loc % 2 == 0,
             }
         } else if i == MAX_PLAYERS + 3 {
             Command::Upgrade {
@@ -113,7 +151,7 @@ fn tick_cmds(
                 cx: cell.0,
                 cz: cell.1,
                 level: 0,
-                loc: LOC_EDGE_W,
+                loc: LOC_EDGE_XLO,
                 material: match t % 3 {
                     0 => MAT_WOOD,
                     1 => MAT_STONE,
@@ -133,7 +171,7 @@ fn tick_cmds(
                 cx: cell.0,
                 cz: cell.1,
                 level: 0,
-                loc: LOC_EDGE_W,
+                loc: LOC_EDGE_XLO,
             }
         } else if i == MAX_PLAYERS + 5 {
             // The raid verb, on the address the repair arm walks. Two
@@ -149,7 +187,7 @@ fn tick_cmds(
                 cx: cell.0,
                 cz: cell.1,
                 level: 0,
-                loc: LOC_EDGE_W,
+                loc: LOC_EDGE_XLO,
             }
         } else {
             Command::Consume {
@@ -216,7 +254,7 @@ fn buildable_cell(w: &World, seed: u64, cx0: u16, cz0: u16) -> (u16, u16) {
                 let cx = (cx0 as i32 + dx).clamp(0, 1023) as u16;
                 let cz = (cz0 as i32 + dz).clamp(0, 1023) as u16;
                 let (x, z) = cell_center(cx, cz);
-                if sim_core::build::foundation_terrain_ok(seed, x, z)
+                if sim_core::build::foundation_terrain_ok(seed, hv(seed), x, z)
                     && w.pieces.find(cx, cz, 0, LOC_PLANE).is_none()
                 {
                     return (cx, cz);
@@ -319,10 +357,12 @@ fn test_alloc_zero() {
     world.players[0].inv[20] = ItemStack {
         item: 0,
         count: 60_000,
+        cond: 0,
     };
     world.players[0].inv[21] = ItemStack {
         item: 1,
         count: 60_000,
+        cond: 0,
     };
     // The duel: bots 3 and 4, armed in the hand they hold. Deliberately
     // not bot 1 — the builder must keep its stock and its own cell, and a
@@ -332,7 +372,11 @@ fn test_alloc_zero() {
     // 38 ticks, so the kill lands around tick 76 of the 300 — the assert
     // at the end is what holds that claim, not this comment.
     for i in [2usize, 3] {
-        world.players[i].inv[0] = ItemStack { item: 0, count: 1 };
+        world.players[i].inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+        };
     }
     // Bot 1's own build cell, so place and upgrade always have reach.
     let builder_cell = |w: &World| {
@@ -364,14 +408,18 @@ fn test_alloc_zero() {
     let bag_cell = buildable_cell(&world, SEED, 341, 341);
     let bag_at = {
         let (x, z) = cell_center(bag_cell.0, bag_cell.1);
-        let b = sim_core::movement::Body::at(SEED, x, z);
+        let b = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
         (b.qx, b.qz)
     };
     world.players[5].body = {
         let (x, z) = cell_center(bag_cell.0, bag_cell.1);
-        sim_core::movement::Body::at(SEED, x, z)
+        sim_core::movement::Body::at(SEED, hv(SEED), x, z)
     };
-    world.players[5].inv[10] = ItemStack { item: 5, count: 1 };
+    world.players[5].inv[10] = ItemStack {
+        item: 5,
+        count: 1,
+        cond: 0,
+    };
     world.tick(&[Command::PlaceDeploy {
         id: 6,
         row: 3, // the fixture's ground-class bag
@@ -422,10 +470,15 @@ fn test_alloc_zero() {
         .expect("the warmup must leave a plane piece for the raider");
     world.players[4].body = sim_core::movement::Body::at(
         SEED,
+        hv(SEED),
         (target.cx as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
         (target.cz as f32 + 0.5) * sim_core::build::BUILD_CELL_M,
     );
-    world.players[4].inv[0] = ItemStack { item: 0, count: 1 };
+    world.players[4].inv[0] = ItemStack {
+        item: 0,
+        count: 1,
+        cond: 0,
+    };
     // Bot 6 is the starving body: both meters emptied as the window opens,
     // deliberately not a bot the duel, the raid or the build script uses.
     // The shard's own meters do not run dry until ~tick 240 and a full body
@@ -447,7 +500,7 @@ fn test_alloc_zero() {
     // mouthful a 100 hp body drinks itself dead in five: the landed drink,
     // the salt death, the respawn's grant, and — once the ring has put it
     // somewhere inland — the dry refusal all land inside the window.
-    world.players[6].body = sim_core::movement::Body::at(SEED, shore.0, shore.1);
+    world.players[6].body = sim_core::movement::Body::at(SEED, hv(SEED), shore.0, shore.1);
     world.players[6].water = 0;
     // Bot 2's meters are the drain witness: it neither duels, raids,
     // builds nor eats, so nothing but the clock moves them.

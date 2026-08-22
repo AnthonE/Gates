@@ -215,9 +215,32 @@ pub struct Auth {
 ///
 /// `domain` is the shard's own name, and it is what stops a signature
 /// collected by one server being replayed at another.
+///
+/// ⚠ **These bytes are the scry launcher's, not ours, and that is the point.**
+/// This used to be a message Gates composed and asked the launcher to `sign`;
+/// the launcher refused every one of them, because `sign` classifies a message
+/// by its first line (`scry <family>`) and an EIP-4361 message begins with a
+/// domain. The refusal became `None`, `None` means "connect as a guest", and a
+/// shard with `require_auth` answered `REFUSE_AUTH` — a login that looked like
+/// a signing failure and was really a message nothing would ever sign.
+///
+/// The verb that works is `prove`, where the LAUNCHER writes every word so a
+/// game cannot smuggle a sentence into a signature. That makes this function a
+/// **recomputation of somebody else's format**: it must equal
+/// `scry_broker::protocol::prove_message` byte for byte or nothing verifies.
+/// Four of its fields are theirs and are not ours to prefer — the statement,
+/// `https://` (not a custom scheme), chain 4663, and an ISO-8601 `Issued At`.
+///
+/// `address` is the **EIP-55 checksummed** text, not [`Address::to_hex`]'s
+/// lowercase. EIP-4361 requires it, reference parsers reject an all-lowercase
+/// address, and the launcher binds the checksummed form into the bytes it
+/// signs — so the case is load-bearing and the caller must have keccak to
+/// produce it. `Address::to_hex` is deliberately still lowercase for every
+/// other use.
 pub fn siwe_message(
     domain: &str,
-    address: &Address,
+    address: &str,
+    game: &str,
     nonce: &[u8; NONCE_BYTES],
     issued_at: u64,
     out: &mut [u8; SIWE_MESSAGE_MAX],
@@ -225,18 +248,24 @@ pub fn siwe_message(
     let mut w = TextWriter { out, at: 0 };
     w.s(domain);
     w.s(" wants you to sign in with your Ethereum account:\n");
-    w.bytes(&address.to_hex());
-    w.s(
-        "\n\nSign in to the Gates shard. This proves the address is yours; \
-         it authorises nothing and moves no funds.\n\nURI: gates://",
-    );
+    w.s(address);
+    w.s("\n\nProve your identity to play ");
+    w.s(game);
+    w.s(". This signature authorises nothing and moves no funds.\n\nURI: https://");
     w.s(domain);
-    w.s("\nVersion: 1\nChain ID: 1\nNonce: ");
+    w.s("\nVersion: 1\nChain ID: ");
+    w.num(CHAIN_ID);
+    w.s("\nNonce: ");
     w.hex(nonce);
     w.s("\nIssued At: ");
-    w.num(issued_at);
+    w.iso8601(issued_at);
     w.at.min(SIWE_MESSAGE_MAX)
 }
+
+/// The chain the launcher names in a proof. **Theirs, not ours**
+/// (`scry_broker::protocol::CHAIN_ID`) — we recompute their message, so a
+/// number we preferred here would simply fail to verify.
+pub const CHAIN_ID: u64 = 4663;
 
 /// Ceiling for [`siwe_message`]: the fixed text is ~220 bytes, the address
 /// 42, the nonce 64 hex, the timestamp ≤ 20, and `domain` appears twice and
@@ -280,6 +309,46 @@ impl TextWriter<'_> {
         for i in (0..n).rev() {
             self.bytes(&[buf[i]]);
         }
+    }
+    /// Zero-padded to `w` digits — `07`, never `7`.
+    fn pad2(&mut self, v: u64) {
+        self.bytes(&[b'0' + (v / 10) as u8, b'0' + (v % 10) as u8]);
+    }
+    /// `YYYY-MM-DDTHH:MM:SSZ`, which is what the launcher writes.
+    ///
+    /// Reimplemented rather than pulled in: this crate takes no dependency for
+    /// four lines of arithmetic, and the algorithm is Howard Hinnant's
+    /// `civil_from_days`, the same one `scry_broker::protocol` uses. The pinned
+    /// golden below is what actually holds the two together — an agreement
+    /// between two crates in two repos is a claim, and only a test is evidence.
+    fn iso8601(&mut self, unix_secs: u64) {
+        let days = (unix_secs / 86_400) as i64;
+        let rem = unix_secs % 86_400;
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = (doy - (153 * mp + 2) / 5 + 1) as u64;
+        let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u64;
+        let y = if m <= 2 { y + 1 } else { y } as u64;
+        // Four digits, and a shard whose clock says year 10000 has a worse
+        // problem than this line.
+        self.pad2(y / 100);
+        self.pad2(y % 100);
+        self.bytes(b"-");
+        self.pad2(m);
+        self.bytes(b"-");
+        self.pad2(d);
+        self.bytes(b"T");
+        self.pad2(rem / 3600);
+        self.bytes(b":");
+        self.pad2((rem % 3600) / 60);
+        self.bytes(b":");
+        self.pad2(rem % 60);
+        self.bytes(b"Z");
     }
 }
 
@@ -386,19 +455,61 @@ mod tests {
             *b = i as u8;
         }
         let mut buf = [0u8; SIWE_MESSAGE_MAX];
-        let n = siwe_message("gates.example", &a, &nonce, 1_770_000_000, &mut buf);
+        // EIP-55 checksummed, as the launcher supplies it. Lowercase here
+        // would recompute to different bytes and verify nothing.
+        let checksummed = "0x7E5F4552091A69125d5DfcB7b8C2659029395Bdf";
+        let n = siwe_message(
+            "gates.example",
+            checksummed,
+            "gates",
+            &nonce,
+            1_770_000_000,
+            &mut buf,
+        );
         let text = core::str::from_utf8(&buf[..n]).expect("the message is utf-8");
+        // **This is scry's format, transcribed.** It must equal what
+        // `scry_broker::protocol::prove_message` writes for the same inputs;
+        // the launcher signs THAT, and a shard that recomputes anything else
+        // rejects every honest login. Changing a byte here is changing what
+        // the launcher does, not what we prefer.
         assert_eq!(
             text,
             "gates.example wants you to sign in with your Ethereum account:\n\
-             0x7e5f4552091a69125d5dfcb7b8c2659029395bdf\n\n\
-             Sign in to the Gates shard. This proves the address is yours; it \
-             authorises nothing and moves no funds.\n\n\
-             URI: gates://gates.example\nVersion: 1\nChain ID: 1\n\
+             0x7E5F4552091A69125d5DfcB7b8C2659029395Bdf\n\n\
+             Prove your identity to play gates. This signature authorises \
+             nothing and moves no funds.\n\n\
+             URI: https://gates.example\nVersion: 1\nChain ID: 4663\n\
              Nonce: 000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\n\
-             Issued At: 1770000000"
+             Issued At: 2026-02-02T02:40:00Z"
         );
         assert!(n < SIWE_MESSAGE_MAX, "the ceiling must have headroom");
+        let _ = a;
+    }
+
+    /// The timestamp is the field this whole change exists for, so it is
+    /// pinned away from a single happy value: a leap day, a year boundary,
+    /// and midnight, each of which a hand-rolled civil-from-days gets wrong
+    /// in its own way.
+    #[test]
+    fn iso8601_matches_the_launchers_formatter() {
+        let cases = [
+            (0u64, "1970-01-01T00:00:00Z"),
+            (951_782_400, "2000-02-29T00:00:00Z"), // a leap day
+            (1_767_225_599, "2025-12-31T23:59:59Z"), // one second before a year
+            (1_767_225_600, "2026-01-01T00:00:00Z"), // and the year itself
+            (1_770_000_000, "2026-02-02T02:40:00Z"),
+        ];
+        for (secs, want) in cases {
+            let mut buf = [0u8; SIWE_MESSAGE_MAX];
+            let mut w = TextWriter {
+                out: &mut buf,
+                at: 0,
+            };
+            w.iso8601(secs);
+            let at = w.at;
+            let got = core::str::from_utf8(&buf[..at]).expect("utf-8");
+            assert_eq!(got, want, "unix {secs}");
+        }
     }
 
     /// The nonce reaches the text. Without this, every connection would sign
@@ -406,11 +517,12 @@ mod tests {
     /// password.
     #[test]
     fn a_different_nonce_is_a_different_message() {
-        let a = Address::GUEST;
+        let hex = Address::GUEST.to_hex();
+        let a = core::str::from_utf8(&hex).expect("utf-8");
         let mut one = [0u8; SIWE_MESSAGE_MAX];
         let mut two = [0u8; SIWE_MESSAGE_MAX];
-        let n1 = siwe_message("d", &a, &[1; NONCE_BYTES], 5, &mut one);
-        let n2 = siwe_message("d", &a, &[2; NONCE_BYTES], 5, &mut two);
+        let n1 = siwe_message("d", a, "gates", &[1; NONCE_BYTES], 5, &mut one);
+        let n2 = siwe_message("d", a, "gates", &[2; NONCE_BYTES], 5, &mut two);
         assert_eq!(n1, n2);
         assert_ne!(one[..n1], two[..n2], "the nonce did not reach the text");
     }
@@ -419,11 +531,12 @@ mod tests {
     /// one shard being replayed at another.
     #[test]
     fn a_different_domain_is_a_different_message() {
-        let a = Address::GUEST;
+        let hex = Address::GUEST.to_hex();
+        let a = core::str::from_utf8(&hex).expect("utf-8");
         let mut one = [0u8; SIWE_MESSAGE_MAX];
         let mut two = [0u8; SIWE_MESSAGE_MAX];
-        let n1 = siwe_message("shard-a", &a, &[0; NONCE_BYTES], 5, &mut one);
-        let n2 = siwe_message("shard-b", &a, &[0; NONCE_BYTES], 5, &mut two);
+        let n1 = siwe_message("shard-a", a, "gates", &[0; NONCE_BYTES], 5, &mut one);
+        let n2 = siwe_message("shard-b", a, "gates", &[0; NONCE_BYTES], 5, &mut two);
         assert_ne!(one[..n1], two[..n2], "the domain did not reach the text");
     }
 
@@ -436,7 +549,9 @@ mod tests {
     fn the_message_buffer_cannot_be_overrun() {
         let long = "x".repeat(4096);
         let mut buf = [0u8; SIWE_MESSAGE_MAX];
-        let n = siwe_message(&long, &Address::GUEST, &[0; NONCE_BYTES], 0, &mut buf);
+        let hex = Address::GUEST.to_hex();
+        let a = core::str::from_utf8(&hex).expect("utf-8");
+        let n = siwe_message(&long, a, "gates", &[0; NONCE_BYTES], 0, &mut buf);
         assert!(n >= SIWE_MESSAGE_MAX, "an over-long domain should saturate");
     }
 }

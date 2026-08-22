@@ -94,6 +94,17 @@ impl MapSet {
 ///
 /// Derived, not edited: the source file stays pristine and swappable, and
 /// `assets/textures/MANIFEST.md` carries the row.
+///
+/// ⚠ **Superseded 2026-08-15 and no longer loaded.** The splat material samples
+/// each identity's own albedo and takes ITS luminance
+/// (`render/ground_splat.rs`), so grass's pre-baked luminance field is now one
+/// of four computed in the shader rather than the one field all four shared.
+/// The constants stay because they are the cross-check that says the two
+/// constructions agree — `GRAIN_GAIN[1]` measures 4.0292 off `grass_albedo.jpg`
+/// against this 4.0579 off the baked file, and those have to be close or one of
+/// them is wrong. The file still ships and `ground_where_the_green_goes.rs`
+/// still gates it; nothing samples it. Deleting it is a separate call, because
+/// a pre-baked luminance field is exactly what a cheaper LOD would want.
 pub const GROUND_DETAIL: &str = "textures/ground_detail.jpg";
 /// `1 / linear mean` of that field (0.2464), so the delivered mean is the
 /// authored colour. Scalar, not per-channel — which is what makes the span 1.
@@ -109,8 +120,6 @@ pub struct GroundMaps {
     pub grass: MapSet,
     pub litter: MapSet,
     pub rock: MapSet,
-    /// The luminance field the ground actually samples today.
-    pub detail: Handle<Image>,
 }
 
 /// The prop identities' maps — the five sets that were fetched, manifested and
@@ -156,7 +165,6 @@ pub fn load(mut commands: Commands, assets: Res<AssetServer>) {
         grass: MapSet::load(&assets, "grass"),
         litter: MapSet::load(&assets, "litter"),
         rock: MapSet::load(&assets, "rock"),
-        detail: assets.load_with_settings(GROUND_DETAIL, tiling(true)),
     });
     // Same paths as the ground's `rock`, and therefore the same handle: the
     // asset server keys on path plus settings, so naming it twice costs one

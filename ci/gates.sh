@@ -79,9 +79,11 @@ $NICE node ci/knob_registry.mjs || fail "knob registry"
 
 # Also pure text, also no build. The sim proves the haven pad concentrates
 # containers; this proves the containers it concentrates are the richer kind.
-# That half lives entirely in content/loot.toml, which no Rust gate reads —
-# no verb opens a container yet — so without this the gradient is one
-# rebalance away from being the defect the coast road already had.
+# That half lives entirely in content/loot.toml, which no Rust gate scores
+# for richness — the verb exists (Command::OpenWorldCont, world.rs) but it
+# opens a container, it does not check the container was worth opening — so
+# without this the gradient is one rebalance away from being the defect the
+# coast road already had.
 echo "== gate: haven prize (the destination outpays the route, in content)"
 $NICE node ci/haven_prize.mjs || fail "haven prize"
 
@@ -100,6 +102,26 @@ $NICE python3 ci/depot.py --self-test || fail "depot packaging"
 # generator and the game cannot drift apart on what they will accept.
 echo "== gate: shard list (scry-shardlist-v1, docs/LAUNCHER.md §6)"
 $NICE python3 ci/shardlist.py --self-test || fail "shard list"
+
+# The third seam onto scry, and the only one where this repo is the AUTHOR
+# rather than the source of a build. `scry.json` is our store row and our
+# community feed; `scry.sig.json` signs its exact bytes, and scry applies the
+# pair or neither. The failure this catches is the ordinary one — edit the
+# manifest, forget to re-sign — which scry refuses silently as far as we can
+# see from here: the row simply stops moving. Local properties only (the
+# signature covers these bytes; the version equals the workspace's), so it
+# needs no key, no network, and no copy of scry's schema to drift from.
+echo "== gate: scry manifest (the repo desk, GAME-REPO.md)"
+$NICE python3 ci/scry_manifest.py --self-test || fail "scry manifest"
+
+# The other end of the bug-report key. `report.rs` writes one `.json` per
+# report and this folds a directory of them onto their fingerprints — which is
+# the claim that two reports sharing one are ONE piece of work, and the only
+# place that arithmetic lives. Two failures it exists to catch, both silent:
+# a fold that drops a report, and a file it cannot read being skipped instead
+# of named. No network and no client; it builds reports in a temp directory.
+echo "== gate: report board (a pile of reports is a worklist, crates/client/src/report.rs)"
+$NICE python3 ci/reports.py --self-test || fail "report board"
 
 echo "== gate: rustfmt"
 $NICE cargo fmt --all --check || fail "rustfmt"
@@ -120,9 +142,22 @@ $NICE cargo test --workspace --release || fail "cargo test"
 #
 # Two commands, both cheap once Bevy is in the cache, and this is `RENDER.md`
 # R0's probe. It is NOT a visual gate and does not pretend to be: it compiles
-# the render path under `-D warnings` and runs the three renderer-tier suites
-# (`tree`, `fell`, `look`), none of which needs a GPU or a window. What
-# photographs these screens is still owed.
+# the render path under `-D warnings` and runs every renderer-tier suite, none
+# of which needs a GPU or a window. What photographs these screens is still
+# owed.
+#
+# ⚠ **This line used to name its suites one at a time, and two of them were
+# never named.** `--test tree --test fell --test look --test ghost --test
+# mob_mesh` excludes every OTHER renderer-tier target, and `cargo test
+# --workspace` above cannot stand in: it compiles the client without `render`,
+# so `tests/greybox.rs` (`#![cfg(feature = "render")]`) built empty and passed
+# with zero tests while `tests/water.rs` (`required-features`) was skipped
+# outright. Both are headless, both were green, and neither had ever run under
+# this script — the whole sea gate and the whole occupant-volume gate. An
+# enumeration is a list somebody has to remember to append to, and this is what
+# forgetting looks like, so there is no enumeration any more: every test target
+# the crate has runs, and a suite that needs a GPU has to say so itself rather
+# than rely on being left off a line here.
 #
 # Bevy's default features pull `wayland-client`, `alsa` and `libudev` through
 # `winit`, `bevy_audio` and `bevy_gilrs`, and this client uses only the first —
@@ -131,18 +166,16 @@ $NICE cargo test --workspace --release || fail "cargo test"
 # need (`CLAUDE.md`: the second question), and trimming the feature set is the
 # fix; until then the requirement is stated here rather than discovered.
 #
-# `--lib` rides along with the three suites because the client's unit tests are
-# behind the same feature: `cargo test --workspace` above compiles the crate
-# WITHOUT `render`, so everything under `render::` is cfg'd out of it. Without
-# this flag `render::loading`'s tests — which assert that a world is not loaded
-# until the server has said where — are compiled by the clippy line above and
-# run by nothing.
-echo "== gate: native client (--features render: clippy + lib + the renderer-tier suites)"
+# The crate's own unit tests ride along for the same reason the suites do:
+# `cargo test --workspace` above compiles the crate WITHOUT `render`, so
+# everything under `render::` is cfg'd out of it, and `render::loading`'s tests
+# — which assert that a world is not loaded until the server has said where —
+# would be compiled by the clippy line above and run by nothing.
+echo "== gate: native client (--features render: clippy + every renderer-tier suite)"
 echo "   (needs libwayland-dev + libasound2-dev + libudev-dev — Bevy defaults, not ours)"
 $NICE cargo clippy -p client --features render --all-targets -- -D warnings \
   || fail "clippy (native client)"
-$NICE cargo test -p client --features render --lib --test tree --test fell --test look --test ghost \
-  --test mob_mesh \
+$NICE cargo test -p client --features render \
   || fail "native client suites"
 
 # **The only wasm in this repo, and it is not a client** (operator,
@@ -168,6 +201,24 @@ $NICE cargo run -p sim-core --release --example probe > "$native_out" \
 $NICE node ci/parity.mjs > "$wasm_out" || fail "wasm probe"
 diff -u "$native_out" "$wasm_out" \
   || fail "test_parity_wasm: native and wasm digests differ"
+
+# Same target, different optimizer. `reference/MONUMENTS.md` §9.4: a third CPU
+# is not runnable on this box (no qemu, no cross linker), so aarch64 and MSVC
+# stay ungated — but the failure that would bite there is float contraction,
+# and THAT is reachable here. If LLVM ever fuses an `a*b + c` at -O3 that it
+# leaves alone at -O0, worldgen's digest moves with the profile, which is the
+# same bug an ARM build would show and is what `sim-core/clippy.toml`'s ban on
+# `mul_add` exists to prevent. The wasm diff above cannot see it: both sides
+# are --release. Cost, measured 2026-08-10 on this box: **39 s**, against 43 s
+# for the release probe beside it — the crate is already compiled in debug by
+# every other gate in this file, so it is the RUN and not the build, and it is
+# the same order as the step it sits next to rather than a new tier of cost.
+debug_out="$(mktemp)"
+trap 'rm -f "$native_out" "$wasm_out" "$debug_out"' EXIT
+$NICE cargo run -p sim-core --example probe > "$debug_out" || fail "debug probe"
+diff -u "$debug_out" "$native_out" \
+  || fail "test_parity_wasm: debug and release digests differ — the optimizer \
+changed a float result, which is the contraction class wall 1 bans by name"
 grep -q '^parity ' "$native_out" || fail "probe output empty — parity not exercised"
 grep -q '^combat ' "$native_out" || fail "probe output has no combat line — melee not exercised"
 grep -q '^bags ' "$native_out" || fail "probe output has no bags line — respawn-on-bag not exercised"

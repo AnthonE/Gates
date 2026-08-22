@@ -27,13 +27,26 @@ on:
 jobs:
   gates:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45, not 30. The first green run after the toolchain pin took **27.4
+    # minutes** on a cold cache — 2.6 minutes under the old ceiling — and a
+    # `Cargo.lock` change busts the cache on exactly the commits that are
+    # least like the last one. A gate that trips on a slow runner reports a
+    # hang, not a defect, and `CLAUDE.md`'s own rule is that widening a
+    # timeout is not a fix; that rule is about *waiting on a clock inside a
+    # test*, which this is not — this is a ceiling for a whole compile.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: toolchain
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup target add wasm32-unknown-unknown
+          # `rust-toolchain.toml` pins the version, the profile, the two
+          # components and the wasm target, so rustup installs exactly that on
+          # first use and this step only has to exist to make it happen early
+          # (and to fail here rather than mid-gate). Installing `stable` by
+          # name is what this repo did until 2026-08-11, and it is what let CI
+          # and the developer's box drift three releases apart while the gates
+          # read green locally.
+          rustup show active-toolchain || rustup toolchain install
       - name: cache cargo
         uses: actions/cache@v4
         with:
@@ -41,6 +54,16 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: gates-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          key: gates-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+      # `ci/gates.sh`'s native-client gate builds `--features render`, and each
+      # of these fails identically without its package: a `pkg-config exited
+      # with status code 1` panic from a *-sys build script, with the crate
+      # named only in the backtrace. Absent here until 2026-08-11, which is the
+      # failure this gate would have hit next once the clippy break above it
+      # was fixed.
+      - name: the three -dev packages --features render needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev
       - name: the gates
         run: ./ci/gates.sh

@@ -3,12 +3,22 @@
 //! sim").
 //!
 //! `[globals] farm_per_min` declares an *effective* gather rate; the
-//! sim's at-node ceiling is ~27–41× hotter (1353/min at the kit hatchet,
-//! 2030 at the best tier-1 tool, against the declared 50), and until
-//! this test nothing in the repo had ever farmed on the real island to
-//! say where between the two a player lands. The named
+//! sim's at-node ceiling is ~110–118× hotter (5481/min at the kit
+//! hatchet, 5887 at the best tier-1 tool, against the declared 50), and
+//! until this test nothing in the repo had ever farmed on the real island
+//! to say where between the two a player lands.
+//!
+//! **Those two ceilings tripled on 2026-08-10** when the node totals
+//! became the reference game's (`reference/RIPLIST.md` §2 row 1) — they
+//! read 1353 and 2030 before it, against the same declared 50, which did
+//! not move. The measured *duty* below is unchanged at 71.6% to the
+//! decimal, which is the useful part: the walk's shape is what duty
+//! measures, and a pure payout rescale cannot move it. The named
 //! method is the one used here: a bot walk on a real shard. A greedy
-//! walker with the spawn kit's stone hatchet targets the nearest standing
+//! walker with a shipped stone hatchet — the spawn kit's, until the kit
+//! became a rock and a torch on 2026-08-15; the instrument still measures
+//! `item.hatchet_stone` so the printed rate stays comparable across every
+//! earlier run — targets the nearest standing
 //! tree, sprints to it, chops it out, and repeats until it has a wood
 //! goal in its pockets — the same `movement::step`, the same
 //! `gather::swing`, the same shipped content a player gets.
@@ -133,7 +143,7 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
         .unwrap_or((fx + 5.0, fz));
     core.world.dev_spawn = Some((sx, sz));
     assert!(core.connect(0, 0x100), "connect");
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     let p = core
         .world
         .players
@@ -141,21 +151,39 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
         .position(|p| p.active)
         .expect("seated");
 
-    // The walker owns a hatchet and nothing else: the kit's bulk grants
-    // would mask the count, and a full pocket silently drops yield
+    // The walker owns a stone hatchet and nothing else: anything else in a
+    // pocket would mask the count, and a full pocket silently drops yield
     // (`gather::inv_add`'s documented policy), which would corrupt the
     // measurement low.
-    let hatchet = c.item_index("item.hatchet_stone").expect("the kit's axe");
-    let sel = (0..HOTBAR_SLOTS)
-        .find(|&s| {
-            core.world.players[p].inv[s].item == hatchet && core.world.players[p].inv[s].count > 0
-        })
-        .expect("the spawn kit holds a stone hatchet on the hotbar");
-    for (i, slot) in core.world.players[p].inv.iter_mut().enumerate() {
-        if i != sel {
-            *slot = Default::default();
-        }
+    //
+    // **It is installed, not found.** This read the hatchet off the spawn
+    // kit's hotbar until 2026-08-15, when the kit became a rock and a torch
+    // (DECISIONS.md) and the `expect` below it stopped being satisfiable.
+    // Reading it off the kit was never what this test was measuring — the
+    // number is a property of the TOOL, and which tool a spawn happens to
+    // hold is a content decision that moves on its own schedule. The tool
+    // is still shipped content (`item.hatchet_stone`, and `per_hit` below
+    // comes off the baked table), so the walk is still priced by
+    // `content/` and not by a number typed into this file.
+    //
+    // Keeping the stone hatchet rather than switching to the kit's rock
+    // also keeps the printed rate comparable with every earlier run of
+    // this instrument: the module header's 5481/min is the hatchet's.
+    let hatchet = c.item_index("item.hatchet_stone").expect("the shipped axe");
+    let sel = 0usize;
+    assert!(sel < HOTBAR_SLOTS, "the swing reads a hotbar slot");
+    for slot in core.world.players[p].inv.iter_mut() {
+        *slot = Default::default();
     }
+    // Granted WHOLE, off the baked table rather than a literal: a stone
+    // hatchet at condition 0 is a dead tool since durability v0, and this
+    // instrument would measure a refusal loop instead of a farm.
+    let hatchet_cond = core.world.gather.cond_max[hatchet as usize];
+    core.world.players[p].inv[sel] = sim_core::gather::ItemStack {
+        item: hatchet,
+        count: 1,
+        cond: hatchet_cond,
+    };
 
     let wood = c.item_index("item.wood").expect("wood is an item");
     let def = &core.world.gather.nodes[0];
@@ -293,7 +321,7 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
     );
 
     // The measurement. `farm_per_min` declares wood at an effective rate
-    // 27× under this tool's at-node ceiling; this is where an UNTHREATENED
+    // 110× under this tool's at-node ceiling; this is where an UNTHREATENED
     // SOLO walk landed. Duty is effective/at-node, both printed. A
     // populated PvP shard subtracts a threat term this island cannot
     // charge — see the header.

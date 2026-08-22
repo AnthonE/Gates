@@ -11,7 +11,7 @@ use client_core::core::{
 use protocol::{ActionMsg, ItemCatalog};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
-use sim_core::craft::{CraftContent, REFUSE_STATION};
+use sim_core::craft::{CraftContent, REFUSE_BLUEPRINT};
 use sim_core::gather::GatherContent;
 
 const SEED: u64 = 20_260_731;
@@ -28,7 +28,7 @@ fn probe_catalog() -> ItemCatalog {
     cat.count = 8;
     for i in 0..8usize {
         let name = [b'P', b'0' + i as u8];
-        cat.set(i, &name).unwrap();
+        cat.set(i, &name, 0).unwrap();
     }
     cat
 }
@@ -39,7 +39,6 @@ fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientC
     let mut buf = [0u8; 1100];
     for (slot, c) in clients.iter_mut() {
         c.advance(1000.0 / 30.0);
-        c.predict.decay_error();
         let n = c.poll_input(&mut buf);
         if n > 0 {
             let dg = protocol::decode_input(&buf[..n]).expect("client encodes valid input");
@@ -48,7 +47,7 @@ fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientC
     }
     let mut snaps: Vec<(usize, Vec<u8>)> = Vec::new();
     let mut events: Vec<(usize, Vec<u8>)> = Vec::new();
-    core.tick(stats, |lane, slot, bytes| {
+    core.tick_bare(stats, |lane, slot, bytes| {
         match lane {
             Lane::Snapshot => snaps.push((slot, bytes.to_vec())),
             Lane::Event => events.push((slot, bytes.to_vec())),
@@ -91,7 +90,7 @@ fn act(core: &mut ShardCore, slot: usize, a: ActionMsg) {
 fn craft_rides_the_wire() {
     let fixture = CraftContent::probe_fixture();
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.craft = fixture;
     core.world.dev_spawn = Some(SPAWN);
@@ -121,7 +120,11 @@ fn craft_rides_the_wire() {
     // Grant the crafter its inputs server-side (gather_wire covers how
     // resources are earned; this gate is about the craft lane).
     let w0 = world_slot(&core, id_of(0));
-    core.world.players[w0].inv[0] = sim_core::gather::ItemStack { item: 0, count: 20 };
+    core.world.players[w0].inv[0] = sim_core::gather::ItemStack {
+        item: 0,
+        count: 20,
+        cond: 0,
+    };
 
     // Craft 2 of recipe 0 (3 × item0 per unit, 2 ticks each).
     act(
@@ -175,7 +178,15 @@ fn craft_rides_the_wire() {
         "3 of item 0 refunded"
     );
 
-    // A station-gated recipe refuses with its reason, on the wire.
+    // A gated recipe refuses with its reason, on the wire.
+    //
+    // Fixture row 2 is gated **twice** — a station and a blueprint — and
+    // since research v0 the blueprint is what a player hears, because a
+    // station refusal would send someone who needs a research table back
+    // to the bench they are standing at (`craft::enqueue` states the
+    // order; `sim-core/tests/research.rs` asserts it both ways). What this
+    // test owns is the wire: a reason computed in the sim reaches the
+    // right client as the same integer.
     act(
         &mut core,
         0,
@@ -187,7 +198,7 @@ fn craft_rides_the_wire() {
     let flags = pump(&mut core, &stats, &mut clients);
     assert_ne!(flags[0] & APPLIED_CRAFT_REFUSED, 0, "refusal never arrived");
     let c0 = &mut clients[0].1;
-    assert_eq!(c0.pop_craft_refusal(), Some(REFUSE_STATION as u8));
+    assert_eq!(c0.pop_craft_refusal(), Some(REFUSE_BLUEPRINT as u8));
     assert_eq!(c0.jobs_count, 0, "refused request must not queue");
 
     // The bystander heard the recipe drip but none of the crafter's

@@ -211,7 +211,13 @@ look the way they do.
    emitters. Ours is one looping bed whose gain reads the drawn prop density
    around the eye: it answers to the world, it cannot leak an emitter set, and
    it costs a query length. Emitters are a later slice that arrives with a
-   cull budget, not without one.
+   cull budget, not without one. **What did land (2026-08-11) is the other
+   half of §3 — the LAYER**, which is a different thing from a bed and not a
+   step toward emitters: `sound/birds.rs` is one clock, one voice, a call
+   every few seconds in cover and every couple of minutes on a beach,
+   positional at a drawn prop and culled by the mixer's own falloff. Crickets
+   are what §3's other named layer would be and they need a day/night cycle
+   the client does not have.
 4. **The 2–5 kHz rule is a design rule and we have not paid it.** §4 is a
    stated priority order — footsteps and combat own that band. We have no EQ
    and no ducking at all; the bed is simply quieter. Writing that down is
@@ -235,14 +241,41 @@ look the way they do.
    a wall between me and this" without either raycasting the render meshes or
    asking the sim, and the second is the one that would be correct. It is a
    slice with a prerequisite, not a tuning pass.
-8. **Music is the highest-value unbuilt thing here, and it is nearly free.**
-   §8 is a complete design: a gap timer in minutes, themes of sectioned
-   pieces, an intensity scalar bumped by events we already have as integer
-   codes (`EV_HIT`, `EV_HEALTH`, a weapon selected), and transitions that
-   happen only at section boundaries. Every input exists. What does not exist
-   is the music, and a generated bank (`sound/synth.rs`) can make tones but
-   cannot make a theme. **That is the honest blocker and it is a content
-   blocker, not an engineering one.**
+8. **Music was the highest-value unbuilt thing here, and it is built**
+   (2026-08-11). §8 is a complete design and `sound/music.rs` is that design
+   with nothing added: a gap timer at their own 240–480 s, a theme of three
+   sections holding three intensity clips each, a tier read **only at a
+   section boundary**, an intensity that falls at the end of any section in
+   which nothing happened, and pieces that are a body plus a reverb tail so a
+   cut from any piece to any other is covered rather than faded. The bumps
+   take their published *order* exactly — a weapon in play < a bullet past
+   your head < taking damage — mapped onto the two events we have (a swing, a
+   hit) and the one state change we track (a fall in `hp`).
+
+   **The blocker this section named is exactly the part still outstanding, and
+   it was called correctly**: it was a content blocker, not an engineering
+   one. `synth::score` generates nine placeholder pieces from a drone, a pad,
+   a plucked line and a Schroeder reverb — which makes the SYSTEM real and
+   audible while the music stays programmer art. Nothing in `render/audio.rs`
+   knows its `AudioSource` came from arithmetic, so recorded pieces are a
+   change to one function.
+
+   Two of their inputs we still cannot bump on: a weapon *equipped* (a state,
+   where ours is the swing) and a projectile near-miss. The second arrives
+   with `reference/PROJECTILES.md`'s work, not before it.
 9. **What the reference does that we should NOT copy yet**: reverb zones,
-   surround-speaker configuration, voice chat, and per-weapon foley
-   consistency — all of them are polish on systems we do not have.
+   surround-speaker configuration and per-weapon foley consistency — all of
+   them polish on systems we do not have.
+
+   **Voice chat was in that list and has been lifted out of it, because the
+   reason was wrong on both halves** (`reference/VOICE.md`, 2026-08-15). It
+   is not polish — it is a disclosure mechanic, and in this genre it is the
+   one that makes strangers into content. And it is not a system we lack:
+   the routing is a distance compare against the AOI set the server already
+   builds each tick, on the datagram lane we already run. It stays deferred
+   on **scope** — `ALPHA.md` §5 cuts it from alpha and `NOW.md` leads with a
+   playtest — and `VOICE.md` §9.5 has the build order for when it is not.
+   Note that it is barely this file's business anyway: only the last step
+   (decode → a positional voice in the mixer) is `crate::sound`'s, and
+   `VOICE.md` §9.1 — the server culls, the client never filters a broadcast
+   — is a wire decision that has to be right before any of it.

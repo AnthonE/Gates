@@ -193,6 +193,43 @@ fn hash_moves_with_values() {
         build(&srcs).unwrap().hash(),
         "the declared farm rate must move the content hash"
     );
+
+    // The night notice radius — now the newest field on this path, and the
+    // one with the sharpest reason to be here: it is the only content
+    // number the *hour* selects, so two sets differing only in it produce
+    // shards that hunt differently for a third of every cycle while
+    // agreeing about every other byte. Exactly the "plays differently,
+    // canonicalises the same" defect above, with a clock in front of it.
+    let mut srcs = sources();
+    let m = srcs.iter_mut().find(|(n, _)| *n == "mobs.toml").unwrap();
+    m.1 = m.1.replace("night_spook_m = 15", "night_spook_m = 16");
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "the night notice radius must move the content hash"
+    );
+
+    // The tree edge (tech tree v0): `requires` reaches the sim through
+    // `bake_research`, and two contents that disagree about a parent
+    // charge different path totals for the same node — the same "plays
+    // differently, canonicalises the same" defect, priced in coin.
+    let mut srcs = sources();
+    let r = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "research.toml")
+        .unwrap();
+    // Anchored on the revolver's whole block: two rows require gunpowder,
+    // and a bare `replace` moved both — which strips the satchel's
+    // craft-graph floor edge and fails validation for an unrelated reason.
+    r.1 = r.1.replace(
+        "item = \"item.revolver\"\ncost = 75\nrequires = \"item.gunpowder\"",
+        "item = \"item.revolver\"\ncost = 75\nrequires = \"item.medkit\"",
+    );
+    assert_ne!(
+        base,
+        build(&srcs).unwrap().hash(),
+        "the tree edge must move the content hash"
+    );
 }
 
 /// The raid tool reaches the sim, and the raid ratio is arithmetic a
@@ -370,7 +407,7 @@ fn dollar_ticker_refused() {
 fn orphan_refs_refused() {
     refuses(
         "recipes.toml",
-        "inputs = [{ item = \"item.stone\", count = 15 }]",
+        "inputs = [{ item = \"item.stone\", count = 10 }]",
         "inputs = [{ item = \"item.unobtanium\", count = 15 }]",
         "not an item",
     );
@@ -460,18 +497,20 @@ fn band_breaks_refused() {
     // Farm rate: a 3-per-hit tier-1 hatchet starves the tree band.
     refuses(
         "gatherables.toml",
-        "\"item.hatchet_metal\" = 30",
+        "\"item.hatchet_metal\" = 87",
         "\"item.hatchet_metal\" = 3",
         "band break: node yield",
     );
     // The declared effective rate may never beat standing at the node:
-    // wood's at-node ceiling is 2060/min (30 on the finding hit, then
-    // 9 weak-marked 45s, over ten 38-tick swings), and a declaration
-    // above it prices walking as a bonus.
+    // wood's at-node ceiling is 5887/min (870 over the 7 marked swings
+    // that exhaust a 10-hit node, at the 38-tick cadence), and a
+    // declaration above it prices walking as a bonus. The mutation has to
+    // clear the ceiling to be refused, so it moved with the yields —
+    // 3000 was over the old 2030 and sits comfortably under this one.
     refuses(
         "balance.toml",
         "\"item.wood\" = 50",
-        "\"item.wood\" = 3000",
+        "\"item.wood\" = 9000",
         "farm rate break",
     );
     // Armor: 60% reduction turns 4 hits into 10 — over the +2 cap.
@@ -505,16 +544,25 @@ fn band_breaks_refused() {
 fn the_declared_farm_rate_cannot_beat_standing_at_the_node() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
     let rates = &c.anchors().farm_rates;
-    // (item, declared, at-node): wood/stone/ores hold 10 × 30 = 300 at
-    // the metal tool, emptied in ceil(1000/150) = 7 marked swings →
-    // 300 × 1800 / (7 × 38) = 2030. Cloth is the bush's hand 10 over one
-    // hit with no mark → 10 × 1800 / 38 = 473. Declared sits ~24–68×
-    // under the ceiling (cloth 23.7×, wood/stone 40.6×, ores 67.7×) —
-    // the friction the world charges, recorded where it is visible.
+    // (item, declared, at-node). Every node empties in the same
+    // ceil(1000/150) = 7 marked swings, so the ceiling is just the node's
+    // total × 1800 / (7 × 38 = 266): wood 870 → 5887, stone 1000 → 6766,
+    // metal 600 → 4060, sulfur 300 → 2030. Cloth is the bush's hand 10
+    // over one unmarked hit → 10 × 1800 / 38 = 473.
+    //
+    // **The ceilings tripled on 2026-08-10 and the declared rates did
+    // not**, so the gap widened from ~24–68× to ~24–135× (cloth 23.7×,
+    // sulfur 67.7×, wood 117.7×, stone and metal 135.3×). That is not a
+    // regression being pinned quietly: `farm_per_min` is a number the
+    // reference has no equivalent for (`reference/RIPLIST.md` §3), its
+    // semantics are the open operator knob, and the node take deliberately
+    // left it alone rather than tune one unmeasured number against
+    // another. The widening is the visible cost of that choice and it
+    // belongs in a fixture where the next pass cannot miss it.
     for (item, declared, at_node) in [
-        ("item.wood", 50, 2030),
-        ("item.stone", 50, 2030),
-        ("item.metal_ore", 30, 2030),
+        ("item.wood", 50, 5887),
+        ("item.stone", 50, 6766),
+        ("item.metal_ore", 30, 4060),
         ("item.sulfur_ore", 30, 2030),
         ("item.cloth", 20, 473),
     ] {
@@ -544,7 +592,7 @@ fn the_declared_farm_rate_cannot_beat_standing_at_the_node() {
 fn upgrade_ladder_must_be_whole() {
     refuses(
         "building.toml",
-        "[[piece]]\nid = \"build.roof_wood\"\nshape = \"roof\"\nmaterial = \"wood\"\nhp = 250\ncost = [{ item = \"item.wood\", count = 350 }]\n",
+        "[[piece]]\nid = \"build.roof_wood\"\nshape = \"roof\"\nmaterial = \"wood\"\nhp = 250\ncost = [{ item = \"item.wood\", count = 100 }]\n",
         "",
         "upgrade ladder must be whole",
     );
@@ -573,13 +621,31 @@ fn bake_carries_the_shipped_numbers() {
     assert_eq!(gc.item_count as usize, c.items.len());
     assert_eq!(gc.stack_max[wood as usize], 1000, "items.toml wood stack");
 
-    // gatherables.toml gather.tree: output wood, 10 hits, hand 5,
-    // stone hatchet 20, weak-spot +50% — read back from the baked table.
+    // gatherables.toml gather.tree: output wood, 10 hits, **no hand row**,
+    // rock 50, stone hatchet 81, weak-spot +50% — read back from the baked
+    // table. The tool yields are the reference's large-tree totals over our
+    // own 10 hits (810 ÷ 10 at the stone hatchet); they moved 2026-08-10
+    // with the rest of the node take.
+    //
+    // **The hand yield was 25 and is now 0** (DECISIONS.md 2026-08-15:
+    // bare hands gather nothing). It is pinned by VALUE rather than left
+    // unasserted because the zero is the whole decision and because it is
+    // expressed by an ABSENT row: `bake.rs` initialises `hand_yield: 0`,
+    // so a `hand` line silently re-added to gatherables.toml reddens here
+    // and nowhere else. `yield_for` falls back to the hand yield for any
+    // item not in the tool table, so this also pins what a torch or a
+    // hammer draws off a tree, which `gather::swing` now refuses on.
     let tree = &gc.nodes[0];
+    let rock = c.item_index("item.rock").unwrap();
     assert_eq!(tree.output, wood);
     assert_eq!(tree.hits, 10);
-    assert_eq!(tree.yield_for(sim_core::gather::NO_ITEM), 5);
-    assert_eq!(tree.yield_for(hatchet), 20);
+    assert_eq!(
+        tree.yield_for(sim_core::gather::NO_ITEM),
+        0,
+        "bare hands pay something on a tree — the `hand` row is back"
+    );
+    assert_eq!(tree.yield_for(rock), 50, "the bootstrap tool pays nothing");
+    assert_eq!(tree.yield_for(hatchet), 81);
     assert_eq!(tree.weak_pct, 50, "gatherables.toml weak_spot_bonus_pct");
     assert_eq!(gc.nodes[4].weak_pct, 0, "the bush carries no mark");
 
@@ -630,8 +696,8 @@ fn bake_craft_carries_the_shipped_numbers() {
     assert_eq!(def.n_inputs, 2);
     let wood = c.item_index("item.wood").unwrap();
     let stone = c.item_index("item.stone").unwrap();
-    assert!(def.inputs[..2].contains(&(wood, 100)));
-    assert!(def.inputs[..2].contains(&(stone, 50)));
+    assert!(def.inputs[..2].contains(&(wood, 200)));
+    assert!(def.inputs[..2].contains(&(stone, 100)));
 
     // Station codes map in schema order.
     let furnace = c.recipe_index("recipe.furnace").unwrap() as usize;
@@ -667,8 +733,8 @@ fn bake_craft_refuses_out_of_cap_rows() {
     let mut srcs = sources();
     let entry = srcs.iter_mut().find(|(n, _)| *n == "recipes.toml").unwrap();
     entry.1 = entry.1.replace(
-        "inputs = [{ item = \"item.stone\", count = 15 }]",
-        "inputs = [\n    { item = \"item.stone\", count = 15 },\n    { item = \"item.wood\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n    { item = \"item.fat\", count = 1 },\n    { item = \"item.charcoal\", count = 1 },\n]",
+        "inputs = [{ item = \"item.stone\", count = 10 }]",
+        "inputs = [\n    { item = \"item.stone\", count = 10 },\n    { item = \"item.wood\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n    { item = \"item.fat\", count = 1 },\n    { item = \"item.charcoal\", count = 1 },\n]",
     );
     let c = build(&srcs).expect("five inputs is a bake error, not a schema error");
     let err = c.bake_craft().expect_err("five-input recipe baked");
@@ -684,7 +750,7 @@ fn bake_building_carries_the_shipped_numbers() {
     assert_eq!(bc.piece_count as usize, c.pieces.len());
 
     // building.toml build.wall_stone: shape wall, stone, hp 500,
-    // 350 stone — read back from the baked row.
+    // 300 stone — read back from the baked row.
     let idx = c.piece_index("build.wall_stone").unwrap() as usize;
     let def = &bc.pieces[idx];
     assert_eq!(def.shape, sim_core::build::SHAPE_WALL);
@@ -692,7 +758,7 @@ fn bake_building_carries_the_shipped_numbers() {
     assert_eq!(def.hp, 500);
     assert_eq!(def.n_costs, 1);
     let stone = c.item_index("item.stone").unwrap();
-    assert_eq!(def.costs[0], (stone, 350));
+    assert_eq!(def.costs[0], (stone, 300));
 
     // Index mapping is a bijection into 0..len.
     let mut seen = vec![false; c.pieces.len()];
@@ -725,8 +791,8 @@ fn bake_building_refuses_out_of_cap_rows() {
         .find(|(n, _)| *n == "building.toml")
         .unwrap();
     entry.1 = entry.1.replacen(
-        "cost = [{ item = \"item.wood\", count = 350 }]",
-        "cost = [\n    { item = \"item.wood\", count = 350 },\n    { item = \"item.stone\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n]",
+        "cost = [{ item = \"item.wood\", count = 50 }]",
+        "cost = [\n    { item = \"item.wood\", count = 50 },\n    { item = \"item.stone\", count = 1 },\n    { item = \"item.cloth\", count = 1 },\n]",
         1,
     );
     let c = build(&srcs).expect("three costs is a bake error, not a schema error");
@@ -742,8 +808,8 @@ fn bake_building_refuses_out_of_cap_rows() {
         .find(|(n, _)| *n == "building.toml")
         .unwrap();
     entry.1 = entry.1.replacen(
-        "cost = [{ item = \"item.wood\", count = 350 }]",
-        "cost = [\n    { item = \"item.wood\", count = 350 },\n    { item = \"item.wood\", count = 1 },\n]",
+        "cost = [{ item = \"item.wood\", count = 50 }]",
+        "cost = [\n    { item = \"item.wood\", count = 50 },\n    { item = \"item.wood\", count = 1 },\n]",
         1,
     );
     let c = build(&srcs).expect("a duplicate cost item is a bake error, not a schema error");
@@ -761,12 +827,12 @@ fn bake_deployables_carries_the_shipped_numbers() {
     assert_eq!(dc.def_count as usize, c.deployables.len());
 
     // deployables.toml item.hearth: hearth archetype, foundation
-    // placement, hp 500 — read back from the baked row.
+    // placement, hp 1000 — read back from the baked row.
     let idx = c.deploy_index("item.hearth").unwrap() as usize;
     let def = &dc.defs[idx];
     assert_eq!(def.arch, sim_core::deploy::ARCH_HEARTH);
     assert_eq!(def.placement, sim_core::deploy::PLACE_FOUNDATION);
-    assert_eq!(def.hp, 500);
+    assert_eq!(def.hp, 1000);
     assert_eq!(def.item, c.item_index("item.hearth").unwrap());
 
     // The doors keep their doorway placement and material pairing.
@@ -961,16 +1027,85 @@ fn bake_backpack_walks_the_rarity_ladder_the_data_declares() {
     inv[0] = sim_core::gather::ItemStack {
         item: c.item_index(&commonest.id).unwrap(),
         count: 1,
+        cond: 0,
     };
     assert_eq!(bc.lifetime_ticks(&inv), bc.base_ticks);
     inv[1] = sim_core::gather::ItemStack {
         item: c.item_index(&rarest.id).unwrap(),
         count: 1,
+        cond: 0,
     };
     assert_eq!(
         bc.lifetime_ticks(&inv),
         bc.base_ticks * mults[rarest.rarity.canon() as usize],
         "one rare thing raises the whole bag"
+    );
+}
+
+/// The seven durability rules (item durability v0), each proven against
+/// the shipped set with one edit. V7 and V4 are the two the slice's gates
+/// name — the stack law everything else leans on, and the set check this
+/// repo keeps getting bitten by — and the other five are the dead-row and
+/// width refusals between them.
+#[test]
+fn the_durability_rules_refuse_what_they_name() {
+    // V7: a condition-carrying item must stack to 1. The rock keeps its
+    // 10 000 hundredths and grows a stack of 3 — refused, because
+    // condition is per-stack state and `plan_move`/`inv_add` keep their
+    // arithmetic only while no merge can ever meet two conditions.
+    refuses(
+        "items.toml",
+        "name = \"Rock\"\nstack = 1",
+        "name = \"Rock\"\nstack = 3",
+        "(V7)",
+    );
+    // V4, the set check: a condition-carrying tool that pays on a node
+    // must have a loss row there. Dropping the stone hatchet's tree row
+    // leaves a tool that farms the forest free forever.
+    refuses(
+        "gatherables.toml",
+        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.hatchet_stone\" = 30\n\"item.hatchet_metal\" = 30",
+        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.hatchet_metal\" = 30",
+        "(V4)",
+    );
+    // V1: the ceiling must fit the sim's u16 hundredths.
+    refuses(
+        "items.toml",
+        "condition_max = 40000\n\n[[item]]\nid = \"item.pickaxe_metal\"",
+        "condition_max = 90000\n\n[[item]]\nid = \"item.pickaxe_metal\"",
+        "(V1)",
+    );
+    // V2: bare hands do not wear — a `hand` loss row is refused. The
+    // bush is the one node with a hand row, so it is where the bait goes.
+    refuses(
+        "gatherables.toml",
+        "[gatherable.yield_per_hit]\nhand = 10",
+        "[gatherable.yield_per_hit]\nhand = 10\n\n[gatherable.condition_loss]\nhand = 30",
+        "(V2)",
+    );
+    // V3: a loss row must name a tool with a yield row on the same node —
+    // wear lands only on a paying hit, so a row for a non-paying tool is
+    // unreachable coverage. The torch carries condition and pays nowhere.
+    refuses(
+        "gatherables.toml",
+        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.hatchet_stone\" = 30\n\"item.hatchet_metal\" = 30",
+        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.hatchet_stone\" = 30\n\"item.hatchet_metal\" = 30\n\"item.torch\" = 30",
+        "(V3)",
+    );
+    // V5: a zero loss is an inert row, not a statement.
+    refuses(
+        "gatherables.toml",
+        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.pickaxe_stone\" = 30\n\"item.pickaxe_metal\" = 30\n\n# Bush",
+        "[gatherable.condition_loss]\n\"item.rock\" = 30\n\"item.pickaxe_stone\" = 0\n\"item.pickaxe_metal\" = 30\n\n# Bush",
+        "(V5)",
+    );
+    // V6: a loss row's tool must declare a condition to lose. Strip the
+    // stone hatchet's ceiling while its tree loss row still names it.
+    refuses(
+        "items.toml",
+        "# 100 pts / 0.3 per hit (wiki-confirmed) = 333 hits, ~33 trees.\ncondition_max = 10000",
+        "# 100 pts / 0.3 per hit (wiki-confirmed) = 333 hits, ~33 trees.\ncondition_max = 0",
+        "(V6)",
     );
 }
 
@@ -1235,10 +1370,12 @@ fn a_clock_with_no_answer_is_refused() {
         "[gatherable.secondary]\noutput = \"item.cloth_UNUSED\"",
         "is not an item",
     );
-    // The honest version of the same defect — the rows simply absent. Both
-    // of them, since 2026-08-09: the tree's mushrooms answer hunger on
-    // their own, so deleting only the bush's berries no longer starves the
-    // island — which is the redundancy working, not the check weakening.
+    // The honest version of the same defect — the rows simply absent. All
+    // three of them since world containers v0 widened the clock's
+    // reachable set (2026-08-17): the tree's mushrooms answer hunger on
+    // their own, and so does the barrel's corn now that a verb opens every
+    // shipped container — which is the redundancy working, not the check
+    // weakening.
     let mut srcs = sources();
     let g = srcs
         .iter_mut()
@@ -1254,6 +1391,18 @@ fn a_clock_with_no_answer_is_refused() {
         );
         g.1 = g.1.replace(row, "\n");
     }
+    // Positive control for the widening itself: with both secondaries gone
+    // the barrel's corn is the island's only food, and it counts — before
+    // 2026-08-17 this exact set was refused as unanswerable, which had
+    // become a false refusal the day the open verb landed.
+    build(&srcs).expect("the barrel's corn answers hunger since world containers v0");
+    let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+    let corn_row = "    { item = \"item.corn\", weight = 8, count_min = 2, count_max = 4 },\n";
+    assert!(
+        l.1.contains(corn_row),
+        "test fixture rot: the barrel's corn row moved"
+    );
+    l.1 = l.1.replace(corn_row, "");
     let err = build(&srcs).expect_err("a foodless island must be refused");
     assert!(
         err.contains("the clock has no answer"),
@@ -1281,6 +1430,13 @@ fn a_clock_with_no_answer_is_refused() {
             *text = text.replace(
                 "id = \"item.mushrooms\"\nhealth = 3\nfood = 15\nwater = 5",
                 "id = \"item.mushrooms\"\nhealth = 3\nfood = 15\nwater = 0",
+            );
+            // The barrel's corn counts toward the clock since world
+            // containers v0 widened the reachable set, so the dry island
+            // has to dry it out too.
+            *text = text.replace(
+                "id = \"item.corn\"\nhealth = 0\nfood = 40\nwater = 20",
+                "id = \"item.corn\"\nhealth = 0\nfood = 40\nwater = 0",
             );
         }
     }
@@ -1471,22 +1627,30 @@ fn a_container_that_cannot_be_opened_is_refused() {
 
 /// The decay ladder must not invert.
 ///
-/// The three numbers look like taste and one relationship in them is
+/// The four numbers look like taste and one relationship in them is
 /// not: if metal rots faster than wood, an upgrade spends materials to
 /// *shorten* a base's life, and nothing downstream would ever say so —
-/// the sweep would just quietly eat the expensive walls first.
+/// the sweep would just quietly eat the expensive walls first. Twig
+/// leads the ladder and is the same rule at the bottom: a scaffold that
+/// outlasted a wooden wall would be a base, not a draft.
 #[test]
 fn an_inverted_decay_ladder_is_refused() {
     refuses(
         "balance.toml",
-        "decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }",
-        "decay_pct_per_period = { wood = 13, stone = 20, metal = 34 }",
+        "decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { twig = 100, wood = 13, stone = 20, metal = 34 }",
         "not monotone",
     );
     refuses(
         "balance.toml",
-        "decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }",
-        "decay_pct_per_period = { wood = 34, stone = 20, metal = 0 }",
+        "decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { twig = 20, wood = 34, stone = 20, metal = 13 }",
+        "not monotone",
+    );
+    refuses(
+        "balance.toml",
+        "decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }",
+        "decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 0 }",
         "never rots",
     );
 }
@@ -1602,6 +1766,7 @@ fn the_code_lock_bakes_to_the_archetype_the_sim_branches_on() {
 /// than against a remembered constant.
 #[test]
 fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
+    use sim_core::gather::NO_ITEM;
     use sim_core::limits::{ARROW_STEP_MM, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, TICK_HZ};
 
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
@@ -1612,84 +1777,274 @@ fn bows_bake_to_per_tick_integers_the_sim_can_integrate() {
         let idx = c.item_index(&w.id).expect("weapon arms an item") as usize;
         let baked = cc.ranged[idx];
         if w.kind != content::schema::WeaponKind::Bow {
+            // A firearm shares this table and is the one row in it that is
+            // NOT a projectile: `hitscan` is what separates them, and it is
+            // asserted both ways here so a bake that set the flag on
+            // everything would fail rather than read as covered.
+            if w.kind == content::schema::WeaponKind::Firearm {
+                assert!(
+                    baked.hitscan,
+                    "`{}` is a firearm and must bake as hitscan",
+                    w.id
+                );
+                continue;
+            }
             assert_eq!(
                 baked.damage, 0,
-                "`{}` is not a bow and must not be armed in the ranged table",
+                "`{}` is neither a bow nor a firearm and must not be armed in the ranged table",
                 w.id
             );
             continue;
         }
         bows += 1;
-        let b = w
-            .ballistic
-            .as_ref()
-            .expect("validate refuses a bow without one");
-
+        assert!(
+            !baked.hitscan,
+            "`{}` is a bow — its arrow flies, so it must not bake as hitscan",
+            w.id
+        );
         assert_eq!(baked.damage as u32, w.damage, "`{}` damage", w.id);
-        assert_eq!(
-            baked.speed_mmpt as u32,
-            b.speed_mps * 1000 / TICK_HZ,
-            "`{}` muzzle speed in mm/tick",
-            w.id
-        );
-        assert_eq!(
-            baked.drop_mmpt2 as u32,
-            b.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ),
-            "`{}` drop in mm/tick^2",
-            w.id
-        );
         assert_eq!(
             baked.rate_ticks as u32,
             TICK_HZ * 60 / w.rate_per_min,
             "`{}` ticks between shots",
             w.id
         );
-        let ammo = w.ammo.as_ref().expect("validate refuses a bow without one");
         assert_eq!(
-            baked.ammo,
-            c.item_index(ammo).expect("ammo is an item"),
-            "`{}` spends the ammo it names",
+            baked.range_mm,
+            w.range_m * 1000,
+            "`{}` reach in millimetres",
             w.id
         );
 
-        // The flight must actually cover the reach the data claims, and
-        // then stop: a life derived too short makes `range_m` a lie, and
-        // one derived too long makes `MAX_ARROWS` a leak.
-        assert!(
-            baked.life_ticks > 0 && baked.life_ticks <= MAX_ARROW_LIFE_TICKS,
-            "`{}` lives {} ticks",
-            w.id,
-            baked.life_ticks
+        // The round list bakes in **declared order** — order is the whole
+        // ammo policy until a switch verb exists (`PROJECTILES.md` §9.3),
+        // so a bake that sorted or deduped it would silently change which
+        // arrow a bow reaches for first.
+        let rounds = w.ammo.as_ref().expect("validate refuses a bow without one");
+        for (slot, id) in rounds.iter().enumerate() {
+            assert_eq!(
+                baked.ammo[slot],
+                c.item_index(id).expect("round is an item"),
+                "`{}` round {slot} is the one it names",
+                w.id
+            );
+        }
+        for slot in rounds.len()..baked.ammo.len() {
+            assert_eq!(
+                baked.ammo[slot], NO_ITEM,
+                "`{}` pads unused round slots rather than repeating one",
+                w.id
+            );
+        }
+
+        // Every round the bow lists must fly, and must cover the reach the
+        // weapon claims. Flight time is no longer baked — it is
+        // `range_mm / speed` at the moment of the shot, because with the
+        // speed on the round one bow's fast arrow and its slow arrow cross
+        // the same range in different numbers of ticks. This asserts the
+        // sim's arithmetic against the data for each round in turn.
+        for id in rounds {
+            let a = c
+                .ammo
+                .iter()
+                .find(|a| &a.id == id)
+                .expect("validate refuses a round with no [[ammo]] row");
+            let ball = cc
+                .ammo_def(c.item_index(id).expect("round is an item"))
+                .expect("a listed round is armed");
+            assert_eq!(
+                ball.speed_mmpt as u32,
+                a.speed_mps * 1000 / TICK_HZ,
+                "`{id}` muzzle speed in mm/tick"
+            );
+            assert_eq!(
+                ball.drop_mmpt2 as u32,
+                a.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ),
+                "`{id}` drop in mm/tick^2"
+            );
+
+            // The flight must actually cover the reach the data claims and
+            // then stop: derived too short makes `range_m` a lie, too long
+            // makes `MAX_ARROWS` a leak. Same expression `ranged::draw`
+            // evaluates, asserted against `weapons.toml` rather than a
+            // remembered constant.
+            let life =
+                (baked.range_mm / ball.speed_mmpt as u32).clamp(1, MAX_ARROW_LIFE_TICKS as u32);
+            assert!(
+                life > 0 && life <= MAX_ARROW_LIFE_TICKS as u32,
+                "`{}` firing `{id}` lives {life} ticks",
+                w.id
+            );
+            let reach_mm = life * ball.speed_mmpt as u32;
+            assert!(
+                reach_mm >= w.range_m * 1000 - ball.speed_mmpt as u32,
+                "`{}` firing `{id}` expires {} mm short of its declared {} m",
+                w.id,
+                w.range_m * 1000 - reach_mm,
+                w.range_m
+            );
+
+            // And the sampler wall, checked on the shipped rows rather than
+            // only on the refusal path below — a round that sits exactly on
+            // the ceiling would be traced honestly by one sample per step
+            // and nothing would say so.
+            assert!(
+                ball.speed_mmpt as usize <= ARROW_STEP_MM as usize * MAX_ARROW_SUBSTEPS,
+                "`{id}` outruns the collision sampler at {} mm/tick",
+                ball.speed_mmpt
+            );
+        }
+    }
+    assert_eq!(bows, 2, "the alpha data ships a bow and a crossbow");
+}
+
+/// The revolver reaches the sim, armed, and kills inside the band
+/// `balance.toml` declares for a firearm.
+///
+/// **This is the gate on a charged dead end rather than on a number.**
+/// Until 2026-08-19 `bake_combat` dropped every row that was not melee,
+/// throwable or bow, and the revolver was not inert data while it sat
+/// there: it is a barrel drop at weight 1 (`the_shipped_loot_tables_bake`),
+/// it has a recipe, it is on the research ladder behind gunpowder, and its
+/// round both drops and crafts. So a player could spend scrap on the
+/// research, materials on the gun and more on ammo, and pull the trigger on
+/// nothing. What this asserts is the whole chain out of that: the row bakes,
+/// it bakes as hitscan, its round is the one it names, its reach is
+/// traceable at the sampler's spacing, and the hits it takes to kill is the
+/// number the band already gates.
+#[test]
+fn the_firearm_reaches_the_sim_and_kills_in_the_band_it_declares() {
+    use sim_core::gather::NO_ITEM;
+    use sim_core::limits::{ARROW_STEP_MM, MAX_HITSCAN_SAMPLES, TICK_HZ};
+
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped weapons must bake");
+    let [lo, hi] = c.balance.bands.ttk_firearm;
+
+    let mut guns = 0;
+    for w in &c.weapons {
+        if w.kind != content::schema::WeaponKind::Firearm {
+            continue;
+        }
+        guns += 1;
+        let idx = c.item_index(&w.id).expect("weapon arms an item") as usize;
+        let baked = cc.ranged[idx];
+        assert!(baked.hitscan, "`{}` must bake as hitscan", w.id);
+        assert_eq!(baked.damage as u32, w.damage, "`{}` damage", w.id);
+        assert_eq!(
+            baked.rate_ticks as u32,
+            TICK_HZ * 60 / w.rate_per_min,
+            "`{}` ticks between shots",
+            w.id
         );
-        let reach_mm = baked.life_ticks as u32 * baked.speed_mmpt as u32;
+        assert_eq!(
+            baked.range_mm,
+            w.range_m * 1000,
+            "`{}` reach in millimetres",
+            w.id
+        );
+
+        // The rounds, in declared order and `NO_ITEM`-padded — the bow's
+        // rule, because it is the same field and the same policy.
+        let rounds = w
+            .ammo
+            .as_ref()
+            .expect("validate refuses a firearm without one");
+        for (slot, id) in rounds.iter().enumerate() {
+            assert_eq!(
+                baked.ammo[slot],
+                c.item_index(id).expect("round is an item"),
+                "`{}` round {slot} is the one it names",
+                w.id
+            );
+            // And it is a round with no ballistics, which is what makes it
+            // hitscan rather than a projectile nobody baked a speed for.
+            assert!(
+                cc.ammo_def(c.item_index(id).expect("round is an item"))
+                    .is_none(),
+                "`{}` round `{id}` carries ballistics — it would be a projectile",
+                w.id
+            );
+        }
+        for slot in rounds.len()..baked.ammo.len() {
+            assert_eq!(
+                baked.ammo[slot], NO_ITEM,
+                "`{}` pads unused round slots rather than repeating one",
+                w.id
+            );
+        }
+
+        // The hitscan sampler wall, on the shipped row rather than only on
+        // the refusal path: a reach sitting exactly on the ceiling would be
+        // traced by one sample per step and nothing would say so.
+        let taps = baked.range_mm as usize / ARROW_STEP_MM as usize + 1;
         assert!(
-            reach_mm >= w.range_m * 1000 - baked.speed_mmpt as u32,
-            "`{}` expires {} mm short of its declared {} m",
+            taps <= MAX_HITSCAN_SAMPLES,
+            "`{}` needs {taps} collision samples for its {} m, past the {MAX_HITSCAN_SAMPLES} \
+             one shot may take",
             w.id,
-            w.range_m * 1000 - reach_mm,
             w.range_m
         );
 
-        // And the sampler wall, checked on the shipped rows rather than
-        // only on the refusal path below — a weapon that sits exactly on
-        // the ceiling would be traced honestly by one sample per step and
-        // nothing would say so.
+        // Hits to kill, computed the way the sim computes it — the melee
+        // test's arithmetic against the firearm band.
+        let mut hp = cc.player_hp;
+        let mut hits = 0u32;
+        while hp > 0 {
+            hp -= baked.damage.min(hp);
+            hits += 1;
+        }
         assert!(
-            baked.speed_mmpt as usize <= ARROW_STEP_MM as usize * MAX_ARROW_SUBSTEPS,
-            "`{}` outruns the collision sampler at {} mm/tick",
-            w.id,
-            baked.speed_mmpt
+            (lo..=hi).contains(&hits),
+            "`{}` kills in {hits} shots, outside the declared firearm TTK band {lo}..={hi}",
+            w.id
         );
     }
-    assert_eq!(bows, 2, "the alpha data ships a bow and a crossbow");
+    assert_eq!(guns, 1, "the alpha data ships exactly one firearm");
+}
+
+/// A firearm reaching further than one shot can be sampled is refused at
+/// boot, not clamped at tick time — the round's sampler wall, one clock
+/// over. A clamped reach is a gun that shoots through cover past some
+/// distance the data never admits to.
+#[test]
+fn a_firearm_that_outreaches_the_collision_sampler_is_refused() {
+    refuses_bake(
+        "weapons.toml",
+        "range_m = 50",
+        "range_m = 500",
+        "shoot through cover",
+    );
+}
+
+/// A firearm whose round carries `[[ammo]]` ballistics is refused at boot.
+///
+/// The bow's refusal inverted, and the reason is the same one: the pairing
+/// is what tells a projectile from a hitscan, so a round that is both would
+/// leave the question to whichever reader asked it.
+#[test]
+fn a_firearm_whose_round_has_ballistics_is_refused() {
+    refuses(
+        "weapons.toml",
+        "ammo = [\"item.pistol_ammo\"]",
+        "ammo = [\"item.arrow_wood\"]",
+        "it is a projectile",
+    );
 }
 
 /// A muzzle speed the collision sampler cannot trace is refused at boot,
 /// not clamped at tick time. A clamped projectile is a weapon whose reach
 /// is a lie the data never admits to, and it would first be noticed as an
 /// arrow passing through a wall.
+///
+/// **The refusal belongs to the round, not to the bow, and that is the
+/// point of where it now lives** (`reference/PROJECTILES.md` §9.3). While
+/// the speed sat on the weapon, an untraceably fast arrow was only refused
+/// if some weapon declared that speed; with the speed on the ammo, the
+/// arrow is refused whichever bow picks it up — including a bow added later
+/// that lists it as a second round.
 #[test]
-fn a_bow_that_outruns_the_collision_sampler_is_refused() {
+fn a_round_that_outruns_the_collision_sampler_is_refused() {
     refuses_bake(
         "weapons.toml",
         "speed_mps = 40",
@@ -1698,54 +2053,241 @@ fn a_bow_that_outruns_the_collision_sampler_is_refused() {
     );
 }
 
+/// A bow naming a round with no `[[ammo]]` row is refused at boot.
+///
+/// This is the check the schema move exists for. A bow used to carry its own
+/// ballistics and could not be missing them; now it names rounds that have
+/// to supply them, and the failure mode without this refusal is quiet — the
+/// round bakes to a zero-speed `AmmoDef`, `ammo_def` filters it out, and the
+/// bow silently refuses to fire with a full quiver.
+#[test]
+fn a_bow_whose_round_has_no_ballistics_is_refused() {
+    refuses(
+        "weapons.toml",
+        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.cloth\"]",
+        "no [[ammo]] row",
+    );
+}
+
+/// A weapon may not list the same round twice.
+///
+/// Order is the whole of the ammo policy until a switch verb exists, so a
+/// duplicate is not harmless padding — it is an entry that can never be
+/// reached, in the one field whose meaning is its ordering.
+#[test]
+fn a_weapon_that_lists_a_round_twice_is_refused() {
+    refuses(
+        "weapons.toml",
+        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_wood\"]",
+        "listed twice",
+    );
+}
+
+/// A round with no muzzle speed is refused rather than defaulted.
+///
+/// Zero is a division at the shot (`range_mm / speed`), and it is also the
+/// inert value the whole table starts at, so a shipped zero would be
+/// indistinguishable from an unarmed slot.
+#[test]
+fn a_round_that_cannot_fly_is_refused() {
+    refuses(
+        "weapons.toml",
+        "speed_mps = 40",
+        "speed_mps = 0",
+        "muzzle speed",
+    );
+}
+
+/// Ballistics live on the round, and the whole point is that a second round
+/// on one bow flies by its own numbers.
+///
+/// The shipped data lists one round per bow, so nothing in `weapons.toml`
+/// exercises the list — this builds a two-round bow and proves the bake
+/// keeps both, in order, with each round's own speed. Without this, §9.3's
+/// capacity is asserted by a comment and nothing else.
+#[test]
+fn one_bow_carries_several_rounds_each_with_its_own_ballistics() {
+    let mut src = sources();
+    let w = src
+        .iter_mut()
+        .find(|(n, _)| *n == "weapons.toml")
+        .expect("weapons.toml is a source");
+    w.1 = w.1.replace(
+        "ammo = [\"item.arrow_wood\"]",
+        "ammo = [\"item.arrow_wood\", \"item.arrow_metal\"]",
+    );
+    let c = build(&src).expect("a bow with two rounds is legal content");
+    let cc = c.bake_combat().expect("and it bakes");
+
+    let bow = c.item_index("item.bow").expect("the bow is an item");
+    let wood = c.item_index("item.arrow_wood").expect("wood is an item");
+    let metal = c.item_index("item.arrow_metal").expect("metal is an item");
+    let baked = cc.ranged[bow as usize];
+
+    assert_eq!(
+        [baked.ammo[0], baked.ammo[1]],
+        [wood, metal],
+        "the bow keeps both rounds in declared order"
+    );
+    let a = cc.ammo_def(wood).expect("wood is armed");
+    let b = cc.ammo_def(metal).expect("metal is armed");
+    assert_ne!(
+        a.speed_mmpt, b.speed_mmpt,
+        "the two rounds must differ, or this proves nothing about per-round ballistics"
+    );
+    // And the flight the sim would derive differs with them — the reason
+    // `life_ticks` could not stay a baked constant on the weapon.
+    assert_ne!(
+        baked.range_mm / a.speed_mmpt as u32,
+        baked.range_mm / b.speed_mmpt as u32,
+        "one bow's two rounds must not share a flight time"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The spawn kit
 //
-// It is testing scaffolding that ships in content, which makes it exactly the
-// kind of thing that rots quietly: it is not on any player's critical path,
-// so a kit that silently granted nothing, or granted an item the tables do
-// not have, would be found by somebody wondering why their hands were empty.
+// **It is on every player's critical path now**, which is a change of kind and
+// not of degree. Until 2026-08-15 it was testing scaffolding — nine entries
+// whose own comment called them that — and this block existed so a kit that
+// silently granted nothing would be found by a gate rather than by somebody
+// wondering why their hands were empty. It is now the reference's naked spawn
+// (a rock and a torch, DECISIONS.md 2026-08-15), it is granted again on every
+// respawn (`World::wake`), and with bare hands paying nothing on any swung
+// node it is the ONLY thing standing between a fresh body and a world it
+// cannot touch. So the assertions below pin the decision, not the plumbing.
 
-/// The alpha kit is real, reaches the sim, and lands where it says it does.
+/// The kit is exactly the rock and the torch, on the belt, and the rock is a
+/// live tool on every node the game is farmed from.
+///
+/// Three claims, each of which was true of the old kit for a different reason
+/// and would be a different bug if it broke:
+///
+/// - **Exactly two entries, in order.** The spoken kit is "a rock and a
+///   torch"; a third entry is content nobody spoke.
+/// - **Both on the belt.** `grant_kit` writes slots in order, so this is
+///   free today — but it is the property that makes the kit usable without a
+///   trip to the inventory, and it was load-bearing when the kit was nine
+///   deep and could push a tool past `HOTBAR_SLOTS`.
+/// - **Every entry is a single hand item, never a stack of material.** This
+///   is what makes the kit safe to re-grant on death: the old kit could not
+///   be, because 900 wood on every respawn is an item printer, and that
+///   arithmetic is the whole of `world.rs::wake`'s argument. A material row
+///   added back here re-opens it silently — nothing in `sim-core` can see
+///   the difference between a tool and a stack of wood.
 #[test]
 fn the_spawn_kit_bakes_and_seats() {
     let c = build(&sources()).expect("content builds");
     let kit = c.bake_spawn_kit().expect("the kit bakes");
-    assert!(kit.count > 0, "the alpha kit grants nothing");
 
-    // The order is load-bearing: `grant_kit` writes slots in order, so the
-    // first HOTBAR_SLOTS entries are the belt. A kit whose plan and hammer
-    // were not on the belt would need a trip to the inventory before the
-    // player could build at all, which defeats the reason it exists.
-    let plan = c
-        .item_index("item.building_plan")
-        .expect("the plan is an item");
-    let hammer = c.item_index("item.hammer").expect("the hammer is an item");
-    let belt: Vec<u16> = kit.stacks[..(kit.count as usize).min(sim_core::limits::HOTBAR_SLOTS)]
+    let rock = c.item_index("item.rock").expect("the rock is an item");
+    let torch = c.item_index("item.torch").expect("the torch is an item");
+    let granted: Vec<(u16, u16)> = kit.stacks[..kit.count as usize]
         .iter()
-        .map(|s| s.item)
+        .map(|s| (s.item, s.count))
         .collect();
-    assert!(belt.contains(&plan), "the building plan is not on the belt");
-    assert!(belt.contains(&hammer), "the hammer is not on the belt");
+    assert_eq!(
+        granted,
+        vec![(rock, 1), (torch, 1)],
+        "the naked spawn is a rock and a torch, in that order \
+         (DECISIONS.md 2026-08-15) — this kit is something else"
+    );
+    assert!(
+        kit.count as usize <= sim_core::limits::HOTBAR_SLOTS,
+        "the kit runs past the belt: {} entries",
+        kit.count
+    );
 
-    // And it pays for something. A kit with tools and no materials cannot
-    // place a piece, which is the verb it exists to unblock.
-    let wood = c.item_index("item.wood").expect("wood is an item");
-    let carried: u32 = kit.stacks[..kit.count as usize]
-        .iter()
-        .filter(|s| s.item == wood)
-        .map(|s| s.count as u32)
-        .sum();
-    assert!(carried > 0, "the kit carries no wood to build with");
+    // Tools, not materials — the re-grant safety property, read off the
+    // shipped item rows rather than off the two ids above.
+    for e in &c.balance.spawn_kit {
+        let item = c.item(&e.item).expect("kit names a shipped item");
+        assert_eq!(
+            item.slot,
+            content::schema::EquipSlot::Hand,
+            "`{}` is not a hand item — a kit of materials cannot be \
+             re-granted on death (world.rs::wake)",
+            e.item
+        );
+        assert_eq!(
+            e.count, 1,
+            "`{}` grants {} — a kit entry above 1 is a stack of goods, \
+             which is the item printer `wake` is priced against",
+            e.item, e.count
+        );
+    }
+
+    // And the rock actually works: with no `hand` row on any swung node,
+    // a kit whose tool paid nothing would be a naked spawn wearing a kit.
+    let gc = c.bake_gather().expect("gather bakes");
+    let mut swung = 0;
+    for node in gc.nodes.iter() {
+        if node.output == sim_core::gather::NO_ITEM || node.hits < 2 {
+            continue; // the bush is a one-hit pickup, not a swung node
+        }
+        swung += 1;
+        assert!(
+            node.yield_for(rock) > 0,
+            "a swung node pays the spawn kit's rock nothing — the loop \
+             cannot start from the beach"
+        );
+        assert_eq!(
+            node.yield_for(sim_core::gather::NO_ITEM),
+            0,
+            "a swung node still pays bare hands — DECISIONS.md 2026-08-15"
+        );
+    }
+    assert!(swung >= 4, "only {swung} swung nodes — this gate got thin");
 }
 
-/// Absent is legal, and it means naked.
+/// Absent is legal, and it means naked — **while bare hands can start the
+/// loop.** The default matters more than the alpha kit does: a public shard
+/// wants a beach spawn, and `#[serde(default)]` is what lets that be
+/// expressed by deleting a table rather than by editing code.
 ///
-/// The default matters more than the alpha kit does: a public shard wants a
-/// beach spawn, and `#[serde(default)]` is what lets that be expressed by
-/// deleting a table rather than by editing code.
+/// The fixture restores a `hand` row on the tree first, because over the
+/// SHIPPED gatherables (no swung node pays bare hands, DECISIONS.md
+/// 2026-08-15) an absent kit is an unwinnable world and the boot rule
+/// refuses it — that half is `a_kit_that_cannot_start_the_loop_is_refused`.
 #[test]
 fn no_spawn_kit_is_a_naked_spawn() {
+    let mut srcs = sources();
+    let g = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "gatherables.toml")
+        .unwrap();
+    let anchor = "[gatherable.yield_per_hit]\n\"item.rock\" = 50";
+    assert!(
+        g.1.contains(anchor),
+        "fixture rot: the tree's rock row moved"
+    );
+    g.1 = g.1.replace(
+        anchor,
+        "[gatherable.yield_per_hit]\nhand = 25\n\"item.rock\" = 50",
+    );
+    let entry = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+    let cut = entry
+        .1
+        .find("[[spawn_kit]]")
+        .expect("the alpha kit is there");
+    entry.1.truncate(cut);
+    let c = build(&srcs).expect("with a hand row back, content without a spawn kit validates");
+    let kit = c.bake_spawn_kit().expect("an absent kit bakes");
+    assert_eq!(kit.count, 0, "an absent kit granted something");
+}
+
+/// The boot rule (NOW.md §0kit remainder 2, landed 2026-08-17): with no
+/// `hand` row on any swung node, a kit that grants no paying tool boots a
+/// world where every swing is refused forever — unwinnable, and until this
+/// rule it validated green. Three cases: the empty kit, the kit of
+/// non-tools, and the coupling itself (a restored hand row makes the empty
+/// kit a legal naked spawn again, so the rule fires on the pair of tables
+/// and never on the kit alone).
+#[test]
+fn a_kit_that_cannot_start_the_loop_is_refused() {
+    // An empty kit over handless nodes: delete the whole table.
     let mut srcs = sources();
     let entry = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
     let cut = entry
@@ -1753,40 +2295,79 @@ fn no_spawn_kit_is_a_naked_spawn() {
         .find("[[spawn_kit]]")
         .expect("the alpha kit is there");
     entry.1.truncate(cut);
-    let c = build(&srcs).expect("content without a spawn kit still validates");
-    let kit = c.bake_spawn_kit().expect("an absent kit bakes");
-    assert_eq!(kit.count, 0, "an absent kit granted something");
+    let err = build(&srcs).expect_err("an empty kit over handless swung nodes booted");
+    assert!(
+        err.contains("no tool any swung node pays"),
+        "expected the unwinnable-spawn refusal, got: {err}"
+    );
+
+    // A kit of only the torch: an item, a hand item even, and a tool no
+    // swung node has a yield row for.
+    refuses(
+        "balance.toml",
+        "[[spawn_kit]]\nitem = \"item.rock\"\ncount = 1\n\n",
+        "",
+        "no tool any swung node pays",
+    );
+
+    // The coupling: restore a hand row on one swung node and the same
+    // empty kit is a naked beach spawn again, not a refusal.
+    let mut srcs = sources();
+    let g = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "gatherables.toml")
+        .unwrap();
+    let anchor = "[gatherable.yield_per_hit]\n\"item.rock\" = 50";
+    assert!(
+        g.1.contains(anchor),
+        "fixture rot: the tree's rock row moved"
+    );
+    g.1 = g.1.replace(
+        anchor,
+        "[gatherable.yield_per_hit]\nhand = 25\n\"item.rock\" = 50",
+    );
+    let entry = srcs.iter_mut().find(|(n, _)| *n == "balance.toml").unwrap();
+    let cut = entry
+        .1
+        .find("[[spawn_kit]]")
+        .expect("the alpha kit is there");
+    entry.1.truncate(cut);
+    build(&srcs).expect("a hand row on the tree makes the empty kit legal again");
 }
 
+/// The four refusals, re-anchored on the rock when the kit became a rock
+/// and a torch (2026-08-15). They read the same because the rules did not
+/// move — only the row they are spelled against.
 #[test]
 fn spawn_kit_refusals() {
     // An item the tables do not have.
     refuses(
         "balance.toml",
-        "[[spawn_kit]]\nitem = \"item.hammer\"",
+        "[[spawn_kit]]\nitem = \"item.rock\"",
         "[[spawn_kit]]\nitem = \"item.jetpack\"",
         "no such item",
     );
     // A count of zero — a slot that would draw empty.
     refuses(
         "balance.toml",
-        "item = \"item.hammer\"\ncount = 1",
-        "item = \"item.hammer\"\ncount = 0",
+        "item = \"item.rock\"\ncount = 1",
+        "item = \"item.rock\"\ncount = 0",
         "grants 0",
     );
-    // Past the item's own stack size.
+    // Past the item's own stack size, which for the rock is 1 — so this
+    // case is now tighter than it was against the hammer, not looser.
     refuses(
         "balance.toml",
-        "item = \"item.hammer\"\ncount = 1",
-        "item = \"item.hammer\"\ncount = 99",
+        "item = \"item.rock\"\ncount = 1",
+        "item = \"item.rock\"\ncount = 99",
         "past its own stack size",
     );
     // The same item twice — `grant_kit` writes slots and never merges, so
     // this is a typo that halves what the author meant.
     refuses(
         "balance.toml",
-        "[[spawn_kit]]\nitem = \"item.hammer\"\ncount = 1",
-        "[[spawn_kit]]\nitem = \"item.hammer\"\ncount = 1\n\n[[spawn_kit]]\nitem = \"item.hammer\"\ncount = 1",
+        "[[spawn_kit]]\nitem = \"item.rock\"\ncount = 1",
+        "[[spawn_kit]]\nitem = \"item.rock\"\ncount = 1\n\n[[spawn_kit]]\nitem = \"item.rock\"\ncount = 1",
         "granted twice",
     );
 }
@@ -1799,7 +2380,7 @@ fn the_shipped_pig_bakes() {
     let mc = c.bake_mobs().expect("the pig must bake");
     let pig = mc.def(sim_core::mob::MOB_PIG);
 
-    assert_eq!(pig.hp, 150);
+    assert_eq!(pig.hp, 80);
     // 50% and 70% of the −127..=127 axis, floored.
     assert_eq!(pig.gait, 63);
     assert_eq!(pig.flee_gait, 88);
@@ -1823,6 +2404,11 @@ fn the_shipped_pig_bakes() {
     // Metres → centimetres, the unit the sim compares distances in.
     assert_eq!(pig.roam_cm, 6_000);
     assert_eq!(pig.spook_cm, 1_200);
+    // Prey's flinch is not clock-keyed. Asserted rather than assumed
+    // because the field is required on every row, so "the pig's night
+    // radius" is a number somebody chose and not one the schema defaulted:
+    // equal is the choice, and this is where changing it costs a test.
+    assert_eq!(pig.night_spook_cm, pig.spook_cm);
     // The leash must be wider than the fright radius or a pig spends its
     // life being turned around — validate refuses it, assert it here too
     // because this is the pair that produces the behaviour.
@@ -1836,6 +2422,51 @@ fn the_shipped_pig_bakes() {
     }
     assert_eq!(pig.loot[3].item, sim_core::gather::NO_ITEM);
     assert_ne!(pig.loot[0].item, pig.loot[1].item);
+}
+
+/// **The shipped wolf hunts a narrower circle after dusk, and the sim asks
+/// the right question to find that out.**
+///
+/// Two halves, deliberately in one test because either alone passes for the
+/// wrong reason: the *table* (30 m by day, 15 m by night, through the same
+/// metres→centimetres crossing every other radius makes) and the *selector*
+/// (`spook_at` returns the day number in daylight and the night number
+/// after dusk). A table with no selector is a field nothing reads; a
+/// selector over equal numbers is a branch nothing distinguishes.
+///
+/// The direction is asserted as an inequality rather than as `15`, so a
+/// balance pass may retune the number without touching this file — but it
+/// may not quietly invert the design, which is the part that has a source
+/// (`content/mobs.toml`'s comment, and `DECISIONS.md` §open "nocturnal
+/// senses").
+#[test]
+fn the_shipped_wolf_hunts_a_narrower_circle_after_dusk() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let mc = c.bake_mobs().expect("the wolf must bake");
+    let wolf = mc.def(sim_core::mob::MOB_WOLF);
+
+    assert_eq!(wolf.spook_cm, 3_000);
+    assert_eq!(wolf.night_spook_cm, 1_500);
+    assert!(
+        wolf.night_spook_cm < wolf.spook_cm,
+        "the predator's night radius must not be the wider one: the \
+         reference game shipped wider-at-night and removed it"
+    );
+    // The leash still clears the widest radius in force at any hour.
+    assert!(wolf.roam_cm > wolf.spook_cm.max(wolf.night_spook_cm));
+    // And the bite is reachable at the tighter hour, or it is a bite on
+    // something the animal never noticed.
+    assert!(wolf.attack_range_cm <= wolf.night_spook_cm);
+
+    // The selector, against the shipped table.
+    let day = (0..sim_core::limits::DAY_TICKS)
+        .find(|&t| !sim_core::world::is_night(t))
+        .expect("the cycle must contain a day");
+    let night = (0..sim_core::limits::DAY_TICKS)
+        .find(|&t| sim_core::world::is_night(t))
+        .expect("the cycle must contain a night");
+    assert_eq!(wolf.spook_at(day), wolf.spook_cm);
+    assert_eq!(wolf.spook_at(night), wolf.night_spook_cm);
 }
 
 /// **The loop, across three content files that cannot see each other.**
@@ -1991,14 +2622,16 @@ fn the_meal_left_on_the_fire_burns() {
 ///
 /// The seed set is what the world pays DIRECTLY, one entry per verb the sim
 /// actually runs: a swing on a node (gather primary + secondary), a kill
-/// (mob drops), a smashed barrel (`gather::smash` rolls `LOOT_BARREL` and
-/// nothing else — no verb opens a cache or a crate yet, `loot.rs`'s own
-/// words, so counting their rows would be exactly the lie `validate.rs`'s
-/// clock comment warns about; when those verbs land, this widens in that
-/// commit), and the spawn kit. The closure then walks the transformations:
-/// the oven's burn (fuel → byproduct), cook rows, and recipes whose inputs
-/// — and whose station, itself an item that must be produced — are all
-/// reachable, to a fixpoint.
+/// (mob drops), an opened container — every table `bake::container_index`
+/// knows, because a barrel is smashed (`gather::smash`) and a crate or a
+/// cache is opened (`worldcont::open`, world containers v0, 2026-08-14),
+/// while a table naming any other container is refused at bake and seeds
+/// nothing (this walk counted barrels alone until 2026-08-17, on the
+/// then-true reason "no verb opens a cache or a crate yet") — and the
+/// spawn kit. The closure then walks the transformations: the oven's burn
+/// (fuel → byproduct), cook rows, and recipes whose inputs — and whose
+/// station, itself an item that must be produced — are all reachable, to a
+/// fixpoint.
 fn unreachable_consumables(c: &Content) -> Vec<String> {
     let mut have = std::collections::BTreeSet::new();
     for g in &c.gatherables {
@@ -2013,7 +2646,7 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
         }
     }
     for l in &c.loot_tables {
-        if l.container == "barrel" {
+        if content::bake::container_index(&l.container).is_some() {
             for e in &l.entries {
                 have.insert(e.item.as_str());
             }
@@ -2036,6 +2669,8 @@ fn unreachable_consumables(c: &Content) -> Vec<String> {
             let station_ok = match r.station {
                 content::schema::Station::None => true,
                 content::schema::Station::Workbench1 => have.contains("item.workbench1"),
+                content::schema::Station::Workbench2 => have.contains("item.workbench2"),
+                content::schema::Station::Workbench3 => have.contains("item.workbench3"),
                 content::schema::Station::Furnace => have.contains("item.furnace"),
             };
             if station_ok && r.inputs.iter().all(|i| have.contains(i.item.as_str())) {
@@ -2075,8 +2710,8 @@ fn every_consumable_the_content_ships_is_reachable() {
         missing.is_empty(),
         "consumables nothing in the world can produce: {missing:?} — every \
          row in consumables.toml must be producible by a live verb chain \
-         (gather, kill, barrel smash, spawn kit; then burn/cook/recipe \
-         closure)"
+         (gather, kill, container smash/open, spawn kit; then \
+         burn/cook/recipe closure)"
     );
 
     // The enumeration is honest: strip one producer row and its consumable
@@ -2108,19 +2743,49 @@ fn every_consumable_the_content_ships_is_reachable() {
         "fixture rot: the barrel's corn row moved"
     );
     l.1 = l.1.replace(row, "");
-    let mutant = build(&srcs).expect("still valid — a loot row is not the clock's answer");
+    let mutant = build(&srcs).expect("still valid — the bush and the tree keep the clock answered");
     assert_eq!(
         unreachable_consumables(&mutant),
         vec!["item.corn".to_string()],
         "deleting the barrel's corn row must strand exactly the corn"
     );
+
+    // World containers v0 (2026-08-14) made the crate and the cache
+    // verb-openable (`worldcont::open`), so a consumable that exists ONLY
+    // in one of their tables is reachable — the pre-widening walk (barrel
+    // rows alone) called exactly this fixture stranded, which is the
+    // regression this pins.
+    let corn_row = "    { item = \"item.corn\", weight = 8, count_min = 2, count_max = 4 },\n";
+    for anchor in [
+        // The crate's metal_frags row — unique counts, so the corn lands
+        // in the crate's table.
+        "    { item = \"item.metal_frags\", weight = 15, count_min = 25, count_max = 50 },\n",
+        // The cache's — same, for the third container kind.
+        "    { item = \"item.metal_frags\", weight = 15, count_min = 15, count_max = 30 },\n",
+    ] {
+        let mut srcs = sources();
+        let l = srcs.iter_mut().find(|(n, _)| *n == "loot.toml").unwrap();
+        assert!(
+            l.1.contains(corn_row) && l.1.contains(anchor),
+            "fixture rot: the corn row or the metal_frags anchor moved"
+        );
+        l.1 = l.1.replace(corn_row, "");
+        l.1 = l.1.replace(anchor, &format!("{anchor}{corn_row}"));
+        let mutant = build(&srcs).expect("moving the corn between containers is legal content");
+        assert_eq!(
+            unreachable_consumables(&mutant),
+            Vec::<String>::new(),
+            "corn only in a verb-openable container's table is reachable — \
+             a walk that counts barrels alone is stale since world containers v0"
+        );
+    }
 }
 
 /// The mob validator refuses what it claims to. Each of these is a content
 /// bug that would read as a bug in the sim if it booted.
 #[test]
 fn mob_refusals() {
-    refuses("mobs.toml", "hp = 150", "hp = 0", "zero hp");
+    refuses("mobs.toml", "hp = 80", "hp = 0", "zero hp");
     refuses(
         "mobs.toml",
         "walk_pct = 50",
@@ -2139,6 +2804,32 @@ fn mob_refusals() {
         "flee_seconds = 3",
         "flee_seconds = 0",
         "scenery",
+    );
+    // **The same three bands, stated at the other hour.** Before nocturnal
+    // senses each of these read `spook_m` alone, which was total when there
+    // was one radius and became a hole the moment there were two: a species
+    // could be given a night radius outside its own leash, a night it is
+    // blind through, or a bite reaching further than it can notice after
+    // dark, and every band above would still have passed it. The wolf's
+    // `night_spook_m = 15` is the anchor because it is the only row that
+    // carries that value.
+    refuses(
+        "mobs.toml",
+        "night_spook_m = 15",
+        "night_spook_m = 200",
+        "treadmill",
+    );
+    refuses(
+        "mobs.toml",
+        "night_spook_m = 15",
+        "night_spook_m = 0",
+        "scenery",
+    );
+    refuses(
+        "mobs.toml",
+        "night_spook_m = 15",
+        "night_spook_m = 1",
+        "outreaches",
     );
     refuses(
         "mobs.toml",
@@ -2162,4 +2853,336 @@ fn mob_refusals() {
     let c = build(&srcs).expect("a well-formed unknown species reaches the bake");
     let err = c.bake_mobs().expect_err("an unknown species must not bake");
     assert!(err.contains("no roster kind"), "got: {err}");
+}
+
+// ---------------------------------------------------------------------------
+// The research ladder (`content/research.toml` §requires, `validate::structural`,
+// `bake_research`). Added 2026-08-15 with the ladder itself; before that day
+// the whole table reached the sim as `ResearchContent::EMPTY`, because
+// `bake_research` had no caller — so these tests exist as much to prove the
+// *edges* work as to prove the table is installed at all, which is
+// `crates/server/tests/boot_tables.rs`.
+// ---------------------------------------------------------------------------
+
+/// The shipped tree is a tree: it bakes, its one authored edge survives into
+/// the sim's own bit space, and the row it points at is a root.
+#[test]
+fn the_shipped_research_tree_bakes_with_its_edge_intact() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content loads");
+    let rc = c.bake_research().expect("shipped research bakes");
+
+    assert_eq!(
+        rc.row_count as usize,
+        c.research.len(),
+        "every authored row reaches the sim"
+    );
+    assert!(rc.row_count > 0, "an empty table is the pre-2026-08-15 bug");
+
+    let idx = |id: &str| c.item_index(id).unwrap_or_else(|| panic!("shipped {id}"));
+    let powder_recipe = c
+        .recipe_index("recipe.gunpowder")
+        .expect("shipped recipe.gunpowder");
+
+    let satchel = rc
+        .row_for(idx("item.satchel_charge"))
+        .expect("satchel is researchable");
+    assert_eq!(
+        satchel.requires, powder_recipe,
+        "the satchel's prerequisite is gunpowder's RECIPE INDEX — what the \
+         tree verb looks up in `Player::known`, or the check means nothing"
+    );
+
+    let powder = rc
+        .row_for(idx("item.gunpowder"))
+        .expect("gunpowder is researchable");
+    assert_eq!(
+        powder.requires,
+        sim_core::research::NO_RECIPE,
+        "gunpowder is a root of the tree"
+    );
+}
+
+/// The floor: an edge the craft graph already implies may not be dropped
+/// from the tree. This is the drift that makes a tech tree lie — the recipe
+/// says you need gunpowder, the tree says you do not, and a player buys a
+/// blueprint for a thing they cannot make.
+#[test]
+fn a_prerequisite_the_recipe_already_implies_cannot_be_dropped() {
+    refuses(
+        "research.toml",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
+        "item = \"item.satchel_charge\"\ncost = 75",
+        "must require it",
+    );
+}
+
+/// Every other way an edge can be wrong.
+#[test]
+fn research_edge_refusals() {
+    // A row that requires itself is a cycle of length one.
+    refuses(
+        "research.toml",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.satchel_charge\"",
+        "requires itself",
+    );
+    // A prerequisite that names no item at all.
+    refuses(
+        "research.toml",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.nonesuch\"",
+        "is not an item",
+    );
+    // A prerequisite that is a real item but is not researchable: nobody can
+    // ever learn it, so the row behind it is locked forever.
+    refuses(
+        "research.toml",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.gunpowder\"",
+        "item = \"item.satchel_charge\"\ncost = 75\nrequires = \"item.rock\"",
+        "is not researchable",
+    );
+    // The "same edge twice" case that stood here is DELETED by the
+    // 2026-08-15 integration rather than skipped: `requires` is one parent
+    // now, not a list, so a repeat is unrepresentable and the validator
+    // check it exercised is gone with it.
+}
+
+/// A cycle, and the row stranded behind it, are one refusal — because
+/// "can never be learned" is what a player experiences and a cycle is only
+/// one cause of it. Gunpowder is made to depend on the satchel that depends
+/// on gunpowder; the medkit is untouched and must stay reachable, which is
+/// what proves the walk reports the stuck rows rather than giving up.
+#[test]
+fn a_prerequisite_cycle_is_refused() {
+    let mut srcs = sources();
+    let entry = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "research.toml")
+        .expect("research.toml");
+    entry.1 = entry.1.replace(
+        "[[research]]\nitem = \"item.gunpowder\"\ncost = 40",
+        "[[research]]\nitem = \"item.gunpowder\"\ncost = 40\nrequires = \"item.satchel_charge\"",
+    );
+    let err = build(&srcs).expect_err("a research cycle was accepted");
+    assert!(
+        err.contains("can never be learned"),
+        "expected the reachability walk to refuse, got: {err}"
+    );
+    assert!(
+        err.contains("item.gunpowder") && err.contains("item.satchel_charge"),
+        "the refusal must name the stuck rows, got: {err}"
+    );
+    assert!(
+        !err.contains("item.medkit"),
+        "a root outside the cycle is still reachable and must not be named: {err}"
+    );
+}
+
+/// The ladder is part of what a content set MEANS, so it digests. Two sets
+/// whose tree is wired differently must not canonicalise identically — the
+/// exact hole `canon.rs` documents for three other columns.
+#[test]
+fn the_hash_moves_with_the_ladder() {
+    let base = Content::load_dir(&content_dir()).expect("shipped content loads");
+
+    let mut srcs = sources();
+    let entry = srcs
+        .iter_mut()
+        .find(|(n, _)| *n == "research.toml")
+        .expect("research.toml");
+    // A legal edge that changes the tree: the revolver behind gunpowder.
+    // Legal because the floor is a minimum and authoring MORE is a design
+    // call — which is exactly why the hash has to be able to see it.
+    entry.1 = entry.1.replace(
+        "[[research]]\nitem = \"item.arrow_metal\"\ncost = 20",
+        "[[research]]\nitem = \"item.arrow_metal\"\ncost = 20\nrequires = \"item.gunpowder\"",
+    );
+    let moved = build(&srcs).expect("an added edge is legal content");
+    assert_ne!(
+        base.hash(),
+        moved.hash(),
+        "two contents whose tech tree differs canonicalise identically"
+    );
+}
+
+/// **`content/armor.toml` reaches the sim.** Every row lands at its item's
+/// index carrying the percent and the slot the file declares — the assertion
+/// that stopped this file being priced, validated, hashed, balance-anchored
+/// and *unread* from M1 to 2026-08-19 (`reference/ARMOR.md` §9.1).
+///
+/// Slot-checked as well as valued, because the slot is not decoration:
+/// `Player::worn` is indexed by it, so a bake that keyed the head piece to
+/// the body row would put a headwrap in a slot that never pays.
+#[test]
+fn bake_combat_arms_the_armor_the_data_prices() {
+    use content::schema::ArmorSlot;
+    use sim_core::combat::{WEAR_BODY, WEAR_HEAD, WEAR_NONE};
+
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped armor must bake");
+    assert!(
+        c.armors.len() >= 3,
+        "the shipped set prices {} armor rows — fewer than the three this \
+         test was written against, so it is now proving less than it says",
+        c.armors.len()
+    );
+    for a in &c.armors {
+        let idx = c.item_index(&a.id).expect("armor arms an item") as usize;
+        let baked = cc.armor[idx];
+        assert_eq!(
+            baked.reduction_pct as u32, a.reduction_pct,
+            "`{}` reduction did not survive the bake",
+            a.id
+        );
+        assert_eq!(
+            baked.slot,
+            match a.slot {
+                ArmorSlot::Head => WEAR_HEAD,
+                ArmorSlot::Body => WEAR_BODY,
+            },
+            "`{}` was baked into the wrong wear slot",
+            a.id
+        );
+    }
+    // And the table is not simply full: an item nobody armors stays inert,
+    // so `slot == WEAR_NONE` still means "not wearable".
+    let rock = c.item_index("item.rock").expect("the rock is an item") as usize;
+    assert_eq!(
+        cc.armor[rock].slot, WEAR_NONE,
+        "a rock is wearable — the bake filled rows it was never given"
+    );
+}
+
+/// **A body in the shipped burlap shirt takes six rock hits instead of
+/// five**, computed through the sim's own reducer against the shipped
+/// numbers. The one sentence this whole slice is for, in the crate that
+/// owns the numbers.
+#[test]
+fn the_shipped_burlap_shirt_costs_an_attacker_a_swing() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped content must bake");
+    let rock = c
+        .weapons
+        .iter()
+        .find(|w| w.id == "item.rock")
+        .expect("the rock is a weapon");
+    let shirt = c
+        .armors
+        .iter()
+        .find(|a| a.id == "item.armor_burlap_body")
+        .expect("the burlap shirt is priced");
+
+    // Hits to kill, swung rather than divided: the loop `bake_combat_plays_
+    // the_band_the_data_declares` already uses, with the reduction the sim
+    // applies inserted where the sim applies it.
+    let swings = |pct: u32| {
+        let mut hp = cc.player_hp;
+        let mut hits = 0u32;
+        let per = sim_core::combat::reduce(rock.damage as u16, pct);
+        assert!(per > 0, "a rock that deals nothing never kills");
+        while hp > 0 {
+            hp -= per.min(hp);
+            hits += 1;
+        }
+        hits
+    };
+    assert_eq!(swings(0), 5, "a naked body and a rock");
+    assert_eq!(
+        swings(shirt.reduction_pct),
+        6,
+        "the shipped burlap shirt ({} %) changed nothing about a rock \
+         fight — it is craftable for 20 cloth and must buy the wearer a \
+         swing",
+        shirt.reduction_pct
+    );
+}
+
+/// **The band's arithmetic and the sim's are one function, not two that
+/// agree by luck.**
+///
+/// `balance::hits_to_kill` divides `player_hp` by the exact rational
+/// `damage × (100 − pct) / 100`; the sim computes
+/// `combat::reduce(damage, pct)` once — an integer floor — and subtracts it
+/// every swing. Those are different functions, and where they disagree the
+/// band describes a fight nobody has (`findings/armor-design-20260818.md`
+/// §5). They agree on every pair we ship; this is what says so, and it
+/// covers the *set* percentages too, which no band currently reaches.
+#[test]
+fn the_band_and_the_sim_kill_in_the_same_number_of_hits() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let hp = c.balance.globals.player_hp;
+
+    // Every single piece, plus every legal pairing of one head and one
+    // body — which is what `Player::worn` can actually hold, and what
+    // `combat::worn_pct` sums.
+    let mut sets: Vec<u32> = vec![0];
+    for a in &c.armors {
+        sets.push(a.reduction_pct);
+    }
+    for h in c
+        .armors
+        .iter()
+        .filter(|a| a.slot == content::schema::ArmorSlot::Head)
+    {
+        for b in c
+            .armors
+            .iter()
+            .filter(|a| a.slot == content::schema::ArmorSlot::Body)
+        {
+            sets.push(h.reduction_pct + b.reduction_pct);
+        }
+    }
+    assert!(
+        sets.len() >= 6,
+        "only {} protection values to check — the shipped armor set shrank \
+         and this pin is now guarding almost nothing",
+        sets.len()
+    );
+
+    let mut pairs = 0;
+    for w in &c.weapons {
+        if w.kind == content::schema::WeaponKind::Throwable {
+            continue; // structure damage, no TTK
+        }
+        for &pct in &sets {
+            let banded = content::balance::hits_to_kill(hp, w.damage, pct);
+            let per = sim_core::combat::reduce(w.damage as u16, pct);
+            assert!(per > 0, "`{}` under {pct}% deals nothing a hit", w.id);
+            let mut left = hp as u16;
+            let mut played = 0u32;
+            while left > 0 {
+                left -= per.min(left);
+                played += 1;
+            }
+            assert_eq!(
+                banded, played,
+                "`{}` against {pct}% armor: the band computes {banded} hits \
+                 and the sim plays {played}. The two arithmetics have \
+                 drifted, so `armor_extra_hits_max` is now describing a \
+                 fight nobody has",
+                w.id
+            );
+            pairs += 1;
+        }
+    }
+    assert!(
+        pairs >= 20,
+        "only {pairs} (weapon, armor) pairs were checked — the loop is \
+         guarding nothing"
+    );
+}
+
+/// An armor row the sim cannot represent never reaches it. A zero
+/// reduction is the interesting one: `validate` has no opinion about it
+/// (it only refuses over 90), but zero **is** the sim's "not armor"
+/// sentinel, so a piece declaring no protection would silently become an
+/// unwearable item rather than a useless one.
+#[test]
+fn an_armor_row_that_cannot_work_never_reaches_the_sim() {
+    refuses_bake(
+        "armor.toml",
+        "reduction_pct = 15",
+        "reduction_pct = 0",
+        "protects from nothing",
+    );
 }

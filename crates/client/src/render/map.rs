@@ -9,13 +9,13 @@
 //! height taps plus an apron — real work, but work done once, on the first
 //! open, off the join path. `web/src/map.js` reached the same conclusion for
 //! the same reason and is explicit that doing it at boot would put it where
-//! `browser_smoke` measures time-to-world.
+//! `browser_smoke` measured time-to-world — that gate is deleted, and the
+//! reasoning is kept because it is about the join path, not about the gate.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 
 use crate::ui::map::{self, MarkKind, GRID_COLS, GRID_LETTERS};
 
@@ -61,34 +61,99 @@ pub struct Island {
     seed: Option<u64>,
 }
 
-/// `M` opens the map from the world; `M` or `Esc` closes it.
-pub fn open(keyboard: Res<ButtonInput<KeyCode>>, mut next: ResMut<NextState<Screen>>) {
-    if keyboard.just_pressed(KeyCode::KeyM) {
+impl Island {
+    /// The painted island for this seed, painting it if this is the first
+    /// ask of the session.
+    ///
+    /// **Two screens share it and that is the reason it is a method.** The
+    /// death screen draws the same island (`render::death`), and a second
+    /// `paint` call there would be ~65 k height taps repeated on the one
+    /// frame a player is already unhappy about — plus a second texture in
+    /// VRAM for the same picture. The seed check is what makes it safe to
+    /// share: a second shard repaints rather than showing the first one's
+    /// coastline, which looks plausible and is the worst kind of wrong.
+    pub fn texture(&mut self, images: &mut Assets<Image>, seed: u64) -> Handle<Image> {
+        if self.seed != Some(seed) || self.texture.is_none() {
+            let mut buf = vec![0u8; MAP_PX * MAP_PX * 4];
+            map::paint(seed, MAP_PX, &mut buf);
+            let image = Image::new(
+                Extent3d {
+                    width: MAP_PX as u32,
+                    height: MAP_PX as u32,
+                    depth_or_array_layers: 1,
+                },
+                TextureDimension::D2,
+                buf,
+                TextureFormat::Rgba8UnormSrgb,
+                RenderAssetUsages::RENDER_WORLD,
+            );
+            self.texture = Some(images.add(image));
+            self.seed = Some(seed);
+        }
+        self.texture.clone().expect("painted above")
+    }
+}
+
+/// **Hold `G`.** The map is up while the key is down and gone when it is
+/// released; `Esc` also closes it, because every other screen in this client
+/// answers `Esc` and one that did not would read as a hang.
+///
+/// It was a `M` toggle until 2026-08-16 (`DECISIONS.md`, the control scheme),
+/// and a hold is a different thing rather than the same thing with a shorter
+/// press: you keep running while you read it, which is why the two systems
+/// below are careful about state that a toggle could afford to be sloppy with.
+///
+/// **The guard is not decoration.** `open` runs `in_state(InWorld)` — which is
+/// exactly where the inventory panel and the door keypad also live, since
+/// neither is a `Screen` — so without it, `G` typed into the crafting search
+/// box or into a keypad's code would also throw the map up. That was a live
+/// bug on the old binding (`M` into the search box opened the map) and it is
+/// fixed here rather than inherited: `verbs::keys` and `ghost::level_keys`
+/// already stand down for the same reason, and this system simply never had
+/// the check. The chat composer needs no arm — `chat::keys` clears the whole
+/// keyboard while it is open.
+pub fn open(
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mut next: ResMut<NextState<Screen>>,
+    ui: Option<Res<super::panels::Ui>>,
+    pad: Option<Res<super::verbs::Pad>>,
+) {
+    let busy = ui.map(|u| u.panel.grabs_pointer()).unwrap_or(false)
+        || pad.map(|p| p.0.is_open()).unwrap_or(false);
+    if !busy && keyboard.just_pressed(KeyCode::KeyG) {
         next.set(Screen::Map);
     }
 }
 
+/// Closed by letting go — `!pressed` rather than `just_released`.
+///
+/// The difference is a real frame and not a style choice: a tap shorter than
+/// one frame produces a `just_pressed` that `open` sees and a `just_released`
+/// that this system never observes, and the map would be stuck up with no key
+/// held. Asking whether the key is down now cannot miss that edge.
 pub fn keys(keyboard: Res<ButtonInput<KeyCode>>, mut next: ResMut<NextState<Screen>>) {
-    if keyboard.just_pressed(KeyCode::KeyM) || keyboard.just_pressed(KeyCode::Escape) {
+    if !keyboard.pressed(KeyCode::KeyG) || keyboard.just_pressed(KeyCode::Escape) {
         next.set(Screen::InWorld);
     }
 }
 
-/// Let the pointer go: this is a screen you read, not an overlay you fight
-/// under.
-pub fn enter(mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>) {
-    if let Ok(mut c) = cursor.single_mut() {
-        c.grab_mode = CursorGrabMode::None;
-        c.visible = true;
-    }
-}
+/// **The pointer stays locked, and the world keeps running under it.**
+///
+/// This was a screen you stopped at and read, with the cursor released. A
+/// held map is the opposite: the player is moving, the mouse is still
+/// steering, and handing the pointer back for the duration would swing the
+/// view on release when the OS cursor snapped home. `input::gather` is
+/// registered to keep running in `Screen::Map` for the same reason — see
+/// `render/mod.rs`, where that is also what keeps the sim's input latch fresh
+/// instead of leaving the body walking on the last frame's keys.
+///
+/// Kept as an empty system rather than deleted so the `OnEnter`/`OnExit`
+/// wiring stays visible at the registration site: this screen deliberately
+/// does nothing to the cursor, which is worth reading as a decision rather
+/// than as an omission.
+pub fn enter() {}
 
-pub fn leave(mut cursor: Query<&mut CursorOptions, With<PrimaryWindow>>) {
-    if let Ok(mut c) = cursor.single_mut() {
-        c.grab_mode = CursorGrabMode::Locked;
-        c.visible = false;
-    }
-}
+pub fn leave() {}
 
 pub fn setup(
     mut commands: Commands,
@@ -99,24 +164,7 @@ pub fn setup(
     look: Res<super::input::Look>,
 ) {
     // Paint on the first open of this seed, and never again.
-    if island.seed != Some(world.seed) || island.texture.is_none() {
-        let mut buf = vec![0u8; MAP_PX * MAP_PX * 4];
-        map::paint(world.seed, MAP_PX, &mut buf);
-        let image = Image::new(
-            Extent3d {
-                width: MAP_PX as u32,
-                height: MAP_PX as u32,
-                depth_or_array_layers: 1,
-            },
-            TextureDimension::D2,
-            buf,
-            TextureFormat::Rgba8UnormSrgb,
-            RenderAssetUsages::RENDER_WORLD,
-        );
-        island.texture = Some(images.add(image));
-        island.seed = Some(world.seed);
-    }
-    let texture = island.texture.clone().expect("painted above");
+    let texture = island.texture(&mut images, world.seed);
 
     let [x, _, z] = net.session.core.predict.render_position();
     let (px, py) = map::world_to_map(x, z, 1);
@@ -138,6 +186,8 @@ pub fn setup(
         &core.deploy_defs,
         core.deploy_defs_have,
         core.bags.entries(),
+        core.own_bag,
+        core.own_bags(),
     );
 
     commands
@@ -207,10 +257,16 @@ pub fn setup(
                 }
                 // The marks, UNDER the player: a sibling spawned later draws
                 // on top, and *where am I* outranks everything else drawn
-                // here. Positions are `resolve_marks`'s fractions — the same
-                // `world_to_map` the player goes through, so the two cannot
-                // disagree about the projection.
-                for m in &marks.a[..marks.count] {
+                // here. Spawned in REVERSE resolve order, so the push order
+                // is one rule with two ends — first pushed is last the cap
+                // eats AND last spawned, drawing on top: the haven over a
+                // bag over a stranger's bed. (Forward order quietly flipped
+                // when bags moved ahead of the anchors: the beds, spawned
+                // later, papered over the bag marks the rank had just
+                // protected.) Positions are `resolve_marks`'s fractions —
+                // the same `world_to_map` the player goes through, so the
+                // two cannot disagree about the projection.
+                for m in marks.a[..marks.count].iter().rev() {
                     spawn_mark(frame, m);
                 }
 
@@ -253,7 +309,7 @@ pub fn setup(
             root.spawn((
                 ui::label(
                     format!(
-                        "{}    -    north is up    -    M or Esc closes",
+                        "{}    -    north is up    -    let go of G to close",
                         &GRID_LETTERS[..1.min(GRID_LETTERS.len())]
                     ),
                     12.0,
@@ -278,7 +334,11 @@ pub fn setup(
 ///
 /// The exhaustive `match` is the gate the browser needed a table-walk for: a
 /// kind added without a draw branch fails to compile.
-fn spawn_mark(frame: &mut ChildSpawnerCommands, m: &map::Mark) {
+///
+/// Shared with the death screen (`render::death`), which draws the same
+/// markers on the same island — one projection, one shape table, so a bag
+/// cannot be in two places depending on which screen you are looking at.
+pub(super) fn spawn_mark(frame: &mut ChildSpawnerCommands, m: &map::Mark) {
     let f = m.kind.fill();
     let fill = Color::srgb(f[0] / 255.0, f[1] / 255.0, f[2] / 255.0);
     let px = match m.kind {
@@ -313,6 +373,14 @@ fn spawn_mark(frame: &mut ChildSpawnerCommands, m: &map::Mark) {
             if m.kind == MarkKind::Hearth {
                 e.insert(UiTransform::from_rotation(Rot2::degrees(45.0)));
             }
+        }
+        // A bag inside its cooldown: the bed's square, HOLLOW. Weight is
+        // the channel (`MarkKind::fill`'s note says why it is not
+        // colour) — an outline reads as "this one is not answering" next
+        // to a solid one at a glance, and the two are the same blue so
+        // both still read as yours.
+        MarkKind::BedSpent => {
+            frame.spawn((node(2.0), BorderColor::all(fill)));
         }
         MarkKind::Backpack => {
             let mut n = node(1.0);

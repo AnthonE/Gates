@@ -24,9 +24,9 @@ use protocol::{
 };
 use protocol::{
     encode_action_consume, encode_action_container, encode_action_drink, encode_action_move,
-    encode_action_respawn, encode_action_throw, encode_event_charge_placed, encode_event_cont_sync,
-    encode_event_drank, encode_event_move_refused, encode_event_moved, encode_event_oven,
-    encode_event_respawn,
+    encode_action_research, encode_action_respawn, encode_action_throw, encode_event_charge_placed,
+    encode_event_cont_sync, encode_event_drank, encode_event_move_refused, encode_event_moved,
+    encode_event_oven, encode_event_respawn, encode_event_shot,
 };
 use sim_core::limits::DATAGRAM_BUDGET_BYTES;
 
@@ -124,8 +124,8 @@ fn main() {
     let len = encode_action_cancel(goldens::action_cancel(), &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[20], &buf[..len]);
 
-    let (row, cx, cz, level, loc) = goldens::action_place();
-    let len = encode_action_place(row, cx, cz, level, loc, &mut buf).unwrap();
+    let (row, cx, cz, level, loc, freehand) = goldens::action_place();
+    let len = encode_action_place(row, cx, cz, level, loc, freehand, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[21], &buf[..len]);
 
     let len = encode_event_piece_placed(&goldens::event_piece_placed(), &mut buf).unwrap();
@@ -369,5 +369,92 @@ fn main() {
     {
         let len = encode_event_oven(cx, cz, level, lit, by, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[76 + n], &buf[..len]);
+    }
+
+    {
+        let (shooter, yaw, pitch, speed, drop) = goldens::event_shot();
+        let len = encode_event_shot(shooter, yaw, pitch, speed, drop, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[82], &buf[..len]);
+    }
+
+    // World containers v0 (v37): the fourth container kind, on all three
+    // of the lanes it travels.
+    {
+        let (kind, cont) = goldens::action_container_world();
+        let len = encode_action_container(kind, cont, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[83], &buf[..len]);
+
+        let (cont, fk, fs, tk, ts, count) = goldens::action_move_world();
+        let len = encode_action_move(cont, fk, fs, tk, ts, count, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[84], &buf[..len]);
+
+        let (kind, cont, reset, slots) = goldens::event_cont_sync_world();
+        let len = encode_event_cont_sync(kind, cont, reset, &slots, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[85], &buf[..len]);
+    }
+
+    // The bench ladder + tech tree (v38): the unlock action, the
+    // research-rows drip, and the three research-lane events pinned for
+    // the first time.
+    {
+        let len = protocol::encode_action_unlock(goldens::action_unlock(), &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[86], &buf[..len]);
+
+        let rc = goldens::event_research_rows();
+        let (len, took) = protocol::encode_event_research_rows(&rc, 0, &mut buf).unwrap();
+        assert_eq!(took, protocol::RESEARCH_BATCH);
+        write_fixture(goldens::FIXTURES[87], &buf[..len]);
+
+        let (recipe, cost) = goldens::event_research();
+        let len = protocol::encode_event_research(recipe, cost, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[88], &buf[..len]);
+
+        let len =
+            protocol::encode_event_research_refused(goldens::event_research_refused(), &mut buf)
+                .unwrap();
+        write_fixture(goldens::FIXTURES[89], &buf[..len]);
+
+        let len = protocol::encode_event_known(goldens::event_known(), &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[90], &buf[..len]);
+
+        // The table verb's action, carried through the 2026-08-15
+        // integration. The tree verb replaced this lane's other four
+        // fixtures and not this one, and `encode_action_research` is still
+        // called by the client — an encoder whose bytes nothing pins is
+        // what `every_encoder_has_a_golden` exists to refuse.
+        let len = encode_action_research(goldens::action_research(), &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[91], &buf[..len]);
+    }
+
+    // The gather refusal (v42, item durability's wire window).
+    {
+        let (item, reason) = goldens::event_gather_refused();
+        let len = protocol::encode_event_gather_refused(item, reason, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[92], &buf[..len]);
+    }
+
+    // Bag choice v0 (v43). **93 and not 92**: the manifest is positional
+    // and the gather refusal above was appended first on the trunk, so
+    // the index moved under this writer in the merge. Both wrote 92 for a
+    // moment, which is one fixture silently never generated — the exact
+    // renumbering the manifest's own comments keep warning about.
+    {
+        let (bags, n) = goldens::event_bags();
+        let len = protocol::encode_event_bags(&bags[..n], &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[93], &buf[..len]);
+    }
+
+    // Surface marks v0 (v44): where an arrow stopped.
+    {
+        let (qx, qy, qz, surf) = goldens::event_impact();
+        let len = protocol::encode_event_impact(qx, qy, qz, surf, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[94], &buf[..len]);
+    }
+
+    // Remote swing fact v0 (v47): a body swung, hit or miss.
+    {
+        let s = goldens::event_swing();
+        let len = protocol::encode_event_swing(s, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[95], &buf[..len]);
     }
 }

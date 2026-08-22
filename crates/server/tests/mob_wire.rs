@@ -27,7 +27,7 @@ fn id_of(slot: usize) -> u32 {
 fn snapshot(core: &mut ShardCore, stats: &ShardStats, slot: usize) -> Vec<u8> {
     loop {
         let mut got: Option<Vec<u8>> = None;
-        core.tick(stats, |lane, s, bytes| {
+        core.tick_bare(stats, |lane, s, bytes| {
             if lane == Lane::Snapshot && s == slot {
                 got = Some(bytes.to_vec());
             }
@@ -43,13 +43,19 @@ fn snapshot(core: &mut ShardCore, stats: &ShardStats, slot: usize) -> Vec<u8> {
 
 /// One client standing `away` metres from the first live animal on the
 /// island. Returns the core and that animal's roster slot.
-fn core_beside_a_pig(stats: &ShardStats, away: f32) -> (ShardCore, usize) {
-    let mut core = ShardCore::new(SEED);
+///
+/// **Boxed, and it is not a style note** — `chat_wire.rs` says the same
+/// thing from the other side: `ShardCore` is far too big to hand back by
+/// value, and doing it overflows a test thread's 2 MiB stack. It did, in
+/// release, on a clean tree, until this box landed: the return move is a
+/// second whole copy of a struct that is already most of the budget.
+fn core_beside_a_pig(stats: &ShardStats, away: f32) -> (Box<ShardCore>, usize) {
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.mob = MobContent::probe_fixture();
     core.world.combat = sim_core::combat::CombatContent::probe_fixture();
     // Hatch the roster before seating anyone, so the spawn can be placed
     // relative to a real animal rather than the other way round.
-    core.tick(stats, |_, _, _| true);
+    core.tick_bare(stats, |_, _, _| true);
     let slot = core
         .world
         .mobs
@@ -63,7 +69,7 @@ fn core_beside_a_pig(stats: &ShardStats, away: f32) -> (ShardCore, usize) {
         m.body.qz as f32 * POS_XZ_Q,
     ));
     assert!(core.connect(0, id_of(0)), "connect");
-    core.tick(stats, |_, _, _| true);
+    core.tick_bare(stats, |_, _, _| true);
     (core, slot)
 }
 

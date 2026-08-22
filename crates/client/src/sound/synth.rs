@@ -34,7 +34,10 @@
 //! energy, it does not clip, it starts and ends near silence, and the bed's
 //! loop seam is continuous.
 
+use super::music;
 use super::{Cue, CUE_COUNT, SAMPLE_RATE};
+
+use std::f32::consts::{PI, TAU};
 
 /// Peak every cue is normalized to before the table's gain is applied.
 ///
@@ -62,9 +65,20 @@ const BED_LOOP_SECS: f32 = BED_SECS - BED_FADE_SECS;
 
 /// Generate the whole bank, in [`Cue::ALL`] order. Called once, at startup.
 ///
-/// Allocating and not cheap — roughly 1.5 MB of `f32` and a megabyte of WAV.
-/// That is a boot cost, not a frame cost, and it is paid on the loading
-/// screen where the pipelines are already specializing.
+/// **Measured 2026-08-11: 11.7 MB of WAV in ~0.8 s release, ~3.9 s debug** —
+/// and the score is nearly all of both. Nine pieces at
+/// `music::PIECE_S` each is 94 seconds of audio against the ~30 the rest of
+/// the bank comes to, and it is dominated by `f32::sin`: roughly 65 million
+/// evaluations across the drone, the pad and the plucked line.
+///
+/// That is a boot cost, not a frame cost, and it is paid on the loading screen
+/// where the pipelines are already specializing — but it is no longer
+/// negligible, and it is written down rather than implied. **A sine lookup
+/// table was tried and measured SLOWER in both profiles** (release 0.90 →
+/// 1.00 s), because the per-call `LazyLock` deref cost more than the `sin` it
+/// replaced; reverted rather than kept on the theory that it should have
+/// helped. The real lever is not an optimization at all: the day recorded
+/// pieces replace `score`, this cost leaves with it.
 pub fn bank() -> [Vec<u8>; CUE_COUNT] {
     core::array::from_fn(|i| wav(Cue::ALL[i]))
 }
@@ -283,6 +297,8 @@ fn render(cue: Cue) -> Vec<f32> {
 
         // ---- the animals ------------------------------------------------
         Cue::Snort => snort(&mut r),
+        Cue::Howl => howl(&mut r),
+        Cue::Growl => growl(&mut r),
 
         // ---- remote footsteps -------------------------------------------
         // The same ground under someone else's boot: BYTE-IDENTICAL to the
@@ -296,6 +312,32 @@ fn render(cue: Cue) -> Vec<f32> {
         Cue::RemoteStepLitter => render(Cue::StepLitter),
         Cue::RemoteStepRock => render(Cue::StepRock),
         Cue::RemoteStepWater => render(Cue::StepWater),
+
+        // ---- a remote swing ---------------------------------------------
+        // The same arm through the same air, by delegation for the remote
+        // steps' reason: what makes a swing remote is its def — positional,
+        // at the body, culled by the falloff law — never its waveform, and
+        // a copied parameter set is a fork waiting to happen.
+        Cue::RemoteSwing => render(Cue::Swing),
+
+        // ---- the forest layer -------------------------------------------
+        Cue::Bird => bird(&mut r),
+
+        // ---- the score ---------------------------------------------------
+        // Nine pieces, one generator, and the table decides which: the arm
+        // is a lookup in `music::PIECES` rather than nine parameter sets, so
+        // adding a section or a tier is a change to that table alone.
+        //
+        // **The one wildcard arm in this match, and it is gated rather than
+        // trusted.** A cue added to the enum and forgotten everywhere else
+        // lands here and renders as silence — which `tests/sound.rs`'s
+        // "every cue has energy" assertion turns into a red gate on the next
+        // run. Silence rather than a panic because a bank that refuses to
+        // build is a client that refuses to boot over a sound.
+        _ => match music::piece_of(cue) {
+            Some((section, tier)) => score(&mut r, section, tier),
+            None => Vec::new(),
+        },
     }
 }
 
@@ -351,6 +393,65 @@ impl Lp {
     fn run(&mut self, x: f32) -> f32 {
         self.y += self.a * (x - self.y);
         self.y
+    }
+}
+
+/// A two-pole resonator — one formant.
+///
+/// The second filter in this module, and it earns its place where `Lp` cannot:
+/// a formant is a *peak*, and no arrangement of one-poles makes a peak. Added
+/// with the wolf, whose growl is a pulse train that only reads as a throat
+/// once four of these are across it (`WOLF_FORMANTS`).
+///
+/// `y[n] = b0·x[n] + a1·y[n−1] + a2·y[n−2]` with the poles at radius
+/// `r = e^(−πB/fs)` and angle `2πF/fs` — the textbook resonator. `r < 1`
+/// always, so it is unconditionally stable and cannot ring away on us.
+struct Res {
+    b0: f32,
+    a1: f32,
+    a2: f32,
+    y1: f32,
+    y2: f32,
+}
+
+impl Res {
+    fn new(hz: f32, bw: f32) -> Self {
+        let sr = SAMPLE_RATE as f32;
+        let r = (-std::f32::consts::PI * bw / sr).exp();
+        let theta = std::f32::consts::TAU * hz / sr;
+        let a1 = 2.0 * r * theta.cos();
+        let a2 = -r * r;
+        // **Normalized to unity gain AT THE PEAK, evaluated rather than
+        // approximated**, and the difference is not cosmetic. The obvious
+        // `b0 = 1 − r²` looks like a normalization and is not one: a
+        // resonator's gain rises as its bandwidth narrows, so with the four
+        // bandwidths in `WOLF_FORMANTS` it hands F1 a peak of 20.6 and F4 a
+        // peak of 3.0 — and then a −6 dB/oct tilt on top multiplies a spread
+        // that is already there, for 48:1 in F1's favour. That is one formant
+        // with three inaudible companions, which would have made `growl`'s
+        // doc comment a claim about a filter bank it did not have.
+        //
+        // `|1 − a₁e^{−jθ} − a₂e^{−2jθ}|` is that gain in closed form, so
+        // dividing it out leaves every formant peaking at 1 and the source's
+        // own spectrum is then the only thing shaping the envelope — which is
+        // what the model says it is.
+        let (c, s) = (theta.cos(), theta.sin());
+        let (c2, s2) = ((2.0 * theta).cos(), (2.0 * theta).sin());
+        let re = 1.0 - a1 * c - a2 * c2;
+        let im = a1 * s + a2 * s2;
+        Self {
+            b0: (re * re + im * im).sqrt(),
+            a1,
+            a2,
+            y1: 0.0,
+            y2: 0.0,
+        }
+    }
+    fn run(&mut self, x: f32) -> f32 {
+        let y = self.b0 * x + self.a1 * self.y1 + self.a2 * self.y2;
+        self.y2 = self.y1;
+        self.y1 = y;
+        y
     }
 }
 
@@ -833,8 +934,578 @@ fn snort(r: &mut Rng) -> Vec<f32> {
     out
 }
 
+/// The wolf's vocal tract, as four formants: `(centre Hz, bandwidth Hz)`.
+///
+/// **Derived rather than picked.** Measured formant *dispersion* in large-dog
+/// growls is 671 ± 253 Hz (Faragó et al. 2010); for a uniform tube
+/// `dF = c / 2L`, so 671 Hz is a 26 cm tract — the 50 kg end of Riede &
+/// Fitch's radiographed range, which is where a wolf sits. Taking
+/// `dF = 680 Hz`, the formants are the odd multiples of `dF/2`: 340, 1020,
+/// 1700, 2380. The fifth (3060) is dropped — it is above where the energy is
+/// and it costs a filter.
+///
+/// The bandwidths are the one engineering choice here (no canid measurements
+/// are published) at Q ≈ 6–10.
+///
+/// Two consequences worth stating, because both are easy to get wrong:
+///
+/// - **Formants are fixed per animal and do not glide with F0.** They are a
+///   property of the throat, not of the note. `howl` moves its fundamental
+///   through a contour and leaves this table alone.
+/// - **This is what `Cue::pitch_var` is really varying.** A playback rate
+///   moves F0 *and* the formants together, which is exactly a differently
+///   sized animal — dogs judge body size off formant dispersion, so the
+///   ±12 % on a howl is not a detune, it is a bigger or smaller wolf.
+const WOLF_FORMANTS: [(f32, f32); 4] = [
+    (340.0, 60.0),
+    (1_020.0, 110.0),
+    (1_700.0, 180.0),
+    (2_380.0, 250.0),
+];
+
+/// How many harmonics a howl is built from. A wolf's howl carries harmonics
+/// up to the eighteenth, but the energy sits in the first eight once
+/// [`WOLF_FORMANTS`] has shaped it — past that the terms are below the breath
+/// noise and cost samples for nothing.
+const HOWL_HARMONICS: usize = 8;
+
+/// The vocal tract's response at one frequency, as an amplitude weight.
+///
+/// The source–filter model, evaluated analytically instead of run as a filter:
+/// a howl is built as a sum of harmonics at known frequencies, so the tract
+/// can be applied as a gain per harmonic rather than as four resonators over
+/// the whole buffer. Same model, no state, no chance of a filter ringing.
+///
+/// Each formant is a Lorentzian peak; the `1/f` term is the net spectral tilt
+/// of the textbook chain — −12 dB/oct at the glottis, +6 dB/oct from radiation
+/// at the mouth, so −6 dB/oct out.
+fn formant_gain(f: f32) -> f32 {
+    let mut g = 0.0;
+    for (centre, bw) in WOLF_FORMANTS {
+        let d = (f - centre) / bw;
+        g += 1.0 / (1.0 + d * d);
+    }
+    g * (WOLF_FORMANTS[0].0 / f.max(60.0))
+}
+
+/// The wolf's far voice: a swell that rises fast, wavers on a plateau, and
+/// falls away under where it started.
+///
+/// **The only sustained pitched cue in the bank**, and that is what makes it
+/// hard rather than easy. `bird` already found the trap one register up — a
+/// swept sine with no wobble reads as a kettle, not an animal — and a howl
+/// holds its note for three seconds where a chirp is gone in eighty
+/// milliseconds, so it has three seconds to sound like a test tone.
+///
+/// Every shape below is measured rather than chosen (Iberian-wolf and
+/// Indian-wolf howl corpora; Tooze/Harrington/Fentress 1990):
+///
+/// - **The contour is asymmetric, and that is the finding.** Maximum F0 falls
+///   in the first quarter of 79 % of howls and minimum F0 in the last quarter
+///   of 78 %, so it is a fast rise onto the note and a long terminal fall —
+///   not an arc. Roughly 260 Hz → 470 Hz by 18 % → drift → ~280 Hz.
+/// - **The waver is slow.** 1–15 inflexion points across a call of several
+///   seconds is 0.5–3 Hz, an order of magnitude under a singer's vibrato, at
+///   ±2–4 % of F0. A 5 Hz wobble is a theremin.
+/// - **The breaks are the highest-value detail.** Real howls carry 1–8
+///   *frequency discontinuities* — instantaneous steps of ±8–15 %, part of the
+///   nonlinear phenomena documented in canid howling. They are what stop the
+///   pitch reading as an envelope generator, because no LFO does that.
+/// - **Amplitude peaks early** (first half in 83 % of calls) and decays.
+///
+/// The harmonics are phase-integrated off the fundamental (see `sweep` — the
+/// one arithmetic trap in this file) rather than computed from an
+/// instantaneous frequency, so a moving pitch does not tear, and each one is
+/// weighted by [`formant_gain`] rather than by a `1/h` rule: the throat
+/// decides which harmonics are loud, and it is the same throat as the growl's.
+fn howl(r: &mut Rng) -> Vec<f32> {
+    let dur = 3.0f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    // The plateau pitch. 400–470 Hz brackets the Indian-wolf mean of
+    // 422 ± 126 Hz. Each wolf is its own animal before `Cue::pitch_var` ever
+    // gets to it: the bank holds one howl, so the spread that stops a chorus
+    // being a unison starts here and the playback rate widens it.
+    let root = 400.0 + r.unit() * 70.0;
+    // Three breaks, at drawn points in the plateau, each a step that persists
+    // until the next one — a discontinuity, not a bump.
+    let breaks: [(f32, f32); 3] = [
+        (0.30 + r.unit() * 0.08, 1.0 + (r.unit() - 0.5) * 0.24),
+        (0.46 + r.unit() * 0.08, 1.0 + (r.unit() - 0.5) * 0.24),
+        (0.60 + r.unit() * 0.06, 1.0 + (r.unit() - 0.5) * 0.24),
+    ];
+    let mut phase = [0.0f32; HOWL_HARMONICS];
+    let mut breath_lp = Lp::new(2_600.0);
+    let mut breath_hp = Lp::new(900.0);
+    for (i, v) in out.iter_mut().enumerate() {
+        let t = i as f32 / sr;
+        let u = t / dur;
+        // Rise over the first 18 %, hold to 72 %, then the terminal fall to
+        // 0.60 of the plateau — which ends *below* where the rise began, the
+        // shape that reads as a call ending rather than a note switched off.
+        let (shape, held) = if u < 0.18 {
+            (0.55 + 0.45 * smooth(u / 0.18), 0.0)
+        } else if u < 0.72 {
+            (1.0, 1.0)
+        } else {
+            (1.0 - 0.40 * smooth((u - 0.72) / 0.28), 0.0)
+        };
+        let waver = 1.0 + 0.03 * held * (std::f32::consts::TAU * 1.6 * t).sin();
+        let mut step = 1.0f32;
+        for (at, mult) in breaks {
+            if u >= at {
+                step = mult;
+            }
+        }
+        let f0 = root * shape * waver * step;
+        // Peaks at ~28 % and decays from there — never symmetric.
+        let env = attack(t, 0.22) * (1.0 - 0.75 * smooth(((u - 0.28) / 0.72).clamp(0.0, 1.0)));
+        let mut tone = 0.0f32;
+        for (h, ph) in phase.iter_mut().enumerate() {
+            let mult = h as f32 + 1.0;
+            let f = f0 * mult;
+            *ph += std::f32::consts::TAU * f / sr;
+            tone += ph.sin() * formant_gain(f);
+        }
+        // Breath under the tone: inaudible as noise, and the difference
+        // between an oscillator and a mouth. Under 5 %, per the corpus.
+        let x = r.noise();
+        let breath = {
+            let l = breath_lp.run(x);
+            l - breath_hp.run(l)
+        };
+        *v = (tone * 0.55 + breath * 0.045) * env * edges(i, n);
+    }
+    out
+}
+
+/// The wolf's near voice: low, rough and continuous.
+///
+/// Where the howl is a tone, this is a **texture** — but not a noise, and
+/// that is the correction the research forced. A growl is tonal-with-noise:
+/// dogs read body size off the *formant spacing* in a growl, which is
+/// impossible unless the source is periodic enough to excite resolvable
+/// formants (Faragó et al. 2010). So it is a pulse train through the same
+/// [`WOLF_FORMANTS`] the howl uses, with noise as a 15–30 % aperiodic layer
+/// over it — not filtered hiss with a hum underneath.
+///
+/// Three source facts, all measured:
+///
+/// - **F0 70–110 Hz.** Slow enough that the ear resolves individual glottal
+///   pulses, which is what "rough" is here. The rattle *is* the fundamental;
+///   there is no separate tremolo doing that job.
+/// - **Period doubling is the character.** Real growls drop intermittently
+///   into a regime where alternate pulses differ in amplitude, putting a
+///   subharmonic at F0/2 (35–55 Hz). It runs across the middle of the call
+///   and stops, because a growl that does it throughout is a synthesizer
+///   patch.
+/// - **The envelope is near-square**, with a shallow 4–8 Hz breath ripple.
+///   A growl does not swell like a howl; it is already happening when you
+///   hear it.
+///
+/// It must also be tellable from the howl with your back turned, which the
+/// shared formant bank does not do on its own — what separates them is that
+/// this source is an octave and a half lower and never moves.
+fn growl(r: &mut Rng) -> Vec<f32> {
+    let dur = 1.15f32;
+    let n = samples(dur);
+    let sr = SAMPLE_RATE as f32;
+    let mut out = vec![0.0f32; n];
+    // The tract, as four parallel resonators at equal weight — `Res::new`
+    // normalizes each to unity peak, so equal here means equal.
+    //
+    // **The spectral tilt lives on the SOURCE for this voice, not on the
+    // filter**, which is the one place the two halves of the shared model are
+    // expressed differently. `formant_gain` folds the −6 dB/oct into a
+    // per-harmonic weight because the howl is a harmonic sum with a known
+    // list of frequencies; a pulse train has no such list, so the same tilt
+    // has to be a filter on the source — and it has to be somewhere. A
+    // hard-edged pulse has infinite bandwidth and drives F2, F3 and F4 as
+    // hard as F1: the first cut of this function did exactly that and came
+    // out BRIGHTER than the howl, which
+    // `a_growl_is_the_darkest_voice_and_a_held_one` caught.
+    let mut tract: Vec<Res> = WOLF_FORMANTS
+        .iter()
+        .map(|&(centre, bw)| Res::new(centre, bw))
+        .collect();
+    // Two one-poles in series: −12 dB/oct above 260 Hz, the textbook glottal
+    // source spectrum. A real fold does not emit a sawtooth.
+    // The glottal pulse. `ph` walks in seconds and the period is redrawn each
+    // time it wraps, so no two cycles are the same length — 0.3–0.7 % jitter
+    // is what a real fold does and a fixed period is what a sawtooth does.
+    let mut glottis = [Lp::new(260.0), Lp::new(260.0)];
+    let mut ph = 0.0f32;
+    let mut period = 1.0 / 92.0;
+    let mut alternate = false;
+    for (i, v) in out.iter_mut().enumerate() {
+        let t = i as f32 / sr;
+        let u = t / dur;
+        // The doubled regime, across the middle 45 % of the call.
+        let doubling = (0.28..0.73).contains(&u);
+        ph += 1.0 / sr;
+        if ph >= period {
+            ph -= period;
+            period = 1.0 / (74.0 + r.unit() * 36.0);
+            alternate = !alternate;
+        }
+        // A narrow falling pulse rather than a full-width saw — 60 % duty,
+        // which is the buzzier source a growl needs. Amplitude alternates
+        // inside the doubled regime and does not outside it.
+        let frac = ph / period;
+        let pulse = if frac < 0.6 {
+            1.0 - frac / 0.6 * 2.0
+        } else {
+            -1.0
+        };
+        let level = if doubling && alternate { 0.6 } else { 1.0 };
+        let mut src = pulse * level;
+        for lp in glottis.iter_mut() {
+            src = lp.run(src);
+        }
+        // **The aperiodic layer is summed at the SOURCE, not over the
+        // output**, which is the textbook chain and was the second half of
+        // the same mistake: breath is made at the glottis, so the tract
+        // shapes it exactly as it shapes the pulse. Mixed in after the
+        // filters it is raw wideband hiss, and it then dominates the
+        // brightness of a sound whose whole character is that it is dark.
+        // Not low-passed with the pulse, because that rolloff describes the
+        // *pulse shape* and aspiration has none.
+        src += r.noise() * 0.20;
+        let mut voiced = 0.0f32;
+        for res in tract.iter_mut() {
+            voiced += res.run(src);
+        }
+        // ±3 dB at 6 Hz — breath across a held sound, not a tremolo.
+        let ripple = 0.85 + 0.15 * (std::f32::consts::TAU * 6.0 * t).sin();
+        // Near-square: 40 ms on, 80 ms off, sustained in between.
+        let env = attack(t, 0.040) * (1.0 - smooth(((u - 0.93) / 0.07).clamp(0.0, 1.0)));
+        *v = voiced * ripple * env * edges(i, n);
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Shaping and containers.
+// ---------------------------------------------------------------------------
+// The forest layer.
+// ---------------------------------------------------------------------------
+
+/// A bird call: three whistled chirps with a gap between them.
+///
+/// **Whistles, not noise bursts**, which is what separates this from every
+/// other cue in the bank: a footstep is filtered noise with an envelope and a
+/// bird is a near-pure tone that MOVES. The tell is the vibrato — a swept
+/// sine with no wobble in it reads as a kettle or a test tone, and 3 % at
+/// 38 Hz is enough to stop it.
+fn bird(r: &mut Rng) -> Vec<f32> {
+    let n = samples(0.62);
+    let mut out = vec![0.0f32; n];
+    // A rising call, a shorter answer, and a falling tail note. The spacing
+    // is jittered off the cue's own stream so the phrase is not three evenly
+    // spaced beeps — `Cue::pitch_var` then varies the whole call, but a
+    // rhythm inside it cannot come from a playback rate.
+    let base = 2_600.0 + r.unit() * 500.0;
+    chirp(&mut out, 0.00, 0.085, base * 0.82, base * 1.06, 1.0);
+    chirp(
+        &mut out,
+        0.15 + r.unit() * 0.03,
+        0.070,
+        base * 1.02,
+        base * 1.18,
+        0.85,
+    );
+    chirp(
+        &mut out,
+        0.30 + r.unit() * 0.04,
+        0.120,
+        base * 1.12,
+        base * 0.74,
+        0.7,
+    );
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// One whistled note: a frequency sweep with vibrato under a bell envelope.
+fn chirp(out: &mut [f32], start_s: f32, dur_s: f32, from_hz: f32, to_hz: f32, amp: f32) {
+    let sr = SAMPLE_RATE as f32;
+    let from = samples(start_s);
+    let n = samples(dur_s);
+    // Phase INTEGRATED, never `sin(2π f(t) t)` — `sweep`'s trap, one function
+    // up: that form sweeps at twice the rate asked for and lands an octave
+    // low.
+    let mut phase = 0.0f32;
+    for k in 0..n {
+        let Some(slot) = out.get_mut(from + k) else {
+            break;
+        };
+        let t = k as f32 / sr;
+        let u = k as f32 / n as f32;
+        let vib = 1.0 + 0.03 * (TAU * 38.0 * t).sin();
+        phase += TAU * (from_hz + (to_hz - from_hz) * u) * vib / sr;
+        // A bell, because a whistle has neither an attack transient nor a
+        // tail: it fades up and back down inside its own length.
+        *slot += (phase.sin() + 0.25 * (phase * 2.0).sin()) * (u * PI).sin() * amp;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The score. `sound::music` decides WHEN; this decides what it sounds like.
+// ---------------------------------------------------------------------------
+
+/// The key. A2, and everything in a piece is a semitone offset from it.
+const ROOT_HZ: f32 = 110.0;
+
+/// Beats per minute. Chosen so a section is a whole number of beats:
+/// `music::SECTION_S` is 8 s, which is exactly 12 beats at 90 — a piece is a
+/// phrase that ends where it should rather than a clip that stops.
+const BPM: f32 = 90.0;
+const BEAT_S: f32 = 60.0 / BPM;
+
+/// Each section's chord, as semitones from [`ROOT_HZ`].
+///
+/// A minor plagal turn — i, ♭VI, ♭VII — which is the most-used progression in
+/// survival and exploration scoring for a reason: it moves without resolving,
+/// so a song can be cut short at any section boundary (which is exactly what
+/// `music::Director` does) and never sound interrupted. **That property is
+/// the whole reason the progression is this one**: a cadence that wanted to
+/// land on the tonic would be a cadence the director keeps stepping on.
+const CHORDS: [[f32; 3]; music::SECTIONS] = [
+    [0.0, 3.0, 7.0],  // i   — A C E
+    [-4.0, 0.0, 3.0], // ♭VI — F A C
+    [-2.0, 2.0, 5.0], // ♭VII— G B D
+];
+
+/// The melody's note set: A minor pentatonic, two octaves up from the root.
+const PENT: [f32; 5] = [12.0, 15.0, 17.0, 19.0, 22.0];
+
+/// One piece: drone, pad, melody, and — at the top tier — a pulse, all under
+/// a reverb whose tail is what makes a cut from any piece to any other sound
+/// like a join.
+///
+/// The buffer is `music::PIECE_S` long and **no note starts after
+/// `music::SECTION_S`**. That is the arithmetic behind the reference's
+/// "pieces end with reverb tails and delays rather than looping cleanly": the
+/// last `music::TAIL_S` holds only what the reverb is still ringing out, so
+/// the next piece can start at the body's end and play over it.
+fn score(r: &mut Rng, section: usize, tier: music::Tier) -> Vec<f32> {
+    let n = samples(music::PIECE_S);
+    let body_s = music::SECTION_S;
+    let mut out = vec![0.0f32; n];
+    let sr = SAMPLE_RATE as f32;
+    let chord = CHORDS[section];
+
+    // How the tiers differ, in one table rather than in three branches. Every
+    // column is a knob (`DECISIONS.md` §open, "music v0") and none is
+    // measured — the ORDER is what is designed: each step up is denser,
+    // lower, and shorter-decayed than the one below it.
+    let (drone_amp, pad_amp, note_amp, decay_s, pulse_amp, subdiv) = match tier {
+        music::Tier::Calm => (0.30, 0.34, 0.30, 1.60, 0.00, 3),
+        music::Tier::Tense => (0.42, 0.28, 0.34, 0.90, 0.10, 2),
+        music::Tier::Combat => (0.55, 0.20, 0.38, 0.55, 0.34, 1),
+    };
+
+    // 1. The drone: root and fifth, detuned against each other so they beat
+    //    slowly. It is the only layer that is present in every sample of the
+    //    body, and it is what makes the nine pieces one theme.
+    for (i, v) in out.iter_mut().enumerate() {
+        let t = i as f32 / sr;
+        let env = attack(t, 1.2) * ((body_s - t) / 2.0).clamp(0.0, 1.0);
+        if env <= 0.0 {
+            continue;
+        }
+        let a = (TAU * ROOT_HZ * t).sin();
+        let b = (TAU * ROOT_HZ * 1.5 * 1.001 * t).sin() * 0.6;
+        // A third partial an octave down gives it a floor without adding a
+        // note: at 55 Hz it is felt more than heard.
+        let c = (TAU * ROOT_HZ * 0.5 * t).sin() * 0.5;
+        *v += (a + b + c) * env * drone_amp * 0.33;
+    }
+
+    // 2. The pad: the section's chord, slow in and slow out. This is the
+    //    layer that says WHICH section you are hearing.
+    for semis in chord {
+        pad(&mut out, hz(semis), pad_amp * 0.33, body_s, 0.0015);
+    }
+
+    // 3. The melody, on the beat grid. `subdiv` is how many beats apart the
+    //    slots are, so the tiers differ in density without differing in
+    //    tempo — a piece that changed tempo could not be cut against its
+    //    neighbours.
+    let beats = (body_s / BEAT_S).floor() as usize;
+    let mut prev = 2usize;
+    for b in (0..beats).step_by(subdiv) {
+        // Not every slot sounds: a rest is what stops a melody being a scale.
+        if r.unit() < 0.18 {
+            continue;
+        }
+        // Step to a neighbouring degree more often than leaping, which is
+        // the cheapest thing that makes a note sequence read as a line
+        // rather than as a draw.
+        let step = (r.next_u32() % 3) as i32 - 1;
+        prev = (prev as i32 + step).clamp(0, PENT.len() as i32 - 1) as usize;
+        let octave = if tier == music::Tier::Combat && r.unit() < 0.4 {
+            -12.0
+        } else {
+            0.0
+        };
+        pluck(
+            &mut out,
+            samples(b as f32 * BEAT_S),
+            hz(PENT[prev] + octave),
+            decay_s,
+            note_amp,
+        );
+        // The top tier answers itself a fifth up on the off-beat: one more
+        // voice, no new material.
+        if tier == music::Tier::Combat {
+            pluck(
+                &mut out,
+                samples((b as f32 + 0.5) * BEAT_S),
+                hz(PENT[prev] + 7.0),
+                decay_s * 0.6,
+                note_amp * 0.5,
+            );
+        }
+    }
+
+    // 4. The pulse: a low thump on every third beat, and only when there is
+    //    something to be tense about. It is the layer a player notices
+    //    arriving, which is the whole point of having tiers at all.
+    if pulse_amp > 0.0 {
+        for b in (0..beats).step_by(3) {
+            thump(&mut out, samples(b as f32 * BEAT_S), pulse_amp);
+        }
+    }
+
+    // 5. The tail. Everything above is dry; this is what rings past the body.
+    let mut out = reverb(&out, 0.38);
+    for (i, v) in out.iter_mut().enumerate() {
+        *v *= edges(i, n);
+    }
+    out
+}
+
+/// A semitone offset from [`ROOT_HZ`], in Hz.
+fn hz(semis: f32) -> f32 {
+    ROOT_HZ * (semis / 12.0).exp2()
+}
+
+/// A struck string: four harmonics, each decaying faster than the one below
+/// it. The cheapest thing that is not a sine and does not read as a beep.
+fn pluck(out: &mut [f32], start: usize, hz: f32, decay_s: f32, amp: f32) {
+    let sr = SAMPLE_RATE as f32;
+    // Rendered until it is inaudible rather than for a fixed length, so a
+    // note struck near the end of the body decays INTO the tail instead of
+    // being cut at the body's edge.
+    let n = samples(decay_s * 3.0);
+    for k in 0..n {
+        let Some(slot) = out.get_mut(start + k) else {
+            break;
+        };
+        let t = k as f32 / sr;
+        let mut v = 0.0;
+        // **One `exp` per sample, not four.** The h-th harmonic's envelope is
+        // `exp(-t·h/τ)`, which is `exp(-t/τ)` raised to h — so the four
+        // decays are successive multiplications of the first. Exactly the same
+        // arithmetic, a quarter of the transcendentals, and `exp` is as
+        // expensive as `sin` in the loop that dominates the whole bank's
+        // generation time.
+        let fall = (-t / decay_s).exp();
+        let mut decay = fall;
+        for h in 1..=4u32 {
+            let hf = h as f32;
+            // 1/h² amplitudes and a decay that scales with h: a bright
+            // attack that darkens as it falls, which is what a struck thing
+            // does and a sine does not.
+            v += (TAU * hz * hf * t).sin() * (1.0 / (hf * hf)) * decay;
+            decay *= fall;
+        }
+        *slot += v * attack(t, 0.005) * amp;
+    }
+}
+
+/// A slow chord voice: two detuned sines swelling in and back out over the
+/// body.
+fn pad(out: &mut [f32], hz: f32, amp: f32, body_s: f32, detune: f32) {
+    let sr = SAMPLE_RATE as f32;
+    for (i, v) in out.iter_mut().enumerate() {
+        let t = i as f32 / sr;
+        let env = attack(t, 2.0) * ((body_s - t) / 1.5).clamp(0.0, 1.0);
+        if env <= 0.0 {
+            continue;
+        }
+        let a = (TAU * hz * t).sin();
+        let b = (TAU * hz * (1.0 + detune) * t).sin();
+        *v += (a + b) * 0.5 * env * amp;
+    }
+}
+
+/// The pulse: a pitch-dropping sine with a noise transient on it.
+fn thump(out: &mut [f32], start: usize, amp: f32) {
+    let sr = SAMPLE_RATE as f32;
+    let dur = 0.34;
+    let n = samples(dur);
+    let mut phase = 0.0f32;
+    for k in 0..n {
+        let Some(slot) = out.get_mut(start + k) else {
+            break;
+        };
+        let t = k as f32 / sr;
+        // 92 Hz falling to 45 over the first tenth of a second. Integrated,
+        // for `chirp`'s reason.
+        let f = 45.0 + 47.0 * (-t / 0.045).exp();
+        phase += TAU * f / sr;
+        *slot += phase.sin() * (-t / 0.10).exp() * attack(t, 0.003) * amp;
+    }
+}
+
+/// A Schroeder reverb — four parallel combs into two series allpasses.
+///
+/// **The tail is not decoration; it is the mechanism.** `reference/AUDIO.md`
+/// §8: pieces end with reverb tails rather than looping cleanly, and the
+/// stated reason is that it lets the system cut from any piece to any other
+/// in any order without stopping playback and without fading. Everything
+/// `music::Director` does about transitions rests on there being ~2.5 s of
+/// ring-out after the last note.
+///
+/// The delays are mutually prime-ish in samples so the combs do not reinforce
+/// into a ringing pitch; the feedback is sized for a ~2.3 s RT60 at this
+/// sample rate, which is what fills `music::TAIL_S`.
+fn reverb(dry: &[f32], wet: f32) -> Vec<f32> {
+    const COMBS: [(usize, f32); 4] = [(1557, 0.90), (1617, 0.89), (1491, 0.90), (1422, 0.89)];
+    const ALLPASS: [(usize, f32); 2] = [(225, 0.5), (556, 0.5)];
+    let mut acc = vec![0.0f32; dry.len()];
+    for (len, fb) in COMBS {
+        let mut buf = vec![0.0f32; len];
+        let mut i = 0usize;
+        for (k, x) in dry.iter().enumerate() {
+            let y = buf[i];
+            buf[i] = x + y * fb;
+            i = (i + 1) % len;
+            acc[k] += y * 0.25;
+        }
+    }
+    for (len, g) in ALLPASS {
+        let mut buf = vec![0.0f32; len];
+        let mut i = 0usize;
+        for v in acc.iter_mut() {
+            let d = buf[i];
+            let y = d - g * *v;
+            buf[i] = *v + g * d;
+            i = (i + 1) % len;
+            *v = y;
+        }
+    }
+    dry.iter()
+        .zip(acc.iter())
+        .map(|(d, w)| d * (1.0 - wet) + w * wet)
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 
 fn samples(secs: f32) -> usize {
@@ -849,6 +1520,18 @@ fn attack(time: f32, attack_s: f32) -> f32 {
     } else {
         (time / attack_s).clamp(0.0, 1.0)
     }
+}
+
+/// Smoothstep on [0, 1] — `3x² − 2x³`, flat at both ends.
+///
+/// Used where a shape has to *arrive* rather than change direction: a howl's
+/// rise onto its note and its fall off it are both this, and a linear ramp
+/// there is audible as a corner in the pitch. `attack` is deliberately linear
+/// and stays so — an amplitude ramp of a few milliseconds has no corner to
+/// hear, and this is for the ones that last a third of a second.
+fn smooth(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }
 
 /// Short fades at both ends of a buffer: 0.5 ms in, 4 ms out.

@@ -1,8 +1,9 @@
 //! Reaching the scry launcher — identity and signatures, with no key in this
 //! process and no crate added to the tree.
 //!
-//! `scry_overlay.rs` beside this file is **vendored byte-for-byte** from the
-//! scry repo, `sdk/rust/scry_overlay.rs` (first vendored 2026-08-05). It is
+//! `scry_overlay.rs` beside this file is **vendored byte-for-byte** from
+//! `sdk/rust/scry_overlay.rs` in **`AnthonE/scry-forge`** (first vendored
+//! 2026-08-05; this line said `AnthonE/scry` until 2026-08-14, see below). It is
 //! `std`-only by design, so vendoring costs nothing and adds no dependency —
 //! which is the whole reason that file was written the way it was.
 //!
@@ -33,9 +34,19 @@
 //!
 //! ```text
 //! sha256sum crates/client/src/scry_overlay.rs
-//! # must appear in sdk/SHA256SUMS in AnthonE/scry — if it does not, upstream
-//! # has moved: re-vendor, re-pin, and run the client's tests.
+//! # must appear in sdk/SHA256SUMS in AnthonE/scry-forge — if it does not,
+//! # upstream has moved: re-vendor, re-pin, and run the client's tests.
 //! ```
+//!
+//! ⚠ **Run that check against `AnthonE/scry-forge`, and against nothing else.**
+//! There are two repos holding an `sdk/` and they are not the same file.
+//! `scry-forge` is where the SDK is edited and where the launcher is built;
+//! **`AnthonE/scryward` is the public mirror of the open half and it lags.**
+//! On 2026-08-14 the mirror still published `3a81c70…` while the source had
+//! moved to `3df3d41a…`, so checking the pin against the mirror returned a
+//! clean match over a copy two days stale — a **false green**, which is worse
+//! than the drift it was run to find. The mirror is the wrong side of a check
+//! whose whole job is to notice that upstream moved.
 //!
 //! That file did not exist until this re-vendor asked for it, and neither did
 //! the two upstream checks beside it (`sdk/test_sdk.py` §what a vendoring game
@@ -49,6 +60,17 @@
 //! (`Option<Value>` → `Option<String>`) and nothing here calls it, which is
 //! luck rather than design — check the call sites, not just the compile, on
 //! the next one.
+//!
+//! Re-vendored again 2026-08-14 (`3a81c70…` → `3df3d41a…`), and the next one
+//! was the same shape: **[`play_message`] changed the message a wallet signs**,
+//! its second field going from `vow: {vow_id}` to `wallet: {wallet}` with the
+//! address lowercased (upstream, 2026-08-12 — a checksummed address is
+//! different bytes and verifies differently). That is a signed-format change,
+//! not a rename: a client on the old string and a server on the new one
+//! disagree about what was signed, and both compile. It cost us nothing only
+//! because [`play_message`] is re-exported below and **called nowhere in this
+//! tree** — luck for the second re-vendor running. The drift also carried the
+//! doc-path fix `docs/SDK.md` → `docs/client/SDK.md`.
 //!
 //! ## What the launcher is for, and what it is not
 //!
@@ -90,17 +112,23 @@
 #[path = "scry_overlay.rs"]
 pub mod overlay;
 
-pub use overlay::{play_message, Overlay, SignError, Signature};
+pub use overlay::{play_message, Overlay, Proof, SignError, Signature};
 
 /// This game's slug in the scry catalog — the key its manifest, its depot and
 /// its shard list are all filed under.
-pub const SLUG: &str = "gates";
+///
+/// Re-exported from `protocol` rather than declared here: it also reaches the
+/// signed bytes of a login (the launcher writes it into the SIWE statement),
+/// so the shard needs the same spelling and two constants would be two
+/// chances to disagree.
+pub use protocol::SLUG;
 
-/// sha256 of the vendored `scry_overlay.rs`, byte-for-byte as it ships in the
-/// scry repo. Regenerate ONLY when re-vendoring an upstream change:
+/// sha256 of the vendored `scry_overlay.rs`, byte-for-byte as it ships in
+/// `AnthonE/scry-forge` (the source — **not** the `AnthonE/scryward` mirror,
+/// which lags). Regenerate ONLY when re-vendoring an upstream change:
 /// `sha256sum crates/client/src/scry_overlay.rs`.
 pub const VENDORED_SHA256: &str =
-    "3a81c7020ef166702d34f4dd5708e1782df0adc75b09d7aa679915e2deab93cd";
+    "4b97954b04c2378bff16e0e4d8b55cdf6981c9d698f8442bdc7ccc71bac97dec";
 
 /// Who is playing, and how we came to believe it. The variants are kept
 /// distinct because they carry different weight and a single `Option<String>`
@@ -205,8 +233,72 @@ impl Scry {
         }
     }
 
+    /// Ask the launcher to prove who is playing, to one server, over one
+    /// nonce, at one instant.
+    ///
+    /// The verb [`sign`](Self::sign) cannot do: the launcher composes the
+    /// whole SIWE message, so **no consent prompt fires** and a game cannot
+    /// put words in it. `issued_at` is the shard's own second, passed through
+    /// so the shard can rebuild the exact bytes it must verify — without it
+    /// the launcher stamps its own clock and no server can recompute the
+    /// message at all.
+    ///
+    /// ⚠ Still not for a frame system: it is a blocking round trip over a
+    /// local socket.
+    pub fn prove_at(
+        &mut self,
+        server: &str,
+        nonce: &str,
+        issued_at: Option<i64>,
+    ) -> Result<Proof, SignError> {
+        match self.overlay.as_mut() {
+            Some(ov) => ov.prove_at(server, nonce, issued_at),
+            None => Err(SignError::NoLauncher("no scry launcher is running".into())),
+        }
+    }
+
     pub fn connected(&self) -> bool {
         self.overlay.is_some()
+    }
+
+    /// Where this title's manifest lives — the document naming its news,
+    /// store and workshop pages (`crate::manifest`).
+    ///
+    /// ⚠ **A URL, not the document.** The launcher does not proxy a game's
+    /// own files; `Overlay::title` says so in full, and the same rule already
+    /// governs `servers_url`. The caller fetches it, capped, off the frame.
+    ///
+    /// ⚠ **Not from a frame system.** One round trip over a local socket is
+    /// cheap — the SDK calls `overlay()` cheap enough to poll every frame —
+    /// but this runs beside the boot handshake on a thread anyway, and the
+    /// habit is worth more than the microseconds.
+    pub fn title_url(&mut self) -> Option<String> {
+        self.overlay.as_mut()?.title(SLUG)
+    }
+
+    /// Ask the launcher to open a page in the player's browser.
+    ///
+    /// **This is how NEWS, ITEM STORE and WORKSHOP work, and the handoff is
+    /// the point rather than a shortcut.** A game draws its own pixels, so it
+    /// can draw a convincing fake of any dialog — the SDK's warning on
+    /// `Overlay::overlay`, in those words. A checkout drawn by a game teaches
+    /// players that a checkout drawn by a game is normal, and the next one
+    /// they see will be a forgery. So the money door is the launcher's.
+    ///
+    /// Returns whether the launcher accepted it. `false` covers both "no
+    /// launcher" and "it declined", and the caller says so rather than
+    /// pretending the click worked — a button that silently does nothing is
+    /// the worst of the three outcomes.
+    ///
+    /// The URL is checked against `manifest::check_url` **by the caller**,
+    /// before it ever reaches here, because that is where a bad one is worth
+    /// reporting; this is the last mile and the launcher has its own opinion
+    /// too.
+    pub fn open(&mut self, url: &str) -> bool {
+        match self.overlay.as_mut() {
+            Some(ov) => ov.open_url(url),
+            None => false,
+        }
     }
 }
 
@@ -226,7 +318,7 @@ mod tests {
             sha256_hex(bytes),
             VENDORED_SHA256,
             "crates/client/src/scry_overlay.rs has been edited. It is VENDORED from \
-             AnthonE/scry sdk/rust/scry_overlay.rs — fix it there and re-vendor, or \
+             AnthonE/scry-forge sdk/rust/scry_overlay.rs — fix it there and re-vendor, or \
              every other game keeps the broken version. If this IS a re-vendor, \
              update scry::VENDORED_SHA256 in the same commit."
         );
@@ -352,10 +444,16 @@ mod tests {
 /// r ‖ s ‖ v. A short or long one is refused rather than padded, because a
 /// padded signature recovers a *different* address, and the failure would
 /// present as "the shard says I am somebody else".
-pub fn sign_siwe(text: &str) -> Option<protocol::Signature> {
+pub fn sign_siwe(domain: &str, nonce: &str, issued_at: u64) -> Option<protocol::Signature> {
     let mut scry = Scry::discover(None, env!("CARGO_PKG_VERSION"));
-    let sig = scry.sign(text, "sign in to this Gates shard").ok()?;
-    parse_signature(&sig.signature)
+    let proof = scry
+        .prove_at(domain, nonce, i64::try_from(issued_at).ok())
+        .ok()?;
+    // The echoed `message` is deliberately ignored. The SDK says it is for
+    // logging and that a verifier must recompute — and here the verifier is
+    // the shard, which does exactly that. Reading it would be trusting the
+    // thing we are checking.
+    parse_signature(&proof.signature)
 }
 
 /// `0x…` hex → 65 bytes. Refuses anything else.

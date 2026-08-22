@@ -26,9 +26,9 @@
 #
 # `crate` had no spawn site at all until the pad placed `Occupant::CrateSlot`
 # (TERRAIN.md §1 stage 8): it was parsed, validated and content-hashed with
-# nothing in the world able to produce its container. Neither it nor `cache`
-# is openable — no verb opens a container yet — so this is reachable content
-# ahead of reachable loot, and the verb is the systems lane's.
+# nothing in the world able to produce its container. Both are **openable
+# since world containers v0** (2026-08-14, `sim-core/worldcont.rs`), so these
+# two tables are reachable loot and not merely reachable content.
 
 [[loot_table]]
 id = "loot.barrel"

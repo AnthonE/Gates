@@ -1,6 +1,6 @@
 [package]
 name = "client"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -47,14 +47,67 @@ name = "gates"
 path = "src/bin/gates.rs"
 required-features = ["render"]
 
+# The rig bench (`src/bin/modelview.rs`): a glTF loaded against the sim's own
+# 1.8 m capsule, its clips listed by name, nothing connected. It links Bevy and
+# NO client code, so it costs a link rather than a build — which is the whole
+# reason it lives here rather than in a crate of its own, where a second Bevy
+# feature set would rebuild several hundred crates to say the same thing.
+# Not a gate and not run by CI: `CLAUDE.md` says a person looking IS the
+# visual gate, and this is the bench that person looks at.
+[[bin]]
+name = "modelview"
+path = "src/bin/modelview.rs"
+required-features = ["render"]
+
+# The CPU cost probe (`examples/frame_cost.rs`): what a streaming frame spends
+# on the ground, the population and the sea. Not a gate and never will be — it
+# reports elapsed time, and a gate that waits on a clock is not a gate on this
+# box. It exists so `findings/client-frame-20260819.md`'s numbers can be
+# re-run rather than trusted, which is that directory's one rule.
+[[example]]
+name = "frame_cost"
+path = "examples/frame_cost.rs"
+required-features = ["render"]
+
 # The fell gate needs the render module, so it carries the same requirement
 # the binary does — and therefore runs in the renderer tier, not the code one.
 # The conifer's bounds gate: pure geometry, headless, no GPU — but it imports
 # `render::tree`, so it carries the same feature requirement and runs in the
 # renderer tier.
+# The report key's arithmetic: what a player may choose and that every screen
+# has a name. Headless — it draws nothing — but it imports `render::`, so it
+# carries the same requirement the binary does.
+[[test]]
+name = "report_key"
+path = "tests/report_key.rs"
+required-features = ["render"]
+
 [[test]]
 name = "tree"
 path = "tests/tree.rs"
+required-features = ["render"]
+
+# The tree LOD's spawn-site gate: it drives `props::spawn_slot` against a real
+# `World` and reads back what reached the ECS, which is the one thing a mesh
+# measurement cannot see. Same tier and same requirement as the suite above.
+[[test]]
+name = "tree_lod"
+path = "tests/tree_lod.rs"
+required-features = ["render"]
+
+# The graphics ladder: its top rung against the frame that shipped, the rungs
+# against each other, and one headless run of the applier that proves the
+# table reaches the ECS.
+[[test]]
+name = "quality"
+path = "tests/quality.rs"
+required-features = ["render"]
+
+# The pipeline prewarm: that every material gets a draw, that the draw wears
+# the layout the game wears, that it is under a pixel, and that it leaves.
+[[test]]
+name = "prewarm"
+path = "tests/prewarm.rs"
 required-features = ["render"]
 
 # The build ghost's doorway against the sim's own `doorway_solid_at`. Pure
@@ -66,8 +119,63 @@ path = "tests/ghost.rs"
 required-features = ["render"]
 
 [[test]]
+name = "lattice_geom"
+path = "tests/lattice_geom.rs"
+required-features = ["render"]
+
+[[test]]
 name = "fell"
 path = "tests/fell.rs"
+required-features = ["render"]
+
+# The ground streamer's move onto `AsyncComputeTaskPool`: that the loading
+# bar's flag still means "the island is in the world" and that a chunk is
+# never queued twice. Runs `terrain_mesh::stream` on a bare `App` with
+# `MinimalPlugins` — no window, no GPU, no socket — so it is `tests/music.rs`'
+# shape applied to the streamer, and it carries the feature for the same
+# reason every other renderer-tier suite does.
+[[test]]
+name = "ground_async"
+path = "tests/ground_async.rs"
+required-features = ["render"]
+
+# The two run conditions that stopped a per-frame sweep, held against
+# `client_core`'s own published `APPLIED*` surface rather than against a
+# hand-kept copy of it. Pure text and arithmetic — no App, no GPU — but it
+# imports `render::structures` and `render::props`, so it carries the feature.
+[[test]]
+name = "frame_gates"
+path = "tests/frame_gates.rs"
+required-features = ["render"]
+
+# The player rig against what `render/anim.rs` assumes about it: the clip names
+# it resolves, the height it measured, the stand-up rotation the import writes,
+# one material, KTX2 textures. Headless arithmetic over the GLB's JSON chunk —
+# but it imports `render::anim` for `Clip::name`, so it carries the feature and
+# runs in the renderer tier.
+[[test]]
+name = "rig_asset"
+path = "tests/rig_asset.rs"
+required-features = ["render"]
+
+# The remote head override: that the pitch axis is DERIVED from the rig rather
+# than typed, and that the delta does not accumulate on a clip which never
+# touches the head. Runs `anim`'s systems on a bare `App` over a hand-built
+# hierarchy — no window, no GPU, no assets — so it is `tests/music.rs`'s shape
+# and runs in the renderer tier.
+[[test]]
+name = "head_look"
+path = "tests/head_look.rs"
+required-features = ["render"]
+
+# The screenshot key's wiring: that `render/shot.rs`'s system is scheduled,
+# resolves its parameters, and tells the player the truth about whether the
+# file landed. No window and no GPU — but it runs Bevy systems on a bare
+# `App`, so it carries the feature and runs in the renderer tier.
+# `src/shot.rs`'s own unit tests are the code-tier half.
+[[test]]
+name = "shot"
+path = "tests/shot.rs"
 required-features = ["render"]
 
 # The sea's arithmetic: the wave set's steepness, the Nyquist rule that retires
@@ -80,6 +188,26 @@ name = "water"
 path = "tests/water.rs"
 required-features = ["render"]
 
+# The sea's snap carry: that sliding the last sweep's answers across a
+# `SNAP_M` crossing produces the same grid, bit for bit, as building one from
+# scratch there. Runs `water::stream` on a bare `App` — no window, no GPU, no
+# socket — and is the evidence for a claim `NOW.md` §0pf item 2 got backwards.
+[[test]]
+name = "water_carry"
+path = "tests/water_carry.rs"
+required-features = ["render"]
+
+# The sky fill's arithmetic: that it is a hemisphere rather than the
+# direction-free term Bevy's `AmbientLight` is, that its earth half is the
+# island's own measured albedo, and that the baked cubemap's FACES agree with
+# the model. No GPU and no window — but it imports `render::fill` and links
+# Bevy for `Image` and `Vec3`, so it carries the feature and runs in the
+# renderer tier.
+[[test]]
+name = "fill"
+path = "tests/fill.rs"
+required-features = ["render"]
+
 # The handedness gate. Pure arithmetic and no GPU, but it checks the client's
 # right-vector against BEVY's `Transform` basis rather than against a restated
 # identity, so it links Bevy and carries the feature — `crate::look`'s own unit
@@ -88,6 +216,67 @@ required-features = ["render"]
 name = "look"
 path = "tests/look.rs"
 required-features = ["render"]
+
+# The score's Bevy half: that the two music systems RUN, on a bare `App` with
+# no window, no device and its own clock. `tests/sound.rs` owns the director's
+# rules in the code tier; this owns the wiring, which is the half that has cost
+# this repo a run before (`render/audio::build_bank`'s header). Links Bevy, so
+# it carries the feature and runs in the renderer tier.
+[[test]]
+name = "music"
+path = "tests/music.rs"
+required-features = ["render"]
+
+# The day/night cycle: the sun curve as arithmetic, plus `rig::day_night`
+# actually reaching the sun and the ambient on a bare `App` — `music.rs`'
+# shape, applied to the coupled lighting set (day/night v0).
+[[test]]
+name = "daynight"
+path = "tests/daynight.rs"
+required-features = ["render"]
+
+# The sun: that the vector Bevy uploads for the `N·L` term IS the vector its
+# atmosphere draws the disc from, that a caster's shadow falls away from it,
+# and that `sky.rs`'s cloud deck marches along the same one. Convention-free —
+# signs, ratios and a monotonic sweep — because which compass point `+X` is is
+# an open question one file over (`NOW.md` §0gj). Pure arithmetic, no GPU.
+[[test]]
+name = "sun"
+path = "tests/sun.rs"
+required-features = ["render"]
+
+# Where the green goes: the material-side chain's hue invariance, the detail
+# map's neutrality, and the moisture-band mosaic that explains why three
+# visual reports called the island one painted material. Pure arithmetic plus
+# one JPEG decode — no GPU and no window — but it imports
+# `render::terrain_mesh`, so it carries the feature and runs in the renderer
+# tier.
+[[test]]
+name = "ground_where_the_green_goes"
+path = "tests/ground_where_the_green_goes.rs"
+required-features = ["render"]
+
+# The ground mix's WINDOW. `fill::GROUND_MIX` and `GROUND_ALBEDO`'s granite
+# paragraph were both derived over `-1024..1024` on a world that runs `0..2048`
+# — the quadrant `CLAUDE.md`'s trap list retracted for the relief sweep, still
+# live on the client side. This walks the whole world square, reproduces the
+# retracted window's own numbers so the retraction is checked rather than
+# remembered, and pins what the capture spawn's near field is actually made of.
+# Pure arithmetic over `sim_core::terrain`, no GPU — but it imports
+# `render::fill`, so it carries the feature.
+[[test]]
+name = "ground_mix"
+path = "tests/ground_mix.rs"
+required-features = ["render"]
+
+# `image` is a dev-dep and NOT a dependency, deliberately. The client never
+# decodes an image itself — `bevy_image` does that behind the asset server —
+# and the one place we need a decoder is a gate that opens a shipped .jpg to
+# check it is the luminance-only field its doc comment claims. Same version
+# Bevy already resolves, so no second copy is linked, and `default-features =
+# false` + `jpeg` keeps it to the one format `assets/textures/` ships.
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
 [dependencies]
 # Default features for now. Trimming is still a follow-up — but the list of
@@ -141,7 +330,27 @@ required-features = ["render"]
 # was played. Vorbis is the wrong answer here — we are the encoder, and pulling
 # a Vorbis encoder in to compress a buffer that was generated in memory and is
 # decoded back in memory buys nothing.
-bevy = { version = "0.18", optional = true, features = ["jpeg", "wav"] }
+#
+# `ktx2` + `basis-universal` + `zstd_rust` are the GPU-compressed texture path,
+# added 2026-08-11 for `assets/models/`. **The problem they solve is VRAM, and
+# only a compressed-in-VRAM format solves it**: a JPEG is decompressed to full
+# RGBA8 on the GPU, so a 2048² map costs 16.8 MB of video memory whatever it
+# weighs on disk, and twelve props at three maps each is ~600 MB of texture
+# alone. `ci/ktx_pack.py` encodes UASTC at 1024 and rewrites the `.glb` to
+# reference it through `KHR_texture_basisu`; `basis-universal` is what
+# transcodes that to the GPU's own format at load, and without it the loader
+# has the container and not the codec. `zstd_rust` over `zstd_c` deliberately:
+# the C path wants a system library on a box that may not have one, and this
+# runs once per texture at load rather than per frame.
+# Same failure shape as `jpeg` above and worth stating in the same breath: a
+# missing feature here does not fail the build, it draws the white fallback.
+bevy = { version = "0.18", optional = true, features = [
+    "jpeg",
+    "wav",
+    "ktx2",
+    "basis-universal",
+    "zstd_rust",
+] }
 # The shard list (`scry-shardlist-v1`, docs/LAUNCHER.md §6 in AnthonE/scry).
 # `rustls` rather than a system TLS: the same reason wtransport carries its
 # own — one trust store the build controls, on a box that may have no
@@ -182,6 +391,23 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-ut
 # NETCODE.md §2.2): crates.io tops out at 0.7.1, which has the two-byte
 # remote panic. The client speaks the identical transport the browser does,
 # so no server change is owed to this crate.
+#
+# **`dangerous-configuration` buys exactly ONE call now, and it is the
+# loopback carve-out** (operator, DECISIONS.md 2026-08-10). It used to gate
+# the client's whole trust posture — `with_no_cert_validation()` on every
+# connect, on every player binary — and the validating paths that replaced it
+# need nothing from this feature: `with_native_certs` and
+# `with_server_certificate_hashes` are both unconditional in the pinned rev.
+# So the feature could not simply be dropped, but what it now enables is a
+# single arm of a `match` on the address being dialled (`src/lib.rs`), gated
+# by `crates/server/tests/tls_posture.rs`.
+#
+# **Removing it here would not be a compile gate anyway**, which is why the
+# gate is a test: `cargo … --workspace` unifies features, the server asks for
+# `dangerous-configuration` too, and the dangerous call would keep compiling
+# in client code with this line deleted. `ci/gates.sh`'s `-p client` clippy
+# line is the only place a manifest change would bite, and a wall that only
+# holds under one of two invocations is not a wall.
 wtransport = { git = "https://github.com/BiagioFesta/wtransport", rev = "a11e6a8e7ff33c6eef522d308007da55d1df9f81", features = [
     "dangerous-configuration",
     "quinn",

@@ -13,6 +13,18 @@ members = [
 edition = "2021"
 license = "MIT"
 publish = false
+# **The one place a version number is typed.** Every crate inherits it with
+# `version.workspace = true`, so a release is this line plus a tag and nothing
+# else — there is no second copy to forget. `protocol::version` reads it back
+# out of `CARGO_PKG_VERSION` at compile time, which is what the client prints
+# in its corner and what the shard's minimum-client gate compares against, so
+# bumping here moves the displayed build, the wire's `ver` field and the depot
+# id together. `ci/depot.py` reads the same value off `crates/client`.
+#
+# Semver, and the middle field is where alpha work lands: the wire's own
+# compatibility is `PROTO_VER`, not this, so this number is free to describe
+# the *release* rather than the packet layout.
+version = "0.5.0"
 
 # Release profile keeps debug assertions off but stays deterministic: no
 # fast-math anywhere, ever. opt-level 3 + thin LTO for the wasm artifact size.

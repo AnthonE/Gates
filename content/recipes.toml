@@ -1,5 +1,6 @@
 # Gates · content/recipes.toml — the craft ladder (CONTENT.md §1/§2).
-# station: none | workbench1 | furnace. `count` is the output quantity per
+# station: none | workbench1 | workbench2 | workbench3 | furnace (the bench
+# ladder, bench ladder v0). `count` is the output quantity per
 # craft. Components (gears/rope/tarp) and fat have no recipe: barrel-only,
 # priced for the balance math by balance.toml `component_minutes`.
 
@@ -11,7 +12,7 @@ output = "item.rock"
 count = 1
 station = "none"
 seconds = 3
-inputs = [{ item = "item.stone", count = 15 }]
+inputs = [{ item = "item.stone", count = 10 }]
 
 [[recipe]]
 id = "recipe.torch"
@@ -21,7 +22,8 @@ station = "none"
 seconds = 5
 inputs = [
     { item = "item.wood", count = 30 },
-    { item = "item.cloth", count = 10 },
+    { item = "item.cloth", count = 1 },
+    { item = "item.lowgrade", count = 1 },
 ]
 
 [[recipe]]
@@ -30,7 +32,7 @@ output = "item.spear_wood"
 count = 1
 station = "none"
 seconds = 10
-inputs = [{ item = "item.wood", count = 120 }]
+inputs = [{ item = "item.wood", count = 300 }]
 
 [[recipe]]
 id = "recipe.hatchet_stone"
@@ -39,8 +41,8 @@ count = 1
 station = "none"
 seconds = 15
 inputs = [
-    { item = "item.wood", count = 100 },
-    { item = "item.stone", count = 50 },
+    { item = "item.wood", count = 200 },
+    { item = "item.stone", count = 100 },
 ]
 
 [[recipe]]
@@ -50,8 +52,8 @@ count = 1
 station = "none"
 seconds = 15
 inputs = [
-    { item = "item.wood", count = 100 },
-    { item = "item.stone", count = 50 },
+    { item = "item.wood", count = 200 },
+    { item = "item.stone", count = 100 },
 ]
 
 [[recipe]]
@@ -68,7 +70,7 @@ inputs = [
 [[recipe]]
 id = "recipe.arrow_wood"
 output = "item.arrow_wood"
-count = 3
+count = 2
 station = "none"
 seconds = 5
 inputs = [
@@ -82,7 +84,7 @@ output = "item.bandage"
 count = 1
 station = "none"
 seconds = 5
-inputs = [{ item = "item.cloth", count = 20 }]
+inputs = [{ item = "item.cloth", count = 4 }]
 
 [[recipe]]
 id = "recipe.sleeping_bag"
@@ -90,7 +92,7 @@ output = "item.sleeping_bag"
 count = 1
 station = "none"
 seconds = 15
-inputs = [{ item = "item.cloth", count = 60 }]
+inputs = [{ item = "item.cloth", count = 30 }]
 
 [[recipe]]
 id = "recipe.box_small"
@@ -106,10 +108,7 @@ output = "item.fire_pit"
 count = 1
 station = "none"
 seconds = 10
-inputs = [
-    { item = "item.wood", count = 100 },
-    { item = "item.stone", count = 50 },
-]
+inputs = [{ item = "item.wood", count = 100 }]
 
 # Hand-craftable T1 shells: the starter base must not gate on a workbench.
 
@@ -121,7 +120,46 @@ station = "none"
 seconds = 60
 inputs = [
     { item = "item.wood", count = 500 },
-    { item = "item.stone", count = 100 },
+    { item = "item.metal_frags", count = 100 },
+]
+
+# The bench ladder (bench ladder v0): each rung is crafted AT the rung
+# below, which is the reference's own shape and the whole progression —
+# the satchel is not gated by its own price so much as by the two benches
+# standing in front of it. Costs are the pre-Oct-2025 scrap-era **ratios**
+# over our own T1 research row: their WB2 was 6.7× a T1 research and WB3
+# 16.7×, ours are 125 and 300 against the 20-obol T1 row. That the ratio
+# is what was taken is what makes this row survive 2026-08-18, when the
+# recycler's yields became theirs (`reference/RIPLIST.md` §1f): the
+# faucet tripled, our T1 research row did not move, and a multiple of an
+# unmoved row does not move either. The clause it used to carry — the
+# ratios "scaled onto our faucet (~0.85 obol/barrel against their ~10
+# scrap)" — is struck, because **the ~10 was never measured**; their
+# barrel pays ~2.42 and ours now pays 2.727, so no scaling is applied to
+# anything here. Their 20/100 HQM line has no equivalent
+# here (no HQM tier — `reference/RIPLIST.md` §3) and is refused, not
+# substituted; the frags line carries their frags line as written.
+# DECISIONS.md §open "bench ladder v0" is the knob row.
+[[recipe]]
+id = "recipe.workbench2"
+output = "item.workbench2"
+count = 1
+station = "workbench1"
+seconds = 60
+inputs = [
+    { item = "item.metal_frags", count = 500 },
+    { item = "item.obol", count = 125 },
+]
+
+[[recipe]]
+id = "recipe.workbench3"
+output = "item.workbench3"
+count = 1
+station = "workbench2"
+seconds = 60
+inputs = [
+    { item = "item.metal_frags", count = 1000 },
+    { item = "item.obol", count = 300 },
 ]
 
 [[recipe]]
@@ -130,10 +168,7 @@ output = "item.hearth"
 count = 1
 station = "none"
 seconds = 30
-inputs = [
-    { item = "item.wood", count = 300 },
-    { item = "item.stone", count = 100 },
-]
+inputs = [{ item = "item.wood", count = 1000 }]
 
 [[recipe]]
 id = "recipe.door_wood"
@@ -141,7 +176,7 @@ output = "item.door_wood"
 count = 1
 station = "none"
 seconds = 15
-inputs = [{ item = "item.wood", count = 200 }]
+inputs = [{ item = "item.wood", count = 300 }]
 
 [[recipe]]
 id = "recipe.building_plan"
@@ -149,7 +184,7 @@ output = "item.building_plan"
 count = 1
 station = "none"
 seconds = 5
-inputs = [{ item = "item.wood", count = 50 }]
+inputs = [{ item = "item.wood", count = 20 }]
 
 [[recipe]]
 id = "recipe.hammer"
@@ -157,7 +192,7 @@ output = "item.hammer"
 count = 1
 station = "none"
 seconds = 5
-inputs = [{ item = "item.wood", count = 75 }]
+inputs = [{ item = "item.wood", count = 100 }]
 
 [[recipe]]
 id = "recipe.lowgrade"
@@ -166,7 +201,7 @@ count = 4
 station = "none"
 seconds = 5
 inputs = [
-    { item = "item.fat", count = 1 },
+    { item = "item.fat", count = 3 },
     { item = "item.cloth", count = 1 },
 ]
 
@@ -180,8 +215,8 @@ station = "workbench1"
 seconds = 30
 inputs = [
     { item = "item.stone", count = 200 },
-    { item = "item.wood", count = 50 },
-    { item = "item.lowgrade", count = 25 },
+    { item = "item.wood", count = 100 },
+    { item = "item.lowgrade", count = 50 },
 ]
 
 [[recipe]]
@@ -203,7 +238,7 @@ station = "workbench1"
 seconds = 20
 inputs = [
     { item = "item.wood", count = 100 },
-    { item = "item.metal_frags", count = 75 },
+    { item = "item.metal_frags", count = 125 },
 ]
 
 [[recipe]]
@@ -215,6 +250,36 @@ seconds = 15
 inputs = [
     { item = "item.wood", count = 100 },
     { item = "item.metal_frags", count = 50 },
+]
+
+# The research table (research v0). Cheaper than the recycler and asking
+# for no salvage, deliberately: the sink must be standable-at before the
+# faucet is worth running, or a player banks coin with nowhere to spend it.
+[[recipe]]
+id = "recipe.research_table"
+output = "item.research_table"
+count = 1
+station = "workbench1"
+seconds = 20
+inputs = [
+    { item = "item.metal_frags", count = 200 },
+    { item = "item.obol", count = 20 },
+]
+
+# The recycler (recycler v0). Priced between the furnace (275 units of
+# raw + lowgrade) and the large box, and it asks for **gears** on purpose:
+# the machine that makes salvage worth carrying is gated behind carrying
+# some. Two is a single barrel's luck, so it is a gate and not a grind.
+[[recipe]]
+id = "recipe.recycler"
+output = "item.recycler"
+count = 1
+station = "workbench1"
+seconds = 30
+inputs = [
+    { item = "item.metal_frags", count = 100 },
+    { item = "item.wood", count = 200 },
+    { item = "item.gears", count = 2 },
 ]
 
 [[recipe]]
@@ -234,7 +299,7 @@ output = "item.armor_burlap_head"
 count = 1
 station = "workbench1"
 seconds = 10
-inputs = [{ item = "item.cloth", count = 15 }]
+inputs = [{ item = "item.cloth", count = 10 }]
 
 [[recipe]]
 id = "recipe.armor_burlap_body"
@@ -242,11 +307,12 @@ output = "item.armor_burlap_body"
 count = 1
 station = "workbench1"
 seconds = 10
-inputs = [{ item = "item.cloth", count = 25 }]
+inputs = [{ item = "item.cloth", count = 20 }]
 
 [[recipe]]
 id = "recipe.arrow_metal"
 output = "item.arrow_metal"
+blueprint = true
 count = 3
 station = "workbench1"
 seconds = 5
@@ -262,12 +328,36 @@ count = 1
 station = "workbench1"
 seconds = 30
 inputs = [
-    { item = "item.wood", count = 150 },
+    { item = "item.wood", count = 200 },
     { item = "item.metal_frags", count = 75 },
     { item = "item.rope", count = 2 },
 ]
 
 # --- furnace runs -------------------------------------------------------
+#
+# **Their shape, taken 2026-08-10** (`reference/RIPLIST.md` §4.6;
+# `BALANCE.md` §6.3's ladder). Two sources disagree: metal 2.5 / sulfur
+# 2.5 against metal 3.3 / sulfur 1.7. Rungs 1–2 do not separate them
+# (nothing checkable, neither devblog-primary), rung 3 does — 2.5/2.5 is
+# the reading two independent retellings share, where 3.3/1.7 looks like
+# an inverted rate (1/0.3, 1/0.6) reported as a duration.
+#
+# **The shape is the real change and it is free: metal and sulfur smelt
+# ALIKE there.** Ours had sulfur at half of metal, which is a difference a
+# returning player feels every furnace load. Sulfur 1 → 2.
+#
+# The magnitude is where our schema stops: `seconds` is a `u32` baked as
+# `seconds × TICK_HZ`, so **2.5 is not expressible** and both rows land on
+# 2. That is a representation limit, not a preference — filed as its own
+# row in `RIPLIST.md` §2 rather than written up here as a reason, because
+# §6.2 is explicit that a cost dressed as a principle is how a deferral
+# becomes permanent. The sim already runs in ticks; only the content field
+# is integer-seconds.
+#
+# The mechanism half outranks the seconds and already matched: their
+# furnace smelts **every slot in parallel**, so five furnaces cost the
+# same wood as one and finish in a fifth of the time. `oven::sweep`
+# advances every slot holding a cookable input, so ours does too.
 
 [[recipe]]
 id = "recipe.metal_frags"
@@ -282,7 +372,7 @@ id = "recipe.sulfur"
 output = "item.sulfur"
 count = 1
 station = "furnace"
-seconds = 1
+seconds = 2
 inputs = [{ item = "item.sulfur_ore", count = 1 }]
 
 [[recipe]]
@@ -293,24 +383,29 @@ station = "furnace"
 seconds = 1
 inputs = [{ item = "item.wood", count = 1 }]
 
-# --- T2, the powder chain (workbench1 — alpha has one bench tier) -------
+# --- T2, the powder chain (workbench2 since bench ladder v0 — the
+# second rung IS the powder gate: guns, ammunition and the plate that
+# stops them all stand behind one bench, and the raid tool behind the
+# one after it) -------------------------------------------------------
 
 [[recipe]]
 id = "recipe.gunpowder"
 output = "item.gunpowder"
+blueprint = true
 count = 10
-station = "workbench1"
+station = "workbench2"
 seconds = 5
 inputs = [
-    { item = "item.charcoal", count = 20 },
-    { item = "item.sulfur", count = 10 },
+    { item = "item.charcoal", count = 30 },
+    { item = "item.sulfur", count = 20 },
 ]
 
 [[recipe]]
 id = "recipe.revolver"
 output = "item.revolver"
+blueprint = true
 count = 1
-station = "workbench1"
+station = "workbench2"
 seconds = 60
 inputs = [
     { item = "item.metal_frags", count = 125 },
@@ -322,18 +417,19 @@ inputs = [
 id = "recipe.pistol_ammo"
 output = "item.pistol_ammo"
 count = 4
-station = "workbench1"
+station = "workbench2"
 seconds = 10
 inputs = [
     { item = "item.metal_frags", count = 10 },
-    { item = "item.gunpowder", count = 20 },
+    { item = "item.gunpowder", count = 5 },
 ]
 
 [[recipe]]
 id = "recipe.satchel_charge"
 output = "item.satchel_charge"
+blueprint = true
 count = 1
-station = "workbench1"
+station = "workbench3"
 seconds = 30
 inputs = [
     { item = "item.gunpowder", count = 240 },
@@ -359,13 +455,14 @@ output = "item.door_metal"
 count = 1
 station = "workbench1"
 seconds = 30
-inputs = [{ item = "item.metal_frags", count = 200 }]
+inputs = [{ item = "item.metal_frags", count = 150 }]
 
 [[recipe]]
 id = "recipe.armor_roadsign_body"
 output = "item.armor_roadsign_body"
+blueprint = true
 count = 1
-station = "workbench1"
+station = "workbench2"
 seconds = 30
 inputs = [
     { item = "item.metal_frags", count = 40 },
@@ -376,6 +473,7 @@ inputs = [
 [[recipe]]
 id = "recipe.medkit"
 output = "item.medkit"
+blueprint = true
 count = 1
 station = "workbench1"
 seconds = 20

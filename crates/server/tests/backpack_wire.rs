@@ -21,6 +21,35 @@ use sim_core::gather::{GatherContent, ItemStack, SWING_INTERVAL_TICKS};
 use sim_core::input::BTN_PRIMARY;
 use sim_core::movement::{Body, POS_XZ_Q};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 20_260_802;
 /// The canonical dev spawn point, guarded walkable in sim-core
 /// `world::tests`.
@@ -44,7 +73,6 @@ fn pump(
     let mut buf = [0u8; 1100];
     for (slot, c) in clients.iter_mut() {
         c.advance(1000.0 / 30.0);
-        c.predict.decay_error();
         let n = c.poll_input(&mut buf);
         if n > 0 {
             let dg = protocol::decode_input(&buf[..n]).expect("client encodes valid input");
@@ -53,7 +81,7 @@ fn pump(
     }
     let mut snaps: Vec<(usize, Vec<u8>)> = Vec::new();
     let mut events: Vec<(usize, Vec<u8>)> = Vec::new();
-    core.tick(stats, |lane, slot, bytes| {
+    core.tick_bare(stats, |lane, slot, bytes| {
         match lane {
             Lane::Snapshot => snaps.push((slot, bytes.to_vec())),
             Lane::Event => events.push((slot, bytes.to_vec())),
@@ -86,8 +114,8 @@ fn world_slot(core: &ShardCore, id: u32) -> usize {
         .expect("player in world")
 }
 
-fn armed_core() -> ShardCore {
-    let mut core = ShardCore::new(SEED);
+fn armed_core() -> Box<ShardCore> {
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.combat = CombatContent::probe_fixture();
     core.world.backpack = BackpackContent::probe_fixture();
@@ -150,14 +178,17 @@ fn a_kill_puts_a_bag_on_every_client_and_the_loot_takes_it_off() {
     core.world.players[w0].inv[0] = ItemStack {
         item: SPEAR,
         count: 1,
+        cond: 0,
     };
     core.world.players[w1].inv[0] = ItemStack {
         item: SPEAR,
         count: 1,
+        cond: 0,
     };
     core.world.players[w1].inv[1] = ItemStack {
         item: JUNK,
         count: 42,
+        cond: 0,
     };
 
     let seen = fight_to_a_kill(&mut core, &stats, &mut clients);
@@ -249,10 +280,12 @@ fn a_late_joiner_is_handed_the_standing_bags_by_the_sync_walk() {
     core.world.players[w0].inv[0] = ItemStack {
         item: SPEAR,
         count: 1,
+        cond: 0,
     };
     core.world.players[w1].inv[0] = ItemStack {
         item: JUNK,
         count: 9,
+        cond: 0,
     };
     let seen = fight_to_a_kill(&mut core, &stats, &mut clients);
     assert!(
@@ -302,10 +335,12 @@ fn a_bag_out_of_reach_is_refused_by_distance_alone() {
     core.world.players[w0].inv[0] = ItemStack {
         item: SPEAR,
         count: 1,
+        cond: 0,
     };
     core.world.players[w1].inv[1] = ItemStack {
         item: JUNK,
         count: 42,
+        cond: 0,
     };
     fight_to_a_kill(&mut core, &stats, &mut clients);
     let bag = core.world.backpacks.entries()[0];
@@ -316,6 +351,7 @@ fn a_bag_out_of_reach_is_refused_by_distance_alone() {
     let w0 = world_slot(&core, id_of(0));
     core.world.players[w0].body = Body::at(
         SEED,
+        hv(SEED),
         bag.qx as f32 * POS_XZ_Q + 20.0,
         bag.qz as f32 * POS_XZ_Q,
     );

@@ -35,14 +35,20 @@ upkeep_pct_per_day = 10
 repair_cost_pct = 100
 # Unpaid decay per upkeep period (1 h), as a % of the piece's max hp, by
 # the piece's own material. The reference's ladder, converted: it takes a
-# full-health block ~3 h of wood / ~5 h of stone / ~8 h of metal to rot
-# away once its upkeep runs out, so the tougher the grade the SLOWER it
-# goes and an upgrade buys time as well as hp. 100 / hours, rounded up.
+# full-health block ~1 h of twig / ~3 h of wood / ~5 h of stone / ~8 h of
+# metal to rot away once its upkeep runs out, so the tougher the grade the
+# SLOWER it goes and an upgrade buys time as well as hp. 100 / hours,
+# rounded up — which puts twig at exactly 100, one period and gone.
+#
+# Twig's rate is only half of what makes it a draft; the other half is in
+# sim-core `deploy::upkeep_sweep`, where twig is never charged upkeep and
+# therefore never protected by a hearth however well stocked. A scaffold
+# pays no rent and gets no shelter.
 #
 # It replaces one flat 5 % for everything, which made a metal base rot at
 # a wooden one's rate and took twenty hours to do it. Proposed default,
 # DECISIONS.md §open ("upkeep/decay v1").
-decay_pct_per_period = { wood = 34, stone = 20, metal = 13 }
+decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }
 
 [bands]
 # Anchor 2 — TTK in body hits, no armor; per weapon kind.
@@ -55,10 +61,42 @@ headshot_mult = 2
 # Any single armor piece may add at most this many hits vs any banded weapon.
 armor_extra_hits_max = 2
 # Anchor 3 — a banded node's total yield and hit count at tier-1 tools.
-node_yield = [250, 400]
+#
+# The ceiling moved 400 → 1000 on 2026-08-10, and it is the band that had
+# to move for the reference's node totals to land (`reference/RIPLIST.md`
+# §2 row 1; operator, 2026-08-10). It is not a loosening for its own sake:
+# 1000 is exactly their stone node, the largest of the four, and 250 keeps
+# the floor it has always had because nothing in the take argues about the
+# floor. The band now brackets their own spread — sulfur 300 to stone 1000
+# — which is the citation, so a value outside it is a value outside
+# theirs.
+#
+# **`node_hits` did NOT move, and that is the deliberate half.** Their hit
+# counts run 15–28 and would break [8, 12] — but they are unobtainable
+# rather than merely unfound (§4.1a: the marker made hits-to-clear a
+# function of aim, so no modern source publishes them). Our schema needs
+# only the total, so the hit count stays ours and this band stays put.
+node_yield = [250, 1000]
 node_hits = [8, 12]
-# "A full wood wall ≈ 7 min of wood at T1 tools" (CONTENT §4 anchor 3).
-wood_wall_minutes = [5, 9]
+# A full wood wall in farm-minutes of wood at T1 tools (CONTENT §4 anchor 3).
+#
+# **Re-spoken 7 → 4 on 2026-08-10** (`DECISIONS.md` §open "twig v0"), and
+# it is `reference/BALANCE.md` §7's rule working rather than a loosening:
+# their wood wall is 200 wood, which prices at 4.0 here, and the question
+# a band break asks is which of the two is out of date. This one was. The
+# band was written around a cost column that had never been compared to
+# anything — the 2026-08-08 balance pass took the hp ladder out of
+# `building.toml` and left `cost` alone, and `RIPLIST.md` never opened a
+# row for it — so [5, 9] was a fence around our own invented number.
+#
+# The node take of 2026-08-10 is what made it visible: once a tree paid
+# **their** 810 wood, a wall priced at **ours** cost 1.75× theirs in
+# trees, which is the unit a player actually feels. Taking the cost column
+# makes both halves of "how many trees is a wall" come from one game.
+#
+# [3, 5] keeps the old band's shape — ±29% around the value, one unit
+# either side after the anchor's rounding — so it still catches drift.
+wood_wall_minutes = [3, 5]
 # Anchor 1 — satchels-to-break-a-stone-wall in farm-minutes over the
 # starter build in farm-minutes; below ~1.0 nobody builds, above ~3
 # nobody raids. Percent (100 = 1.0×) so the file stays integer-only.
@@ -166,56 +204,46 @@ item = "item.box_small"
 count = 1
 
 # What a fresh character spawns holding (`sim_core::inventory::SpawnKit`;
-# DECISIONS.md §open "spawn kit v0"). **Testing scaffolding, and an
-# operator call to empty** — a public shard almost certainly wants a naked
-# beach spawn, which is what an absent `[[spawn_kit]]` gives: the table is
-# `#[serde(default)]` and no kit is not an error.
+# DECISIONS.md 2026-08-15). **A rock and a torch** — the reference's own
+# naked spawn, spoken after the operator played the shard: *"we should be
+# starting with a rock and a torch"*, *"you cant smash trees with ur hans
+# lol u need a rock"*.
 #
-# It exists because the build and hammer verbs could not be exercised at
-# all. A fresh spawn had nothing, so the build wheel read `350 Wood (0)`,
-# nothing could be placed, and nothing could be upgraded or repaired —
-# which meant the whole building interaction was unreachable by anyone
-# testing it, human or agent.
+# This is no longer scaffolding. It replaces nine entries — plan, hammer,
+# stone hatchet, stone pickaxe, torch, 3 bandages, 900 wood, 500 stone,
+# 100 metal frags, and no rock — whose own comment called itself *"testing
+# scaffolding, and an operator call to empty"*. That kit existed because a
+# naked spawn made the build wheel read `350 Wood (0)`, and it survived by
+# being the only way anybody could reach the building verb. It is not the
+# only way any more: `shard.toml`'s `dev_spawn_kit` re-grants a fat kit on
+# a dev shard, and never on a public one (`crates/server/src/config.rs`).
 #
-# The order is the order it lands in: the first six entries are the
-# hotbar, so the plan and the hammer are on 1 and 2 the moment you open
-# your eyes. Materials are enough for a small base plus an upgrade or two,
-# priced off `[globals] farm_per_min` at roughly twenty minutes of farm.
+# **The rock is the mechanism, which is what `BALANCE.md` §6 asks for.**
+# Bare hands pay nothing on any swung node (gatherables.toml), so the rock
+# is what makes the loop start. It costs 10 stone (recipes.toml) and
+# carries no condition, so a player WITH stone can always re-make one.
+#
+# ⚠ **A player with no stone and no rock is stranded until they die**, and
+# that is a property of the shipped tables rather than a guess: stone comes
+# off `gather.stone_node`, whose only yield rows are the rock and the two
+# pickaxes, and no loot table or mob drop pays `item.stone` or `item.rock`
+# (`grep 'item.stone' content/loot.toml content/mobs.toml` — empty). So the
+# re-grant below is not only a convenience, it is the ONLY route back. The
+# reference has the same shape, which is why it hands you a rock on every
+# spawn, so this is probably right — but it is a consequence nobody spoke,
+# and the operator's options if it is not (a stone row on a barrel table, a
+# rock that cannot be moved out of the belt) are content, not code.
+#
+# **Cheap enough to re-grant on every respawn**, which is the half that
+# fixes death: `World::wake` grants this beside `survival::grant`, where
+# the old kit could not go because 900 wood on every death is an item
+# printer and 10 stone of tools is not. `NOW.md` §0die mechanism 3.
+#
+# The order is the order it lands in: rock on hotbar slot 1, torch on 2.
 [[spawn_kit]]
-item = "item.building_plan"
-count = 1
-
-[[spawn_kit]]
-item = "item.hammer"
-count = 1
-
-[[spawn_kit]]
-item = "item.hatchet_stone"
-count = 1
-
-[[spawn_kit]]
-item = "item.pickaxe_stone"
+item = "item.rock"
 count = 1
 
 [[spawn_kit]]
 item = "item.torch"
 count = 1
-
-[[spawn_kit]]
-item = "item.bandage"
-count = 5
-
-# Under the 1000 ceiling on purpose: a grant that sits exactly at an item's
-# stack size is one balance edit away from being refused, and `test_content`
-# lowers every stack to prove the hash moves.
-[[spawn_kit]]
-item = "item.wood"
-count = 900
-
-[[spawn_kit]]
-item = "item.stone"
-count = 500
-
-[[spawn_kit]]
-item = "item.metal_frags"
-count = 100

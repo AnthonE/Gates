@@ -36,7 +36,7 @@ use protocol::event::WireBag;
 use sim_core::build::BUILD_CELL_M;
 use sim_core::deploy::{
     box_key, DeployContent, DeployRec, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE,
-    ARCH_HEARTH,
+    ARCH_HEARTH, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
 };
 
 pub use sim_core::build::BUILD_REACH_M as REACH_M;
@@ -62,6 +62,42 @@ pub enum Verb {
     /// A fire or a furnace — one verb for both, because they are one
     /// thing in the sim (`sim-core/oven.rs`) and the prompt names a KIND.
     Fire,
+    /// A recycler. The same sim class as the two above and deliberately
+    /// **not** the same verb: the prompt names a KIND, and "FIRE" over a
+    /// machine that burns nothing would teach the wrong noun for the
+    /// second key. What it shares with `Fire` is the shape of the
+    /// interaction — a container with a switch — and that shows up as the
+    /// two arms agreeing everywhere the code asks a question about
+    /// containers, never as one variant doing both jobs.
+    Recycler,
+    /// A research table (research v0). The one verb here that acts on what
+    /// is in your HAND rather than on what is at the address — the table
+    /// holds nothing — so the prompt names the held item and `E` spends it.
+    Research,
+    /// An authored world container — the haven pad's crate, a waystation's
+    /// cache (`sim-core/worldcont.rs`).
+    ///
+    /// **The one verb on this enum that is not a deployable.** Every other
+    /// variant is born from an `ARCH_*` on a record the deploy sync sent;
+    /// this one is born from a terrain `Occupant`, which terrain places as
+    /// a pure function of the seed and no packet ever mentions. So it is
+    /// resolved by the *second* resolver (`resolve_open`, beside
+    /// `resolve_swing`) and folded into the pick by the caller — the
+    /// deploy scan cannot see it, because there is nothing there to see.
+    ///
+    /// One variant for both kinds, `Fire`'s argument exactly: a crate and
+    /// a cache are one thing in the sim, differing only in the loot table
+    /// their occupant selects, and the prompt names a KIND. What the
+    /// player is told apart is what is inside.
+    Crate,
+    /// A workbench, any rung (tech tree v0). One verb for three
+    /// archetypes, `Fire`'s argument again: the prompt names a KIND, and
+    /// which level you are standing at is the sim's business — the tree
+    /// panel `E` opens shows every node and the server refuses a rung
+    /// you have not built. Before this verb a workbench was pure
+    /// proximity token: the first deployable a player could place and
+    /// not press.
+    TechTree,
 }
 
 impl Verb {
@@ -89,6 +125,16 @@ impl Verb {
             // forbids. The rung exists so the order is total, not because
             // anything can reach it.
             Verb::Fire => 5,
+            Verb::Recycler => 6,
+            Verb::Research => 7,
+            // Last, and unlike `Fire`'s rung this one is genuinely
+            // unreachable: a world container is not a deployable, so it
+            // cannot tie with one — the two resolvers scan different
+            // things and the caller only consults this one when the
+            // deploy scan came back `None`. The rung exists so the order
+            // stays total.
+            Verb::Crate => 8,
+            Verb::TechTree => 9,
         }
     }
 
@@ -102,6 +148,10 @@ impl Verb {
             Verb::Box => "BOX",
             Verb::Hearth => "HEARTH",
             Verb::Fire => "FIRE",
+            Verb::Recycler => "RECYCLER",
+            Verb::Research => "RESEARCH TABLE",
+            Verb::Crate => "CRATE",
+            Verb::TechTree => "WORKBENCH",
         }
     }
 }
@@ -201,6 +251,22 @@ impl Pick {
                 "[E] OPEN FIRE  ·  [C] {}",
                 if self.lit { "PUT OUT" } else { "LIGHT" }
             ),
+            // The same two keys and a different pair of words, because a
+            // recycler is switched rather than lit — "LIGHT" over a
+            // machine with no fire in it is the prompt lying about the
+            // mechanism.
+            Verb::Recycler => format!(
+                "[E] OPEN RECYCLER  ·  [C] {}",
+                if self.lit { "STOP" } else { "START" }
+            ),
+            // Not "OPEN": there is nothing to open, and a prompt that
+            // promised a panel would be teaching the wrong gesture. What
+            // `E` does here is spend the held item, so the prompt says so.
+            Verb::Research => "[E] RESEARCH HELD ITEM".to_string(),
+            // "TECH TREE", not "OPEN WORKBENCH": the bench holds nothing
+            // and opens nothing — what `E` does here is show the tree
+            // (tech tree v0), so the prompt names the thing you get.
+            Verb::TechTree => "[E] TECH TREE".to_string(),
             v => format!("[E] OPEN {}", v.label()),
         }
     }
@@ -327,6 +393,9 @@ pub fn resolve(
             ARCH_BOX => Verb::Box,
             ARCH_HEARTH => Verb::Hearth,
             ARCH_FIRE | ARCH_FURNACE => Verb::Fire,
+            ARCH_RECYCLER => Verb::Recycler,
+            ARCH_RESEARCH => Verb::Research,
+            ARCH_WORKBENCH | ARCH_WORKBENCH2 | ARCH_WORKBENCH3 => Verb::TechTree,
             _ => continue,
         };
         // A box is addressed by its packed cell. `box_key(0, 0, 0)` is 0 and
@@ -335,7 +404,7 @@ pub fn resolve(
         // one this client should not have, so it is not offered at all —
         // better than a prompt for a box the key would decline to open.
         let mut handle = 0u32;
-        if verb == Verb::Box || verb == Verb::Fire {
+        if verb == Verb::Box || verb == Verb::Fire || verb == Verb::Recycler {
             handle = box_key(rec.cx, rec.cz, rec.level);
             if handle == 0 {
                 continue;
@@ -411,6 +480,7 @@ mod tests {
             open: false,
             locked: false,
             has_lock: false,
+            dmg: 0,
         }
     }
 
@@ -610,10 +680,13 @@ mod tests {
 // is driven directly off `harvested(key)` and swaps the mesh on the event, so
 // the harvested set is the whole truth and there is no second state to test.
 
+use sim_core::backpack::LOOT_REACH_M as OPEN_REACH_M;
 use sim_core::fmath::{fabs, floor_i32};
 use sim_core::gather::{CONE_COS, DY_MAX_M, POINT_BLANK_M2, REACH_M as SWING_REACH_M};
-use sim_core::occupy::Harvested;
-use sim_core::terrain::{scatter, Haven, Occupant, ScatterTable, CELL_SIZE};
+use sim_core::occupy::{Harvested, SlotCache};
+// `scatter` itself is deliberately NOT imported: every read on this path goes
+// through `Island::slot`, and `tests/ui.rs`'s call-site gate says so.
+use sim_core::terrain::{Haven, Occupant, ScatterTable, Slot, CELL_SIZE};
 
 /// What a swing would land on, or `Occupant::None` for a whiff.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -682,11 +755,35 @@ pub struct SwingAim {
 /// takes `&dyn Fn`: the caller's harvest state is `ClientCore`'s in the game
 /// and a fixture in the gate, and neither should force a generic through
 /// every signature between here and the HUD.
+///
+/// This is `sim_core::occupy::Occupants` plus the seed, deliberately — the
+/// sim bundles the identical four borrows for the identical scan, and
+/// `ClientCore::island` hands both halves over in one call so the client's
+/// crosshair and the client's predictor share one set of cache lines.
 pub struct Island<'a> {
     pub seed: u64,
     pub table: &'a ScatterTable,
     pub haven: &'a Haven,
     pub harvested: &'a dyn Harvested,
+    /// **The memo, and the only door to `terrain::scatter` on this path.**
+    /// A cold `scatter` costs ~60 `noise2` taps, a 3×3 window nine of them,
+    /// and the crosshair resolves that window every frame — so the resolver
+    /// reads through here and `tests/ui.rs`'s call-site gate refuses a
+    /// direct call that would walk past it.
+    pub cache: &'a mut SlotCache,
+}
+
+impl Island<'_> {
+    /// The slot in cell (`cx`, `cz`), memoized.
+    ///
+    /// Identical bits to `terrain::scatter(seed, table, haven, cx, cz)` — the
+    /// cache is a pure function's memo, so a hit and a miss return the same
+    /// answer and eviction can only change how long it took
+    /// (`occupy::SlotCache`'s own argument). `tests/ui.rs` proves that
+    /// equality over a walk of the island rather than asserting it here.
+    pub fn slot(&mut self, cx: i32, cz: i32) -> Slot {
+        self.cache.slot(self.seed, self.table, self.haven, cx, cz)
+    }
 }
 
 /// The nearest standing swingable slot in reach and inside the aim cone.
@@ -697,9 +794,49 @@ pub struct Island<'a> {
 /// grid), and `d2 < best` is strict so the FIRST cell in that order keeps it,
 /// which is what `gather::swing`'s `is_none_or(|b| d2 < b.d2)` does.
 ///
-/// Allocates nothing and takes no `&mut`: the caller may run it every frame
-/// for the prompt and again on the click without the two disagreeing.
-pub fn resolve_swing(at: SwingAim, island: Island<'_>) -> SwingPick {
+/// Allocates nothing and is **idempotent**: the caller may run it every frame
+/// for the prompt and again on the click without the two disagreeing. It took
+/// no `&mut` at all until the memo landed, and the weaker word is the honest
+/// one — `island.cache` is written, but only with answers `terrain::scatter`
+/// would have recomputed, so nothing observable moves.
+pub fn resolve_swing(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
+    scan_slots(at, island, swingable, SWING_REACH_M)
+}
+
+/// Whether an occupant is something `E` OPENS.
+///
+/// The mirror of `swingable`, and its complement rather than a subset:
+/// nothing on the island is both smashed and opened. A barrel is hit until
+/// it bursts and pays into a bag on the ground; a crate is furniture with
+/// a lid. That split is the sim's — `gather::target_index` claims the
+/// barrel and `worldcont::table_of` claims these two — and this is those
+/// two predicates read from the client side, never a third opinion.
+fn openable(o: Occupant) -> bool {
+    matches!(o, Occupant::CrateSlot | Occupant::CacheSlot)
+}
+
+/// What `E` would OPEN in the scatter, or `Occupant::None` for nothing.
+///
+/// Same scan, same cone, same 3×3 memo as `resolve_swing` — a different
+/// predicate and a different reach, because an open is priced at the arm
+/// every other container uses (`backpack::LOOT_REACH_M`) and a swing at
+/// the longer `gather::REACH_M`. Sharing the body rather than copying it
+/// is the point: the two prompts must never disagree about which cell the
+/// player is standing at, and two hand-written 3×3 walks would eventually
+/// do exactly that.
+pub fn resolve_open(at: SwingAim, island: &mut Island<'_>) -> SwingPick {
+    scan_slots(at, island, openable, OPEN_REACH_M)
+}
+
+/// The 3×3 scatter walk both slot resolvers run: nearest cell whose
+/// occupant satisfies `want`, inside `reach`, inside the aim cone or
+/// point-blank, not already harvested.
+fn scan_slots(
+    at: SwingAim,
+    island: &mut Island<'_>,
+    want: fn(Occupant) -> bool,
+    reach: f32,
+) -> SwingPick {
     let SwingAim { x, y, z, fx, fz } = at;
     let mut out = SwingPick::default();
     let mut best = f32::INFINITY;
@@ -723,15 +860,15 @@ pub fn resolve_swing(at: SwingAim, island: Island<'_>) -> SwingPick {
             let cx = pcx + dx_cell;
             let cz = pcz + dz_cell;
             dx_cell += 1;
-            let s = scatter(island.seed, island.table, island.haven, cx, cz);
-            if !swingable(s.occupant) {
+            let s = island.slot(cx, cz);
+            if !want(s.occupant) {
                 continue;
             }
             let dx = s.x - x;
             let dy = s.y - y;
             let dz = s.z - z;
             let d2 = dx * dx + dz * dz;
-            if d2 > SWING_REACH_M * SWING_REACH_M {
+            if d2 > reach * reach {
                 continue;
             }
             if fabs(dy) > DY_MAX_M {

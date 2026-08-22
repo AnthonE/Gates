@@ -15,7 +15,7 @@ use crate::input::InputFrame;
 use crate::inventory;
 use crate::limits::{
     BOX_SLOTS, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ARROWS, MAX_COMMANDS_PER_TICK,
-    MAX_EVENTS_PER_TICK, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
+    MAX_EVENTS_PER_TICK, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL, WEAR_SLOTS,
 };
 use crate::loot::{LootContent, LOOT_BARREL};
 use crate::mob;
@@ -50,25 +50,42 @@ const SPAWN_TARGET_H: f32 = 1.2;
 const SPAWN_BISECT_ITERS: i32 = 12;
 /// The walkability shape used by foundations and the old placeholder alike.
 const SPAWN_MAX_SLOPE: f32 = 1.0;
-/// Clearance from any scatter slot center. The widest archetype the client
-/// draws is the tree, whose canopy radius is capped at `PINE_MAX_R` = 1.7 m
-/// (`web/src/props.js`); 1.7 × 1.1 max scale ≈ 1.9 m, add the 0.4 m capsule
-/// and 4 m leaves a spawn standing clear of it, not merely outside it.
+/// Clearance from any scatter slot center, metres.
 ///
-/// That was a sentence about a constant in another language until
-/// `ci/pine_shape.mjs`, which reads this number, the capsule, the scatter's
-/// scale range and the tree's actual vertices, and closes the arithmetic. A
-/// canopy widened for taste on the client used to be able to put fresh spawns
-/// back inside trees with every gate green.
-const SPAWN_CLEAR_M: f32 = 4.0;
+/// **Raised 4.0 → 4.5 when the tree pool gained a second, wider species**
+/// (operator, 2026-08-10: *"im fine with raising the sim or whatever we got
+/// the juice i think"*). The derivation, which is now checked rather than
+/// merely stated: the widest canopy ceiling (`tree::TREE_MAX_R`, 2.9 m) at the
+/// largest scale `scatter` rolls (`SLOT_SCALE_MAX`, 1.1) is a 3.19 m canopy
+/// edge; plus `CAPSULE_RADIUS_M` (0.4) is 3.59 m of touching distance; plus
+/// standing room so a spawn does not open with a trunk filling the frame.
+///
+/// **This used to credit `ci/pine_shape.mjs` with closing that arithmetic, and
+/// that gate does not exist** — it went with the browser client, so the
+/// derivation was a dead citation of the exact kind `CLAUDE.md` says to
+/// assume about any `.mjs` a doc comment names. It is closed in Rust now, by
+/// `crates/client/tests/tree.rs::a_fresh_spawn_stands_clear_of_the_widest_tree`
+/// — the client is the crate that can see both the mesh and this constant.
+/// `pub` for that reason and no other.
+pub const SPAWN_CLEAR_M: f32 = 4.5;
 
 /// Integer event codes (CLAUDE.md wall 3) — the sim's outbound facts, one
 /// ring per tick, drained by the server after `tick` returns.
-/// EV_GATHER: a = player id, b = item index << 16 | units actually added.
+/// EV_GATHER: a = player id, b = item index << 16 | units actually added
+/// (0 = the pack was full and every unit went to the ground; the loss is
+/// announced, never silent — `EV_CRAFT_DONE` has said this since it
+/// landed and this one now says it too).
 /// Read it as "these units entered your inventory", not as "a node paid":
 /// looting a backpack (backpack.rs) announces its take the same way, and
 /// deliberately — the client's `+N Item` toast is the right feedback for
 /// both, and loot pays in the currency gathering already pays in.
+///
+/// **Every producer owes the zero its meaning.** All three only push when
+/// something was actually owed — `gather::swing` guards on `pay > 0` and
+/// on `sec_pay > 0`, `backpack`'s loot walk skips a slot it took nothing
+/// from — so a zero here is never "nothing happened". A fourth producer
+/// that pushes an unowed zero silently turns the client's "pack full" line
+/// into a lie, which is why the guards are stated rather than assumed.
 pub const EV_GATHER: u8 = 1;
 /// EV_SLOT_HARVESTED: a = cell key (cx << 16 | cz), b = terrain occupant
 /// ordinal (`terrain::Occupant as u32`) — *what* stopped standing there,
@@ -286,6 +303,250 @@ pub const EV_KNOCK: u8 = 31;
 /// codes and a client cannot mistake silence for a grant.
 pub const EV_AUTH: u8 = 32;
 
+/// EV_RESEARCH: a = the player who learned it, b = recipe index, c = the
+/// coin burned. **Own-fact** — a blueprint is personal (`research.rs`), so
+/// nobody else's client has any use for it and broadcasting what a rival
+/// has unlocked would be handing out their tech level for free.
+///
+/// The cost rides `c` rather than being looked up, because it is what the
+/// player just paid and the table can change under a shard: an ack that
+/// re-derived the price would tell them a number they were not charged.
+pub const EV_RESEARCH: u8 = 33;
+/// EV_RESEARCH_REFUSED: a = the player who asked, b = a
+/// `research::REFUSE_R_*` reason. Own-fact, `EV_CRAFT_REFUSED`'s shape
+/// exactly: a verb that refuses says why, in an integer, to the one hand
+/// that pressed.
+pub const EV_RESEARCH_REFUSED: u8 = 34;
+
+/// EV_SHOT: a = the shooter's player id, b = yaw << 8 | pitch, c =
+/// speed mm/tick << 16 | drop mm/tick². **Broadcast** — an arrow in the
+/// air is a world fact like a door swinging, and it is the one fact in
+/// combat that everyone near it needs and only the shooter had.
+///
+/// **The payload is what a tracer needs and not one field more, and the
+/// omissions are the design.** No origin: the client knows where the
+/// shooter is from the snapshot, and `ranged::ARROW_EYE_MM` above the feet
+/// is a constant on both sides. No item: an arrow is an arrow to look at,
+/// and the day a fire arrow must *look* different is the day this earns a
+/// field. What it does carry is the ballistics, because `client-core`
+/// holds no content tables at all — it is a wire and prediction layer, so
+/// speed and drop have to cross or the client cannot draw the curve.
+///
+/// Carrying them has a better reason than necessity, though. The
+/// trajectory is a pure function of `(origin, yaw, pitch, speed, drop)`,
+/// so a client handed all five integrates **the same arc the sim did** —
+/// the quantize-both-sides law (CLAUDE.md's trap list) applied to a
+/// tracer. The drawn arrow is not an approximation of the real one that
+/// drifts over a second of flight; it is the same arithmetic.
+///
+/// This is deliberately **not** the reference game's model, and §9.1 of
+/// `reference/PROJECTILES.md` is why: theirs lets the client own the
+/// projectile and audits it with thirteen tolerance convars. Here the
+/// client owns a *picture* of a projectile the server already fired, and
+/// a forged one changes nothing but what its author sees.
+pub const EV_SHOT: u8 = 35;
+
+/// EV_KNOWN: a = the player who holds it, b = the blueprint mask's low 32
+/// bits, c = its high 32 bits. **Own-fact** — a blueprint is personal, so
+/// only the hand that holds it hears this.
+///
+/// The whole mask, never a delta, and the reason is the one `SUB_KNOWN`
+/// was already written for: a dropped increment would grey a recipe the
+/// player has paid OBOL for, with no later event able to correct it. A
+/// full statement of the fact is self-healing — the next one repairs
+/// every loss before it.
+///
+/// **It fires at the doors, not only at the purchase, and that is the
+/// whole point of the code existing.** `Player::known` is sim state that
+/// survives a death and a restore, but nothing on the wire ever said so:
+/// the server synthesised `SUB_KNOWN` from `EV_RESEARCH` alone, so a
+/// player who researched on Monday, logged out and came back on Tuesday
+/// was told nothing, and their craft panel greyed six recipes they owned
+/// until they bought a seventh. Three doors emit it — `seat`, `take_over`
+/// and `wake` — because those are the three places a body starts being
+/// driven, and a fact stated at only two of them is a fact that depends
+/// on how you arrived.
+///
+/// Two `u32`s for one `u64` because an event field is a `u32` and
+/// `KNOWN_MASK_BITS` is 64. Low first: `b` is `mask as u32` and `c` is
+/// `(mask >> 32) as u32`, which is the order `encode_event_known` puts
+/// them back together in.
+pub const EV_KNOWN: u8 = 36;
+
+/// EV_GATHER_REFUSED: a = player id, b = held item index << 16 |
+/// `gather::REFUSE_G_*` reason. Own-fact, `EV_CRAFT_REFUSED`'s posture: a
+/// button that did nothing says so. The high half names the **held item**
+/// (`NO_ITEM` = bare hands) rather than only a reason, because the
+/// sentence the client owes is *a torch cannot fell a tree* — hotbar 2 is
+/// one key from the rock, and a new player pressing `2` at a tree used to
+/// get nothing at all (`NOW.md` §0kit item 2). Bounded by the swing
+/// cadence: at most one per `SWING_INTERVAL_TICKS` per player.
+pub const EV_GATHER_REFUSED: u8 = 37;
+
+/// EV_IMPACT: a = `ranged::SURF_*` << 24 | the stop point's x in `POS_XZ_Q`
+/// quanta, b = its z in the same, c = its y in `POS_Y_Q` quanta **as a
+/// signed `i32` reinterpreted** — an arrow can stop below sea level, and
+/// this is the one field in the lane that can be negative.
+///
+/// **Broadcast**, `EV_SHOT`'s posture and its reason: where an arrow
+/// landed is a world fact, and the mark it leaves is visible to anyone who
+/// walks past it later. A client that misses one loses a scuff.
+///
+/// **It fires only where something met the WORLD, never where it met
+/// flesh.** `ranged::step` resolves a body first and leaves by another
+/// door, so flesh is `EV_HIT` and this is everything else — the two are
+/// exclusive and a reader never has to ask which kind of mark to make.
+///
+/// **Two producers since 2026-08-18, and it was never really an arrow's
+/// fact.** `ranged::step` pushes it where an arrow stopped, and
+/// `gather::swing` pushes it where a landed melee swing bit an occupant
+/// (`NOW.md` §0mk item 1). The fact is *a surface was struck at this
+/// point*, which belongs to neither verb, so a mark on a tree cost no wire
+/// byte, no `PROTO_VER` bump and no client line — `render/decal.rs` was
+/// already the single reader and could not tell the two apart, which is
+/// the test of whether reuse was honest rather than convenient. A swing
+/// the node REFUSES pushes nothing: the mark sits below that arm, so a
+/// torch waved at a tree leaves the bark clean.
+///
+/// The position is here rather than read back out of a store at encode
+/// (`EV_BAG_DROPPED`'s trick) because on the arrow path there is nothing
+/// left to read — the arrow's slot is freed on the same line that pushes
+/// this — and on the swing path the point is not a thing at all, only the
+/// place where two things touched. An impact is a fact about a moment, not
+/// about a thing that persists, which is also why nothing about it is
+/// saved — see `worldsave.rs` for what is.
+pub const EV_IMPACT: u8 = 38;
+
+/// EV_TRUST: a = the player who acted, b = the counterparty — the player
+/// whose record the verb answered to, c = `TRUST_*` verb << 8 |
+/// `PRESENCE_*`.
+///
+/// **The trust ledger's own row** (`PLAYERS.md` §the four walls, wall 3).
+/// Every other event in this lane says what happened to a *thing*; this
+/// one says what happened between two *people*, and it carries the one
+/// field none of the others has room for: whether the counterparty was
+/// online when it happened. That field is what the agent-player
+/// measurement turns on, it is ordinary game state a human client already
+/// sees standing there, and it cannot be added later — a shard-hour
+/// logged without it is a shard-hour that cannot answer the question.
+///
+/// **Sim-side only, and deliberately.** Nothing encodes it, so no wire
+/// byte moves (wall 6 is untouched) — and that is the design, not an
+/// omission being deferred. Broadcasting "this base's owner is asleep"
+/// would hand every client a fact it has to *walk to a base and watch*
+/// to learn, which is `PLAYERS.md` wall 1's affordance rule failing on
+/// the human side first. The record is the server's to keep, the way a
+/// bag's position is the server's to read at encode.
+///
+/// **It fires when the verb answered to somebody else's record**, and the
+/// filter is one rule in one place (`World::log_trust`): a verb on your
+/// own door, your own hearth, your own box creates no trust relationship,
+/// so `counterparty == actor` is silent. So is `counterparty == 0` (no
+/// player placed it) and so is a `mob::mob_id` (a boar's corpse bag is
+/// loot, not a counterparty).
+///
+/// ⚠ **It rides the same drop-newest ring as everything else, and it is
+/// the one passenger a resync cannot re-derive.** `MAX_EVENTS_PER_TICK` is
+/// 256 against a `MAX_COMMANDS_PER_TICK` of 256, so a tick saturated with
+/// trust verbs was already at the ring's edge before this code existed —
+/// what is new is that each such verb now costs two seats instead of one.
+/// Every other event in the lane is a fact about *state*, which the late-
+/// join sync walk re-derives from the world; this is a fact about a
+/// *moment*, and a dropped one is gone. `EventQueue::dropped` counts it,
+/// which is the honest floor and not a fix.
+///
+/// **No address.** Three fields are spent on who/whom/what, and the
+/// address is not lost: every push here rides the same tick as the verb's
+/// own addressed event — `EV_DOOR` for a leaf, `EV_AUTH` for a grant or a
+/// crew seat, `EV_MOVED` for a container — so a reader joins the two by
+/// tick and loses nothing. That is a claim, so each of the four causes in
+/// `tests/event_roles.rs` asserts its verb's own event is on the tick
+/// beside the trust row.
+pub const EV_TRUST: u8 = 39;
+
+/// EV_SWING: a = the swinging player's id, b = 0, c = 0.
+///
+/// **Broadcast**, `EV_SHOT`'s posture and its reason: a swing is a fact
+/// about a body that other clients are drawing, and a client that misses
+/// one loses an arc. It carries no position, because it does not need to —
+/// every body's place is already in the snapshot, and the one thing a
+/// remote client cannot derive is *that the arm moved*, since it never
+/// receives another player's input frame.
+///
+/// **Outcome-free, and that is the whole point.** It fires once per swing
+/// on a hit AND on a whiff, from the only line in the tree that runs
+/// exactly once per swing regardless of what the swing found:
+/// `gather::swing`'s cadence gate. Every later exit — a refusal, a free
+/// arm handed on to flesh, a smashed barrel — is downstream of a decision
+/// the swinger has already committed to with their arm. A fact that only
+/// fires when something was hit is not a swing fact; it is a hit fact, and
+/// this lane already has one (`EV_HIT`), which is unicast to the attacker
+/// and drops field `a` at encode precisely because it is theirs alone.
+///
+/// **`b` and `c` are zero and stay zero until something reads them.** The
+/// held item would be cheap in bits and would make an a/b transposition
+/// detectable by `event_roles.rs`'s own discipline, but nothing draws a
+/// different arc for a rock than for a hatchet yet, and a field nobody
+/// reads is a field nobody maintains (`validate.rs` names that shape).
+pub const EV_SWING: u8 = 40;
+
+/// Which trust-bearing verb `EV_TRUST.c` is about, in its high byte.
+///
+/// A leaf someone else placed, worked by this hand (`deploy::use_door`).
+/// The counterparty is the **deployable's** owner and not the lock's: the
+/// thing worked is the door, a lock may be bolted on by another hand
+/// entirely, and "who placed this leaf" is the question a raid record
+/// wants answered.
+pub const TRUST_DOOR: u8 = 1;
+/// An access list someone else owns, exercised by this hand — a correct
+/// code on their lock (`lock::Outcome::Authorized`) or a crew op on their
+/// hearth (`deploy::crew_op`). One value for both, because `EV_AUTH` is
+/// already one event for both: "who may do this here" is one question
+/// whichever `Roster` answers it (`reference/BUILDING.md` §1 fact 1).
+pub const TRUST_AUTH: u8 = 2;
+/// A container someone else owns, moved through by this hand — a box, an
+/// oven or a bag (`World::move_item`). A world container has no owner and
+/// is therefore never this: nobody's crate is nobody's trust.
+pub const TRUST_CONT: u8 = 3;
+/// The highest verb above, named rather than counted — `EV_MAX`'s
+/// discipline applied to a value domain, exactly as `DEATH_BY_MAX` is.
+///
+/// The difference from `DEATH_BY_MAX` is worth stating, because it is the
+/// reason this one is cheaper: a new `DEATH_BY_*` is refused by an
+/// encoder at runtime and nothing sees it until a death screen fails to
+/// open. Nothing encodes `EV_TRUST`, so a new verb here cannot be refused
+/// by the wire — which means the only thing standing between a new value
+/// and an unclassified log column is this constant and the ledger that
+/// reads it (`event_roles.rs`).
+///
+/// `PLAYERS.md`'s verb list names a fourth — **give** — and it is
+/// deliberately absent: there is no player-to-player give verb in the sim
+/// yet, so a `TRUST_GIVE` declared now would be a value with no cause,
+/// which is the one thing this lane's discipline refuses. It lands in the
+/// commit that lands the verb.
+pub const TRUST_VERB_MAX: u8 = TRUST_CONT;
+
+/// Whether the counterparty was online, in `EV_TRUST.c`'s low byte.
+///
+/// A body with a client driving it. A player on the death screen is
+/// **awake**: they are watching, and the whole question this field asks is
+/// whether the act was witnessed.
+pub const PRESENCE_AWAKE: u8 = 1;
+/// A sleeper — the body is standing in the world and nobody is behind it
+/// (`Player::sleeping`). This is the value the measurement is for, and the
+/// same bit offline raiding already runs on.
+pub const PRESENCE_ASLEEP: u8 = 2;
+/// No body at all: the id names nobody in the world, because the slot was
+/// freed. Its own value rather than folded into `ASLEEP`, because they are
+/// different facts about the counterparty and folding them would let the
+/// record say a player was reachable when their body was gone.
+pub const PRESENCE_GONE: u8 = 3;
+/// The highest presence above, `TRUST_VERB_MAX`'s discipline for the low
+/// byte. Zero is deliberately not a value here: `EV_TRUST.c` is two
+/// packed fields, and a zero in either half is a half that reads the same
+/// as a field nobody wrote.
+pub const PRESENCE_MAX: u8 = PRESENCE_GONE;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -293,7 +554,7 @@ pub const EV_AUTH: u8 = 32;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_AUTH;
+pub const EV_MAX: u8 = EV_SWING;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -315,12 +576,42 @@ pub const DEATH_BY_CLOCK: u8 = 1;
 /// player *pressed a key for* is a different sentence from one that
 /// happened to them.
 pub const DEATH_BY_SALT: u8 = 2;
-/// An arrow (ranged.rs). Its own cause and not `DEATH_BY_HAND`'s for the
-/// same reason `DEATH_BY_SALT` is not the clock's: the sentence the death
-/// screen builds is "who, with what, from how far", and 34 m is a
-/// different fact about a fight from 1.6 m. `death_item` is the bow, not
-/// the arrow — the weapon is what the killer held.
+/// A shot (ranged.rs) — an arrow, and since hitscan v0 a bullet too. Its
+/// own cause and not `DEATH_BY_HAND`'s for the same reason `DEATH_BY_SALT`
+/// is not the clock's: the sentence the death screen builds is "who, with
+/// what, from how far", and 34 m is a different fact about a fight from
+/// 1.6 m. `death_item` is the bow or the gun, never the round — the weapon
+/// is what the killer held, and it is what makes the shared sentence exact
+/// ("shot you with the revolver" / "shot you with the bow").
+///
+/// **The name is the arrow's because the value is, and a firearm sharing
+/// it is a deliberate refusal rather than an oversight.** A seventh cause
+/// would fit `DEATH_CAUSE_BITS` (3 bits, six values spent) and move no
+/// layout, and it is still a **wire change**: an eighth bit pattern both
+/// ends currently refuse as forged would become a live fact, so an old
+/// client and a new server would disagree about a packet whose bytes are
+/// identical. `protocol`'s `every_domain_fits_its_wire_field` pins
+/// `live_max` for exactly that and says so in its own failure — it was
+/// what refused `DEATH_BY_BULLET` when hitscan v0 tried to add one. The
+/// bump, the goldens and the pin land together or not at all (wall 6), and
+/// this slice does not bump. Renaming this constant is refused for a
+/// different reason: `event_roles.rs` and `protocol/src/event.rs` narrate
+/// the 2026-08-05 failure by this name, and a rename would falsify three
+/// histories to tidy one word.
 pub const DEATH_BY_ARROW: u8 = 3;
+/// An animal's bite (mob.rs — the pig that fights back). `death_by` is
+/// the roster slot's **tagged** id (`mob::mob_id`), which is how the
+/// death screen knows to name a species instead of printing a player
+/// number; `death_item` is `NO_ITEM`, because a boar holds nothing. The
+/// fifth cause, and the one the 2 → 3 bit widening at wire v36 was for.
+pub const DEATH_BY_MOB: u8 = 4;
+/// A satchel blast (charge.rs — satchel blast v0). `death_by` is the
+/// planter, who may be the victim: standing at your own bomb is a
+/// sentence of its own on the death screen. `death_item` is `NO_ITEM` —
+/// the bomb already went with the plant — and `death_range_cm` is the
+/// distance from the epicentre, which is the whole story of a blast
+/// death the way range is of an arrow's.
+pub const DEATH_BY_CHARGE: u8 = 5;
 
 /// The highest cause above, named rather than counted — `EV_MAX`'s
 /// discipline applied to a *value domain* instead of a code ledger.
@@ -343,7 +634,55 @@ pub const DEATH_BY_ARROW: u8 = 3;
 /// so a cause declared past this line fails loudly instead of silently.
 /// A widened *meaning* is still a wire change (`protocol/src/lib.rs`) —
 /// this makes the widening impossible to do by accident, not permitted.
-pub const DEATH_BY_MAX: u8 = DEATH_BY_ARROW;
+/// (And it was not an accident when it happened: `DEATH_BY_MOB` is the
+/// cause that saturated the two-bit field, and wire v36 widened it;
+/// `DEATH_BY_CHARGE` landed in the same merge window on the same bump.)
+pub const DEATH_BY_MAX: u8 = DEATH_BY_CHARGE;
+
+/// Where in the day/night cycle a tick falls, `0.0..1.0` — 0 is dawn,
+/// `limits::DAY_PORTION` is dusk (day/night v0, `DECISIONS.md` §open).
+///
+/// A pure function of the tick, deliberately (`limits::DAY_TICKS`' doc has
+/// the argument): the client derives it from the smoothed tick estimate it
+/// already keeps, so no wire byte carries it, and gameplay that reads the
+/// clock calls this same function on the sim's own tick and stays
+/// deterministic for free.
+///
+/// **The sim reads it now** — [`is_night`] is the door, and `mob::think`
+/// walked through it (nocturnal senses, 2026-08-14). The bet this doc used
+/// to hedge on has been called: the curve is a divergence surface today,
+/// not just a look, which is why `is_night` exists as one comparison rather
+/// than as a threshold each caller writes for itself.
+///
+/// Wall 1: one modulo and one division, no trig — the sun curve the
+/// renderer builds from this is the renderer's own.
+pub fn day_frac(tick: u64) -> f32 {
+    use crate::limits::{DAY_PHASE_TICKS, DAY_TICKS};
+    ((tick.wrapping_add(DAY_PHASE_TICKS)) % DAY_TICKS) as f32 / DAY_TICKS as f32
+}
+
+/// Is this tick after dusk? The one place the day/night boundary is a
+/// comparison, for both the sim and the renderer.
+///
+/// It exists because the renderer's bird layer had already open-coded the
+/// threshold (`render/audio.rs` compared `day_frac` against `DAY_PORTION`
+/// itself), and the moment the sim wanted the same answer a second hand-
+/// written `<` would be a determinism surface keyed off a boundary two
+/// files could disagree about. Both call this now, so a species is
+/// nocturnal on exactly the ticks the birds stop, by construction rather
+/// than by two matching literals.
+///
+/// `render/rig.rs::sun_elevation` still names `DAY_PORTION` and is
+/// deliberately not a caller: it takes a *fraction*, not a tick, and uses
+/// the constant as the breakpoint between two half-sine arcs rather than
+/// as a question about an hour. Same number, different job.
+///
+/// Dusk itself (`frac == DAY_PORTION`) is night — the half-open convention
+/// the renderer's own curve already used, so the sun is at the horizon on
+/// the first night tick and not on the last day one.
+pub fn is_night(tick: u64) -> bool {
+    day_frac(tick) >= crate::limits::DAY_PORTION
+}
 
 /// Bit 24 of `EV_STRUCT_HIT`'s `b`: the address names the deployable store
 /// (a door, a box) rather than the piece store. Level, loc and row are all
@@ -416,6 +755,21 @@ pub struct Player {
     /// 6 hotbar + 24 backpack (ALPHA.md §1). A join starts empty — the
     /// naked spawn punches its first resources (gatherables' hand rows).
     pub inv: [ItemStack; INV_SLOTS],
+    /// Worn equipment, **indexed by slot**: `[0]` is the head and `[1]` the
+    /// body (`combat::WEAR_HEAD`/`WEAR_BODY`, one-based in the baked row).
+    /// A piece in the wrong index protects nobody — `combat::worn_pct`
+    /// checks the baked slot against the array index rather than trusting
+    /// the placement — which is what holds "one piece per slot" up before
+    /// any verb exists to enforce it.
+    ///
+    /// **Nothing in the sim writes this yet, and that is the honest state
+    /// of it** (2026-08-19). Wearing is a container move into a
+    /// `CONT_WEAR` kind, and all four values of the wire's 2-bit container
+    /// field are spent (`inventory.rs`), so equipping costs a
+    /// `CONT_KIND_BITS` widening and a `PROTO_VER` bump — a wire slice, not
+    /// this one. Until it lands, the only writers are tests and a save.
+    /// Reduction is real; reachability is not.
+    pub worn: [ItemStack; WEAR_SLOTS],
     /// Tick the next swing is allowed at (gather.rs cadence).
     pub next_swing: u64,
     /// Weak-spot chase: the cell this player last landed a hit on
@@ -427,6 +781,11 @@ pub struct Player {
     pub jobs: [CraftJob; CRAFT_QUEUE],
     /// Tick the head job's current unit completes at; 0 = idle.
     pub craft_done_at: u64,
+    /// Blueprints this player has researched: bit `i` = recipe `i`
+    /// (research.rs). Sim state, saved with the player, and the reason
+    /// `Player` carries a mask rather than a set — one shift on the craft
+    /// path, nothing to iterate, nothing to allocate.
+    pub known: u64,
     /// Hit points. A join grants `CombatContent::player_hp`, so inert
     /// content leaves this 0 and nothing can be killed (combat.rs).
     pub hp: u16,
@@ -514,11 +873,13 @@ impl Default for Player {
             body: Body::default(),
             frame: InputFrame::default(),
             inv: [ItemStack::default(); INV_SLOTS],
+            worn: [ItemStack::default(); WEAR_SLOTS],
             next_swing: 0,
             ws_cell: NO_CELL,
             ws_hits: 0,
             jobs: [CraftJob::default(); CRAFT_QUEUE],
             craft_done_at: 0,
+            known: 0,
             hp: 0,
             hp_max: 0,
             deaths: 0,
@@ -545,6 +906,14 @@ impl Default for Player {
 /// Every mutation the sim accepts. The WAL is exactly this stream plus the
 /// tick numbers (DESIGN.md §7).
 #[derive(Clone, Copy, Debug)]
+// `JoinAs` carries a `PlayerSave` BY VALUE, and that is `persist.rs`'s own
+// stated contract — "`Copy` and POD like every other record that crosses a
+// boundary here, so it rides a `Command` and an SPSC ring without an
+// allocation." Boxing it to please the variant-size lint would put an
+// allocation on the command path and a deallocation inside the tick that
+// consumes it, which is the exact traffic wall 2's counting allocator
+// exists to refuse. The size is priced, not accidental.
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     Join {
         id: u32,
@@ -620,6 +989,44 @@ pub enum Command {
     Evict {
         id: u32,
     },
+    /// Move `id`'s body to `to`'s feet — the admin lane's travel verb
+    /// (admin v0, `ALPHA.md` §3).
+    ///
+    /// **Not reachable from the wire**, `Evict`'s posture and for a
+    /// stronger reason: no `ActionMsg` maps here, so a client cannot ask
+    /// for it however it forges its bytes, and the only mint site is the
+    /// server's admin dispatch behind a wallet allowlist. It is a
+    /// `Command` rather than a poke at `world.players` from outside
+    /// because **the WAL is the command stream** (`Command::JoinAs`'
+    /// argument): a body that moved by side channel would replay as a
+    /// body that never moved, and every hash after it would differ. An
+    /// admin act being *visible in a replay* is also what `ALPHA.md` §3
+    /// asks for in the same breath as the lane.
+    ///
+    /// A miss — either id naming nobody live — is a legal no-op, `Wake`'s
+    /// posture, because a WAL replayed against a world that diverged must
+    /// refuse rather than teleport somebody into a hole.
+    ///
+    /// The destination is the *target's* body, not a coordinate, and that
+    /// is the whole safety story: an arbitrary xyz would need bounds, a
+    /// walkability check and a "you are now inside a rock" answer;
+    /// somewhere a player is already standing is known-good ground.
+    AdminTeleport {
+        id: u32,
+        to: u32,
+    },
+    /// Put `count` of item row `item` in `id`'s inventory — the admin
+    /// lane's other verb, `AdminTeleport`'s posture in every respect
+    /// (not wire-reachable, minted only behind the allowlist, a command
+    /// so it replays).
+    ///
+    /// Overflow is `gather::inv_add`'s documented policy and not this
+    /// command's business: a full inventory keeps what fits.
+    AdminGive {
+        id: u32,
+        item: u16,
+        count: u16,
+    },
     Input {
         id: u32,
         frame: InputFrame,
@@ -631,6 +1038,24 @@ pub enum Command {
         recipe: u16,
         count: u16,
     },
+    /// Learn the blueprint for whatever is in inventory `slot`, at a
+    /// research table in reach, paying the row's coin (research.rs).
+    /// The slot is the sender's claim and the sim is the verdict: a forged
+    /// index, an empty hand and a stack of wood all land on the same
+    /// announced refusal, exactly as `Consume`'s does.
+    Research {
+        id: u32,
+        slot: u8,
+    },
+    /// Learn recipe row `recipe` through the tech tree (tech tree v0):
+    /// at a workbench of the node's tier, along the `requires` graph,
+    /// paying the row's coin — no sample needed (research.rs says why
+    /// the two verbs stay asymmetric). The recipe index is the sender's
+    /// claim and the sim is the verdict, as `Research`'s slot is.
+    Unlock {
+        id: u32,
+        recipe: u16,
+    },
     /// Cancel the queue job at `index`, refunding its remaining inputs.
     CraftCancel {
         id: u32,
@@ -639,6 +1064,11 @@ pub enum Command {
     /// Place baked building-piece row `row` at grid address (cx, cz,
     /// level, loc) (build.rs validates and refuses by event, never by
     /// panic).
+    ///
+    /// `freehand` declines the plate latch — see [`build::plate_for`]. It
+    /// rides the command rather than being re-derived because the server
+    /// knows which neighbour is built and cannot know which floor the
+    /// player wanted (freehand placement v0).
     Place {
         id: u32,
         row: u16,
@@ -646,6 +1076,7 @@ pub enum Command {
         cz: u16,
         level: u8,
         loc: u8,
+        freehand: bool,
     },
     /// Place baked deployable row `row` at grid address (deploy.rs
     /// validates and refuses by event, never by panic).
@@ -761,10 +1192,31 @@ pub enum Command {
     Loot {
         id: u32,
     },
+    /// Open the authored world container at cell key `cont`
+    /// (`worldcont.rs`) — the haven pad's crate, a waystation's cache.
+    ///
+    /// **The only container verb that enters the sim at all.** Opening a
+    /// bag or a box is pure server-side subscription (`open_container`):
+    /// the contents already exist, so a view of them changes no state and
+    /// mints no command. A world container's contents do *not* exist until
+    /// somebody opens it — the roll is the state change — so this one has
+    /// to be a `Command`, has to be in the WAL, and has to be in
+    /// `state_hash`. A replay that skipped it would replay a shard whose
+    /// crates were all still full.
+    ///
+    /// Payload is the cell key alone, and the sim treats it as a claim:
+    /// `terrain::scatter` re-derives what actually stands there, so a
+    /// handle naming an empty meadow opens nothing. Reach is re-proved
+    /// here and again on every tick the panel is open.
+    OpenWorldCont {
+        id: u32,
+        cont: u32,
+    },
     /// Move `count` items between two slots (`inventory.rs`). `cont` names
     /// the one ground container this move touches — a bag id for
-    /// `CONT_BAG`, a packed `deploy::box_key` address for `CONT_BOX`, zero
-    /// when the move is inside the sender's own inventory.
+    /// `CONT_BAG`, a packed `deploy::box_key` address for `CONT_BOX`, a
+    /// packed `gather::cell_key` for `CONT_WORLD`, zero when the move is
+    /// inside the sender's own inventory.
     ///
     /// Unlike `Loot`, this one *does* carry a target, and it has to: the
     /// whole verb is the player choosing which slot, which is the choice
@@ -833,6 +1285,9 @@ pub struct World {
     /// inert default leaves every fire cold, which is the game that
     /// existed before the module.
     pub cook: crate::oven::CookContent,
+    /// Baked research rules (research.rs). Construction input, like every
+    /// other content table; `EMPTY` teaches nothing.
+    pub research: crate::research::ResearchContent,
     /// Baked melee rows + max hp (combat.rs). Construction input too; the
     /// inert default leaves the world unable to hurt anyone.
     pub combat: CombatContent,
@@ -891,6 +1346,13 @@ pub struct World {
     /// for its client array — keeps `World`'s stack footprint where this
     /// slice found it. Nothing here allocates in the tick (wall 2).
     pub backpacks: Box<Backpacks>,
+    /// Authored world containers a player has opened — sim state, hashed
+    /// (`worldcont.rs`). Boxed inside, for `backpacks`' reason: 64 records
+    /// of `INV_SLOTS` stacks is ~8.7 kB of fixed capacity on a stack-built
+    /// `World`. Nothing here allocates in the tick, and nothing here runs
+    /// in the tick at all — a world container is touched only by the verb
+    /// that opens it and the move that empties it.
+    pub world_conts: crate::worldcont::WorldConts,
     /// Upkeep/decay sweep cursors (deploy.rs) — sim state, hashed.
     pub sweep_piece: u32,
     pub sweep_deploy: u32,
@@ -959,6 +1421,7 @@ impl World {
             build: BuildContent::EMPTY,
             deploy: DeployContent::EMPTY,
             cook: crate::oven::CookContent::EMPTY,
+            research: crate::research::ResearchContent::EMPTY,
             combat: CombatContent::EMPTY,
             backpack: BackpackContent::EMPTY,
             survival: SurvivalContent::EMPTY,
@@ -968,6 +1431,7 @@ impl World {
             deploys: Deploys::new(),
             charges: crate::charge::Charges::new(),
             backpacks: Box::new(Backpacks::new()),
+            world_conts: crate::worldcont::WorldConts::new(),
             sweep_piece: 0,
             sweep_deploy: 0,
             sweep_support: 0,
@@ -1111,8 +1575,114 @@ impl World {
     /// only a corpse may send, and `Input`, which is the client's own
     /// frame and keeps flowing so prediction and the server agree about a
     /// body that is standing still (the tick zeroes what it acts on).
-    fn live_slot_of(&self, id: u32) -> Option<usize> {
+    pub fn live_slot_of(&self, id: u32) -> Option<usize> {
         self.slot_of(id).filter(|&s| !self.players[s].dead)
+    }
+
+    /// Was this player online — [`PRESENCE_AWAKE`], [`PRESENCE_ASLEEP`] or
+    /// [`PRESENCE_GONE`] (`EV_TRUST`'s low byte).
+    ///
+    /// The linear scan is `slot_of`'s, and deliberately not a smarter
+    /// lookup: a player id is minted `generation << 8 | slot` by the
+    /// **server**, and sim-core does not know that — deriving a slot from
+    /// an id here would be this crate learning a convention it is not
+    /// allowed to depend on, and it would be silently wrong the first time
+    /// the minter changes. `MAX_PLAYERS` compares on a door press is
+    /// bounded work in a tick that already did a reach check.
+    ///
+    /// A corpse reads awake on purpose: the death screen is a player
+    /// watching, and the question this answers is whether the act had a
+    /// witness.
+    pub fn presence_of(&self, id: u32) -> u8 {
+        match self.players.iter().find(|p| p.active && p.id == id) {
+            None => PRESENCE_GONE,
+            Some(p) if p.sleeping => PRESENCE_ASLEEP,
+            Some(_) => PRESENCE_AWAKE,
+        }
+    }
+
+    /// Push one `EV_TRUST` row: `actor` exercised `verb` against a record
+    /// `counterparty` owns, and this is whether they were there to see it.
+    ///
+    /// **The one place the "is this a counterparty at all" rule lives**,
+    /// so the four emit sites cannot disagree about it. Three ids are not
+    /// counterparties and each is silent for its own reason:
+    ///
+    /// - `0` — nobody placed it. Every deployable in the world today comes
+    ///   from a player (`NOW.md` §4b), so this is the authored-site case
+    ///   arriving early rather than a live path; it is here because the
+    ///   record must not gain a row whose subject is the number zero the
+    ///   day one lands.
+    /// - `actor` — your own door, your own hearth, your own box. A verb on
+    ///   your own thing creates no trust relationship, and logging it would
+    ///   bury the rows that are the measurement under the rows that are
+    ///   ordinary play.
+    /// - a `mob::mob_id` — a corpse bag carries the dead animal's tagged
+    ///   id where a player's would be (`EV_BAG_DROPPED`). A boar is not a
+    ///   counterparty, and without this check every skinned carcass would
+    ///   log one against a player number that does not exist.
+    fn log_trust(&mut self, actor: u32, counterparty: u32, verb: u8) {
+        if counterparty == 0
+            || counterparty == actor
+            || crate::mob::slot_of_id(counterparty).is_some()
+        {
+            return;
+        }
+        let presence = self.presence_of(counterparty);
+        self.events.push(
+            EV_TRUST,
+            actor,
+            counterparty,
+            ((verb as u32) << 8) | presence as u32,
+        );
+    }
+
+    /// One slot of whichever container `kind` names, by value. `ci` is the
+    /// resolved ground-container index and is only read when the kind is a
+    /// ground container — the caller has already proved it resolves.
+    ///
+    /// **`pub` because it is the only answer to "what is in slot `s` of
+    /// this kind", and a second answer is a shipped defect.** It was
+    /// private until 2026-08-14, so the server's per-tick container drip
+    /// could not call it and re-implemented the dispatch as a two-way
+    /// `if kind == CONT_BAG { backpacks } else { deploys }`
+    /// (`server/core.rs`). That was correct for the two kinds alive when
+    /// it was written and silently wrong the moment a third landed:
+    /// `CONT_WORLD` fell through the `else` and read `deploys.box_slot`
+    /// with a `world_conts` index — an index that is always in range
+    /// (`MAX_WORLD_CONTS` 64 < 1 024 deploys) and therefore never panics,
+    /// so opening the pad's crate drew a *deploy box's* contents with
+    /// every gate green. The kinds are wire `u8` constants, so no
+    /// exhaustive `match` can be made to catch the next one; the only
+    /// structural defence is that there is one function, and it is this
+    /// one. Call it — do not re-derive it.
+    pub fn cont_slot(&self, slot: usize, kind: u8, s: u8, ci: usize) -> ItemStack {
+        match kind {
+            inventory::CONT_BAG => self.backpacks.slot(ci, s as usize),
+            inventory::CONT_BOX => self.deploys.box_slot(ci, s as usize),
+            inventory::CONT_WORLD => self.world_conts.slot(ci, s as usize),
+            _ => self.players[slot].inv[s as usize],
+        }
+    }
+
+    /// The mirror of `cont_slot`, and the only place a move writes.
+    fn set_cont_slot(&mut self, slot: usize, kind: u8, s: u8, ci: usize, v: ItemStack) {
+        match kind {
+            inventory::CONT_BAG => self.backpacks.set_slot(ci, s as usize, v),
+            inventory::CONT_BOX => self.deploys.set_box_slot(ci, s as usize, v),
+            // The one kind whose write needs the clock: emptying the last
+            // stack arms the refill timer, and the jitter is the barrel's
+            // own so a crate and a barrel come back on one schedule
+            // (`gather::RESPAWN_*`, DECISIONS.md §open "node/barrel
+            // respawn 20–45 min" — reused, not re-spoken).
+            inventory::CONT_WORLD => {
+                let c = self.world_conts.entries()[ci];
+                let refill = crate::worldcont::refill_ticks(self.seed, c.cx, c.cz, self.tick);
+                self.world_conts
+                    .set_slot(ci, s as usize, v, self.tick, refill);
+            }
+            _ => self.players[slot].inv[s as usize] = v,
+        }
     }
 
     /// The move verb's one mutating body. Everything it decides is decided
@@ -1131,26 +1701,10 @@ impl World {
     ///
     /// Every exit before the writes announces itself. There is no silent
     /// path and no path that ends the session.
-    /// One slot of whichever container `kind` names, by value. `ci` is the
-    /// resolved ground-container index and is only read when the kind is a
-    /// ground container — the caller has already proved it resolves.
-    fn cont_slot(&self, slot: usize, kind: u8, s: u8, ci: usize) -> ItemStack {
-        match kind {
-            inventory::CONT_BAG => self.backpacks.slot(ci, s as usize),
-            inventory::CONT_BOX => self.deploys.box_slot(ci, s as usize),
-            _ => self.players[slot].inv[s as usize],
-        }
-    }
-
-    /// The mirror of `cont_slot`, and the only place a move writes.
-    fn set_cont_slot(&mut self, slot: usize, kind: u8, s: u8, ci: usize, v: ItemStack) {
-        match kind {
-            inventory::CONT_BAG => self.backpacks.set_slot(ci, s as usize, v),
-            inventory::CONT_BOX => self.deploys.set_box_slot(ci, s as usize, v),
-            _ => self.players[slot].inv[s as usize] = v,
-        }
-    }
-
+    //
+    // (This block sat on `cont_slot` until 2026-08-14 — a doc comment
+    // attaches to the item that follows it, and an intervening helper had
+    // been added above `move_item` without moving it down.)
     #[allow(clippy::too_many_arguments)]
     fn move_item(
         &mut self,
@@ -1252,6 +1806,27 @@ impl World {
                 }
                 Some(i)
             }
+            // A world container resolves by cell key, and — unlike a bag
+            // and a box — a handle that resolves to nothing is the
+            // *ordinary* case rather than a lost container: it means
+            // nobody has opened this crate yet, so no record exists. The
+            // move still refuses. `open` is the only path that mints one,
+            // because minting is where the loot is rolled, and rolling
+            // from inside the move verb would let a client skip the reach
+            // and occupant checks that `open` is made of.
+            inventory::CONT_WORLD => {
+                let Some(i) = self.world_conts.index_of(cont) else {
+                    self.events
+                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
+                    return;
+                };
+                if !self.world_conts.in_reach(i, &self.players[slot]) {
+                    self.events
+                        .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_REACH, addr);
+                    return;
+                }
+                Some(i)
+            }
             _ => None,
         };
         // Safe past the guard above: `cont_idx` is `Some` whenever either
@@ -1302,6 +1877,23 @@ impl World {
             addr,
             ((count as u32) << 16) | src.item as u32,
         );
+        // Whose container this was — the trust row for the move verb
+        // (`EV_TRUST`). Read here rather than at the top, because it must
+        // be read after the move succeeded and before `drop_if_empty`
+        // below can take the bag's record out from under it.
+        //
+        // A world container is deliberately absent: a loot crate is
+        // nobody's, so a hand in one answers to nobody. `CONT_SELF` to
+        // `CONT_SELF` leaves `ground` at `CONT_SELF` and falls through the
+        // same way — arranging your own hotbar is not a relationship.
+        let owner = match ground {
+            inventory::CONT_BOX => Some(self.deploys.boxes()[ci].owner),
+            inventory::CONT_BAG => Some(self.backpacks.entries()[ci].owner),
+            _ => None,
+        };
+        if let Some(owner) = owner {
+            self.log_trust(pid, owner, TRUST_CONT);
+        }
         // A bag a withdrawal emptied leaves by `loot_nearest`'s route, so
         // the wire sees one removal contract however it was emptied. A box
         // does **not** take that route and that is the difference between
@@ -1366,8 +1958,44 @@ impl World {
             // cost the raider a fight and pay them nothing.
             sleeping: body.sleeping,
             slept_at: body.slept_at,
+            // Carried for a different reason, and it is the one this
+            // spread had already got wrong once. The backpack takes the
+            // inventory, so a corpse holding nothing is correct — but a
+            // blueprint is not carried, it is *known*, and `..default()`
+            // cleared it here at the instant of death, one door before
+            // `wake` could have carried it. Fixing only `wake` would have
+            // looked right and shipped a zero.
+            //
+            // Found 2026-08-15 by `event_roles.rs`'s `known_names_the_
+            // holder…`, which starves a body for real rather than setting
+            // `dead` by hand — the hand-set version of the same test
+            // passed, because it never came through this function.
+            known: body.known,
             ..Player::default()
         };
+        // **What it was wearing goes into the bag with what it was
+        // carrying**, and that is the decision `tests/persist.rs`'s field
+        // ledger forces into a test rather than into a reviewer's
+        // attention. Armor as loot is what makes killing an armored player
+        // worth doing; a corpse that keeps its plates is a body nobody
+        // fights for. So `worn` is *not* named in the literal above —
+        // `..Player::default()` clears it, exactly as it clears `inv` —
+        // and this is where it lands instead.
+        //
+        // Through `drain_spill` rather than by widening `drop_for`'s
+        // buffer, and the difference is whether an item can be destroyed.
+        // A bag holds `INV_SLOTS`, a full pocket plus two plates is
+        // `INV_SLOTS + WEAR_SLOTS`, and merging into the array `drop_for`
+        // copies wholesale would drop whatever did not fit. `spill_at`
+        // merges into the bag standing in reach — the one the line above
+        // just stood up, at distance zero — and stands a second one up for
+        // the remainder, so the pack being full costs the killer a walk
+        // and never an item. It is the same drain the six existing
+        // producers use; this is the seventh, and it is named here for the
+        // reason `backpack.rs`'s header names the others.
+        let mut shed = [ItemStack::default(); INV_SLOTS];
+        shed[..WEAR_SLOTS].copy_from_slice(&body.worn);
+        self.drain_spill(slot, &mut shed);
     }
 
     /// The other half: you wake up naked **on your own bag if you asked for
@@ -1384,7 +2012,7 @@ impl World {
     ///
     /// The bag is asked first and the ring is the fallback, which is also
     /// the order of the two `dev_spawn` obeys: `dev_spawn` pins the *ring*
-    /// (its doc says so, and `browser_smoke` uses it to put two tabs on
+    /// (its doc says so, and `browser_smoke` used it to put two tabs on
     /// one beach), and a bag is not the ring. A shard pinned for testing
     /// still honours a bag its player placed, which is the behaviour the
     /// player would report a bug about otherwise.
@@ -1428,21 +2056,97 @@ impl World {
             None => self.spawn_pos_n(id, deaths as u32),
         };
         let hp = self.combat.player_hp;
+        // `known` is the fifth thing a body carries through a death, and
+        // it is carried for the same reason `deaths` is: both are ledgers
+        // of what the player *did*, not of what they were holding when
+        // they fell. A blueprint is bought with OBOL, and OBOL is the
+        // scarcest thing on the shard.
+        //
+        // **It was not carried until 2026-08-15, so dying deleted every
+        // blueprint you had paid for.** The mask landed at research v0
+        // into `Player`, `Default`, `PlayerSave`, `state_hash` and
+        // `worldsave.rs`, and the `..Player::default()` below answered
+        // "no, a body does not keep that" without anybody deciding it —
+        // the spread's silence is the whole defect. Death is the most
+        // common event in the game, so this was the OBOL sink emptying
+        // itself on a timer. The gates are `research.rs`'s
+        // `a_blueprint_survives_a_death`, `persist.rs`'s
+        // `the_carried_decisions_survive_a_real_death`, and
+        // `event_roles.rs`'s
+        // `known_names_the_holder_then_the_mask_low_half_first`;
+        // `persist.rs`'s `every_player_field_is_classified_across_a_death`
+        // is why the next field cannot land here silently.
+        //
+        // (This comment named a `combat.rs` test that has never existed —
+        // corrected 2026-08-15. A citation is a claim that something is
+        // enforced, so an invented one reads as covered while nothing
+        // checks it, which is `CLAUDE.md`'s dead-citation ⚠ exactly. The
+        // check when you write one is `ls`, or a grep for the `fn`.)
+        let known = body.known;
         self.players[slot] = Player {
             id,
             active: true,
-            body: Body::at(self.seed, x, z),
+            body: Body::at(self.seed, &self.haven, x, z),
             frame,
             hp,
             hp_max: hp,
             deaths,
+            known,
             ..Player::default()
         };
         // A player who starved does not respawn already starving.
         survival::grant(&self.survival, &mut self.players[slot]);
+        // **And a player who died does not respawn unable to play**
+        // (DECISIONS.md 2026-08-15; `NOW.md` §0die mechanism 3).
+        //
+        // The kit was fresh-arm-only until here, and `inventory.rs` gave
+        // the reason: re-granting "would be an item printer". That was
+        // correct arithmetic against a kit worth 900 wood, 500 stone and
+        // 100 metal frags, and it is void against one worth a rock and a
+        // torch — 10 stone of craftable tools, which is less than one
+        // swing of the node the rock opens. What the old reasoning bought
+        // instead was the compound §0die names: the inventory drops into a
+        // bag where you fell, the bag despawns on its rarity timer, and no
+        // kit ever comes back — so one death ended a session for good.
+        //
+        // **`wake` is where a new body is built**, and this sits beside
+        // `survival::grant` for exactly its reason: both restore the floor
+        // a body needs to be playable, and neither restores anything the
+        // player earned. So the rule is *once per BODY*, not once per
+        // character and not once per login.
+        //
+        // ⚠ **`Command::Respawn` is not the only caller, and a comment
+        // here said it was until 2026-08-15.** `grep -n '\.wake(' ` on this
+        // file returns three: the respawn command, `seat`'s restore arm
+        // when the save is `dead` (logged off on the death screen), and the
+        // sleeper takeover when the body it takes over is dead. All three
+        // rebuild the body from `..Player::default()`, so all three are new
+        // bodies and all three are paid — and since 2026-08-17 all three
+        // are gated: `tests/bag_respawn.rs` and `server/tests/spawn_kit.rs`
+        // drive `Command::Respawn`;
+        // `persist.rs::a_dead_save_wakes_holding_the_spawn_kit` drives the
+        // dead restore; `sleepers.rs::
+        // a_takeover_of_a_dead_body_wakes_holding_the_spawn_kit` drives the
+        // takeover. Each of the latter two is proven red both under an
+        // early return at its own door and under deleting this `grant_kit`
+        // call alone — the mutation the doors' older position/hp gates
+        // cannot see.
+        //
+        // A returning login whose save is ALIVE is the different door and
+        // still grants nothing, because a saved character keeps what it
+        // saved.
+        //
+        // It writes slots in order and does not merge, so a bag-spawn
+        // respawn that already looted itself gets its slot-0 and slot-1
+        // overwritten. That is `grant_kit`'s documented shape rather than
+        // an oversight here; the alternative — merging — would make the
+        // grant depend on what you were carrying, which is the item
+        // printer this comment is about.
+        inventory::grant_kit(&self.spawn_kit, &mut self.players[slot]);
         self.events.push(EV_RESPAWN, id, bag.is_some() as u32, 0);
         self.events.push(EV_HEALTH, id, hp as u32, hp as u32);
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
+        self.announce_known(slot);
     }
 
     /// **The one door into the world for a player**, and there are two
@@ -1489,25 +2193,70 @@ impl World {
                 self.players[slot] = Player {
                     id,
                     active: true,
-                    body: Body::at(self.seed, x, z),
+                    body: Body::at(self.seed, &self.haven, x, z),
                     hp,
                     hp_max: hp,
                     ..Player::default()
                 };
                 survival::grant(&self.survival, &mut self.players[slot]);
-                // The spawn kit, on the FRESH arm only. A restore keeps what
-                // it saved; re-granting on every login would be an item
-                // printer, which is the same reason `survival::grant` is
-                // here and not below the match.
+                // The spawn kit, on the FRESH arm only — of this door. A
+                // restore keeps what it saved; re-granting on every LOGIN
+                // would be an item printer, which is the same reason
+                // `survival::grant` is here and not below the match.
+                //
+                // ⚠ **A respawn is not a login and grants it too** since
+                // 2026-08-15 (`wake`, above). Read the two together before
+                // moving either: the rule is not "once per character", it
+                // is "once per body" — a fresh body gets the floor it needs
+                // to play, and a body that already exists gets nothing.
+                // Death makes a new body; a login does not.
+                //
+                // ⚠ **"a restore gets nothing" is true of a LIVE restore
+                // only**, which the arm below is not alone in being. A save
+                // marked `dead` falls through `Some(s)` and then calls
+                // `wake` (~60 lines down), so it takes the kit — correctly,
+                // because declining the death screen is choosing the beach
+                // and that is a new body. Stated because the sentence above
+                // read as covering every restore until 2026-08-15, and the
+                // counterexample sits inside the same `match`.
                 inventory::grant_kit(&self.spawn_kit, &mut self.players[slot]);
             }
             Some(s) => {
+                // Every field named, and no `..Player::default()` — this
+                // is `worldsave.rs`'s discipline, moved here because this
+                // door had the bug that one was written to prevent.
+                //
+                // `known` was missing from this list. `PlayerSave` carried
+                // the blueprint mask correctly, the codec round-tripped it,
+                // and the spread then quietly answered `known: 0` — so a
+                // keyed player reconnecting after a restart lost every
+                // blueprint they had paid OBOL for, with `test_replay`
+                // blind to it (its stream has no `JoinAs`) and
+                // `a_blueprint_survives_a_save_and_a_load` blind to it too
+                // (it exercises the codec and never seats a world).
+                //
+                // Named rather than spread, so **a field added to
+                // `PlayerSave` stops compiling here** and whoever adds it
+                // has to decide whether a returning body remembers it. The
+                // default silently answered "no" once already.
+                //
+                // The fields the save does not carry are still
+                // `Player::default()`'s, and deliberately: the input frame,
+                // the swing cooldown, the weak-spot chase, the craft timer
+                // (re-armed below), the death record and the sleep flags.
+                // They are written out here rather than spread so that the
+                // list is a decision instead of an omission.
                 self.players[slot] = Player {
                     id,
                     active: true,
                     body: s.body,
                     inv: s.inv,
+                    // You log off in your armor, you log in in your armor
+                    // — `hp`'s sentence, and the alternative would make
+                    // closing the game a way to lose a plate.
+                    worn: s.worn,
                     jobs: s.jobs,
+                    known: s.known,
                     hp: s.hp,
                     hp_max: s.hp_max,
                     deaths: s.deaths,
@@ -1520,7 +2269,26 @@ impl World {
                     heal_total: s.heal_total,
                     heal_span: s.heal_span,
                     heal_acc: s.heal_acc,
-                    ..Player::default()
+                    // Not from the save, by design (`persist.rs` says
+                    // which and why). `dead` is read below rather than
+                    // stored: a body that logged off dead wakes on a
+                    // beach, so `wake` owns that record, not this one.
+                    dead: false,
+                    frame: InputFrame::default(),
+                    next_swing: 0,
+                    // `NO_CELL`, not zero: the weak-spot chase names a
+                    // cell and cell 0 is a real one, so a `0` here would
+                    // restore a player already half-way through chasing
+                    // the weak spot on whatever stands at the origin.
+                    ws_cell: NO_CELL,
+                    ws_hits: 0,
+                    craft_done_at: 0,
+                    death_by: 0,
+                    death_cause: 0,
+                    death_item: NO_ITEM,
+                    death_range_cm: 0,
+                    sleeping: false,
+                    slept_at: 0,
                 };
                 craft::rearm(&self.craft, self.tick, &mut self.players[slot]);
                 if s.dead {
@@ -1544,6 +2312,25 @@ impl World {
             self.events.push(EV_HEALTH, id, hp as u32, hp_max as u32);
         }
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
+        self.announce_known(slot);
+    }
+
+    /// State the blueprint mask, whole. The third thing said at a door,
+    /// for the same reason as the first two: `known` is only ever
+    /// announced when it changes, so without this a returning player has
+    /// no blueprints until they buy one — and that is the one moment a
+    /// greyed-out recipe they already own is worst.
+    ///
+    /// **Unconditional, unlike `EV_HEALTH` above.** An empty mask is a
+    /// fact too, and the interesting case is a client-core reused across
+    /// two characters: a stale mask left standing would offer recipes the
+    /// new body has not earned, and the craft gate would then refuse them
+    /// at the sim. Saying `0` out loud costs one event per door and makes
+    /// the client's copy a statement rather than a residue.
+    fn announce_known(&mut self, slot: usize) {
+        let (id, mask) = (self.players[slot].id, self.players[slot].known);
+        self.events
+            .push(EV_KNOWN, id, mask as u32, (mask >> 32) as u32);
     }
 
     /// The slot holding the sleeping body `id`, or `None` — the sleeper
@@ -1629,6 +2416,12 @@ impl World {
             self.events.push(EV_HEALTH, id, hp as u32, hp_max as u32);
         }
         survival::announce_vitals(&self.survival, &self.players[slot], &mut self.events);
+        // The body kept its mask — a takeover never rebuilt the record,
+        // which is why this door was the one that did not lose it. The
+        // announcement is owed anyway: the *connection* is new even when
+        // the body is not, so the client arriving through it knows
+        // nothing until told.
+        self.announce_known(slot);
     }
 
     /// The world-side half of two-phase eviction: remove the sleeping body
@@ -1688,6 +2481,13 @@ impl World {
             if arch == crate::deploy::ARCH_DOOR {
                 self.pieces.set_door(d.cx, d.cz, d.level, d.loc, !d.open);
             }
+            // The solid nibble is the shut bit's twin and derived the same
+            // way (deploy collision v0): `Pieces::restore` cleared the
+            // index, so every standing body deploy re-blocks here or a
+            // loaded shard's furniture is walk-through until re-placed.
+            if crate::deploy::solid_vol(arch).is_some() {
+                self.pieces.set_solid(d.cx, d.cz, d.level, Some(arch));
+            }
             if !crate::deploy::lockable(arch) {
                 continue;
             }
@@ -1738,6 +2538,59 @@ impl World {
         self.slot_of(id).map(|s| PlayerSave::of(&self.players[s]))
     }
 
+    /// **The one drain.** Hand whatever a verb could not fit into the
+    /// player in `slot` to the ground under that body, merging into a bag
+    /// already in reach before minting one. `spill` comes back empty; an
+    /// all-empty buffer costs a scan of `INV_SLOTS` and nothing else.
+    ///
+    /// This is a function rather than two copies of nine lines because the
+    /// number of producers went from two to six this pass (a node's yield,
+    /// a finished craft, and the four give-backs of `NOW.md` §0sp2), and
+    /// **a container with a single-consumer contract needs an owner named
+    /// in code** — `CLAUDE.md`'s clean-merge trap, which cost this repo a
+    /// silent audio outage when two lanes each added a reader to a ring
+    /// that hands each fact over once. The producers write; this drains;
+    /// nothing else calls `spill_at`.
+    ///
+    /// The fall-point is always the body, never the object given back.
+    /// `build::demolish`'s doc carries the argument in full: every one of
+    /// the six producers refuses beyond `BUILD_REACH_M`, and
+    /// `backpack::LOOT_REACH_M` *is* `BUILD_REACH_M`, so the object's own
+    /// address is inside the merge reach of the feet by construction and
+    /// choosing between them cannot change what a player finds.
+    ///
+    /// `self.tick` and `World::tick`'s local `tick` are the same value —
+    /// the local is bound after the command loop and nothing advances the
+    /// field mid-tick — so this reads identically from `apply` and from the
+    /// player loop. A bag's expiry would otherwise depend on which caller
+    /// stood it up, which the state hash would see.
+    fn drain_spill(&mut self, slot: usize, spill: &mut [ItemStack; INV_SLOTS]) {
+        if spill.iter().all(|s| s.count == 0) {
+            return;
+        }
+        let (owner, sx, sy, sz) = {
+            let p = &self.players[slot];
+            (
+                p.id,
+                p.body.qx,
+                p.body.qy + crate::backpack::BAG_Y_OFFSET_Q,
+                p.body.qz,
+            )
+        };
+        let tick = self.tick;
+        self.backpacks.spill_at(
+            &self.backpack,
+            &self.gather,
+            sx,
+            sy,
+            sz,
+            owner,
+            spill,
+            tick,
+            &mut self.events,
+        );
+    }
+
     fn apply(&mut self, cmd: &Command, removals: &mut usize) {
         match *cmd {
             Command::Join { id } => self.seat(id, None),
@@ -1768,6 +2621,38 @@ impl World {
             }
             Command::Wake { id, sleeper } => self.take_over(id, sleeper),
             Command::Evict { id } => self.evict(id),
+            Command::AdminTeleport { id, to } => {
+                // Both bodies resolved before either is touched, and a
+                // miss on either is a no-op: `Wake`'s rule, because a WAL
+                // replayed against a diverged world must refuse rather
+                // than move somebody somewhere nobody is standing.
+                if let (Some(from), Some(dest)) = (self.live_slot_of(id), self.live_slot_of(to)) {
+                    if from != dest {
+                        let body = self.players[dest].body;
+                        self.players[from].body = body;
+                    }
+                }
+            }
+            Command::AdminGive { id, item, count } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    // An unknown row is refused rather than stored: the
+                    // stack cap is read off the item table, and an index
+                    // past it would be a stack with no rule.
+                    if (item as usize) < self.gather.stack_max.len() {
+                        let cap = self.gather.stack_max[item as usize];
+                        if cap > 0 {
+                            let cond = self.gather.cond_max[item as usize];
+                            crate::gather::inv_add(
+                                &mut self.players[slot].inv,
+                                item,
+                                count,
+                                cap,
+                                cond,
+                            );
+                        }
+                    }
+                }
+            }
             Command::Input { id, frame } => {
                 if let Some(slot) = self.slot_of(id) {
                     let mut frame = frame;
@@ -1799,15 +2684,43 @@ impl World {
                     );
                 }
             }
+            Command::Research { id, slot } => {
+                if let Some(s) = self.live_slot_of(id) {
+                    crate::research::research(
+                        &self.research,
+                        &self.deploy,
+                        &self.deploys,
+                        &mut self.players[s],
+                        slot,
+                        &mut self.events,
+                    );
+                }
+            }
+            Command::Unlock { id, recipe } => {
+                if let Some(s) = self.live_slot_of(id) {
+                    crate::research::unlock(
+                        &self.research,
+                        &self.craft,
+                        &self.deploy,
+                        &self.deploys,
+                        &mut self.players[s],
+                        recipe,
+                        &mut self.events,
+                    );
+                }
+            }
             Command::CraftCancel { id, index } => {
                 if let Some(slot) = self.live_slot_of(id) {
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
                     craft::cancel(
                         &self.craft,
                         &self.gather,
                         self.tick,
                         &mut self.players[slot],
                         index,
+                        &mut spill,
                     );
+                    self.drain_spill(slot, &mut spill);
                 }
             }
             Command::Place {
@@ -1817,10 +2730,12 @@ impl World {
                 cz,
                 level,
                 loc,
+                freehand,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     build::place(
                         self.seed,
+                        &self.haven,
                         &self.build,
                         &self.deploys,
                         &mut self.pieces,
@@ -1831,6 +2746,7 @@ impl World {
                         cz,
                         level,
                         loc,
+                        freehand,
                         &mut self.events,
                     );
                 }
@@ -1846,6 +2762,7 @@ impl World {
                 if let Some(slot) = self.live_slot_of(id) {
                     deploy::place_deploy(
                         self.seed,
+                        &self.haven,
                         &self.deploy,
                         &self.build,
                         &mut self.pieces,
@@ -1899,7 +2816,7 @@ impl World {
                         &mut self.events,
                     );
                     if !lit {
-                        deploy::use_door(
+                        let owner = deploy::use_door(
                             &self.deploy,
                             &mut self.pieces,
                             &mut self.deploys,
@@ -1910,6 +2827,15 @@ impl World {
                             loc,
                             &mut self.events,
                         );
+                        // The trust row rides here rather than inside the
+                        // verb, and that is the whole reason the verb
+                        // returns an owner instead of pushing the event:
+                        // `use_door` holds `&mut players[slot]`, so it
+                        // cannot also read the roster the presence
+                        // question is asked of. One borrow later, this can.
+                        if let Some(owner) = owner {
+                            self.log_trust(id, owner, TRUST_DOOR);
+                        }
                     }
                 }
             }
@@ -1922,6 +2848,7 @@ impl World {
                 loc,
             } => {
                 if let Some(slot) = self.live_slot_of(id) {
+                    let mut spill = [ItemStack::default(); INV_SLOTS];
                     if deploy {
                         deploy::pick_up(
                             &self.deploy,
@@ -1934,6 +2861,7 @@ impl World {
                             level,
                             loc,
                             &mut self.events,
+                            &mut spill,
                         );
                     } else {
                         build::demolish(
@@ -1950,8 +2878,12 @@ impl World {
                             loc,
                             removals,
                             &mut self.events,
+                            &mut spill,
                         );
                     }
+                    // One buffer for both arms: they are two verbs behind
+                    // one command and exactly one of them ran.
+                    self.drain_spill(slot, &mut spill);
                 }
             }
             Command::Access {
@@ -1969,8 +2901,12 @@ impl World {
                     // a door's edge. `deploy::op_is_crew` is the split,
                     // written once so the wire's range check and this
                     // cannot disagree about which store an op means.
+                    // One `TRUST_AUTH` for both stores, because `EV_AUTH`
+                    // is already one event for both — the crew and the
+                    // lock's list are the same `Roster` answering the same
+                    // question.
                     if deploy::op_is_crew(op) {
-                        deploy::crew_op(
+                        let owner = deploy::crew_op(
                             &mut self.deploys,
                             &self.players[slot],
                             cx,
@@ -1979,8 +2915,12 @@ impl World {
                             op,
                             &mut self.events,
                         );
+                        if let Some(owner) = owner {
+                            self.log_trust(id, owner, TRUST_AUTH);
+                        }
                     } else {
-                        deploy::lock_op(
+                        let mut spill = [ItemStack::default(); INV_SLOTS];
+                        let owner = deploy::lock_op(
                             &self.deploy,
                             &self.gather,
                             &mut self.deploys,
@@ -1993,7 +2933,12 @@ impl World {
                             code,
                             self.tick,
                             &mut self.events,
+                            &mut spill,
                         );
+                        self.drain_spill(slot, &mut spill);
+                        if let Some(owner) = owner {
+                            self.log_trust(id, owner, TRUST_AUTH);
+                        }
                     }
                 }
             }
@@ -2110,6 +3055,21 @@ impl World {
                     );
                 }
             }
+            Command::OpenWorldCont { id, cont } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    self.world_conts.open(
+                        self.seed,
+                        &self.scatter,
+                        &self.haven,
+                        &self.loot,
+                        &self.gather,
+                        self.tick,
+                        (cont >> 16) as u16,
+                        (cont & 0xFFFF) as u16,
+                        &self.players[slot],
+                    );
+                }
+            }
             Command::Move {
                 id,
                 cont,
@@ -2191,6 +3151,7 @@ impl World {
                 };
                 movement::step(
                     seed,
+                    &self.haven,
                     self.pieces.cols(),
                     &mut crate::occupy::Occupants {
                         table: &self.scatter,
@@ -2232,6 +3193,7 @@ impl World {
                 };
                 movement::step(
                     seed,
+                    &self.haven,
                     self.pieces.cols(),
                     &mut crate::occupy::Occupants {
                         table: &self.scatter,
@@ -2258,6 +3220,7 @@ impl World {
             let frame = self.players[i].frame;
             movement::step(
                 seed,
+                &self.haven,
                 self.pieces.cols(),
                 &mut crate::occupy::Occupants {
                     table: &self.scatter,
@@ -2274,8 +3237,19 @@ impl World {
             // an archer's shot for the crime of standing next to a tree —
             // and standing next to a tree is where an archer stands. The
             // bow answers first or it does not work at all.
-            let swung = if ranged::draw(tick, &self.combat, &mut self.arrows, &mut self.players[i])
-            {
+            // What a full pack could not hold this tick. Written by
+            // `gather::swing` and `craft::step`, drained once below into a
+            // bag at this body's feet — one fixed drain point, because two
+            // producers each standing their own bag up is the shape
+            // CLAUDE.md's single-consumer trap is about.
+            let mut spill = [ItemStack::default(); INV_SLOTS];
+            let swung = if ranged::draw(
+                tick,
+                &self.combat,
+                &mut self.arrows,
+                &mut self.events,
+                &mut self.players[i],
+            ) {
                 gather::Swing::Absorbed
             } else {
                 gather::swing(
@@ -2285,9 +3259,11 @@ impl World {
                     &self.loot,
                     &self.scatter,
                     &self.haven,
+                    &mut self.slot_cache,
                     &mut self.slot_lives,
                     &mut self.events,
                     &mut self.players[i],
+                    &mut spill,
                 )
             };
             craft::step(
@@ -2296,6 +3272,7 @@ impl World {
                 tick,
                 &mut self.players[i],
                 &mut self.events,
+                &mut spill,
             );
             if let Swing::Smashed { cx, cz, qx, qy, qz } = swung {
                 // The barrel is already gone (gather.rs marked the slot and
@@ -2328,9 +3305,17 @@ impl World {
                     &mut self.events,
                 );
             }
-            if swung == Swing::Free {
+            // Drain the tick's spill. After the barrel arm on purpose: a
+            // smashed barrel's bag stands at arm's length, so a spill in
+            // the same tick merges into it instead of minting a second
+            // container a step away.
+            self.drain_spill(i, &mut spill);
+            if swung == Swing::Free || swung == Swing::Refused {
                 // node → player → structure: the arm passes on only what
-                // nothing nearer absorbed.
+                // nothing nearer absorbed. A `Refused` swing carries this
+                // far too — a node must not become cover — and stops at
+                // the animal: it was aimed at a gather node, so the wall
+                // behind that node is not a target (`Swing::Refused`).
                 match combat::strike(&self.combat, i, &mut self.players, &mut self.events) {
                     combat::Strike::Killed {
                         victim,
@@ -2357,8 +3342,9 @@ impl World {
                             &mut self.backpacks,
                             &mut self.events,
                         );
-                        if !took {
+                        if !took && swung == Swing::Free {
                             combat::raid(
+                                &self.haven,
                                 &self.combat,
                                 &self.build,
                                 &self.deploy,
@@ -2383,16 +3369,32 @@ impl World {
         // `removals` is the same allowance the swings above just spent:
         // wall 4 does not hand out a second one because the damage arrived
         // on a timer.
+        let mut blast_kills = crate::charge::BlastKills::new();
         crate::charge::tick_fuses(
+            seed,
+            &self.haven,
             &self.build,
             &self.deploy,
+            &self.combat,
             &mut self.charges,
             &mut self.pieces,
             &mut self.deploys,
+            &mut self.players,
             tick,
             &mut removals,
+            &mut blast_kills,
             &mut self.events,
         );
+        // The blast's dead, laid down after every fuse resolved — the
+        // bite buffer's split, for its reason: `die` needs the whole
+        // world. The hp is already zero and the events already rang
+        // inside `detonate`; this is the corpse's half.
+        for &(victim, owner, range_cm) in blast_kills.entries() {
+            let slot = victim as usize;
+            if self.players[slot].active && self.players[slot].hp == 0 && !self.players[slot].dead {
+                self.die(slot, owner, DEATH_BY_CHARGE, NO_ITEM, range_cm);
+            }
+        }
 
         // The roster steps after the player loop and before the arrows, and
         // both sides of that are deliberate. After the players, because an
@@ -2401,8 +3403,10 @@ impl World {
         // depend on the reader's slot index. Before the arrows, because a
         // shot must resolve against where the animal ended this tick — the
         // same rule the player loop's ordering states in the comment above.
+        let mut bites = mob::Bites::new();
         mob::step(
             seed,
+            &self.haven,
             tick,
             &self.mob,
             self.pieces.cols(),
@@ -2414,7 +3418,40 @@ impl World {
             },
             &mut self.mobs,
             &self.players,
+            &mut bites,
         );
+        // The bites land after the whole roster stepped, so every animal
+        // decided against one consistent tick — the borrow split `Bites`'
+        // own doc names. The hp and the deaths counter go through
+        // `combat::hurt`, the one debit (this loop used to hand-copy
+        // "`combat::strike`'s exact damage liturgy" and said so); what
+        // stays here is the half the funnel deliberately does not own —
+        // EV_HEALTH to the victim, EV_DEATH broadcast, and `die` laying
+        // the body down with the cause the wire widened for. Still no
+        // EV_HIT: a hitmarker is an attacker's fact and a pig has no
+        // screen to draw one on.
+        for b in bites.entries() {
+            let victim = b.victim as usize;
+            let v = &mut self.players[victim];
+            if !v.active || v.hp == 0 {
+                continue; // died to something else since the roster looked
+            }
+            // The funnel, reduced: a bite is a hit.
+            let crate::combat::Hurt { left, died, .. } =
+                crate::combat::hurt(&self.combat, v, b.damage);
+            let victim_id = v.id;
+            self.events.push(
+                EV_HEALTH,
+                victim_id,
+                left as u32,
+                self.combat.player_hp as u32,
+            );
+            if died {
+                let by = mob::mob_id(b.mob_slot as usize);
+                self.events.push(EV_DEATH, victim_id, by, 0);
+                self.die(victim, by, DEATH_BY_MOB, NO_ITEM, b.range_cm);
+            }
+        }
 
         // Arrows fly after the player loop, never inside it. Two reasons,
         // both structural: every body has already taken its step, so a shot
@@ -2425,8 +3462,19 @@ impl World {
         // mutably. `removals` is not spent here — an arrow does not chip a
         // wall in v0, it stops on one.
         let mut kills = [ranged::Kill::default(); MAX_ARROWS];
-        let n_kills = ranged::step(
+        // A firearm resolves here rather than in the loop above, for the
+        // arrow's two reasons — final positions, and no dependence on the
+        // shooter's slot index — and it goes **first** because it is the
+        // only shot on this tick that was fired on it. An arrow in the
+        // store was launched on an earlier one and has a tick of flight to
+        // spend before it can reach anybody, so resolving the instant shot
+        // ahead of it is the chronology, not a preference. `kills` is
+        // reused rather than doubled: this pass writes at most one entry
+        // per player, the array is drained before `step` fills it again,
+        // and `ranged.rs`'s const assert holds `MAX_PLAYERS <= MAX_ARROWS`.
+        let n_shot = ranged::hitscan(
             seed,
+            &self.haven,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
                 table: &self.scatter,
@@ -2434,6 +3482,26 @@ impl World {
                 harvested: &self.slot_lives,
                 cache: &mut self.slot_cache,
             },
+            tick,
+            &self.combat,
+            &mut self.players,
+            &mut self.events,
+            &mut kills,
+        );
+        for k in kills.iter().take(n_shot) {
+            self.die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm);
+        }
+        let n_kills = ranged::step(
+            seed,
+            &self.haven,
+            self.pieces.cols(),
+            &mut crate::occupy::Occupants {
+                table: &self.scatter,
+                haven: &self.haven,
+                harvested: &self.slot_lives,
+                cache: &mut self.slot_cache,
+            },
+            &self.combat,
             &mut self.arrows,
             &mut self.players,
             &mut self.events,
@@ -2496,7 +3564,14 @@ impl World {
         // that decayed with nothing in it.
         for i in 0..self.deploys.box_spill_len() {
             let bx = self.deploys.box_spill_at(i);
-            let (x, y, z) = deploy::box_drop_pos(seed, bx.cx, bx.cz, bx.level);
+            let (x, y, z) = deploy::box_drop_pos(
+                seed,
+                &self.haven,
+                self.pieces.cols(),
+                bx.cx,
+                bx.cz,
+                bx.level,
+            );
             let mut items = [ItemStack::default(); INV_SLOTS];
             items[..BOX_SLOTS].copy_from_slice(&bx.items);
             self.backpacks.stand_up(
@@ -2592,16 +3667,49 @@ impl World {
             db[11..19].copy_from_slice(&p.slept_at.to_le_bytes());
             h.update(&db);
             for s in p.inv.iter() {
-                let mut sb = [0u8; 4];
+                let mut sb = [0u8; 6];
                 sb[0..2].copy_from_slice(&s.item.to_le_bytes());
                 sb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
                 h.update(&sb);
             }
-            let mut cb = [0u8; 8 + CRAFT_QUEUE * 4];
+            // What this body is wearing (armor v0), in its own loop
+            // appended after the inventory rather than folded into it.
+            // Two reasons and both are load-bearing. It is sim state — a
+            // worn piece changes what every hit takes off, so two shards
+            // that disagreed about it would disagree about a fight and
+            // then about a death — and it is a **separate array**, so
+            // widening the inventory's loop to cover it would make one
+            // digest out of two stores and hide the next widening of
+            // either.
+            //
+            // This is what moved `GOLDEN_FINAL_HASH` on 2026-08-19, and
+            // it moved it deliberately: `worn` is per-player and always
+            // present, so unlike `world.rs`'s store loops there is no
+            // length prefix to fold zeroes into, and the digest changes
+            // the moment the field exists whether or not anything is in
+            // it. The hash is behavioural now — it says the sim carries
+            // worn equipment — where before it said nothing at all.
+            for s in p.worn.iter() {
+                let mut wb = [0u8; 6];
+                wb[0..2].copy_from_slice(&s.item.to_le_bytes());
+                wb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                wb[4..6].copy_from_slice(&s.cond.to_le_bytes());
+                h.update(&wb);
+            }
+            let mut cb = [0u8; 16 + CRAFT_QUEUE * 4];
             cb[0..8].copy_from_slice(&p.craft_done_at.to_le_bytes());
+            // The blueprint mask (research v0). It belongs here for the
+            // reason `[backpack]`'s ladder had to reach `canon::hash`, one
+            // layer over: a `Command::Research` mutates it, and what it
+            // changes is which craft requests the sim will honour from
+            // then on. Two replays of one WAL that disagreed about a
+            // player's blueprints would diverge on the first gated craft
+            // — silently, because every other field still matched.
+            cb[8..16].copy_from_slice(&p.known.to_le_bytes());
             for (j, job) in p.jobs.iter().enumerate() {
-                cb[8 + j * 4..8 + j * 4 + 2].copy_from_slice(&job.recipe.to_le_bytes());
-                cb[8 + j * 4 + 2..8 + j * 4 + 4].copy_from_slice(&job.remaining.to_le_bytes());
+                cb[16 + j * 4..16 + j * 4 + 2].copy_from_slice(&job.recipe.to_le_bytes());
+                cb[16 + j * 4 + 2..16 + j * 4 + 4].copy_from_slice(&job.remaining.to_le_bytes());
             }
             h.update(&cb);
         }
@@ -2625,7 +3733,7 @@ impl World {
             h.update(&t.to_le_bytes());
         }
         for r in self.pieces.entries() {
-            let mut buf = [0u8; 12];
+            let mut buf = [0u8; 13];
             buf[0..2].copy_from_slice(&r.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&r.cz.to_le_bytes());
             buf[4] = r.level;
@@ -2633,6 +3741,17 @@ impl World {
             buf[6] = r.row;
             buf[7..9].copy_from_slice(&r.hp.to_le_bytes());
             buf[9..11].copy_from_slice(&r.uh.to_le_bytes());
+            // The soft-side facing (hard/soft v0) in the buffer's one
+            // spare byte: it prices a swing, so two shards disagreeing
+            // about it disagree about a raid.
+            buf[11] = r.facing;
+            // The column's plate (build plate v1), which widened this
+            // buffer from 12 — the first piece field that is a CHOICE
+            // rather than a function of (seed, cell). Two shards that
+            // disagree about it disagree about where every surface in the
+            // column is, which is further than a raid's price: it is
+            // whether a body is standing or falling.
+            buf[12] = r.plate as u8;
             h.update(&buf);
         }
         // Arrows in the air, and deliberately on the **player** idiom
@@ -2675,7 +3794,7 @@ impl World {
         // makes one field over: it is a pure function of the seed,
         // recomputed identically by every build, so it is worldgen and not
         // state. What is hashed is everything a tick can move — including
-        // `respawn_at` and `flee_until`, which are deadlines rather than
+        // `respawn_at` and `roused_until`, which are deadlines rather than
         // counters for the reason `charges` states, and `awake`, because
         // two shards that disagree about which animals are dormant will
         // disagree about every position downstream of it.
@@ -2694,7 +3813,7 @@ impl World {
             buf[19] = m.awake as u8;
             buf[20..22].copy_from_slice(&m.yaw.to_le_bytes());
             buf[22..24].copy_from_slice(&m.hp.to_le_bytes());
-            buf[24..32].copy_from_slice(&m.flee_until.to_le_bytes());
+            buf[24..32].copy_from_slice(&m.roused_until.to_le_bytes());
             buf[32..40].copy_from_slice(&m.respawn_at.to_le_bytes());
             h.update(&buf);
         }
@@ -2761,18 +3880,23 @@ impl World {
         // view of it that a replay resuming mid-fuse would have to rebuild.
         h.update(&(self.charges.len() as u64).to_le_bytes());
         for c in self.charges.entries() {
-            let mut buf = [0u8; 21];
+            let mut buf = [0u8; 25];
             buf[0..2].copy_from_slice(&c.cx.to_le_bytes());
             buf[2..4].copy_from_slice(&c.cz.to_le_bytes());
             buf[4] = c.level;
             buf[5] = c.loc;
             buf[6] = c.deploy as u8;
             buf[7..9].copy_from_slice(&c.structure.to_le_bytes());
-            buf[9..17].copy_from_slice(&c.fires_at.to_le_bytes());
+            // The blast's other two copied-at-plant numbers (satchel
+            // blast v0): two shards disagreeing about a live charge's
+            // radius disagree about which walls are standing next tick.
+            buf[9..11].copy_from_slice(&c.damage.to_le_bytes());
+            buf[11..13].copy_from_slice(&c.blast_cm.to_le_bytes());
+            buf[13..21].copy_from_slice(&c.fires_at.to_le_bytes());
             // The planter rides the digest too: it is on the wire off this
             // record, so a replay that reproduced the blast while
             // inventing the raider would put a different name on it.
-            buf[17..21].copy_from_slice(&c.owner.to_le_bytes());
+            buf[21..25].copy_from_slice(&c.owner.to_le_bytes());
             h.update(&buf);
         }
         // The bag cooldowns, in their own pass rather than widening the
@@ -2824,9 +3948,10 @@ impl World {
             buf[5..9].copy_from_slice(&bx.owner.to_le_bytes());
             h.update(&buf);
             for s in bx.items.iter() {
-                let mut sb = [0u8; 4];
+                let mut sb = [0u8; 6];
                 sb[0..2].copy_from_slice(&s.item.to_le_bytes());
                 sb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
                 h.update(&sb);
             }
         }
@@ -2858,9 +3983,10 @@ impl World {
             buf[20..28].copy_from_slice(&b.expires.to_le_bytes());
             h.update(&buf);
             for s in b.items.iter() {
-                let mut sb = [0u8; 4];
+                let mut sb = [0u8; 6];
                 sb[0..2].copy_from_slice(&s.item.to_le_bytes());
                 sb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
                 h.update(&sb);
             }
         }
@@ -2869,6 +3995,29 @@ impl World {
         // thing, and every downstream client keyed on it would agree with
         // neither.
         h.update(&self.backpacks.next_id().to_le_bytes());
+        // World containers (`worldcont.rs`). Every field is hashed
+        // including `refill_at`: two shards whose crates were emptied on
+        // different ticks agree about the contents (both empty) and
+        // disagree about *when they pay again*, which is a divergence that
+        // would otherwise stay silent until the first refill.
+        h.update(&(self.world_conts.len() as u64).to_le_bytes());
+        for c in self.world_conts.entries() {
+            let mut buf = [0u8; 21];
+            buf[0..2].copy_from_slice(&c.cx.to_le_bytes());
+            buf[2..4].copy_from_slice(&c.cz.to_le_bytes());
+            buf[4..8].copy_from_slice(&c.qx.to_le_bytes());
+            buf[8..12].copy_from_slice(&c.qz.to_le_bytes());
+            buf[12] = c.table;
+            buf[13..21].copy_from_slice(&c.refill_at.to_le_bytes());
+            h.update(&buf);
+            for s in c.items.iter() {
+                let mut sb = [0u8; 6];
+                sb[0..2].copy_from_slice(&s.item.to_le_bytes());
+                sb[2..4].copy_from_slice(&s.count.to_le_bytes());
+                sb[4..6].copy_from_slice(&s.cond.to_le_bytes());
+                h.update(&sb);
+            }
+        }
         h.update(&self.sweep_piece.to_le_bytes());
         h.update(&self.sweep_deploy.to_le_bytes());
         h.update(&self.sweep_support.to_le_bytes());
@@ -2882,11 +4031,138 @@ mod tests {
     use super::*;
     use crate::terrain;
 
-    /// The point and seed `ci/browser_smoke.mjs` puts both tabs on. Guarded
-    /// here natively so a worldgen change that sinks or steepens it fails
-    /// this test, not the browser gate.
+    /// The point and seed `ci/browser_smoke.mjs` put both tabs on. That gate
+    /// is deleted; this native guard is what it was written to back up, so a
+    /// worldgen change that sinks or steepens the spawn fails here.
     const SMOKE_SEED: u64 = 20260731;
     const SMOKE_SPAWN: (f32, f32) = (1024.0, 1024.0);
+
+    /// **Wear is in `state_hash`, in all four container stores** (item
+    /// durability v0, gate 4): two worlds differing ONLY in one stack's
+    /// condition must hash differently — for the player inventory, a
+    /// ground bag, a deployed box and a world container, each store
+    /// proven alone. Proven red by omitting the `cond` bytes from any of
+    /// the four `[0u8; 6]` loops above: the store whose loop was narrowed
+    /// hashes the two worlds identical and its assert fires.
+    #[test]
+    fn condition_is_hashed_in_every_container_store() {
+        use crate::backpack::BackpackRec;
+        use crate::deploy::BoxRec;
+        use crate::worldcont::WorldContRec;
+
+        let base = || {
+            let mut w = Box::new(World::new(SMOKE_SEED));
+            w.tick(&[Command::Join { id: 7 }]);
+            w
+        };
+        let stack = |cond: u16| ItemStack {
+            item: 3,
+            count: 1,
+            cond,
+        };
+
+        // 1. The player inventory loop.
+        let mut a = base();
+        let mut b = base();
+        a.players[0].inv[4] = stack(100);
+        b.players[0].inv[4] = stack(101);
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "two worlds differing only in a held stack's condition hashed \
+             the same — the inventory loop dropped the cond bytes"
+        );
+
+        // 2. The ground-bag loop.
+        let bag = |cond: u16| {
+            let mut r = BackpackRec {
+                id: 1,
+                qx: 100,
+                qy: 50,
+                qz: 100,
+                owner: 7,
+                expires: 999,
+                items: [ItemStack::default(); INV_SLOTS],
+            };
+            r.items[2] = stack(cond);
+            r
+        };
+        let mut a = base();
+        let mut b = base();
+        a.backpacks.restore(&[bag(100)], 2);
+        b.backpacks.restore(&[bag(101)], 2);
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "two worlds differing only in a bagged stack's condition hashed \
+             the same — the backpack loop dropped the cond bytes"
+        );
+
+        // 3. The deployed-box loop. The deploy store restores empty except
+        // for one box record; the record slices are all index-aligned.
+        let boxed = |cond: u16| {
+            let mut r = BoxRec {
+                cx: 10,
+                cz: 10,
+                level: 0,
+                owner: 7,
+                items: [ItemStack::default(); crate::limits::BOX_SLOTS],
+            };
+            r.items[1] = stack(cond);
+            r
+        };
+        let mut a = base();
+        let mut b = base();
+        a.deploys.restore(
+            &[],
+            &[],
+            &[],
+            &[],
+            &[boxed(100)],
+            &[crate::oven::OvenState::default()],
+            &[],
+        );
+        b.deploys.restore(
+            &[],
+            &[],
+            &[],
+            &[],
+            &[boxed(101)],
+            &[crate::oven::OvenState::default()],
+            &[],
+        );
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "two worlds differing only in a boxed stack's condition hashed \
+             the same — the box loop dropped the cond bytes"
+        );
+
+        // 4. The world-container loop.
+        let cont = |cond: u16| {
+            let mut r = WorldContRec {
+                cx: 20,
+                cz: 20,
+                qx: 5_000,
+                qz: 5_000,
+                table: crate::loot::LOOT_CRATE as u8,
+                refill_at: 0,
+                items: [ItemStack::default(); INV_SLOTS],
+            };
+            r.items[0] = stack(cond);
+            r
+        };
+        let mut a = base();
+        let mut b = base();
+        a.world_conts.restore(&[cont(100)]);
+        b.world_conts.restore(&[cont(101)]);
+        assert_ne!(
+            a.state_hash(),
+            b.state_hash(),
+            "two worlds differing only in a crated stack's condition hashed \
+             the same — the world-container loop dropped the cond bytes"
+        );
+    }
 
     #[test]
     fn dev_spawn_overrides_every_join() {

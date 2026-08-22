@@ -43,9 +43,11 @@
 //! must not draw a move it cannot address**, and it must send the values it
 //! drew.
 
+use protocol::event::ItemCatalog;
 use protocol::{encode_action_move, WireError};
+use sim_core::deploy::{box_key, DeployContent, DeployRec, ARCH_BOX};
 use sim_core::gather::ItemStack;
-use sim_core::inventory::{CONT_BOX, CONT_MAX, CONT_SELF};
+use sim_core::inventory::{CONT_BOX, CONT_MAX, CONT_SELF, CONT_WORLD};
 use sim_core::limits::{BOX_SLOTS, HOTBAR_SLOTS, INV_SLOTS};
 
 /// Slots addressable in a container of `kind` — `sim_core::inventory`'s
@@ -53,13 +55,34 @@ use sim_core::limits::{BOX_SLOTS, HOTBAR_SLOTS, INV_SLOTS};
 pub use sim_core::inventory::slots_in;
 
 /// Rows of six below the belt, so 6 + 24 = `INV_SLOTS`. The reference frame
-/// (`Rust Images/inventory.jpeg`) is the same shape and for the same reason:
+/// (the reference `inventory.jpeg`) is the same shape and for the same reason:
 /// the belt is the row the world can see.
 pub const GRID_COLS: usize = HOTBAR_SLOTS;
 /// Rows in the main grid, below the belt.
 pub const GRID_ROWS: usize = (INV_SLOTS - HOTBAR_SLOTS) / GRID_COLS;
 
 const _: () = assert!(HOTBAR_SLOTS + GRID_ROWS * GRID_COLS == INV_SLOTS);
+
+/// The hotbar slot a scroll of `notches` lands on, wrapping at both ends.
+///
+/// Pure, and here rather than inside `render::input`, for this module's own
+/// stated reason: a mapping that lives inside a system is a mapping no test
+/// in the code tier can call.
+///
+/// `notches` is signed, and **negative walks toward slot 1** — a wheel pushed
+/// away from the player. That is the direction every reference this client's
+/// players arrive from uses, and it is the half of a scroll binding that is
+/// actually worth gating, because it is invisible in a screenshot and wrong
+/// in exactly one of two ways.
+///
+/// **It wraps rather than saturating.** Six slots under a wheel is a ring;
+/// saturating would make the wheel unable to reach slot 6 from slot 1 without
+/// a full sweep back, which is the one thing a wheel is for.
+pub fn hotbar_scrolled(sel: u8, notches: i32) -> u8 {
+    (sel as i32)
+        .wrapping_add(notches)
+        .rem_euclid(HOTBAR_SLOTS as i32) as u8
+}
 
 /// Where a slot sits on screen, in cells. Row 0 is the belt; rows 1.. are
 /// the main grid. Pure geometry — the render layer multiplies by a cell
@@ -274,6 +297,13 @@ pub fn container_title(kind: u8) -> &'static str {
     match kind {
         CONT_BOX => "BOX",
         CONT_SELF => "-",
+        // Named rather than left to the fallback, and that is the whole
+        // point of touching this function: the wildcard below reads every
+        // unknown kind as a bag, so world containers v0 would have
+        // titled the haven pad's crate "BAG" with nothing failing. A
+        // fallback that is a real answer for one kind is a fallback that
+        // lies about the next one.
+        CONT_WORLD => "CRATE",
         _ => "BAG",
     }
 }
@@ -288,4 +318,138 @@ pub fn container_cols(kind: u8) -> usize {
     } else {
         GRID_COLS
     }
+}
+
+/// The deployable item standing at a box handle, if the client is already
+/// drawing one.
+///
+/// **No new wire.** `CONT_BOX`'s handle is `box_key(cx, cz, level)` — an
+/// address, not an id, and deliberately so (`sim_core::inventory`) — and the
+/// deploy sync the client draws every box from carries the same three
+/// numbers plus the baked row. So the panel can name the box it opened out
+/// of what is already on screen.
+///
+/// **The arch check is what makes the address unambiguous**, not tidiness: a
+/// handle names a cell and a level, and `DeployRec` also carries a `loc`, so
+/// a hearth and a box sharing one cell share one key. Filtering to `ARCH_BOX`
+/// picks the one the handle can actually mean.
+///
+/// `defs_have` is the watermark — the def table drips in over the first
+/// seconds of a session, and a row past it is a row of zeroes whose `arch`
+/// reads as `ARCH_BAG`. Reading it anyway would name a box after the wrong
+/// item, which is worse than not naming it.
+pub fn box_item_at(
+    handle: u32,
+    deploys: &[DeployRec],
+    defs: &DeployContent,
+    defs_have: u16,
+) -> Option<u16> {
+    deploys.iter().find_map(|d| {
+        if box_key(d.cx, d.cz, d.level) != handle || u16::from(d.row) >= defs_have {
+            return None;
+        }
+        let def = &defs.defs[d.row as usize];
+        (def.arch == ARCH_BOX).then_some(def.item)
+    })
+}
+
+/// What the LOOT panel's name bar says — the container's own name, in the
+/// reference frame's caps.
+///
+/// The reference names the thing you opened (`LARGE WOODEN BOX`) rather
+/// than its category, and the name is the only thing on that screen telling
+/// two boxes apart. Ours comes from `content/items.toml` by way of the
+/// catalog, so a shard that renames its boxes renames this bar with no code
+/// change — wall 7.
+///
+/// Falls back to [`container_title`] whenever the name cannot be *known*:
+/// a bag or a crate, whose handles are not addresses this side can resolve;
+/// a box whose deploy record or def row has not arrived yet; and an item
+/// index the catalog has no name for, which `item_label` renders as `#12`
+/// and which would read as a defect in 12 px caps. A generic word is a
+/// worse label and an honest one.
+pub fn container_name(
+    kind: u8,
+    handle: u32,
+    deploys: &[DeployRec],
+    defs: &DeployContent,
+    defs_have: u16,
+    catalog: &ItemCatalog,
+) -> String {
+    if kind == CONT_BOX {
+        if let Some(item) = box_item_at(handle, deploys, defs, defs_have) {
+            let name = crate::ui::craft::item_label(catalog, item);
+            if !name.starts_with('#') {
+                return name.to_uppercase();
+            }
+        }
+    }
+    container_title(kind).to_string()
+}
+
+/// The multiplier a filled cell draws, or `None` when there is nothing worth
+/// drawing.
+///
+/// Two rules, both the reference's own: **a count of one is not drawn** — a
+/// screen of tools would otherwise read as a screen of numbers — and the
+/// count that *is* drawn carries its `x`. The prefix is not decoration: a
+/// bare `3` sitting in the corner of a picture of an arrow is ambiguous with
+/// a quality, a tier or a slot number, and every reference frame this panel
+/// is measured against writes `x3`.
+pub fn count_badge(count: u16) -> Option<String> {
+    (count > 1).then(|| format!("x{count}"))
+}
+
+/// The durability pip's fill fraction, or `None` when no pip is drawn
+/// (`NOW.md` §0dur item 1) — [`count_badge`]'s shape for the other number a
+/// cell carries.
+///
+/// The reference's rule, and all three states are it: a thin bar under the
+/// icon, **visible only when the item is worn**. An item that carries no
+/// condition (`cond_max == 0` — wood, stone, every stackable) never draws
+/// one; a pristine tool (`cond >= cond_max`, and `>` only off a smuggled
+/// save) draws none either, because a full bar under every fresh tool is a
+/// screen of bars; a worn tool draws `cond / cond_max`, and a dead one
+/// (`cond == 0` under a nonzero ceiling) draws the bar EMPTY — the warning
+/// `REFUSE_G_BROKEN` otherwise gives only at the moment the swing bounces.
+///
+/// **The ceiling arrives now** (wire v46, 2026-08-17): the catalog drip
+/// carries `cond_max` beside every name, so a panel's call is
+/// `pip_fraction(stack.cond, core.catalog.cond_max(stack.item as usize))`.
+/// Until that bump this function had no possible caller — the client held
+/// `cond` per stack (wire v42) and NO ceiling to divide by, because the
+/// catalog was names-only and the client links no content crate. A
+/// session-learned ceiling (max `cond` seen per item) was considered and
+/// REFUSED on the way: a tool looted half-worn would read pristine, which
+/// is the exact lie the pip exists to prevent; and hardcoding the per-item
+/// table here is wall 7's business.
+///
+/// **Drawn since 2026-08-17** by all three cells that hold a stack — the
+/// hotbar (`render::hud`), the inventory and container grids and the drag
+/// ghost (`render::panels::inv`) — and by nothing else, which is a property
+/// of call sites rather than of this value, so `tests/ui.rs` §Q scans for
+/// them. The colours and the bar's height are
+/// `render::panels::{PIP_FILL, PIP_TROUGH, PIP_H_PX}`; this function decides
+/// only whether there is a bar and how full it is.
+pub fn pip_fraction(cond: u16, cond_max: u16) -> Option<f32> {
+    (cond < cond_max).then(|| cond as f32 / cond_max as f32)
+}
+
+/// Where the thing in your hand is drawn, given the cursor and the tile's
+/// edge: **centred on the pointer**, which is what every game this client's
+/// players arrive from does.
+///
+/// It used to hang off to the lower right, and that is the bug this function
+/// exists to close rather than a taste call — an offset ghost is a ghost the
+/// player aims with by parallax, and at the screen's right edge it walks off
+/// the window while the cursor is still inside it. Centred, the tile *is*
+/// the cursor's payload: the cell under the pointer is the cell the drop
+/// addresses, and the picture over it is what will land there.
+///
+/// The tile never eats the pointer (`Pickable::IGNORE` at every node of it),
+/// so covering the target is free — and the OS cursor draws above the
+/// window, so the arrow stays visible on top of the item exactly as it does
+/// in the reference frame.
+pub fn ghost_origin(cursor_x: f32, cursor_y: f32, size: f32) -> (f32, f32) {
+    (cursor_x - size * 0.5, cursor_y - size * 0.5)
 }

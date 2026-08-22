@@ -22,6 +22,8 @@
 
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
+use client_core::core::ClientCore;
+use sim_core::build::{SHAPE_FOUNDATION, SHAPE_TRI_FOUNDATION};
 use sim_core::limits::MAX_BUILD_LEVELS;
 
 use crate::look::yaw_u16;
@@ -29,10 +31,39 @@ use crate::ui::build::{row_for, PLACE_MATERIAL, SHAPES};
 use crate::ui::place::{self, DeploySite, DeployVerdict, Site, Target, Verdict};
 
 use super::hud::Toast;
-use super::input::Look;
+use super::input::{pitch_u8, Look};
 use super::panels::Ui;
-use super::structures::{base_transform, deploy_transform, shape_parts};
-use super::{Net, WorldId};
+use super::structures::{self, base_transform, deploy_transform, shape_parts};
+use super::{Net, WorldId, EYE_HEIGHT};
+
+/// The planar point the ghost aims at: the LOOK ray — eye, yaw AND pitch,
+/// the tracer's own ray convention, so the ghost sits where a shot would
+/// land — marched into the world by [`place::aim_from_look`] against
+/// terrain and the predictor's piece surfaces.
+///
+/// Until 2026-08-15 the aim was `feet + yaw · 3.5 m`, pitch discarded: the
+/// crosshair rested on one cell and the ghost stood on another, which is
+/// how that day's playtest read `SPOT TAKEN` off a gap. The ray is the
+/// crosshair now; the fixed projection survives inside `aim_from_look` as
+/// the sky/out-of-range fallback.
+fn aim_point(
+    seed: u64,
+    haven: &sim_core::terrain::Haven,
+    core: &ClientCore,
+    look: &Look,
+    feet: [f32; 3],
+) -> (f32, f32) {
+    let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
+    let (ch, sv) = sim_core::pitch_dir(pitch_u8(look.pitch));
+    place::aim_from_look(
+        seed,
+        haven,
+        core.pieces.cols(),
+        [feet[0], feet[1] + EYE_HEIGHT, feet[2]],
+        [fx * ch, sv, fz * ch],
+        (feet[0], feet[2]),
+    )
+}
 
 /// The ghost's translucency, and its two verdicts. Cosmetics
 /// (`DECISIONS.md` §open, client cosmetics).
@@ -77,6 +108,10 @@ pub struct Ghost {
     ok_mat: Option<Handle<StandardMaterial>>,
     no_mat: Option<Handle<StandardMaterial>>,
     mesh: Option<Handle<Mesh>>,
+    /// The unit half-cell prism beside the unit cube (triangles v0) —
+    /// `structures::part_mesh` builds both, so the preview's triangle is
+    /// the piece's.
+    tri_mesh: Option<Handle<Mesh>>,
     /// The working level the `R`/`F` steppers move. Client-side latch, like
     /// the wheel's own shape and material.
     pub level: u8,
@@ -86,6 +121,12 @@ pub struct Ghost {
     pub verdict: Verdict,
     pub row: Option<u16>,
     pub shape: u8,
+    /// Whether this placement declines the plate latch (freehand placement
+    /// v0). Latched beside `target` for the same reason `target` is: it is
+    /// aimed, so it changes as the crosshair sweeps the cell, and `place_key`
+    /// must send the bit that was DRAWN rather than re-derive one from an aim
+    /// taken a frame later.
+    pub freehand: bool,
     /// The deploy ghost's own latched pair, for the same rule: `deploy_key`
     /// sends the address that was drawn, and the HUD says the reason the
     /// drawing is red. Defaults are the empty address and `Unknown` —
@@ -136,11 +177,18 @@ pub fn track(
 ) {
     let ghost = &mut *ghost;
     if ghost.mesh.is_none() {
-        // ONE unit cube, scaled per shape. A mesh per shape would be five
-        // more pipeline specializations for a thing that is drawn
-        // translucent and never inspected — and a pipeline created after the
-        // world is up is the prewarm trap (`CLAUDE.md`, `RENDER.md` §2).
+        // ONE unit cube, scaled per shape — plus the one unit prism the
+        // triangle shapes need (triangles v0). Two meshes, not one per
+        // shape: both carry the standard vertex layout, so the second is
+        // the same pipeline, not a new specialization — the prewarm trap
+        // (`CLAUDE.md`, `RENDER.md` §2) is about pipelines, not meshes.
         ghost.mesh = Some(meshes.add(Cuboid::new(1.0, 1.0, 1.0)));
+        ghost.tri_mesh = Some(meshes.add(structures::part_mesh(&structures::Part {
+            size: Vec3::ONE,
+            offset: Vec3::ZERO,
+            x_rot: 0.0,
+            kind: structures::PartKind::Tri,
+        })));
         ghost.ok_mat = Some(materials.add(translucent(GHOST_OK)));
         ghost.no_mat = Some(materials.add(translucent(GHOST_NO)));
     }
@@ -176,30 +224,43 @@ pub fn track(
         return;
     };
 
-    let [x, _, z] = core.predict.render_position();
-    let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
-    let target = place::target(x, z, fx, fz, shape, ghost.level);
-    let verdict = place::verdict(
-        target,
-        row,
-        shape,
-        &Site {
-            seed: world.seed,
-            at: (x, z),
-            taken: core.pieces.entries(),
-            content: &core.piece_defs,
-            inv: &core.inv,
-        },
-    );
+    let [x, y, z] = core.predict.render_position();
+    let aim = aim_point(world.seed, &world.haven, core, &look, [x, y, z]);
+    let target = place::target_at(aim.0, aim.1, shape, ghost.level);
+    let site = Site {
+        seed: world.seed,
+        haven: &world.haven,
+        at: (x, z),
+        taken: core.pieces.entries(),
+        cols: core.pieces.cols(),
+        content: &core.piece_defs,
+        inv: &core.inv,
+    };
+    // Does this aim decline the latch (freehand placement v0)? Off the
+    // sub-cell remainder `target_at` discards, so the answer moves with the
+    // crosshair inside one cell and the ghost's own height is the preview of
+    // it — there is no key and no mode.
+    let freehand = place::freehand_from_aim(&site, target, aim);
+    let verdict = place::verdict(target, row, shape, &site, freehand);
+    // The floor this placement would take (build plate v1) — the sim's own
+    // rule, so the preview stands where the piece will and a stilt is visible
+    // before the key is pressed rather than after.
+    let plate = place::ghost_plate(&site, target, freehand);
     ghost.target = target;
     ghost.verdict = verdict;
     ghost.row = Some(row);
     ghost.shape = shape;
+    ghost.freehand = freehand;
 
     // The same base point and quarter-turn `structures::spawn_piece` gives
     // the real thing, from the same function, so the ghost and the piece it
     // becomes are the same object in the same pose.
-    let transform = base_transform(world.seed, (target.cx, target.cz, target.level, target.loc));
+    let transform = base_transform(
+        world.seed,
+        &world.haven,
+        (target.cx, target.cz, target.level, target.loc),
+        plate,
+    );
     let mat = if verdict.ok() {
         ghost.ok_mat.clone()
     } else {
@@ -224,18 +285,44 @@ pub fn track(
     // Rebuild the children only when the shape changes. `despawn_related` drops
     // the previous set; a shape that keeps its part count would still be
     // rebuilt, which is fine because the trigger is a wheel turn.
+    // A foundation's one part is per-ADDRESS, not per shape: the skirt
+    // depth follows the terrain under the aimed cell
+    // (`structures::foundation_part` — the same emit the standing piece
+    // draws, so the preview promises exactly the object the click buys).
+    let footing = matches!(shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION).then(|| {
+        structures::foundation_part(
+            world.seed,
+            &world.haven,
+            target.cx,
+            target.cz,
+            shape == SHAPE_TRI_FOUNDATION,
+            plate,
+        )
+    });
+
     if ghost.built_shape != Some(shape) {
         ghost.built_shape = Some(shape);
         commands.entity(root).despawn_related::<Children>();
         let mesh = ghost.mesh.clone().expect("built above");
-        // The shared table (`structures::shape_parts`): one unit cube scaled
-        // per part, where the piece will use a real-size mesh per part —
-        // same sizes, same offsets, same pitch, one emit site.
-        let (parts, n) = shape_parts(shape);
+        let tri = ghost.tri_mesh.clone().expect("built above");
+        // The shared table (`structures::shape_parts`): one unit mesh —
+        // the cube, or the prism for a Tri part — scaled per part, where
+        // the piece will use a real-size mesh per part. Same sizes, same
+        // offsets, same pitch, one emit site. The foundations' one part is
+        // the per-address footing computed above instead of the table's
+        // fixed-thickness fallback arm.
+        let (mut parts, n) = shape_parts(shape);
+        if let Some(part) = footing {
+            parts[0] = part;
+        }
         commands.entity(root).with_children(|c| {
             for part in &parts[..n] {
+                let unit = match part.kind {
+                    structures::PartKind::Box => mesh.clone(),
+                    structures::PartKind::Tri => tri.clone(),
+                };
                 c.spawn((
-                    Mesh3d(mesh.clone()),
+                    Mesh3d(unit),
                     MeshMaterial3d(mat.clone()),
                     // **The header has always claimed "no shadow" and the code
                     // never said so.** A translucent mesh still casts one in
@@ -249,13 +336,23 @@ pub fn track(
             }
         });
     } else {
-        // Same shape, so only the verdict colour can have moved.
-        let kids: Vec<Entity> = children
-            .get(root)
-            .map(|c| c.iter().collect())
-            .unwrap_or_default();
-        for k in kids {
-            commands.entity(k).insert(MeshMaterial3d(mat.clone()));
+        // Same shape, so the verdict colour can have moved — and for a
+        // foundation, the footing's depth with the aimed cell.
+        //
+        // Iterated in place rather than collected into a `Vec`: the collect
+        // was a heap allocation on every frame the build plan is held, which
+        // is the client's one stated hot-path rule (`CLAUDE.md` traps). The
+        // borrow it was dodging is `children` against `commands`, and those
+        // are two different system parameters — nothing needed dodging.
+        if let Ok(kids) = children.get(root) {
+            for k in kids.iter() {
+                commands.entity(k).insert(MeshMaterial3d(mat.clone()));
+                if let Some(part) = footing {
+                    commands
+                        .entity(k)
+                        .insert(part.transform().with_scale(part.size));
+                }
+            }
         }
     }
 }
@@ -304,18 +401,18 @@ pub fn place_key(
     // there to stop the player wasting the press, not to veto it.
     let t = ghost.target;
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
-    match protocol::encode_action_place(row, t.cx, t.cz, t.level, t.loc, &mut buf) {
+    match protocol::encode_action_place(row, t.cx, t.cz, t.level, t.loc, ghost.freehand, &mut buf) {
         Ok(len) => match net.session.send_action(&buf[..len]) {
             Ok(()) => {
                 if let Verdict::No(why) = ghost.verdict {
                     if !why.is_empty() {
-                        toast.say(why);
+                        toast.warn(why);
                     }
                 }
             }
-            Err(e) => toast.say(e.to_string()),
+            Err(e) => toast.warn(e.to_string()),
         },
-        Err(e) => toast.say(format!("that placement would not encode ({e:?})")),
+        Err(e) => toast.warn(format!("that placement would not encode ({e:?})")),
     }
 }
 
@@ -399,18 +496,19 @@ pub fn deploy_track(
     let arch = def.arch as usize;
     let size = super::structures::deploy_size(arch);
 
-    let [x, _, z] = core.predict.render_position();
-    let (fx, fz) = sim_core::yaw_dir(yaw_u16(look.yaw));
+    let [x, y, z] = core.predict.render_position();
+    let aim = aim_point(world.seed, &world.haven, core, &look, [x, y, z]);
     // A doorway-class deployable resolves an edge (the level is the build
     // ghost's working latch — placing a doorway at L1 leaves the latch
     // there, so the door that follows it aims the same storey); everything
     // else keeps `deploy_key`'s original plane target at level 0.
-    let t = place::deploy_target(x, z, fx, fz, def.placement, ghost.level);
+    let t = place::deploy_target_at(aim.0, aim.1, def.placement, ghost.level);
     let verdict = place::deploy_verdict(
         t,
         row,
         &DeploySite {
             seed: world.seed,
+            haven: &world.haven,
             at: (x, z),
             pieces: core.pieces.entries(),
             piece_defs: &core.piece_defs,
@@ -427,8 +525,18 @@ pub fn deploy_track(
     // The one pose site (`structures::deploy_transform`, closed): the ghost
     // and the deployable it becomes are the same box in the same place —
     // for a door, in the doorway's edge.
-    let transform = deploy_transform(world.seed, (t.cx, t.cz, t.level, t.loc), arch as u8, false)
-        .with_scale(size);
+    let transform = deploy_transform(
+        world.seed,
+        &world.haven,
+        (t.cx, t.cz, t.level, t.loc),
+        arch as u8,
+        false,
+        // A deployable stands on what is already built, so the column's
+        // stored plate is the one to draw at — never a would-be one. A
+        // ground placement has no column and answers 0, the terrain rule.
+        core.pieces.cols().plate(t.cx, t.cz).unwrap_or(0),
+    )
+    .with_scale(size);
     let mat = if verdict.refused() {
         ghost.no_mat.clone()
     } else {
@@ -510,13 +618,13 @@ pub fn deploy_key(
             Ok(()) => {
                 if let DeployVerdict::No(why) = ghost.deploy_verdict {
                     if !why.is_empty() {
-                        toast.say(why);
+                        toast.warn(why);
                     }
                 }
             }
-            Err(e) => toast.say(e.to_string()),
+            Err(e) => toast.warn(e.to_string()),
         },
-        Err(e) => toast.say(format!("that deployable would not encode ({e:?})")),
+        Err(e) => toast.warn(format!("that deployable would not encode ({e:?})")),
     }
 }
 
