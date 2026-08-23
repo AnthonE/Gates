@@ -2076,7 +2076,7 @@ What remains, in order:
 5. **The public shard is up and no one has ever joined it** (2026-08-11).
    Boot, persistence, the SIGTERM flush and the status endpoint are all
    measured; the join is not, and **the tools here cannot measure it**:
-   `bots` takes a `SocketAddr`, so it cannot dial `game.moreright.xyz` by
+   `bots` takes a `SocketAddr`, so it cannot dial `game.elopros.com` by
    name at all — which is the half that matters, because the certificate is
    issued for the name and the client validates against the platform root
    store on a non-loopback address (`tls_posture.rs`) — and it carries no
@@ -2579,27 +2579,28 @@ failed connect returns with the reason, settings persist (`crate::config`,
 `DECISIONS.md` §open "settings v0"), and `Screen::Disconnected` latches a
 hangup through the menu's own teardown. Remaining:
 
-1. **The document exists now; the two acts that serve it are on scry's
-   box.** `shards.toml` is written and `./ci/shardlist.py` produces
-   `target/servers.json` — one row, `game.moreright.xyz:61234`, carrying a
-   `status_url`. What is left is exactly what it always was and no more:
-   copy the document into `$SCRY_DEPOTS_DIR/gates/`, **then** set
-   `servers.url`. In that order — `servers.url` pointing at a file that is
-   not there is an error dialog on a game that is running fine, which is
-   worse than the honest "no shards published" both readers draw now.
-   ⚠ **scry's half is confirmed live, not assumed**: `GET
-   /api/launcher/servers/gates` answers **404** as of 2026-08-11, which is
-   its documented "publishes none" and is a different answer from the 503 it
-   reserves for "could not look". The route is built and waiting for bytes.
-   (The 2026-08-10 finding this replaces was that `/depot/` was not a
-   `location` on that origin at all, so the url printed here could only 404
-   for the wrong reason.)
+1. ~~The document exists; the two acts that serve it are on scry's box~~ —
+   **both acts are done and the list is served.** `GET
+   /api/launcher/servers/gates` answers 200 with the one row, and
+   `./ci/shardlist.py` reproduces the served bytes exactly, so the generator
+   can no longer silently revert what is published.
+   ⚠ **It was served and DARK for three days, which is the part worth
+   keeping.** The 2026-08-20 platform move rewrote the served row to
+   `game.elopros.com:61234` and the shard did not follow, so every joiner got
+   `invalid peer certificate` off a chain whose only DnsName was
+   `game.moreright.xyz` — with the unit active, the port bound and
+   `/status.json` answering 200 on both names. Fixed 2026-08-23 by moving the
+   shard (`DECISIONS.md`); `ops/certbot-deploy-hook.sh` refuses a chain that
+   does not cover the published name now, which is the check whose absence
+   made it silent. **What is still hand-only: nothing re-checks that the
+   SERVED document matches `shards.toml`.** The self-test is a pure
+   generator by design (no network), so the diff is a command somebody runs.
 2. ~~Player counts: three steps on a box~~ — **two of the three are done
    2026-08-11, and the count is live.** `status_addr = "127.0.0.1:8431"` is
    in `shard-public.toml` and the url is in `shards.toml`. The third step
    was "open that TCP port (the cloud firewall too)" and it was **not taken,
    on purpose**: the endpoint binds LOOPBACK and nginx fronts it on the 443
-   this box already serves, so `https://game.moreright.xyz/gates/status.json`
+   this box already serves, so `https://game.elopros.com/gates/status.json`
    needs no console act, carries the same certificate as everything else we
    publish, and puts a buffer in front of a status thread that answers
    serially by design. It answers `{"players":0,"max_players":100,"tick":T}`

@@ -111,7 +111,25 @@ if [ "$GO" = 1 ]; then
   if [ "$ok" = 1 ]; then
     echo "  active, bound on 61234/udp, status answering:"
     curl -fsS -m 3 http://127.0.0.1:8431/status.json; echo
-    echo "  public: $(curl -fsS -m 5 https://game.moreright.xyz/gates/status.json 2>&1 || echo 'NOT REACHABLE — is the nginx location installed?')"
+    echo "  public: $(curl -fsS -m 5 https://game.elopros.com/gates/status.json 2>&1 || echo 'NOT REACHABLE — is the nginx location installed?')"
+    # The name the shard can PROVE, which is a different question from the
+    # name nginx answers on 443 above — they are two certificates and only
+    # this one is in the QUIC handshake. A shard serving a chain for a name
+    # nobody dials is dark with every check on this page green (2026-08-20
+    # to 08-23; ops/certbot-deploy-hook.sh carries the story).
+    NAME=$(grep -oP '^domain\s*=\s*"\K[^"]+' "$CFG")
+    # The verdict is on stdout and the exit code is 0 either way — see
+    # ops/certbot-deploy-hook.sh, where writing this the obvious way made
+    # the check accept anything.
+    if openssl x509 -noout -checkhost "$NAME" \
+         -in /home/master/gates-certs/fullchain.pem 2>/dev/null \
+         | grep -q "does match certificate"; then
+      echo "  cert:   covers $NAME"
+    else
+      echo "  cert:   !! /home/master/gates-certs/fullchain.pem does NOT cover $NAME"
+      echo "          every joiner will fail the handshake. Run the deploy hook:"
+      echo "          sudo $HOOK"
+    fi
   else
     echo "  !! did not come up. journalctl -u $UNIT -n 50 --no-pager"
     sudo -n journalctl -u "$UNIT" -n 30 --no-pager
