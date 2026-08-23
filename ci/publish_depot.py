@@ -265,7 +265,7 @@ def confirm_live(api: str, build: str, platform: str) -> str | None:
 def _cast_send(digest: str, label: str, memo: str) -> str:
     """The remote one-liner. Everything secret stays inside this shell.
 
-    ⚠ **`SCRY_RH_RPC_POOL` is a COMMA-SEPARATED LIST, not a url**, and passing
+    ⚠ **`ELO_RH_RPC_POOL` is a COMMA-SEPARATED LIST, not a url**, and passing
     it whole to `--rpc-url` fails as `HTTP 401 UNAUTHORIZED` — which reads like
     a bad key and is really a malformed url, because the first endpoint's
     credential arrives with the rest of the list glued to it. Measured
@@ -280,11 +280,18 @@ def _cast_send(digest: str, label: str, memo: str) -> str:
     """
     return (
         "set -a; . /data/apps/secrets/keys.env; set +a; "
+        # ⚠ The knob is `ELO_RH_RPC_POOL` since the SCRY→ELO migration; it was
+        # `SCRY_RH_RPC_POOL` before. Reading only the old name is not a
+        # misconfiguration that announces itself — every endpoint in an EMPTY
+        # list is unreachable, so it fails as "no reachable endpoint" and reads
+        # like a dead provider. Both names, current one first.
+        'POOL="${ELO_RH_RPC_POOL:-$SCRY_RH_RPC_POOL}"; '
+        'if [ -z "$POOL" ]; then echo "neither ELO_RH_RPC_POOL nor SCRY_RH_RPC_POOL is set in keys.env" >&2; exit 1; fi; '
         'RPC=""; '
-        'for u in $(printf %s "$SCRY_RH_RPC_POOL" | tr "," " "); do '
+        'for u in $(printf %s "$POOL" | tr "," " "); do '
         '  if ~/.foundry/bin/cast chain-id --rpc-url "$u" >/dev/null 2>&1; then RPC="$u"; break; fi; '
         "done; "
-        'if [ -z "$RPC" ]; then echo "no reachable endpoint in SCRY_RH_RPC_POOL" >&2; exit 1; fi; '
+        'if [ -z "$RPC" ]; then echo "no reachable endpoint in the RPC pool" >&2; exit 1; fi; '
         f"~/.foundry/bin/cast send {NOTARY} "
         f"'notarize(bytes32,string,string)' {digest} {shlex.quote(label)} {shlex.quote(memo)} "
         '--rpc-url "$RPC" --private-key "$PRIVATE_KEY" --json'
