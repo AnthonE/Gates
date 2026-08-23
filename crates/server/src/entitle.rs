@@ -139,7 +139,7 @@ impl Verdict {
 /// honest default `status_addr` and `require_auth` take.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
-    /// The origin, no trailing slash: `https://scry.moreright.xyz`. `None`
+    /// The origin, no trailing slash: `https://elopros.com`. `None`
     /// disables every check in this module.
     pub origin: Option<String>,
     /// The title's slug in scry's catalog. Ours, and it is not a knob a
