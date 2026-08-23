@@ -150,7 +150,12 @@ TARGETS = {
 # depots published BEFORE it keep the old two-segment url forever. The origin
 # still serves that shape; a published depot's location is part of what was
 # sealed on chain, so it can never be moved.
-DEFAULT_ROOT = ("https://scry.moreright.xyz/api/launcher/depot"
+# ⚠ THE HOST MOVED. `scry.moreright.xyz` was retired 2026-08-20 and now answers
+# 410 Gone; the platform is `elopros.com`. A depot packaged with the old root
+# names its files on a dead host, which is exactly what happened to
+# 0.5.0-gce57499e6 — it installed nowhere until this line was fixed. Only the
+# PLATFORM host moved: `game.moreright.xyz` is the public shard and is live.
+DEFAULT_ROOT = ("https://elopros.com/api/launcher/depot"
                 "/{slug}/{build}/{platform}/files")
 
 # The launcher fills these. `{server}` is the shard to join, `{wallet}` the

@@ -77,7 +77,7 @@ TARGETS = depot_mod.TARGETS
 
 DEFAULT_HOST = "morr"
 DEFAULT_DEPOTS = "/data/apps/scry-data/depots"
-DEFAULT_API = "https://scry.moreright.xyz/api"
+DEFAULT_API = "https://elopros.com/api"   # scry.moreright.xyz retired 2026-08-20 (410)
 NOTARY = "0x0C15fA7829458118e3d26229F58FE0443f8b792c"  # ScryNotary, chain 4663
 NOTARY_CHAIN = 4663
 
@@ -89,8 +89,17 @@ def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return p
 
 
-def ssh(host: str, script: str) -> str:
-    """One remote command. `script` runs under the remote shell as written."""
+def ssh(host: str | None, script: str) -> str:
+    """One command against the origin. `script` runs under its shell as written.
+
+    ⚠ `host=None` is the LOCAL origin (`--local`), and it is not a shortcut: the
+    platform runs on the box the depots live on, where ssh-to-self needs a key
+    nobody should add for this. Same script, same order, same refusals — only
+    the transport differs. Every caller goes through here, so there is one
+    place where that choice is made.
+    """
+    if host is None:
+        return run(["bash", "-c", script]).stdout.strip()
     return run(["ssh", "-o", "BatchMode=yes", host, script]).stdout.strip()
 
 
@@ -173,7 +182,7 @@ def package(platform: str, do_build: bool) -> Path:
 def upload(stage: Path, host: str, depots: str, build: str, platform: str,
            dry: bool) -> None:
     remote = f"{depots}/{SLUG}/{build}/{platform}"
-    dest = f"{host}:{remote}/"
+    dest = f"{remote}/" if host is None else f"{host}:{remote}/"
     print(f"== upload · {stage} → {dest}")
     if dry:
         print("   (dry-run: nothing sent)")
@@ -312,11 +321,17 @@ def main() -> int:
     ap.add_argument("--no-build", action="store_true", help="package what is compiled")
     ap.add_argument("--dry-run", action="store_true", help="every check, no writes")
     ap.add_argument("--notarize", action="store_true", help="seal the digest on chain")
-    ap.add_argument("--scry", default=None, help="path to a `scry` binary for --notarize")
+    ap.add_argument("--scry", default=None, help="path to an `elo` binary for --notarize (was `scry` before 2026-08-21; the flag name is kept so callers keep working)")
     ap.add_argument("--host", default=DEFAULT_HOST, help="origin box (ssh alias)")
+    ap.add_argument("--local", action="store_true",
+                    help="the origin is THIS box — run the steps here, no ssh")
     ap.add_argument("--depots", default=DEFAULT_DEPOTS, help="depot root on the origin")
     ap.add_argument("--api", default=DEFAULT_API, help="public API base to confirm against")
     a = ap.parse_args()
+    if a.local:
+        # One assignment, so every step below takes the same road. `ssh()` and
+        # `upload()` both read None as "this box".
+        a.host = None
 
     sha = require_clean_tree()
     build = depot_mod.build_id()
