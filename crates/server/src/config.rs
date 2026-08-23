@@ -557,7 +557,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
                 if !value.starts_with("https://") && !value.starts_with("http://") {
                     return Err(format!(
                         "shard.toml line {}: entitle_origin needs a scheme, e.g. \
-                         https://scry.moreright.xyz",
+                         https://elopros.com",
                         n + 1
                     ));
                 }

@@ -15,7 +15,7 @@ scry reads two files from this repo's default branch and nothing else:
 
 It applies what changed. Nothing here runs on scry's box and nothing of scry's
 runs here: the whole transport is a commit, and the authority is the signature.
-The standard is `GET https://scry.moreright.xyz/api/library/GAME-REPO.md`.
+The standard is `GET https://elopros.com/api/library/GAME-REPO.md`.
 
 ## What the GATE checks, and what it deliberately does not
 
