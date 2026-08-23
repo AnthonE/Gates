@@ -27,7 +27,7 @@
 # gates-data`), because a wipe deletes the world and keeps the players.
 
 [Unit]
-Description=Gates public shard — game.moreright.xyz:61234
+Description=Gates public shard — game.elopros.com:61234
 Documentation=https://github.com/AnthonE/Gates
 After=network-online.target
 Wants=network-online.target

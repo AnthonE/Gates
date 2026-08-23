@@ -17,11 +17,19 @@ id = "eu-1"
 name = "Gates EU 1"
 
 # host:port. A NAME, not an address — the public shard's certificate is
-# issued for `game.moreright.xyz` (see shard-public.toml) and WebTransport
+# issued for `game.elopros.com` (see shard-public.toml) and WebTransport
 # needs that name for SNI. An IP here connects and then cannot say who it is
 # talking to. The port is the one shard-public.toml binds; it sits in
 # 49152-65535 because that range is what the cloud firewall actually passes.
-addr = "game.moreright.xyz:61234"
+#
+# ⚠ **This name appears in THREE places and they move together**: here (what
+# is dialled), `shard-public.toml`'s `cert_pem` (what the handshake can
+# prove) and its `domain` (what a login is signed against). Publishing ahead
+# of the certificate is `invalid peer certificate`; publishing ahead of
+# `domain` is REFUSE_AUTH on every login. Both read as a client bug and
+# neither puts the shard in a failed state — it was live for three days in
+# 2026-08. `ops/certbot-deploy-hook.sh` refuses the first one now.
+addr = "game.elopros.com:61234"
 
 # Optional, free text. The seed is what makes one island different from
 # another, so naming it is more useful than naming a map that does not exist.
@@ -55,7 +63,7 @@ map = "island 20260731"
 #   3. A shard that does not answer costs the row nothing. The reader keeps
 #      the last count it got, so a blip does not read as "everyone left".
 #
-# status_url = "https://game.moreright.xyz:8080/status.json"
+# status_url = "https://game.elopros.com:8080/status.json"
 
 # players / ping_ms are deliberately NOT set here. `players` is what
 # status_url lights, live, and writing one here would freeze it at whatever it

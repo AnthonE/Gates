@@ -11,16 +11,24 @@
 #             (opened for WebRTC DataChannels; 50000/55000/60000 all arrived),
 #             so the shard lives there. 4433/4434/4455 are taken by thrml-ws,
 #             the live MMO game-server and its wt-gateway.
-#   cert_pem  a REAL Let's Encrypt chain for game.moreright.xyz (which is an
-#             A record onto this box, DNS-only — a Cloudflare-proxied name
-#             cannot carry WebTransport, which is QUIC over UDP). With a
-#             trusted chain a validating client needs no
-#             `serverCertificateHashes` pinning — that is the dev flow, and
-#             it requires a short-lived cert.
+#   cert_pem  a REAL Let's Encrypt chain that MUST COVER `domain` below —
+#             `game.elopros.com`, an A record onto this box, DNS-only (a
+#             Cloudflare-proxied name cannot carry WebTransport, which is
+#             QUIC over UDP). With a trusted chain a validating client needs
+#             no `serverCertificateHashes` pinning — that is the dev flow,
+#             and it requires a short-lived cert.
 #             certbot renews these; the shard reads them at boot, so a
-#             renewal needs a restart to take (the copies are refreshed by
-#             hand today — a renewal hook is worth writing before this
-#             matters).
+#             renewal needs a restart to take. `ops/certbot-deploy-hook.sh`
+#             is that restart, and it now REFUSES to install a chain that
+#             does not cover the name below rather than serving one that
+#             cannot answer for it.
+#             ⚠ **The lineage is expanded, not replaced.** Ask for both
+#             names — `certbot certonly --expand -d game.moreright.xyz -d
+#             game.elopros.com` — so the lineage keeps its path on disk (the
+#             hook copies from `/etc/letsencrypt/live/<lineage>`, and a
+#             rename is a delete-and-reissue with a window where this shard
+#             has no cert at all). A lineage named for the retired brand is
+#             a fact about the filesystem, never a label.
 #   NO dev_spawn — a public shard must not land every joiner on one point
 #             (config.rs says so). The welcome's dev bit tracks this key,
 #             and bot_smoke's `test_welcome_dev_bit_tracks_dev_spawn` pins
@@ -30,7 +38,8 @@
 #             bodies survive a restart, and players keep what they were
 #             carrying. require_auth is on with them because a save is filed
 #             under the identity the handshake proves, and a guest has none.
-#   domain    must match the host players dial — it is in what they sign.
+#   domain    must match the host players dial — it is in what they sign,
+#             and it is a SINGLE name, so it is a cutover and not a SAN.
 
 bind = "0.0.0.0:61234"
 
@@ -72,14 +81,22 @@ world_file = "/home/master/gates-data/island.world"
 # `domain` is what goes in the signed message and it MUST be the host players
 # dial — that is the whole of the domain binding, and a mismatch refuses
 # every login rather than failing quietly.
-domain = "game.moreright.xyz"
+#
+# ⚠ **ONE NAME, SO IT IS A CUTOVER.** The client signs the host it DIALLED
+# and never anything the server said (`client/src/lib.rs` — letting the
+# server name itself would hand the binding away), and the shard rebuilds
+# the text from this key. There is no second name to accept during a move:
+# the instant `shards.toml` publishes a name, this key has to be it, and the
+# certificate above has to cover it. Moved to `game.elopros.com` 2026-08-23,
+# behind the platform's 2026-08-20 move (`DECISIONS.md`).
+domain = "game.elopros.com"
 
 # The status endpoint (crates/server/src/status.rs): GET /status.json,
 # integers only, read off the shard's counters and never touching the sim.
 # It is what lights the `players` column in the shard list.
 #
 # **LOOPBACK, AND FRONTED BY NGINX** (operator, 2026-08-11). The published
-# url is `https://game.moreright.xyz/gates/status.json`, which is a
+# url is `https://game.elopros.com/gates/status.json`, which is a
 # `location` in the vhost this box already serves on 443. Three reasons this
 # beat binding it publicly, and the first is the one that decided it:
 #
@@ -135,4 +152,4 @@ status_addr = "127.0.0.1:8431"
 # `entitle_unknown` in the stats — armed and climbing means the door is open
 # and nobody can see it.
 #
-# entitle_origin = "https://scry.moreright.xyz"
+# entitle_origin = "https://elopros.com"   # scry.moreright.xyz retired 2026-08-20 (410)
