@@ -375,7 +375,19 @@ async fn main() {
         }
     };
     println!("shard up on {} (seed {seed})", handle.local_addr);
-    println!("dev cert sha256 {}", handle.cert_hash);
+    // ⚠ **This line said "dev cert" unconditionally**, including on a shard
+    // serving a real Let's Encrypt chain — measured 2026-08-23 on the public
+    // shard, whose boot log read `dev cert sha256 2d:c0:…` while it was in
+    // fact serving the `game.elopros.com` leaf. That is the wrong thing to say
+    // in the one log line somebody reads while debugging TLS: it invites the
+    // conclusion that the shard is self-signing, which sends the search in the
+    // opposite direction from the fault. The hash is worth printing either way
+    // — for a dev chain it is the `serverCertificateHashes` a browser needs —
+    // so name which of the two it is instead of assuming the dev case.
+    match boot_cfg.cert_pem.as_deref() {
+        Some(path) => println!("cert sha256 {} (chain {path})", handle.cert_hash),
+        None => println!("dev cert sha256 {} (self-signed, this boot only)", handle.cert_hash),
+    }
     // The status endpoint, only where the operator said (config.rs says why
     // absent-serves-nothing is the default). A bind failure refuses the boot
     // rather than running without it: a shard whose config names an endpoint
