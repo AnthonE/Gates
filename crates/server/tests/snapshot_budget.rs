@@ -10,7 +10,8 @@ use protocol::InputDatagram;
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use server::view::{Applied, ClientView};
-use sim_core::gather::SWING_INTERVAL_TICKS;
+use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
+use sim_core::gather::{ItemStack, NO_ITEM, SWING_INTERVAL_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{
     AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, DATAGRAM_BUDGET_BYTES, MAX_MOBS,
@@ -1500,4 +1501,186 @@ fn the_filter_buys_nothing_on_a_clustered_shard() {
         "slot 0 can see only {players} of the 99 bodies stood on top of it — \
          the clustered fixture is not clustered, so the no-op claim is untested"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The other two body/point-addressed arms. One bow shot exercises both:
+// loosing it pushes `EV_SHOT`, and its landing pushes `EV_IMPACT`.
+// ---------------------------------------------------------------------------
+
+/// Item indices for the shot fixture, `sim-core/tests/shoot.rs`'s values.
+const BOW: u16 = 3;
+const ARROW: u16 = 4;
+
+/// The real bow's numbers as `bake_ranged` converts them, written out
+/// rather than loaded — `shoot.rs`'s rule, for its reason: this suite
+/// gates the **routing**, and a content edit must not be able to turn a
+/// red here into a green.
+fn bow_fixture() -> CombatContent {
+    let mut c = CombatContent::EMPTY;
+    c.player_hp = 100;
+    c.ranged[BOW as usize] = RangedDef {
+        damage: 30,
+        ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 60,
+        hitscan: false,
+        range_mm: 60_000,
+    };
+    c.ammo[ARROW as usize] = AmmoDef {
+        speed_mmpt: 1333,
+        drop_mmpt2: 22,
+    };
+    c
+}
+
+/// Put a drawn bow in the hands of the player at world slot `w`.
+fn arm_archer(core: &mut ShardCore, w: usize) {
+    let p = &mut core.world.players[w];
+    p.inv[0] = ItemStack {
+        item: BOW,
+        count: 1,
+        cond: 0,
+    };
+    p.inv[7] = ItemStack {
+        item: ARROW,
+        count: 32,
+        cond: 0,
+    };
+}
+
+/// One tick, returning every `(slot, EventMsg)` the event lane carried.
+fn event_round(core: &mut ShardCore, stats: &ShardStats) -> Vec<(usize, protocol::EventMsg)> {
+    let mut ev: Vec<(usize, Vec<u8>)> = Vec::new();
+    core.tick_bare(stats, |lane, slot, bytes| {
+        if lane == Lane::Event {
+            ev.push((slot, bytes.to_vec()));
+        }
+        true
+    });
+    ev.iter()
+        .filter_map(|(slot, bytes)| protocol::decode_event(bytes).ok().map(|m| (*slot, m)))
+        .collect()
+}
+
+/// What one bow's volley put on the event lane.
+#[derive(Default)]
+struct Volley {
+    /// `(recipient slot, shooter id)`, one entry per `EV_SHOT` frame.
+    shots: Vec<(usize, u32)>,
+    /// `(recipient slot, qx, qz)`, one entry per `EV_IMPACT` frame.
+    marks: Vec<(usize, i32, i32)>,
+}
+
+/// Fire slot 0's bow and collect what the lane carried while it flew.
+fn fire_and_collect(core: &mut ShardCore, stats: &ShardStats) -> Volley {
+    let mut seq = 1u16;
+    let mut v = Volley::default();
+    for _ in 0..90 {
+        press_primary(core, &[0], &mut seq);
+        for (slot, m) in event_round(core, stats) {
+            match m {
+                protocol::EventMsg::Shot { shooter, .. } => v.shots.push((slot, shooter)),
+                protocol::EventMsg::Impact { qx, qz, .. } => v.marks.push((slot, qx, qz)),
+                _ => {}
+            }
+        }
+    }
+    v
+}
+
+/// **A shot nobody can see costs one message, and its mark costs none.**
+///
+/// The effect gate for both arms at once. `EV_SHOT` is body-addressed, so
+/// the shooter keeps its own copy; `EV_IMPACT` is point-addressed and has
+/// no owner at all, so on a sparse shard the only client near the mark is
+/// the archer — 60 m of bow against a 320 m pitch.
+///
+/// Mutants: delete either filter → 36 frames per event instead of 1 → red.
+#[test]
+fn a_shot_nobody_can_see_costs_one_message() {
+    let stats = ShardStats::default();
+    let mut core = sparse_core(&stats);
+    core.world.combat = bow_fixture();
+    let w = core
+        .world
+        .players
+        .iter()
+        .position(|p| p.active && p.id == id_of(0))
+        .expect("slot 0 has a body");
+    arm_archer(&mut core, w);
+    let Volley { shots, marks } = fire_and_collect(&mut core, &stats);
+
+    assert!(
+        !shots.is_empty(),
+        "nothing was loosed — the bow fixture never reached `ranged::draw`, \
+         so both filters below are asserted over an empty set"
+    );
+    let stray: Vec<(usize, u32)> = shots
+        .iter()
+        .copied()
+        .filter(|(slot, shooter)| id_of(*slot) != *shooter)
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "{} of {} shot frames reached a client that cannot see the archer — \
+         e.g. {:?}",
+        stray.len(),
+        shots.len(),
+        &stray[..stray.len().min(4)]
+    );
+    // The archer is the only body within a bow's reach of its own arrow.
+    assert!(
+        !marks.is_empty(),
+        "no arrow ever landed, so the impact assertion below is vacuous —          a filter that dropped every mark would satisfy it too"
+    );
+    let far: Vec<(usize, i32, i32)> = marks.iter().copied().filter(|(s, _, _)| *s != 0).collect();
+    assert!(
+        far.is_empty(),
+        "{} impact frames reached a client {} m from the mark — a decal \
+         pool is fixed and evicts, so those take a slot from a mark at \
+         somebody's feet. e.g. {:?}",
+        far.len(),
+        SPARSE_PITCH_M,
+        &far[..far.len().min(4)]
+    );
+}
+
+/// **A shot and its mark still reach a shard standing on top of itself.**
+///
+/// The correctness end, and the anti-vacuity partner of the gate above:
+/// a filter that never delivers anything satisfies every assertion there.
+///
+/// Mutant: invert either predicate → the clustered audience empties → red.
+#[test]
+fn a_shot_reaches_the_clients_that_can_see_it() {
+    let stats = ShardStats::default();
+    let mut core = clustered_core(&stats);
+    settle_interest(&mut core, &stats);
+    core.world.combat = bow_fixture();
+    let w = core
+        .world
+        .players
+        .iter()
+        .position(|p| p.active && p.id == id_of(0))
+        .expect("slot 0 has a body");
+    arm_archer(&mut core, w);
+    let Volley { shots, marks } = fire_and_collect(&mut core, &stats);
+
+    let shot_audience: BTreeSet<usize> = shots.iter().map(|(slot, _)| *slot).collect();
+    let mark_audience: BTreeSet<usize> = marks.iter().map(|(slot, _, _)| *slot).collect();
+    assert!(
+        shot_audience.len() > 1,
+        "only the archer was told it fired, on a shard where 100 bodies \
+         stand in a 60 m square — the filter ate the clustered case"
+    );
+    assert!(
+        mark_audience.len() > 1,
+        "the arrow's mark reached only one client in a 60 m square"
+    );
+    for slot in &shot_audience {
+        assert!(
+            *slot == 0 || interest_of(&core, *slot).contains(&id_of(0)),
+            "slot {slot} was told about a shot by a body it cannot see"
+        );
+    }
 }

@@ -2003,18 +2003,41 @@ impl ShardCore {
                     }
                 }
                 EV_SHOT => {
-                    // Broadcast, `EV_OVEN`'s posture and its reason: an
-                    // arrow in the air is a world fact, visible from
-                    // outside whatever base it was loosed in. A client
-                    // that misses one loses a tracer and nothing else —
-                    // the arrow itself is the sim's, and the hit arrives
-                    // on its own events whether the shot was drawn or not.
+                    // Broadcast **to the interest set**, `EV_SWING`'s
+                    // posture and — after this was checked rather than
+                    // assumed — its reason too. A client that misses one
+                    // loses a tracer and nothing else: the arrow itself is
+                    // the sim's, and the hit arrives on its own events
+                    // whether the shot was drawn or not.
+                    //
+                    // **The obvious objection is that a projectile
+                    // travels**, so unlike a swing it could matter to
+                    // somebody who cannot see the hand that loosed it. It
+                    // does not, for two independent reasons, and the first
+                    // alone is sufficient. `render/tracer.rs` already
+                    // refuses a shot whose shooter it holds no body for —
+                    // *"Nothing to hang it on, so it is dropped rather
+                    // than drawn from the origin"* — and that is the same
+                    // set this filter reads, so nothing that was ever
+                    // drawn stops being drawn. And the arithmetic agrees:
+                    // the longest `range_m` in `content/weapons.toml` is
+                    // 80 against an `AOI_ENTER_CM` of 176 m, so a shot
+                    // from outside a client's interest cannot put a
+                    // projectile within 96 m of it.
+                    // `content/tests/content.rs` gates that second reason,
+                    // because it is a relationship between a content
+                    // number and a limit and nothing else was holding it.
                     let (yaw, pitch) = ((ev.b >> 8) as u16, ev.b as u8);
                     let (speed, drop) = ((ev.c >> 16) as u16, ev.c as u16);
+                    let sh = Self::world_slot_of(&self.world, ev.a);
                     match encode_event_shot(ev.a, yaw, pitch, speed, drop, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.body_event_visible(slot, ev.a, sh) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -2103,10 +2126,23 @@ impl ShardCore {
                     let qx = (ev.a & 0x00FF_FFFF) as i32;
                     let qz = ev.b as i32;
                     let qy = ev.c as i32;
+                    // Filtered on the **point**, not on a body — see
+                    // `point_event_visible`. A mark is the one thing in
+                    // this arm's family a client can place without holding
+                    // anything, so this filter removes a decal that would
+                    // otherwise have been spawned, and it is worth it: the
+                    // pool is fixed and evicts, so a sub-pixel impact past
+                    // the band takes a slot from a mark at the player's
+                    // feet.
+                    let at = interest::body_cm(qx, qz);
                     match encode_event_impact(qx, qy, qz, surf, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.point_event_visible(slot, at) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -3067,6 +3103,31 @@ impl ShardCore {
             return true;
         };
         !self.interest_settled(slot) || c.interest[w]
+    }
+
+    /// May connection `slot` be told about something that happened at
+    /// world point `at_cm` (centimetres)?
+    ///
+    /// The **position-addressed** twin of `body_event_visible`, for an
+    /// event that names a place rather than a body — `EV_IMPACT` today.
+    /// Those cannot use class-D interest at all: an arrow's stop point is
+    /// not an entity and has no world slot, so the question is a distance
+    /// and the set to measure it against is the class-S anchor
+    /// `EV_PIECE_PLACED` already filters on. Same predicate, same anchor,
+    /// same fail-open when the anchor is not yet valid.
+    ///
+    /// **This one is not free the way the body filter is.** A client
+    /// discards a swing or a shot it cannot hang on a body by itself
+    /// (`render/tracer.rs` says so in as many words), so filtering those
+    /// removes nothing that was ever drawn. A decal needs no body — it is
+    /// placed at the point — so `render/decal.rs` will happily spawn one
+    /// 500 m away, claim a slot from a fixed pool and **evict a mark at
+    /// the player's feet for one that is sub-pixel**. That eviction is the
+    /// thing this removes; the visible cost is a 0.22 m quad past 208 m,
+    /// which is under a pixel at any sane field of view.
+    fn point_event_visible(&self, slot: usize, at_cm: (i64, i64)) -> bool {
+        let c = &self.clients[slot];
+        !c.piece_anchor_valid || interest::point_in_interest(c.piece_anchor_cm, at_cm)
     }
 
     /// AOI v0 (DESIGN.md §5.5): **two** hysteresis bands over the same

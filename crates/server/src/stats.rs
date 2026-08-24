@@ -248,14 +248,18 @@ pub struct ShardStats {
     pub forced_resyncs: AtomicU64,
     /// Event-lane messages accepted by per-connection rings.
     pub ev_sent: AtomicU64,
-    /// Body-addressed event broadcasts a connection was not sent because
-    /// the body the event names is outside its class-D interest
-    /// (`ShardCore::body_event_visible`; `EV_SWING` is the only arm using
-    /// it today). Not an anomaly and deliberately not in `by_name` — a
-    /// filter firing is the normal case, and `piece_events_skipped` sets
-    /// that precedent. Read the other way it is the useful number: near
-    /// zero on a shard whose players all stand in one place, and most of
-    /// the fan-out on a shard where they do not.
+    /// Event-lane broadcasts a connection was not sent because it cannot
+    /// see what the event is about. **One counter for two predicates**,
+    /// because the operational question is the same one: how much of the
+    /// fan-out is this shard's geometry saving. `EV_SWING` and `EV_SHOT`
+    /// are body-addressed and go through `body_event_visible` (class-D
+    /// interest); `EV_IMPACT` names a place rather than a body and goes
+    /// through `point_event_visible` (the class-S anchor). Not an anomaly
+    /// and deliberately not in `by_name` — a filter firing is the normal
+    /// case, and `piece_events_skipped` sets that precedent. Read the
+    /// other way it is the useful number: near zero on a shard whose
+    /// players all stand in one place, and most of the fan-out on a shard
+    /// where they do not.
     pub ev_interest_skipped: AtomicU64,
     /// Event-lane resyncs: a refused ring push or a dropped sim event
     /// restarted a client's harvested-set walk (limits.rs policy).

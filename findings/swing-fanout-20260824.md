@@ -59,6 +59,37 @@ client can draw.
    an imminent storm. Phase-correlated joins are the only thing that stacks
    it.
 
+## 2b · The other two arms, and the objection that had to be checked
+
+Landed the same day. **`EV_SHOT` is the same call** — but only after the
+obvious objection was tested rather than waved off: *a swing is local to a
+body, a projectile travels*, so a shot could matter to somebody who cannot
+see the hand that loosed it. Two independent reasons it does not, and the
+first alone settles it:
+
+1. **`render/tracer.rs` already refuses it.** *"A shot from someone outside
+   AOI, or one that arrived before their first snapshot. Nothing to hang it
+   on, so it is dropped rather than drawn from the origin."* That is the
+   same set the filter reads, so nothing that was ever drawn stops being
+   drawn. `feed.shots()` has exactly one consumer, so there is no second
+   path to check.
+2. **The arithmetic agrees.** The longest `range_m` in
+   `content/weapons.toml` is **80** against `AOI_ENTER_CM` = 176 m, so a
+   shot from outside a client's band cannot put a projectile within 96 m
+   of it. This one is a content-vs-limit relationship that a new gun breaks
+   in silence, so it is now
+   `content.rs::no_weapon_outranges_the_interest_band` — proven red by
+   raising the crossbow to 200 m.
+
+**`EV_IMPACT` is different and is the one that changes behaviour.** It
+names a place, not a body, so class-D interest cannot answer it;
+`point_event_visible` measures the stop point against the class-S anchor
+`EV_PIECE_PLACED` already uses. And unlike a swing or a shot, a client
+*can* place a decal with no body — `render/decal.rs` will spawn one at any
+distance from a **fixed pool that evicts**, so a sub-pixel mark past 208 m
+was taking a slot from a mark at the player's feet. That eviction is what
+this removes; what it costs is a 0.22 m quad past 208 m.
+
 ## 3 · What is still open, in the order it bites
 
 - **The overflow path is self-amplifying.** A refused ring push calls
@@ -71,9 +102,10 @@ client can draw.
   a shard-wide resync is invisible to `/status.json`. One counter closes it.
 - **`ev_resyncs` conflates two causes** — a refused push and a dropped sim
   event. Nothing can tell them apart, so nothing can be concluded from it.
-- **Two more arms have identical shape**: `EV_SHOT` (`a` = shooter) is a
-  drop-in for `body_event_visible`; `EV_IMPACT` is position-addressed and
-  wants `interest::d2_cm` against the anchor instead.
+- **Eighteen broadcast arms are still unfiltered.** Most correctly so — a
+  removal leaves residue and `EV_PIECE_REMOVED`'s arm argues it at length.
+  The ones worth re-asking are `EV_DOOR`, `EV_KNOCK` and `EV_OVEN`: all
+  instants at a place, which is `point_event_visible`'s shape exactly.
 - **Nobody has run a swinging soak.** `raid_storm.rs:516` still says
   *"nobody swings"*, and it cannot be the place: its
   `PLAYERS * STEPS_PER_TICK == MAX_COMMANDS_PER_TICK` is a compile-time

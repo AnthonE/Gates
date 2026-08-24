@@ -74,32 +74,48 @@ What it does NOT do, in the order the value drops:
 
 ## 0fan · The event lane's fan-out — one arm filtered, twenty to go *(server lane)*
 
-`EV_SWING` is AOI-filtered as of 2026-08-24 and the saving is measured:
-**36.0×** on a dispersed shard (36 connections, 72 swings, 2520 frames
-skipped, 6 B each). It was 1 of 21 broadcast arms with no filter against 1
-that had one. Numbers and the three things §0sw got wrong:
-`findings/swing-fanout-20260824.md`. Six gates in
-`server/tests/snapshot_budget.rs`, six mutants proven red. No `PROTO_VER`,
-no replay hash, no content, no new cap.
+`EV_SWING`, `EV_SHOT` and `EV_IMPACT` are interest-filtered as of
+2026-08-24 and the saving is measured: **36.0×** on a dispersed shard
+(36 connections, 72 swings, 2520 frames skipped, 6 B each). They were 3 of
+21 broadcast arms with no filter against 1 that had one. Numbers and the
+three things §0sw got wrong: `findings/swing-fanout-20260824.md`. Nine
+gates (`server/tests/snapshot_budget.rs`, `content/tests/content.rs`),
+ten mutants proven red. No `PROTO_VER`, no replay hash, no content edit,
+no new cap.
 
 **Do not read this as wall 4 closed.** Post-filter peak fan-in per client
 is `AOI_RANK_EXIT` = 64 and `EVENT_RING_CAP` = 64 — the same number, zero
 headroom for the other twenty arms. `limits.rs` says so now and a gate
 asserts the equality so a rank-band widening is loud.
 
-Next, cheapest first:
+~~1. `EV_SHOT` is a drop-in; `EV_IMPACT` wants the anchor instead.~~
+**Both landed 2026-08-24.** `EV_SHOT` through the same
+`body_event_visible`, and the "but a projectile *travels*" objection was
+checked rather than waved off: `render/tracer.rs` already drops a shot it
+has no body to hang on, so nothing drawn stops being drawn, and no shipped
+weapon reaches 176 m (worst is 80) — the second half is now
+`content.rs::no_weapon_outranges_the_interest_band`, because it is a
+content-vs-limit relationship a new gun breaks in silence. `EV_IMPACT`
+took `point_event_visible` against the class-S anchor, and that one
+removes a real decal: the pool is fixed and evicts, so a sub-pixel mark
+past the band was taking a slot from one at your feet.
 
-1. **`EV_SHOT` is a drop-in** — `a` is the shooter id, so it is one call to
-   `body_event_visible`. `EV_IMPACT` is position-addressed and wants
-   `interest::d2_cm` against the anchor instead.
-2. **`EventQueue::dropped` reaches no `ShardStats` field.** It resyncs every
-   connected client at once and nothing on `/status.json` records the cause.
-   One counter.
-3. **`ev_resyncs` conflates a refused push with a dropped sim event**, so
-   nothing can be concluded from it. Split it.
-4. **Nobody has run a swinging soak.** Not `raid_storm.rs` —
+What is left, and **it is one slice rather than the three this list had**:
+
+1. **`EventQueue::dropped` is counted nowhere, `ev_resyncs` conflates its
+   two causes, and nobody has run an event storm — and all three want the
+   same fixture.** Making `MAX_EVENTS_PER_TICK` (256) overflow on purpose
+   *is* the population test, and until something can, two new counters
+   would ship unobserved. Not `raid_storm.rs`:
    `PLAYERS * STEPS_PER_TICK == MAX_COMMANDS_PER_TICK` is a compile-time
-   equality there with no budget for a swing.
+   equality there with no budget left. The shape that nearly works is
+   `snapshot_budget.rs`'s clustered 100 with bows at a short `rate_ticks`,
+   so shots and impacts land in one tick (~200 of 256) — it wants hits and
+   deaths on top, which a 60 m square gives for free.
+2. **Eighteen broadcast arms are still unfiltered.** Most are correctly so
+   (a removal leaves residue — `EV_PIECE_REMOVED`'s arm argues it); the
+   ones worth re-asking are `EV_DOOR`, `EV_KNOCK` and `EV_OVEN`, which are
+   instants at a place and so are `point_event_visible`'s shape.
 
 ---
 
