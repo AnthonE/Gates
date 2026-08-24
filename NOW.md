@@ -124,10 +124,33 @@ What is left:
    has the measurement too: 50 of 64 under the worst fixture anybody has
    built. Raise it (322 B a slot per connection) or batch a tick's events
    into one message (`PROTO_VER` work). Operator's call, not a loop's.
-2. **Eighteen broadcast arms are still unfiltered.** Most are correctly so
-   (a removal leaves residue — `EV_PIECE_REMOVED`'s arm argues it); the
-   ones worth re-asking are `EV_DOOR`, `EV_KNOCK` and `EV_OVEN`, which are
-   instants at a place and so are `point_event_visible`'s shape.
+2. ~~`EV_DOOR`, `EV_KNOCK` and `EV_OVEN` are instants at a place.~~
+   **Wrong, and audited 2026-08-24 — only `EV_KNOCK` is.** The other two
+   are *state* (`EV_OVEN`'s own doc: "Absolute, never a delta"), and the
+   thing that decides it is **residue, not address**. `EV_KNOCK` landed
+   filtered: its arm argued AOI would silence "a defender asleep on the
+   far side of their own base", which does not survive the actual radius —
+   a base spans tens of metres and the band is 208 m. What it really did
+   was toast *"knock knock"* on every screen on the island, with no owner
+   check anywhere (`hud.rs`).
+   ⚠ **Open, and the operator's**: should the OWNER hear their own door
+   from anywhere on the island? A game question; nothing has an owner
+   check to hang it on.
+3. **The deploy walk is unaimed, and it is what blocks the other two.**
+   `EV_DOOR` and `EV_OVEN` cannot be filtered because every client holds
+   every deployable on the island — the walk streams `deploys.entries()`
+   whole, where the piece walk streams what is within `PIECE_INTEREST_CM`
+   of its anchor and counts the rest in `piece_sync_skipped`. Filtering a
+   state change onto a record somebody keeps leaves it wrong forever.
+   **This is a documented deferral, not an oversight**: `core.rs` says the
+   deployable walk "was left reading upward until its own placement seam is
+   proven". So the order is (a) aim `EV_DEPLOY_PLACED` the way
+   `EV_PIECE_PLACED` already is, (b) aim the walk with the same anchor and
+   re-arm, (c) *then* `EV_DOOR` and `EV_OVEN` become filterable.
+   Sizing: the band is **3.2%** of the island's area, `MAX_DEPLOYS` is
+   1024, and `deploy_wire.rs` now pins the current truth with a client
+   400 m out — three counts in it are tripwires that go red when the seam
+   is aimed, and say so.
 3. **The storm is combat only.** No building, looting or doors, so the
    arms it exercises are three of twenty-two. `raid_storm.rs` drives the
    other verbs but at the *command* ceiling and with nobody swinging; the

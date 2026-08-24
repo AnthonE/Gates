@@ -151,10 +151,26 @@ stayed plausible through all three:
   ⚠ **Neither fires under shipped limits**, by construction — the queue does
   not overflow at population, which is the good news §2c reports. They were
   proven live by shrinking `MAX_EVENTS_PER_TICK` to 128, not by a scenario.
-- **Eighteen broadcast arms are still unfiltered.** Most correctly so — a
-  removal leaves residue and `EV_PIECE_REMOVED`'s arm argues it at length.
-  The ones worth re-asking are `EV_DOOR`, `EV_KNOCK` and `EV_OVEN`: all
-  instants at a place, which is `point_event_visible`'s shape exactly.
+- **The remaining arms were audited and the rule is RESIDUE, not address.**
+  This note previously said `EV_DOOR`, `EV_KNOCK` and `EV_OVEN` were all
+  "instants at a place"; only the knock is. `EV_OVEN`'s own doc says
+  "Absolute, never a delta", and a door's state is the same. `EV_KNOCK`
+  landed filtered — its arm's objection ("a defender asleep on the far
+  side of their own base") does not survive the radius, since a base is
+  tens of metres inside a 208 m band, and what it was really doing was
+  toasting every knock on the island onto every screen with **no owner
+  check anywhere** (`hud.rs`).
+- **The deploy walk is unaimed, and it is the blocker for the other two.**
+  `deploys.entries()` streams whole to every client, where the piece walk
+  streams what is within `PIECE_INTEREST_CM` of its anchor and counts the
+  rest. So a client 400 m away holds a door's record, and a filtered state
+  change would leave it wrong forever. **Documented deferral, not an
+  oversight** — `core.rs`: the deployable walk "was left reading upward
+  until its own placement seam is proven". Order: aim `EV_DEPLOY_PLACED`
+  as `EV_PIECE_PLACED` already is, then the walk, then the two events.
+  The band is **3.2%** of the island's area against `MAX_DEPLOYS` 1024;
+  `deploy_wire.rs` pins the present truth with three counts that go red —
+  deliberately — when that seam is aimed.
 - **Nobody has run a swinging soak.** `raid_storm.rs:516` still says
   *"nobody swings"*, and it cannot be the place: its
   `PLAYERS * STEPS_PER_TICK == MAX_COMMANDS_PER_TICK` is a compile-time

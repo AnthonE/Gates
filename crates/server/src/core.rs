@@ -1947,18 +1947,51 @@ impl ShardCore {
                     }
                 }
                 EV_KNOCK => {
-                    // A knock is broadcast for the same reason a door's
-                    // state is, and for one more: the whole point of the
-                    // event is that somebody *other* than the sender
-                    // hears it (`reference/DOORS.md` §4). AOI'ing it
-                    // would silence the case it exists for — a defender
-                    // asleep on the far side of their own base.
+                    // A knock reaches the **neighbourhood**, which is what
+                    // the reference means by it (`DOORS.md` §4): the one
+                    // channel a locked-out player has to the person
+                    // inside. The point of the event is still that
+                    // somebody *other* than the sender hears it.
+                    //
+                    // ⚠ **This paragraph used to argue against filtering
+                    // and the argument did not survive its own radius.**
+                    // It said AOI'ing would silence "a defender asleep on
+                    // the far side of their own base" — but the band is
+                    // `PIECE_INTEREST_CM`, 208 m, and a base spans tens of
+                    // metres, so that defender is four to seven times
+                    // inside it. What the unfiltered version actually did
+                    // was toast *"knock knock"* on every screen on the
+                    // island for every knock anywhere on it — `hud.rs`
+                    // says the quiet part, that it fires "for a door
+                    // across the base as readily as the one in front of
+                    // you", and there is no owner check anywhere to stop
+                    // it at your own base's edge.
+                    //
+                    // Safe to filter where `EV_DOOR` and `EV_OVEN` — the
+                    // two events beside it in this arm's family — are not,
+                    // and the difference is not the address, it is the
+                    // residue. A knock is an instant; those two are
+                    // *state*, on records the client holds shard-wide
+                    // because the deploy walk is unaimed. Filtering a
+                    // state change onto a record somebody keeps is how a
+                    // door stays shut on one screen forever.
+                    //
+                    // **Still open and the operator's**: whether the OWNER
+                    // should hear their own door knocked from anywhere on
+                    // the island. That is a game question, not a routing
+                    // one, and nothing here has an owner check to hang it
+                    // on. `NOW.md` §0fan.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
+                    let at = interest::cell_cm(cx, cz);
                     match encode_event_knock(cx, cz, level, loc, ev.c, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.point_event_visible(slot, at) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
