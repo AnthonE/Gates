@@ -72,6 +72,37 @@ What it does NOT do, in the order the value drops:
 
 ---
 
+## 0fan · The event lane's fan-out — one arm filtered, twenty to go *(server lane)*
+
+`EV_SWING` is AOI-filtered as of 2026-08-24 and the saving is measured:
+**36.0×** on a dispersed shard (36 connections, 72 swings, 2520 frames
+skipped, 6 B each). It was 1 of 21 broadcast arms with no filter against 1
+that had one. Numbers and the three things §0sw got wrong:
+`findings/swing-fanout-20260824.md`. Six gates in
+`server/tests/snapshot_budget.rs`, six mutants proven red. No `PROTO_VER`,
+no replay hash, no content, no new cap.
+
+**Do not read this as wall 4 closed.** Post-filter peak fan-in per client
+is `AOI_RANK_EXIT` = 64 and `EVENT_RING_CAP` = 64 — the same number, zero
+headroom for the other twenty arms. `limits.rs` says so now and a gate
+asserts the equality so a rank-band widening is loud.
+
+Next, cheapest first:
+
+1. **`EV_SHOT` is a drop-in** — `a` is the shooter id, so it is one call to
+   `body_event_visible`. `EV_IMPACT` is position-addressed and wants
+   `interest::d2_cm` against the anchor instead.
+2. **`EventQueue::dropped` reaches no `ShardStats` field.** It resyncs every
+   connected client at once and nothing on `/status.json` records the cause.
+   One counter.
+3. **`ev_resyncs` conflates a refused push with a dropped sim event**, so
+   nothing can be concluded from it. Split it.
+4. **Nobody has run a swinging soak.** Not `raid_storm.rs` —
+   `PLAYERS * STEPS_PER_TICK == MAX_COMMANDS_PER_TICK` is a compile-time
+   equality there with no budget for a swing.
+
+---
+
 ## 0pw · Every material is drawn once before it is needed *(client lane)*
 
 LANDED 2026-08-20, and it corrects the trap it closes. `CLAUDE.md` said a
@@ -429,8 +460,10 @@ backpack → bag respawn, the kill feed, and since v48 a corpse that falls
    keep-first had to be written.
 6. **Nothing has fought at population.** `raid_storm.rs:516` says so in
    its own source — *"nobody swings"* — so wall 4's caps are gated one
-   site at a time on every combat path, and `EV_SWING`'s AOI-free fan-out
-   is still unpriced (§0sw). Planned:
+   site at a time on every combat path. ~~`EV_SWING`'s AOI-free fan-out is
+   still unpriced.~~ **Priced and filtered 2026-08-24, §0fan** — and it is
+   a no-op for *this* item by construction: fighters are co-located, so
+   they are all inside each other's interest. Planned:
    `findings/combat-soak-design-20260818.md`. Two findings worth the read
    before anything else: **`EVENT_RING_CAP` (64) is smaller than
    `MAX_PLAYERS` (100)**, so 65 simultaneous swingers resync every client
@@ -704,12 +737,12 @@ first time somebody swings near you.
 ⚠ **Nothing has ever played the clip.** `client/tests/anim.rs` is a source
 scrape by construction, `client-core/tests/wire.rs` stops at the ring, and
 no headless test spawns a `SceneRoot`. The wire half is gated end to end;
-the arc itself is unseen, exactly like the decal above. And the throughput
-half of the fan-out is unpriced: `EV_SWING` is one broadcast per swing per
-player with no AOI filter, so a 100-player shard swinging pays 100× the
-per-client event rate — `raid_storm.rs` cannot see it, because that gate's
-bots never press `BTN_PRIMARY`. A soak with swinging bots is the
-measurement, and it is the same gap wall 4 has had since the soak landed.
+the arc itself is unseen, exactly like the decal above.
+~~And the throughput half of the fan-out is unpriced.~~ **Priced and
+filtered 2026-08-24 (§0fan)** — and the sentence that stood here was wrong
+in three ways, which `findings/swing-fanout-20260824.md` §2 lists. It is
+not 100× on the shard that matters, the filter does not touch the burst it
+named, and steady state was ~2.4 swings/tick rather than 100.
 
 Two things remain, and the first needs a word rather than work. **The clip
 is `Punch_Cross` and the ask was a rock swing** — arithmetic, not taste:
