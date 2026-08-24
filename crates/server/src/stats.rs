@@ -263,7 +263,31 @@ pub struct ShardStats {
     pub ev_interest_skipped: AtomicU64,
     /// Event-lane resyncs: a refused ring push or a dropped sim event
     /// restarted a client's harvested-set walk (limits.rs policy).
+    ///
+    /// **Two causes, one number** — which is why the two fields below
+    /// exist. Refused-push resyncs are `ev_resyncs − ev_resyncs_dropped`;
+    /// they are per-client and mean that one connection fell behind. The
+    /// other cause is shard-wide and means the *sim* outran its per-tick
+    /// event budget, which is a different problem with a different fix.
+    /// Nothing could tell them apart until 2026-08-24.
     pub ev_resyncs: AtomicU64,
+    /// Sim events `EventQueue` refused because a single tick produced more
+    /// than `MAX_EVENTS_PER_TICK` of them (drop-newest, `world.rs`).
+    ///
+    /// **The cause, and it was recorded nowhere at all.** `EventQueue::
+    /// dropped` is reset by `clear()` on the first line of every
+    /// `World::tick`, so before this counter the only trace a drop ever
+    /// left was its consequence — every connected client resyncing at
+    /// once, indistinguishable from a hundred slow connections. Watched by
+    /// name, unlike `ev_interest_skipped`: a filter firing is normal and
+    /// this never is.
+    pub ev_sim_dropped: AtomicU64,
+    /// The subset of `ev_resyncs` caused by the above rather than by a
+    /// refused push. One dropped sim event resyncs **every** connected
+    /// client, so this moves in steps of the population and the two
+    /// numbers together say how much of a resync storm one overflowing
+    /// tick bought.
+    pub ev_resyncs_dropped: AtomicU64,
     /// Event-lane stream writes that failed (connection dying).
     pub ev_send_errors: AtomicU64,
     /// C→S action frames decoded and ringed.
@@ -691,6 +715,8 @@ impl ShardStats {
             "snap_entities_shed" => &self.snap_entities_shed,
             "forced_resyncs" => &self.forced_resyncs,
             "ev_resyncs" => &self.ev_resyncs,
+            "ev_sim_dropped" => &self.ev_sim_dropped,
+            "ev_resyncs_dropped" => &self.ev_resyncs_dropped,
             "ev_send_errors" => &self.ev_send_errors,
             "actions_bad" => &self.actions_bad,
             "chat_bad" => &self.chat_bad,

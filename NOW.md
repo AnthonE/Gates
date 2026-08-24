@@ -100,22 +100,38 @@ took `point_event_visible` against the class-S anchor, and that one
 removes a real decal: the pool is fixed and evicts, so a sub-pixel mark
 past the band was taking a slot from one at your feet.
 
-What is left, and **it is one slice rather than the three this list had**:
+~~The counters, the split and the storm — one slice.~~ **Landed
+2026-08-24**, and the storm answered the question the other two were
+asking. `the_event_lane_holds_at_population` stands 100 bodies at arm's
+length firing lethal hitscan every tick, and is the first test in the tree
+to model the per-connection ring at its real cap (`EVENT_RING_CAP` lives in
+`net.rs`, so every other suite's `|_,_,_| true` closure can never see a
+refusal):
 
-1. **`EventQueue::dropped` is counted nowhere, `ev_resyncs` conflates its
-   two causes, and nobody has run an event storm — and all three want the
-   same fixture.** Making `MAX_EVENTS_PER_TICK` (256) overflow on purpose
-   *is* the population test, and until something can, two new counters
-   would ship unobserved. Not `raid_storm.rs`:
-   `PLAYERS * STEPS_PER_TICK == MAX_COMMANDS_PER_TICK` is a compile-time
-   equality there with no budget left. The shape that nearly works is
-   `snapshot_budget.rs`'s clustered 100 with bows at a short `rate_ticks`,
-   so shots and impacts land in one tick (~200 of 256) — it wants hits and
-   deaths on top, which a 60 m square gives for free.
+| cap | peak | headroom |
+|---|---|---|
+| `MAX_EVENTS_PER_TICK` 256 | **144** | 1.8× |
+| `EVENT_RING_CAP` 64 | **50** | **1.28×** |
+
+**The ring is the binding cap; the queue is not close.** `ev_sim_dropped`
+and `ev_resyncs_dropped` exist now (the first watched in `anomaly.rs`) —
+neither fires under shipped limits, which is the good news, and both were
+proven live by shrinking the queue to 128: **16 drops → 100 resyncs.**
+
+What is left:
+
+1. **Decide `EVENT_RING_CAP`.** `DECISIONS.md` §open has the trade and now
+   has the measurement too: 50 of 64 under the worst fixture anybody has
+   built. Raise it (322 B a slot per connection) or batch a tick's events
+   into one message (`PROTO_VER` work). Operator's call, not a loop's.
 2. **Eighteen broadcast arms are still unfiltered.** Most are correctly so
    (a removal leaves residue — `EV_PIECE_REMOVED`'s arm argues it); the
    ones worth re-asking are `EV_DOOR`, `EV_KNOCK` and `EV_OVEN`, which are
    instants at a place and so are `point_event_visible`'s shape.
+3. **The storm is combat only.** No building, looting or doors, so the
+   arms it exercises are three of twenty-two. `raid_storm.rs` drives the
+   other verbs but at the *command* ceiling and with nobody swinging; the
+   two fixtures want merging eventually.
 
 ---
 

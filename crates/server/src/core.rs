@@ -2435,10 +2435,22 @@ impl ShardCore {
         if self.world.events.dropped > 0 {
             // The ring refused events this tick; whatever they announced,
             // the sync walk re-derives (limits.rs event-ring policy).
+            //
+            // **Counted in two places, because the cause and the
+            // consequence are different questions.** `EventQueue::dropped`
+            // is reset by `clear()` on the first line of the next
+            // `World::tick`, so unless it is folded in here the fact that
+            // the sim outran its per-tick event budget leaves no trace at
+            // all — only a shard-wide resync that reads exactly like a
+            // hundred connections falling behind at once. `ev_resyncs`
+            // keeps counting the total so nothing watching it changes
+            // meaning; `ev_resyncs_dropped` is the share this branch owns.
+            ShardStats::add(&stats.ev_sim_dropped, self.world.events.dropped as u64);
             for slot in 0..MAX_PLAYERS {
                 if self.clients[slot].connected {
                     self.clients[slot].ev_resync();
                     ShardStats::bump(&stats.ev_resyncs);
+                    ShardStats::bump(&stats.ev_resyncs_dropped);
                 }
             }
         }

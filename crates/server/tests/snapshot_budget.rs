@@ -14,8 +14,9 @@ use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
 use sim_core::gather::{ItemStack, NO_ITEM, SWING_INTERVAL_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{
-    AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, DATAGRAM_BUDGET_BYTES, MAX_MOBS,
-    MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
+    AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, DATAGRAM_BUDGET_BYTES,
+    EVENT_RING_CAP, MAX_EVENTS_PER_TICK, MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
+    SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
 };
 use std::collections::BTreeSet;
 
@@ -1243,13 +1244,22 @@ fn settle_interest(core: &mut ShardCore, stats: &ShardStats) {
     }
 }
 
-/// Hold `BTN_PRIMARY` on each of `slots` for one tick of input.
-fn press_primary(core: &mut ShardCore, slots: &[usize], seq: &mut u16) {
+/// Hold `BTN_PRIMARY` on each of `slots` for one tick of input, aiming at
+/// `pitch`.
+///
+/// **Pitch is explicit because the default is not level.** `InputFrame::
+/// default()` is pitch 0, and the wire's pitch 0 is straight *down*
+/// (`pitch_lut`: `ch` 0, `sv` −1); level is 128. A fixture that leaves it
+/// defaulted fires every shot into the ground at the shooter's own feet,
+/// which is a perfectly good routing test and a useless combat one — and
+/// it looks identical in the event counts until you go looking.
+fn press_primary(core: &mut ShardCore, slots: &[usize], seq: &mut u16, pitch: u8) {
     for &slot in slots {
         let mut dg = InputDatagram::new(0, 0, *seq as u32);
         dg.push(InputFrame {
             seq: *seq,
             buttons: BTN_PRIMARY,
+            pitch,
             ..InputFrame::default()
         })
         .expect("one frame fits");
@@ -1293,7 +1303,7 @@ fn a_swing_nobody_can_see_costs_one_message() {
     let mut swings: Vec<(usize, u32)> = Vec::new();
     let all: Vec<usize> = (0..SPARSE_N).collect();
     for _ in 0..SWING_INTERVAL_TICKS + 4 {
-        press_primary(&mut core, &all, &mut seq);
+        press_primary(&mut core, &all, &mut seq, 0);
         swings.extend(swing_round(&mut core, &stats));
     }
 
@@ -1333,7 +1343,7 @@ fn the_swing_filter_counts_what_it_skipped() {
     let mut swings: Vec<(usize, u32)> = Vec::new();
     let all: Vec<usize> = (0..SPARSE_N).collect();
     for _ in 0..SWING_INTERVAL_TICKS + 4 {
-        press_primary(&mut core, &all, &mut seq);
+        press_primary(&mut core, &all, &mut seq, 0);
         swings.extend(swing_round(&mut core, &stats));
     }
     let skipped = ShardStats::get(&stats.ev_interest_skipped) - before;
@@ -1374,7 +1384,7 @@ fn a_swing_reaches_exactly_the_clients_that_can_see_it() {
     let mut seq = 1u16;
     let mut got: Vec<usize> = Vec::new();
     for _ in 0..SWING_INTERVAL_TICKS + 4 {
-        press_primary(&mut core, &[0], &mut seq);
+        press_primary(&mut core, &[0], &mut seq, 0);
         let round = swing_round(&mut core, &stats);
         if !round.is_empty() {
             for (slot, swinger) in &round {
@@ -1454,7 +1464,7 @@ fn a_connection_whose_body_is_gone_still_hears_the_shard() {
     );
 
     let mut seq = 1u16;
-    press_primary(&mut core, &[0], &mut seq);
+    press_primary(&mut core, &[0], &mut seq, 0);
     let round = swing_round(&mut core, &stats);
     let got: BTreeSet<usize> = round.iter().map(|(slot, _)| *slot).collect();
 
@@ -1576,7 +1586,7 @@ fn fire_and_collect(core: &mut ShardCore, stats: &ShardStats) -> Volley {
     let mut seq = 1u16;
     let mut v = Volley::default();
     for _ in 0..90 {
-        press_primary(core, &[0], &mut seq);
+        press_primary(core, &[0], &mut seq, 0);
         for (slot, m) in event_round(core, stats) {
             match m {
                 protocol::EventMsg::Shot { shooter, .. } => v.shots.push((slot, shooter)),
@@ -1683,4 +1693,165 @@ fn a_shot_reaches_the_clients_that_can_see_it() {
             "slot {slot} was told about a shot by a body it cannot see"
         );
     }
+}
+
+/// Level aim. Wire pitch 0 is straight **down**; 128 is the horizon.
+const PITCH_LEVEL: u8 = 128;
+
+/// A hundred bodies at arm's length on one plane, every one of them firing
+/// a lethal hitscan round at the horizon every tick.
+///
+/// **Deliberately not survivable and deliberately not realistic** — it is a
+/// worst case for the *event lane*, not a scenario. Three properties were
+/// each measured into it rather than chosen, and each one cost a run:
+///
+/// - **One plane.** On `clustered_core`'s 6 m grid over real terrain only
+///   32 of 100 level shots connected: the slope tilts a 6 m ray off a
+///   capsule. Flattening `qy` and closing to 0.6 m is what makes most
+///   shots land.
+/// - **Lethal.** A hit is two events (`EV_HIT`, `EV_HEALTH`); a *kill* is
+///   three, and the third is the only broadcast of the set.
+/// - **Hitscan, at a reach the sampler can walk.** `ranged::hitscan`
+///   silently refuses a `range_mm` needing more than `MAX_HITSCAN_SAMPLES`
+///   taps at `ARROW_STEP_MM` — a backstop whose comment says `bake_combat`
+///   makes it unreachable, which is true of *shipped* content and not of a
+///   fixture. An 80 m gun here fires nothing at all and reads as a bug in
+///   the routing.
+fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
+    let mut core = clustered_core(stats);
+    settle_interest(&mut core, stats);
+    let y0 = core.world.players[0].body.qy;
+    for i in 0..MAX_PLAYERS {
+        if !core.world.players[i].active {
+            continue;
+        }
+        let p = &mut core.world.players[i];
+        p.body.qx = ((900.0 + (i % 4) as f32 * 0.6) / 0.03) as i32;
+        p.body.qz = ((900.0 + (i / 4) as f32 * 0.6) / 0.03) as i32;
+        p.body.qy = y0;
+        // Spawned before any combat content existed, so `player_hp` was 0
+        // and `hitscan` — which checks `hp == 0` where `draw` does not —
+        // refused every shot in silence.
+        p.hp = 100;
+        p.hp_max = 100;
+        p.inv[0] = ItemStack {
+            item: BOW,
+            count: 1,
+            cond: 0,
+        };
+        p.inv[7] = ItemStack {
+            item: ARROW,
+            count: 60_000,
+            cond: 0,
+        };
+    }
+    let mut c = CombatContent::EMPTY;
+    c.player_hp = 100;
+    c.ranged[BOW as usize] = RangedDef {
+        damage: 100,
+        ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 1,
+        hitscan: true,
+        range_mm: 50_000,
+    };
+    core.world.combat = c;
+    core
+}
+
+/// **The event lane holds at population, and this says by how much.**
+///
+/// `NOW.md` §0fan asked for an event storm because nothing had ever run
+/// one: wall 4's per-tick and per-connection event caps were argued from
+/// their doc comments and never met a hundred clients. This is that run,
+/// and it is the first test in the tree to **model the per-connection ring
+/// at its real cap** — `EVENT_RING_CAP` lives in `net.rs` as an `rtrb`, so
+/// every other suite hands `tick_bare` a closure returning `true` and can
+/// therefore never see a refusal. The closure's bool *is* the ring's
+/// verdict (`tick_bare`'s own doc says so), so counting pushes per slot
+/// per tick and refusing past 64 is the ring, not a model of it.
+///
+/// Measured 2026-08-24 on the fixture above:
+///
+/// | cap | what it bounds | peak | headroom |
+/// |---|---|---|---|
+/// | `MAX_EVENTS_PER_TICK` 256 | sim events in one tick | **144** | 1.8× |
+/// | `EVENT_RING_CAP` 64 | pushes to one client in one tick | **50** | 1.28× |
+///
+/// So the per-connection ring is the binding cap, by a wide margin, and
+/// the sim's own queue is not close. That is the evidence for
+/// `DECISIONS.md` §open "event-lane fan-out v0": the number to argue about
+/// is `EVENT_RING_CAP`, and 50 of 64 is what "zero headroom for the other
+/// arms" looks like when it is measured rather than reasoned about.
+///
+/// **`ev_interest_skipped` is 0 here and that is the point of the
+/// fixture, not a defect.** Bodies at arm's length are inside each other's
+/// interest by construction, so the three filters landed today contribute
+/// exactly nothing — the third independent confirmation of the caveat the
+/// commit that added them leads with.
+///
+/// The assertions are the law and an anti-vacuity floor, never the
+/// measured value: pinning 50 would go red on any content edit and teach
+/// the next reader to re-baseline rather than think.
+#[test]
+fn the_event_lane_holds_at_population() {
+    let stats = ShardStats::default();
+    let mut core = storm_core(&stats);
+    let all: Vec<usize> = (0..MAX_PLAYERS).collect();
+    let mut seq = 1u16;
+    let mut peak_events = 0usize;
+    let mut peak_push = 0usize;
+
+    for _ in 0..40 {
+        press_primary(&mut core, &all, &mut seq, PITCH_LEVEL);
+        let mut per_slot = [0usize; MAX_PLAYERS];
+        core.tick_bare(&stats, |lane, slot, _| {
+            if lane != Lane::Event {
+                return true;
+            }
+            per_slot[slot] += 1;
+            per_slot[slot] <= EVENT_RING_CAP
+        });
+        peak_events = peak_events.max(core.world.events.len());
+        peak_push = peak_push.max(per_slot.iter().copied().max().unwrap_or(0));
+    }
+
+    // Anti-vacuity first: a fixture that fired nothing satisfies every
+    // bound below, and three separate mistakes made exactly that happen
+    // while the counts looked plausible.
+    assert!(
+        peak_events > MAX_EVENTS_PER_TICK / 4,
+        "peak {peak_events} sim events in a tick — a hundred bodies at \
+         arm's length firing lethal rounds should be well past that, so \
+         the fixture is not storming and the bounds below prove nothing"
+    );
+    assert!(
+        peak_push > EVENT_RING_CAP / 4,
+        "peak {peak_push} pushes to one client in a tick — same problem"
+    );
+
+    assert!(
+        peak_events < MAX_EVENTS_PER_TICK,
+        "the sim produced {peak_events} events in one tick against a \
+         {MAX_EVENTS_PER_TICK} cap; past it `EventQueue` drops newest and \
+         `pump_events` resyncs EVERY connected client at once"
+    );
+    assert!(
+        peak_push < EVENT_RING_CAP,
+        "one client was offered {peak_push} event messages in one tick \
+         against a {EVENT_RING_CAP}-slot ring. Past it the push is refused, \
+         which calls `ev_resync`, whose recovery drip pushes MORE messages \
+         into the ring that just refused — the self-amplifying case in \
+         `DECISIONS.md` §open. Raising the cap is one answer and batching \
+         a tick's events is the other; do not delete this assertion."
+    );
+    assert_eq!(
+        ShardStats::get(&stats.ev_sim_dropped),
+        0,
+        "the per-tick event queue overflowed"
+    );
+    assert_eq!(
+        ShardStats::get(&stats.ev_resyncs),
+        0,
+        "a client's event ring refused a push at population"
+    );
 }

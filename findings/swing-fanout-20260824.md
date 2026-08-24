@@ -90,18 +90,67 @@ distance from a **fixed pool that evicts**, so a sub-pixel mark past 208 m
 was taking a slot from a mark at the player's feet. That eviction is what
 this removes; what it costs is a 0.22 m quad past 208 m.
 
+## 2c · The storm, run — and the ring is the binding cap, not the queue
+
+`NOW.md` §0fan's *"nobody has run an event storm"* is closed.
+`snapshot_budget.rs::the_event_lane_holds_at_population` stands 100 bodies
+at arm's length on one plane, each firing a **lethal hitscan round every
+tick**, and it is the first test in the tree to model the per-connection
+ring at its real cap — `EVENT_RING_CAP` lives in `net.rs` as an `rtrb`, so
+every other suite hands `tick_bare` a closure returning `true` and can
+never see a refusal. The closure's bool *is* the ring's verdict, so
+counting pushes per slot and refusing past 64 is the ring itself.
+
+| cap | bounds | peak | headroom |
+|---|---|---|---|
+| `MAX_EVENTS_PER_TICK` 256 | sim events in one tick | **144** | 1.8× |
+| `EVENT_RING_CAP` 64 | pushes to one client in one tick | **50** | **1.28×** |
+
+**The per-connection ring is the binding cap and the sim's own queue is
+not close.** That settles which number §open should argue about, with a
+measurement instead of a chain of reasoning.
+
+**The amplification is measured too.** Shrinking `MAX_EVENTS_PER_TICK` to
+128 so the queue actually overflows: **16 dropped sim events produced 100
+client resyncs**, and `ev_resyncs_dropped` accounted for all 100 of them —
+so in that scenario none came from a refused push. That ratio is the case
+for splitting the counter: the two causes are a whole shard versus one
+slow connection, and one number could not tell them apart.
+
+**`ev_interest_skipped` is 0 throughout**, which is the third independent
+confirmation of §2's caveat: bodies at arm's length are inside each other's
+interest by construction, so the filters buy nothing in a fight.
+
+Three mistakes were made building this fixture and each looked like a
+routing bug rather than a fixture bug — worth knowing, because the counts
+stayed plausible through all three:
+
+1. **Wire pitch 0 is straight down**, not level (128 is). Every shot went
+   into the shooter's own feet, producing exactly one mark each.
+2. **`ranged::hitscan` silently refuses a reach it cannot sample** — more
+   than `MAX_HITSCAN_SAMPLES` taps at `ARROW_STEP_MM`, i.e. past ~54 m. Its
+   comment says `bake_combat` makes that unreachable, which is true of
+   shipped content and not of a hand-built fixture. An 80 m gun fired
+   nothing at all.
+3. **`hitscan` checks `hp == 0` where `draw` does not.** These players
+   spawned before any combat content existed, so `player_hp` was 0 and
+   every gun refused in silence while bows worked.
+
 ## 3 · What is still open, in the order it bites
 
-- **The overflow path is self-amplifying.** A refused ring push calls
-  `ev_resync`, and recovery re-drips up to 13 message sites per tick into
-  the ring that just refused. Convergence is ≈ 64 ticks ≈ 2.1 s per client,
-  and a Ring-A drop (`EventQueue::dropped`, cap `MAX_EVENTS_PER_TICK` 256)
-  resyncs **every connected client at once** — 100 clients × ~13 msgs × 64
-  ticks ≈ 83 k extra messages from one 257th event.
-- **`EventQueue::dropped` reaches no `ShardStats` field.** The trigger for
-  a shard-wide resync is invisible to `/status.json`. One counter closes it.
-- **`ev_resyncs` conflates two causes** — a refused push and a dropped sim
-  event. Nothing can tell them apart, so nothing can be concluded from it.
+- **The overflow path is self-amplifying**, and this is now the top item
+  because §2c measured how little headroom stands in front of it. A refused
+  ring push calls `ev_resync`, and recovery re-drips up to 13 message sites
+  per tick into the ring that just refused; convergence is ≈ 64 ticks ≈
+  2.1 s per client. Peak observed is 50 of 64. Nothing is broken today and
+  nothing says how close it is either — that is what §open has to answer.
+- ~~`EventQueue::dropped` reaches no `ShardStats` field~~ /
+  ~~`ev_resyncs` conflates two causes~~ — **both closed 2026-08-24**
+  (`ev_sim_dropped`, `ev_resyncs_dropped`; the first is watched by name in
+  `anomaly.rs`, since a filter firing is normal and this never is).
+  ⚠ **Neither fires under shipped limits**, by construction — the queue does
+  not overflow at population, which is the good news §2c reports. They were
+  proven live by shrinking `MAX_EVENTS_PER_TICK` to 128, not by a scenario.
 - **Eighteen broadcast arms are still unfiltered.** Most correctly so — a
   removal leaves residue and `EV_PIECE_REMOVED`'s arm argues it at length.
   The ones worth re-asking are `EV_DOOR`, `EV_KNOCK` and `EV_OVEN`: all
