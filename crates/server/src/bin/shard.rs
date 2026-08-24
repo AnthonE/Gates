@@ -386,7 +386,10 @@ async fn main() {
     // so name which of the two it is instead of assuming the dev case.
     match boot_cfg.cert_pem.as_deref() {
         Some(path) => println!("cert sha256 {} (chain {path})", handle.cert_hash),
-        None => println!("dev cert sha256 {} (self-signed, this boot only)", handle.cert_hash),
+        None => println!(
+            "dev cert sha256 {} (self-signed, this boot only)",
+            handle.cert_hash
+        ),
     }
     // The status endpoint, only where the operator said (config.rs says why
     // absent-serves-nothing is the default). A bind failure refuses the boot
