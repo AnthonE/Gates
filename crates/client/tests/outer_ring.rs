@@ -57,6 +57,15 @@ const YAW: u8 = 137;
 /// it; the budget arithmetic below is meaningless without it.
 const RING_TREES_P90: usize = 328;
 
+/// The outer ring has to be OUTSIDE the near one. Both are consts, so this is a
+/// compile error rather than a test failure — and clippy is right that an
+/// `assert!` over two constants is the weaker form of the same claim.
+const _: () = assert!(
+    OUTER_RADIUS > NEAR_RADIUS,
+    "OUTER_RADIUS is inside NEAR_RADIUS — the outer ring would be a set of \
+     chunks the near ring already owns"
+);
+
 fn fixture() -> (App, PropAssets) {
     let mut app = App::new();
     app.add_plugins((MinimalPlugins, AssetPlugin::default()));
@@ -279,12 +288,6 @@ fn the_far_height_matches_the_mesh_at_its_own_vertices() {
 /// of it stops being true.
 #[test]
 fn the_outer_ring_fits_the_frame() {
-    assert!(
-        OUTER_RADIUS > NEAR_RADIUS,
-        "OUTER_RADIUS {OUTER_RADIUS} is inside NEAR_RADIUS {NEAR_RADIUS} — the \
-         outer ring would be a set of chunks the near ring already owns"
-    );
-
     // Area scaling off the near ring's own measured tree count. The outer ring
     // is every chunk of the 11×11 block that the 5×5 does not already hold.
     let near_chunks = ((2 * NEAR_RADIUS + 1) * (2 * NEAR_RADIUS + 1)) as usize;

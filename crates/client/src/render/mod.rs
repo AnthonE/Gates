@@ -1031,6 +1031,9 @@ impl Plugin for GatesRenderPlugin {
                     // goes quiet while it is up. HUD, not `panels::` — it
                     // must not grab the pointer, so it runs on a capture
                     // build too (where the pad simply never opens).
+                    // Fires light the ground beside them. Reads the lit set
+                    // `EV_OVEN` already puts in `ClientCore`; no wire change.
+                    structures::fire_lights,
                     hud::pad_overlay,
                 )
                     .in_set(Stream)
