@@ -388,6 +388,7 @@ impl Plugin for GatesRenderPlugin {
         app.insert_resource(day_pin)
             .init_resource::<Eye>()
             .init_resource::<collider_debug::ShowColliders>()
+            .init_resource::<hud::ShowDiagnostics>()
             .init_resource::<input::Look>()
             .init_resource::<terrain_mesh::Ring>()
             .init_resource::<props::PropRing>()
@@ -1006,10 +1007,22 @@ impl Plugin for GatesRenderPlugin {
                     // every snapshot and displayed nowhere — see `NetLine`.
                     hud::net_line,
                     // F3: draw what the SIM blocks over what the client
-                    // draws. Not a gate and not a probe — it does nothing
-                    // until a person presses the key.
-                    collider_debug::toggle,
-                    collider_debug::draw,
+                    // draws. F4: the two top-left diagnostics. Neither is a
+                    // gate or a probe — they do nothing until a person
+                    // presses the key.
+                    //
+                    // **Nested, and it has to be.** Bevy implements
+                    // `IntoScheduleConfigs` for tuples up to 20 elements and
+                    // this set reached exactly 20; a 21st resolves to no
+                    // `in_set` method at all, and the error names a
+                    // twenty-one-field tuple rather than the system that
+                    // overflowed it. Grouping the keypress-driven three keeps
+                    // the outer arity where the trait can still see it.
+                    (
+                        hud::toggle_diagnostics,
+                        collider_debug::toggle,
+                        collider_debug::draw,
+                    ),
                     // The keypad's small panel, beside the prompt that
                     // goes quiet while it is up. HUD, not `panels::` — it
                     // must not grab the pointer, so it runs on a capture
