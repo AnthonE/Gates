@@ -814,10 +814,14 @@ pub fn deploy_blocked(
 /// standing body, so being inside one must never be absorbing — walking out is
 /// the only escape a capsule has.
 ///
-/// The **shot** walk deliberately does not consult this. An arrow through a
-/// floor is its own open item with its own answer (`NOW.md` §0ar), and the
-/// lintel precedent applies: a body and an arrow may disagree about what is
-/// solid, but only where somebody has decided that they should.
+/// The **shot** walk does not call this — it calls
+/// [`cell_planes_stop_shot`], which is this function's slab set at a
+/// projectile's profile. Until 2026-08-25 it consulted nothing and every
+/// floor in the world was transparent to an arrow; this doc said so and
+/// sent the reader to `NOW.md` §0ar, **a section that never existed**. The
+/// lintel precedent decided it in the end: a body and an arrow may disagree
+/// about what is solid, but only where somebody has decided that they
+/// should, and nobody ever decided this.
 pub fn plane_blocked(
     seed: u64,
     haven: &crate::terrain::Haven,
@@ -899,6 +903,124 @@ pub fn plane_blocked(
                 // Level 0 is a foundation and is solid to the ground; anything
                 // above it is a slab with air under it.
                 if level > 0 && head <= top - PLANE_THICKNESS_M {
+                    continue; // passed under
+                }
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether a built **plane** stops a shot sample at (`x`, `z`) at altitude
+/// `y` with radius `r` — [`plane_blocked`]'s slab set with a projectile's
+/// profile instead of a body's, and the answer to the question that
+/// function's own doc deferred until now.
+///
+/// **The defect it closes: an arrow fired down inside a base reached the
+/// dirt.** [`shot_blocked`] walked edges and diagonals and nothing else, so
+/// every floor, roof and foundation in the world was transparent to a
+/// projectile — a shot through six storeys stopped on `SURF_GROUND` under
+/// the base, and a roof was cover you could see through. The body walk has
+/// read these bits since piece flanks v0; only the shot walk had not.
+///
+/// Three differences from the body twin, each the same one [`shot_blocked`]
+/// lists against [`blocked`]:
+///
+/// - the mover is a point at `y`, not a capsule spanning `feet_y..head`;
+/// - the footprint is inflated by `r` (the arrowhead), not
+///   [`CAPSULE_RADIUS_M`], through the identical clamp-to-rectangle circle
+///   distance — so the two walks are one algorithm with two radii rather
+///   than two footprints that can drift;
+/// - there is **no [`STEP_UP`]**. A body may climb a slab that low; an
+///   arrow meets it. That short circuit is the whole of what keeps a base
+///   walkable and it has no meaning for a projectile.
+///
+/// **Stairs are absent here because they are absent from the body twin**,
+/// not by a separate judgement: [`plane_blocked`] reads `planes` and the
+/// triangles and never `stairs` — a ramp is something you stand on
+/// ([`piece_ground`]), never something that stops you. Keeping the two sets
+/// equal is what lets the pair be read as one law; a stair that stops an
+/// arrow is a change to *both* walks and its own item (`NOW.md` §0mk).
+///
+/// **Point sampling is honest at this thickness.** `ranged.rs` taps its
+/// segment every `limits::ARROW_STEP_MM` (170 mm), and the vertical
+/// spacing of those taps is at most that — so a slab whose band is
+/// [`PLANE_THICKNESS_M`] + 2·`r` deep always takes at least two samples,
+/// which is the same argument `ARROW_STEP_MM`'s own doc makes about a
+/// trunk's diameter.
+fn cell_planes_stop_shot(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    y: f32,
+    r: f32,
+) -> bool {
+    // The same four-cell reach [`plane_blocked`] takes, and for its reason:
+    // a plane IS the cell, so inflated by the mover's radius it can reach
+    // past a boundary. The arrowhead is 0.05 m against a 3 m cell, so the
+    // pair collapses to one except within a head's width of a seam.
+    let (x0, x1) = (
+        crate::build::build_cell_of(x - r),
+        crate::build::build_cell_of(x + r),
+    );
+    let (z0, z1) = (
+        crate::build::build_cell_of(z - r),
+        crate::build::build_cell_of(z + r),
+    );
+    let half = BUILD_CELL_M * 0.5;
+    for bx in x0..=x1 {
+        for bz in z0..=z1 {
+            if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
+                continue;
+            }
+            let m = cols.get(bx as u16, bz as u16);
+            let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
+            if m.planes == 0 && tris == 0 {
+                continue;
+            }
+            let (cxm, czm) = (
+                bx as f32 * BUILD_CELL_M + half,
+                bz as f32 * BUILD_CELL_M + half,
+            );
+            let ex = x - cxm - (x - cxm).clamp(-half, half);
+            let ez = z - czm - (z - czm).clamp(-half, half);
+            if ex * ex + ez * ez >= r * r {
+                continue;
+            }
+            let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
+            let dx = x - bx as f32 * BUILD_CELL_M;
+            let dz = z - bz as f32 * BUILD_CELL_M;
+            // `piece_ground`'s own half tests, boundary-inclusive on both
+            // sides for its reason: the seam of a NW+SE pair must read the
+            // same from either.
+            let in_half = |loc: u8| match loc {
+                LOC_TRI_XLO_ZLO => dx + dz <= BUILD_CELL_M,
+                LOC_TRI_XHI_ZHI => dx + dz >= BUILD_CELL_M,
+                LOC_TRI_XHI_ZLO => dz <= dx,
+                _ => dz >= dx,
+            };
+            for level in 0..MAX_BUILD_LEVELS {
+                let bit = 1u8 << level;
+                let here = m.planes & bit != 0
+                    || (m.tri_xlo_zlo & bit != 0 && in_half(LOC_TRI_XLO_ZLO))
+                    || (m.tri_xhi_zlo & bit != 0 && in_half(LOC_TRI_XHI_ZLO))
+                    || (m.tri_xlo_zhi & bit != 0 && in_half(LOC_TRI_XLO_ZHI))
+                    || (m.tri_xhi_zhi & bit != 0 && in_half(LOC_TRI_XHI_ZHI));
+                if !here {
+                    continue;
+                }
+                let top = base + level as f32 * LEVEL_H_M;
+                if y - r >= top {
+                    continue; // over it
+                }
+                // Level 0 is a foundation and is solid to the ground — the
+                // skirt `render/structures.rs` draws is the volume, exactly
+                // as [`plane_blocked`] reads it. Anything above it is a
+                // slab with air under it, and an arrow uses that air.
+                if level > 0 && y + r <= top - PLANE_THICKNESS_M {
                     continue; // passed under
                 }
                 return true;
@@ -1298,6 +1420,17 @@ pub fn shot_blocked(
     if (bx0 != bx1 || bz0 != bz1)
         && cell_diags_block(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, y, true, r)
     {
+        return true;
+    }
+    // The planes, at the sample's own point rather than over the sweep.
+    // **A point, deliberately, where the edges above are swept**: an edge is
+    // crossed horizontally and a plane is crossed vertically, and the
+    // vertical step between two taps is at most `ARROW_STEP_MM` — under the
+    // band a slab presents, so the sweep an edge needs a plane does not
+    // ([`cell_planes_stop_shot`]'s doc carries the arithmetic). It reads the
+    // destination `(nx, nz)`, which is the sample `ranged::world_stop` is
+    // asking about and the same point it hands `Occupants::blocks_volume`.
+    if cell_planes_stop_shot(seed, haven, cols, nx, nz, y, r) {
         return true;
     }
     false

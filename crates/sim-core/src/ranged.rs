@@ -58,6 +58,18 @@
 //! whole contract is *blocks a body and not a shot* is unbuildable while
 //! every shot is shaped like a body. Trees and bodies still stop arrows
 //! exactly as before; only the piece query changed profile.
+//!
+//! **A floor stops it too, since 2026-08-25** (shot planes v0). Until then
+//! `shot_blocked` read edges and diagonals and no plane, so an arrow fired
+//! down inside a base fell through every storey and landed on the dirt as
+//! `SURF_GROUND` — and a roof was cover you could see through, which is the
+//! half a raider notices. The body walk has read those bits since piece
+//! flanks v0; the two movers now share the slab set, and where they
+//! deliberately differ is written down at each shape rather than left to
+//! whichever walk was written first. It costs the same walk, at the sample
+//! point rather than over the sweep: a plane is crossed vertically, and the
+//! vertical step between two taps is at most `ARROW_STEP_MM`, under the band
+//! a slab presents.
 
 use crate::collide::{self, ColIndex, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M};
 use crate::combat::{held_item, CombatContent};
@@ -114,6 +126,16 @@ pub const SURF_GROUND: u8 = 0;
 /// a slot (`occupy::Occupants::blocks_volume`).
 pub const SURF_WORLD: u8 = 1;
 /// A built piece: a wall, a floor, a door (`collide::shot_blocked`).
+///
+/// ⚠ **"a floor" was a lie in this line until 2026-08-25.**
+/// `collide::shot_blocked` walked edges and diagonals and consulted no plane
+/// at all, so a floor, a roof and a foundation were transparent to a
+/// projectile and this code could never mean one — a shot fired down inside a
+/// base reported [`SURF_GROUND`] from the dirt underneath it. The doc was
+/// right about the intent and wrong about the tree, which is the direction
+/// that reads as covered while nothing checks it. `collide::
+/// cell_planes_stop_shot` is what makes the sentence true; `tests/shoot.rs`'
+/// floor block is what keeps it that way.
 pub const SURF_BUILT: u8 = 2;
 
 /// One arrow in flight. `life == 0` ⇔ the slot is free, which is also what
