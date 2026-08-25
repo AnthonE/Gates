@@ -1329,11 +1329,14 @@ negation with `#ifndef VERTEX_TANGENTS`, `mesh.rs:2410` defines
 ever flipped.** Do not turn `double_sided` off — it changes nothing here and
 would black out the real back faces.
 
-So the fix is **not** a blend constant: it is a per-vertex ramp, ground normal
-at the root to the blade's own facing at the tip, which needs `Soup::tri` to
-take a blend *function* rather than one `f32`. **Do not land it blind** — it
-is a shading change and this pass could not open a frame. Knobs:
-`DECISIONS.md` §open "clutter contact v0".
+**LANDED 2026-08-25.** `Soup::tri_ramp` takes the blend as a function of the
+vertex, and `blade()` ramps 1.0 at the root (the ground's normal — rule 2 keeps
+the blade bedded) to `BLADE_TIP_BLEND = 0.75` at the tip. Gated by
+`tests/contact.rs::a_blade_separates_from_the_ground_it_grows_out_of`, which is
+red on the shipped value and prints what it was: **tip normal y = 0.9978**, the
+ground's normal to three decimals. Knob: `DECISIONS.md` §open "clutter contact
+v0" — and 0.75 is the one number here a person still has to judge, against
+`ART.md` §5's "blades catch a rim of sun at their tips".
 
 ## 0gi · The island reads as one surface — two causes, one landed *(client+sim lane)*
 

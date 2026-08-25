@@ -446,6 +446,37 @@ impl Soup {
         volume_center: Option<Vec3>,
         blend: f32,
     ) {
+        self.tri_ramp(a, b, c, color, volume_center, |_| blend);
+    }
+
+    /// [`Self::tri`] with the blend as a **function of the vertex** rather than
+    /// one number for the whole triangle.
+    ///
+    /// **Grass is why this exists.** `clutter::blade` blends every vertex fully
+    /// to the volume normal, which for a 34 cm blade over a centre 2 m below it
+    /// is within ~3° of straight up — the GROUND's own normal. So a blade took
+    /// the same sun cosine and the same hemisphere sample as the dirt it stood
+    /// in, and albedo was the only thing separating grass from ground. That is
+    /// the visual judge's "reads as paint" stated as arithmetic, on the layer
+    /// that fills the bottom half of every frame.
+    ///
+    /// One number cannot fix it, because both ends are right: a blade's ROOT
+    /// really is bedded in the ground and should shade with it, and its TIP is
+    /// a card standing up in the light and should shade as itself. What the
+    /// surface wants is the ramp between them.
+    ///
+    /// The projection plane is still chosen from the FACET, unchanged — a
+    /// per-vertex choice would tear the triangle across two projections, and
+    /// that reason does not weaken when the blend varies.
+    pub(super) fn tri_ramp(
+        &mut self,
+        a: Vec3,
+        b: Vec3,
+        c: Vec3,
+        color: impl Fn(Vec3) -> [f32; 4],
+        volume_center: Option<Vec3>,
+        blend: impl Fn(Vec3) -> f32,
+    ) {
         let facet = (b - a).cross(c - a).normalize_or_zero();
         // The projection plane: drop the facet normal's dominant axis. Chosen
         // from the FACET and not from each vertex's blended normal, so all
@@ -456,7 +487,8 @@ impl Soup {
             let n = match volume_center {
                 Some(ctr) => {
                     let vol = (v - ctr).normalize_or_zero();
-                    (facet * (1.0 - blend) + vol * blend).normalize_or_zero()
+                    let t = blend(v);
+                    (facet * (1.0 - t) + vol * t).normalize_or_zero()
                 }
                 None => facet,
             };
