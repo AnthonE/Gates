@@ -304,7 +304,8 @@ pub fn material(name: &str) -> StandardMaterial {
     match name {
         "torch" => StandardMaterial {
             perceptual_roughness: 0.85,
-            reflectance: 0.14,
+            // See `render::fresnel`: 0.14 was F0 0.31%.
+            reflectance: super::fresnel::DIELECTRIC,
             ..default()
         },
         // The stand-in head's lesson restated: not a mirror — a near-specular
@@ -312,7 +313,7 @@ pub fn material(name: &str) -> StandardMaterial {
         "revolver" => StandardMaterial {
             perceptual_roughness: 0.52,
             metallic: 0.55,
-            reflectance: 0.35,
+            reflectance: super::fresnel::METAL_DIELECTRIC,
             ..default()
         },
         _ => panic!("HeldSrc::Gen({name:?}) has no material in render::heldgen"),

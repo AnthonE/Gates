@@ -29,27 +29,30 @@
 //! bought +32.8% contrast at the same spawn, which is two orders of magnitude
 //! clear of that floor — so the instrument is not blind, this change is quiet.
 //!
-//! **The cause is one constant and it is not in this file.**
-//! `terrain_mesh::ground_material` sets `reflectance: 0.18`, and Bevy maps
-//! that to normal-incidence specular as `F0 = 0.16 × reflectance²` —
-//! **0.0052, i.e. 0.52%**, against the ~4% (reflectance 0.5) of an ordinary
-//! dielectric. Roughness shapes the specular lobe and nothing else, so it is
-//! being asked to redistribute about an eighth of the energy a real surface
-//! would put there. The maps are bound, sampled per texel and correct; there
-//! is almost nothing for them to shape.
+//! **The cause was one constant and it was not in this file.**
+//! `terrain_mesh::ground_material` set `reflectance: 0.18`, and Bevy maps that
+//! to normal-incidence specular as `F0 = 0.16 × reflectance²` — **0.0052, i.e.
+//! 0.52%**, against the ~4% (reflectance 0.5) of an ordinary dielectric.
+//! Roughness shapes the specular lobe and nothing else, so it was being asked
+//! to redistribute about an eighth of the energy a real surface puts there.
+//! The maps were bound, sampled per texel and correct; there was almost
+//! nothing for them to shape.
 //!
-//! **This slice must not fix that**, and the restraint is the point rather
-//! than timidity. Moving `reflectance` moves every ground pixel's specular at
-//! once, on an island whose brightness is already carrying an 8.0% debt from
-//! the albedo half — and `CLAUDE.md`'s coupled-owner trap is explicit that
-//! tonemap, sky, exposure and fog belong to one owner in one iteration,
-//! measured elsewhere as three parallel rounds making things worse. So the
-//! number is recorded here and in `DECISIONS.md` §open for that owner, and
-//! what landed here is the thing that had to land first: **when the ground's
-//! specular is turned up, there is now a measured per-texel roughness field
-//! for it to act on instead of one shared scalar.** That ordering is not
-//! reversible — turning up reflectance over a constant roughness makes the
-//! whole island uniformly shiny, which is the defect, not the fix.
+//! ✅ **FIXED 2026-08-25**, and this file's own reasoning is why it could be.
+//! `render::fresnel` is the one place a `reflectance` is now decided and the
+//! ground takes `fresnel::DIELECTRIC`. The ordering that slice insisted on is
+//! what made it safe — *"turning up reflectance over a constant roughness
+//! makes the whole island uniformly shiny, which is the defect, not the fix"*
+//! — and the per-texel roughness field this file landed is exactly what it is
+//! turned up over. It also turned out not to be one constant: **every**
+//! material in the client was authored the same way, 8–70× under physical, so
+//! the fix is a module rather than a number.
+//!
+//! ⚠ **The measurement above stands and has not been re-run.** The −0.4%
+//! null result was measured with F0 at 0.52%; nobody has re-measured the
+//! roughness maps' contribution now that there is energy for them to shape,
+//! because that needs a GPU and a capture. Expect it to be non-null; do not
+//! quote a number for it until someone takes one.
 //!
 //! **It deliberately does NOT declare `#[bindless]`, and that is the point.**
 //! `terrain_mesh.rs` recorded the blocker: in 0.18 `StandardMaterial` is

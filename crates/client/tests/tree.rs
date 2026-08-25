@@ -612,7 +612,10 @@ fn the_needle_chain_holds_its_coverage() {
         let cov = coverage(&data[off..off + bytes]);
         if level == 0 {
             base = cov;
-            assert!(base > 0.0, "level 0 of the needle mask has no coverage at all");
+            assert!(
+                base > 0.0,
+                "level 0 of the needle mask has no coverage at all"
+            );
         } else if w >= 4 {
             // Below 4×4 there are sixteen texels and exact coverage is not
             // reachable at any scale, so the band is only held where it means

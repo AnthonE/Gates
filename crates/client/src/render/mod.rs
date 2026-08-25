@@ -50,6 +50,10 @@ pub mod death;
 // the client in a dead world; `pause::Disconnect` is the verb the PLAYER
 // takes, and this is the state for when the shard takes it.
 pub mod disconnected;
+// The one place a `reflectance` is decided. Every material in the client was
+// authored 8-70x under physical because Bevy's `reflectance` is a remap
+// (`F0 = 0.16 * r^2`) and not a 0..1 slider.
+pub mod fresnel;
 // The build ghost: the cell being aimed at, and the click that commits it.
 pub mod ghost;
 // The blue wash over the piece a hammer is aimed at.

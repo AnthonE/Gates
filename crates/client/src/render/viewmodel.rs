@@ -223,7 +223,8 @@ pub fn spawn_item(
         base_color_texture: Some(maps.wood.albedo.clone()),
         normal_map_texture: Some(maps.wood.normal.clone()),
         perceptual_roughness: 0.82,
-        reflectance: 0.14,
+        // See `render::fresnel`: 0.14 was F0 0.31%.
+        reflectance: super::fresnel::DIELECTRIC,
         ..default()
     });
     // **The head carries no map, and that is a sourcing gap stated rather than
@@ -245,7 +246,7 @@ pub fn spawn_item(
         // polished one needs a reflection probe, which is a slice, not a knob.
         perceptual_roughness: 0.52,
         metallic: 0.55,
-        reflectance: 0.35,
+        reflectance: super::fresnel::METAL_DIELECTRIC,
         ..default()
     });
 

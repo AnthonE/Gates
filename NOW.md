@@ -241,6 +241,36 @@ so an inside-out hull still shades outward; and the hull first carried
 `FellPart::Trunk`, the variant `audio.rs` reads as *speaks for the slot* — one
 chop would have played `TreeFall` twice and doubled every tree's cover count.
 
+## 0out · The horizon has trees — what the outer ring still owes *(client lane)*
+
+Landed 2026-08-25. `props::OUTER_RADIUS = 5` streams an 11×11 chunk ring of
+TREE-ONLY hulls past `NEAR_RADIUS`, one entity each (`spawn_outer_tree`) —
+no `Topple`, no stump, no canopy, no `VisibilityRange`. ~1,260 trees at 105
+tris = ~132 k against `DESIGN.md` §9's 1.5 M. Planted on
+`terrain_mesh::far_ground_y`, not `slot.y`: the drawn ground out there is the
+8 m far mesh minus `FAR_DROP`, measured 0.630 m from the heightfield at worst
+on the shipped seed. Gates: `tests/outer_ring.rs` (4), three mutants proven
+red — including one that caught a worthless assertion in the first draft.
+
+Remaining, in order:
+
+1. **Nobody has looked at the swap band or the far forest.** `tree.rs` says
+   the hull is opaque where a canopy is mostly air, so it should read DENSER
+   than the near tree; the ring multiplies whatever that looks like by four.
+   Walk to 80 m. This is the next action and it costs nothing.
+2. **The hull is untextured** — it wears `foliage` (white, vertex-coloured,
+   no map), so the whole midground is flat green shapes. `WANTED.md` §9.5's
+   leaf texture is the cheapest fix and serves the bush too.
+3. **The harvest sweep got denser and that was a named cost.**
+   `harvest_changed`'s own doc measured 1,500 props × a full 16,384 set at
+   2.34 ms and warned "a denser ring is the case that gets worse". Outer
+   hulls carry `Fellable` for correctness, so the count roughly doubles on
+   frames where the harvested set moves. The real fix is that
+   `HarvestedSet::contains` is a linear scan; unmeasured on a GPU.
+4. **Only trees.** Boulders and barrels still stop at `NEAR_RADIUS` — a
+   sub-pixel lump costs an entity and changes no silhouette. Revisit if the
+   midground reads as a treeline with nothing under it.
+
 ## 0chr · The player is a stick-man now — what the seven clips cannot cover *(client lane)*
 
 Landed 2026-08-17: `stumpy.glb` replaces the mannequin as every drawn body.
@@ -1147,14 +1177,16 @@ What is still open here, in rank order:
    over six vantages, inside the harness's own ~0.3% run-to-run spread, which
    this pass measured — `RENDER.md` §5) and landed anyway, because the cause is
    item 3b and the ordering only runs one way.
-3b. **The ground's specular is off: `reflectance: 0.18` → F0 = 0.52%**, where a
-   dielectric is ~4% (`F0 = 0.16 × reflectance²`). Roughness shapes the
-   specular lobe and nothing else, so the maps have almost nothing to shape.
-   The constant is an undocumented one in `terrain_mesh::ground_material`. **It
-   is the coupled lighting owner's** (§0fill), not the ground material's, and
-   it is now unblocked: raising it over one shared roughness makes the island
-   uniformly shiny, raising it over the per-texel field that now exists is the
-   fix. `DECISIONS.md` §open "ground specular v0".
+3b. ~~**The ground's specular is off: `reflectance: 0.18` → F0 = 0.52%**~~
+   **LANDED 2026-08-25**, and it was not one constant: *every* material in the
+   client was authored 8–70× under physical, because Bevy's `reflectance` is a
+   remap (`F0 = 0.16 × r²`) whose default 0.5 IS the dielectric 4%. One owner
+   now — `render/fresnel.rs` — and `tests/fresnel.rs` reads every prop material
+   back out of the asset store and fails anything outside 1.5–6% F0 (red on the
+   shipped `bark` 0.08 = 0.10%). The ordering this item insisted on held: the
+   per-texel roughness field landed first, so it is turned up over a field
+   rather than over a scalar. ⚠ **The −0.4% roughness-map null result has NOT
+   been re-measured** with energy in the lobe; it needs a GPU.
 4. **`ground_detail.jpg` is now loaded by nothing** — it is grass's baked
    luminance field and the shader computes the same thing from `grass_albedo`.
    It still ships and is still gated as a file; deleting it is a separate call,
@@ -1286,11 +1318,16 @@ arithmetic. The quad's own facet is `lean/√(1+lean²)` off horizontal, i.e.
 0.215–0.489 vertical over the drawn range, so the forced blend discards the
 dominant component.
 
-**The reason the code gave for it is false** and `tests/contact.rs` §winding
-computes that: the two triangles do *not* wind opposite ways (dot > 0.99 over
-a 128-case sweep). The real blackener is the tile material's `double_sided`
-flip — Bevy negates the shading normal on a back-facing fragment, and seven
-blades at seven yaws put half of them there.
+**Both reasons the code gave for it are false**, and the second was found by
+reading Bevy rather than reasoning. `tests/contact.rs` §winding killed the
+first (the two triangles do *not* wind opposite ways, dot > 0.99 over a
+128-case sweep). The second — `double_sided` negating the shading normal on a
+back face — is dead too (2026-08-25): `pbr_functions.wgsl:130-134` guards that
+negation with `#ifndef VERTEX_TANGENTS`, `mesh.rs:2410` defines
+`VERTEX_TANGENTS` whenever the layout has `ATTRIBUTE_TANGENT`, and
+`Soup::mesh` calls `generate_tangents()` on every clutter tile. **No blade is
+ever flipped.** Do not turn `double_sided` off — it changes nothing here and
+would black out the real back faces.
 
 So the fix is **not** a blend constant: it is a per-vertex ramp, ground normal
 at the root to the blade's own facing at the tip, which needs `Soup::tri` to

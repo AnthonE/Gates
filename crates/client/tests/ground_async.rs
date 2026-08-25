@@ -49,6 +49,10 @@ fn maps() -> GroundMaps {
         albedo: Handle::default(),
         normal: Handle::default(),
         rough: Handle::default(),
+        // `None`, like a role with no `_ao.jpg`: the ground shader does not
+        // sample this slot, and a default handle here would be a claim that it
+        // does.
+        ao: None,
     };
     GroundMaps {
         sand: set(),

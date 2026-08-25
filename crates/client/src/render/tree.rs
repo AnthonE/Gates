@@ -664,7 +664,10 @@ const NEEDLE_MASK_BYTE: u8 = 128;
 /// cannot see it, and every frame this project has ever judged was a still.
 fn needle_mips(level0: &[u8], size: u32) -> Vec<Vec<u8>> {
     let coverage = |px: &[u8]| -> f32 {
-        let hit = px.chunks_exact(4).filter(|p| p[3] > NEEDLE_MASK_BYTE).count();
+        let hit = px
+            .chunks_exact(4)
+            .filter(|p| p[3] > NEEDLE_MASK_BYTE)
+            .count();
         hit as f32 / (px.len() / 4) as f32
     };
     let want = coverage(level0);

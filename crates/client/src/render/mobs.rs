@@ -311,7 +311,10 @@ pub fn load(
         material: materials.add(StandardMaterial {
             base_color: Color::WHITE,
             perceptual_roughness: 0.88,
-            reflectance: 0.06,
+            // Hide, not stone — `fresnel::FLESH` is 2.8% where the island
+            // is 4%. It shipped at 0.06, i.e. F0 0.06%, the darkest specular
+            // anywhere in the client.
+            reflectance: super::fresnel::FLESH,
             ..default()
         }),
     });

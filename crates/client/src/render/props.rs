@@ -35,6 +35,7 @@ use bevy::prelude::*;
 use sim_core::gather::cell_key;
 use sim_core::terrain::{self, Occupant};
 
+use super::fresnel;
 use super::terrain_mesh::{CHUNK_M, NEAR_RADIUS};
 use super::tree;
 use super::{Eye, Net, WorldId};
@@ -257,13 +258,47 @@ pub enum FellPart {
     Far,
 }
 
+/// Chunk radius of the TREE-ONLY outer ring, past [`NEAR_RADIUS`]. **(knob)**
+///
+/// **The ring the trees stop at was sized for a tree that cost 5,900
+/// triangles, and that tree has not existed since 2026-08-20.** `NEAR_RADIUS`
+/// is 2, so every prop on the island stops between 128 m and 192 m while the
+/// far ground mesh draws all 2,048 m of it — the far two-thirds of every wide
+/// frame is a painted heightfield with nothing standing on it, which is
+/// `ART.md` §1's "air has depth" and §8's far-third checklist item failing for
+/// want of anything to haze. Then `tree::impostor_of` landed and a whole tree
+/// became **one 105-triangle opaque hull**, ~55× cheaper, and nobody re-derived
+/// the radius the old cost had chosen.
+///
+/// **5, and the arithmetic is the reason.** An 11×11 ring is 96 chunks beyond
+/// the near 25, 3.84× the area, so at the ring's own measured p90 of 328 trees
+/// it is ~1,260 more — every one of them past [`tree::TREE_LOD_SWAP_M`] by
+/// construction and therefore a hull. 1,260 × 105 = **~132 k triangles**
+/// against trees currently costing 510 k and `DESIGN.md` §9's 1.5 M for the
+/// whole frame. `tests/outer_ring.rs` holds that arithmetic.
+///
+/// **Widening `NEAR_RADIUS` instead would have been the wrong lever**, and
+/// this is the part worth writing down. That constant is read by the ground
+/// streamer and by `clutter`, so moving it drags a 65×65 vertex heightfield
+/// and a 721-element clutter fill per chunk along with the trees — and a near
+/// tree is FOUR entities (trunk, canopy, hidden stump, hull) where an outer
+/// one is a single hull with no `Topple` and no `VisibilityRange`. Same
+/// picture, an order of magnitude more of everything else.
+pub const OUTER_RADIUS: i32 = 5;
+
 /// What the scatter ring has spawned, one parent entity per chunk.
 #[derive(Resource, Default)]
 pub struct PropRing {
     built: HashMap<(i32, i32), Entity>,
+    outer: HashMap<(i32, i32), Entity>,
 }
 
 impl PropRing {
+    /// Chunks in the NEAR ring, and deliberately not counting [`Self::outer`].
+    ///
+    /// `loading::read` measures the boot bar against `RING_CHUNKS` (25) with
+    /// this number, so folding the outer ring in here would leave the bar
+    /// asking for 121 chunks it does not wait for and never filling.
     pub fn len(&self) -> usize {
         self.built.len()
     }
@@ -273,7 +308,15 @@ impl PropRing {
     pub fn is_full(&self) -> bool {
         self.built.len() >= super::terrain_mesh::RING_CHUNKS
     }
+    /// Chunks in the tree-only outer ring. Read by gates, not by the bar.
+    pub fn outer_len(&self) -> usize {
+        self.outer.len()
+    }
 }
+
+/// Chunks in a full outer ring — the 11×11 block minus the near 5×5 it wraps.
+pub const OUTER_CHUNKS: usize = ((2 * OUTER_RADIUS + 1) * (2 * OUTER_RADIUS + 1)
+    - (2 * NEAR_RADIUS + 1) * (2 * NEAR_RADIUS + 1)) as usize;
 
 /// sRGB hex to linear, which is what a vertex colour is in.
 pub(super) fn linear(hex: u32) -> [f32; 3] {
@@ -1087,11 +1130,14 @@ pub fn assets(
             base_color: Color::WHITE,
             base_color_texture: Some(m.albedo.clone()),
             normal_map_texture: Some(m.normal.clone()),
-            // The roughness maps stay unwired for the reason `terrain_mesh`
-            // states: `metallic_roughness_texture` is a glTF-packed ORM slot
-            // whose B channel is METALLIC, and these sources are greyscale
-            // roughness jpgs, so binding one here would make every prop a
-            // half-metal. It needs an ORM packing step, not a slot assignment.
+            // The roughness maps stay unwired: `metallic_roughness_texture`
+            // is a glTF-packed ORM slot whose B channel is METALLIC, and these
+            // sources are greyscale roughness jpgs, so binding one here would
+            // make every prop a half-metal. It needs an ORM packing step, not
+            // a slot assignment. **The occlusion slot is a different question**
+            // and is wired below: `occlusion_texture` is its own binding and
+            // takes a greyscale map directly.
+            occlusion_texture: m.ao.clone(),
             perceptual_roughness: rough,
             reflectance: refl,
             ..default()
@@ -1139,12 +1185,12 @@ pub fn assets(
         // the `authored` block above for what mirroring them by hand cost.
         shelter: meshes.add(archetype_mesh(Occupant::HavenShelter).expect("shelter mesh")),
         canopy: meshes.add(archetype_mesh(Occupant::WaystationCanopy).expect("canopy mesh")),
-        foliage: surface(0.86, 0.10, materials),
+        foliage: surface(0.86, fresnel::DIELECTRIC, materials),
         needle: materials.add(StandardMaterial {
             base_color: Color::WHITE,
             base_color_texture: Some(needle_map),
             perceptual_roughness: 0.90,
-            reflectance: 0.08,
+            reflectance: fresnel::DIELECTRIC,
             // Cards are two-sided by construction — you see the underside of
             // every branch you stand beneath, and `ART.md` §5 calls that face
             // the one every judge catches.
@@ -1162,11 +1208,20 @@ pub fn assets(
         // a roughness scalar until now, which is `ART.md` rule 1 broken on
         // every non-ground surface in the frame.
         //
-        // The three ore nodes share the GRANITE map and differ by roughness
-        // and reflectance rather than by hue: they are one rock with a
-        // different mineral in it, and a node's identity is the glint its
-        // reflectance gives it. A per-ore albedo is a real want and a sourcing
-        // question rather than a code one — there is no sulfur map here.
+        // The three ore nodes share the GRANITE map and differ by ROUGHNESS
+        // rather than by hue: they are one rock with a different mineral in
+        // it, and a node's identity is the glint it gives back. A per-ore
+        // albedo is a real want and a sourcing question rather than a code one
+        // — there is no sulfur map here.
+        //
+        // **That identity used to be spelled in `reflectance` and could not
+        // work.** The three sat at 0.24/0.42/0.22, i.e. F0 0.9%/2.8%/0.8%, all
+        // far under a dielectric's 4% — so the channel carrying the difference
+        // had almost no energy in it, and the roughness that shapes the lobe
+        // had nothing to shape (`render::fresnel`). Every rock is a dielectric
+        // at 4% now and the split moved to the channel that can express it:
+        // 0.80 for granite against 0.55 for the metal-bearing node is a wide
+        // gap that reads for the first time.
         //
         // **`stone` is deliberately not one of them, and the capture is why.**
         // `Bricks089` is photoscanned stacked FIELD STONE — mortar joints and
@@ -1176,23 +1231,23 @@ pub fn assets(
         // thing in the frame and it was conspicuous because the map is good.
         // Masonry belongs on something a player BUILT (`structures.rs`), and
         // a natural rock face is granite whatever the ore in it.
-        rock: photo(&maps.rock, 0.88, 0.20, materials),
-        ore_stone: photo(&maps.rock, 0.80, 0.24, materials),
-        ore_metal: photo(&maps.metal, 0.55, 0.42, materials),
-        ore_sulfur: photo(&maps.rock, 0.78, 0.22, materials),
-        wood: photo(&maps.wood, 0.85, 0.14, materials),
-        metal: photo(&maps.metal, 0.50, 0.45, materials),
+        rock: photo(&maps.rock, 0.88, fresnel::DIELECTRIC, materials),
+        ore_stone: photo(&maps.rock, 0.80, fresnel::DIELECTRIC, materials),
+        ore_metal: photo(&maps.metal, 0.55, fresnel::METAL_DIELECTRIC, materials),
+        ore_sulfur: photo(&maps.rock, 0.78, fresnel::DIELECTRIC, materials),
+        wood: photo(&maps.wood, 0.85, fresnel::DIELECTRIC, materials),
+        metal: photo(&maps.metal, 0.50, fresnel::METAL_DIELECTRIC, materials),
         // The haven pad and the waystation ARE built, so they get the
         // masonry — this is the identity that map was sourced for
         // (`MANIFEST.md`: "the identity ART asks for, not brick").
-        stone: photo(&maps.stone, 0.82, 0.26, materials),
+        stone: photo(&maps.stone, 0.82, fresnel::DIELECTRIC, materials),
         // The conifer's trunk. `ART.md` §5 asks for fissures running UP the
         // trunk, and this is the one prop that needed no UV work at all to get
         // them: `bevy_procedural_tree` emits `ATTRIBUTE_UV_0` cylindrically —
         // u around the ring, v along the branch — so a bark map lands with its
         // grain already pointing the right way. Before this the bark half of
         // every tree wore `foliage`, an untextured white surface.
-        bark: photo(&maps.bark, 0.92, 0.08, materials),
+        bark: photo(&maps.bark, 0.92, fresnel::DIELECTRIC, materials),
     }
 }
 
@@ -1272,6 +1327,136 @@ pub fn stream(
             return;
         }
     }
+
+    // ── The outer ring ──────────────────────────────────────────────────
+    //
+    // Reached only once the near ring is complete, because the `return` above
+    // fires on every frame that built a near chunk. That ordering is the
+    // priority rule and it is free: the player is standing in the near ring,
+    // and a horizon that arrives a second late is a horizon nobody watched
+    // arrive.
+    let mut dropped_outer = 0usize;
+    ring.outer.retain(|(bx, bz), e| {
+        if dropped_outer >= 1
+            || ((*bx - cx).abs() <= OUTER_RADIUS && (*bz - cz).abs() <= OUTER_RADIUS)
+        {
+            return true;
+        }
+        dropped_outer += 1;
+        commands.entity(*e).despawn();
+        false
+    });
+    if dropped_outer > 0 {
+        // Stream-out is budgeted too — `CLAUDE.md`'s "the teardown spike is
+        // the half everyone forgets". A chunk of hulls despawned is a frame's
+        // work on its own.
+        return;
+    }
+
+    for dz in -OUTER_RADIUS..=OUTER_RADIUS {
+        for dx in -OUTER_RADIUS..=OUTER_RADIUS {
+            // The near ring already owns this chunk at full detail.
+            if dx.abs() <= NEAR_RADIUS && dz.abs() <= NEAR_RADIUS {
+                continue;
+            }
+            let key = (cx + dx, cz + dz);
+            if ring.outer.contains_key(&key) {
+                continue;
+            }
+            let parent = commands
+                .spawn((
+                    super::WorldEntity,
+                    Transform::IDENTITY,
+                    Visibility::default(),
+                ))
+                .id();
+            let cells = (CHUNK_M / terrain::CELL_SIZE) as i32;
+            let mut lat = terrain::Lattice::new();
+            for iz in 0..cells {
+                for ix in 0..cells {
+                    let cell_x = key.0 * cells + ix;
+                    let cell_z = key.1 * cells + iz;
+                    let slot = terrain::scatter_memo(
+                        &mut lat,
+                        world.seed,
+                        &world.table,
+                        &world.haven,
+                        cell_x,
+                        cell_z,
+                    );
+                    // **Trees only.** A boulder or a barrel at 300 m is a
+                    // sub-pixel lump that costs an entity and changes no
+                    // silhouette; a tree at 300 m is the treeline, which is
+                    // the whole thing this ring exists to draw.
+                    if slot.occupant != Occupant::Tree {
+                        continue;
+                    }
+                    let key = cell_key(cell_x as u16, cell_z as u16);
+                    spawn_outer_tree(&mut commands, parent, a, &slot, key, &world);
+                }
+            }
+            ring.outer.insert(key, parent);
+            return;
+        }
+    }
+}
+
+/// One far tree: a single entity, and everything it deliberately is not.
+///
+/// A near tree is FOUR entities — a trunk that topples, a canopy that topples
+/// beside it, a stump waiting hidden for a cut, and the hull that replaces the
+/// first two past [`tree::TREE_LOD_SWAP_M`]. Out here the swap distance is
+/// already behind us, so three of those four would spawn only to be culled by
+/// a `VisibilityRange` that can never open. What is left is the hull, and it
+/// needs no range component at all: nothing else is ever going to be shown in
+/// its place.
+///
+/// **It carries `FellPart::Vanish`, and that is the one thing it shares with a
+/// real prop.** Without a `Fellable` a felled tree would stand out here until
+/// the chunk happened to be rebuilt, and `harvest_new`'s `Added<Fellable>`
+/// pass is also what makes a chunk streaming into already-cleared ground
+/// correct on arrival — which matters far more here than in the near ring,
+/// because this ring streams 96 chunks. `Vanish` rather than `Trunk`: a hull
+/// has no stump to reveal and no sibling canopy to keep in step, and `Trunk`
+/// means *speaks for the slot* to the fell cue and the ambience bed
+/// (`FellPart::Far`'s own doc has the two bugs that rule was written from).
+/// It does not topple — `apply_fell`'s `Vanish` arm takes `Visibility` and
+/// never touches `Topple` — so a tree felled at 300 m blinks out rather than
+/// falling. At that range it is a few pixels; the near ring is where a topple
+/// is a thing anybody sees.
+pub fn spawn_outer_tree(
+    commands: &mut Commands,
+    parent: Entity,
+    a: &PropAssets,
+    slot: &terrain::Slot,
+    key: u32,
+    world: &WorldId,
+) {
+    let variant = (slot.yaw as usize) % a.impostors.len();
+    let yaw = slot.yaw as f32 / 256.0 * std::f32::consts::TAU;
+    // **`far_ground_y`, never `slot.y`.** Out here the ground a player sees is
+    // the 8 m far mesh sitting `FAR_DROP` below the real heightfield, so
+    // planting on `slot.y` floats every tree over a valley and buries it on a
+    // ridge. `terrain_mesh::far_ground_y` has the arithmetic and the one place
+    // it is only an approximation.
+    let y = super::terrain_mesh::far_ground_y(world.seed, &world.haven, slot.x, slot.z);
+    commands.entity(parent).with_child((
+        Fellable {
+            key,
+            variant,
+            base_y: y,
+            yaw,
+            part: FellPart::Vanish,
+            felled: false,
+        },
+        Mesh3d(a.impostors[variant].clone()),
+        MeshMaterial3d(a.foliage.clone()),
+        Transform {
+            translation: Vec3::new(slot.x, y - SINK_M, slot.z),
+            rotation: Quat::from_rotation_y(yaw),
+            scale: Vec3::splat(slot.scale),
+        },
+    ));
 }
 
 /// Draw one scatter slot as a child of its chunk.
@@ -1711,6 +1896,32 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
 }
 
 impl PropAssets {
+    /// Every material this pool builds, by name.
+    ///
+    /// **Exists for `tests/fresnel.rs` and for nothing else.** Every
+    /// `reflectance` in the client was authored 8–70× under physical because
+    /// the field is a remap and not a slider (`render::fresnel`), and the
+    /// defect is invisible to every other gate here: it changes no triangle, no
+    /// handle, no bit on the wire. The only way to catch the next one is to
+    /// read back what actually reached the asset store and ask what F0 it
+    /// delivers, which needs the handles.
+    ///
+    /// Named rather than indexed so a failure says *which* surface is wrong.
+    pub fn materials(&self) -> [(&'static str, &Handle<StandardMaterial>); 10] {
+        [
+            ("foliage", &self.foliage),
+            ("needle", &self.needle),
+            ("rock", &self.rock),
+            ("ore_stone", &self.ore_stone),
+            ("ore_metal", &self.ore_metal),
+            ("ore_sulfur", &self.ore_sulfur),
+            ("wood", &self.wood),
+            ("metal", &self.metal),
+            ("stone", &self.stone),
+            ("bark", &self.bark),
+        ]
+    }
+
     /// Read-only handles the fell gate compares against.
     pub fn stump_mesh(&self) -> &Handle<Mesh> {
         &self.stump
