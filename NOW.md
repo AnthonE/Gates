@@ -72,6 +72,92 @@ What it does NOT do, in the order the value drops:
 
 ---
 
+## 0fan · The event lane's fan-out — one arm filtered, twenty to go *(server lane)*
+
+`EV_SWING`, `EV_SHOT` and `EV_IMPACT` are interest-filtered as of
+2026-08-24 and the saving is measured: **36.0×** on a dispersed shard
+(36 connections, 72 swings, 2520 frames skipped, 6 B each). They were 3 of
+21 broadcast arms with no filter against 1 that had one. Numbers and the
+three things §0sw got wrong: `findings/swing-fanout-20260824.md`. Nine
+gates (`server/tests/snapshot_budget.rs`, `content/tests/content.rs`),
+ten mutants proven red. No `PROTO_VER`, no replay hash, no content edit,
+no new cap.
+
+**Do not read this as wall 4 closed.** Post-filter peak fan-in per client
+is `AOI_RANK_EXIT` = 64 and `EVENT_RING_CAP` = 64 — the same number, zero
+headroom for the other twenty arms. `limits.rs` says so now and a gate
+asserts the equality so a rank-band widening is loud.
+
+~~1. `EV_SHOT` is a drop-in; `EV_IMPACT` wants the anchor instead.~~
+**Both landed 2026-08-24.** `EV_SHOT` through the same
+`body_event_visible`, and the "but a projectile *travels*" objection was
+checked rather than waved off: `render/tracer.rs` already drops a shot it
+has no body to hang on, so nothing drawn stops being drawn, and no shipped
+weapon reaches 176 m (worst is 80) — the second half is now
+`content.rs::no_weapon_outranges_the_interest_band`, because it is a
+content-vs-limit relationship a new gun breaks in silence. `EV_IMPACT`
+took `point_event_visible` against the class-S anchor, and that one
+removes a real decal: the pool is fixed and evicts, so a sub-pixel mark
+past the band was taking a slot from one at your feet.
+
+~~The counters, the split and the storm — one slice.~~ **Landed
+2026-08-24**, and the storm answered the question the other two were
+asking. `the_event_lane_holds_at_population` stands 100 bodies at arm's
+length firing lethal hitscan every tick, and is the first test in the tree
+to model the per-connection ring at its real cap (`EVENT_RING_CAP` lives in
+`net.rs`, so every other suite's `|_,_,_| true` closure can never see a
+refusal):
+
+| cap | peak | headroom |
+|---|---|---|
+| `MAX_EVENTS_PER_TICK` 256 | **144** | 1.8× |
+| `EVENT_RING_CAP` 64 | **50** | **1.28×** |
+
+**The ring is the binding cap; the queue is not close.** `ev_sim_dropped`
+and `ev_resyncs_dropped` exist now (the first watched in `anomaly.rs`) —
+neither fires under shipped limits, which is the good news, and both were
+proven live by shrinking the queue to 128: **16 drops → 100 resyncs.**
+
+What is left:
+
+1. **Decide `EVENT_RING_CAP`.** `DECISIONS.md` §open has the trade and now
+   has the measurement too: 50 of 64 under the worst fixture anybody has
+   built. Raise it (322 B a slot per connection) or batch a tick's events
+   into one message (`PROTO_VER` work). Operator's call, not a loop's.
+2. ~~`EV_DOOR`, `EV_KNOCK` and `EV_OVEN` are instants at a place.~~
+   **Wrong, and audited 2026-08-24 — only `EV_KNOCK` is.** The other two
+   are *state* (`EV_OVEN`'s own doc: "Absolute, never a delta"), and the
+   thing that decides it is **residue, not address**. `EV_KNOCK` landed
+   filtered: its arm argued AOI would silence "a defender asleep on the
+   far side of their own base", which does not survive the actual radius —
+   a base spans tens of metres and the band is 208 m. What it really did
+   was toast *"knock knock"* on every screen on the island, with no owner
+   check anywhere (`hud.rs`).
+   ⚠ **Open, and the operator's**: should the OWNER hear their own door
+   from anywhere on the island? A game question; nothing has an owner
+   check to hang it on.
+3. **The deploy walk is unaimed, and it is what blocks the other two.**
+   `EV_DOOR` and `EV_OVEN` cannot be filtered because every client holds
+   every deployable on the island — the walk streams `deploys.entries()`
+   whole, where the piece walk streams what is within `PIECE_INTEREST_CM`
+   of its anchor and counts the rest in `piece_sync_skipped`. Filtering a
+   state change onto a record somebody keeps leaves it wrong forever.
+   **This is a documented deferral, not an oversight**: `core.rs` says the
+   deployable walk "was left reading upward until its own placement seam is
+   proven". So the order is (a) aim `EV_DEPLOY_PLACED` the way
+   `EV_PIECE_PLACED` already is, (b) aim the walk with the same anchor and
+   re-arm, (c) *then* `EV_DOOR` and `EV_OVEN` become filterable.
+   Sizing: the band is **3.2%** of the island's area, `MAX_DEPLOYS` is
+   1024, and `deploy_wire.rs` now pins the current truth with a client
+   400 m out — three counts in it are tripwires that go red when the seam
+   is aimed, and say so.
+3. **The storm is combat only.** No building, looting or doors, so the
+   arms it exercises are three of twenty-two. `raid_storm.rs` drives the
+   other verbs but at the *command* ceiling and with nobody swinging; the
+   two fixtures want merging eventually.
+
+---
+
 ## 0pw · Every material is drawn once before it is needed *(client lane)*
 
 LANDED 2026-08-20, and it corrects the trap it closes. `CLAUDE.md` said a
@@ -429,8 +515,10 @@ backpack → bag respawn, the kill feed, and since v48 a corpse that falls
    keep-first had to be written.
 6. **Nothing has fought at population.** `raid_storm.rs:516` says so in
    its own source — *"nobody swings"* — so wall 4's caps are gated one
-   site at a time on every combat path, and `EV_SWING`'s AOI-free fan-out
-   is still unpriced (§0sw). Planned:
+   site at a time on every combat path. ~~`EV_SWING`'s AOI-free fan-out is
+   still unpriced.~~ **Priced and filtered 2026-08-24, §0fan** — and it is
+   a no-op for *this* item by construction: fighters are co-located, so
+   they are all inside each other's interest. Planned:
    `findings/combat-soak-design-20260818.md`. Two findings worth the read
    before anything else: **`EVENT_RING_CAP` (64) is smaller than
    `MAX_PLAYERS` (100)**, so 65 simultaneous swingers resync every client
@@ -704,12 +792,12 @@ first time somebody swings near you.
 ⚠ **Nothing has ever played the clip.** `client/tests/anim.rs` is a source
 scrape by construction, `client-core/tests/wire.rs` stops at the ring, and
 no headless test spawns a `SceneRoot`. The wire half is gated end to end;
-the arc itself is unseen, exactly like the decal above. And the throughput
-half of the fan-out is unpriced: `EV_SWING` is one broadcast per swing per
-player with no AOI filter, so a 100-player shard swinging pays 100× the
-per-client event rate — `raid_storm.rs` cannot see it, because that gate's
-bots never press `BTN_PRIMARY`. A soak with swinging bots is the
-measurement, and it is the same gap wall 4 has had since the soak landed.
+the arc itself is unseen, exactly like the decal above.
+~~And the throughput half of the fan-out is unpriced.~~ **Priced and
+filtered 2026-08-24 (§0fan)** — and the sentence that stood here was wrong
+in three ways, which `findings/swing-fanout-20260824.md` §2 lists. It is
+not 100× on the shard that matters, the filter does not touch the burst it
+named, and steady state was ~2.4 swings/tick rather than 100.
 
 Two things remain, and the first needs a word rather than work. **The clip
 is `Punch_Cross` and the ask was a rock swing** — arithmetic, not taste:

@@ -412,10 +412,25 @@ fn doors_toggle_across_the_wire() {
     core.catalog = ItemCatalog::EMPTY;
     assert!(core.connect(0, id_of(0)));
     assert!(core.connect(1, id_of(1)));
+    // A third client, a long way off. It is here for the knock: the door's
+    // own state must still reach it (the deploy walk is unaimed, so it
+    // holds every deployable on the island) while the knock must not.
+    // Slot 3, not 2: this test adds a late joiner at slot 2 further down.
+    assert!(core.connect(3, id_of(3)));
     let mut clients = vec![
         (0usize, ClientCore::new(SEED, id_of(0), 0)),
         (1usize, ClientCore::new(SEED, id_of(1), 0)),
+        (3usize, ClientCore::new(SEED, id_of(3), 0)),
     ];
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients);
+    }
+    // 400 m out — comfortably past `PIECE_INTEREST_CM` (208 m), and past
+    // it by more than a body can walk back inside one tick.
+    {
+        let w3 = world_slot(&core, id_of(3));
+        core.world.players[w3].body.qx = ((SPAWN.0 + 400.0) / 0.03) as i32;
+    }
     for _ in 0..4 {
         pump(&mut core, &stats, &mut clients);
     }
@@ -495,7 +510,17 @@ fn doors_toggle_across_the_wire() {
             _ => None,
         })
         .collect();
-    assert_eq!(placed.len(), 2, "the placement must reach both clients");
+    // Three, not two, and the third is the client 400 m away: unlike
+    // `EV_PIECE_PLACED`, the deployable placement broadcast is **unaimed**
+    // — `core.rs` says why in as many words, that "the deployable walk was
+    // left reading upward until its own placement seam is proven". When
+    // that seam is aimed this becomes 2, and this line is where you will
+    // find out: it is a tripwire for a deliberate change, not a bound.
+    assert_eq!(
+        placed.len(),
+        3,
+        "the placement must reach every client, aimed or not"
+    );
     for (slot, rec) in placed {
         assert!(
             !rec.locked && !rec.has_lock,
@@ -591,10 +616,14 @@ fn doors_toggle_across_the_wire() {
                 }
             ))
             .count(),
-        2,
-        "bolting a lock on must announce has_lock to both clients, and \
-         must not announce it as locked — an unarmed lock is not a locked \
-         door"
+        3,
+        "bolting a lock on must announce has_lock to EVERY client — three, \
+         including the one 400 m away, because `EV_DOOR` is deliberately \
+         unfiltered: the deploy walk is unaimed, so that client holds this \
+         door's record and a state change it never hears leaves the record \
+         wrong forever. Contrast the knock below, which is an instant and \
+         is filtered. And it must not announce it as locked — an unarmed \
+         lock is not a locked door"
     );
 
     // ...and arms it with a code. Now it is shut to everyone else.
@@ -647,12 +676,34 @@ fn doors_toggle_across_the_wire() {
             .filter(|(_, m)| matches!(m, protocol::EventMsg::Knock { .. }))
             .count(),
         2,
-        "a knock must reach the shard, not only the hand that knocked — \
-         it is the one channel a locked-out player has to the person inside"
+        "a knock must reach the NEIGHBOURHOOD, not only the hand that \
+         knocked and not the whole island — it is the one channel a \
+         locked-out player has to the person inside, and the two clients \
+         at the door are exactly who that is. The third is 400 m away; \
+         before this was filtered it got one too, and so would all 99 \
+         strangers on a full shard"
     );
     assert!(
         clients[0].1.pop_knock().is_some(),
         "the OWNER is who a knock is for"
+    );
+    assert!(
+        clients[2].1.pop_knock().is_none(),
+        "a client 400 m from the door heard somebody knock on it"
+    );
+    // The door's own STATE is a different question and must still reach
+    // it: `EV_DOOR` is not filtered, because the deploy walk is unaimed
+    // and a client 400 m away is holding this door's record. Filtering
+    // state onto a record somebody keeps leaves it wrong forever.
+    assert!(
+        clients[2]
+            .1
+            .deploys
+            .entries()
+            .iter()
+            .any(|r| r.loc == LOC_EDGE_XLO && r.locked && r.has_lock),
+        "the distant client lost the door's state, so EV_DOOR is being \
+         filtered like the knock — it must not be"
     );
     assert!(
         !core
@@ -730,8 +781,9 @@ fn doors_toggle_across_the_wire() {
                 }
             ))
             .count(),
-        2,
-        "the door announcement must reach both clients open and still locked"
+        3,
+        "the door announcement must reach every client open and still \
+         locked — three, `EV_DOOR` being unfiltered (see above)"
     );
     assert!(
         core.world
@@ -804,9 +856,11 @@ fn doors_toggle_across_the_wire() {
     );
     seen.clear();
     let flags = pump_seen(&mut core, &stats, &mut clients, &mut seen);
-    for (slot, f) in flags.iter().enumerate().take(clients.len()) {
+    // By SLOT, not by position: the vec is no longer in slot order once a
+    // late joiner takes slot 2 behind a client seated at 3.
+    for (slot, _) in clients.iter() {
         assert_ne!(
-            f & APPLIED_DEPLOYS,
+            flags[*slot] & APPLIED_DEPLOYS,
             0,
             "client {slot} missed the lock change"
         );
@@ -822,8 +876,9 @@ fn doors_toggle_across_the_wire() {
                 }
             ))
             .count(),
-        3,
-        "the unlock must cross to all three clients with the leaf untouched"
+        4,
+        "the unlock must cross to all four clients with the leaf untouched \
+         — the fourth is 400 m off and `EV_DOOR` is unfiltered on purpose"
     );
     for (_, c) in &clients {
         let rec = c

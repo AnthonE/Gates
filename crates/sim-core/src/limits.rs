@@ -392,6 +392,21 @@ pub const UPKEEP_SWEEP_PER_TICK: usize = 64;
 /// with a reset batch, catalog restarts, the inventory shadow already
 /// re-diffs), the same recovery path a fresh join uses. Proposed default,
 /// DECISIONS.md §open (gather wire row).
+///
+/// ⚠ **This number and `AOI_RANK_EXIT` are both 64, and that is not a
+/// coincidence worth relying on.** A broadcast arm in `pump_events` costs
+/// one push into *this* ring per connected client, so the per-client
+/// fan-in from a class-D-filtered arm (`ShardCore::body_event_visible`;
+/// `EV_SWING` today) is bounded by the interest set, which the rank band
+/// caps at `AOI_RANK_EXIT`. Filtered, the worst case exactly meets this
+/// cap and leaves **zero** headroom for the twenty-odd unfiltered arms and
+/// the drip's thirteen send sites. Widening the rank band without widening
+/// this makes the ring the smaller of the two silently;
+/// `server/tests/snapshot_budget.rs::the_filter_buys_nothing_on_a_clustered_shard`
+/// asserts the equality so that drift is loud. The overflow is also
+/// self-amplifying — a refused push calls `ev_resync`, and the recovery
+/// drip pushes *more* messages into the ring that just refused — so the
+/// number to argue about is this one, not the retry.
 pub const EVENT_RING_CAP: usize = 64;
 
 /// Slot-life entries the per-client harvested-set walk scans per tick
