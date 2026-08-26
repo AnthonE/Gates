@@ -45,6 +45,59 @@ pub const FAR_STEP: f32 = 8.0;
 /// How far the far mesh sits below the near ring so the boundary cannot
 /// z-fight, metres.
 pub const FAR_DROP: f32 = 0.15;
+
+/// The y the FAR mesh actually draws at `(x, z)` — not `terrain::ground`.
+///
+/// **A prop outside the near ring must be planted on this and not on the
+/// heightfield, and the gap is 0.63 m on the shipped seed.** The far mesh samples
+/// `terrain::ground` on an [`FAR_STEP`]-metre lattice and interpolates
+/// linearly across each 8 m quad, then sits the whole sheet [`FAR_DROP`] lower
+/// so the near↔far boundary cannot z-fight. So the surface a player SEES out
+/// there is a chord across the real terrain, and on anything but flat ground
+/// the chord is below the curve — a tree placed at `slot.y` stands with its
+/// base in the air over a valley and buried on a ridge, at exactly the ranges
+/// where a floating trunk is the most obvious thing in the frame. Measured
+/// worst separation over a 2,000-sample line across the island on seed
+/// 20260731: **0.630 m**, against a 6.6 m conifer — a tenth of the tree
+/// hanging in the air, which is what `tests/outer_ring.rs` searches for and
+/// then plants at.
+///
+/// This is `heightfield`'s own sampling restated for one point instead of for
+/// a grid: the four surrounding lattice corners, minus the drop.
+///
+/// **Bilinear, where the mesh is two triangles, and the gap is stated rather
+/// than hidden.** A quad rasterises as a pair of triangles and is therefore
+/// planar either side of one diagonal; bilinear is the average of the two ways
+/// that diagonal can run. The two agree EXACTLY at the four corners — which is
+/// what `tests/outer_ring.rs` pins, because it is the only place the two can be
+/// compared without rebuilding the mesh — and differ inside the quad by at most
+/// the quad's twist, `|h00 − h10 − h01 + h11| / 4`. That is small against the
+/// 0.63 m the naive `slot.y` carries, so it buys the fix without a second
+/// triangulation to keep in step. Choosing the
+/// diagonal correctly would mean knowing `heightfield`'s index winding here,
+/// which is a coupling worth more than the centimetres.
+///
+/// Not used by the near ring: inside [`NEAR_RADIUS`] the drawn ground IS
+/// `terrain::ground` at 1 m, so `scatter`'s own `slot.y` is already exact.
+pub fn far_ground_y(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> f32 {
+    let gx = (x / FAR_STEP).floor() * FAR_STEP;
+    let gz = (z / FAR_STEP).floor() * FAR_STEP;
+    let tx = (x - gx) / FAR_STEP;
+    let tz = (z - gz) / FAR_STEP;
+
+    // One memo for the four corners: they are one lattice quad apart, so this
+    // is the memo's best case and the same reason `heightfield` holds one.
+    let mut lat = terrain::Lattice::new();
+    let h00 = terrain::ground_memo(&mut lat, seed, haven, gx, gz);
+    let h10 = terrain::ground_memo(&mut lat, seed, haven, gx + FAR_STEP, gz);
+    let h01 = terrain::ground_memo(&mut lat, seed, haven, gx, gz + FAR_STEP);
+    let h11 = terrain::ground_memo(&mut lat, seed, haven, gx + FAR_STEP, gz + FAR_STEP);
+
+    let a = h00 + (h10 - h00) * tx;
+    let b = h01 + (h11 - h01) * tx;
+    a + (b - a) * tz - FAR_DROP
+}
+
 /// Chunks QUEUED per frame, and chunks torn down per frame. Stream-in AND
 /// stream-out are budgeted: the teardown spike is the half everyone forgets
 /// (`CLAUDE.md` traps).
@@ -458,7 +511,12 @@ fn ground_material(
             // there, not a replacement), which is why it is a separate slice
             // and not a slot assignment either. `NOW.md` carries it.
             metallic: 0.0,
-            reflectance: 0.18,
+            // `fresnel::DIELECTRIC`, not the 0.18 this shipped with. That
+            // number put F0 at 0.52% against a dielectric's 4%, which is why
+            // `ground_splat`'s four per-texel roughness maps measured as a
+            // null result: they were shaping a lobe with an eighth of its
+            // energy in it. `DECISIONS.md` §open, ground specular v0.
+            reflectance: super::fresnel::DIELECTRIC,
             ..default()
         },
         extension: GroundSplat::new(maps),

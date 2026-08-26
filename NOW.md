@@ -710,37 +710,54 @@ brightness delta there as the effect of a render change.
   (`reflectance: 0.18` → F0 0.52%) are debts against this same owner.
 
 
-## 0gc · A blade is shaded exactly like the dirt it stands in *(client lane)*
+## 0gc · A blade shaded exactly like the dirt it stood in — LANDED *(client lane)*
 
-`blade()` still blends every normal fully to +Y (`render/clutter.rs:135–192`,
-both `s.tri(…, 1.0)` calls). That is the GROUND's normal, so a blade takes
-the same sun cosine and the same `fill_at` sample as the dirt under it, and
-albedo is all that separates grass from ground — the judge's "reads as
-paint" as arithmetic. The quad's own facet is `lean/√(1+lean²)` off
-horizontal, 0.215–0.489 vertical over the drawn range, so the forced blend
-discards the dominant component.
+**Landed 2026-08-25.** `Soup::tri_ramp` takes the blend as a function of the
+vertex; `blade()` ramps 1.0 at the root (the ground's normal, so `ART.md`
+rule 2 keeps the blade bedded) to `BLADE_TIP_BLEND = 0.75` at the tip. `tri`
+delegates to it, so none of its twenty-odd other call sites moved. Gate:
+`tests/contact.rs::a_blade_separates_from_the_ground_it_grows_out_of`, red on
+the shipped value, where it prints what it was — **tip normal y = 0.9978**,
+the ground's normal to three decimals. Knob: `DECISIONS.md` §open, clutter
+contact v0.
 
-The reason the code gave for it is false, and `tests/contact.rs`'s
-`a_blades_two_triangles_do_not_wind_opposite_ways` computes that (dot > 0.99
-over a 128-case sweep). The real blackener is the tile material's
-`double_sided` flip (`clutter.rs:416`): Bevy negates the shading normal on a
-back-facing fragment and seven blades at seven yaws put half of them there.
+⚠ **This item carried TWO false mechanisms and both are dead.** The winding
+claim went to `a_blades_two_triangles_do_not_wind_opposite_ways` (dot > 0.99
+over a 128-case sweep). The `double_sided` claim — that Bevy negates the
+shading normal on a back-facing fragment — was checked against Bevy 0.18.1 on
+2026-08-25 and is **also false**: `pbr_functions.wgsl:130-134` guards that
+negation with `#ifndef VERTEX_TANGENTS`, `mesh.rs:2410` defines
+`VERTEX_TANGENTS` whenever the layout carries `ATTRIBUTE_TANGENT`, and
+`Soup::mesh` calls `generate_tangents()` on every clutter tile. **No blade is
+ever flipped.** Do not turn `double_sided` off — it changes nothing here and
+would black out the real back faces.
 
-The fix is **not** a blend constant — it is a per-vertex ramp, ground normal
-at the root to the blade's own facing at the tip, which needs `Soup::tri` to
-take a blend *function* rather than one `f32`, and lands on grass and
-standing litter together (`stand()` is the shared builder). **Do not land it
-blind.** Knobs: `DECISIONS.md` §open "clutter contact v0".
+What is left is the one number: **0.75 is invented and nobody has judged it**,
+against `ART.md` §5's "blades catch a rim of sun at their tips".
 
 
 ## 0gp · The ground splat's residuals: a projection, a specular, and five prop maps *(client lane)*
 
 1. **Still planar XZ, not biplanar** — a vertical face stretches;
    `assets/shaders/ground_splat.wgsl` projects no other way (`RENDER.md` R4).
-2. **`reflectance: 0.18` → F0 = 0.52%** against a dielectric's ~4%, so the
-   per-texel roughness field has nothing to shape. Undocumented in
-   `terrain_mesh::ground_material`; the coupled lighting owner's (§0fill).
-   `DECISIONS.md` §open "ground specular v0"; the splat's 8.0% luma is §0fill's.
+2. ~~**`reflectance: 0.18` → F0 = 0.52%**~~ **LANDED 2026-08-25, and it was
+   not one constant**: *every* material in the client was authored 8–70× under
+   physical, because Bevy's `reflectance` is a remap (`F0 = 0.16 × r²`) whose
+   default 0.5 already IS the dielectric 4%. One owner now,
+   `render/fresnel.rs`; `tests/fresnel.rs` reads every prop material back out of
+   the asset store and fails anything outside 1.5–6% F0 (red on the shipped
+   `bark` 0.08 = 0.10%). The ordering this item insisted on held — the
+   per-texel field landed first, so it is turned up over a field and not a
+   scalar. ⚠ **The −0.4% roughness null result has NOT been re-measured** with
+   energy in the lobe. `DECISIONS.md` §open "specular v0".
+2b. ~~The four ground `*_ao.jpg` are read by nothing~~ **LANDED 2026-08-25** —
+   bindings 114–117, blended by the same `bw` as colour, normal and roughness,
+   folded into `diffuse_occlusion` with `min` per `ART.md` §4 (never a
+   multiply: two occlusion terms of one scale double-darken). Diffuse only.
+   The binding gate now scrapes BOTH the WGSL and the Rust struct — it held the
+   shader against a hand-kept list that *claimed* to be the struct and never
+   read it. ⚠ Nothing in this repo compiles the WGSL; a syntax error there is
+   green in CI and dead at boot. **Booted 2026-08-26 under lavapipe: it draws.**
 3. **`ground_detail.jpg` is loaded by nothing** — `textures::GROUND_DETAIL` has
    no load site; the shader derives the field from `grass_albedo`. Deleting it
    is a separate call: a pre-baked field is what a cheaper LOD would want.
@@ -792,6 +809,32 @@ Items 1–3 are struck and gated (`sim-core/tests/relief.rs`,
 5. **Roughness maps unread — ten now** (`assets/textures/*_rough.jpg`).
    Blocked on an ORM packing step: `metallic_roughness_texture` is
    glTF-packed and its B channel is metallic (`render/props.rs:1090`).
+
+
+## 0out · The horizon has trees — what the outer ring owes *(client lane)*
+
+Landed 2026-08-25. `props::OUTER_RADIUS = 5` streams an 11×11 chunk ring of
+TREE-ONLY hulls past `NEAR_RADIUS`, one entity each (`spawn_outer_tree`) — no
+`Topple`, no stump, no canopy, no `VisibilityRange`. ~1,260 trees at 105 tris
+= ~132 k against `DESIGN.md` §9's 1.5 M. The radius it replaces was sized when
+a tree cost 5,900 triangles and never re-derived after `impostor_of` made it
+105. Planted on `terrain_mesh::far_ground_y`, not `slot.y`: the ground drawn
+out there is the 8 m far mesh minus `FAR_DROP`, measured **0.630 m** off the
+heightfield at worst. Gates: `tests/outer_ring.rs` (4); one mutant caught a
+worthless assertion in the first draft.
+
+1. **The hull is untextured** — it wears `foliage` (white, vertex-coloured, no
+   map), so the midground is flat green shapes and this ring multiplied them by
+   four. `WANTED.md` §9.5's leaf texture is the cheapest fix and serves the
+   bush too. **Highest-value item here.**
+2. **The harvest sweep got denser and that was a named cost.**
+   `harvest_changed` measured 1,500 props × a full 16,384 set at 2.34 ms and
+   warned that a denser ring is the case that worsens. Outer hulls carry
+   `Fellable` for correctness, so the count roughly doubles on frames where the
+   harvested set moves. The real fix is that `HarvestedSet::contains` is a
+   linear scan. Unmeasured on a GPU.
+3. **Only trees.** Boulders and barrels still stop at `NEAR_RADIUS` — a
+   sub-pixel lump costs an entity and changes no silhouette.
 
 
 ## 0t · the forest — what it still owes *(client lane)*

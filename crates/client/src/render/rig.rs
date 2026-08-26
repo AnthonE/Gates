@@ -29,7 +29,7 @@ use bevy::light::{light_consts::lux, EnvironmentMapLight, SunDisk};
 use bevy::pbr::{Atmosphere, AtmosphereSettings, ScatteringMedium, ScreenSpaceAmbientOcclusion};
 use bevy::post_process::bloom::Bloom;
 use bevy::prelude::*;
-use bevy::render::view::Msaa;
+use bevy::render::view::{ColorGrading, Msaa};
 
 use super::{Eye, EYE_HEIGHT};
 
@@ -203,13 +203,44 @@ pub fn setup(
         // most of a stop of missing image. This is the rig's exposure and
         // nothing else sets one: if a surface is blown, its albedo is wrong
         // (`ART.md` §4).
-        Exposure { ev100: 14.2 },
-        // Chosen by measurement in a later slice, not by name (`RENDER.md`
-        // §4 R2/R5). TonyMcMapface is Bevy's default and is neutral with a
-        // gentle roll-off; what it is NOT is the browser's Khronos PBR
-        // Neutral, whose `x - 6.25x²` toe under 0.08 squared the shadows and
-        // delivered a face arriving at linear 0.02 as 8/255.
-        Tonemapping::TonyMcMapface,
+        // **Grouped, and it has to be.** Bevy implements `Bundle` for tuples
+        // up to 16 elements and this camera reached exactly 16; a 17th fails
+        // as "`(..., ..., ...)` is not a `Bundle`" pointing at the `spawn`
+        // rather than at the component that overflowed it. The tonal three —
+        // what the scene is exposed at, the curve it is mapped through, and
+        // the grade applied after — are one nested tuple, which is also the
+        // grouping `ART.md` rule 5 describes: one owner for the transfer.
+        (
+            Exposure { ev100: 14.2 },
+            // Chosen by measurement in a later slice, not by name (`RENDER.md`
+            // §4 R2/R5). TonyMcMapface is Bevy's default and is neutral with a
+            // gentle roll-off; what it is NOT is the browser's Khronos PBR
+            // Neutral, whose `x - 6.25x²` toe under 0.08 squared the shadows and
+            // delivered a face arriving at linear 0.02 as 8/255.
+            Tonemapping::TonyMcMapface,
+            // **The tonal instrument, and it is deliberately at identity.**
+            //
+            // Until now there was no grading stage of any kind in this client:
+            // `rg 'ColorGrading|AutoExposure' crates/client/src` returned nothing,
+            // so the frame's transfer was a fixed `ev100` and a tone curve and
+            // there was no third thing to turn. That matters because `RENDER.md`
+            // §0's own measured gap against the reference set is *exactly* a
+            // grading gap — the darks read ~30 luma too bright, the highlights ~15
+            // too dim, and chroma-per-luma is ~32% short — and a missing
+            // instrument is why `NOW.md` §0fill has been re-deferred pass after
+            // pass with the cause already solved.
+            //
+            // **Identity, not a grade**, and the distinction is the whole reason
+            // this is safe to land unlooked-at. Every field below is Bevy's
+            // default, so the frame does not move by one level from this line; it
+            // exists so the next pass has a knob to turn instead of a slice to
+            // build. Choosing the values is the coupled owner's job with the game
+            // open — `CLAUDE.md` measured three parallel passes at that making
+            // things worse 60→66 and one sequential owner cutting them to 26 —
+            // and the numbers go to `DECISIONS.md` §open when they are chosen,
+            // never invented here.
+            ColorGrading::default(),
+        ),
         // **The sky fill, and it is a HEMISPHERE now** (`fill.rs`) — `ART.md`
         // §4 asks for one in those words ("sky half cool blue, earth half
         // warm"), and the line below used to say why we could not have it:

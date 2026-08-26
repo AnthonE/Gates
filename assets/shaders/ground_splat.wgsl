@@ -80,6 +80,13 @@ struct GroundSplat {
 @group(#{MATERIAL_BIND_GROUP}) @binding(111) var rough_grass: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(112) var rough_litter: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(113) var rough_rock: texture_2d<f32>;
+// Ambient occlusion, per identity — `ART.md` §4's MEDIUM scale, the one
+// occlusion term a light rig cannot supply. All four shipped in every depot and
+// were sampled by nothing until 2026-08-25.
+@group(#{MATERIAL_BIND_GROUP}) @binding(114) var ao_sand: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(115) var ao_grass: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(116) var ao_litter: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(117) var ao_rock: texture_2d<f32>;
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
@@ -256,6 +263,33 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     pbr_input.N = normalize(tbn * nt);
 
     var out: FragmentOutput;
+    // ── Ambient occlusion, blended by the same weights ──────────────────
+    //
+    // **`min`, never a multiply, and that is `ART.md` §4 in one line**: "Never
+    // sum or multiply two occlusion terms of the same scale. Frostbite takes
+    // `min(bakedAO, ssAO)` to avoid double-darkening." Bevy's own
+    // `pbr_fragment` already applies exactly that rule between a material's
+    // `occlusion_texture` and SSAO, and `pbr_input.diffuse_occlusion` arrives
+    // here holding the SSAO term alone — the ground's base `StandardMaterial`
+    // has no occlusion slot, because these four maps are per-identity and it
+    // has one. So this is the same fold, one level up.
+    //
+    // **Diffuse only.** §4 again: the medium scale is `indirectDiffuse *= ao`,
+    // indirect only, and "specular occlusion is a separate term, not the
+    // diffuse one reused" — applying this to specular is visibly wrong at
+    // grazing angles. `pbr_input.specular_occlusion` is left as Bevy computed
+    // it from SSAO.
+    let ao = dot(
+        bw,
+        vec4<f32>(
+            textureSample(ao_sand, ground_sampler, uv).r,
+            textureSample(ao_grass, ground_sampler, uv).r,
+            textureSample(ao_litter, ground_sampler, uv).r,
+            textureSample(ao_rock, ground_sampler, uv).r,
+        ),
+    );
+    pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(ao));
+
     out.color = apply_pbr_lighting(pbr_input);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;

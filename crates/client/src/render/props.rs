@@ -21,12 +21,15 @@
 //! that silhouette now; `crates/client/tests/tree.rs` is the shape that
 //! survived, and it measures the hull rather than the cone.)
 //!
-//! The one thing not carried across yet is the per-instance colour tint. The
-//! browser had it per instance because it drew through an `InstancedMesh`
-//! with a colour attribute; here a shared material is what makes a forest one
-//! draw call, so variation comes from `Slot`'s own yaw and scale plus a small
-//! pool of mesh variants. `ART.md` rule 7 asks for more than that and
-//! `RENDER.md` records the debt.
+//! The per-instance colour tint is **two-thirds carried across** (2026-08-25).
+//! The browser had it truly per instance because it drew through an
+//! `InstancedMesh` with a colour attribute; here a shared material is what
+//! makes a forest one draw call, so what shipped is a POOL of value-tinted
+//! copies picked by cell key ([`TINT_POOL`]) — four batches where there was
+//! one, `POOL × variants` appearances where there were `variants`. Two
+//! boulders can still draw alike; they no longer always do. The remaining
+//! third is real per-instance data and wants the custom material `RENDER.md`
+//! already lists.
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -35,6 +38,7 @@ use bevy::prelude::*;
 use sim_core::gather::cell_key;
 use sim_core::terrain::{self, Occupant};
 
+use super::fresnel;
 use super::terrain_mesh::{CHUNK_M, NEAR_RADIUS};
 use super::tree;
 use super::{Eye, Net, WorldId};
@@ -132,18 +136,18 @@ pub struct PropAssets {
     cache_box: Handle<Mesh>,
     shelter: Handle<Mesh>,
     canopy: Handle<Mesh>,
-    foliage: Handle<StandardMaterial>,
+    foliage: [Handle<StandardMaterial>; TINT_POOL],
     /// The needle card's material: alpha-MASKED, not blended. A canopy is
     /// hundreds of overlapping cards, and blending them would need a per-card
     /// depth sort that changes with the camera — masked cards write depth and
     /// sort themselves. `AlphaMode::Mask` also keeps them in the opaque pass,
     /// so they cast the shadows a forest floor is made of.
-    needle: Handle<StandardMaterial>,
+    needle: [Handle<StandardMaterial>; TINT_POOL],
     /// The conifer trunk's bark. Separate from `foliage`, which the bark half
     /// used to wear for want of anything better — an untextured white surface
     /// whose only colour was the mesh's own trunk band.
-    bark: Handle<StandardMaterial>,
-    rock: Handle<StandardMaterial>,
+    bark: [Handle<StandardMaterial>; TINT_POOL],
+    rock: [Handle<StandardMaterial>; TINT_POOL],
     ore_stone: Handle<StandardMaterial>,
     ore_metal: Handle<StandardMaterial>,
     ore_sulfur: Handle<StandardMaterial>,
@@ -257,13 +261,47 @@ pub enum FellPart {
     Far,
 }
 
+/// Chunk radius of the TREE-ONLY outer ring, past [`NEAR_RADIUS`]. **(knob)**
+///
+/// **The ring the trees stop at was sized for a tree that cost 5,900
+/// triangles, and that tree has not existed since 2026-08-20.** `NEAR_RADIUS`
+/// is 2, so every prop on the island stops between 128 m and 192 m while the
+/// far ground mesh draws all 2,048 m of it — the far two-thirds of every wide
+/// frame is a painted heightfield with nothing standing on it, which is
+/// `ART.md` §1's "air has depth" and §8's far-third checklist item failing for
+/// want of anything to haze. Then `tree::impostor_of` landed and a whole tree
+/// became **one 105-triangle opaque hull**, ~55× cheaper, and nobody re-derived
+/// the radius the old cost had chosen.
+///
+/// **5, and the arithmetic is the reason.** An 11×11 ring is 96 chunks beyond
+/// the near 25, 3.84× the area, so at the ring's own measured p90 of 328 trees
+/// it is ~1,260 more — every one of them past [`tree::TREE_LOD_SWAP_M`] by
+/// construction and therefore a hull. 1,260 × 105 = **~132 k triangles**
+/// against trees currently costing 510 k and `DESIGN.md` §9's 1.5 M for the
+/// whole frame. `tests/outer_ring.rs` holds that arithmetic.
+///
+/// **Widening `NEAR_RADIUS` instead would have been the wrong lever**, and
+/// this is the part worth writing down. That constant is read by the ground
+/// streamer and by `clutter`, so moving it drags a 65×65 vertex heightfield
+/// and a 721-element clutter fill per chunk along with the trees — and a near
+/// tree is FOUR entities (trunk, canopy, hidden stump, hull) where an outer
+/// one is a single hull with no `Topple` and no `VisibilityRange`. Same
+/// picture, an order of magnitude more of everything else.
+pub const OUTER_RADIUS: i32 = 5;
+
 /// What the scatter ring has spawned, one parent entity per chunk.
 #[derive(Resource, Default)]
 pub struct PropRing {
     built: HashMap<(i32, i32), Entity>,
+    outer: HashMap<(i32, i32), Entity>,
 }
 
 impl PropRing {
+    /// Chunks in the NEAR ring, and deliberately not counting [`Self::outer`].
+    ///
+    /// `loading::read` measures the boot bar against `RING_CHUNKS` (25) with
+    /// this number, so folding the outer ring in here would leave the bar
+    /// asking for 121 chunks it does not wait for and never filling.
     pub fn len(&self) -> usize {
         self.built.len()
     }
@@ -273,6 +311,72 @@ impl PropRing {
     pub fn is_full(&self) -> bool {
         self.built.len() >= super::terrain_mesh::RING_CHUNKS
     }
+    /// Chunks in the tree-only outer ring. Read by gates, not by the bar.
+    pub fn outer_len(&self) -> usize {
+        self.outer.len()
+    }
+}
+
+/// Chunks in a full outer ring — the 11×11 block minus the near 5×5 it wraps.
+pub const OUTER_CHUNKS: usize = ((2 * OUTER_RADIUS + 1) * (2 * OUTER_RADIUS + 1)
+    - (2 * NEAR_RADIUS + 1) * (2 * NEAR_RADIUS + 1)) as usize;
+
+/// How many value-tinted copies of a high-count material the pool holds.
+/// **(knob)**
+///
+/// **`ART.md` rule 7 is "nothing may look procedural — no two identical
+/// instances adjacent at the same rotation and scale", and this file's own
+/// header recorded that we could not honour it.** The browser tinted per
+/// instance because it drew through an `InstancedMesh` with a colour
+/// attribute; here a shared material is what makes a forest one draw call, so
+/// variation came from yaw, a ±10% scale and a six-mesh pool and nothing else.
+/// At the measured p90 of 328 trees in the ring, and one boulder mesh for every
+/// granite outcrop on the island, that is not enough.
+///
+/// A small pool of pre-tinted materials is the cheap two-thirds of the fix.
+/// Bevy batches by `(mesh, material)`, so four tints is four batches where
+/// there was one — against `DESIGN.md` §9's 300 draw calls that is noise, and
+/// it buys `POOL × variants` distinct appearances instead of `variants`.
+/// **It is not per-instance** and does not claim to be: two boulders can still
+/// draw the same tint, just no longer always.
+pub const TINT_POOL: usize = 4;
+
+/// Peak value swing a tint applies, as a fraction. **(knob)**
+///
+/// Mean-1 by construction (see [`tint_pool`]), so the pool multiplies a
+/// surface's authored albedo without moving its mean — `ART.md` §7's rule for a
+/// modifier that sets a colour, and what keeps every tinted copy inside
+/// `ALBEDO_LUMA_BAND = [0.05, 0.55]` that prop albedo v1 established. Grey, not
+/// a hue: a per-instance HUE shift would fight the identity work `GROUND_ALBEDO`
+/// and the prop maps were measured into.
+///
+/// Invented — `DECISIONS.md` §open, prop tint v0. 7% is chosen to be visible
+/// against the ~6.3 luma neighbour contrast `ART.md` §3 measures in the
+/// reference set without reading as two different materials.
+pub const TINT_SWING: f32 = 0.07;
+
+/// `TINT_POOL` value multipliers, symmetric about 1.0.
+///
+/// Symmetric so the pool's mean is exactly 1: with an even count the values
+/// pair off (`1−s, 1−s/3, 1+s/3, 1+s`), so a population drawing uniformly from
+/// it delivers the authored albedo on average and the frame's brightness does
+/// not move. `tests/tint.rs` holds that.
+pub fn tint_pool() -> [f32; TINT_POOL] {
+    std::array::from_fn(|i| {
+        // i = 0..POOL-1 mapped onto [-1, 1].
+        let t = (i as f32 / (TINT_POOL - 1) as f32) * 2.0 - 1.0;
+        1.0 + TINT_SWING * t
+    })
+}
+
+/// Which tint a slot draws, from the cell key alone.
+///
+/// **Off the CELL KEY and not off a counter or a position hash**, for the
+/// reason every other per-slot decision in this file is: the key is what the
+/// sim and both clients agree on, so two players standing in one clearing see
+/// the same boulder. A streaming order would not survive walking away and back.
+pub fn tint_of(key: u32) -> usize {
+    (hash2(0x9e37_79b9, key) as usize) % TINT_POOL
 }
 
 /// sRGB hex to linear, which is what a vertex colour is in.
@@ -403,6 +507,37 @@ impl Soup {
         volume_center: Option<Vec3>,
         blend: f32,
     ) {
+        self.tri_ramp(a, b, c, color, volume_center, |_| blend);
+    }
+
+    /// [`Self::tri`] with the blend as a **function of the vertex** rather than
+    /// one number for the whole triangle.
+    ///
+    /// **Grass is why this exists.** `clutter::blade` blends every vertex fully
+    /// to the volume normal, which for a 34 cm blade over a centre 2 m below it
+    /// is within ~3° of straight up — the GROUND's own normal. So a blade took
+    /// the same sun cosine and the same hemisphere sample as the dirt it stood
+    /// in, and albedo was the only thing separating grass from ground. That is
+    /// the visual judge's "reads as paint" stated as arithmetic, on the layer
+    /// that fills the bottom half of every frame.
+    ///
+    /// One number cannot fix it, because both ends are right: a blade's ROOT
+    /// really is bedded in the ground and should shade with it, and its TIP is
+    /// a card standing up in the light and should shade as itself. What the
+    /// surface wants is the ramp between them.
+    ///
+    /// The projection plane is still chosen from the FACET, unchanged — a
+    /// per-vertex choice would tear the triangle across two projections, and
+    /// that reason does not weaken when the blend varies.
+    pub(super) fn tri_ramp(
+        &mut self,
+        a: Vec3,
+        b: Vec3,
+        c: Vec3,
+        color: impl Fn(Vec3) -> [f32; 4],
+        volume_center: Option<Vec3>,
+        blend: impl Fn(Vec3) -> f32,
+    ) {
         let facet = (b - a).cross(c - a).normalize_or_zero();
         // The projection plane: drop the facet normal's dominant axis. Chosen
         // from the FACET and not from each vertex's blended normal, so all
@@ -413,7 +548,8 @@ impl Soup {
             let n = match volume_center {
                 Some(ctr) => {
                     let vol = (v - ctr).normalize_or_zero();
-                    (facet * (1.0 - blend) + vol * blend).normalize_or_zero()
+                    let t = blend(v);
+                    (facet * (1.0 - t) + vol * t).normalize_or_zero()
                 }
                 None => facet,
             };
@@ -1067,12 +1203,20 @@ pub fn assets(
     images: &mut Assets<Image>,
     maps: &super::textures::PropMaps,
 ) -> PropAssets {
-    let surface = |rough: f32, refl: f32, materials: &mut Assets<StandardMaterial>| {
-        materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            perceptual_roughness: rough,
-            reflectance: refl,
-            ..default()
+    // `foliage` was the only untinted-`surface` caller and is pooled now, so
+    // the single-handle constructor went with it. `photo` stays: five classes
+    // still take one handle apiece.
+    // Once per tint. `base_color` is the mean-1 grey multiplier
+    // `ART.md` §7 asks a colour modifier to be — never a hue, which would fight
+    // the identity work the maps were measured into.
+    let surface_pool = |rough: f32, refl: f32, materials: &mut Assets<StandardMaterial>| {
+        tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                perceptual_roughness: rough,
+                reflectance: refl,
+                ..default()
+            })
         })
     };
     // The same, wearing a photograph. `base_color` stays WHITE and no gain is
@@ -1087,14 +1231,35 @@ pub fn assets(
             base_color: Color::WHITE,
             base_color_texture: Some(m.albedo.clone()),
             normal_map_texture: Some(m.normal.clone()),
-            // The roughness maps stay unwired for the reason `terrain_mesh`
-            // states: `metallic_roughness_texture` is a glTF-packed ORM slot
-            // whose B channel is METALLIC, and these sources are greyscale
-            // roughness jpgs, so binding one here would make every prop a
-            // half-metal. It needs an ORM packing step, not a slot assignment.
+            // The roughness maps stay unwired: `metallic_roughness_texture`
+            // is a glTF-packed ORM slot whose B channel is METALLIC, and these
+            // sources are greyscale roughness jpgs, so binding one here would
+            // make every prop a half-metal. It needs an ORM packing step, not
+            // a slot assignment. **The occlusion slot is a different question**
+            // and is wired below: `occlusion_texture` is its own binding and
+            // takes a greyscale map directly.
+            occlusion_texture: m.ao.clone(),
             perceptual_roughness: rough,
             reflectance: refl,
             ..default()
+        })
+    };
+    // …and once per tint, for the classes with hundreds of instances in a
+    // frame. See [`TINT_POOL`].
+    let photo_pool = |m: &super::textures::MapSet,
+                      rough: f32,
+                      refl: f32,
+                      materials: &mut Assets<StandardMaterial>| {
+        tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(m.albedo.clone()),
+                normal_map_texture: Some(m.normal.clone()),
+                occlusion_texture: m.ao.clone(),
+                perceptual_roughness: rough,
+                reflectance: refl,
+                ..default()
+            })
         })
     };
     // One generated conifer per pool entry, split into its two halves — and
@@ -1139,34 +1304,45 @@ pub fn assets(
         // the `authored` block above for what mirroring them by hand cost.
         shelter: meshes.add(archetype_mesh(Occupant::HavenShelter).expect("shelter mesh")),
         canopy: meshes.add(archetype_mesh(Occupant::WaystationCanopy).expect("canopy mesh")),
-        foliage: surface(0.86, 0.10, materials),
-        needle: materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            base_color_texture: Some(needle_map),
-            perceptual_roughness: 0.90,
-            reflectance: 0.08,
-            // Cards are two-sided by construction — you see the underside of
-            // every branch you stand beneath, and `ART.md` §5 calls that face
-            // the one every judge catches.
-            cull_mode: None,
-            // 0.5 against a mask whose alpha ramps to the needle's edge. Not
-            // defaulted anywhere: `props.js` mutation-tested a `|| 0.3`
-            // fallback and found it silently restored an opaque hull.
-            alpha_mode: AlphaMode::Mask(0.5),
-            // Needles are thin and the sun is behind half of them. Without
-            // this the canopy's lit side is the only side that reads.
-            double_sided: true,
-            ..default()
+        foliage: surface_pool(0.86, fresnel::DIELECTRIC, materials),
+        needle: tint_pool().map(|v| {
+            materials.add(StandardMaterial {
+                base_color: Color::linear_rgb(v, v, v),
+                base_color_texture: Some(needle_map.clone()),
+                perceptual_roughness: 0.90,
+                reflectance: fresnel::DIELECTRIC,
+                // Cards are two-sided by construction — you see the underside of
+                // every branch you stand beneath, and `ART.md` §5 calls that face
+                // the one every judge catches.
+                cull_mode: None,
+                // 0.5 against a mask whose alpha ramps to the needle's edge. Not
+                // defaulted anywhere: `props.js` mutation-tested a `|| 0.3`
+                // fallback and found it silently restored an opaque hull.
+                alpha_mode: AlphaMode::Mask(0.5),
+                // Needles are thin and the sun is behind half of them. Without
+                // this the canopy's lit side is the only side that reads.
+                double_sided: true,
+                ..default()
+            })
         }),
         // ── The photographs. Every one of these was a flat `base_color` and
         // a roughness scalar until now, which is `ART.md` rule 1 broken on
         // every non-ground surface in the frame.
         //
-        // The three ore nodes share the GRANITE map and differ by roughness
-        // and reflectance rather than by hue: they are one rock with a
-        // different mineral in it, and a node's identity is the glint its
-        // reflectance gives it. A per-ore albedo is a real want and a sourcing
-        // question rather than a code one — there is no sulfur map here.
+        // The three ore nodes share the GRANITE map and differ by ROUGHNESS
+        // rather than by hue: they are one rock with a different mineral in
+        // it, and a node's identity is the glint it gives back. A per-ore
+        // albedo is a real want and a sourcing question rather than a code one
+        // — there is no sulfur map here.
+        //
+        // **That identity used to be spelled in `reflectance` and could not
+        // work.** The three sat at 0.24/0.42/0.22, i.e. F0 0.9%/2.8%/0.8%, all
+        // far under a dielectric's 4% — so the channel carrying the difference
+        // had almost no energy in it, and the roughness that shapes the lobe
+        // had nothing to shape (`render::fresnel`). Every rock is a dielectric
+        // at 4% now and the split moved to the channel that can express it:
+        // 0.80 for granite against 0.55 for the metal-bearing node is a wide
+        // gap that reads for the first time.
         //
         // **`stone` is deliberately not one of them, and the capture is why.**
         // `Bricks089` is photoscanned stacked FIELD STONE — mortar joints and
@@ -1176,23 +1352,23 @@ pub fn assets(
         // thing in the frame and it was conspicuous because the map is good.
         // Masonry belongs on something a player BUILT (`structures.rs`), and
         // a natural rock face is granite whatever the ore in it.
-        rock: photo(&maps.rock, 0.88, 0.20, materials),
-        ore_stone: photo(&maps.rock, 0.80, 0.24, materials),
-        ore_metal: photo(&maps.metal, 0.55, 0.42, materials),
-        ore_sulfur: photo(&maps.rock, 0.78, 0.22, materials),
-        wood: photo(&maps.wood, 0.85, 0.14, materials),
-        metal: photo(&maps.metal, 0.50, 0.45, materials),
+        rock: photo_pool(&maps.rock, 0.88, fresnel::DIELECTRIC, materials),
+        ore_stone: photo(&maps.rock, 0.80, fresnel::DIELECTRIC, materials),
+        ore_metal: photo(&maps.metal, 0.55, fresnel::METAL_DIELECTRIC, materials),
+        ore_sulfur: photo(&maps.rock, 0.78, fresnel::DIELECTRIC, materials),
+        wood: photo(&maps.wood, 0.85, fresnel::DIELECTRIC, materials),
+        metal: photo(&maps.metal, 0.50, fresnel::METAL_DIELECTRIC, materials),
         // The haven pad and the waystation ARE built, so they get the
         // masonry — this is the identity that map was sourced for
         // (`MANIFEST.md`: "the identity ART asks for, not brick").
-        stone: photo(&maps.stone, 0.82, 0.26, materials),
+        stone: photo(&maps.stone, 0.82, fresnel::DIELECTRIC, materials),
         // The conifer's trunk. `ART.md` §5 asks for fissures running UP the
         // trunk, and this is the one prop that needed no UV work at all to get
         // them: `bevy_procedural_tree` emits `ATTRIBUTE_UV_0` cylindrically —
         // u around the ring, v along the branch — so a bark map lands with its
         // grain already pointing the right way. Before this the bark half of
         // every tree wore `foliage`, an untextured white surface.
-        bark: photo(&maps.bark, 0.92, 0.08, materials),
+        bark: photo_pool(&maps.bark, 0.92, fresnel::DIELECTRIC, materials),
     }
 }
 
@@ -1272,6 +1448,136 @@ pub fn stream(
             return;
         }
     }
+
+    // ── The outer ring ──────────────────────────────────────────────────
+    //
+    // Reached only once the near ring is complete, because the `return` above
+    // fires on every frame that built a near chunk. That ordering is the
+    // priority rule and it is free: the player is standing in the near ring,
+    // and a horizon that arrives a second late is a horizon nobody watched
+    // arrive.
+    let mut dropped_outer = 0usize;
+    ring.outer.retain(|(bx, bz), e| {
+        if dropped_outer >= 1
+            || ((*bx - cx).abs() <= OUTER_RADIUS && (*bz - cz).abs() <= OUTER_RADIUS)
+        {
+            return true;
+        }
+        dropped_outer += 1;
+        commands.entity(*e).despawn();
+        false
+    });
+    if dropped_outer > 0 {
+        // Stream-out is budgeted too — `CLAUDE.md`'s "the teardown spike is
+        // the half everyone forgets". A chunk of hulls despawned is a frame's
+        // work on its own.
+        return;
+    }
+
+    for dz in -OUTER_RADIUS..=OUTER_RADIUS {
+        for dx in -OUTER_RADIUS..=OUTER_RADIUS {
+            // The near ring already owns this chunk at full detail.
+            if dx.abs() <= NEAR_RADIUS && dz.abs() <= NEAR_RADIUS {
+                continue;
+            }
+            let key = (cx + dx, cz + dz);
+            if ring.outer.contains_key(&key) {
+                continue;
+            }
+            let parent = commands
+                .spawn((
+                    super::WorldEntity,
+                    Transform::IDENTITY,
+                    Visibility::default(),
+                ))
+                .id();
+            let cells = (CHUNK_M / terrain::CELL_SIZE) as i32;
+            let mut lat = terrain::Lattice::new();
+            for iz in 0..cells {
+                for ix in 0..cells {
+                    let cell_x = key.0 * cells + ix;
+                    let cell_z = key.1 * cells + iz;
+                    let slot = terrain::scatter_memo(
+                        &mut lat,
+                        world.seed,
+                        &world.table,
+                        &world.haven,
+                        cell_x,
+                        cell_z,
+                    );
+                    // **Trees only.** A boulder or a barrel at 300 m is a
+                    // sub-pixel lump that costs an entity and changes no
+                    // silhouette; a tree at 300 m is the treeline, which is
+                    // the whole thing this ring exists to draw.
+                    if slot.occupant != Occupant::Tree {
+                        continue;
+                    }
+                    let key = cell_key(cell_x as u16, cell_z as u16);
+                    spawn_outer_tree(&mut commands, parent, a, &slot, key, &world);
+                }
+            }
+            ring.outer.insert(key, parent);
+            return;
+        }
+    }
+}
+
+/// One far tree: a single entity, and everything it deliberately is not.
+///
+/// A near tree is FOUR entities — a trunk that topples, a canopy that topples
+/// beside it, a stump waiting hidden for a cut, and the hull that replaces the
+/// first two past [`tree::TREE_LOD_SWAP_M`]. Out here the swap distance is
+/// already behind us, so three of those four would spawn only to be culled by
+/// a `VisibilityRange` that can never open. What is left is the hull, and it
+/// needs no range component at all: nothing else is ever going to be shown in
+/// its place.
+///
+/// **It carries `FellPart::Vanish`, and that is the one thing it shares with a
+/// real prop.** Without a `Fellable` a felled tree would stand out here until
+/// the chunk happened to be rebuilt, and `harvest_new`'s `Added<Fellable>`
+/// pass is also what makes a chunk streaming into already-cleared ground
+/// correct on arrival — which matters far more here than in the near ring,
+/// because this ring streams 96 chunks. `Vanish` rather than `Trunk`: a hull
+/// has no stump to reveal and no sibling canopy to keep in step, and `Trunk`
+/// means *speaks for the slot* to the fell cue and the ambience bed
+/// (`FellPart::Far`'s own doc has the two bugs that rule was written from).
+/// It does not topple — `apply_fell`'s `Vanish` arm takes `Visibility` and
+/// never touches `Topple` — so a tree felled at 300 m blinks out rather than
+/// falling. At that range it is a few pixels; the near ring is where a topple
+/// is a thing anybody sees.
+pub fn spawn_outer_tree(
+    commands: &mut Commands,
+    parent: Entity,
+    a: &PropAssets,
+    slot: &terrain::Slot,
+    key: u32,
+    world: &WorldId,
+) {
+    let variant = (slot.yaw as usize) % a.impostors.len();
+    let yaw = slot.yaw as f32 / 256.0 * std::f32::consts::TAU;
+    // **`far_ground_y`, never `slot.y`.** Out here the ground a player sees is
+    // the 8 m far mesh sitting `FAR_DROP` below the real heightfield, so
+    // planting on `slot.y` floats every tree over a valley and buries it on a
+    // ridge. `terrain_mesh::far_ground_y` has the arithmetic and the one place
+    // it is only an approximation.
+    let y = super::terrain_mesh::far_ground_y(world.seed, &world.haven, slot.x, slot.z);
+    commands.entity(parent).with_child((
+        Fellable {
+            key,
+            variant,
+            base_y: y,
+            yaw,
+            part: FellPart::Vanish,
+            felled: false,
+        },
+        Mesh3d(a.impostors[variant].clone()),
+        MeshMaterial3d(a.foliage[tint_of(key)].clone()),
+        Transform {
+            translation: Vec3::new(slot.x, y - SINK_M, slot.z),
+            rotation: Quat::from_rotation_y(yaw),
+            scale: Vec3::splat(slot.scale),
+        },
+    ));
 }
 
 /// Draw one scatter slot as a child of its chunk.
@@ -1294,6 +1600,9 @@ pub fn spawn_slot(
     lod: &tree::TreeLod,
 ) {
     let yaw = slot.yaw as f32 / 256.0 * std::f32::consts::TAU;
+    // Which value-tint this slot draws. Off the CELL KEY so two players in one
+    // clearing see the same boulder — see [`tint_of`].
+    let tint = tint_of(key);
     // Which mesh, which material, and how far the mesh's own origin sits
     // above the ground — the browser's `lift`, kept because these meshes are
     // centred and the slot's y is the surface.
@@ -1305,13 +1614,13 @@ pub fn spawn_slot(
     let (mesh, material) = match slot.occupant {
         Occupant::Tree => {
             variant = (slot.yaw as usize) % a.pines.len();
-            (a.pines[variant].clone(), a.bark.clone())
+            (a.pines[variant].clone(), a.bark[tint].clone())
         }
         Occupant::StoneNode => (a.blob.clone(), a.ore_stone.clone()),
         Occupant::MetalNode => (a.blob.clone(), a.ore_metal.clone()),
         Occupant::SulfurNode => (a.blob.clone(), a.ore_sulfur.clone()),
-        Occupant::Bush => (a.bush.clone(), a.foliage.clone()),
-        Occupant::Rock => (a.boulder.clone(), a.rock.clone()),
+        Occupant::Bush => (a.bush.clone(), a.foliage[tint].clone()),
+        Occupant::Rock => (a.boulder.clone(), a.rock[tint].clone()),
         Occupant::BarrelSlot => (a.barrel.clone(), a.metal.clone()),
         Occupant::CrateSlot => (a.crate_box.clone(), a.wood.clone()),
         Occupant::CacheSlot => (a.cache_box.clone(), a.wood.clone()),
@@ -1420,7 +1729,7 @@ pub fn spawn_slot(
             fellable(FellPart::Canopy),
             Topple { t: -1.0 },
             Mesh3d(a.needles[variant].clone()),
-            MeshMaterial3d(a.needle.clone()),
+            MeshMaterial3d(a.needle[tint].clone()),
             lod.near.clone(),
             transform,
         ));
@@ -1444,7 +1753,7 @@ pub fn spawn_slot(
             fellable(FellPart::Far),
             Topple { t: -1.0 },
             Mesh3d(a.impostors[variant].clone()),
-            MeshMaterial3d(a.foliage.clone()),
+            MeshMaterial3d(a.foliage[tint].clone()),
             lod.far.clone(),
             transform,
         ));
@@ -1711,6 +2020,41 @@ fn apply_fell_in<F: bevy::ecs::query::QueryFilter>(
 }
 
 impl PropAssets {
+    /// Every material this pool builds, by name.
+    ///
+    /// **Exists for `tests/fresnel.rs` and for nothing else.** Every
+    /// `reflectance` in the client was authored 8–70× under physical because
+    /// the field is a remap and not a slider (`render::fresnel`), and the
+    /// defect is invisible to every other gate here: it changes no triangle, no
+    /// handle, no bit on the wire. The only way to catch the next one is to
+    /// read back what actually reached the asset store and ask what F0 it
+    /// delivers, which needs the handles.
+    ///
+    /// Named rather than indexed so a failure says *which* surface is wrong.
+    pub fn materials(&self) -> Vec<(&'static str, &Handle<StandardMaterial>)> {
+        // The tinted classes contribute every tint, not a representative: a
+        // pool built by `map` could have one entry authored differently and
+        // this is the gate that would say so.
+        let mut out: Vec<(&'static str, &Handle<StandardMaterial>)> = Vec::new();
+        for (name, pool) in [
+            ("foliage", &self.foliage),
+            ("needle", &self.needle),
+            ("rock", &self.rock),
+            ("bark", &self.bark),
+        ] {
+            out.extend(pool.iter().map(|h| (name, h)));
+        }
+        out.extend([
+            ("ore_stone", &self.ore_stone),
+            ("ore_metal", &self.ore_metal),
+            ("ore_sulfur", &self.ore_sulfur),
+            ("wood", &self.wood),
+            ("metal", &self.metal),
+            ("stone", &self.stone),
+        ]);
+        out
+    }
+
     /// Read-only handles the fell gate compares against.
     pub fn stump_mesh(&self) -> &Handle<Mesh> {
         &self.stump
@@ -1738,10 +2082,17 @@ impl PropAssets {
     /// and no longer is: the bark half wears a photograph now, so the fell
     /// gate's "a restored tree is a tree again" assertion compares against
     /// this handle.
-    pub fn bark_material(&self) -> &Handle<StandardMaterial> {
-        &self.bark
+    /// The trunk material a slot with this key draws. **Takes the key now**:
+    /// the class is a `TINT_POOL` of value-tinted copies, so "the bark
+    /// material" is not one handle and a gate comparing against a fixed one
+    /// would pass only for the quarter of slots that happened to land on it.
+    pub fn bark_material(&self, key: u32) -> &Handle<StandardMaterial> {
+        &self.bark[tint_of(key)]
     }
-    pub fn foliage_material(&self) -> &Handle<StandardMaterial> {
-        &self.foliage
+    /// The foliage material a slot with this key draws — the bush, the far
+    /// hull and the outer ring all wear it. Keyed for [`Self::bark_material`]'s
+    /// reason.
+    pub fn foliage_material(&self, key: u32) -> &Handle<StandardMaterial> {
+        &self.foliage[tint_of(key)]
     }
 }

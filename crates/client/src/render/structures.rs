@@ -477,7 +477,12 @@ struct Live {
 /// Shared meshes and materials, built once on first use. A base is hundreds
 /// of pieces over five shapes and three materials; one `StandardMaterial`
 /// per piece would be one draw call per piece.
-struct Kit {
+/// The shared mesh/material pool for pieces and deployables.
+///
+/// `pub` for `tests/fire.rs`, the same reason `props::PropAssets` is: the
+/// question "does a burnable deployable get a light child" can only be answered
+/// by running the real spawn, and the real spawn needs the real pool.
+pub struct Kit {
     /// One mesh per (shape, part), sized from [`shape_parts`] — the one
     /// table — and deduplicated by size, so the doorway's two posts share a
     /// mesh and the three slab shapes share one slab.
@@ -1335,7 +1340,8 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     None, // 11 workbench 3 — greybox
 ];
 
-fn build_kit(
+/// Build the pool. `pub` for the same reason [`Kit`] is.
+pub fn build_kit(
     assets: &AssetServer,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -1829,8 +1835,12 @@ pub fn deploy_transform(
     }
 }
 
+/// Public for `tests/fire.rs`, and for the reason `props::spawn_slot` is:
+/// whether a burnable deployable gets a light child is a SPAWN-SHAPE claim, and
+/// a spawn is not type-checked. Drop the `with_child` and every other gate in
+/// this crate stays green over a shard where no fire lights anything.
 #[allow(clippy::too_many_arguments)]
-fn spawn_deploy(
+pub fn spawn_deploy(
     commands: &mut Commands,
     kit: &Kit,
     seed: u64,
@@ -1855,14 +1865,151 @@ fn spawn_deploy(
         kit.deploy_mat[idx].clone()
     };
 
-    commands
-        .spawn((
-            super::WorldEntity,
-            Mesh3d(kit.deploy_mesh[idx].clone()),
-            MeshMaterial3d(mat),
-            transform,
-        ))
-        .id()
+    let mut e = commands.spawn((
+        super::WorldEntity,
+        Mesh3d(kit.deploy_mesh[idx].clone()),
+        MeshMaterial3d(mat),
+        transform,
+    ));
+    // A thing that burns gets a light, hung as a child and dark until the sim
+    // says the fire is lit. See [`FireLight`].
+    if burns(arch) {
+        e.with_child((
+            FireLight {
+                cx: rec.cx,
+                cz: rec.cz,
+                level: rec.level,
+            },
+            PointLight {
+                color: FIRE_COLOR,
+                intensity: 0.0,
+                range: FIRE_RANGE_M,
+                shadows_enabled: false,
+                ..default()
+            },
+            Transform::from_xyz(0.0, FIRE_LIGHT_LIFT_M, 0.0),
+        ));
+    }
+    e.id()
+}
+
+/// Archetypes that burn, as opposed to archetypes that merely convert.
+///
+/// **Narrower than [`is_converter`] on purpose**: that predicate covers the
+/// recycler, which `oven::toggle` switches through the same verb and which
+/// therefore appears in `ClientCore::ovens()` exactly as a campfire does. A
+/// recycler is a machine with a motor in it and putting a warm flickering
+/// light inside one would be this module inferring *fire* from *running*.
+pub fn burns(arch: u8) -> bool {
+    matches!(arch, ARCH_FIRE | ARCH_FURNACE)
+}
+
+/// The light a lit fire casts. Hung on every burnable deployable at spawn and
+/// left at zero intensity until the sim says that address is alight.
+///
+/// **There was no dynamic light of any kind in this client.** `PointLight`,
+/// `SpotLight` and a non-black `emissive` all returned zero across
+/// `crates/client/src` — one directional sun, one hemisphere fill baked into a
+/// cubemap, and nothing else. So a lit campfire cooked meat, made a crackling
+/// sound and did not put one photon on the ground beside it, and night was ten
+/// minutes in eighty of a uniform 60-lux `AmbientLight` (`rig::NIGHT_AMBIENT_
+/// LUX`) that `fill.rs`'s own header proves is direction-free.
+///
+/// **It needs no wire change, which is why it is a small slice rather than a
+/// `PROTO_VER` bump.** `DeployRec` carries no burning bit — but it does not
+/// have to: `EV_OVEN` announces lit/unlit per address, `ClientCore` keeps the
+/// set in `LitOvens`, and `verbs.rs` already reads it to decide what the
+/// crosshair says. This reads the same set.
+///
+/// Shadows are OFF. A shadow-casting point light is six faces of re-rasterised
+/// geometry per fire, `rig.rs` already spends four cascades on the sun, and a
+/// base with six lit furnaces would multiply that for a light whose whole job
+/// is a warm pool on the floor.
+///
+/// **It carries its own address rather than reading its parent's.** The light
+/// is a child of the deployable so it inherits the pose, and the alternative —
+/// a `ChildOf` hop into a second query — needs an address component on the
+/// deployable that nothing else wants. Three fields on the marker is the whole
+/// of it, and the fire's address never changes: a deployable that moves is a
+/// deployable that was despawned and respawned.
+#[derive(Component)]
+pub struct FireLight {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+}
+
+/// Fire colour. Not authored: `DEPLOY`'s own fire-pit row already carries
+/// `Color::srgb(0.816, 0.439, 0.188)` as the greybox tint that stood in for the
+/// mesh, which is a measured ember orange this file has been carrying since
+/// before there was a model. Reused rather than re-picked so the light and the
+/// thing it comes out of cannot drift.
+const FIRE_COLOR: Color = Color::srgb(1.0, 0.62, 0.28);
+
+/// How far the pool of light reaches, metres. **(knob)**
+///
+/// A campfire is not a floodlight: past a few metres its contribution is under
+/// the night ambient and all the range buys is more fragments touched. Six
+/// metres covers the cell it stands in and the bodies around it.
+const FIRE_RANGE_M: f32 = 6.0;
+
+/// Lumens when lit. **(knob)** Bevy's `PointLight` is in lumens and its own
+/// docs put a lightbulb near 1,000; a campfire is dimmer and warmer, and this
+/// has to sit far enough under `rig::lux::DIRECT_SUNLIGHT` that a fire in
+/// daylight is not a second sun. Registered in `DECISIONS.md` §open.
+const FIRE_LUMENS: f32 = 900.0;
+
+/// How far above the deployable's own origin the flame sits, metres. The
+/// origin is the centre of the archetype's box, so a light at zero is inside
+/// the fire ring rather than above it.
+const FIRE_LIGHT_LIFT_M: f32 = 0.35;
+
+/// Drive every fire light off the lit set the sim announces.
+///
+/// Reads the whole mirror rather than the change slice, for the reason
+/// `structures.rs` states at the top of this file: a resync restates the world
+/// and a renderer driven off deltas has to reproduce that state machine or
+/// leave a fire burning that the server put out. Reading the set makes the
+/// desync impossible by construction, and the set is capped (`MAX_BOXES`).
+///
+/// No per-frame allocation: the address rides the marker and `LitOvens::is_lit`
+/// is a linear scan of a bounded array.
+pub fn fire_lights(net: NonSend<super::Net>, q: Query<(&FireLight, &mut PointLight)>) {
+    if q.is_empty() {
+        return;
+    }
+    // The session is read through a predicate so the sweep below is testable
+    // without a socket — `props::harvest` / `apply_fell` is the same split for
+    // the same reason, and `LitOvens` is the authority exactly as
+    // `HarvestedSet` is there.
+    let ovens = net.session.core.ovens();
+    apply_fire_lights(q, &|cx, cz, level| ovens.is_lit(cx, cz, level));
+}
+
+/// [`fire_lights`] with the lit set as a predicate. The half a gate can drive.
+pub fn apply_fire_lights(
+    mut q: Query<(&FireLight, &mut PointLight)>,
+    lit: &dyn Fn(u16, u16, u8) -> bool,
+) {
+    for (fire, mut light) in q.iter_mut() {
+        let want = if lit(fire.cx, fire.cz, fire.level) {
+            FIRE_LUMENS
+        } else {
+            0.0
+        };
+        // Assign only on a change: `PointLight` is `Changed`-tracked and the
+        // render world re-extracts what moved, so writing the same lumens every
+        // frame would re-upload every fire on the shard forever.
+        if light.intensity != want {
+            light.intensity = want;
+        }
+    }
+}
+
+/// Lumens a lit fire delivers — read by the gate so the number is not written
+/// twice.
+pub fn fire_lumens() -> f32 {
+    FIRE_LUMENS
 }
 
 /// Which archetypes a player can open. Stated here because it is a property

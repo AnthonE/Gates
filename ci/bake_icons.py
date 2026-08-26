@@ -202,6 +202,31 @@ ITEMS = {
     "cooked_meat": "lorc/chicken-leg",
 }
 
+# The three vitals, bottom right, in every frame of play.
+#
+# **A separate map and not `ITEMS`, for a structural reason rather than a
+# tidiness one.** `ITEMS` is checked for equality against `content/items.toml`
+# — a stem in it that no item declares exits nonzero — because the wire carries
+# an item's display name and a missing picture must fail here rather than
+# silently in a cell. A vital is not an item and never will be, so it belongs
+# with `SHAPES` and `VERBS`: stems the interface needs that the content does
+# not name.
+#
+# They were the ASCII characters `+`, `~` and `*` until 2026-08-25 — the code
+# named itself a placeholder and pointed at this file — beside three carefully
+# measured coloured bars, which was the loudest prototype tell left in the
+# interface.
+#
+# `hot-meal` is the steaming cloche `ITEMS` REJECTED for `cooked_meat` above,
+# and the reason it lost there is the reason it wins here: it says *meal* and
+# not *meat*. A hunger vital is about eating rather than about a cut, so the
+# two read as different things in a frame holding both.
+VITALS = {
+    "vital_hp": "sbed/health-normal",
+    "vital_water": "sbed/water-drop",
+    "vital_food": "delapouite/hot-meal",
+}
+
 # THE SECOND SOURCE, AND WHY IT IS NOT THE FIRST
 #
 # game-icons.net's zip is unreachable from this box (the egress proxy
@@ -281,6 +306,7 @@ if unknown:
 
 ALL = dict(SHAPES)
 ALL.update(VERBS)
+ALL.update(VITALS)
 for item_id, icon in ITEMS.items():
     ALL[norm(BY_ID[item_id])] = icon
 MINE = {norm(BY_ID[item_id]): f for item_id, f in OURS.items()}

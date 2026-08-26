@@ -558,11 +558,28 @@ impl Vital {
         }
     }
 
-    /// The glyph standing in for the reference's icon.
+    /// The baked icon's file stem, and the ASCII the square falls back to.
     ///
-    /// **A placeholder, and named as one.** The reference puts a drawn icon
-    /// in that square; a glyph is what a client with no icons can say
-    /// truthfully until `NOW.md` §0p item 3 lands them.
+    /// **The glyph was a placeholder that named itself as one and outlived
+    /// three icon passes.** `+`, `~` and `*` sat in the bottom-right corner of
+    /// every frame of play beside three carefully measured coloured bars,
+    /// which is `ART.md` §2 rule 1's complaint arriving through the interface
+    /// rather than through a material — the bars were authored and the thing
+    /// labelling them was typography.
+    ///
+    /// The fallback is not dead code and must stay: `icons::load` is a
+    /// `Startup` system, a shard can be entered before its handles settle, and
+    /// this module's own rule is to draw something truthful rather than an
+    /// empty square. It is the same shape `panels::inv` uses for item cells.
+    fn icon_stem(self) -> &'static str {
+        match self {
+            Vital::Hp => "vital_hp",
+            Vital::Water => "vital_water",
+            Vital::Food => "vital_food",
+        }
+    }
+
+    /// What the square draws when the icon has not loaded.
     fn glyph(self) -> &'static str {
         match self {
             Vital::Hp => "+",
@@ -672,6 +689,53 @@ pub struct Compass;
 #[derive(Component)]
 pub struct NetLine;
 
+/// The two top-left diagnostics — the build stamp and [`NetLine`] — as one set.
+///
+/// **They were in every frame this project has ever produced.** Both were
+/// spawned unconditionally with no toggle and no run condition, so
+/// `0.2.0-g<sha>` and `net 99.87% ok · 3 miss · err 0.04 m` sat in the corner
+/// of every capture the visual judge scored, every screenshot the operator
+/// posted, and every `.png` an F7 report attached. Their own doc comments say
+/// the job is *"to be legible in a screenshot pasted into a bug report"* — and
+/// that job moved when bug reports v0 landed: `render/report.rs` writes
+/// `VERSION`/`GIT_SHA`/`PROTO_VER` and the netcode counters into the `.md` and
+/// the `.json` beside the frame, so the document carries the build whether or
+/// not the pixels do. What was left was the cost with none of the reason.
+///
+/// Hidden by default, F4 shows them. Same shape as `collider_debug`'s F3 and
+/// for the same stated reason: making an invisible thing visible on a keypress
+/// is the other half of "the operator boots the game and looks", and it asserts
+/// nothing, so `CLAUDE.md`'s ban on a replacement pixel gate is untouched.
+#[derive(Component)]
+pub struct Diagnostic;
+
+/// Are the top-left diagnostics up? Off by default and never persisted — the
+/// whole defect this fixes is that they shipped in frames nobody chose to put
+/// them in, and a toggle that survived a restart would do it again.
+#[derive(Resource, Default)]
+pub struct ShowDiagnostics(pub bool);
+
+/// F4 toggles. F3 is the collider overlay, F7 files a report and F12 takes a
+/// screenshot, so this is the next free one.
+pub fn toggle_diagnostics(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut show: ResMut<ShowDiagnostics>,
+    mut q: Query<&mut Visibility, With<Diagnostic>>,
+) {
+    if !keys.just_pressed(KeyCode::F4) {
+        return;
+    }
+    show.0 = !show.0;
+    let want = if show.0 {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    };
+    for mut v in &mut q {
+        *v = want;
+    }
+}
+
 /// The code lock's keypad, drawn — the root of [`pad_overlay`]'s small
 /// panel. Spawned and despawned by the system itself, so it lives here in
 /// the HUD (over the world, pointer-free) and not in `panels::` (which
@@ -680,7 +744,7 @@ pub struct NetLine;
 #[derive(Component)]
 pub struct PadRoot;
 
-pub fn setup(mut commands: Commands) {
+pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
     // The hotbar: six cells, bottom centre.
     commands
         .spawn((
@@ -826,9 +890,19 @@ pub fn setup(mut commands: Commands) {
                         },
                     ))
                     .with_children(|row| {
-                        // The icon square, left of the bar. A glyph today; a
-                        // drawn icon when there are icons.
-                        row.spawn((
+                        // The icon square, left of the bar. The baked picture
+                        // when it is loaded, the ASCII glyph when it is not —
+                        // never an empty square.
+                        //
+                        // The image is inset by 3 px on each side rather than
+                        // filling the trough: a 128 px silhouette scaled to the
+                        // bar's own 19 px height touches all four edges and
+                        // reads as a filled tile, and the cell is a *label* for
+                        // the bar beside it. Tinted with the vital's own fill,
+                        // so the icon and its bar are one colour and the row
+                        // reads as one object.
+                        let icon = icons.as_ref().and_then(|i| i.glyph(v.icon_stem()));
+                        let mut square = row.spawn((
                             Node {
                                 width: Val::Px(VITAL_BAR_H),
                                 height: Val::Px(VITAL_BAR_H),
@@ -837,12 +911,31 @@ pub fn setup(mut commands: Commands) {
                                 ..default()
                             },
                             BackgroundColor(super::panels::VITAL_TROUGH),
-                            children![(
-                                Text::new(v.glyph().to_string()),
-                                super::ui::font_bold(13.0),
-                                TextColor(v.fill()),
-                            )],
                         ));
+                        match icon {
+                            Some(h) => {
+                                square.with_children(|c| {
+                                    c.spawn((
+                                        ImageNode::new(h).with_color(v.fill()),
+                                        Node {
+                                            width: Val::Px(VITAL_BAR_H - 6.0),
+                                            height: Val::Px(VITAL_BAR_H - 6.0),
+                                            ..default()
+                                        },
+                                        Pickable::IGNORE,
+                                    ));
+                                });
+                            }
+                            None => {
+                                square.with_children(|c| {
+                                    c.spawn((
+                                        Text::new(v.glyph().to_string()),
+                                        super::ui::font_bold(13.0),
+                                        TextColor(v.fill()),
+                                    ));
+                                });
+                            }
+                        }
                         // The bar: a trough, the fill over it, and the number
                         // over both. Only the fill's width animates.
                         row.spawn((
@@ -901,6 +994,7 @@ pub fn setup(mut commands: Commands) {
         Text::new(""),
         super::ui::font_bold(14.0),
         TextColor(Color::srgba(0.86, 0.83, 0.76, 0.80)),
+        super::ui::TEXT_SHADOW,
         Pickable::IGNORE,
     ));
 
@@ -918,6 +1012,7 @@ pub fn setup(mut commands: Commands) {
     // server log all say one thing.
     commands.spawn((
         super::WorldEntity,
+        Diagnostic,
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(10.0),
@@ -927,6 +1022,9 @@ pub fn setup(mut commands: Commands) {
         Text::new(protocol::version::BUILD_ID),
         super::ui::font(11.0),
         TextColor(Color::srgba(0.86, 0.83, 0.76, 0.45)),
+        super::ui::TEXT_SHADOW,
+        // Hidden until F4. See [`ShowDiagnostics`].
+        Visibility::Hidden,
         Pickable::IGNORE,
     ));
 
@@ -935,6 +1033,7 @@ pub fn setup(mut commands: Commands) {
     commands.spawn((
         super::WorldEntity,
         NetLine,
+        Diagnostic,
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(24.0),
@@ -944,6 +1043,8 @@ pub fn setup(mut commands: Commands) {
         Text::new(""),
         super::ui::font(11.0),
         TextColor(Color::srgba(0.86, 0.83, 0.76, 0.35)),
+        super::ui::TEXT_SHADOW,
+        Visibility::Hidden,
         Pickable::IGNORE,
     ));
 
@@ -1000,6 +1101,7 @@ pub fn setup(mut commands: Commands) {
         Text::new(""),
         super::ui::font_bold(PROMPT_FONT_PX),
         TextColor(Color::srgba(0.96, 0.94, 0.88, 0.92)),
+        super::ui::TEXT_SHADOW,
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
     ));
@@ -1021,6 +1123,7 @@ pub fn setup(mut commands: Commands) {
             Text::new(""),
             super::ui::font(TOAST_FONT_PX),
             TextColor(Color::srgba(0.98, 0.82, 0.55, 0.0)),
+            super::ui::TEXT_SHADOW,
             TextLayout::new_with_justify(Justify::Center),
             Pickable::IGNORE,
         ));
@@ -1043,6 +1146,7 @@ pub fn setup(mut commands: Commands) {
         Text::new(""),
         super::ui::font_bold(14.0),
         TextColor(Color::srgba(0.98, 0.82, 0.55, 0.0)),
+        super::ui::TEXT_SHADOW,
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
     ));
@@ -1062,6 +1166,7 @@ pub fn setup(mut commands: Commands) {
         Text::new(""),
         super::ui::font_bold(15.0),
         TextColor(Color::srgba(0.90, 0.88, 0.82, 0.75)),
+        super::ui::TEXT_SHADOW,
         TextLayout::new_with_justify(Justify::Center),
         Pickable::IGNORE,
     ));

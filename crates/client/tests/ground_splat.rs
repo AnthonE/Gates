@@ -175,7 +175,62 @@ fn the_shader_and_the_rust_side_bind_the_same_slots() {
         (111, "rough_grass"),
         (112, "rough_litter"),
         (113, "rough_rock"),
+        (114, "ao_sand"),
+        (115, "ao_grass"),
+        (116, "ao_litter"),
+        (117, "ao_rock"),
     ];
+
+    // ── And the RUST struct, which this gate never actually read ────────
+    //
+    // The list above is hand-kept on purpose — it is the tripwire that makes
+    // adding a texture a three-place edit. But its doc called it "what
+    // `GroundSplat`'s `AsBindGroup` derive declares" while reading nothing of
+    // the sort, so shader and list could agree perfectly while the struct that
+    // actually builds the bind group had drifted from both. That is
+    // `CLAUDE.md`'s hand-kept-mirror trap exactly, and the whole failure this
+    // suite exists to prevent is a binding index nothing announces at runtime.
+    //
+    // Indices only, not names: binding 109 is the shared sampler, which the
+    // derive hangs off the `albedo_rock` FIELD while the shader calls it
+    // `ground_sampler` — the two sides legitimately disagree about that one
+    // name and agreeing about the number is the thing that matters.
+    let rust_src = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/render/ground_splat.rs"
+    ))
+    .expect("ground_splat.rs is not where this test expects it");
+    let mut rust_slots: Vec<u32> = Vec::new();
+    for attr in ["#[uniform(", "#[texture(", "#[sampler("] {
+        for (_, rest) in rust_src.split_once(attr).into_iter().flat_map(|_| {
+            rust_src
+                .match_indices(attr)
+                .map(|(i, _)| (i, &rust_src[i + attr.len()..]))
+        }) {
+            let num = rest
+                .split_once(')')
+                .unwrap_or_else(|| panic!("unterminated {attr} in ground_splat.rs"))
+                .0;
+            rust_slots.push(
+                num.trim()
+                    .parse()
+                    .unwrap_or_else(|e| panic!("{attr}{num}) is not a number: {e}")),
+            );
+        }
+    }
+    rust_slots.sort_unstable();
+    let shader_slots: Vec<u32> = {
+        let mut v: Vec<u32> = found.iter().map(|(n, _)| *n).collect();
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(
+        rust_slots, shader_slots,
+        "the WGSL and `GroundSplat`'s own attributes bind different slots. \
+         A slot the struct declares and the shader does not read is a texture \
+         uploaded for nobody; a slot the shader reads and the struct does not \
+         declare is an unbound sample, which reads as BLACK."
+    );
 
     let got: Vec<(u32, &str)> = found.iter().map(|(n, s)| (*n, s.as_str())).collect();
     assert_eq!(

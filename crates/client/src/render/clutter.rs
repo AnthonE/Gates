@@ -164,31 +164,66 @@ fn blade(s: &mut Soup, k: Stalk, v: f32) {
     // whichever way it happens to face, which is also what a real blade does
     // once its neighbours have scattered into it.
     //
-    // ⚠ **The reason this line used to give for going fully vertical was
-    // false, and the correction matters because it points at a different
-    // fix.** It said "a blade's two triangles wind opposite ways, so one of
-    // them took the sun and the other went black". They do not:
-    // `(b0,t0,b1)` and `(b1,t0,t1)` cross to the same side of the quad, and
-    // `tests/contact.rs` computes both facets over a swept blade and holds
-    // them in one hemisphere. The mechanism that actually blackens half a
-    // tuft is the material's `double_sided` flip below — Bevy negates the
-    // shading normal on a back-facing fragment, so any normal with a
-    // horizontal component presents as its own opposite to a camera on the
-    // other side, and seven blades at seven yaws put half of them there.
+    // ⚠ **This line has now given TWO false reasons for going fully vertical,
+    // and both corrections matter because each pointed at a different fix.**
     //
-    // **So the cost of this line is a real defect and the fix is not a
-    // blend number.** A fully vertical normal is the ground's own normal, so
-    // every blade is shaded *identically to the dirt it stands in* — same sun
-    // cosine, same hemisphere sample — and the only thing separating grass
-    // from ground is albedo. That is the visual judge's "reads as paint"
-    // stated as arithmetic. What it wants is a per-vertex ramp (ground normal
-    // at the root, the blade's own facing at the tip) rather than one constant
-    // for the whole quad, which is a change to `Soup::tri`'s signature and a
-    // shading change nobody here can look at. `NOW.md` §0gc carries it.
+    // The first said "a blade's two triangles wind opposite ways, so one took
+    // the sun and the other went black". They do not: `(b0,t0,b1)` and
+    // `(b1,t0,t1)` cross to the same side of the quad, and `tests/contact.rs`
+    // computes both facets over a swept blade and holds them in one
+    // hemisphere.
+    //
+    // The second — that the material's `double_sided` flip is what blackens
+    // half a tuft — is **also false, and was checked against Bevy's source
+    // rather than reasoned about** (2026-08-25). `pbr_functions.wgsl:130-134`
+    // wraps that negation in `#ifndef VERTEX_TANGENTS`, and
+    // `bevy_pbr/src/render/mesh.rs:2410` pushes `VERTEX_TANGENTS` whenever the
+    // layout carries `ATTRIBUTE_TANGENT` — which `Soup::mesh` puts on every
+    // clutter tile via `generate_tangents()`. The other `double_sided &&
+    // !is_front` in that file is inside `apply_normal_mapping`, and this
+    // material has no normal map. **No blade is ever flipped.** Do not
+    // "fix" this by turning `double_sided` off; it would change nothing here
+    // and would black out the back of every blade for real.
+    //
+    // **The real defect this line carried, and the fix.** A fully vertical
+    // normal is the GROUND's own normal, so every blade was shaded identically
+    // to the dirt it stood in — same sun cosine, same hemisphere sample — and
+    // albedo was the only thing separating grass from ground. That is the
+    // visual judge's "reads as paint" stated as arithmetic, on the layer that
+    // fills the bottom half of every frame.
+    //
+    // One number could not fix it, because BOTH ENDS ARE RIGHT: a blade's root
+    // really is bedded in the turf and should shade with it (`ART.md` rule 2 —
+    // nothing sits ON the ground), and its tip is a card standing in the light
+    // and should shade as itself (rule 1 — no surface may be one flat value).
+    // So the blend is a ramp up the blade rather than a constant, which is what
+    // `Soup::tri_ramp` exists for.
     let up_volume = Some(base - Vec3::Y * 2.0);
-    s.tri(b0, t0, b1, col, up_volume, 1.0);
-    s.tri(b1, t0, t1, col, up_volume, 1.0);
+    let root_y = base.y;
+    let ramp = move |p: Vec3| {
+        let t = ((p.y - root_y) / h).clamp(0.0, 1.0);
+        // 1 at the root (the ground's normal), `BLADE_TIP_BLEND` at the tip.
+        1.0 - (1.0 - BLADE_TIP_BLEND) * t
+    };
+    s.tri_ramp(b0, t0, b1, col, up_volume, ramp);
+    s.tri_ramp(b1, t0, t1, col, up_volume, ramp);
 }
+
+/// How much of the volume normal a blade's TIP keeps. **(knob)**
+///
+/// 0 would be the blade's own facet outright, which is the plate-lit look the
+/// fully-vertical blend was introduced to kill: seven blades at seven yaws each
+/// taking a different sun cosine reads as a pile of foil, not as turf. 1 is
+/// what shipped and is the ground's normal, which is the "reads as paint"
+/// defect. This keeps most of the volume behaviour and lets a quarter of the
+/// blade's own facing through, so a tuft still shades as a mass while its tips
+/// separate from the dirt.
+///
+/// **Invented, and nobody has looked at it** — `DECISIONS.md` §open, clutter
+/// contact v0. It is the one number in this slice a person has to judge, and
+/// `ART.md` §5's "blades catch a rim of sun at their tips" is what to judge it
+/// against.
+pub const BLADE_TIP_BLEND: f32 = 0.75;
 
 /// Blades per tuft. Seven, not the three the first native capture shipped:
 /// `terrain::clutter_fill` places ~2.4 elements per square metre, so a tuft
@@ -410,7 +445,9 @@ pub fn stream(
             materials.add(StandardMaterial {
                 base_color: Color::WHITE,
                 perceptual_roughness: 0.92,
-                reflectance: 0.12,
+                // A blade is a leaf: an ordinary dielectric. See
+                // `render::fresnel` for what 0.12 was actually delivering.
+                reflectance: super::fresnel::DIELECTRIC,
                 // Blades are single-sided quads and a player walks all the way
                 // around them.
                 double_sided: true,
