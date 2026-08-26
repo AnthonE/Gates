@@ -154,8 +154,8 @@ fn every_model_answers_to_an_item_that_exists() {
     }
 }
 
-/// The longest edge of a built mesh's positions, for the generated rows.
-fn mesh_longest(mesh: &bevy::prelude::Mesh) -> f32 {
+/// The +Y extent of a built mesh's positions, for the generated rows.
+fn mesh_height(mesh: &bevy::prelude::Mesh) -> f32 {
     let Some(VertexAttributeValues::Float32x3(pos)) =
         mesh.attribute(bevy::prelude::Mesh::ATTRIBUTE_POSITION)
     else {
@@ -168,19 +168,28 @@ fn mesh_longest(mesh: &bevy::prelude::Mesh) -> f32 {
             hi[k] = hi[k].max(p[k]);
         }
     }
-    (0..3).map(|k| hi[k] - lo[k]).fold(0.0f32, f32::max)
+    hi[1] - lo[1]
 }
 
 #[test]
-fn the_declared_length_is_the_models_own_length() {
-    // The grip is a fraction of `length_m`, so `length_m` being a
+fn the_declared_height_is_the_models_own_height() {
+    // The grip is a fraction of `height_m`, so `height_m` being a
     // *restatement* of what the geometry measures is the whole assumption.
     // Regenerate an asset at a different size, forget this table, and the
     // hand silently moves to the wrong place along the haft — no error, just
     // a spear held by its point. This is the gate for that, and it holds the
     // generated rows to the same number their table line declares.
+    //
+    // **It measures +Y and not the longest axis, and that is the fix rather
+    // than a tidy-up.** `grip_m` spends the fraction up +Y; measuring some
+    // other axis here made the gate green on a rock whose fist sat 97% of
+    // the way up it and on a building plan whose grip point was 8 cm off the
+    // object altogether — both models are wider than they are tall, so the
+    // number this test compared was never the number the grip was spent on.
+    // With +Y on both sides, `every_grip_is_on_the_object`'s 0..=1 assertion
+    // finally means what its name says.
     for m in &HELD_MODELS {
-        let longest = match m.src {
+        let height = match m.src {
             HeldSrc::Glb(rel) => {
                 let g = glb_json(&asset_path(rel));
                 let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
@@ -197,21 +206,52 @@ fn the_declared_length_is_the_models_own_length() {
                         hi[k] = hi[k].max(a["max"][k].as_f64().unwrap() as f32);
                     }
                 }
-                (0..3).map(|k| hi[k] - lo[k]).fold(0.0f32, f32::max)
+                hi[1] - lo[1]
             }
-            HeldSrc::Gen(name) => mesh_longest(&heldgen::mesh(name)),
+            HeldSrc::Gen(name) => mesh_height(&heldgen::mesh(name)),
         };
-        let err = (longest - m.length_m).abs() / m.length_m;
+        let err = (height - m.height_m).abs() / m.height_m;
         assert!(
             err < 0.02,
-            "{} declares length_m = {:.3} and the geometry measures {:.3} \
+            "{} declares height_m = {:.3} and the geometry measures {:.3} \
              ({:+.0}%). The grip offset is derived from that number, so the \
              hand is now {:.3} m off along the haft.",
             m.key,
-            m.length_m,
-            longest,
+            m.height_m,
+            height,
             err * 100.0,
-            (longest - m.length_m).abs() * m.grip_frac
+            (height - m.height_m).abs() * m.grip_frac
+        );
+    }
+}
+
+#[test]
+fn every_model_stands_on_its_own_feet() {
+    // `ci/import_meshy.py`'s convention — authored standing, feet at y = 0 —
+    // and the other half of the assumption `grip_m` rests on: the grip is
+    // measured UP from the model's origin, so an asset whose origin sits in
+    // its middle puts the fist half a model away from where the table says,
+    // with `the_declared_height_is_the_models_own_height` still green because
+    // an extent says nothing about where it sits.
+    for (key, rel) in glb_rows() {
+        let g = glb_json(&asset_path(rel));
+        let mut lo = f32::MAX;
+        for p in g["meshes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x["primitives"].as_array())
+            .flatten()
+        {
+            let a = &g["accessors"][p["attributes"]["POSITION"].as_u64().unwrap() as usize];
+            lo = lo.min(a["min"][1].as_f64().unwrap() as f32);
+        }
+        assert!(
+            lo.abs() < 0.01,
+            "{key} ({rel}) has its lowest vertex at y = {lo:+.3} rather than \
+             on 0. The grip is measured up from the origin, so the fist is \
+             {:.3} m out of the model.",
+            lo.abs()
         );
     }
 }
@@ -221,7 +261,7 @@ fn every_grip_is_on_the_object() {
     for m in &HELD_MODELS {
         assert!(
             (0.0..=1.0).contains(&m.grip_frac),
-            "{} grips at {} of its own length — outside the model, so the item \
+            "{} grips at {} of its own height — outside the model, so the item \
              would float beside the hand rather than in it",
             m.key,
             m.grip_frac
