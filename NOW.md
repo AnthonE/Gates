@@ -122,22 +122,28 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    slice is no code — `sim-core/src/bots.rs:53-60` presses `BTN_PRIMARY` 1-in-3.
 
 
-## 0mk · A swing at a piece marks nothing, and arrows pass through floors *(systems+client lane)*
+## 0mk · A swing at a piece marks nothing, and a deployable eats no shot *(systems+client lane)*
+
+✅ **The floor half landed 2026-08-25** (shot planes v0, `DECISIONS.md` §open):
+`collide::cell_planes_stop_shot` is the body walk's slab set at the
+arrowhead's radius, and `render/decal.rs::plane_face` gives a mark on a slab
+a `±Y` normal instead of a wall's. Item 1 was behind it and is now free.
 
 1. **A swing at a built PIECE marks nothing.** `combat::raid`
    (`combat.rs:869`) pushes no `EV_IMPACT`; `SURF_BUILT` is the kind, and
-   it sits behind item 2. Flesh stays unmarked by choice (one spare code).
-2. **⚠ Fix the collision, not the decal.** `collide::shot_blocked`
-   (`collide.rs:1266`) calls only
-   `cell_edges_stop_shot` and `cell_diags_block`, never `ColIndex::planes`
-   (`collide.rs:126`) — so an arrow fired down inside a base passes through
-   every floor as `SURF_GROUND`. `plane_blocked`'s doc sends this to
-   `NOW.md` §0ar, **a section that does not exist**. Only then the piece
-   address on the message: 27 bits against 4 spare pad bits, 11 bytes.
-   **What IS reachable today is a diagonal wall, 45° out** — `decal.rs`'s
-   built-piece arm snaps the normal to the dominant horizontal axis (±X or
-   ±Z), so the one wrong mark a player can actually see is on a diagonal.
-3. **Spray paint is a deployable, not a decal**: a `limits.rs` cap, a
+   the collision it was waiting on now exists. Flesh stays unmarked by
+   choice (one spare code).
+2. **A solid deployable stops no shot** — the same hole in a different
+   shape, and the one the floor fix left. `shot_blocked` never reads
+   `ColMasks::solid` and `ranged.rs` never calls `collide::deploy_blocked`,
+   so an arrow passes through a furnace, a box and a shut door's own
+   volume. `deploy::solid_vol` already gives the box; it is the plane
+   walk's shape with a per-archetype extent.
+3. **The piece address on `EV_IMPACT`** — 27 bits against 4 spare pad bits,
+   11 bytes. What still needs it: a **rim** (`plane_face` declines the
+   ambiguous strip by design) and a **diagonal wall, 45° out**, since the
+   built arm still snaps to the dominant horizontal axis.
+4. **Spray paint is a deployable, not a decal**: a `limits.rs` cap, a
    `worldsave.rs` slot, build privilege, decay, moderation. Stencil or
    painted is the call to make first.
 
@@ -257,13 +263,18 @@ The first two need a wire field (`DECISIONS.md` §open):
 1. **A band-boundary wall bases on its canonical cell** and hangs one band over
    the lower plate — an arrow-sized slit. The lower column is the honest base;
    needs `collide` and the renderer together. Rare since the plate, not fixed.
-2. **The flank costs 153 µs a tick; a memo takes most of it back.** `col_base_y`
-   re-samples terrain per cell per candidate and `plane_blocked` reads four
-   cells. `build::terrain_band` is pure in (seed, cell), so a direct-mapped memo
-   is exact (`occupy::SlotCache`'s argument). Nothing memoizes it. Not urgent.
-3. **The shot walk ignores the flanks** — `collide::shot_blocked` reads edges
-   and diagonals only, so an arrow passes through a floor a body is stopped by.
-   ⚠ this pointed at a §0ar that does not exist in this file.
+2. **The flank costs 153 µs a tick and the shot walk now pays too; one memo
+   takes most of both back.** `col_base_y` re-samples terrain per cell per
+   candidate. `build::terrain_band` is pure in (seed, cell), so a direct-mapped
+   memo is exact (`occupy::SlotCache`'s argument) and nothing memoizes it.
+   **Measured 2026-08-25** on `examples/shot_cost --base`: 100 shooters
+   volleying while stood on a slab is **1.25 → 3.07 ms** a tick against the
+   same run with nothing built, because `cell_planes_stop_shot` taps
+   `col_base_y` per sample over a plane-bearing column. Two callers now, same
+   fix, still not urgent — the number is an aligned volley, not play.
+3. ✅ **The shot walk reads the planes** (shot planes v0, 2026-08-25) —
+   `cell_planes_stop_shot`, gated by `tests/shoot.rs`' floor block. What it
+   still does not read is `ColMasks::solid`: see §0mk item 2.
 4. **The half wall** — the reference's answer to the gap a half-storey plate
    offset leaves on upper floors; `build.rs` has eleven `SHAPE_*`, no half.
 5. **The stepped foundation — and DO NOT widen the plate limits instead.**

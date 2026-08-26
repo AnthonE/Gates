@@ -68,6 +68,9 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use super::feed::Feed;
 use super::{Eye, WorldId};
+use sim_core::build::{self, BUILD_CELL_M, LEVEL_H_M};
+use sim_core::collide::{ColIndex, PLANE_THICKNESS_M};
+use sim_core::limits::{MAX_BUILD_COORD, MAX_BUILD_LEVELS};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 use sim_core::ranged::{SURF_BUILT, SURF_GROUND, SURF_WORLD};
 use sim_core::terrain;
@@ -379,13 +382,24 @@ fn tint(surf: u8) -> Color {
 ///   trunk's axis is its slot's own `x`/`z`, so the outward normal is the
 ///   horizontal from that axis to the impact. `terrain::scatter` is the
 ///   lookup `props.rs` already spawns the tree from.
-/// - **A built piece** is the approximate one, and it is the honest gap in
-///   this slice. A wall lies on its cell's edge, so the impact's offset
-///   from the cell centre points at that edge and snapping it to the
-///   dominant horizontal axis is right for a wall and wrong for a floor,
-///   which gets a wall's normal and reads as a mark on its lip. Closing it
-///   properly wants the piece's address on `EV_IMPACT` — `NOW.md`.
-fn facing(world: &WorldId, x: f32, z: f32, surf: u8) -> Vec3 {
+/// - **A built piece** is the approximate one, and it is still the honest
+///   gap in this slice — but it is no longer wrong about floors, which is
+///   the half that started mattering when `collide::shot_blocked` learned
+///   to read a plane (shot planes v0). A wall lies on its cell's edge, so
+///   the impact's offset from the cell centre points at that edge and the
+///   dominant horizontal axis is right for it; a **floor is horizontal**,
+///   and the same snap laid every mark on a floor edge-on, where a decal
+///   projects to a smear or to nothing. So the altitude is asked first
+///   ([`plane_face`]) and only an impact that is not on a slab's face falls
+///   through to the edge snap.
+///
+///   Closing it *properly* still wants the piece's address on `EV_IMPACT`
+///   (`NOW.md` §0mk): what the altitude cannot separate is a slab's face
+///   from its **rim**, and [`plane_face`] declines the ambiguous band rather
+///   than guessing — so a rim hit keeps exactly the normal it has always
+///   had. The change is monotone: every impact this improves was wrong
+///   before, and none that were right have moved.
+fn facing(world: &WorldId, cols: &ColIndex, x: f32, y: f32, z: f32, surf: u8) -> Vec3 {
     match surf {
         SURF_GROUND => {
             // One arrow-radius of separation: closer and the difference is
@@ -411,7 +425,13 @@ fn facing(world: &WorldId, x: f32, z: f32, surf: u8) -> Vec3 {
             Vec3::new(x - slot.x, 0.0, z - slot.z).normalize_or(Vec3::Y)
         }
         _ => {
-            let cell = sim_core::build::BUILD_CELL_M;
+            // A slab's face, when the altitude says so and says it
+            // unambiguously; otherwise the edge snap below, which is what a
+            // wall, a rim and a foundation skirt all want.
+            if let Some(n) = plane_face(world, cols, x, y, z) {
+                return n;
+            }
+            let cell = BUILD_CELL_M;
             let ox = x - (x / cell).floor() * cell - cell * 0.5;
             let oz = z - (z / cell).floor() * cell - cell * 0.5;
             if ox.abs() >= oz.abs() {
@@ -421,6 +441,114 @@ fn facing(world: &WorldId, x: f32, z: f32, surf: u8) -> Vec3 {
             }
         }
     }
+}
+
+/// Whether the impact at (`x`, `y`, `z`) landed on the **face** of a built
+/// plane, and which way that face points — `None` when the altitude cannot
+/// say so without guessing.
+///
+/// **Derived, like every other arm of [`facing`], and from the mirror the
+/// predictor already holds.** A plane's geometry is not a secret the wire has
+/// to carry: its top is `column_floor_y(cell, plate) + level·LEVEL_H_M` —
+/// `collide`'s own sentence, computed here from the same `ColIndex` the
+/// client predicts movement against — and the slab hangs
+/// `PLANE_THICKNESS_M` below it. So an impact's height above that column is
+/// enough to separate a floor from a wall, which is the distinction the mark
+/// actually needs.
+///
+/// **It declines the rim, and that is the point of the margin.** An arrow
+/// stopped by a slab's exposed edge reports a position in the same altitude
+/// band as one stopped by its face, and nothing on the wire separates them —
+/// so `EDGE_M` fences off the strip where a rim hit is reachable
+/// (`ranged::ARROW_R_M` plus one `limits::ARROW_STEP_MM` tap, rounded up) and
+/// this returns `None` inside it. `facing`'s edge snap then answers, exactly
+/// as it did before shot planes v0. The result is that this function only
+/// ever *replaces a wrong normal with a right one*; it never overrules a
+/// normal that was already correct.
+///
+/// A **foundation** (level 0) has a top face and no underside — it is solid
+/// to the ground and the drawn skirt is its side — so it claims `+Y` at its
+/// top and declines everywhere below, leaving the skirt to the edge snap that
+/// suits a vertical face.
+fn plane_face(world: &WorldId, cols: &ColIndex, x: f32, y: f32, z: f32) -> Option<Vec3> {
+    /// How close to a cell boundary an impact may be and still be called a
+    /// face. Inside this, a rim hit is reachable and nothing distinguishes
+    /// the two, so the answer is "do not guess".
+    const EDGE_M: f32 = 0.25;
+    /// The slack around a slab's two faces: an arrow stops at the first
+    /// sample inside the band, so its reported height overshoots by up to one
+    /// tap. Wider than the sample step so a mark is not thrown back to the
+    /// edge snap by quantization.
+    ///
+    /// Named at this length because the knob registry scans **crate-wide by
+    /// name** and a bare `TOL` already means 0.01 in `sim-core/tests/
+    /// relief.rs` — the registry cannot be authoritative about a name that
+    /// means two things, and it says so out loud rather than picking one.
+    const SLAB_FACE_TOL_M: f32 = 0.25;
+
+    let (bx, bz) = (build::build_cell_of(x), build::build_cell_of(z));
+    // Both ends of the lattice, `collide`'s own guard: a mark arrives as three
+    // quantized wire fields and nothing upstream promises they name a cell.
+    if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
+        return None;
+    }
+    let (bx, bz) = (bx as u16, bz as u16);
+    let m = cols.get(bx, bz);
+    let tris = m.tri_xlo_zlo | m.tri_xhi_zlo | m.tri_xlo_zhi | m.tri_xhi_zhi;
+    if m.planes == 0 && tris == 0 {
+        return None;
+    }
+    // Far enough inside the cell that a rim cannot be what was hit. The
+    // triangles' own half tests are deliberately not repeated here: a
+    // triangle's hypotenuse is a rim too, and `EDGE_M` off the cell says
+    // nothing about it, so a triangle only answers where the square would.
+    let cxm = bx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
+    let czm = bz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5;
+    if (x - cxm).abs() > BUILD_CELL_M * 0.5 - EDGE_M
+        || (z - czm).abs() > BUILD_CELL_M * 0.5 - EDGE_M
+    {
+        return None;
+    }
+    let base = build::column_floor_y(
+        world.seed,
+        &world.haven,
+        bx,
+        bz,
+        cols.plate(bx, bz).unwrap_or(0),
+    );
+    for level in 0..MAX_BUILD_LEVELS {
+        let bit = 1u8 << level;
+        if (m.planes | tris) & bit == 0 {
+            continue;
+        }
+        let top = base + level as f32 * LEVEL_H_M;
+        if y > top + SLAB_FACE_TOL_M {
+            continue; // over this slab
+        }
+        // Level 0 is solid to the ground, so it has a top face and no
+        // underside — the drawn skirt is its side, and a hit on that side is
+        // at the cell boundary, where `EDGE_M` has already declined.
+        if level == 0 {
+            if y >= top - SLAB_FACE_TOL_M {
+                return Some(Vec3::Y);
+            }
+            continue;
+        }
+        let bottom = top - PLANE_THICKNESS_M;
+        if y < bottom - SLAB_FACE_TOL_M {
+            continue; // under this slab
+        }
+        // Inside the band: the NEARER face, rather than whichever test was
+        // written first. The two windows overlap — the slack is most of the
+        // slab's own thickness — so an order-dependent answer would put a
+        // ceiling mark face-up on nothing more than statement order.
+        return Some(if top - y <= y - bottom {
+            Vec3::Y
+        } else {
+            Vec3::NEG_Y
+        });
+    }
+    None
 }
 
 /// Claim a slot for every impact the feed reports.
@@ -433,6 +561,12 @@ pub fn mark(
     mut pool: ResMut<Marks>,
     feed: Res<Feed>,
     world: Res<WorldId>,
+    // The piece mirror, for the one thing a mark on a built surface needs
+    // that the wire does not carry: which way that surface points. Read the
+    // way `audio::place` reads it — the placement broadcast that raised a
+    // column inserted the record, so the column is in the mirror by the time
+    // an impact inside it can arrive.
+    net: NonSend<super::Net>,
     eye: Res<Eye>,
     mut materials: ResMut<Assets<ForwardDecalMaterial<StandardMaterial>>>,
     mut q: Query<(&mut Transform, &mut Visibility)>,
@@ -449,6 +583,7 @@ pub fn mark(
         // otherwise put the prewarm mark behind the horizon.
         let ahead = eye.pos + Vec3::new(eye.yaw.sin(), 0.0, eye.yaw.cos()) * 3.0;
         let y = terrain::ground(world.seed, &world.haven, ahead.x, ahead.z);
+        let cols = net.session.core.pieces.cols();
         let ix = pool.claim();
         pool.slots[ix] = Mark {
             left: LIFE_S,
@@ -461,7 +596,7 @@ pub fn mark(
             &pool,
             ix,
             Vec3::new(ahead.x, y, ahead.z),
-            facing(&world, ahead.x, ahead.z, SURF_GROUND),
+            facing(&world, cols, ahead.x, y, ahead.z, SURF_GROUND),
             SURF_GROUND,
             PREWARM_ALPHA,
         );
@@ -473,7 +608,14 @@ pub fn mark(
             qy as f32 * POS_Y_Q,
             qz as f32 * POS_XZ_Q,
         );
-        let n = facing(&world, at.x, at.z, surf);
+        let n = facing(
+            &world,
+            net.session.core.pieces.cols(),
+            at.x,
+            at.y,
+            at.z,
+            surf,
+        );
         let ix = pool.claim();
         pool.slots[ix] = Mark {
             left: LIFE_S + FADE_S,
@@ -646,7 +788,8 @@ mod tests {
         // Sea level well off the island's shoulder is as close to flat as
         // this worldgen offers; the assertion is deliberately loose,
         // because what would fail it is an axis error, not a gentle slope.
-        let n = facing(&world, 1024.0, 1024.0, SURF_GROUND);
+        let empty = ColIndex::new();
+        let n = facing(&world, &empty, 1024.0, 0.0, 1024.0, SURF_GROUND);
         assert!(
             n.y > 0.9,
             "a ground mark's normal must point broadly up, got {n:?} — a \
@@ -664,7 +807,7 @@ mod tests {
         let mut tilted = 0;
         for i in 0..64 {
             let (x, z) = (300.0 + i as f32 * 20.0, 700.0 + i as f32 * 11.0);
-            if facing(&world, x, z, SURF_GROUND).y < 0.999 {
+            if facing(&world, &empty, x, 0.0, z, SURF_GROUND).y < 0.999 {
                 tilted += 1;
             }
         }
@@ -685,12 +828,111 @@ mod tests {
     #[test]
     fn a_world_mark_faces_out_of_the_thing_it_hit() {
         let world = WorldId::new(SEED);
-        let n = facing(&world, 512.3, 733.7, SURF_WORLD);
+        let empty = ColIndex::new();
+        let n = facing(&world, &empty, 512.3, 0.0, 733.7, SURF_WORLD);
         assert_eq!(n.y, 0.0, "a mark on a trunk's side has no vertical lean");
         assert!(
             (n.length() - 1.0).abs() < 1e-3,
             "the normal must be unit length, got {}",
             n.length()
+        );
+    }
+
+    /// A mark on a floor lies flat on it, and one on a wall still stands up.
+    ///
+    /// **The check that shot planes v0 does not arrive drawing smears.**
+    /// `collide::shot_blocked` learned to stop an arrow on a plane, so a
+    /// built impact can now be a *floor* — and every built normal used to be
+    /// horizontal, which lays a decal edge-on to the surface it is projecting
+    /// onto. Both halves are asserted together on purpose: a `plane_face`
+    /// that answered `+Y` everywhere would fix the floor and flatten every
+    /// mark on every wall, and the wall half is the only thing that says so.
+    ///
+    /// Arithmetic, not a screenshot — `CLAUDE.md` is explicit that there is
+    /// no visual gate and that what may be gated about a frame is arithmetic.
+    #[test]
+    fn a_mark_on_a_floor_lies_flat_and_one_on_a_wall_stands_up() {
+        use sim_core::build::{LOC_PLANE, SHAPE_FLOOR, SHAPE_FOUNDATION};
+
+        let world = WorldId::new(SEED);
+        // Boxed: `ColIndex` is a large fixed array, and building one in a
+        // stack frame is CLAUDE.md's wasm shadow-stack trap.
+        let mut cols = Box::new(ColIndex::new());
+        let (cx, cz) = (341u16, 341u16);
+        cols.add(cx, cz, 0, LOC_PLANE, SHAPE_FOUNDATION, 0);
+        cols.add(cx, cz, 1, LOC_PLANE, SHAPE_FLOOR, 0);
+
+        let base = build::column_floor_y(world.seed, &world.haven, cx, cz, 0);
+        let (mx, mz) = (
+            cx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
+            cz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
+        );
+
+        // On the foundation's top face, mid-cell.
+        let n = facing(&world, &cols, mx, base, mz, SURF_BUILT);
+        assert_eq!(
+            n,
+            Vec3::Y,
+            "a mark on a foundation at y={base:.2} faces {n:?} — a horizontal              normal lays the decal edge-on to the floor it is on"
+        );
+
+        // On the first storey's floor, and on its underside — the ceiling of
+        // the room below, which is the half a downward shot never reaches.
+        let up = facing(&world, &cols, mx, base + LEVEL_H_M, mz, SURF_BUILT);
+        assert_eq!(up, Vec3::Y, "a mark on the level-1 floor faces {up:?}");
+        let down = facing(
+            &world,
+            &cols,
+            mx,
+            base + LEVEL_H_M - PLANE_THICKNESS_M,
+            mz,
+            SURF_BUILT,
+        );
+        assert_eq!(
+            down,
+            Vec3::NEG_Y,
+            "a mark on the ceiling of the storey below faces {down:?}"
+        );
+
+        // A WALL — the same cell, at an altitude no slab occupies. It must
+        // keep the horizontal snap, or this helper has flattened every
+        // vertical surface in the game.
+        let mid = facing(
+            &world,
+            &cols,
+            mx + 1.0,
+            base + LEVEL_H_M * 0.5,
+            mz,
+            SURF_BUILT,
+        );
+        assert_eq!(
+            mid.y, 0.0,
+            "a mark between two floors is on something vertical and must              stand up, got {mid:?}"
+        );
+
+        // And the RIM: at a slab's altitude but at the cell's edge, where
+        // nothing on the wire separates a face from an exposed edge. It must
+        // DECLINE rather than guess, which is what keeps this change from
+        // overruling a normal that was already right.
+        let rim = facing(
+            &world,
+            &cols,
+            cx as f32 * BUILD_CELL_M + 0.05,
+            base + LEVEL_H_M,
+            mz,
+            SURF_BUILT,
+        );
+        assert_eq!(
+            rim.y, 0.0,
+            "an impact on the cell boundary is a rim hit as easily as a face              hit; it must keep the edge snap, got {rim:?}"
+        );
+
+        // An empty column answers nothing at any altitude — the mirror is
+        // what makes this derived rather than invented.
+        let none = facing(&world, &ColIndex::new(), mx, base, mz, SURF_BUILT);
+        assert_eq!(
+            none.y, 0.0,
+            "with no piece in the mirror there is no plane to face, got {none:?}"
         );
     }
 
