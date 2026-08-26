@@ -49,10 +49,14 @@ fn maps() -> GroundMaps {
         albedo: Handle::default(),
         normal: Handle::default(),
         rough: Handle::default(),
-        // `None`, like a role with no `_ao.jpg`: the ground shader does not
-        // sample this slot, and a default handle here would be a claim that it
-        // does.
-        ao: None,
+        // `Some`, like every real ground role. This said `None` for one day
+        // between the AO slot landing on `MapSet` and the ground shader
+        // actually sampling it, with a comment asserting the shader did not —
+        // and `GroundSplat::new` panics on a ground role with no AO map, on
+        // purpose, because an unresolved handle in that slot samples BLACK and
+        // would draw the whole island in shadow. So the fixture has to carry
+        // one, exactly as it carries the other three.
+        ao: Some(Handle::default()),
     };
     GroundMaps {
         sand: set(),
