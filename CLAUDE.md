@@ -336,6 +336,36 @@ do not rediscover)
   look right and not the same measurement. **`git status` before quoting a
   timing**, and if a counter has to exist, put it behind a cargo feature so the
   default build has no atomic in the hot path.
+- **A shaping curve interpolated with `lerp` is a contour map, and no gate in
+  this repo could see it.** `terrain::remap` ran the height field through 17
+  LUT knots with `lerp` between them from the first commit to 2026-08-26. A
+  piecewise-linear curve is C⁰ and not C¹ — its *slope* steps at every knot,
+  here by **8× at knot 7 and 12× at knot 12** — and `render/terrain_mesh.rs`
+  takes its normal analytically from that field's gradient, on purpose, so the
+  triangulation never shades. A slope step is therefore a normal step, and a
+  normal step along a set of constant elevation is a **survey contour drawn on
+  the mountain in shading**. Sixteen knots, sixteen rings, nested around every
+  hill; the same thing happens at a `clamp`'s two rails and at any linear ramp
+  keyed on height (the ridged blend's gate put two more at 52 m and 80 m).
+  **Every gate was green and every one of them had to be**: the golden pinned
+  the values the curve produced, the replay reproduced them, `test_content` had
+  no opinion, and clippy sees a `lerp`. The defect is not a wrong value
+  anywhere — it is a *derivative* being discontinuous, and nothing in this tree
+  asserted on a derivative. It was found by drawing it
+  (`sim-core/examples/hillshade` renders |∇‖∇h‖|; the island came out as a topo
+  map) after the operator pointed at a screenshot.
+  Two things to carry. **First: a shading defect can live entirely in the sim
+  crate.** The renderer was correct; worldgen handed it a creased surface.
+  Anything that reaches the frame through an analytic normal — terrain, water,
+  any signed distance — is held to C¹, and a LUT, a `clamp`, a `min`/`max`
+  ramp and a `t.clamp(0,1)` gate are all C⁰ by default. **Second: the obvious
+  gate does not work and was thrown away rather than shipped** — sweeping the
+  island and binning curvature by elevation reads 3.58–4.65× the median before
+  the fix and 1.54–3.52× after, overlapping, because it cannot tell a crease
+  from the cliffs the LUT exists to create. `tests/contour.rs` gates the
+  *mechanism* (the curve is C¹ at every knot and at the clamp) instead, which
+  is exact, runs in microseconds, and is proven red under the old body.
+
 - **A judge names the symptom; fix the cause.** Optimizing the judge's
   literal sentence is how a loop circles for three passes — elsewhere,
   "untextured" was really diffuse contrast crushed by an earlier fix for

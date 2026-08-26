@@ -60,6 +60,38 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 # Buildable now — a loop can pick any of these
 
 
+## 0wg · What worldgen shape v1 left open *(sim+client lane)*
+
+The island stopped rendering as a contour map (`DECISIONS.md` §open, worldgen
+shape v1: `remap` is a monotone cubic, detail rides after the curve, the
+highland blend is a ridged multifractal). Four things it did not do.
+
+1. **Nobody has booted it** — the whole slice is hillshades of
+   `terrain::height` and arithmetic gates. The operator's screenshot has not
+   been re-shot, and `--features render` does not build on the container it
+   landed in (three `-dev` packages, `CLAUDE.md` §container). Belongs to
+   `§LOOK`, and it is the only item there that is a *regression* risk rather
+   than an unseen feature: the shape under every prop, tree and clutter tile
+   moved.
+2. **The lowlands are still flat**, and that is a choice this slice made
+   rather than a defect it missed. Detail is weighted by `shelf²`, so a 14 m
+   shelf keeps 2.6% of `DETAIL_AMP` where the summit keeps all of it — bought
+   deliberately, because a linear weight costs the doorway, the wolf hunt and
+   the replay build floor at ~8 m (measured, three gates, clean dose-response).
+   If the flats should have relief, the answer is not a bigger amplitude, it
+   is relief that does not fight `foundation_terrain_ok` — a field that varies
+   *between* build cells and is flat *within* one.
+3. **18.75 m is the finest relief worldgen may author**, because `FAR_STEP` is
+   8 m and the far mesh cannot resolve below ~16 m of wavelength. Anything
+   finer wants the far mesh's step to come down first, which is a budget
+   question nobody has costed.
+4. **The statistical contour gate does not exist and should not be rebuilt**
+   until someone has a metric that separates. Binning |∇‖∇h‖| by elevation was
+   built and measured: 3.58–4.65× the median before the fix, 1.54–3.52× after,
+   overlapping over four seeds, because it cannot tell a crease from the LUT's
+   designed cliffs. `tests/contour.rs` gates the mechanism instead.
+
+
 ## Sim, content and gameplay verbs *(systems lane)*
 
 
@@ -1375,6 +1407,13 @@ build a replacement pixel gate.** One session with the client open closes most
 of it.
 
 Two of these are not taste, they are unresolved defects:
+
+- **Worldgen's shape changed under every frame** (§0wg). `remap` became a
+  monotone cubic and a detail ladder landed after it, so the ground under
+  every prop, tree and clutter tile moved. It is gated as arithmetic and
+  hillshades; the operator's own screenshot of the terraced mountain has not
+  been re-shot. This is the one item here where looking could find a
+  regression rather than an unseen feature.
 
 - **No `ForwardDecal` renders under lavapipe at any size, alpha or
   orientation** (§0mk). The sim's half is confirmed to the centimetre; the

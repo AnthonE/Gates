@@ -210,9 +210,10 @@ pub const CHUNK_LANDS_PER_FRAME: usize = 1;
 /// [`super::fill::GROUND_MIX`] for the full retraction and
 /// `crates/client/tests/ground_mix.rs` for the gate.
 ///
-/// Whole-island the mix is sand 0.0113, grass 0.5182, litter 0.3789, **rock
-/// 0.0916**. Granite is the third identity by area and the brightest of the
-/// four, so its value was never free and the mean it was pinned to was 14.4%
+/// Whole-island the mix is sand 0.0113, grass 0.5186, litter 0.3801, **rock
+/// 0.0900** (0.0916 until worldgen shape v1 re-measured it, 2026-08-26).
+/// Granite is the third identity by area and the brightest of the
+/// four, so its value was never free and the mean it was pinned to was 14.1%
 /// low. **That is the constraint the table above is placed under**, and the
 /// reason litter is the one identity whose value is derived rather than read:
 /// granite's share is what it has to absorb.

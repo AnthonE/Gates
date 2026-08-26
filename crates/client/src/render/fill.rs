@@ -120,8 +120,8 @@ pub const SKY_FILL_LUX: f32 = lux::AMBIENT_DAYLIGHT * 1.7;
 /// 2026-08-14; the client's two copies were not re-measured then, and this is
 /// that.
 ///
-/// Whole-island, 157,198 land samples at the same step: sand 0.0113, grass
-/// 0.5182, litter 0.3789, **rock 0.0916** — granite is the third identity by
+/// Whole-island, 157,184 land samples at the same step: sand 0.0113, grass
+/// 0.5186, litter 0.3801, **rock 0.0900** — granite is the third identity by
 /// area, eight times sand's share, and `sim-core/tests/relief.rs` (10.0% of
 /// land carries a legible rock weight) and `examples/seed_scan.rs` (8.9%
 /// within 300 m of the capture spawn) have both said so since the retraction.
@@ -137,10 +137,20 @@ pub const SKY_FILL_LUX: f32 = lux::AMBIENT_DAYLIGHT * 1.7;
 /// **What this costs, stated because it is not free.** `GROUND_ALBEDO`'s
 /// granite was authored as a free parameter *because* this said its weight was
 /// zero. It is not free now, and the area-weighted mean linear luma that whole
-/// re-placement was pinned to (0.09390) is 14.4% low against the island's own
-/// 0.1075. Re-placing four coupled albedos is the brightness owner's iteration
+/// re-placement was pinned to (0.09390) is 14.1% low against the island's own
+/// 0.1072. Re-placing four coupled albedos is the brightness owner's iteration
 /// and not this one's — `NOW.md` carries it.
-pub const GROUND_MIX: [f32; 4] = [0.011_284, 0.518_242, 0.378_859, 0.091_615];
+/// ⚠ **Re-measured 2026-08-26 from `[0.011_284, 0.518_242, 0.378_859,
+/// 0.091_615]`, and this time for a worldgen change rather than a window
+/// error** — `terrain::remap` became a monotone cubic and a detail ladder
+/// landed after it (`DECISIONS.md` §open, worldgen shape v1), so the island
+/// under this mean is a different island. The two corrections are unrelated
+/// and both stand: the window story below is why this constant is taken over
+/// `[0, ISLAND_SIZE)`, and this is the island that window now contains. The
+/// move is small — granite 0.0916 → 0.0900, 1.7% of its own value — which is
+/// the shape to expect, because the shaping curve's knots did not move and
+/// `SPLAT_ALPINE_BAND` therefore still opens on the same ground.
+pub const GROUND_MIX: [f32; 4] = [0.011_323, 0.518_633, 0.380_086, 0.089_958];
 
 /// sRGB → linear, the exact piecewise transfer (not the 2.2 approximation).
 pub fn srgb_to_linear(v: f32) -> f32 {

@@ -182,22 +182,45 @@ fn an_outer_tree_stands_on_the_far_mesh() {
     let (mut app, a) = fixture();
     let w = WorldId::new(SEED);
 
-    // Walk a line across the island and take the worst disagreement between
-    // the exact heightfield and the surface the far mesh actually draws. This
-    // is the error a naive `slot.y` would plant with.
-    let mut worst = 0.0f32;
-    for i in 0..2_000 {
-        let x = 40.0 + i as f32 * 0.97;
-        let z = 300.0 + i as f32 * 0.61;
-        let exact = terrain::ground(w.seed, &w.haven, x, z);
-        let drawn = far_ground_y(w.seed, &w.haven, x, z);
-        worst = worst.max((exact - drawn).abs());
+    // Sweep the island and take the worst disagreement between the exact
+    // heightfield and the surface the far mesh actually draws. That gap is the
+    // error a naive `slot.y` would plant with, and the same sweep picks the
+    // point the placement assert below runs at — see the note under it about
+    // searching rather than hand-picking.
+    //
+    // ⚠ **This walked ONE hand-chosen line until 2026-08-26, and one line is
+    // not the island** — `CLAUDE.md`'s own trap, twice paid for. It cost a
+    // false red: worldgen shape v1 (`DECISIONS.md` §open) made `remap` C¹, and
+    // an 8 m chord across a curve with no creases in it tracks the ground
+    // *better*, so that line's worst fell 0.630 → 0.472 and tripped the
+    // non-vacuity floor below — while the island's worst went the other way,
+    // **2.416 → 2.939 m**, exactly as adding relief should. The line said the
+    // gate had stopped measuring anything at the moment it started measuring
+    // more. A 4 m sweep of the world square costs well under a second here and
+    // leaves the floor six times clear instead of 6% clear.
+    let (mut worst, mut px, mut pz) = (0.0f32, 0.0f32, 0.0f32);
+    let mut sz = 4.0f32;
+    while sz < terrain::ISLAND_SIZE {
+        let mut sx = 4.0f32;
+        while sx < terrain::ISLAND_SIZE {
+            let exact = terrain::ground(w.seed, &w.haven, sx, sz);
+            // Land only: a tree is not planted in the sea, so a disagreement
+            // out there is not the error this gate is about.
+            if exact > 0.5 {
+                let d = (exact - far_ground_y(w.seed, &w.haven, sx, sz)).abs();
+                if d > worst {
+                    (worst, px, pz) = (d, sx, sz);
+                }
+            }
+            sx += 4.0;
+        }
+        sz += 4.0;
     }
     assert!(
         worst > 0.5,
-        "the far mesh and the heightfield differ by at most {worst:.3} m along \
-         this line — if that is really under half a metre this gate is \
-         measuring nothing and the placement fix is unnecessary"
+        "the far mesh and the heightfield differ by at most {worst:.3} m \
+         anywhere on the island — if that is really under half a metre this \
+         gate is measuring nothing and the placement fix is unnecessary"
     );
 
     // **Pick the test point by SEARCH, not by hand.** The first draft of this
@@ -207,20 +230,12 @@ fn an_outer_tree_stands_on_the_far_mesh() {
     // UNDER ITS OWN MUTANT too, because at that particular point the two
     // grounds happened to agree inside the slop. A test that shares a tolerance
     // with the effect it is measuring is measuring the tolerance.
-    let (mut px, mut pz, mut gap) = (0.0f32, 0.0f32, 0.0f32);
-    for i in 0..2_000 {
-        let x = 40.0 + i as f32 * 0.97;
-        let z = 300.0 + i as f32 * 0.61;
-        let d =
-            (terrain::ground(w.seed, &w.haven, x, z) - far_ground_y(w.seed, &w.haven, x, z)).abs();
-        if d > gap {
-            (px, pz, gap) = (x, z, d);
-        }
-    }
+    let gap = worst;
     assert!(
         gap > 0.4,
-        "the most discriminating point on this line separates the two grounds \
-         by only {gap:.3} m — assert below would not be able to tell them apart"
+        "the most discriminating point on the island separates the two grounds \
+         by only {gap:.3} m — the assert below would not be able to tell them \
+         apart"
     );
 
     let s = Slot {
