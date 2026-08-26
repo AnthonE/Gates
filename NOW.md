@@ -1187,6 +1187,14 @@ What is still open here, in rank order:
    per-texel roughness field landed first, so it is turned up over a field
    rather than over a scalar. ⚠ **The −0.4% roughness-map null result has NOT
    been re-measured** with energy in the lobe; it needs a GPU.
+3c. ~~The four `*_ao.jpg` are loaded by nothing~~ **LANDED 2026-08-25** —
+   bindings 114–117, blended by the same `bw` as colour, normal and roughness,
+   folded into `pbr_input.diffuse_occlusion` with `min` per `ART.md` §4 (never
+   a multiply: two occlusion terms of one scale double-darken). Diffuse only;
+   specular_occlusion stays Bevy's. The binding gate now scrapes BOTH the WGSL
+   and the Rust struct — it previously held the shader against a hand-kept list
+   that claimed to be the struct and never read it. ⚠ Nothing compiles the
+   WGSL; a syntax error here is green in CI and dead at boot.
 4. **`ground_detail.jpg` is now loaded by nothing** — it is grass's baked
    luminance field and the shader computes the same thing from `grass_albedo`.
    It still ships and is still gated as a file; deleting it is a separate call,
