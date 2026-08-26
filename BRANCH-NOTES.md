@@ -1,11 +1,25 @@
 # Branch notes — `claude/game-visual-improvements-fj1qyz`
 
-Six visual slices, five commits, all gates green locally. This replaces the
+Seven visual slices, nine commits, all gates green locally, and **the branch
+has been booted** — see "What a real frame showed" below. This replaces the
 `claude/building-placement-foundations-3gmwfk` note.
 
 **Read `NOW.md` §0out first**, then `DECISIONS.md` §open's five new rows
 (specular v0, outer tree ring v0, fire light v0, clutter contact v0's second
 half, prop tint v0).
+
+## Merged with main's `NOW.md` prune, and the merge needed a hand
+
+`82e148d` cut `NOW.md` 3,273 → 1,728. **`NOW.md` and `DECISIONS.md` are
+`merge=union`** (`.gitattributes`), so the automatic merge produced 3,289
+lines: it silently resurrected 1,561 of the lines that prune deliberately
+deleted, with **no conflict reported**. `CLAUDE.md`'s "a clean merge is not a
+correct merge" trap, in the file it warns about by name.
+
+Resolved by taking main's pruned file as the base and re-applying this
+branch's four edits onto it by hand (§0gc, §0gp items 2 and 2b, and a new
+§0out). Anyone merging a doc-prune against a `merge=union` file has to do the
+same — check the line count, do not trust the absence of a conflict.
 
 ## The one thing that matters more than any of it
 
@@ -25,6 +39,42 @@ booting it and walking three routes:
    against either noon or midnight.
 3. **Down the quality ladder.** LOW and MEDIUM are still unlooked-at from
    2026-08-20, and three of these slices add cost to the frame they tier.
+
+## What a real frame showed (2026-08-26)
+
+**The branch boots and the six vantages shoot.** `mesa-vulkan-drivers` +
+`Xvfb` + `VK_DRIVER_FILES=…/lvp_icd.json`, a local shard on seed 20260731 with
+`dev_spawn = "1500,600"` — `RENDER.md`'s pin, because the roster homes on the
+flat interior and an unpinned probe is killed by a wolf (it was, at frame 33,
+first try). 7 frames in `/tmp/shots`.
+
+**What that settles**, and it is the half I could not claim before:
+
+- **The AO shader compiles and draws.** Zero shader/WGSL/naga/pipeline errors
+  over the run. Nothing in this repo compiles that file, and `ground occlusion
+  v0` said so as its own open risk. Closed by running it.
+- **No duplicate-component panic** in the three bundles this branch added to.
+  `CLAUDE.md` records that class shipping green through every gate.
+- Outer ring, fire lights, tint pool and the blade ramp all reach the ECS on a
+  live shard; `bevy_audio` degrades silently with no card, as documented.
+
+**What the frames say, and the first item is the loudest thing in them:**
+
+1. **The litter clutter reads as pale spikes, not vegetation.** Near-white
+   shards standing out of dark gravel — bleached bone, not bracken. It is the
+   most conspicuous element in three of six vantages. ⚠ **This branch may have
+   made it worse**: clutter reflectance went 0.12 → 0.5 (8× the specular
+   energy) and the blade tip now takes its own facing instead of the ground's,
+   both of which lighten a tip that `FROND_TIP_GAIN = 1.45` was already
+   lightening. **There is no before-capture to compare against** — take one at
+   the old reflectance before believing either way.
+2. **The ground splat's planar XZ projection is very visible** on the big
+   hill in `0-design.png`: horizontal banding and a grid across the whole
+   slope. `§0gp` item 1 is not a subtle defect at this scale.
+3. **The outer ring works** — trees stand on the far hillsides and the left
+   horizon in `0-design` and `2-south`, where there was bare heightfield.
+4. **The sky has real cumulus** and the vitals icons, hotbar and shadowed
+   compass all draw correctly.
 
 ## What landed
 
