@@ -161,9 +161,15 @@ const MODEL_UPRIGHT_TO_HELD: f32 = -std::f32::consts::FRAC_PI_2;
 // The grip is per item and lives in `ui::hold::HeldModelDef::grip_m` — a
 // point up the model's own +Y that `swap` rotates with the pose and lands on
 // the fist. **One shared offset was the first cut and it does not survive the
-// set**: a 0.20 m rock and a 1.80 m spear are a factor of nine apart, so an
-// offset that seats the rock puts the spear's butt through the camera. `swap`
-// writes it when the model changes.
+// set**: a 0.10 m rock and a 1.80 m spear are a factor of eighteen apart, so
+// an offset that seats the rock puts the spear's butt through the camera.
+// `swap` writes it when the model changes.
+//
+// ⚠ **A fraction is only as good as the axis it is a fraction OF**, and that
+// cost the rock a shipped frame: the table declared each model's longest axis
+// while `grip_m` spent the fraction up +Y, which agree on a haft and do not
+// agree on a stone that is twice as wide as it is tall. See
+// `HeldModelDef::height_m`.
 
 /// The motion state. A resource rather than a component: there is exactly one
 /// held item, and this keeps `animate` one cheap system that queries only the

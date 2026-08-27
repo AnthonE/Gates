@@ -14,8 +14,8 @@
 //! **The authoring convention is the glb one**, deliberately: +Y up, foot at
 //! y = 0, so `HeldModelDef::grip_m` and the quarter-turn in
 //! `viewmodel::swap` treat both sources identically, and
-//! `tests/held_assets.rs` holds a generated row's measured length to its
-//! declared `length_m` exactly as it holds a file's.
+//! `tests/held_assets.rs` holds a generated row's measured HEIGHT to its
+//! declared `height_m` exactly as it holds a file's.
 //!
 //! Nothing here glows: a carried light source is forbidden by name
 //! (`tests/held_assets.rs::nothing_held_glows`), and the torch is an inert
