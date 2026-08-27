@@ -92,6 +92,8 @@ impl Glb {
             Some("SCALAR") => 1,
             Some("VEC3") => 3,
             Some("VEC4") => 4,
+            // The inverse bind matrices, for the hand gate below.
+            Some("MAT4") => 16,
             other => panic!("{RIG}: accessor {i} is {other:?} — this reader cannot decode it"),
         };
         let bv = &self.json["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
@@ -112,6 +114,38 @@ impl Glb {
                         f32::from_le_bytes(self.bin[o..o + 4].try_into().unwrap())
                     })
                     .collect()
+            })
+            .collect()
+    }
+
+    /// One accessor's `u8` VEC4 rows — `JOINTS_0` and nothing else. Separate
+    /// from [`Self::floats`] rather than folded into it: that reader refuses
+    /// what it cannot decode on purpose, and widening it to cover every
+    /// component type is how a decoder starts guessing.
+    fn u8_quads(&self, i: usize) -> Vec<[u8; 4]> {
+        let a = &self.json["accessors"][i];
+        assert_eq!(
+            (a["componentType"].as_u64(), a["type"].as_str()),
+            (Some(5121), Some("VEC4")),
+            "{RIG}: accessor {i} is not u8 VEC4 — JOINTS_0 may also ship as \
+             u16, and reading it as bytes would pick a different bone"
+        );
+        let bv = &self.json["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
+        let base = bv["byteOffset"].as_u64().unwrap_or(0) as usize
+            + a["byteOffset"].as_u64().unwrap_or(0) as usize;
+        let stride = match bv["byteStride"].as_u64().unwrap_or(0) as usize {
+            0 => 4,
+            s => s,
+        };
+        (0..a["count"].as_u64().unwrap() as usize)
+            .map(|k| {
+                let o = base + k * stride;
+                [
+                    self.bin[o],
+                    self.bin[o + 1],
+                    self.bin[o + 2],
+                    self.bin[o + 3],
+                ]
             })
             .collect()
     }
@@ -548,4 +582,141 @@ fn the_flinch_blend_lands_on_the_clips_own_apex() {
     // constants and clippy is right that a runtime assert over two of those
     // is a check deferred for no reason — this way it is a compile error.
     const { assert!(FLINCH_BLEND_S < FLINCH_CLIP_S) };
+}
+
+/// The smallest fingertip displacement that counts as a curled hand, as a
+/// fraction of the hand's own reach.
+///
+/// **Both ends are measured, not chosen.** The shipped bind pose reads 0.032
+/// and 0.043 on the two hands; after `ci/curl_hands.py` they read 0.138 and
+/// 0.132. This sits between, more than twice the splayed reading and well
+/// under the curled one, so it is a gate on "was the step run" rather than a
+/// golden on the angle it was run at — the angle is that tool's knob and may
+/// move without touching this number.
+const HAND_CURL_MIN: f32 = 0.09;
+
+#[test]
+fn the_hands_are_curled_out_of_their_bind_pose_splay() {
+    // **`RightHand` is a LEAF on this skeleton** — the generator modelled five
+    // digits per hand and rigged none of them — so the hand's pose is the
+    // mesh's shape and nothing at runtime can change it. It arrived in the
+    // flat, spread pose a rigger binds in, which is correct as a BIND pose and
+    // wrong as the rest pose of a character on screen in every frame of the
+    // game, first person and third, holding something or not.
+    // `ci/curl_hands.py` bends it in the vertices; this is what fails when a
+    // re-import runs the documented pipeline and forgets that step. Nothing
+    // else would notice: the file loads, the clips play, the height is right,
+    // and the character just goes back to holding its hands out flat.
+    let glb = Glb::open(&asset_path(RIG));
+    let prim = &glb.json["meshes"][0]["primitives"][0];
+    let attrs = &prim["attributes"];
+
+    // The two halves must share one vertex buffer, which is what makes the
+    // viewmodel and every remote body impossible to fix separately.
+    for a in ["POSITION", "JOINTS_0", "WEIGHTS_0"] {
+        let ix: Vec<_> = glb.json["meshes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["primitives"][0]["attributes"][a].as_u64().unwrap())
+            .collect();
+        assert!(
+            ix.windows(2).all(|w| w[0] == w[1]),
+            "{RIG}: the mesh halves point at different {a} accessors ({ix:?}). \
+             `ci/split_arms.py` shares one, and a bend applied to the shared \
+             buffer is what curls the first-person hand and the world body at \
+             the same time."
+        );
+    }
+
+    let pos = glb.floats(attrs["POSITION"].as_u64().unwrap() as usize);
+    let joints = glb.u8_quads(attrs["JOINTS_0"].as_u64().unwrap() as usize);
+    let weights = glb.floats(attrs["WEIGHTS_0"].as_u64().unwrap() as usize);
+
+    let skin = &glb.json["skins"][0];
+    let bones: Vec<usize> = skin["joints"]
+        .as_array()
+        .expect("the rig has no skin")
+        .iter()
+        .map(|j| j.as_u64().unwrap() as usize)
+        .collect();
+    let ibm = glb.floats(skin["inverseBindMatrices"].as_u64().unwrap() as usize);
+
+    for hand in ["RightHand", "LeftHand"] {
+        let slot = bones
+            .iter()
+            .position(|&n| glb.json["nodes"][n]["name"].as_str() == Some(hand))
+            .unwrap_or_else(|| panic!("{RIG}: the skin has no {hand}"));
+        // glTF stores a MAT4 column-major, so row r column c is m[c * 4 + r].
+        let m = &ibm[slot];
+        let to_bone = |p: &[f32]| -> [f32; 3] {
+            let mut o = [0.0f32; 3];
+            for (r, out) in o.iter_mut().enumerate() {
+                *out = m[r] * p[0] + m[4 + r] * p[1] + m[8 + r] * p[2] + m[12 + r];
+            }
+            o
+        };
+
+        // The vertices this bone alone owns. It is a leaf, so their skinned
+        // position depends on nothing else in the character.
+        let hand_v: Vec<[f32; 3]> = (0..pos.len())
+            .filter(|&k| (0..4).any(|c| joints[k][c] as usize == slot && weights[k][c] > 0.5))
+            .map(|k| to_bone(&pos[k]))
+            .collect();
+        assert!(
+            hand_v.len() > 200,
+            "{RIG}: only {} vertices are dominated by {hand} — this gate is \
+             measuring almost nothing",
+            hand_v.len()
+        );
+
+        // Derived, not typed: the finger axis is the bone frame's longest
+        // extent, and the curl shows up on whichever of the other two the
+        // fingertips have moved furthest along — which is opposite between
+        // the two hands, so naming it would need a left/right special case
+        // and this does not.
+        let axis_span = |k: usize| {
+            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            for v in &hand_v {
+                lo = lo.min(v[k]);
+                hi = hi.max(v[k]);
+            }
+            hi - lo
+        };
+        let spans = [axis_span(0), axis_span(1), axis_span(2)];
+        let finger = (0..3)
+            .max_by(|&a, &b| spans[a].total_cmp(&spans[b]))
+            .unwrap();
+        let mut sorted = spans;
+        sorted.sort_by(f32::total_cmp);
+        assert!(
+            sorted[2] > sorted[1] * 1.15,
+            "{RIG}: {hand}'s longest axis ({:.2}) is not clearly longer than \
+             the next ({:.2}), so which way the fingers point is a guess",
+            sorted[2],
+            sorted[1]
+        );
+
+        let mut along: Vec<f32> = hand_v.iter().map(|v| v[finger]).collect();
+        along.sort_by(f32::total_cmp);
+        let tip_line = along[(along.len() as f32 * 0.95) as usize];
+        let tips: Vec<&[f32; 3]> = hand_v.iter().filter(|v| v[finger] >= tip_line).collect();
+        let mean = |vs: &[&[f32; 3]], k: usize| -> f32 {
+            vs.iter().map(|v| v[k]).sum::<f32>() / vs.len() as f32
+        };
+        let all: Vec<&[f32; 3]> = hand_v.iter().collect();
+        let off = |k: usize| (mean(&tips, k) - mean(&all, k)).abs() / spans[finger];
+        let curl = (0..3)
+            .filter(|&k| k != finger)
+            .map(off)
+            .fold(0.0f32, f32::max);
+
+        assert!(
+            curl >= HAND_CURL_MIN,
+            "{RIG}: {hand}'s fingertips sit {curl:.3} of the hand's reach off \
+             the palm plane, under {HAND_CURL_MIN}. The hand is still in its \
+             bind-pose splay — run `ci/curl_hands.py` on it (see \
+             `assets/models/MANIFEST.md` for where it goes in the pipeline)."
+        );
+    }
 }
