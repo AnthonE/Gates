@@ -49,7 +49,8 @@ ci/import_char.py <merged>.glb stumpy_raw.glb \
 ci/ktx_pack.py stumpy_raw.glb stumpy_packed.glb
 ci/retarget_anim.py assets/models/mannequin.gltf stumpy_packed.glb stumpy_rt.glb \
     --retime Sword_Attack=1.05333
-ci/split_arms.py stumpy_rt.glb assets/models/stumpy.glb
+ci/split_arms.py stumpy_rt.glb stumpy_split.glb
+ci/curl_hands.py stumpy_split.glb assets/models/stumpy.glb
 ```
 
 
@@ -60,19 +61,36 @@ ci/split_arms.py stumpy_rt.glb assets/models/stumpy.glb
    and a name it cannot find draws a body frozen in its bind pose, so
    `Idle_11` is an idle that never plays.
 
-**The last step is what makes a first-person viewmodel possible**, and it is
+**`split_arms.py` is what makes a first-person viewmodel possible**, and it is
 one line because the alternative was believed impossible: the mesh becomes
 `char1_arms` + `char1_body`, two nodes on one skeleton **sharing their vertex
 buffers** and differing only in their index array (+0.4 MB, no second copy of
 anything). `render/viewmodel.rs` hides the body half and draws the arms on the
 camera; `bodies.rs` draws both and is unchanged.
 
+**`curl_hands.py` is the last step and it corrects a delivery, not a choice.**
+The generator modelled five digits per hand — 1,048 vertices in the right one —
+and rigged none of them: `RightHand` is a LEAF, so the hand's pose IS the
+mesh's shape and nothing at runtime can change it. It arrived in the flat,
+spread pose a rigger binds in, which is right for binding and wrong as the rest
+pose of the most-seen mesh in the game. The tool bends 1,068 vertices across
+both hands — nothing else in the file moves, and the shared vertex buffer means
+the viewmodel and every remote body get it in the same edit. It derives the
+hand frame, which digit is the thumb, which way the palm faces and where each
+digit's knuckle is from the geometry; the one knob is how far, defaulting to
+85° over a finger's length (a relaxed hand, not a fist) with the spread closed
+45%. Both hands land at 0.13 of their reach off the palm plane against 0.03
+before. **A grip pose is not this**: it would want a second baked pose selected
+by what is in hand, and joints are what it would want after that (`NOW.md`
+0chr).
+
 `crates/client/tests/rig_asset.rs` gates all of it — the clip names off `Clip`
 itself, the height against `ANIM_RIG_H_M`, the stand-up rotation, one material,
-KTX2 textures, both halves of the split, the arms' hold clip, and that the
-swing clip still fits the sim's swing cadence. Five of the eight were watched
-going red under their own defect — four against the raw file, and the cadence
-one against the un-retimed 1.5 s swing.
+KTX2 textures, both halves of the split, the arms' hold clip, that the swing
+clip still fits the sim's swing cadence, and that the hands are curled. Six of
+the nine were watched going red under their own defect — four against the raw
+file, the cadence one against the un-retimed 1.5 s swing, and the hand one
+against the splayed delivery, which reports 0.032 against a floor of 0.09.
 
 **The `--retime` on the swing is not cosmetic.** `SWING_CLIP_S` is derived
 from the sim (`SWING_INTERVAL_TICKS / TICK_HZ − ANIM_BLEND_S − one frame` = 1.05333 s), and
