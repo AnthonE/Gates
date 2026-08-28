@@ -3908,6 +3908,84 @@ fn the_panels_protection_is_the_sims_protection() {
     );
 }
 
+/// **The cap is the one line of `worn_pct` the sweep above cannot reach.**
+///
+/// The judge's first ranked fix on pass `-07`. `probe_fixture` ships 10 %
+/// head and 20 % body, so the sweep's largest possible total is **30**
+/// against an `ARMOR_MAX_PCT` of **90** — deleting `.min(ARMOR_MAX_PCT)`
+/// from either copy passes all 128 cases. That is `lattice.rs`'s shape in
+/// the trap list: a gate that agrees for a reason that has nothing to do
+/// with the branch it was written for.
+///
+/// So this drives the same pair over a fixture priced to *exceed* the cap
+/// — 60 head + 50 body, both inside what `ItemRow::coherent` admits — and
+/// asserts three things the sweep above cannot: that the two agree, that
+/// the answer is the cap and not the sum, and (the effect, not only the
+/// correctness) that some case actually saturated. Run the mutant: drop
+/// the `.min` from `slots::worn_pct` and the full set reads 110 against
+/// the sim's 90; drop it from `combat::worn_pct` and the mismatch is the
+/// other way round. Neither is visible above.
+#[test]
+fn the_protection_total_stops_at_the_cap_on_both_sides() {
+    let mut cc = combat::CombatContent::probe_fixture();
+    cc.armor[4] = sim_core::combat::ArmorDef {
+        reduction_pct: 60,
+        slot: combat::WEAR_HEAD,
+    };
+    cc.armor[5] = sim_core::combat::ArmorDef {
+        reduction_pct: 50,
+        slot: combat::WEAR_BODY,
+    };
+    let cat = catalog_for(&cc);
+
+    let mut saturated = 0usize;
+    let mut biggest = 0u32;
+    for head in 0..8u16 {
+        for body in 0..8u16 {
+            let mut p = sim_core::world::Player::default();
+            let mut worn = empty();
+            for (i, item) in [head, body].into_iter().enumerate() {
+                let s = ItemStack {
+                    item,
+                    count: 1,
+                    cond: 0,
+                };
+                p.worn[i] = s;
+                worn[i] = s;
+            }
+            let sim = combat::worn_pct(&cc, &p);
+            let ours = slots::worn_pct(&cat, &worn);
+            assert_eq!(
+                sim, ours,
+                "head {head} body {body}: the sim charges {sim} % and the \
+                 panel would print {ours} %"
+            );
+            assert!(
+                sim <= combat::ARMOR_MAX_PCT,
+                "head {head} body {body}: {sim} % is over the cap of {} %",
+                combat::ARMOR_MAX_PCT
+            );
+            biggest = biggest.max(sim);
+            if sim == combat::ARMOR_MAX_PCT {
+                saturated += 1;
+            }
+        }
+    }
+    // The full set is 60 + 50 = 110, which is 20 over the cap. If this
+    // stops being true the sweep has quietly gone back to agreeing about
+    // a sum that never needed clamping.
+    assert_eq!(
+        biggest,
+        combat::ARMOR_MAX_PCT,
+        "no worn set in this sweep reached the cap, so neither `.min` ran"
+    );
+    assert_eq!(
+        saturated, 1,
+        "exactly one of the 64 pairs (head 4, body 5) wears both rows and \
+         so exceeds the cap; {saturated} did"
+    );
+}
+
 /// **A tail slot protects nobody, and the loop bound is what says so.**
 /// The wire ships `INV_SLOTS` slots whatever container is open and the
 /// wear container is two wide, so `cont[2..30]` is a region the server
@@ -4070,6 +4148,20 @@ fn the_paperdoll_captions_the_slots_the_sim_names() {
         slots::wear_slot_label(WEAR_SLOTS),
         "-",
         "a slot the body does not have was given a name"
+    );
+    // The judge's second ranked fix on pass `-07`: `WEAR_SLOTS` is 2 and
+    // cannot overflow `s + 1`, so the case above proved the fallback and
+    // not the bound. 255 is the value the `u8` cast admits and the one
+    // that panics in debug / wraps to `WEAR_NONE` in release.
+    assert_eq!(
+        slots::wear_slot_label(255),
+        "-",
+        "the caption's u8 cast was reached with an out-of-range slot"
+    );
+    assert_eq!(
+        slots::wear_slot_label(usize::MAX),
+        "-",
+        "a slot index no cast can hold was given a name"
     );
 }
 

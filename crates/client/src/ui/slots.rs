@@ -385,8 +385,16 @@ pub fn container_title(kind: u8) -> &'static str {
 /// A slot past `WEAR_SLOTS` has no name; it cannot be drawn (the panel
 /// walks `WEAR_SLOTS`) and it cannot be addressed (`slots_in`), so the
 /// fallback is a placeholder rather than a guess at what a fourth slot
-/// would be called.
+/// would be called. `s` is bounded here for the same reason
+/// `wearable_here` bounds it and not one step later: `s + 1` on a `u8`
+/// overflow-panics in debug and wraps to 0 in release, and `0` is
+/// `WEAR_NONE` — so an unbounded `s = 255` is a panic in one build and a
+/// silent `"-"` in the other, which is two behaviours for one input. The
+/// third copy of the `s + 1` shape, hardened like the other two.
 pub fn wear_slot_label(s: usize) -> &'static str {
+    if s >= WEAR_SLOTS {
+        return "-";
+    }
     match u8::try_from(s).map(|s| s + 1) {
         Ok(WEAR_HEAD) => "HEAD",
         Ok(WEAR_BODY) => "BODY",
