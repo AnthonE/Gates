@@ -68,6 +68,15 @@ fn stocked() -> [ItemStack; INV_SLOTS] {
     inv
 }
 
+/// An empty body — the third view `move_args` reads since the wear
+/// container moved off the ground subscription (`NOW.md` §0eq item 4).
+/// Two slots wide, which is the width the panel and the wire now agree
+/// on; passing `empty()` here would still compile and would hide a
+/// source-side read of the wrong container behind a 30-long array.
+fn bare() -> [ItemStack; WEAR_SLOTS] {
+    [ItemStack::default(); WEAR_SLOTS]
+}
+
 /// A real handle: large, distinct, and not confusable with a kind or a slot.
 /// The browser client learned this the hard way — while `bag`, `from_kind`
 /// and `to_kind` were all 0 on every legal call, transposing two of them was
@@ -80,8 +89,18 @@ const HANDLE: u32 = 0x0031_0004;
 fn move_marshals_every_field_to_its_own_name() {
     let inv = stocked();
     let cont = empty();
-    let m = slots::move_args(0, CONT_SELF, 0, CONT_SELF, 5, Grab::All, &inv, &cont)
-        .expect("a self move of a real stack");
+    let m = slots::move_args(
+        0,
+        CONT_SELF,
+        0,
+        CONT_SELF,
+        5,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare(),
+    )
+    .expect("a self move of a real stack");
     assert_eq!(m.from_slot, 0);
     assert_eq!(m.to_slot, 5);
     assert_eq!(m.from_kind, CONT_SELF);
@@ -122,8 +141,18 @@ fn a_wear_move_needs_no_handle_and_carries_none() {
     };
     let cont = empty();
 
-    let m = slots::move_args(HANDLE, CONT_SELF, 3, CONT_WEAR, 1, Grab::All, &inv, &cont)
-        .expect("putting armor on is a move the client can address");
+    let m = slots::move_args(
+        HANDLE,
+        CONT_SELF,
+        3,
+        CONT_WEAR,
+        1,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare(),
+    )
+    .expect("putting armor on is a move the client can address");
     assert_eq!((m.from_kind, m.from_slot), (CONT_SELF, 3));
     assert_eq!((m.to_kind, m.to_slot), (CONT_WEAR, 1));
     assert_eq!(m.count, 1);
@@ -133,14 +162,31 @@ fn a_wear_move_needs_no_handle_and_carries_none() {
     );
 
     // And back off again, with the wear container on the source side.
-    let mut worn = empty();
+    //
+    // The body is its own view now, so this reads it out of `worn` and
+    // not out of `cont` — it used to pass `&worn` for *both* the pack and
+    // the ground container, which was the only way to make the source
+    // read land while the two shared one array. `inv` and `cont` are
+    // deliberately empty here: if the source pick regressed to either,
+    // the count is 0 and the call refuses.
+    let mut worn = bare();
     worn[1] = ItemStack {
         item: 5,
         count: 1,
         cond: 0,
     };
-    let m = slots::move_args(HANDLE, CONT_WEAR, 1, CONT_SELF, 8, Grab::All, &worn, &worn)
-        .expect("taking it off is the same verb");
+    let m = slots::move_args(
+        HANDLE,
+        CONT_WEAR,
+        1,
+        CONT_SELF,
+        8,
+        Grab::All,
+        &empty(),
+        &empty(),
+        &worn,
+    )
+    .expect("taking it off is the same verb");
     assert_eq!((m.from_kind, m.to_kind), (CONT_WEAR, CONT_SELF));
     assert_eq!(m.bag, 0);
 }
@@ -162,12 +208,34 @@ fn widening_own_did_not_legalise_two_ground_containers() {
     };
     // One ground side plus the body: addressable.
     assert!(
-        slots::move_args(HANDLE, CONT_BOX, 0, CONT_WEAR, 1, Grab::All, &inv, &cont).is_some(),
+        slots::move_args(
+            HANDLE,
+            CONT_BOX,
+            0,
+            CONT_WEAR,
+            1,
+            Grab::All,
+            &inv,
+            &cont,
+            &bare()
+        )
+        .is_some(),
         "putting on what you just looted is one handle"
     );
     // Two ground sides: still not.
     assert!(
-        slots::move_args(HANDLE, CONT_BAG, 0, CONT_BOX, 1, Grab::All, &inv, &cont).is_none(),
+        slots::move_args(
+            HANDLE,
+            CONT_BAG,
+            0,
+            CONT_BOX,
+            1,
+            Grab::All,
+            &inv,
+            &cont,
+            &bare()
+        )
+        .is_none(),
         "two ground containers name one handle between them"
     );
 }
@@ -236,8 +304,18 @@ fn a_ground_move_carries_the_handle_and_the_containers_own_count() {
         count: 6,
         cond: 0,
     };
-    let m = slots::move_args(HANDLE, CONT_BOX, 4, CONT_SELF, 0, Grab::All, &inv, &cont)
-        .expect("box to self");
+    let m = slots::move_args(
+        HANDLE,
+        CONT_BOX,
+        4,
+        CONT_SELF,
+        0,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare(),
+    )
+    .expect("box to self");
     assert_eq!(m.bag, HANDLE);
     assert_eq!(m.from_kind, CONT_BOX);
     // Read from the CONTAINER's view. Reading `inv` here is the label bug
@@ -257,12 +335,36 @@ fn refusals_in_order() {
     };
 
     // 1 · a kind past CONT_MAX.
-    assert!(slots::move_args(HANDLE, 9, 0, CONT_SELF, 1, Grab::All, &inv, &cont).is_none());
+    assert!(
+        slots::move_args(HANDLE, 9, 0, CONT_SELF, 1, Grab::All, &inv, &cont, &bare()).is_none()
+    );
 
     // 2 · two DIFFERENT ground containers — the command carries one handle.
-    assert!(slots::move_args(HANDLE, CONT_BAG, 0, CONT_BOX, 1, Grab::All, &inv, &cont).is_none());
+    assert!(slots::move_args(
+        HANDLE,
+        CONT_BAG,
+        0,
+        CONT_BOX,
+        1,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare()
+    )
+    .is_none());
     // ...but the same kind on both ends is rearranging one open container.
-    assert!(slots::move_args(HANDLE, CONT_BOX, 0, CONT_BOX, 1, Grab::All, &inv, &cont).is_some());
+    assert!(slots::move_args(
+        HANDLE,
+        CONT_BOX,
+        0,
+        CONT_BOX,
+        1,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare()
+    )
+    .is_some());
 
     // 3 · a slot past its OWN container's width. The encoder would carry
     //     box slot 20 — `slots_in` is why the panel does not send it.
@@ -275,7 +377,8 @@ fn refusals_in_order() {
         BOX_SLOTS,
         Grab::All,
         &inv,
-        &cont
+        &cont,
+        &bare()
     )
     .is_none());
     // The same slot number in your own inventory is fine: the bound is
@@ -288,30 +391,86 @@ fn refusals_in_order() {
         BOX_SLOTS,
         Grab::All,
         &inv,
-        &cont
+        &cont,
+        &bare()
     )
     .is_some());
 
     // 4 · the same address twice.
-    assert!(slots::move_args(0, CONT_SELF, 3, CONT_SELF, 3, Grab::All, &inv, &cont).is_none());
+    assert!(slots::move_args(
+        0,
+        CONT_SELF,
+        3,
+        CONT_SELF,
+        3,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare()
+    )
+    .is_none());
     // Same slot NUMBER across two kinds is a different address.
-    assert!(slots::move_args(HANDLE, CONT_BOX, 0, CONT_SELF, 0, Grab::All, &inv, &cont).is_some());
+    assert!(slots::move_args(
+        HANDLE,
+        CONT_BOX,
+        0,
+        CONT_SELF,
+        0,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare()
+    )
+    .is_some());
 
     // 5 · a ground end with a zero handle. `box_key(0,0,0) == 0` addresses a
     //     real box, so sending 0 for "no container known" would move items
     //     in a stranger's box rather than being refused.
-    assert!(slots::move_args(0, CONT_BOX, 0, CONT_SELF, 5, Grab::All, &inv, &cont).is_none());
+    assert!(slots::move_args(
+        0,
+        CONT_BOX,
+        0,
+        CONT_SELF,
+        5,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare()
+    )
+    .is_none());
 
     // 6 · an empty source. The sim does not clamp a count, so neither does
     //     this: a stack of nothing yields nothing to send.
-    assert!(slots::move_args(0, CONT_SELF, 20, CONT_SELF, 21, Grab::All, &inv, &cont).is_none());
+    assert!(slots::move_args(
+        0,
+        CONT_SELF,
+        20,
+        CONT_SELF,
+        21,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare()
+    )
+    .is_none());
 }
 
 #[test]
 fn a_validated_move_encodes() {
     let inv = stocked();
     let cont = empty();
-    let m = slots::move_args(0, CONT_SELF, 0, CONT_SELF, 5, Grab::All, &inv, &cont).unwrap();
+    let m = slots::move_args(
+        0,
+        CONT_SELF,
+        0,
+        CONT_SELF,
+        5,
+        Grab::All,
+        &inv,
+        &cont,
+        &bare(),
+    )
+    .unwrap();
     let mut buf = [0u8; protocol::MAX_STREAM_MSG_BYTES];
     let len = m
         .encode(&mut buf)
@@ -340,9 +499,31 @@ fn grabs_round_the_way_a_hand_expects() {
 fn a_half_drag_sends_half() {
     let inv = stocked();
     let cont = empty();
-    let m = slots::move_args(0, CONT_SELF, 0, CONT_SELF, 6, Grab::Half, &inv, &cont).unwrap();
+    let m = slots::move_args(
+        0,
+        CONT_SELF,
+        0,
+        CONT_SELF,
+        6,
+        Grab::Half,
+        &inv,
+        &cont,
+        &bare(),
+    )
+    .unwrap();
     assert_eq!(m.count, 5);
-    let m = slots::move_args(0, CONT_SELF, 0, CONT_SELF, 6, Grab::One, &inv, &cont).unwrap();
+    let m = slots::move_args(
+        0,
+        CONT_SELF,
+        0,
+        CONT_SELF,
+        6,
+        Grab::One,
+        &inv,
+        &cont,
+        &bare(),
+    )
+    .unwrap();
     assert_eq!(m.count, 1);
 }
 
@@ -4239,6 +4420,57 @@ fn the_wear_panel_draws_what_the_wire_now_carries() {
          The answer is on the wire now, so a wrong-slot drag can be told \
          before the release instead of coming back as `REFUSE_M_WEAR` after \
          the prediction has already drawn the piece into the slot"
+    );
+}
+
+/// **The body is drawn whether or not a box is open, and it is drawn from
+/// the body's own view.**
+///
+/// `NOW.md` §0eq item 4. The wear panel used to be a branch inside
+/// `container_grid`, which is called only when `cont_kind != CONT_SELF` —
+/// so the paperdoll appeared exactly when a ground container did *not*,
+/// and the move the feature exists for (helmet out of a raided box, onto
+/// a head) was the one route the panel could not draw.
+///
+/// Two claims, and the second is the one a value test cannot make. That
+/// `wear_panel` is called from the unconditional row rather than from
+/// `container_grid` is a *call site*, which is `tests/sound.rs`'s reason
+/// for scraping: it is not a number anywhere and nothing about the panel
+/// is wrong when it is missing — the panel is simply absent, which is
+/// what it was before.
+#[test]
+fn the_body_is_drawn_beside_the_container_and_not_instead_of_it() {
+    let code = inv_code();
+    assert!(
+        !code.contains("wear_panel(row, core, icons);\n        return;"),
+        "`container_grid` still short-circuits into `wear_panel` — the body \
+         is drawn only when it IS the open container, which is never now \
+         and was a box's eviction before"
+    );
+    // The call sits in `build_screen`'s lower row, ungated: `own_grid`,
+    // then the body, then the container *if* one is open.
+    let row = code
+        .split("own_grid(row, core, icons);")
+        .nth(1)
+        .expect("`build_screen` must draw the pack");
+    let head = &row[..row.len().min(200)];
+    assert!(
+        head.contains("wear_panel(row, core, icons);"),
+        "the body is not drawn beside the pack: {head}"
+    );
+    assert!(
+        head.find("wear_panel").unwrap() < head.find("if core.cont_kind").unwrap_or(usize::MAX),
+        "the body is drawn inside the open-container branch — it must be \
+         unconditional, which is the whole of §0eq item 4: {head}"
+    );
+    // And from `core.worn`, not `core.cont`. The two were one array until
+    // 2026-08-28; a panel left reading `cont` draws the open box's first
+    // two slots as the armor a player is wearing, which is a *plausible*
+    // picture and would have shipped.
+    assert!(
+        code.contains("&core.worn") && code.contains("CONT_WEAR => &core.worn"),
+        "`inv.rs` does not read the body's own view — the wear cells and \
+         the protection total would come off whatever container is open"
     );
 }
 

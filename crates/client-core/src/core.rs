@@ -19,10 +19,10 @@ use sim_core::craft::CraftContent;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_DOOR, BAG_CAP};
 use sim_core::gather::{cell_key, ItemStack, NO_CELL};
 use sim_core::input::InputFrame;
-use sim_core::inventory::CONT_SELF;
+use sim_core::inventory::{CONT_SELF, CONT_WEAR};
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_BACKPACKS, MAX_BOXES, MAX_DEPLOYS,
-    MAX_PIECES, MAX_SLOT_LIVES,
+    MAX_PIECES, MAX_SLOT_LIVES, WEAR_SLOTS,
 };
 use sim_core::movement::POS_XZ_Q;
 use sim_core::occupy::{Harvested, Occupants, SlotCache};
@@ -220,6 +220,12 @@ pub const APPLIED2_MOVE: u32 = 1 << 0;
 /// `client_cont_kind()`, which is zero when nothing is open and names the
 /// container otherwise.
 pub const APPLIED2_CONT: u32 = 1 << 1;
+
+/// The **body's** slots changed (`EventMsg::ContSync` with `CONT_WEAR`).
+/// Distinct from `APPLIED2_CONT` because the two views are now distinct:
+/// a box arriving must not read as the armor moving, and the wear panel
+/// is drawn whether or not a ground container is open.
+pub const APPLIED2_WORN: u32 = 1 << 2;
 
 /// A satchel charge was planted somewhere in the world and its fuse is
 /// burning — `EventMsg::ChargePlaced`. Re-read `client_charge_key`,
@@ -861,6 +867,23 @@ pub struct ClientCore {
     /// fills the first `BOX_SLOTS` and the rest stay empty, which is what
     /// the server's shadow holds too.
     pub cont: [ItemStack; INV_SLOTS],
+    /// **What this player is wearing** — a second container view, fed by
+    /// its own stream and never by the one above.
+    ///
+    /// `CONT_WEAR` shared `cont` from armor v1 to 2026-08-28, which meant
+    /// opening a box evicted the body: the route from a looted helmet to
+    /// a head was take, close, re-open, drag (`NOW.md` §0eq item 4). It is
+    /// the one `is_own` kind — no handle, no reach, no lock — so nothing
+    /// about it ever needed the exclusivity a ground container's
+    /// subscription is for, and the server drips it unconditionally now.
+    /// There is therefore no `worn_kind` beside this: the body is always
+    /// open, so the only state is the slots.
+    ///
+    /// Sized to `WEAR_SLOTS` rather than `INV_SLOTS`, which is safe by
+    /// the codec and not by the array: `decode_event_cont_sync` refuses a
+    /// slot at or past `slots_in(kind)`, so a `CONT_WEAR` batch that
+    /// reached here cannot name a slot this array does not have.
+    pub worn: [ItemStack; WEAR_SLOTS],
     pub harvested: HarvestedSet,
     /// The three parts the occupant collision query needs beyond the
     /// harvested mirror above (`sim_core::occupy`). They live here rather
@@ -1234,6 +1257,7 @@ impl ClientCore {
             cont_kind: CONT_SELF,
             cont_handle: 0,
             cont: [ItemStack::default(); INV_SLOTS],
+            worn: [ItemStack::default(); WEAR_SLOTS],
             harvested: HarvestedSet::new(),
             scatter_table: ScatterTable::alpha_default(),
             haven: terrain::haven(seed),
@@ -1734,7 +1758,27 @@ impl ClientCore {
                 slots,
                 count,
             } => {
-                if kind == CONT_SELF {
+                if kind == CONT_WEAR {
+                    // **The body's own stream, routed before anything
+                    // else.** It shares this message and nothing else:
+                    // no handle to echo (there is one body and the
+                    // server sends 0), no kind to latch (it is always
+                    // open), and — the reason this arm is first — no
+                    // interaction with `CONT_SELF` below. A close is
+                    // about the ground container; routing it here would
+                    // undress the panel every time a box shut.
+                    //
+                    // `s.slot` is bounded by the decoder against
+                    // `slots_in(CONT_WEAR)`, so it indexes this array;
+                    // the `take` mirrors `count`'s own bound.
+                    if reset {
+                        self.worn = [ItemStack::default(); WEAR_SLOTS];
+                    }
+                    for s in slots.iter().take(count as usize) {
+                        self.worn[s.slot as usize] = s.stack;
+                    }
+                    self.applied2 |= APPLIED2_WORN;
+                } else if kind == CONT_SELF {
                     // The server shut the panel: gone, or out of reach.
                     self.cont_kind = CONT_SELF;
                     self.cont_handle = 0;

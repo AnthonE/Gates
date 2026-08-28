@@ -221,6 +221,7 @@ pub fn move_args(
     grab: Grab,
     inv: &[ItemStack; INV_SLOTS],
     cont: &[ItemStack; INV_SLOTS],
+    worn: &[ItemStack],
 ) -> Option<MoveArgs> {
     // 1 · a kind the wire's two-bit field will carry.
     if from_kind > CONT_MAX || to_kind > CONT_MAX {
@@ -263,8 +264,24 @@ pub fn move_args(
         return None;
     }
     // 6 · the count, read from the source container's own view.
-    let src = if from_kind == CONT_SELF { inv } else { cont };
-    let held = src[from_slot].count;
+    //
+    //     Three views since the body moved off the ground subscription
+    //     (`NOW.md` §0eq item 4): the pack, the body, and whatever is
+    //     open. This was a two-way pick on `== CONT_SELF` while the wear
+    //     slots lived in `cont`, and leaving it that way would have read
+    //     a helmet's count out of the open box's slot 0 — the right
+    //     value in the wrong container, which is the positional-payload
+    //     shape and would have shipped a plausible `count`.
+    //
+    //     `get` rather than an index: step 3 already bounded `from_slot`
+    //     against `slots_in(from_kind)`, but `worn` is a slice and its
+    //     width is no longer proved by its type.
+    let src: &[ItemStack] = match from_kind {
+        CONT_SELF => inv,
+        CONT_WEAR => worn,
+        _ => cont,
+    };
+    let held = src.get(from_slot).map_or(0, |s| s.count);
     let count = grab.units(held);
     if count == 0 || count > held {
         return None;
@@ -325,11 +342,14 @@ pub fn refusal_text(reason: u8) -> &'static str {
 /// that the gate drives the sim's function and this one over the same
 /// worn sets and compares, rather than rebuilding this one's body.
 ///
-/// `worn` is the client's view of the `CONT_WEAR` container, which is
-/// `INV_SLOTS` wide on the wire with a tail of zeros — the loop reads the
-/// sim's own `WEAR_SLOTS` and nothing past it, so a smuggled stack in slot
-/// 7 protects nobody here either.
-pub fn worn_pct(catalog: &ItemCatalog, worn: &[ItemStack; INV_SLOTS]) -> u32 {
+/// `worn` is the client's view of the `CONT_WEAR` container. It is a
+/// **slice** rather than a fixed array because the view moved: it was
+/// `cont`, `INV_SLOTS` wide with a tail of zeros, until the body got its
+/// own `WEAR_SLOTS`-wide stream (2026-08-28, `NOW.md` §0eq item 4). The
+/// `take(WEAR_SLOTS)` is unchanged and is why both shapes are correct
+/// here — it reads the sim's own width and nothing past it, so a
+/// smuggled stack in slot 7 protects nobody either way.
+pub fn worn_pct(catalog: &ItemCatalog, worn: &[ItemStack]) -> u32 {
     let mut pct = 0u32;
     for (i, stack) in worn.iter().enumerate().take(WEAR_SLOTS) {
         if stack.count > 0 && catalog.wear_slot(stack.item as usize) as usize == i + 1 {
