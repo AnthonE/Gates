@@ -28,7 +28,8 @@
 //! reasoning for its 34, one table over.
 
 use sim_core::build::{
-    foundation_terrain_ok, BuildContent, BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_XLO, LOC_PLANE,
+    foundation_terrain_ok, BuildContent, BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B,
+    LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
 };
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef, HARD_SIDE_STRUCTURE};
 use sim_core::deploy::DeployContent;
@@ -66,6 +67,22 @@ const SLOT_BOW: usize = 4;
 const SLOT_GUN: usize = 5;
 const YAW_PLUS_X: u16 = 64 << 8;
 const YAW_MINUS_X: u16 = 192 << 8;
+/// `yaw_lut.rs`' own header: index 0 faces **+Z** and increasing index
+/// rotates toward +X, so 64 is +X and 0 is +Z. These four are read off that
+/// table rather than derived, and each is a bearing no case in this file
+/// could fire before.
+///
+/// - `YAW_PLUS_Z` (0) — at a `LOC_EDGE_ZLO` wall from its -z side.
+/// - `YAW_MINUS_Z` (128) — the same wall from the far side, its hard face.
+/// - `YAW_DIAG_A` (224) — `(-0.707, +0.707)`, which crosses the line
+///   `dz = dx`; that is `LOC_DIAG_A`, and it is entered from the +x/-z
+///   corner where no edge piece stands.
+/// - `YAW_DIAG_B` (160) — `(-0.707, -0.707)`, crossing `dx + dz = cell`,
+///   which is `LOC_DIAG_B`, from the +x/+z corner.
+const YAW_PLUS_Z: u16 = 0;
+const YAW_MINUS_Z: u16 = 128 << 8;
+const YAW_DIAG_A: u16 = 224 << 8;
+const YAW_DIAG_B: u16 = 160 << 8;
 /// How far from the wall the archer stands, in build cells.
 const STANCE_CELLS: f32 = 1.0;
 /// Ticks a case may spend waiting for an event before it is a failure
@@ -163,13 +180,27 @@ fn shooter_combat(structure: u16) -> CombatContent {
 /// from outside lands `HARD_SIDE_STRUCTURE` on every case and quietly turns
 /// every damage assertion into a test of the side rule.
 fn walled_world(w: &mut World, structure: u16) -> (u16, u16) {
+    let (cx, cz) = armed_shooter(w, structure, -STANCE_CELLS, 0.0);
+    place(w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    place(w, PIECE_WALL, cx, cz, GROUND, LOC_EDGE_XLO);
+    (cx, cz)
+}
+
+/// `walled_world`'s prologue on its own: a joined shooter carrying the
+/// build materials, both weapons and both quivers, standing `(dx, dz)`
+/// **cells** off the centre of a buildable cell. Nothing is built yet.
+///
+/// Split out so the `loc` cases below can choose a stance without
+/// `walled_world` — whose stance, wall and lack of a height pin are load-
+/// bearing for a dozen existing cases — changing by a byte.
+fn armed_shooter(w: &mut World, structure: u16, dx: f32, dz: f32) -> (u16, u16) {
     w.gather = GatherContent::probe_fixture();
     w.combat = shooter_combat(structure);
     w.build = BuildContent::probe_fixture();
     w.deploy = DeployContent::probe_fixture();
     w.tick(&[Command::Join { id: SHOOTER }]);
     let (cx, cz) = buildable_cell(SEED);
-    seat(w, cx, cz, STANCE_CELLS);
+    seat_at(w, cx, cz, dx, dz);
     // Build materials in the low slots, the bow and its quiver above them.
     for (slot, item) in [(0usize, 0u16), (1, 1), (2, 2), (3, 4)] {
         w.players[0].inv[slot] = ItemStack {
@@ -205,19 +236,65 @@ fn walled_world(w: &mut World, structure: u16) -> (u16, u16) {
         count: 200,
         cond: 0,
     };
-    place(w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
-    place(w, PIECE_WALL, cx, cz, GROUND, LOC_EDGE_XLO);
     (cx, cz)
 }
 
 /// Stand the shooter `cells` build cells along -x from the centre of
 /// (cx, cz). A negative `cells` puts them on the far side.
 fn seat(w: &mut World, cx: u16, cz: u16, cells: f32) {
+    seat_at(w, cx, cz, -cells, 0.0);
+}
+
+/// `seat`'s two-axis form: `(dx, dz)` build cells off the centre of
+/// (cx, cz), signed the way the world is.
+///
+/// **A fixture that can only stand west can only shoot east**, and that is
+/// half of why three of the shot walk's four `loc` arms had no address case
+/// — the other half being that the only wall any fixture built stood on
+/// `LOC_EDGE_XLO`.
+fn seat_at(w: &mut World, cx: u16, cz: u16, dx: f32, dz: f32) {
     let (x, z) = (
-        (cx as f32 + 0.5 - cells) * BUILD_CELL_M,
-        (cz as f32 + 0.5) * BUILD_CELL_M,
+        (cx as f32 + 0.5 + dx) * BUILD_CELL_M,
+        (cz as f32 + 0.5 + dz) * BUILD_CELL_M,
     );
     w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+}
+
+/// A foundation and **one** wall at `loc`, both placed from a stance
+/// `(dx, dz)` cells off the cell centre — so the soft side faces the
+/// shooter, `walled_world`'s rule and its reason — with the shooter left
+/// standing there, feet pinned to the foundation's own top.
+///
+/// **The pin is not tidiness.** `Body::at` seats on whatever terrain is
+/// under the stance, and a diagonal stance is 4.24 m out; far enough that
+/// the ground there can put the eye outside the storey band the wall
+/// occupies, and a shot that flies over a wall is a clean miss that reads
+/// as a walk defect. `benched_world` pins for the same reason.
+///
+/// **One wall, not `walled_world`'s plus another**, so the address the walk
+/// returns can only have come from the piece under test.
+fn walled_world_at(w: &mut World, structure: u16, loc: u8, dx: f32, dz: f32) -> (u16, u16) {
+    let (cx, cz) = armed_shooter(w, structure, dx, dz);
+    place(w, PIECE_FOUNDATION, cx, cz, GROUND, LOC_PLANE);
+    place(w, PIECE_WALL, cx, cz, GROUND, loc);
+    let top = sim_core::build::column_floor_y(
+        SEED,
+        hv(SEED),
+        cx,
+        cz,
+        w.pieces.cols().plate(cx, cz).unwrap_or(0),
+    );
+    w.players[0].body.qy = quant_y(top);
+    (cx, cz)
+}
+
+/// The four-part address an `EV_STRUCT_HIT` carries, unpacked: the cell
+/// key, the level and the `loc`.
+///
+/// `world.rs`' own role line for the event: a = the cell key,
+/// b = level << 16 | loc << 8 | deploy bits.
+fn struck_address(h: &SimEvent) -> (u32, u8, u8) {
+    (h.a, (h.b >> 16) as u8, ((h.b >> 8) & 0xff) as u8)
 }
 
 fn place(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
@@ -459,6 +536,176 @@ fn a_shot_with_no_structure_column_leaves_the_wall_whole() {
         hp,
         WALL_HP * 2,
         "the foundation and the wall are both whole at {WALL_HP} each"
+    );
+}
+
+// --- The other three `loc` arms. --------------------------------------------
+//
+// `collide::shot_stop` can name four `loc`s on a wall — `LOC_EDGE_XLO`,
+// `LOC_EDGE_ZLO`, `LOC_DIAG_A`, `LOC_DIAG_B` — and until now every fixture
+// in this file and in `tests/shoot.rs` stood its wall on the first of them.
+// Two lines pick the answer, one per walk:
+//
+//     loc: if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO }   (collide.rs)
+//     loc: if diag_b  { LOC_DIAG_B }  else { LOC_DIAG_A }
+//
+// so with only XLO under test, **both** ternaries could be replaced by
+// their left branch and every gate in the repo stayed green — while a
+// player watched the wrong wall of their base lose hp, or watched a
+// diagonal absorb shots and never fall. `NOW.md` §0mk item 5, and the
+// third ranked fix of two consecutive judge reports.
+//
+// The three cases below are one shape: build ONE wall at the loc, shoot it
+// from the side it was placed from, and read the address back off
+// `EV_STRUCT_HIT`. `struck_address` unpacks it so the three read alike.
+
+/// A wall on the cell's low-**z** boundary is named `LOC_EDGE_ZLO`, not the
+/// low-x one every other case in this file builds.
+///
+/// The mutant: `cell_edges_stop_shot`'s ternary always says `LOC_EDGE_XLO`.
+/// Every piece case above it passes under that, because every one of them
+/// is an XLO wall.
+#[test]
+fn a_shot_on_the_low_z_wall_names_the_z_edge() {
+    const S: u16 = 25;
+    let mut w = Box::new(World::new(SEED));
+    // One cell to the -z, so the wall's soft side faces the shot and the
+    // price is the same S the XLO case reads.
+    let (cx, cz) = walled_world_at(&mut w, S, LOC_EDGE_ZLO, 0.0, -STANCE_CELLS);
+    let ev = shoot_until(&mut w, SLOT_BOW as u8, YAW_PLUS_Z, EV_STRUCT_HIT);
+    let h = only(&ev, EV_STRUCT_HIT);
+    let (key, level, loc) = struck_address(&h);
+
+    assert_eq!(
+        key,
+        cell_key(cx, cz),
+        "the struck cell is not the wall's own"
+    );
+    assert_eq!(level, GROUND, "the chip named level {level}, not {GROUND}");
+    assert_eq!(
+        loc, LOC_EDGE_ZLO,
+        "the chip named loc {loc} and the wall stands at LOC_EDGE_ZLO \
+         ({LOC_EDGE_ZLO}) — LOC_EDGE_XLO is {LOC_EDGE_XLO}, the answer every \
+         other case in this file would accept"
+    );
+    assert_eq!(
+        h.c >> 16,
+        S as u32,
+        "the shot came from the side the wall was placed from, so it pays the \
+         soft price {S} and not the hard one"
+    );
+    assert_eq!(
+        h.c & 0xffff,
+        WALL_HP - S as u32,
+        "the wall's hp did not move"
+    );
+}
+
+/// The same low-z wall from the far side pays the hard price — the side
+/// rule is not an x-axis accident either.
+#[test]
+fn the_low_z_walls_far_face_is_its_hard_one() {
+    const S: u16 = 25;
+    const { assert!(S > HARD_SIDE_STRUCTURE) };
+    let mut w = Box::new(World::new(SEED));
+    let (cx, cz) = walled_world_at(&mut w, S, LOC_EDGE_ZLO, 0.0, -STANCE_CELLS);
+    // Around to +z and turn back.
+    seat_at(&mut w, cx, cz, 0.0, STANCE_CELLS);
+    let ev = shoot_until(&mut w, SLOT_BOW as u8, YAW_MINUS_Z, EV_STRUCT_HIT);
+    let h = only(&ev, EV_STRUCT_HIT);
+    let (_, _, loc) = struck_address(&h);
+    assert_eq!(loc, LOC_EDGE_ZLO, "the chip named loc {loc}");
+    assert_eq!(
+        h.c >> 16,
+        HARD_SIDE_STRUCTURE as u32,
+        "a shot on the hard face of a z-edge dealt {} where the side rule \
+         prices it at {HARD_SIDE_STRUCTURE}",
+        h.c >> 16
+    );
+}
+
+/// A diagonal wall on the `dz = dx` line is named `LOC_DIAG_A`.
+///
+/// A second walk entirely — `cell_diags_block`, which `shot_stop` reaches
+/// only after **both** edge walks decline — so this is not the ternary
+/// above with different constants; it is the arm nothing had ever entered.
+/// The approach is from the +x/-z corner, where no edge piece stands, so
+/// the diagonal is the only thing in the shot's way.
+#[test]
+fn a_shot_on_the_a_diagonal_names_it() {
+    const S: u16 = 25;
+    let mut w = Box::new(World::new(SEED));
+    // A diagonal anchors at the CELL CENTRE (`build::anchor`), so the
+    // stance is 4.24 m out — inside `BUILD_REACH_M` (5.0) and no further.
+    let (cx, cz) = walled_world_at(&mut w, S, LOC_DIAG_A, STANCE_CELLS, -STANCE_CELLS);
+    let ev = shoot_until(&mut w, SLOT_BOW as u8, YAW_DIAG_A, EV_STRUCT_HIT);
+    let h = only(&ev, EV_STRUCT_HIT);
+    let (key, level, loc) = struck_address(&h);
+
+    assert_eq!(
+        key,
+        cell_key(cx, cz),
+        "a diagonal is wholly inside its own cell — no neighbour shares it"
+    );
+    assert_eq!(level, GROUND, "the chip named level {level}, not {GROUND}");
+    assert_eq!(
+        loc, LOC_DIAG_A,
+        "the chip named loc {loc} and the wall stands at LOC_DIAG_A \
+         ({LOC_DIAG_A}); LOC_DIAG_B is {LOC_DIAG_B} and the two cross at the \
+         cell centre, so charging the wrong one is charging a piece that is \
+         not there"
+    );
+    assert_eq!(
+        h.c >> 16,
+        S as u32,
+        "the shot came from the side the diagonal was placed from, so it pays \
+         the soft price {S}; the hard one is {HARD_SIDE_STRUCTURE}, and a \
+         self-consistent `left == HP - dealt` would have taken a dealt of 0"
+    );
+    assert_eq!(
+        h.c & 0xffff,
+        WALL_HP - S as u32,
+        "the wall's hp did not move"
+    );
+}
+
+/// And a diagonal on the `dx + dz = cell` line is named `LOC_DIAG_B`.
+///
+/// **Its own `World`**: `build::body_overlaps` lists `(LOC_DIAG_A,
+/// LOC_DIAG_B)` as a conflict — they cross at the cell centre — so the two
+/// cannot stand in one cell and this case cannot be a second row of the one
+/// above.
+#[test]
+fn a_shot_on_the_b_diagonal_names_it() {
+    const S: u16 = 25;
+    let mut w = Box::new(World::new(SEED));
+    let (cx, cz) = walled_world_at(&mut w, S, LOC_DIAG_B, STANCE_CELLS, STANCE_CELLS);
+    let ev = shoot_until(&mut w, SLOT_BOW as u8, YAW_DIAG_B, EV_STRUCT_HIT);
+    let h = only(&ev, EV_STRUCT_HIT);
+    let (key, level, loc) = struck_address(&h);
+
+    assert_eq!(
+        key,
+        cell_key(cx, cz),
+        "the struck cell is not the wall's own"
+    );
+    assert_eq!(level, GROUND, "the chip named level {level}, not {GROUND}");
+    assert_eq!(
+        loc, LOC_DIAG_B,
+        "the chip named loc {loc} and the wall stands at LOC_DIAG_B \
+         ({LOC_DIAG_B}); LOC_DIAG_A is {LOC_DIAG_A}"
+    );
+    assert_eq!(
+        h.c >> 16,
+        S as u32,
+        "the shot came from the side the diagonal was placed from, so it pays \
+         the soft price {S}; the hard one is {HARD_SIDE_STRUCTURE}, and a \
+         self-consistent `left == HP - dealt` would have taken a dealt of 0"
+    );
+    assert_eq!(
+        h.c & 0xffff,
+        WALL_HP - S as u32,
+        "the wall's hp did not move"
     );
 }
 

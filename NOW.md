@@ -216,6 +216,16 @@ a `±Y` normal instead of a wall's. Item 1 was behind it and is now free.
    already walks, so nothing is owed there — but a door standing OPEN is
    still air to a shot, exactly as it is to a body, and whether that is
    right is a design question nobody has asked.
+   ⚠ **Its first two miss fixtures claimed a mutant class they did not
+   catch** (judged FAIL, `findings/pass-20260828-065501-02-judge.md` fix 1):
+   both offset x and z at once, so either extent test rejects the sample
+   alone and deleting the other was invisible; and every hit fired down the
+   exact centre, where the clamp is the identity. Fixed 2026-08-28 — one
+   axis per row on the miss, an off-centre-but-inside row on the hit, and
+   all four mutants (`ex := 0.0`, `ez := 0.0`, `ex := x - cxm`,
+   `ez := z - czm`) now redden a named case in **both** `shoot.rs` and
+   `chip.rs`. **The lesson generalises past this function**: a fixture that
+   violates two conditions at once tests neither.
 3. **The piece address on `EV_IMPACT`** — 27 bits against 4 spare pad bits,
    11 bytes. What still needs it: a **rim** (`plane_face` declines the
    ambiguous strip by design) and a **diagonal wall, 45° out**, since the
@@ -223,15 +233,23 @@ a `±Y` normal instead of a wall's. Item 1 was behind it and is now free.
 4. **Spray paint is a deployable, not a decal**: a `limits.rs` cap, a
    `worldsave.rs` slot, build privilege, decay, moderation. Stencil or
    painted is the call to make first.
-5. **Three of the shot walk's four `loc` arms have no address case.**
-   Every fixture in `tests/shoot.rs` is a `LOC_PLANE` floor and `chip.rs`
-   covers `LOC_EDGE_XLO` alone, so a walk naming the wrong piece on
-   `LOC_EDGE_ZLO`, `LOC_DIAG_A` or `LOC_DIAG_B` is green — the mutant that
-   survived ranged structure damage v0's first round, and the judge asked
-   for a standing gate rather than the note it got
-   (`findings/note-20260828-the-structure-column-was-hashed-and-dropped.md`).
-   Deploy shots v0 fixed the same shape one axis over (a level-1 case, so
-   `World::chip` cannot throw the level away) and left this one.
+5. ✅ **All four of the shot walk's `loc` arms have an address case now**
+   (2026-08-28, the third ranked fix of two consecutive judge reports).
+   `chip.rs` covered `LOC_EDGE_XLO` alone, so **both** ternaries that name a
+   loc — `cell_edges_stop_shot`'s and `cell_diags_block`'s — could have been
+   replaced by their left branch with every gate in the repo green.
+   `walled_world_at` builds one wall at any loc from any stance and
+   `struck_address` unpacks the payload; four mutants (edge → always XLO,
+   edge swapped, diag → always A, diag → always B) each redden their own
+   case. The diagonals were the harder half and the reason is worth keeping:
+   they anchor at the **cell centre**, so the stance is 4.24 m out (inside
+   `BUILD_REACH_M`, barely), `shot_stop` runs both edge walks first so the
+   approach must enter from a side with no edge piece, and `body_overlaps`
+   makes A and B conflict, so they need two `World`s.
+   ⚠ Still open, found while doing this: `cell_edges_stop_shot`'s
+   `(bx+1, bz)` / `(bx, bz+1)` rows return the **neighbour's** address
+   (`collide.rs:1641`), and nothing asserts that a shot stopping on a cell's
+   high face names cell+1 rather than the cell it was sampled in.
 
 ⚠ **Nobody has seen a decal**: no `ForwardDecal` renders under lavapipe at
 any size, alpha or orientation. One boot on a real GPU settles it.
