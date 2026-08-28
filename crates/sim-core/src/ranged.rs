@@ -562,6 +562,23 @@ pub fn step(
     (n_kills, n_chips)
 }
 
+/// What a shot walk stopped on, when what it stopped on was **built** —
+/// the address and the store it lives in.
+///
+/// The two stores share one four-part address by design (`Deploys::
+/// find_index` says so: a door and its doorway have one), so a walk that
+/// reaches both has to say which. It is the same discriminator
+/// `build::repair` takes as its `deploy` flag and the same one the wire
+/// carries as `world::STRUCT_DEPLOY_BIT`; without it the shot path would
+/// have to guess, and a guess here charges a wall for a furnace's hit or
+/// silently drops the chip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Struck {
+    pub at: collide::PieceHit,
+    /// `true` <=> the address names a `DeployRec`, not a `PieceRec`.
+    pub deploy: bool,
+}
+
 /// A chip a shot took out of a building piece — found here, applied by
 /// `World`.
 ///
@@ -581,23 +598,6 @@ pub fn step(
 /// at the moment it charges the damage, and a hit whose piece has gone is
 /// simply no longer a hit: the shot still stopped and still drew its
 /// impact, and only the chip is lost.
-/// What a shot walk stopped on, when what it stopped on was **built** —
-/// the address and the store it lives in.
-///
-/// The two stores share one four-part address by design (`Deploys::
-/// find_index` says so: a door and its doorway have one), so a walk that
-/// reaches both has to say which. It is the same discriminator
-/// `build::repair` takes as its `deploy` flag and the same one the wire
-/// carries as `world::STRUCT_DEPLOY_BIT`; without it the shot path would
-/// have to guess, and a guess here charges a wall for a furnace's hit or
-/// silently drops the chip.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Struck {
-    pub at: collide::PieceHit,
-    /// `true` <=> the address names a `DeployRec`, not a `PieceRec`.
-    pub deploy: bool,
-}
-
 #[derive(Clone, Copy, Default)]
 pub struct Chip {
     /// Which piece — `build`'s four-part address, the same one

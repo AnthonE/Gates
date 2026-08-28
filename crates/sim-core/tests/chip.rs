@@ -689,6 +689,37 @@ fn a_bullet_chips_the_same_bench_the_same_way() {
     );
 }
 
+/// The workbench's half-extents, as `deploy::solid_vol` gives them —
+/// `(half_w, half_d)`, the two the shot walk clamps against.
+fn bench_halves() -> (f32, f32) {
+    let (hw, _, hd) = sim_core::deploy::solid_vol(sim_core::deploy::ARCH_WORKBENCH)
+        .expect("the workbench is a solid archetype");
+    (hw, hd)
+}
+
+/// Stand the shooter `(dx, dz)` metres off the bench's cell centre and fire
+/// one arrow straight down. Returns the `EV_STRUCT_HIT` it landed and the
+/// bench's hp after.
+///
+/// A whole `World` per offset rather than a moved body, because
+/// `benched_world` is what places the bench and stocks the quiver, and a
+/// second shot into a bench the first one already chipped would make the hp
+/// assertion depend on the order the offsets are written in.
+fn shot_offset_from_bench(dx: f32, dz: f32) -> (SimEvent, u32, u16, u16) {
+    let mut w = Box::new(World::new(SEED));
+    let (cx, cz, top) = benched_world(&mut w, 20);
+    let (x, z) = (
+        (cx as f32 + 0.5) * BUILD_CELL_M + dx,
+        (cz as f32 + 0.5) * BUILD_CELL_M + dz,
+    );
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    w.players[0].body.qy = quant_y(top);
+
+    let ev = shoot_down_until(&mut w, SLOT_BOW as u8, EV_STRUCT_HIT);
+    let hit = only(&ev, EV_STRUCT_HIT);
+    (hit, w.deploys.entries()[0].hp as u32, cx, cz)
+}
+
 /// A shot fired past the bench, inside its own cell, leaves it whole — and
 /// lands on the foundation under it instead.
 ///
@@ -700,45 +731,87 @@ fn a_bullet_chips_the_same_bench_the_same_way() {
 /// same shot must still charge something, and what it charges is the slab
 /// the bench is bolted to — one `STRUCT_DEPLOY_BIT` away from the case
 /// above it, over identical geometry, at the same address.
+///
+/// **And one axis at a time.** The first draft put the offset on x AND z
+/// together and claimed in a comment that it therefore caught a mutant that
+/// dropped either extent test; a judge ran it, and it caught neither —
+/// with both axes out the surviving one rejects the sample by itself, so
+/// deleting the other is invisible. A miss must be caused by exactly one
+/// axis for that axis to be under test. Judged 2026-08-28.
 #[test]
 fn a_shot_past_the_workbench_leaves_it_whole() {
-    let mut w = Box::new(World::new(SEED));
-    let (cx, cz, top) = benched_world(&mut w, 20);
-    let (hw, _, hd) = sim_core::deploy::solid_vol(sim_core::deploy::ARCH_WORKBENCH)
-        .expect("the workbench is a solid archetype");
-    // Inside the build cell, outside the bench on both axes at once — so a
-    // mutant that dropped either clamp is still caught.
+    let (hw, hd) = bench_halves();
+    // Inside the build cell, outside the bench.
     let off = 1.2f32;
     assert!(
         off > hw && off > hd && off < BUILD_CELL_M * 0.5,
         "the fixture offset must clear the bench ({hw:.2}, {hd:.2}) and stay \
          inside the cell"
     );
-    let (x, z) = (
-        (cx as f32 + 0.5) * BUILD_CELL_M + off,
-        (cz as f32 + 0.5) * BUILD_CELL_M + off,
-    );
-    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
-    w.players[0].body.qy = quant_y(top);
 
-    let ev = shoot_down_until(&mut w, SLOT_BOW as u8, EV_STRUCT_HIT);
-    let hit = only(&ev, EV_STRUCT_HIT);
-    assert_eq!(
-        hit.b & sim_core::world::STRUCT_DEPLOY_BIT,
-        0,
-        "a shot fired {off:.1} m off the cell centre charged a bench whose \
-         half-extents are ({hw:.2}, {hd:.2})"
+    for (dx, dz) in [(off, 0.0f32), (0.0f32, off), (off, off)] {
+        let (hit, hp, cx, cz) = shot_offset_from_bench(dx, dz);
+        assert_eq!(
+            hit.b & sim_core::world::STRUCT_DEPLOY_BIT,
+            0,
+            "a shot fired (+{dx:.1}, +{dz:.1}) m off the cell centre charged a \
+             bench whose half-extents are ({hw:.2}, {hd:.2})"
+        );
+        assert_eq!(
+            hit.a,
+            cell_key(cx, cz),
+            "…and what it did charge is in the bench's own cell: the foundation"
+        );
+        assert_eq!(
+            hp, BENCH_HP,
+            "the bench lost hp to a shot from (+{dx:.1}, +{dz:.1}) that missed it"
+        );
+    }
+}
+
+/// A shot fired **inside** the bench but off its centre still charges it.
+///
+/// The other half of the case above, and it exists for a mutant the miss
+/// cases cannot see: `deploy_stop` measures the sphere by clamping the
+/// offset into the box's extents, and down the exact centre the offset is
+/// zero, so the clamp is the identity and deleting it changes nothing any
+/// centred case reads. Half an extent out the unclamped term is 0.40 m in x
+/// and 0.17 m in z against an arrowhead of 0.05 m — far enough that the
+/// bench stops answering altogether and the foundation takes the shot, which
+/// this case reads as `STRUCT_DEPLOY_BIT` going to zero. One axis per row,
+/// so each clamp is named by a case of its own. Judged 2026-08-28.
+#[test]
+fn a_shot_inside_the_workbench_but_off_its_centre_still_charges_it() {
+    let (hw, hd) = bench_halves();
+    assert!(
+        hw * 0.5 > sim_core::ranged::ARROW_R_M && hd * 0.5 > sim_core::ranged::ARROW_R_M,
+        "half the bench's extents ({:.2}, {:.2}) must exceed the arrowhead \
+         {:.2}, or a clamp-deleted mutant survives this case too",
+        hw * 0.5,
+        hd * 0.5,
+        sim_core::ranged::ARROW_R_M
     );
-    assert_eq!(
-        hit.a,
-        cell_key(cx, cz),
-        "…and what it did charge is in the bench's own cell: the foundation"
-    );
-    assert_eq!(
-        w.deploys.entries()[0].hp as u32,
-        BENCH_HP,
-        "the bench lost hp to a shot that missed it"
-    );
+
+    for (dx, dz) in [(hw * 0.5, 0.0f32), (0.0f32, hd * 0.5)] {
+        let (hit, hp, cx, cz) = shot_offset_from_bench(dx, dz);
+        assert_ne!(
+            hit.b & sim_core::world::STRUCT_DEPLOY_BIT,
+            0,
+            "a shot fired (+{dx:.2}, +{dz:.2}) m off centre — INSIDE a bench \
+             whose half-extents are ({hw:.2}, {hd:.2}) — charged the piece \
+             store instead, so the walk let it past the bench"
+        );
+        assert_eq!(
+            hit.a,
+            cell_key(cx, cz),
+            "…in the bench's own cell ({cx}, {cz})"
+        );
+        assert_eq!(
+            hp,
+            BENCH_HP - 20,
+            "the bench took no damage from a shot that stopped on it"
+        );
+    }
 }
 
 /// `BuildContent::probe_fixture`'s row 2: a floor, for the upper storey.

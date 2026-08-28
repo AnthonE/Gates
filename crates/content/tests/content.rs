@@ -3329,10 +3329,13 @@ fn every_solid_deployable_places_on_the_plane() {
             );
         }
     }
-    assert!(
-        seen >= 7,
-        "expected the hearth, the box (twice), the furnace, the three \
-         benches, the recycler and the research table; found {seen} solid \
-         rows — an empty loop is not a passing gate"
+    assert_eq!(
+        seen, 9,
+        "expected exactly nine solid rows — the hearth, the box (twice), the \
+         furnace, the three benches, the recycler and the research table — \
+         and found {seen}. The floor used to be `>= 7`, which its own message \
+         already contradicted: two solid rows could have been deleted with \
+         this gate green (judged 2026-08-28). A row added here is a \
+         deliberate edit to this number."
     );
 }
