@@ -365,6 +365,30 @@ do not rediscover)
   *mechanism* (the curve is C¹ at every knot and at the clamp) instead, which
   is exact, runs in microseconds, and is proven red under the old body.
 
+- **A statistic about an asset is not a number until you say how it was read,
+  and the DECODER is part of that.** `assets/textures/MANIFEST.md` and two doc
+  tables in `crates/client/src/render/` describe the shipped `.jpg`s — means,
+  luma, sd, gain span — and on 2026-08-28 all three were wrong somewhere while
+  every constant beside them was right, because `GRAIN_GAIN`, `ROUGH_MEAN` and
+  `GRAIN_SHARE` each have a test that re-measures them off the file and the
+  prose had nothing. The 2026-08-27 `rock` swap (`Rock023` → `Gravel004`) moved
+  exactly the things with a gate pointing at them and left the old texture's
+  numbers in **four** places plus a dead `pub ROCK_GAIN` nothing read. Two
+  things to carry beyond "gate the prose". **First: the basis is half the
+  claim** — one `rock_albedo.jpg` reads an sd of 0.1379 at 1024², 0.1287 at
+  512² and 0.1131 at 256², so the file's own candidate table and its prop-bind
+  table differ legitimately and neither may be "corrected" into the other.
+  **Second: two JPEG decoders of one file disagree by more than the digits
+  these tables print** — the first round of corrections here was measured with
+  Pillow and `image` 0.25 put five more cells out of range (`bark`'s span
+  2.000 → 1.995, `litter`'s 3.586 → 3.559, worst case 0.45%). Neither is wrong;
+  the one that matters is **the decoder the game ships**, because Bevy reads
+  these files through `image` and the frame is what the number describes. The
+  gate is `crates/client/tests/manifest_measured.rs`, its bound is half an ulp
+  of whatever precision the text printed (a full ulp let `47.6%` → `47.5%`
+  pass — found by running the mutants, six of seven caught and the bound was
+  the reason), and it prints the whole table as measured so nobody re-derives
+  one by hand again.
 - **A judge names the symptom; fix the cause.** Optimizing the judge's
   literal sentence is how a loop circles for three passes — elsewhere,
   "untextured" was really diffuse contrast crushed by an earlier fix for

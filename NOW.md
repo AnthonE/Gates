@@ -63,7 +63,7 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 ## 0gs · What ground surface v1 left open *(client lane)*
 
 The ground stopped repeating and `rock` stopped being a wall (`DECISIONS.md`
-§open, ground surface v1). Four things it did not do; one is closed.
+§open, ground surface v1). Five things it did not do; two are closed.
 
 1. **Nobody has booted it**, and the biplanar tap is the sharp end: it is WGSL
    that no GPU in this container can compile, so it is gated by *scrapes* of
@@ -82,6 +82,20 @@ The ground stopped repeating and `rock` stopped being a wall (`DECISIONS.md`
 4. **`ROUGH_MEAN[3]` is now 0.536**, 0.43 below sand, and the wet term
    multiplies down from there. If a mountain reads as glossy in the first
    frame anyone draws, that is the number to suspect.
+5. ✅ **The prose around the constants is gated now** (`tests/
+   manifest_measured.rs`, 2026-08-28 — three tables and three statements, all
+   proven red under mutants). It closed the judged `sand` defect and found
+   that the `Gravel004` swap had left `Rock023`'s numbers in four more places
+   plus a dead `pub ROCK_GAIN`. **What it leaves open is `gravel`**: the one
+   role in `MANIFEST.md` with no `bundled` tick, so nothing loads it and this
+   gate does not read it. It is the obvious source for item 3's cliff, which
+   is the only reason to keep the row.
+
+⚠ **This item is now `§LOOK`'s, not a loop's, except for item 3.** Items 1, 2
+and 4 all end at "boot it and look", item 5 is closed, and item 3 needs both a
+texture and a `[u8; 4]` → 5 widening of `terrain::splat` — which is the scatter
+mix, `Biome`'s four rows, the minimap palette and `test_terrain_golden` in one
+commit, not a texture swap. Size it before picking it.
 
 
 ## 0wg · What worldgen shape v1 left open *(sim+client lane)*
