@@ -660,7 +660,33 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// client that decoded a v49 stream as v48 would put every base back on the
 /// terrain it was stilted over, dropping half of them into hillsides. All 96
 /// fixtures re-key; every one carrying a piece record moves bytes.
-pub const PROTO_VER: u16 = 50;
+///
+/// **v50 (freehand placement v0, `d57dbe0`) left no paragraph here.** Said
+/// rather than quietly fixed, because the gap is the evidence: this list is
+/// maintained by hand and nothing gates it, so it is a history that can skip
+/// a row without any test noticing. Read `git log -S` for the authority.
+///
+/// **v51 (2026-08-28): `CONT_KIND_BITS` 2 → 3, one wider field on both
+/// lanes** (armor v1). Not a new message and not a new column — the
+/// *container-kind field itself* grew a bit, because `CONT_WEAR` is the
+/// fifth kind and v37 spent the last of four. Wearing is a move into it
+/// (`reference/ARMOR.md` §9.2), so this one bit is the entire wire cost of
+/// equipment: no `ACT_EQUIP`, no wear-sync message, no second mutation path
+/// into container state.
+///
+/// The failure a stale client suffers is the **quiet** kind, and it is worth
+/// naming as the exception to the run of loud ones above. The field sits
+/// mid-message on `ACT_MOVE`, `ACT_CONTAINER`, `EV_MOVED`, `EV_MOVE_REFUSED`
+/// and `EV_CONT_SYNC`, so a v50 client reading a v51 stream does not read
+/// short — it reads *shifted*: every slot index, count and item id after the
+/// kind is off by one bit, which decodes cleanly into wrong numbers. A move
+/// acknowledgement would land on the wrong slot and a container sync would
+/// fill a panel with plausible garbage. Nothing errors; the two ends simply
+/// disagree about a container, which is the trap-list disconnect arriving by
+/// the other road. That is exactly what the handshake refusal is for. All 96
+/// fixtures re-key and every one carrying a container address moves bytes;
+/// three are appended for the new kind.
+pub const PROTO_VER: u16 = 51;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1152,7 +1178,15 @@ const _: () = assert!(
 /// Every check is against `inventory::CONT_MAX`, never against this width
 /// — the two are deliberately not the same number, and the paragraph above
 /// is what that separation buys.
-const CONT_KIND_BITS: u32 = 2;
+///
+/// **Widened to three at v51, and the paragraph above is what happened.**
+/// `CONT_WEAR` (armor v1) is the "next container kind" it names, the
+/// widening is its "first move", and the guards kept rather than deleted
+/// are the ones that start refusing again: 4 is live, 5..7 are forgeable
+/// and refuse at decode. The separation this last paragraph describes is
+/// what let the widening be one number here plus one in `event.rs` — no
+/// call site checks a *width*, so none of them had to move.
+const CONT_KIND_BITS: u32 = 3;
 /// Move-count width. Full `u16`, matching `ItemStack::count` and the
 /// stack ladder's own type, so no count a container can legally hold is
 /// unsendable. Zero refuses at decode: a move of nothing is not a move,
@@ -3173,19 +3207,37 @@ mod tests {
             encode_action_container(CONT_SELF, 1, &mut buf),
             Err(WireError::Range)
         );
-        // The kind field is **saturated** as of wire v37 (world containers
-        // v0): `CONT_MAX` is 3 and the field is two bits, so there is no
-        // longer a bit pattern that decodes as a forged kind, and the
-        // forged-kind half of this test cannot be written any more. That
-        // is a real change in the wire's shape, so it is asserted rather
-        // than deleted — the day a fifth kind widens `CONT_KIND_BITS`,
-        // this line goes red and the forged case becomes writable again.
-        assert_eq!(
-            CONT_MAX as u32,
-            (1 << CONT_KIND_BITS) - 1,
-            "the container-kind field is saturated; if it was widened, \
-             restore the forged-kind decode case below it"
+        // **That day came: wire v51 (armor v1) widened the field to three
+        // bits for `CONT_WEAR`, and the forged case below is writable
+        // again** — which is the whole reason the assert that used to
+        // stand here was written as an assert instead of a deletion. It
+        // went red on the widening commit and pointed at this paragraph.
+        //
+        // So the field now has headroom, and headroom is a thing a
+        // decoder has to refuse rather than pass along: 5, 6 and 7 encode
+        // fine as bit patterns and name no container. Every one of them
+        // is checked, not just the first, because the guard being
+        // defended is `kind > CONT_MAX` and an off-by-one there —
+        // `>=`, or a mask — passes exactly one of these three.
+        assert!(
+            (CONT_MAX as u32) < (1 << CONT_KIND_BITS) - 1,
+            "the container-kind field is saturated again; the forged-kind \
+             cases below cannot fire and must be replaced by the assert \
+             this paragraph describes"
         );
+        for forged in (CONT_MAX as u32 + 1)..(1 << CONT_KIND_BITS) {
+            let mut w = BitWriter::new(&mut buf);
+            w.write(KIND_ACTION, KIND_BITS).unwrap();
+            w.write(ACT_CONTAINER, ACTION_SUB_BITS).unwrap();
+            w.write(forged, CONT_KIND_BITS).unwrap();
+            w.write(0, 32).unwrap();
+            let len = w.finish();
+            assert_eq!(
+                decode_action(&buf[..len]),
+                Err(WireError::Malformed),
+                "forged container kind {forged} decoded"
+            );
+        }
 
         let mut w = BitWriter::new(&mut buf);
         w.write(KIND_ACTION, KIND_BITS).unwrap();

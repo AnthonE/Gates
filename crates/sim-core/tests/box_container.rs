@@ -33,7 +33,7 @@ use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_PLA
 use sim_core::deploy::{box_key, DeployContent, DeployDef, ARCH_BOX, PLACE_FOUNDATION};
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::inventory::{
-    CONT_BAG, CONT_BOX, CONT_SELF, REFUSE_M_NO_CONTAINER, REFUSE_M_REACH, REFUSE_M_SLOT,
+    CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, REFUSE_M_NO_CONTAINER, REFUSE_M_REACH, REFUSE_M_SLOT,
 };
 use sim_core::limits::{BOX_SLOTS, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS};
 use sim_core::world::{Command, World, EV_MOVED, EV_MOVE_REFUSED};
@@ -752,4 +752,64 @@ fn the_zero_handle_never_resolves_to_a_box() {
         None,
         "handle 0 resolved to a box; the client cannot tell it from 'nothing open'"
     );
+}
+
+/// **Armor goes from a box straight onto the body**, and that is the test
+/// `inventory::is_own` exists for.
+///
+/// The move verb carries **one** container handle, so at most one side of
+/// a move may be a container standing in the world — `move_item` refuses
+/// two of them as `REFUSE_M_NO_CONTAINER` because the message has no room
+/// to address the second. For four kinds "stands in the world" was
+/// spelled `kind != CONT_SELF`, which was correct and became wrong the
+/// moment a player carried a *second* container: `CONT_WEAR` is on the
+/// body, has no handle and nothing to be out of reach of, so under the
+/// old spelling this move names two ground containers and is refused.
+///
+/// `is_own` is the fix and this is the only test that can see it. Every
+/// self-to-wear case agrees under both spellings — `CONT_SELF` is own
+/// either way — so a suite without a real ground container on one side
+/// passes with `is_own` reverted, which is exactly what happened when
+/// this was run as a mutant against `tests/armor.rs`: 21 green.
+///
+/// The claim is a *success*, not a refusal, which is the direction that
+/// matters: opening a raided box and putting the loot on is the move.
+#[test]
+fn armor_moves_from_a_box_onto_the_body() {
+    let (mut w, key, _, _) = box_world();
+    // The armor table, so `wearable_in` has rows to answer from. Item 5
+    // is `probe_fixture`'s body piece.
+    w.combat = sim_core::combat::CombatContent::probe_fixture();
+    const PLATE: u16 = 5;
+    let plate = ItemStack {
+        item: PLATE,
+        count: 1,
+        cond: 0,
+    };
+    let bi = w.deploys.box_index(key).expect("the fixture's box");
+    w.deploys.set_box_slot(bi, 3, plate);
+
+    let (code, why, _) = do_move(&mut w, key, CONT_BOX, 3, CONT_WEAR, 1, 1);
+
+    assert_eq!(
+        (code, why),
+        (
+            EV_MOVED,
+            sim_core::inventory::addr(CONT_BOX, 3, CONT_WEAR, 1)
+        ),
+        "a plate must move from the box onto the body"
+    );
+    assert_eq!(w.players[0].worn[1], plate, "worn");
+    assert_eq!(
+        w.deploys.box_slot(bi, 3),
+        ItemStack::default(),
+        "and gone from the box"
+    );
+
+    // The reverse, so stripping into storage works too — and so the
+    // `ground` selection is exercised with the wear kind on each side.
+    let (code, _, _) = do_move(&mut w, key, CONT_WEAR, 1, CONT_BOX, 3, 1);
+    assert_eq!(code, EV_MOVED, "and back into the box");
+    assert_eq!(w.deploys.box_slot(bi, 3), plate);
+    assert_eq!(w.players[0].worn[1], ItemStack::default());
 }

@@ -70,9 +70,10 @@
 //! hits into six. What is still *not* here is named rather than implied:
 //! no damage types (one scalar — `ArmorDef`'s doc has the argument and its
 //! source), no hit areas (the set is one number, `worn_pct`), no condition
-//! on a worn piece, no `move_penalty_pct` consumer, and — the one a player
-//! notices — **no way to put armor on**, because that is `CONT_WEAR` and a
-//! wire bump (`findings/armor-design-20260818.md` §4).
+//! on a worn piece, and no `move_penalty_pct` consumer. The item this list
+//! led with — *"the one a player notices: no way to put armor on"* — is
+//! **closed** (armor v1, wire v51): `CONT_WEAR` is the fifth container
+//! kind and equipping is a move into it, checked here by `wearable_in`.
 //!
 //! The throwable's damage does not flow through this module's swing arm at
 //! all, and that is the design rather than an omission: a charge resolves
@@ -682,6 +683,33 @@ pub fn worn_pct(cc: &CombatContent, v: &Player) -> u32 {
         i += 1;
     }
     pct.min(ARMOR_MAX_PCT)
+}
+
+/// **May `item` be worn in wear slot `s`?** — `CanWearItem(Item, Int32)`
+/// (`reference/ARMOR.md` §1), and the whole of what `CONT_WEAR` refuses.
+///
+/// One-based `ArmorDef::slot` against a zero-based array index, exactly
+/// as `worn_pct` reads it two functions up. That is not a coincidence to
+/// be tidied away — it is the invariant. `worn_pct` **ignores** a piece
+/// sitting in the wrong index rather than counting it, so before armor v1
+/// a mis-slotted piece was inert; now that a move can put one there, the
+/// two predicates have to be the same predicate or a helmet in the body
+/// slot becomes a thing you can wear for no protection. Written as
+/// `slot == s + 1` at both sites, deliberately, so a reader diffing them
+/// sees one expression twice.
+///
+/// `WEAR_NONE` is 0 and `s + 1` is never 0, so "this item is not armor at
+/// all" needs no separate branch and no separate refusal — which is why
+/// there is exactly one `REFUSE_M_WEAR` rather than three.
+///
+/// An item index past the table reads as not wearable, the same way
+/// `worn_pct` bounds it and for the same reason: content decides the
+/// table's width, and a forged index is a wire fact, not a content one.
+///
+/// Wall 1: one compare. Wall 2: no allocation.
+#[inline]
+pub fn wearable_in(cc: &CombatContent, item: u16, s: u8) -> bool {
+    (item as usize) < MAX_ITEM_DEFS && cc.armor[item as usize].slot == s + 1
 }
 
 /// What gets through `pct` percent of protection.

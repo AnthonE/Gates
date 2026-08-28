@@ -40,8 +40,8 @@ use sim_core::build::{
 use sim_core::craft::CraftContent;
 use sim_core::deploy::DeployContent;
 use sim_core::gather::ItemStack;
-use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF};
-use sim_core::limits::{BOX_SLOTS, INV_SLOTS};
+use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
+use sim_core::limits::{BOX_SLOTS, INV_SLOTS, WEAR_SLOTS};
 
 fn empty() -> [ItemStack; INV_SLOTS] {
     [ItemStack::default(); INV_SLOTS]
@@ -93,6 +93,137 @@ fn move_marshals_every_field_to_its_own_name() {
     // `world.rs` never reads the field for such a move and the encoder does
     // not range-check it, so a stray value would enter the WAL unvalidated.
     assert_eq!(m.bag, 0);
+}
+
+/// **A wear move carries no handle, and the old rule sent nothing at all.**
+///
+/// `move_args` required a non-zero handle for every kind that was not
+/// `CONT_SELF`, which was right while every other container stood in the
+/// world. `CONT_WEAR` is on the body and has none, so under the old rule
+/// this returned `None` — and `None` here is not a refusal: it is the
+/// drag snapping back with nothing sent, no `EV_MOVE_REFUSED`, no toast
+/// and no line in any log. The feature would have read as a dead panel.
+///
+/// The second half is worse and is why the fixture passes a live handle:
+/// with a box open, `bag` is that box's `box_key`, and a rule that only
+/// asked "is it non-zero" would have shipped it as a **wear** move's
+/// handle. So the assertion is `m.bag == 0` — normalized away, not
+/// passed through — for the reason the self-to-self case gives one test
+/// up: `world.rs` never reads the field for an own move and the encoder
+/// does not range-check it, so a stray value enters the WAL unvalidated.
+#[test]
+fn a_wear_move_needs_no_handle_and_carries_none() {
+    let mut inv = empty();
+    inv[3] = ItemStack {
+        item: 5,
+        count: 1,
+        cond: 0,
+    };
+    let cont = empty();
+
+    let m = slots::move_args(HANDLE, CONT_SELF, 3, CONT_WEAR, 1, Grab::All, &inv, &cont)
+        .expect("putting armor on is a move the client can address");
+    assert_eq!((m.from_kind, m.from_slot), (CONT_SELF, 3));
+    assert_eq!((m.to_kind, m.to_slot), (CONT_WEAR, 1));
+    assert_eq!(m.count, 1);
+    assert_eq!(
+        m.bag, 0,
+        "a body has no address; an open box's handle must not ride along"
+    );
+
+    // And back off again, with the wear container on the source side.
+    let mut worn = empty();
+    worn[1] = ItemStack {
+        item: 5,
+        count: 1,
+        cond: 0,
+    };
+    let m = slots::move_args(HANDLE, CONT_WEAR, 1, CONT_SELF, 8, Grab::All, &worn, &worn)
+        .expect("taking it off is the same verb");
+    assert_eq!((m.from_kind, m.to_kind), (CONT_WEAR, CONT_SELF));
+    assert_eq!(m.bag, 0);
+}
+
+/// A wear move and a ground container in one drag is still two handles,
+/// and still refused here.
+///
+/// `is_own` widened what counts as "on the player"; it must not have
+/// widened what counts as one handle. Box-to-wear is legal (one ground
+/// side) and is gated in `sim-core`; bag-to-box was and stays illegal.
+#[test]
+fn widening_own_did_not_legalise_two_ground_containers() {
+    let inv = empty();
+    let mut cont = empty();
+    cont[0] = ItemStack {
+        item: 5,
+        count: 1,
+        cond: 0,
+    };
+    // One ground side plus the body: addressable.
+    assert!(
+        slots::move_args(HANDLE, CONT_BOX, 0, CONT_WEAR, 1, Grab::All, &inv, &cont).is_some(),
+        "putting on what you just looted is one handle"
+    );
+    // Two ground sides: still not.
+    assert!(
+        slots::move_args(HANDLE, CONT_BAG, 0, CONT_BOX, 1, Grab::All, &inv, &cont).is_none(),
+        "two ground containers name one handle between them"
+    );
+}
+
+/// The container grid's width is the sim's width, for every kind.
+///
+/// `container_cols` used to name `CONT_BOX` and answer `GRID_COLS` for
+/// everything else — a hand-kept mirror of `slots_in`, which would have
+/// drawn a two-slot wear container as six cells with four of them lies.
+/// It is derived now, and this is the gate that says the derivation
+/// agrees with the sim on every live kind rather than only on the new one.
+#[test]
+fn every_container_draws_at_the_sims_own_width() {
+    // The property, and it is the bug class rather than the formula: a
+    // panel may never draw a cell the sim has no slot for. Asserted
+    // against `slots_in` — the sim's own answer — and NOT against
+    // `container_cols`' body, which would be the naive rebuild that
+    // shares a code path with the thing it checks.
+    for kind in [CONT_SELF, CONT_BAG, CONT_BOX, CONT_WORLD, CONT_WEAR] {
+        let cols = slots::container_cols(kind);
+        assert!(
+            cols <= slots::slots_in(kind),
+            "kind {kind} draws {cols} cells over {} slots",
+            slots::slots_in(kind)
+        );
+        assert!(cols > 0, "kind {kind} draws nothing");
+    }
+    // The four kinds that predate the derivation are unchanged — this is
+    // the regression half, and without it the property above is satisfied
+    // by returning 1 for everything.
+    for kind in [CONT_SELF, CONT_BAG, CONT_BOX, CONT_WORLD] {
+        assert_eq!(
+            slots::container_cols(kind),
+            slots::GRID_COLS,
+            "kind {kind} changed width when the derivation landed"
+        );
+    }
+    assert_eq!(slots::container_cols(CONT_WEAR), WEAR_SLOTS);
+}
+
+/// Every live kind has a title of its own, and none of them falls through.
+///
+/// The fallback is `"BAG"`, which was a real answer for one kind and a
+/// lie about the next two — the comment in `container_title` was written
+/// after `CONT_WORLD` nearly shipped as "BAG". This is that comment as a
+/// test, so the next kind fails here instead of being discovered on
+/// screen.
+#[test]
+fn no_live_container_kind_is_titled_bag_by_accident() {
+    assert_eq!(slots::container_title(CONT_BAG), "BAG");
+    for kind in [CONT_SELF, CONT_BOX, CONT_WORLD, CONT_WEAR] {
+        assert_ne!(
+            slots::container_title(kind),
+            "BAG",
+            "kind {kind} fell through to the bag fallback"
+        );
+    }
 }
 
 #[test]

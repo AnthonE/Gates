@@ -32,7 +32,7 @@ use sim_core::build::{damage_band, BuildContent, PieceRec, LOC_PLANE};
 use sim_core::craft::CraftJob;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
 use sim_core::gather::{ItemStack, NO_ITEM};
-use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WORLD};
+use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
 use sim_core::limits::{
     AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, CHAT_LOCAL_CM, CRAFT_QUEUE,
     DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_MOBS,
@@ -2927,6 +2927,21 @@ impl ShardCore {
                         .world_conts
                         .index_of(handle)
                         .filter(|&i| self.world.world_conts.in_reach(i, p)),
+                    // What you are wearing. The one kind with no store to
+                    // look in and nothing to be out of reach of — it is
+                    // this player's own body, so it resolves to a fixed
+                    // index and the whole of the guard is the `p.dead`
+                    // test above, which it inherits for free and wants:
+                    // the death screen must not keep feeding a panel.
+                    //
+                    // The handle is ignored rather than checked against
+                    // zero. `encode_action_container` refuses a nonzero
+                    // handle on `CONT_SELF` only, so a forged one can
+                    // arrive here; answering it with the body anyway is
+                    // right, because there is no *other* body it could
+                    // name. Refusing would spend a close on a message
+                    // that asked for the only thing this kind has.
+                    CONT_WEAR => Some(0),
                     _ => None,
                 }
             };
@@ -2970,11 +2985,16 @@ impl ShardCore {
                     // one owner: `cont_slot` is that owner, and the drip
                     // asks it rather than answering again.
                     //
-                    // `own_wslot` is passed for the `CONT_SELF` arm the
-                    // drip can never reach (line ~2409 already proved the
-                    // kind is a ground container); it is the honest
-                    // argument rather than a placeholder, so the call
-                    // stays correct if that guard ever moves.
+                    // `own_wslot` was passed for the `CONT_SELF` arm the
+                    // drip can never reach — the honest argument rather
+                    // than a placeholder, so the call would stay correct
+                    // if that guard ever moved. **It is load-bearing as
+                    // of armor v1** and that is worth recording: the fifth
+                    // kind is `CONT_WEAR`, which reads `players[slot].worn`,
+                    // so this argument now selects a body on every wear
+                    // drip. Passing a placeholder here would have been
+                    // free for four kinds and drawn every player the wrong
+                    // armor on the fifth.
                     for (s, out) in now.iter_mut().enumerate().take(width) {
                         *out = self.world.cont_slot(c.own_wslot, kind, s as u8, i);
                     }

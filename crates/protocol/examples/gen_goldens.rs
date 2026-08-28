@@ -457,4 +457,25 @@ fn main() {
         let len = protocol::encode_event_swing(s, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[95], &buf[..len]);
     }
+
+    // Armor v1 (v51): the fifth container kind — the one worn rather
+    // than stood in — on all three lanes it travels, plus the refusal
+    // that is the only place a kind rides inside an address.
+    {
+        let (kind, cont) = goldens::action_container_wear();
+        let len = encode_action_container(kind, cont, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[96], &buf[..len]);
+
+        let (cont, fk, fs, tk, ts, count) = goldens::action_move_wear();
+        let len = encode_action_move(cont, fk, fs, tk, ts, count, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[97], &buf[..len]);
+
+        let (kind, cont, reset, slots) = goldens::event_cont_sync_wear();
+        let len = encode_event_cont_sync(kind, cont, reset, &slots, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[98], &buf[..len]);
+
+        let (reason, fk, fs, tk, ts) = goldens::event_move_refused_wear();
+        let len = encode_event_move_refused(reason, fk, fs, tk, ts, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[99], &buf[..len]);
+    }
 }

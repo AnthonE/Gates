@@ -771,13 +771,17 @@ pub struct Player {
     /// the placement — which is what holds "one piece per slot" up before
     /// any verb exists to enforce it.
     ///
-    /// **Nothing in the sim writes this yet, and that is the honest state
-    /// of it** (2026-08-19). Wearing is a container move into a
-    /// `CONT_WEAR` kind, and all four values of the wire's 2-bit container
-    /// field are spent (`inventory.rs`), so equipping costs a
-    /// `CONT_KIND_BITS` widening and a `PROTO_VER` bump — a wire slice, not
-    /// this one. Until it lands, the only writers are tests and a save.
-    /// Reduction is real; reachability is not.
+    /// **Written by the move verb since armor v1** (wire v51). This said
+    /// "nothing in the sim writes this yet, and that is the honest state
+    /// of it" from 2026-08-19, and priced the fix: a `CONT_WEAR` kind, a
+    /// `CONT_KIND_BITS` widening, a `PROTO_VER` bump. That is what landed,
+    /// so the writers are now `move_item` (through `set_cont_slot`), a
+    /// save, and tests — in that order of importance.
+    ///
+    /// The invariant above still does the work it always did, and now it
+    /// has a second enforcer rather than none: `worn_pct` ignores a piece
+    /// in the wrong index, and `combat::wearable_in` refuses to put one
+    /// there. Both are spelled `slot == index + 1`, deliberately.
     pub worn: [ItemStack; WEAR_SLOTS],
     /// Tick the next swing is allowed at (gather.rs cadence).
     pub next_swing: u64,
@@ -1678,6 +1682,16 @@ impl World {
             inventory::CONT_BAG => self.backpacks.slot(ci, s as usize),
             inventory::CONT_BOX => self.deploys.box_slot(ci, s as usize),
             inventory::CONT_WORLD => self.world_conts.slot(ci, s as usize),
+            // Armor v1. This arm is exactly the defect the paragraph above
+            // describes, caught before it shipped rather than after: the
+            // `_` fallback is `inv`, so a `CONT_WEAR` reaching it would
+            // read and write the *inventory* array under a wear address —
+            // in range, never a panic, green everywhere, and the helmet
+            // you dragged onto your head would land in backpack slot 0.
+            // The wrong store here is a *plausible* store, which is what
+            // makes it worse than the `CONT_WORLD` case above it.
+            // `container_wire`'s wear test is the mutant proof.
+            inventory::CONT_WEAR => self.players[slot].worn[s as usize],
             _ => self.players[slot].inv[s as usize],
         }
     }
@@ -1698,6 +1712,7 @@ impl World {
                 self.world_conts
                     .set_slot(ci, s as usize, v, self.tick, refill);
             }
+            inventory::CONT_WEAR => self.players[slot].worn[s as usize] = v,
             _ => self.players[slot].inv[s as usize] = v,
         }
     }
@@ -1755,15 +1770,18 @@ impl World {
         //    ground container — two different ones is a destination the
         //    message cannot address, not a rule about what players may do
         //    (`REFUSE_M_NO_CONTAINER`).
-        if from_kind != inventory::CONT_SELF
-            && to_kind != inventory::CONT_SELF
-            && from_kind != to_kind
-        {
+        //    "Ground" is `!is_own`, not `!= CONT_SELF`: since armor v1 a
+        //    player carries two containers, and a wear slot has no handle
+        //    to be named by and nothing to be out of reach of. Spelled the
+        //    old way, `CONT_SELF` -> `CONT_WEAR` would have been read as a
+        //    move into a ground container, handed whatever handle the
+        //    command carried, and refused as `REFUSE_M_NO_CONTAINER`.
+        if !inventory::is_own(from_kind) && !inventory::is_own(to_kind) && from_kind != to_kind {
             self.events
                 .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_NO_CONTAINER, addr);
             return;
         }
-        let ground = if from_kind != inventory::CONT_SELF {
+        let ground = if !inventory::is_own(from_kind) {
             from_kind
         } else {
             to_kind
@@ -1872,6 +1890,34 @@ impl World {
             }
         }
         let dst = self.cont_slot(slot, to_kind, to_slot, ci);
+        // A wear slot takes the piece that goes in it and nothing else
+        // (`CanWearItem`, `combat::wearable_in`). Asked here for the same
+        // reason the oven is: it is a rule about what a container accepts,
+        // which is a property of content, and `plan_move` decides
+        // arithmetic and only arithmetic.
+        //
+        // **Both landing sites, not just the destination.** A move's
+        // result is two writes, and when the destination is occupied
+        // `plan_move` answers SWAP — so `dst` travels backwards into
+        // `from_slot`. Check only the forward half and a body piece
+        // dragged from the body slot onto a helmet puts the helmet in the
+        // body slot: refused in one direction, admitted in the other, by
+        // one verb. The source side is guarded on `dst.count > 0` because
+        // that is exactly when a swap can happen; an empty destination
+        // falls through to `plan_move`'s own ladder with the reason it
+        // would have given anyway, and `src.count > 0` leaves an empty
+        // source to `REFUSE_M_EMPTY` rather than answering it here.
+        let wear_refused = (to_kind == inventory::CONT_WEAR
+            && src.count > 0
+            && !combat::wearable_in(&self.combat, src.item, to_slot))
+            || (from_kind == inventory::CONT_WEAR
+                && dst.count > 0
+                && !combat::wearable_in(&self.combat, dst.item, from_slot));
+        if wear_refused {
+            self.events
+                .push(EV_MOVE_REFUSED, pid, inventory::REFUSE_M_WEAR, addr);
+            return;
+        }
 
         // 4. Plan. This is the whole of the validation, and it holds no
         //    reference to anything it could damage.

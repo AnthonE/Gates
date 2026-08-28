@@ -235,6 +235,19 @@ Melee cells equal on all three pieces we own.
 
 ### 9.2 Equip is a container move — do not add an equip verb
 
+⚠ **BUILT, 2026-08-28 (armor v1, wire v51), and it went exactly as priced
+below** — which is worth recording, because the price is the reason it
+waited nine days. `CONT_WEAR = 4`, `CONT_KIND_BITS` 2 → 3 on both lanes,
+`PROTO_VER` 50 → 51, 96 fixtures re-keyed and 4 appended, all in one
+commit. `plan_move` did not move a line and no `ACT_EQUIP` exists.
+Two things this section did **not** anticipate, both found by writing it:
+`slots_in` and `World::cont_slot` each have a `_` fallback that answers
+*inventory*, so the fifth kind had to be named in both or it would have
+addressed 30 slots over a 2-element array and drawn a wear panel out of
+the player's backpack. A container kind is not additive by default; it is
+additive only where somebody already wrote the dispatch as a match.
+Read the rest as the design it was, in the past tense.
+
 **The single most useful thing in this file.** The reference has no
 `EquipItem` RPC: wearing is `MoveItem` into a wear container, refused by
 `CanWearItem(item, slot)` (§1). We should take that exactly, and the reason

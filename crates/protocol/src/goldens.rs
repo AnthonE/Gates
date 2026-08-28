@@ -36,130 +36,141 @@ use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 96] = [
-    "v50_input_acks_only.bin",
-    "v50_input_full.bin",
-    "v50_snapshot_keyframe.bin",
-    "v50_snapshot_delta.bin",
-    "v50_snapshot_cap.bin",
-    "v50_hello.bin",
-    "v50_welcome.bin",
-    "v50_refuse_full.bin",
-    "v50_event_gather.bin",
-    "v50_event_inv.bin",
-    "v50_event_slot_harvested.bin",
-    "v50_event_slot_respawned.bin",
-    "v50_event_slot_sync.bin",
-    "v50_event_catalog.bin",
-    "v50_event_weak_mark.bin",
-    "v50_event_craft_q.bin",
-    "v50_event_craft_done.bin",
-    "v50_event_craft_refused.bin",
-    "v50_event_recipes.bin",
-    "v50_action_craft.bin",
-    "v50_action_cancel.bin",
-    "v50_action_place.bin",
-    "v50_event_piece_placed.bin",
-    "v50_event_piece_sync.bin",
-    "v50_event_build_refused.bin",
-    "v50_event_piece_defs.bin",
-    "v50_action_deploy.bin",
-    "v50_action_feed.bin",
-    "v50_event_deploy_placed.bin",
-    "v50_event_deploy_sync.bin",
-    "v50_event_deploy_refused.bin",
-    "v50_event_deploy_defs.bin",
-    "v50_event_piece_removed.bin",
-    "v50_event_deploy_removed.bin",
-    "v50_event_stock.bin",
-    "v50_action_use.bin",
-    "v50_action_access.bin",
-    "v50_event_door.bin",
-    "v50_action_upgrade.bin",
-    "v50_chat.bin",
-    "v50_event_chat.bin",
-    "v50_event_hit.bin",
-    "v50_event_health.bin",
-    "v50_event_death.bin",
-    "v50_action_loot.bin",
-    "v50_event_bag_dropped.bin",
-    "v50_event_bag_sync.bin",
-    "v50_event_bag_removed.bin",
-    "v50_event_struct_hit_piece.bin",
-    "v50_event_struct_hit_deploy.bin",
-    "v50_event_vitals.bin",
-    "v50_event_consumed.bin",
-    "v50_event_consume_refused.bin",
-    "v50_action_consume.bin",
-    "v50_event_drank.bin",
-    "v50_action_drink.bin",
-    "v50_event_respawn.bin",
-    "v50_action_respawn.bin",
-    "v50_action_move.bin",
-    "v50_event_moved.bin",
-    "v50_event_move_refused.bin",
-    "v50_action_move_box.bin",
-    "v50_action_container.bin",
-    "v50_action_container_close.bin",
-    "v50_event_cont_sync.bin",
-    "v50_event_cont_close.bin",
-    "v50_action_repair_piece.bin",
-    "v50_action_repair_deploy.bin",
-    "v50_event_piece_repaired_piece.bin",
-    "v50_event_piece_repaired_deploy.bin",
-    "v50_action_throw_piece.bin",
-    "v50_action_throw_deploy.bin",
-    "v50_event_charge_placed_piece.bin",
-    "v50_event_charge_placed_deploy.bin",
-    "v50_challenge.bin",
-    "v50_auth.bin",
-    "v50_event_oven_lit.bin",
-    "v50_event_oven_out.bin",
+pub const FIXTURES: [&str; 100] = [
+    "v51_input_acks_only.bin",
+    "v51_input_full.bin",
+    "v51_snapshot_keyframe.bin",
+    "v51_snapshot_delta.bin",
+    "v51_snapshot_cap.bin",
+    "v51_hello.bin",
+    "v51_welcome.bin",
+    "v51_refuse_full.bin",
+    "v51_event_gather.bin",
+    "v51_event_inv.bin",
+    "v51_event_slot_harvested.bin",
+    "v51_event_slot_respawned.bin",
+    "v51_event_slot_sync.bin",
+    "v51_event_catalog.bin",
+    "v51_event_weak_mark.bin",
+    "v51_event_craft_q.bin",
+    "v51_event_craft_done.bin",
+    "v51_event_craft_refused.bin",
+    "v51_event_recipes.bin",
+    "v51_action_craft.bin",
+    "v51_action_cancel.bin",
+    "v51_action_place.bin",
+    "v51_event_piece_placed.bin",
+    "v51_event_piece_sync.bin",
+    "v51_event_build_refused.bin",
+    "v51_event_piece_defs.bin",
+    "v51_action_deploy.bin",
+    "v51_action_feed.bin",
+    "v51_event_deploy_placed.bin",
+    "v51_event_deploy_sync.bin",
+    "v51_event_deploy_refused.bin",
+    "v51_event_deploy_defs.bin",
+    "v51_event_piece_removed.bin",
+    "v51_event_deploy_removed.bin",
+    "v51_event_stock.bin",
+    "v51_action_use.bin",
+    "v51_action_access.bin",
+    "v51_event_door.bin",
+    "v51_action_upgrade.bin",
+    "v51_chat.bin",
+    "v51_event_chat.bin",
+    "v51_event_hit.bin",
+    "v51_event_health.bin",
+    "v51_event_death.bin",
+    "v51_action_loot.bin",
+    "v51_event_bag_dropped.bin",
+    "v51_event_bag_sync.bin",
+    "v51_event_bag_removed.bin",
+    "v51_event_struct_hit_piece.bin",
+    "v51_event_struct_hit_deploy.bin",
+    "v51_event_vitals.bin",
+    "v51_event_consumed.bin",
+    "v51_event_consume_refused.bin",
+    "v51_action_consume.bin",
+    "v51_event_drank.bin",
+    "v51_action_drink.bin",
+    "v51_event_respawn.bin",
+    "v51_action_respawn.bin",
+    "v51_action_move.bin",
+    "v51_event_moved.bin",
+    "v51_event_move_refused.bin",
+    "v51_action_move_box.bin",
+    "v51_action_container.bin",
+    "v51_action_container_close.bin",
+    "v51_event_cont_sync.bin",
+    "v51_event_cont_close.bin",
+    "v51_action_repair_piece.bin",
+    "v51_action_repair_deploy.bin",
+    "v51_event_piece_repaired_piece.bin",
+    "v51_event_piece_repaired_deploy.bin",
+    "v51_action_throw_piece.bin",
+    "v51_action_throw_deploy.bin",
+    "v51_event_charge_placed_piece.bin",
+    "v51_event_charge_placed_deploy.bin",
+    "v51_challenge.bin",
+    "v51_auth.bin",
+    "v51_event_oven_lit.bin",
+    "v51_event_oven_out.bin",
     // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
-    "v50_event_knock.bin",
-    "v50_event_auth.bin",
-    "v50_action_access_crew.bin",
-    "v50_action_demolish.bin",
-    "v50_event_shot.bin",
+    "v51_event_knock.bin",
+    "v51_event_auth.bin",
+    "v51_action_access_crew.bin",
+    "v51_action_demolish.bin",
+    "v51_event_shot.bin",
     // World containers v0 (v37): the fourth container kind. Three
     // fixtures and not one, because `action_move_box`'s own doc records
     // what happens otherwise — the third kind crossed the wire for a
     // whole version with only the *open* pinned, so the bytes that mean
     // "take it out of the box" were checked by nothing. Kind 3 gets its
     // open, its move and its sync in the commit that legalises it.
-    "v50_action_container_world.bin",
-    "v50_action_move_world.bin",
-    "v50_event_cont_sync_world.bin",
+    "v51_action_container_world.bin",
+    "v51_action_move_world.bin",
+    "v51_event_cont_sync_world.bin",
     // The bench ladder + tech tree (v38): the unlock action and the
     // research-rows drip, plus the three research-lane events that had
     // ridden unpinned since v32 — the role gate checked their payloads
     // and nothing checked their bytes, which is the exact seat the v37
     // world-container note called out as empty.
-    "v50_action_unlock.bin",
-    "v50_event_research_rows.bin",
-    "v50_event_research.bin",
-    "v50_event_research_refused.bin",
-    "v50_event_known.bin",
+    "v51_action_unlock.bin",
+    "v51_event_research_rows.bin",
+    "v51_event_research.bin",
+    "v51_event_research_refused.bin",
+    "v51_event_known.bin",
     // The table verb's own action, pinned by the local branch and kept
     // through the 2026-08-15 integration: `encode_action_research` is
     // still live (the client's `verbs.rs` calls it), so
     // `every_encoder_has_a_golden` requires these bytes.
-    "v50_action_research.bin",
+    "v51_action_research.bin",
     // The gather refusal (v42) — appended, because the manifest is
     // positional and a name in the middle silently renumbers every
     // writer after it.
-    "v50_event_gather_refused.bin",
+    "v51_event_gather_refused.bin",
     // Bag choice v0 (v43): the own-fact bag list the death screen shapes
     // itself around. Appended for the same positional reason.
-    "v50_event_bags.bin",
+    "v51_event_bags.bin",
     // Surface marks v0 (v45): where an arrow stopped, and on what.
     // Appended, like the two above — `gen_goldens` writes this list by
     // INDEX, so inserting anywhere but the end silently re-points every
     // fixture after the insertion at another message's bytes.
-    "v50_event_impact.bin",
-    "v50_event_swing.bin",
+    "v51_event_impact.bin",
+    "v51_event_swing.bin",
+    // Armor v1 (v51): the fifth container kind, and the first that is
+    // carried on the player rather than standing in the world. Four
+    // fixtures on the v37 precedent above — its open, its move and its
+    // sync in the commit that legalises it — plus the refusal, because
+    // `REFUSE_M_WEAR` is a reason no fixture has ever carried and the
+    // refusal message is the only one that pins a container kind inside
+    // an *address* rather than as a field of its own.
+    "v51_action_container_wear.bin",
+    "v51_action_move_wear.bin",
+    "v51_event_cont_sync_wear.bin",
+    "v51_event_move_refused_wear.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -1544,3 +1555,100 @@ pub fn action_research() -> u8 {
 // survivors are the ones `FIXTURES` names. `action_research` above has no
 // counterpart there and stays: it is the fifth encoder of this lane, and
 // `every_encoder_has_a_golden` is why it may not quietly lose its bytes.
+
+/// Opening the **wear** container (wire v51, armor v1).
+///
+/// Kind 4 with handle **zero**, and the zero is the fixture's whole
+/// point: `CONT_WEAR` is an own container (`inventory::is_own`), so
+/// unlike the box and the crate above it there is no address to name —
+/// the body is wherever the sender is. Every other container fixture in
+/// this file carries a deliberately distinctive handle so a transposition
+/// moves bytes; this one carries the absence of a handle, which is the
+/// thing a decoder that treated kind 4 as ground would get wrong first.
+///
+/// Note what this pins about the *encoder's* one handle rule: it refuses
+/// a nonzero handle on `CONT_SELF` only, so kind 4 is legal here purely
+/// because it is a kind and not because anything special-cases it.
+pub fn action_container_wear() -> (u8, u32) {
+    (4, 0)
+}
+
+/// **Putting armor on** (wire v51) — the verb equipment actually is.
+///
+/// `CONT_SELF` slot 19 → `CONT_WEAR` slot 1, one piece. There is no
+/// `ACT_EQUIP` to pin because there is no `ACT_EQUIP`: these are the
+/// bytes that make a body wear something, and they are `ACT_MOVE`'s
+/// (`reference/ARMOR.md` §9.2).
+///
+/// The count is **1 and honestly 1** — a wear slot holds one piece and
+/// `stack_max` says so — rather than a number picked to differ from
+/// everything else the way `action_move`'s 42 is. So the transposition
+/// defence here rests on the other three fields instead, and they carry
+/// it: the kinds differ (0 → 4, the two ends of the widened field), the
+/// slots differ and are far apart (19 → 1), and swapping either
+/// `(kind, slot)` pair for the other yields `(4, 1, 0, 19)`, which is
+/// different bytes. The handle is zero for the reason above.
+///
+/// Slot 19 is also past `BOX_SLOTS`, so a decoder resolving the source
+/// width against the wrong container's table refuses this fixture.
+pub fn action_move_wear() -> (u32, u8, u8, u8, u8, u16) {
+    (0, 0, 19, 4, 1, 1)
+}
+
+/// What a body is wearing, arriving as an opening `reset` (wire v51).
+///
+/// Two slots, which is all `WEAR_SLOTS` has, and they are **both filled
+/// and both non-zero items** so the head/body pair cannot be read in
+/// either order without moving bytes: slot 0 carries item 4 and slot 1
+/// carries item 5, which are `combat.rs`'s two probe armor rows, in the
+/// one arrangement `worn_pct` scores as a full set.
+///
+/// `reset` is true, matching `event_cont_sync_world` and unlike
+/// `event_cont_sync`, because a wear container has no incremental state
+/// to diff against on open either.
+pub fn event_cont_sync_wear() -> (u8, u32, bool, [InvSlot; 2]) {
+    (
+        4,
+        0,
+        true,
+        [
+            InvSlot {
+                slot: 0,
+                stack: ItemStack {
+                    item: 4,
+                    count: 1,
+                    cond: 9_100,
+                },
+            },
+            InvSlot {
+                slot: 1,
+                stack: ItemStack {
+                    item: 5,
+                    count: 1,
+                    cond: 10_000,
+                },
+            },
+        ],
+    )
+}
+
+/// A move refused because **that is not where that goes** (wire v51):
+/// `REFUSE_M_WEAR`, carrying the address that was asked for.
+///
+/// Two firsts in five bytes, which is why it is pinned separately from
+/// `event_move_refused`. The reason is **9** — the first value to need
+/// `REFUSE_M_BITS`' fourth bit for a reason rather than for headroom, so
+/// a field narrowed back to three bits truncates it into
+/// `REFUSE_M_SLOT`'s neighbourhood and says "resync" where the sim said
+/// "wrong slot". And the destination kind is 4 *inside an address*: the
+/// refusal packs two `(kind, slot)` pairs, so this is the message where a
+/// container kind travels without a `cont` handle beside it to make the
+/// width obvious.
+///
+/// The address is `action_move_wear`'s with the destination slot changed
+/// from 1 to 0 — the body piece offered to the head slot, which is
+/// exactly what `combat::wearable_in` refuses — so the two fixtures read
+/// as the same drag succeeding and failing.
+pub fn event_move_refused_wear() -> (u8, u8, u8, u8, u8) {
+    (9, 0, 19, 4, 0)
+}

@@ -318,7 +318,13 @@ const _: () = assert!(
 /// `ACTION_SLOT_BITS`). An acknowledgement that could not express an
 /// address the client is allowed to *ask* for would be a reconcile hole,
 /// so the two lanes carry the address identically or neither is sound.
-const CONT_KIND_BITS: u32 = 2;
+///
+/// **Three since wire v51** (armor v1). The pair was exactly full at v37
+/// and `CONT_WEAR` is the kind that had to widen it. Both lanes moved in
+/// the one commit for the reason this paragraph already gives: widening
+/// only the action lane would let a client ask for an address the
+/// acknowledgement could not name back.
+const CONT_KIND_BITS: u32 = 3;
 const MOVE_SLOT_BITS: u32 = 5;
 /// Move-refusal reason width — `inventory::REFUSE_M_*` runs `1..=7` and
 /// zero is reserved as "no reason", refused at both ends the way
@@ -4530,7 +4536,10 @@ mod wire_domains {
             exempt: &["MAX"],
             min_members: 8,
             bits: REFUSE_M_BITS,
-            live_max: 8,
+            // 8 -> 9 at wire v51 (armor v1): `REFUSE_M_WEAR` is the
+            // reason a wear slot gives for "that is not what goes here",
+            // and the pin fired on it exactly as its message promised.
+            live_max: 9,
         },
         Domain {
             what: "consume refusal",
@@ -4582,17 +4591,24 @@ mod wire_domains {
             prefix: "pub const CONT_",
             ty: ": u8 = ",
             exempt: &["MAX"],
-            min_members: 4,
+            min_members: 5,
             bits: CONT_KIND_BITS,
             // Moved 2 -> 3 at wire v37 (world containers v0), which is
             // the case this pin was written for: no field widened and no
             // fixture's bytes moved, but value 3 stopped being forged and
-            // started being the crate on the haven pad. The domain is now
-            // **saturated** — `live_max == capacity - 1` — so the next
-            // container kind cannot be added without widening
-            // `CONT_KIND_BITS`, and the fit assert above is what will say
-            // so.
-            live_max: 3,
+            // started being the crate on the haven pad. That saturated
+            // the domain, and the note here said the next kind could not
+            // land without a widening.
+            //
+            // It did, at v51 (armor v1): `CONT_WEAR` is 4, the field went
+            // 2 -> 3 bits, and every fixture carrying a container address
+            // re-keyed. So this pin has now fired for real, in both of
+            // its jobs — the fit assert refused the fifth kind under two
+            // bits, and this `live_max` refused it under three until the
+            // widening was deliberate. Values 5..7 are forgeable and
+            // refuse at both ends, which is the posture the field lost at
+            // v37 and has back.
+            live_max: 4,
         },
         Domain {
             what: "piece shape",
