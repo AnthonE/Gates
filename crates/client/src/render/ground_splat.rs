@@ -96,7 +96,9 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
 
-use super::terrain_mesh::{ALBEDO_LUMA_FLOOR, GROUND_ALBEDO, WET_SATURATION, WET_VALUE};
+use super::terrain_mesh::{
+    ALBEDO_LUMA_FLOOR, GROUND_ALBEDO, GROUND_TILE_M, WET_SATURATION, WET_VALUE,
+};
 use super::textures::GroundMaps;
 
 /// The shader, resolved against the asset root `bin/gates.rs` sets.
@@ -240,6 +242,15 @@ pub struct GroundSplatParams {
     /// as the top tap, and a second literal `0.25` in WGSL is a copy that can
     /// drift from the one `heightfield` writes.
     pub wall: Vec4,
+    /// Per identity, what the mesh's UV must be multiplied by so that identity
+    /// repeats every [`GROUND_TILE_M`] metres — `1 / (UV_PER_M × tile_m)`.
+    ///
+    /// **Sent as a multiplier rather than as the tile size itself** so the
+    /// shader does no division and the reference density stays in one place:
+    /// `heightfield` writes UV at [`UV_PER_M`] and this is the only thing that
+    /// re-spreads it. Sand and rock are drawn at the 4 m reference, so their
+    /// entries are exactly `1.0` and their sampling is bit-unchanged.
+    pub tile: Vec4,
 }
 
 impl GroundSplatParams {
@@ -258,8 +269,22 @@ impl GroundSplatParams {
             tune: Vec4::new(WET_VALUE, WET_SATURATION, ALBEDO_LUMA_FLOOR, BLEND_DEPTH),
             blend: Vec4::new(HEIGHT_INFLUENCE, NORMAL_Z_FLOOR, WET_ROUGH, 0.0),
             wall: Vec4::new(WALL_ON, WALL_SHARPNESS, super::terrain_mesh::UV_PER_M, 0.0),
+            tile: Vec4::from_array(tile_multipliers()),
         }
     }
+}
+
+/// The four UV multipliers, derived from [`GROUND_TILE_M`] and [`UV_PER_M`].
+///
+/// Free-standing so `tests/ground_tiling.rs` can re-derive them from the two
+/// constants rather than reading them back out of a built uniform — the same
+/// arrangement `GRAIN_GAIN` has with the files it is measured from.
+pub fn tile_multipliers() -> [f32; 4] {
+    let mut m = [0.0f32; 4];
+    for k in 0..4 {
+        m[k] = 1.0 / (super::terrain_mesh::UV_PER_M * GROUND_TILE_M[k]);
+    }
+    m
 }
 
 /// Where the biplanar wall tap turns on, as `sin(tilt)`.

@@ -28,8 +28,20 @@
 //! and `ground_mix.rs` both carry the retraction that came from sweeping a
 //! quadrant and calling it the island.
 
-use client::render::terrain_mesh::{vertex_mods, MACRO_AMP, MACRO_M};
+use client::render::terrain_mesh::{vertex_mods, GROUND_TILE_M, MACRO_AMP, MACRO_M};
 use sim_core::terrain::ISLAND_SIZE;
+
+/// The coarsest repeat the break-up has to hide, metres.
+///
+/// **Derived, because it used to be a bare `4.0` here.** Every identity shared
+/// one 4 m tile until 2026-08-28; they now have four sizes
+/// (`terrain_mesh::GROUND_TILE_M`), and the hardest case for a low-frequency
+/// break-up is the WIDEST of them — the finer ones are further below
+/// `MACRO_M` still. A literal would have gone on measuring 4 m after the
+/// tiles moved, with this gate green and testing the wrong distance.
+fn widest_tile() -> f32 {
+    GROUND_TILE_M.iter().copied().fold(f32::MIN, f32::max)
+}
 
 /// The modifier a vertex at (x, z) carries, with the wet term out of the way.
 /// `y` is above the waterline band and `grad` flat, so `wet_factor` is 0 and
@@ -97,7 +109,7 @@ fn the_break_up_varies_at_its_own_scale_and_not_the_tiles() {
         let mut x = 23.7f32;
         while x < ISLAND_SIZE - MACRO_M {
             let a = modifier(x, z);
-            near += f64::from((modifier(x + 4.0, z) - a).abs());
+            near += f64::from((modifier(x + widest_tile(), z) - a).abs());
             far += f64::from((modifier(x + MACRO_M, z) - a).abs());
             n += 1;
             x += 31.0;
@@ -107,10 +119,11 @@ fn the_break_up_varies_at_its_own_scale_and_not_the_tiles() {
     let (near, far) = (near / f64::from(n), far / f64::from(n));
     assert!(
         far > near * 1.15,
-        "the modifier moves {near:.4} across one 4 m texture tile and {far:.4} \
-         across a whole {MACRO_M} m macro cell — the break-up is not \
+        "the modifier moves {near:.4} across one {} m texture tile and \
+         {far:.4} across a whole {MACRO_M} m macro cell — the break-up is not \
          lower-frequency than the repeat it is hiding, so it adds a second \
-         pattern instead of dissolving the first."
+         pattern instead of dissolving the first.",
+        widest_tile()
     );
 }
 
