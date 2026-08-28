@@ -91,6 +91,7 @@ fn gun_fixture() -> sim_core::combat::CombatContent {
         rate_ticks: 12,
         hitscan: true,
         range_mm: 50_000,
+        structure: 0,
     };
     c
 }
@@ -167,7 +168,8 @@ fn pull(
 ) -> Shot {
     let mut events = EventQueue::default();
     let mut kills = [Kill::default(); MAX_ARROWS];
-    let n = ranged::hitscan(
+    let mut chips = [ranged::Chip::default(); MAX_ARROWS];
+    let (n, _n_chips) = ranged::hitscan(
         SEED,
         hv(SEED),
         cols,
@@ -177,6 +179,7 @@ fn pull(
         players,
         &mut events,
         &mut kills,
+        &mut chips,
     );
     Shot {
         events,

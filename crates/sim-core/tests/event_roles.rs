@@ -458,6 +458,7 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         rate_ticks: 60,
         hitscan: false,
         range_mm: 60_000,
+        structure: 0,
     };
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: SPEED_MMPT,
@@ -554,6 +555,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         rate_ticks: 60,
         hitscan: false,
         range_mm: 60_000,
+        structure: 0,
     };
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1_333,

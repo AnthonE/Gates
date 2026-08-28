@@ -718,6 +718,11 @@ impl Content {
 
         let damage = u16::try_from(w.damage)
             .map_err(|_| format!("bake: `{}` damage {} overflows u16", w.id, w.damage))?;
+        // The melee arm's rule on the melee arm's column: refused, never
+        // truncated. A `structure` past `u16` silently wrapping is a wall
+        // that a bow opens in one shot.
+        let structure = u16::try_from(w.structure)
+            .map_err(|_| format!("bake: `{}` structure {} overflows u16", w.id, w.structure))?;
         if damage == 0 {
             return Err(format!("bake: ranged weapon `{}` deals no damage", w.id));
         }
@@ -768,6 +773,13 @@ impl Content {
             // speed on the round, `range_m` over *which* speed? The sim
             // divides by the round it actually fires (`ranged::draw`).
             range_mm: w.range_m * 1000,
+            // The structure column, carried at last. It has been on the
+            // bow, the crossbow and the revolver in `weapons.toml` since
+            // the content crate and been dropped here every bake — parsed,
+            // range-checked, `canon`-hashed, and thrown away one line
+            // before the sim could read it. `RangedDef::structure` says
+            // what that cost.
+            structure,
         };
         Ok(())
     }

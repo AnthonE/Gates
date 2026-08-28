@@ -213,6 +213,24 @@ pub struct RangedDef {
     /// The sim divides this by the chosen round's speed at the moment of
     /// the shot — integer division, once per shot, never per tick.
     pub range_mm: u32,
+    /// What one hit takes off a **building piece** — `weapons.toml`'s
+    /// second damage column, the same one `MeleeDef::structure` carries and
+    /// under the same law (`balance.rs`: never above the row's own
+    /// `damage`, never at the raid tool's).
+    ///
+    /// **It was priced, validated and content-hashed for months while the
+    /// bake threw it away.** `content/weapons.toml` has given the bow,
+    /// the crossbow and the revolver `structure = 1` since the content
+    /// crate; `bake_combat` sends a `bow`/`firearm` row to `bake_ranged`
+    /// before the melee table's `structure` read, and `RangedDef` had
+    /// nowhere to put it — so `canon.rs` hashed a number that changed
+    /// nothing, which is the same "armed and unread" shape that left the
+    /// whole bow unfired until hitscan v0 (this module's header).
+    ///
+    /// Zero is a weapon that cannot mark a wall at all, and the sim reads
+    /// it as exactly that rather than as "unset": `ranged.rs` skips the
+    /// damage write, and the shot still stops and still draws its impact.
+    pub structure: u16,
 }
 
 /// **Hand-written rather than derived, and the reason is the ammo array.**
@@ -233,6 +251,7 @@ impl Default for RangedDef {
             rate_ticks: 0,
             hitscan: false,
             range_mm: 0,
+            structure: 0,
         }
     }
 }
@@ -353,6 +372,7 @@ impl CombatContent {
             rate_ticks: 0,
             hitscan: false,
             range_mm: 0,
+            structure: 0,
         }; MAX_ITEM_DEFS],
         ammo: [AmmoDef {
             speed_mmpt: 0,
