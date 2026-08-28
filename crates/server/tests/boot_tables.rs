@@ -79,10 +79,19 @@ fn every_content_bake_is_installed_on_the_boot_path() {
     );
 }
 
-/// (2) The same list, from the other end: `SimTables` has a field per bake,
-/// so the compiler carries the invariant once the grep above has pointed at
-/// it. A table in `bake_all` that no field receives cannot compile, and this
-/// asserts the count agrees so a field cannot be quietly served twice.
+/// (2) The same list, from the other end: every `SimTables` field is filled
+/// **by name** in `bake_all`.
+///
+/// **By name and not by count**, since 2026-08-28. It counted before —
+/// fields against lines matching `bake_` and `:` — and that read the
+/// *shape* of the constructor rather than the fact under assertion. Wire
+/// v52 made the catalog read the already-baked combat table instead of
+/// re-deriving the armor rows from `content.armors`, which needs one bake
+/// hoisted into a `let` above the literal; the hoisted line has no colon,
+/// the field line has no `bake_`, and a green gate went red over a
+/// constructor that still fills all thirteen. A count is also the weaker
+/// assertion in the direction that matters: two fields served from one
+/// bake and one served from none counts the same as thirteen correct.
 #[test]
 fn the_table_struct_has_one_field_per_bake() {
     let net_src = read("src/net.rs");
@@ -93,27 +102,60 @@ fn the_table_struct_has_one_field_per_bake() {
         .split_once("\n}")
         .expect("SimTables is closed")
         .0;
-    let fields = body
+    let fields: Vec<&str> = body
         .lines()
-        .filter(|l| l.trim().starts_with("pub "))
-        .count();
+        .filter_map(|l| l.trim().strip_prefix("pub "))
+        .filter_map(|rest| rest.split(':').next())
+        .collect();
+
+    assert!(
+        fields.len() >= 13,
+        "only {} `SimTables` fields parsed: {fields:?} — the declaration \
+         shape moved and this gate is reading nothing",
+        fields.len()
+    );
 
     let call_body = net_src
         .split_once("pub fn bake_all(")
         .expect("bake_all is declared in net.rs")
-        .1;
-    let installs = call_body
-        .lines()
-        .take_while(|l| !l.starts_with('}'))
-        .filter(|l| l.contains("bake_") && l.contains(':'))
-        .count();
+        .1
+        .split_once("\n}")
+        .expect("bake_all is closed")
+        .0;
 
-    assert_eq!(
-        fields, installs,
-        "`SimTables` has {fields} fields and `bake_all` fills {installs} — \
-         a field that is not filled from a bake is a table the sim runs on \
-         that nothing in `content/` authored"
-    );
+    for f in &fields {
+        // Two shapes, and each carries its own half of the claim.
+        //
+        // `field: <expr>,` in the literal — the expression must name a
+        // bake, which is the half the old count assertion was carrying:
+        // `catalog: ItemCatalog::EMPTY` fills the field, compiles, and is
+        // `bake_research`'s defect exactly (a table the sim runs on that
+        // nothing in `content/` authored). Found by running the mutant on
+        // the rewrite: the name check alone let it through.
+        //
+        // `field,` — the shorthand for a value hoisted above the literal,
+        // which `combat` is because the catalog reads it. Then the *let*
+        // has to be the one naming the bake.
+        let by_expr = call_body.lines().any(|l| {
+            l.trim()
+                .strip_prefix(f)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .is_some_and(|expr| expr.contains("bake_"))
+        });
+        let by_binding = call_body.lines().any(|l| l.trim() == format!("{f},"))
+            && call_body.lines().any(|l| {
+                let l = l.trim();
+                l.starts_with(&format!("let {f} ")) && l.contains("bake_")
+            });
+        assert!(
+            by_expr || by_binding,
+            "`SimTables::{f}` is not filled from a bake in `bake_all` — \
+             either the field is missing from the constructor, or it is \
+             served from something that is not a `bake_*` call. A table \
+             the sim runs on that nothing in `content/` authored is \
+             `bake_research`'s defect, and it compiles."
+        );
+    }
 }
 
 /// (3) The behavioural half. The shipped content, through the boot path,
@@ -238,4 +280,73 @@ fn the_shipped_catalog_carries_every_condition_ceiling() {
         "no shipped item carries a condition ceiling — the column is \
          untested by this content set and this gate is passing for free"
     );
+}
+
+/// (5) The armor columns' behavioural half (wire v52), the same shape one
+/// version later — and the same reason: **the client links no content
+/// crate**, so the wear panel's protection total is whatever the catalog
+/// says and nothing else. If the columns are inert, the panel prints 0 %
+/// on a full set with every wire gate green, because a golden pins bytes
+/// and not whether the boot path filled them.
+///
+/// Checked against `content.armors` rather than against `tables.combat`,
+/// deliberately: `bake_catalog` reads the combat table, so comparing the
+/// two would compare a value with itself. The authored toml is the
+/// independent source, and it is the one an editor changes.
+#[test]
+fn the_shipped_catalog_carries_every_armor_row() {
+    let content = content::Content::load_dir(&content_dir()).expect("shipped content loads");
+    let tables = server::net::bake_all(&content).expect("shipped content bakes");
+
+    for a in &content.armors {
+        let idx = content.item_index(&a.id).expect("armor is item-backed") as usize;
+        assert_eq!(
+            u32::from(tables.catalog.armor_pct(idx)),
+            a.reduction_pct,
+            "`{}` is authored at {} % and the catalog drips {} % — the wear \
+             panel would print a total the server never subtracts",
+            a.id,
+            a.reduction_pct,
+            tables.catalog.armor_pct(idx)
+        );
+        let authored_slot = match a.slot {
+            content::schema::ArmorSlot::Head => sim_core::combat::WEAR_HEAD,
+            content::schema::ArmorSlot::Body => sim_core::combat::WEAR_BODY,
+        };
+        assert_eq!(
+            tables.catalog.wear_slot(idx),
+            authored_slot,
+            "`{}` is authored for slot {} and the catalog drips {} — the \
+             client would light the wrong cell during a drag",
+            a.id,
+            authored_slot,
+            tables.catalog.wear_slot(idx)
+        );
+    }
+    assert!(
+        content.armors.len() >= 3,
+        "only {} armor rows ship — the columns are untested by this content \
+         set and this gate is passing for free",
+        content.armors.len()
+    );
+
+    // The other direction, and the one a per-row loop cannot see: an item
+    // that is *not* armor must carry an inert row. Without this, a bake
+    // that wrote `WEAR_HEAD` into every row would pass everything above
+    // and make a rock protect your head.
+    let mut inert = 0usize;
+    for item in &content.items {
+        if content.armors.iter().any(|a| a.id == item.id) {
+            continue;
+        }
+        let idx = content.item_index(&item.id).expect("own id resolves") as usize;
+        assert_eq!(
+            (tables.catalog.armor_pct(idx), tables.catalog.wear_slot(idx)),
+            (0, sim_core::combat::WEAR_NONE),
+            "`{}` is not armor and the catalog gives it a wear row",
+            item.id
+        );
+        inert += 1;
+    }
+    assert!(inert > 0, "every shipped item is armor?");
 }

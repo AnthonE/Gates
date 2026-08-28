@@ -45,10 +45,11 @@
 
 use protocol::event::ItemCatalog;
 use protocol::{encode_action_move, WireError};
+use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD};
 use sim_core::deploy::{box_key, DeployContent, DeployRec, ARCH_BOX};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{is_own, CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, CONT_WORLD};
-use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS};
+use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS, WEAR_SLOTS};
 
 /// Slots addressable in a container of `kind` — `sim_core::inventory`'s
 /// `slots_in`, re-exported rather than mirrored so the two cannot drift.
@@ -289,7 +290,7 @@ pub fn move_args(
 pub fn refusal_text(reason: u8) -> &'static str {
     use sim_core::inventory::{
         REFUSE_M_COUNT, REFUSE_M_EMPTY, REFUSE_M_NO_CONTAINER, REFUSE_M_NO_ROOM, REFUSE_M_OVEN,
-        REFUSE_M_REACH, REFUSE_M_SLOT, REFUSE_M_UNSTACKABLE,
+        REFUSE_M_REACH, REFUSE_M_SLOT, REFUSE_M_UNSTACKABLE, REFUSE_M_WEAR,
     };
     match reason as u32 {
         REFUSE_M_SLOT => "that slot is not addressable",
@@ -300,8 +301,56 @@ pub fn refusal_text(reason: u8) -> &'static str {
         REFUSE_M_REACH => "too far away",
         REFUSE_M_UNSTACKABLE => "that item cannot be moved",
         REFUSE_M_OVEN => "a fire takes fuel and what it cooks",
+        // The reason armor v1 minted, unwired until v52: a helmet dragged
+        // onto the body slot, or anything that is not armor dragged onto
+        // either, bounced with the generic word. The client refuses most
+        // of these before the round trip now (`wearable_here`), so what
+        // reaches this arm is the disagreement — a stale catalog, or a
+        // slot the server knows about and this build does not.
+        REFUSE_M_WEAR => "that is not what goes in that slot",
         _ => "refused",
     }
+}
+
+/// The protection a worn set is worth, whole percent — the client's read
+/// of `sim_core::combat::worn_pct`, off the catalog columns wire v52
+/// added.
+///
+/// **The same arithmetic, deliberately, and gated against the original**
+/// (`tests/ui.rs` §H). Both sum every slot rather than the slot that was
+/// hit, both pay a piece only in the slot its baked row names — the check
+/// is against the *row*, not against where the stack is sitting — and both
+/// clamp to `combat::ARMOR_MAX_PCT`. A second implementation is what this
+/// is, and it is the shape `CLAUDE.md` warns about; what makes it safe is
+/// that the gate drives the sim's function and this one over the same
+/// worn sets and compares, rather than rebuilding this one's body.
+///
+/// `worn` is the client's view of the `CONT_WEAR` container, which is
+/// `INV_SLOTS` wide on the wire with a tail of zeros — the loop reads the
+/// sim's own `WEAR_SLOTS` and nothing past it, so a smuggled stack in slot
+/// 7 protects nobody here either.
+pub fn worn_pct(catalog: &ItemCatalog, worn: &[ItemStack; INV_SLOTS]) -> u32 {
+    let mut pct = 0u32;
+    for (i, stack) in worn.iter().enumerate().take(WEAR_SLOTS) {
+        if stack.count > 0 && catalog.wear_slot(stack.item as usize) as usize == i + 1 {
+            pct += catalog.armor_pct(stack.item as usize) as u32;
+        }
+    }
+    pct.min(ARMOR_MAX_PCT)
+}
+
+/// May this item be worn in wear-container slot `s`? The client's read of
+/// `sim_core::combat::wearable_in`, off the same catalog column.
+///
+/// This is what lets a wrong-slot drag be refused **before** the round
+/// trip, on the sim's own predicate rather than a second list of what
+/// counts as armor. `s` is a container slot index and is bounded here
+/// rather than at the caller: `s + 1` on a `u8` wraps to 0 in release and
+/// `0` is `WEAR_NONE`, so an unbounded `s = 255` would answer *true* for
+/// every non-armor item — the hardening the merge-gate judge asked for on
+/// `wearable_in`, taken at both copies rather than one.
+pub fn wearable_here(catalog: &ItemCatalog, item: u16, s: usize) -> bool {
+    s < WEAR_SLOTS && catalog.wear_slot(item as usize) as usize == s + 1
 }
 
 /// The container panel's title. `CONT_SELF` has no panel, so it is named
@@ -321,6 +370,27 @@ pub fn container_title(kind: u8) -> &'static str {
         // have titled a player's own armor "BAG".
         CONT_WEAR => "WORN",
         _ => "BAG",
+    }
+}
+
+/// What wear-container slot `s` is called, for the paperdoll's caption.
+///
+/// **Keyed on the sim's own constants, not on the index.** `Player::worn`
+/// is zero-based and `ArmorDef::slot` is one-based, which is the one thing
+/// about this container that is easy to get backwards — `combat::worn_pct`
+/// and `combat::wearable_in` both spell the relation `slot == s + 1`, and
+/// so does this, so a third slot lands here as a compile-visible gap
+/// rather than as a caption that is off by one.
+///
+/// A slot past `WEAR_SLOTS` has no name; it cannot be drawn (the panel
+/// walks `WEAR_SLOTS`) and it cannot be addressed (`slots_in`), so the
+/// fallback is a placeholder rather than a guess at what a fourth slot
+/// would be called.
+pub fn wear_slot_label(s: usize) -> &'static str {
+    match u8::try_from(s).map(|s| s + 1) {
+        Ok(WEAR_HEAD) => "HEAD",
+        Ok(WEAR_BODY) => "BODY",
+        _ => "-",
     }
 }
 

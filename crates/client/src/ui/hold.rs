@@ -390,7 +390,8 @@ mod tests {
     fn catalog_with(names: &[&str]) -> ItemCatalog {
         let mut c = ItemCatalog::EMPTY;
         for (i, n) in names.iter().enumerate() {
-            c.set(i, n.as_bytes(), 0).expect("a short name fits");
+            c.set(i, n.as_bytes(), protocol::ItemRow::EMPTY)
+                .expect("a short name fits");
         }
         c.count = names.len() as u16;
         c

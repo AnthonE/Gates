@@ -79,7 +79,7 @@ fn probe_catalog() -> ItemCatalog {
     cat.count = 8;
     for i in 0..8usize {
         let name = [b'P', b'0' + i as u8];
-        cat.set(i, &name, 0).unwrap();
+        cat.set(i, &name, protocol::ItemRow::EMPTY).unwrap();
     }
     cat
 }

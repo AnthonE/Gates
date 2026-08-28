@@ -20,9 +20,9 @@
 //!
 //! ## The key is the item's NAME, and that is forced
 //!
-//! `protocol::ItemCatalog` carries display names and condition ceilings
-//! (v46) and nothing else — there is
-//! no content id on the wire. So a cell finds its icon by normalising the
+//! `protocol::ItemCatalog` carries display names, condition ceilings (v46)
+//! and the armor columns (v52) — there is
+//! no content id on the wire, and none of the numeric columns is one. So a cell finds its icon by normalising the
 //! name the server sent (`"Low Grade Fuel"` → `low_grade_fuel`) and the baker
 //! writes its files under the same normalisation, derived from
 //! `content/items.toml` rather than typed twice. 21 of the 48 items have a

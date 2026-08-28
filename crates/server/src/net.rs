@@ -231,7 +231,21 @@ pub struct ShardHandle {
 /// Each row carries its condition ceiling (wire v46) in the u16 hundredths
 /// the sim runs on — the same conversion `bake::bake_gather` performs, and
 /// the same refusal when a `condition_max` overflows it.
-pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
+///
+/// The armor columns (wire v52) are read off the **already-baked**
+/// `CombatContent` rather than off `content.armors`, and the parameter
+/// exists only to force that. A second walk of the authored rows here
+/// would be a second derivation of the same fact — the `head`/`body`
+/// string mapping, the item-index resolution and the reduction — and the
+/// two would agree until the day one of them was edited, at which point
+/// the client would draw a protection total off table A while `hurt`
+/// charged off table B. Every gate would be green: the golden pins what
+/// this function produced, and the sim's own armor suite never reads the
+/// catalog. One table, one reader.
+pub fn bake_catalog(
+    content: &content::Content,
+    combat: &sim_core::combat::CombatContent,
+) -> Result<ItemCatalog, String> {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = content.items.len() as u16;
     for item in &content.items {
@@ -242,12 +256,24 @@ pub fn bake_catalog(content: &content::Content) -> Result<ItemCatalog, String> {
                 item.id, item.condition_max
             )
         })?;
-        cat.set(idx, item.name.as_bytes(), cond_max).map_err(|_| {
+        let armor = combat.armor[idx];
+        cat.set(
+            idx,
+            item.name.as_bytes(),
+            protocol::ItemRow {
+                cond_max,
+                armor_pct: armor.reduction_pct,
+                wear_slot: armor.slot,
+            },
+        )
+        .map_err(|_| {
             format!(
-                "catalog: item `{}` name `{}` is empty or over {} bytes",
+                "catalog: item `{}` name `{}` is empty or over {} bytes, or its                  armor row ({} % in slot {}) is one the sim cannot mean",
                 item.id,
                 item.name,
-                protocol::MAX_ITEM_NAME_BYTES
+                protocol::MAX_ITEM_NAME_BYTES,
+                armor.reduction_pct,
+                armor.slot
             )
         })?;
     }
@@ -290,12 +316,14 @@ pub struct SimTables {
 /// Bake every table a shard needs, or refuse the boot naming the one that
 /// failed. The single place the list of tables is written down.
 pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
+    // Combat is baked into a local first because the catalog reads its
+    // armor rows rather than re-deriving them (`bake_catalog`).
+    let combat = content.bake_combat()?;
     Ok(SimTables {
         gather: content.bake_gather()?,
         craft: content.bake_craft()?,
         build: content.bake_building()?,
         deploy: content.bake_deployables()?,
-        combat: content.bake_combat()?,
         backpack: content.bake_backpack()?,
         survival: content.bake_survival()?,
         cook: content.bake_cooking()?,
@@ -303,7 +331,8 @@ pub fn bake_all(content: &content::Content) -> Result<SimTables, String> {
         loot: content.bake_loot()?,
         mobs: content.bake_mobs()?,
         research: content.bake_research()?,
-        catalog: bake_catalog(content)?,
+        catalog: bake_catalog(content, &combat)?,
+        combat,
     })
 }
 

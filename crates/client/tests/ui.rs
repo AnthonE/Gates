@@ -37,6 +37,7 @@ use client::ui::slots::{self, Grab};
 use sim_core::build::{
     BuildContent, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD, SHAPE_FOUNDATION, SHAPE_WALL,
 };
+use sim_core::combat;
 use sim_core::craft::CraftContent;
 use sim_core::deploy::DeployContent;
 use sim_core::gather::ItemStack;
@@ -554,7 +555,7 @@ fn the_browser_skips_inert_rows() {
 #[test]
 fn an_unnamed_item_prints_its_index_rather_than_nothing() {
     let mut catalog = protocol::event::ItemCatalog::EMPTY;
-    catalog.set(4, b"Wood", 0).unwrap();
+    catalog.set(4, b"Wood", protocol::ItemRow::EMPTY).unwrap();
     assert_eq!(craft::item_name(&catalog, 4), Some("Wood"));
     assert_eq!(craft::item_name(&catalog, 9), None);
     assert_eq!(craft::item_label(&catalog, 4), "Wood");
@@ -1609,8 +1610,9 @@ fn every_item_in_the_content_has_an_icon() {
 // §H · the two items the mouse is modal on must exist
 //
 // `crate::ui::hold` decides what left and right click mean by normalising the
-// held item's DISPLAY NAME, because that is the only thing on the wire —
-// `protocol::ItemCatalog` carries names and nothing else. That works, and it
+// held item's DISPLAY NAME, because it is the only IDENTITY on the wire —
+// `protocol::ItemCatalog` carries names plus numeric columns (a condition
+// ceiling since v46, armor since v52) and no id. That works, and it
 // has one failure mode worth a gate: rename the item in `content/items.toml`
 // and nothing breaks loudly. `held` simply returns `Other` forever, the ghost
 // stops appearing, right-click stops opening the wheel, and left click goes
@@ -3539,7 +3541,8 @@ mod loot {
 
     fn named() -> ItemCatalog {
         let mut c = ItemCatalog::EMPTY;
-        c.set(LARGE_BOX as usize, b"Large Box", 0).unwrap();
+        c.set(LARGE_BOX as usize, b"Large Box", protocol::ItemRow::EMPTY)
+            .unwrap();
         c
     }
 
@@ -3812,4 +3815,372 @@ mod q_durability_pip {
              an item or a count happened to move (`NOW.md` §0dur item 1)"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// §R · the wear panel's arithmetic (`NOW.md` §0eq items 1 and 2)
+//
+// The client links no content crate, so until wire v52 it held the worn
+// items and no number to put beside them: `combat::worn_pct` was read on
+// every hit and carried by nothing. The catalog drip carries the two
+// columns now, and this section is the half that cannot be checked by
+// looking at the panel — that the client's read of them is the sim's.
+//
+// **`slots::worn_pct` is a second implementation of `combat::worn_pct`**,
+// which is the shape `CLAUDE.md`'s trap list warns about twice. What makes
+// it safe is below: the gate drives *both* functions over the same worn
+// sets and compares, off a `CombatContent` and the `ItemCatalog` the boot
+// path would derive from it. Neither side rebuilds the other's body.
+// ---------------------------------------------------------------------------
+
+/// The catalog a shard would drip for `cc`, built the way `net::bake_catalog`
+/// builds it — one row per item, armor columns read off the baked combat
+/// table rather than re-derived. Names are placeholders; this section is
+/// about the numeric columns.
+fn catalog_for(cc: &combat::CombatContent) -> protocol::ItemCatalog {
+    let mut cat = protocol::ItemCatalog::EMPTY;
+    cat.count = 8;
+    for idx in 0..8usize {
+        let a = cc.armor[idx];
+        cat.set(
+            idx,
+            format!("Item {idx}").as_bytes(),
+            protocol::ItemRow {
+                cond_max: 0,
+                armor_pct: a.reduction_pct,
+                wear_slot: a.slot,
+            },
+        )
+        .expect("a fixture row the sim already validated is coherent");
+    }
+    cat
+}
+
+/// **The panel's number is the number the server will subtract.**
+///
+/// Every worn set the two slots can hold, over the probe fixture's items,
+/// through both implementations. A disagreement here is the worst shape
+/// this feature has: the player reads a protection total, plays a fight
+/// priced on it, and takes damage off a different one — with the wire, the
+/// goldens and the sim's own armor suite all green, because none of them
+/// looks at both sides at once.
+#[test]
+fn the_panels_protection_is_the_sims_protection() {
+    let cc = combat::CombatContent::probe_fixture();
+    let cat = catalog_for(&cc);
+
+    let mut agreed = 0usize;
+    let mut nonzero = 0usize;
+    for head in 0..8u16 {
+        for body in 0..8u16 {
+            for count in [0u16, 1] {
+                let mut p = sim_core::world::Player::default();
+                let mut worn = empty();
+                for (i, item) in [head, body].into_iter().enumerate() {
+                    let s = ItemStack {
+                        item,
+                        count,
+                        cond: 0,
+                    };
+                    p.worn[i] = s;
+                    worn[i] = s;
+                }
+                let sim = combat::worn_pct(&cc, &p);
+                let ours = slots::worn_pct(&cat, &worn);
+                assert_eq!(
+                    sim, ours,
+                    "head {head} body {body} count {count}: the sim charges \
+                     {sim} % and the panel would print {ours} %"
+                );
+                agreed += 1;
+                if sim > 0 {
+                    nonzero += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(agreed, 128, "the sweep stopped covering the pairs");
+    assert!(
+        nonzero >= 8,
+        "only {nonzero} of {agreed} cases carried any protection at all — \
+         the fixture stopped containing armor and this gate is agreeing \
+         about zero, which every implementation does"
+    );
+}
+
+/// **A tail slot protects nobody, and the loop bound is what says so.**
+/// The wire ships `INV_SLOTS` slots whatever container is open and the
+/// wear container is two wide, so `cont[2..30]` is a region the server
+/// never writes.
+///
+/// **The forged row is the point, and it was found by running the
+/// mutant.** With a *shipped* catalog this case is held up twice over —
+/// the loop stops at `WEAR_SLOTS`, and the `slot == i + 1` check could not
+/// match at index 2 anyway, because no row may carry slot 3
+/// (`ItemRow::coherent`). So `take(WEAR_SLOTS)` → `take(INV_SLOTS)` passed
+/// the first version of this test: it asserted a property two independent
+/// guards hold and credited the wrong one. What makes the bound
+/// load-bearing is the value `coherent` refuses and `WEAR_SLOT_BITS`
+/// carries — two bits hold 3, one more than the ledger has, which is
+/// exactly the spare pattern the `wire_domains` row for `WEAR_SLOT_BITS`
+/// exists to guard. Written straight into the table here, past `set`,
+/// because that is the state a decoder bug would leave.
+#[test]
+fn a_stack_past_the_last_wear_slot_is_worth_nothing() {
+    let cc = combat::CombatContent::probe_fixture();
+    let mut cat = catalog_for(&cc);
+
+    // Find an item the fixture treats as real armor, so the case is not
+    // vacuous — a tail slot full of nothing proves nothing.
+    let armor = (0..8u16)
+        .find(|i| cc.armor[*i as usize].slot != combat::WEAR_NONE)
+        .expect("the probe fixture ships armor");
+    assert!(
+        cat.armor_pct(armor as usize) > 0,
+        "the fixture's armor reduces nothing, so the tail case cannot fail"
+    );
+
+    let mut worn = empty();
+    worn[WEAR_SLOTS] = ItemStack {
+        item: armor,
+        count: 1,
+        cond: 0,
+    };
+    assert_eq!(
+        slots::worn_pct(&cat, &worn),
+        0,
+        "a stack past the last wear slot was added to the total"
+    );
+
+    // The forged row: a slot one past the ledger, aimed at the first index
+    // the loop must not reach. `slot == i + 1` is satisfied here, so the
+    // bound is the only thing left.
+    let ghost = 7u16;
+    cat.rows[ghost as usize] = protocol::ItemRow {
+        cond_max: 0,
+        armor_pct: 25,
+        wear_slot: WEAR_SLOTS as u8 + 1,
+    };
+    assert!(
+        !cat.rows[ghost as usize].coherent(),
+        "the forged row is one `set` would have taken, so it forges nothing"
+    );
+    let mut worn = empty();
+    worn[WEAR_SLOTS] = ItemStack {
+        item: ghost,
+        count: 1,
+        cond: 0,
+    };
+    assert_eq!(
+        slots::worn_pct(&cat, &worn),
+        0,
+        "a row naming a slot the body does not have paid into the total \
+         from the container's tail"
+    );
+
+    // And in the slot it belongs in, real armor does pay — otherwise every
+    // assertion above is satisfied by a function that always says 0.
+    let mut worn = empty();
+    let s = (cc.armor[armor as usize].slot - 1) as usize;
+    worn[s] = ItemStack {
+        item: armor,
+        count: 1,
+        cond: 0,
+    };
+    assert!(slots::worn_pct(&cat, &worn) > 0);
+}
+
+/// **`wearable_here` is the sim's predicate, including at the slot index
+/// that used to wrap.** `combat::wearable_in` takes a `u8` and computed
+/// `s + 1`, which panics in debug and wraps to `WEAR_NONE` in release — so
+/// a release build asked about slot 255 answered *true* for every item
+/// that is not armor. Both copies bound the slot now; this drives both.
+#[test]
+fn nothing_is_wearable_in_a_slot_the_body_does_not_have() {
+    let cc = combat::CombatContent::probe_fixture();
+    let mut cat = catalog_for(&cc);
+
+    for item in 0..8u16 {
+        for s in 0..WEAR_SLOTS {
+            assert_eq!(
+                slots::wearable_here(&cat, item, s),
+                combat::wearable_in(&cc, item, s as u8),
+                "item {item} slot {s}: the client and the sim disagree about \
+                 what goes where, which is a drag the client draws and the \
+                 server refuses"
+            );
+        }
+        // The wrap the merge-gate judge named: `255u8 + 1` panics in debug
+        // and is `WEAR_NONE` in release, and `WEAR_NONE` is what every
+        // non-armor row carries — so an unbounded release build answered
+        // *true* here for everything that is not armor.
+        assert!(
+            !slots::wearable_here(&cat, item, 255),
+            "item {item} is wearable in slot 255"
+        );
+        assert!(
+            !combat::wearable_in(&cc, item, 255),
+            "item {item} is wearable in slot 255 (sim side)"
+        );
+    }
+
+    // And the slot one past the ledger, which no wrap is involved in. The
+    // forged row is the same one `a_stack_past_the_last_wear_slot_is_worth_nothing`
+    // uses and for the same reason found the same way: without it, `s + 1`
+    // at `s == WEAR_SLOTS` is 3 and no shipped row carries 3, so the bound
+    // is redundant and dropping it survives the test.
+    let ghost = 7u16;
+    cat.rows[ghost as usize] = protocol::ItemRow {
+        cond_max: 0,
+        armor_pct: 25,
+        wear_slot: WEAR_SLOTS as u8 + 1,
+    };
+    assert!(
+        !slots::wearable_here(&cat, ghost, WEAR_SLOTS),
+        "a row naming a slot the body does not have was accepted into it"
+    );
+    assert!(
+        !combat::wearable_in(&cc, ghost, WEAR_SLOTS as u8),
+        "the sim accepted a slot the body does not have"
+    );
+}
+
+/// **The captions are the sim's slot order, not a guess.** `Player::worn`
+/// is zero-based and `ArmorDef::slot` is one-based; a paperdoll that
+/// captioned container slot 0 "BODY" would be a wrong label over a cell
+/// that still worked, which nothing else in this suite could see.
+#[test]
+fn the_paperdoll_captions_the_slots_the_sim_names() {
+    assert_eq!(
+        slots::wear_slot_label(combat::WEAR_HEAD as usize - 1),
+        "HEAD"
+    );
+    assert_eq!(
+        slots::wear_slot_label(combat::WEAR_BODY as usize - 1),
+        "BODY"
+    );
+    for s in 0..WEAR_SLOTS {
+        assert_ne!(
+            slots::wear_slot_label(s),
+            "-",
+            "wear slot {s} is drawn by the panel and has no caption"
+        );
+    }
+    assert_eq!(
+        slots::wear_slot_label(WEAR_SLOTS),
+        "-",
+        "a slot the body does not have was given a name"
+    );
+}
+
+/// **The wear refusal reaches a sentence.** `REFUSE_M_WEAR` was minted by
+/// armor v1 and had no arm here, so dragging a helmet onto the body slot
+/// printed the generic word — the one refusal in the ledger that is about
+/// *what* rather than *where*, reading as if the move had been malformed.
+#[test]
+fn every_move_refusal_including_the_wear_one_says_something() {
+    use sim_core::inventory::{REFUSE_M_MAX, REFUSE_M_WEAR};
+    let generic = slots::refusal_text(u8::MAX);
+    for r in 1..=REFUSE_M_MAX {
+        let t = slots::refusal_text(r as u8);
+        assert_ne!(
+            t, generic,
+            "move refusal {r} falls through to `{generic}` — the sim has a \
+             reason and the panel prints the fallback"
+        );
+    }
+    assert!(
+        slots::refusal_text(REFUSE_M_WEAR as u8).contains("slot"),
+        "the wear refusal should name the slot it is about"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// §S · the wear panel's readers are called (`NOW.md` §0eq items 1 and 2)
+//
+// §R above proves the arithmetic. This is the other half and the one that
+// actually failed before: from wire v42 to v46 `cond` shipped on every
+// slot with nothing dividing it, and the fix was a call site rather than a
+// value. v52 puts two more columns on the same drip, and a correct
+// `worn_pct` that no panel calls is that state again — the wear container
+// drawn as a two-cell grid under the heading LOOT, with a protection total
+// the client can compute and does not print.
+//
+// A source scan, for the reason `tests/sound.rs` states about the feed
+// drain: the defect is a call site, not a value.
+// ---------------------------------------------------------------------------
+
+/// `inv.rs` with its comments stripped — a rule may be *named* freely in
+/// prose without satisfying itself. `tls_callsite.rs`'s `code_of`, inlined
+/// the way §Q inlines it.
+fn inv_code() -> String {
+    let src = std::fs::read_to_string("src/render/panels/inv.rs").expect("panels/inv.rs");
+    src.lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// **The worn container is drawn as a body, and the body says what it is
+/// worth.** Three readers, each guarding a different way the panel could
+/// be correct and useless.
+#[test]
+fn the_wear_panel_draws_what_the_wire_now_carries() {
+    let code = inv_code();
+    assert!(
+        code.contains("worn_pct("),
+        "`inv.rs` draws the wear container and never calls `worn_pct` — the \
+         armor columns are on the wire (v52), the client holds them, and \
+         the panel is throwing them away, which is the v42→v46 condition \
+         defect arriving on the next column"
+    );
+    assert!(
+        code.contains("wear_slot_label("),
+        "`inv.rs` draws the wear cells with no caption from `wear_slot_label` \
+         — the slot names would be a second mapping of one-based \
+         `ArmorDef::slot` onto a zero-based array, which is the one thing \
+         about this container that is easy to get backwards"
+    );
+    assert!(
+        code.contains("wearable_here("),
+        "`inv.rs` never asks whether a wear slot takes what is being dragged. \
+         The answer is on the wire now, so a wrong-slot drag can be told \
+         before the release instead of coming back as `REFUSE_M_WEAR` after \
+         the prediction has already drawn the piece into the slot"
+    );
+}
+
+/// **The heading is the container's own, not the literal `LOOT`.** Every
+/// kind was titled LOOT with the name bar underneath carrying the
+/// difference — which reads as "someone else's loot" over your own body,
+/// and would read the same way over the next own-kind container.
+/// `container_title` is the sim-keyed answer and it already exists.
+#[test]
+fn no_container_is_headed_with_a_literal() {
+    let code = inv_code();
+    assert!(
+        !code.contains("\"LOOT\""),
+        "`inv.rs` still hardcodes a container heading. `container_title(kind)` \
+         is the one place a kind gets a name, and a literal beside it is the \
+         hand-kept mirror that gave `CONT_WORLD` the title BAG"
+    );
+    assert!(
+        code.contains("container_title("),
+        "`inv.rs` heads its container panels with nothing the sim named"
+    );
+}
+
+/// **The paperdoll walks the sim's slot count.** A panel that drew a
+/// literal two cells would be right today and silently short the day
+/// `WEAR_SLOTS` grows — the same defect `container_cols` was rewritten to
+/// avoid, one panel over.
+#[test]
+fn the_paperdoll_is_as_wide_as_the_body_is() {
+    let code = inv_code();
+    assert!(
+        code.contains("0..WEAR_SLOTS"),
+        "the wear panel does not walk `WEAR_SLOTS` — a hardcoded pair of \
+         cells draws two slots of however many the sim has, and \
+         `reference/ARMOR.md` §9.3 has three more queued"
+    );
 }
