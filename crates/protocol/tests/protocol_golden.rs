@@ -6,25 +6,24 @@
 
 use protocol::goldens::{
     action_access, action_access_crew, action_cancel, action_consume, action_container,
-    action_container_close, action_container_wear, action_container_world, action_craft, action_demolish, action_deploy,
-    action_feed, action_move, action_move_box, action_move_wear, action_move_world,
-    action_place,
-    action_repair_deploy, action_repair_piece, action_research, action_respawn,
-    action_throw_deploy, action_throw_piece, action_unlock, action_upgrade, action_use, auth,
-    challenge, chat, event_auth, event_bag_dropped, event_bag_removed, event_bag_sync, event_bags,
-    event_build_refused, event_catalog, event_charge_placed_deploy, event_charge_placed_piece,
-    event_chat, event_consume_refused, event_consumed, event_cont_close, event_cont_sync,
-    event_cont_sync_wear, event_cont_sync_world, event_craft_done, event_craft_q, event_craft_refused, event_death,
-    event_deploy_defs, event_deploy_placed, event_deploy_refused, event_deploy_sync, event_door,
-    event_drank, event_gather, event_gather_refused, event_health, event_hit, event_impact,
-    event_inv, event_knock, event_known, event_move_refused, event_move_refused_wear,
-    event_moved, event_oven_lit,
-    event_oven_out, event_piece_defs, event_piece_placed, event_piece_repaired_deploy,
-    event_piece_repaired_piece, event_piece_sync, event_recipes, event_removed, event_research,
-    event_research_refused, event_research_rows, event_respawn, event_shot, event_slot_change,
-    event_slot_sync, event_stock, event_struct_hit_deploy, event_struct_hit_piece, event_swing,
-    event_vitals, event_weak_mark, hello, input_acks_only, input_full, refuse_full, snapshot_cap,
-    snapshot_delta, snapshot_keyframe, welcome, SnapshotCase, FIXTURES,
+    action_container_close, action_container_wear, action_container_world, action_craft,
+    action_demolish, action_deploy, action_feed, action_move, action_move_box, action_move_wear,
+    action_move_world, action_place, action_repair_deploy, action_repair_piece, action_research,
+    action_respawn, action_throw_deploy, action_throw_piece, action_unlock, action_upgrade,
+    action_use, auth, challenge, chat, event_auth, event_bag_dropped, event_bag_removed,
+    event_bag_sync, event_bags, event_build_refused, event_catalog, event_charge_placed_deploy,
+    event_charge_placed_piece, event_chat, event_consume_refused, event_consumed, event_cont_close,
+    event_cont_sync, event_cont_sync_wear, event_cont_sync_world, event_craft_done, event_craft_q,
+    event_craft_refused, event_death, event_deploy_defs, event_deploy_placed, event_deploy_refused,
+    event_deploy_sync, event_door, event_drank, event_gather, event_gather_refused, event_health,
+    event_hit, event_impact, event_inv, event_knock, event_known, event_move_refused,
+    event_move_refused_wear, event_moved, event_oven_lit, event_oven_out, event_piece_defs,
+    event_piece_placed, event_piece_repaired_deploy, event_piece_repaired_piece, event_piece_sync,
+    event_recipes, event_removed, event_research, event_research_refused, event_research_rows,
+    event_respawn, event_shot, event_slot_change, event_slot_sync, event_stock,
+    event_struct_hit_deploy, event_struct_hit_piece, event_swing, event_vitals, event_weak_mark,
+    hello, input_acks_only, input_full, refuse_full, snapshot_cap, snapshot_delta,
+    snapshot_keyframe, welcome, SnapshotCase, FIXTURES,
 };
 use protocol::{
     decode_action, decode_auth, decode_challenge, decode_chat, decode_event, decode_hello,
@@ -274,8 +273,10 @@ fn test_protocol_golden() {
     golden_event(GOLDEN[82], FIXTURES[82]);
     // World containers v0 (v37): the fourth container kind on its open,
     // its move and its sync. The value `3` was `Malformed` at both ends
-    // through v36, so these three are the fixtures that say the two bits
-    // are now fully spent — there is no forgeable kind left to test for.
+    // through v36, so these three are the fixtures that spent the last of
+    // the two bits. (This comment ended "there is no forgeable kind left
+    // to test for" until v51 widened the field to three; there are three
+    // again, and `lib.rs`'s restored decode case tests all of them.)
     golden_action(GOLDEN[83], FIXTURES[83]);
     golden_action(GOLDEN[84], FIXTURES[84]);
     golden_event(GOLDEN[85], FIXTURES[85]);

@@ -70,9 +70,10 @@
 //! hits into six. What is still *not* here is named rather than implied:
 //! no damage types (one scalar — `ArmorDef`'s doc has the argument and its
 //! source), no hit areas (the set is one number, `worn_pct`), no condition
-//! on a worn piece, no `move_penalty_pct` consumer, and — the one a player
-//! notices — **no way to put armor on**, because that is `CONT_WEAR` and a
-//! wire bump (`findings/armor-design-20260818.md` §4).
+//! on a worn piece, and no `move_penalty_pct` consumer. The item this list
+//! led with — *"the one a player notices: no way to put armor on"* — is
+//! **closed** (armor v1, wire v51): `CONT_WEAR` is the fifth container
+//! kind and equipping is a move into it, checked here by `wearable_in`.
 //!
 //! The throwable's damage does not flow through this module's swing arm at
 //! all, and that is the design rather than an omission: a charge resolves

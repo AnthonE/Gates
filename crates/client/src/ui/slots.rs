@@ -231,7 +231,11 @@ pub fn move_args(
     //     rather than a second one written here — the same reason
     //     `slots_in` is re-exported above. A player carries two containers
     //     since armor v1, and both of them are addressed without a handle.
-    let ground = if !is_own(from_kind) { from_kind } else { to_kind };
+    let ground = if !is_own(from_kind) {
+        from_kind
+    } else {
+        to_kind
+    };
     if !is_own(from_kind) && !is_own(to_kind) && from_kind != to_kind {
         return None;
     }

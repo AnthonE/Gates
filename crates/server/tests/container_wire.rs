@@ -1360,7 +1360,6 @@ const _: () = assert!(
     "a container kind was added without a container_wire test that opens it"
 );
 
-
 /// A body's wear panel carries the *body's* contents, not its backpack's.
 ///
 /// The sixth thing a container view can get wrong, and it is the fifth one
@@ -1463,8 +1462,9 @@ fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
     // they will take, so a fanned-out wear panel is the same raid
     // intelligence a box's contents are, read off a person.
     assert!(
-        seen.iter().all(|(s, m)| *s == 0
-            || !matches!(m, EventMsg::ContSync { kind, .. } if *kind == CONT_WEAR)),
+        seen.iter()
+            .all(|(s, m)| *s == 0
+                || !matches!(m, EventMsg::ContSync { kind, .. } if *kind == CONT_WEAR)),
         "nobody else may read what a body is wearing: {seen:?}"
     );
 

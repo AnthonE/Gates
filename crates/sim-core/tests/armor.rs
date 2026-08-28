@@ -43,10 +43,10 @@
 
 use sim_core::combat::{self, ArmorDef, CombatContent, ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD};
 use sim_core::gather::{GatherContent, ItemStack, SWING_INTERVAL_TICKS};
+use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::inventory::{
     CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, REFUSE_M_NO_CONTAINER, REFUSE_M_SLOT, REFUSE_M_WEAR,
 };
-use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{INV_SLOTS, MAX_ITEM_DEFS, WEAR_SLOTS};
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::survival::{self, SurvivalContent};
@@ -605,7 +605,6 @@ fn a_forged_record_buys_no_protection() {
     );
 }
 
-
 // ---------------------------------------------------------------------
 // Wearing it: `CONT_WEAR`, the move verb (wire v51).
 //
@@ -640,7 +639,11 @@ fn refusal(w: &World) -> Option<u32> {
         .filter(|e| e.code == EV_MOVED || e.code == EV_MOVE_REFUSED)
         .map(|e| (e.code, e.b))
         .collect();
-    assert_eq!(answers.len(), 1, "a move must answer exactly once: {answers:?}");
+    assert_eq!(
+        answers.len(),
+        1,
+        "a move must answer exactly once: {answers:?}"
+    );
     match answers[0] {
         (EV_MOVE_REFUSED, reason) => Some(reason),
         _ => None,
@@ -753,7 +756,10 @@ fn a_spear_cannot_be_worn_on_the_head() {
 
     assert_eq!(refusal(&w), Some(REFUSE_M_WEAR));
     assert_eq!(w.players[s].inv[0], one(SPEAR), "the spear stays put");
-    assert_eq!(w.players[s].worn[(WEAR_HEAD - 1) as usize], ItemStack::default());
+    assert_eq!(
+        w.players[s].worn[(WEAR_HEAD - 1) as usize],
+        ItemStack::default()
+    );
 }
 
 /// **The swap travels backwards, and the forward check cannot see it.**
@@ -817,7 +823,13 @@ fn a_head_piece_cannot_be_swapped_into_the_body_slot() {
         "the set is on before the swap is attempted"
     );
 
-    w.tick(&[wear_move(1, CONT_WEAR, WEAR_HEAD - 1, CONT_WEAR, WEAR_BODY - 1)]);
+    w.tick(&[wear_move(
+        1,
+        CONT_WEAR,
+        WEAR_HEAD - 1,
+        CONT_WEAR,
+        WEAR_BODY - 1,
+    )]);
 
     assert_eq!(refusal(&w), Some(REFUSE_M_WEAR));
     assert_eq!(

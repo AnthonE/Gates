@@ -771,13 +771,17 @@ pub struct Player {
     /// the placement — which is what holds "one piece per slot" up before
     /// any verb exists to enforce it.
     ///
-    /// **Nothing in the sim writes this yet, and that is the honest state
-    /// of it** (2026-08-19). Wearing is a container move into a
-    /// `CONT_WEAR` kind, and all four values of the wire's 2-bit container
-    /// field are spent (`inventory.rs`), so equipping costs a
-    /// `CONT_KIND_BITS` widening and a `PROTO_VER` bump — a wire slice, not
-    /// this one. Until it lands, the only writers are tests and a save.
-    /// Reduction is real; reachability is not.
+    /// **Written by the move verb since armor v1** (wire v51). This said
+    /// "nothing in the sim writes this yet, and that is the honest state
+    /// of it" from 2026-08-19, and priced the fix: a `CONT_WEAR` kind, a
+    /// `CONT_KIND_BITS` widening, a `PROTO_VER` bump. That is what landed,
+    /// so the writers are now `move_item` (through `set_cont_slot`), a
+    /// save, and tests — in that order of importance.
+    ///
+    /// The invariant above still does the work it always did, and now it
+    /// has a second enforcer rather than none: `worn_pct` ignores a piece
+    /// in the wrong index, and `combat::wearable_in` refuses to put one
+    /// there. Both are spelled `slot == index + 1`, deliberately.
     pub worn: [ItemStack; WEAR_SLOTS],
     /// Tick the next swing is allowed at (gather.rs cadence).
     pub next_swing: u64,

@@ -754,7 +754,6 @@ fn the_zero_handle_never_resolves_to_a_box() {
     );
 }
 
-
 /// **Armor goes from a box straight onto the body**, and that is the test
 /// `inventory::is_own` exists for.
 ///
@@ -794,7 +793,10 @@ fn armor_moves_from_a_box_onto_the_body() {
 
     assert_eq!(
         (code, why),
-        (EV_MOVED, sim_core::inventory::addr(CONT_BOX, 3, CONT_WEAR, 1)),
+        (
+            EV_MOVED,
+            sim_core::inventory::addr(CONT_BOX, 3, CONT_WEAR, 1)
+        ),
         "a plate must move from the box onto the body"
     );
     assert_eq!(w.players[0].worn[1], plate, "worn");
