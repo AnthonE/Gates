@@ -1,7 +1,7 @@
 {
  "scry": 1,
  "game": "gates",
- "version": "0.5.0",
+ "version": "0.6.0",
  "_version": "The workspace version in Cargo.toml. scry never copies this onto the store row \u2014 it serves it beside the version actually published in its depot and flags the gap, so a tag ahead of a build shows up as a gap instead of vanishing. ci/scry_manifest.py --self-test keeps this equal to Cargo.toml, the same check release.yml already makes against a tag.",
  "listing": {
   "kind": "survival \u2014 100-player shards",
@@ -20,6 +20,12 @@
  },
  "_listing": "These fields are now THIS REPO's to write: whatever is here wins on the next pull, so editing them at scry's store desk is temporary and editing them here is permanent. Seeded byte-for-byte from the row as it stood 2026-08-11, so wiring this up changed no copy. Fields deliberately NOT claimed: state and play_url (the house decides when a title reads live), and capsule/hero/media (art is uploaded, not committed \u2014 a manifest is text and cannot ship bytes). band/hidden/placeholder/lane/note are the house's and a manifest may not write them at all.",
  "updates": [
+  {
+   "id": "v0.6.0",
+   "kind": "release",
+   "title": "0.6.0 \u2014 armor goes on, arrows come back, and a base has a floor to build from",
+   "body": "0.5.0 said armor was priced and the sim blunted a hit with it, but nothing could put a piece on. You can now. Wearing is a move rather than a button: drag a helmet onto your head the way you drag anything into a box. The slot lights when it will take the item and reddens when it will not, so a wrong-slot drag is answered before you let go. The wear panel says what a set is worth \u2014 each piece and a total \u2014 and the body is its own view now, so opening a box no longer undresses you.\n\nAn arrow you fired is an arrow you can pick up. It survives the shot about six times in seven, and one that hit somebody lies in them for ten seconds before it can be taken back \u2014 so an archer cannot re-collect the arrow they just shot you with mid-fight, and a bow still runs dry in a long one while losing almost nothing to a day of hunting. Arrows also stop passing through every floor on the island, which they had been doing.\n\nShots land on things. An arrow chips the wall it stops on, a bullet stops on the furnace it flies at instead of through it, and a hatchet marks the plank it hits.\n\nBuilding has a floor to start from: a foundation pins the plate and everything latches to it, stairs walk the tread you can see rather than an invisible ramp beside it, a base has sides so the camera stays out of it, and a placement can decline the latch when you want it freehand. Twig stops wearing a photograph of a tree.\n\nWhat you hold looks held. The item sits in the palm instead of the wrist, a rock is hand-sized, the revolver shows its profile, and the arm that is not holding anything is hidden. The island's ground is laid at its photographs' real size, a distant tree is a hull inside a triangle budget, and the renderer has a quality knob whose top rung is what shipped.\n\nF7 writes a bug report a stranger can act on.\n\nThe platform is elo now and lives at elopros.com; the old host answers 410.\n\nThis one breaks the wire \u2014 the packet layout went from 48 to 52, so a 0.5.0 client is refused at the door rather than quietly misread \u2014 and the world is wiped with it, because the content moved. 75 commits since 0.5.0."
+  },
   {
    "id": "v0.5.0",
    "kind": "release",

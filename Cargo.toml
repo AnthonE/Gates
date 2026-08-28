@@ -24,7 +24,7 @@ publish = false
 # Semver, and the middle field is where alpha work lands: the wire's own
 # compatibility is `PROTO_VER`, not this, so this number is free to describe
 # the *release* rather than the packet layout.
-version = "0.5.0"
+version = "0.6.0"
 
 # Release profile keeps debug assertions off but stays deterministic: no
 # fast-math anywhere, ever. opt-level 3 + thin LTO for the wasm artifact size.
