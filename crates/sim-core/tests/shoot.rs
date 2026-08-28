@@ -1503,3 +1503,235 @@ fn a_shot_into_the_dirt_chips_nothing() {
         );
     }
 }
+
+// --- The deployable block. -------------------------------------------------
+//
+// Everything above is about a *piece* stopping a shot. A solid deployable is
+// the other half of what a base is made of and it lived in a walk the shot
+// path never called (`collide::deploy_blocked` — the body's), so an arrow
+// flew through a furnace, a box and a bench (`NOW.md` §0mk item 2).
+//
+// The fixture inverts the one above it again: **no pieces at all**, one
+// `set_solid` nibble on an otherwise empty index, so a plane can never take
+// the credit for what a furnace did. And every case is run as a PAIR over
+// identical geometry — once with the nibble and once without — because
+// "the shot stopped" is satisfied by an arrow that hit the dirt, and the
+// dirt is 4 m below the furnace here on purpose.
+
+/// A furnace standing at LEVEL 1 of a bare column: an empty index with one
+/// solid nibble, the level chosen so the deployable's band sits a clear
+/// storey above the terrain. Returns `(cols, cx, cz, bottom)`.
+///
+/// **Level 1 and not 0**, which is the whole reason the fixture is trustworthy:
+/// at level 0 the furnace's 0.95 m band sits inside the terrain band's own
+/// rounding, and `world_stop` asks the ground BEFORE anything built — so a
+/// case that failed would not say whether the walk missed the furnace or the
+/// dirt answered first. Three metres up, the two answers are 4 m apart.
+///
+/// Boxed for `storeys`' reason (the wasm shadow stack).
+fn furnace_column(seed: u64) -> (Box<ColIndex>, u16, u16, f32) {
+    let (bcx, bcz) = flat_run(seed, 1);
+    let mut cols = Box::new(ColIndex::new());
+    cols.set_solid(bcx, bcz, 1, Some(sim_core::deploy::ARCH_FURNACE));
+    let base = build::column_floor_y(seed, hv(seed), bcx, bcz, 0);
+    (cols, bcx, bcz, base + LEVEL_H_M)
+}
+
+/// The furnace's own volume, as `deploy::solid_vol` gives it.
+fn furnace_vol() -> (f32, f32, f32) {
+    sim_core::deploy::solid_vol(sim_core::deploy::ARCH_FURNACE)
+        .expect("the furnace is a solid archetype")
+}
+
+/// An arrow fired down onto a furnace stops **on** it, and the same shot over
+/// the same column without it reaches the dirt.
+///
+/// The pair is the assertion. `SURF_BUILT` alone would be satisfied by any
+/// piece anywhere in the walk, and there are none here; "stopped at all"
+/// would be satisfied by the ground. The furnace is the only difference
+/// between the two runs, and they answer 4 m apart.
+///
+/// **Three origins, and the two off-centre ones are a mutant this case did
+/// not used to catch.** `deploy_stop` measures the sphere against the box by
+/// clamping the offset into the box's own extents — `x - cxm - (x -
+/// cxm).clamp(-hw, hw)` — and down the cell's exact centre `x - cxm` is
+/// zero, so the clamp is the identity there and DELETING IT changes nothing.
+/// A shot fired inside the box but off its centre is where the clamp does
+/// work: at half an extent out the unclamped term is 0.33 m against an
+/// arrowhead of 0.05 m, so the furnace stops answering and the dirt takes
+/// the shot. One axis at a time, so each of the two clamps is named by a
+/// case of its own. Judged 2026-08-28.
+#[test]
+fn a_furnace_stops_a_shot_the_bare_column_lets_through() {
+    for seed in SEEDS {
+        let (cols, bcx, bcz, bottom) = furnace_column(seed);
+        let (cx, cz) = cell_centre(bcx, bcz);
+        let (hw, h, hd) = furnace_vol();
+        // Boxed and hoisted: `ColIndex` is a large fixed array and this loop
+        // would otherwise build one per origin (the wasm shadow-stack trap).
+        let bare = Box::new(ColIndex::new());
+        // Half an extent is the off-centre distance below, and it has to
+        // clear the arrowhead in BOTH axes or the clamp-deleted mutant walks
+        // through the case that was written to catch it.
+        assert!(
+            hw * 0.5 > ranged::ARROW_R_M && hd * 0.5 > ranged::ARROW_R_M,
+            "half the furnace's extents ({:.2}, {:.2}) must exceed the \
+             arrowhead {:.2}",
+            hw * 0.5,
+            hd * 0.5,
+            ranged::ARROW_R_M
+        );
+
+        // Centre, then half an extent out along each axis on its own —
+        // inside the box every time, so all three must stop on the furnace.
+        for (dx, dz) in [(0.0f32, 0.0f32), (hw * 0.5, 0.0), (0.0, hd * 0.5)] {
+            let from = (cx + dx, bottom + 2.5, cz + dz);
+
+            let (surf, y) = impact_of(seed, &cols, from, 0, 30).unwrap_or_else(|| {
+                panic!("seed {seed}: the shot from (+{dx:.2}, +{dz:.2}) never stopped on anything")
+            });
+            assert_eq!(
+                surf,
+                SURF_BUILT,
+                "seed {seed}: an arrow fired down onto a furnace from \
+                 (+{dx:.2}, +{dz:.2}) — inside half-extents ({hw:.2}, {hd:.2}) \
+                 — reported surface {surf} at y={y:.2}; the furnace's band is \
+                 {bottom:.2}..{:.2} and it is transparent to the shot",
+                bottom + h
+            );
+            // The TOP, not the first sample in the column: a walk that answered
+            // on the nibble alone and never measured the box would stop the
+            // arrow 2.5 m higher, and `surf` cannot tell the two apart.
+            assert!(
+                fabs(y - (bottom + h)) <= 0.3,
+                "seed {seed}: the impact landed at y={y:.2}; the furnace's top is \
+                 {:.2} and the arrow was fired from {:.2}",
+                bottom + h,
+                from.1
+            );
+
+            let (bsurf, by) = impact_of(seed, &bare, from, 0, 30)
+                .unwrap_or_else(|| panic!("seed {seed}: the barren shot never stopped"));
+            assert_eq!(
+                bsurf, SURF_GROUND,
+                "seed {seed}: with the nibble cleared the identical shot must reach \
+                 the dirt — it reported {bsurf} at y={by:.2}, so the fixture is not \
+                 isolating the furnace"
+            );
+        }
+    }
+}
+
+/// The chip a furnace hit mints names the DEPLOY store, at the deployable's
+/// own address.
+///
+/// Two mutants live here and neither is visible from `surf`. Reporting
+/// `deploy: false` sends the chip to `Pieces::find_index`, which finds
+/// nothing at that address and silently drops it — a furnace that stops
+/// arrows forever and never loses hp. Naming level 0 instead of 1 charges a
+/// different deployable in the same column, which is a real address a base
+/// can hold.
+#[test]
+fn the_chip_off_a_furnace_names_the_deploy_store() {
+    for seed in SEEDS {
+        let (cols, bcx, bcz, bottom) = furnace_column(seed);
+        let (cx, cz) = cell_centre(bcx, bcz);
+        let cc = chipping_bow(3);
+
+        let (chips, surf) = chips_of(seed, &cc, &cols, (cx, bottom + 2.5, cz), 0, 30);
+        assert_eq!(
+            surf,
+            Some(SURF_BUILT),
+            "seed {seed}: the fixture shot did not stop on the furnace, so this \
+             case is not testing what it says"
+        );
+        assert_eq!(
+            chips.len(),
+            1,
+            "seed {seed}: one arrow stopping on one furnace must produce exactly \
+             one chip, not {}",
+            chips.len()
+        );
+        let c = chips[0];
+        assert!(
+            c.deploy,
+            "seed {seed}: the chip off a furnace is addressed to the piece \
+             store, so `World::chip` will look it up in `Pieces` and drop it"
+        );
+        assert_eq!(
+            (c.hit.cx, c.hit.cz, c.hit.level, c.hit.loc),
+            (bcx, bcz, 1, LOC_PLANE),
+            "seed {seed}: the furnace stands at ({bcx}, {bcz}) level 1 and the \
+             chip names ({}, {}, {}, {})",
+            c.hit.cx,
+            c.hit.cz,
+            c.hit.level,
+            c.hit.loc
+        );
+        assert_eq!(
+            c.structure, 3,
+            "seed {seed}: the chip carries the bow's structure column, not {}",
+            c.structure
+        );
+    }
+}
+
+/// A shot down the same column but outside the furnace's footprint misses it
+/// and reaches the dirt.
+///
+/// The mutant: stop on the nibble and skip the extent test. Every assertion
+/// in the two cases above passes under it, because both fire down the cell's
+/// exact centre — this is the one that reads `DEPLOY_VOL`'s row.
+///
+/// **One axis at a time, and that correction is the whole reason this
+/// paragraph exists.** The first draft offset x AND z together and said in a
+/// comment that it therefore caught a mutant that dropped either extent
+/// test. It caught neither, and a judge ran it: with both axes out, the
+/// surviving axis rejects the sample on its own, so deleting the other one
+/// is invisible. A miss has to be caused by exactly one axis for that axis's
+/// test to be load-bearing. The diagonal case stays as the third row because
+/// it is the ordinary geometry, not because it proves anything the first two
+/// do not. Judged 2026-08-28.
+#[test]
+fn a_shot_past_the_furnace_in_its_own_cell_misses_it() {
+    for seed in SEEDS {
+        let (cols, bcx, bcz, bottom) = furnace_column(seed);
+        let (cx, cz) = cell_centre(bcx, bcz);
+        let (hw, _, hd) = furnace_vol();
+        // Inside the build cell (half 1.5 m), outside the box (0.65 x 0.425)
+        // by more than the arrowhead.
+        let off = 1.2f32;
+        assert!(
+            off > hw + ranged::ARROW_R_M && off > hd + ranged::ARROW_R_M,
+            "the fixture offset must clear the furnace's own extents"
+        );
+        assert!(
+            off < BUILD_CELL_M * 0.5,
+            "…and stay inside the build cell, or a neighbour answers instead"
+        );
+
+        for (dx, dz) in [(off, 0.0f32), (0.0f32, off), (off, off)] {
+            let (chips, surf) = chips_of(
+                seed,
+                &chipping_bow(3),
+                &cols,
+                (cx + dx, bottom + 2.5, cz + dz),
+                0,
+                30,
+            );
+            assert_eq!(
+                surf,
+                Some(SURF_GROUND),
+                "seed {seed}: an arrow fired (+{dx:.1}, +{dz:.1}) m off the cell \
+                 centre passed a furnace whose half-extents are ({hw:.2}, \
+                 {hd:.2}) and was stopped by it"
+            );
+            assert!(
+                chips.is_empty(),
+                "seed {seed}: a shot from (+{dx:.1}, +{dz:.1}) that stopped on \
+                 the ground minted {} chip(s)",
+                chips.len()
+            );
+        }
+    }
+}

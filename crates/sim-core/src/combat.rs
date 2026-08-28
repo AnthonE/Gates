@@ -1023,14 +1023,17 @@ pub fn raid(
                     // whatever the tool — the reference's own rule as a
                     // raider meets it. Planes and risers have no sides;
                     // the satchel does not care either (`charge.rs` — a
-                    // blast is a point, not a stance).
+                    // blast is a point, not a stance). The rule itself is
+                    // `build::structure_price`, shared with the shot path
+                    // (`World::chip`) rather than copied into it.
                     let rec = pieces.entries()[i];
-                    let sided = crate::build::shape_has_facing(bc.pieces[rec.row as usize].shape);
-                    let amount = if sided && !crate::build::soft_side(&rec, px, pz) {
-                        HARD_SIDE_STRUCTURE
-                    } else {
-                        def.structure
-                    };
+                    let amount = crate::build::structure_price(
+                        &rec,
+                        bc.pieces[rec.row as usize].shape,
+                        px,
+                        pz,
+                        def.structure,
+                    );
                     damage_piece(dc, bc, pieces, deploys, i, amount, budget, events);
                     true
                 }
