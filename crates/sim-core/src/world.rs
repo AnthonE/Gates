@@ -1398,6 +1398,13 @@ pub struct World {
     /// that only grows with `MAX_ARROWS`. One allocation at construction,
     /// none in the tick.
     pub arrows: Box<ranged::Arrows>,
+    /// Arrows that have landed and can be taken back — sim state, hashed
+    /// and **saved**, which is the pair's whole distinction (`spent.rs`).
+    /// One field up is a trajectory between two ticks and `worldsave.rs`
+    /// drops it on purpose; this is an item lying on a hillside, and
+    /// dropping it across a restart would delete ammunition a player
+    /// earned. Boxed for `slot_cache`'s reason.
+    pub spent: Box<crate::spent::SpentArrows>,
     /// This tick's outbound events; cleared at tick start.
     pub events: EventQueue,
     /// Hash stamped every `STATE_HASH_INTERVAL` ticks (0 until the first).
@@ -1448,6 +1455,7 @@ impl World {
             slot_lives: SlotLives::new(),
             slot_cache: Box::new(crate::occupy::SlotCache::new()),
             arrows: Box::new(ranged::Arrows::new()),
+            spent: Box::new(crate::spent::SpentArrows::new()),
             events: EventQueue::default(),
             last_hash: 0,
             dev_spawn: None,
@@ -3603,6 +3611,7 @@ impl World {
         }
         let (n_kills, n_chips) = ranged::step(
             seed,
+            self.tick,
             &self.haven,
             self.pieces.cols(),
             &mut crate::occupy::Occupants {
@@ -3613,6 +3622,7 @@ impl World {
             },
             &self.combat,
             &mut self.arrows,
+            &mut self.spent,
             &mut self.players,
             &mut self.events,
             &mut kills,
@@ -3883,7 +3893,7 @@ impl World {
         // allocation order, allocation is deterministic, so two runs that
         // agree about the shot agree about the index.
         for a in self.arrows.entries() {
-            let mut buf = [0u8; 38];
+            let mut buf = [0u8; 40];
             buf[0..4].copy_from_slice(&a.qx.to_le_bytes());
             buf[4..8].copy_from_slice(&a.qy.to_le_bytes());
             buf[8..12].copy_from_slice(&a.qz.to_le_bytes());
@@ -3896,8 +3906,37 @@ impl World {
             buf[32..34].copy_from_slice(&a.damage.to_le_bytes());
             buf[34..36].copy_from_slice(&a.structure.to_le_bytes());
             buf[36..38].copy_from_slice(&a.life.to_le_bytes());
+            buf[38..40].copy_from_slice(&a.round.to_le_bytes());
             h.update(&buf);
             h.update(&a.flown.to_le_bytes());
+        }
+        // Arrows that have landed (`spent.rs`). Length-prefixed, unlike the
+        // block above — this store is dense with an explicit `len` where
+        // `Arrows` is a slotted array with holes, so the count is state
+        // here and an artefact there.
+        //
+        // **The whole block is skipped while nothing has ever landed**,
+        // which is the arrow idiom's payoff kept rather than its shape:
+        // a world where no arrow has hit anything folds not one byte, so
+        // `GOLDEN_FINAL_HASH` stays evidence about the script it pins.
+        // `evictions` is part of the condition and not only of the body,
+        // because a store that filled and was then emptied by pickups has
+        // a zero length and a history — and that history is the only
+        // evidence an eviction leaves (`MAX_SPENT_ARROWS`, and
+        // `World::evictions` one field over makes the same argument about
+        // sleeping bodies).
+        if !self.spent.is_empty() || self.spent.evictions() > 0 {
+            h.update(&(self.spent.len() as u64).to_le_bytes());
+            for e in self.spent.entries() {
+                let mut buf = [0u8; 14];
+                buf[0..4].copy_from_slice(&e.qx.to_le_bytes());
+                buf[4..8].copy_from_slice(&e.qy.to_le_bytes());
+                buf[8..12].copy_from_slice(&e.qz.to_le_bytes());
+                buf[12..14].copy_from_slice(&e.round.to_le_bytes());
+                h.update(&buf);
+                h.update(&e.ready_at.to_le_bytes());
+            }
+            h.update(&self.spent.evictions().to_le_bytes());
         }
         // The animal roster, on the arrow idiom above and for its reason:
         // **skip-if-not-alive, no length prefix**, so a world whose content

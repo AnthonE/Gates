@@ -259,6 +259,8 @@ pub fn hash(c: &Content) -> u64 {
     }
     h.u(g.upkeep_pct_per_day);
     h.u(g.repair_cost_pct);
+    h.u(g.arrow_break_pct);
+    h.u(g.arrow_lodge_s);
     let b = &c.balance.bands;
     for pair in [
         b.ttk_melee,

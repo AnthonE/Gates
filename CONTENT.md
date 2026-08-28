@@ -52,7 +52,13 @@ properly. The short version:
   `globals.repair_cost_pct` (100 = the damage's worth exactly, validated
   1..=100), rounded up and floored at one unit so no repair is ever free.
 - **weapon**: kind (`melee|bow|firearm|throwable`), damage, headshot ×,
-  rate, range falloff curve, ballistic (speed, drop) or hitscan, ammo id
+  rate, range falloff curve, ballistic (speed, drop) or hitscan, ammo id.
+  What a *spent* arrow does is not on this row and is two `globals`
+  instead — `arrow_break_pct` (chance in 100 that a landing destroys it)
+  and `arrow_lodge_s` (seconds an arrow that dealt damage waits before it
+  may be taken; a miss waits none). Globals rather than an ammo column for
+  `[[ammo]]`'s own stated reason: it carries no damage column either, so
+  one break rate for every round is that posture one step out
 - **armor**: slot, damage reduction %, movement penalty
 - **consumable**: health/food/water deltas over seconds
 - **mob**: one row per animal species — hp, speeds as a percentage of the

@@ -350,6 +350,20 @@ pub struct CombatContent {
     /// the inert default and disarms the module entirely: no hp is granted
     /// at join, so no damage is applied and nobody can die.
     pub player_hp: u16,
+    /// Chance in 100 that a landed arrow is destroyed rather than lodged
+    /// (`globals.arrow_break_pct`, arrow recovery v0). **Zero is not the
+    /// inert default here and that is deliberate**: the disarmed value is
+    /// 100, which destroys every arrow and is exactly the game that
+    /// existed before `spent.rs` — so a content set with no recovery row
+    /// cannot silently make ammunition free. `CombatContent::EMPTY` says
+    /// 100 for that reason and it is the one field of this struct whose
+    /// inert value is not zero.
+    pub arrow_break_pct: u16,
+    /// Ticks an arrow that DEALT DAMAGE waits before it may be taken back
+    /// (`globals.arrow_lodge_s` × `TICK_HZ`, baked). A missed arrow is
+    /// takeable on the tick it lands, so this number prices exactly one
+    /// thing: re-using the arrow you just shot someone with, mid-fight.
+    pub arrow_lodge_ticks: u32,
 }
 
 impl CombatContent {
@@ -383,6 +397,12 @@ impl CombatContent {
             slot: WEAR_NONE,
         }; MAX_ITEM_DEFS],
         player_hp: 0,
+        // 100, not 0 — see the field. An inert recovery rule must destroy
+        // every arrow, because the opposite failure (a content set with no
+        // row silently giving ammunition back forever) is the one that
+        // cannot be noticed by looking at the game.
+        arrow_break_pct: 100,
+        arrow_lodge_ticks: 0,
     };
 
     /// Synthetic table for the parity/replay/alloc gates. Deliberately

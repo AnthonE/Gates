@@ -328,6 +328,19 @@ pub fn structural(c: &Content) -> Result<(), String> {
              for free, over 100 costs more than rebuilding"
         ));
     }
+    // A break chance is a percentage and both ends of the range mean
+    // something, so this refuses only the value that is not a percentage.
+    // 0 is "an arrow is forever" and 100 is "an arrow is spent", which is
+    // the game that existed before arrow recovery v0 — a shard may choose
+    // either end, and `CombatContent::EMPTY` chooses 100 for the reason
+    // stated there.
+    let bp = c.balance.globals.arrow_break_pct;
+    if bp > 100 {
+        return Err(format!(
+            "globals: arrow_break_pct {bp} is not a percentage — 0 is an \
+             arrow that never breaks, 100 is one that always does"
+        ));
+    }
     let piece_hp = |shape: Shape, material: Material| -> Option<u32> {
         c.pieces
             .iter()

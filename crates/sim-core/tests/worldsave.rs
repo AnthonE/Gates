@@ -563,11 +563,13 @@ fn a_corrupt_world_is_refused_by_reason() {
         let mut world = armed();
         assert!(world.load(&b).is_err(), "a {cut}-byte blob must refuse");
     }
-    // A player count past MAX_PLAYERS. Counts start at offset 34 (2 format
-    // + 8 tick + 12 sweeps + 8 evictions + 4 next_bag) and run to the end
-    // of the head — which is `HEAD_BYTES` and NOT a hand-copied total, for
-    // that constant's own stated reason.
-    const COUNTS_AT: usize = 34;
+    // A player count past MAX_PLAYERS. The counts are the tail of the head,
+    // so their offset is `HEAD_BYTES - SECTION_COUNTS` and NOT a hand-copied
+    // total — this was `34` until format 10 put a `u32` eviction counter in
+    // the head ahead of them, at which point every poke below landed four
+    // bytes early and the failure named the wrong thing entirely. Both
+    // constants are `pub` for exactly this.
+    const COUNTS_AT: usize = sim_core::worldsave::HEAD_BYTES - sim_core::worldsave::SECTION_COUNTS;
     assert_eq!(
         bent(&|b| b[COUNTS_AT..COUNTS_AT + 2].copy_from_slice(&u16::MAX.to_le_bytes())),
         Err(WorldSaveError::CountOverCap)

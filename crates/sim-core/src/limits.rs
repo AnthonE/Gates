@@ -716,6 +716,36 @@ pub const BLAST_MAX_CM: u16 = 300;
 /// Proposed default, DECISIONS.md §open (ranged v0).
 pub const MAX_ARROWS: usize = 128;
 
+/// Spent arrows lying on the ground across the whole shard
+/// (`spent.rs`, arrow recovery v0). Four full skies of arrows: nothing
+/// reaches this store without leaving `MAX_ARROWS` first, so the cap says
+/// how many landings the world remembers, and 4 × 128 is the number that
+/// keeps every arrow from two whole volleys collectable while the third
+/// is still in the air.
+///
+/// Overflow policy: **drop the one that has been takeable longest** — the
+/// entry with the smallest `ready_at` is evicted to make room, and
+/// `SpentArrows::evictions` counts it so the policy is measurable rather
+/// than assumed (`World::evictions`' argument, one store over: an
+/// eviction's only evidence is an absence).
+///
+/// It is deliberately not *refuse*, which is the policy one const up and
+/// is right there and wrong here. `MAX_ARROWS` refuses because the thing
+/// being refused is a shot that has not happened yet, and the shooter
+/// pays nothing. Here the arrow has already landed, so refusing would
+/// destroy the newest arrow — the one whose owner is walking toward it —
+/// because of litter somebody else left on the far side of the island.
+/// Evicting the oldest takeable arrow instead is also the closest thing
+/// this store has to the despawn timer the reference presumably has and
+/// `reference/PROJECTILES.md` §5 does not give a number for.
+///
+/// Note it is `ready_at` and not a landing tick, so a **lodged** arrow is
+/// protected for its lodge window: the arrow you have just shot someone
+/// with cannot be evicted out from under you by a busy shard, which is
+/// the one case where losing it would read as the game cheating.
+/// Proposed default, DECISIONS.md §open (arrow recovery v0).
+pub const MAX_SPENT_ARROWS: usize = 512;
+
 /// Ticks an arrow may stay in flight before it expires, whatever the
 /// weapon's own derived life. The backstop that makes `MAX_ARROWS` a
 /// bound on *occupancy* rather than a hope: an arrow that somehow misses

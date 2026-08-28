@@ -49,6 +49,22 @@ repair_cost_pct = 100
 # a wooden one's rate and took twenty hours to do it. Proposed default,
 # DECISIONS.md §open ("upkeep/decay v1").
 decay_pct_per_period = { twig = 100, wood = 34, stone = 20, metal = 13 }
+# Chance an arrow is destroyed where it lands instead of becoming an item
+# on the ground again (arrow recovery v0). Theirs, taken whole under
+# BALANCE.md §6: reference/PROJECTILES.md §5 reads "~15 % chance to break
+# on impact and be destroyed", and §5 is the reason the bow's damage row
+# is on hold — their ~35 is priced against ammunition that comes back and
+# ours was priced against ammunition that never did. The odds are what
+# turn a spent arrow from a cost into a tax; nothing else in the loop
+# does. Tier 3 in their doc, so approximate by their own warning.
+arrow_break_pct = 15
+# Seconds an arrow that DEALT DAMAGE lies in its target before it may be
+# taken back; one that missed may be taken the moment it lands. Theirs
+# too (§5, "retrieved after 10 seconds"), and the rule reads arbitrary
+# and is not: it stops an archer re-collecting the arrow they just shot
+# someone with *during* the fight, so a bow still runs dry in a sustained
+# engagement while losing almost nothing to a day of hunting.
+arrow_lodge_s = 10
 
 [bands]
 # Anchor 2 — TTK in body hits, no armor; per weapon kind.

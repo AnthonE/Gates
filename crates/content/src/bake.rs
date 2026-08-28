@@ -556,6 +556,33 @@ impl Content {
         if cc.player_hp == 0 {
             return Err("bake: player_hp 0 would disarm combat entirely".to_string());
         }
+        // `validate::structural` has already pinned this to 0..=100, so the
+        // narrow cannot fail on shipped content; it is written as a bake
+        // refusal anyway for `repair_cost_pct`'s reason one function over —
+        // `bake_combat` is reachable from fixtures that never validated.
+        cc.arrow_break_pct = u16::try_from(self.balance.globals.arrow_break_pct)
+            .ok()
+            .filter(|&p| p <= 100)
+            .ok_or_else(|| {
+                format!(
+                    "bake: arrow_break_pct {} is not a percentage",
+                    self.balance.globals.arrow_break_pct
+                )
+            })?;
+        // Seconds → ticks, checked, exactly like a throwable's `fuse_s`.
+        // A lodge nobody could outlive is a lodge that never expires, so
+        // the overflow is refused rather than saturated.
+        cc.arrow_lodge_ticks = self
+            .balance
+            .globals
+            .arrow_lodge_s
+            .checked_mul(TICK_HZ)
+            .ok_or_else(|| {
+                format!(
+                    "bake: arrow_lodge_s {} overflows a tick count",
+                    self.balance.globals.arrow_lodge_s
+                )
+            })?;
         // Rounds before weapons: a bow's row is meaningless without the
         // ballistics its rounds carry, and baking them first means a
         // failure names the round rather than the weapon that happened to
