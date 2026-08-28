@@ -428,7 +428,10 @@ pub const STRIKE_WAIST_FRAC: f32 = 0.5;
 /// `ranged::fire` shoots from. Derived from `ARROW_EYE_MM` rather than
 /// picked, so the two origins cannot drift apart — no new knob is spoken
 /// for here and none is invented.
-const EYE_M: f32 = crate::ranged::ARROW_EYE_MM as f32 / 1000.0;
+/// `pub(crate)` since 2026-08-28 so `combat::raid`'s mark rides the same
+/// origin: a hatchet's swing at a wall and a hatchet's swing at a tree
+/// leave their scuff at one height, and the two cannot drift apart.
+pub(crate) const EYE_M: f32 = crate::ranged::ARROW_EYE_MM as f32 / 1000.0;
 
 /// Where a landed swing scuffs the thing it hit: the point on the struck
 /// occupant's own collision skin, on the side the swinger is standing.

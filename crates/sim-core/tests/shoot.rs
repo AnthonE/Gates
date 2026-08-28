@@ -1622,6 +1622,63 @@ fn a_furnace_stops_a_shot_the_bare_column_lets_through() {
     }
 }
 
+/// **A shot fired UP from below a furnace stops on its UNDERSIDE**, not on
+/// the first sample of the column.
+///
+/// The gate for `collide::deploy_stop`'s vertical band, and specifically
+/// for the FLOOR of it. `ey = y - y.clamp(bottom, bottom + h)` and
+/// `ey = y - y.min(bottom + h)` are bit-identical for every `y >= bottom`,
+/// and until 2026-08-28 every case in this file and in `tests/chip.rs`
+/// fired straight down from above the box — so deleting the floor rail ran
+/// the whole `sim-core` suite green (the merge-gate judge's first ranked
+/// fix on `pass-20260828-065501-03`). Without it a box is an infinitely
+/// deep column: a bench on the storey above eats an arrow fired level on
+/// the ground floor, and a raider shooting up at a ceiling hits a bench
+/// they cannot see, 1.4 m before they reach it.
+///
+/// `surf` cannot separate the two — both report `SURF_BUILT` — so the
+/// assertion is on **y**, and the two answers are `LEVEL_H_M − eye` apart,
+/// which is 1.4 m against a 0.3 m tolerance.
+///
+/// The control is the roof case's, for its reason: fired up, this fixture's
+/// arrow outlives its own range and announces no impact at all, so
+/// "not built" is the honest read rather than "the dirt".
+#[test]
+fn a_shot_fired_up_stops_on_the_furnace_underside_not_below_it() {
+    for seed in SEEDS {
+        let (cols, bcx, bcz, bottom) = furnace_column(seed);
+        let (cx, cz) = cell_centre(bcx, bcz);
+        let (_, h, _) = furnace_vol();
+        // Standing on the bare column under the furnace's storey.
+        let feet = bottom - LEVEL_H_M;
+        let muzzle = feet + ARROW_EYE_MM as f32 / 1000.0;
+        assert!(
+            muzzle < bottom,
+            "seed {seed}: the muzzle at {muzzle:.2} is already inside the              furnace's band, so there is nothing below the box to fire from"
+        );
+
+        // 255 is the steepest up the pitch encoding holds.
+        let (surf, y) = impact_of(seed, &cols, (cx, feet, cz), 255, 20)
+            .unwrap_or_else(|| panic!("seed {seed}: the shot never stopped on anything"));
+        assert_eq!(
+            surf, SURF_BUILT,
+            "seed {seed}: an arrow fired up at a furnace reported surface {surf}              at y={y:.2} — its underside at {bottom:.2} let it through"
+        );
+        assert!(
+            fabs(y - bottom) <= 0.3,
+            "seed {seed}: the impact landed at y={y:.2}; the furnace's underside              is {bottom:.2}, its top is {:.2}, and the muzzle was {muzzle:.2} — a              stop below the box is the vertical band with no floor",
+            bottom + h
+        );
+
+        let bare = ColIndex::new();
+        let control = impact_of(seed, &bare, (cx, feet, cz), 255, 90);
+        assert!(
+            !matches!(control, Some((SURF_BUILT, _))),
+            "seed {seed}: the control stopped on a built surface with an empty              index ({control:?}), so the assertion above is not about the furnace"
+        );
+    }
+}
+
 /// The chip a furnace hit mints names the DEPLOY store, at the deployable's
 /// own address.
 ///
