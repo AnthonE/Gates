@@ -464,6 +464,22 @@ pub fn keys(
         super::verbs::close_container(&net, &mut toast);
     }
 
+    // And opening it opens your own body (armor v1). The mirror of the
+    // close above, and the reference's arrangement: `inventory.jpeg` draws
+    // the worn slots as part of the inventory screen rather than as a
+    // panel of their own, so there is no key to bind and none is invented.
+    //
+    // Gated on `open_inventory` — the key — rather than on the panel
+    // having become visible, and that distinction is the whole of the
+    // correctness here. `E` on a box also raises this panel, in the same
+    // frame it sends its own `ACT_CONTAINER`; asking for the body too
+    // would put two container opens in one tick and the box would win or
+    // lose by ordering. The key press is unambiguous: nothing else is
+    // being opened by it.
+    if open_inventory && ui.panel == Panel::Inventory {
+        super::verbs::open_worn(&net, &mut toast);
+    }
+
     // The wheel wins over nothing and loses to the two toggle screens: a
     // player with the inventory (or the tree) open who brushes the button
     // is not asking for a wheel on top of it.

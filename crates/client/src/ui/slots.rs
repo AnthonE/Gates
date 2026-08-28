@@ -47,8 +47,8 @@ use protocol::event::ItemCatalog;
 use protocol::{encode_action_move, WireError};
 use sim_core::deploy::{box_key, DeployContent, DeployRec, ARCH_BOX};
 use sim_core::gather::ItemStack;
-use sim_core::inventory::{CONT_BOX, CONT_MAX, CONT_SELF, CONT_WORLD};
-use sim_core::limits::{BOX_SLOTS, HOTBAR_SLOTS, INV_SLOTS};
+use sim_core::inventory::{is_own, CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, CONT_WORLD};
+use sim_core::limits::{HOTBAR_SLOTS, INV_SLOTS};
 
 /// Slots addressable in a container of `kind` — `sim_core::inventory`'s
 /// `slots_in`, re-exported rather than mirrored so the two cannot drift.
@@ -226,12 +226,13 @@ pub fn move_args(
         return None;
     }
     // 2 · one ground container, or none. Which one is the handle's owner.
-    let ground = if from_kind != CONT_SELF {
-        from_kind
-    } else {
-        to_kind
-    };
-    if from_kind != CONT_SELF && to_kind != CONT_SELF && from_kind != to_kind {
+    //
+    //     `is_own`, not `!= CONT_SELF`, and it is `sim_core`'s predicate
+    //     rather than a second one written here — the same reason
+    //     `slots_in` is re-exported above. A player carries two containers
+    //     since armor v1, and both of them are addressed without a handle.
+    let ground = if !is_own(from_kind) { from_kind } else { to_kind };
+    if !is_own(from_kind) && !is_own(to_kind) && from_kind != to_kind {
         return None;
     }
     // 3 · each slot inside its OWN container's width.
@@ -242,10 +243,18 @@ pub fn move_args(
     if from_kind == to_kind && from_slot == to_slot {
         return None;
     }
-    // 5 · the handle. Normalized to zero for self→self, required non-zero
-    //     for anything on the ground.
-    let handle = if ground == CONT_SELF { 0 } else { bag };
-    if ground != CONT_SELF && handle == 0 {
+    // 5 · the handle. Normalized to zero when both sides are on the
+    //     player, required non-zero for anything on the ground.
+    //
+    //     **This check is why the wear panel would have looked broken
+    //     rather than refused.** Under `ground != CONT_SELF` a
+    //     `CONT_SELF → CONT_WEAR` move takes `ground == CONT_WEAR`, has no
+    //     handle to offer, and returns `None` here — which sends nothing
+    //     at all, so the drag snaps back with no refusal, no event and no
+    //     toast. Worse, with a box open it would have shipped the *box's*
+    //     `box_key` as a wear move's handle.
+    let handle = if is_own(ground) { 0 } else { bag };
+    if !is_own(ground) && handle == 0 {
         return None;
     }
     // 6 · the count, read from the source container's own view.
@@ -304,6 +313,9 @@ pub fn container_title(kind: u8) -> &'static str {
         // fallback that is a real answer for one kind is a fallback that
         // lies about the next one.
         CONT_WORLD => "CRATE",
+        // Named for the same reason, one kind later. The fallback would
+        // have titled a player's own armor "BAG".
+        CONT_WEAR => "WORN",
         _ => "BAG",
     }
 }
@@ -312,12 +324,18 @@ pub fn container_title(kind: u8) -> &'static str {
 /// the view that carries it: the wire ships `INV_SLOTS` slots whatever kind
 /// is open, and the tail stays zero for a box — so a panel that drew all 30
 /// would draw twelve slots and eighteen lies.
+///
+/// **Derived from `slots_in` rather than listed**, which is the same move
+/// the re-export at the top of this file makes and for the same reason.
+/// The old body named `CONT_BOX` and answered `GRID_COLS` for everything
+/// else; that is a hand-kept mirror of `sim_core`'s width table, and a
+/// two-slot wear container would have drawn as six — four of them lies,
+/// which is the defect the paragraph above describes arriving at the next
+/// kind. This form is identical for all four older kinds (30 and 12 both
+/// clamp to `GRID_COLS`; 12 was already reaching `BOX_SLOTS.min`) and
+/// correct for the fifth without naming it.
 pub fn container_cols(kind: u8) -> usize {
-    if kind == CONT_BOX {
-        BOX_SLOTS.min(GRID_COLS)
-    } else {
-        GRID_COLS
-    }
+    slots_in(kind).min(GRID_COLS)
 }
 
 /// The deployable item standing at a box handle, if the client is already

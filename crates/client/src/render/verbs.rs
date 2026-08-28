@@ -25,7 +25,7 @@
 //! world that rarely moves between the two.
 
 use bevy::prelude::*;
-use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WORLD};
+use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
 
 use crate::look::yaw_u16;
 use crate::ui::interact::{self, Aim, Pick, SwingAim, SwingPick, Verb};
@@ -750,6 +750,27 @@ fn open_panel(ui: Option<&mut Ui>) {
             ui.dirty = true;
         }
     }
+}
+
+/// Ask the sim for **what this player is wearing**.
+///
+/// The mirror of `close_container` below, and it exists because armor has
+/// no world verb to be opened by. Every other container is reached by
+/// pointing at a thing — `E` on a box, a crate, a bag — and a body is not
+/// a thing in the world you can look at, so the open has to be attached
+/// to the screen that draws it. `panels/mod.rs` sends this when the
+/// inventory is opened by its own key, which is where the reference puts
+/// worn slots too (`inventory.jpeg`: the paperdoll is part of the
+/// inventory screen, not a separate panel).
+///
+/// The handle is zero and means it: `CONT_WEAR` is an own container
+/// (`inventory::is_own`), so there is no address — the body is whoever
+/// sent the message. That is also why this needs no `handle` argument
+/// while all five opens above take one.
+pub fn open_worn(net: &Net, toast: &mut Toast) {
+    send(net, toast, "worn", |buf| {
+        protocol::encode_action_container(CONT_WEAR, 0, buf)
+    });
 }
 
 /// Close whatever container the sim has open, if any.
