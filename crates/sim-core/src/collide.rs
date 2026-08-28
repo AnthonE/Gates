@@ -40,8 +40,8 @@
 //! DECISIONS.md §open ("piece collision v0" row).
 
 use crate::build::{
-    BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_TRI_XHI_ZHI,
-    LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, SHAPE_DOORWAY, SHAPE_FLOOR,
+    BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
+    LOC_TRI_XHI_ZHI, LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI, LOC_TRI_XLO_ZLO, SHAPE_DOORWAY, SHAPE_FLOOR,
     SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
     SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
@@ -957,7 +957,7 @@ fn cell_planes_stop_shot(
     z: f32,
     y: f32,
     r: f32,
-) -> bool {
+) -> Option<PieceHit> {
     // The same four-cell reach [`plane_blocked`] takes, and for its reason:
     // a plane IS the cell, so inflated by the mover's radius it can reach
     // past a boundary. The arrowhead is 0.05 m against a 3 m cell, so the
@@ -1004,14 +1004,41 @@ fn cell_planes_stop_shot(
             };
             for level in 0..MAX_BUILD_LEVELS {
                 let bit = 1u8 << level;
-                let here = m.planes & bit != 0
-                    || (m.tri_xlo_zlo & bit != 0 && in_half(LOC_TRI_XLO_ZLO))
-                    || (m.tri_xhi_zlo & bit != 0 && in_half(LOC_TRI_XHI_ZLO))
-                    || (m.tri_xlo_zhi & bit != 0 && in_half(LOC_TRI_XLO_ZHI))
-                    || (m.tri_xhi_zhi & bit != 0 && in_half(LOC_TRI_XHI_ZHI));
-                if !here {
+                // Which slab, not just whether one — the address is what
+                // `ranged.rs` charges structure damage against, and the OR
+                // this replaced could not say.
+                //
+                // **The order is a real tie-break and not just insurance.**
+                // A plane and a triangle cannot share a (cell, level) —
+                // `build::body_overlaps` refuses that pair — but two
+                // COMPLEMENTARY triangles can, and are meant to: NW+SE and
+                // NE+SW are how two halves make a cell. Their `in_half`
+                // tests are boundary-inclusive on both sides on purpose
+                // (the comment above says why: the seam must read the same
+                // from either), so a sample landing exactly on `dx + dz ==
+                // BUILD_CELL_M` satisfies both halves and the first arm
+                // wins. That is a whole answer either way — both halves are
+                // real pieces standing at that point, and a raider on the
+                // seam of a split floor has no claim about which one the
+                // arrow found. What the sim does require is that the pick
+                // be a rule rather than an accident, which an `||` chain
+                // read for its address would not have been.
+                let here = if m.planes & bit != 0 {
+                    Some(LOC_PLANE)
+                } else if m.tri_xlo_zlo & bit != 0 && in_half(LOC_TRI_XLO_ZLO) {
+                    Some(LOC_TRI_XLO_ZLO)
+                } else if m.tri_xhi_zlo & bit != 0 && in_half(LOC_TRI_XHI_ZLO) {
+                    Some(LOC_TRI_XHI_ZLO)
+                } else if m.tri_xlo_zhi & bit != 0 && in_half(LOC_TRI_XLO_ZHI) {
+                    Some(LOC_TRI_XLO_ZHI)
+                } else if m.tri_xhi_zhi & bit != 0 && in_half(LOC_TRI_XHI_ZHI) {
+                    Some(LOC_TRI_XHI_ZHI)
+                } else {
+                    None
+                };
+                let Some(loc) = here else {
                     continue;
-                }
+                };
                 let top = base + level as f32 * LEVEL_H_M;
                 if y - r >= top {
                     continue; // over it
@@ -1023,11 +1050,16 @@ fn cell_planes_stop_shot(
                 if level > 0 && y + r <= top - PLANE_THICKNESS_M {
                     continue; // passed under
                 }
-                return true;
+                return Some(PieceHit {
+                    cx: bx as u16,
+                    cz: bz as u16,
+                    level: level as u8,
+                    loc,
+                });
             }
         }
     }
-    false
+    None
 }
 
 /// Where the move `a0`→`a1` meets the edge plane at `px`, if it does: the
@@ -1253,13 +1285,13 @@ fn cell_diags_block(
     hi_y: f32,
     point: bool,
     r_extra: f32,
-) -> bool {
+) -> Option<PieceHit> {
     if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
-        return false;
+        return None;
     }
     let m = cols.get(bx as u16, bz as u16);
     if m.diag_a | m.diag_b == 0 {
-        return false;
+        return None;
     }
     let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
     for level in 0..MAX_BUILD_LEVELS {
@@ -1282,12 +1314,17 @@ fn cell_diags_block(
             }
             if let Some(t) = diag_meet(bx, bz, diag_b, x, z, nx, nz, r_extra) {
                 if (0.0..=DIAG_LEN_M).contains(&t) {
-                    return true;
+                    return Some(PieceHit {
+                        cx: bx as u16,
+                        cz: bz as u16,
+                        level: level as u8,
+                        loc: if diag_b { LOC_DIAG_B } else { LOC_DIAG_A },
+                    });
                 }
             }
         }
     }
-    false
+    None
 }
 
 /// Whether a wall, doorway post, window, frame rim or diagonal wall stops
@@ -1330,6 +1367,9 @@ pub fn blocked(
         return true;
     }
     let (lo, hi) = (feet_y, feet_y + CAPSULE_HEIGHT_M);
+    // `.is_some()`: the body walk asks only whether it is stopped. The
+    // address the diagonal now names is the shot walk's business
+    // ([`shot_stop`]) — a mover that cannot damage a wall has no use for it.
     if cell_diags_block(
         seed,
         haven,
@@ -1344,7 +1384,9 @@ pub fn blocked(
         hi,
         false,
         CAPSULE_RADIUS_M,
-    ) {
+    )
+    .is_some()
+    {
         return true;
     }
     if (bx0 != bx1 || bz0 != bz1)
@@ -1363,10 +1405,33 @@ pub fn blocked(
             false,
             CAPSULE_RADIUS_M,
         )
+        .is_some()
     {
         return true;
     }
     false
+}
+
+/// Which built piece a shot walk stopped on — the address, never a store
+/// index.
+///
+/// **An address cannot go stale and an index can**, which is
+/// `charge::detonate`'s rule arriving on the shot path: the walk that finds
+/// the piece and the write that damages it are separated by the body pass
+/// and, on a hitscan tick, by other players' shots, any of which can drop a
+/// piece and shuffle the store. The caller re-resolves through
+/// `Pieces::find_index` at the moment it charges damage, and a hit whose
+/// address no longer holds a piece is simply no longer a hit.
+///
+/// `loc` is one of `build`'s `LOC_*` — the same four-part address
+/// `combat::raid` picks and `deploy::damage_piece` writes against, so a shot
+/// and a swing name a wall identically.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct PieceHit {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+    pub loc: u8,
 }
 
 /// Whether an edge piece stops a **shot** sample moving (x,z)→(nx,nz) at
@@ -1385,6 +1450,64 @@ pub fn blocked(
 ///   ([`DOOR_HEAD_M`]), where a body only ever met the posts; and a
 ///   **shut door** seals its doorway on both walks.
 #[allow(clippy::too_many_arguments)]
+pub fn shot_stop(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    nx: f32,
+    nz: f32,
+    y: f32,
+    r: f32,
+) -> Option<PieceHit> {
+    let (bx0, bz0) = (
+        crate::build::build_cell_of(x),
+        crate::build::build_cell_of(z),
+    );
+    let (bx1, bz1) = (
+        crate::build::build_cell_of(nx),
+        crate::build::build_cell_of(nz),
+    );
+    let hit = cell_edges_stop_shot(seed, haven, cols, bx1, bz1, x, z, nx, nz, y, r);
+    if hit.is_some() {
+        return hit;
+    }
+    if bx0 != bx1 || bz0 != bz1 {
+        let hit = cell_edges_stop_shot(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, r);
+        if hit.is_some() {
+            return hit;
+        }
+    }
+    // The diagonals, with the point's own band: containment of `y`, not a
+    // capsule's overlap.
+    let hit = cell_diags_block(seed, haven, cols, bx1, bz1, x, z, nx, nz, y, y, true, r);
+    if hit.is_some() {
+        return hit;
+    }
+    if bx0 != bx1 || bz0 != bz1 {
+        let hit = cell_diags_block(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, y, true, r);
+        if hit.is_some() {
+            return hit;
+        }
+    }
+    // The planes, at the sample's own point rather than over the sweep.
+    // **A point, deliberately, where the edges above are swept**: an edge is
+    // crossed horizontally and a plane is crossed vertically, and the
+    // vertical step between two taps is at most `ARROW_STEP_MM` — under the
+    // band a slab presents, so the sweep an edge needs a plane does not
+    // ([`cell_planes_stop_shot`]'s doc carries the arithmetic). It reads the
+    // destination `(nx, nz)`, which is the sample `ranged::world_stop` is
+    // asking about and the same point it hands `Occupants::blocks_volume`.
+    cell_planes_stop_shot(seed, haven, cols, nx, nz, y, r)
+}
+
+/// Whether anything built stops the shot — [`shot_stop`] with the address
+/// discarded. The two are one walk: this is the question the collision
+/// suite has always asked, kept spelled as a predicate so a caller that
+/// only needs a yes/no does not carry an address it will drop.
+#[allow(clippy::too_many_arguments)]
+#[inline]
 pub fn shot_blocked(
     seed: u64,
     haven: &crate::terrain::Haven,
@@ -1396,44 +1519,7 @@ pub fn shot_blocked(
     y: f32,
     r: f32,
 ) -> bool {
-    let (bx0, bz0) = (
-        crate::build::build_cell_of(x),
-        crate::build::build_cell_of(z),
-    );
-    let (bx1, bz1) = (
-        crate::build::build_cell_of(nx),
-        crate::build::build_cell_of(nz),
-    );
-    if cell_edges_stop_shot(seed, haven, cols, bx1, bz1, x, z, nx, nz, y, r) {
-        return true;
-    }
-    if (bx0 != bx1 || bz0 != bz1)
-        && cell_edges_stop_shot(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, r)
-    {
-        return true;
-    }
-    // The diagonals, with the point's own band: containment of `y`, not a
-    // capsule's overlap.
-    if cell_diags_block(seed, haven, cols, bx1, bz1, x, z, nx, nz, y, y, true, r) {
-        return true;
-    }
-    if (bx0 != bx1 || bz0 != bz1)
-        && cell_diags_block(seed, haven, cols, bx0, bz0, x, z, nx, nz, y, y, true, r)
-    {
-        return true;
-    }
-    // The planes, at the sample's own point rather than over the sweep.
-    // **A point, deliberately, where the edges above are swept**: an edge is
-    // crossed horizontally and a plane is crossed vertically, and the
-    // vertical step between two taps is at most `ARROW_STEP_MM` — under the
-    // band a slab presents, so the sweep an edge needs a plane does not
-    // ([`cell_planes_stop_shot`]'s doc carries the arithmetic). It reads the
-    // destination `(nx, nz)`, which is the sample `ranged::world_stop` is
-    // asking about and the same point it hands `Occupants::blocks_volume`.
-    if cell_planes_stop_shot(seed, haven, cols, nx, nz, y, r) {
-        return true;
-    }
-    false
+    shot_stop(seed, haven, cols, x, z, nx, nz, y, r).is_some()
 }
 
 /// [`cell_edges_block`] with the shot profile — the four boundaries of one
@@ -1452,7 +1538,7 @@ fn cell_edges_stop_shot(
     nz: f32,
     y: f32,
     r: f32,
-) -> bool {
+) -> Option<PieceHit> {
     let edges = [
         (bx, bz, true),
         (bx + 1, bz, true),
@@ -1524,11 +1610,16 @@ fn cell_edges_stop_shot(
                 span && frame_solid_at(t, y - bottom)
             };
             if solid {
-                return true;
+                return Some(PieceHit {
+                    cx: ecx as u16,
+                    cz: ecz as u16,
+                    level: level as u8,
+                    loc: if x_plane { LOC_EDGE_XLO } else { LOC_EDGE_ZLO },
+                });
             }
         }
     }
-    false
+    None
 }
 
 #[cfg(test)]

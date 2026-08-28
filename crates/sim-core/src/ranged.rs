@@ -45,9 +45,31 @@
 //! # What v0 does not do
 //!
 //! No headshots (melee has none either — `frame.pitch` aims the shot but no
-//! part of a body is worth more than another), no damage falloff (the schema
-//! has no curve to read), and no structure damage
-//! — an arrow that reaches a wall stops dead rather than chipping it.
+//! part of a body is worth more than another) and no damage falloff (the
+//! schema has no curve to read).
+//!
+//! **A shot chips the wall it stops on, since 2026-08-28** (ranged
+//! structure damage v0) — this paragraph said it did not, for as long as
+//! there has been a bow. `content/weapons.toml` has given the bow, the
+//! crossbow and the revolver a `structure = 1` since the content crate was
+//! written; the column was parsed, range-checked, balance-checked and
+//! folded into the content hash, and `bake_ranged` dropped it one line
+//! before `RangedDef` could hold it. The same "armed and unread" shape as
+//! the whole bow before hitscan v0, one column down.
+//!
+//! It is not a second damage path. `world_stop` already knew a shot had
+//! stopped on a piece — that is what `SURF_BUILT` means — and all that was
+//! missing was **which** piece, so [`collide::shot_stop`] now names the
+//! address the walk already had in hand and threw away. The write is
+//! `deploy::damage_piece`, the same one a swing uses, through
+//! `World::chip`; the sides, the removal budget and the `EV_STRUCT_HIT`
+//! payload are `combat::raid`'s and are not restated here.
+//!
+//! **A deployable still stops no shot**, which is a different hole in a
+//! different walk (`NOW.md` §0mk item 2): `shot_stop` never reads
+//! `ColMasks::solid`, so an arrow passes through a furnace rather than
+//! failing to damage one. Arrows still do not come back either
+//! (`reference/PROJECTILES.md` §9.7).
 //!
 //! **An arrow flies at its own size now** (catalogue v1). Pieces stop it
 //! through `collide::shot_blocked` — a point at the arrow's altitude,
@@ -165,6 +187,17 @@ pub struct Arrow {
     /// The weapon that fired it, for the death screen's "with <weapon>".
     pub item: u16,
     pub damage: u16,
+    /// What this arrow takes off a building piece if it stops on one —
+    /// the bow's `structure` column, copied at the draw beside `damage`
+    /// and for `drop`'s stated reason: an arrow already in the air should
+    /// not change behaviour because content was rebaked under it.
+    ///
+    /// It is the **bow's** number and not the round's. `content/
+    /// weapons.toml`'s `[[ammo]]` table carries no damage column of any
+    /// kind (the file says so and says why), so every arrow out of one bow
+    /// chips a wall by the same amount — the same rule already in force
+    /// for flesh.
+    pub structure: u16,
     /// Ticks of flight left. Zero means the slot is free.
     pub life: u16,
     /// Millimetres flown so far — arc length, summed per tick, which is
@@ -214,6 +247,7 @@ impl Arrows {
             owner: 0,
             item: 0,
             damage: 0,
+            structure: 0,
             life: 0,
             flown: 0,
         }; MAX_ARROWS],
@@ -346,6 +380,7 @@ pub fn draw(
         owner: p.id,
         item: held_item(p),
         damage: def.damage,
+        structure: def.structure,
         life,
         flown: 0,
     };
@@ -381,8 +416,10 @@ pub fn step(
     players: &mut [Player; MAX_PLAYERS],
     events: &mut EventQueue,
     kills: &mut [Kill; MAX_ARROWS],
-) -> usize {
+    chips: &mut [Chip; MAX_ARROWS],
+) -> (usize, usize) {
     let mut n_kills = 0usize;
+    let mut n_chips = 0usize;
     for ix in 0..MAX_ARROWS {
         let mut a = arrows.a[ix];
         if !a.active() {
@@ -427,7 +464,8 @@ pub fn step(
         // answered, because that is the difference between a puff of dirt,
         // a chip of bark and a splintered plank, and it is knowable here
         // and nowhere else (`SURF_*`).
-        let (stop_t, surf) = world_stop(seed, haven, cols, occ, (ox, oy, oz), (sx, sy, sz), n, n);
+        let (stop_t, surf, piece) =
+            world_stop(seed, haven, cols, occ, (ox, oy, oz), (sx, sy, sz), n, n);
 
         // Pass two: the nearest body whose closest approach to the segment
         // comes at or before the world's stop. Solved rather than sampled,
@@ -489,6 +527,21 @@ pub fn step(
                 // starts at zero.
                 qy as u32,
             );
+            // …and the wall takes it, on `hitscan`'s ordering and for its
+            // reason. `(ox, oz)` is the arrow's position at the start of
+            // this tick — one tick of flight back from the wall, which is
+            // the side it came from and what the hard/soft rule asks for.
+            if let Some(hit) = piece {
+                if a.structure > 0 {
+                    chips[n_chips] = Chip {
+                        hit,
+                        structure: a.structure,
+                        from_x: ox / MM_PER_M,
+                        from_z: oz / MM_PER_M,
+                    };
+                    n_chips += 1;
+                }
+            }
             arrows.a[ix].life = 0;
             continue;
         }
@@ -500,7 +553,44 @@ pub fn step(
         a.life -= 1;
         arrows.a[ix] = a;
     }
-    n_kills
+    (n_kills, n_chips)
+}
+
+/// A chip a shot took out of a building piece — found here, applied by
+/// `World`.
+///
+/// **Handed back rather than written, for `Kill`'s reason stated one type
+/// up**: damaging a piece needs the store, the build and deploy content and
+/// the tick's removal budget, and this pass holds none of them — it holds
+/// the collision index and half a world. Taking `&mut Pieces` here would
+/// also make the shot pass the only reader of that store that is not a
+/// build verb, and would put a store-mutating parameter on the one function
+/// `tests/shoot.rs` drives with a hand-built `ColIndex`.
+///
+/// The address travels, never a store index. `charge::detonate` states the
+/// rule: the walk that finds a piece and the write that damages it are
+/// separated — here by the body pass, the remaining arrows and every other
+/// player's shot on the same tick — and any of those can drop a piece and
+/// swap-remove another into its slot. `World::chip` re-resolves the address
+/// at the moment it charges the damage, and a hit whose piece has gone is
+/// simply no longer a hit: the shot still stopped and still drew its
+/// impact, and only the chip is lost.
+#[derive(Clone, Copy, Default)]
+pub struct Chip {
+    /// Which piece — `build`'s four-part address, the same one
+    /// `combat::raid` picks and `deploy::damage_piece` writes against, so a
+    /// shot and a swing name a wall identically.
+    pub hit: collide::PieceHit,
+    /// What to take off it: the firing weapon's `structure` column. Never
+    /// zero — a weapon with no structure column produces no `Chip` at all,
+    /// so this array holds only hits that will be charged.
+    pub structure: u16,
+    /// Where the shot came from, metres, planar — what the hard/soft side
+    /// rule reads. For an arrow that is its position one tick of flight
+    /// back; for a bullet it is the muzzle. Both are the approach side,
+    /// which is what the rule is actually about.
+    pub from_x: f32,
+    pub from_z: f32,
 }
 
 /// How far along `s` from `o` the **world** stops a shot, and what stopped
@@ -533,11 +623,12 @@ fn world_stop(
     s: (f32, f32, f32),
     n: usize,
     upto: usize,
-) -> (f32, Option<u8>) {
+) -> (f32, Option<u8>, Option<collide::PieceHit>) {
     let (ox, oy, oz) = o;
     let (sx, sy, sz) = s;
     let mut stop_t = 1.0f32;
     let mut surf: Option<u8> = None;
+    let mut piece: Option<collide::PieceHit> = None;
     let mut prev = (ox / MM_PER_M, oz / MM_PER_M);
     for k in 1..=upto.min(n) {
         let t = k as f32 / n as f32;
@@ -548,23 +639,28 @@ fn world_stop(
         // stands on, and on an authored site that is the carved floor. A
         // raw read here puts the impact — and the decal drawn from it —
         // several metres under the pad.
+        // `shot_stop` rather than `shot_blocked`: the address it names is
+        // what the caller charges structure damage against. The ladder is
+        // otherwise unchanged — ground, then occupants, then pieces, and
+        // the first answer wins — so a shot stops exactly where it did.
+        let mut hit = None;
         let what = if py <= terrain::ground(seed, haven, px, pz) {
             Some(SURF_GROUND)
         } else if occ.blocks_volume(seed, px, pz, py, ARROW_R_M, ARROW_R_M) {
             Some(SURF_WORLD)
-        } else if collide::shot_blocked(seed, haven, cols, prev.0, prev.1, px, pz, py, ARROW_R_M) {
-            Some(SURF_BUILT)
         } else {
-            None
+            hit = collide::shot_stop(seed, haven, cols, prev.0, prev.1, px, pz, py, ARROW_R_M);
+            hit.map(|_| SURF_BUILT)
         };
         if what.is_some() {
             stop_t = t;
             surf = what;
+            piece = hit;
             break;
         }
         prev = (px, pz);
     }
-    (stop_t, surf)
+    (stop_t, surf, piece)
 }
 
 /// The nearest body whose closest approach to the segment `o + s·t` comes at
@@ -625,10 +721,18 @@ fn nearest_body(
 /// Asserted rather than assumed: `World::tick` hands both passes the same
 /// `[Kill; MAX_ARROWS]`, and the day `MAX_PLAYERS` outgrows `MAX_ARROWS`
 /// that array stops being a container and becomes an overflow.
+///
+/// **It bounds the chip array on the same terms** (ranged structure damage
+/// v0): `World::tick` hands both passes one `[Chip; MAX_ARROWS]` too, and
+/// the two passes fill it under the two rules this covers — `step` writes
+/// at most one chip per arrow over `0..MAX_ARROWS`, and `hitscan` at most
+/// one per player. So wall 4's cap on this write is the array's own length
+/// and this line is the check, rather than a bound restated at each
+/// `chips[n_chips]`.
 const _: () = assert!(
     MAX_PLAYERS <= MAX_ARROWS,
-    "the hitscan pass writes at most one Kill per player into the arrow \
-     store's kill array — widen MAX_ARROWS or give the pass its own"
+    "the hitscan pass writes at most one Kill and one Chip per player into \
+     the arrow store's arrays — widen MAX_ARROWS or give the pass its own"
 );
 
 /// Every firearm on the shard fires, resolves and is paid for, once, on the
@@ -675,8 +779,10 @@ const _: () = assert!(
 /// and the beam are a follow-up that needs either a new event or a spoken
 /// reading of `EV_SHOT`'s spare bit patterns. Neither is invented here.
 ///
-/// No structure damage (an arrow does not chip a wall either), no falloff
-/// (`content/weapons.toml` has no curve to read), and no headshot.
+/// It chips a wall exactly as an arrow does (the module header): the shot
+/// stops on a piece, `Chip` carries the address out and `World::chip`
+/// charges the revolver's `structure` against it. No falloff
+/// (`content/weapons.toml` has no curve to read) and no headshot.
 #[allow(clippy::too_many_arguments)]
 pub fn hitscan(
     seed: u64,
@@ -688,8 +794,10 @@ pub fn hitscan(
     players: &mut [Player; MAX_PLAYERS],
     events: &mut EventQueue,
     kills: &mut [Kill; MAX_ARROWS],
-) -> usize {
+    chips: &mut [Chip; MAX_ARROWS],
+) -> (usize, usize) {
     let mut n_kills = 0usize;
+    let mut n_chips = 0usize;
     for i in 0..MAX_PLAYERS {
         let p = &players[i];
         // A corpse and a sleeper do not shoot. `World::tick`'s player loop
@@ -780,7 +888,7 @@ pub fn hitscan(
             Some((t, _)) => (t * n as f32) as usize + 1,
             None => MAX_HITSCAN_MARK_SAMPLES,
         };
-        let (stop_t, surf) =
+        let (stop_t, surf, piece) =
             world_stop(seed, haven, cols, occ, (ox, oy, oz), (sx, sy, sz), n, upto);
         let best = seen.filter(|&(t, _)| t <= stop_t);
 
@@ -822,7 +930,22 @@ pub fn hitscan(
                 qz as u32,
                 qy as u32,
             );
+            // …and the wall takes it. After the impact, so the order on the
+            // wire is *where it hit* then *what that cost* — and so a piece
+            // that falls to this shot has its `EV_PIECE_REMOVED` behind the
+            // mark that explains it.
+            if let Some(hit) = piece {
+                if def.structure > 0 {
+                    chips[n_chips] = Chip {
+                        hit,
+                        structure: def.structure,
+                        from_x: ox / MM_PER_M,
+                        from_z: oz / MM_PER_M,
+                    };
+                    n_chips += 1;
+                }
+            }
         }
     }
-    n_kills
+    (n_kills, n_chips)
 }

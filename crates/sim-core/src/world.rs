@@ -1904,6 +1904,58 @@ impl World {
         }
     }
 
+    /// Charge one shot's structure damage to the piece it stopped on —
+    /// `ranged`'s half of the raid verb, written here for the reason
+    /// `Chip` states: the shot pass holds the collision index, and this
+    /// holds the store, the content and the tick's removal budget.
+    ///
+    /// **The address is re-resolved, never carried as an index.** Between
+    /// the walk that found this piece and this line sit the rest of the
+    /// arrows, every other player's bullet and — on the arrow pass — the
+    /// bodies `die` has already laid down, any of which can drop a piece
+    /// and swap-remove another into its slot (`Pieces::remove_at`). A hit
+    /// whose address no longer holds a piece is simply no longer a hit; the
+    /// shot still stopped there and still drew its `EV_IMPACT`.
+    ///
+    /// **Hard and soft sides apply exactly as they do to a swing**
+    /// (`combat::raid`, hard/soft v0): a shot meeting a sided piece on its
+    /// hard face lands `HARD_SIDE_STRUCTURE` whatever fired it. Sharing the
+    /// law rather than restating it is the point — otherwise a bow pays a
+    /// price a hatchet pays or does not, depending on which file was
+    /// written first. What differs is only *whose* position names the side:
+    /// `raid` asks where the attacker stands, a shot asks where the shot
+    /// came from.
+    ///
+    /// Bounded: one `find_index` walk and one `damage_piece` per chip, and
+    /// the chip array is capped at `MAX_ARROWS`. The removal budget is the
+    /// same allowance a swing spends, so an arrow cannot drop a piece past
+    /// the cap that bounds every other remover.
+    fn chip(&mut self, c: &ranged::Chip, removals: &mut usize) {
+        let Some(i) = self
+            .pieces
+            .find_index(c.hit.cx, c.hit.cz, c.hit.level, c.hit.loc)
+        else {
+            return;
+        };
+        let rec = self.pieces.entries()[i];
+        let sided = crate::build::shape_has_facing(self.build.pieces[rec.row as usize].shape);
+        let amount = if sided && !crate::build::soft_side(&rec, c.from_x, c.from_z) {
+            crate::combat::HARD_SIDE_STRUCTURE
+        } else {
+            c.structure
+        };
+        deploy::damage_piece(
+            &self.deploy,
+            &self.build,
+            &mut self.pieces,
+            &mut self.deploys,
+            i,
+            amount,
+            removals,
+            &mut self.events,
+        );
+    }
+
     /// Death, v3: the body falls **and stays down**. What you were carrying
     /// is lying where you fell, the kill is already counted and announced
     /// (combat.rs, survival.rs), and the consequence splits in two — this
@@ -3459,9 +3511,16 @@ impl World {
         // final for the low slots and stale for the high ones; and nothing
         // about a hit may depend on the shooter's slot index, which it
         // would if flight ran while the loop still held one player
-        // mutably. `removals` is not spent here — an arrow does not chip a
-        // wall in v0, it stops on one.
+        // mutably. **`removals` IS spent here now** (ranged structure
+        // damage v0): an arrow chips the wall it stops on, so a shot can
+        // drop a piece and pays out of the same tick allowance a swing
+        // does — this line said the opposite until 2026-08-28.
         let mut kills = [ranged::Kill::default(); MAX_ARROWS];
+        // Reused between the two passes exactly as `kills` is, and drained
+        // by each before the other fills it — one entry per arrow that
+        // stopped on a piece, and `hitscan` writes at most one per player
+        // under the same `MAX_PLAYERS <= MAX_ARROWS` const assert.
+        let mut chips = [ranged::Chip::default(); MAX_ARROWS];
         // A firearm resolves here rather than in the loop above, for the
         // arrow's two reasons — final positions, and no dependence on the
         // shooter's slot index — and it goes **first** because it is the
@@ -3472,7 +3531,7 @@ impl World {
         // reused rather than doubled: this pass writes at most one entry
         // per player, the array is drained before `step` fills it again,
         // and `ranged.rs`'s const assert holds `MAX_PLAYERS <= MAX_ARROWS`.
-        let n_shot = ranged::hitscan(
+        let (n_shot, n_chips) = ranged::hitscan(
             seed,
             &self.haven,
             self.pieces.cols(),
@@ -3487,11 +3546,21 @@ impl World {
             &mut self.players,
             &mut self.events,
             &mut kills,
+            &mut chips,
         );
+        // Chips before deaths, and the order is the tick's chronology
+        // rather than a preference: a bullet reaches the wall it stops on
+        // during this pass, and `die` lays a body down, drops its bag and
+        // can itself take a deployable with it. Draining the shot's own
+        // consequence first keeps the wall's `EV_STRUCT_HIT` adjacent to
+        // the `EV_IMPACT` that explains it.
+        for c in chips.iter().take(n_chips) {
+            self.chip(c, &mut removals);
+        }
         for k in kills.iter().take(n_shot) {
             self.die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm);
         }
-        let n_kills = ranged::step(
+        let (n_kills, n_chips) = ranged::step(
             seed,
             &self.haven,
             self.pieces.cols(),
@@ -3506,7 +3575,11 @@ impl World {
             &mut self.players,
             &mut self.events,
             &mut kills,
+            &mut chips,
         );
+        for c in chips.iter().take(n_chips) {
+            self.chip(c, &mut removals);
+        }
         for k in kills.iter().take(n_kills) {
             self.die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm);
         }
@@ -3769,7 +3842,7 @@ impl World {
         // allocation order, allocation is deterministic, so two runs that
         // agree about the shot agree about the index.
         for a in self.arrows.entries() {
-            let mut buf = [0u8; 36];
+            let mut buf = [0u8; 38];
             buf[0..4].copy_from_slice(&a.qx.to_le_bytes());
             buf[4..8].copy_from_slice(&a.qy.to_le_bytes());
             buf[8..12].copy_from_slice(&a.qz.to_le_bytes());
@@ -3780,7 +3853,8 @@ impl World {
             buf[26..30].copy_from_slice(&a.owner.to_le_bytes());
             buf[30..32].copy_from_slice(&a.item.to_le_bytes());
             buf[32..34].copy_from_slice(&a.damage.to_le_bytes());
-            buf[34..36].copy_from_slice(&a.life.to_le_bytes());
+            buf[34..36].copy_from_slice(&a.structure.to_le_bytes());
+            buf[36..38].copy_from_slice(&a.life.to_le_bytes());
             h.update(&buf);
             h.update(&a.flown.to_le_bytes());
         }

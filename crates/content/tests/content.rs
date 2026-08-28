@@ -3232,3 +3232,50 @@ fn no_weapon_outranges_the_interest_band() {
         band_m
     );
 }
+
+/// The three ranged rows' `structure` column reaches the sim.
+///
+/// **`the_raid_tool_crosses_into_the_sim`, one weapon kind over, and it was
+/// broken in exactly the same way for longer.** `content/weapons.toml` has
+/// given the bow, the crossbow and the revolver a `structure` since the
+/// content crate was written; it is parsed, range-checked by
+/// `balance.rs`'s two laws, and folded into the content hash by `canon.rs`
+/// — so editing it moved the hash, moved the WAL header, and moved nothing
+/// a player could see, because `bake_ranged` wrote a `RangedDef` that had
+/// no field to put it in. Ranged structure damage v0 (2026-08-28) gave it
+/// one; this is the assertion that keeps it wired.
+///
+/// The value is read off the file rather than typed, so a balance pass on
+/// `weapons.toml` is not a red gate here — what is asserted is the
+/// *crossing*, which is the thing that was silently absent.
+#[test]
+fn every_ranged_weapon_carries_its_structure_column_into_the_sim() {
+    let c = build(&sources()).expect("shipped content bakes");
+    let cc = c.bake_combat().expect("combat bakes");
+    let mut seen = 0;
+    for w in &c.weapons {
+        if !matches!(
+            w.kind,
+            content::schema::WeaponKind::Bow | content::schema::WeaponKind::Firearm
+        ) {
+            continue;
+        }
+        seen += 1;
+        let idx = c
+            .item_index(&w.id)
+            .unwrap_or_else(|| panic!("ranged weapon `{}` arms no item", w.id))
+            as usize;
+        assert_eq!(
+            cc.ranged[idx].structure as u32, w.structure,
+            "`{}` declares structure {} and the sim baked {} — the column is \
+             hashed either way, so this drift is invisible to every other gate",
+            w.id, w.structure, cc.ranged[idx].structure
+        );
+    }
+    assert!(
+        seen >= 3,
+        "expected the bow, the crossbow and the revolver; found {seen} ranged \
+         rows — if a row was cut, cut it here too rather than letting this \
+         pass on an empty loop"
+    );
+}

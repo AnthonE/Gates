@@ -139,10 +139,15 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
 *"ranged tracks the reference game as closely as we can, and arrows come back"*
 (`DECISIONS.md`; `reference/PROJECTILES.md` §9 is the sized list).
 
-1. **The arrow does no structure damage.** An arrow that reaches a wall
-   stops dead rather than chipping it (`sim-core/src/ranged.rs:50`). ⚠ The
-   fat-arrow half of this bullet is done — `collide::shot_blocked` takes a
-   radius and pieces stop an arrow at `ARROW_R_M`.
+1. ✅ **A shot chips the wall it stops on** (ranged structure damage v0,
+   2026-08-28) — arrow and bullet, `collide::shot_stop` names the address,
+   `World::chip` charges `deploy::damage_piece` at the swing's own
+   hard/soft price and removal budget. It invented no knob: `weapons.toml`
+   has carried `structure = 1` on the bow, crossbow and revolver since the
+   content crate and `bake_ranged` dropped the column. What it leaves open:
+   **a deployable still stops no shot** (§0mk item 2 — `shot_stop` never
+   reads `ColMasks::solid`, so an arrow passes through a furnace rather
+   than failing to damage one), and nobody has watched a wall come down.
 2. **Arrow recovery** (`reference/PROJECTILES.md` §9.7) — the spent-arrow
    store, the ~15 % break, the 10 s lodge, and the first verb in the
    protocol addressed to a world position rather than a build cell. A
@@ -204,11 +209,14 @@ a `±Y` normal instead of a wall's. Item 1 was behind it and is now free.
    the collision it was waiting on now exists. Flesh stays unmarked by
    choice (one spare code).
 2. **A solid deployable stops no shot** — the same hole in a different
-   shape, and the one the floor fix left. `shot_blocked` never reads
+   shape, and the one the floor fix left. `shot_stop` never reads
    `ColMasks::solid` and `ranged.rs` never calls `collide::deploy_blocked`,
    so an arrow passes through a furnace, a box and a shut door's own
    volume. `deploy::solid_vol` already gives the box; it is the plane
-   walk's shape with a per-archetype extent.
+   walk's shape with a per-archetype extent. ⚠ **Half the cost is now
+   paid**: ranged structure damage v0 (§5.1) gave the shot walk an address
+   to return and `damage_deploy` is the write, so this is a `deploy_stop`
+   beside `shot_stop` and one arm in `World::chip` — not a new mechanism.
 3. **The piece address on `EV_IMPACT`** — 27 bits against 4 spare pad bits,
    11 bytes. What still needs it: a **rim** (`plane_face` declines the
    ambiguous strip by design) and a **diagonal wall, 45° out**, since the
@@ -1461,6 +1469,13 @@ Two of these are not taste, they are unresolved defects:
   been re-shot. This is the one item here where looking could find a
   regression rather than an unseen feature.
 
+- **Nobody has watched a wall come down under arrow fire** (§5.1, ranged
+  structure damage v0, 2026-08-28). The sim's half is gated to the payload
+  byte — six `World`-level cases, seven mutants run and caught — and the
+  question a frame answers is whether a shot at a wall *reads* as a raid:
+  the mark, the hp readout and the collapse arriving together. It shares
+  the decal blocker directly below: if no decal draws, an arrow chipping a
+  wall is a wall silently losing hp.
 - **No `ForwardDecal` renders under lavapipe at any size, alpha or
   orientation** (§0mk). The sim's half is confirmed to the centimetre; the
   frame shows no mark. That is a claim about this box — the client logs

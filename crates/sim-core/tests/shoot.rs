@@ -105,6 +105,7 @@ fn bow_fixture() -> CombatContent {
         // round's speed for the flight, which at 1333 mm/tick is the 45
         // ticks this fixture used to state as a constant.
         range_mm: 60_000,
+        structure: 0,
     };
     // The ballistics belong to the round now (`reference/PROJECTILES.md`
     // §9.3), so the fixture arms the arrow rather than the bow.
@@ -267,6 +268,7 @@ fn shoot_through(
     let fired = arrows.len();
 
     let mut kills = [Kill::default(); MAX_ARROWS];
+    let mut chips = [ranged::Chip::default(); MAX_ARROWS];
     let mut ticks = 0;
     // Long enough for a 45-tick arrow to expire on its own if nothing ever
     // stops it — so "the store emptied" is never a timeout.
@@ -282,6 +284,7 @@ fn shoot_through(
             &mut players,
             &mut events,
             &mut kills,
+            &mut chips,
         );
         ticks += 1;
     }
@@ -392,6 +395,7 @@ fn an_arrow_in_the_open_lands_and_is_announced() {
     );
 
     let mut kills = [Kill::default(); MAX_ARROWS];
+    let mut chips = [ranged::Chip::default(); MAX_ARROWS];
     let mut hits = 0;
     for _ in 0..40 {
         events = EventQueue::default();
@@ -405,6 +409,7 @@ fn an_arrow_in_the_open_lands_and_is_announced() {
             &mut players,
             &mut events,
             &mut kills,
+            &mut chips,
         );
         hits += events.entries().iter().filter(|e| e.code == EV_HIT).count();
     }
@@ -427,6 +432,7 @@ fn four_arrows_kill_and_the_kill_names_the_bow() {
     let mut events;
     let cc = bow_fixture();
     let mut kills = [Kill::default(); MAX_ARROWS];
+    let mut chips = [ranged::Chip::default(); MAX_ARROWS];
     let mut deaths = 0;
     let mut killed: Option<Kill> = None;
 
@@ -439,7 +445,7 @@ fn four_arrows_kill_and_the_kill_names_the_bow() {
             &mut EventQueue::default(),
             &mut players[0],
         );
-        let n = ranged::step(
+        let (n, _n_chips) = ranged::step(
             seed,
             hv(seed),
             &cols,
@@ -449,6 +455,7 @@ fn four_arrows_kill_and_the_kill_names_the_bow() {
             &mut players,
             &mut events,
             &mut kills,
+            &mut chips,
         );
         deaths += events
             .entries()
@@ -724,6 +731,7 @@ fn an_arrow_never_hits_its_owner() {
     let mut arrows = Arrows::new();
     let mut events;
     let mut kills = [Kill::default(); MAX_ARROWS];
+    let mut chips = [ranged::Chip::default(); MAX_ARROWS];
     ranged::draw(
         0,
         &bow_fixture(),
@@ -743,6 +751,7 @@ fn an_arrow_never_hits_its_owner() {
             &mut players,
             &mut events,
             &mut kills,
+            &mut chips,
         );
     }
     assert_eq!(players[0].hp, 100, "an archer shot themselves");
@@ -764,6 +773,7 @@ fn the_ground_stops_an_arrow_and_the_store_drains() {
         let mut arrows = Arrows::new();
         let mut events;
         let mut kills = [Kill::default(); MAX_ARROWS];
+        let mut chips = [ranged::Chip::default(); MAX_ARROWS];
         ranged::draw(
             0,
             &bow_fixture(),
@@ -784,6 +794,7 @@ fn the_ground_stops_an_arrow_and_the_store_drains() {
                 &mut players,
                 &mut events,
                 &mut kills,
+                &mut chips,
             );
         }
         assert!(
@@ -810,6 +821,7 @@ fn the_same_shot_flies_the_same_path_twice() {
         let mut arrows = Arrows::new();
         let mut events;
         let mut kills = [Kill::default(); MAX_ARROWS];
+        let mut chips = [ranged::Chip::default(); MAX_ARROWS];
         ranged::draw(
             0,
             &bow_fixture(),
@@ -830,6 +842,7 @@ fn the_same_shot_flies_the_same_path_twice() {
                 &mut players,
                 &mut events,
                 &mut kills,
+                &mut chips,
             );
             if let Some(a) = arrows.entries().next() {
                 out.push((a.qx, a.qy, a.qz));
@@ -1033,6 +1046,7 @@ fn impact_of(
     );
 
     let mut kills = [Kill::default(); MAX_ARROWS];
+    let mut chips = [ranged::Chip::default(); MAX_ARROWS];
     for _ in 0..ticks {
         let mut events = EventQueue::default();
         ranged::step(
@@ -1045,6 +1059,7 @@ fn impact_of(
             &mut players,
             &mut events,
             &mut kills,
+            &mut chips,
         );
         if let Some(e) = events.entries().iter().find(|e| e.code == EV_IMPACT) {
             // `world.rs`' own role line: a = SURF_* << 24 | x, b = z,
@@ -1295,4 +1310,196 @@ fn a_stilted_foundation_stops_a_shot_through_its_skirt() {
          passed through the skirt of a plate whose top is {top:.2} and whose \
          ground is {ground:.2}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Ranged structure damage v0 (2026-08-28) — the address half.
+//
+// Everything above asks whether a shot STOPS on a piece. These ask which
+// piece, which is the fact `deploy::damage_piece` needs and the one
+// `collide::shot_blocked` threw away for as long as there has been a bow:
+// the walk resolved a cell, a level and a mask bit and returned `true`.
+//
+// The store half is `tests/chip.rs`, at `World` level, because a facing
+// lives on a `PieceRec` and not on the column index this file writes
+// directly. These two suites are the same slice split at the seam the sim
+// itself is split at: `ranged` finds the piece, `World` charges it.
+// ---------------------------------------------------------------------------
+
+/// `bow_fixture` with a structure column, so a shot out of it produces a
+/// `Chip` instead of only an impact. The shared fixture stays at zero on
+/// purpose — every test above it is about where an arrow stops, and a
+/// fixture that started chipping would quietly widen all of them.
+fn chipping_bow(structure: u16) -> CombatContent {
+    let mut c = bow_fixture();
+    c.ranged[BOW as usize].structure = structure;
+    c
+}
+
+/// Fire one arrow and report every `Chip` the flight produced, with the
+/// impact that came with it.
+///
+/// Returns `(chips, impact_surface)`. Reading both is the point: a chip that
+/// arrives without an impact, or an impact whose chip went missing, are two
+/// different defects and a test that watched one of them could not tell.
+fn chips_of(
+    seed: u64,
+    cc: &CombatContent,
+    cols: &ColIndex,
+    at: (f32, f32, f32),
+    pitch: u8,
+    ticks: u32,
+) -> (Vec<ranged::Chip>, Option<u8>) {
+    let mut sc = Scratch::barren();
+    let mut players = Box::new([Player::default(); MAX_PLAYERS]);
+    players[0] = archer(1, at.0, at.1, at.2, 0, pitch, 5);
+    let mut arrows = Arrows::new();
+    assert!(
+        ranged::draw(
+            0,
+            cc,
+            &mut arrows,
+            &mut EventQueue::default(),
+            &mut players[0],
+        ),
+        "a bow in hand must take the arm"
+    );
+
+    let mut kills = [Kill::default(); MAX_ARROWS];
+    let mut chips = [ranged::Chip::default(); MAX_ARROWS];
+    for _ in 0..ticks {
+        let mut events = EventQueue::default();
+        let (_, n_chips) = ranged::step(
+            seed,
+            hv(seed),
+            cols,
+            &mut sc.occupants(),
+            cc,
+            &mut arrows,
+            &mut players,
+            &mut events,
+            &mut kills,
+            &mut chips,
+        );
+        let surf = events
+            .entries()
+            .iter()
+            .find(|e| e.code == EV_IMPACT)
+            .map(|e| (e.a >> 24) as u8);
+        if surf.is_some() || n_chips > 0 {
+            return (chips[..n_chips].to_vec(), surf);
+        }
+    }
+    (Vec::new(), None)
+}
+
+/// An arrow that stops on a floor names **that** floor: the cell it was
+/// fired down inside, level 1, `LOC_PLANE`.
+///
+/// This is the assertion the whole slice rests on. `damage_piece` writes
+/// against an address, so an address that is merely *a* piece rather than
+/// *the* piece would chip a wall on the far side of the base and read as
+/// working — every event fires, the hp comes off something, and only a
+/// player watching the wrong wall crumble would ever know.
+#[test]
+fn the_chip_names_the_piece_the_arrow_actually_stopped_on() {
+    for seed in SEEDS {
+        let (cols, bcx, bcz, base) = storeys(seed, 1);
+        let (cx, cz) = cell_centre(bcx, bcz);
+        let feet = base + LEVEL_H_M;
+        let cc = chipping_bow(3);
+
+        let (chips, surf) = chips_of(seed, &cc, &cols, (cx, feet, cz), 0, 20);
+        assert_eq!(
+            surf,
+            Some(SURF_BUILT),
+            "seed {seed}: the fixture shot did not stop on the floor, so this \
+             case is not testing what it says"
+        );
+        assert_eq!(
+            chips.len(),
+            1,
+            "seed {seed}: one arrow stopping on one piece must produce exactly \
+             one chip, not {}",
+            chips.len()
+        );
+        let c = chips[0];
+        assert_eq!(
+            (c.hit.cx, c.hit.cz, c.hit.level, c.hit.loc),
+            (bcx, bcz, 1, LOC_PLANE),
+            "seed {seed}: the arrow stopped on the level-1 floor of \
+             ({bcx}, {bcz}) and the chip names ({}, {}, {}, {})",
+            c.hit.cx,
+            c.hit.cz,
+            c.hit.level,
+            c.hit.loc
+        );
+        assert_eq!(
+            c.structure, 3,
+            "seed {seed}: the chip carries the bow's structure column, not {}",
+            c.structure
+        );
+    }
+}
+
+/// A bow with no structure column produces no chip — and still stops.
+///
+/// The mutant this kills is the obvious one: charge damage whenever a shot
+/// stops on a piece, ignoring the column. Every other assertion in this
+/// slice passes under it, because every other fixture has a column.
+#[test]
+fn a_bow_with_no_structure_column_chips_nothing_and_still_stops() {
+    for seed in SEEDS {
+        let (cols, bcx, bcz, base) = storeys(seed, 1);
+        let (cx, cz) = cell_centre(bcx, bcz);
+        let feet = base + LEVEL_H_M;
+
+        let (chips, surf) = chips_of(seed, &chipping_bow(0), &cols, (cx, feet, cz), 0, 20);
+        assert_eq!(
+            surf,
+            Some(SURF_BUILT),
+            "seed {seed}: a bow that cannot chip must still be stopped by the \
+             floor — the shot and the damage are two questions"
+        );
+        assert!(
+            chips.is_empty(),
+            "seed {seed}: a bow with structure 0 produced {} chip(s) at \
+             ({bcx}, {bcz})",
+            chips.len()
+        );
+    }
+}
+
+/// A shot that stops on the GROUND or on scenery chips nothing.
+///
+/// The ladder in `world_stop` answers three ways and only one of them is a
+/// piece; a chip minted on `SURF_GROUND` would be an address of (0, 0, 0, 0)
+/// — a real build cell — so the failure is not a crash, it is a shot into
+/// the dirt taking hp off whatever somebody built at the origin.
+#[test]
+fn a_shot_into_the_dirt_chips_nothing() {
+    for seed in SEEDS {
+        let cols = ColIndex::new();
+        let (bcx, bcz) = flat_run(seed, 1);
+        let (cx, cz) = cell_centre(bcx, bcz);
+        let feet = terrain::ground(seed, hv(seed), cx, cz);
+
+        // Straight down at its own feet, over an empty index: nothing built
+        // is anywhere near, so the only thing that can stop it is dirt.
+        let (chips, surf) = chips_of(seed, &chipping_bow(3), &cols, (cx, feet + 2.0, cz), 0, 30);
+        assert_eq!(
+            surf,
+            Some(SURF_GROUND),
+            "seed {seed}: the fixture shot did not reach the ground, so this \
+             case is not testing what it says"
+        );
+        assert!(
+            chips.is_empty(),
+            "seed {seed}: a shot that stopped on the ground minted {} chip(s) \
+             — the first would be charged against build cell ({}, {})",
+            chips.len(),
+            chips.first().map(|c| c.hit.cx).unwrap_or(0),
+            chips.first().map(|c| c.hit.cz).unwrap_or(0),
+        );
+    }
 }

@@ -119,6 +119,7 @@ fn main() {
         rate_ticks: 12,
         hitscan: true,
         range_mm: 50_000,
+        structure: 0,
     };
     let mut pristine = Scratch::with(SEED, Pristine);
     let mut barren = Scratch::barren();
@@ -168,6 +169,7 @@ fn main() {
     }
 
     let mut kills = [Kill::default(); MAX_ARROWS];
+    let mut chips = [ranged::Chip::default(); MAX_ARROWS];
     let (mut worst, mut total, mut n) = (0u128, 0u128, 0u128);
     // Everyone fires on the same tick every twelfth, which is the aligned
     // volley — the case a cap has to survive, not the case play produces.
@@ -188,6 +190,7 @@ fn main() {
             &mut players,
             &mut events,
             &mut kills,
+            &mut chips,
         );
         let dt = start.elapsed().as_micros();
         if t % 12 == 0 {
