@@ -10,10 +10,15 @@ use protocol::InputDatagram;
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use server::view::{Applied, ClientView};
+use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
+use sim_core::gather::{ItemStack, NO_ITEM, SWING_INTERVAL_TICKS};
+use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{
-    AOI_ENTER_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, DATAGRAM_BUDGET_BYTES, MAX_MOBS, MAX_PLAYERS,
-    MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
+    AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, DATAGRAM_BUDGET_BYTES,
+    EVENT_RING_CAP, MAX_EVENTS_PER_TICK, MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES,
+    SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
 };
+use std::collections::BTreeSet;
 
 const SEED: u64 = 0xB1D_6E75;
 
@@ -1158,4 +1163,695 @@ fn the_rank_band_agrees_with_a_full_sort_of_the_same_field() {
             got.len()
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// The event lane's fan-out. `test_snapshot_budget` above bounds what the
+// *snapshot* lane costs a clustered shard; nothing bounded what the **event**
+// lane costs a dispersed one, and `EV_SWING` was the arm that showed it: a
+// broadcast to `0..MAX_PLAYERS` with no filter, for a fact whose entire
+// meaning is "this body's arm moved" — which a client that cannot see the
+// body throws away silently (`client-core/src/core.rs`: the id is stored
+// unvalidated and both readers iterate *bodies*, so an unmatchable swing
+// matches nothing).
+//
+// These four gates hold the filter from both ends, and the split is the
+// point: the **clustered** fixture proves it does not over-filter, and the
+// **sparse** one proves it filters at all. A correctness-only suite here
+// would be satisfied by a filter that never fires, which is the
+// `client/tests/water_carry.rs` lesson written into a different lane.
+// ---------------------------------------------------------------------------
+
+/// Sparse grid pitch. Comfortably past `AOI_EXIT_CM` (208 m) rather than
+/// barely past it: 100 bodies cannot be mutually un-interested on a 2048 m
+/// island — that is the hexagonal packing limit almost exactly — so this
+/// fixture trades population for a margin no tick can erode, and
+/// `sparse_core` asserts the resulting interest sets are empty rather than
+/// trusting the arithmetic.
+const SPARSE_PITCH_M: f32 = 320.0;
+const SPARSE_SIDE: usize = 6;
+const SPARSE_N: usize = SPARSE_SIDE * SPARSE_SIDE;
+
+/// A core with `SPARSE_N` connections whose bodies are far enough apart that
+/// no two are ever in each other's class-D interest.
+fn sparse_core(stats: &ShardStats) -> Box<ShardCore> {
+    assert!(
+        (SPARSE_PITCH_M as i64) * 100 > AOI_EXIT_CM,
+        "the pitch must exceed the leave radius or this fixture measures nothing"
+    );
+    let mut core = Box::new(ShardCore::new(SEED));
+    for slot in 0..SPARSE_N {
+        assert!(core.connect(slot, id_of(slot)), "connect {slot}");
+        if (slot + 1) % 32 == 0 || slot + 1 == SPARSE_N {
+            core.tick_bare(stats, |_, _, _| true);
+        }
+    }
+    for (i, p) in core.world.players.iter_mut().enumerate() {
+        if !p.active {
+            continue;
+        }
+        p.body.qx = ((224.0 + (i % SPARSE_SIDE) as f32 * SPARSE_PITCH_M) / 0.03) as i32;
+        p.body.qz = ((224.0 + (i / SPARSE_SIDE) as f32 * SPARSE_PITCH_M) / 0.03) as i32;
+    }
+    settle_interest(&mut core, stats);
+    for slot in 0..SPARSE_N {
+        let seen: BTreeSet<u32> = interest_of(&core, slot)
+            .into_iter()
+            .filter(|id| (0..SPARSE_N).any(|s| id_of(s) == *id))
+            .collect();
+        assert!(
+            seen.is_empty(),
+            "slot {slot} can see {seen:?} — the sparse fixture is not sparse, \
+             so anything it measures about filtering is measuring nothing"
+        );
+    }
+    core
+}
+
+/// Run the interest bands to a fixed point against whatever positions were
+/// just written into the world.
+///
+/// `clustered_core` and `sparse_core` both poke `body.qx/qz` directly and
+/// neither ticks afterwards, so on the tick they return, `interest` still
+/// describes the spawn positions. `test_snapshot_budget` never noticed
+/// because its first act is twelve snapshot rounds; a gate that reads the
+/// arrays immediately gets 12 of 99 and a false story about the bands.
+/// Found by `the_filter_buys_nothing_on_a_clustered_shard` failing on its
+/// own fixture.
+fn settle_interest(core: &mut ShardCore, stats: &ShardStats) {
+    for _ in 0..8 {
+        core.tick_bare(stats, |_, _, _| true);
+    }
+}
+
+/// Hold `BTN_PRIMARY` on each of `slots` for one tick of input, aiming at
+/// `pitch`.
+///
+/// **Pitch is explicit because the default is not level.** `InputFrame::
+/// default()` is pitch 0, and the wire's pitch 0 is straight *down*
+/// (`pitch_lut`: `ch` 0, `sv` −1); level is 128. A fixture that leaves it
+/// defaulted fires every shot into the ground at the shooter's own feet,
+/// which is a perfectly good routing test and a useless combat one — and
+/// it looks identical in the event counts until you go looking.
+fn press_primary(core: &mut ShardCore, slots: &[usize], seq: &mut u16, pitch: u8) {
+    for &slot in slots {
+        let mut dg = InputDatagram::new(0, 0, *seq as u32);
+        dg.push(InputFrame {
+            seq: *seq,
+            buttons: BTN_PRIMARY,
+            pitch,
+            ..InputFrame::default()
+        })
+        .expect("one frame fits");
+        core.push_input(slot, &dg);
+    }
+    *seq = seq.wrapping_add(1);
+}
+
+/// One tick, returning the `(slot, swinger)` pairs the event lane carried.
+/// Every other lane is accepted and dropped — this is the event-lane twin
+/// of `snapshot_round`, which drops everything that is not a snapshot.
+fn swing_round(core: &mut ShardCore, stats: &ShardStats) -> Vec<(usize, u32)> {
+    let mut ev: Vec<(usize, Vec<u8>)> = Vec::new();
+    core.tick_bare(stats, |lane, slot, bytes| {
+        if lane == Lane::Event {
+            ev.push((slot, bytes.to_vec()));
+        }
+        true
+    });
+    ev.iter()
+        .filter_map(|(slot, bytes)| match protocol::decode_event(bytes) {
+            Ok(protocol::EventMsg::Swing { swinger }) => Some((*slot, swinger)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **A swing nobody can see costs one message, not one per connection.**
+///
+/// The effect gate. Correctness assertions alone are satisfied by a filter
+/// that never fires; this one fails the moment the filter is deleted,
+/// because the fan-out goes from 1 to `SPARSE_N` per swing.
+///
+/// Mutant: delete the `body_event_visible` guard in the `EV_SWING` arm →
+/// every swing reaches all 36 → red on the stranger assertion.
+#[test]
+fn a_swing_nobody_can_see_costs_one_message() {
+    let stats = ShardStats::default();
+    let mut core = sparse_core(&stats);
+    let mut seq = 1u16;
+    let mut swings: Vec<(usize, u32)> = Vec::new();
+    let all: Vec<usize> = (0..SPARSE_N).collect();
+    for _ in 0..SWING_INTERVAL_TICKS + 4 {
+        press_primary(&mut core, &all, &mut seq, 0);
+        swings.extend(swing_round(&mut core, &stats));
+    }
+
+    assert!(
+        !swings.is_empty(),
+        "nobody swung at all — the fixture never reached the cadence gate, \
+         so the filter below is being asserted over an empty set"
+    );
+    let strangers: Vec<(usize, u32)> = swings
+        .iter()
+        .copied()
+        .filter(|(slot, swinger)| id_of(*slot) != *swinger)
+        .collect();
+    assert!(
+        strangers.is_empty(),
+        "{} of {} swing frames went to a client that cannot see the body \
+         that swung — e.g. {:?}. On a dispersed shard that is the whole \
+         fan-out, and the client discards every one of them.",
+        strangers.len(),
+        swings.len(),
+        &strangers[..strangers.len().min(4)]
+    );
+}
+
+/// **The filter counts what it skipped**, once per connection and not once
+/// per event.
+///
+/// Mutants: skip without bumping (0 vs positive), bump without skipping
+/// (the gate above goes red instead), or bump once per event rather than
+/// per client (`n` vs `n × (SPARSE_N − 1)`).
+#[test]
+fn the_swing_filter_counts_what_it_skipped() {
+    let stats = ShardStats::default();
+    let mut core = sparse_core(&stats);
+    let before = ShardStats::get(&stats.ev_interest_skipped);
+    let mut seq = 1u16;
+    let mut swings: Vec<(usize, u32)> = Vec::new();
+    let all: Vec<usize> = (0..SPARSE_N).collect();
+    for _ in 0..SWING_INTERVAL_TICKS + 4 {
+        press_primary(&mut core, &all, &mut seq, 0);
+        swings.extend(swing_round(&mut core, &stats));
+    }
+    let skipped = ShardStats::get(&stats.ev_interest_skipped) - before;
+
+    assert!(!swings.is_empty(), "nothing swung");
+    // Under the filter each swing puts exactly one frame on the wire, so
+    // the frames counted above ARE the swings, and each owed a skip to
+    // every other connection.
+    assert_eq!(
+        skipped,
+        swings.len() as u64 * (SPARSE_N as u64 - 1),
+        "{} swings should have skipped {} connections each",
+        swings.len(),
+        SPARSE_N - 1
+    );
+}
+
+/// **A swing reaches exactly the clients that can see the body, and the
+/// hand that swung.**
+///
+/// The correctness end, on the fixture where the filter is *least* of a
+/// no-op it can be: 100 bodies in a 60 m square are all inside each other's
+/// 176 m enter radius, so the distance band admits everyone and only the
+/// **rank** band (`AOI_RANK_ENTER` 45 / `AOI_RANK_EXIT` 64) trims the set.
+/// The recipients must be that trimmed set exactly — read here off the
+/// interest arrays by a different route (`interest_of`) than the filter
+/// reads them, because a test that asks the code under test what the answer
+/// is has asked nothing.
+///
+/// Mutants: filter on `m_interest` (the mob array) → recipients collapse;
+/// invert the predicate → the complement appears; drop the own-copy
+/// pass-through → slot 0 vanishes from its own swing.
+#[test]
+fn a_swing_reaches_exactly_the_clients_that_can_see_it() {
+    let stats = ShardStats::default();
+    let mut core = clustered_core(&stats);
+    settle_interest(&mut core, &stats);
+    let mut seq = 1u16;
+    let mut got: Vec<usize> = Vec::new();
+    for _ in 0..SWING_INTERVAL_TICKS + 4 {
+        press_primary(&mut core, &[0], &mut seq, 0);
+        let round = swing_round(&mut core, &stats);
+        if !round.is_empty() {
+            for (slot, swinger) in &round {
+                assert_eq!(*swinger, id_of(0), "only slot 0 was told to swing");
+                got.push(*slot);
+            }
+            break; // one tick's audience, against that tick's interest
+        }
+    }
+    assert!(!got.is_empty(), "slot 0 never swung");
+
+    let actual: BTreeSet<usize> = got.into_iter().collect();
+    let mut expected: BTreeSet<usize> = (0..MAX_PLAYERS)
+        .filter(|&slot| interest_of(&core, slot).contains(&id_of(0)))
+        .collect();
+    expected.insert(0); // the swinger's own copy
+
+    assert!(
+        actual.len() > 1,
+        "only the swinger heard it — the filter ate a clustered shard, \
+         which is the case it must never touch"
+    );
+    assert!(
+        actual.contains(&0),
+        "the swinger was not told about its own arm: `interest[own]` is \
+         false by construction, so a filter without the own-copy \
+         pass-through drops it silently"
+    );
+    assert_eq!(
+        actual, expected,
+        "the audience is not the interest set — left is who got the swing, \
+         right is who can see the body"
+    );
+}
+
+/// **A connection whose body is not in the world still hears the shard.**
+///
+/// The fail-open, and it is here because the mutant survived without it:
+/// deleting `!self.interest_settled(slot) ||` from `body_event_visible`
+/// left all thirteen other gates green. `update_interest` *returns* before
+/// pass 1 for a connection whose body it cannot find, without touching
+/// `interest`, so that array is not "empty", it is **unmeasured** — and a
+/// filter that reads it anyway reads "interested in nobody" and mutes the
+/// connection for as long as the state lasts.
+///
+/// **The state is constructed here, and that is worth saying plainly.**
+/// The obvious route — queue more joins than one tick can land — does not
+/// reach it: `MAX_COMMANDS_PER_TICK` is 256 against a 100-slot world, so
+/// every queued `Join` drains in the same `world.tick` that precedes
+/// `update_interest`, and this test asserted the opposite until it was
+/// run. What does reach it in production is a connection outliving its
+/// body in the world — the window two-phase eviction opens (`slots_short`)
+/// and the one a sleeper-occupied slot table will open when a join has to
+/// wait for a seat. Neither is cheap to stand up in this fixture, so the
+/// body is removed directly, which is the same poke the fixtures above use
+/// on `body.qx`. What is gated is the routing decision, honestly; what is
+/// **not** gated is that any caller ever produces this state.
+///
+/// Mutant: drop the `interest_settled` disjunct → the bodyless connection
+/// is filtered out of a swing it is owed → red.
+#[test]
+fn a_connection_whose_body_is_gone_still_hears_the_shard() {
+    let stats = ShardStats::default();
+    let mut core = sparse_core(&stats);
+    // Slot 1 keeps its connection and loses its body.
+    let gone = 1usize;
+    let w = core
+        .world
+        .players
+        .iter()
+        .position(|p| p.active && p.id == id_of(gone))
+        .expect("slot 1 has a body to remove");
+    core.world.players[w].active = false;
+    assert!(
+        core.clients[gone].connected,
+        "the connection must outlive the body or this tests nothing"
+    );
+
+    let mut seq = 1u16;
+    press_primary(&mut core, &[0], &mut seq, 0);
+    let round = swing_round(&mut core, &stats);
+    let got: BTreeSet<usize> = round.iter().map(|(slot, _)| *slot).collect();
+
+    assert!(
+        got.contains(&0),
+        "slot 0 never swung, so nothing was routed at all"
+    );
+    assert!(
+        got.contains(&gone),
+        "a connection whose interest was never measured was filtered out \
+         of the shard's events — it is sparse, so its `interest` array is \
+         all false, and reading that as a verdict mutes it"
+    );
+}
+
+/// **The clustered shard is exactly where the filter buys nothing**, and
+/// this pins that honestly rather than letting the commit imply otherwise.
+///
+/// Fighters are co-located by construction, so every one of them is inside
+/// everyone else's enter radius and the only trimming is the rank band.
+/// The recorded consequence: post-filter peak fan-in per client is
+/// `AOI_RANK_EXIT`, and `EVENT_RING_CAP` is the same 64. If a later pass
+/// widens the rank band, this goes red and that is the point — the ring
+/// would then be the smaller of the two with nothing saying so.
+#[test]
+fn the_filter_buys_nothing_on_a_clustered_shard() {
+    assert_eq!(
+        AOI_RANK_EXIT,
+        sim_core::limits::EVENT_RING_CAP,
+        "the post-filter fan-in bound and the ring that receives it have \
+         drifted apart; whichever is now smaller is the real cap and \
+         `limits.rs` should say so"
+    );
+    let stats = ShardStats::default();
+    let mut core = clustered_core(&stats);
+    settle_interest(&mut core, &stats);
+    let seen = interest_of(&core, 0);
+    let players = seen
+        .iter()
+        .filter(|id| (0..MAX_PLAYERS).any(|s| id_of(s) == **id))
+        .count();
+    assert!(
+        players > AOI_RANK_ENTER,
+        "slot 0 can see only {players} of the 99 bodies stood on top of it — \
+         the clustered fixture is not clustered, so the no-op claim is untested"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The other two body/point-addressed arms. One bow shot exercises both:
+// loosing it pushes `EV_SHOT`, and its landing pushes `EV_IMPACT`.
+// ---------------------------------------------------------------------------
+
+/// Item indices for the shot fixture, `sim-core/tests/shoot.rs`'s values.
+const BOW: u16 = 3;
+const ARROW: u16 = 4;
+
+/// The real bow's numbers as `bake_ranged` converts them, written out
+/// rather than loaded — `shoot.rs`'s rule, for its reason: this suite
+/// gates the **routing**, and a content edit must not be able to turn a
+/// red here into a green.
+fn bow_fixture() -> CombatContent {
+    let mut c = CombatContent::EMPTY;
+    c.player_hp = 100;
+    c.ranged[BOW as usize] = RangedDef {
+        damage: 30,
+        ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 60,
+        hitscan: false,
+        range_mm: 60_000,
+    };
+    c.ammo[ARROW as usize] = AmmoDef {
+        speed_mmpt: 1333,
+        drop_mmpt2: 22,
+    };
+    c
+}
+
+/// Put a drawn bow in the hands of the player at world slot `w`.
+fn arm_archer(core: &mut ShardCore, w: usize) {
+    let p = &mut core.world.players[w];
+    p.inv[0] = ItemStack {
+        item: BOW,
+        count: 1,
+        cond: 0,
+    };
+    p.inv[7] = ItemStack {
+        item: ARROW,
+        count: 32,
+        cond: 0,
+    };
+}
+
+/// One tick, returning every `(slot, EventMsg)` the event lane carried.
+fn event_round(core: &mut ShardCore, stats: &ShardStats) -> Vec<(usize, protocol::EventMsg)> {
+    let mut ev: Vec<(usize, Vec<u8>)> = Vec::new();
+    core.tick_bare(stats, |lane, slot, bytes| {
+        if lane == Lane::Event {
+            ev.push((slot, bytes.to_vec()));
+        }
+        true
+    });
+    ev.iter()
+        .filter_map(|(slot, bytes)| protocol::decode_event(bytes).ok().map(|m| (*slot, m)))
+        .collect()
+}
+
+/// What one bow's volley put on the event lane.
+#[derive(Default)]
+struct Volley {
+    /// `(recipient slot, shooter id)`, one entry per `EV_SHOT` frame.
+    shots: Vec<(usize, u32)>,
+    /// `(recipient slot, qx, qz)`, one entry per `EV_IMPACT` frame.
+    marks: Vec<(usize, i32, i32)>,
+}
+
+/// Fire slot 0's bow and collect what the lane carried while it flew.
+fn fire_and_collect(core: &mut ShardCore, stats: &ShardStats) -> Volley {
+    let mut seq = 1u16;
+    let mut v = Volley::default();
+    for _ in 0..90 {
+        press_primary(core, &[0], &mut seq, 0);
+        for (slot, m) in event_round(core, stats) {
+            match m {
+                protocol::EventMsg::Shot { shooter, .. } => v.shots.push((slot, shooter)),
+                protocol::EventMsg::Impact { qx, qz, .. } => v.marks.push((slot, qx, qz)),
+                _ => {}
+            }
+        }
+    }
+    v
+}
+
+/// **A shot nobody can see costs one message, and its mark costs none.**
+///
+/// The effect gate for both arms at once. `EV_SHOT` is body-addressed, so
+/// the shooter keeps its own copy; `EV_IMPACT` is point-addressed and has
+/// no owner at all, so on a sparse shard the only client near the mark is
+/// the archer — 60 m of bow against a 320 m pitch.
+///
+/// Mutants: delete either filter → 36 frames per event instead of 1 → red.
+#[test]
+fn a_shot_nobody_can_see_costs_one_message() {
+    let stats = ShardStats::default();
+    let mut core = sparse_core(&stats);
+    core.world.combat = bow_fixture();
+    let w = core
+        .world
+        .players
+        .iter()
+        .position(|p| p.active && p.id == id_of(0))
+        .expect("slot 0 has a body");
+    arm_archer(&mut core, w);
+    let Volley { shots, marks } = fire_and_collect(&mut core, &stats);
+
+    assert!(
+        !shots.is_empty(),
+        "nothing was loosed — the bow fixture never reached `ranged::draw`, \
+         so both filters below are asserted over an empty set"
+    );
+    let stray: Vec<(usize, u32)> = shots
+        .iter()
+        .copied()
+        .filter(|(slot, shooter)| id_of(*slot) != *shooter)
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "{} of {} shot frames reached a client that cannot see the archer — \
+         e.g. {:?}",
+        stray.len(),
+        shots.len(),
+        &stray[..stray.len().min(4)]
+    );
+    // The archer is the only body within a bow's reach of its own arrow.
+    assert!(
+        !marks.is_empty(),
+        "no arrow ever landed, so the impact assertion below is vacuous —          a filter that dropped every mark would satisfy it too"
+    );
+    let far: Vec<(usize, i32, i32)> = marks.iter().copied().filter(|(s, _, _)| *s != 0).collect();
+    assert!(
+        far.is_empty(),
+        "{} impact frames reached a client {} m from the mark — a decal \
+         pool is fixed and evicts, so those take a slot from a mark at \
+         somebody's feet. e.g. {:?}",
+        far.len(),
+        SPARSE_PITCH_M,
+        &far[..far.len().min(4)]
+    );
+}
+
+/// **A shot and its mark still reach a shard standing on top of itself.**
+///
+/// The correctness end, and the anti-vacuity partner of the gate above:
+/// a filter that never delivers anything satisfies every assertion there.
+///
+/// Mutant: invert either predicate → the clustered audience empties → red.
+#[test]
+fn a_shot_reaches_the_clients_that_can_see_it() {
+    let stats = ShardStats::default();
+    let mut core = clustered_core(&stats);
+    settle_interest(&mut core, &stats);
+    core.world.combat = bow_fixture();
+    let w = core
+        .world
+        .players
+        .iter()
+        .position(|p| p.active && p.id == id_of(0))
+        .expect("slot 0 has a body");
+    arm_archer(&mut core, w);
+    let Volley { shots, marks } = fire_and_collect(&mut core, &stats);
+
+    let shot_audience: BTreeSet<usize> = shots.iter().map(|(slot, _)| *slot).collect();
+    let mark_audience: BTreeSet<usize> = marks.iter().map(|(slot, _, _)| *slot).collect();
+    assert!(
+        shot_audience.len() > 1,
+        "only the archer was told it fired, on a shard where 100 bodies \
+         stand in a 60 m square — the filter ate the clustered case"
+    );
+    assert!(
+        mark_audience.len() > 1,
+        "the arrow's mark reached only one client in a 60 m square"
+    );
+    for slot in &shot_audience {
+        assert!(
+            *slot == 0 || interest_of(&core, *slot).contains(&id_of(0)),
+            "slot {slot} was told about a shot by a body it cannot see"
+        );
+    }
+}
+
+/// Level aim. Wire pitch 0 is straight **down**; 128 is the horizon.
+const PITCH_LEVEL: u8 = 128;
+
+/// A hundred bodies at arm's length on one plane, every one of them firing
+/// a lethal hitscan round at the horizon every tick.
+///
+/// **Deliberately not survivable and deliberately not realistic** — it is a
+/// worst case for the *event lane*, not a scenario. Three properties were
+/// each measured into it rather than chosen, and each one cost a run:
+///
+/// - **One plane.** On `clustered_core`'s 6 m grid over real terrain only
+///   32 of 100 level shots connected: the slope tilts a 6 m ray off a
+///   capsule. Flattening `qy` and closing to 0.6 m is what makes most
+///   shots land.
+/// - **Lethal.** A hit is two events (`EV_HIT`, `EV_HEALTH`); a *kill* is
+///   three, and the third is the only broadcast of the set.
+/// - **Hitscan, at a reach the sampler can walk.** `ranged::hitscan`
+///   silently refuses a `range_mm` needing more than `MAX_HITSCAN_SAMPLES`
+///   taps at `ARROW_STEP_MM` — a backstop whose comment says `bake_combat`
+///   makes it unreachable, which is true of *shipped* content and not of a
+///   fixture. An 80 m gun here fires nothing at all and reads as a bug in
+///   the routing.
+fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
+    let mut core = clustered_core(stats);
+    settle_interest(&mut core, stats);
+    let y0 = core.world.players[0].body.qy;
+    for i in 0..MAX_PLAYERS {
+        if !core.world.players[i].active {
+            continue;
+        }
+        let p = &mut core.world.players[i];
+        p.body.qx = ((900.0 + (i % 4) as f32 * 0.6) / 0.03) as i32;
+        p.body.qz = ((900.0 + (i / 4) as f32 * 0.6) / 0.03) as i32;
+        p.body.qy = y0;
+        // Spawned before any combat content existed, so `player_hp` was 0
+        // and `hitscan` — which checks `hp == 0` where `draw` does not —
+        // refused every shot in silence.
+        p.hp = 100;
+        p.hp_max = 100;
+        p.inv[0] = ItemStack {
+            item: BOW,
+            count: 1,
+            cond: 0,
+        };
+        p.inv[7] = ItemStack {
+            item: ARROW,
+            count: 60_000,
+            cond: 0,
+        };
+    }
+    let mut c = CombatContent::EMPTY;
+    c.player_hp = 100;
+    c.ranged[BOW as usize] = RangedDef {
+        damage: 100,
+        ammo: [ARROW, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 1,
+        hitscan: true,
+        range_mm: 50_000,
+    };
+    core.world.combat = c;
+    core
+}
+
+/// **The event lane holds at population, and this says by how much.**
+///
+/// `NOW.md` §0fan asked for an event storm because nothing had ever run
+/// one: wall 4's per-tick and per-connection event caps were argued from
+/// their doc comments and never met a hundred clients. This is that run,
+/// and it is the first test in the tree to **model the per-connection ring
+/// at its real cap** — `EVENT_RING_CAP` lives in `net.rs` as an `rtrb`, so
+/// every other suite hands `tick_bare` a closure returning `true` and can
+/// therefore never see a refusal. The closure's bool *is* the ring's
+/// verdict (`tick_bare`'s own doc says so), so counting pushes per slot
+/// per tick and refusing past 64 is the ring, not a model of it.
+///
+/// Measured 2026-08-24 on the fixture above:
+///
+/// | cap | what it bounds | peak | headroom |
+/// |---|---|---|---|
+/// | `MAX_EVENTS_PER_TICK` 256 | sim events in one tick | **144** | 1.8× |
+/// | `EVENT_RING_CAP` 64 | pushes to one client in one tick | **50** | 1.28× |
+///
+/// So the per-connection ring is the binding cap, by a wide margin, and
+/// the sim's own queue is not close. That is the evidence for
+/// `DECISIONS.md` §open "event-lane fan-out v0": the number to argue about
+/// is `EVENT_RING_CAP`, and 50 of 64 is what "zero headroom for the other
+/// arms" looks like when it is measured rather than reasoned about.
+///
+/// **`ev_interest_skipped` is 0 here and that is the point of the
+/// fixture, not a defect.** Bodies at arm's length are inside each other's
+/// interest by construction, so the three filters landed today contribute
+/// exactly nothing — the third independent confirmation of the caveat the
+/// commit that added them leads with.
+///
+/// The assertions are the law and an anti-vacuity floor, never the
+/// measured value: pinning 50 would go red on any content edit and teach
+/// the next reader to re-baseline rather than think.
+#[test]
+fn the_event_lane_holds_at_population() {
+    let stats = ShardStats::default();
+    let mut core = storm_core(&stats);
+    let all: Vec<usize> = (0..MAX_PLAYERS).collect();
+    let mut seq = 1u16;
+    let mut peak_events = 0usize;
+    let mut peak_push = 0usize;
+
+    for _ in 0..40 {
+        press_primary(&mut core, &all, &mut seq, PITCH_LEVEL);
+        let mut per_slot = [0usize; MAX_PLAYERS];
+        core.tick_bare(&stats, |lane, slot, _| {
+            if lane != Lane::Event {
+                return true;
+            }
+            per_slot[slot] += 1;
+            per_slot[slot] <= EVENT_RING_CAP
+        });
+        peak_events = peak_events.max(core.world.events.len());
+        peak_push = peak_push.max(per_slot.iter().copied().max().unwrap_or(0));
+    }
+
+    // Anti-vacuity first: a fixture that fired nothing satisfies every
+    // bound below, and three separate mistakes made exactly that happen
+    // while the counts looked plausible.
+    assert!(
+        peak_events > MAX_EVENTS_PER_TICK / 4,
+        "peak {peak_events} sim events in a tick — a hundred bodies at \
+         arm's length firing lethal rounds should be well past that, so \
+         the fixture is not storming and the bounds below prove nothing"
+    );
+    assert!(
+        peak_push > EVENT_RING_CAP / 4,
+        "peak {peak_push} pushes to one client in a tick — same problem"
+    );
+
+    assert!(
+        peak_events < MAX_EVENTS_PER_TICK,
+        "the sim produced {peak_events} events in one tick against a \
+         {MAX_EVENTS_PER_TICK} cap; past it `EventQueue` drops newest and \
+         `pump_events` resyncs EVERY connected client at once"
+    );
+    assert!(
+        peak_push < EVENT_RING_CAP,
+        "one client was offered {peak_push} event messages in one tick \
+         against a {EVENT_RING_CAP}-slot ring. Past it the push is refused, \
+         which calls `ev_resync`, whose recovery drip pushes MORE messages \
+         into the ring that just refused — the self-amplifying case in \
+         `DECISIONS.md` §open. Raising the cap is one answer and batching \
+         a tick's events is the other; do not delete this assertion."
+    );
+    assert_eq!(
+        ShardStats::get(&stats.ev_sim_dropped),
+        0,
+        "the per-tick event queue overflowed"
+    );
+    assert_eq!(
+        ShardStats::get(&stats.ev_resyncs),
+        0,
+        "a client's event ring refused a push at population"
+    );
 }

@@ -119,6 +119,11 @@ path = "tests/ghost.rs"
 required-features = ["render"]
 
 [[test]]
+name = "lattice_geom"
+path = "tests/lattice_geom.rs"
+required-features = ["render"]
+
+[[test]]
 name = "fell"
 path = "tests/fell.rs"
 required-features = ["render"]

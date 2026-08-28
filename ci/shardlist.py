@@ -72,6 +72,11 @@ KIND = "elo-shardlist-v1"
 # `docs/client/LAUNCHER.md` §6), serving `$SCRY_DEPOTS_DIR/<slug>/servers.json`
 # byte-for-byte. The scp destination below was always right; only the url the
 # manifest points at was wrong.
+# ⚠ AND IT WAS WRONG A SECOND TIME, the same way. The host moved to
+# `elopros.com` on 2026-08-20 and this line kept naming `scry.moreright.xyz`,
+# which answers **410 Gone** — so the one act this script tells an operator to
+# perform pointed at a dead host again. Fixed 2026-08-23. The url a generator
+# PRINTS is followed by a human; it rots exactly like a url in code.
 PUBLISH_URL = "https://elopros.com/api/launcher/servers/gates"
 
 # The client's caps, from `crates/client/src/shardlist.rs`. Restated rather

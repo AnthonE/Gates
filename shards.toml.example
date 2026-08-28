@@ -21,6 +21,14 @@ name = "Gates EU 1"
 # needs that name for SNI. An IP here connects and then cannot say who it is
 # talking to. The port is the one shard-public.toml binds; it sits in
 # 49152-65535 because that range is what the cloud firewall actually passes.
+#
+# ⚠ **This name appears in THREE places and they move together**: here (what
+# is dialled), `shard-public.toml`'s `cert_pem` (what the handshake can
+# prove) and its `domain` (what a login is signed against). Publishing ahead
+# of the certificate is `invalid peer certificate`; publishing ahead of
+# `domain` is REFUSE_AUTH on every login. Both read as a client bug and
+# neither puts the shard in a failed state — it was live for three days in
+# 2026-08. `ops/certbot-deploy-hook.sh` refuses the first one now.
 addr = "game.elopros.com:61234"
 
 # Optional, free text. The seed is what makes one island different from

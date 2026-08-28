@@ -29,27 +29,59 @@
 //! bought +32.8% contrast at the same spawn, which is two orders of magnitude
 //! clear of that floor — so the instrument is not blind, this change is quiet.
 //!
-//! **The cause is one constant and it is not in this file.**
-//! `terrain_mesh::ground_material` sets `reflectance: 0.18`, and Bevy maps
-//! that to normal-incidence specular as `F0 = 0.16 × reflectance²` —
-//! **0.0052, i.e. 0.52%**, against the ~4% (reflectance 0.5) of an ordinary
-//! dielectric. Roughness shapes the specular lobe and nothing else, so it is
-//! being asked to redistribute about an eighth of the energy a real surface
-//! would put there. The maps are bound, sampled per texel and correct; there
-//! is almost nothing for them to shape.
+//! **The cause was one constant and it was not in this file.**
+//! `terrain_mesh::ground_material` set `reflectance: 0.18`, and Bevy maps that
+//! to normal-incidence specular as `F0 = 0.16 × reflectance²` — **0.0052, i.e.
+//! 0.52%**, against the ~4% (reflectance 0.5) of an ordinary dielectric.
+//! Roughness shapes the specular lobe and nothing else, so it was being asked
+//! to redistribute about an eighth of the energy a real surface puts there.
+//! The maps were bound, sampled per texel and correct; there was almost
+//! nothing for them to shape.
 //!
-//! **This slice must not fix that**, and the restraint is the point rather
-//! than timidity. Moving `reflectance` moves every ground pixel's specular at
-//! once, on an island whose brightness is already carrying an 8.0% debt from
-//! the albedo half — and `CLAUDE.md`'s coupled-owner trap is explicit that
-//! tonemap, sky, exposure and fog belong to one owner in one iteration,
-//! measured elsewhere as three parallel rounds making things worse. So the
-//! number is recorded here and in `DECISIONS.md` §open for that owner, and
-//! what landed here is the thing that had to land first: **when the ground's
-//! specular is turned up, there is now a measured per-texel roughness field
-//! for it to act on instead of one shared scalar.** That ordering is not
-//! reversible — turning up reflectance over a constant roughness makes the
-//! whole island uniformly shiny, which is the defect, not the fix.
+//! ✅ **FIXED 2026-08-25**, and this file's own reasoning is why it could be.
+//! `render::fresnel` is the one place a `reflectance` is now decided and the
+//! ground takes `fresnel::DIELECTRIC`. The ordering that slice insisted on is
+//! what made it safe — *"turning up reflectance over a constant roughness
+//! makes the whole island uniformly shiny, which is the defect, not the fix"*
+//! — and the per-texel roughness field this file landed is exactly what it is
+//! turned up over. It also turned out not to be one constant: **every**
+//! material in the client was authored the same way, 8–70× under physical, so
+//! the fix is a module rather than a number.
+//!
+//! ⚠ **The measurement above stands and has not been re-run.** The −0.4%
+//! null result was measured with F0 at 0.52%; nobody has re-measured the
+//! roughness maps' contribution now that there is energy for them to shape,
+//! because that needs a GPU and a capture. Expect it to be non-null; do not
+//! quote a number for it until someone takes one.
+//!
+//! ## The fourth map: ambient occlusion (2026-08-25)
+//!
+//! Bindings 114–117. All four ground identities publish an `<role>_ao.jpg`,
+//! all four were git-tracked and staged into every depot by `ci/depot.py`, and
+//! **this shader sampled twelve textures and none of them** — `occlusion_
+//! texture` appeared zero times in `crates/`. `ART.md` §4 names this exact
+//! term as the one scale a light rig cannot supply ("Medium … `indirectDiffuse
+//! *= ao`, indirect only") and as the unblock for the ambient floor: raising
+//! the fill lands everywhere including in the darks, while AO removes it only
+//! where geometry occludes.
+//!
+//! **Folded with `min`, never multiplied**, which is §4's other half in one
+//! line: "Never sum or multiply two occlusion terms of the same scale.
+//! Frostbite takes `min(bakedAO, ssAO)` to avoid double-darkening." Bevy's own
+//! `pbr_fragment` applies exactly that rule between a material's occlusion slot
+//! and SSAO, so `pbr_input.diffuse_occlusion` arrives here carrying the SSAO
+//! term alone — the base `StandardMaterial` has no occlusion texture because
+//! these four are per-identity and it has one slot. This is the same fold, one
+//! level up.
+//!
+//! **Diffuse only.** §4 again: "specular occlusion is a separate term, not the
+//! diffuse one reused"; applying it to specular is visibly wrong at grazing
+//! angles. `specular_occlusion` is left as Bevy computed it.
+//!
+//! ⚠ **Nothing compiles this shader.** `tests/ground_splat.rs` holds the
+//! bindings equal across the WGSL and the Rust struct — both scraped now,
+//! neither hand-kept — but a WGSL syntax or type error is a runtime failure
+//! with every gate in this repo green. Boot it.
 //!
 //! **It deliberately does NOT declare `#[bindless]`, and that is the point.**
 //! `terrain_mesh.rs` recorded the blocker: in 0.18 `StandardMaterial` is
@@ -87,7 +119,13 @@ pub type GroundMaterial = ExtendedMaterial<StandardMaterial, GroundSplat>;
 ///
 /// `tests/ground_splat.rs` re-measures all four off the files and fails on
 /// drift, so a swapped source cannot silently keep the old gain.
-pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 3.7128];
+/// ⚠ **`rock` moved 3.7128 → 4.0820 on 2026-08-27**, when that identity's
+/// source was replaced (aCG `Rock023`, a stratified CLIFF, → aCG `Gravel004`,
+/// isotropic scree — `assets/textures/MANIFEST.md`). Its mean linear luma fell
+/// 0.2693 → 0.2450, so the gain that places that mean at 1 rose by the same
+/// 9.0%. Nothing was authored here; the file changed and the gate said so,
+/// which is the whole reason this constant is re-measured rather than typed.
+pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 4.0820];
 
 /// Per identity, the mean of its shipped `*_rough.jpg` — sand · grass ·
 /// litter · rock, in `terrain::splat`'s order.
@@ -110,7 +148,14 @@ pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 3.7128];
 /// term's job ([`WET_ROUGH`]) rather than an identity's; and a hard mineral
 /// face genuinely is smoother than needle litter. Granite moving 0.88 → 0.611
 /// is the biggest single change here and it is the one to look at first.
-pub const ROUGH_MEAN: [f32; 4] = [0.9631, 0.9364, 0.9197, 0.6108];
+///
+/// ⚠ **`rock` moved 0.6108 → 0.5359 with the same 2026-08-27 source swap.**
+/// Granite was already the smoothest of the four and scree is smoother still,
+/// which is worth a second look when someone can boot it: it is now 0.43 below
+/// sand and the wet term ([`WET_ROUGH`]) multiplies from there. If a mountain
+/// reads as glossy in a frame, this is the number to suspect first — the same
+/// sentence this block already carried about 0.88 → 0.611, one swap later.
+pub const ROUGH_MEAN: [f32; 4] = [0.9631, 0.9364, 0.9197, 0.5359];
 
 /// What a soaked surface keeps of its **dry roughness**.
 ///
@@ -187,6 +232,14 @@ pub struct GroundSplatParams {
     /// for both until they moved — which is the registry working exactly as
     /// intended, and the reason to pass them through the uniform.
     pub blend: Vec4,
+    /// x = [`WALL_ON`], y = [`WALL_SHARPNESS`],
+    /// z = [`super::terrain_mesh::UV_PER_M`], w reserved.
+    ///
+    /// `z` is the ground's own projection scale, sent rather than repeated: the
+    /// wall tap builds a UV in metres and must land on the same texel density
+    /// as the top tap, and a second literal `0.25` in WGSL is a copy that can
+    /// drift from the one `heightfield` writes.
+    pub wall: Vec4,
 }
 
 impl GroundSplatParams {
@@ -204,25 +257,59 @@ impl GroundSplatParams {
             gain: Vec4::from_array(GRAIN_GAIN),
             tune: Vec4::new(WET_VALUE, WET_SATURATION, ALBEDO_LUMA_FLOOR, BLEND_DEPTH),
             blend: Vec4::new(HEIGHT_INFLUENCE, NORMAL_Z_FLOOR, WET_ROUGH, 0.0),
+            wall: Vec4::new(WALL_ON, WALL_SHARPNESS, super::terrain_mesh::UV_PER_M, 0.0),
         }
     }
 }
 
-/// Four albedo maps, four normal maps, four roughness maps and one sampler.
+/// Where the biplanar wall tap turns on, as `sin(tilt)`.
 ///
-/// **One sampler for twelve textures, and that is the constraint that scales.**
-/// Each map wants the identical tiling and anisotropy descriptor
+/// **Derived, not chosen.** The ground's UV is a planar XZ projection, so on a
+/// face of tilt θ the photograph is stretched by `1/cos θ` along the fall line
+/// — 1.41× at 45°, 2.9× at 70°, unbounded at vertical. A second tap on the
+/// vertical plane containing that fall line is stretched by `1/sin θ` instead,
+/// so the two are exact complements and `sin θ = cos θ` — 45°, `1/√2` — is
+/// precisely where the plane you already have stops being the better one.
+/// Below it the top tap wins and the wall tap is skipped entirely.
+///
+/// **The fall-line plane, not an axis plane, and both halves matter.** An
+/// axis-aligned pair swaps wherever `|n.x| = |n.z|`, which is a hard line of
+/// changed photograph down every diagonal face; a frame built from the face's
+/// own fall line rotates through that locus continuously. This is `DECISIONS.md`
+/// materials v4's design, which the browser client shipped and the native one
+/// never got.
+pub const WALL_ON: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+/// The exponent the two plane weights are raised to before blending.
+///
+/// Quilez's own prescribed value for the non-remapped form: a linear blend at a
+/// 70° face still hands ~32% of the sample to the top plane while that plane is
+/// stretched 2.9×, which is the smear the wall tap exists to remove. At k = 8
+/// that share is 0.05%, and 45° and below are untouched because [`WALL_ON`]
+/// owns them. Proposed default, not spoken.
+pub const WALL_SHARPNESS: f32 = 8.0;
+
+/// Four albedo maps, four normal maps, four roughness maps, four AO maps — and
+/// one sampler.
+///
+/// **One sampler for sixteen textures, and that is the constraint that
+/// scales.** Each map wants the identical tiling and anisotropy descriptor
 /// `textures::tiling` builds, and a sampler each would put this bind group at
-/// 24 in the fragment stage before `StandardMaterial`'s own are counted — far
+/// 32 in the fragment stage before `StandardMaterial`'s own are counted — far
 /// over the 16 a downlevel adapter guarantees. Textures are the cheap axis
 /// (Bevy asks the adapter for its own limits, and every desktop adapter is far
-/// past 12); samplers are the one with a hard floor under it. So the roughness
-/// slice cost four bindings and **zero** samplers.
+/// past 16); samplers are the one with a hard floor under it. So the roughness
+/// slice cost four bindings and zero samplers, and the AO slice cost four more
+/// and **zero** again.
 ///
-/// **It cost no new VRAM either.** `textures::MapSet::load` has always loaded
-/// `<role>_rough.jpg` and the `GroundMaps` resource has always held the handle,
-/// so all four have been resident and uploaded since the day the maps landed —
-/// paid for and unread. This binds what was already there.
+/// ⚠ **The roughness slice cost no new VRAM and the AO slice DOES**, which is
+/// the one place these two otherwise-identical changes differ.
+/// `textures::MapSet::load` had always loaded `<role>_rough.jpg`, so those four
+/// were resident and uploaded from the day the maps landed — paid for and
+/// unread, and binding them was free. `<role>_ao.jpg` was **not** loaded by
+/// anything: it shipped in the depot and never reached the GPU. So AO is four
+/// genuinely new 1K uploads here (and three more on the prop side), which is
+/// real and small and worth not misremembering as free.
 #[derive(Asset, AsBindGroup, TypePath, Clone)]
 pub struct GroundSplat {
     #[uniform(100)]
@@ -257,6 +344,25 @@ pub struct GroundSplat {
     pub rough_litter: Handle<Image>,
     #[texture(113)]
     pub rough_rock: Handle<Image>,
+    /// Ambient occlusion, per identity. **`ART.md` §4's MEDIUM scale** — the
+    /// one occlusion term a light rig cannot supply, "between a surface's own
+    /// features … what a fetched `*_ao.jpg` carries", indirect only.
+    ///
+    /// All four ground sources publish one and all four shipped in every depot
+    /// unread until 2026-08-25: `occlusion_texture` appeared zero times in
+    /// `crates/`, and this shader sampled twelve textures and none of them.
+    /// `Option` is not needed here where `MapSet::ao` has one — every ground
+    /// role is in `textures::ROLES_WITH_AO`, and `GroundSplat::new` asserts it
+    /// rather than silently binding a default handle, which would sample BLACK
+    /// and put the whole island in shadow.
+    #[texture(114)]
+    pub ao_sand: Handle<Image>,
+    #[texture(115)]
+    pub ao_grass: Handle<Image>,
+    #[texture(116)]
+    pub ao_litter: Handle<Image>,
+    #[texture(117)]
+    pub ao_rock: Handle<Image>,
 }
 
 impl GroundSplat {
@@ -276,8 +382,28 @@ impl GroundSplat {
             rough_grass: maps.grass.rough.clone(),
             rough_litter: maps.litter.rough.clone(),
             rough_rock: maps.rock.rough.clone(),
+            // **`expect`, not `unwrap_or_default`.** An unresolved handle in a
+            // texture slot samples as black, and a black occlusion map puts the
+            // entire island in full shadow — a spectacular failure that would
+            // look like a lighting bug rather than a missing file. Every ground
+            // role is in `textures::ROLES_WITH_AO`, so this cannot fire without
+            // that list and `assets/textures/` having drifted apart, and it is
+            // better to say so at boot than to draw a black world.
+            ao_sand: ao(&maps.sand, "sand"),
+            ao_grass: ao(&maps.grass, "grass"),
+            ao_litter: ao(&maps.litter, "litter"),
+            ao_rock: ao(&maps.rock, "rock"),
         }
     }
+}
+
+/// One ground role's AO handle, or a loud failure.
+fn ao(m: &super::textures::MapSet, role: &str) -> Handle<Image> {
+    m.ao.clone().unwrap_or_else(|| {
+        panic!(
+            "ground identity `{role}` has no AO map — every ground role must be              in textures::ROLES_WITH_AO with a matching assets/textures/             {role}_ao.jpg, or the splat shader samples an unresolved handle as              BLACK and the island draws in full shadow"
+        )
+    })
 }
 
 impl MaterialExtension for GroundSplat {

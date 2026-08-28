@@ -916,7 +916,10 @@ pub fn raid(
         let Some(d2) = aimed_at_rec(&aimed_at, rec.cx, rec.cz, rec.loc) else {
             continue;
         };
-        if !storey_ok(col_base_y(seed, haven, rec.cx, rec.cz), rec.level) {
+        if !storey_ok(
+            col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz),
+            rec.level,
+        ) {
             continue;
         }
         if best.is_none_or(|(bd2, _)| d2 < bd2) {
@@ -965,7 +968,8 @@ pub fn raid(
                 if best.is_some_and(|(bd2, _)| d2 >= bd2) {
                     continue; // an equal or nearer target already stands
                 }
-                let base = *base.get_or_insert_with(|| col_base_y(seed, haven, cx, cz));
+                let base =
+                    *base.get_or_insert_with(|| col_base_y(seed, haven, pieces.cols(), cx, cz));
                 for level in 0..MAX_BUILD_LEVELS as u8 {
                     if mask & (1 << level) == 0 || !storey_ok(base, level) {
                         continue;
@@ -1108,6 +1112,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(pieces.len(), 1, "the rig needs its foundation");
@@ -1249,6 +1254,7 @@ mod tests {
             CZ,
             0,
             crate::build::LOC_EDGE_XLO,
+            false,
             &mut ev,
         );
         let wall = pieces.find(CX, CZ, 0, crate::build::LOC_EDGE_XLO).unwrap();
@@ -1471,6 +1477,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         crate::build::place(
@@ -1486,6 +1493,7 @@ mod tests {
             CZ,
             0,
             LOC_EDGE_XLO,
+            false,
             &mut ev,
         );
         assert_eq!(pieces.len(), 2, "foundation + doorway");

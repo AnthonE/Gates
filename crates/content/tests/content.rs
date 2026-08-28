@@ -3186,3 +3186,49 @@ fn an_armor_row_that_cannot_work_never_reaches_the_sim() {
         "protects from nothing",
     );
 }
+
+/// **No weapon outranges the band that decides who is told it fired.**
+///
+/// This is a relationship between a content number and a limit, and until
+/// 2026-08-24 nothing held it from either side.
+///
+/// `EV_SHOT` is filtered to the shooter's class-D interest set
+/// (`server/core.rs::body_event_visible`), so a client that cannot see the
+/// hand is not told it loosed anything. Two things make that safe, and the
+/// second is this gate: `render/tracer.rs` already discards a shot it has
+/// no body to hang on, **and** no weapon can throw a projectile far enough
+/// to reach somebody outside the band anyway. The first is behavioural and
+/// holds whatever the numbers say; the second is arithmetic and a content
+/// edit can break it in silence.
+///
+/// The failure it prevents is a real product decision arriving as an
+/// accident: someone adds a 200 m rifle to `weapons.toml`, every gate in
+/// the tree stays green, and its tracer stops existing for exactly the
+/// players it was aimed at. If this goes red, the fix is **not** to raise
+/// the number here — it is to decide whether that weapon wants a wider
+/// filter (a range-aware radius rather than the interest bit) and to say
+/// so in `DECISIONS.md`.
+///
+/// `AOI_ENTER_CM` rather than `AOI_EXIT_CM`: enter is the *narrower* band
+/// and the one a client must have crossed to hold the body, so it is the
+/// conservative side to measure against.
+#[test]
+fn no_weapon_outranges_the_interest_band() {
+    let c = build(&sources()).expect("shipped content builds");
+    let band_m = (sim_core::limits::AOI_ENTER_CM / 100) as u32;
+    let worst = c
+        .weapons
+        .iter()
+        .max_by_key(|w| w.range_m)
+        .expect("content ships at least one weapon");
+    assert!(
+        worst.range_m < band_m,
+        "`{}` reaches {} m and the interest band is {} m — a shot from \
+         outside a client's band could land inside its world, and \
+         `EV_SHOT`'s filter would have thrown the tracer away. Do not \
+         raise this assertion; decide what that weapon's audience is.",
+        worst.id,
+        worst.range_m,
+        band_m
+    );
+}

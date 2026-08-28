@@ -197,6 +197,8 @@ pub fn step(
     // The same latch for solid deployables, separately: being stuck in a
     // pine must not license walking through a furnace.
     let mut inside_dep: Option<bool> = None;
+    // ...and for plane flanks, third and apart for the same reason.
+    let mut inside_plane: Option<bool> = None;
     if len2 > 0.0 {
         let clamp_x = |v: f32| v.clamp(BORDER_MARGIN, ISLAND_SIZE - BORDER_MARGIN);
         let candidates = [(x + dx, z + dz), (x + dx, z), (x, z + dz)];
@@ -237,6 +239,27 @@ pub fn step(
                     inside_dep = Some(collide::deploy_blocked(seed, haven, cols, x, z, y));
                 }
                 if inside_dep != Some(true) {
+                    continue;
+                }
+            }
+            // The flank of a foundation, a floor or a roof (piece flanks
+            // v0, `collide::plane_blocked`). Planes were ground and nothing
+            // else until 2026-08-21, so a body walked into the side of a
+            // base and stood inside the slab and the skirt under it — the
+            // camera in a wall of earth. Third latch, and it is separate
+            // from the other two for their reason: being stuck in a pine
+            // must not license walking through a furnace, and being stuck
+            // in either must not license walking into a foundation.
+            //
+            // A foundation CAN be placed around a standing body — `place`
+            // asks nothing about who is there — so the lift is not
+            // optional. It is the whole of why a base built over somebody
+            // is a thing they walk out of rather than a grave.
+            if collide::plane_blocked(seed, haven, cols, cx, cz, y) {
+                if inside_plane.is_none() {
+                    inside_plane = Some(collide::plane_blocked(seed, haven, cols, x, z, y));
+                }
+                if inside_plane != Some(true) {
                     continue;
                 }
             }

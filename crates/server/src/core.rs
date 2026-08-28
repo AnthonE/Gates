@@ -866,6 +866,7 @@ impl ShardCore {
                         cz,
                         level,
                         loc,
+                        freehand,
                     } => Command::Place {
                         id: c.id,
                         row,
@@ -873,6 +874,7 @@ impl ShardCore {
                         cz,
                         level,
                         loc,
+                        freehand,
                     },
                     ActionMsg::Deploy {
                         row,
@@ -1945,18 +1947,51 @@ impl ShardCore {
                     }
                 }
                 EV_KNOCK => {
-                    // A knock is broadcast for the same reason a door's
-                    // state is, and for one more: the whole point of the
-                    // event is that somebody *other* than the sender
-                    // hears it (`reference/DOORS.md` §4). AOI'ing it
-                    // would silence the case it exists for — a defender
-                    // asleep on the far side of their own base.
+                    // A knock reaches the **neighbourhood**, which is what
+                    // the reference means by it (`DOORS.md` §4): the one
+                    // channel a locked-out player has to the person
+                    // inside. The point of the event is still that
+                    // somebody *other* than the sender hears it.
+                    //
+                    // ⚠ **This paragraph used to argue against filtering
+                    // and the argument did not survive its own radius.**
+                    // It said AOI'ing would silence "a defender asleep on
+                    // the far side of their own base" — but the band is
+                    // `PIECE_INTEREST_CM`, 208 m, and a base spans tens of
+                    // metres, so that defender is four to seven times
+                    // inside it. What the unfiltered version actually did
+                    // was toast *"knock knock"* on every screen on the
+                    // island for every knock anywhere on it — `hud.rs`
+                    // says the quiet part, that it fires "for a door
+                    // across the base as readily as the one in front of
+                    // you", and there is no owner check anywhere to stop
+                    // it at your own base's edge.
+                    //
+                    // Safe to filter where `EV_DOOR` and `EV_OVEN` — the
+                    // two events beside it in this arm's family — are not,
+                    // and the difference is not the address, it is the
+                    // residue. A knock is an instant; those two are
+                    // *state*, on records the client holds shard-wide
+                    // because the deploy walk is unaimed. Filtering a
+                    // state change onto a record somebody keeps is how a
+                    // door stays shut on one screen forever.
+                    //
+                    // **Still open and the operator's**: whether the OWNER
+                    // should hear their own door knocked from anywhere on
+                    // the island. That is a game question, not a routing
+                    // one, and nothing here has an owner check to hang it
+                    // on. `NOW.md` §0fan.
                     let (cx, cz) = ((ev.a >> 16) as u16, ev.a as u16);
                     let (level, loc) = ((ev.b >> 16) as u8, (ev.b >> 8) as u8);
+                    let at = interest::cell_cm(cx, cz);
                     match encode_event_knock(cx, cz, level, loc, ev.c, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.point_event_visible(slot, at) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -2001,18 +2036,41 @@ impl ShardCore {
                     }
                 }
                 EV_SHOT => {
-                    // Broadcast, `EV_OVEN`'s posture and its reason: an
-                    // arrow in the air is a world fact, visible from
-                    // outside whatever base it was loosed in. A client
-                    // that misses one loses a tracer and nothing else —
-                    // the arrow itself is the sim's, and the hit arrives
-                    // on its own events whether the shot was drawn or not.
+                    // Broadcast **to the interest set**, `EV_SWING`'s
+                    // posture and — after this was checked rather than
+                    // assumed — its reason too. A client that misses one
+                    // loses a tracer and nothing else: the arrow itself is
+                    // the sim's, and the hit arrives on its own events
+                    // whether the shot was drawn or not.
+                    //
+                    // **The obvious objection is that a projectile
+                    // travels**, so unlike a swing it could matter to
+                    // somebody who cannot see the hand that loosed it. It
+                    // does not, for two independent reasons, and the first
+                    // alone is sufficient. `render/tracer.rs` already
+                    // refuses a shot whose shooter it holds no body for —
+                    // *"Nothing to hang it on, so it is dropped rather
+                    // than drawn from the origin"* — and that is the same
+                    // set this filter reads, so nothing that was ever
+                    // drawn stops being drawn. And the arithmetic agrees:
+                    // the longest `range_m` in `content/weapons.toml` is
+                    // 80 against an `AOI_ENTER_CM` of 176 m, so a shot
+                    // from outside a client's interest cannot put a
+                    // projectile within 96 m of it.
+                    // `content/tests/content.rs` gates that second reason,
+                    // because it is a relationship between a content
+                    // number and a limit and nothing else was holding it.
                     let (yaw, pitch) = ((ev.b >> 8) as u16, ev.b as u8);
                     let (speed, drop) = ((ev.c >> 16) as u16, ev.c as u16);
+                    let sh = Self::world_slot_of(&self.world, ev.a);
                     match encode_event_shot(ev.a, yaw, pitch, speed, drop, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.body_event_visible(slot, ev.a, sh) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -2027,23 +2085,48 @@ impl ShardCore {
                     }
                 }
                 EV_SWING => {
-                    // Broadcast, `EV_SHOT`'s posture and its reason, and
-                    // the routing is the whole slice: a swing exists to be
-                    // seen by everyone EXCEPT the hand that swung, which
-                    // already predicted its own arc from its own button
-                    // (`ui::swing::SwingCadence`). `EV_HIT`'s arm below
-                    // sends to one slot and drops field `a` at encode; copy
-                    // that here and the feature is a body standing still
-                    // for everybody, with every other gate green — which is
-                    // why `gather_wire.rs`'s
+                    // Broadcast **to the interest set**, which is the whole
+                    // of the routing: an arm that moved is a fact about a
+                    // body other people are drawing, so the audience is
+                    // exactly the clients drawing that body.
+                    // `body_event_visible` states the three pass-throughs;
+                    // the filter is legitimate here — where
+                    // `EV_PIECE_REMOVED`'s refuses one — because a swing is
+                    // an instant and leaves no residue to be wrong about.
+                    // `EV_HIT`'s arm below sends to one slot and drops field
+                    // `a` at encode; copy that here and the feature is a
+                    // body standing still for everybody, with every other
+                    // gate green — which is why `gather_wire.rs`'s
                     // `a_swing_reaches_every_client_not_just_the_swinger`
                     // exists. (That citation named a `swing_wire.rs` that was
                     // never written, for one commit: the exact dead-citation
                     // class `CLAUDE.md` says to `ls` before writing.)
+                    //
+                    // ⚠ **This paragraph used to say the opposite of the
+                    // code.** It claimed the swing went to everyone EXCEPT
+                    // the hand that swung; the loop had no such skip and a
+                    // named gate pinned the copy. The copy stays — it is one
+                    // message per event, not one per client, and the client
+                    // discards it by itself (`bodies::stream` skips
+                    // `core.player_id`) — and the sentence is now the one
+                    // the code implements.
+                    //
+                    // ⚠ **What this does NOT bound.** Post-filter peak
+                    // fan-in per client is `AOI_RANK_EXIT`, which is 64, and
+                    // `EVENT_RING_CAP` is also 64. Co-located swingers —
+                    // a raid, i.e. the case where everyone swings at once —
+                    // are all inside each other's interest, so the filter is
+                    // a no-op there by construction. It buys the dispersed
+                    // shard, which is every other minute of play.
+                    let sw = Self::world_slot_of(&self.world, ev.a);
                     match encode_event_swing(ev.a, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.body_event_visible(slot, ev.a, sw) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -2076,10 +2159,23 @@ impl ShardCore {
                     let qx = (ev.a & 0x00FF_FFFF) as i32;
                     let qz = ev.b as i32;
                     let qy = ev.c as i32;
+                    // Filtered on the **point**, not on a body — see
+                    // `point_event_visible`. A mark is the one thing in
+                    // this arm's family a client can place without holding
+                    // anything, so this filter removes a decal that would
+                    // otherwise have been spawned, and it is worth it: the
+                    // pool is fixed and evicts, so a sub-pixel impact past
+                    // the band takes a slot from a mark at the player's
+                    // feet.
+                    let at = interest::body_cm(qx, qz);
                     match encode_event_impact(qx, qy, qz, surf, &mut self.ev_buf) {
                         Ok(len) => {
                             for slot in 0..MAX_PLAYERS {
                                 if !self.clients[slot].connected {
+                                    continue;
+                                }
+                                if !self.point_event_visible(slot, at) {
+                                    ShardStats::bump(&stats.ev_interest_skipped);
                                     continue;
                                 }
                                 if send(Lane::Event, slot, &self.ev_buf[..len]) {
@@ -2372,10 +2468,22 @@ impl ShardCore {
         if self.world.events.dropped > 0 {
             // The ring refused events this tick; whatever they announced,
             // the sync walk re-derives (limits.rs event-ring policy).
+            //
+            // **Counted in two places, because the cause and the
+            // consequence are different questions.** `EventQueue::dropped`
+            // is reset by `clear()` on the first line of the next
+            // `World::tick`, so unless it is folded in here the fact that
+            // the sim outran its per-tick event budget leaves no trace at
+            // all — only a shard-wide resync that reads exactly like a
+            // hundred connections falling behind at once. `ev_resyncs`
+            // keeps counting the total so nothing watching it changes
+            // meaning; `ev_resyncs_dropped` is the share this branch owns.
+            ShardStats::add(&stats.ev_sim_dropped, self.world.events.dropped as u64);
             for slot in 0..MAX_PLAYERS {
                 if self.clients[slot].connected {
                     self.clients[slot].ev_resync();
                     ShardStats::bump(&stats.ev_resyncs);
+                    ShardStats::bump(&stats.ev_resyncs_dropped);
                 }
             }
         }
@@ -2978,6 +3086,95 @@ impl ShardCore {
         world.players.iter().position(|p| p.active && p.id == id)
     }
 
+    /// Does connection `slot`'s class-D interest array describe this tick?
+    ///
+    /// `update_interest` gives up before pass 1 when the connection has no
+    /// live body — a join command still queued, or a world slot whose
+    /// tenant changed under it — and returns **without touching
+    /// `interest`**, so the array is not "empty", it is meaningless.
+    /// Anything reading it as a routing filter has to ask this first, or
+    /// it reads "interested in nobody" off a client that has simply not
+    /// been measured yet and mutes it. Named once and used by both the
+    /// producer and the consumer, so the two cannot drift.
+    fn interest_settled(&self, slot: usize) -> bool {
+        let c = &self.clients[slot];
+        c.own_wslot != usize::MAX
+            && self.world.players[c.own_wslot].active
+            && self.world.players[c.own_wslot].id == c.id
+    }
+
+    /// May connection `slot` be told that body `subject` did something?
+    ///
+    /// The class-D interest set read as a routing filter for a
+    /// **body-addressed instant** — an event whose whole payload is "this
+    /// player did a visible thing", which carries no position because the
+    /// snapshot already said where the body is, and which leaves no
+    /// residue if it is never delivered. `EV_SWING` is the first arm to
+    /// use it; `EV_SHOT` and `EV_IMPACT` are the same shape and are the
+    /// intended next two, which is why this is a method rather than an
+    /// expression inlined in one arm.
+    ///
+    /// **Only for instants.** A state change may not be filtered this way,
+    /// and `EV_PIECE_REMOVED`'s arm says why at length: an absence that
+    /// nothing re-derives is a wall standing in a client's world forever.
+    /// An unheard swing is an arm that did not move on a screen that was
+    /// not looking at it.
+    ///
+    /// `subject_wslot` is passed in rather than resolved here because the
+    /// caller hoists it out of the per-client loop — one `world_slot_of`
+    /// scan per event, not one per connection.
+    ///
+    /// Three pass-throughs, each load-bearing:
+    ///
+    /// - **The subject's own connection.** A body is never a candidate for
+    ///   itself (`update_interest` pass 1: `p.id != c.id`), so
+    ///   `interest[own]` is false *by construction* and filtering on it
+    ///   alone would silently drop the copy the actor gets. That copy is
+    ///   one message per event rather than one per client, and
+    ///   `gather_wire.rs`'s `a_swing_reaches_every_client_not_just_the_swinger`
+    ///   pins it.
+    /// - **A subject with no world slot.** Nothing to index; fail open.
+    /// - **A recipient whose interest is unsettled** (above). This is the
+    ///   one that bites, and it fails open for the same reason
+    ///   `EV_PIECE_PLACED` passes everything through an invalid
+    ///   `piece_anchor_valid`: a filter that guesses is worse than one
+    ///   that waits a tick.
+    fn body_event_visible(&self, slot: usize, subject: u32, subject_wslot: Option<usize>) -> bool {
+        let c = &self.clients[slot];
+        if c.id == subject {
+            return true;
+        }
+        let Some(w) = subject_wslot else {
+            return true;
+        };
+        !self.interest_settled(slot) || c.interest[w]
+    }
+
+    /// May connection `slot` be told about something that happened at
+    /// world point `at_cm` (centimetres)?
+    ///
+    /// The **position-addressed** twin of `body_event_visible`, for an
+    /// event that names a place rather than a body — `EV_IMPACT` today.
+    /// Those cannot use class-D interest at all: an arrow's stop point is
+    /// not an entity and has no world slot, so the question is a distance
+    /// and the set to measure it against is the class-S anchor
+    /// `EV_PIECE_PLACED` already filters on. Same predicate, same anchor,
+    /// same fail-open when the anchor is not yet valid.
+    ///
+    /// **This one is not free the way the body filter is.** A client
+    /// discards a swing or a shot it cannot hang on a body by itself
+    /// (`render/tracer.rs` says so in as many words), so filtering those
+    /// removes nothing that was ever drawn. A decal needs no body — it is
+    /// placed at the point — so `render/decal.rs` will happily spawn one
+    /// 500 m away, claim a slot from a fixed pool and **evict a mark at
+    /// the player's feet for one that is sub-pixel**. That eviction is the
+    /// thing this removes; the visible cost is a 0.22 m quad past 208 m,
+    /// which is under a pixel at any sane field of view.
+    fn point_event_visible(&self, slot: usize, at_cm: (i64, i64)) -> bool {
+        let c = &self.clients[slot];
+        !c.piece_anchor_valid || interest::point_in_interest(c.piece_anchor_cm, at_cm)
+    }
+
     /// AOI v0 (DESIGN.md §5.5): **two** hysteresis bands over the same
     /// candidate field, plus the NETCODE.md §3 priority accrual for
     /// everything inside. A distance band — enter 176 m, leave 208 m — and
@@ -3007,16 +3204,13 @@ impl ShardCore {
         /// decision falls through to distance — no special case needed.
         const ABSENT: i64 = i64::MAX;
 
-        let c = &mut self.clients[slot];
-        if c.own_wslot == usize::MAX
-            || !self.world.players[c.own_wslot].active
-            || self.world.players[c.own_wslot].id != c.id
-        {
-            c.own_wslot = match Self::world_slot_of(&self.world, c.id) {
-                Some(w) => w,
+        if !self.interest_settled(slot) {
+            match Self::world_slot_of(&self.world, self.clients[slot].id) {
+                Some(w) => self.clients[slot].own_wslot = w,
                 None => return, // join command still queued
-            };
+            }
         }
+        let c = &mut self.clients[slot];
         let own = self.world.players[c.own_wslot].body;
         let mut overflow = false;
 

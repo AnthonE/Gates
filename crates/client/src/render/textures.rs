@@ -35,6 +35,24 @@ pub struct MapSet {
     pub albedo: Handle<Image>,
     pub normal: Handle<Image>,
     pub rough: Handle<Image>,
+    /// Ambient occlusion, where the source published one.
+    ///
+    /// **`Option`, because only seven of the ten roles have a file** — the
+    /// photogrammetry sets (grass, gravel, litter, metal, rock, sand, stone)
+    /// ship `<role>_ao.jpg` and the three authored-surface sets (bark, wood,
+    /// twig) do not. A missing map must be `None` and not a broken handle:
+    /// `StandardMaterial::occlusion_texture` is itself an `Option`, and an
+    /// unresolved handle in that slot samples as black, which would put every
+    /// bark surface in full shadow.
+    ///
+    /// These seven files were **git-tracked, staged into every depot by
+    /// `ci/depot.py`, and read by nothing** — 436 KB shipped to every player
+    /// with `occlusion_texture` appearing zero times in `crates/`. `ART.md` §4
+    /// names this exact term as the one scale a light rig cannot supply
+    /// (*"Medium … `indirectDiffuse *= ao`, indirect only"*) and as the unblock
+    /// for raising the ambient floor: fill lands everywhere, AO removes it only
+    /// where the geometry occludes.
+    pub ao: Option<Handle<Image>>,
 }
 
 /// A tiling sampler. **Every map here is tiled and the default is not.**
@@ -64,13 +82,28 @@ fn tiling(srgb: bool) -> impl Fn(&mut ImageLoaderSettings) + Send + Sync + 'stat
     }
 }
 
+/// Roles that ship an `<role>_ao.jpg`, which is not all of them.
+///
+/// **Derived from the tree by `tests/textures.rs`, not trusted from here.**
+/// A hand-kept mirror of a directory listing is the drift `CLAUDE.md` names
+/// twice — a role added to this list with no file loads a handle that samples
+/// black, and a role with a file left off the list ships an unread texture
+/// again, which is the bug this whole change is fixing.
+pub const ROLES_WITH_AO: [&str; 7] = [
+    "grass", "gravel", "litter", "metal", "rock", "sand", "stone",
+];
+
 impl MapSet {
-    /// Load one role out of `assets/textures/<role>_{albedo,normal,rough}.jpg`.
+    /// Load one role out of `assets/textures/<role>_{albedo,normal,rough}.jpg`,
+    /// plus `_ao.jpg` for the roles that have one.
     pub fn load(assets: &AssetServer, role: &str) -> Self {
         Self {
             albedo: assets.load_with_settings(format!("textures/{role}_albedo.jpg"), tiling(true)),
             normal: assets.load_with_settings(format!("textures/{role}_normal.jpg"), tiling(false)),
             rough: assets.load_with_settings(format!("textures/{role}_rough.jpg"), tiling(false)),
+            ao: ROLES_WITH_AO.contains(&role).then(|| {
+                assets.load_with_settings(format!("textures/{role}_ao.jpg"), tiling(false))
+            }),
         }
     }
 }

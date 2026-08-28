@@ -60,7 +60,7 @@ pub fn icon_stem(
 /// not do I/O to find out what it has — and because a gate can then compare
 /// it against the directory and fail on either half drifting
 /// (`tests/ui.rs` §G).
-pub const STEMS: [&str; 72] = [
+pub const STEMS: [&str; 75] = [
     // the shape wheel
     "shape_foundation",
     "shape_tri_foundation",
@@ -141,6 +141,13 @@ pub const STEMS: [&str; 72] = [
     "raw_meat",
     "cooked_meat",
     "burnt_meat",
+    // The three vitals, bottom right. Not items — these are the only stems
+    // that name a HUD readout rather than something a player can hold, and
+    // they are here because `tests/ui.rs` §G holds this list equal to the
+    // baked set and a picture with no stem would fail it either way.
+    "vital_hp",
+    "vital_water",
+    "vital_food",
 ];
 
 #[cfg(test)]

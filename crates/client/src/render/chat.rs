@@ -284,6 +284,12 @@ pub fn draw(
                 } else {
                     Color::srgba(0.92, 0.90, 0.84, 0.85)
                 }),
+                // The chat log is the longest-lived floating string in the
+                // client and the only one a stranger writes the content of, so
+                // it is the one that most has to stay readable over whatever
+                // the player happens to be facing. `ui::TEXT_SHADOW` has the
+                // reasoning.
+                super::ui::TEXT_SHADOW,
                 Pickable::IGNORE,
             ));
         }

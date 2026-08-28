@@ -423,7 +423,72 @@ const TICKS: u64 = 900;
 /// `0xDFFD_AE59_3232_47C6` is the value before, and it is left written
 /// here on purpose: the next reader's question is *which change moved it*,
 /// and a pin that only ever shows its current value cannot answer that.
-const GOLDEN_FINAL_HASH: u64 = 0xE6C1_8463_97AE_FB21;
+///
+/// **Moved `0xE6C1_8463_97AE_FB21` → `0x3DF4_80D5_22B1_FEAD` at piece flanks
+/// v0** (2026-08-21). A plane grew sides (`collide::plane_blocked`), so bodies
+/// that used to walk through the foundations this script places now stop at
+/// them, and where a hundred bodies are standing at tick 900 is most of what
+/// this digest is. Deliberate, and the regeneration is in the same commit as
+/// the change that caused it — which is the whole of what this pin is for.
+/// Regenerated 2026-08-26 from `0x3DF4_80D5_22B1_FEAD`, and **not for a
+/// behavioural reason** — this is the one shape of regeneration this file's
+/// header calls the cheap kind. Worldgen changed (`terrain::remap` is a
+/// monotone cubic now, plus a post-curve detail ladder), the run seats bodies
+/// on the ground, and every `y` in the trace moved with it. No verb, no
+/// ordering and no rule changed; the equality assert above it stayed green on
+/// the same run, which is what says the drift is the world and not the sim.
+const GOLDEN_FINAL_HASH: u64 = 0xC473_3C6D_8776_3266;
+
+/// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
+/// run, not just the last one.
+///
+/// **Written 2026-08-21 because the final hash does not cover the piece
+/// store, and never has.** The script drives `Command::Place` from tick 0 and
+/// the world ends with **zero pieces**: everything a player can place enters
+/// as twig (twig v0), twig is the one material `deploy::upkeep_sweep` never
+/// protects, and 900 ticks is long enough for all of it to rot. So the pinned
+/// end state has an empty piece store, and `state_hash`'s whole piece section
+/// folds nothing into it. Proven by mutant: `buf[4] = r.level.wrapping_add(1)`
+/// in `world.rs`'s piece loop — a field hashed since this gate was written —
+/// leaves `GOLDEN_FINAL_HASH` bit-identical.
+///
+/// The A-vs-B comparison below was never blind to it (both runs place and rot
+/// the same pieces, so a nondeterministic one still diverges), which is why
+/// this is a hole in the *golden* and not in the whole suite: what went
+/// unwatched is drift ACROSS BUILDS in anything that does not survive to the
+/// last tick. That is most of the build verb, most of decay, and every
+/// intermediate the sweeps walk.
+///
+/// Folding the trace costs one constant and covers all of it. It is a
+/// separate pin rather than a replacement, because the two answer different
+/// questions and a reader who finds one moved wants to know whether the other
+/// did: the final hash says the world ENDED somewhere else, the trace says it
+/// went somewhere else on the way.
+///
+/// Both moved at piece flanks v0 (2026-08-21) and both for one reason — a
+/// plane grew sides, so bodies stop at foundations they used to walk through.
+/// It was `0xCF27_5417_7837_CB31` at the tick this pin was written, which was
+/// the same commit's earlier half; that value pinned a world where planes had
+/// no flanks and is kept here for the reason above.
+/// Regenerated 2026-08-26 beside `GOLDEN_FINAL_HASH`, for the same worldgen
+/// change and with the same reading: the trace stamps positions, positions
+/// include `y`, and the ground under this run moved.
+const GOLDEN_TRACE_HASH: u64 = 0x57D0_F9E3_88F8_9D18;
+
+/// Fold a stamped trace into one number.
+///
+/// Deliberately the dumbest mixing that is order-sensitive and position-
+/// sensitive: a fold that summed, xor'd or otherwise commuted would pass a
+/// run that visited the same states in a different order, which is exactly
+/// the drift a trace pin exists to see.
+fn trace_of(hashes: &[u64]) -> u64 {
+    let mut acc = 0xcbf2_9ce4_8422_2325u64;
+    for (i, h) in hashes.iter().enumerate() {
+        acc ^= h.rotate_left((i % 64) as u32);
+        acc = acc.wrapping_mul(0x1000_0000_01b3);
+    }
+    acc
+}
 
 /// A standable point with sea inside `DRINK_REACH_M`, scanned off the
 /// heightfield rather than typed in — the same reason `walk_up_the_beach`
@@ -497,6 +562,24 @@ fn barrel_cells(seed: u64, scatter: &sim_core::terrain::ScatterTable, n: usize) 
 /// and the same `foundation_terrain_ok` the sim refuses on, so the fixture
 /// cannot drift away from the rule.
 ///
+/// ⚠ **It looks for a cell whose whole 3×3 neighbourhood is buildable, not
+/// one buildable cell**, and that is the second time this fixture has been
+/// fragile in the same way. Asking for one cell answers the question "will a
+/// foundation stand here", and the script's question is "will a *base* stand
+/// here" — it places a foundation and then walls, a door and an upgrade
+/// around it, and every one of those wants its own cell. A single-cell probe
+/// can stop on a lone flat spot on a slope, where the arc places one piece and
+/// the rest refuse; the count then reads as a lost build path when nothing
+/// about building changed.
+///
+/// It bit on 2026-08-26, when worldgen's remap curve became C¹: `SEED ^ 1`
+/// went from 6 placements to 2 while the **island's own buildability did not
+/// move** — 976.7‰ → 976.3‰ of its land cells hold a foundation, and 957.4‰ →
+/// 956.6‰ hold a whole 3×3 (`examples/buildable`, five seeds, worst relative
+/// change anywhere 0.4%). So the world was fine and the fixture had walked
+/// onto a worse spot. Widening the floor would have hidden that; asking for
+/// what the script actually needs fixes it.
+///
 /// A fixture arrangement, like the inventory grants beside it — applied
 /// identically on both runs, so the replay contract is untouched.
 fn walk_up_the_beach(world: &mut World, seed: u64, slot: usize) {
@@ -516,9 +599,14 @@ fn walk_up_the_beach(world: &mut World, seed: u64, slot: usize) {
     for _ in 0..200 {
         let cx = sim_core::build::build_cell_of(x);
         let cz = sim_core::build::build_cell_of(z);
-        let ax = (cx as f32 + 0.5) * sim_core::build::BUILD_CELL_M;
-        let az = (cz as f32 + 0.5) * sim_core::build::BUILD_CELL_M;
-        if sim_core::build::foundation_terrain_ok(seed, hv(seed), ax, az) {
+        let room = (-1..=1).all(|oz: i32| {
+            (-1..=1).all(|ox: i32| {
+                let ax = (cx as f32 + ox as f32 + 0.5) * sim_core::build::BUILD_CELL_M;
+                let az = (cz as f32 + oz as f32 + 0.5) * sim_core::build::BUILD_CELL_M;
+                sim_core::build::foundation_terrain_ok(seed, hv(seed), ax, az)
+            })
+        });
+        if room {
             break;
         }
         x += dx * sim_core::build::BUILD_CELL_M;
@@ -650,6 +738,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz: cell(b.qz),
                     level: ((t / 106) % 2) as u8,
                     loc: ((t / 53 + id as u64) % 4) as u8,
+                    freehand: false,
                 });
             }
             // The deploy verb too: a bag and a workbench at the player's
@@ -829,6 +918,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: 0,
+                    freehand: false,
                 }),
                 151 => cmds.push(Command::PlaceDeploy {
                     id,
@@ -852,6 +942,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_XLO,
+                    freehand: false,
                 }),
                 153 => cmds.push(Command::PlaceDeploy {
                     id,
@@ -886,6 +977,7 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
                     cz,
                     level: 0,
                     loc: sim_core::build::LOC_EDGE_ZLO,
+                    freehand: false,
                 }),
                 160 | 161 => cmds.push(Command::Upgrade {
                     id,
@@ -1058,9 +1150,12 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
     // build path about as well as one that lands none — and that is
     // exactly what the beach ring did to `SEED ^ 1` before
     // `walk_up_the_beach` staged the kitted bots, while `> 0` stayed
-    // green. Measured this commit at placed 8 / deployed 50 / decayed 28
-    // at `SEED` and 5 / 34 / 18 at `SEED ^ 1`; the floors sit under both,
-    // where thinning stops being incidental and becomes a lost gate.
+    // green. Measured 2026-08-26, after `walk_up_the_beach` started asking
+    // for a buildable 3x3 rather than one cell: placed 8 / deployed 60 /
+    // decayed 40 at `SEED` and 8 / 44 / 34 at `SEED ^ 1` — up on both seeds
+    // from the 7 / 40 / 29 and 6 / 37 / 27 the single-cell probe was getting.
+    // The floors sit under both, where thinning stops being incidental and
+    // becomes a lost gate.
     assert!(
         placed >= 4,
         "the script placed {placed} pieces — the build success path is falling out \
@@ -1187,6 +1282,12 @@ fn test_replay() {
         final_a, GOLDEN_FINAL_HASH,
         "sim behavior drifted from the pinned replay golden; if intentional, \
          regenerate the golden in this same commit"
+    );
+    assert_eq!(
+        trace_of(&hashes_a),
+        GOLDEN_TRACE_HASH,
+        "the run took a different PATH to the same end state; if intentional, \
+         regenerate this golden in the same commit as the change"
     );
 
     // A different seed must actually change the world (guards against a

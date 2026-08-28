@@ -1362,6 +1362,7 @@ fn build_refused_names_the_player_then_why() {
         cz,
         level: GROUND,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     let bad_row = only(&w, EV_BUILD_REFUSED);
     refused(
@@ -1386,6 +1387,7 @@ fn build_refused_names_the_player_then_why() {
         cz,
         level: GROUND,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     let broke = only(&w, EV_BUILD_REFUSED);
     refused(
@@ -1577,6 +1579,7 @@ fn place_piece(w: &mut World, row: u16, cx: u16, cz: u16, level: u8, loc: u8) {
         cz,
         level,
         loc,
+        freehand: false,
     }]);
     assert_eq!(
         w.pieces.len(),

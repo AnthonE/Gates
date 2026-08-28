@@ -35,11 +35,32 @@ Stages, in order — each cheap, each deterministic:
 3. **Domain warp** — one warp pass over the relief lookup; this is the
    single biggest "looks procedural → looks natural" purchase and costs
    two extra noise reads.
-4. **Height remap curve** — a fixed LUT that flattens mid-elevations into
-   **buildable shelves** and steepens the transitions. This curve *is* the
-   game design: it manufactures base spots and the cliffs between them.
-   Ridged-noise blend above the treeline fakes an eroded look without
-   simulating erosion (hydraulic erosion is a post-alpha toy, not a need).
+4. **Height remap curve** — a fixed 17-knot LUT that flattens mid-elevations
+   into **buildable shelves** and steepens the transitions. This curve *is*
+   the game design: it manufactures base spots and the cliffs between them.
+   ⚠ **It is interpolated with a monotone cubic (PCHIP), not `lerp`, and that
+   is load-bearing rather than cosmetic.** A piecewise-linear curve steps its
+   slope at every knot — up to 12× — and the renderer takes its normal
+   analytically from this field's gradient, so each step drew a contour line
+   at a fixed elevation across the whole island. It rendered as a survey map;
+   `sim-core/examples/hillshade` is the picture and `tests/contour.rs` is the
+   gate. The knots did not move (the cubic stays within 2 m of 90).
+4b. **Detail** — three octaves (75 / 37.5 / 18.75 m) added **after** the
+   curve, because a curve that flattens a shelf flattens the fine octaves
+   with it: before this the island's smallest legible feature was ~100 m
+   across. Applied as `land = shelf × (AMPLITUDE + shelf × detail ×
+   DETAIL_AMP)` — multiplicative so `land ≥ 0` holds by construction and no
+   pond appears the water pass cannot draw, squared in `shelf` so the
+   roughness is spent on the highlands and not on the buildable flats and the
+   shoreline disturbance falls to 1.8 cm at the LUT's 2.7 m contour. The floor of 18.75 m is set by
+   `FAR_STEP`: worldgen may not author relief the far mesh cannot resolve.
+   **Ridged multifractal** above the treeline fakes an eroded look without
+   simulating erosion (hydraulic erosion is a post-alpha toy, not a need) —
+   three octaves, each weighted by the one above it so spurs grow on crests
+   and valley floors stay smooth, on a `fade`d height gate rather than a
+   linear clamp (a clamp put two more contour rings at its two rails). This
+   is our answer to what the reference game calls "pseudo-erosion"
+   (Devblog 63).
 5. **Masks** (derived, not stored): slope from finite differences → cliff
    mask (slope > ~50° **(knob)**: unclimbable, unbuildable, distinct
    material); beach mask (height within ~2 m of sea level); moisture =

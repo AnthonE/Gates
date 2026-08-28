@@ -184,6 +184,10 @@ pub const WATCHED: &[&str] = &[
     "snap_entities_shed",
     "forced_resyncs",
     "ev_resyncs",
+    // The sim outran `MAX_EVENTS_PER_TICK`, which resyncs every connected
+    // client at once. Watched where `ev_interest_skipped` is not: a filter
+    // firing is the normal case and this is never one.
+    "ev_sim_dropped",
     "ev_send_errors",
     "actions_bad",
     "chat_bad",

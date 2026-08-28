@@ -129,7 +129,7 @@ fn part(app: &mut App, a: &PropAssets, part: FellPart) -> Entity {
             felled: false,
         },
         Mesh3d(mesh),
-        MeshMaterial3d(a.bark_material().clone()),
+        MeshMaterial3d(a.bark_material(KEY).clone()),
         Transform {
             // The stump sits `STUMP_LIFT_M` above the slot's ground because
             // its mesh is centred on its own axis while the slot's `y` is the

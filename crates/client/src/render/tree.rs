@@ -586,6 +586,17 @@ pub fn needle_image() -> Image {
         }
     }
 
+    // Levels 1..n, coverage-preserved. See [`needle_mips`] for why a plain box
+    // filter is the wrong tool for an alpha-tested mask.
+    let levels = needle_mips(&data, NEEDLE_TEX);
+    let mip_level_count = levels.len() as u32;
+    let chained: Vec<u8> = levels.concat();
+
+    // **Constructed at level 0, then given the chain.** `Image::new` asserts
+    // `data.len() == width · height · block_size` — it describes one mip and
+    // has no parameter for a chain — so handing it the concatenated buffer
+    // panics inside the constructor rather than failing a gate. The descriptor
+    // and the buffer are both plain fields, so the chain is installed after.
     let mut img = Image::new(
         Extent3d {
             width: NEEDLE_TEX,
@@ -600,8 +611,121 @@ pub fn needle_image() -> Image {
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
     );
-    img.sampler = bevy::image::ImageSampler::linear();
+    img.data = Some(chained);
+    img.texture_descriptor.mip_level_count = mip_level_count;
+    // `ImageSampler::linear()` leaves `mipmap_filter` at Nearest, which would
+    // hard-cut between levels on a canopy that is already the highest-frequency
+    // thing in the frame. Trilinear across the chain, tiling off: the card's
+    // UVs are 0..1 and a wrapped needle mask bleeds the far edge into the near.
+    img.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+        mag_filter: bevy::image::ImageFilterMode::Linear,
+        min_filter: bevy::image::ImageFilterMode::Linear,
+        mipmap_filter: bevy::image::ImageFilterMode::Linear,
+        ..default()
+    });
     img
+}
+
+/// Alpha cutoff the canopy's `AlphaMode::Mask` tests against, as a byte.
+///
+/// The cutoff itself is authored in `props.rs`'s foliage material
+/// (`AlphaMode::Mask(0.5)`) and this is the same number as a byte, so the two
+/// can drift; `tests/tree.rs::the_needle_chain_holds_its_coverage` pins them
+/// together. Alpha is linear even in an sRGB-encoded texture — only RGB carries
+/// the transfer function — so 0.5 is 128 and not 188.
+const NEEDLE_MASK_BYTE: u8 = 128;
+
+/// The full mip chain for the needle mask, level 0 first, **coverage-preserved**.
+///
+/// **Why this is not `image::imageops::resize` or a plain box filter.** The
+/// canopy is `AlphaMode::Mask(0.5)`, so what reaches the frame is not the
+/// filtered alpha — it is the *fraction of texels that survive a threshold*.
+/// Box-filtering a sparse mask drives every texel toward the mask's mean, and
+/// the mean of a needle sprig is well under 0.5, so each level loses coverage
+/// against the one above it. Measured with the rescale pinned at 1.0: **level 1
+/// alone keeps 0.53× of level 0's coverage** (0.102 against 0.192), one halving
+/// from full detail, and it compounds down the chain. That reads as a thinning
+/// forest rather than as a filtering artefact, so nobody looks for it in a
+/// texture — `tests/tree.rs::the_needle_chain_holds_its_coverage` is where the
+/// number comes from and is red under exactly that mutant.
+///
+/// The fix is Castaño's: after downsampling, scale the level's alpha so the
+/// share of texels above the cutoff matches level 0's. A bisection on the scale
+/// is enough — coverage is monotonic in it — and 12 steps resolves the scale to
+/// better than one part in 4,000 of the search span, which is finer than the
+/// 1/255 the channel can store anyway.
+///
+/// **This is the whole of the shimmer fix, and the shimmer is why it matters
+/// more than the baldness.** The map shipped with `mip_level_count` at 1, so a
+/// canopy 60 m out sampled a 64² needle mask at roughly one texel per several
+/// pixels with no minification filtering at all — every frame the camera moved,
+/// a different set of needles won the sample. `CLAUDE.md`'s "median fps hides
+/// shader-compile stalls" entry has the general shape of this: a still frame
+/// cannot see it, and every frame this project has ever judged was a still.
+fn needle_mips(level0: &[u8], size: u32) -> Vec<Vec<u8>> {
+    let coverage = |px: &[u8]| -> f32 {
+        let hit = px
+            .chunks_exact(4)
+            .filter(|p| p[3] > NEEDLE_MASK_BYTE)
+            .count();
+        hit as f32 / (px.len() / 4) as f32
+    };
+    let want = coverage(level0);
+
+    let mut out = vec![level0.to_vec()];
+    let mut w = size;
+    while w > 1 {
+        let prev = out.last().expect("out is seeded with level 0");
+        let half = w / 2;
+        let mut next = vec![0u8; (half * half) as usize * 4];
+        for y in 0..half as usize {
+            for x in 0..half as usize {
+                // Box of four. RGB is a constant white across the whole map, so
+                // only alpha carries anything and the average is exact.
+                let mut acc = 0u32;
+                for (dy, dx) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                    let sy = y * 2 + dy;
+                    let sx = x * 2 + dx;
+                    acc += u32::from(prev[(sy * w as usize + sx) * 4 + 3]);
+                }
+                let i = (y * half as usize + x) * 4;
+                next[i] = 255;
+                next[i + 1] = 255;
+                next[i + 2] = 255;
+                next[i + 3] = (acc / 4) as u8;
+            }
+        }
+
+        // Bisect the alpha scale until this level tests to level 0's coverage.
+        // The upper bound is 8: past that the scale is pushing near-empty texels
+        // over the cutoff, which invents needles rather than preserving them,
+        // and the bottom levels are a handful of texels where exact coverage is
+        // unreachable at any scale.
+        let (mut lo, mut hi) = (1.0f32, 8.0f32);
+        for _ in 0..12 {
+            let mid = 0.5 * (lo + hi);
+            let scaled: Vec<u8> = next
+                .chunks_exact(4)
+                .flat_map(|p| {
+                    let a = (f32::from(p[3]) * mid).min(255.0) as u8;
+                    [255, 255, 255, a]
+                })
+                .collect();
+            if coverage(&scaled) < want {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let s = 0.5 * (lo + hi);
+        for p in next.chunks_exact_mut(4) {
+            p[3] = (f32::from(p[3]) * s).min(255.0) as u8;
+        }
+
+        out.push(next);
+        w = half;
+    }
+    out
 }
 
 /// Paint one soft dot of needle into the RGBA buffer, alpha-max blended.

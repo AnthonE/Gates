@@ -33,6 +33,7 @@
 //! generation stamp instead of building a live-key set each frame and
 //! diffing it: mark what the mirror still holds, then `retain` the marked.
 
+use bevy::math::Affine2;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use sim_core::build::{
@@ -54,10 +55,17 @@ use sim_core::terrain;
 use super::textures::MapSet;
 use super::{Net, WorldId};
 
-/// Plane-piece thickness, metres. Cosmetic — the sim's plane is a surface
-/// height and not a slab (`collide.rs`), so this is how thick we *draw* it
-/// and nothing stands on the underside.
-pub const SLAB_T: f32 = 0.3;
+/// Plane-piece thickness, metres — **the sim's number, not a second one**
+/// (`collide::PLANE_THICKNESS_M`).
+///
+/// It said "cosmetic — the sim's plane is a surface height and not a slab, so
+/// this is how thick we *draw* it and nothing stands on the underside", and
+/// every word of that was true until piece flanks v0 (2026-08-21). A plane
+/// has sides now: `collide::plane_blocked` stops a body in exactly this band
+/// below the walk surface. A drawn thickness that disagreed with it would be
+/// a slab you can see and walk through, or one you cannot see and cannot pass
+/// — which is the drawn-vs-collided split this whole lane exists to close.
+pub const SLAB_T: f32 = sim_core::collide::PLANE_THICKNESS_M;
 
 /// The seam a drawn piece leaves at its cell boundary, metres. Without it,
 /// two abutting floors z-fight along their shared edge for the whole length
@@ -79,8 +87,45 @@ pub fn piece_span() -> f32 {
 /// that disagreed with it is exactly what shipped for six days — see [`TIER`].
 pub const N_TIERS: usize = MAT_METAL as usize + 1;
 
+/// One tier's cosmetics: which photograph it wears, how densely that
+/// photograph is laid on a piece, and the two PBR scalars beside it.
+///
+/// **A named struct rather than the five-tuple this row was becoming.** It
+/// grew [`Tier::tiles_per_m`] when the UV density moved off the mesh, and
+/// `CLAUDE.md`'s positional-payload trap is exactly this shape: `gain`,
+/// `roughness`, `metallic` and `tiles_per_m` are four `f32` in a row, and
+/// every gate this file has — a length check against `MAT_METAL`, a band
+/// check per column — stays green when two of them swap places. A field name
+/// is the one thing that does not.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tier {
+    /// The role name under `assets/textures/`: `<role>_{albedo,normal,rough}.jpg`.
+    pub role: &'static str,
+    /// Scalar multiply on the photograph's albedo. 1.0 ships the map's
+    /// measured colour whole, which is what every row does since twig got a
+    /// map of its own — see the table.
+    pub gain: f32,
+    pub roughness: f32,
+    pub metallic: f32,
+    /// Tiles of this tier's photograph per metre of piece surface.
+    ///
+    /// **Per tier, because a photograph has an authored real-world size and
+    /// the four sources do not share one.** This was a single
+    /// `PIECE_UV_PER_M = 0.55` for every tier until 2026-08-22, which drew
+    /// `bark_brown_02` — a 1 m² patch of tree trunk — across 1.82 m of wall,
+    /// and that is most of why a twig base read as *carved out of a log*
+    /// rather than built: it was a photograph of a tree, at 1.8× life size.
+    ///
+    /// It lives on the material rather than in the mesh
+    /// ([`build_kit`] sets `uv_transform`) because the piece meshes are
+    /// deduplicated by `(kind, size)` and SHARED across all four tiers — a
+    /// per-tier density baked into UVs would be four times the meshes. The
+    /// mesh's UV is therefore literally metres ([`quad`]), and this scales it.
+    pub tiles_per_m: f32,
+}
+
 /// Twig, wood, stone, metal — the photograph each tier wears, a scalar gain
-/// over it, perceptual roughness, metallic.
+/// over it, perceptual roughness, metallic, and its tile density.
 ///
 /// **This table had THREE rows against the sim's four materials until
 /// 2026-08-16, and every piece in the game drew one rung off.** `spawn_piece`
@@ -98,32 +143,93 @@ pub const N_TIERS: usize = MAT_METAL as usize + 1;
 /// flat `base_color` — `props.rs` and `viewmodel.rs` have sampled these same
 /// already-shipped, already-manifested CC0 maps since 2026-08-11, and a wall
 /// is the largest flat thing a player ever stands in front of. Paths are
-/// `MapSet::load`'s, so the handles are the ones `PropMaps` already holds:
-/// the asset server keys on path plus settings, and these settings are the
-/// same, so wiring four tiers here costs zero extra residency.
+/// `MapSet::load`'s, so three of the four handles are ones `PropMaps` already
+/// holds: the asset server keys on path plus settings, and these settings are
+/// the same, so those cost zero extra residency.
+///
+/// **Twig wore `bark` until 2026-08-22, and that is the whole of why a base
+/// looked like logs** (operator, on a screenshot: *"we need to work on the
+/// foundation look its like logs or something?"*). `MAT_TWIG` is the state
+/// every piece is FIRST seen in (`build.rs`: *"every piece enters the world
+/// as twig and nothing else"*), so the tier nobody chooses is the tier
+/// everybody sees — and it was wearing `bark_brown_02`, a photograph of a
+/// living tree trunk, complete with moss in its fissures. It read as a tree
+/// because it was one. `MANIFEST.md` had said so as an intention since
+/// 2026-08-12: *"`bark` doubles as tier 0 (twig) … for want of a
+/// straw/lashed-pole set."* The want is filled — `twig` is Poly Haven
+/// `bamboo_wall` (CC0), lashed vertical poles, which is what the reference's
+/// twig tier actually is. `bark` stays, on trees.
 ///
 /// **The gain is scalar and that is what makes it legal.** `ART.md` §7 bounds
 /// a per-channel gain to stretching a source's colour deviation by at most
 /// ×1; a scalar has span **1.000 by construction**, the same argument
-/// `GROUND_DETAIL_GAIN` is built on. Only twig carries one: it wears `bark`,
-/// which is the literal surface of a stick but measures luma 0.107 — darker
-/// than `wood` at 0.141, where the reference reads a twig frame as the PALER
-/// of the two. ×1.6 lands it at 0.171, between wood and stone, and clips
-/// 0.004% of texels (measured on the shipped file, 2026-08-16). The other
-/// three ship their colour whole, `base_color` white, exactly as the props do.
+/// `GROUND_DETAIL_GAIN` is built on. **No row carries one now.** Twig was the
+/// only one that did, and its ×1.6 existed to drag `bark`'s luma 0.107 up to
+/// 0.171 so a twig frame would read as the PALER of the first two tiers, the
+/// way the reference has it. `bamboo_wall` measures **0.167** off the shipped
+/// file — pale of `wood`'s 0.141 on its own, with a gain of exactly 1.0. A
+/// number that had to be engineered stopped needing to be, which is the tell
+/// that the map was the wrong map and not the gain the wrong gain. All four
+/// tiers now ship their colour whole, `base_color` white, as the props do.
 ///
 /// Roughness stays a scalar for the reason `props.rs` states: the `_rough`
 /// files are greyscale jpgs and `metallic_roughness_texture` is a glTF-packed
 /// ORM slot whose B channel is metallic, so binding one here would make every
 /// wall a half-metal. That needs a packing step, not a slot assignment.
-const TIER: [(&str, f32, f32, f32); N_TIERS] = [
-    // twig · lashed poles and thatch. The roughest thing in the game.
-    ("bark", 1.6, 0.95, 0.0),
-    ("wood", 1.0, 0.88, 0.0),
-    ("stone", 1.0, 0.72, 0.0),
+/// **Every density below is the source's own published physical size, or
+/// says why it is not.** `tiles_per_m = 1000 / <the map's authored mm>` is a
+/// measurement of the file, not a taste call, and it is the number that makes
+/// a photograph read as the material it is a photograph of. Poly Haven
+/// publishes it per asset (`api.polyhaven.com/info/<slug>` → `dimensions`);
+/// ambientCG publishes it for some assets and not others, and the two rows
+/// that inherit the old 0.55 are the two it does not settle — each with the
+/// cross-check that says 0.55 is nonetheless the right size for that surface.
+const TIER: [Tier; N_TIERS] = [
+    // twig · lashed poles. The roughest thing in the game.
+    // `bamboo_wall` is authored at 2000 mm → 0.5. At that density its poles
+    // draw ~4 cm across, which is a sapling — a frame you could lash by hand,
+    // which is the read the tier wants.
+    Tier {
+        role: "twig",
+        gain: 1.0,
+        roughness: 0.95,
+        metallic: 0.0,
+        tiles_per_m: 0.5,
+    },
+    // wood · `brown_planks_03`, authored at 1000 mm → 1.0. That puts a plank
+    // at ~11 cm, against a real deck board's 10–15. At the old shared 0.55 it
+    // drew at 20 cm, which is a beam pretending to be a plank.
+    Tier {
+        role: "wood",
+        gain: 1.0,
+        roughness: 0.88,
+        metallic: 0.0,
+        tiles_per_m: 1.0,
+    },
+    // stone · `Bricks089`, published 2200 × 1100 mm — NOT square, and the
+    // file we ship is 1024², so the authored scale did not survive the fetch
+    // and there is no honest ratio to take. Keeping 0.55 is the measured
+    // answer anyway: it puts a course at ~23 cm over the map's ~8 courses,
+    // which is field-stone size.
+    Tier {
+        role: "stone",
+        gain: 1.0,
+        roughness: 0.72,
+        metallic: 0.0,
+        tiles_per_m: 0.55,
+    },
+    // metal · `CorrugatedSteel009` publishes no physical size at all
+    // (`dimensionX`/`Y` are 0). Counted instead: ~22 ribs across the map, so
+    // 0.55 lands the corrugation pitch at ~83 mm against a real profile's 76.
     // The one conductor: `ART.md` reads the reference's tier as *sheen* as
     // much as hue, and a tier told apart by colour alone reads as paint.
-    ("metal", 1.0, 0.38, 0.85),
+    Tier {
+        role: "metal",
+        gain: 1.0,
+        roughness: 0.38,
+        metallic: 0.85,
+        tiles_per_m: 0.55,
+    },
 ];
 
 /// How far through the damage response a band sits: 0 at untouched, 1 at the
@@ -133,30 +239,32 @@ pub fn damage_mix(band: u8) -> f32 {
     band.min(DMG_BANDS - 1) as f32 / (DMG_BANDS - 1) as f32
 }
 
-/// One tier's cosmetics: texture role, scalar gain, roughness, metallic.
+/// One tier's cosmetics.
 ///
 /// Public so `tests/pieces.rs` can gate the thing that actually broke — that
 /// every material the sim can send resolves to its OWN row, and that the role
 /// it names is a file that exists. A private table clamped by `.min(2)` is
 /// how four materials became three paints for six days.
-pub fn tier(material: u8) -> (&'static str, f32, f32, f32) {
+pub fn tier(material: u8) -> Tier {
     TIER[(material as usize).min(N_TIERS - 1)]
 }
 
-/// Tiles of a tier's photograph per metre of piece surface.
+/// What one unit of a piece mesh's UV is worth, in metres of surface: one.
 ///
 /// **A piece mesh carried 0..1 UVs per face until 2026-08-16**, which is one
 /// tile stretched over a 3 m wall — the failure `textures.rs` records for the
 /// terrain, where a map that does not repeat "reads as no texture at all
 /// rather than as an error, so nothing would say so".
 ///
-/// 0.5 is the authored structures' number (`props::authored`, the shelter and
-/// the canopy — the nearest thing in the tree to a built wall), and it puts a
-/// 1K map's texel at ~2 mm, well inside `ART.md` rule 1's < 5 cm near-field
-/// grain. It is deliberately NOT a whole number of tiles across a 3 m cell:
-/// at 0.5 a tile boundary would land exactly on every piece edge, which is
-/// rule 7's visible tiling drawn at the one place the eye is already looking.
-pub const PIECE_TILES_PER_M: f32 = 0.55;
+/// It then carried a shared `0.55` tiles/m for every tier until 2026-08-22,
+/// which is the constant this replaces. The density is a property of the
+/// PHOTOGRAPH — each has its own authored real-world size — so it belongs on
+/// the tier ([`Tier::tiles_per_m`], applied as the material's `uv_transform`),
+/// and what belongs in the mesh is the only thing all four tiers agree about:
+/// how big the surface is. So the UV is metres, this constant is 1.0, and it
+/// stays a named constant rather than a bare `1.0` because it is what
+/// `tests/pieces.rs` §B holds the two builders to — the unit is the claim.
+pub const PIECE_UV_PER_M: f32 = 1.0;
 
 /// The per-face albedo multipliers a piece mesh carries in its vertices: top,
 /// side, bottom. A mean-1 LUMINANCE field, so it modulates the photograph
@@ -353,12 +461,28 @@ struct Live {
     /// forever: this loop redraws on a CHANGE, and a change nobody records
     /// is a change nobody notices.
     dmg: u8,
+    /// The plate it was drawn at (build plate v1).
+    ///
+    /// **It is redraw state for the DEPLOY store and not for the piece one**,
+    /// and the asymmetry is the wire's. A piece record carries its own plate
+    /// (`protocol::event::write_piece_rec`), so a piece can never be drawn
+    /// before the plate that places it. A deployable's does not — it reads its
+    /// column's plate out of the piece mirror — so a deploy sync that lands
+    /// before its column's pieces would draw a furnace on the terrain the base
+    /// is stilted over and, without this, keep it there: the loop redraws on a
+    /// change, and the plate was not one of the things it compared.
+    plate: i8,
 }
 
 /// Shared meshes and materials, built once on first use. A base is hundreds
 /// of pieces over five shapes and three materials; one `StandardMaterial`
 /// per piece would be one draw call per piece.
-struct Kit {
+/// The shared mesh/material pool for pieces and deployables.
+///
+/// `pub` for `tests/fire.rs`, the same reason `props::PropAssets` is: the
+/// question "does a burnable deployable get a light child" can only be answered
+/// by running the real spawn, and the real spawn needs the real pool.
+pub struct Kit {
     /// One mesh per (shape, part), sized from [`shape_parts`] — the one
     /// table — and deduplicated by size, so the doorway's two posts share a
     /// mesh and the three slab shapes share one slab.
@@ -424,8 +548,23 @@ impl StructRing {
 /// silently drawn every floor off the surface the sim walks players on. It
 /// calls the sim's one implementation now; the storey term is the only
 /// arithmetic left here.
-pub fn level_base_y(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, level: u8) -> f32 {
-    sim_core::build::column_floor_y(seed, haven, cx, cz) + level as f32 * LEVEL_H_M
+///
+/// **`plate` is the column's stored floor offset** (build plate v1,
+/// `build::plate_for`), and it is a parameter rather than a lookup for the
+/// reason every emit in this file takes its address: the caller knows which
+/// column it is drawing and where its plate came from — a standing piece
+/// carries it on the record, and the ghost asks `plate_for` for the one a
+/// placement WOULD get. A lookup here would make a preview impossible to
+/// draw, because the column it previews does not exist yet.
+pub fn level_base_y(
+    seed: u64,
+    haven: &terrain::Haven,
+    cx: u16,
+    cz: u16,
+    level: u8,
+    plate: i8,
+) -> f32 {
+    sim_core::build::column_floor_y(seed, haven, cx, cz, plate) + level as f32 * LEVEL_H_M
 }
 
 /// The world XZ of a cell's centre.
@@ -436,10 +575,61 @@ pub fn cell_center(cx: u16, cz: u16) -> (f32, f32) {
     )
 }
 
-/// How far a stairs ramp runs in Z, metres. Shared with the build ghost for
-/// the same reason the doorway numbers are: a preview the wrong length is a
-/// preview of a different piece.
-pub const STAIRS_RUN_M: f32 = 4.15;
+/// The stair ramp's pitch, radians — the slope of the surface the sim
+/// actually stands a player on, derived rather than typed.
+///
+/// **This was `FRAC_PI_4` until 2026-08-21 and it was right by coincidence.**
+/// `collide::piece_ground` walks a rider up `floor + frac·LEVEL_H_M` across
+/// `BUILD_CELL_M` of z, so the sim's ramp rises `LEVEL_H_M` per `BUILD_CELL_M`
+/// — 45° only while those two numbers are equal, which they are today and
+/// which nothing enforces. A literal 45° here is the hand-kept mirror
+/// `CLAUDE.md` warns about twice: move the storey height and the drawn tread
+/// silently stops being the walked one, with every gate in the repo green.
+pub fn stairs_pitch() -> f32 {
+    LEVEL_H_M.atan2(BUILD_CELL_M)
+}
+
+/// How far a stairs ramp runs along its own slope, metres — the cell's
+/// diagonal, so the tread's z extent is exactly the cell and its rise is
+/// exactly the storey.
+///
+/// Shared with the build ghost for the same reason the doorway numbers are: a
+/// preview the wrong length is a preview of a different piece. It was a typed
+/// 4.15 m, which is 0.09 m short of the diagonal — so the drawn tread stopped
+/// 0.066 m below the storey it delivers you to.
+pub fn stairs_run() -> f32 {
+    (BUILD_CELL_M * BUILD_CELL_M + LEVEL_H_M * LEVEL_H_M).sqrt()
+}
+
+/// Where the ramp slab's centre goes, relative to the piece's base point, so
+/// that the slab's **top face** is the line the sim walks a player up: the
+/// storey's mid-point, pushed half a thickness along the ramp's own DOWNWARD
+/// normal.
+///
+/// **This is the 0.212 m the stairs were wrong by** (measured 2026-08-21,
+/// `tests/lattice_geom.rs` §A). The part was centred on the storey's
+/// mid-height, which puts the ramp's *centre plane* on the sim's surface and
+/// its top face `SLAB_T / (2·cos θ)` above it — a uniform 21 cm of tread the
+/// player's feet were inside for the whole climb. A slab has a thickness and
+/// the sim's ramp has none, so which of the slab's faces is the surface is a
+/// decision rather than a detail: it is the top one, because that is the face
+/// a player sees themselves standing on.
+///
+/// **Half a thickness DOWN-NORMAL, not half a thickness down.** Dropping the
+/// centre vertically puts the top face on the right line and slides it
+/// `(SLAB_T/2)·sin θ` down that line — the tread then overhangs the cell
+/// below by 0.106 m and stops 0.106 m short of the storey it delivers you to.
+/// The normal offset moves the face onto the line and leaves it spanning
+/// exactly `z ∈ [0, BUILD_CELL_M]`, `y ∈ [0, LEVEL_H_M]`, which is exactly
+/// what `collide::piece_ground` ramps over.
+pub fn stairs_offset() -> Vec3 {
+    let (sin, cos) = stairs_pitch().sin_cos();
+    Vec3::new(
+        0.0,
+        LEVEL_H_M * 0.5 - SLAB_T * 0.5 * cos,
+        SLAB_T * 0.5 * sin,
+    )
+}
 
 /// The doorway's lintel: how tall it is, and how far its centre sits below the
 /// piece's own mid-height.
@@ -598,9 +788,9 @@ pub fn shape_parts(shape: u8) -> ([Part; MAX_PARTS], usize) {
                 // always rises toward +Z (cosmetic v0 — the browser's choice
                 // too), pitched the way the standing piece has always been.
                 Part {
-                    size: Vec3::new(span, SLAB_T, STAIRS_RUN_M),
-                    offset: Vec3::new(0.0, LEVEL_H_M * 0.5, 0.0),
-                    x_rot: -std::f32::consts::FRAC_PI_4,
+                    size: Vec3::new(span, SLAB_T, stairs_run()),
+                    offset: stairs_offset(),
+                    x_rot: -stairs_pitch(),
                     kind: PartKind::Box,
                 },
                 none,
@@ -781,9 +971,16 @@ pub fn skirt_step(raw: f32) -> (usize, f32) {
 /// its base and the volume below it blocks nothing (`NOW.md` carries the
 /// residual). The top face is unmoved, so nothing about where a player
 /// stands changed with the skirt's depth.
-pub fn foundation_part(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, tri: bool) -> Part {
+pub fn foundation_part(
+    seed: u64,
+    haven: &terrain::Haven,
+    cx: u16,
+    cz: u16,
+    tri: bool,
+    plate: i8,
+) -> Part {
     let span = piece_span();
-    let (_, depth) = footing_of(seed, haven, cx, cz);
+    let (_, depth) = footing_of(seed, haven, cx, cz, plate);
     Part {
         size: Vec3::new(span, depth, span),
         offset: Vec3::new(0.0, -depth * 0.5, 0.0),
@@ -807,8 +1004,8 @@ pub fn foundation_part(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, tri:
 /// surfaces — a foundation that floats or buries itself on an authored site.
 /// That is why this function grew a `haven`: the split above arrived on main
 /// in the same window the carve landed here, and each half is correct alone.
-pub fn footing_of(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16) -> (usize, f32) {
-    let base = sim_core::build::column_floor_y(seed, haven, cx, cz);
+pub fn footing_of(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, plate: i8) -> (usize, f32) {
+    let base = sim_core::build::column_floor_y(seed, haven, cx, cz, plate);
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
     // The lowest ground under the cell: four corners and the centre. Five
@@ -835,7 +1032,7 @@ pub fn footing_of(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16) -> (usize
 /// Both builders emit the four things a piece needs and none of which it had
 /// before 2026-08-16, each of which fails SILENTLY when absent:
 ///
-/// 1. **Metre-scaled UVs** ([`PIECE_TILES_PER_M`]) instead of 0..1 per face —
+/// 1. **Metre-scaled UVs** ([`PIECE_UV_PER_M`]) instead of 0..1 per face —
 ///    a stretched tile reads as no texture, not as an error.
 /// 2. **Per-face vertex tint** ([`FACE_TOP`] and friends), the mean-1 field
 ///    that separates a slab's top from its sides.
@@ -872,8 +1069,8 @@ fn quad(b: &mut Buffers, corners: [Vec3; 4], n: Vec3, tint: impl Fn(Vec3) -> f32
     // Edge lengths in metres, straight off the corners, so a face whose
     // extent is not axis-aligned (the prism's hypotenuse) is still measured
     // rather than assumed.
-    let du = (corners[1] - corners[0]).length() * PIECE_TILES_PER_M;
-    let dv = (corners[3] - corners[0]).length() * PIECE_TILES_PER_M;
+    let du = (corners[1] - corners[0]).length() * PIECE_UV_PER_M;
+    let dv = (corners[3] - corners[0]).length() * PIECE_UV_PER_M;
     for (i, c) in corners.iter().enumerate() {
         pos.push([c.x, c.y, c.z]);
         nor.push([n.x, n.y, n.z]);
@@ -960,13 +1157,28 @@ fn box_mesh(size: Vec3) -> Mesh {
     let h = size * 0.5;
     let mut b = buffers(24);
     // (normal, u, v) with u × v = normal — see [`quad`].
+    //
+    // **v is UP on all four uprights, and it was not until 2026-08-22.** The
+    // old +x row was `(u = Y, v = Z)` and the old −z row `(u = Y, v = X)`, so
+    // those two faces carried the map turned a quarter-turn against the other
+    // two. Both rows satisfied `u × v = n` — the only thing stated here, and
+    // the only thing anything checked — so nothing was wrong except the
+    // picture: on a box wearing a DIRECTIONAL map, half a base's walls ran
+    // their grain vertically and half ran it horizontally. Invisible while
+    // every tier wore tree bark, which is directional but reads as noise;
+    // immediately visible on planks or lashed poles, which is what the tiers
+    // wear now. Gated by `tests/pieces.rs` §B.
+    //
+    // Solved rather than tried: fixing v = Y leaves u = ±(Y × n), which is
+    // −Z, +Z, +X, −X for +x, −x, +z, −z. The caps keep their own frame; a
+    // horizontal surface has no up to agree about.
     for (n, u, v) in [
         (Vec3::Y, Vec3::Z, Vec3::X),
         (Vec3::NEG_Y, Vec3::X, Vec3::Z),
-        (Vec3::X, Vec3::Y, Vec3::Z),
+        (Vec3::X, Vec3::NEG_Z, Vec3::Y),
         (Vec3::NEG_X, Vec3::Z, Vec3::Y),
         (Vec3::Z, Vec3::X, Vec3::Y),
-        (Vec3::NEG_Z, Vec3::Y, Vec3::X),
+        (Vec3::NEG_Z, Vec3::NEG_X, Vec3::Y),
     ] {
         let c = n * h;
         let (hu, hv) = ((u * h).length(), (v * h).length());
@@ -1007,10 +1219,7 @@ fn tri_prism_mesh(size: Vec3) -> Mesh {
             pos.push([p.x, y, p.z]);
             nor.push([0.0, ny, 0.0]);
             col.push([t, t, t, 1.0]);
-            uv.push([
-                (p.x + h.x) * PIECE_TILES_PER_M,
-                (p.z + h.z) * PIECE_TILES_PER_M,
-            ]);
+            uv.push([(p.x + h.x) * PIECE_UV_PER_M, (p.z + h.z) * PIECE_UV_PER_M]);
         }
         if wind {
             idx.extend([base, base + 1, base + 2]);
@@ -1025,13 +1234,21 @@ fn tri_prism_mesh(size: Vec3) -> Mesh {
     for (p0, p1) in [(a, b), (c, a), (b, c)] {
         let e = p1 - p0;
         let n = Vec3::new(e.z, 0.0, -e.x).normalize();
+        // Corner 0 → 3 is the quad's v axis, and it runs UP — the same
+        // invariant `box_mesh`'s frame table states, held here by starting at
+        // the far foot rather than the near head. The rim used to run
+        // head-to-foot, which is v pointing DOWN: legal, correctly wound, and
+        // a quarter-turn's worth of the same disagreement `box_mesh` carried
+        // between its own faces — a prism roof drawing its poles upside down
+        // against the wall it meets. Starting at `p1` rather than `p0` is what
+        // keeps `u × v = n` with v flipped; see the winding note in [`quad`].
         quad(
             &mut buf,
             [
-                p0 + Vec3::Y * h.y,
-                p1 + Vec3::Y * h.y,
                 p1 - Vec3::Y * h.y,
                 p0 - Vec3::Y * h.y,
+                p0 + Vec3::Y * h.y,
+                p1 + Vec3::Y * h.y,
             ],
             n,
             |p| face_tint(n, p.y, -h.y, h.y),
@@ -1045,9 +1262,14 @@ fn tri_prism_mesh(size: Vec3) -> Mesh {
 /// edge carries. Shared with the build ghost for the reason the parts are:
 /// the ghost and the piece it becomes must be the same object in the same
 /// pose, and edge canonicalisation written twice is how they stop being.
-pub fn base_transform(seed: u64, haven: &terrain::Haven, (cx, cz, level, loc): Addr) -> Transform {
+pub fn base_transform(
+    seed: u64,
+    haven: &terrain::Haven,
+    (cx, cz, level, loc): Addr,
+    plate: i8,
+) -> Transform {
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, SQRT_2};
-    let base_y = level_base_y(seed, haven, cx, cz, level);
+    let base_y = level_base_y(seed, haven, cx, cz, level, plate);
     let (cxm, czm) = cell_center(cx, cz);
     // Triangles and diagonals are one drawn object each under a turn of
     // the root (triangles v0): the four halves are the NW prism at 0,
@@ -1118,7 +1340,8 @@ pub const DEPLOY_ASSET: [Option<&str>; DEPLOY.len()] = [
     None, // 11 workbench 3 — greybox
 ];
 
-fn build_kit(
+/// Build the pool. `pub` for the same reason [`Kit`] is.
+pub fn build_kit(
     assets: &AssetServer,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -1127,22 +1350,29 @@ fn build_kit(
     // hue — the map ships its own colour, and a coloured multiply here would
     // be the per-channel gain `ART.md` §7 bounds (see [`TIER`]).
     let tier = std::array::from_fn(|i| {
-        let (role, gain, perceptual_roughness, metallic) = TIER[i];
-        let map = MapSet::load(assets, role);
+        let t = TIER[i];
+        let map = MapSet::load(assets, t.role);
+        // The tile density, as a scale on every UV this material samples with
+        // — base colour AND normal AND roughness, which is what keeps the
+        // relief registered with the colour. Uniform, so the tangent frame
+        // `finish` generated is still the right one; a non-uniform scale here
+        // would shear it and the normal map would light wrong.
+        let uv_transform = Affine2::from_scale(Vec2::splat(t.tiles_per_m));
         // The maps are loaded ONCE per tier and cloned into all eight bands
         // — `MapSet::load` inside the band loop would be eight identical
         // paths and eight identical settings, which the asset server would
         // dedupe anyway, but relying on that to avoid eight loads is
         // relying on a cache for correctness of cost.
         std::array::from_fn(|band| {
-            let t = damage_mix(band as u8);
-            let g = gain * (1.0 + (DMG_DARKEST - 1.0) * t);
+            let hurt = damage_mix(band as u8);
+            let g = t.gain * (1.0 + (DMG_DARKEST - 1.0) * hurt);
             materials.add(StandardMaterial {
                 base_color: Color::linear_rgb(g, g, g),
                 base_color_texture: Some(map.albedo.clone()),
                 normal_map_texture: Some(map.normal.clone()),
-                perceptual_roughness: (perceptual_roughness + DMG_ROUGHEN * t).min(1.0),
-                metallic,
+                perceptual_roughness: (t.roughness + DMG_ROUGHEN * hurt).min(1.0),
+                metallic: t.metallic,
+                uv_transform,
                 ..default()
             })
         })
@@ -1331,7 +1561,7 @@ pub fn stream(
             // An upgrade keeps the address and changes the row; a raid keeps
             // both and changes the band. Both are redraws, and the band is
             // the one that moves while the player is standing there.
-            if live.row == rec.row && live.dmg == rec.dmg {
+            if live.row == rec.row && live.dmg == rec.dmg && live.plate == rec.plate {
                 continue;
             }
             commands.entity(live.entity).despawn();
@@ -1347,6 +1577,7 @@ pub fn stream(
             def.shape,
             def.material,
             rec.dmg,
+            rec.plate,
         );
         ring.pieces.insert(
             key,
@@ -1357,6 +1588,7 @@ pub fn stream(
                 open: false,
                 locked: false,
                 dmg: rec.dmg,
+                plate: rec.plate,
             },
         );
     }
@@ -1375,6 +1607,11 @@ pub fn stream(
             continue;
         }
         let key = (rec.cx, rec.cz, rec.level, rec.loc);
+        // The column's plate, from the piece mirror the predictor already
+        // keeps — a deployable's own record does not carry one
+        // (`protocol::event::write_deploy_rec` says why). An unbuilt column
+        // is a ground placement and answers 0, the terrain rule.
+        let plate = core.pieces.cols().plate(rec.cx, rec.cz).unwrap_or(0);
         if let Some(live) = ring.deploys.get_mut(&key) {
             live.seen = gen;
             // A door swing and a lock are both redraws at one address.
@@ -1387,14 +1624,18 @@ pub fn stream(
             // this store either way — that is the wire's doing, not the
             // renderer's. When deployables get a damage response, this line
             // and `Live::dmg` below change together.
-            if live.row == rec.row && live.open == rec.open && live.locked == rec.locked {
+            if live.row == rec.row
+                && live.open == rec.open
+                && live.locked == rec.locked
+                && live.plate == plate
+            {
                 continue;
             }
             commands.entity(live.entity).despawn();
             ring.deploys.remove(&key);
         }
         let arch = core.deploy_defs.defs[rec.row as usize].arch;
-        let entity = spawn_deploy(&mut commands, kit, seed, haven, rec, arch);
+        let entity = spawn_deploy(&mut commands, kit, seed, haven, rec, arch, plate);
         ring.deploys.insert(
             key,
             Live {
@@ -1404,6 +1645,7 @@ pub fn stream(
                 open: rec.open,
                 locked: rec.locked,
                 dmg: 0,
+                plate,
             },
         );
     }
@@ -1446,6 +1688,9 @@ pub fn stream(
                 open: false,
                 locked: false,
                 dmg: 0,
+                // A bag carries a quantized world position, so it has no
+                // column and no plate to be drawn against.
+                plate: 0,
             },
         );
     }
@@ -1468,6 +1713,7 @@ fn spawn_piece(
     shape: u8,
     material: u8,
     dmg: u8,
+    plate: i8,
 ) -> Entity {
     // Clamped, not `.min(2)`: the table covers every material the sim has
     // (`N_TIERS`, gated in `tests/pieces.rs` §A), so this only catches a
@@ -1480,7 +1726,7 @@ fn spawn_piece(
     // boundary — canonical, so one physical edge is never addressable twice
     // (`build.rs`) — and the parts are the shared table's, so this and the
     // build ghost are the same object in the same pose.
-    let root = base_transform(seed, haven, addr);
+    let root = base_transform(seed, haven, addr, plate);
 
     // A foundation's one part is per-address — the terrain-following skirt
     // ([`foundation_part`], the shared emit the ghost also draws) — so it
@@ -1491,11 +1737,18 @@ fn spawn_piece(
         shape,
         sim_core::build::SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION
     ) {
-        let part = foundation_part(seed, haven, addr.0, addr.1, shape == SHAPE_TRI_FOUNDATION);
+        let part = foundation_part(
+            seed,
+            haven,
+            addr.0,
+            addr.1,
+            shape == SHAPE_TRI_FOUNDATION,
+            plate,
+        );
         // The mesh is picked by the same call that sized the part, and it is
         // already true-size — so the transform carries NO scale, which is
         // what lets the skirt wear a metre-scaled texture at all.
-        let (step, _) = footing_of(seed, haven, addr.0, addr.1);
+        let (step, _) = footing_of(seed, haven, addr.0, addr.1, plate);
         let mesh = kit.footing[step][usize::from(part.kind == PartKind::Tri)].clone();
         return commands
             .spawn((
@@ -1556,11 +1809,12 @@ pub fn deploy_transform(
     addr: Addr,
     arch: u8,
     open: bool,
+    plate: i8,
 ) -> Transform {
     let idx = (arch as usize).min(DEPLOY.len() - 1);
     let [_, h, d] = DEPLOY[idx].0;
     let (cx, cz, level, loc) = addr;
-    let base_y = level_base_y(seed, haven, cx, cz, level);
+    let base_y = level_base_y(seed, haven, cx, cz, level, plate);
     let (cxm, czm) = cell_center(cx, cz);
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
@@ -1581,13 +1835,19 @@ pub fn deploy_transform(
     }
 }
 
-fn spawn_deploy(
+/// Public for `tests/fire.rs`, and for the reason `props::spawn_slot` is:
+/// whether a burnable deployable gets a light child is a SPAWN-SHAPE claim, and
+/// a spawn is not type-checked. Drop the `with_child` and every other gate in
+/// this crate stays green over a shard where no fire lights anything.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_deploy(
     commands: &mut Commands,
     kit: &Kit,
     seed: u64,
     haven: &terrain::Haven,
     rec: &DeployRec,
     arch: u8,
+    plate: i8,
 ) -> Entity {
     let idx = (arch as usize).min(DEPLOY.len() - 1);
     let transform = deploy_transform(
@@ -1596,6 +1856,7 @@ fn spawn_deploy(
         (rec.cx, rec.cz, rec.level, rec.loc),
         arch,
         rec.open,
+        plate,
     );
 
     let mat = if arch == ARCH_DOOR && rec.locked {
@@ -1604,14 +1865,151 @@ fn spawn_deploy(
         kit.deploy_mat[idx].clone()
     };
 
-    commands
-        .spawn((
-            super::WorldEntity,
-            Mesh3d(kit.deploy_mesh[idx].clone()),
-            MeshMaterial3d(mat),
-            transform,
-        ))
-        .id()
+    let mut e = commands.spawn((
+        super::WorldEntity,
+        Mesh3d(kit.deploy_mesh[idx].clone()),
+        MeshMaterial3d(mat),
+        transform,
+    ));
+    // A thing that burns gets a light, hung as a child and dark until the sim
+    // says the fire is lit. See [`FireLight`].
+    if burns(arch) {
+        e.with_child((
+            FireLight {
+                cx: rec.cx,
+                cz: rec.cz,
+                level: rec.level,
+            },
+            PointLight {
+                color: FIRE_COLOR,
+                intensity: 0.0,
+                range: FIRE_RANGE_M,
+                shadows_enabled: false,
+                ..default()
+            },
+            Transform::from_xyz(0.0, FIRE_LIGHT_LIFT_M, 0.0),
+        ));
+    }
+    e.id()
+}
+
+/// Archetypes that burn, as opposed to archetypes that merely convert.
+///
+/// **Narrower than [`is_converter`] on purpose**: that predicate covers the
+/// recycler, which `oven::toggle` switches through the same verb and which
+/// therefore appears in `ClientCore::ovens()` exactly as a campfire does. A
+/// recycler is a machine with a motor in it and putting a warm flickering
+/// light inside one would be this module inferring *fire* from *running*.
+pub fn burns(arch: u8) -> bool {
+    matches!(arch, ARCH_FIRE | ARCH_FURNACE)
+}
+
+/// The light a lit fire casts. Hung on every burnable deployable at spawn and
+/// left at zero intensity until the sim says that address is alight.
+///
+/// **There was no dynamic light of any kind in this client.** `PointLight`,
+/// `SpotLight` and a non-black `emissive` all returned zero across
+/// `crates/client/src` — one directional sun, one hemisphere fill baked into a
+/// cubemap, and nothing else. So a lit campfire cooked meat, made a crackling
+/// sound and did not put one photon on the ground beside it, and night was ten
+/// minutes in eighty of a uniform 60-lux `AmbientLight` (`rig::NIGHT_AMBIENT_
+/// LUX`) that `fill.rs`'s own header proves is direction-free.
+///
+/// **It needs no wire change, which is why it is a small slice rather than a
+/// `PROTO_VER` bump.** `DeployRec` carries no burning bit — but it does not
+/// have to: `EV_OVEN` announces lit/unlit per address, `ClientCore` keeps the
+/// set in `LitOvens`, and `verbs.rs` already reads it to decide what the
+/// crosshair says. This reads the same set.
+///
+/// Shadows are OFF. A shadow-casting point light is six faces of re-rasterised
+/// geometry per fire, `rig.rs` already spends four cascades on the sun, and a
+/// base with six lit furnaces would multiply that for a light whose whole job
+/// is a warm pool on the floor.
+///
+/// **It carries its own address rather than reading its parent's.** The light
+/// is a child of the deployable so it inherits the pose, and the alternative —
+/// a `ChildOf` hop into a second query — needs an address component on the
+/// deployable that nothing else wants. Three fields on the marker is the whole
+/// of it, and the fire's address never changes: a deployable that moves is a
+/// deployable that was despawned and respawned.
+#[derive(Component)]
+pub struct FireLight {
+    pub cx: u16,
+    pub cz: u16,
+    pub level: u8,
+}
+
+/// Fire colour. Not authored: `DEPLOY`'s own fire-pit row already carries
+/// `Color::srgb(0.816, 0.439, 0.188)` as the greybox tint that stood in for the
+/// mesh, which is a measured ember orange this file has been carrying since
+/// before there was a model. Reused rather than re-picked so the light and the
+/// thing it comes out of cannot drift.
+const FIRE_COLOR: Color = Color::srgb(1.0, 0.62, 0.28);
+
+/// How far the pool of light reaches, metres. **(knob)**
+///
+/// A campfire is not a floodlight: past a few metres its contribution is under
+/// the night ambient and all the range buys is more fragments touched. Six
+/// metres covers the cell it stands in and the bodies around it.
+const FIRE_RANGE_M: f32 = 6.0;
+
+/// Lumens when lit. **(knob)** Bevy's `PointLight` is in lumens and its own
+/// docs put a lightbulb near 1,000; a campfire is dimmer and warmer, and this
+/// has to sit far enough under `rig::lux::DIRECT_SUNLIGHT` that a fire in
+/// daylight is not a second sun. Registered in `DECISIONS.md` §open.
+const FIRE_LUMENS: f32 = 900.0;
+
+/// How far above the deployable's own origin the flame sits, metres. The
+/// origin is the centre of the archetype's box, so a light at zero is inside
+/// the fire ring rather than above it.
+const FIRE_LIGHT_LIFT_M: f32 = 0.35;
+
+/// Drive every fire light off the lit set the sim announces.
+///
+/// Reads the whole mirror rather than the change slice, for the reason
+/// `structures.rs` states at the top of this file: a resync restates the world
+/// and a renderer driven off deltas has to reproduce that state machine or
+/// leave a fire burning that the server put out. Reading the set makes the
+/// desync impossible by construction, and the set is capped (`MAX_BOXES`).
+///
+/// No per-frame allocation: the address rides the marker and `LitOvens::is_lit`
+/// is a linear scan of a bounded array.
+pub fn fire_lights(net: NonSend<super::Net>, q: Query<(&FireLight, &mut PointLight)>) {
+    if q.is_empty() {
+        return;
+    }
+    // The session is read through a predicate so the sweep below is testable
+    // without a socket — `props::harvest` / `apply_fell` is the same split for
+    // the same reason, and `LitOvens` is the authority exactly as
+    // `HarvestedSet` is there.
+    let ovens = net.session.core.ovens();
+    apply_fire_lights(q, &|cx, cz, level| ovens.is_lit(cx, cz, level));
+}
+
+/// [`fire_lights`] with the lit set as a predicate. The half a gate can drive.
+pub fn apply_fire_lights(
+    mut q: Query<(&FireLight, &mut PointLight)>,
+    lit: &dyn Fn(u16, u16, u8) -> bool,
+) {
+    for (fire, mut light) in q.iter_mut() {
+        let want = if lit(fire.cx, fire.cz, fire.level) {
+            FIRE_LUMENS
+        } else {
+            0.0
+        };
+        // Assign only on a change: `PointLight` is `Changed`-tracked and the
+        // render world re-extracts what moved, so writing the same lumens every
+        // frame would re-upload every fire on the shard forever.
+        if light.intensity != want {
+            light.intensity = want;
+        }
+    }
+}
+
+/// Lumens a lit fire delivers — read by the gate so the number is not written
+/// twice.
+pub fn fire_lumens() -> f32 {
+    FIRE_LUMENS
 }
 
 /// Which archetypes a player can open. Stated here because it is a property

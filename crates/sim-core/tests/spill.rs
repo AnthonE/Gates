@@ -676,6 +676,7 @@ fn a_demolish_refund_a_full_pack_cannot_hold_falls_at_your_feet() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     assert_eq!(w.pieces.len(), 1, "the case needs its foundation");
     let cost = w.build.pieces[FOUNDATION_ROW as usize].costs[0];
@@ -770,6 +771,7 @@ fn an_unbolted_lock_a_full_pack_cannot_hold_falls_at_your_feet() {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     w.tick(&[Command::PlaceDeploy {
         id: OWNER,
@@ -889,6 +891,7 @@ fn the_give_back_spill_replays_bit_identically() {
             cz,
             level: 0,
             loc: LOC_PLANE,
+            freehand: false,
         }]);
         wall_off(&mut w);
         w.tick(&[Command::Demolish {

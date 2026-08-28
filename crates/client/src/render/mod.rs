@@ -50,6 +50,10 @@ pub mod death;
 // the client in a dead world; `pause::Disconnect` is the verb the PLAYER
 // takes, and this is the state for when the shard takes it.
 pub mod disconnected;
+// The one place a `reflectance` is decided. Every material in the client was
+// authored 8-70x under physical because Bevy's `reflectance` is a remap
+// (`F0 = 0.16 * r^2`) and not a 0..1 slider.
+pub mod fresnel;
 // The build ghost: the cell being aimed at, and the click that commits it.
 pub mod ghost;
 // The blue wash over the piece a hammer is aimed at.
@@ -59,6 +63,9 @@ pub mod tracer;
 // The launcher-backed nav entries: the title manifest's fetch, and the click
 // that hands NEWS / ITEM STORE / WORKSHOP to the launcher's own window. The
 // model is `crate::ui::hub`.
+// Generated held-item geometry: the meshes behind `ui::hold::HeldSrc::Gen`
+// rows and the viewmodel's two-primitive stand-in tool.
+pub mod heldgen;
 pub mod hub;
 pub mod hud;
 pub mod input;
@@ -385,6 +392,7 @@ impl Plugin for GatesRenderPlugin {
         app.insert_resource(day_pin)
             .init_resource::<Eye>()
             .init_resource::<collider_debug::ShowColliders>()
+            .init_resource::<hud::ShowDiagnostics>()
             .init_resource::<input::Look>()
             .init_resource::<terrain_mesh::Ring>()
             .init_resource::<props::PropRing>()
@@ -1003,14 +1011,29 @@ impl Plugin for GatesRenderPlugin {
                     // every snapshot and displayed nowhere — see `NetLine`.
                     hud::net_line,
                     // F3: draw what the SIM blocks over what the client
-                    // draws. Not a gate and not a probe — it does nothing
-                    // until a person presses the key.
-                    collider_debug::toggle,
-                    collider_debug::draw,
+                    // draws. F4: the two top-left diagnostics. Neither is a
+                    // gate or a probe — they do nothing until a person
+                    // presses the key.
+                    //
+                    // **Nested, and it has to be.** Bevy implements
+                    // `IntoScheduleConfigs` for tuples up to 20 elements and
+                    // this set reached exactly 20; a 21st resolves to no
+                    // `in_set` method at all, and the error names a
+                    // twenty-one-field tuple rather than the system that
+                    // overflowed it. Grouping the keypress-driven three keeps
+                    // the outer arity where the trait can still see it.
+                    (
+                        hud::toggle_diagnostics,
+                        collider_debug::toggle,
+                        collider_debug::draw,
+                    ),
                     // The keypad's small panel, beside the prompt that
                     // goes quiet while it is up. HUD, not `panels::` — it
                     // must not grab the pointer, so it runs on a capture
                     // build too (where the pad simply never opens).
+                    // Fires light the ground beside them. Reads the lit set
+                    // `EV_OVEN` already puts in `ClientCore`; no wire change.
+                    structures::fire_lights,
                     hud::pad_overlay,
                 )
                     .in_set(Stream)

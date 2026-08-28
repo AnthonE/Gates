@@ -19,7 +19,7 @@
 use crate::{
     ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, Nudge, Refuse,
     SnapshotHeader, Welcome, WireBag, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH, PIECE_SYNC_BATCH,
-    SLOT_SYNC_BATCH,
+    PLATE_BIAS, PLATE_BITS, SLOT_SYNC_BATCH,
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
 use sim_core::craft::{
@@ -37,129 +37,129 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
 pub const FIXTURES: [&str; 96] = [
-    "v48_input_acks_only.bin",
-    "v48_input_full.bin",
-    "v48_snapshot_keyframe.bin",
-    "v48_snapshot_delta.bin",
-    "v48_snapshot_cap.bin",
-    "v48_hello.bin",
-    "v48_welcome.bin",
-    "v48_refuse_full.bin",
-    "v48_event_gather.bin",
-    "v48_event_inv.bin",
-    "v48_event_slot_harvested.bin",
-    "v48_event_slot_respawned.bin",
-    "v48_event_slot_sync.bin",
-    "v48_event_catalog.bin",
-    "v48_event_weak_mark.bin",
-    "v48_event_craft_q.bin",
-    "v48_event_craft_done.bin",
-    "v48_event_craft_refused.bin",
-    "v48_event_recipes.bin",
-    "v48_action_craft.bin",
-    "v48_action_cancel.bin",
-    "v48_action_place.bin",
-    "v48_event_piece_placed.bin",
-    "v48_event_piece_sync.bin",
-    "v48_event_build_refused.bin",
-    "v48_event_piece_defs.bin",
-    "v48_action_deploy.bin",
-    "v48_action_feed.bin",
-    "v48_event_deploy_placed.bin",
-    "v48_event_deploy_sync.bin",
-    "v48_event_deploy_refused.bin",
-    "v48_event_deploy_defs.bin",
-    "v48_event_piece_removed.bin",
-    "v48_event_deploy_removed.bin",
-    "v48_event_stock.bin",
-    "v48_action_use.bin",
-    "v48_action_access.bin",
-    "v48_event_door.bin",
-    "v48_action_upgrade.bin",
-    "v48_chat.bin",
-    "v48_event_chat.bin",
-    "v48_event_hit.bin",
-    "v48_event_health.bin",
-    "v48_event_death.bin",
-    "v48_action_loot.bin",
-    "v48_event_bag_dropped.bin",
-    "v48_event_bag_sync.bin",
-    "v48_event_bag_removed.bin",
-    "v48_event_struct_hit_piece.bin",
-    "v48_event_struct_hit_deploy.bin",
-    "v48_event_vitals.bin",
-    "v48_event_consumed.bin",
-    "v48_event_consume_refused.bin",
-    "v48_action_consume.bin",
-    "v48_event_drank.bin",
-    "v48_action_drink.bin",
-    "v48_event_respawn.bin",
-    "v48_action_respawn.bin",
-    "v48_action_move.bin",
-    "v48_event_moved.bin",
-    "v48_event_move_refused.bin",
-    "v48_action_move_box.bin",
-    "v48_action_container.bin",
-    "v48_action_container_close.bin",
-    "v48_event_cont_sync.bin",
-    "v48_event_cont_close.bin",
-    "v48_action_repair_piece.bin",
-    "v48_action_repair_deploy.bin",
-    "v48_event_piece_repaired_piece.bin",
-    "v48_event_piece_repaired_deploy.bin",
-    "v48_action_throw_piece.bin",
-    "v48_action_throw_deploy.bin",
-    "v48_event_charge_placed_piece.bin",
-    "v48_event_charge_placed_deploy.bin",
-    "v48_challenge.bin",
-    "v48_auth.bin",
-    "v48_event_oven_lit.bin",
-    "v48_event_oven_out.bin",
+    "v50_input_acks_only.bin",
+    "v50_input_full.bin",
+    "v50_snapshot_keyframe.bin",
+    "v50_snapshot_delta.bin",
+    "v50_snapshot_cap.bin",
+    "v50_hello.bin",
+    "v50_welcome.bin",
+    "v50_refuse_full.bin",
+    "v50_event_gather.bin",
+    "v50_event_inv.bin",
+    "v50_event_slot_harvested.bin",
+    "v50_event_slot_respawned.bin",
+    "v50_event_slot_sync.bin",
+    "v50_event_catalog.bin",
+    "v50_event_weak_mark.bin",
+    "v50_event_craft_q.bin",
+    "v50_event_craft_done.bin",
+    "v50_event_craft_refused.bin",
+    "v50_event_recipes.bin",
+    "v50_action_craft.bin",
+    "v50_action_cancel.bin",
+    "v50_action_place.bin",
+    "v50_event_piece_placed.bin",
+    "v50_event_piece_sync.bin",
+    "v50_event_build_refused.bin",
+    "v50_event_piece_defs.bin",
+    "v50_action_deploy.bin",
+    "v50_action_feed.bin",
+    "v50_event_deploy_placed.bin",
+    "v50_event_deploy_sync.bin",
+    "v50_event_deploy_refused.bin",
+    "v50_event_deploy_defs.bin",
+    "v50_event_piece_removed.bin",
+    "v50_event_deploy_removed.bin",
+    "v50_event_stock.bin",
+    "v50_action_use.bin",
+    "v50_action_access.bin",
+    "v50_event_door.bin",
+    "v50_action_upgrade.bin",
+    "v50_chat.bin",
+    "v50_event_chat.bin",
+    "v50_event_hit.bin",
+    "v50_event_health.bin",
+    "v50_event_death.bin",
+    "v50_action_loot.bin",
+    "v50_event_bag_dropped.bin",
+    "v50_event_bag_sync.bin",
+    "v50_event_bag_removed.bin",
+    "v50_event_struct_hit_piece.bin",
+    "v50_event_struct_hit_deploy.bin",
+    "v50_event_vitals.bin",
+    "v50_event_consumed.bin",
+    "v50_event_consume_refused.bin",
+    "v50_action_consume.bin",
+    "v50_event_drank.bin",
+    "v50_action_drink.bin",
+    "v50_event_respawn.bin",
+    "v50_action_respawn.bin",
+    "v50_action_move.bin",
+    "v50_event_moved.bin",
+    "v50_event_move_refused.bin",
+    "v50_action_move_box.bin",
+    "v50_action_container.bin",
+    "v50_action_container_close.bin",
+    "v50_event_cont_sync.bin",
+    "v50_event_cont_close.bin",
+    "v50_action_repair_piece.bin",
+    "v50_action_repair_deploy.bin",
+    "v50_event_piece_repaired_piece.bin",
+    "v50_event_piece_repaired_deploy.bin",
+    "v50_action_throw_piece.bin",
+    "v50_action_throw_deploy.bin",
+    "v50_event_charge_placed_piece.bin",
+    "v50_event_charge_placed_deploy.bin",
+    "v50_challenge.bin",
+    "v50_auth.bin",
+    "v50_event_oven_lit.bin",
+    "v50_event_oven_out.bin",
     // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
-    "v48_event_knock.bin",
-    "v48_event_auth.bin",
-    "v48_action_access_crew.bin",
-    "v48_action_demolish.bin",
-    "v48_event_shot.bin",
+    "v50_event_knock.bin",
+    "v50_event_auth.bin",
+    "v50_action_access_crew.bin",
+    "v50_action_demolish.bin",
+    "v50_event_shot.bin",
     // World containers v0 (v37): the fourth container kind. Three
     // fixtures and not one, because `action_move_box`'s own doc records
     // what happens otherwise — the third kind crossed the wire for a
     // whole version with only the *open* pinned, so the bytes that mean
     // "take it out of the box" were checked by nothing. Kind 3 gets its
     // open, its move and its sync in the commit that legalises it.
-    "v48_action_container_world.bin",
-    "v48_action_move_world.bin",
-    "v48_event_cont_sync_world.bin",
+    "v50_action_container_world.bin",
+    "v50_action_move_world.bin",
+    "v50_event_cont_sync_world.bin",
     // The bench ladder + tech tree (v38): the unlock action and the
     // research-rows drip, plus the three research-lane events that had
     // ridden unpinned since v32 — the role gate checked their payloads
     // and nothing checked their bytes, which is the exact seat the v37
     // world-container note called out as empty.
-    "v48_action_unlock.bin",
-    "v48_event_research_rows.bin",
-    "v48_event_research.bin",
-    "v48_event_research_refused.bin",
-    "v48_event_known.bin",
+    "v50_action_unlock.bin",
+    "v50_event_research_rows.bin",
+    "v50_event_research.bin",
+    "v50_event_research_refused.bin",
+    "v50_event_known.bin",
     // The table verb's own action, pinned by the local branch and kept
     // through the 2026-08-15 integration: `encode_action_research` is
     // still live (the client's `verbs.rs` calls it), so
     // `every_encoder_has_a_golden` requires these bytes.
-    "v48_action_research.bin",
+    "v50_action_research.bin",
     // The gather refusal (v42) — appended, because the manifest is
     // positional and a name in the middle silently renumbers every
     // writer after it.
-    "v48_event_gather_refused.bin",
+    "v50_event_gather_refused.bin",
     // Bag choice v0 (v43): the own-fact bag list the death screen shapes
     // itself around. Appended for the same positional reason.
-    "v48_event_bags.bin",
+    "v50_event_bags.bin",
     // Surface marks v0 (v45): where an arrow stopped, and on what.
     // Appended, like the two above — `gen_goldens` writes this list by
     // INDEX, so inserting anywhere but the end silently re-points every
     // fixture after the insertion at another message's bytes.
-    "v48_event_impact.bin",
-    "v48_event_swing.bin",
+    "v50_event_impact.bin",
+    "v50_event_swing.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -832,8 +832,13 @@ pub fn action_cancel() -> u16 {
 
 /// A place request: (row, cx, cz, level, loc) — a stone wall on a cell's
 /// low-z edge, one storey up.
-pub fn action_place() -> (u16, u16, u16, u8, u8) {
-    (13, 341, 682, 1, sim_core::build::LOC_EDGE_ZLO)
+/// The freehand bit is pinned **true** here, not defaulted false: a fixture
+/// whose new field carries the zero value is a fixture that cannot tell a
+/// live bit from a dropped one, which is the positional-payload trap
+/// (CLAUDE.md) one field over. Proven by deleting the `w.write` in
+/// `encode_action_place` — with `false` the bytes are unchanged.
+pub fn action_place() -> (u16, u16, u16, u8, u8, bool) {
+    (13, 341, 682, 1, sim_core::build::LOC_EDGE_ZLO, true)
 }
 
 /// The piece record behind the placed broadcast.
@@ -848,6 +853,13 @@ pub fn event_piece_placed() -> PieceRec {
         // (wire v39) the way the defs fixture pins shape 7 — a bit that
         // never carries a 1 is a bit nothing gates.
         facing: 1,
+        // And the plate NEGATIVE (build plate v1, wire v49), for the same
+        // rule one line up and one turn sharper: `plate` is the only signed
+        // field on this record, it is written biased, and every way of
+        // getting a bias wrong — the wrong constant, an unsigned read, a
+        // width one short — agrees with a correct encoder on zero. A fixture
+        // carrying 0 would pin bytes that cannot tell the two apart.
+        plate: -1,
         ..PieceRec::default()
     }
 }
@@ -856,7 +868,7 @@ pub fn event_piece_placed() -> PieceRec {
 /// message at its cap.
 pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 18);
-    let recs = core::array::from_fn(|_| PieceRec {
+    let recs = core::array::from_fn(|i| PieceRec {
         cx: rng.next_bounded(1024) as u16,
         cz: rng.next_bounded(1024) as u16,
         level: rng.next_bounded(8) as u8,
@@ -865,6 +877,29 @@ pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
         loc: rng.next_bounded(10) as u8,
         row: rng.next_bounded(32) as u8,
         facing: rng.next_bounded(2) as u8,
+        // The whole FIELD, both signs — the batch is where a width is pinned
+        // across many records, so it covers the range rather than a value
+        // (`event_piece_placed` pins the single deliberate one).
+        //
+        // **The wire's range, not the sim's knobs.** `PLATE_BITS` is
+        // deliberately wider than `build::PLATE_RISE_MAX_BANDS` and
+        // `PLATE_SINK_MAX_BANDS`, and its own doc says why: those two are
+        // balance knobs, and a wire field sized to today's knob is a
+        // `PROTO_VER` bump for every balance pass. A fixture cycled off the
+        // knobs has the same defect one layer up, and it fired the day it was
+        // written — adopting the reference's ±half-a-wall offset moved every
+        // byte of this golden for a reason that has nothing to do with the
+        // wire. The field's own width pins what the LAYOUT can carry, which
+        // is what a wire golden is for, and it stays put while balance moves.
+        //
+        // **Cycled off the index, deliberately NOT drawn from `rng`.** Every
+        // field above shares one stream, so an extra draw per record shifts
+        // every later one — and the first version of this line did draw,
+        // which slid the `loc` sequence far enough that one of the ten
+        // addresses stopped appearing in the batch at all.
+        // `the_loc_fuzz_covers_each_stores_whole_domain` caught it, which is
+        // that gate's whole reason for existing.
+        plate: (i as i32 % (1 << PLATE_BITS) - PLATE_BIAS) as i8,
         ..PieceRec::default()
     });
     (true, recs)

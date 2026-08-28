@@ -16,11 +16,21 @@
 //! cargo run -p sim-core --release --example shot_cost            # duelling grid
 //! cargo run -p sim-core --release --example shot_cost -- --lonely # nobody in range
 //! cargo run -p sim-core --release --example shot_cost -- --ground # standing on the island
+//! cargo run -p sim-core --release --example shot_cost -- --base   # firing through a base
 //! ```
 //!
 //! `--lonely` is the worst case and the reason the mark is bounded: with no
 //! body in the line, the only thing a walk can find is where to draw a
 //! decal.
+//!
+//! `--base` is what **shot planes v0** added and the reason it is measured
+//! rather than reasoned about: `collide::shot_blocked` now consults
+//! `cell_planes_stop_shot`, which costs a `col_base_y` — a `terrain::ground`
+//! tap — for every sample that lands in a column *carrying a plane*. On open
+//! ground that is a hash lookup returning `ColMasks::EMPTY` and nothing else,
+//! so the default runs above are the no-base control and this is the paid
+//! case: a hundred shooters standing on and firing along a slab. Run it
+//! against the same invocation without the flag; the difference is the walk.
 
 // Host-side timing probe: the clock and the printing are its job. The wall-1
 // and wall-3 lists bind SIM code, and an example binary is not sim code —
@@ -65,8 +75,40 @@ fn spread(i: usize, lonely: bool) -> (f32, f32) {
     }
 }
 
+/// A slab of foundation under every shooter and the length of every barrel
+/// — `MAX_PLAYERS`' 10 × 10 grid at `spread`'s 3 m pitch is exactly one
+/// build cell per shooter, plus the run each trace walks down.
+///
+/// Flush by construction, `tests/shoot.rs::storeys`' rule: every column takes
+/// the plate that puts it on the anchor's band, so this is a floor rather
+/// than a staircase and the walk pays for a plane at every sample instead of
+/// stopping on the first riser.
+fn base_index(haven: &sim_core::terrain::Haven) -> Box<ColIndex> {
+    let mut cols = Box::new(ColIndex::new());
+    let (ax, az) = (
+        sim_core::build::build_cell_of(900.0) as u16,
+        sim_core::build::build_cell_of(900.0) as u16,
+    );
+    let anchor = sim_core::build::terrain_band(SEED, haven, ax, az);
+    for dx in 0..12u16 {
+        for dz in 0..12u16 {
+            let want = anchor - sim_core::build::terrain_band(SEED, haven, ax + dx, az + dz);
+            cols.add(
+                ax + dx,
+                az + dz,
+                0,
+                sim_core::build::LOC_PLANE,
+                sim_core::build::SHAPE_FOUNDATION,
+                want as i8,
+            );
+        }
+    }
+    cols
+}
+
 fn main() {
     let (lonely, on_ground) = (flag("--lonely"), flag("--ground"));
+    let on_base = flag("--base");
     let haven = sim_core::terrain::haven(SEED);
     let mut cc = CombatContent::EMPTY;
     cc.player_hp = 100;
@@ -80,7 +122,11 @@ fn main() {
     };
     let mut pristine = Scratch::with(SEED, Pristine);
     let mut barren = Scratch::barren();
-    let cols = ColIndex::new();
+    let cols = if on_base {
+        base_index(&haven)
+    } else {
+        Box::new(ColIndex::new())
+    };
 
     let mut players = Box::new([Player::default(); MAX_PLAYERS]);
     for (i, p) in players.iter_mut().enumerate() {
@@ -151,9 +197,14 @@ fn main() {
         }
     }
     println!(
-        "{MAX_PLAYERS} shooters, {} occupants, {}: {n} firing ticks, mean {:.2} ms, worst {:.2} ms \
-         (tick budget 33 ms)",
+        "{MAX_PLAYERS} shooters, {} occupants, {}, {}: {n} firing ticks, mean {:.2} ms, \
+         worst {:.2} ms (tick budget 33 ms)",
         if on_ground { "pristine" } else { "barren" },
+        if on_base {
+            "on a slab"
+        } else {
+            "nothing built"
+        },
         if lonely {
             "nobody in range"
         } else {

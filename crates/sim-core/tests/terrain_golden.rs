@@ -48,7 +48,23 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// the scatter pass stopped choosing a biome row and started blending four
 /// (`terrain::scatter_row`), a delta confined to the ~11% of land cells no
 /// single splat channel owns outright.
-const GOLDEN_TERRAIN_HASH: u64 = 0x7356_4E57_06B4_74D9;
+/// Regenerated here from `0x7356_4E57_06B4_74D9` for **the shape of the
+/// island itself** (2026-08-26): `remap` stopped being piecewise-linear
+/// between its knots and became a monotone cubic, the highland's ridged blend
+/// became a three-octave ridged multifractal on a `fade`d gate, and a detail
+/// ladder was added after the curve. The island had been rendering as a
+/// stack of terraces with a contour line at every one of the LUT's 16 knots;
+/// `terrain.rs`'s own `remap` docs carry the mechanism.
+///
+/// This is a bigger move than the carve was — the carve touched three discs
+/// and this touches every sample above the waterline — so what bounds it is
+/// stated rather than implied: the **coast does not move**, because
+/// `REMAP_LUT`'s first three segments have equal secants (the cubic through
+/// them IS the old straight line) and the detail rides on `shelf`, which is 0
+/// at sea level. The road ring, the haven solve and the clutter waterline
+/// veto are all gated on that and all stayed green through the change without
+/// a tolerance moving.
+const GOLDEN_TERRAIN_HASH: u64 = 0x9033_206F_0ECB_E2A4;
 
 #[test]
 fn test_terrain_golden() {

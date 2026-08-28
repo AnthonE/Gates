@@ -71,7 +71,7 @@ pub const RESEARCH: [&str; 7] = [
 
 /// `sim_core::build`'s `REFUSE_B_*: u32` — a build, an upgrade or a repair
 /// on a structure piece.
-pub const BUILD: [&str; 13] = [
+pub const BUILD: [&str; 15] = [
     "no such piece",
     "spot taken",
     "needs support",
@@ -85,6 +85,12 @@ pub const BUILD: [&str; 13] = [
     "cannot be repaired",
     "too late to take that down",
     "nothing there",
+    // The two plate refusals (build plate v1). They are a pair and they are
+    // written from the PLAYER's side of the fact: the sim knows "the latched
+    // band is 7 over this column's terrain", and what a player can act on is
+    // which way the ground went and what to do about it.
+    "too far below the floor",
+    "the hill is in the way",
 ];
 
 /// `sim_core::deploy`'s `REFUSE_D_*: u32` — placing a deployable.

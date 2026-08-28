@@ -133,6 +133,7 @@ fn raid_world() -> (World, u16, u16) {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     w.tick(&[Command::Place {
         id: RAIDER,
@@ -141,6 +142,7 @@ fn raid_world() -> (World, u16, u16) {
         cz,
         level: 0,
         loc: LOC_EDGE_XLO,
+        freehand: false,
     }]);
     assert_eq!(w.pieces.len(), 2, "foundation + wall");
     (w, cx, cz)

@@ -45,6 +45,59 @@ pub const FAR_STEP: f32 = 8.0;
 /// How far the far mesh sits below the near ring so the boundary cannot
 /// z-fight, metres.
 pub const FAR_DROP: f32 = 0.15;
+
+/// The y the FAR mesh actually draws at `(x, z)` — not `terrain::ground`.
+///
+/// **A prop outside the near ring must be planted on this and not on the
+/// heightfield, and the gap is 0.63 m on the shipped seed.** The far mesh samples
+/// `terrain::ground` on an [`FAR_STEP`]-metre lattice and interpolates
+/// linearly across each 8 m quad, then sits the whole sheet [`FAR_DROP`] lower
+/// so the near↔far boundary cannot z-fight. So the surface a player SEES out
+/// there is a chord across the real terrain, and on anything but flat ground
+/// the chord is below the curve — a tree placed at `slot.y` stands with its
+/// base in the air over a valley and buried on a ridge, at exactly the ranges
+/// where a floating trunk is the most obvious thing in the frame. Measured
+/// worst separation over a 2,000-sample line across the island on seed
+/// 20260731: **0.630 m**, against a 6.6 m conifer — a tenth of the tree
+/// hanging in the air, which is what `tests/outer_ring.rs` searches for and
+/// then plants at.
+///
+/// This is `heightfield`'s own sampling restated for one point instead of for
+/// a grid: the four surrounding lattice corners, minus the drop.
+///
+/// **Bilinear, where the mesh is two triangles, and the gap is stated rather
+/// than hidden.** A quad rasterises as a pair of triangles and is therefore
+/// planar either side of one diagonal; bilinear is the average of the two ways
+/// that diagonal can run. The two agree EXACTLY at the four corners — which is
+/// what `tests/outer_ring.rs` pins, because it is the only place the two can be
+/// compared without rebuilding the mesh — and differ inside the quad by at most
+/// the quad's twist, `|h00 − h10 − h01 + h11| / 4`. That is small against the
+/// 0.63 m the naive `slot.y` carries, so it buys the fix without a second
+/// triangulation to keep in step. Choosing the
+/// diagonal correctly would mean knowing `heightfield`'s index winding here,
+/// which is a coupling worth more than the centimetres.
+///
+/// Not used by the near ring: inside [`NEAR_RADIUS`] the drawn ground IS
+/// `terrain::ground` at 1 m, so `scatter`'s own `slot.y` is already exact.
+pub fn far_ground_y(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> f32 {
+    let gx = (x / FAR_STEP).floor() * FAR_STEP;
+    let gz = (z / FAR_STEP).floor() * FAR_STEP;
+    let tx = (x - gx) / FAR_STEP;
+    let tz = (z - gz) / FAR_STEP;
+
+    // One memo for the four corners: they are one lattice quad apart, so this
+    // is the memo's best case and the same reason `heightfield` holds one.
+    let mut lat = terrain::Lattice::new();
+    let h00 = terrain::ground_memo(&mut lat, seed, haven, gx, gz);
+    let h10 = terrain::ground_memo(&mut lat, seed, haven, gx + FAR_STEP, gz);
+    let h01 = terrain::ground_memo(&mut lat, seed, haven, gx, gz + FAR_STEP);
+    let h11 = terrain::ground_memo(&mut lat, seed, haven, gx + FAR_STEP, gz + FAR_STEP);
+
+    let a = h00 + (h10 - h00) * tx;
+    let b = h01 + (h11 - h01) * tx;
+    a + (b - a) * tz - FAR_DROP
+}
+
 /// Chunks QUEUED per frame, and chunks torn down per frame. Stream-in AND
 /// stream-out are budgeted: the teardown spike is the half everyone forgets
 /// (`CLAUDE.md` traps).
@@ -157,9 +210,10 @@ pub const CHUNK_LANDS_PER_FRAME: usize = 1;
 /// [`super::fill::GROUND_MIX`] for the full retraction and
 /// `crates/client/tests/ground_mix.rs` for the gate.
 ///
-/// Whole-island the mix is sand 0.0113, grass 0.5182, litter 0.3789, **rock
-/// 0.0916**. Granite is the third identity by area and the brightest of the
-/// four, so its value was never free and the mean it was pinned to was 14.4%
+/// Whole-island the mix is sand 0.0113, grass 0.5186, litter 0.3801, **rock
+/// 0.0900** (0.0916 until worldgen shape v1 re-measured it, 2026-08-26).
+/// Granite is the third identity by area and the brightest of the
+/// four, so its value was never free and the mean it was pinned to was 14.1%
 /// low. **That is the constraint the table above is placed under**, and the
 /// reason litter is the one identity whose value is derived rather than read:
 /// granite's share is what it has to absorb.
@@ -458,7 +512,12 @@ fn ground_material(
             // there, not a replacement), which is why it is a separate slice
             // and not a slot assignment either. `NOW.md` carries it.
             metallic: 0.0,
-            reflectance: 0.18,
+            // `fresnel::DIELECTRIC`, not the 0.18 this shipped with. That
+            // number put F0 at 0.52% against a dielectric's 4%, which is why
+            // `ground_splat`'s four per-texel roughness maps measured as a
+            // null result: they were shaping a lobe with an eighth of its
+            // energy in it. `DECISIONS.md` §open, ground specular v0.
+            reflectance: super::fresnel::DIELECTRIC,
             ..default()
         },
         extension: GroundSplat::new(maps),
@@ -515,13 +574,76 @@ pub fn vertex_splat(w: [u8; 4]) -> [f32; 4] {
 /// `ATTRIBUTE_UV_1`'s two floats, and what lets the four weights have
 /// `ATTRIBUTE_COLOR` to themselves.
 ///
+/// Texture UV per metre of world — the ground's planar XZ projection.
+///
+/// One 1024² photograph therefore covers **4 m** and repeats 512 times per
+/// island side. It was a bare `0.25` at the one call site until 2026-08-27;
+/// it is named because `ground_splat.wgsl`'s biplanar wall tap has to build
+/// its own UV at exactly this scale, and two copies of a projection constant
+/// in two languages is the drift `CLAUDE.md` warns about. The shader reads it
+/// from the uniform (`GroundSplatParams::wall.z`) rather than repeating it.
+pub const UV_PER_M: f32 = 0.25;
+
+/// Wavelength of the tile break-up, metres.
+///
+/// **This exists because the ground texture repeats every 4 m and nothing else
+/// hides it.** `heightfield` writes a planar UV of `world.xz × 0.25`, so one
+/// 1024² photograph covers 4 m and repeats **512 times per island side**, on a
+/// rigid axis-aligned lattice; `ground_splat.wgsl` samples all sixteen maps at
+/// that one UV with no rotation, no second scale and no stochastic tiling. Any
+/// low-frequency content in a source — and every photograph has some — then
+/// reads as a quilt at exactly 4 m. Measured over the four shipped albedos, the
+/// sd of an 8×8 box downsample runs 1.3% of the mean (grass, which tiles
+/// cleanly) to 4.1% (the old stratified `rock`, which did not).
+///
+/// 48 m is twelve tiles: far enough above the repeat that the two cannot beat
+/// against each other, and small enough that a player standing still sees
+/// several of them rather than one flat wash.
+pub const MACRO_M: f32 = 48.0;
+
+/// Peak deviation of that field, as a fraction of the surface's own colour.
+pub const MACRO_AMP: f32 = 0.13;
+
+/// Smooth value noise on a [`MACRO_M`] lattice, mean 0, in about [-1, 1].
+///
+/// Quintic-faded rather than linearly interpolated, for the reason
+/// `sim-core/tests/contour.rs` exists: a C⁰ field has a slope step at every
+/// lattice line, and a slope step in something the eye integrates across is a
+/// visible seam. This one multiplies a colour rather than a height, so it
+/// cannot reach the analytic normal — but a 48 m grid of faint creases in the
+/// ground's brightness is the same defect wearing different clothes, and the
+/// fade costs two multiplies.
+fn macro_noise(x: f32, z: f32) -> f32 {
+    let (fx, fz) = (x / MACRO_M, z / MACRO_M);
+    let (x0, z0) = (fx.floor(), fz.floor());
+    let (tx, tz) = (fx - x0, fz - z0);
+    let (ix, iz) = (x0 as i32, z0 as i32);
+    let c = |dx: i32, dz: i32| super::props::hash01((ix + dx) as u32, (iz + dz) as u32) * 2.0 - 1.0;
+    let fade = |t: f32| t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+    let (u, v) = (fade(tx), fade(tz));
+    let a = c(0, 0) + (c(1, 0) - c(0, 0)) * u;
+    let b = c(0, 1) + (c(1, 1) - c(0, 1)) * u;
+    a + (b - a) * v
+}
+
 /// Rule 1: no surface may be one flat value. `[0]` is the MACRO break-up
 /// (0.5–1 m) — the near ring's vertices are 1 m apart, so one hash per vertex
 /// is exactly that scale. The near-field grain under 5 cm is the photograph's
 /// job and the splat material is where it finally lands.
+///
+/// **Two scales, and they do different jobs.** The per-vertex hash is white
+/// noise at the vertex spacing — 1 m near, 8 m far — which satisfies rule 1 and
+/// is useless against a 4 m texture repeat, because it is neither correlated
+/// across a tile nor larger than one. [`macro_noise`] is the one that breaks
+/// the lattice. Both are mean 1 by construction (the hash term is
+/// `0.88 + 0.24u`, mean exactly 1.00; the macro term is `1 + A·n` with `n`
+/// mean 0), so their product is too and no gate that averages the island's
+/// albedo moves — `fill::GROUND_MIX` and the bounce are folded from the splat
+/// weights and the authored identities, and neither reads this slot.
 pub fn vertex_mods(y: f32, x: f32, z: f32, grad: f32) -> [f32; 2] {
+    let dither = 0.88 + 0.24 * super::props::hash01(x.to_bits(), z.to_bits());
     [
-        0.88 + 0.24 * super::props::hash01(x.to_bits(), z.to_bits()),
+        dither * (1.0 + MACRO_AMP * macro_noise(x, z)),
         wet_factor(y, grad),
     ]
 }
@@ -743,7 +865,7 @@ pub fn heightfield(
             // the shader against.
             colors.push(vertex_splat(w));
             mods.push(vertex_mods(y, x, z, grad));
-            uvs.push([x * 0.25, z * 0.25]);
+            uvs.push([x * UV_PER_M, z * UV_PER_M]);
         }
 
         if grid_slope {

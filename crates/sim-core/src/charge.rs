@@ -434,7 +434,8 @@ fn detonate(
     use crate::limits::{MAX_BUILD_COORD, MAX_BUILD_LEVELS};
 
     let (ax, az) = anchor(c.cx, c.cz, c.loc);
-    let ay = crate::collide::col_base_y(seed, haven, c.cx, c.cz) + c.level as f32 * LEVEL_H_M;
+    let ay = crate::collide::col_base_y(seed, haven, pieces.cols(), c.cx, c.cz)
+        + c.level as f32 * LEVEL_H_M;
     let blast = c.blast_cm;
 
     // Distance from the epicentre to a point, centimetres. Planar plus
@@ -464,7 +465,7 @@ fn detonate(
             }
             let (cx, cz) = (cx as u16, cz as u16);
             let m = pieces.cols().get(cx, cz);
-            let base = crate::collide::col_base_y(seed, haven, cx, cz);
+            let base = crate::collide::col_base_y(seed, haven, pieces.cols(), cx, cz);
             for level in 0..MAX_BUILD_LEVELS as u8 {
                 let bit = 1u8 << level;
                 let ly = base + level as f32 * LEVEL_H_M;
@@ -495,8 +496,8 @@ fn detonate(
             break;
         }
         let (tx, tz) = anchor(rec.cx, rec.cz, rec.loc);
-        let ly =
-            crate::collide::col_base_y(seed, haven, rec.cx, rec.cz) + rec.level as f32 * LEVEL_H_M;
+        let ly = crate::collide::col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz)
+            + rec.level as f32 * LEVEL_H_M;
         let d = dist_cm(tx, ly, tz);
         let scaled = falloff(c.structure, d, blast);
         if scaled > 0 {

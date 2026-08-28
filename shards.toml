@@ -11,12 +11,15 @@
 #   ./ci/shardlist.py                  # -> target/servers.json
 #   ./ci/shardlist.py --self-test      # the gate ci/gates.sh runs
 # then the two OPERATOR acts, in this order and never the other one:
-#   1. copy servers.json into elo's $SCRY_DEPOTS_DIR/gates/
+#   1. copy servers.json into the origin's $SCRY_DEPOTS_DIR/gates/
 #   2. set manifest.servers.url to
 #      https://elopros.com/api/launcher/servers/gates
 # The order matters: `servers.url` pointing at a file that is not there is
 # an error dialog on a game that is running fine, which is worse than the
 # honest "no shards published" both readers draw while it is null.
+# Both acts are DONE — the url is set in scry-forge's
+# `data/launcher/gates.manifest.json` and the origin answers 200. What is
+# left on the box is step 1 again, whenever a row here changes.
 
 [[shard]]
 # **`id` is the row KEY** — a reader builds its row and its favourite from it,
@@ -35,6 +38,29 @@ name = "Gates US East 1"
 # it sits in 49152-65535 because that is the range the Hetzner cloud
 # firewall actually passes (`DECISIONS.md` 2026-08-03 — measured, not
 # assumed).
+#
+# ⚠ **THREE THINGS CARRY THIS NAME AND THEY MOVE TOGETHER OR NOT AT ALL**
+# (`DECISIONS.md` 2026-08-23, and the row is there because they did not).
+# The row below is what a player DIALS; `shard-public.toml`'s `cert_pem`
+# decides what name the QUIC handshake can prove, and its `domain` decides
+# what name a login is signed against. Move one and the shard is dark in a
+# way that reads as a client bug:
+#
+#   list ahead of the cert    → "invalid peer certificate: certificate is
+#                                only valid for DnsName(...)" — the client
+#                                is right to refuse, it validates against
+#                                the platform root store with no pin
+#   list ahead of the domain  → the handshake succeeds and every login is
+#                                REFUSE_AUTH, because the client signs the
+#                                host it dialled (`client/src/lib.rs`) and
+#                                the shard rebuilds the message from
+#                                `domain`
+#
+# That first failure was live from the 2026-08-20 platform domain move
+# until 2026-08-23: the SERVED document was moved to `game.elopros.com` by
+# hand and this file — the document's own generator input — was not, so
+# re-running `./ci/shardlist.py` would have silently reverted it. They agree
+# again now.
 addr = "game.elopros.com:61234"
 
 # The seed is what makes one island different from another, so naming it is

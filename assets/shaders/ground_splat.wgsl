@@ -55,6 +55,13 @@ struct GroundSplat {
     // is one the knob registry cannot see, and `ci/gates.sh` refuses its
     // `DECISIONS.md` row.
     blend: vec4<f32>,
+    // x = WALL_ON, y = WALL_SHARPNESS, z = UV_PER_M, w reserved.
+    // ⚠ This struct's field list and order must match `GroundSplatParams`
+    // exactly — a uniform whose two sides disagree about layout is garbage in
+    // every field after the first mismatch, and nothing about that failure
+    // looks like a layout bug. `tests/ground_splat.rs` scrapes both and fails
+    // on a disagreement.
+    wall: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
@@ -80,6 +87,13 @@ struct GroundSplat {
 @group(#{MATERIAL_BIND_GROUP}) @binding(111) var rough_grass: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(112) var rough_litter: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(113) var rough_rock: texture_2d<f32>;
+// Ambient occlusion, per identity — `ART.md` §4's MEDIUM scale, the one
+// occlusion term a light rig cannot supply. All four shipped in every depot and
+// were sampled by nothing until 2026-08-25.
+@group(#{MATERIAL_BIND_GROUP}) @binding(114) var ao_sand: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(115) var ao_grass: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(116) var ao_litter: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(117) var ao_rock: texture_2d<f32>;
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
@@ -124,10 +138,80 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     var pbr_input = pbr_input_from_standard_material(in, is_front);
 
     let uv = in.uv;
-    let a0 = textureSample(albedo_sand, ground_sampler, uv);
-    let a1 = textureSample(albedo_grass, ground_sampler, uv);
-    let a2 = textureSample(albedo_litter, ground_sampler, uv);
-    let a3 = textureSample(albedo_rock, ground_sampler, uv);
+    var a0 = textureSample(albedo_sand, ground_sampler, uv);
+    var a1 = textureSample(albedo_grass, ground_sampler, uv);
+    var a2 = textureSample(albedo_litter, ground_sampler, uv);
+    var a3 = textureSample(albedo_rock, ground_sampler, uv);
+
+    // --- Biplanar: the second tap a slope needs -----------------------------
+    //
+    // `in.uv` is a planar XZ projection, so on a face of tilt θ the photograph
+    // is stretched by `1/cos θ` along the fall line. The second tap lives on
+    // the vertical plane CONTAINING that fall line, whose stretch is `1/sin θ`
+    // — the exact complement, so between the two the worst case anywhere is
+    // 45° at 1.41× and a third tap would buy nothing.
+    //
+    // ⚠ **Derivatives are taken of the WORLD POSITION and never of the finished
+    // wall UV, and they are taken here — before any branch.** Both halves are
+    // load-bearing and `DECISIONS.md` materials v4 records the browser client
+    // shipping the first one backwards. `gm_across` is per-fragment, so
+    // `dpdx(dot(p.xz, across))` expands by the product rule to
+    // `dot(dpdx(p).xz, across) + dot(p.xz, dpdx(across))` — and the second term
+    // is the FRAME TURNING, multiplied by a world coordinate of order 1500 m.
+    // A frame rotation of 1e-4 rad/px injects ~0.16 m/px against a true
+    // footprint of ~0.002, which selects a mip about seven levels too coarse in
+    // bands that follow the terrain's curvature. Quilez states the rule for the
+    // axis-aligned case — take the gradients of `p` before the projection is
+    // chosen — and holding a rotating frame fixed is that same rule.
+    // Derivatives are also undefined under non-uniform control flow, and the
+    // branch below is non-uniform by construction, which is the second reason
+    // they are up here.
+    let wp = in.world_position.xyz;
+    let dp_dx = dpdx(wp);
+    let dp_dy = dpdy(wp);
+
+    let wn = normalize(in.world_normal);
+    let horiz = vec2<f32>(wn.x, wn.z);
+    let sin_tilt = length(horiz);
+    let cos_tilt = abs(wn.y);
+    // The contour direction — the horizontal axis ACROSS the fall line. On a
+    // level face `sin_tilt` is 0, the wall tap is off, and this is never read.
+    var across = vec2<f32>(1.0, 0.0);
+    if sin_tilt > 1e-4 {
+        across = vec2<f32>(-horiz.y, horiz.x) / sin_tilt;
+    }
+    // `pow(cos, k)` against `pow(sin, k)`: the two foreshortenings are exact
+    // complements, so this crosses over at 45° by construction rather than by a
+    // tuned threshold, and `WALL_ON` is that same angle written as `sin`.
+    let w_top = pow(cos_tilt, splat.wall.y);
+    let w_wall = pow(sin_tilt, splat.wall.y);
+    var wall_mix = 0.0;
+    if sin_tilt > splat.wall.x {
+        wall_mix = w_wall / max(w_top + w_wall, 1e-6);
+    }
+
+    // Skipped whole below 45°, which is every flat metre of the island — 996 to
+    // 998 land samples in 1000 on the seeds measured, so the four extra
+    // fetches are paid on cliffs and nowhere else. `textureSampleGrad` is what
+    // makes the branch legal: an explicit-gradient sample is defined under
+    // non-uniform control flow where `textureSample` is not.
+    if wall_mix > 0.0 {
+        let s = splat.wall.z;
+        let wall_uv = vec2<f32>(dot(wp.xz, across), wp.y) * s;
+        let wall_ddx = vec2<f32>(dot(dp_dx.xz, across), dp_dx.y) * s;
+        let wall_ddy = vec2<f32>(dot(dp_dy.xz, across), dp_dy.y) * s;
+        a0 = mix(a0, textureSampleGrad(albedo_sand, ground_sampler, wall_uv, wall_ddx, wall_ddy), wall_mix);
+        a1 = mix(a1, textureSampleGrad(albedo_grass, ground_sampler, wall_uv, wall_ddx, wall_ddy), wall_mix);
+        a2 = mix(a2, textureSampleGrad(albedo_litter, ground_sampler, wall_uv, wall_ddx, wall_ddy), wall_mix);
+        a3 = mix(a3, textureSampleGrad(albedo_rock, ground_sampler, wall_uv, wall_ddx, wall_ddy), wall_mix);
+    }
+    // **The relief stays the top tap's alone**, so the wall costs four fetches
+    // and not twelve. `to_gradient` reads a tangent-space normal as a gradient
+    // over the XZ heightfield, which is what lets the four blend as one
+    // surface; a normal sampled on a VERTICAL plane describes a surface whose
+    // up is world ±X or ±Z, and there is no honest reading of it as a height
+    // over XZ. Roughness and AO are scalars whose stretch is invisible next to
+    // the albedo's, and they stay planar for the same budget reason.
 
     // Each map's raw linear luminance, in [0, 1]. This is the HEIGHT.
     let luma = vec4<f32>(
@@ -256,6 +340,33 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     pbr_input.N = normalize(tbn * nt);
 
     var out: FragmentOutput;
+    // ── Ambient occlusion, blended by the same weights ──────────────────
+    //
+    // **`min`, never a multiply, and that is `ART.md` §4 in one line**: "Never
+    // sum or multiply two occlusion terms of the same scale. Frostbite takes
+    // `min(bakedAO, ssAO)` to avoid double-darkening." Bevy's own
+    // `pbr_fragment` already applies exactly that rule between a material's
+    // `occlusion_texture` and SSAO, and `pbr_input.diffuse_occlusion` arrives
+    // here holding the SSAO term alone — the ground's base `StandardMaterial`
+    // has no occlusion slot, because these four maps are per-identity and it
+    // has one. So this is the same fold, one level up.
+    //
+    // **Diffuse only.** §4 again: the medium scale is `indirectDiffuse *= ao`,
+    // indirect only, and "specular occlusion is a separate term, not the
+    // diffuse one reused" — applying this to specular is visibly wrong at
+    // grazing angles. `pbr_input.specular_occlusion` is left as Bevy computed
+    // it from SSAO.
+    let ao = dot(
+        bw,
+        vec4<f32>(
+            textureSample(ao_sand, ground_sampler, uv).r,
+            textureSample(ao_grass, ground_sampler, uv).r,
+            textureSample(ao_litter, ground_sampler, uv).r,
+            textureSample(ao_rock, ground_sampler, uv).r,
+        ),
+    );
+    pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(ao));
+
     out.color = apply_pbr_lighting(pbr_input);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
