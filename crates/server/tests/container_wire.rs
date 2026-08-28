@@ -49,8 +49,8 @@ use sim_core::combat::CombatContent;
 use sim_core::deploy::{box_key, DeployContent, DeployDef, ARCH_BOX, PLACE_FOUNDATION};
 use sim_core::gather::{cell_key, GatherContent, ItemStack, SWING_INTERVAL_TICKS};
 use sim_core::input::BTN_PRIMARY;
-use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WORLD};
-use sim_core::limits::{BOX_SLOTS, INV_SLOTS, MAX_ITEM_DEFS};
+use sim_core::inventory::{CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
+use sim_core::limits::{BOX_SLOTS, INV_SLOTS, MAX_ITEM_DEFS, WEAR_SLOTS};
 use sim_core::loot::{LootContent, LootEntryDef, LootTableDef, LOOT_CRATE};
 use sim_core::movement::Body;
 use sim_core::terrain::{self, Haven, Occupant, ScatterTable, CELL_SIZE, HAVEN_CRATES};
@@ -1356,6 +1356,132 @@ fn crate_fixture() -> LootContent {
 /// Do not "fix" a failure here by bumping the literal. The failure is the
 /// notice.
 const _: () = assert!(
-    sim_core::inventory::CONT_MAX == CONT_WORLD,
+    sim_core::inventory::CONT_MAX == CONT_WEAR,
     "a container kind was added without a container_wire test that opens it"
 );
+
+
+/// A body's wear panel carries the *body's* contents, not its backpack's.
+///
+/// The sixth thing a container view can get wrong, and it is the fifth one
+/// again — `cont_slot`'s dispatch — with the failure mode inverted, which
+/// is why it earns its own test rather than a line in the one above.
+///
+/// `CONT_WORLD` fell through an `else` into the wrong store and drew a
+/// crate as a deploy box. `CONT_WEAR` would have fallen through
+/// `cont_slot`'s `_` arm into `players[slot].inv` — the player's own
+/// backpack — and that is worse in the one way that matters here: the
+/// wrong store is a *plausible* store. A crate showing a box's contents is
+/// visibly nonsense; a wear panel showing your own inventory reads as a
+/// UI that opened the wrong tab, and both of its slots are real, occupied
+/// and in range. It could have shipped.
+///
+/// So the fixture makes the two stores **disagree by construction**:
+/// `worn[0..2]` holds `OTHER`/`THIRD` and `inv[0..2]` holds `SPEAR`/
+/// `FILLER` at the same two indices. Reading the wrong array cannot
+/// produce these bytes, and reading the right one cannot produce the
+/// other's.
+///
+/// It makes a second claim nothing else can, and it is the one that would
+/// have been a remote panic rather than a wrong picture: the panel is
+/// `WEAR_SLOTS` wide. `Player::worn` is a two-element array and
+/// `slots_in`'s `_` arm answers `INV_SLOTS`, so a `CONT_WEAR` without its
+/// own arm sends the drip walking `cont_slot(.., s, ..)` for `s` in
+/// `0..30` across a `[ItemStack; 2]`. That is an out-of-bounds index on
+/// the server tick, reachable from one wire field, in the module whose
+/// header says every reachable input lands on an announced refusal. The
+/// assertion below is `rows.len() <= WEAR_SLOTS`, but the test's real
+/// proof of it is that the tick returns at all.
+#[test]
+fn a_wear_panel_is_drawn_from_the_body_not_the_backpack() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.gather = GatherContent::probe_fixture();
+    core.world.dev_spawn = Some(SPAWN);
+    core.catalog = ItemCatalog::EMPTY;
+    let mut clients = two_clients(&mut core, &stats);
+
+    let w0 = world_slot(&core, id_of(0));
+    // The two stores, deliberately disagreeing at the same indices.
+    let worn = [
+        ItemStack {
+            item: OTHER,
+            count: 1,
+            cond: 9_100,
+        },
+        ItemStack {
+            item: THIRD,
+            count: 1,
+            cond: 10_000,
+        },
+    ];
+    core.world.players[w0].worn = worn;
+    core.world.players[w0].inv[0] = ItemStack {
+        item: SPEAR,
+        count: COUNT_A,
+        cond: 0,
+    };
+    core.world.players[w0].inv[1] = ItemStack {
+        item: FILLER,
+        count: COUNT_B,
+        cond: 0,
+    };
+
+    // The handle is zero and stays zero: a body has no address, which is
+    // the whole of what `inventory::is_own` means on the wire.
+    let mut seen = Vec::new();
+    ask(&mut core, 0, CONT_WEAR, 0);
+    for _ in 0..4 {
+        pump(&mut core, &stats, &mut clients, &mut seen);
+    }
+
+    let got = syncs(&seen);
+    assert_eq!(got.len(), 1, "one open, one payment: {got:?}");
+    let (slot, kind, handle, reset, rows) = &got[0];
+    assert_eq!((*slot, *kind, *handle, *reset), (0, CONT_WEAR, 0, true));
+
+    // **The claim.** Under `cont_slot`'s `_` arm this was the backpack:
+    // `[(0, SPEAR x COUNT_A), (1, FILLER x COUNT_B)]`, a full and
+    // believable panel drawn from the wrong array.
+    let expect: Vec<(u8, ItemStack)> = worn
+        .iter()
+        .enumerate()
+        .map(|(s, st)| (s as u8, *st))
+        .collect();
+    assert_eq!(
+        rows, &expect,
+        "the wear panel must carry `Player::worn`, not `Player::inv`"
+    );
+    assert!(
+        rows.len() <= WEAR_SLOTS,
+        "a wear panel is {WEAR_SLOTS} slots wide, got {}: {rows:?}",
+        rows.len()
+    );
+
+    // The audience restriction holds for the fifth kind too, and for a
+    // body it is not a nicety: what someone is wearing is how much damage
+    // they will take, so a fanned-out wear panel is the same raid
+    // intelligence a box's contents are, read off a person.
+    assert!(
+        seen.iter().all(|(s, m)| *s == 0
+            || !matches!(m, EventMsg::ContSync { kind, .. } if *kind == CONT_WEAR)),
+        "nobody else may read what a body is wearing: {seen:?}"
+    );
+
+    // And it crossed the ABI, so the claim is about what the client draws.
+    assert_eq!(
+        (clients[0].1.cont_kind, clients[0].1.cont_handle),
+        (CONT_WEAR, 0),
+        "the kind must round-trip — it is what a move will carry"
+    );
+    let mirrored: Vec<(u8, ItemStack)> = clients[0].1.cont[..WEAR_SLOTS]
+        .iter()
+        .enumerate()
+        .filter(|(_, st)| st.count > 0)
+        .map(|(s, st)| (s as u8, *st))
+        .collect();
+    assert_eq!(
+        mirrored, expect,
+        "the client's mirror of the body must agree with the store"
+    );
+}

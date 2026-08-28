@@ -47,7 +47,7 @@
 //! mode being defended against *is the disconnect*.
 
 use crate::gather::ItemStack;
-use crate::limits::{BOX_SLOTS, INV_SLOTS, MAX_SPAWN_KIT};
+use crate::limits::{BOX_SLOTS, INV_SLOTS, MAX_SPAWN_KIT, WEAR_SLOTS};
 
 /// The sender's own inventory: `Player::inv`, all `INV_SLOTS` of it. The
 /// hotbar is slots `0..HOTBAR_SLOTS` of the same array (`world.rs`), so
@@ -100,16 +100,73 @@ pub const CONT_WORLD: u8 = 3;
 /// kind left: every value of the field is now a real container, which is
 /// why `worldcont::open`'s scatter re-derivation is the authorization and
 /// not the kind check.
-pub const CONT_MAX: u8 = CONT_WORLD;
+/// What the player is **wearing**: `Player::worn`, `WEAR_SLOTS` of it,
+/// indexed by `combat::WEAR_HEAD - 1` and `WEAR_BODY - 1`.
+///
+/// **Equipping is a move, not a verb of its own** (`reference/ARMOR.md`
+/// §9.2, tier 1 — the reference's hook table carries `CanWearItem(Item,
+/// Int32)` beside `CanEquipItem` with one `MoveItem` under both, and no
+/// `EquipItem` RPC anywhere). Taking that shape is not fidelity, it is
+/// reuse of the most expensive verb in this tree: `CLAUDE.md`'s trap list
+/// names the item move as the reference's most bug-prone thing and names
+/// its failure mode as *the server disconnecting the client*. An
+/// `ACT_EQUIP` would be a second path into container mutation with none
+/// of `plan_move`'s refusal ladder, none of `MoveArgs`' named fields, and
+/// none of the role-gated payloads — guarding the exact state whose
+/// divergence presents as a kick.
+///
+/// Like `CONT_SELF` and unlike the three above it, this is an **own**
+/// container (`is_own`): it is the player's body, so it has no handle to
+/// name and no reach to check. That is the whole of the asymmetry, and
+/// `is_own` exists so the distinction is asked once rather than spelled
+/// `!= CONT_SELF` at each of the sites that used to mean "on the ground".
+///
+/// What a slot *accepts* is content's answer, not this file's: the baked
+/// `ArmorDef::slot` is one-based precisely so a zeroed row reads as "not
+/// wearable" (`combat::wearable_in`), and `world.rs`'s move verb asks it
+/// as `REFUSE_M_WEAR`. There is no second list of what is armor.
+pub const CONT_WEAR: u8 = 4;
+/// The highest kind the sim understands. **Three wire bits since armor
+/// v1** (`PROTO_VER` 51): world containers filled the two-bit field, so
+/// `CONT_WEAR` is the widening that paragraph in `protocol/src/lib.rs`
+/// said would be the next kind's first move. Values 5..7 are forgeable
+/// again and refuse at both ends, which is the posture the container
+/// field held before v37 and lost.
+pub const CONT_MAX: u8 = CONT_WEAR;
+
+/// Is this kind carried **on the player** rather than standing in the
+/// world? `CONT_SELF` and `CONT_WEAR`, and the difference is not
+/// cosmetic: an own container has no handle in the command and nothing to
+/// be out of reach of, so the whole of `move_item`'s step 2 — the one
+/// handle, the two-ground-containers refusal, the reach check — is about
+/// the kinds this returns `false` for.
+///
+/// It exists because the alternative is `kind != CONT_SELF` meaning "on
+/// the ground", which was true for every kind until now and is written at
+/// several sites across the sim and the client. Each of those is a place
+/// a wear move would have been handed a bag's handle, or refused for
+/// having none.
+pub fn is_own(kind: u8) -> bool {
+    kind == CONT_SELF || kind == CONT_WEAR
+}
 
 /// Slots addressable in a container of `kind`. A box is smaller than an
 /// inventory (`BOX_SLOTS` against `INV_SLOTS`), so the address check is
 /// per-kind rather than one `INV_SLOTS` bound for everything — otherwise
 /// slots 12..30 of a box would be nameable, land inside the record, and
 /// be invisible to every reader that stops at `BOX_SLOTS`.
+///
+/// **`CONT_WEAR`'s arm is load-bearing, not tidiness.** `Player::worn` is
+/// two elements; the `_` fallback answers `INV_SLOTS`, so without this
+/// line a forged slot 2..30 would pass `move_item`'s address check and
+/// index a 2-element array — a panic reachable from one wire field, which
+/// is the disconnect this module's header says it exists to prevent.
+/// Proven by mutant: `CONT_WEAR => INV_SLOTS` panics the server tick
+/// inside `container_wire`'s wear test.
 pub fn slots_in(kind: u8) -> usize {
     match kind {
         CONT_BOX => BOX_SLOTS,
+        CONT_WEAR => WEAR_SLOTS,
         _ => INV_SLOTS,
     }
 }
@@ -167,10 +224,23 @@ pub const REFUSE_M_UNSTACKABLE: u32 = 7;
 /// what stops a 100-wood campfire from being a cheaper twelve-slot box
 /// than the 100-wood box whose entire job is to be one.
 pub const REFUSE_M_OVEN: u32 = 8;
+/// The destination is a **wear slot and this item does not go in it** —
+/// `CanWearItem`'s whole job (`reference/ARMOR.md` §1), asked of the
+/// baked `ArmorDef::slot` rather than of a second table. It answers three
+/// asks with one reason, because to the player they are one fact: the
+/// item is not armor at all, it is armor for the *other* slot, or it is
+/// the piece a swap would have pushed back into a slot it does not fit.
+///
+/// Distinct from `REFUSE_M_SLOT` on purpose. That one means "no such
+/// address" and its remedy is a resync; this one means "that address is
+/// real and your helmet is not boots", and the client's picture was
+/// correct — only the drag was wrong. Collapsing them would tell the
+/// client to redraw a container that never changed.
+pub const REFUSE_M_WEAR: u32 = 9;
 /// The largest reason above. Four bits hold `1..=15`, which is what the
 /// wire spends (widened from three with `PROTO_VER` 28, oven v0), and a
 /// reason added past 15 needs the width to move again.
-pub const REFUSE_M_MAX: u32 = REFUSE_M_OVEN;
+pub const REFUSE_M_MAX: u32 = REFUSE_M_WEAR;
 
 /// What a validated move will do. Constructed only by `plan_move`, so a
 /// value of this type *is* the proof that every check passed — the
