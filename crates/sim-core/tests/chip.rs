@@ -14,7 +14,11 @@
 //! written, and `bake_ranged` dropped the column one line before
 //! `RangedDef` could hold it. The number was parsed, range-checked,
 //! balance-checked and folded into the content hash, and moved nothing.
-//! `crates/content/tests/ranged_structure.rs` is the gate on that half.
+//! `crates/content/tests/content.rs`'s
+//! `every_ranged_weapon_carries_its_structure_column_into_the_sim` is the
+//! gate on that half. (This line named a file that does not exist until
+//! 2026-08-28 — the judge's finding on the pass that wrote it, and the
+//! second dead test-path citation in three passes. `ls` the file.)
 //!
 //! **Fixtures, not shipped numbers.** The shipped bow chips 1 and a twig
 //! wall has hundreds of hp, so a shipped-content case would be a thousand
@@ -23,14 +27,18 @@
 //! a fall lands inside a counted window — `combat::probe_fixture`'s own
 //! reasoning for its 34, one table over.
 
-use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_XLO, LOC_PLANE};
+use sim_core::build::{
+    foundation_terrain_ok, BuildContent, BUILD_CELL_M, LEVEL_H_M, LOC_EDGE_XLO, LOC_PLANE,
+};
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef, HARD_SIDE_STRUCTURE};
 use sim_core::deploy::DeployContent;
 use sim_core::gather::{cell_key, GatherContent, ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::movement::Body;
+use sim_core::movement::{quant_y, Body};
 use sim_core::ranged::SURF_BUILT;
-use sim_core::world::{Command, SimEvent, World, EV_IMPACT, EV_PIECE_REMOVED, EV_STRUCT_HIT};
+use sim_core::world::{
+    Command, SimEvent, World, EV_DEPLOY_REMOVED, EV_IMPACT, EV_PIECE_REMOVED, EV_STRUCT_HIT,
+};
 
 const SEED: u64 = 20260802;
 /// The archer's network id — `event_roles.rs`' `BUILDER`, and the same
@@ -451,5 +459,367 @@ fn a_shot_with_no_structure_column_leaves_the_wall_whole() {
         hp,
         WALL_HP * 2,
         "the foundation and the wall are both whole at {WALL_HP} each"
+    );
+}
+
+// --- The deployable half. ---------------------------------------------------
+//
+// Everything above charges a *piece*. A solid deployable is the other half of
+// what a base is made of and it sat in a walk the shot path never called, so
+// an arrow flew through a furnace, a box and a bench (`NOW.md` §0mk item 2).
+// `tests/shoot.rs` gates the address; this gates that the write lands in the
+// **other store** — which is the part no collision fixture can see, because
+// both stores answer to one four-part address by design.
+
+/// `DeployContent::probe_fixture`'s row 1: a workbench, `PLACE_ANY`, hp 80,
+/// its own item 3. Solid — `DEPLOY_VOL[ARCH_WORKBENCH]` is 1.6 x 0.9 x 0.7.
+const DEPLOY_BENCH: u16 = 1;
+/// Its hp, as the fixture rows it.
+const BENCH_HP: u32 = 80;
+
+/// `walled_world`, plus a workbench on the foundation and the shooter
+/// standing over it firing straight down.
+///
+/// **Straight down, from inside the cell**, which is
+/// `shoot.rs`' `a_floor_stops_a_shot_fired_down_through_it` stance and is
+/// forced rather than chosen: the muzzle sits at `ARROW_EYE_MM` (1.6 m) and
+/// the tallest solid deployable in the table is 1.15 m, so a LEVEL shot —
+/// every other case in this suite — flies over every bench in the game and
+/// would test nothing at all while reporting a clean miss.
+///
+/// The body is seated on the foundation's own top rather than on the dirt,
+/// because the whole geometry is measured from that plane and the terrain
+/// under it is a band away. Standing inside the bench is legal and is not an
+/// accident of the fixture: `movement.rs` says in its own comment that a
+/// deploy can be placed around a standing body, and the escape latch is what
+/// lets them walk out.
+fn benched_world(w: &mut World, structure: u16) -> (u16, u16, f32) {
+    let (cx, cz) = walled_world(w, structure);
+    // The bench's **own item** is its cost, consumed whole (`place_deploy`
+    // — a deployable is not crafted at the spot). Row 1's is item 3, which
+    // `walled_world` does not stock: its low slots are the build materials
+    // and slot 3 is the door's item 4.
+    w.players[0].inv[8] = ItemStack {
+        item: 3,
+        count: 4,
+        cond: 0,
+    };
+    let before = w.deploys.len();
+    w.tick(&[Command::PlaceDeploy {
+        id: SHOOTER,
+        row: DEPLOY_BENCH,
+        cx,
+        cz,
+        level: GROUND,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(
+        w.deploys.len(),
+        before + 1,
+        "the workbench did not place at ({cx}, {cz}) — refusal {:?}, and this \
+         is the fixture, not the mechanic",
+        w.events
+            .entries()
+            .iter()
+            .find(|e| e.code == sim_core::world::EV_DEPLOY_REFUSED)
+            .map(|e| e.b)
+    );
+    // Stand on the foundation the bench is bolted to. `col_base_y` is not
+    // public, so the fixture asks the same question `build` answers for it:
+    // the column's floor under whatever plate the foundation latched.
+    let top = sim_core::build::column_floor_y(
+        SEED,
+        hv(SEED),
+        cx,
+        cz,
+        w.pieces.cols().plate(cx, cz).unwrap_or(0),
+    );
+    let (x, z) = (
+        (cx as f32 + 0.5) * BUILD_CELL_M,
+        (cz as f32 + 0.5) * BUILD_CELL_M,
+    );
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    w.players[0].body.qy = quant_y(top);
+    (cx, cz, top)
+}
+
+/// Fire straight down until `code` lands. `shoot_until`'s twin at pitch 0 —
+/// see `benched_world` for why a level shot cannot reach a bench.
+fn shoot_down_until(w: &mut World, slot: u8, code: u8) -> Vec<SimEvent> {
+    let mut seq = 0u16;
+    for _ in 0..MAX_STEPS {
+        w.tick(&[Command::Input {
+            id: SHOOTER,
+            frame: InputFrame {
+                seq,
+                buttons: BTN_PRIMARY,
+                yaw: YAW_PLUS_X,
+                pitch: 0,
+                sel: slot,
+                ..InputFrame::default()
+            },
+        }]);
+        seq = seq.wrapping_add(1);
+        if w.events.entries().iter().any(|e| e.code == code) {
+            return w.events.entries().to_vec();
+        }
+    }
+    panic!("event code {code} never landed in {MAX_STEPS} ticks of shooting down");
+}
+
+/// An arrow that stops on a workbench takes the bow's `structure` off **the
+/// bench**, and says so with `STRUCT_DEPLOY_BIT` set.
+///
+/// The bit is the assertion. Without it the same payload names a piece at the
+/// same address — which is a real address, because the foundation the bench
+/// stands on holds it — so a client would draw the damage band on the
+/// foundation and the shard would have taken hp off neither.
+#[test]
+fn an_arrow_chips_the_workbench_it_stops_on() {
+    let mut w = Box::new(World::new(SEED));
+    let (cx, cz, top) = benched_world(&mut w, 20);
+    assert_eq!(
+        w.deploys.entries()[0].hp as u32,
+        BENCH_HP,
+        "the fixture bench must start at its rowed hp"
+    );
+
+    let ev = shoot_down_until(&mut w, SLOT_BOW as u8, EV_STRUCT_HIT);
+    let hit = only(&ev, EV_STRUCT_HIT);
+    assert_eq!(
+        hit.a,
+        cell_key(cx, cz),
+        "the hit names build cell ({cx}, {cz})"
+    );
+    assert_ne!(
+        hit.b & sim_core::world::STRUCT_DEPLOY_BIT,
+        0,
+        "the shot charged the PIECE store at ({cx}, {cz}) — the foundation \
+         holds that same address, so nothing about the payload looks wrong \
+         except which thing lost hp"
+    );
+    assert_eq!(
+        hit.b & !sim_core::world::STRUCT_DEPLOY_BIT,
+        ((GROUND as u32) << 16) | ((LOC_PLANE as u32) << 8) | DEPLOY_BENCH as u32,
+        "…and the rest of the payload is the bench's own address and row"
+    );
+    assert_eq!(
+        hit.c,
+        (20u32 << 16) | (BENCH_HP - 20),
+        "20 dealt, {} left",
+        BENCH_HP - 20
+    );
+    assert_eq!(
+        w.deploys.entries()[0].hp as u32,
+        BENCH_HP - 20,
+        "the store must agree with the wire"
+    );
+
+    // The foundation and the wall are whole: a chip routed to the piece
+    // store would have landed on one of them, and both are in this cell.
+    for i in 0..w.pieces.len() {
+        let rec = w.pieces.entries()[i];
+        assert_eq!(
+            rec.hp as u32, WALL_HP,
+            "piece {i} at ({}, {}) loc {} lost hp to a shot aimed at the bench",
+            rec.cx, rec.cz, rec.loc
+        );
+    }
+
+    // The mark is still drawn, and still says "built".
+    let imp = only(&ev, EV_IMPACT);
+    assert_eq!(
+        (imp.a >> 24) as u8,
+        SURF_BUILT,
+        "a shot that stopped on a bench reported a surface that is not built"
+    );
+    let y = imp.c as i32 as f32 * sim_core::movement::POS_Y_Q;
+    assert!(
+        y > top,
+        "the impact landed at y={y:.2}, at or under the foundation top \
+         {top:.2} — the arrow went through the bench and marked the slab"
+    );
+}
+
+/// Enough arrows bring the bench down, and the removal is announced.
+///
+/// `damage_deploy` has no removal budget and `drop_deploy` collapses
+/// nothing, which is exactly why this case is here: the piece path's
+/// budget floor (hp parks at 1 when the tick's allowance is spent) has no
+/// analogue, so a bench must actually reach zero and leave the store.
+#[test]
+fn enough_arrows_bring_the_workbench_down() {
+    let mut w = Box::new(World::new(SEED));
+    let (cx, cz, _) = benched_world(&mut w, 20);
+    let ev = shoot_down_until(&mut w, SLOT_BOW as u8, EV_DEPLOY_REMOVED);
+    let gone = only(&ev, EV_DEPLOY_REMOVED);
+    assert_eq!(gone.a, cell_key(cx, cz), "the bench fell in its own cell");
+    assert_eq!(
+        gone.b,
+        ((GROUND as u32) << 16) | ((LOC_PLANE as u32) << 8) | DEPLOY_BENCH as u32,
+        "…at its own address and row"
+    );
+    assert_eq!(w.deploys.len(), 0, "the bench is out of the store");
+    assert!(
+        w.pieces.len() >= 2,
+        "the foundation and the wall must still stand — the bench is what fell"
+    );
+}
+
+/// A bullet reaches a bench the same way an arrow does.
+///
+/// The two passes share `world_stop` and therefore share the new rung, and
+/// this is the case that proves the sharing rather than asserting it in a
+/// comment — `hitscan` walks its own `upto` and mints its own `Chip`.
+#[test]
+fn a_bullet_chips_the_same_bench_the_same_way() {
+    let mut w = Box::new(World::new(SEED));
+    benched_world(&mut w, 20);
+    let ev = shoot_down_until(&mut w, SLOT_GUN as u8, EV_STRUCT_HIT);
+    let hit = only(&ev, EV_STRUCT_HIT);
+    assert_ne!(
+        hit.b & sim_core::world::STRUCT_DEPLOY_BIT,
+        0,
+        "the revolver's round charged the piece store"
+    );
+    assert_eq!(
+        w.deploys.entries()[0].hp as u32,
+        BENCH_HP - 20,
+        "a bullet takes the same 20 off the bench an arrow does"
+    );
+}
+
+/// A shot fired past the bench, inside its own cell, leaves it whole — and
+/// lands on the foundation under it instead.
+///
+/// The mutant: stop on the solid nibble and never measure the box. Every
+/// case above fires down the cell's exact centre and passes under it.
+///
+/// **The pair is what makes it evidence.** "No `EV_STRUCT_HIT`" would be a
+/// weaker claim than it looks, satisfied by an arrow that never flew; the
+/// same shot must still charge something, and what it charges is the slab
+/// the bench is bolted to — one `STRUCT_DEPLOY_BIT` away from the case
+/// above it, over identical geometry, at the same address.
+#[test]
+fn a_shot_past_the_workbench_leaves_it_whole() {
+    let mut w = Box::new(World::new(SEED));
+    let (cx, cz, top) = benched_world(&mut w, 20);
+    let (hw, _, hd) = sim_core::deploy::solid_vol(sim_core::deploy::ARCH_WORKBENCH)
+        .expect("the workbench is a solid archetype");
+    // Inside the build cell, outside the bench on both axes at once — so a
+    // mutant that dropped either clamp is still caught.
+    let off = 1.2f32;
+    assert!(
+        off > hw && off > hd && off < BUILD_CELL_M * 0.5,
+        "the fixture offset must clear the bench ({hw:.2}, {hd:.2}) and stay \
+         inside the cell"
+    );
+    let (x, z) = (
+        (cx as f32 + 0.5) * BUILD_CELL_M + off,
+        (cz as f32 + 0.5) * BUILD_CELL_M + off,
+    );
+    w.players[0].body = Body::at(SEED, hv(SEED), x, z);
+    w.players[0].body.qy = quant_y(top);
+
+    let ev = shoot_down_until(&mut w, SLOT_BOW as u8, EV_STRUCT_HIT);
+    let hit = only(&ev, EV_STRUCT_HIT);
+    assert_eq!(
+        hit.b & sim_core::world::STRUCT_DEPLOY_BIT,
+        0,
+        "a shot fired {off:.1} m off the cell centre charged a bench whose \
+         half-extents are ({hw:.2}, {hd:.2})"
+    );
+    assert_eq!(
+        hit.a,
+        cell_key(cx, cz),
+        "…and what it did charge is in the bench's own cell: the foundation"
+    );
+    assert_eq!(
+        w.deploys.entries()[0].hp as u32,
+        BENCH_HP,
+        "the bench lost hp to a shot that missed it"
+    );
+}
+
+/// `BuildContent::probe_fixture`'s row 2: a floor, for the upper storey.
+const PIECE_FLOOR: u16 = 2;
+
+/// Two benches in one column, one storey apart, and a shot from above
+/// charges the **upper** one.
+///
+/// **This is the case the level-0 fixtures could not make.** Every other
+/// deployable case here stands its bench at level 0, so a `World::chip` that
+/// threw the chip's level away and looked up level 0 was invisible to all of
+/// them — a mutant that survived the first round, and the same shape as the
+/// finding ranged structure damage v0 filed about `shoot.rs`' all-`LOC_PLANE`
+/// fixtures. A base with a box downstairs and a furnace upstairs is not an
+/// exotic geometry; it is the ordinary one, and under that mutant shooting
+/// the furnace takes hp off the box.
+#[test]
+fn a_shot_from_above_charges_the_upper_bench_not_the_lower() {
+    let mut w = Box::new(World::new(SEED));
+    let (cx, cz, top) = benched_world(&mut w, 20);
+    // A floor over the cell, and a second bench standing on it.
+    place(&mut w, PIECE_FLOOR, cx, cz, 1, LOC_PLANE);
+    let before = w.deploys.len();
+    w.tick(&[Command::PlaceDeploy {
+        id: SHOOTER,
+        row: DEPLOY_BENCH,
+        cx,
+        cz,
+        level: 1,
+        loc: LOC_PLANE,
+    }]);
+    assert_eq!(
+        w.deploys.len(),
+        before + 1,
+        "the upper workbench did not place — refusal {:?}, and this is the \
+         fixture, not the mechanic",
+        w.events
+            .entries()
+            .iter()
+            .find(|e| e.code == sim_core::world::EV_DEPLOY_REFUSED)
+            .map(|e| e.b)
+    );
+
+    // Stand on the upper floor and fire down its own storey.
+    w.players[0].body.qy = quant_y(top + LEVEL_H_M);
+    let ev = shoot_down_until(&mut w, SLOT_BOW as u8, EV_STRUCT_HIT);
+    let hit = only(&ev, EV_STRUCT_HIT);
+    assert_ne!(
+        hit.b & sim_core::world::STRUCT_DEPLOY_BIT,
+        0,
+        "the shot charged the piece store"
+    );
+    assert_eq!(
+        (hit.b & !sim_core::world::STRUCT_DEPLOY_BIT) >> 16,
+        1,
+        "the shot charged level {} — the bench it stopped on is on level 1",
+        (hit.b & !sim_core::world::STRUCT_DEPLOY_BIT) >> 16
+    );
+    // The stores, not just the wire: which record actually lost hp is the
+    // whole question, and both benches are the same row at the same loc.
+    let lower = w
+        .deploys
+        .entries()
+        .iter()
+        .take(w.deploys.len())
+        .find(|d| d.level == 0)
+        .expect("the lower bench is still in the store");
+    let upper = w
+        .deploys
+        .entries()
+        .iter()
+        .take(w.deploys.len())
+        .find(|d| d.level == 1)
+        .expect("the upper bench is still in the store");
+    assert_eq!(
+        upper.hp as u32,
+        BENCH_HP - 20,
+        "the upper bench took the shot and must be down 20"
+    );
+    assert_eq!(
+        lower.hp as u32, BENCH_HP,
+        "the bench a storey below the shot lost hp"
     );
 }

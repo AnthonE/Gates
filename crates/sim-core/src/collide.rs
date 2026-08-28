@@ -779,6 +779,95 @@ pub fn deploy_blocked(
     false
 }
 
+/// Which solid deployable a **shot** sample at (`x`, `z`) and altitude `y`,
+/// carrying radius `r`, stops on — [`deploy_blocked`]'s walk with a
+/// projectile's profile instead of a body's, and the hole `ranged.rs`'s
+/// module doc has named since ranged structure damage v0. The three walks
+/// [`shot_stop`] runs read edges, diagonals and planes and **no bit of
+/// [`ColMasks::solid`] at all**, so an arrow flew through a furnace, a box
+/// and a bench rather than failing to damage one.
+///
+/// Three differences from the body twin, each the same one the piece walks
+/// already make:
+///
+/// - the mover is a **point at `y`** inflated by the arrowhead, not a 1.7 m
+///   capsule standing on `feet_y`, so the vertical test clamps into the
+///   box's own band where the body's overlaps a storey;
+/// - there is **no `STEP_UP` mount rule** — a top low enough for a body to
+///   climb is still a surface an arrow hits, and the whole reason that rule
+///   exists (admitting the move the vertical pass would land) has no
+///   projectile analogue;
+/// - it is a **point sample where the edges are swept**, for
+///   [`cell_planes_stop_shot`]'s reason and with the same arithmetic owed:
+///   the shortest through-thickness in `deploy::DEPLOY_VOL` is the hearth's
+///   0.6 m depth and the shallowest band is the box's 0.65 m height, both
+///   well over the 0.17 m (`ARROW_STEP_MM`) between two taps. A shot that
+///   clips a corner between samples is the cost that constant's own doc
+///   admits to, not a defect of this walk.
+///
+/// **One cell, and that is proved rather than assumed.** `DEPLOY_VOL`'s
+/// const block asserts no row's half-extent plus `CAPSULE_RADIUS_M` reaches
+/// the half-cell; `r` here is the arrowhead, which is smaller, so the
+/// inflated volume cannot cross a boundary either and a neighbour's cell
+/// can hold nothing this sample could be inside.
+///
+/// The address returned is the **deploy store's**, and `loc` is always
+/// [`crate::build::LOC_PLANE`]: every archetype `deploy::solid_vol` gives a
+/// volume places `ground`, `foundation` or `any`, and
+/// `deploy::loc_fits_placement` admits only the plane for all three. That
+/// is a claim about `content/deployables.toml`, so the gate for it is in
+/// the content crate (`content/tests/content.rs`) and not here.
+pub fn deploy_stop(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    cols: &ColIndex,
+    x: f32,
+    z: f32,
+    y: f32,
+    r: f32,
+) -> Option<PieceHit> {
+    let bx = crate::build::build_cell_of(x);
+    let bz = crate::build::build_cell_of(z);
+    if bx < 0 || bz < 0 || bx >= MAX_BUILD_COORD as i32 || bz >= MAX_BUILD_COORD as i32 {
+        return None;
+    }
+    let m = cols.get(bx as u16, bz as u16);
+    if m.solid == SOLID_NONE {
+        return None;
+    }
+    let base = col_base_y(seed, haven, cols, bx as u16, bz as u16);
+    let (cxm, czm) = (
+        bx as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
+        bz as f32 * BUILD_CELL_M + BUILD_CELL_M * 0.5,
+    );
+    for level in 0..MAX_BUILD_LEVELS {
+        let Some(arch) = m.solid_at(level) else {
+            continue;
+        };
+        let Some((hw, h, hd)) = crate::deploy::solid_vol(arch) else {
+            continue;
+        };
+        let bottom = base + level as f32 * LEVEL_H_M;
+        // Sphere against the box: [`deploy_blocked`]'s clamp-to-rectangle
+        // circle distance with the third axis added, because a shot has an
+        // altitude where a body has a storey. Growing the box by `r`
+        // instead would round its corners the wrong way — the reason that
+        // function gives for the clamp, unchanged by the extra axis.
+        let ex = x - cxm - (x - cxm).clamp(-hw, hw);
+        let ey = y - y.clamp(bottom, bottom + h);
+        let ez = z - czm - (z - czm).clamp(-hd, hd);
+        if ex * ex + ey * ey + ez * ez < r * r {
+            return Some(PieceHit {
+                cx: bx as u16,
+                cz: bz as u16,
+                level: level as u8,
+                loc: crate::build::LOC_PLANE,
+            });
+        }
+    }
+    None
+}
+
 /// Whether a PLANE piece's flank stops a capsule standing at (`x`, `z`) with
 /// its feet at `feet_y` — the side of a foundation, a floor or a roof.
 ///
@@ -1426,6 +1515,13 @@ pub fn blocked(
 /// `loc` is one of `build`'s `LOC_*` — the same four-part address
 /// `combat::raid` picks and `deploy::damage_piece` writes against, so a shot
 /// and a swing name a wall identically.
+///
+/// ⚠ **The address alone does not say which STORE**, and since
+/// [`deploy_stop`] it is returned by a walk over both. `Deploys::find_index`
+/// states the design in its own doc — a door and its doorway have one
+/// address — so a caller holding this has already decided, or is carrying
+/// the discriminator beside it (`ranged::Struck`, `build::repair`'s
+/// `deploy` flag, `STRUCT_DEPLOY_BIT` on the wire). This type never guesses.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct PieceHit {
     pub cx: u16,

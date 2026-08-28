@@ -1130,6 +1130,34 @@ pub fn soft_side(rec: &PieceRec, px: f32, pz: f32) -> bool {
     facing_of(rec.loc, rec.cx, rec.cz, px, pz) == rec.facing
 }
 
+/// What a structure hit on `rec` actually charges, struck from
+/// (`px`, `pz`) by a tool whose own number is `full` — hard/soft v0,
+/// `reference/BUILDING.md` §7b.5. A sided shape met on its HARD face pays
+/// `combat::HARD_SIDE_STRUCTURE` whatever swung or fired it; a plane, a
+/// riser, or any face that is the soft one pays `full`.
+///
+/// **One body because two callers held the same three lines verbatim.**
+/// `combat::raid` (the swing) and `World::chip` (the shot) each wrote out
+/// `shape_has_facing` -> `soft_side` -> pick, and ranged structure damage v0
+/// claimed in its own commit body that the rule was "reused, not
+/// restated" while it was in fact copied — the judge's finding on that
+/// pass. A rule that lives twice is a rule that changes once, and the
+/// failure that buys is a bow and a hatchet disagreeing about a wall's
+/// hard face with every gate green.
+///
+/// **A blast is deliberately not a caller.** `charge::detonate` prices by
+/// distance alone, because a satchel is a point and not a stance — that
+/// exemption is stated in `combat::raid`'s own comment and is preserved
+/// here by omission rather than by a flag nobody would read.
+#[inline]
+pub fn structure_price(rec: &PieceRec, shape: u8, px: f32, pz: f32, full: u16) -> u16 {
+    if shape_has_facing(shape) && !soft_side(rec, px, pz) {
+        crate::combat::HARD_SIDE_STRUCTURE
+    } else {
+        full
+    }
+}
+
 /// Will this ground hold a foundation? One definition — `place` refuses on
 /// it, and a fixture that needs buildable ground finds it with it, so the
 /// two can never drift apart.

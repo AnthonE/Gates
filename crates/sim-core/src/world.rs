@@ -1904,10 +1904,10 @@ impl World {
         }
     }
 
-    /// Charge one shot's structure damage to the piece it stopped on —
-    /// `ranged`'s half of the raid verb, written here for the reason
-    /// `Chip` states: the shot pass holds the collision index, and this
-    /// holds the store, the content and the tick's removal budget.
+    /// Charge one shot's structure damage to the piece **or deployable** it
+    /// stopped on — `ranged`'s half of the raid verb, written here for the
+    /// reason `Chip` states: the shot pass holds the collision index, and
+    /// this holds both stores, the content and the tick's removal budget.
     ///
     /// **The address is re-resolved, never carried as an index.** Between
     /// the walk that found this piece and this line sit the rest of the
@@ -1922,15 +1922,46 @@ impl World {
     /// hard face lands `HARD_SIDE_STRUCTURE` whatever fired it. Sharing the
     /// law rather than restating it is the point — otherwise a bow pays a
     /// price a hatchet pays or does not, depending on which file was
-    /// written first. What differs is only *whose* position names the side:
-    /// `raid` asks where the attacker stands, a shot asks where the shot
-    /// came from.
+    /// written first. That sharing is literal since 2026-08-28: both call
+    /// `build::structure_price`, where ranged structure damage v0 had
+    /// copied the three lines and *said* they were shared. What differs is
+    /// only *whose* position names the side: `raid` asks where the attacker
+    /// stands, a shot asks where the shot came from.
     ///
-    /// Bounded: one `find_index` walk and one `damage_piece` per chip, and
+    /// **A deployable takes it flat, and that is not an omission.** The
+    /// deploy arm pays no side price and spends no removal budget because
+    /// neither exists for it anywhere else: `combat::raid`'s own
+    /// `Target::Deploy` arm and `charge::detonate` both hand
+    /// `damage_deploy` the raw number, a box has no facing to be on the
+    /// wrong side of, and `drop_deploy` collapses nothing so there is no
+    /// cascade for a budget to bound. Adding either here would make a shot
+    /// the one verb in the game that prices a furnace differently.
+    ///
+    /// Bounded: one `find_index` walk and one damage write per chip, and
     /// the chip array is capped at `MAX_ARROWS`. The removal budget is the
     /// same allowance a swing spends, so an arrow cannot drop a piece past
     /// the cap that bounds every other remover.
     fn chip(&mut self, c: &ranged::Chip, removals: &mut usize) {
+        if c.deploy {
+            // Same re-resolve, other store — `charge::detonate`'s two-arm
+            // shape, and for its stated reason: an address cannot go
+            // stale, an index can.
+            let Some(i) = self
+                .deploys
+                .find_index(c.hit.cx, c.hit.cz, c.hit.level, c.hit.loc)
+            else {
+                return;
+            };
+            deploy::damage_deploy(
+                &self.deploy,
+                &mut self.pieces,
+                &mut self.deploys,
+                i,
+                c.structure,
+                &mut self.events,
+            );
+            return;
+        }
         let Some(i) = self
             .pieces
             .find_index(c.hit.cx, c.hit.cz, c.hit.level, c.hit.loc)
@@ -1938,12 +1969,13 @@ impl World {
             return;
         };
         let rec = self.pieces.entries()[i];
-        let sided = crate::build::shape_has_facing(self.build.pieces[rec.row as usize].shape);
-        let amount = if sided && !crate::build::soft_side(&rec, c.from_x, c.from_z) {
-            crate::combat::HARD_SIDE_STRUCTURE
-        } else {
-            c.structure
-        };
+        let amount = crate::build::structure_price(
+            &rec,
+            self.build.pieces[rec.row as usize].shape,
+            c.from_x,
+            c.from_z,
+            c.structure,
+        );
         deploy::damage_piece(
             &self.deploy,
             &self.build,

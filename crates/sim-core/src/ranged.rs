@@ -65,11 +65,16 @@
 //! `World::chip`; the sides, the removal budget and the `EV_STRUCT_HIT`
 //! payload are `combat::raid`'s and are not restated here.
 //!
-//! **A deployable still stops no shot**, which is a different hole in a
-//! different walk (`NOW.md` §0mk item 2): `shot_stop` never reads
-//! `ColMasks::solid`, so an arrow passes through a furnace rather than
-//! failing to damage one. Arrows still do not come back either
-//! (`reference/PROJECTILES.md` §9.7).
+//! **A deployable stops one now too** (2026-08-28, `NOW.md` §0mk item 2).
+//! It was a different hole in a different walk — `shot_stop` reads edges,
+//! diagonals and planes and no bit of `ColMasks::solid` — so an arrow
+//! passed through a furnace rather than failing to damage one, and the
+//! body walk had reached the same volume through a separate function
+//! (`collide::deploy_blocked`) since deploy collision v0.
+//! `collide::deploy_stop` is that function with a projectile's profile,
+//! asked last in `world_stop`'s ladder, and `Struck` is what lets one
+//! four-part address say which of the two stores it came out of. Arrows
+//! still do not come back (`reference/PROJECTILES.md` §9.7).
 //!
 //! **An arrow flies at its own size now** (catalogue v1). Pieces stop it
 //! through `collide::shot_blocked` — a point at the arrow's altitude,
@@ -464,7 +469,7 @@ pub fn step(
         // answered, because that is the difference between a puff of dirt,
         // a chip of bark and a splintered plank, and it is knowable here
         // and nowhere else (`SURF_*`).
-        let (stop_t, surf, piece) =
+        let (stop_t, surf, built) =
             world_stop(seed, haven, cols, occ, (ox, oy, oz), (sx, sy, sz), n, n);
 
         // Pass two: the nearest body whose closest approach to the segment
@@ -531,10 +536,11 @@ pub fn step(
             // reason. `(ox, oz)` is the arrow's position at the start of
             // this tick — one tick of flight back from the wall, which is
             // the side it came from and what the hard/soft rule asks for.
-            if let Some(hit) = piece {
+            if let Some(hit) = built {
                 if a.structure > 0 {
                     chips[n_chips] = Chip {
-                        hit,
+                        hit: hit.at,
+                        deploy: hit.deploy,
                         structure: a.structure,
                         from_x: ox / MM_PER_M,
                         from_z: oz / MM_PER_M,
@@ -575,12 +581,35 @@ pub fn step(
 /// at the moment it charges the damage, and a hit whose piece has gone is
 /// simply no longer a hit: the shot still stopped and still drew its
 /// impact, and only the chip is lost.
+/// What a shot walk stopped on, when what it stopped on was **built** —
+/// the address and the store it lives in.
+///
+/// The two stores share one four-part address by design (`Deploys::
+/// find_index` says so: a door and its doorway have one), so a walk that
+/// reaches both has to say which. It is the same discriminator
+/// `build::repair` takes as its `deploy` flag and the same one the wire
+/// carries as `world::STRUCT_DEPLOY_BIT`; without it the shot path would
+/// have to guess, and a guess here charges a wall for a furnace's hit or
+/// silently drops the chip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Struck {
+    pub at: collide::PieceHit,
+    /// `true` <=> the address names a `DeployRec`, not a `PieceRec`.
+    pub deploy: bool,
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct Chip {
     /// Which piece — `build`'s four-part address, the same one
     /// `combat::raid` picks and `deploy::damage_piece` writes against, so a
     /// shot and a swing name a wall identically.
     pub hit: collide::PieceHit,
+    /// Which store that address names ([`Struck::deploy`], carried out).
+    /// `World::chip` re-resolves through `Deploys::find_index` and
+    /// `deploy::damage_deploy` when it is set, and pays no side price:
+    /// a box has no facing, exactly as `combat::raid`'s own
+    /// `Target::Deploy` arm and `charge::detonate` already have it.
+    pub deploy: bool,
     /// What to take off it: the firing weapon's `structure` column. Never
     /// zero — a weapon with no structure column produces no `Chip` at all,
     /// so this array holds only hits that will be charged.
@@ -623,12 +652,12 @@ fn world_stop(
     s: (f32, f32, f32),
     n: usize,
     upto: usize,
-) -> (f32, Option<u8>, Option<collide::PieceHit>) {
+) -> (f32, Option<u8>, Option<Struck>) {
     let (ox, oy, oz) = o;
     let (sx, sy, sz) = s;
     let mut stop_t = 1.0f32;
     let mut surf: Option<u8> = None;
-    let mut piece: Option<collide::PieceHit> = None;
+    let mut built: Option<Struck> = None;
     let mut prev = (ox / MM_PER_M, oz / MM_PER_M);
     for k in 1..=upto.min(n) {
         let t = k as f32 / n as f32;
@@ -649,18 +678,35 @@ fn world_stop(
         } else if occ.blocks_volume(seed, px, pz, py, ARROW_R_M, ARROW_R_M) {
             Some(SURF_WORLD)
         } else {
-            hit = collide::shot_stop(seed, haven, cols, prev.0, prev.1, px, pz, py, ARROW_R_M);
+            // Pieces, then deployables — and this is not a tie-break, it is
+            // an order two shapes can never both answer. A solid deployable
+            // stands at its cell's centre and `DEPLOY_VOL`'s const block
+            // proves its inflated volume never reaches the boundary; the
+            // widest bench leaves 0.6 m of clear cell between its face and
+            // the edge, against a 0.17 m step. So no sample can be both
+            // crossing an edge and inside a box.
+            //
+            // The one place they do overlap is a 2*`ARROW_R_M` sliver where
+            // a box's base meets the floor it stands on, and there the
+            // plane answering first is the honest read: at that altitude
+            // the slab is what the arrowhead is in.
+            hit = collide::shot_stop(seed, haven, cols, prev.0, prev.1, px, pz, py, ARROW_R_M)
+                .map(|at| Struck { at, deploy: false })
+                .or_else(|| {
+                    collide::deploy_stop(seed, haven, cols, px, pz, py, ARROW_R_M)
+                        .map(|at| Struck { at, deploy: true })
+                });
             hit.map(|_| SURF_BUILT)
         };
         if what.is_some() {
             stop_t = t;
             surf = what;
-            piece = hit;
+            built = hit;
             break;
         }
         prev = (px, pz);
     }
-    (stop_t, surf, piece)
+    (stop_t, surf, built)
 }
 
 /// The nearest body whose closest approach to the segment `o + s·t` comes at
@@ -888,7 +934,7 @@ pub fn hitscan(
             Some((t, _)) => (t * n as f32) as usize + 1,
             None => MAX_HITSCAN_MARK_SAMPLES,
         };
-        let (stop_t, surf, piece) =
+        let (stop_t, surf, built) =
             world_stop(seed, haven, cols, occ, (ox, oy, oz), (sx, sy, sz), n, upto);
         let best = seen.filter(|&(t, _)| t <= stop_t);
 
@@ -934,10 +980,11 @@ pub fn hitscan(
             // wire is *where it hit* then *what that cost* — and so a piece
             // that falls to this shot has its `EV_PIECE_REMOVED` behind the
             // mark that explains it.
-            if let Some(hit) = piece {
+            if let Some(hit) = built {
                 if def.structure > 0 {
                     chips[n_chips] = Chip {
-                        hit,
+                        hit: hit.at,
+                        deploy: hit.deploy,
                         structure: def.structure,
                         from_x: ox / MM_PER_M,
                         from_z: oz / MM_PER_M,

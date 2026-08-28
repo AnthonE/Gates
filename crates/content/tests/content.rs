@@ -3279,3 +3279,60 @@ fn every_ranged_weapon_carries_its_structure_column_into_the_sim() {
          pass on an empty loop"
     );
 }
+
+/// Every deployable with a collision volume places on the **plane** and
+/// nowhere else.
+///
+/// This is a claim about `content/deployables.toml` that a function in
+/// `sim-core` depends on and cannot check. `collide::deploy_stop` returns a
+/// four-part address so a shot can charge the thing it stopped on, and the
+/// two stores share one address space — a door and its doorway have one —
+/// so the walk has to supply a `loc`. The collision index does not carry
+/// one: `ColMasks::solid` is a nibble per level holding an archetype code,
+/// and nothing else. `LOC_PLANE` is therefore derived from the placement
+/// class, and that derivation is only sound while every solid archetype
+/// places `ground`, `foundation` or `any`.
+///
+/// **The failure it prevents is silent.** A future row that gave a solid
+/// archetype the `doorway` class would place at `LOC_EDGE_XLO`, the shot
+/// walk would keep saying `LOC_PLANE`, `Deploys::find_index` would find
+/// nothing there and `World::chip` would drop the chip — a deployable that
+/// stops every arrow and never loses a point of hp, with no event, no
+/// refusal and no red gate anywhere.
+///
+/// Read off the file and the sim's own tables rather than typed, so this is
+/// the crossing and not a copy of the roster.
+#[test]
+fn every_solid_deployable_places_on_the_plane() {
+    use sim_core::build::LOC_PLANE;
+    let c = build(&sources()).expect("shipped content bakes");
+    let dc = c.bake_deployables().expect("deployables bake");
+    let mut seen = 0;
+    for i in 0..dc.def_count as usize {
+        let def = &dc.defs[i];
+        if sim_core::deploy::solid_vol(def.arch).is_none() {
+            continue;
+        }
+        seen += 1;
+        for loc in 0u8..=sim_core::build::LOC_DIAG_B {
+            let fits = sim_core::deploy::loc_fits_placement(def.placement, loc);
+            assert_eq!(
+                fits,
+                loc == LOC_PLANE,
+                "deployable row {i} (archetype {}, placement {}) has a \
+                 collision volume and {} loc {loc} — `collide::deploy_stop` \
+                 names LOC_PLANE for every solid it finds, so a shot would \
+                 charge an address this row does not occupy",
+                def.arch,
+                def.placement,
+                if fits { "admits" } else { "refuses" }
+            );
+        }
+    }
+    assert!(
+        seen >= 7,
+        "expected the hearth, the box (twice), the furnace, the three \
+         benches, the recycler and the research table; found {seen} solid \
+         rows — an empty loop is not a passing gate"
+    );
+}

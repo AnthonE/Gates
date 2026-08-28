@@ -140,14 +140,12 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
 (`DECISIONS.md`; `reference/PROJECTILES.md` §9 is the sized list).
 
 1. ✅ **A shot chips the wall it stops on** (ranged structure damage v0,
-   2026-08-28) — arrow and bullet, `collide::shot_stop` names the address,
-   `World::chip` charges `deploy::damage_piece` at the swing's own
-   hard/soft price and removal budget. It invented no knob: `weapons.toml`
-   has carried `structure = 1` on the bow, crossbow and revolver since the
-   content crate and `bake_ranged` dropped the column. What it leaves open:
-   **a deployable still stops no shot** (§0mk item 2 — `shot_stop` never
-   reads `ColMasks::solid`, so an arrow passes through a furnace rather
-   than failing to damage one), and nobody has watched a wall come down.
+   2026-08-28), **and a deployable too** (deploy shots v0, same day —
+   §0mk item 2). Arrow and bullet, `collide::{shot_stop, deploy_stop}` name
+   the address, `World::chip` charges the right store. Neither invented a
+   knob. What they leave open: nobody has watched a wall come down or a
+   bench fall (`§LOOK`), and a swing at a piece still marks nothing
+   (§0mk item 1).
 2. **Arrow recovery** (`reference/PROJECTILES.md` §9.7) — the spent-arrow
    store, the ~15 % break, the 10 s lodge, and the first verb in the
    protocol addressed to a world position rather than a build cell. A
@@ -208,15 +206,16 @@ a `±Y` normal instead of a wall's. Item 1 was behind it and is now free.
    (`combat.rs:869`) pushes no `EV_IMPACT`; `SURF_BUILT` is the kind, and
    the collision it was waiting on now exists. Flesh stays unmarked by
    choice (one spare code).
-2. **A solid deployable stops no shot** — the same hole in a different
-   shape, and the one the floor fix left. `shot_stop` never reads
-   `ColMasks::solid` and `ranged.rs` never calls `collide::deploy_blocked`,
-   so an arrow passes through a furnace, a box and a shut door's own
-   volume. `deploy::solid_vol` already gives the box; it is the plane
-   walk's shape with a per-archetype extent. ⚠ **Half the cost is now
-   paid**: ranged structure damage v0 (§5.1) gave the shot walk an address
-   to return and `damage_deploy` is the write, so this is a `deploy_stop`
-   beside `shot_stop` and one arm in `World::chip` — not a new mechanism.
+2. ✅ **A solid deployable stops a shot now** (deploy shots v0, 2026-08-28):
+   `collide::deploy_stop` is `deploy_blocked` with a projectile's profile,
+   `ranged::Struck` is what lets one four-part address say which store it
+   came from, and `World::chip` charges `damage_deploy` flat — no side, no
+   removal budget, which is what `combat::raid` and `charge::detonate`
+   already pay. What it leaves open is the **door's own volume**: a shut
+   door blocks as an *edge* through `ColMasks::shut_*`, which `shot_stop`
+   already walks, so nothing is owed there — but a door standing OPEN is
+   still air to a shot, exactly as it is to a body, and whether that is
+   right is a design question nobody has asked.
 3. **The piece address on `EV_IMPACT`** — 27 bits against 4 spare pad bits,
    11 bytes. What still needs it: a **rim** (`plane_face` declines the
    ambiguous strip by design) and a **diagonal wall, 45° out**, since the
@@ -224,6 +223,15 @@ a `±Y` normal instead of a wall's. Item 1 was behind it and is now free.
 4. **Spray paint is a deployable, not a decal**: a `limits.rs` cap, a
    `worldsave.rs` slot, build privilege, decay, moderation. Stencil or
    painted is the call to make first.
+5. **Three of the shot walk's four `loc` arms have no address case.**
+   Every fixture in `tests/shoot.rs` is a `LOC_PLANE` floor and `chip.rs`
+   covers `LOC_EDGE_XLO` alone, so a walk naming the wrong piece on
+   `LOC_EDGE_ZLO`, `LOC_DIAG_A` or `LOC_DIAG_B` is green — the mutant that
+   survived ranged structure damage v0's first round, and the judge asked
+   for a standing gate rather than the note it got
+   (`findings/note-20260828-the-structure-column-was-hashed-and-dropped.md`).
+   Deploy shots v0 fixed the same shape one axis over (a level-1 case, so
+   `World::chip` cannot throw the level away) and left this one.
 
 ⚠ **Nobody has seen a decal**: no `ForwardDecal` renders under lavapipe at
 any size, alpha or orientation. One boot on a real GPU settles it.
