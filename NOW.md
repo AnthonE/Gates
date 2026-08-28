@@ -95,7 +95,11 @@ The ground stopped repeating and `rock` stopped being a wall (`DECISIONS.md`
 and 4 all end at "boot it and look", item 5 is closed, and item 3 needs both a
 texture and a `[u8; 4]` → 5 widening of `terrain::splat` — which is the scatter
 mix, `Biome`'s four rows, the minimap palette and `test_terrain_golden` in one
-commit, not a texture swap. Size it before picking it.
+commit, not a texture swap. **Sized 2026-08-28 and it is not one pass**:
+30 source files, 22 test files red, the shader's five four-tap blocks — and
+the blocker is that `ATTRIBUTE_COLOR` carries the four weights and is FULL,
+so a fifth needs a vertex channel that does not exist. `map_palette.rs`
+already reddens on the arity, which is the one free part.
 
 
 ## 0wg · What worldgen shape v1 left open *(sim+client lane)*
@@ -143,9 +147,9 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    2026-08-28), **and a deployable too** (deploy shots v0, same day —
    §0mk item 2). Arrow and bullet, `collide::{shot_stop, deploy_stop}` name
    the address, `World::chip` charges the right store. Neither invented a
-   knob. What they leave open: nobody has watched a wall come down or a
-   bench fall (`§LOOK`), and a swing at a piece still marks nothing
-   (§0mk item 1).
+   knob, and **a swing marks the same plank now** (melee raid mark v0,
+   2026-08-28 — §0mk item 1). What they leave open: nobody has watched a
+   wall come down, a bench fall, or a decal draw at all (`§LOOK`).
 2. **Arrow recovery** (`reference/PROJECTILES.md` §9.7) — the spent-arrow
    store, the ~15 % break, the 10 s lodge, and the first verb in the
    protocol addressed to a world position rather than a build cell. A
@@ -202,10 +206,16 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
 arrowhead's radius, and `render/decal.rs::plane_face` gives a mark on a slab
 a `±Y` normal instead of a wall's. Item 1 was behind it and is now free.
 
-1. **A swing at a built PIECE marks nothing.** `combat::raid`
-   (`combat.rs:869`) pushes no `EV_IMPACT`; `SURF_BUILT` is the kind, and
-   the collision it was waiting on now exists. Flesh stays unmarked by
-   choice (one spare code).
+1. ✅ **A swing at a built piece marks it now** (melee raid mark v0,
+   2026-08-28). `combat::piece_mark` is the point, `SURF_BUILT` the kind,
+   and the deployable arm rides `deploy_stop`'s own clamp — so a hatchet
+   and a bow scuff one plank and `EV_IMPACT` has three producers. No wire
+   byte, no `PROTO_VER`, no client line. `tests/mark.rs` proves the point
+   is ON the piece for all ten `loc` arms; eleven mutants, all red. Flesh
+   stays unmarked by choice (one spare code). **What it does not do**: the
+   mark ignores aim, so it is the nearest point of the piece rather than
+   the point swung at — a triangle and a diagonal therefore take one spot
+   per piece. Giving them more wants a ray this arm does not have.
 2. ✅ **A solid deployable stops a shot now** (deploy shots v0, 2026-08-28):
    `collide::deploy_stop` is `deploy_blocked` with a projectile's profile,
    `ranged::Struck` is what lets one four-part address say which store it
@@ -250,6 +260,15 @@ a `±Y` normal instead of a wall's. Item 1 was behind it and is now free.
    `(bx+1, bz)` / `(bx, bz+1)` rows return the **neighbour's** address
    (`collide.rs:1641`), and nothing asserts that a shot stopping on a cell's
    high face names cell+1 rather than the cell it was sampled in.
+6. ✅ **`deploy_stop`'s vertical band has a floor gate now** (2026-08-28,
+   the judge's first ranked fix on `pass-…-03`). `y.clamp(bottom, bottom+h)`
+   → `y.min(bottom+h)` ran the whole `sim-core` suite green, because every
+   case in `shoot.rs` and `chip.rs` fired straight DOWN and the floor rail
+   never binds from above — a box was an infinitely deep column and a bench
+   on the storey above would eat a level shot on the ground floor.
+   `shoot.rs`'s `a_shot_fired_up_stops_on_the_furnace_underside_not_below_it`
+   fires up instead; the two answers are 1.4 m apart and `surf` cannot tell
+   them apart, so the assertion is on y. Proven red under that mutant.
 
 ⚠ **Nobody has seen a decal**: no `ForwardDecal` renders under lavapipe at
 any size, alpha or orientation. One boot on a real GPU settles it.

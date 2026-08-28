@@ -397,16 +397,25 @@ pub const EV_GATHER_REFUSED: u8 = 37;
 /// door, so flesh is `EV_HIT` and this is everything else — the two are
 /// exclusive and a reader never has to ask which kind of mark to make.
 ///
-/// **Two producers since 2026-08-18, and it was never really an arrow's
-/// fact.** `ranged::step` pushes it where an arrow stopped, and
-/// `gather::swing` pushes it where a landed melee swing bit an occupant
-/// (`NOW.md` §0mk item 1). The fact is *a surface was struck at this
-/// point*, which belongs to neither verb, so a mark on a tree cost no wire
+/// **Three producers since 2026-08-28, and it was never really an arrow's
+/// fact.** `ranged::step` pushes it where an arrow stopped, `gather::swing`
+/// where a landed melee swing bit an occupant, and `combat::raid` where one
+/// bit a built piece or a solid deployable (`combat::piece_mark`). The fact
+/// is *a surface was struck at this point*, which belongs to none of the
+/// three verbs, so a mark on a tree and a mark on a plank each cost no wire
 /// byte, no `PROTO_VER` bump and no client line — `render/decal.rs` was
-/// already the single reader and could not tell the two apart, which is
-/// the test of whether reuse was honest rather than convenient. A swing
-/// the node REFUSES pushes nothing: the mark sits below that arm, so a
-/// torch waved at a tree leaves the bark clean.
+/// already the single reader and cannot tell them apart, which is the test
+/// of whether reuse was honest rather than convenient. **The third one is
+/// why the first two were worth reusing**: the shard had taken the right hp
+/// off the right record for an arrow, a bullet, four wall orientations and
+/// nine deployable archetypes while a raider could not see any of it
+/// (`NOW.md` §0mk item 1; the merge-gate judge's second ranked gap,
+/// 2026-08-28), and closing that was one emit site rather than an event.
+///
+/// A swing that lands on NOTHING pushes nothing, on all three paths: the
+/// mark sits past the node's tool refusal, past `raid`'s target pick and
+/// past its store lookup, so a torch waved at a tree leaves the bark clean
+/// and a swing at empty air leaves the base unmarked.
 ///
 /// The position is here rather than read back out of a store at encode
 /// (`EV_BAG_DROPPED`'s trick) because on the arrow path there is nothing
