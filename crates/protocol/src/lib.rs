@@ -63,7 +63,7 @@ pub use event::{
     encode_event_removed, encode_event_research, encode_event_research_refused,
     encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
     encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
-    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, WireBag,
+    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, ItemRow, WireBag,
     BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
     MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
     RESEARCH_BATCH, SLOT_SYNC_BATCH,
@@ -684,9 +684,36 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// fill a panel with plausible garbage. Nothing errors; the two ends simply
 /// disagree about a container, which is the trap-list disconnect arriving by
 /// the other road. That is exactly what the handshake refusal is for. All 96
-/// fixtures re-key and every one carrying a container address moves bytes;
-/// three are appended for the new kind.
-pub const PROTO_VER: u16 = 51;
+/// fixtures re-key and every one carrying a **non-zero** container address
+/// moves bytes — `action_container_close` is the exception and it is the
+/// instructive one: a close encodes `kind = CONT_SELF` with an all-zero
+/// handle, so widening the field shifted zeros into zeros and 41 bits and
+/// 42 bits both round to the same six. Four are appended for the new kind,
+/// taking the set to 100.
+///
+/// **v52 (2026-08-28): two columns on the catalog row** (equipment
+/// readout). `ItemCatalog` and `EV_CATALOG` carry `armor_pct` and
+/// `wear_slot` beside `cond_max`, nine bits per row, and `set` takes an
+/// `ItemRow` rather than a fourth and fifth positional argument.
+///
+/// The reason is v46's, one version later and worth stating as a pattern
+/// rather than an incident: **the client links no content crate**, so any
+/// fact a panel must draw either rides the catalog drip or does not exist
+/// on that side of the wire at all. `combat::worn_pct` was read on every
+/// hit and carried by nothing, so armor v1 shipped a wear container the
+/// player could fill and a screen that could not say what filling it was
+/// worth. This is also what lets the client refuse a wrong-slot drag
+/// before the round trip, on the sim's own predicate rather than a second
+/// list of what is armor.
+///
+/// A stale client's failure here is **loud**, unlike v51's: the row grew
+/// nine bits mid-message, so a v51 reader takes the next row's name length
+/// out of this row's armor bits and reads a length of 0 or one over the
+/// cap within a batch or two — `WireError::Malformed`, not plausible
+/// garbage. All 100 fixtures re-key; `event_catalog` is the only one whose
+/// bytes move for a reason other than the version prefix, and none are
+/// added or removed.
+pub const PROTO_VER: u16 = 52;
 
 /// This game's slug in the elo catalog.
 ///

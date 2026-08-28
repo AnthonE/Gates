@@ -67,20 +67,32 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 naked"). The verb landed this pass — wire v51, `CONT_WEAR`. What is below
 is what that opened rather than what it closed.*
 
-1. **The wear panel has no paperdoll.** Armor draws in the generic
-   container grid with the title `WORN`, two cells wide. `inventory.jpeg`
-   shows the reference's arrangement — silhouette, slots around it,
-   protection percentages — and `panels/inv.rs` draws one grid per open
-   container, so this is a panel shape rather than any new wire.
-2. **Nothing tells a player armor helped.** `combat::worn_pct` is read on
-   every hit and no event carries it, so a blunted hit and a soft one look
-   identical. Cheapest read: the protection total on the wear panel, off
-   state the client already has once §0eq 1 draws it.
+✅ **1 and 2 landed 2026-08-28** (equipment readout, wire v52). The
+paperdoll draws, the protection total prints, and a wear slot lights or
+reddens under a drag before the release. Item 2's stated mechanism was
+**wrong and is worth keeping as the correction**: it said the total was
+"off state the client already has", and the client had names and
+condition ceilings only — `worn_pct` needed two columns on the catalog
+drip, which is why this was a wire bump and not a panel edit.
+
 3. **A body is not drawn wearing anything.** `worn` crosses the wire only
    as the owner's own panel; the mannequin has no armor mesh and no wire
    fact to key one off. Wants a design pass before a byte — it is AOI
    fan-out of what everyone is wearing, which is the raid intelligence
    `container_wire.rs`'s wear test refuses to broadcast today.
+4. **You cannot reach the wear slots with a box open**, so the route from
+   a looted helmet to your head is: take it, close the box, open the
+   inventory, drag again. The client draws one container grid against one
+   server-side open container (`panels/inv.rs`, `core.rs`'s
+   `open_cont_kind`), and `CONT_WEAR` is `is_own` — it has no handle and
+   needs no reach check, so it is the one kind that could be open
+   *alongside* another. Wants a second `cont` view on `ClientCore`, not a
+   new message. Named by the merge-gate judge, pass `-06` fix 2.
+5. **Nobody has looked at the paperdoll.** It is Nodes, not an asset — two
+   rounded blocks — and no frame in `findings/` contains it. `§LOOK`.
+6. **Armor still does not wear out.** §9.4's condition, now that the
+   catalog carries `cond_max` beside the reduction: a worn piece has both
+   halves on the client and debits neither. `§0dur` owns it.
 
 ## 0gs · What ground surface v1 left open *(client lane)*
 
@@ -226,8 +238,8 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    on a worn piece (§9.4 — rides on the reduction path, which now exists);
    `move_penalty_pct` still reaches no line of `movement.rs`
    (`bake.rs:866`), and §9.5 item 4 wants its non-stacking rule spoken
-   first. The wear panel draws in the container grid; a paperdoll is not
-   built.
+   first. ✅ The paperdoll and the protection readout landed 2026-08-28
+   (wire v52, `§0eq`); nobody has looked at either.
 5. **No lag compensation** — slices 2–5 of `findings/lagcomp-design-20260818.md`
    §7: the ring in `sim-core`, `Command::Input` carrying `favour`, `strike`
    rewinding, the server minting it. None exists yet; no wire bump is owed.

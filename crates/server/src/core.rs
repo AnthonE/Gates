@@ -146,8 +146,8 @@ pub struct ShardCore {
     removed_buf: [u32; MAX_SNAPSHOT_ENTITIES],
     /// Scratch: encode target; the closure receives its bytes.
     dg_buf: [u8; DATAGRAM_BUDGET_BYTES],
-    /// Item display names and condition ceilings (v46) for the catalog
-    /// drip. Boot input like the baked gather table: the shard installs it
+    /// Item display names with their condition ceilings (v46) and armor
+    /// columns (v52), for the catalog drip. Boot input like the baked gather table: the shard installs it
     /// before the first tick; empty (the default) sends no catalog, which
     /// is what content-less tests run under.
     pub catalog: ItemCatalog,

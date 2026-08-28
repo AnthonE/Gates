@@ -1480,15 +1480,18 @@ impl ClientCore {
                 count,
                 names,
                 lens,
-                cond_max,
+                rows,
             } => {
                 self.catalog.count = total as u16;
                 for i in 0..count as usize {
-                    // Server-sent lens are wire-validated ≤ the cap.
+                    // Server-sent lens are wire-validated ≤ the cap, and
+                    // the decoder has already refused any row whose armor
+                    // pair the sim cannot mean — so the discarded result
+                    // is an out-of-table index and nothing else.
                     let _ = self.catalog.set(
                         first as usize + i,
                         &names[i][..lens[i] as usize],
-                        cond_max[i],
+                        rows[i],
                     );
                 }
                 flags |= APPLIED_CATALOG;
@@ -2844,7 +2847,7 @@ mod tests {
     use protocol::{
         encode_event_catalog, encode_event_craft_done, encode_event_gather, encode_event_inv,
         encode_event_move_refused, encode_event_moved, encode_event_slot_change,
-        encode_event_slot_sync, InvSlot, MAX_EVENT_MSG_BYTES,
+        encode_event_slot_sync, InvSlot, ItemRow, MAX_EVENT_MSG_BYTES,
     };
 
     fn core() -> ClientCore {
@@ -3274,9 +3277,17 @@ mod tests {
         let mut c = core();
         let mut cat = ItemCatalog::EMPTY;
         cat.count = 3;
-        cat.set(0, b"Wood", 0).unwrap();
-        cat.set(1, b"Stone", 0).unwrap();
-        cat.set(2, b"Cloth", 12_000).unwrap();
+        cat.set(0, b"Wood", ItemRow::EMPTY).unwrap();
+        cat.set(1, b"Stone", ItemRow::EMPTY).unwrap();
+        cat.set(
+            2,
+            b"Cloth",
+            ItemRow {
+                cond_max: 12_000,
+                ..ItemRow::EMPTY
+            },
+        )
+        .unwrap();
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
         assert_eq!(took, 3);

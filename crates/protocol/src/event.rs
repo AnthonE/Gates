@@ -23,6 +23,7 @@ use sim_core::backpack::BackpackRec;
 use sim_core::build::{
     BuildContent, PieceDef, PieceRec, DMG_BANDS, LOC_EDGE_ZLO, MAT_METAL, SHAPE_TRI_ROOF,
 };
+use sim_core::combat::{ARMOR_MAX_PCT, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
 use sim_core::deploy::{
     BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_WORKBENCH3, BAG_CAP, PLACE_DOOR,
@@ -32,7 +33,7 @@ use sim_core::inventory::{slots_in, CONT_MAX, CONT_SELF};
 use sim_core::limits::{
     CRAFT_QUEUE, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOY_COSTS,
     MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES,
-    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS,
+    MAX_RECIPE_INPUTS, MAX_RESEARCH_ROWS, WEAR_SLOTS,
 };
 use sim_core::research::{ResearchRow, NO_RECIPE};
 
@@ -395,6 +396,18 @@ const SYNC_COUNT_BITS: u32 = 7;
 const CATALOG_TOTAL_BITS: u32 = 7;
 const CATALOG_COUNT_BITS: u32 = 4;
 const NAME_LEN_BITS: u32 = 5;
+/// A catalog row's `armor_pct` (v52). Seven bits carries 0..=127 over a
+/// `combat::ARMOR_MAX_PCT` of 90, and both ends range-check against that
+/// constant rather than against the width — a widened cap must move the
+/// refusal, not silently start truncating.
+const ARMOR_PCT_BITS: u32 = 7;
+/// A catalog row's `wear_slot` (v52): `WEAR_NONE`, `WEAR_HEAD`,
+/// `WEAR_BODY`. Two bits over `WEAR_SLOTS + 1` live values.
+const WEAR_SLOT_BITS: u32 = 2;
+// `WEAR_SLOTS` live slots plus `WEAR_NONE`, so the ledger's largest value
+// is `WEAR_SLOTS` itself and that is what has to be representable.
+const _: () = assert!(WEAR_SLOTS < (1usize << WEAR_SLOT_BITS));
+const _: () = assert!(ARMOR_MAX_PCT < (1u32 << ARMOR_PCT_BITS));
 const CRAFT_Q_COUNT_BITS: u32 = 3;
 /// A `research::REFUSE_R_*` reason: seven values since v38 (the tree
 /// verb's parent and bench), and the decoder range-checks rather than
@@ -483,6 +496,50 @@ pub struct InvSlot {
     pub stack: ItemStack,
 }
 
+/// One catalog row's non-name columns.
+///
+/// **A struct rather than three more positional parameters to
+/// [`ItemCatalog::set`].** `set(i, n, 0, 10, 1)` and `set(i, n, 0, 1, 10)`
+/// both compile and mean different things — the right value in the wrong
+/// position, which is the defect class `sim-core/tests/event_roles.rs`
+/// exists against on the event lane and which a byte-golden is blind to by
+/// construction (CLAUDE.md: *a byte-golden is blind to what a field
+/// means*). Named fields make the swap a compile error instead.
+///
+/// `armor_pct` and `wear_slot` are one fact split across two columns and
+/// the split is checked rather than assumed: a row with no slot
+/// (`combat::WEAR_NONE`) carrying a reduction is a state the sim cannot
+/// mean — `combat::worn_pct` only pays a piece in the slot its baked row
+/// names — so both the encoder and the decoder refuse the pair.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ItemRow {
+    /// Condition ceiling in u16 hundredths; 0 ⇒ carries no condition.
+    pub cond_max: u16,
+    /// Damage reduction this piece pays **in its own slot**, whole
+    /// percent, ≤ `combat::ARMOR_MAX_PCT`.
+    pub armor_pct: u8,
+    /// `combat::WEAR_NONE` (not armor), `WEAR_HEAD` or `WEAR_BODY` —
+    /// one-based, so a zeroed row is inert rather than a headpiece.
+    pub wear_slot: u8,
+}
+
+impl ItemRow {
+    pub const EMPTY: Self = Self {
+        cond_max: 0,
+        armor_pct: 0,
+        wear_slot: 0,
+    };
+
+    /// Is this pair one the sim could mean? A reduction with no slot pays
+    /// nobody, so it is refused at both ends of the wire rather than
+    /// silently dripped into a client that would add it to a total.
+    pub fn coherent(&self) -> bool {
+        self.wear_slot as usize <= WEAR_SLOTS
+            && self.armor_pct as u32 <= ARMOR_MAX_PCT
+            && (self.wear_slot != WEAR_NONE || self.armor_pct == 0)
+    }
+}
+
 /// The item-index → display-name table (the mapping `content::bake`
 /// promises the wire ships). Server bakes it at boot; the client fills
 /// its copy from catalog messages. Fixed storage, `MAX_ITEM_DEFS` rows.
@@ -493,11 +550,19 @@ pub struct InvSlot {
 /// catalog dripped names only, no def table carried a ceiling, and the
 /// client links no content crate). 0 means the item carries no condition,
 /// the same convention `content` and the sim use.
+///
+/// v52 added `armor_pct` and `wear_slot` for the same reason one version
+/// later, and the reason is worth restating because it keeps recurring:
+/// **the client links no content crate**, so a fact it must draw has to
+/// ride this table or not exist. `combat::worn_pct` was read on every hit
+/// and carried by no message, so a blunted hit and a soft one were
+/// identical on screen and the wear panel could not say what a set was
+/// worth (NOW.md §0eq.2). Two columns, nine bits a row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ItemCatalog {
     pub names: [[u8; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
     pub lens: [u8; MAX_ITEM_DEFS],
-    pub cond_max: [u16; MAX_ITEM_DEFS],
+    pub rows: [ItemRow; MAX_ITEM_DEFS],
     pub count: u16,
 }
 
@@ -505,23 +570,27 @@ impl ItemCatalog {
     pub const EMPTY: Self = Self {
         names: [[0; MAX_ITEM_NAME_BYTES]; MAX_ITEM_DEFS],
         lens: [0; MAX_ITEM_DEFS],
-        cond_max: [0; MAX_ITEM_DEFS],
+        rows: [ItemRow::EMPTY; MAX_ITEM_DEFS],
         count: 0,
     };
 
-    /// Install one row. Refuses empty, oversize, or out-of-table — the
-    /// server's bake path turns this into a refused boot. `cond_max` is a
-    /// parameter rather than a second setter so the compiler refuses a row
-    /// installed without its ceiling (the omission that kept the column
-    /// off the wire for four versions).
-    pub fn set(&mut self, idx: usize, name: &[u8], cond_max: u16) -> Result<(), WireError> {
-        if idx >= MAX_ITEM_DEFS || name.is_empty() || name.len() > MAX_ITEM_NAME_BYTES {
+    /// Install one row. Refuses empty, oversize, out-of-table, or an
+    /// incoherent [`ItemRow`] — the server's bake path turns this into a
+    /// refused boot. The columns ride in a struct parameter rather than a
+    /// second setter so the compiler refuses a row installed without them
+    /// (the omission that kept `cond_max` off the wire for four versions).
+    pub fn set(&mut self, idx: usize, name: &[u8], row: ItemRow) -> Result<(), WireError> {
+        if idx >= MAX_ITEM_DEFS
+            || name.is_empty()
+            || name.len() > MAX_ITEM_NAME_BYTES
+            || !row.coherent()
+        {
             return Err(WireError::Range);
         }
         self.names[idx][..name.len()].copy_from_slice(name);
         self.names[idx][name.len()..].fill(0);
         self.lens[idx] = name.len() as u8;
-        self.cond_max[idx] = cond_max;
+        self.rows[idx] = row;
         Ok(())
     }
 
@@ -533,14 +602,32 @@ impl ItemCatalog {
         }
     }
 
+    /// One item index's columns; the inert row out of table, so every
+    /// reader below inherits the 0-means-nothing convention.
+    pub fn row(&self, idx: usize) -> ItemRow {
+        if idx < MAX_ITEM_DEFS {
+            self.rows[idx]
+        } else {
+            ItemRow::EMPTY
+        }
+    }
+
     /// The condition ceiling for one item index; 0 out of table, matching
     /// the 0-means-no-condition convention in table.
     pub fn cond_max(&self, idx: usize) -> u16 {
-        if idx < MAX_ITEM_DEFS {
-            self.cond_max[idx]
-        } else {
-            0
-        }
+        self.row(idx).cond_max
+    }
+
+    /// The reduction this item pays in the slot it names; 0 for anything
+    /// that is not armor.
+    pub fn armor_pct(&self, idx: usize) -> u8 {
+        self.row(idx).armor_pct
+    }
+
+    /// The slot this item is worn in — `combat::WEAR_NONE` for everything
+    /// that is not armor.
+    pub fn wear_slot(&self, idx: usize) -> u8 {
+        self.row(idx).wear_slot
     }
 }
 
@@ -579,16 +666,18 @@ pub enum EventMsg {
         count: u8,
     },
     /// Item display names `first..first+count` of a `total`-row table.
-    /// Each row carries its condition ceiling too (v46) — the number
-    /// `pip_fraction` divides a container lane's `cond` by; 0 means the
-    /// item carries no condition.
+    /// Each name is followed by its [`ItemRow`] — the condition ceiling
+    /// (v46) the pip divides by, and since v52 the reduction and slot the
+    /// wear panel adds up. The columns ride in the struct rather than as
+    /// three parallel arrays so a reader cannot pair row *i*'s ceiling
+    /// with row *j*'s slot.
     Catalog {
         total: u8,
         first: u8,
         count: u8,
         names: [[u8; MAX_ITEM_NAME_BYTES]; CATALOG_BATCH],
         lens: [u8; CATALOG_BATCH],
-        cond_max: [u16; CATALOG_BATCH],
+        rows: [ItemRow; CATALOG_BATCH],
     },
     /// Own weak-spot mark after a landed hit (swinger-only): the node's
     /// cell, the next mark heading (u8 over the shared 256-entry yaw LUT,
@@ -1140,7 +1229,17 @@ pub fn encode_event_catalog(
         for &b in name {
             w.write(b as u32, 8)?;
         }
-        w.write(catalog.cond_max(idx) as u32, 16)?;
+        let row = catalog.row(idx);
+        // `set` already refused an incoherent row, so a table that reaches
+        // here holds only pairs the sim can mean. Re-checked anyway: this
+        // is the last place before the bytes leave, and a field written
+        // wider than its width truncates silently.
+        if !row.coherent() {
+            return Err(WireError::Range);
+        }
+        w.write(row.cond_max as u32, 16)?;
+        w.write(row.armor_pct as u32, ARMOR_PCT_BITS)?;
+        w.write(row.wear_slot as u32, WEAR_SLOT_BITS)?;
     }
     Ok((w.finish(), count))
 }
@@ -2457,7 +2556,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             }
             let mut names = [[0u8; MAX_ITEM_NAME_BYTES]; CATALOG_BATCH];
             let mut lens = [0u8; CATALOG_BATCH];
-            let mut cond_max = [0u16; CATALOG_BATCH];
+            let mut rows = [ItemRow::EMPTY; CATALOG_BATCH];
             for i in 0..count {
                 let len = r.read(NAME_LEN_BITS)? as usize;
                 if len == 0 || len > MAX_ITEM_NAME_BYTES {
@@ -2467,7 +2566,19 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                     *b = r.read(8)? as u8;
                 }
                 lens[i] = len as u8;
-                cond_max[i] = r.read(16)? as u16;
+                rows[i] = ItemRow {
+                    cond_max: r.read(16)? as u16,
+                    armor_pct: r.read(ARMOR_PCT_BITS)? as u8,
+                    wear_slot: r.read(WEAR_SLOT_BITS)? as u8,
+                };
+                // Both fields fit their widths by construction; what the
+                // width cannot say is that 91 % is over the cap or that a
+                // reduction with no slot pays nobody. A client that
+                // installed either would draw a total the server will
+                // never charge (`combat::worn_pct`).
+                if !rows[i].coherent() {
+                    return Err(WireError::Malformed);
+                }
             }
             EventMsg::Catalog {
                 total: total as u8,
@@ -2475,7 +2586,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 count: count as u8,
                 names,
                 lens,
-                cond_max,
+                rows,
             }
         }
         SUB_WEAK_MARK => EventMsg::WeakMark {
@@ -3215,6 +3326,7 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sim_core::combat::{WEAR_BODY, WEAR_HEAD};
     use sim_core::inventory::{CONT_BAG, CONT_BOX};
     use sim_core::limits::BOX_SLOTS;
 
@@ -3331,16 +3443,130 @@ mod tests {
         );
     }
 
+    /// **A reduction with no slot is a state the sim cannot mean, and it
+    /// is refused at three doors rather than drawn.** `combat::worn_pct`
+    /// pays a piece only in the slot its baked row names, so a row saying
+    /// "20 %, nowhere" would put a number on the wear panel that the
+    /// server will never subtract from a hit — the two ends disagreeing
+    /// about protection, which is the container-divergence shape one lane
+    /// over. `set` refuses it, the encoder re-refuses it, and a decoder
+    /// handed the bytes anyway calls them malformed.
+    #[test]
+    fn a_reduction_with_no_slot_never_reaches_a_panel() {
+        let mut cat = ItemCatalog::EMPTY;
+        cat.count = 1;
+        assert_eq!(
+            cat.set(
+                0,
+                b"Ghost Plate",
+                ItemRow {
+                    cond_max: 0,
+                    armor_pct: 20,
+                    wear_slot: WEAR_NONE,
+                },
+            ),
+            Err(WireError::Range),
+            "a reduction that pays in no slot was installed"
+        );
+        assert_eq!(
+            cat.set(
+                0,
+                b"Overplate",
+                ItemRow {
+                    cond_max: 0,
+                    armor_pct: ARMOR_MAX_PCT as u8 + 1,
+                    wear_slot: WEAR_BODY,
+                },
+            ),
+            Err(WireError::Range),
+            "a reduction over the sim's own cap was installed"
+        );
+        assert_eq!(
+            cat.set(
+                0,
+                b"Third Slot",
+                ItemRow {
+                    cond_max: 0,
+                    armor_pct: 10,
+                    wear_slot: WEAR_SLOTS as u8 + 1,
+                },
+            ),
+            Err(WireError::Range),
+            "a slot the body does not have was installed"
+        );
+
+        // The encoder's own door: a table smuggled past `set` by a direct
+        // field write still cannot reach the wire.
+        cat.set(
+            0,
+            b"Plate",
+            ItemRow {
+                cond_max: 0,
+                armor_pct: 20,
+                wear_slot: WEAR_BODY,
+            },
+        )
+        .unwrap();
+        let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+        assert!(encode_event_catalog(&cat, 0, &mut buf).is_ok());
+        cat.rows[0].wear_slot = WEAR_NONE;
+        assert_eq!(
+            encode_event_catalog(&cat, 0, &mut buf),
+            Err(WireError::Range),
+            "the encoder shipped a pair the sim cannot mean"
+        );
+
+        // And the decoder's, against bytes this crate cannot produce.
+        // The slot bits are LOCATED rather than counted: encode the same
+        // row twice differing only in `wear_slot` (2 = `10` against 1 =
+        // `01`, so both bits move) and XOR the two messages. Clearing that
+        // mask leaves `armor_pct` untouched and the slot at `WEAR_NONE` —
+        // a hand-counted bit offset would be a second copy of the layout
+        // and would rot the next time a field lands above it.
+        cat.rows[0].wear_slot = WEAR_BODY;
+        let (len, _) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
+        let body = buf;
+        cat.rows[0].wear_slot = WEAR_HEAD;
+        let (head_len, _) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
+        assert_eq!(head_len, len, "the two slots encode at different widths");
+        let mut forged = body;
+        let mut moved = 0u32;
+        for i in 0..len {
+            let mask = body[i] ^ buf[i];
+            moved += mask.count_ones();
+            forged[i] = body[i] & !mask;
+        }
+        assert_eq!(
+            moved, WEAR_SLOT_BITS,
+            "changing only the slot moved {moved} bits, not the field's own width"
+        );
+        assert_eq!(
+            decode_event(&forged[..len]),
+            Err(WireError::Malformed),
+            "the decoder installed a reduction that pays in no slot"
+        );
+    }
+
     #[test]
     fn catalog_batches_walk_the_table_within_cap() {
         let mut cat = ItemCatalog::EMPTY;
         cat.count = 11;
         for i in 0..11usize {
             // Worst-width names so the cap check is honest; ceilings mix
-            // zero (no condition) with the full u16 corner.
+            // zero (no condition) with the full u16 corner, and the armor
+            // columns mix both slots with the not-armor row so the batch
+            // exercises every value the widths carry.
             let name = [b'a' + (i as u8 % 26); MAX_ITEM_NAME_BYTES];
-            let cond_max = if i % 2 == 0 { 0 } else { u16::MAX - i as u16 };
-            cat.set(i, &name, cond_max).unwrap();
+            let row = ItemRow {
+                cond_max: if i % 2 == 0 { 0 } else { u16::MAX - i as u16 },
+                armor_pct: if i % 3 == 0 { 0 } else { ARMOR_MAX_PCT as u8 },
+                wear_slot: if i % 3 == 0 {
+                    WEAR_NONE
+                } else {
+                    (i % 2 + 1) as u8
+                },
+            };
+            cat.set(i, &name, row).unwrap();
         }
         let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
         let (len, took) = encode_event_catalog(&cat, 0, &mut buf).unwrap();
@@ -3353,12 +3579,12 @@ mod tests {
                 count,
                 names,
                 lens,
-                cond_max,
+                rows,
             } => {
                 assert_eq!((total, first, count), (11, 0, CATALOG_BATCH as u8));
                 assert_eq!(&names[0][..lens[0] as usize], cat.name(0));
-                for (i, &cm) in cond_max.iter().enumerate().take(CATALOG_BATCH) {
-                    assert_eq!(cm, cat.cond_max(i), "ceiling column drifted at row {i}");
+                for (i, &row) in rows.iter().enumerate().take(CATALOG_BATCH) {
+                    assert_eq!(row, cat.row(i), "a column drifted at row {i}");
                 }
             }
             other => panic!("wrong variant: {other:?}"),
@@ -4542,6 +4768,25 @@ mod wire_domains {
             live_max: 9,
         },
         Domain {
+            what: "wear slot",
+            sim_site: "combat.rs WEAR_*",
+            wire_site: "WEAR_SLOT_BITS",
+            home: "combat.rs",
+            prefix: "pub const WEAR_",
+            ty: ": u8 = ",
+            exempt: &[],
+            min_members: 3,
+            bits: WEAR_SLOT_BITS,
+            // `WEAR_BODY`. One-based, so the ledger is NONE/HEAD/BODY and
+            // the width carries one spare value — which is exactly the
+            // headroom this row exists to guard, because
+            // `reference/ARMOR.md` §9.3 has legs, gloves and boots queued
+            // behind the per-type vector. A fourth slot is 3, 3 fits two
+            // bits, and every numeric check below would stay green while
+            // a pattern both ends refuse today became a live fact.
+            live_max: 2,
+        },
+        Domain {
             what: "consume refusal",
             sim_site: "survival.rs REFUSE_C_*",
             wire_site: "REFUSE_C_BITS",
@@ -4866,9 +5111,12 @@ mod wire_domains {
 
     /// The table itself must stay honest about which domains exist.
     ///
-    /// Ten is not a count of convenience: it is every private `*_BITS` in
-    /// this module that bounds a `sim-core` enumeration rather than a
-    /// length, an index or a quantity. Widths like `INV_COUNT_BITS` or
+    /// The count is not one of convenience: it is every private `*_BITS`
+    /// in this module that bounds a `sim-core` enumeration rather than a
+    /// length, an index or a quantity. (It is written once, below, and
+    /// **not** restated here — this paragraph said "ten" against a pinned
+    /// sixteen, which is the hand-kept-mirror drift `CLAUDE.md` names
+    /// twice, in a doc comment attached to the pin itself.) Widths like `INV_COUNT_BITS` or
     /// `NAME_LEN_BITS` bound a *magnitude* the sim computes and are not
     /// domains — they have no constant block to drift against.
     ///
@@ -4882,7 +5130,7 @@ mod wire_domains {
     fn the_domain_table_states_its_own_coverage() {
         assert_eq!(
             DOMAINS.len(),
-            16,
+            17,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \
@@ -5010,6 +5258,12 @@ mod wire_domains {
             "BAGS_COUNT_BITS",
             "CONT_COUNT_BITS",
             "LOCK_CODE_BITS",
+            // A percentage bounded by `combat::ARMOR_MAX_PCT`, which is a
+            // sim-core *cap* and not an enumeration — `BAGS_COUNT_BITS`'
+            // shape exactly, and classified with it for the same reason.
+            // Raising the cap is guarded by the compile-time assert beside
+            // the declaration; there is no member list to count.
+            "ARMOR_PCT_BITS",
         ];
 
         let mut widths = Vec::new();

@@ -706,10 +706,24 @@ pub fn worn_pct(cc: &CombatContent, v: &Player) -> u32 {
 /// `worn_pct` bounds it and for the same reason: content decides the
 /// table's width, and a forged index is a wire fact, not a content one.
 ///
+/// **`s` is bounded here rather than by its caller's discipline.** This is
+/// `pub` and total, and `s + 1` on a `u8` was neither: it overflow-panics
+/// in debug and *wraps to 0* in release, and 0 is `WEAR_NONE` — so a
+/// release-mode call with `s = 255` answered **true** for every item in
+/// the table that is not armor, which is the exact inverse of what this
+/// function is for. Nothing reached it: the one call site bounds `s` by
+/// `slots_in(CONT_WEAR)` two steps earlier. A `pub` predicate whose
+/// correctness lives at a call site two steps away is a predicate waiting
+/// for its second caller, and this one is named in a reference doc as the
+/// thing the next equipment slice extends. Raised by the merge-gate judge
+/// on pass `20260828-065501-06`.
+///
 /// Wall 1: one compare. Wall 2: no allocation.
 #[inline]
 pub fn wearable_in(cc: &CombatContent, item: u16, s: u8) -> bool {
-    (item as usize) < MAX_ITEM_DEFS && cc.armor[item as usize].slot == s + 1
+    (s as usize) < WEAR_SLOTS
+        && (item as usize) < MAX_ITEM_DEFS
+        && cc.armor[item as usize].slot == s + 1
 }
 
 /// What gets through `pct` percent of protection.

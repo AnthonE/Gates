@@ -17,11 +17,12 @@
 //! reasons and no reader afterwards can tell which byte answers to which.
 
 use crate::{
-    ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, Nudge, Refuse,
+    ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, ItemRow, Nudge, Refuse,
     SnapshotHeader, Welcome, WireBag, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH, PIECE_SYNC_BATCH,
     PLATE_BIAS, PLATE_BITS, SLOT_SYNC_BATCH,
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
+use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD, WEAR_NONE};
 use sim_core::craft::{
     CraftContent, CraftJob, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
     STATION_WORKBENCH2, STATION_WORKBENCH3,
@@ -37,129 +38,129 @@ use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
 pub const FIXTURES: [&str; 100] = [
-    "v51_input_acks_only.bin",
-    "v51_input_full.bin",
-    "v51_snapshot_keyframe.bin",
-    "v51_snapshot_delta.bin",
-    "v51_snapshot_cap.bin",
-    "v51_hello.bin",
-    "v51_welcome.bin",
-    "v51_refuse_full.bin",
-    "v51_event_gather.bin",
-    "v51_event_inv.bin",
-    "v51_event_slot_harvested.bin",
-    "v51_event_slot_respawned.bin",
-    "v51_event_slot_sync.bin",
-    "v51_event_catalog.bin",
-    "v51_event_weak_mark.bin",
-    "v51_event_craft_q.bin",
-    "v51_event_craft_done.bin",
-    "v51_event_craft_refused.bin",
-    "v51_event_recipes.bin",
-    "v51_action_craft.bin",
-    "v51_action_cancel.bin",
-    "v51_action_place.bin",
-    "v51_event_piece_placed.bin",
-    "v51_event_piece_sync.bin",
-    "v51_event_build_refused.bin",
-    "v51_event_piece_defs.bin",
-    "v51_action_deploy.bin",
-    "v51_action_feed.bin",
-    "v51_event_deploy_placed.bin",
-    "v51_event_deploy_sync.bin",
-    "v51_event_deploy_refused.bin",
-    "v51_event_deploy_defs.bin",
-    "v51_event_piece_removed.bin",
-    "v51_event_deploy_removed.bin",
-    "v51_event_stock.bin",
-    "v51_action_use.bin",
-    "v51_action_access.bin",
-    "v51_event_door.bin",
-    "v51_action_upgrade.bin",
-    "v51_chat.bin",
-    "v51_event_chat.bin",
-    "v51_event_hit.bin",
-    "v51_event_health.bin",
-    "v51_event_death.bin",
-    "v51_action_loot.bin",
-    "v51_event_bag_dropped.bin",
-    "v51_event_bag_sync.bin",
-    "v51_event_bag_removed.bin",
-    "v51_event_struct_hit_piece.bin",
-    "v51_event_struct_hit_deploy.bin",
-    "v51_event_vitals.bin",
-    "v51_event_consumed.bin",
-    "v51_event_consume_refused.bin",
-    "v51_action_consume.bin",
-    "v51_event_drank.bin",
-    "v51_action_drink.bin",
-    "v51_event_respawn.bin",
-    "v51_action_respawn.bin",
-    "v51_action_move.bin",
-    "v51_event_moved.bin",
-    "v51_event_move_refused.bin",
-    "v51_action_move_box.bin",
-    "v51_action_container.bin",
-    "v51_action_container_close.bin",
-    "v51_event_cont_sync.bin",
-    "v51_event_cont_close.bin",
-    "v51_action_repair_piece.bin",
-    "v51_action_repair_deploy.bin",
-    "v51_event_piece_repaired_piece.bin",
-    "v51_event_piece_repaired_deploy.bin",
-    "v51_action_throw_piece.bin",
-    "v51_action_throw_deploy.bin",
-    "v51_event_charge_placed_piece.bin",
-    "v51_event_charge_placed_deploy.bin",
-    "v51_challenge.bin",
-    "v51_auth.bin",
-    "v51_event_oven_lit.bin",
-    "v51_event_oven_out.bin",
+    "v52_input_acks_only.bin",
+    "v52_input_full.bin",
+    "v52_snapshot_keyframe.bin",
+    "v52_snapshot_delta.bin",
+    "v52_snapshot_cap.bin",
+    "v52_hello.bin",
+    "v52_welcome.bin",
+    "v52_refuse_full.bin",
+    "v52_event_gather.bin",
+    "v52_event_inv.bin",
+    "v52_event_slot_harvested.bin",
+    "v52_event_slot_respawned.bin",
+    "v52_event_slot_sync.bin",
+    "v52_event_catalog.bin",
+    "v52_event_weak_mark.bin",
+    "v52_event_craft_q.bin",
+    "v52_event_craft_done.bin",
+    "v52_event_craft_refused.bin",
+    "v52_event_recipes.bin",
+    "v52_action_craft.bin",
+    "v52_action_cancel.bin",
+    "v52_action_place.bin",
+    "v52_event_piece_placed.bin",
+    "v52_event_piece_sync.bin",
+    "v52_event_build_refused.bin",
+    "v52_event_piece_defs.bin",
+    "v52_action_deploy.bin",
+    "v52_action_feed.bin",
+    "v52_event_deploy_placed.bin",
+    "v52_event_deploy_sync.bin",
+    "v52_event_deploy_refused.bin",
+    "v52_event_deploy_defs.bin",
+    "v52_event_piece_removed.bin",
+    "v52_event_deploy_removed.bin",
+    "v52_event_stock.bin",
+    "v52_action_use.bin",
+    "v52_action_access.bin",
+    "v52_event_door.bin",
+    "v52_action_upgrade.bin",
+    "v52_chat.bin",
+    "v52_event_chat.bin",
+    "v52_event_hit.bin",
+    "v52_event_health.bin",
+    "v52_event_death.bin",
+    "v52_action_loot.bin",
+    "v52_event_bag_dropped.bin",
+    "v52_event_bag_sync.bin",
+    "v52_event_bag_removed.bin",
+    "v52_event_struct_hit_piece.bin",
+    "v52_event_struct_hit_deploy.bin",
+    "v52_event_vitals.bin",
+    "v52_event_consumed.bin",
+    "v52_event_consume_refused.bin",
+    "v52_action_consume.bin",
+    "v52_event_drank.bin",
+    "v52_action_drink.bin",
+    "v52_event_respawn.bin",
+    "v52_action_respawn.bin",
+    "v52_action_move.bin",
+    "v52_event_moved.bin",
+    "v52_event_move_refused.bin",
+    "v52_action_move_box.bin",
+    "v52_action_container.bin",
+    "v52_action_container_close.bin",
+    "v52_event_cont_sync.bin",
+    "v52_event_cont_close.bin",
+    "v52_action_repair_piece.bin",
+    "v52_action_repair_deploy.bin",
+    "v52_event_piece_repaired_piece.bin",
+    "v52_event_piece_repaired_deploy.bin",
+    "v52_action_throw_piece.bin",
+    "v52_action_throw_deploy.bin",
+    "v52_event_charge_placed_piece.bin",
+    "v52_event_charge_placed_deploy.bin",
+    "v52_challenge.bin",
+    "v52_auth.bin",
+    "v52_event_oven_lit.bin",
+    "v52_event_oven_out.bin",
     // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
-    "v51_event_knock.bin",
-    "v51_event_auth.bin",
-    "v51_action_access_crew.bin",
-    "v51_action_demolish.bin",
-    "v51_event_shot.bin",
+    "v52_event_knock.bin",
+    "v52_event_auth.bin",
+    "v52_action_access_crew.bin",
+    "v52_action_demolish.bin",
+    "v52_event_shot.bin",
     // World containers v0 (v37): the fourth container kind. Three
     // fixtures and not one, because `action_move_box`'s own doc records
     // what happens otherwise — the third kind crossed the wire for a
     // whole version with only the *open* pinned, so the bytes that mean
     // "take it out of the box" were checked by nothing. Kind 3 gets its
     // open, its move and its sync in the commit that legalises it.
-    "v51_action_container_world.bin",
-    "v51_action_move_world.bin",
-    "v51_event_cont_sync_world.bin",
+    "v52_action_container_world.bin",
+    "v52_action_move_world.bin",
+    "v52_event_cont_sync_world.bin",
     // The bench ladder + tech tree (v38): the unlock action and the
     // research-rows drip, plus the three research-lane events that had
     // ridden unpinned since v32 — the role gate checked their payloads
     // and nothing checked their bytes, which is the exact seat the v37
     // world-container note called out as empty.
-    "v51_action_unlock.bin",
-    "v51_event_research_rows.bin",
-    "v51_event_research.bin",
-    "v51_event_research_refused.bin",
-    "v51_event_known.bin",
+    "v52_action_unlock.bin",
+    "v52_event_research_rows.bin",
+    "v52_event_research.bin",
+    "v52_event_research_refused.bin",
+    "v52_event_known.bin",
     // The table verb's own action, pinned by the local branch and kept
     // through the 2026-08-15 integration: `encode_action_research` is
     // still live (the client's `verbs.rs` calls it), so
     // `every_encoder_has_a_golden` requires these bytes.
-    "v51_action_research.bin",
+    "v52_action_research.bin",
     // The gather refusal (v42) — appended, because the manifest is
     // positional and a name in the middle silently renumbers every
     // writer after it.
-    "v51_event_gather_refused.bin",
+    "v52_event_gather_refused.bin",
     // Bag choice v0 (v43): the own-fact bag list the death screen shapes
     // itself around. Appended for the same positional reason.
-    "v51_event_bags.bin",
+    "v52_event_bags.bin",
     // Surface marks v0 (v45): where an arrow stopped, and on what.
     // Appended, like the two above — `gen_goldens` writes this list by
     // INDEX, so inserting anywhere but the end silently re-points every
     // fixture after the insertion at another message's bytes.
-    "v51_event_impact.bin",
-    "v51_event_swing.bin",
+    "v52_event_impact.bin",
+    "v52_event_swing.bin",
     // Armor v1 (v51): the fifth container kind, and the first that is
     // carried on the player rather than standing in the world. Four
     // fixtures on the v37 precedent above — its open, its move and its
@@ -167,10 +168,10 @@ pub const FIXTURES: [&str; 100] = [
     // `REFUSE_M_WEAR` is a reason no fixture has ever carried and the
     // refusal message is the only one that pins a container kind inside
     // an *address* rather than as a field of its own.
-    "v51_action_container_wear.bin",
-    "v51_action_move_wear.bin",
-    "v51_event_cont_sync_wear.bin",
-    "v51_event_move_refused_wear.bin",
+    "v52_action_container_wear.bin",
+    "v52_action_move_wear.bin",
+    "v52_event_cont_sync_wear.bin",
+    "v52_event_move_refused_wear.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -649,28 +650,48 @@ pub fn event_weak_mark() -> (u16, u16, u8, bool) {
 /// A catalog whose first batch is exactly `CATALOG_BATCH` names of mixed
 /// length — the fixture encodes the batch at `first = 0`. The ceilings
 /// (v46) mix 0 (no condition) with real values and the u16 corner so the
-/// golden pins the column's width and order, not just its presence.
+/// golden pins the column's width and order, not just its presence; the
+/// armor columns (v52) do the same across both slots, the cap, the
+/// not-armor row and a named slot with a zero reduction.
 pub fn event_catalog() -> ItemCatalog {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = 11;
-    let rows: [(&[u8], u16); 11] = [
-        (b"Wood", 0),
-        (b"Stone", 0),
-        (b"Metal Ore", 0),
-        (b"Sulfur Ore", 0),
-        (b"Cloth", 0),
-        (b"Animal Fat", 0),
-        (b"Charcoal", 40_000),
-        (b"Fixture Name Of Width 24", u16::MAX),
-        (b"Sulfur", 0),
-        (b"Gunpowder", 1),
-        (b"Low Grade Fuel", 0),
+    let rows: [(&[u8], ItemRow); 11] = [
+        (b"Wood", row(0, 0, WEAR_NONE)),
+        (b"Stone", row(0, 0, WEAR_NONE)),
+        (b"Metal Ore", row(0, 0, WEAR_NONE)),
+        (b"Sulfur Ore", row(0, 0, WEAR_NONE)),
+        (b"Cloth", row(0, 0, WEAR_NONE)),
+        // Rows 5..8 are the armor columns' coverage (v52): a head piece, a
+        // body piece, the cap itself, and — row 8 — a piece whose slot is
+        // named with no reduction behind it, which is legal and is the
+        // half a fixture full of protective armor would not pin.
+        (b"Burlap Headwrap", row(0, 10, WEAR_HEAD)),
+        (b"Charcoal", row(40_000, 0, WEAR_NONE)),
+        (
+            b"Fixture Name Of Width 24",
+            row(u16::MAX, ARMOR_MAX_PCT as u8, WEAR_BODY),
+        ),
+        (b"Bare Slot", row(0, 0, WEAR_HEAD)),
+        (b"Gunpowder", row(1, 0, WEAR_NONE)),
+        (b"Low Grade Fuel", row(0, 0, WEAR_NONE)),
     ];
-    for (i, (n, cm)) in rows.iter().enumerate() {
-        cat.set(i, n, *cm)
-            .expect("golden names are in-cap by design");
+    for (i, (n, r)) in rows.iter().enumerate() {
+        cat.set(i, n, *r)
+            .expect("golden rows are in-cap and coherent by design");
     }
     cat
+}
+
+/// The three catalog columns in their declared order, so the table above
+/// reads as a table. Positional by necessity here and named at the type —
+/// the point of [`ItemRow`] is that the *setter* cannot be got wrong.
+fn row(cond_max: u16, armor_pct: u8, wear_slot: u8) -> ItemRow {
+    ItemRow {
+        cond_max,
+        armor_pct,
+        wear_slot,
+    }
 }
 
 /// A part-full craft queue (head mid-batch) with a live head timer.
