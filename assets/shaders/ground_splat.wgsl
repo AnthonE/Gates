@@ -62,6 +62,13 @@ struct GroundSplat {
     // looks like a layout bug. `tests/ground_splat.rs` scrapes both and fails
     // on a disagreement.
     wall: vec4<f32>,
+    // Per identity, the factor the mesh UV is multiplied by so that identity
+    // repeats every `terrain_mesh::GROUND_TILE_M[k]` metres rather than at the
+    // shared 4 m reference — `1 / (UV_PER_M * tile_m)`. Sand and rock are 1.0.
+    // A photograph has an authored real-world size and the four sources do not
+    // share one; drawing them all at 4 m put `forrest_ground_01` at 2× life
+    // size and `brown_mud_leaves_01` at 3×.
+    tile: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> splat: GroundSplat;
@@ -137,11 +144,22 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // of it survives into the frame.
     var pbr_input = pbr_input_from_standard_material(in, is_front);
 
-    let uv = in.uv;
-    var a0 = textureSample(albedo_sand, ground_sampler, uv);
-    var a1 = textureSample(albedo_grass, ground_sampler, uv);
-    var a2 = textureSample(albedo_litter, ground_sampler, uv);
-    var a3 = textureSample(albedo_rock, ground_sampler, uv);
+    // One projection, four densities. `in.uv` is the mesh's shared planar XZ
+    // UV at the 4 m reference (`terrain_mesh::UV_PER_M`); `splat.tile` spreads
+    // each identity to its own photograph's authored size. Every tap of an
+    // identity's maps — albedo, roughness, normal, AO, and the wall tap below
+    // — must use ITS uv and no other, or the relief stops being registered
+    // with the colour it came from. Derivatives are implicit here and scale
+    // with the UV, so mip selection follows for free; the wall tap takes its
+    // gradients explicitly and has to scale them by hand.
+    let uv0 = in.uv * splat.tile.x;
+    let uv1 = in.uv * splat.tile.y;
+    let uv2 = in.uv * splat.tile.z;
+    let uv3 = in.uv * splat.tile.w;
+    var a0 = textureSample(albedo_sand, ground_sampler, uv0);
+    var a1 = textureSample(albedo_grass, ground_sampler, uv1);
+    var a2 = textureSample(albedo_litter, ground_sampler, uv2);
+    var a3 = textureSample(albedo_rock, ground_sampler, uv3);
 
     // --- Biplanar: the second tap a slope needs -----------------------------
     //
@@ -200,10 +218,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let wall_uv = vec2<f32>(dot(wp.xz, across), wp.y) * s;
         let wall_ddx = vec2<f32>(dot(dp_dx.xz, across), dp_dx.y) * s;
         let wall_ddy = vec2<f32>(dot(dp_dy.xz, across), dp_dy.y) * s;
-        a0 = mix(a0, textureSampleGrad(albedo_sand, ground_sampler, wall_uv, wall_ddx, wall_ddy), wall_mix);
-        a1 = mix(a1, textureSampleGrad(albedo_grass, ground_sampler, wall_uv, wall_ddx, wall_ddy), wall_mix);
-        a2 = mix(a2, textureSampleGrad(albedo_litter, ground_sampler, wall_uv, wall_ddx, wall_ddy), wall_mix);
-        a3 = mix(a3, textureSampleGrad(albedo_rock, ground_sampler, wall_uv, wall_ddx, wall_ddy), wall_mix);
+        // ⚠ **The gradients are scaled by the same factor as the UV.** They
+        // are what picks the mip, so scaling `wall_uv` alone would leave every
+        // identity whose tile is not 4 m sampling a level chosen for a density
+        // it is no longer drawn at — grass one level too coarse, litter closer
+        // to two. That is the same class of defect as the browser shipping
+        // this tap's gradient backwards, which cost ~80× (materials v4); it is
+        // silent, it is a blur rather than an error, and no gate that reads
+        // values can see it. `tests/ground_tiling.rs` scrapes for it instead.
+        a0 = mix(a0, textureSampleGrad(albedo_sand, ground_sampler, wall_uv * splat.tile.x, wall_ddx * splat.tile.x, wall_ddy * splat.tile.x), wall_mix);
+        a1 = mix(a1, textureSampleGrad(albedo_grass, ground_sampler, wall_uv * splat.tile.y, wall_ddx * splat.tile.y, wall_ddy * splat.tile.y), wall_mix);
+        a2 = mix(a2, textureSampleGrad(albedo_litter, ground_sampler, wall_uv * splat.tile.z, wall_ddx * splat.tile.z, wall_ddy * splat.tile.z), wall_mix);
+        a3 = mix(a3, textureSampleGrad(albedo_rock, ground_sampler, wall_uv * splat.tile.w, wall_ddx * splat.tile.w, wall_ddy * splat.tile.w), wall_mix);
     }
     // **The relief stays the top tap's alone**, so the wall costs four fetches
     // and not twelve. `to_gradient` reads a tangent-space normal as a gradient
@@ -307,10 +333,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // `ground_splat::ROUGH_MEAN` records what the four now measure and the gate
     // re-measures it, so a source swap changes the surface loudly.
     let rough_map = vec4<f32>(
-        textureSample(rough_sand, ground_sampler, uv).r,
-        textureSample(rough_grass, ground_sampler, uv).r,
-        textureSample(rough_litter, ground_sampler, uv).r,
-        textureSample(rough_rock, ground_sampler, uv).r,
+        textureSample(rough_sand, ground_sampler, uv0).r,
+        textureSample(rough_grass, ground_sampler, uv1).r,
+        textureSample(rough_litter, ground_sampler, uv2).r,
+        textureSample(rough_rock, ground_sampler, uv3).r,
     );
     // Wet ground is smoother — `WET_VALUE`'s missing third. `terrain_mesh.rs`
     // states the physics and then states why it could not have it: roughness
@@ -331,10 +357,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     // The relief, blended as gradients and applied on the mesh's own written
     // tangent frame.
-    let g = to_gradient(unpack_normal(textureSample(normal_sand, ground_sampler, uv))) * bw.x
-        + to_gradient(unpack_normal(textureSample(normal_grass, ground_sampler, uv))) * bw.y
-        + to_gradient(unpack_normal(textureSample(normal_litter, ground_sampler, uv))) * bw.z
-        + to_gradient(unpack_normal(textureSample(normal_rock, ground_sampler, uv))) * bw.w;
+    let g = to_gradient(unpack_normal(textureSample(normal_sand, ground_sampler, uv0))) * bw.x
+        + to_gradient(unpack_normal(textureSample(normal_grass, ground_sampler, uv1))) * bw.y
+        + to_gradient(unpack_normal(textureSample(normal_litter, ground_sampler, uv2))) * bw.z
+        + to_gradient(unpack_normal(textureSample(normal_rock, ground_sampler, uv3))) * bw.w;
     let nt = normalize(vec3(g, 1.0));
     let tbn = calculate_tbn_mikktspace(pbr_input.world_normal, in.world_tangent);
     pbr_input.N = normalize(tbn * nt);
@@ -359,10 +385,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let ao = dot(
         bw,
         vec4<f32>(
-            textureSample(ao_sand, ground_sampler, uv).r,
-            textureSample(ao_grass, ground_sampler, uv).r,
-            textureSample(ao_litter, ground_sampler, uv).r,
-            textureSample(ao_rock, ground_sampler, uv).r,
+            textureSample(ao_sand, ground_sampler, uv0).r,
+            textureSample(ao_grass, ground_sampler, uv1).r,
+            textureSample(ao_litter, ground_sampler, uv2).r,
+            textureSample(ao_rock, ground_sampler, uv3).r,
         ),
     );
     pbr_input.diffuse_occlusion = min(pbr_input.diffuse_occlusion, vec3<f32>(ao));

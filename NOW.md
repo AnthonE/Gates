@@ -63,21 +63,17 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 ## 0gs · What ground surface v1 left open *(client lane)*
 
 The ground stopped repeating and `rock` stopped being a wall (`DECISIONS.md`
-§open, ground surface v1). Four things it did not do.
+§open, ground surface v1). Four things it did not do; one is closed.
 
 1. **Nobody has booted it**, and the biplanar tap is the sharp end: it is WGSL
    that no GPU in this container can compile, so it is gated by *scrapes* of
    its own source and by nothing that has run it. `§LOOK`.
-2. **The four ground identities are tiled at a scale none of them was shot
-   at.** Poly Haven publishes the authored size and `heightfield` ignores it:
-   `sand` (coast_sand_01) is 15 m shown at 4, `grass` (forrest_ground_01) is
-   2 m shown at 4, `litter` (brown_mud_leaves_01) is 1.3 m shown at 4. So sand
-   is at a quarter life size and litter at three times it. This is the same
-   defect `piece surface v1` fixed for the building tiers by deriving
-   `tiles_per_m` from the authored mm, and it is unfixed here — deliberately,
-   because correcting it fully spreads the four tiles over 11.5× and sand at
-   15 m/tile is 1.5 cm/texel, which trades a lattice for a blur. It wants a
-   measured call about texel density, not a scale table.
+2. ✅ **The tiling is per identity now** (`DECISIONS.md` §open, ground tiling
+   v1, 2026-08-28) — 4.0 sand · 2.0 grass · 1.3 litter · 4.0 rock. What it
+   leaves open is the **rule 7 half**: litter's repeat is 3.1× more frequent
+   than it was, `MACRO_M`'s 48 m break-up is the only thing standing against
+   it, and no arithmetic here can see whether that is enough. `§LOOK` with
+   item 1 — grass and litter changed, sand and rock are bit-unchanged.
 3. **`rock` is one identity doing three jobs** — alpine ground, the cliff face
    the slope veto forces, and the ore-node prop. Scree is right for the first
    and arguable for the other two; the runner-up (`Gravel005`) was passed over
@@ -1439,6 +1435,11 @@ Two of these are not taste, they are unresolved defects:
 - **The ground's whole surface changed** (§0gs). A new `rock` texture, a macro
   break-up over every identity, and a biplanar tap on faces above 45° that no
   GPU here can compile. Gated as arithmetic and source scrapes; unseen.
+  Since 2026-08-28 also **per-identity tiling** — grass draws at 2 m and
+  litter at 1.3 m instead of a shared 4 m, so both are at life size and both
+  repeat more often. Sand and rock are bit-unchanged. The question a frame
+  answers and no gate can: does litter's 3.1×-finer repeat read as a lattice
+  (`ART.md` rule 7), or does `MACRO_M` dissolve it?
 - **Worldgen's shape changed under every frame** (§0wg). `remap` became a
   monotone cubic and a detail ladder landed after it, so the ground under
   every prop, tree and clutter tile moved. It is gated as arithmetic and

@@ -576,13 +576,107 @@ pub fn vertex_splat(w: [u8; 4]) -> [f32; 4] {
 ///
 /// Texture UV per metre of world — the ground's planar XZ projection.
 ///
-/// One 1024² photograph therefore covers **4 m** and repeats 512 times per
-/// island side. It was a bare `0.25` at the one call site until 2026-08-27;
-/// it is named because `ground_splat.wgsl`'s biplanar wall tap has to build
-/// its own UV at exactly this scale, and two copies of a projection constant
-/// in two languages is the drift `CLAUDE.md` warns about. The shader reads it
-/// from the uniform (`GroundSplatParams::wall.z`) rather than repeating it.
+/// One UV unit therefore spans **4 m** of world, which is the *reference*
+/// density the mesh is written at — since 2026-08-28 it is no longer the
+/// density any identity is necessarily drawn at. [`GROUND_TILE_M`] gives each
+/// of the four its own tile size and `ground_splat.wgsl` scales this UV by
+/// `1 / (UV_PER_M × GROUND_TILE_M[k])` per identity, so the mesh keeps one
+/// `ATTRIBUTE_UV_0` and the material does the spreading. Sand and rock still
+/// land at exactly 4 m, so their multiplier is 1.0 and their UV is unmoved.
+///
+/// It was a bare `0.25` at the one call site until 2026-08-27; it is named
+/// because `ground_splat.wgsl`'s biplanar wall tap has to build its own UV at
+/// exactly this scale, and two copies of a projection constant in two
+/// languages is the drift `CLAUDE.md` warns about. The shader reads it from
+/// the uniform (`GroundSplatParams::wall.z`) rather than repeating it.
 pub const UV_PER_M: f32 = 0.25;
+
+/// Metres of world one tile of each identity's photograph covers — sand ·
+/// grass · litter · rock, in `terrain::splat`'s order.
+///
+/// **The source's own published physical size, or says why it is not** — the
+/// rule `structures::TIER` already applies to the four building tiers
+/// (`tiles_per_m = 1000 / <the map's authored mm>`, piece surface v1). Until
+/// 2026-08-28 the ground ignored it and drew all four at the single 4 m
+/// [`UV_PER_M`] reference, so `forrest_ground_01` — a 2 m scan — was drawn
+/// over 4 m at **twice life size**, and `brown_mud_leaves_01`, a 1.3 m scan,
+/// at **three times** it. Leaves the size of a hand.
+///
+/// Poly Haven publishes `dimensions` in MILLIMETRES per asset
+/// (`api.polyhaven.com/info/<slug>`, fetched 2026-08-28): `coast_sand_01`
+/// 15000, `forrest_ground_01` 2000, `brown_mud_leaves_01` 1300.
+///
+/// **Sand is the one row that refuses its published size, and the refusal is
+/// measured rather than asserted.** `ART.md` rule 1 asks every material for a
+/// near-field grain under 5 cm, and drawing a 15 m scan over 15 m of ground
+/// puts far less of it there: the share of `sand_albedo.jpg`'s linear-luma
+/// variance finer than 5 cm falls **79.8% → 47.6%** going from a 4 m tile to a
+/// 15 m one. So the ceiling is 4 m — the *same* ceiling `tests/pieces.rs`
+/// already gates for piece surfaces (`0.25..=4.0` tiles/m) and for the same
+/// rule-1 reason — and this table is the published size clamped into that
+/// band. That is `NOW.md` §0gs's "trades a lattice for a blur" with a number
+/// under it.
+///
+/// The statistic is [`GRAIN_SHARE`]'s: total variance less the variance of the
+/// field box-averaged over the texels 5 cm spans at that tile, so it is a
+/// share of contrast finer than the rule's own bound and needs no FFT.
+/// ⚠ **It is monotone in the tile size by construction** — a wider tile always
+/// scores lower, for any image — so "it went down" is not evidence about these
+/// files and no gate here asserts it. What is gated is the *magnitude*, pinned
+/// per file, which a source swap moves.
+///
+/// The clamp only ever binds downward, and shrinking a tile is free on rule 1:
+/// grain share rises as the tile narrows (litter 86.5% → 96.1% at its authored
+/// 1.3 m, grass 87.9% → 94.7% at 2 m). What it costs is rule 7 — a repeat that
+/// is 3.1× more frequent for litter — which [`MACRO_M`]'s 48 m break-up is
+/// what stands against, and which **no gate here can see and nobody has
+/// booted** (`NOW.md` §LOOK).
+///
+/// **Rock keeps 4 m because ambientCG does not publish a size for it.**
+/// `Gravel004`'s `dimensionX/Y/Z` are all `0`, their sentinel for unknown —
+/// the same answer `CorrugatedSteel009` gives in `structures::TIER`, and that
+/// row's response is the one copied here: count a feature instead. The
+/// median-energy wavelength of `rock_albedo.jpg` is 14.4 texels, so at 4 m a
+/// clast draws **5.6 cm**, inside real crushed-aggregate grading (20–63 mm).
+pub const GROUND_TILE_M: [f32; 4] = [4.0, 2.0, 1.3, 4.0];
+
+/// Percent of each identity's albedo variance finer than `ART.md` rule 1's
+/// 5 cm grain, **at the tile [`GROUND_TILE_M`] draws it at**.
+///
+/// A record of the shipped `.jpg`s, in `GRAIN_GAIN`'s and `ROUGH_MEAN`'s
+/// tradition and for their reason: `MANIFEST.md` makes a file swap the
+/// designed way to change art here, so the number that justified a tile has to
+/// be pinned to the file or it rots into a claim nobody re-checks.
+/// `tests/ground_tiling.rs` re-measures all four.
+///
+/// Sand and rock are the low pair because both are drawn at the 4 m ceiling
+/// rather than at a size of their own — sand because 15 m is over the band,
+/// rock because ambientCG publishes no size to take.
+pub const GRAIN_SHARE: [f32; 4] = [79.811, 94.683, 96.071, 78.375];
+
+/// What sand's grain share would be at its published 15 m, and the whole of
+/// the case for clamping it.
+///
+/// Kept as a constant rather than as prose so the same gate that re-measures
+/// [`GRAIN_SHARE`] re-measures the counterfactual too. If a future sand source
+/// holds its grain at 15 m, this is the number that says so and the clamp can
+/// be revisited on evidence instead of on memory.
+pub const SAND_GRAIN_SHARE_AT_PUBLISHED: f32 = 47.562;
+
+/// Widest tile any ground identity may be drawn at, metres.
+///
+/// Not a new knob: it is `tests/pieces.rs`'s existing `0.25..=4.0` tiles/m
+/// band read at its far end, adopted here because the rule that sets it —
+/// `ART.md` rule 1's near-field grain — is a statement about a surface, not
+/// about pieces. [`GROUND_TILE_M`] carries the measurement that says the band
+/// is right for these four maps too.
+pub const GROUND_TILE_MAX_M: f32 = 4.0;
+
+/// Narrowest tile any ground identity may be drawn at, metres.
+///
+/// The near end of the same band, and the same reason `pieces.rs` gives for
+/// it: below this the repeat itself becomes the pattern (`ART.md` rule 7).
+pub const GROUND_TILE_MIN_M: f32 = 0.25;
 
 /// Wavelength of the tile break-up, metres.
 ///
