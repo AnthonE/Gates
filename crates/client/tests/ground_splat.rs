@@ -501,3 +501,195 @@ fn the_wet_band_tightens_without_becoming_a_mirror() {
          roughness floor — the clamp would be choosing the value"
     );
 }
+
+/// **The uniform's two sides declare the same fields in the same order.**
+///
+/// `AsBindGroup` writes `GroundSplatParams`'s bytes and the shader reads them
+/// back through its own `struct GroundSplat`. Nothing checks that the two agree
+/// — the binding gate above checks binding *numbers*, and a uniform whose two
+/// sides disagree about layout still binds. Every field after the first
+/// mismatch is then garbage, and the symptom is a wrong-looking ground rather
+/// than anything that names a layout. Adding `wall` on 2026-08-27 is exactly
+/// the edit that could have done it.
+#[test]
+fn the_uniform_declares_the_same_fields_on_both_sides() {
+    fn fields(src: &str, header: &str, strip: &str) -> Vec<String> {
+        let body = src
+            .split_once(header)
+            .unwrap_or_else(|| panic!("no `{header}` in the source"))
+            .1;
+        let body = body.split_once("\n}").expect("unterminated struct").0;
+        body.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with("//") && !l.starts_with("///"))
+            .filter_map(|l| l.trim_start_matches(strip).trim().split(':').next())
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .collect()
+    }
+    let wgsl = std::fs::read_to_string(SHADER).expect("shader");
+    let rust = std::fs::read_to_string("src/render/ground_splat.rs").expect("ground_splat.rs");
+    let shader_fields = fields(&wgsl, "struct GroundSplat {", "");
+    let rust_fields = fields(&rust, "pub struct GroundSplatParams {", "pub ");
+    assert_eq!(
+        shader_fields, rust_fields,
+        "the ground uniform's two sides disagree about their fields. WGSL says \
+         {shader_fields:?}; `GroundSplatParams` says {rust_fields:?}. Whichever \
+         is right, the shader is reading bytes the CPU did not write there."
+    );
+    assert!(
+        shader_fields.len() >= 5,
+        "only {} fields scraped — the parse broke rather than the struct \
+         matching, which is a gate that passes by matching nothing",
+        shader_fields.len()
+    );
+}
+
+/// **The biplanar wall tap samples with explicit gradients, and its
+/// derivatives are taken outside every branch.**
+///
+/// Two ways to write this wrong, and `DECISIONS.md` materials v4 records the
+/// browser client shipping the first:
+///
+/// - `dpdx` of the finished wall UV instead of of the world position. The
+///   frame is per-fragment, so the product rule adds a term that is the frame
+///   *turning* multiplied by a world coordinate of order 1500 m — an error of
+///   about eighty times, which selects a mip seven levels too coarse in bands
+///   following the terrain's curvature.
+/// - `textureSample` inside the wall branch. Implicit-gradient sampling is
+///   undefined under non-uniform control flow, and this branch is non-uniform
+///   by construction.
+///
+/// Neither shows up as a compile error or a wrong value in any test — they show
+/// up as a smear on a cliff — so the gate is a scrape, the same shape as
+/// `sim-core/tests/height_roles.rs`.
+#[test]
+fn the_wall_tap_is_gradient_sampled_and_its_derivatives_are_not_in_a_branch() {
+    let src = std::fs::read_to_string(SHADER).expect("shader");
+    let frag = src
+        .split_once("fn fragment(")
+        .expect("no fragment entry point")
+        .1;
+
+    // Every derivative in the fragment sits at the function body's own depth.
+    let mut depth = 0i32;
+    let mut deriv_lines = 0;
+    for line in frag.lines() {
+        let code = line.split("//").next().unwrap_or("");
+        if code.contains("dpdx(") || code.contains("dpdy(") {
+            deriv_lines += 1;
+            assert_eq!(
+                depth,
+                1,
+                "a derivative is taken at brace depth {depth} in the fragment: \
+                 `{}`. Derivatives are undefined under non-uniform control \
+                 flow; hoist it to the function body.",
+                line.trim()
+            );
+        }
+        depth += code.matches('{').count() as i32 - code.matches('}').count() as i32;
+    }
+    assert!(
+        deriv_lines >= 2,
+        "found {deriv_lines} derivative lines in the fragment — the scrape \
+         broke, and a gate that matches nothing passes for free"
+    );
+
+    // The wall block samples with explicit gradients, four times, and never
+    // implicitly.
+    let block = frag
+        .split_once("if wall_mix > 0.0 {")
+        .expect("no wall branch — the biplanar tap is gone")
+        .1
+        .split_once("\n    }")
+        .expect("unterminated wall branch")
+        .0;
+    assert_eq!(
+        block.matches("textureSampleGrad(").count(),
+        4,
+        "the wall branch does not take exactly four explicit-gradient samples: \
+         {block}"
+    );
+    assert!(
+        !block.contains("textureSample("),
+        "the wall branch uses implicit-gradient `textureSample`, which is \
+         undefined in non-uniform control flow: {block}"
+    );
+    assert!(
+        block.contains("dot(dp_dx.xz, across)") && block.contains("dot(dp_dy.xz, across)"),
+        "the wall gradients are not the world position's projected onto the \
+         frame — see this test's docs for what that costs: {block}"
+    );
+}
+
+/// **No ground identity may be a photograph of a wall.**
+///
+/// ⚠ **This is the gate `assets/textures/MANIFEST.md` measured and did not
+/// ship, and the omission cost exactly what an ungated claim costs.** That file
+/// scored 74 candidates on three axes to replace `cliff_side` in 2026-08-04,
+/// one of them "anisotropy (>1.3 = strata)", rejected `Rock022` on it (1.58),
+/// and recorded the winner at 1.05 — then wrote, correctly, "The anisotropy
+/// figure is not a shipped gate". `Rock023` is tagged `cliff` and `wall` by
+/// ambientCG itself and measures **0.853** here: the swap replaced a
+/// stratified cliff with a stratified cliff, the doc said otherwise, and
+/// nothing in CI could tell. It shipped for 23 days as the identity that
+/// dresses every summit above 60 m, and the defect the operator reported was
+/// "the texture has a pattern to it, like rows and lines".
+///
+/// The estimator is the repo's own convention (`DECISIONS.md` materials v4
+/// measures a "directional-anisotropy ratio ... |dx| over |dy|"), so 1.0 is
+/// isotropic and a horizontally bedded rock face is well under it. The band is
+/// wide on purpose: this is a veto on a source that is *directional*, not a
+/// target to tune a photograph towards.
+#[test]
+fn no_ground_identity_is_a_photograph_of_a_wall() {
+    // ⚠ **Measured on a 256² reduction, and the first cut of this gate was
+    // written at full resolution and PASSED ITS OWN MUTANT.** The strata are a
+    // coarse feature and the grain over them is fine and isotropic, so at 1024²
+    // the gradient sum is dominated by the grain and the direction washes out:
+    // the same `Rock023` file reads **0.907 at 1024² and 0.798 at 256²**. The
+    // reduction is not a shortcut, it is the measurement — "rows and lines" is
+    // what a surface does at a distance, which is exactly a low-pass of it.
+    const SIDE: u32 = 256;
+    // Wide enough that the four shipped maps sit inside it with margin
+    // (0.956–1.029 at this scale), narrow enough to refuse `Rock023` (0.798).
+    const LO: f64 = 0.90;
+    const HI: f64 = 1.10;
+    let mut worst = (String::new(), 1.0f64);
+    for name in ["sand", "grass", "litter", "rock"] {
+        let full = image::open(format!("../../assets/textures/{name}_albedo.jpg"))
+            .unwrap_or_else(|e| panic!("{name}_albedo.jpg: {e}"))
+            .to_luma8();
+        let img = image::imageops::resize(&full, SIDE, SIDE, image::imageops::FilterType::Triangle);
+        let (w, h) = img.dimensions();
+        let (mut dx, mut dy) = (0.0f64, 0.0f64);
+        for y in 1..h - 1 {
+            for x in 1..w - 1 {
+                let at = |a: u32, b: u32| f64::from(img.get_pixel(a, b).0[0]);
+                dx += (at(x + 1, y) - at(x - 1, y)).abs();
+                dy += (at(x, y + 1) - at(x, y - 1)).abs();
+            }
+        }
+        let a = dx / dy;
+        println!("{name:>7} anisotropy |dx|/|dy| = {a:.3}");
+        if (a - 1.0).abs() > (worst.1 - 1.0f64).abs() {
+            worst = (name.to_string(), a);
+        }
+        assert!(
+            (LO..=HI).contains(&a),
+            "{name}_albedo.jpg has a directional anisotropy of {a:.3}, outside \
+             [{LO}, {HI}] — it is a photograph with a grain in it, and the \
+             ground lays it flat on a planar XZ projection so that grain \
+             becomes rows across the terrain. See this test's docs."
+        );
+    }
+    // Non-vacuity: the estimator must actually vary across the four, or it is
+    // returning a constant and this passes for free.
+    assert!(
+        (worst.1 - 1.0).abs() > 0.005,
+        "every identity measured within 0.005 of exactly 1.0 (worst: {} at \
+         {:.4}) — the estimator is not reading the files",
+        worst.0,
+        worst.1
+    );
+}

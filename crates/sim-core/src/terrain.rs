@@ -29,11 +29,12 @@ pub const CLIFF_SLOPE_RATIO: f32 = 1.191_753_6;
 
 // Noise channels: independent fields from one seed (TERRAIN.md §0).
 const CH_RELIEF: u32 = 0; // +octave index, 5 octaves
+const CH_DETAIL: u32 = 8; // +octave index, DETAIL_OCTAVES of them
 const CH_WARP_X: u32 = 16;
 const CH_WARP_Z: u32 = 24;
 const CH_COAST: u32 = 32;
 const CH_MOIST: u32 = 40;
-const CH_RIDGE: u32 = 48;
+const CH_RIDGE: u32 = 48; // +octave index, RIDGE_OCTAVES of them
 const CH_SCATTER: u32 = 64;
 const CH_CLUMP: u32 = 72; // +octave index, 3 octaves
 const CH_CLUTTER: u32 = 80; // the sub-metre ground population
@@ -55,6 +56,72 @@ const RIDGE_FREQ: f32 = 1.0 / 220.0;
 const RIDGE_AMP: f32 = 16.0;
 const RIDGE_START_H: f32 = 52.0;
 const RIDGE_FULL_H: f32 = 80.0;
+/// Octaves of ridged noise the highland blend stacks, each weighted by the
+/// one above it (Musgrave's ridged multifractal). One octave draws a single
+/// scale of crest and nothing between them; three draw a crest, its spurs,
+/// and the grain on the spurs, which is the shape erosion leaves.
+const RIDGE_OCTAVES: u32 = 3;
+/// How strongly a crest opens the octave below it. At 1.0 detail follows the
+/// crest exactly and the flanks stay bare; above ~2 the weight saturates over
+/// most of the field and the multifractal degenerates back into plain fBm.
+const RIDGE_WEIGHT_GAIN: f32 = 1.6;
+
+// --- Post-curve detail (TERRAIN.md §1 stage 4b) --------------------------
+//
+// **`remap` squashes the fine octaves along with the coarse ones, and that is
+// why the shelves were billiard tables.** The curve's middle segments run at
+// 14 m of height per unit of its input where its steep ones run at 259, so the
+// five-octave fBm's finest scales are worth ~1.7 m on a shelf and ~30 m on a
+// transition: the island's smallest legible feature was ~100 m across, and
+// what relief the flats did have arrived as a step at the shelf edge. So a
+// detail ladder is added AFTER the curve, where nothing can flatten it.
+//
+// The form is still the same five octaves it always was — the split is between
+// what the curve shapes and what rides on top of it, not between two fBms.
+/// Detail base wavelength, metres⁻¹ — `RELIEF_FREQ * 8`, so the ladder runs
+/// 75 → 37.5 → 18.75 m.
+///
+/// ⚠ **18.75 m is a floor set by the renderer, not by taste.** The far
+/// terrain mesh samples the ground every `FAR_STEP` = 8 m
+/// (`render/terrain_mesh.rs`), so ground detail below ~16 m of wavelength is
+/// past that mesh's Nyquist limit: it cannot be drawn out there, and what it
+/// would do instead is alias — a shimmer that changes as the near ring swaps a
+/// chunk to the far mesh. Worldgen may not author relief the client cannot
+/// resolve at range.
+const DETAIL_FREQ: f32 = RELIEF_FREQ * 8.0;
+const DETAIL_OCTAVES: u32 = 3;
+/// Detail amplitude in metres, as a modulation of `AMPLITUDE` rather than a
+/// term added to it, and weighted by `shelf` **squared**:
+/// `land = shelf × (AMPLITUDE + shelf × detail × DETAIL_AMP)`.
+///
+/// Multiplicative because `shelf` is 0 exactly at the waterline, so a detail
+/// term *added* to `land` would push land below sea level in the flats and pit
+/// the island with ponds the water pass has no way to draw. Multiplied,
+/// **`land ≥ 0` holds by construction** for any `DETAIL_AMP < AMPLITUDE`, and
+/// the disturbance at the shoreline falls off as `shelf²` instead of being
+/// uniform — **1.8 cm** at the LUT's 2.7 m contour. That is why the road ring,
+/// the haven solve, the clutter waterline veto and the beach measurements all
+/// kept their bands through this change without a tolerance moving.
+///
+/// **Squared rather than linear, and that is measured rather than pretty.**
+/// Detail costs traversability, and two behavioural gates price it: the wolf
+/// hunt (`server/tests/hunt.rs` — 25 m closed in 60 s) and the shelter doorway
+/// (`tests/walk.rs` — a body walking in from 9 m). Under a **linear** weight
+/// they hold at 8 m and **both go red at 10**. That is the buildable-shelf
+/// design pushing back and it should — but a linear weight was charging the
+/// LOW country for roughness the MOUNTAINS wanted, because it still puts 16%
+/// of the amplitude on a 14 m shelf. Squared, that shelf keeps 2.6% and the
+/// summit keeps all of it: the same two gates are green at **40 m** and the
+/// hunt goes at 55.
+///
+/// 20 is half the last measured-green value and a third of where it breaks.
+/// What buys that margin is that the island barely changes at it: slope
+/// p50 0.122 → 0.127, p90 0.571 → 0.581, cliff share 17.4‰ → 17.6‰ over four
+/// seeds (`examples/slope_stats`), and **buildability does not move** — 969.3‰
+/// → 970.0‰ of land cells hold a foundation and 950.8‰ → 950.9‰ hold a whole
+/// 3×3, worst relative change over five seeds **0.4%** (`examples/buildable`).
+/// This is relief the player walks over, not relief that stops them.
+const DETAIL_AMP: f32 = 20.0;
 
 // The grove/clearing field (`clump`, DECISIONS.md §open: scatter clumping v0).
 /// Base wavelength of the field in meters — the size of one grove, and of
@@ -349,15 +416,151 @@ fn fbm<C: Corners>(
 
 /// Height remap LUT (TERRAIN.md §1 stage 4): flattens mid-elevations into
 /// buildable shelves, steepens transitions. 17 entries over n ∈ [0, 1].
-const REMAP_LUT: [f32; 17] = [
+///
+/// **The knots are unchanged and they are the game design** — this curve is
+/// what manufactures base spots and the cliffs between them. What changed is
+/// only how the space *between* two knots is filled; see `remap`.
+pub const REMAP_LUT: [f32; 17] = [
     0.000, 0.030, 0.060, 0.090, 0.115, 0.135, 0.150, 0.160, 0.240, 0.330, 0.370, 0.390, 0.400,
     0.520, 0.700, 0.850, 1.000,
 ];
 
-fn remap(n: f32) -> f32 {
+/// The tangent at each knot, in the LUT's own units per segment — i.e. already
+/// multiplied by the 1/16 knot spacing, so the Hermite basis below needs no
+/// scale factor. Authored offline; `tests/relief.rs` re-derives it from
+/// [`REMAP_LUT`] and fails on a drift, the discipline `CLIFF_SLOPE_RATIO`
+/// carries.
+///
+/// Fritsch–Carlson: the harmonic mean of the two neighbouring secants at an
+/// interior knot, capped at 3× the smaller of them. That cap is what makes the
+/// interpolant **monotone with no overshoot**, which a Catmull–Rom over these
+/// knots is not: the LUT holds long near-flat runs against 12× steps, and an
+/// unconstrained cubic answers a step like that with a bulge above the knot —
+/// a lip around every shelf, which is worse than the crease it replaced.
+///
+/// ⚠ **The TOP tangent is 0, and that is a requirement rather than a taste.**
+/// `remap` clamps its input to [0, 1], so outside that domain the curve is a
+/// constant — and a curve is C¹ across a clamp **iff its derivative is zero at
+/// the rail**. The standard Fritsch–Carlson end formula gives 0.150 here, i.e.
+/// 216 metres of height per unit of n meeting a flat: a hard rim at exactly
+/// `AMPLITUDE` around the summit of every mountain that reaches it. Zeroing it
+/// rounds the summit instead, and the gate that holds it is exact rather than
+/// statistical (`tests/contour.rs`) because the *statistic* is seed-dependent
+/// — islandwide peak curvature moves 0%, −3% and −14% on seeds 20260731, 1 and
+/// 0xDEADBEEF, since it depends on how much of a given island reaches the rail
+/// at all.
+///
+/// **The bottom tangent is NOT zeroed, deliberately.** It leaves a rail of the
+/// same kind at `remap(0) = 0`, which is `land = 0`, which is the waterline —
+/// a crease under the sea. What it buys is that `REMAP_LUT`'s first three
+/// segments have equal secants, so the cubic through them is the old straight
+/// line and the whole low country is bit-for-bit where it was: the road ring,
+/// the haven solve, the clutter waterline veto and the beach measurements all
+/// keep their bands without a tolerance moving. Zeroing it was tried and it
+/// moved the coastline enough to redden four of them.
+pub const REMAP_TAN: [f32; 17] = [
+    0.03,
+    0.03,
+    0.03,
+    0.027_272_7,
+    0.022_222_2,
+    0.017_142_9,
+    0.012,
+    0.017_777_8,
+    0.084_705_9,
+    0.055_384_6,
+    0.026_666_7,
+    0.013_333_3,
+    0.018_461_5,
+    0.144,
+    0.163_636_4,
+    0.15,
+    0.0,
+];
+
+/// The remap curve: monotone cubic Hermite (PCHIP) through [`REMAP_LUT`].
+///
+/// ⚠ **This was `lerp` between the knots until 2026-08-26, and that is the
+/// whole of why the island rendered as a contour map.** A piecewise-linear
+/// curve is C⁰ and not C¹: its slope jumps at every one of the 16 knots, by up
+/// to **12×** (knot 12, where the LUT leaves a shelf for a cliff). The
+/// renderer takes its normal analytically from this function's gradient
+/// (`render/terrain_mesh.rs` — "normals are analytic, never from the
+/// triangulation"), so a slope jump is a *normal* jump, and a normal jump
+/// along a set of constant elevation is a topographic contour line drawn on
+/// the mountain in shading. Sixteen knots, sixteen rings, nested exactly the
+/// way a survey map nests them. It cost nothing to find once it was drawn:
+/// `examples/hillshade` renders |∇‖∇h‖| and the island came out as a
+/// contour map.
+///
+/// Cubic Hermite is C¹ by construction — the tangent at a knot is one value
+/// shared by the segments on both sides of it — so there is no crease to
+/// shade. The knots themselves are untouched, and the curve stays within
+/// **0.0222** of the old straight lines everywhere — 2.00 m of 90, and its
+/// worst point is n = 0.979, which is 87.5 m: the whole of the deviation is
+/// the summit rounding the top rail asks for. The shelves are the same
+/// shelves and no base spot moved.
+pub fn remap(n: f32) -> f32 {
     let t = n.clamp(0.0, 1.0) * 16.0;
     let i = floor_i32(t).clamp(0, 15) as usize;
-    lerp(REMAP_LUT[i], REMAP_LUT[i + 1], t - i as f32)
+    let u = t - i as f32;
+    let u2 = u * u;
+    let u3 = u2 * u;
+    // Hermite basis, written out: no `powi`, wall 1's float set only.
+    let h00 = 2.0 * u3 - 3.0 * u2 + 1.0;
+    let h10 = u3 - 2.0 * u2 + u;
+    let h01 = -2.0 * u3 + 3.0 * u2;
+    let h11 = u3 - u2;
+    h00 * REMAP_LUT[i] + h01 * REMAP_LUT[i + 1] + h10 * REMAP_TAN[i] + h11 * REMAP_TAN[i + 1]
+}
+
+/// Ridged multifractal in [0, 1] — the highland's fake erosion (TERRAIN.md §1
+/// stage 4), and the direct analogue of what the reference game calls
+/// "pseudo-erosion" (Devblog 63).
+///
+/// Three things happen here that `1 − |noise|` alone did not do:
+///
+/// - **Squared.** `(1 − |n|)²` pinches the crest and opens the valley floor,
+///   which is the asymmetry erosion actually produces — a sharp divide above,
+///   a wide filled trough below. `1 − |n|` is symmetric and reads as corrugation.
+/// - **Weighted by the octave above.** Each octave is multiplied by the
+///   previous octave's signal, so spurs and grain appear *on* the ridges and
+///   the valley floors stay smooth. This is the whole of Musgrave's
+///   multifractal idea and it is what separates a mountain from a crumpled
+///   sheet: detail is not uniform over a landscape, it is concentrated where
+///   there is relief to erode.
+/// - **Three octaves**, so a summit carries a crest line, spurs off it, and
+///   grain on the spurs.
+///
+/// The crease along each crest is deliberate and is *not* the defect `remap`
+/// carries: a crest is a line following the noise's zero set — an arête, which
+/// is a thing mountains have — where a contour ring is a line of constant
+/// elevation, which is a thing only maps have.
+fn ridged<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
+    let mut sum = 0.0;
+    let mut norm = 0.0;
+    let mut amp = 1.0;
+    let mut freq = RIDGE_FREQ;
+    let mut weight = 1.0;
+    let mut o = 0;
+    while o < RIDGE_OCTAVES {
+        let n = 1.0 - fabs(noise2(c, seed, CH_RIDGE + o, x * freq, z * freq));
+        let s = n * n * weight;
+        // `fade`d, not a bare clamp: this file's whole argument is that a
+        // rail is C⁰ and a C⁰ term in a field the renderer differentiates is a
+        // crease. `s * GAIN` rails wherever `s > 1/GAIN`, which is most of a
+        // crest, so a bare clamp would draw one along the ridge noise's own
+        // level sets — Musgrave's original does exactly that. `fade` has zero
+        // slope at both ends, so both rails vanish and the weighting gets more
+        // contrast at the same time, which is the direction it wanted anyway.
+        weight = fade((s * RIDGE_WEIGHT_GAIN).clamp(0.0, 1.0));
+        sum += s * amp;
+        norm += amp;
+        amp *= 0.5;
+        freq *= 2.0;
+        o += 1;
+    }
+    sum / norm
 }
 
 /// Continent mask (TERRAIN.md §1 stage 1): radial falloff, coastline
@@ -384,15 +587,26 @@ pub fn height_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
 fn height_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
     let wx = x + fbm(c, seed, CH_WARP_X, x, z, WARP_FREQ, 2) * WARP_AMP;
     let wz = z + fbm(c, seed, CH_WARP_Z, x, z, WARP_FREQ, 2) * WARP_AMP;
+
     let relief = fbm(c, seed, CH_RELIEF, wx, wz, RELIEF_FREQ, 5);
     let shelfed = remap(relief * RELIEF_GAIN * 0.5 + 0.5);
-    let mut land = shelfed * AMPLITUDE;
+
+    // Stage 4b: the detail the curve flattened, added back where it cannot be
+    // flattened. `shelfed` is 0 at the waterline, so this cannot dig a pond,
+    // and it is strongest on the high ground.
+    let detail = fbm(c, seed, CH_DETAIL, wx, wz, DETAIL_FREQ, DETAIL_OCTAVES);
+    let mut land = shelfed * (AMPLITUDE + shelfed * detail * DETAIL_AMP);
 
     // Ridged blend above the treeline: fakes erosion, no simulation.
-    let ridge_t = ((land - RIDGE_START_H) / (RIDGE_FULL_H - RIDGE_START_H)).clamp(0.0, 1.0);
+    //
+    // ⚠ The gate is `fade`d and was a bare `clamp`. A linear ramp is C⁰ at
+    // both its ends, so the two rails put a crease at exactly `RIDGE_START_H`
+    // and `RIDGE_FULL_H` — two more contour rings, on the two elevations most
+    // likely to be looked at. `fade` is quintic with zero first *and* second
+    // derivative at 0 and 1, so both joins vanish.
+    let ridge_t = fade(((land - RIDGE_START_H) / (RIDGE_FULL_H - RIDGE_START_H)).clamp(0.0, 1.0));
     if ridge_t > 0.0 {
-        let ridged = 1.0 - fabs(noise2(c, seed, CH_RIDGE, wx * RIDGE_FREQ, wz * RIDGE_FREQ));
-        land += ridge_t * ridged * RIDGE_AMP;
+        land += ridge_t * ridged(c, seed, wx, wz) * RIDGE_AMP;
     }
 
     let m = continent(c, seed, x, z);

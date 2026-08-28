@@ -17,10 +17,12 @@
 //! 39,521 land samples at seed 20260731 the mean splat is sand 0.008, grass
 //! 0.619, litter 0.373, rock 0.0000", and both conclude in as many words that
 //! *granite never reaches the ground at this seed at all*. That number is
-//! reproducible: the quadrant window at a 4 m step returns land = **39,521**,
-//! to the digit, and `0..1024` alone returns the same 39,521 — every land
-//! sample in `-1024..1024` lies in the south-west quadrant, because the
-//! negative half is open sea. `the_retracted_window_is_what_produced_the_old_
+//! reproducible: the quadrant window at a 4 m step returns land = **39,521**
+//! (39,530 since worldgen shape v1 moved the coastline by nine samples), and
+//! `0..1024` alone returns the identical count — every land sample in
+//! `-1024..1024` lies in the south-west quadrant, because the negative half is
+//! open sea. That second equality is the cross-check and it is still exact;
+//! the first is now a 1% band, for the reason the test states. `the_retracted_window_is_what_produced_the_old_
 //! mix` below asserts exactly that, so the retraction is a checked fact rather
 //! than a remembered one.
 //!
@@ -178,9 +180,22 @@ fn the_retracted_window_is_what_produced_the_old_mix() {
     );
 
     // The doc comments this pass corrects both cite 39,521 land samples.
-    assert_eq!(
-        land_signed, 39_521,
-        "the retracted window no longer returns the sample count the old doc cited"
+    //
+    // ⚠ **A band, not the literal, and the reason is that the literal was a
+    // fact about a worldgen rather than about a window.** It was `== 39_521`
+    // until 2026-08-26, when `terrain::remap` became a monotone cubic
+    // (`DECISIONS.md` §open, worldgen shape v1) and the same window came back
+    // 39,530 — nine samples, 0.02%, entirely the coastline breathing under a
+    // different shaping curve. Pinning it exactly made this gate go red for a
+    // change it has no opinion about, which is the shape of a gate that stops
+    // being read. What it is actually for is that **this window is a quadrant
+    // of the island**, and 1% is far tighter than the 4× a wrong window costs.
+    assert!(
+        land_signed.abs_diff(39_521) * 100 < 39_521,
+        "the retracted window returns {land_signed} land samples against the \
+         39,521 the old doc cited — more than 1% away, so this is no longer \
+         the window that produced the retracted constant and the reproduction \
+         below is not reproducing anything."
     );
     // And every one of them is in the south-west quadrant: the negative half
     // of a world that starts at 0 is open sea, so the signed window was never
@@ -314,12 +329,18 @@ fn the_capture_spawn_stands_on_one_identity() {
 /// luma is 0.10746**, the value the pre-re-place constants actually delivered,
 /// so the 2026-08-15 identity re-place is provably brightness-neutral and any
 /// later albedo edit that moves the island's overall brightness goes red here
-/// rather than arriving as a surprise in a frame. Brightness is the coupled
+/// rather than arriving as a surprise in a frame. ⚠ **Re-pinned 0.10746 →
+/// 0.10715 on 2026-08-26** — not an albedo edit: `GROUND_MIX` is a measurement
+/// of the island and worldgen shape v1 changed the island. No value in
+/// `GROUND_ALBEDO` moved, and −0.29% is what a 1.7%-of-its-own-value shift in
+/// the brightest identity's *weight* buys. The gate's job is unchanged; it
+/// now holds the four albedos against the island they are actually averaged
+/// over. Brightness is the coupled
 /// owner's (`CLAUDE.md` traps); this is the gate that keeps an identity edit
 /// from taking it by accident.
 ///
 /// The second assert is the retraction's own point, kept: the two windows
-/// disagree, and by more than they used to (1.145× → 1.271×), because granite
+/// disagree, and by more than they used to (1.145× → 1.268×), because granite
 /// carries more value now and the quadrant still weights it at zero.
 #[test]
 fn the_mean_luma_is_held_against_the_island_not_the_quadrant() {
@@ -348,8 +369,8 @@ fn the_mean_luma_is_held_against_the_island_not_the_quadrant() {
     );
 
     assert!(
-        (now - 0.107_46).abs() < 1e-4,
-        "the island-weighted mean linear luma is no longer the 0.10746 the \
+        (now - 0.107_15).abs() < 1e-4,
+        "the island-weighted mean linear luma is no longer the 0.10715 the \
          identity re-place was held to: {now:.5}. An albedo edit moved the \
          island's overall brightness — that is the coupled lighting owner's \
          call (`CLAUDE.md` traps), not an identity pass's."
