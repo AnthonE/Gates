@@ -78,13 +78,15 @@ use crate::limits::HOTBAR_SLOTS;
 use crate::limits::{
     BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP,
     MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_HEARTHS,
-    MAX_LIVE_CHARGES, MAX_LOCKS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES, MAX_WORLD_CONTS,
+    MAX_LIVE_CHARGES, MAX_LOCKS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES, MAX_SPENT_ARROWS,
+    MAX_WORLD_CONTS,
 };
 use crate::lock::{LockRec, CODE_MAX, CODE_NONE};
 use crate::loot::{LOOT_CACHE, LOOT_CRATE};
 use crate::movement;
 use crate::oven::OvenState;
 use crate::persist::{PlayerSave, SaveError, PLAYER_SAVE_BYTES};
+use crate::spent::SpentRec;
 use crate::terrain::{self, ISLAND_SIZE};
 use crate::world::{Player, World};
 use crate::worldcont::WorldContRec;
@@ -141,7 +143,17 @@ use crate::worldcont::WorldContRec;
 /// dropping bases into hillsides and leaving others in the air. It is in
 /// `state_hash` for `facing`'s reason and more sharply: it decides where
 /// every collision surface in the column is.
-pub const WORLD_SAVE_FORMAT: u16 = 9;
+///
+/// **10 — arrows that landed are in the file** (arrow recovery v0): a
+/// tenth section count, a `u32` eviction counter in the head beside the
+/// body one, and `MAX_SPENT_ARROWS` records of 22 bytes. It is the first
+/// section whose *sibling is deliberately absent* — `Arrows` is still not
+/// saved, and the module doc four screens up says why: a trajectory
+/// between two ticks is meaningless a restart later, and an arrow lying
+/// on a hillside is ammunition somebody earned. Both are in `state_hash`,
+/// so the distinction is only about which one survives a save, and
+/// getting it backwards either way is wall 5 failing at the origin.
+pub const WORLD_SAVE_FORMAT: u16 = 10;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
 /// the next bag id, and the ten section counts.
@@ -155,12 +167,19 @@ pub const WORLD_SAVE_FORMAT: u16 = 9;
 /// with anything about the head. A hand-copied offset is a silent
 /// wrong-seek the day the layout grows; naming the constant is what makes
 /// the next section free.
-pub const HEAD_BYTES: usize = 2 + 8 + 4 * 3 + 8 + 4 + SECTION_COUNTS;
-/// Nine `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
+pub const HEAD_BYTES: usize = 2 + 8 + 4 * 3 + 8 + 4 + 4 + SECTION_COUNTS;
+/// Ten `u16` counts and one `u32` (`slot_lives`, whose cap is 16 384 and
 /// so does not fit a `u16` with room to be over-cap and *refused* rather
 /// than wrapping — the count has to be able to say an illegal number).
-/// The ninth is `world_conts` (format 5).
-const SECTION_COUNTS: usize = 9 * 2 + 4;
+/// The ninth is `world_conts` (format 5), the tenth `spent` (format 10).
+/// **Public for `HEAD_BYTES`' reason, and it was made public the day that
+/// reason came true a third time.** `tests/worldsave.rs` spelled the offset
+/// of the first section count as a hand-copied `34`, which was right until
+/// format 10 put a `u32` in the head ahead of the counts — at which point
+/// the byte-poke landed in the eviction counter and the test failed with
+/// "a player count past MAX_PLAYERS was accepted" rather than with anything
+/// about the head. The offset is `HEAD_BYTES - SECTION_COUNTS` now.
+pub const SECTION_COUNTS: usize = 10 * 2 + 4;
 
 /// One body: everything `PlayerSave` already validates, plus every
 /// remaining field `World::state_hash` reads off a player.
@@ -238,6 +257,12 @@ const BACKPACK_BYTES: usize = 28 + INV_SLOTS * 6;
 /// decoder re-checks it against the cell it claims, so a hand-edited save
 /// cannot move a crate to the player's feet.
 const WORLD_CONT_BYTES: usize = 2 + 2 + 4 + 4 + 1 + 8 + INV_SLOTS * 6;
+/// One spent arrow (format 10, `spent.rs`): three millimetre coordinates,
+/// the round it is, and the tick it becomes takeable. Millimetres and not
+/// the body's coarser quanta because the reach test the pickup verb will
+/// run measures against this number, and a 3 cm floor on where an arrow
+/// lies is a 3 cm floor on how precisely you can reach for it.
+const SPENT_BYTES: usize = 4 + 4 + 4 + 2 + 8;
 /// A burning fuse: address + store bit + the three copied-at-plant
 /// numbers (structure, damage, blast — format 4) + deadline + planter.
 const CHARGE_BYTES: usize = 25;
@@ -260,6 +285,7 @@ pub const WORLD_SAVE_MAX_BYTES: usize = HEAD_BYTES
     + MAX_BACKPACKS * BACKPACK_BYTES
     + MAX_WORLD_CONTS * WORLD_CONT_BYTES
     + MAX_LIVE_CHARGES * CHARGE_BYTES
+    + MAX_SPENT_ARROWS * SPENT_BYTES
     + MAX_SLOT_LIVES * SLOT_LIFE_BYTES;
 
 /// Why a world was refused. Integer-shaped like every refusal in this crate
@@ -426,6 +452,11 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
     o.u32(w.sweep_support);
     o.u64(w.evictions);
     o.u32(w.backpacks.next_id());
+    // The spent store's eviction counter, in the head beside the body one
+    // and for its reason: it is hashed, it is not derivable from the
+    // records, and a save that dropped it would load to a different
+    // `state_hash` than it was taken from.
+    o.u32(w.spent.evictions());
 
     // Bodies. Everyone in the file is written as a sleeper *by the loader*,
     // not here — see `decode_into`. What is written is who was in the world.
@@ -439,6 +470,7 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
     o.u16(w.backpacks.len() as u16);
     o.u16(w.world_conts.len() as u16);
     o.u16(w.charges.len() as u16);
+    o.u16(w.spent.len() as u16);
     o.u32(w.slot_lives.len() as u32);
 
     for p in w.players.iter().filter(|p| p.active) {
@@ -594,6 +626,13 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u64(c.fires_at);
         o.u32(c.owner);
     }
+    for a in w.spent.entries() {
+        o.i32(a.qx);
+        o.i32(a.qy);
+        o.i32(a.qz);
+        o.u16(a.round);
+        o.u64(a.ready_at);
+    }
     for s in w.slot_lives.entries() {
         o.u16(s.cx);
         o.u16(s.cz);
@@ -738,6 +777,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     let sweep_support = r.u32()?;
     let evictions = r.u64()?;
     let next_bag = r.u32()?;
+    let spent_evictions = r.u32()?;
 
     let n_players = r.count(MAX_PLAYERS)?;
     let n_pieces = r.count(MAX_PIECES)?;
@@ -748,6 +788,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     let n_bags = r.count(MAX_BACKPACKS)?;
     let n_conts = r.count(MAX_WORLD_CONTS)?;
     let n_charges = r.count(MAX_LIVE_CHARGES)?;
+    let n_spent = r.count(MAX_SPENT_ARROWS)?;
     let n_slots = r.count32(MAX_SLOT_LIVES)?;
 
     let max_item = crate::limits::MAX_ITEM_DEFS;
@@ -1268,6 +1309,50 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         };
     }
 
+    // --- arrows on the ground (format 10) --------------------------------
+    // Heap-filled for `conts`' reason: `MAX_SPENT_ARROWS` records is 12 kB
+    // of scratch, and a fixed array that size built in a decode frame is
+    // the wasm shadow-stack trap `CLAUDE.md` lists three sightings of.
+    let mut spent = crate::boxed_array::<SpentRec, MAX_SPENT_ARROWS>(SpentRec::default());
+    for a in spent.iter_mut().take(n_spent) {
+        let qx = r.i32()?;
+        let qy = r.i32()?;
+        let qz = r.i32()?;
+        let round = r.u16()?;
+        let ready_at = r.u64()?;
+        // A save is the one non-command path into `World`, so the file is
+        // checked and never trusted. Two claims here and they are not the
+        // world container's three, because a spent arrow has no address to
+        // forge and no table to name:
+        //
+        // 1. It lies on the island. `qx`/`qz` are millimetres, and the only
+        //    reader is a distance test — so a coordinate out past the edge
+        //    is not exploitable the way a moved crate is, but it IS the
+        //    coordinate `take_near` squares, and the i64 arithmetic there
+        //    is sized for an island rather than for `i32::MAX`.
+        // 2. The round is an item the content table actually has. A forged
+        //    index would hand back a stack of whatever item happens to sit
+        //    at that rank — the loot-table check's shape, one store over.
+        let side_mm = terrain::ISLAND_SIZE as i64 * 1000;
+        if i64::from(qx) < 0
+            || i64::from(qx) > side_mm
+            || i64::from(qz) < 0
+            || i64::from(qz) > side_mm
+        {
+            return Err(WorldSaveError::AddressOutOfRange);
+        }
+        if round == 0 || round as usize >= max_item {
+            return Err(WorldSaveError::BadContentRow);
+        }
+        *a = SpentRec {
+            qx,
+            qy,
+            qz,
+            round,
+            ready_at,
+        };
+    }
+
     // --- harvested terrain ------------------------------------------------
     let mut slots = [SlotLife::default(); MAX_SLOT_LIVES];
     for s in slots.iter_mut().take(n_slots) {
@@ -1311,6 +1396,7 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
     w.backpacks.restore(&bags[..n_bags], next_bag);
     w.world_conts.restore(&conts[..n_conts]);
     w.charges.restore(&charges[..n_charges]);
+    w.spent.restore(&spent[..n_spent], spent_evictions);
     w.slot_lives.restore(&slots[..n_slots]);
     // The collision index is derived, so it is rebuilt rather than stored —
     // and the doors are the half that is easy to forget, because a door's
@@ -1379,7 +1465,7 @@ mod tests {
     }
 
     /// The size constant, asserted rather than trusted — it is derived from
-    /// nine caps, and it is what the server preallocates. A cap that moves
+    /// ten caps, and it is what the server preallocates. A cap that moves
     /// without this test being read is a buffer that is silently too small.
     #[test]
     fn the_ceiling_is_what_the_caps_add_up_to() {
@@ -1397,7 +1483,7 @@ mod tests {
         // is 9 + 12 stacks = 57, and 55 is what you get by forgetting that
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
-        let by_hand = 56                    // head
+        let by_hand = 62                    // head
             + 100 * 320                     // players (6 B a stack, + 2 worn at format 8)
             + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 33                    // deploys + bag_ready + placed
@@ -1407,9 +1493,15 @@ mod tests {
             + 256 * 208                     // bags: 28 + 30 six-byte stacks
             + 64 * 201                      // world containers: 21 + 30 six-byte stacks
             + 64 * 25                       // charges
+            + 512 * 22                      // spent arrows (format 10)
             + 16_384 * 14; // harvested slots
                            // 54 -> 56 at format 5: a ninth section count is a `u16` in the head.
-        assert_eq!(HEAD_BYTES, 56);
+                           // 56 -> 62 at format 10: a tenth count, plus the
+                           // spent store's `u32` eviction counter beside the
+                           // body one.
+        assert_eq!(HEAD_BYTES, 62);
+        // Three millimetre coordinates, the round, and the ready deadline.
+        assert_eq!(SPENT_BYTES, 22);
         // A world container is 201: 4 cell + 8 quantized position + 1 table
         // + 8 refill deadline, then `INV_SLOTS` stacks at six bytes
         // (format 7: item, count, condition).
@@ -1445,8 +1537,10 @@ mod tests {
         // has cost since format 6 that this ceiling never counted
         // (`PIECE_BYTES`). Only the piece section moves — a deployable reads
         // its column's plate out of the pieces rather than storing a copy.
+        // Moved 630_456 → 641_726 at format 10: a whole new section
+        // (`MAX_SPENT_ARROWS` × 22) plus six bytes of head.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 630_456,
+            WORLD_SAVE_MAX_BYTES, 641_726,
             "the world save ceiling moved"
         );
     }

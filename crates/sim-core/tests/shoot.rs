@@ -42,6 +42,7 @@ use sim_core::limits::{MAX_ARROWS, MAX_PLAYERS};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::occupy::{Barren, Occupants, Pristine, Scratch};
 use sim_core::ranged::{self, Arrows, Kill, ARROW_EYE_MM, SURF_BUILT, SURF_GROUND};
+use sim_core::spent::SpentArrows;
 use sim_core::terrain::{self, Occupant, ScatterTable, Slot, CELLS_PER_SIDE};
 use sim_core::world::{EventQueue, Player, EV_DEATH, EV_HIT, EV_IMPACT, EV_SHOT};
 
@@ -269,6 +270,11 @@ fn shoot_through(
 
     let mut kills = [Kill::default(); MAX_ARROWS];
     let mut chips = [ranged::Chip::default(); MAX_ARROWS];
+    // Arrow recovery's store. These fixtures predate it and assert
+    // nothing about it; `bow_fixture`'s content leaves `arrow_break_pct`
+    // at `CombatContent::EMPTY`'s 100, so every landing breaks and the
+    // store stays empty. `tests/arrow_recovery.rs` is where it is driven.
+    let mut spent = SpentArrows::new();
     let mut ticks = 0;
     // Long enough for a 45-tick arrow to expire on its own if nothing ever
     // stops it — so "the store emptied" is never a timeout.
@@ -276,11 +282,13 @@ fn shoot_through(
         events = EventQueue::default();
         ranged::step(
             seed,
+            0,
             hv(seed),
             &cols,
             occ,
             &cc,
             &mut arrows,
+            &mut spent,
             &mut players,
             &mut events,
             &mut kills,
@@ -396,16 +404,23 @@ fn an_arrow_in_the_open_lands_and_is_announced() {
 
     let mut kills = [Kill::default(); MAX_ARROWS];
     let mut chips = [ranged::Chip::default(); MAX_ARROWS];
+    // Arrow recovery's store. These fixtures predate it and assert
+    // nothing about it; `bow_fixture`'s content leaves `arrow_break_pct`
+    // at `CombatContent::EMPTY`'s 100, so every landing breaks and the
+    // store stays empty. `tests/arrow_recovery.rs` is where it is driven.
+    let mut spent = SpentArrows::new();
     let mut hits = 0;
     for _ in 0..40 {
         events = EventQueue::default();
         ranged::step(
             seed,
+            0,
             hv(seed),
             &cols,
             &mut sc.occupants(),
             &cc,
             &mut arrows,
+            &mut spent,
             &mut players,
             &mut events,
             &mut kills,
@@ -433,6 +448,11 @@ fn four_arrows_kill_and_the_kill_names_the_bow() {
     let cc = bow_fixture();
     let mut kills = [Kill::default(); MAX_ARROWS];
     let mut chips = [ranged::Chip::default(); MAX_ARROWS];
+    // Arrow recovery's store. These fixtures predate it and assert
+    // nothing about it; `bow_fixture`'s content leaves `arrow_break_pct`
+    // at `CombatContent::EMPTY`'s 100, so every landing breaks and the
+    // store stays empty. `tests/arrow_recovery.rs` is where it is driven.
+    let mut spent = SpentArrows::new();
     let mut deaths = 0;
     let mut killed: Option<Kill> = None;
 
@@ -447,11 +467,13 @@ fn four_arrows_kill_and_the_kill_names_the_bow() {
         );
         let (n, _n_chips) = ranged::step(
             seed,
+            0,
             hv(seed),
             &cols,
             &mut sc.occupants(),
             &cc,
             &mut arrows,
+            &mut spent,
             &mut players,
             &mut events,
             &mut kills,
@@ -732,6 +754,11 @@ fn an_arrow_never_hits_its_owner() {
     let mut events;
     let mut kills = [Kill::default(); MAX_ARROWS];
     let mut chips = [ranged::Chip::default(); MAX_ARROWS];
+    // Arrow recovery's store. These fixtures predate it and assert
+    // nothing about it; `bow_fixture`'s content leaves `arrow_break_pct`
+    // at `CombatContent::EMPTY`'s 100, so every landing breaks and the
+    // store stays empty. `tests/arrow_recovery.rs` is where it is driven.
+    let mut spent = SpentArrows::new();
     ranged::draw(
         0,
         &bow_fixture(),
@@ -743,11 +770,13 @@ fn an_arrow_never_hits_its_owner() {
         events = EventQueue::default();
         ranged::step(
             seed,
+            0,
             hv(seed),
             &cols,
             &mut sc.occupants(),
             &bow_fixture(),
             &mut arrows,
+            &mut spent,
             &mut players,
             &mut events,
             &mut kills,
@@ -774,6 +803,11 @@ fn the_ground_stops_an_arrow_and_the_store_drains() {
         let mut events;
         let mut kills = [Kill::default(); MAX_ARROWS];
         let mut chips = [ranged::Chip::default(); MAX_ARROWS];
+        // Arrow recovery's store. These fixtures predate it and assert
+        // nothing about it; `bow_fixture`'s content leaves `arrow_break_pct`
+        // at `CombatContent::EMPTY`'s 100, so every landing breaks and the
+        // store stays empty. `tests/arrow_recovery.rs` is where it is driven.
+        let mut spent = SpentArrows::new();
         ranged::draw(
             0,
             &bow_fixture(),
@@ -786,11 +820,13 @@ fn the_ground_stops_an_arrow_and_the_store_drains() {
             events = EventQueue::default();
             ranged::step(
                 seed,
+                0,
                 hv(seed),
                 &cols,
                 &mut sc.occupants(),
                 &bow_fixture(),
                 &mut arrows,
+                &mut spent,
                 &mut players,
                 &mut events,
                 &mut kills,
@@ -822,6 +858,11 @@ fn the_same_shot_flies_the_same_path_twice() {
         let mut events;
         let mut kills = [Kill::default(); MAX_ARROWS];
         let mut chips = [ranged::Chip::default(); MAX_ARROWS];
+        // Arrow recovery's store. These fixtures predate it and assert
+        // nothing about it; `bow_fixture`'s content leaves `arrow_break_pct`
+        // at `CombatContent::EMPTY`'s 100, so every landing breaks and the
+        // store stays empty. `tests/arrow_recovery.rs` is where it is driven.
+        let mut spent = SpentArrows::new();
         ranged::draw(
             0,
             &bow_fixture(),
@@ -834,11 +875,13 @@ fn the_same_shot_flies_the_same_path_twice() {
             events = EventQueue::default();
             ranged::step(
                 seed,
+                0,
                 hv(seed),
                 &cols,
                 &mut sc.occupants(),
                 &bow_fixture(),
                 &mut arrows,
+                &mut spent,
                 &mut players,
                 &mut events,
                 &mut kills,
@@ -1047,15 +1090,22 @@ fn impact_of(
 
     let mut kills = [Kill::default(); MAX_ARROWS];
     let mut chips = [ranged::Chip::default(); MAX_ARROWS];
+    // Arrow recovery's store. These fixtures predate it and assert
+    // nothing about it; `bow_fixture`'s content leaves `arrow_break_pct`
+    // at `CombatContent::EMPTY`'s 100, so every landing breaks and the
+    // store stays empty. `tests/arrow_recovery.rs` is where it is driven.
+    let mut spent = SpentArrows::new();
     for _ in 0..ticks {
         let mut events = EventQueue::default();
         ranged::step(
             seed,
+            0,
             hv(seed),
             cols,
             &mut sc.occupants(),
             &cc,
             &mut arrows,
+            &mut spent,
             &mut players,
             &mut events,
             &mut kills,
@@ -1367,15 +1417,22 @@ fn chips_of(
 
     let mut kills = [Kill::default(); MAX_ARROWS];
     let mut chips = [ranged::Chip::default(); MAX_ARROWS];
+    // Arrow recovery's store. These fixtures predate it and assert
+    // nothing about it; `bow_fixture`'s content leaves `arrow_break_pct`
+    // at `CombatContent::EMPTY`'s 100, so every landing breaks and the
+    // store stays empty. `tests/arrow_recovery.rs` is where it is driven.
+    let mut spent = SpentArrows::new();
     for _ in 0..ticks {
         let mut events = EventQueue::default();
         let (_, n_chips) = ranged::step(
             seed,
+            0,
             hv(seed),
             cols,
             &mut sc.occupants(),
             cc,
             &mut arrows,
+            &mut spent,
             &mut players,
             &mut events,
             &mut kills,

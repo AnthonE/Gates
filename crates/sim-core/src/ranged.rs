@@ -110,6 +110,7 @@ use crate::limits::{
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
 use crate::pitch_lut::pitch_dir;
+use crate::spent::{SpentArrows, SpentRec};
 use crate::terrain;
 use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_IMPACT, EV_SHOT};
 use crate::yaw_lut::yaw_dir;
@@ -191,6 +192,15 @@ pub struct Arrow {
     pub owner: u32,
     /// The weapon that fired it, for the death screen's "with <weapon>".
     pub item: u16,
+    /// The **round** it is, which is not the weapon that fired it
+    /// (`reference/PROJECTILES.md` §1 fact 5: the arrow you pull out of a
+    /// tree is the arrow you fired). Carried for recovery and for nothing
+    /// else — until `spent.rs` there was no reason to remember which of a
+    /// bow's listed rounds left the quiver, because the ballistics were
+    /// already denormalized into `vx/vy/vz` and `drop`. A bow firing
+    /// wooden arrows until they run out and then high-velocity ones gives
+    /// back exactly what it spent, in the order it spent it.
+    pub round: u16,
     pub damage: u16,
     /// What this arrow takes off a building piece if it stops on one —
     /// the bow's `structure` column, copied at the draw beside `damage`
@@ -251,6 +261,7 @@ impl Arrows {
             drop: 0,
             owner: 0,
             item: 0,
+            round: 0,
             damage: 0,
             structure: 0,
             life: 0,
@@ -384,6 +395,7 @@ pub fn draw(
         drop: ball.drop_mmpt2,
         owner: p.id,
         item: held_item(p),
+        round,
         damage: def.damage,
         structure: def.structure,
         life,
@@ -403,6 +415,60 @@ pub fn draw(
     true
 }
 
+/// Retire a landed arrow into the world: break it, or lay it down where a
+/// player can take it back (`spent.rs`, `reference/PROJECTILES.md` §5).
+///
+/// `lodged` is the reference's own axis and it is *dealt damage* rather
+/// than *what was hit*: an arrow in a body waits out the lodge, an arrow
+/// in the scenery is takeable at once. §5 draws no distinction between a
+/// tree, a wall and a hillside, so neither does this.
+///
+/// **The break roll happens here and only here**, so every path that ends
+/// with an arrow on the ground pays the same odds and none of them can
+/// forget to. The slot is part of the key, which is what makes two arrows
+/// landing on one tick two independent draws.
+///
+/// ⚠ **A lodged arrow does not travel with the body it is in.** The
+/// reference sticks it to the victim; ours lies at the point of impact,
+/// so a hit player walking away leaves the arrow behind them. That is a
+/// simplification and not an oversight — attaching it needs the arrow to
+/// be a child of a moving entity, which is a second store and a second
+/// set of rules about what happens when the body dies, sleeps or is
+/// evicted. The lodge *timer* is what §5 says the mechanic is for, and
+/// the timer is exact.
+///
+/// **The arrow's own position is where it lies**, so the caller advances
+/// `a.q*` to the stop point before calling rather than passing the point
+/// beside the arrow that is already carrying one. That is one fewer
+/// argument than the obvious shape — clippy's limit is seven and the
+/// obvious shape was eight — and it is also the truer statement: an arrow
+/// that has stopped is at the place it stopped.
+#[inline]
+fn land(
+    seed: u64,
+    tick: u64,
+    cc: &CombatContent,
+    spent: &mut SpentArrows,
+    slot: usize,
+    a: &Arrow,
+    lodged: bool,
+) {
+    if crate::spent::breaks(seed, tick, slot, cc.arrow_break_pct) {
+        return;
+    }
+    spent.lodge(SpentRec {
+        qx: a.qx,
+        qy: a.qy,
+        qz: a.qz,
+        round: a.round,
+        ready_at: if lodged {
+            tick + u64::from(cc.arrow_lodge_ticks)
+        } else {
+            tick
+        },
+    });
+}
+
 /// Fly every arrow one tick and resolve what it reached. Returns how many
 /// entries of `kills` were written.
 ///
@@ -413,11 +479,13 @@ pub fn draw(
 #[allow(clippy::too_many_arguments)]
 pub fn step(
     seed: u64,
+    tick: u64,
     haven: &terrain::Haven,
     cols: &ColIndex,
     occ: &mut Occupants,
     cc: &CombatContent,
     arrows: &mut Arrows,
+    spent: &mut SpentArrows,
     players: &mut [Player; MAX_PLAYERS],
     events: &mut EventQueue,
     kills: &mut [Kill; MAX_ARROWS],
@@ -497,6 +565,15 @@ pub fn step(
                 };
                 n_kills += 1;
             }
+            // Dealt damage, so the lodge timer applies — this is the
+            // arrow you may not re-use during the fight you fired it in.
+            // The point is the closest approach the solve already found,
+            // which is the arrow's position at the instant it met the
+            // body, not a re-solve of it.
+            a.qx = crate::fmath::floor_i32(ox + sx * t);
+            a.qy = crate::fmath::floor_i32(oy + sy * t);
+            a.qz = crate::fmath::floor_i32(oz + sz * t);
+            land(seed, tick, cc, spent, ix, &a, true);
             arrows.a[ix].life = 0;
             continue;
         }
@@ -548,6 +625,15 @@ pub fn step(
                     n_chips += 1;
                 }
             }
+            // Missed every body, so it is takeable at once. Same stop
+            // point the impact event just reported, in millimetres rather
+            // than in the body's coarser quanta: a decal is 20 cm across
+            // and does not care, but the hand reaching for the arrow is
+            // the thing `take_near` measures against.
+            a.qx = crate::fmath::floor_i32(ox + sx * stop_t);
+            a.qy = crate::fmath::floor_i32(oy + sy * stop_t);
+            a.qz = crate::fmath::floor_i32(oz + sz * stop_t);
+            land(seed, tick, cc, spent, ix, &a, false);
             arrows.a[ix].life = 0;
             continue;
         }

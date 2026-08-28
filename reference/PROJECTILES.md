@@ -455,6 +455,21 @@ The bands in `CONTENT.md` §4 still decide whether any of it may land;
 
 ### 9.7 · Arrow recovery: why we do not have it, and what it costs
 
+⚠ **HALF BUILT, 2026-08-28 — read the four pieces below as a checklist and
+not as a plan.** Pieces **1 and 2 landed** (arrow recovery v0): the store
+is `crates/sim-core/src/spent.rs`, the break roll is `spent::breaks` keyed
+exactly as item 1 proposes, and both numbers came out of §5 into
+`content/balance.toml` as `arrow_break_pct` and `arrow_lodge_s`. It is in
+`state_hash` and in the world save (`WORLD_SAVE_FORMAT` 10);
+`crates/sim-core/tests/arrow_recovery.rs` is the gate.
+Pieces **3 and 4 did not**, and item 4's instruction is the reason they
+were left together rather than half-taken: no player can pick an arrow up
+yet, so the economy consequence at the foot of this section is **not yet
+paid** and §9.6's hold on the bow's damage row still stands.
+`SpentArrows::take_near` is written and gated as the thing that verb will
+call. The paragraph below is left in its original tense because it is the
+argument that produced the decomposition, not a status line.
+
 Asked directly by the operator on 2026-08-10 ("why cant we get arrows
 back?"). The honest answer is that **nothing prevents it** — no wall, no
 determinism problem, no trade. It is unbuilt. But it is not a small build,

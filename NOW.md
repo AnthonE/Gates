@@ -150,11 +150,23 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    knob, and **a swing marks the same plank now** (melee raid mark v0,
    2026-08-28 — §0mk item 1). What they leave open: nobody has watched a
    wall come down, a bench fall, or a decal draw at all (`§LOOK`).
-2. **Arrow recovery** (`reference/PROJECTILES.md` §9.7) — the spent-arrow
-   store, the ~15 % break, the 10 s lodge, and the first verb in the
-   protocol addressed to a world position rather than a build cell. A
-   protocol pass, not an afternoon. It gates §9.6: no bow number may track
-   theirs until arrows come back.
+2. ✅ **An arrow lies where it lands** (arrow recovery v0, 2026-08-28) —
+   §9.7's pieces 1 and 2: `sim-core/src/spent.rs`'s store, the 15 % break
+   roll keyed on (seed, tick, slot), the 10 s lodge for an arrow that drew
+   blood. Both numbers are §5's, taken whole into `content/balance.toml`.
+   Hashed and saved (`WORLD_SAVE_FORMAT` 10).
+   **Nobody can pick one up.** §9.7's pieces 3 and 4 are the verb — the
+   first addressed to a world position rather than a build cell — and its
+   `PROTO_VER` bump, and §9.7 asks for them **with** `EV_SHOT` (§9.2)
+   rather than after it: one bump, one set of goldens.
+   `SpentArrows::take_near` is the whole of what that verb calls and is
+   gated; the reach it measures is deliberately the verb's knob, beside
+   `BUILD_REACH_M`, not the store's.
+   Two stated gaps, both in `spent.rs`: a lodged arrow does not travel
+   with the body it is in (it lies at the impact point), and an arrow that
+   expires in mid-air leaves nothing, because it has no landing point.
+   §9.6 is still blocked until the verb lands — ammunition you cannot pick
+   up has not come back.
 3. **`headshot_mult` is armed and unread** since the content crate (§9.4);
    §7 says take the most significant body part, never the first
    intersection.

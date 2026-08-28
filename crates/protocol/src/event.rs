@@ -4462,6 +4462,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/rng.rs"),
         },
         Module {
+            file: "spent.rs",
+            src: include_str!("../../sim-core/src/spent.rs"),
+        },
+        Module {
             file: "survival.rs",
             src: include_str!("../../sim-core/src/survival.rs"),
         },

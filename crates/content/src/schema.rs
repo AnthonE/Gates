@@ -572,6 +572,18 @@ pub struct Globals {
     /// A map rather than three fields so a fourth grade is a data change
     /// (`Material`'s own set is what validate checks it against).
     pub decay_pct_per_period: BTreeMap<Material, u32>,
+    /// Chance in 100 that an arrow is destroyed where it lands rather
+    /// than becoming an item on the ground (arrow recovery v0). A
+    /// *global* and not an ammo column on purpose: `[[ammo]]` carries no
+    /// damage column either (`content/weapons.toml` says why), and one
+    /// break rate for every round is the same posture one tick further
+    /// out. §9.3's per-round ballistics table is where a per-round break
+    /// chance would go the day one is wanted.
+    pub arrow_break_pct: u32,
+    /// Seconds an arrow that dealt damage lies in its target before it
+    /// may be taken back; a missed arrow is takeable at once. Seconds so
+    /// the file stays free of the tick rate, exactly like `fuse_s`.
+    pub arrow_lodge_s: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]

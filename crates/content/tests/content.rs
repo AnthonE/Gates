@@ -70,6 +70,31 @@ fn refuses_bake(file: &str, from: &str, to: &str, phrase: &str) {
     );
 }
 
+/// The two recovery globals reach the sim, which is the whole disease
+/// this row was written to avoid: `headshot_mult` has been parsed, banded
+/// and hashed since the content crate and **no sim code reads it**
+/// (`reference/PROJECTILES.md` §9.4). A column nothing bakes is a number
+/// that looks tuned and does nothing.
+///
+/// It pins the *wiring* and not the values — asserting 15 and 10 here
+/// would make a balance pass red for no reason, and `CONTENT.md` §4's
+/// bands are what decide whether a value may land.
+#[test]
+fn the_arrow_recovery_globals_reach_the_sim() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped content must bake");
+    assert_eq!(
+        u32::from(cc.arrow_break_pct),
+        c.balance.globals.arrow_break_pct,
+        "the break chance the sim rolls is not the one the file declares"
+    );
+    assert_eq!(
+        cc.arrow_lodge_ticks,
+        c.balance.globals.arrow_lodge_s * sim_core::limits::TICK_HZ,
+        "the lodge the sim waits out is not the file's seconds at TICK_HZ"
+    );
+}
+
 #[test]
 fn test_content() {
     let c = Content::load_dir(&content_dir()).expect("shipped content must load");
@@ -526,6 +551,16 @@ fn band_breaks_refused() {
         "headshot_mult = 2",
         "headshot_mult = 5",
         "band break: headshot",
+    );
+    // A break chance is a percentage, and BOTH ends of it are legal — 0 is
+    // an arrow that lasts forever and 100 is the game that existed before
+    // arrow recovery v0. So the only refusable value is one that is not a
+    // percentage at all, and 101 is the smallest of those.
+    refuses(
+        "balance.toml",
+        "arrow_break_pct = 15",
+        "arrow_break_pct = 101",
+        "arrow_break_pct 101 is not a percentage",
     );
 }
 
