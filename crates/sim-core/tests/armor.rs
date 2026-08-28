@@ -13,17 +13,25 @@
 //! *charged* dead end, the same class as the revolver a day earlier, and
 //! not merely unread data.
 //!
-//! ## What is deliberately NOT here
+//! ## Wearing, and what this paragraph used to say
 //!
-//! **Nothing can put armor on.** Wearing is a container move into a
-//! `CONT_WEAR` kind, and all four values of the wire's two-bit container
-//! field are spent (`inventory.rs`), so equipping costs a
-//! `CONT_KIND_BITS` widening and a `PROTO_VER` bump — a wire slice, not
-//! this one (`findings/armor-design-20260818.md` §4 prices it). So every
-//! test below writes `Player::worn` directly, and that is the honest state
-//! of the feature rather than a shortcut this suite took: reduction is
-//! real, reachability is not, and `NOW.md` §0pvp item 4 names the three
-//! exits an operator has to pick between.
+//! It said **"nothing can put armor on"** — wearing is a container move
+//! into a `CONT_WEAR` kind, all four values of the wire's two-bit
+//! container field were spent, so equipping cost a `CONT_KIND_BITS`
+//! widening and a `PROTO_VER` bump, *a wire slice, not this one*.
+//!
+//! **That slice landed (wire v51, armor v1)**, and the last section of
+//! this file is it: `CONT_WEAR` is kind 4, the field is three bits, and
+//! `World::move_item` carries equipping with no new verb. The paragraph
+//! is kept in the past tense rather than deleted because the price it
+//! quoted was correct and is the reason the feature waited — but read it
+//! as history. Reachability is real now.
+//!
+//! The tests **above** that section still write `Player::worn` directly,
+//! and deliberately: they are about what a plate does to a hit, and
+//! routing each through a move would make a reduction test fail for a
+//! container reason. The tests below are the inverse — they never assert
+//! on damage, only on where a stack ended up.
 //!
 //! ## The numbers
 //!
@@ -35,11 +43,14 @@
 
 use sim_core::combat::{self, ArmorDef, CombatContent, ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD};
 use sim_core::gather::{GatherContent, ItemStack, SWING_INTERVAL_TICKS};
+use sim_core::inventory::{
+    CONT_BOX, CONT_MAX, CONT_SELF, CONT_WEAR, REFUSE_M_NO_CONTAINER, REFUSE_M_SLOT, REFUSE_M_WEAR,
+};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{INV_SLOTS, MAX_ITEM_DEFS, WEAR_SLOTS};
 use sim_core::movement::{Body, POS_XZ_Q};
 use sim_core::survival::{self, SurvivalContent};
-use sim_core::world::{Command, EventQueue, Player, World};
+use sim_core::world::{Command, EventQueue, Player, World, EV_MOVED, EV_MOVE_REFUSED};
 use sim_core::yaw_dir;
 
 /// The solved authored sites for `seed` — what `terrain::ground` needs in
@@ -591,5 +602,276 @@ fn a_forged_record_buys_no_protection() {
         "two plates stacked to 40 % through the save path — the slot check \
          is the only thing standing between a hand-edited record and an \
          invulnerable body"
+    );
+}
+
+
+// ---------------------------------------------------------------------
+// Wearing it: `CONT_WEAR`, the move verb (wire v51).
+//
+// One verb, so these are container tests rather than combat tests: what
+// they assert is which array a stack is in afterwards, and — for every
+// refusal — that the world did not move.
+// ---------------------------------------------------------------------
+
+/// The move, encoded the way the wire encodes it. `cont` is zero because
+/// a body has no handle (`inventory::is_own`).
+fn wear_move(id: u32, from_kind: u8, from_slot: u8, to_kind: u8, to_slot: u8) -> Command {
+    Command::Move {
+        id,
+        cont: 0,
+        from_kind,
+        from_slot,
+        to_kind,
+        to_slot,
+        count: 1,
+    }
+}
+
+/// The reason a move was refused this tick — and the assertion that it
+/// was answered **exactly once**, which `box_container.rs` makes for the
+/// same reason: a verb that both refuses and acknowledges has written
+/// something, and a client that receives both picks one.
+fn refusal(w: &World) -> Option<u32> {
+    let answers: Vec<(u8, u32)> = w
+        .events
+        .entries()
+        .iter()
+        .filter(|e| e.code == EV_MOVED || e.code == EV_MOVE_REFUSED)
+        .map(|e| (e.code, e.b))
+        .collect();
+    assert_eq!(answers.len(), 1, "a move must answer exactly once: {answers:?}");
+    match answers[0] {
+        (EV_MOVE_REFUSED, reason) => Some(reason),
+        _ => None,
+    }
+}
+
+/// A world with one player holding a headwrap and a plate in the pack.
+fn dressing_room() -> World {
+    let mut w = duel_world();
+    let s = w.live_slot_of(1).expect("player 1 is in the world");
+    w.players[s].inv[1] = one(HEADWRAP);
+    w.players[s].inv[2] = one(PLATE);
+    w
+}
+
+/// **Putting armor on is a move, and it is the whole feature.**
+///
+/// The headline claim of the slice: a stack leaves `inv` and arrives in
+/// `worn`, through `Command::Move` and nothing else. There is no
+/// `Command::Equip` for this test to have called.
+///
+/// It asserts the *pair* — gone from the pack AND present on the body —
+/// because either half alone passes under a duplication bug, and a move
+/// verb that duplicates is the one failure this container family has
+/// historically shipped.
+#[test]
+fn a_move_into_the_wear_container_puts_armor_on() {
+    let mut w = dressing_room();
+    let s = w.live_slot_of(1).unwrap();
+
+    w.tick(&[wear_move(1, CONT_SELF, 1, CONT_WEAR, WEAR_HEAD - 1)]);
+
+    assert_eq!(
+        w.players[s].worn[(WEAR_HEAD - 1) as usize],
+        one(HEADWRAP),
+        "the headwrap must be on the head"
+    );
+    assert_eq!(
+        w.players[s].inv[1],
+        ItemStack::default(),
+        "and must have left the pack — a move that copies is the bug"
+    );
+    // And it is now doing its job, which is the only reason any of this
+    // exists. Asserted through the same reader combat uses rather than
+    // by re-deriving the sum.
+    assert_eq!(
+        combat::worn_pct(&w.combat, &w.players[s]),
+        10,
+        "a worn headwrap must be worth its row"
+    );
+}
+
+/// Taking it off is the same verb backwards, and the round trip is exact.
+#[test]
+fn the_same_verb_takes_it_off_again() {
+    let mut w = dressing_room();
+    let s = w.live_slot_of(1).unwrap();
+
+    w.tick(&[wear_move(1, CONT_SELF, 2, CONT_WEAR, WEAR_BODY - 1)]);
+    assert_eq!(w.players[s].worn[(WEAR_BODY - 1) as usize], one(PLATE));
+
+    w.tick(&[wear_move(1, CONT_WEAR, WEAR_BODY - 1, CONT_SELF, 7)]);
+    assert_eq!(w.players[s].inv[7], one(PLATE), "the plate comes back");
+    assert_eq!(
+        w.players[s].worn[(WEAR_BODY - 1) as usize],
+        ItemStack::default(),
+        "and the slot is empty, not still holding a copy"
+    );
+    assert_eq!(
+        combat::worn_pct(&w.combat, &w.players[s]),
+        0,
+        "an undressed body is unprotected"
+    );
+}
+
+/// **A helmet does not go in the body slot** — `CanWearItem`, and the one
+/// rule the wear container has.
+///
+/// Refused with `REFUSE_M_WEAR` and not `REFUSE_M_SLOT`: the address the
+/// client named is real and its picture of both containers was correct,
+/// so telling it to resync would be answering the wrong question.
+#[test]
+fn a_headwrap_is_refused_by_the_body_slot() {
+    let mut w = dressing_room();
+    let s = w.live_slot_of(1).unwrap();
+
+    w.tick(&[wear_move(1, CONT_SELF, 1, CONT_WEAR, WEAR_BODY - 1)]);
+
+    assert_eq!(refusal(&w), Some(REFUSE_M_WEAR));
+    assert_eq!(w.players[s].inv[1], one(HEADWRAP), "the pack is untouched");
+    assert_eq!(
+        w.players[s].worn,
+        [ItemStack::default(); WEAR_SLOTS],
+        "and nothing was worn"
+    );
+}
+
+/// A spear is not armor, and the same reason covers it.
+///
+/// This is why there is one `REFUSE_M_WEAR` rather than three: to the
+/// player "that is not armor" and "that is not *this* armor" are one
+/// fact, and `ArmorDef::slot`'s one-based `WEAR_NONE` makes them one
+/// expression too — `slot == s + 1` is false for zero at every `s`.
+#[test]
+fn a_spear_cannot_be_worn_on_the_head() {
+    let mut w = dressing_room();
+    let s = w.live_slot_of(1).unwrap();
+
+    w.tick(&[wear_move(1, CONT_SELF, 0, CONT_WEAR, WEAR_HEAD - 1)]);
+
+    assert_eq!(refusal(&w), Some(REFUSE_M_WEAR));
+    assert_eq!(w.players[s].inv[0], one(SPEAR), "the spear stays put");
+    assert_eq!(w.players[s].worn[(WEAR_HEAD - 1) as usize], ItemStack::default());
+}
+
+/// **The swap travels backwards, and checking only the forward half
+/// admits exactly what the forward half refuses.**
+///
+/// A move onto an occupied slot is a SWAP: `plan_move` sends `src`
+/// forward and `dst` back. So with a plate worn on the body and a
+/// headwrap worn on the head, dragging the plate onto the head slot is
+/// refused going forward (a plate is not headgear) — and a check that
+/// stopped there would still have to answer the *reverse* drag, where the
+/// headwrap moves to the body slot and the plate is pushed back to the
+/// head. Same two stacks, same two slots, one verb, opposite direction.
+///
+/// Proven red by mutant: dropping the `from_kind == CONT_WEAR` clause of
+/// `move_item`'s check leaves this test failing with the headwrap on the
+/// body and the plate on the head — a body wearing both pieces in the
+/// wrong slots, which `worn_pct` scores as **zero** protection. The
+/// player would have equipped their whole set and been naked.
+#[test]
+fn a_swap_cannot_smuggle_a_piece_into_the_wrong_slot() {
+    let mut w = dressing_room();
+    let s = w.live_slot_of(1).unwrap();
+    w.tick(&[wear_move(1, CONT_SELF, 1, CONT_WEAR, WEAR_HEAD - 1)]);
+    w.tick(&[wear_move(1, CONT_SELF, 2, CONT_WEAR, WEAR_BODY - 1)]);
+    assert_eq!(
+        combat::worn_pct(&w.combat, &w.players[s]),
+        30,
+        "the set is on before the swap is attempted"
+    );
+
+    // The reverse drag: head -> body. Forward, the headwrap is refused by
+    // the body slot; backwards, the plate would be pushed to the head.
+    w.tick(&[wear_move(1, CONT_WEAR, WEAR_HEAD - 1, CONT_WEAR, WEAR_BODY - 1)]);
+
+    assert_eq!(refusal(&w), Some(REFUSE_M_WEAR));
+    assert_eq!(
+        w.players[s].worn[(WEAR_HEAD - 1) as usize],
+        one(HEADWRAP),
+        "the headwrap stayed on the head"
+    );
+    assert_eq!(
+        w.players[s].worn[(WEAR_BODY - 1) as usize],
+        one(PLATE),
+        "and the plate stayed on the body"
+    );
+    assert_eq!(
+        combat::worn_pct(&w.combat, &w.players[s]),
+        30,
+        "a refused swap must not undress the player"
+    );
+}
+
+/// A forged wear slot is refused as an **address**, not as a fit.
+///
+/// `Player::worn` is two elements and `slots_in(CONT_WEAR)` says so, so
+/// slot 2 is not a thing that can be named — which is `REFUSE_M_SLOT`,
+/// the resync reason, and is the branch that would otherwise index a
+/// 2-element array out of bounds. The reason matters as much as the
+/// refusal: answering this with `REFUSE_M_WEAR` would tell a desynced
+/// client its picture was fine.
+#[test]
+fn a_wear_slot_past_the_body_is_not_an_address() {
+    let mut w = dressing_room();
+    let s = w.live_slot_of(1).unwrap();
+
+    for forged in [WEAR_SLOTS as u8, 7, (INV_SLOTS - 1) as u8] {
+        w.tick(&[wear_move(1, CONT_SELF, 1, CONT_WEAR, forged)]);
+        assert_eq!(
+            refusal(&w),
+            Some(REFUSE_M_SLOT),
+            "wear slot {forged} must refuse as an address"
+        );
+    }
+    assert_eq!(w.players[s].inv[1], one(HEADWRAP), "and nothing moved");
+}
+
+/// A forged **kind** past `CONT_MAX` is refused, which is the property the
+/// widening handed back.
+///
+/// Before v51 the two-bit field had no spare pattern and this guard could
+/// not fire; three bits give it 5, 6 and 7 to refuse, and all three are
+/// checked for the reason `protocol/src/lib.rs`'s restored decode case
+/// gives — an off-by-one in `kind > CONT_MAX` passes exactly one of them.
+#[test]
+fn a_kind_past_the_live_set_is_refused_again() {
+    let mut w = dressing_room();
+    let s = w.live_slot_of(1).unwrap();
+
+    for forged in (CONT_MAX + 1)..8 {
+        w.tick(&[wear_move(1, CONT_SELF, 1, forged, 0)]);
+        assert_eq!(
+            refusal(&w),
+            Some(REFUSE_M_SLOT),
+            "container kind {forged} must refuse"
+        );
+        assert_eq!(w.players[s].inv[1], one(HEADWRAP));
+    }
+}
+
+/// Wearing is not a way to reach a box you are standing nowhere near.
+///
+/// `is_own` moved the "which side is on the ground" test, and the risk of
+/// moving it is that a wear kind starts counting as own on the *ground*
+/// side too — at which point `CONT_BOX` -> `CONT_WEAR` would resolve the
+/// box through a handle nobody checked. The one handle still names one
+/// ground container, and the reach check still runs on it: with no box
+/// placed, this is `REFUSE_M_NO_CONTAINER` rather than a silent success.
+#[test]
+fn a_wear_move_does_not_open_a_container_it_did_not_name() {
+    let mut w = dressing_room();
+    let s = w.live_slot_of(1).unwrap();
+
+    w.tick(&[wear_move(1, CONT_BOX, 0, CONT_WEAR, WEAR_HEAD - 1)]);
+
+    assert_eq!(refusal(&w), Some(REFUSE_M_NO_CONTAINER));
+    assert_eq!(
+        w.players[s].worn[(WEAR_HEAD - 1) as usize],
+        ItemStack::default(),
+        "a box that is not there dresses nobody"
     );
 }
