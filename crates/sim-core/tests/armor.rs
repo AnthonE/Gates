@@ -756,24 +756,57 @@ fn a_spear_cannot_be_worn_on_the_head() {
     assert_eq!(w.players[s].worn[(WEAR_HEAD - 1) as usize], ItemStack::default());
 }
 
-/// **The swap travels backwards, and checking only the forward half
-/// admits exactly what the forward half refuses.**
+/// **The swap travels backwards, and the forward check cannot see it.**
 ///
 /// A move onto an occupied slot is a SWAP: `plan_move` sends `src`
-/// forward and `dst` back. So with a plate worn on the body and a
-/// headwrap worn on the head, dragging the plate onto the head slot is
-/// refused going forward (a plate is not headgear) — and a check that
-/// stopped there would still have to answer the *reverse* drag, where the
-/// headwrap moves to the body slot and the plate is pushed back to the
-/// head. Same two stacks, same two slots, one verb, opposite direction.
+/// forward and `dst` back. So when the *source* is the wear container,
+/// the stack that lands on the body is `dst` — a stack the forward check
+/// never looks at, because the forward check is about `to_kind`.
 ///
-/// Proven red by mutant: dropping the `from_kind == CONT_WEAR` clause of
-/// `move_item`'s check leaves this test failing with the headwrap on the
-/// body and the plate on the head — a body wearing both pieces in the
-/// wrong slots, which `worn_pct` scores as **zero** protection. The
-/// player would have equipped their whole set and been naked.
+/// Here that is taking a headwrap **off** onto an inventory slot holding
+/// a spear. Nothing about the destination is wrong: an inventory slot
+/// takes anything. But the swap pushes the spear back the other way, and
+/// the spear lands on the player's head.
+///
+/// **The first draft of this test did not test this.** It swapped head
+/// against body inside the wear container, which the *forward* check
+/// already refuses — so deleting the backward clause left all 21 tests
+/// green (run as a mutant, which is the only reason this is known). The
+/// discriminating case has to be one the forward check passes, and that
+/// means the wear container on the **source** side.
+///
+/// Proven red by mutant: without the `from_kind == CONT_WEAR` clause, the
+/// move succeeds and `worn[WEAR_HEAD - 1]` holds a spear.
 #[test]
-fn a_swap_cannot_smuggle_a_piece_into_the_wrong_slot() {
+fn a_swap_cannot_smuggle_a_non_armor_item_onto_the_body() {
+    let mut w = dressing_room();
+    let s = w.live_slot_of(1).unwrap();
+    w.tick(&[wear_move(1, CONT_SELF, 1, CONT_WEAR, WEAR_HEAD - 1)]);
+    assert_eq!(w.players[s].worn[(WEAR_HEAD - 1) as usize], one(HEADWRAP));
+
+    // Slot 0 holds the spear `duel_world` armed the player with. Taking
+    // the headwrap off onto it is a swap, and the spear is what comes
+    // back.
+    assert_eq!(w.players[s].inv[0], one(SPEAR), "the fixture's spear");
+    w.tick(&[wear_move(1, CONT_WEAR, WEAR_HEAD - 1, CONT_SELF, 0)]);
+
+    assert_eq!(refusal(&w), Some(REFUSE_M_WEAR));
+    assert_eq!(
+        w.players[s].worn[(WEAR_HEAD - 1) as usize],
+        one(HEADWRAP),
+        "a spear must not end up worn on a head"
+    );
+    assert_eq!(w.players[s].inv[0], one(SPEAR), "and the spear stayed put");
+}
+
+/// The same rule inside the wear container: head against body is refused
+/// too, by the forward half.
+///
+/// Kept beside the test above because together they are the pair — one
+/// clause of `move_item`'s check each — and apart either one reads as
+/// covering both.
+#[test]
+fn a_head_piece_cannot_be_swapped_into_the_body_slot() {
     let mut w = dressing_room();
     let s = w.live_slot_of(1).unwrap();
     w.tick(&[wear_move(1, CONT_SELF, 1, CONT_WEAR, WEAR_HEAD - 1)]);
@@ -784,21 +817,9 @@ fn a_swap_cannot_smuggle_a_piece_into_the_wrong_slot() {
         "the set is on before the swap is attempted"
     );
 
-    // The reverse drag: head -> body. Forward, the headwrap is refused by
-    // the body slot; backwards, the plate would be pushed to the head.
     w.tick(&[wear_move(1, CONT_WEAR, WEAR_HEAD - 1, CONT_WEAR, WEAR_BODY - 1)]);
 
     assert_eq!(refusal(&w), Some(REFUSE_M_WEAR));
-    assert_eq!(
-        w.players[s].worn[(WEAR_HEAD - 1) as usize],
-        one(HEADWRAP),
-        "the headwrap stayed on the head"
-    );
-    assert_eq!(
-        w.players[s].worn[(WEAR_BODY - 1) as usize],
-        one(PLATE),
-        "and the plate stayed on the body"
-    );
     assert_eq!(
         combat::worn_pct(&w.combat, &w.players[s]),
         30,
