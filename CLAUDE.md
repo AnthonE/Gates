@@ -653,9 +653,25 @@ shot on seed 20260731 under `art/capture-native.sh` — the same island the
 shard ships, which is the only reason those gaps are about our world at all.
 Steer from `NOW.md` until the loop is restarted.
 
-**`git push` is blocked** by a `pre-push` hook the runner installs, and
-`--no-verify` is how anything gets past it. That friction stays: a push is
-publication, it is hard to take back, and it should cost a deliberate act.
+**`git push` is the DEFAULT now** (operator, 2026-08-28: *"pushing needs to be
+the default change it"*). It was blocked outright by a `pre-push` hook the
+runner installs, with `--no-verify` the only road past it, and that friction
+was retired for a measured reason rather than a preference: **it cost a
+seven-day divergence.** Two commits sat here from 2026-08-21 while thirty-one
+landed on the remote, and because the box also stopped fetching, both sides
+independently did the same elopros.com host migration — eight conflicts that
+existed only because the work never met. Not-pushing was the default, so work
+rotted by omission instead of by decision.
+
+The hook still refuses **one** thing: a force / non-fast-forward push to
+`main`, which is the only push that can destroy published history.
+`--no-verify` remains the deliberate override for a real rewrite. Everything
+else — a branch, a fast-forward of `main` — just goes.
+
+⚠ **So the friction that used to stop you is gone, and the judgement is now
+entirely yours.** Fetch before you start (`git fetch && git status` would have
+said *"ahead 2, behind 31"* the moment anyone looked), and push a slice when
+it lands rather than leaving it to age.
 
 **An agent may push when the operator has plainly asked for it** (operator,
 2026-08-17: *"when its clear that i wanna push you can push please"*). This

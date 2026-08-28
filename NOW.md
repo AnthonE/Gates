@@ -1602,10 +1602,11 @@ each blocked on something outside this tree.
 5. **The junk icon is a picture of two coins.** `assets/icons/junk.png` is
    still `delapouite/two-coins`, which was right for a coin and is wrong for
    scrap. An art call, on the CC-BY rail.
-6. **`fix/us-east-shard` is still unmerged, and half of it has landed anyway.**
-   `shards.toml` now says `us-east-1` (it came in with the 2026-08-23 host
-   move); what that branch still carries is two DECISIONS rows written on the
-   origin and never landed here.
+6. **`fix/us-east-shard` is closed** (2026-08-28). Nothing is owed: `shards.toml`
+   already said `us-east-1` via the 2026-08-23 host move, `ci/depot.py`'s
+   docstring fix landed independently on 08-14, and the two DECISIONS rows the
+   branch carried — the 08-12 Virginia naming call and the 08-11 `servers.url`
+   one — were salvaged into the ledger. The branch is deleted.
 ## 0rep · Where a filed report goes, and what it pays *(client lane + operator)*
 
 1. **Nothing reads them but `ci/reports.py`**, which folds a directory onto its
