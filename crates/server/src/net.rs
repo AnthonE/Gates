@@ -268,7 +268,8 @@ pub fn bake_catalog(
         )
         .map_err(|_| {
             format!(
-                "catalog: item `{}` name `{}` is empty or over {} bytes, or its                  armor row ({} % in slot {}) is one the sim cannot mean",
+                "catalog: item `{}` name `{}` is empty or over {} bytes, or its \
+                 armor row ({} % in slot {}) is one the sim cannot mean",
                 item.id,
                 item.name,
                 protocol::MAX_ITEM_NAME_BYTES,

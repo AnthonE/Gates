@@ -15,10 +15,11 @@ use protocol::{ActionMsg, ChatMsg, EntityState, Nudge};
 use sim_core::craft::CraftJob;
 use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
-use sim_core::inventory::CONT_SELF;
+use sim_core::inventory::{CONT_SELF, CONT_WEAR};
 use sim_core::limits::{
     CRAFT_QUEUE, INPUT_BUFFER_CAP, INPUT_THROTTLE_DEPTH, INV_SLOTS, MAX_MOBS, MAX_PLAYERS,
     MAX_SNAPSHOT_ENTITIES, PENDING_REMOVALS_CAP, SENT_SNAPSHOT_RING, SNAPSHOT_INTERVAL_TICKS,
+    WEAR_SLOTS,
 };
 
 /// Consecutive starved ticks before the nudge escalates to `HardResync`
@@ -225,6 +226,30 @@ pub struct ClientNetState {
     /// and the tail stays zero on both sides, so it never manufactures a
     /// change.
     pub last_cont: [ItemStack; INV_SLOTS],
+    /// The **body's** slots as last successfully queued — `last_cont`'s
+    /// twin, for a stream that runs beside the ground container rather
+    /// than taking its place.
+    ///
+    /// `CONT_WEAR` is the one kind that is `inventory::is_own`: it has no
+    /// handle, no store to resolve, no reach and no lock, so the three
+    /// reasons the subscription above is exclusive — an address, a
+    /// distance and a permission — none of them apply to it. Sharing one
+    /// slot with a box therefore bought nothing and cost the move the
+    /// feature exists for: a helmet out of a raided box could not reach a
+    /// head without closing the box first (`NOW.md` §0eq item 4, the
+    /// merge-gate judge's pass `-06` fix 2).
+    ///
+    /// It is implicit and permanent rather than opened: every live player
+    /// has exactly one body, always addressable, so there is no press for
+    /// the client to make and nothing for a close to mean. The cost is a
+    /// two-slot diff per tick against this shadow, which sends nothing
+    /// while nothing changes — the same arithmetic `last_cont` already
+    /// pays, over 2 slots instead of 30.
+    pub last_wear: [ItemStack; WEAR_SLOTS],
+    /// The next wear batch carries the reset bit: the whole body, forget
+    /// what you had. Armed by a fresh slot and by `ev_resync`, cleared
+    /// once a batch is away.
+    pub wear_reset: bool,
     /// One decoded C→S action awaiting its command slot (the sim drains
     /// the ring only into an empty hand — defer, never drop).
     pub pending_action: Option<ActionMsg>,
@@ -285,6 +310,8 @@ impl ClientNetState {
             open_cont_handle: 0,
             open_cont_reset: false,
             last_cont: [ItemStack::default(); INV_SLOTS],
+            last_wear: [ItemStack::default(); WEAR_SLOTS],
+            wear_reset: true,
             pending_action: None,
             pending_chat: None,
             last_jobs: [CraftJob::default(); CRAFT_QUEUE],
@@ -324,6 +351,14 @@ impl ClientNetState {
         // have shut is worse than making it ask again — an open is one
         // nine-byte action away, and it is the client's press to make.
         self.close_container();
+        // The **body**, unlike the container above, is resynced rather
+        // than dropped. The distinction is whose opinion the state is: an
+        // open box is the client's press and after a ring overflow the two
+        // ends no longer agree it happened, so making it ask again is the
+        // honest answer. A body is not a press — it is a fact about a
+        // player the server can always name — so there is nothing for the
+        // client to re-ask and no panel it may have shut.
+        self.resync_wear();
         self.last_done_at = u64::MAX;
     }
 
@@ -337,10 +372,29 @@ impl ClientNetState {
             self.close_container();
             return;
         }
+        // The body has its own stream and cannot be *opened* into this
+        // one — a client that asks is asking for a resync of something it
+        // is already being fed, which is exactly what an old client's
+        // `open_worn` press means and the only thing it can honestly be
+        // answered with. Taking the ground slot for it would put the two
+        // views back in one place, which is the defect this pair exists
+        // to remove: a box open would evict the body again.
+        if kind == CONT_WEAR {
+            self.resync_wear();
+            return;
+        }
         self.open_cont_kind = kind;
         self.open_cont_handle = handle;
         self.open_cont_reset = true;
         self.last_cont = [ItemStack::default(); INV_SLOTS];
+    }
+
+    /// Send the whole body next tick. The shadow is zeroed so the reset
+    /// batch is built from the truth rather than diffed against whatever
+    /// this client was last told.
+    pub fn resync_wear(&mut self) {
+        self.wear_reset = true;
+        self.last_wear = [ItemStack::default(); WEAR_SLOTS];
     }
 
     /// Nothing is open. The shadow is zeroed with it so the next open

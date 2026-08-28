@@ -37,7 +37,7 @@ use sim_core::limits::{
     AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, CHAT_LOCAL_CM, CRAFT_QUEUE,
     DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_MOBS,
     MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
-    SYNC_SCAN_PER_TICK,
+    SYNC_SCAN_PER_TICK, WEAR_SLOTS,
 };
 use sim_core::mob;
 use sim_core::persist::PlayerSave;
@@ -2927,21 +2927,20 @@ impl ShardCore {
                         .world_conts
                         .index_of(handle)
                         .filter(|&i| self.world.world_conts.in_reach(i, p)),
-                    // What you are wearing. The one kind with no store to
-                    // look in and nothing to be out of reach of — it is
-                    // this player's own body, so it resolves to a fixed
-                    // index and the whole of the guard is the `p.dead`
-                    // test above, which it inherits for free and wants:
-                    // the death screen must not keep feeding a panel.
+                    // **The body does not ride here any more.** It had
+                    // this arm from armor v1 to 2026-08-28 and resolved
+                    // to `Some(0)` — no store, no reach, no lock, the one
+                    // kind for which every line of this resolution was a
+                    // formality. That is precisely why it was moved to
+                    // its own stream below (`ClientNetState::last_wear`):
+                    // sharing the slot bought nothing and evicted the
+                    // wear view whenever a box opened.
                     //
-                    // The handle is ignored rather than checked against
-                    // zero. `encode_action_container` refuses a nonzero
-                    // handle on `CONT_SELF` only, so a forged one can
-                    // arrive here; answering it with the body anyway is
-                    // right, because there is no *other* body it could
-                    // name. Refusing would spend a close on a message
-                    // that asked for the only thing this kind has.
-                    CONT_WEAR => Some(0),
+                    // `open_container` refuses `CONT_WEAR` outright, so
+                    // this field cannot hold it and the arm is gone
+                    // rather than left answering. Falling to `None` is
+                    // the safe direction if it ever did: a close costs a
+                    // panel that is being fed by the other stream anyway.
                     _ => None,
                 }
             };
@@ -3038,6 +3037,78 @@ impl ShardCore {
                             Err(_) => ShardStats::bump(&stats.encode_range_errors),
                         }
                     }
+                }
+            }
+        }
+
+        // **The body, beside the container and never instead of it.**
+        //
+        // `CONT_WEAR` used to ride the subscription above, so opening a
+        // box evicted the wear view and the route from a looted helmet to
+        // a head was: take it, close the box, open the inventory, drag
+        // again (`NOW.md` §0eq item 4). It rides its own stream now, for
+        // the reason `ClientNetState::last_wear` states: it is the one
+        // `is_own` kind, so it has no handle to resolve, no reach to
+        // re-prove and no lock to pass — the whole resolution the block
+        // above spends its length on says `Some(0)` for this kind and
+        // always did. What is left when that is gone is a two-slot diff.
+        //
+        // It is deliberately not gated on a panel being up. A view the
+        // client did not ask for costs nothing while nothing changes —
+        // the shadow below sends only differences — and gating it on an
+        // open would put back the press, the race and the eviction in one
+        // step. The quantize-both-sides law is untouched: a wear move is
+        // refused on `players[slot].worn`, which is the array this drip
+        // reads, so the panel and the refusal cannot disagree.
+        //
+        // A dead player still has a body and it is still fed. Unlike a
+        // box there is nothing here that can despawn, lock or move out of
+        // reach, so `None` would name no fact — and the death screen's
+        // panel showing what the corpse is wearing is the truth.
+        let c = &self.clients[slot];
+        if c.own_wslot != usize::MAX {
+            let wslot = c.own_wslot;
+            let mut now = [ItemStack::default(); WEAR_SLOTS];
+            // Through `World::cont_slot` for the reason spelled at length
+            // above: the arithmetic that turns a kind and a slot into a
+            // stack has one owner, and a second reader of `worn` here
+            // would be the `CONT_WORLD` defect waiting to happen again.
+            // The handle is 0 and means it — this kind resolves to the
+            // body of `wslot` and to nothing else.
+            for (s, out) in now.iter_mut().enumerate() {
+                *out = self.world.cont_slot(wslot, CONT_WEAR, s as u8, 0);
+            }
+            let c = &self.clients[slot];
+            let mut changed = [InvSlot::default(); CONT_SYNC_BATCH];
+            let mut n_changed = 0usize;
+            for (s, (now, last)) in now.iter().zip(c.last_wear.iter()).enumerate() {
+                if now != last {
+                    changed[n_changed] = InvSlot {
+                        slot: s as u8,
+                        stack: *now,
+                    };
+                    n_changed += 1;
+                }
+            }
+            if c.wear_reset || n_changed > 0 {
+                match encode_event_cont_sync(
+                    CONT_WEAR,
+                    0,
+                    c.wear_reset,
+                    &changed[..n_changed],
+                    &mut self.ev_buf,
+                ) {
+                    Ok(len) => {
+                        if send(Lane::Event, slot, &self.ev_buf[..len]) {
+                            ShardStats::bump(&stats.ev_sent);
+                            let c = &mut self.clients[slot];
+                            c.wear_reset = false;
+                            c.last_wear = now;
+                        } else {
+                            return;
+                        }
+                    }
+                    Err(_) => ShardStats::bump(&stats.encode_range_errors),
                 }
             }
         }

@@ -67,29 +67,27 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 naked"). The verb landed this pass — wire v51, `CONT_WEAR`. What is below
 is what that opened rather than what it closed.*
 
-✅ **1 and 2 landed 2026-08-28** (equipment readout, wire v52). The
-paperdoll draws, the protection total prints, and a wear slot lights or
-reddens under a drag before the release. Item 2's stated mechanism was
+✅ **1, 2 and 4 landed 2026-08-28.** The readout was wire v52; the wear
+view moved off the ground subscription with **no wire change at all**
+(`DECISIONS.md` §open, wear stream v1). Item 2's stated mechanism was
 **wrong and is worth keeping as the correction**: it said the total was
 "off state the client already has", and the client had names and
 condition ceilings only — `worn_pct` needed two columns on the catalog
-drip, which is why this was a wire bump and not a panel edit.
+drip, which is why that one was a bump and not a panel edit.
 
 3. **A body is not drawn wearing anything.** `worn` crosses the wire only
    as the owner's own panel; the mannequin has no armor mesh and no wire
    fact to key one off. Wants a design pass before a byte — it is AOI
    fan-out of what everyone is wearing, which is the raid intelligence
    `container_wire.rs`'s wear test refuses to broadcast today.
-4. **You cannot reach the wear slots with a box open**, so the route from
-   a looted helmet to your head is: take it, close the box, open the
-   inventory, drag again. The client draws one container grid against one
-   server-side open container (`panels/inv.rs`, `core.rs`'s
-   `open_cont_kind`), and `CONT_WEAR` is `is_own` — it has no handle and
-   needs no reach check, so it is the one kind that could be open
-   *alongside* another. Wants a second `cont` view on `ClientCore`, not a
-   new message. Named by the merge-gate judge, pass `-06` fix 2.
-5. **Nobody has looked at the paperdoll.** It is Nodes, not an asset — two
-   rounded blocks — and no frame in `findings/` contains it. `§LOOK`.
+5. **Nobody has looked at the paperdoll**, and it is now on screen far
+   more often — it draws on every inventory screen rather than only when
+   the body was the open container. Two rounded `Node`s, no asset, and no
+   frame in `findings/` contains it. `§LOOK`.
+   ⚠ **The three-panel row has never been measured against the screen.**
+   Pack + body + container now sit side by side where two did; nothing
+   here knows whether that fits at 1280 wide or wraps. One number an
+   operator can read off a frame.
 6. **Armor still does not wear out.** §9.4's condition, now that the
    catalog carries `cond_max` beside the reduction: a worn piece has both
    halves on the client and debits neither. `§0dur` owns it.

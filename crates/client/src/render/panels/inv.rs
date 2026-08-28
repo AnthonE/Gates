@@ -121,7 +121,19 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
 
             craft::build_queue(root, ui, core);
 
-            // The lower half: your slots, and the container if one is open.
+            // The lower half: your slots, your body, and the container if
+            // one is open.
+            //
+            // **The body is drawn unconditionally now** (`NOW.md` §0eq
+            // item 4). It used to be a branch inside `container_grid`, so
+            // it appeared only when `CONT_WEAR` was the open container —
+            // and a box was the open container the whole time you were
+            // looting one, which made the panel's own move (helmet out of
+            // a raided box, onto a head) the one route it could not draw.
+            // It is fed by its own stream now and is never absent, so the
+            // three panels sit left-to-right in the order the move runs:
+            // take from the box on the right, drop on the body in the
+            // middle, or hold it in the pack on the left.
             root.spawn(Node {
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(8.0),
@@ -129,6 +141,7 @@ pub fn build_screen(commands: &mut Commands, ui: &Ui, core: &ClientCore, icons: 
             })
             .with_children(|row| {
                 own_grid(row, core, icons);
+                wear_panel(row, core, icons);
                 if core.cont_kind != CONT_SELF {
                     container_grid(row, core, icons);
                 }
@@ -218,13 +231,11 @@ fn own_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
 /// and eighteen lies.
 fn container_grid(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
     let kind = core.cont_kind;
-    // The body is not loot. Every other container is somewhere you are
-    // standing; this one is you, so it gets its own arrangement rather
-    // than a two-cell grid under a heading that says LOOT.
-    if kind == CONT_WEAR {
-        wear_panel(row, core, icons);
-        return;
-    }
+    // The body is not loot, and it is not drawn from here. It had a
+    // branch at the top of this function until 2026-08-28, when it got
+    // its own stream and its own permanent column beside this one —
+    // `core.cont_kind` can no longer be `CONT_WEAR` at all, because the
+    // server refuses to open the body into the ground subscription.
     let n = slots_in(kind);
     let name = container_name(
         kind,
@@ -279,7 +290,7 @@ const DOLL_W_PX: f32 = 40.0;
 /// `SlotCell { kind: CONT_WEAR, slot }` by query and neither knows nor
 /// cares what is drawn around it.
 fn wear_panel(row: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons) {
-    let pct = worn_pct(&core.catalog, &core.cont);
+    let pct = worn_pct(&core.catalog, &core.worn);
     row.spawn((
         Node {
             flex_direction: FlexDirection::Column,
@@ -331,7 +342,14 @@ fn wear_slot(parent: &mut ChildSpawnerCommands, core: &ClientCore, icons: &Icons
                 TextColor(TEXT_DIM),
                 Pickable::IGNORE,
             ));
-            cell(c, CONT_WEAR, slot, core.cont[slot], core, icons);
+            cell(
+                c,
+                CONT_WEAR,
+                slot,
+                cell_stack(core, CONT_WEAR, slot),
+                core,
+                icons,
+            );
         });
 }
 
@@ -444,6 +462,29 @@ fn name_bar(parent: &mut ChildSpawnerCommands, name: &str) {
 
 /// `slots` of `kind`, `cols` wide, drawn from the core's view of it.
 #[allow(clippy::too_many_arguments)]
+/// **The stack a cell draws from, and the only place the view is
+/// picked.** Three containers reach this panel — the pack, the body and
+/// whatever is open on the ground — and until 2026-08-28 there were two,
+/// so the pick was `if kind == CONT_SELF { inv } else { cont }` written
+/// out at four call sites. Adding the third view to three of four is a
+/// silent defect of exactly the shape the trap list names: the wrong
+/// container answers with a *plausible* stack, so the panel draws, the
+/// drag starts, and the count shipped to the server is some other item's.
+///
+/// `get` rather than an index, and no clamp. The three sites this
+/// replaces each ended `[slot.min(INV_SLOTS - 1)]`, which turns an
+/// out-of-range slot into slot 29's contents — a lie that draws. An
+/// empty stack is the honest answer and the one a cell already knows how
+/// to render.
+fn cell_stack(core: &ClientCore, kind: u8, slot: usize) -> ItemStack {
+    let view: &[ItemStack] = match kind {
+        CONT_SELF => &core.inv,
+        CONT_WEAR => &core.worn,
+        _ => &core.cont,
+    };
+    view.get(slot).copied().unwrap_or_default()
+}
+
 fn grid(
     parent: &mut ChildSpawnerCommands,
     core: &ClientCore,
@@ -453,11 +494,6 @@ fn grid(
     to: usize,
     cols: usize,
 ) {
-    let view: &[ItemStack; INV_SLOTS] = if kind == CONT_SELF {
-        &core.inv
-    } else {
-        &core.cont
-    };
     parent
         .spawn(Node {
             display: Display::Grid,
@@ -467,8 +503,8 @@ fn grid(
             ..default()
         })
         .with_children(|g| {
-            for (slot, stack) in view.iter().enumerate().take(to).skip(from) {
-                cell(g, kind, slot, *stack, core, icons);
+            for slot in from..to {
+                cell(g, kind, slot, cell_stack(core, kind, slot), core, icons);
             }
         });
 }
@@ -695,12 +731,7 @@ pub fn drag_pointer(
         if border.top != want {
             *border = BorderColor::all(want);
         }
-        let view = if cell.kind == CONT_SELF {
-            &core.inv
-        } else {
-            &core.cont
-        };
-        let filled = view[cell.slot.min(INV_SLOTS - 1)].count > 0;
+        let filled = cell_stack(core, cell.kind, cell.slot).count > 0;
         let fill = match (hot || source, filled) {
             (true, _) => CELL_HOVER,
             (false, true) => CELL_FULL,
@@ -728,12 +759,7 @@ pub fn drag_pointer(
             None
         };
         if let (Some(grab), Some(cell)) = (grab, over) {
-            let view = if cell.kind == CONT_SELF {
-                &core.inv
-            } else {
-                &core.cont
-            };
-            let stack = view[cell.slot.min(INV_SLOTS - 1)];
+            let stack = cell_stack(core, cell.kind, cell.slot);
             if stack.count > 0 {
                 ui.drag = Some(Drag {
                     kind: cell.kind,
@@ -796,6 +822,7 @@ pub fn drag_pointer(
         drag.grab,
         &core.inv,
         &core.cont,
+        &core.worn,
     ) else {
         // The refusals this side owns are all "the panel cannot address
         // that", and every one of them would otherwise cost a round trip and
