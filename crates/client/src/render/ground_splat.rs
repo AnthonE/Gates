@@ -119,7 +119,13 @@ pub type GroundMaterial = ExtendedMaterial<StandardMaterial, GroundSplat>;
 ///
 /// `tests/ground_splat.rs` re-measures all four off the files and fails on
 /// drift, so a swapped source cannot silently keep the old gain.
-pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 3.7128];
+/// ⚠ **`rock` moved 3.7128 → 4.0820 on 2026-08-27**, when that identity's
+/// source was replaced (aCG `Rock023`, a stratified CLIFF, → aCG `Gravel004`,
+/// isotropic scree — `assets/textures/MANIFEST.md`). Its mean linear luma fell
+/// 0.2693 → 0.2450, so the gain that places that mean at 1 rose by the same
+/// 9.0%. Nothing was authored here; the file changed and the gate said so,
+/// which is the whole reason this constant is re-measured rather than typed.
+pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 4.0820];
 
 /// Per identity, the mean of its shipped `*_rough.jpg` — sand · grass ·
 /// litter · rock, in `terrain::splat`'s order.
@@ -142,7 +148,14 @@ pub const GRAIN_GAIN: [f32; 4] = [5.5398, 4.0292, 9.6954, 3.7128];
 /// term's job ([`WET_ROUGH`]) rather than an identity's; and a hard mineral
 /// face genuinely is smoother than needle litter. Granite moving 0.88 → 0.611
 /// is the biggest single change here and it is the one to look at first.
-pub const ROUGH_MEAN: [f32; 4] = [0.9631, 0.9364, 0.9197, 0.6108];
+///
+/// ⚠ **`rock` moved 0.6108 → 0.5359 with the same 2026-08-27 source swap.**
+/// Granite was already the smoothest of the four and scree is smoother still,
+/// which is worth a second look when someone can boot it: it is now 0.43 below
+/// sand and the wet term ([`WET_ROUGH`]) multiplies from there. If a mountain
+/// reads as glossy in a frame, this is the number to suspect first — the same
+/// sentence this block already carried about 0.88 → 0.611, one swap later.
+pub const ROUGH_MEAN: [f32; 4] = [0.9631, 0.9364, 0.9197, 0.5359];
 
 /// What a soaked surface keeps of its **dry roughness**.
 ///
@@ -219,6 +232,14 @@ pub struct GroundSplatParams {
     /// for both until they moved — which is the registry working exactly as
     /// intended, and the reason to pass them through the uniform.
     pub blend: Vec4,
+    /// x = [`WALL_ON`], y = [`WALL_SHARPNESS`],
+    /// z = [`super::terrain_mesh::UV_PER_M`], w reserved.
+    ///
+    /// `z` is the ground's own projection scale, sent rather than repeated: the
+    /// wall tap builds a UV in metres and must land on the same texel density
+    /// as the top tap, and a second literal `0.25` in WGSL is a copy that can
+    /// drift from the one `heightfield` writes.
+    pub wall: Vec4,
 }
 
 impl GroundSplatParams {
@@ -236,9 +257,37 @@ impl GroundSplatParams {
             gain: Vec4::from_array(GRAIN_GAIN),
             tune: Vec4::new(WET_VALUE, WET_SATURATION, ALBEDO_LUMA_FLOOR, BLEND_DEPTH),
             blend: Vec4::new(HEIGHT_INFLUENCE, NORMAL_Z_FLOOR, WET_ROUGH, 0.0),
+            wall: Vec4::new(WALL_ON, WALL_SHARPNESS, super::terrain_mesh::UV_PER_M, 0.0),
         }
     }
 }
+
+/// Where the biplanar wall tap turns on, as `sin(tilt)`.
+///
+/// **Derived, not chosen.** The ground's UV is a planar XZ projection, so on a
+/// face of tilt θ the photograph is stretched by `1/cos θ` along the fall line
+/// — 1.41× at 45°, 2.9× at 70°, unbounded at vertical. A second tap on the
+/// vertical plane containing that fall line is stretched by `1/sin θ` instead,
+/// so the two are exact complements and `sin θ = cos θ` — 45°, `1/√2` — is
+/// precisely where the plane you already have stops being the better one.
+/// Below it the top tap wins and the wall tap is skipped entirely.
+///
+/// **The fall-line plane, not an axis plane, and both halves matter.** An
+/// axis-aligned pair swaps wherever `|n.x| = |n.z|`, which is a hard line of
+/// changed photograph down every diagonal face; a frame built from the face's
+/// own fall line rotates through that locus continuously. This is `DECISIONS.md`
+/// materials v4's design, which the browser client shipped and the native one
+/// never got.
+pub const WALL_ON: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+/// The exponent the two plane weights are raised to before blending.
+///
+/// Quilez's own prescribed value for the non-remapped form: a linear blend at a
+/// 70° face still hands ~32% of the sample to the top plane while that plane is
+/// stretched 2.9×, which is the smear the wall tap exists to remove. At k = 8
+/// that share is 0.05%, and 45° and below are untouched because [`WALL_ON`]
+/// owns them. Proposed default, not spoken.
+pub const WALL_SHARPNESS: f32 = 8.0;
 
 /// Four albedo maps, four normal maps, four roughness maps, four AO maps — and
 /// one sampler.
