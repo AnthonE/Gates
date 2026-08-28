@@ -117,8 +117,8 @@ impl MapSet {
 /// the delivered mean and the relief's light and shade survive. It also
 /// bounds the alternative — a per-channel gain placing a source's mean may
 /// not stretch that source's colour deviation by more than ×1 — and measured
-/// over the four ground sources, only `rock` clears it (span 1.054; grass
-/// 2.454, sand 2.073, litter 3.586). A luminance field has span **1.000 by
+/// over the four ground sources, only `rock` clears it (span 1.108; grass
+/// 2.444, sand 2.066, litter 3.559). A luminance field has span **1.000 by
 /// construction**, because every channel is the same channel.
 ///
 /// So this is not a workaround for the rule; it is what the rule asks for.
@@ -170,15 +170,16 @@ pub struct GroundMaps {
 /// the rule is vacuous in. The rule bounds how far a per-channel gain may
 /// stretch a source's colour deviation, and a gain of exactly 1 stretches it
 /// by exactly 1. Measured off the shipped files (linear means, Rec.709 luma,
-/// against `ALBEDO_LUMA_BAND = [0.05, 0.55]`):
+/// against `ALBEDO_LUMA_BAND = [0.05, 0.55]`, at the files' full 1024²;
+/// `tests/manifest_measured.rs` re-measures every cell):
 ///
 /// | role | linear mean rgb | luma | albedo sd | in band |
 /// |---|---|---|---|---|
-/// | rock | 0.273 0.269 0.259 | 0.269 | 0.0933 | ✓ |
+/// | rock | 0.250 0.245 0.226 | 0.245 | 0.1379 | ✓ |
 /// | bark | 0.128 0.105 0.064 | 0.107 | 0.0676 | ✓ |
-/// | wood | 0.161 0.139 0.112 | 0.142 | 0.0661 | ✓ |
-/// | stone | 0.237 0.202 0.106 | 0.203 | 0.1139 | ✓ |
-/// | metal | 0.230 0.228 0.228 | 0.228 | 0.0689 | ✓ |
+/// | wood | 0.161 0.139 0.112 | 0.141 | 0.0661 | ✓ |
+/// | stone | 0.237 0.202 0.107 | 0.203 | 0.1138 | ✓ |
+/// | metal | 0.230 0.227 0.228 | 0.228 | 0.0688 | ✓ |
 ///
 /// All five clear the band off the raw file, so every one of them ships its
 /// colour whole. The per-instance and per-part variation that used to BE the

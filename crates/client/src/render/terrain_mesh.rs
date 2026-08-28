@@ -357,12 +357,6 @@ pub fn wetted(c: [f32; 3], wet: f32) -> [f32; 3] {
     out
 }
 
-/// `1 / linear mean` of `rock_albedo.jpg`, per channel — the mean-placing
-/// correction of `ART.md` §7, measured off the shipped file rather than
-/// guessed. Its span (max/min) is 1.054, i.e. the correction stretches the
-/// source's colour deviation by 5%, which is what the ×1 rule permits.
-pub const ROCK_GAIN: [f32; 3] = [3.659, 3.713, 3.855];
-
 /// One built ground chunk, so teardown can find it.
 #[derive(Component)]
 pub struct Chunk(pub i32, pub i32);
@@ -461,12 +455,20 @@ impl Ring {
 /// spans measured over the four ground sources are why every map still arrives
 /// as a luminance field rather than as colour:
 ///
+/// Off the shipped 1024² files, linearised from sRGB, Rec.709 luma; `sd` is
+/// the sd of that per-texel luma. The basis is stated because the statistic
+/// moves with it — `rock` reads 0.1379 here and 0.1287 at 512² — and because
+/// this table had no basis and no gate until 2026-08-28, by which time its
+/// `rock` row was a texture the repo had stopped shipping and its `sd` column
+/// did not reproduce under any reading. `tests/manifest_measured.rs` re-measures
+/// all of it now.
+///
 /// | source | linear mean rgb | gain span | albedo sd |
 /// |---|---|---|---|
-/// | grass | 0.291 0.249 0.119 | **2.454** | 0.0743 |
-/// | sand | 0.228 0.174 0.110 | **2.073** | 0.0480 |
-/// | litter | 0.139 0.099 0.039 | **3.586** | 0.0527 |
-/// | rock | 0.273 0.269 0.259 | **1.054** | 0.0924 |
+/// | grass | 0.292 0.248 0.120 | **2.444** | 0.0753 |
+/// | sand | 0.228 0.174 0.110 | **2.066** | 0.0499 |
+/// | litter | 0.140 0.098 0.039 | **3.559** | 0.0635 |
+/// | rock | 0.250 0.245 0.226 | **1.108** | 0.1379 |
 ///
 /// Only `rock` clears the rule. Reducing each source to its own mean-1
 /// luminance field gives every one of them a span of 1.000 by construction, so

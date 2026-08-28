@@ -35,6 +35,13 @@ size and quality number below as a browser-era artifact, not a budget.**
 **`rock` is the one exception to that encode spec — albedo q74, normal q82.** It
 holds the swap at **553 KB against `cliff_side`'s 562 KB**, so the only identity
 here that costs client boot time does not cost more of it than what it replaced.
+(⚠ **Every number in this paragraph and the three below it is `Rock023`'s** —
+the encode spec, the 553 KB, the 1.03 span, the 0.0942 → 0.0933 sd, the join
+times. It is history and it stays: it records why the encode was trimmed and
+that the theory behind the trim was measured false. But `rock` is `Gravel004`
+since 2026-08-27, so read none of it in the present tense — the shipped file's
+statistics are the prop-bind table's, and those are gated
+[`crates/client/tests/manifest_measured.rs`].)
 (⚠ This parenthetical used to say only the four ground identities were bundled
 and `stone`/`metal`/`wood`/`bark` were "not loaded by the client at all today".
 That went stale twice: the props bound all four on 2026-08-11 — the **bundled**
@@ -125,15 +132,15 @@ is still gated as a file.
 | role | source | ao | bundled | note |
 |---|---|---|---|---|
 | `bark` | PH [bark_brown_02](https://polyhaven.com/a/bark_brown_02) | | ✓ | vertical fissures + moss — the reference asks for exactly this, **on a tree**. It wore the twig building tier as well until 2026-08-22; see the `twig` row. Authored at 1000 mm, and the shared 0.55 drew it over 1.82 m, so a twig base was a photograph of a trunk at 1.8× life size. |
-| `grass` | PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01) | ✓ | ✓ | **Authored at 2000 mm** → `terrain_mesh::GROUND_TILE_M[1]` is 2.0 m. It was drawn over the shared 4 m ground reference until 2026-08-28, i.e. at twice life size. turf with dirt wear — matches ART §3 lit-grass band once tinted. Its AO is the strongest of the set (mean 0.477, sd 0.162) and it owns ~99% of the near ring. |
+| `grass` | PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01) | ✓ | ✓ | **Authored at 2000 mm** → `terrain_mesh::GROUND_TILE_M[1]` is 2.0 m. It was drawn over the shared 4 m ground reference until 2026-08-28, i.e. at twice life size. turf with dirt wear — matches ART §3 lit-grass band once tinted. Its AO is the strongest of the set (mean 0.477, sd 0.150) — strength here is how far the mean falls below 1, not the sd, and on that reading it leads litter's 0.775, rock's 0.839 and sand's 0.943 by a distance while its sd is only third. It owns ~99% of the near ring. |
 | `gravel` | PH [bicolour_gravel](https://polyhaven.com/a/bicolour_gravel) | ✓ | | fine scree; slope/scree identity and path scuff |
 | `litter` | PH [brown_mud_leaves_01](https://polyhaven.com/a/brown_mud_leaves_01) | ✓ | ✓ | **Authored at 1300 mm** → `terrain_mesh::GROUND_TILE_M[2]` is 1.3 m. At the old shared 4 m it drew at 3.1× life size — leaves the size of a hand. forest floor, red-leaning; forest identity |
 | `metal` | aCG [CorrugatedSteel009](https://ambientcg.com/view?id=CorrugatedSteel009) | ✓ | ✓ | replaced `green_metal_rust` 2026-08-04. Photoscanned ribbed steel: albedo sd 0.0090 → **0.0709**, i.e. the old one was a flat swatch. Grey industrial rather than rusty — ambientCG's rusty corrugated sheets are all `PBRProcedural` and their albedos are flat paint with screw dots, the very defect being replaced, so the rust has to come from the wear layer. |
 | `rock` | aCG [Gravel004](https://ambientcg.com/view?id=Gravel004) | ✓ | ✓ | CC0. **No authored size published** — `dimensionX/Y/Z` are all `0`, ambientCG's sentinel for unknown and the same answer `CorrugatedSteel009` gives `structures::TIER`. `GROUND_TILE_M[3]` keeps the 4 m reference on the counted cross-check that row's shape asks for: the median-energy wavelength of the shipped albedo is 14.4 texels, so a clast draws 5.6 cm at 4 m, inside real crushed-aggregate grading (20–63 mm). Replaced `Rock023` 2026-08-27, which replaced `cliff_side` 2026-08-04 — **both of those were cliffs**; see below. |
-| `sand` | PH [coast_sand_01](https://polyhaven.com/a/coast_sand_01) | ✓ | ✓ | **Authored at 15000 mm and it is the one ground row that refuses its own size**: 15 m is over the 4 m ceiling `tests/pieces.rs` holds piece surfaces to, and drawing it there costs `ART.md` rule 1's near-field grain — the share of its linear-luma variance under 5 cm falls **66.3% → 22.5%**. `GROUND_TILE_M[0]` is 4.0 m, and `terrain_mesh.rs` carries the measurement. fine coastal sand, close to ART §3's 42°/10% sample |
+| `sand` | PH [coast_sand_01](https://polyhaven.com/a/coast_sand_01) | ✓ | ✓ | **Authored at 15000 mm and it is the one ground row that refuses its own size**: 15 m is over the 4 m ceiling `tests/pieces.rs` holds piece surfaces to, and drawing it there costs `ART.md` rule 1's near-field grain — the share of its linear-luma variance under 5 cm falls **79.8% → 47.6%**. `GROUND_TILE_M[0]` is 4.0 m, and `terrain_mesh.rs` carries the measurement. fine coastal sand, close to ART §3's 42°/10% sample |
 | `stone` | aCG [Bricks089](https://ambientcg.com/view?id=Bricks089) | ✓ | ✓ | replaced `castle_brick_01` 2026-08-04. Photoscanned medieval stacked field stone — the identity ART asks for, not brick. sd 0.0947 → **0.1253**, anisotropy 1.34 → **1.09** (less row-banding). |
-| `ground_detail` | **derived** from `grass` (PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01)) | | ✓ | Rec.601 luma of the source's LINEAR albedo, re-encoded to sRGB greyscale, 1024 q88, 342 KB. The ground's near-field grain: `ART.md` §7 asks a modifier that sets a colour to multiply the surface's own **mean-1 luminance field**, and a luminance field has gain span **1.000 by construction** where the four colour sources measure 2.454 / 2.073 / 3.586 / 1.054 (grass / sand / litter / rock) against a ×1 ceiling. Linear luma mean 0.2464, sd 0.0762. Derived, never edited: the source stays pristine and swappable, and regenerating is a luma convert. |
-| `twig` | PH [bamboo_wall](https://polyhaven.com/a/bamboo_wall) | | ✓ | lashed vertical poles; building tier 0 — **the straw/lashed-pole set the `wood` row below had been waiting for since 2026-08-12**, landed 2026-08-22 because the tier nobody chooses is the tier everybody sees (`build.rs`: every piece enters the world as twig) and it was wearing a photograph of a living tree, moss and all. Authored at 2000 mm, so `structures::Tier::tiles_per_m` is 0.5 and its poles draw ~4 cm — a sapling. Linear mean rgb 0.242 0.153 0.091, luma **0.167**, sd 0.0551, measured on the shipped file: in `ALBEDO_LUMA_BAND` on its own, so it ships its colour whole at gain 1.0 and *is* the paler of the first two tiers without the ×1.6 `bark` needed to fake it. |
+| `ground_detail` | **derived** from `grass` (PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01)) | | ✓ | Rec.601 luma of the source's LINEAR albedo, re-encoded to sRGB greyscale, 1024 q88, 342 KB. The ground's near-field grain: `ART.md` §7 asks a modifier that sets a colour to multiply the surface's own **mean-1 luminance field**, and a luminance field has gain span **1.000 by construction** where the four colour sources measure 2.444 / 2.066 / 3.559 / 1.108 (grass / sand / litter / rock) against a ×1 ceiling. Linear luma mean 0.2466, sd 0.0768. Derived, never edited: the source stays pristine and swappable, and regenerating is a luma convert. |
+| `twig` | PH [bamboo_wall](https://polyhaven.com/a/bamboo_wall) | | ✓ | lashed vertical poles; building tier 0 — **the straw/lashed-pole set the `wood` row below had been waiting for since 2026-08-12**, landed 2026-08-22 because the tier nobody chooses is the tier everybody sees (`build.rs`: every piece enters the world as twig) and it was wearing a photograph of a living tree, moss and all. Authored at 2000 mm, so `structures::Tier::tiles_per_m` is 0.5 and its poles draw ~4 cm — a sapling. Linear mean rgb 0.242 0.153 0.091, luma **0.167**, sd 0.0552, measured on the shipped file: in `ALBEDO_LUMA_BAND` on its own, so it ships its colour whole at gain 1.0 and *is* the paler of the first two tiers without the ×1.6 `bark` needed to fake it. |
 | `wood` | PH [brown_planks_03](https://polyhaven.com/a/brown_planks_03) | | ✓ | weathered grey planks; building tier 1 — **and it is that tier's map since 2026-08-16**, four days after this note was written as an intention. `stone` is tier 2, `metal` tier 3. (⚠ This row also said `bark` doubled as tier 0 "for want of a straw/lashed-pole set". It did, for six days short of a fortnight; the `twig` row above is the want being filled, and `bark` is a tree's map again and nothing else's.) Authored at 1000 mm → `tiles_per_m` 1.0, which puts a plank at ~11 cm; it drew at 20 cm under the shared 0.55 every tier used until 2026-08-22. `structures::TIER` |
 
 ### ⚠ `rock` was a wall twice over, and the gate that would have said so was measured and not shipped
@@ -230,17 +237,40 @@ rather than by a correction. All six clear the band off the raw file:
 
 | role | linear mean rgb | luma | albedo sd | gain span |
 |---|---|---|---|---|
-| `rock` | 0.273 0.269 0.259 | 0.269 | 0.0933 | 1.054 |
-| `bark` | 0.128 0.105 0.064 | 0.107 | 0.0676 | 2.000 |
-| `twig` | 0.242 0.153 0.091 | 0.167 | 0.0551 | 2.659 |
-| `wood` | 0.161 0.139 0.112 | 0.142 | 0.0661 | 1.442 |
-| `stone` | 0.237 0.202 0.106 | 0.203 | 0.1139 | 2.223 |
-| `metal` | 0.230 0.228 0.228 | 0.228 | 0.0689 | 1.009 |
+| `rock` | 0.250 0.245 0.226 | 0.245 | 0.1379 | 1.108 |
+| `bark` | 0.128 0.105 0.064 | 0.107 | 0.0676 | 1.995 |
+| `twig` | 0.242 0.153 0.091 | 0.167 | 0.0552 | 2.654 |
+| `wood` | 0.161 0.139 0.112 | 0.141 | 0.0661 | 1.441 |
+| `stone` | 0.237 0.202 0.107 | 0.203 | 0.1138 | 2.215 |
+| `metal` | 0.230 0.227 0.228 | 0.228 | 0.0688 | 1.012 |
 
 (`twig` joined 2026-08-22, measured the same way and off the SHIPPED file. The
 five above it were re-derived at the same time as a check on the method rather
 than trusted: all five reproduce to the digit, span included — `max(mean_rgb) /
 min(mean_rgb)`, which is what `materials.js`'s `baseGainSpan` computes.)
+
+⚠ **`rock`'s row was `Rock023`'s for a day, and re-deriving it by hand is what
+this table had instead of a gate.** The 2026-08-27 swap to `Gravel004` moved
+`GRAIN_GAIN[3]` and `ROUGH_MEAN[3]` correctly, because both have a test that
+re-measures them off the file; it moved the `rock` row two hundred lines above,
+because `GROUND_TILE_M[3]` has one too. This table had neither, so it kept
+describing a texture the repo no longer ships — a mean 10% high, an sd 32% low
+and a span that was the whole basis for "the ground can only take `rock`".
+Corrected 2026-08-28 and **gated**: `crates/client/tests/manifest_measured.rs`
+re-measures every number in this table off the file it names, at the precision
+the row prints it to. Two more of the same swap's leftovers went with it — the
+`ground_detail` row's four spans, and the ground-source table in
+`render/terrain_mesh.rs`.
+
+**The basis is stated because these statistics move with it.** Every number in
+this table is the full-resolution shipped `.jpg` (1024²), linearised from sRGB,
+Rec.709 luma; `sd` is the sd of that per-texel luma. That is not pedantry — the
+same `rock_albedo.jpg` reads sd 0.1379 at 1024², 0.1287 at 512² and 0.1131 at
+256², a 1.22× span across three honest readings of one file. **The candidate
+table further up is on a 512² basis** (its 0.129 and 1.109 for `Gravel004` are
+that file at 512², reproduced), which is why it and this table differ in the
+last place or two and why neither should be "corrected" into the other. An sd
+quoted without its resolution is not a number anyone can check.
 
 The span column is recorded but **not binding for any of these**, because nothing
 divides by their means — it is what the correction WOULD have cost had one been
