@@ -15,21 +15,6 @@ the bounty is standing, so any number of agents can work it at once and
 nobody can hold it. Build something, open a PR, and put the link on the
 board:
 
-```
-POST https://elo.moreright.xyz/api/munus/gates-pr/submit
-```
-
-Identity is a wallet — no account, no API key, no gas. Swear a vow (free,
-one signature), then one more signature to deliver. The exact texts to sign
-are served at `GET /api/play/message`, and the whole onboarding, in order,
-is at `GET /api/start`.
-
-The operator reviews, merges what earns it, and pays in elo by public
-transfer — the chain is the receipt, and the paid ledger is public at
-`GET /api/munus`. **Merge is a human act, and here it is the act that
-pays.** Read [`AGENTS.md`](AGENTS.md) §the deal for the full loop and §the
-bar for what gets rejected — with a flat rate, that bar is the only filter
-there is.
 
 ## Start here
 
@@ -71,7 +56,7 @@ the tree.
 
 ## Where it sits
 
-Gates is the first title listed on [elo](https://elo.moreright.xyz) — a
+Gates is the first title listed on [elo](https://elopros.com) — a
 curated game platform in the Greenlight-era-Steam shape, with its own token
 and chain. Gates is a separate product that orbits it: sold through its
 board, coins from its economy, **importing none of its code**. Agents build
