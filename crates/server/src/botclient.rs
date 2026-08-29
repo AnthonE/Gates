@@ -37,12 +37,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use wtransport::endpoint::endpoint_side::Client;
-use wtransport::Endpoint;
+use wtransport::error::{ConnectingError, ConnectionError};
+use wtransport::{Connection, Endpoint};
 
 #[derive(Debug, Default)]
 pub struct BotReport {
     pub player_id: u32,
     pub welcome: Option<Welcome>,
+    /// Times the peer's HTTP/3 layer shed this bot's connect before the
+    /// shard ever answered, and we dialled again. Reported rather than
+    /// swallowed: a retry that nothing counts turns a real capacity
+    /// regression into a slower green run (`bot_smoke` asserts a ceiling).
+    pub connect_sheds: u32,
     pub snapshots_applied: u64,
     pub delta_snapshots: u64,
     pub stale_snapshots: u64,
@@ -260,6 +266,72 @@ fn body_cell(q: i32) -> u16 {
     build_cell_of(q as f32 * POS_XZ_Q).clamp(0, MAX_BUILD_COORD as i32 - 1) as u16
 }
 
+/// `H3_EXCESSIVE_LOAD` — the HTTP/3 code a peer sends when it is shedding
+/// load rather than answering (RFC 9114 §8.1, `wtransport_proto`'s
+/// `H3_EXCESSIVE_LOAD`).
+const H3_EXCESSIVE_LOAD: u64 = 0x0107;
+
+/// How many times a dial may be shed before the bot gives up.
+const CONNECT_TRIES: u32 = 4;
+
+/// Is this failure the box saying "not now", rather than the shard saying no?
+///
+/// The distinction is the whole point and it is exact, not a heuristic.
+/// **Our** refusals are `REFUSE_VERSION..=REFUSE_ADMIN`, 0..=5, closed with
+/// the refusal text beside them (`net.rs`) — those are ANSWERS and are
+/// returned on the first try, because retrying one would let a suite sleep
+/// through a version gate that had begun rejecting everybody. `0x107` is
+/// emitted by the transport beneath both ends' application code and means
+/// only that the peer was too busy to start a session.
+fn is_load_shed(e: &ConnectingError) -> bool {
+    match e {
+        ConnectingError::ConnectionError(ConnectionError::ApplicationClosed(close)) => {
+            code_is_load_shed(close.code().into_inner())
+        }
+        _ => false,
+    }
+}
+
+/// The decidable half, split out so it can be gated.
+///
+/// `wtransport`'s `ApplicationClose::new` is `pub(crate)`, so a test cannot
+/// build the error value — but the DISCRIMINATION is what can go wrong, and
+/// it is a predicate over a `u64`. Widening this by one digit is how a
+/// refusal starts being retried, so it is checked directly.
+fn code_is_load_shed(code: u64) -> bool {
+    code == H3_EXCESSIVE_LOAD
+}
+
+/// Dial, retrying only a transport-level shed, with a widening gap.
+///
+/// Why this exists: `test_bot_smoke_50` opens fifty QUIC connections in a
+/// burst, and on 2026-08-28 bot 24 of 50 was shed with `0x107` on a box that
+/// was simultaneously running a release build. The suite went red, then green
+/// on a re-run with no change, and the loop runner stopped itself — correctly
+/// — because an oracle that flips is not an oracle. The burst is a timing
+/// assertion made by the transport rather than by us, which is the same class
+/// as the clock rule in `CLAUDE.md`: assert on observable state, never on the
+/// box being fast enough.
+async fn connect_retrying_a_shed(
+    endpoint: &Endpoint<Client>,
+    url: &str,
+    sheds: &mut u32,
+) -> Result<Connection, String> {
+    let mut gap = Duration::from_millis(40);
+    for attempt in 1..=CONNECT_TRIES {
+        match endpoint.connect(url).await {
+            Ok(c) => return Ok(c),
+            Err(e) if attempt < CONNECT_TRIES && is_load_shed(&e) => {
+                *sheds += 1;
+                tokio::time::sleep(gap).await;
+                gap *= 2;
+            }
+            Err(e) => return Err(format!("connect: {e}")),
+        }
+    }
+    unreachable!("the loop returns on the last attempt")
+}
+
 /// Connect, handshake, then walk for `duration`. Any transport failure is
 /// an `Err` with a short reason.
 ///
@@ -276,10 +348,8 @@ pub async fn run_bot(
     raid: Option<RaidRows>,
 ) -> Result<BotReport, String> {
     let url = format!("https://{server}");
-    let connection = endpoint
-        .connect(&url)
-        .await
-        .map_err(|e| format!("connect: {e}"))?;
+    let mut connect_sheds = 0;
+    let connection = connect_retrying_a_shed(endpoint, &url, &mut connect_sheds).await?;
 
     let opening = connection
         .open_bi()
@@ -300,6 +370,7 @@ pub async fn run_bot(
     let mut report = BotReport {
         player_id: welcome.player_id,
         welcome: Some(welcome),
+        connect_sheds,
         ..BotReport::default()
     };
 
@@ -524,5 +595,32 @@ pub fn bot_endpoint() -> Result<Endpoint<Client>, String> {
         Ok(e) => Ok(e),
         Err(v4) => build(wtransport::config::IpBindConfig::InAddrAnyDual)
             .map_err(|dual| format!("client endpoint: v4 {v4}; dual-stack {dual}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The one property that must not drift: a shed is retried, an ANSWER is
+    /// not. Proven over both sets rather than the happy case, because the
+    /// failure mode is a predicate widened until it swallows a refusal — and
+    /// a suite that retried `REFUSE_VERSION` would sleep through a version
+    /// gate that had begun rejecting everybody, then pass.
+    #[test]
+    fn a_refusal_is_an_answer_and_only_a_shed_is_retried() {
+        for code in protocol::REFUSE_VERSION..=protocol::REFUSE_ADMIN {
+            assert!(
+                !code_is_load_shed(u64::from(code)),
+                "REFUSE code {code} is the shard answering — it must never be retried"
+            );
+        }
+        assert!(code_is_load_shed(H3_EXCESSIVE_LOAD), "0x107 is the shed");
+        // Its neighbours are other HTTP/3 errors and are not about load:
+        // 0x106 is FRAME_ERROR, 0x108 is ID_ERROR. A predicate widened to a
+        // range would take these too.
+        assert!(!code_is_load_shed(0x0106));
+        assert!(!code_is_load_shed(0x0108));
+        assert!(!code_is_load_shed(0));
     }
 }

@@ -13,6 +13,10 @@ use std::time::Duration;
 
 const BOTS: usize = 50;
 
+/// How many transport-level connect sheds the herd may absorb before the
+/// suite calls it a capacity problem rather than a busy box. A fifth.
+const SHED_CEILING: u32 = (BOTS / 5) as u32;
+
 /// The shipped content set, baked — the smoke runs the same boot path the
 /// shard binary does, so gather and the catalog are live under the herd.
 fn baked_content() -> server::net::SimTables {
@@ -85,6 +89,21 @@ async fn test_bot_smoke_50() {
             .unwrap_or_else(|e| panic!("bot {i} failed: {e}"));
         reports.push(report);
     }
+
+    // `run_bot` re-dials a connect the peer's HTTP/3 layer SHED
+    // (`H3_EXCESSIVE_LOAD`, 0x107) rather than failing the herd over one
+    // busy moment — a shed is the box saying "not now", and our own
+    // refusals (0..=5) are still returned on the first try. But a retry
+    // that nothing counts is a capacity regression made invisible: a shard
+    // that could only seat ten would go green, slowly. So the count is
+    // observable and bounded here. One shed on a loaded box is ordinary;
+    // a fifth of the herd needing a second dial is the shard's problem.
+    let sheds: u32 = reports.iter().map(|r| r.connect_sheds).sum();
+    assert!(
+        sheds <= SHED_CEILING,
+        "{sheds} of {BOTS} bots were shed at connect (ceiling {SHED_CEILING}) — \
+         that is not a busy box, that is the shard failing to seat a herd"
+    );
 
     // ...and return to 0 once every bot has left, which is what separates a
     // gauge (set each tick off occupancy) from a counter that only climbs.
