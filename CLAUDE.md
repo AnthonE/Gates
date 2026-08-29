@@ -631,18 +631,27 @@ trim that is owed (`NOW.md` §0x item 4).
 
 ## The loop that builds this repo
 
-⚠ **STOPPED, not retired — and "stopped" is a state that changes, so read the
-harness rather than this line.** It was paused 2026-08-04 through 2026-08-13
-(operator, 2026-08-11: *"its paused"*), then **ran again: 18 judged passes
-under `gates-anchor-20260813-230343` (2026-08-13 23:44 → 2026-08-14 14:16) and
-3 under `gates-anchor-20260814-142610` (15:31 → 17:44), all 21 PASS at the
-merge gate and merged by the runner.** `STOP` was touched at 17:16 on
-2026-08-14, the runner finished its pass and exited cleanly, and nothing is
-running now. **The check is `loop-status.sh` and `ls .../STOP`, in that order**
-— this paragraph has been wrong about the loop's state at least once, and a
-dated claim about a live process is the shape `CLAUDE.md` warns about
-everywhere else. While it is dark, `NOW.md` is the steering; the harness is
-intact and the table below still works.
+⚠ **Not retired, and this line does not know whether it is running.** That is
+deliberate now: every previous version of this paragraph asserted a state, and
+each was wrong within days — a dated claim about a live process is the shape
+`CLAUDE.md` warns about everywhere else. **The check is `loop-status.sh` then
+`ls .../STOP`, in that order.** It has run in bursts (21 passes 2026-08-13/14,
+11 on 2026-08-15, 8 on 2026-08-28) with long dark stretches between; while it is
+dark, `NOW.md` is the steering.
+
+**The failure worth knowing about is 2026-08-29**, because it changed the
+harness. A run died at 01:31 with no `STOP` — its first health gate took seven
+`rust-lld` SIGBUS crashes, so no test ran and no wall fired, and every one of
+them surfaced as `GATE FAIL: native client suites`. The loop could not tell a
+build that failed to COMPLETE from a wall that FIRED, so it would have opened a
+recovery pass against a green tree; the steward that woke measured silence
+against a *previous* run's log and reported 22790s about a four-minute-old
+runner; and the sweep meant to file pre-2026-08 reports had been eating the
+current ones, so `loop-status.sh` read `0 PASS / 0 FAIL` over 70 real verdicts.
+All three are fixed and gated (`watchdog-test.sh`, 23 checks, six mutants);
+**why the linker took a SIGBUS is still unknown** and a health run now traces
+disk, RAM and swap so the next one is diagnosable —
+`gates-loop/findings/note-20260829-the-loop-died-of-the-box-not-the-tree.md`.
 
 The loop wrote most of the commits in this tree. It lives at
 `/mnt/hive-data/gates-loop` — **outside this repo, deliberately.** The builder is
@@ -669,13 +678,15 @@ judge holding `judge/RUBRIC.md` (ten procedural checks — the merge gate) and
 performs the merge itself on a PASS, then captures and spawns the visual judge
 holding `art/RUBRIC.md` (ten visual criteria against the reference set). Both
 reports end in a `## Ranked gaps` section, and those gaps — not `NOW.md` — are
-where the loop's direction comes from **while it is running**. It is stopped,
-so that instruction is suspended rather than deleted, and the reports are
-evidence rather than a queue. **The newest pair is 2026-08-14
-(`pass-20260814-142610-03-{judge,visual}.md`)**, and all six frames in it were
-shot on seed 20260731 under `art/capture-native.sh` — the same island the
-shard ships, which is the only reason those gaps are about our world at all.
-Steer from `NOW.md` until the loop is restarted.
+where the loop's direction comes from **while it is running**; when it is dark
+that instruction is suspended rather than deleted, and the reports are evidence
+rather than a queue. `ls -t findings/` is the newest pair — do not trust a date
+written here, which is why one is not. **The visual half is the older half**:
+capture has been OFF since 2026-08-28, so the newest visual report is weeks
+behind the newest judge report, and its frames were shot on seed 20260731 under
+`art/capture-native.sh` — the same island the shard ships, which is the only
+reason those gaps are about our world at all. Steer from `NOW.md` while it is
+dark.
 
 **`git push` is the DEFAULT now** (operator, 2026-08-28: *"pushing needs to be
 the default change it"*). It was blocked outright by a `pre-push` hook the
