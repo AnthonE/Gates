@@ -1486,13 +1486,24 @@ fn a_connection_whose_body_is_gone_still_hears_the_shard() {
 /// Fighters are co-located by construction, so every one of them is inside
 /// everyone else's enter radius and the only trimming is the rank band.
 /// The recorded consequence: post-filter peak fan-in per client is
-/// `AOI_RANK_EXIT`, and `EVENT_RING_CAP` is the same 64. If a later pass
-/// widens the rank band, this goes red and that is the point — the ring
-/// would then be the smaller of the two with nothing saying so.
+/// `AOI_RANK_EXIT` **per broadcast arm**, and `EVENT_RING_CAP` is sized as
+/// exactly that band times the number of such arms. If a later pass widens
+/// the rank band, or adds a third body-broadcast arm without saying so in
+/// `BODY_BROADCAST_ARMS`, this goes red and that is the point — the ring
+/// would then be smaller than its own worst case with nothing saying so.
+///
+/// ⚠ **This was `assert_eq!(AOI_RANK_EXIT, EVENT_RING_CAP)` until wire
+/// v54, and the change is a tightening rather than a loosening.** The old
+/// form pinned an equality that happened to hold while exactly one arm
+/// broadcast a body's fact; it could not have caught the second arm being
+/// added, which is precisely what overflowed the ring (82 offered against
+/// 64). The relation asserted now is the mechanism the old one was a
+/// snapshot of, so it still fails on a widened rank band **and** on an arm
+/// nobody counted.
 #[test]
 fn the_filter_buys_nothing_on_a_clustered_shard() {
     assert_eq!(
-        AOI_RANK_EXIT,
+        AOI_RANK_EXIT * sim_core::limits::BODY_BROADCAST_ARMS,
         sim_core::limits::EVENT_RING_CAP,
         "the post-filter fan-in bound and the ring that receives it have \
          drifted apart; whichever is now smaller is the real cap and \

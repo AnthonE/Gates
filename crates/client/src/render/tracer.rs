@@ -154,6 +154,22 @@ pub fn launch(mut pool: ResMut<Tracers>, feed: Res<Feed>, net: NonSend<Net>) {
     let mut rs = client_core::interp::RemoteState::default();
 
     for &(shooter, yaw, pitch, speed_mmpt, drop_mmpt2) in feed.shots() {
+        // **An instantaneous shot has no flight to claim a slot for**
+        // (wire v54). `speed == 0` is the sim's instant reading and the
+        // low field is a reach rather than a drop, so flying this one
+        // would hang a motionless streak at the muzzle for four seconds
+        // and burn one of sixteen slots doing it — which is precisely the
+        // failure `ranged::hitscan` refused to raise the event over, and
+        // the half that had to move before it could. Skipped before the
+        // body lookup, so a rifle costs this system nothing at all.
+        //
+        // Drawing the beam is deliberately not done here and is not a
+        // slot's shape: it lives one frame, not `MAX_ARROW_LIFE_TICKS`,
+        // and it is a line of known length rather than an integration.
+        // `NOW.md` §0shot carries it.
+        if protocol::shot_is_instant(speed_mmpt) {
+            continue;
+        }
         // Where the bow was. The local player's own shot comes off the
         // predictor — the interpolator does not hold you — and everyone
         // else's off the same sample `bodies::stream` draws them at, so a

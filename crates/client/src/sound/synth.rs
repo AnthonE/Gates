@@ -320,6 +320,63 @@ fn render(cue: Cue) -> Vec<f32> {
         // a copied parameter set is a fork waiting to happen.
         Cue::RemoteSwing => render(Cue::Swing),
 
+        // ---- the two shots ------------------------------------------------
+        // Both are `impact`, which is the bank's transient-plus-body
+        // primitive, because that is exactly what a shot is: a crack and
+        // whatever the mechanism rings at underneath it.
+        //
+        // **A bow.** Almost all transient and almost no body — a string
+        // released is a broadband snap with a short woody thump off the
+        // limbs, gone in a fifth of a second. The high-pass sits well up so
+        // it stays a *tick* rather than a thud, which is what keeps it from
+        // reading as a footstep at distance: its def already says it only
+        // carries 40 m, and a sound that carries a short way and has energy
+        // low down is a sound a player mistakes for their own boots.
+        Cue::ShotBow => impact(
+            &mut r,
+            0.20,
+            Tone {
+                lo_hz: 240.0,
+                lo_amp: 0.30,
+                lo_tau: 0.030,
+                noise_amp: 0.80,
+                noise_tau: 0.022,
+                lp_hz: 7_000.0,
+                hp_hz: 700.0,
+                attack_s: 0.0004,
+                crackle: 0.35,
+            },
+        ),
+        // **A gun**, and it is the loudest and longest transient in the
+        // bank. Three things separate it from every impact above, and each
+        // is doing a job at a hundred metres rather than in front of you:
+        // a very low body (85 Hz) with a long tail, which is the half that
+        // survives distance and tells you *something serious happened over
+        // there*; a wide-open low-pass, because the crack's brightness is
+        // what makes it read as a gun and not as a tree falling; and a
+        // longer `noise_tau` than any impact, which is the report's slap
+        // off the terrain rather than a strike on a surface.
+        //
+        // No falloff filtering — the mixer's law is amplitude only
+        // (`sound::falloff`), so a distant shot here is a quiet shot and
+        // not a muffled one. That is a real gap against the reference and
+        // it belongs to the mixer rather than to this waveform.
+        Cue::ShotGun => impact(
+            &mut r,
+            0.55,
+            Tone {
+                lo_hz: 85.0,
+                lo_amp: 0.95,
+                lo_tau: 0.150,
+                noise_amp: 1.00,
+                noise_tau: 0.060,
+                lp_hz: 11_000.0,
+                hp_hz: 120.0,
+                attack_s: 0.0002,
+                crackle: 0.15,
+            },
+        ),
+
         // ---- the forest layer -------------------------------------------
         Cue::Bird => bird(&mut r),
 

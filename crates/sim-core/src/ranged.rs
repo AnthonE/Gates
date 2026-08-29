@@ -7,8 +7,8 @@
 //! rare barrel drop with a recipe, a research rung and a craftable round,
 //! all of which a player could pay for before pulling the trigger on
 //! nothing, because `bake_combat` dropped every row that was not melee,
-//! throwable or bow. See `hitscan` for what it deliberately still does not
-//! do (no `EV_SHOT`, so no tracer and no muzzle flash).
+//! throwable or bow. It announces itself with `EV_SHOT` at speed zero —
+//! see `hitscan` for why that pattern was free to spend.
 //!
 //! Until this module `combat.rs` exposed `strike` and `raid` and nothing
 //! else, so every fight on the island was a walk-up club fight while
@@ -900,16 +900,23 @@ const _: () = assert!(
 /// name is the only thing about it that is wrong: a seventh cause is a
 /// wire change and that constant's doc carries the refusal.
 ///
-/// # What it does not do
+/// # It raises `EV_SHOT`, and the reading it uses is the cheap one
 ///
-/// **No `EV_SHOT`.** That event's payload is a muzzle speed and a drop in
-/// mm/tick, and the client re-flies exactly those integers
-/// (`render/tracer.rs`); a hitscan has neither, and a zero in both fields
-/// would hang a motionless tracer at the muzzle for four seconds. So a
-/// firearm announces itself by what it *reaches* — `EV_IMPACT` where the
-/// world stopped it, `EV_HIT` on a body — and the muzzle flash, the crack
-/// and the beam are a follow-up that needs either a new event or a spoken
-/// reading of `EV_SHOT`'s spare bit patterns. Neither is invented here.
+/// Until wire v54 it raised none, on a stated argument: the payload is a
+/// muzzle speed and a drop that the client re-flies (`render/tracer.rs`),
+/// a hitscan has neither, and a zero in both would hang a motionless
+/// tracer at the muzzle for four seconds. The argument was sound and the
+/// conclusion outlived it — the same doc named the fix (*a spoken reading
+/// of `EV_SHOT`'s spare bit patterns*) and then declined to take it, so a
+/// firearm announced itself only by what it *reached* and a gunfight was
+/// a private event for twenty-four days.
+///
+/// **`speed == 0` means instantaneous** and the low half of `c` carries
+/// the **reach in decimetres**. The tracer reads the zero and draws
+/// nothing to fly; the mixer reads it and picks the gunshot cue over the
+/// bowshot, which is the whole of how the wire tells them apart without a
+/// field for the item. `world.rs`'s doc on the constant is the authority
+/// and `DECISIONS.md` §open carries the proposal.
 ///
 /// It chips a wall exactly as an arrow does (the module header): the shot
 /// stops on a piece, `Chip` carries the address out and `World::chip`
@@ -978,6 +985,25 @@ pub fn hitscan(
             continue;
         };
         inv_take(&mut players[i].inv, round, 1);
+        // **The report, and it is the same event a bow raises.** Announced
+        // here for `draw`'s reason, one line later in the same order: the
+        // cadence and the ammunition have both had their say, so `EV_SHOT`
+        // means *a round left this barrel* rather than *someone pressed the
+        // button*. Everything below only decides what it reached.
+        //
+        // `speed == 0` is the instantaneous reading (`world.rs`'s doc on the
+        // constant): a projectile cannot leave the muzzle at rest, so the
+        // pattern was unreachable, and it is now the one bit of state that
+        // separates a flight from a beam. The low half then carries the
+        // **reach in decimetres** instead of a drop, because a shot with no
+        // flight has no gravity to describe and a beam does need a length —
+        // `range_m` is at most 80 here and the field holds 6 553.
+        events.push(
+            EV_SHOT,
+            id,
+            (yaw as u32) << 8 | pitch as u32,
+            def.range_mm / 100,
+        );
 
         let (fx, fz) = yaw_dir(yaw);
         let (ch, sv) = pitch_dir(pitch);

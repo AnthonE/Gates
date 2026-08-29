@@ -323,6 +323,18 @@ pub const EV_RESEARCH_REFUSED: u8 = 34;
 /// air is a world fact like a door swinging, and it is the one fact in
 /// combat that everyone near it needs and only the shooter had.
 ///
+/// **`speed == 0` reads as *instantaneous*, and then the low half is the
+/// reach in decimetres rather than a drop** (wire v54, `DECISIONS.md`
+/// §open). A projectile cannot leave the muzzle at rest, so that pattern
+/// was unreachable rather than merely unused, which is what makes it
+/// spendable: it costs no field and it partitions the event into the two
+/// things a ranged weapon can be. A flight is re-flown from
+/// `(speed, drop)`; a beam is drawn from `(yaw, pitch, reach)` and gone
+/// the same frame. Until v54 a firearm raised no `EV_SHOT` at all, so it
+/// announced itself only by what it *reached* and a gunfight had no
+/// sound, no flash and no line — the disclosure the reference gets from
+/// audio at a hundred metres (`reference/AUDIO.md` §9).
+///
 /// **The payload is what a tracer needs and not one field more, and the
 /// omissions are the design.** No origin: the client knows where the
 /// shooter is from the snapshot, and `ranged::ARROW_EYE_MM` above the feet

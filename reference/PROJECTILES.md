@@ -503,9 +503,15 @@ So recovery is four pieces, and only the first is small:
    `EV_SHOT`. That advice was right about the cost and wrong about the
    blocker: `EV_SHOT` carries a muzzle speed and a drop that the client
    re-flies, a hitscan has neither, and refusing to invent a meaning for
-   those fields is a live refusal in `ranged::hitscan`'s own doc rather
+   those fields was a live refusal in `ranged::hitscan`'s own doc rather
    than a scheduling matter. Bundling would have held *"arrows come back"*
-   behind an unmade decision. One extra bump, paid knowingly.
+   behind an unmade decision. One extra bump, paid knowingly — and it
+   cost exactly the one predicted, because **§9.2 landed the next pass**
+   (gun report v0, wire v54): `speed == 0` reads as *instantaneous* and
+   the low `u16` becomes a reach in decimetres, so a firearm raises the
+   event, the mixer gives it a hundred-metre report and the tracer
+   declines to fly it. The flash and the beam are still unbuilt and owe
+   no further bump. `DECISIONS.md` §open, "gun report v0".
 
 **The economy consequence, stated because it is the reason to want this.**
 Our arrow is spent permanently, so our ammunition is strictly harsher than

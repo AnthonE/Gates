@@ -2113,12 +2113,17 @@ impl ShardCore {
                     // the code implements.
                     //
                     // ⚠ **What this does NOT bound.** Post-filter peak
-                    // fan-in per client is `AOI_RANK_EXIT`, which is 64, and
-                    // `EVENT_RING_CAP` is also 64. Co-located swingers —
-                    // a raid, i.e. the case where everyone swings at once —
-                    // are all inside each other's interest, so the filter is
-                    // a no-op there by construction. It buys the dispersed
-                    // shard, which is every other minute of play.
+                    // fan-in per client is `AOI_RANK_EXIT`. Co-located
+                    // swingers — a raid, i.e. the case where everyone
+                    // swings at once — are all inside each other's
+                    // interest, so the filter is a no-op there by
+                    // construction. It buys the dispersed shard, which is
+                    // every other minute of play.
+                    //
+                    // This arm is one of `BODY_BROADCAST_ARMS`, and that
+                    // count is what `EVENT_RING_CAP` is sized from — it
+                    // was equal to a single band until `EV_SHOT` became
+                    // the second such arm at wire v54 and overflowed it.
                     let sw = Self::world_slot_of(&self.world, ev.a);
                     match encode_event_swing(ev.a, &mut self.ev_buf) {
                         Ok(len) => {

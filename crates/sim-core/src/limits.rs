@@ -393,21 +393,50 @@ pub const UPKEEP_SWEEP_PER_TICK: usize = 64;
 /// re-diffs), the same recovery path a fresh join uses. Proposed default,
 /// DECISIONS.md §open (gather wire row).
 ///
-/// ⚠ **This number and `AOI_RANK_EXIT` are both 64, and that is not a
-/// coincidence worth relying on.** A broadcast arm in `pump_events` costs
-/// one push into *this* ring per connected client, so the per-client
-/// fan-in from a class-D-filtered arm (`ShardCore::body_event_visible`;
-/// `EV_SWING` today) is bounded by the interest set, which the rank band
-/// caps at `AOI_RANK_EXIT`. Filtered, the worst case exactly meets this
-/// cap and leaves **zero** headroom for the twenty-odd unfiltered arms and
-/// the drip's thirteen send sites. Widening the rank band without widening
-/// this makes the ring the smaller of the two silently;
-/// `server/tests/snapshot_budget.rs::the_filter_buys_nothing_on_a_clustered_shard`
-/// asserts the equality so that drift is loud. The overflow is also
-/// self-amplifying — a refused push calls `ev_resync`, and the recovery
-/// drip pushes *more* messages into the ring that just refused — so the
-/// number to argue about is this one, not the retry.
-pub const EVENT_RING_CAP: usize = 64;
+/// **It is [`BODY_BROADCAST_ARMS`] × [`AOI_RANK_EXIT`], and that product is
+/// the whole argument** — this is a derived number, not a chosen one.
+///
+/// A broadcast arm in `pump_events` costs one push into *this* ring per
+/// connected client, so the per-client fan-in from one class-D-filtered arm
+/// (`ShardCore::body_event_visible`) is bounded by the interest set, which
+/// the rank band caps at `AOI_RANK_EXIT`. One such arm can therefore fill
+/// `AOI_RANK_EXIT` slots by itself, and the ring has to hold one band per
+/// arm or a firefight overflows it on arithmetic alone.
+///
+/// ⚠ **It was a flat 64 until wire v54, equal to `AOI_RANK_EXIT`, and that
+/// left zero headroom** — the doc here said so in those words, and
+/// `snapshot_budget.rs` had measured the peak at 50 of 64. The second arm
+/// is what called it in: `EV_SHOT` became a firearm's report as well as a
+/// bow's, so a hundred co-located players firing offered one client **82**
+/// messages in a tick against the 64-slot ring. That is the predicted
+/// failure arriving, not a new one, and the fix is the one the assertion
+/// named first.
+///
+/// The overflow is self-amplifying — a refused push calls `ev_resync`, and
+/// the recovery drip pushes *more* messages into the ring that just refused
+/// — which is why this is sized against the worst case rather than the
+/// common one. Overflow policy is unchanged: **resync**.
+/// Proposed default, DECISIONS.md §open (event-lane fan-out v0).
+pub const EVENT_RING_CAP: usize = BODY_BROADCAST_ARMS * AOI_RANK_EXIT;
+
+/// How many `pump_events` arms broadcast a **body's** fact to the whole
+/// class-D interest set, each therefore able to fan in `AOI_RANK_EXIT`
+/// messages to one client in one tick.
+///
+/// Two: `EV_SWING` (an arm moved) and `EV_SHOT` (a round left a weapon).
+/// Both are filtered by `ShardCore::body_event_visible`, and both fire on
+/// exactly the tick everyone is co-located — a raid — so the filter buys
+/// nothing precisely when the ring is fullest.
+///
+/// **This is a count of code sites, so it rots the way a hand-kept mirror
+/// always does** (`CLAUDE.md`'s `props.js` line). What stands against that
+/// is not this doc but
+/// `server/tests/snapshot_budget.rs::the_filter_buys_nothing_on_a_clustered_shard`,
+/// which pins `EVENT_RING_CAP == BODY_BROADCAST_ARMS * AOI_RANK_EXIT` as an
+/// equality: a third broadcast arm added without touching this constant
+/// leaves the product wrong, and the storm fixture is what notices.
+/// Proposed default, DECISIONS.md §open (event-lane fan-out v0).
+pub const BODY_BROADCAST_ARMS: usize = 2;
 
 /// Slot-life entries the per-client harvested-set walk scans per tick
 /// (join sync / resync is drip-fed: at most one sync message per client

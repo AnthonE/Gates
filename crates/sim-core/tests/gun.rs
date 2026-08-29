@@ -462,25 +462,44 @@ fn a_miss_marks_the_world_and_a_hit_does_not() {
     );
 }
 
-/// No `EV_SHOT`, ever — and this is a gate on a *deliberate omission*
-/// rather than an oversight, which is why it is asserted rather than left
-/// to a reading of the code.
+/// A firearm raises `EV_SHOT` with **speed zero**, which is the wire's
+/// whole way of saying *this one did not fly*.
 ///
-/// `EV_SHOT` carries a muzzle speed and a drop in mm/tick and the client
-/// re-flies exactly those integers (`render/tracer.rs`). A hitscan has
-/// neither, and a zero in both fields would hang a motionless tracer at the
-/// muzzle for four seconds — a phantom arrow that cannot hit anyone, which
-/// is worse than no tracer at all. The day a firearm earns a muzzle flash,
-/// this test is the thing that has to be rewritten on purpose.
+/// This test is the rewrite its own predecessor asked for. Until wire v54
+/// it asserted the opposite — no `EV_SHOT`, ever — and it was an honest
+/// gate on a deliberate omission: the payload carries a muzzle speed and a
+/// drop that the client re-flies, a hitscan has neither, and a zero in both
+/// hangs a motionless tracer at the muzzle for four seconds. That last
+/// clause was a fact about `render/tracer.rs`, not about the wire, and it
+/// is the half that changed: the tracer reads the zero now and declines to
+/// launch. What the old test protected against is therefore still gated,
+/// one layer out, by `client/tests/tracer.rs`.
+///
+/// The reach rides in the low half because a beam needs a length where a
+/// flight needs a gravity, and the two are never both meaningful.
 #[test]
-fn a_firearm_draws_no_tracer() {
+fn a_firearm_reports_itself_as_an_instant_shot() {
     let cc = gun_fixture();
     let mut sc = Scratch::barren();
     let mut players = face_off();
     let s = pull(0, &cc, &ColIndex::new(), &mut sc.occupants(), &mut players);
-    assert!(
-        !s.events.entries().iter().any(|e| e.code == EV_SHOT),
-        "a hitscan shot has no speed and no drop, so it must not claim EV_SHOT's payload"
+    let shot = s
+        .events
+        .entries()
+        .iter()
+        .find(|e| e.code == EV_SHOT)
+        .copied()
+        .expect("a firearm announces itself");
+    assert_eq!(shot.a, players[0].id, "EV_SHOT.a names the shooter");
+    assert_eq!(
+        shot.c >> 16,
+        0,
+        "the high half is the muzzle speed and a hitscan has none - zero is what makes it a beam"
+    );
+    assert_eq!(
+        shot.c & 0xffff,
+        500,
+        "the low half is the reach in decimetres, and the fixture's range_mm is 50_000"
     );
     assert_eq!(players[1].hp, 80, "and it fired all the same");
 }

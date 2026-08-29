@@ -54,10 +54,11 @@ use super::{Eye, Net};
 /// The scale handed to rodio, so its own inverse-square law clamps to 1 for
 /// every audible emitter and only its panning survives. See the header.
 ///
-/// 128 rather than 96 (`MAX_AUDIBLE_M`) because rodio measures from each EAR,
+/// 128 rather than 100 (`MAX_AUDIBLE_M`) because rodio measures from each EAR,
 /// not from the listener's centre — at the far edge of the radius an ear is
 /// half the ear gap further out, and the margin keeps the clamp exact rather
-/// than approximately exact.
+/// than approximately exact. The margin is what absorbed v54's gunshot: 96 m
+/// became 100 m and `clamp_holds` did not have to move.
 pub const SPATIAL_SCALE: f32 = 1.0 / 128.0;
 
 /// Distance between the listener's ears, metres. Bevy defaults to **4.0**,
@@ -369,6 +370,84 @@ pub fn remote_swings(
             Cue::RemoteSwing,
             [t.translation.x, t.translation.y, t.translation.z],
         ));
+    }
+}
+
+/// Which report a shot makes, from the one bit that separates the two
+/// weapons.
+///
+/// Split out of [`shots`] for `tests/fell.rs`'s stated reason — a decision
+/// inside a system needs a window and a socket to drive, and this one is
+/// arithmetic. `protocol::shot_is_instant` is the law itself; this is the
+/// mapping from it to a sound, and the mapping is the half a gate can
+/// actually be wrong about.
+///
+/// No item crosses the wire on `EV_SHOT` and none is wanted: the two cues
+/// exist because the two *disclosure radii* differ, and the radius is what
+/// the wire's one bit already tells you.
+pub fn shot_cue(speed_mmpt: u16) -> Cue {
+    if protocol::shot_is_instant(speed_mmpt) {
+        Cue::ShotGun
+    } else {
+        Cue::ShotBow
+    }
+}
+
+/// Every shot in earshot, as a report at the shooter (wire v54).
+///
+/// **This is the fact the game has been broadcasting and nobody was
+/// listening to.** `EV_SHOT` has crossed the wire since ranged v0 and had
+/// exactly one reader — `render/tracer.rs`, which draws a streak — so a bow
+/// made no sound, and a firearm raised no event at all. A gunfight was a
+/// private event between the two people in it: the only evidence a shot had
+/// been fired was the damage, which is the wrong end of the fight to learn
+/// it at. Sound is the reference's primary disclosure channel
+/// (`reference/AUDIO.md` §9) and the radius is where the mechanic lives —
+/// 40 m for a bow against 100 m for a gun.
+///
+/// **The shooter's own shot is positional too, and that is deliberate**
+/// against `feed`'s own-fact rule below. A report is not an interface sound
+/// happening *to* you like a hitmarker; it is a thing that happens at a
+/// place, and the place is where you are standing. Emitting it at the body
+/// costs one lookup and keeps one rule — `Request::at` for a world event,
+/// `Request::own` for an answer from the interface — instead of splitting
+/// one cue across both constructors. The falloff at zero distance is 1.0,
+/// so it is full gain with no pan, which is what `own` would have given it
+/// anyway.
+///
+/// A shooter with no body is dropped rather than played from the origin,
+/// `tracer::launch`'s rule for `tracer::launch`'s reason: the local player
+/// is not in `bodies`, so the predictor answers for them.
+pub fn shots(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    bodies: Query<(&super::bodies::Body, &Transform)>,
+    mut sound: ResMut<Sound>,
+) {
+    if feed.shots().is_empty() {
+        return;
+    }
+    let core = &net.session.core;
+    for &(shooter, _yaw, _pitch, speed_mmpt, _reach) in feed.shots() {
+        // The one bit that separates the two weapons, and it is the same
+        // bit the tracer reads: a projectile cannot leave a muzzle at rest,
+        // so zero means the shot was instantaneous and instantaneous means
+        // a firearm. No item on the wire and none needed.
+        let cue = shot_cue(speed_mmpt);
+        let at = if shooter == core.player_id {
+            let p = core.predict.position();
+            [p[0], p[1], p[2]]
+        } else {
+            let Some(t) = bodies
+                .iter()
+                .find(|(b, _)| b.0 == shooter)
+                .map(|(_, t)| t.translation)
+            else {
+                continue;
+            };
+            [t.x, t.y, t.z]
+        };
+        sound.play(Request::at(cue, at));
     }
 }
 

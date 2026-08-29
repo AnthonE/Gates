@@ -1100,6 +1100,10 @@ impl Plugin for GatesRenderPlugin {
                 // …and their arms. Same slice `bodies::stream` animates
                 // from, same transform it just wrote.
                 audio::remote_swings,
+                // …and every shot in earshot, at the shooter. Same slice,
+                // and after it for the same reason: the transform this
+                // reads is the one `bodies::stream` just wrote.
+                audio::shots,
                 audio::fell,
                 // The herd's voices, off the animals `mobs::stream` just
                 // moved — a snort, a howl or a growl, by species and range.
