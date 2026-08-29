@@ -2436,7 +2436,7 @@ mod tests {
         // A forged in-layout value: decodes, refused, and still counted.
         let mut dg = InputDatagram::new(0, 0, 0);
         dg.push(InputFrame {
-            buttons: BTN_MASK | 0x10,
+            buttons: BTN_MASK | 0x20,
             ..InputFrame::default()
         })
         .expect("one frame fits");
@@ -2491,6 +2491,13 @@ mod tests {
     /// and nothing of that datagram reaches the ring (the refusal is
     /// ordered before the mutation). The value just inside the boundary —
     /// every meaningful bit at once — still crosses.
+    ///
+    /// **The outside probe is derived from `BTN_MASK`, not typed**, since
+    /// torch fuel v0: it used the literal `0x10`, and bit 4 became
+    /// `BTN_LIGHT`, so the "just outside" case quietly became a legal
+    /// frame. It failed loudly here only because the accept counter moved
+    /// — which is luck, the same shape as `SUB_MAX`'s probe. The lowest
+    /// bit the mask does not claim cannot go stale that way.
     #[test]
     fn accept_input_refuses_buttons_the_sim_cannot_mean() {
         use protocol::{encode_input, InputDatagram};
@@ -2510,7 +2517,7 @@ mod tests {
             (buf, n)
         };
 
-        // Just inside: all four meaningful bits at once.
+        // Just inside: every meaningful bit at once.
         let (buf, n) = encode(BTN_MASK);
         accept_input(&buf[..n], &mut tx, &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_ok), 1);
@@ -2518,10 +2525,15 @@ mod tests {
         let ringed = rx.pop().expect("the in-domain datagram is ringed");
         assert_eq!(ringed.frames()[0].buttons, BTN_MASK);
 
-        // Just outside: bit 4 — the octet's first meaningless bit. The
-        // encoder writes it happily (the field is 8 wide since v0), which
-        // is exactly the slack being closed here.
-        let (buf, n) = encode(BTN_MASK | 0x10);
+        // Just outside: the lowest bit `BTN_MASK` does not claim, taken
+        // FROM the mask so declaring a new button walks the probe along
+        // instead of retiring it. The encoder writes it happily (the field
+        // is 8 wide since v0), which is exactly the slack being closed
+        // here.
+        let unmeant = 1u8 << BTN_MASK.trailing_ones();
+        assert_ne!(unmeant, 0, "the octet is full — this probe needs a new bit");
+        assert_eq!(unmeant & BTN_MASK, 0, "the probe bit must be unmeant");
+        let (buf, n) = encode(BTN_MASK | unmeant);
         accept_input(&buf[..n], &mut tx, &stats);
         assert_eq!(ShardStats::get(&stats.input_dg_forged), 1);
         assert_eq!(

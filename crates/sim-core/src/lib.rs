@@ -18,6 +18,7 @@ pub mod fmath;
 pub mod gather;
 pub mod input;
 pub mod inventory;
+pub mod light;
 pub mod limits;
 pub mod lock;
 pub mod loot;

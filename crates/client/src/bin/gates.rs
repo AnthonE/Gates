@@ -134,7 +134,11 @@ fn main() -> AppExit {
 
     if let Some(session) = session {
         app.insert_resource(WorldId::new(session.welcome.seed));
-        app.insert_non_send_resource(Net { session, sel: 0 });
+        app.insert_non_send_resource(Net {
+            session,
+            sel: 0,
+            light: false,
+        });
     }
     let start = Start {
         direct: server,

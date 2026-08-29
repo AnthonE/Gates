@@ -513,6 +513,48 @@ pub fn held_model_in_hand(catalog: &ItemCatalog, inv: &[ItemStack], sel: u8) -> 
     held_model(catalog, inv[(sel as usize).min(inv.len() - 1)])
 }
 
+/// **The client's copy of `sim_core::light::is_lit`**, returning the
+/// [`HELD_MODELS`] row that is actually alight (torch fuel v0).
+///
+/// The same three facts the sim reads, in the same order, from data both
+/// ends already hold — which is the whole reason a flame is derived on
+/// both sides instead of stored on one and shipped to the other:
+///
+/// 1. `latch` — the player's own `BTN_LIGHT`, `render::Net::light`, which
+///    is what crosses to the sim;
+/// 2. the row declaring a [`HeldLight`] at all, this side's spelling of
+///    the content row's `light_burn`;
+/// 3. `cond > 0` — the fuel, mirrored here by `SUB_INV`, which is how a
+///    torch that burned out goes dark on this side without a message
+///    existing to say "your torch went out".
+///
+/// It lags the sim by exactly one round trip on the third fact and by
+/// nothing on the other two, and lagging is the correct failure: the
+/// flame dies a few frames late, never lights something that is not
+/// burning.
+///
+/// **`cond` is only asked of a row that declares a light.** A zero
+/// condition means *never wears* for everything else in the game
+/// (`GatherContent::cond_max`), and asking it of a hatchet would put out
+/// a light no hatchet has. Content rule V8 is what makes the question
+/// safe here — a light always has a ceiling to spend.
+pub fn lit_model_in_hand(
+    catalog: &ItemCatalog,
+    inv: &[ItemStack],
+    sel: u8,
+    latch: bool,
+) -> Option<usize> {
+    if !latch || inv.is_empty() {
+        return None;
+    }
+    let stack = inv[(sel as usize).min(inv.len() - 1)];
+    let row = held_model(catalog, stack)?;
+    if HELD_MODELS[row].light.is_none() || stack.cond == 0 {
+        return None;
+    }
+    Some(row)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +567,132 @@ mod tests {
         }
         c.count = names.len() as u16;
         c
+    }
+
+    /// The client's half of the derived flame, one fact at a time.
+    ///
+    /// This is the mirror of `sim_core::light::tests::
+    /// a_flame_needs_the_latch_the_row_and_the_fuel`, deliberately shaped
+    /// the same way, because the two are one predicate computed twice —
+    /// the quantize-both-sides law applied to a flag. A drift between them
+    /// is a torch that glows on one screen and burns on the other, and
+    /// neither side's own suite can see it alone.
+    #[test]
+    fn a_drawn_flame_needs_the_latch_the_row_and_the_fuel() {
+        let c = catalog_with(&["Torch", "Rock"]);
+        let full = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 5_000,
+        };
+        let inv = |s: ItemStack| [s, ItemStack::default()];
+
+        assert_eq!(
+            lit_model_in_hand(&c, &inv(full), 0, true),
+            Some(torch_row()),
+            "latch, row and fuel all hold"
+        );
+        assert_eq!(
+            lit_model_in_hand(&c, &inv(full), 0, false),
+            None,
+            "the latch is off — a torch in the hand is not a lit torch"
+        );
+        assert_eq!(
+            lit_model_in_hand(&c, &inv(ItemStack { cond: 0, ..full }), 0, true),
+            None,
+            "spent: `SUB_INV` is how this side hears the flame died"
+        );
+        let rock = ItemStack {
+            item: 1,
+            count: 1,
+            cond: 0,
+        };
+        assert_eq!(
+            lit_model_in_hand(&c, &inv(rock), 0, true),
+            None,
+            "a rock declares no light, and its zero `cond` means *never \
+             wears* rather than *spent* — the row is what refuses it"
+        );
+        assert_eq!(
+            lit_model_in_hand(&c, &inv(ItemStack::default()), 0, true),
+            None,
+            "an empty hand"
+        );
+        assert_eq!(
+            lit_model_in_hand(&c, &[], 0, true),
+            None,
+            "and an inventory that has not arrived yet"
+        );
+    }
+
+    /// The row index the assertions above want, found by the same lookup
+    /// the client uses rather than typed — `HELD_MODELS` is reordered by
+    /// anyone adding a model.
+    fn torch_row() -> usize {
+        HELD_MODELS
+            .iter()
+            .position(|m| m.light.is_some())
+            .expect("exactly one row declares a light")
+    }
+
+    /// **The seam this design creates, gated at the seam.**
+    ///
+    /// A flame is derived on both sides, and the two sides spell "this is
+    /// a light" differently: over here it is a `HELD_MODELS` row with a
+    /// [`HeldLight`], over there it is a `light_burn` in `content/
+    /// items.toml`. Nothing links them — the client links no content
+    /// crate (`PROTO_VER`'s own note on why the catalog drips) — so the
+    /// two lists can drift apart in either direction and every other gate
+    /// in both crates stays green: a content row losing `light_burn`
+    /// leaves a torch that glows and never burns, and a `HELD_MODELS` row
+    /// losing its `light` leaves one that burns and never glows.
+    ///
+    /// So this reads the TOML as text, which is the only thing this crate
+    /// can do and is the right shape anyway (`CLAUDE.md`: read the
+    /// surface, do not keep a mirror of it). Both directions, by name.
+    #[test]
+    fn the_lit_rows_and_the_burning_content_rows_are_the_same_set() {
+        let toml = include_str!("../../../../content/items.toml");
+        // `[[item]]` blocks, each reduced to (stem of `name`, has a
+        // `light_burn` line). A whole TOML parser is not owed here: the
+        // file is generated by nobody and read by `crates/content` for
+        // real, so what this needs is the two fields, spelled the way the
+        // file spells them.
+        let mut burning: Vec<String> = Vec::new();
+        for block in toml.split("[[item]]").skip(1) {
+            let body = block.split("[[").next().unwrap_or(block);
+            let name = body.lines().find_map(|l| {
+                let l = l.trim();
+                let rest = l.strip_prefix("name")?.trim_start().strip_prefix('=')?;
+                Some(rest.trim().trim_matches('"').to_string())
+            });
+            let burns = body.lines().any(|l| {
+                let l = l.trim();
+                l.starts_with("light_burn") && !l.starts_with('#')
+            });
+            if burns {
+                burning.push(stem(&name.expect("every item row has a name")).to_string());
+            }
+        }
+        assert!(
+            !burning.is_empty(),
+            "no `[[item]]` row in content/items.toml declares `light_burn` — \
+             either the scrape stopped matching the file or every light in \
+             the game became free"
+        );
+        let mut drawn: Vec<String> = HELD_MODELS
+            .iter()
+            .filter(|m| m.light.is_some())
+            .map(|m| m.key.to_string())
+            .collect();
+        burning.sort();
+        drawn.sort();
+        assert_eq!(
+            drawn, burning,
+            "the set of held models that DRAW a light and the set of item \
+             rows that BURN for one have drifted apart. A row on the left \
+             only glows for free; a row on the right only burns in the dark."
+        );
     }
 
     #[test]

@@ -114,6 +114,12 @@ impl Content {
                     item.id, item.condition_max
                 )
             })?;
+            gc.light_burn[idx] = u16::try_from(item.light_burn).map_err(|_| {
+                format!(
+                    "bake: `{}` light_burn {} overflows u16 hundredths/min",
+                    item.id, item.light_burn
+                )
+            })?;
         }
         for g in &self.gatherables {
             let slot = node_slot(g.archetype);

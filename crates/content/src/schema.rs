@@ -49,6 +49,28 @@ pub struct Item {
     /// state and two conditions in one slot is a merge nobody can resolve.
     #[serde(default)]
     pub condition_max: u32,
+    /// **Hundredths of condition burned per minute while this item is
+    /// held up lit** (torch fuel v0). Absent means 0 means *this is not a
+    /// light* — the field is the predicate as well as the price, and that
+    /// is deliberate: an item that emitted light for free would be a
+    /// decoration rather than the tradeoff `ALPHA.md` §1 names
+    /// (*"light = visibility = target"*), so there is no way to declare
+    /// the first without the second.
+    ///
+    /// **Taken from the reference** (`reference/BALANCE.md` §6's default):
+    /// their torch burns **1/6 of a condition point per second** off a max
+    /// of 50, which is five minutes of light. One sixth of a point per
+    /// second is exactly 1 000 hundredths per minute, and 5 000 hundredths
+    /// of ceiling divided by that is 5.00 minutes — the numbers fall out
+    /// whole, so nothing here is rounded to look tidy.
+    ///
+    /// A nonzero value requires `condition_max > 0` (validation rule V8):
+    /// a light with no condition to spend would burn forever, which is the
+    /// free light this field exists to make unrepresentable. V9 holds it
+    /// under `u16::MAX`, which is what makes the sim's debit at most one
+    /// point per tick — see `sim_core::light::step`.
+    #[serde(default)]
+    pub light_burn: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

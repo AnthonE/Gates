@@ -189,11 +189,16 @@ stack = 1
 tier = 0
 rarity = "common"
 slot = "hand"
-# 50 pts. Wears nowhere today -- no node pays a torch, so no condition_loss
-# row names it (V3 forbids an unreachable one) -- but the ceiling is the
-# reference's and the field is what makes a dead torch representable the
-# day something wears it.
+# 50 pts, the reference's ceiling. No node pays a torch, so no
+# condition_loss row names it (V3 forbids an unreachable one) -- what
+# spends this is the flame itself.
 condition_max = 5000
+# Hundredths of condition per minute while lit (torch fuel v0). The
+# reference burns 1/6 of a point per second, which is 1000 hundredths a
+# minute exactly, so a full torch is 5000/1000 = 5.00 minutes of light and
+# then it is a stick. Nonzero here is also what makes this item a light at
+# all -- see the schema field, and V16.
+light_burn = 1000
 
 [[item]]
 id = "item.spear_wood"

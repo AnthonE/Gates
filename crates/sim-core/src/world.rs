@@ -912,6 +912,17 @@ pub struct Player {
     /// by, and a shard that drifted on it would nominate a different
     /// victim on its next replayed session.
     pub slept_at: u64,
+    /// The sub-point remainder of a burning torch (torch fuel v0,
+    /// `light.rs`). Hundredths×ticks, drained against `light::BURN_DEN`.
+    ///
+    /// The **only** state a flame has, because a flame is derived rather
+    /// than stored — `light::is_lit` reads the latch, the content row and
+    /// the fuel, and there is no `lit` bit for the two ends of the wire to
+    /// disagree about. This is here for the reason `food_acc` is: a
+    /// remainder that reset on a restore would hand back a fraction of a
+    /// torch on every reconnect, which is a small exploit and an exact-
+    /// arithmetic bug (`persist.rs`).
+    pub light_acc: u32,
 }
 
 impl Default for Player {
@@ -948,6 +959,7 @@ impl Default for Player {
             death_range_cm: 0,
             sleeping: false,
             slept_at: 0,
+            light_acc: 0,
         }
     }
 }
@@ -2459,6 +2471,7 @@ impl World {
                     food_acc: s.food_acc,
                     water_acc: s.water_acc,
                     hurt_acc: s.hurt_acc,
+                    light_acc: s.light_acc,
                     heal_rem: s.heal_rem,
                     heal_total: s.heal_total,
                     heal_span: s.heal_span,
@@ -3422,6 +3435,17 @@ impl World {
                 self.die(i, id, DEATH_BY_CLOCK, NO_ITEM, 0);
                 continue;
             }
+            // The torch burns on the same footing as the metabolism, and
+            // deliberately beside it: both are clocks that spend something
+            // the player is carrying, and both run before the arm so a
+            // flame that dies this tick is dead for this tick's swing too.
+            //
+            // Only the live path. `light::is_lit` refuses a sleeper and a
+            // corpse on its own, so this placement is not what makes that
+            // true — but a body nobody is driving holds a stale frame, and
+            // the cheapest way to never spend an absent player's inventory
+            // is to not run the sweep over them.
+            crate::light::step(&mut self.players[i], &self.gather);
             let frame = self.players[i].frame;
             movement::step(
                 seed,
@@ -3870,9 +3894,15 @@ impl World {
             sv[18..20].copy_from_slice(&p.heal_rem.to_le_bytes());
             sv[20..22].copy_from_slice(&p.heal_total.to_le_bytes());
             h.update(&sv);
-            let mut hb = [0u8; 8];
+            let mut hb = [0u8; 12];
             hb[0..4].copy_from_slice(&p.heal_span.to_le_bytes());
             hb[4..8].copy_from_slice(&p.heal_acc.to_le_bytes());
+            // The torch's remainder, for the accumulators' reason exactly
+            // (torch fuel v0): a replay resuming mid-point with a zeroed
+            // remainder burns the next point six seconds late and every
+            // one after it. There is no `lit` byte to hash beside it
+            // because a flame is derived, not stored — `light.rs`.
+            hb[8..12].copy_from_slice(&p.light_acc.to_le_bytes());
             h.update(&hb);
             // The death screen, in its own buffer for the survival clock's
             // reason: every byte is sim state. `dead` most obviously — two

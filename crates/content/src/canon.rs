@@ -49,6 +49,12 @@ pub fn hash(c: &Content) -> u64 {
         // canonicalise identically, and a WAL then replays under a wear
         // table it was not played under (item durability v0).
         h.u(i.condition_max);
+        // The burn rate walks for `condition_max`'s reason exactly: it
+        // reaches the sim (`bake_gather`'s `light_burn`), it decides both
+        // whether an item is a light and how fast it eats itself, and two
+        // contents that disagree on it would run the same WAL to different
+        // inventories (torch fuel v0).
+        h.u(i.light_burn);
     }
 
     h.s("gatherables");

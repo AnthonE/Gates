@@ -41,7 +41,7 @@
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll, MouseScrollUnit};
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
-use sim_core::input::{BTN_CROUCH, BTN_JUMP, BTN_PRIMARY, BTN_SPRINT};
+use sim_core::input::{BTN_CROUCH, BTN_JUMP, BTN_LIGHT, BTN_PRIMARY, BTN_SPRINT};
 
 use crate::look::{self, FREE_LOOK_YAW_LIMIT, MOUSE_RAD_PER_PX, PITCH_LIMIT};
 
@@ -239,10 +239,17 @@ pub fn gather(
         // a client that stopped sending would be a client standing still for
         // a different reason. It goes out EMPTY of movement and buttons,
         // with the view angles unchanged, which is exactly "standing here".
+        //
+        // **Empty except the torch**, and that exception is the difference
+        // between a latch and a keypress. `sel` already survives this path
+        // for the same reason: opening a bag does not change what is in
+        // your hand, and it must not blow out the flame you are reading by
+        // — which is precisely when a player opens one.
         let sel = net.sel;
+        let lit = if net.light { BTN_LIGHT } else { 0 };
         net.session
             .core
-            .set_input(0, yaw_u16(look.yaw), pitch_u8(look.pitch), 0, 0, sel);
+            .set_input(lit, yaw_u16(look.yaw), pitch_u8(look.pitch), 0, 0, sel);
         return;
     }
 
@@ -316,6 +323,19 @@ pub fn gather(
     let core = &net.session.core;
     let hand = crate::ui::hold::held_in_hand(&core.catalog, &core.inv, net.sel);
     let swings = !hand.opens_a_wheel();
+    // **A light is struck with the right hand, not a keyboard letter** —
+    // the reference's own binding for a torch, and it costs no key at a
+    // point where `R`, `F` and `G` are all spoken for (repair, the ghost's
+    // flip, the map). Right-click is already held-item modal in this
+    // client: `panels/mod.rs` opens the build wheel with it when the hand
+    // `opens_a_wheel`, and `ghost.rs` cancels a placement with it. A torch
+    // does neither, so the gesture is free exactly where it is wanted.
+    //
+    // Gated on the row declaring a light rather than on `swings`, so a
+    // right-click with a hatchet toggles nothing at all instead of
+    // flipping a latch nobody can see.
+    let toggles_light = crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, net.sel)
+        .is_some_and(|i| crate::ui::hold::HELD_MODELS[i].light.is_some());
     if swings && mouse.pressed(MouseButton::Left) {
         buttons |= BTN_PRIMARY;
     }
@@ -378,6 +398,18 @@ pub fn gather(
         sel = crate::ui::slots::hotbar_scrolled(sel, -notches);
     }
     net.sel = sel;
+    // After the immutable borrow above. The latch **persists across a slot
+    // change**: switch to a rock and the flame is not burning (the sim's
+    // `is_lit` fails on fact 2, this side's `lit_model_in_hand` on the same
+    // one), switch back and it is. The alternative — clearing it on every
+    // swap — would make a torch something you re-light after every swing
+    // of an axe, which is not the tradeoff `ALPHA.md` §1 is asking for.
+    if toggles_light && mouse.just_pressed(MouseButton::Right) {
+        net.light = !net.light;
+    }
+    if net.light {
+        buttons |= BTN_LIGHT;
+    }
 
     net.session.core.set_input(
         buttons,

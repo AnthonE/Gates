@@ -57,6 +57,37 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 i.id, i.condition_max, i.stack
             ));
         }
+        // --- torch fuel V8: a light spends condition, so it must have
+        // some. `light_burn` is the predicate for *is this a light* as
+        // well as its price (see the schema field), and a light with no
+        // ceiling to spend would burn forever — the free light the field
+        // exists to make unrepresentable.
+        if i.light_burn > 0 && i.condition_max == 0 {
+            return Err(format!(
+                "item `{}`: light_burn {} with no condition_max — a light \
+                 burns its own condition, so one that never wears would be \
+                 a free light (V8)",
+                i.id, i.light_burn
+            ));
+        }
+        // --- torch fuel V9: the rate fits `u16`, and that bound is load-
+        // bearing rather than tidy. `light::step` runs
+        // `tick_units(acc, light_burn, TICK_HZ * 60 * 100)`, whose
+        // denominator is 180 000; a numerator below 65 536 can never put
+        // more than one whole point out of the accumulator in a tick, so
+        // the per-tick debit is bounded by construction rather than by a
+        // clamp somebody has to remember (wall 4). It is also a real
+        // ceiling: 65 535 hundredths a minute burns the torch's whole
+        // 5 000 in under five seconds.
+        if i.light_burn > u16::MAX as u32 {
+            return Err(format!(
+                "item `{}`: light_burn {} overflows u16 (max {}) — the sim's \
+                 per-tick debit is bounded by this fitting (V9)",
+                i.id,
+                i.light_burn,
+                u16::MAX
+            ));
+        }
         // --- durability V1: the ceiling fits the sim's u16 hundredths.
         // 65 535 hundredths is 655 points — the metal tier's 40 000 sits
         // inside it with headroom, and a value past it would truncate in
