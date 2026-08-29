@@ -136,6 +136,25 @@ pub const VIEWMODEL_SWING_PUSH: f32 = 0.13;
 #[derive(Component)]
 pub struct HeldItem;
 
+/// The emitter a lit held item hangs in the world. One per session, spawned
+/// dark beside the model and driven by [`hand_light`].
+///
+/// **A child of [`HeldItem`] and not of [`HeldModel`]**, which is the whole
+/// reason it needs no work to follow the hand: `HeldItem` is the entity
+/// `animate` writes, so the light inherits bob, sway and the swing arc for
+/// free, and it is NOT the entity `swap` re-poses per item — a light hung
+/// there would be rotated by `grip_m`'s slide and by `pose_yaw`, which are
+/// corrections for where a MESH sits in a fist and mean nothing to a point
+/// source. Its own offset is [`crate::ui::hold::HeldModelDef::flame_m`], up
+/// the hold frame's +Y, and every row that declares a light is upright, so
+/// that axis is the item's axis too.
+///
+/// **Driven by intensity, never by `Visibility`**, exactly as
+/// `structures::FireLight` is: it is one entity that outlives every swap, so
+/// there is nothing to spawn or despawn when the hand changes.
+#[derive(Component)]
+pub struct HandLight;
+
 /// The child that carries whichever model is in hand. Separate from
 /// [`HeldItem`] so `animate` keeps writing exactly one transform and the swap
 /// below writes only handles — two systems, one entity each, no contention.
@@ -300,6 +319,23 @@ pub fn spawn_item(
                 MeshMaterial3d::<StandardMaterial>(Handle::default()),
                 Transform::from_rotation(Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)),
                 Visibility::Hidden,
+            ));
+            // What the item puts into the world, dark until `hand_light`
+            // says otherwise. See [`HandLight`] for why it hangs here and
+            // not on the model, and `structures::FireLight` for why its
+            // shadows are off: a shadow-casting point light is six faces of
+            // re-rasterised geometry, this one MOVES every frame, and the
+            // sun already spends four cascades.
+            item.spawn((
+                HandLight,
+                PointLight {
+                    color: super::structures::FIRE_COLOR,
+                    intensity: 0.0,
+                    range: 0.0,
+                    shadows_enabled: false,
+                    ..default()
+                },
+                Transform::IDENTITY,
             ));
         });
     });
@@ -721,6 +757,74 @@ pub fn swap(
         } else {
             Visibility::Hidden
         };
+    }
+}
+
+/// Drive the hand's emitter off whichever [`crate::ui::hold::HELD_MODELS`]
+/// row is in the fist.
+///
+/// **Night had no counter before this.** `rig::day_night` takes the sun to
+/// zero illuminance, kills the environment map and the sky brightness, and
+/// leaves `NIGHT_AMBIENT_LUX` — 60 lux of direction-free ambient — as the
+/// entire lighting of a tenth of every cycle, while `mob::think` sends the
+/// wolves out into it. The starter kit has put a torch on hotbar slot 2
+/// since the kit existed (`content/balance.toml`), and holding it did
+/// nothing at all.
+///
+/// **It reads the same function `swap` reads and that is not a second
+/// drain.** `hold::held_model_in_hand` is a pure lookup over the catalog
+/// and the inventory mirror — the single-consumer trap `feed.rs` narrates
+/// is about the destructive `pop_*` rings, and this touches none of them.
+/// Two readers of a pure function is two calls.
+///
+/// No allocation, no branch per frame beyond the row lookup: the emitter is
+/// one entity that outlives every swap.
+pub fn hand_light(
+    net: Option<NonSend<Net>>,
+    q: Query<(&mut PointLight, &mut Transform), With<HandLight>>,
+) {
+    let want = net.as_deref().and_then(|n| {
+        let core = &n.session.core;
+        crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, n.sel)
+    });
+    apply_hand_light(want, q);
+}
+
+/// [`hand_light`] with the held row as a value. The half a gate can drive —
+/// `structures::apply_fire_lights` is the same split for the same reason:
+/// the socket is the only thing the system adds.
+///
+/// A row with no `light` and an empty hand are one case on purpose. There is
+/// no third state: an emitter that is off is a zero, not a hidden entity,
+/// so nothing here can leave a light burning for an item that is no longer
+/// in the hand.
+pub fn apply_hand_light(
+    want: Option<usize>,
+    mut q: Query<(&mut PointLight, &mut Transform), With<HandLight>>,
+) {
+    let (lumens, range, lift) = match want.map(|i| &crate::ui::hold::HELD_MODELS[i]) {
+        Some(row) => match row.light {
+            Some(l) => (l.lumens, l.range_m, row.flame_m()),
+            None => (0.0, 0.0, 0.0),
+        },
+        None => (0.0, 0.0, 0.0),
+    };
+    for (mut light, mut tf) in &mut q {
+        // Assign only on a change, `apply_fire_lights`' reason exactly:
+        // `PointLight` is `Changed`-tracked and the render world re-extracts
+        // what moved, so writing the same lumens every frame would re-upload
+        // this light forever. The transform is the same — and it is the
+        // stronger case here, because a `Transform` write on a parent of
+        // nothing still dirties the propagation.
+        if light.intensity != lumens {
+            light.intensity = lumens;
+        }
+        if light.range != range {
+            light.range = range;
+        }
+        if tf.translation.y != lift {
+            tf.translation.y = lift;
+        }
     }
 }
 

@@ -220,6 +220,7 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         scale: 1.0,
         lay_forward: false,
         pose_yaw: 0.0,
+        light: Some(TORCH_LIGHT),
     },
     // A revolver is authored barrel-up so the shared quarter-turn points it
     // forward, and gripped low, at the handle.
@@ -231,6 +232,7 @@ pub const HELD_MODELS: [HeldModelDef; 14] = [
         scale: 1.0,
         lay_forward: true,
         pose_yaw: -0.65,
+        light: None,
     },
     // The deployables, palmed level. `height_m` restates each FILE's +Y
     // extent (the gate measures it); the grip fraction puts the palm near the
@@ -311,6 +313,103 @@ pub struct HeldModelDef {
     /// shows its PROFILE — seen from dead behind, a gun is a stack of
     /// blocks, and the L-shape is the whole read.
     pub pose_yaw: f32,
+    /// What this item puts into the world when it is in the hand, or `None`
+    /// for the twelve rows that put nothing. See [`HeldLight`].
+    pub light: Option<HeldLight>,
+}
+
+/// A light a held item casts. One row carries one today — the torch.
+///
+/// **It is a table entry rather than a `match` in `render`** for the reason
+/// the module header states about the grip: the pose lives with the item
+/// because it can be silently wrong, and a light is the same shape of fact.
+/// A `match arch` in the renderer is how `structures::burns` had to be
+/// written — the deployables have no per-row table to hang it on — and this
+/// one does.
+///
+/// **The colour is deliberately NOT here.** There is exactly one flame
+/// colour in this client (`render::structures::FIRE_COLOR`) and a second
+/// copy of it in a second module is the drift `CLAUDE.md` warns about on
+/// every mirror: a torch and a campfire burn the same thing, so they read
+/// the same constant. Lumens and metres are arithmetic and live here;
+/// a `Color` is a render type and could not live here anyway.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct HeldLight {
+    /// Luminous flux, lumens — the unit Bevy's `PointLight::intensity` is
+    /// in. **(knob)**, registered in `DECISIONS.md` §open.
+    pub lumens: f32,
+    /// Where the light is cut off, metres. **(knob)** Past this the fragment
+    /// is not touched at all; it is a budget, not a look, and it wants to be
+    /// set where the contribution has already fallen under the night ambient
+    /// — see [`pool_radius_m`].
+    pub range_m: f32,
+}
+
+/// The torch's light. **(knob)** — `DECISIONS.md` §open, "torch light v0".
+///
+/// **Priced ordinally, which is what the emission rule in
+/// `.claude/skills/threejs-procedural-vfx` actually asks for**: its numbers
+/// "are evidence of relative hierarchy inside that scene, not universal
+/// exposure-independent constants… preserve the relationship." The ladder
+/// this client has is `sun 100 000 lx → campfire 900 lm → torch → night
+/// ambient 60 lux`, and the torch's whole job is to sit between the last
+/// two. So it is **600 lm — deliberately under `structures::FIRE_LUMENS`**,
+/// because a hand torch that out-lit a fire pit standing next to one is the
+/// inverted hierarchy that rule exists to forbid, and no amount of "it
+/// reads better" is allowed to buy it.
+///
+/// **What it buys, in metres.** [`pool_radius_m`] is where the source stops
+/// beating the ambient: 600 lm against 60 lux is **0.89 m**. The flame is
+/// carried about 1.4 m up, so the ground at the player's feet takes ~24 lux
+/// of orange on top of 60 lux of blue-white — a 1.4× warm pool with an
+/// inverse-square edge, against an ambient that is direction-free and has
+/// no edge at all. The chroma is doing as much work as the ratio:
+/// `rig`'s night ambient is `srgb(0.80, 0.85, 0.95)` and this is
+/// `structures::FIRE_COLOR`.
+///
+/// **The photometry says 600 is already generous and the ambient is the
+/// real problem.** Nobody has ever put a torch in an integrating sphere;
+/// the defensible chain is a candle at 4π ≈ 12.6 lm and ~0.16 lm/W for a
+/// sooting flame, giving a large pitch torch **~250 lm**. We are 2.4× that
+/// — and `rig::NIGHT_AMBIENT_LUX` is **240× moonlight**, by its own
+/// admission. Fixing that ratio properly is one owner over `rig`'s coupled
+/// set (`CLAUDE.md` §traps: tonemap, sky, exposure and fog are one owner),
+/// not a bigger number here. `NOW.md` §0tl carries it.
+///
+/// **The exposure trap in that skill pack does not apply to us, and saying
+/// so is the point.** It warns that a torch filling an unmasked 64×36
+/// luminance meter pulls exposure down and darkens the world *because* you
+/// lit a torch. This client has no meter: `rig` runs a fixed
+/// `Exposure { ev100: 14.2 }`. So the failure mode is absent — and so is
+/// the recovery, which is why the ambient has to carry night rather than an
+/// adaptation curve.
+///
+/// Range matches the campfire's 6 m for the same reason it has one: past
+/// there the contribution is a rounding error on the ambient (5 lux at 3 m,
+/// 1.3 at 6) and all a longer reach buys is fragments touched.
+pub const TORCH_LIGHT: HeldLight = HeldLight {
+    lumens: 600.0,
+    range_m: 6.0,
+};
+
+/// Where a light of `lumens` stops beating a uniform `ambient_lux`, metres.
+///
+/// A point light of `L` lumens radiates `L / 4π` candela, so its
+/// illuminance at `d` metres is `L / (4π d²)`; set that equal to the ambient
+/// and solve. **This is the number that decides whether a held light is a
+/// mechanic or a decoration**, and it is a function rather than a comment
+/// so a gate can read it — `tests/hand_light.rs` binds it to the
+/// renderer's own `NIGHT_AMBIENT_LUX`, which is the coupling a written
+/// constant would lose the moment night changed.
+///
+/// Returns 0.0 for a non-positive ambient rather than an infinity: an
+/// ambient of zero means every radius beats it, which is true and is not a
+/// radius.
+pub fn pool_radius_m(lumens: f32, ambient_lux: f32) -> f32 {
+    if ambient_lux <= 0.0 || lumens <= 0.0 {
+        return 0.0;
+    }
+    (lumens / (4.0 * core::f32::consts::PI * ambient_lux)).sqrt()
 }
 
 impl HeldModelDef {
@@ -324,6 +423,7 @@ impl HeldModelDef {
             scale: 1.0,
             lay_forward: true,
             pose_yaw: 0.0,
+            light: None,
         }
     }
 
@@ -343,6 +443,7 @@ impl HeldModelDef {
             scale,
             lay_forward: false,
             pose_yaw: 0.0,
+            light: None,
         }
     }
 
@@ -356,7 +457,36 @@ impl HeldModelDef {
     pub fn grip_m(&self) -> f32 {
         self.height_m * self.scale * self.grip_frac
     }
+
+    /// How far above the fist this row's light sits, metres — the crown of
+    /// the model plus [`FLAME_LIFT_M`].
+    ///
+    /// **Derived from the mesh rather than typed**, for the reason
+    /// [`grip_m`](Self::grip_m) is: a hand-tuned offset drifts the moment
+    /// the geometry is regenerated, and a light that has drifted INSIDE the
+    /// head lights nothing at all while looking like a dead constant. The
+    /// crown is `height_m · scale` up the model's own +Y and the fist is
+    /// `grip_m` up the same axis, so the flame is the difference.
+    ///
+    /// Only meaningful for an upright row, and every row that declares a
+    /// light is one — `tests/hand_light.rs` refuses a lit row with
+    /// `lay_forward`, because a laid-forward model's +Y is the view's −Z
+    /// and this offset would push the flame out of the frame instead of up.
+    pub fn flame_m(&self) -> f32 {
+        self.height_m * self.scale - self.grip_m() + FLAME_LIFT_M
+    }
 }
+
+/// How far the flame sits above the model's crown, metres. **(knob)**
+///
+/// Not zero, and the reason is the one thing a point light cannot do: it
+/// does not light the surface it is standing on. At the crown exactly, the
+/// torch's own wrapped head is at the light's origin and stays black while
+/// everything around it brightens — a lamp with a dark bulb. Four
+/// centimetres up puts the head *below* the source, so it is lit from above
+/// like anything else the torch lights, and the player sees where the light
+/// is coming from without a flame mesh existing yet (`NOW.md` §0tl).
+pub const FLAME_LIFT_M: f32 = 0.04;
 
 /// Which [`HELD_MODELS`] row an item draws, or `None` for an empty hand and
 /// for everything we have no model for.

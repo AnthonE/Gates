@@ -815,6 +815,12 @@ impl Plugin for GatesRenderPlugin {
                 // `animate` writes only a transform, so the two never
                 // contend for one entity and need no order between them.
                 viewmodel::swap.after(viewmodel::spawn_item),
+                // What the hand puts into the WORLD, which is a different
+                // question from what it draws — `swap` writes handles and
+                // visibility on the model, this writes lumens and one offset
+                // on an emitter that outlives every swap. Both read the same
+                // pure row lookup, so neither has to run first.
+                viewmodel::hand_light.after(viewmodel::spawn_item),
                 // The tracer's two halves. `launch` reads the drained feed,
                 // so it must follow the drain for the swing's reason —
                 // the other order reacts a frame late. `fly` then advances
