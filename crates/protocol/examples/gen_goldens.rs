@@ -16,11 +16,11 @@ use protocol::{
     encode_event_craft_q, encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_gather, encode_event_health, encode_event_hit,
-    encode_event_inv, encode_event_knock, encode_event_piece_defs, encode_event_piece_placed,
-    encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_removed, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
-    encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark, encode_hello,
-    encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
+    encode_event_hurt, encode_event_inv, encode_event_knock, encode_event_piece_defs,
+    encode_event_piece_placed, encode_event_piece_repaired, encode_event_piece_sync,
+    encode_event_recipes, encode_event_removed, encode_event_slot_change, encode_event_slot_sync,
+    encode_event_stock, encode_event_struct_hit, encode_event_vitals, encode_event_weak_mark,
+    encode_hello, encode_input, encode_refuse, encode_snapshot, encode_welcome, goldens,
 };
 use protocol::{
     encode_action_consume, encode_action_container, encode_action_drink, encode_action_move,
@@ -485,5 +485,13 @@ fn main() {
     {
         let len = protocol::encode_action_pickup(&mut buf).unwrap();
         write_fixture(goldens::FIXTURES[100], &buf[..len]);
+    }
+
+    // The victim's half of a landed blow (v57): a bearing sector and the
+    // damage, unicast to the person it happened to.
+    {
+        let (sector, damage) = goldens::event_hurt();
+        let len = encode_event_hurt(sector, damage, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[101], &buf[..len]);
     }
 }

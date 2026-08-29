@@ -3358,6 +3358,53 @@ fn the_landed_eat_gate_can_see_the_reader_go_away() {
     );
 }
 
+/// Being hurt reaches the screen — the whole chain, in one grep.
+///
+/// `EV_HURT` lands in `ClientCore`'s ring, `render/feed.rs` drains it (which
+/// `tests/sound.rs` enforces, from the other end), and this is the link
+/// neither of those can see: that something in `render/hud.rs` actually
+/// *reads* it. A direction the client receives and never draws is exactly
+/// §0eat's dead button — worse here, because the wire carries a packet per
+/// landed blow to pay for it.
+#[test]
+fn the_direction_a_blow_came_from_reaches_the_screen() {
+    let (feed, hud) = feed_and_hud();
+    assert!(
+        feed.contains("pop_hurt()"),
+        "render/feed.rs is not draining the hurt ring - either the drain \
+         moved (which tests/sound.rs would also be shouting about) or the \
+         mark is now fed from somewhere that is not the one drain"
+    );
+    assert!(
+        names_field(&hud, "hurt_from"),
+        "nothing in render/hud.rs reads `hurt_from` - a player is being told \
+         which way to turn by a packet nobody draws"
+    );
+    assert!(
+        hud.contains("hurt_arc_px("),
+        "render/hud.rs no longer places the arc - the sector reaches the HUD \
+         and stops at a number"
+    );
+}
+
+/// The gate above, proven red on its defect — every run.
+#[test]
+fn the_hurt_gate_can_see_the_reader_go_away() {
+    let (_, hud) = feed_and_hud();
+    let doctored = hud
+        .replace("hurt_from", "hurt_gone")
+        .replace("hurt_arc_px(", "gone(");
+    assert_ne!(
+        doctored, hud,
+        "nothing in hud.rs matches the hurt reader - this proof is scanning \
+         for text that is not there, so it proves nothing"
+    );
+    assert!(
+        !names_field(&doctored, "hurt_from") && !doctored.contains("hurt_arc_px("),
+        "the hurt gate cannot see its reader go away, so it is not a gate"
+    );
+}
+
 /// Does `code` name `field` as a whole word, rather than as a prefix?
 ///
 /// Kept even with one row left: `last_eat` was a prefix of

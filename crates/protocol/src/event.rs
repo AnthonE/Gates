@@ -23,7 +23,7 @@ use sim_core::backpack::BackpackRec;
 use sim_core::build::{
     BuildContent, PieceDef, PieceRec, DMG_BANDS, LOC_EDGE_ZLO, MAT_METAL, SHAPE_TRI_ROOF,
 };
-use sim_core::combat::{ARMOR_MAX_PCT, WEAR_NONE};
+use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
 use sim_core::deploy::{
     BagAnchor, DeployContent, DeployDef, DeployRec, ARCH_WORKBENCH3, BAG_CAP, PLACE_DOOR,
@@ -289,7 +289,13 @@ const SUB_IMPACT: u32 = 51;
 /// or not the swing found anything. `SUB_SHOT` is the shape this copies:
 /// a broadcast cosmetic fact about someone else's hands.
 const SUB_SWING: u32 = 52;
-const SUB_MAX: u32 = SUB_SWING;
+/// `EV_HURT` (v57): the victim's half of a landed blow — a direction and a
+/// magnitude, unicast to the person it happened to. `SUB_HIT` is the other
+/// half and goes to the other person; the two are deliberately separate
+/// subtypes rather than one with an audience flag, because the audience is
+/// the server's decision and nothing on the wire should be able to claim it.
+const SUB_HURT: u32 = 53;
+const SUB_MAX: u32 = SUB_HURT;
 /// Width of `SUB_IMPACT`'s surface field, and how many values it may say.
 ///
 /// **`SURF_KINDS` is derived from the sim's own last kind rather than
@@ -408,6 +414,13 @@ const WEAR_SLOT_BITS: u32 = 2;
 // is `WEAR_SLOTS` itself and that is what has to be representable.
 const _: () = assert!(WEAR_SLOTS < (1usize << WEAR_SLOT_BITS));
 const _: () = assert!(ARMOR_MAX_PCT < (1u32 << ARMOR_PCT_BITS));
+/// An `EV_HURT` bearing sector (v57). Four bits over
+/// `combat::HURT_SECTORS` of them, and the assert below is what makes
+/// widening the disclosure a wire decision instead of a silent truncation
+/// to the low nibble — a sector 16 that arrived as sector 0 would point a
+/// hurt player due north for every attacker in the world.
+const HURT_SECTOR_BITS: u32 = 4;
+const _: () = assert!((HURT_SECTORS as u32) <= (1u32 << HURT_SECTOR_BITS));
 const CRAFT_Q_COUNT_BITS: u32 = 3;
 /// A `research::REFUSE_R_*` reason: seven values since v38 (the tree
 /// verb's parent and bench), and the decoder range-checks rather than
@@ -974,6 +987,13 @@ pub enum EventMsg {
     /// health readout; the victim's own `Health` is the truth about the
     /// victim, and it goes only to them.
     Hit { victim: u32, damage: u16 },
+    /// Something took `damage` off you, and it came from `sector`
+    /// (`sim_core::combat::bearing_sector`, clockwise from north, absolute
+    /// world bearing). The victim's fact and the victim's alone — the
+    /// mirror of `Hit`, and the only thing on this wire that tells a body
+    /// which way to turn. Quantized to sectors on purpose: enough to face,
+    /// not enough to aim (`sim_core::world`, `EV_HURT`).
+    Hurt { sector: u8, damage: u16 },
     /// Your hp after something changed it, and the max it is measured
     /// against. Absolute, never a delta: a client that misses one hears
     /// the whole truth from the next, exactly like `Door`.
@@ -2386,6 +2406,24 @@ pub fn encode_event_hit(victim: u32, damage: u16, buf: &mut [u8]) -> Result<usiz
     Ok(w.finish())
 }
 
+/// The victim's half: `damage` arrived from `sector`.
+///
+/// `sector` is range-checked rather than masked. The field is four bits and
+/// `HURT_SECTORS` is sixteen, so today the two agree exactly and this can
+/// only fire on a sim that started making a value it did not declare — which
+/// is precisely the case where silently keeping the low nibble would put an
+/// arrow marker on the wrong side of a player's screen and no gate anywhere
+/// would notice.
+pub fn encode_event_hurt(sector: u8, damage: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+    if sector >= HURT_SECTORS {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_HURT)?;
+    w.write(sector as u32, HURT_SECTOR_BITS)?;
+    w.write(damage as u32, 16)?;
+    Ok(w.finish())
+}
+
 /// The owner's health, absolute. `hp > max` is a server bug surfacing —
 /// refused here rather than rendered as an over-full bar.
 pub fn encode_event_health(hp: u16, max: u16, buf: &mut [u8]) -> Result<usize, WireError> {
@@ -3099,6 +3137,20 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
         SUB_SWING => EventMsg::Swing {
             swinger: r.read(32)?,
         },
+        SUB_HURT => {
+            // The width and the domain are the same size today, so nothing
+            // here can be out of range — and it is written as a checked read
+            // anyway, because the encoder's refusal above is only half a
+            // guarantee: it binds our sender, not the next one.
+            let sector = r.read(HURT_SECTOR_BITS)? as u8;
+            if sector >= HURT_SECTORS {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Hurt {
+                sector,
+                damage: r.read(16)? as u16,
+            }
+        }
         SUB_IMPACT => {
             let qx = r.read(POS_XZ_BITS)? as i32;
             let qy = r.read(POS_Y_BITS)? as i32 - POS_Y_BIAS;
@@ -5319,6 +5371,11 @@ mod wire_domains {
             // Raising the cap is guarded by the compile-time assert beside
             // the declaration; there is no member list to count.
             "ARMOR_PCT_BITS",
+            // A bearing sector bounded by `combat::HURT_SECTORS`, which is
+            // a sim-core *count* and not an enumeration — there is no
+            // member block to scrape, only a compile-time assert beside the
+            // declaration. `ARMOR_PCT_BITS`' shape, classified with it.
+            "HURT_SECTOR_BITS",
         ];
 
         let mut widths = Vec::new();

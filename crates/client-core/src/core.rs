@@ -1050,6 +1050,19 @@ pub struct ClientCore {
     hits: [(u32, u16); TOAST_RING],
     hit_head: usize,
     hit_len: usize,
+    /// Blows landed on **you**, oldest first: `(bearing sector, damage)`.
+    ///
+    /// The mirror of [`ClientCore::pop_hit`] and the newer half by three
+    /// months (wire v57). Being hurt used to reach this client only as a
+    /// fall in `hp` — an absolute number with no author and no direction, so
+    /// `render/audio.rs` had to *derive* the fact from a delta and nothing
+    /// could tell a hatchet behind you from starvation. The sector is an
+    /// absolute world bearing (`sim_core::combat::bearing_sector`); the
+    /// renderer subtracts its own yaw, so the mark stays where the attacker
+    /// is while you turn to look at them.
+    hurts: [(u8, u16); TOAST_RING],
+    hurt_head: usize,
+    hurt_len: usize,
     /// Deaths as broadcast, oldest first: (victim, killer) — the kill feed.
     deaths: [(u32, u32); TOAST_RING],
     death_head: usize,
@@ -1307,6 +1320,9 @@ impl ClientCore {
             hits: [(NO_VICTIM, 0); TOAST_RING],
             hit_head: 0,
             hit_len: 0,
+            hurts: [(0, 0); TOAST_RING],
+            hurt_head: 0,
+            hurt_len: 0,
             deaths: [(0, 0); TOAST_RING],
             death_head: 0,
             death_len: 0,
@@ -2089,6 +2105,15 @@ impl ClientCore {
                 self.hp_max = max;
                 flags |= APPLIED_HEALTH;
             }
+            EventMsg::Hurt { sector, damage } => {
+                if self.hurt_len == TOAST_RING {
+                    self.hurt_head = (self.hurt_head + 1) % TOAST_RING;
+                    self.hurt_len -= 1;
+                }
+                self.hurts[(self.hurt_head + self.hurt_len) % TOAST_RING] = (sector, damage);
+                self.hurt_len += 1;
+                flags |= APPLIED_HIT;
+            }
             EventMsg::Hit { victim, damage } => {
                 // **The victim is kept, and it used to be dropped here.**
                 // `EV_HIT` is unicast to the attacker, so this names the
@@ -2535,6 +2560,21 @@ impl ClientCore {
     /// Oldest buffered hitmarker, if any: `(victim, damage)` this client's
     /// blow dealt. The victim is [`NO_VICTIM`] when the thing struck was a
     /// wall rather than a body — see the `hits` field.
+    /// The oldest blow landed on you: `(bearing sector, damage)`.
+    ///
+    /// Destructive, single-consumer, `pop_hit`'s contract exactly —
+    /// `render/feed.rs` is the one drain and `client/tests/sound.rs` is what
+    /// keeps it that way (`CLAUDE.md`'s clean-merge trap).
+    pub fn pop_hurt(&mut self) -> Option<(u8, u16)> {
+        if self.hurt_len == 0 {
+            return None;
+        }
+        let h = self.hurts[self.hurt_head];
+        self.hurt_head = (self.hurt_head + 1) % TOAST_RING;
+        self.hurt_len -= 1;
+        Some(h)
+    }
+
     pub fn pop_hit(&mut self) -> Option<(u32, u16)> {
         if self.hit_len == 0 {
             return None;
