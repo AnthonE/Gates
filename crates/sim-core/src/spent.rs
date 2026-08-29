@@ -23,14 +23,15 @@
 //! why rather than quietly.** It asks for this bump to ride *together
 //! with* `EV_SHOT` (§9.2), because two wire bumps for one feature is two
 //! sets of regenerated goldens and two chances to get wall 6 wrong. It
-//! does not, because the blocker on `EV_SHOT` is not the bump: that
-//! event's payload is a muzzle speed and a drop and the client re-flies
-//! exactly those integers, so a hitscan — which has neither — needs either
-//! a new event or a spoken reading of its spare bit patterns
-//! (`ranged::hitscan`'s doc states the refusal). Waiting for a decision
-//! nobody has made would have held the operator's *"arrows come back"*
-//! behind it indefinitely. The cost is one extra bump; `DECISIONS.md`
-//! §open carries the question.
+//! did not, because the blocker on `EV_SHOT` was never the bump — it was
+//! a reading nobody had spoken: that event's payload is a muzzle speed and
+//! a drop and the client re-flies exactly those integers, so a hitscan,
+//! which has neither, needed a new event or a reading of its spare bit
+//! patterns. Waiting for a decision nobody had made would have held the
+//! operator's *"arrows come back"* behind it indefinitely. **The reading
+//! landed one pass later** (wire v54, `ranged::hitscan`): `speed == 0` is
+//! *instantaneous* and the low half becomes a reach. So the cost was
+//! exactly the one extra bump this paragraph predicted, and no more.
 //!
 //! **Two rules, both theirs (§5).**
 //!

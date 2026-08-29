@@ -207,11 +207,31 @@ pub enum Cue {
     /// than a missing sound. Appended after `Growl`, the enum's
     /// append-order rule.
     RemoteSwing,
+    /// A bow released, heard from where the archer stands (wire v54).
+    ///
+    /// `EV_SHOT` has crossed the wire since ranged v0 and reached exactly
+    /// one reader — `render/tracer.rs` — so a bow drew a streak and made
+    /// no sound at all. This is the other half of that event.
+    ///
+    /// Quiet and short on purpose: a bowstring is the reference's stealth
+    /// option against a firearm, and the whole of what makes it one is
+    /// that it does not carry.
+    ShotBow,
+    /// A gun fired, heard from where the shooter stands (wire v54).
+    ///
+    /// **This is the loudest thing in the bank and that is the mechanic.**
+    /// A firearm raised no event at all until v54, so a gunfight was a
+    /// private event — the only evidence a shot had happened was the
+    /// damage, and a player had no input to the fight-or-run decision.
+    /// Sound is the reference's primary disclosure channel
+    /// (`reference/AUDIO.md` §9) and its radius is a hundred metres, which
+    /// is why [`MAX_AUDIBLE_M`] is what it is.
+    ShotGun,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 41;
+pub const CUE_COUNT: usize = 43;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -261,6 +281,8 @@ impl Cue {
         Cue::Howl,
         Cue::Growl,
         Cue::RemoteSwing,
+        Cue::ShotBow,
+        Cue::ShotGun,
     ];
 
     /// Is this cue a piece of music?
@@ -342,6 +364,13 @@ impl Cue {
             | Cue::Snort
             | Cue::Growl
             | Cue::Hurt => 0.07,
+            // A shot varies like any other diegetic cue, and slightly less
+            // than a swing: the two are the most *repeated* sounds in a
+            // fight, so unison is the tell, but a firearm's report is a
+            // mechanism with a fixed bore and a bow's is a fixed string —
+            // both vary with the shooter and the round, not with the
+            // weapon's pitch.
+            Cue::ShotBow | Cue::ShotGun => 0.05,
             // Wider than any diegetic cue but the bird, and for the bird's
             // reason turned up one notch: a howl is the most *exposed* tonal
             // call in the bank — a near-pure pitched tone held for seconds,
@@ -497,8 +526,8 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // the crossing test is a sign change, and a body oscillating around
     // `SEA_LEVEL` produces one every frame.
     row(GAME,  0.0, 0.65, 220, 5, false),  // splash
-    // A tree coming down is the loudest thing in the forest and the one cue
-    // whose radius sets `MAX_AUDIBLE_M`.
+    // A tree coming down is the loudest thing in the forest — and it set
+    // `MAX_AUDIBLE_M` until the gun's report outranged it at v54.
     row(GAME, 96.0, 0.90,   0, 6, true),   // tree fall
     row(GAME,  0.0, 0.30,  40, 2, false),  // ui click
     // The beds. Never started by the mixer (`Cue::is_bed`); `render/audio.rs`
@@ -542,9 +571,8 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // scenery, and a player who turns the bed down must not turn the
     // predator down with it.
     //
-    // **The howl is the second-furthest-carrying cue in the table**, behind
-    // only the falling tree that sets `MAX_AUDIBLE_M` — which is the point of
-    // it. The wolf notices a player at 30 m by day and 15 m at night
+    // **The howl carries further than anything but a gunshot and a falling
+    // tree** — which is the point of it. The wolf notices a player at 30 m by day and 15 m at night
     // (`content/mobs.toml`), so 88 m means the island tells you it has
     // wolves, and roughly where, long before one of them can act on you. The
     // cooldown is per-CUE and therefore the pack's stagger, not one animal's
@@ -568,6 +596,21 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     row(GAME, 14.0, 0.65, 200, 5, true),   // growl
     // Another player's swing — see RSWING.
     RSWING,
+    // **The two shots, and both radii are the reference's own number read
+    // off one sentence** (`CueDef::radius_m`'s doc, quoted there since
+    // audio v0): a silenced weapon there carries "a maximum of 40m instead
+    // of the 100m it used to be". That is a published pair for exactly the
+    // two roles this game has — the loud ranged option and the quiet one —
+    // so `BALANCE.md` §6 takes both and no case is owed for either. What
+    // would need a case is *differing*, and the thing worth not differing
+    // about is the RATIO: a bow discloses you over 40 m and a gun over
+    // 100 m, which is 6× the area, and that multiple is the whole of why
+    // anyone would carry a bow once they can craft a revolver.
+    //
+    // The gun's 100 m is what sets `MAX_AUDIBLE_M`; the falling tree held
+    // that title until v54.
+    row(GAME,  40.0, 0.45,  60, 4, true),   // bow released
+    row(GAME, 100.0, 0.85,  60, 6, true),   // gun fired
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its
@@ -664,7 +707,15 @@ const M_COMBAT: CueDef = music_row(1.0);
 /// spatial scale, and asserted against [`CUES`] in `tests/sound.rs` — the two
 /// must not drift, because a cue with a radius past this one would fall off
 /// the far side of rodio's clamp and get *louder* with distance.
-pub const MAX_AUDIBLE_M: f32 = 96.0;
+///
+/// **Set by [`Cue::ShotGun`] since v54**, at the reference's own hundred
+/// metres; the falling tree's 96 m held it before that (this line said 88 m
+/// for one commit, which is the howl's radius — the maximum of a table is
+/// the kind of claim to re-read off the table). It is a derived
+/// number and not a taste one — it is the maximum of the table, and the
+/// test that asserts so is what makes raising a radius force this line
+/// rather than silently invert a cue's falloff.
+pub const MAX_AUDIBLE_M: f32 = 100.0;
 
 /// How many voices may sound at once.
 ///

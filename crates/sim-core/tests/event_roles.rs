@@ -516,6 +516,89 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
     );
 }
 
+/// The same event from a **firearm**: `c`'s high half is zero and its low
+/// half stops being a drop and becomes a reach in decimetres (wire v54).
+///
+/// This is the role gate for the spare-bit reading, and it is the half a
+/// byte-golden is blindest to — the field is the same `u32` in the same
+/// position carrying a different quantity, so nothing about the layout
+/// moved and nothing about the encoder can notice. The fixture picks a
+/// range whose decimetre value **cannot be mistaken for a speed or a
+/// drop**: 50 m is 500 dm, which is three times the largest drop the bow
+/// fixture above uses and far under any muzzle speed in mm/tick, so a
+/// half-swap inside the word lands somewhere obviously wrong rather than
+/// somewhere plausible.
+#[test]
+fn an_instant_shot_reads_zero_speed_and_a_reach() {
+    /// Past a byte, for the same reason the bow fixture's is.
+    const SHOT_YAW: u16 = 4_097;
+    /// Not the level default.
+    const SHOT_PITCH: u8 = 200;
+    const GUN: u16 = 5;
+    const ROUND: u16 = 6;
+    /// 50 m, so the reach reads 500 dm.
+    const RANGE_MM: u32 = 50_000;
+
+    let mut w = duel_world();
+    w.combat.ranged[GUN as usize] = RangedDef {
+        damage: 20,
+        ammo: [ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 60,
+        hitscan: true,
+        range_mm: RANGE_MM,
+        structure: 0,
+    };
+    w.players[0].inv[0] = ItemStack {
+        item: GUN,
+        count: 1,
+        cond: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: ROUND,
+        count: 5,
+        cond: 0,
+    };
+    w.tick(&[Command::Input {
+        id: ATTACKER,
+        frame: InputFrame {
+            seq: 1,
+            buttons: BTN_PRIMARY,
+            yaw: SHOT_YAW,
+            pitch: SHOT_PITCH,
+            move_x: 0,
+            move_z: 0,
+            sel: 0,
+        },
+    }]);
+
+    let shot = only(&w, EV_SHOT);
+    assert_eq!(
+        shot.a, ATTACKER,
+        "EV_SHOT.a is who fired, whichever weapon fired it"
+    );
+    assert_eq!(
+        shot.b >> 8,
+        SHOT_YAW as u32,
+        "EV_SHOT.b's high half is yaw on the hitscan path too"
+    );
+    assert_eq!(
+        shot.b & 0xff,
+        SHOT_PITCH as u32,
+        "EV_SHOT.b's low byte is pitch on the hitscan path too"
+    );
+    assert_eq!(
+        shot.c >> 16,
+        0,
+        "a hitscan's muzzle speed is zero — that zero IS the instant reading, \
+         and a nonzero here makes the client fly a phantom arrow"
+    );
+    assert_eq!(
+        shot.c & 0xffff,
+        RANGE_MM / 100,
+        "EV_SHOT.c's low half is the reach in decimetres when speed is zero"
+    );
+}
+
 /// `EV_IMPACT: a = SURF_* << 24 | x, b = z, c = y` — all three in the
 /// entity lane's quanta, `c` signed.
 ///

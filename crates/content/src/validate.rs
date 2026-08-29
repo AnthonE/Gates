@@ -388,6 +388,18 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if w.damage == 0 || w.headshot_mult == 0 || w.rate_per_min == 0 {
             return Err(format!("weapon `{}`: zero damage/mult/rate", w.id));
         }
+        // A weapon with no reach cannot hit anything, and since wire v54 it
+        // is also unsendable: a firearm's `EV_SHOT` carries `range_m` as a
+        // reach in decimetres, and the encoder refuses an instant shot whose
+        // reach is zero because a beam of no length is the same nonsense a
+        // zero-speed arrow was. Refused at the door rather than guarded at
+        // the encoder — the ammo block below makes the identical argument
+        // about `speed_mps`, and for the identical reason: a content bound
+        // is a boot failure a person reads, and an encoder bound is an
+        // event that silently stops arriving.
+        if w.range_m == 0 {
+            return Err(format!("weapon `{}`: a weapon with no reach", w.id));
+        }
         match w.kind {
             WeaponKind::Bow => {
                 let rounds = w

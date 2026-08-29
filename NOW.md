@@ -60,26 +60,28 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 # Buildable now — a loop can pick any of these
 
 
-## 0shot · A gun still makes no sound and no light *(systems lane)*
+## 0shot · A gun is heard — what it still cannot be *seen* doing *(client lane)*
 
-*From `findings/pass-20260828-175853-01-judge.md` §Ranked gaps 2 — a GAP
-PASS item. Two of its three thirds landed at arrow recovery v1 (wire v53,
-2026-08-29): the pickup verb (§5 item 2) and `DEATH_BY_BULLET`. This is
-the third.*
+*The sound half landed at gun report v0 (wire v54, 2026-08-29):
+`EV_SHOT` fires on the hitscan path with `speed == 0` meaning instant and
+the low `u16` carrying the reach in decimetres, and the mixer plays it at
+the shooter — 100 m for a gun against 40 m for a bow, both the
+reference's. `DECISIONS.md` §open has the reading and the cap it cost.*
 
-1. **`EV_SHOT` does not fire on the hitscan path, and that is a refusal
-   with a stated reason rather than an omission.** `ranged::hitscan`'s doc
-   holds it: the event's payload is a muzzle speed and a drop in mm/tick
-   and `render/tracer.rs` re-flies exactly those integers, so a zero in
-   both hangs a motionless tracer at the muzzle for four seconds. A
-   firearm therefore announces itself only by what it *reaches* —
-   `EV_IMPACT`, `EV_HIT` — with no muzzle flash, no crack and no beam.
-   **It needs a decision, not a slice**: either a new event, or a spoken
-   reading of `EV_SHOT`'s spare bit patterns (e.g. speed 0 meaning
-   *instant*, which the client would draw as a beam rather than fly).
-   `DECISIONS.md` §open carries the question. Arrow recovery v1
-   deliberately did not bundle this into its bump, and `spent.rs`'s header
-   says why.
+1. **Nothing draws the beam or the flash.** `tracer.rs` declines to fly an
+   instant shot (it would hang a motionless streak for four seconds) and
+   draws nothing in its place, so a firearm is now loud and still
+   invisible. **No wire work is owed** — the reach crosses on `EV_SHOT`
+   already, which is why it was put there — so this is a pure render
+   slice: a line from the muzzle along (yaw, pitch) of the carried length,
+   alive for a frame or two rather than `MAX_ARROW_LIFE_TICKS`, and not a
+   `Tracers` slot's shape. A muzzle flash is the same event and a
+   different primitive.
+2. **A distant shot is quiet, not muffled.** `sound::falloff` is amplitude
+   only, so the 100 m report arrives with its full brightness at 99 m.
+   Air absorbs treble long before it absorbs bass, which is most of how a
+   player judges *how far away* a gunfight is. That belongs to the mixer,
+   not to the waveform, and it would pay for every positional cue at once.
 
 ## 0eq · Equipment, after armor v1 *(systems+client lane)*
 
@@ -241,10 +243,11 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    (`DECISIONS.md` §open "attacker-side flinch v0"). Nobody has seen the pose.
 2. **No positional hit sound** — a flesh impact needs a waveform `sound/
    synth.rs` does not generate. Nobody has heard `Cue::RemoteSwing` either.
-3. **A gun has no muzzle flash, crack or tracer**: `ranged::hitscan` emits no
-   `EV_SHOT`, so a firearm speaks only through `EV_IMPACT`/`EV_HIT`. A voice is
-   a new event or a spoken reading of `EV_SHOT`'s spare patterns. ⚠ A firearm
-   death still reports `DEATH_BY_ARROW`.
+3. **A gun is heard but not seen** — the crack landed (gun report v0, wire
+   v54): `ranged::hitscan` raises `EV_SHOT` at `speed == 0` and the mixer
+   plays it at the shooter, 100 m against a bow's 40 m. No muzzle flash and
+   no beam yet, and the reach is already on the wire for whoever draws
+   them — `§0shot`. The firearm death cause landed at v53.
 4. **Armor can be worn (armor v1, wire v51) — what it still owes.** The
    equip half is done: `CONT_WEAR` is kind 4, the field is 3 bits, and
    `move_item` carries it with no new verb. Remaining, none of it blocking:

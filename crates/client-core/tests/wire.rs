@@ -395,21 +395,29 @@ fn an_unknown_impact_surface_is_malformed() {
 /// A round with no muzzle speed is refused rather than drawn.
 ///
 /// Zero speed is a tracer that hangs at the shooter's eye forever, and
-/// `content::validate` refuses such a round at boot, so the value can only
-/// reach a client from a forged or corrupted datagram. Both ends refuse it:
-/// the encoder returns `Range`, and this is the decoder's half.
+/// **Narrowed at wire v54, and this test grew a positive half rather than
+/// shrinking.** A zero muzzle speed used to be refused outright, because a
+/// round that never leaves the bow is not a round. It now *means* something
+/// — the shot was instantaneous, and the second `u16` is a reach in
+/// decimetres rather than a drop — so what stays malformed is the pattern
+/// that is still nonsense in the new reading: a beam of no length. Both
+/// ends narrowed together (`protocol::encode_event_shot` returns `Range`,
+/// and this is the decoder's half), and a weapon with no reach is refused
+/// at boot by `content::validate`, so the value can still only arrive from
+/// a forged or corrupted datagram.
 ///
 /// **The forge is bit-exact and paired with a control**, because a test that
 /// corrupted the frame at large would be refused for any number of reasons
 /// and prove nothing about this one. The event header is 10 bits
 /// (`KIND_BITS` 4 + `SUB_BITS` 6) and the writer packs LSB-first, so the
 /// fields land at bit 10 (shooter, 32), 42 (yaw, 16), 58 (pitch, 8), 66
-/// (speed, 16), 82 (drop, 16). Only bits 66..=81 are cleared; the control
-/// clears a strict subset that leaves the speed nonzero and must still
-/// decode. If the control ever starts failing, this test has stopped
-/// isolating the zero.
+/// (speed, 16), 82 (drop, 16). Three frames come out of one encode: a
+/// control that leaves the speed nonzero, an *instant* forge that clears
+/// only the speed, and a malformed forge that clears the speed and the
+/// reach together. If the control ever starts failing, this test has
+/// stopped isolating anything.
 #[test]
-fn a_shot_with_no_speed_is_malformed() {
+fn a_shot_with_no_speed_is_instant_and_one_with_no_reach_either_is_malformed() {
     let mut c = core();
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     // speed = 1, so the field's only set bit is its bit 0, at wire
@@ -427,16 +435,37 @@ fn a_shot_with_no_speed_is_malformed() {
     );
     assert!(c.pop_shot().is_some(), "and it must reach the ring");
 
-    // Forge: clear exactly bits 66..=81. Byte 8 keeps its low two bits
-    // (the top of `pitch`), byte 10 keeps everything above its low two
-    // (the bottom of `drop`).
+    // Instant: clear exactly bits 66..=81, leaving `drop` (the reach) at
+    // 22. Byte 8 keeps its low two bits (the top of `pitch`), byte 10 keeps
+    // everything above its low two (the bottom of `drop`). This is what a
+    // firearm actually sends, and it must arrive.
+    let mut instant = buf[..len].to_vec();
+    instant[8] &= 0b0000_0011;
+    instant[9] = 0;
+    instant[10] &= 0b1111_1100;
+    assert!(
+        c.on_stream(&instant).is_ok(),
+        "a zero-speed shot is the instant reading now, not a malformed frame"
+    );
+    let shot = c.pop_shot().expect("and it must reach the ring");
+    assert_eq!(
+        shot.3, 0,
+        "the speed the client sees is the zero that was sent"
+    );
+    assert_eq!(shot.4, 22, "and the low field is the reach, untouched");
+
+    // Malformed: clear the speed AND the reach — bits 66..=97, which is
+    // byte 8's top six, bytes 9 through 11, and byte 10's low two carried
+    // above. A beam of no length is the one pattern left with no meaning.
     let mut forged = buf[..len].to_vec();
     forged[8] &= 0b0000_0011;
     forged[9] = 0;
-    forged[10] &= 0b1111_1100;
+    forged[10] = 0;
+    forged[11] = 0;
+    forged[12] &= 0b1111_1100;
     assert!(
         c.on_stream(&forged).is_err(),
-        "a zero-speed shot must be refused, not drawn"
+        "an instant shot with no reach must be refused, not drawn"
     );
     assert_eq!(c.pop_shot(), None, "and nothing may reach the ring");
 }

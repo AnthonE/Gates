@@ -63,10 +63,10 @@ pub use event::{
     encode_event_removed, encode_event_research, encode_event_research_refused,
     encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
     encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
-    encode_event_vitals, encode_event_weak_mark, EventMsg, InvSlot, ItemCatalog, ItemRow, WireBag,
-    BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH, DEPLOY_SYNC_BATCH,
-    MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH, PIECE_SYNC_BATCH, RECIPE_BATCH,
-    RESEARCH_BATCH, SLOT_SYNC_BATCH,
+    encode_event_vitals, encode_event_weak_mark, shot_is_instant, EventMsg, InvSlot, ItemCatalog,
+    ItemRow, WireBag, BAG_SYNC_BATCH, CATALOG_BATCH, CONT_SYNC_BATCH, DEPLOY_DEFS_BATCH,
+    DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, MAX_ITEM_NAME_BYTES, PIECE_DEFS_BATCH,
+    PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
 use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
@@ -713,7 +713,18 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// garbage. All 100 fixtures re-key; `event_catalog` is the only one whose
 /// bytes move for a reason other than the version prefix, and none are
 /// added or removed.
-pub const PROTO_VER: u16 = 53;
+///
+/// **v54 — a firearm announces itself, and not one bit was added to say
+/// so.** `EventMsg::Shot`'s layout is byte-identical; what changed is that
+/// `speed_mmpt == 0` acquired a meaning (*instantaneous*, low field = reach
+/// in decimetres) where it had been refused as malformed on both sides.
+/// That refusal is why this is a version turn and not a free change: a v53
+/// reader does not ignore the new pattern, it rejects the whole event as
+/// `Malformed`, so a v53 client against a v54 shard would drop every rifle
+/// report and keep every arrow. `input.rs`'s v22 note is the precedent for
+/// a bump with no layout change — the golden that moves is `hello`, which
+/// carries this number, and nothing else in the 100 shifts a byte.
+pub const PROTO_VER: u16 = 54;
 
 /// This game's slug in the elo catalog.
 ///

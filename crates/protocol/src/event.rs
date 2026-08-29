@@ -910,11 +910,21 @@ pub enum EventMsg {
         lit: bool,
         by: u32,
     },
-    /// An arrow left `shooter`'s bow, aimed at (`yaw`, `pitch`), flying at
-    /// `speed_mmpt` and falling `drop_mmpt2` a tick (broadcast).
+    /// A round left `shooter`'s weapon, aimed at (`yaw`, `pitch`)
+    /// (broadcast).
     ///
     /// No origin and no item — the client reconstructs the first from the
     /// shooter's snapshot and does not need the second to draw a shaft.
+    ///
+    /// **`speed_mmpt == 0` means the shot did not fly** (wire v54), and
+    /// then `drop_mmpt2` is not a drop: it is the **reach in decimetres**.
+    /// One event covers both kinds of ranged weapon because the two
+    /// readings are never both meaningful — a flight needs a gravity and a
+    /// beam needs a length — and a projectile cannot leave a muzzle at
+    /// rest, so the discriminating pattern costs no field. The field names
+    /// keep the flight's spelling because renaming them to something
+    /// neutral would make every bow call site read worse to make one gun
+    /// call site read better.
     Shot {
         shooter: u32,
         yaw: u16,
@@ -2057,10 +2067,18 @@ pub fn encode_event_shot(
     drop_mmpt2: u16,
     buf: &mut [u8],
 ) -> Result<usize, WireError> {
-    // A round with no speed is not a round (`content::validate` refuses
-    // one), and a zero here would be a tracer that hangs in the air at the
-    // shooter's eye forever. Refused at the encoder rather than drawn.
-    if speed_mmpt == 0 {
+    // **This refusal narrowed at v54 rather than went away, and the
+    // difference is the whole of the spare-bit reading.** It used to be
+    // `speed_mmpt == 0`, on the argument that a round with no speed is not
+    // a round and a zero would hang a tracer at the shooter's eye forever.
+    // Zero speed now *means* something — an instantaneous shot, where the
+    // second `u16` stops being a drop and becomes a reach in decimetres —
+    // so the pattern that stayed nonsense is the one where both are zero:
+    // a beam of no length, which is exactly as undrawable as the hanging
+    // tracer was. `content::validate` refuses a weapon with no reach at the
+    // door, so this is unreachable with anything shipped, which is what
+    // lets it stay a hard refusal instead of a clamp.
+    if shot_is_instant(speed_mmpt) && drop_mmpt2 == 0 {
         return Err(WireError::Range);
     }
     let mut w = begin(buf, SUB_SHOT)?;
@@ -2070,6 +2088,26 @@ pub fn encode_event_shot(
     w.write(speed_mmpt as u32, 16)?;
     w.write(drop_mmpt2 as u32, 16)?;
     Ok(w.finish())
+}
+
+/// Did this shot fly, or was it instantaneous?
+///
+/// **The v54 spare-bit reading, in one place so its three readers cannot
+/// disagree about it.** `EventMsg::Shot` covers both kinds of ranged
+/// weapon, and everything that separates them is this predicate: a
+/// projectile cannot leave a muzzle at rest, so a zero muzzle speed is the
+/// sim saying *there was no flight*, and `drop_mmpt2` stops being a drop
+/// and becomes a reach in decimetres.
+///
+/// Three callers, and the point of naming it is that they are in three
+/// crates: the encoder's range check here, `render/tracer.rs` (which must
+/// not fly it — a zero velocity is a streak that hangs at the muzzle for
+/// four seconds and burns one of sixteen slots), and `render/audio.rs`
+/// (which picks the gunshot cue over the bowshot by it, since no item
+/// crosses the wire). A `== 0` written out at each of those is three
+/// chances to write `!= 0`.
+pub fn shot_is_instant(speed_mmpt: u16) -> bool {
+    speed_mmpt == 0
 }
 
 /// Where an arrow stopped: a point in the entity lane's quanta and what
@@ -3042,10 +3080,18 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 speed_mmpt: r.read(16)? as u16,
                 drop_mmpt2: r.read(16)? as u16,
             };
-            // The encoder's refusal, mirrored: a zero-speed tracer is a
-            // value no honest sender produces, so it is malformed rather
-            // than drawn. Same posture as the address ranges above.
-            if matches!(m, EventMsg::Shot { speed_mmpt: 0, .. }) {
+            // The encoder's refusal, mirrored, and it narrowed with it at
+            // v54: a zero speed is now the *instant* reading and the low
+            // field is a reach, so what no honest sender produces is a beam
+            // of no length. Same posture as the address ranges above.
+            if matches!(
+                m,
+                EventMsg::Shot {
+                    speed_mmpt: 0,
+                    drop_mmpt2: 0,
+                    ..
+                }
+            ) {
                 return Err(WireError::Malformed);
             }
             m
