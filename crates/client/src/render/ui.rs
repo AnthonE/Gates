@@ -15,7 +15,7 @@
 //! pin this module to the name of Bevy's spawner type, which has been renamed
 //! twice in as many releases.
 //!
-//! Colours are read off the reference's own options screen (`Rust Images/`,
+//! Colours are read off the reference's own options screen (the reference set,
 //! and the frame the operator pasted): near-black panels a shade lighter than
 //! the background, an olive selection block for the chosen category, warm
 //! off-white type, and a hairline rule the same warm hue at low alpha.
@@ -109,9 +109,40 @@ pub fn font_bold(size: f32) -> TextFont {
     }
 }
 
+/// The drop shadow every **floating** HUD string carries. **(knob)**
+///
+/// **The problem it solves is that the HUD has no background and the world
+/// does.** Chrome-backed strings — the hotbar count sitting in its cell, the
+/// vitals number on its trough — are legible because something behind them is
+/// a known colour. The strings that float over the scene are not: the toast
+/// stack, the `[E]` prompt, the compass, the build plan and the chat log are
+/// warm off-whites at 0.75–0.95 alpha drawn straight onto whatever the player
+/// is looking at, and `ART.md` §3 measures that backdrop at a near-band mean of
+/// 86 luma against a sky band of 143. So the same string is comfortable over
+/// turf and gone over sky, and nothing in the client had a `TextShadow`,
+/// `BoxShadow` or `Outline` anywhere.
+///
+/// **A shadow rather than a plate, deliberately.** A backing plate is a second
+/// rectangle in the layout, and the announce stack's whole design is that each
+/// row has a fixed home so an arriving line does not shove the readout — a
+/// plate sized to its text reintroduces exactly the movement that geometry was
+/// built to avoid. A shadow costs no layout at all.
+///
+/// **Offset is 1 px, not Bevy's default 4.** The default is sized for display
+/// type; at the 13–15 px this HUD draws at, 4 px is a second copy of the string
+/// rather than a shadow. One logical pixel down-right is the smallest offset
+/// that separates a glyph from a bright background, and it is what keeps this
+/// readable as the reference's flat interface rather than as an outlined
+/// arcade HUD. The alpha is high because the job is contrast against a *bright*
+/// backdrop; over dark ground it disappears into the ground.
+pub const TEXT_SHADOW: TextShadow = TextShadow {
+    offset: Vec2::splat(1.0),
+    color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+};
+
 // ---- the palette, re-derived 2026-08-07 ----------------------------------
 //
-// **Every value below is sampled off `Rust Images/crafting.png`**, the
+// **Every value below is sampled off the reference `crafting.png`**, the
 // reference's own inventory frame, by averaging a 7×7 patch at the named
 // place. The previous palette was neither measured nor close: it was a
 // **cool near-black** (`0.082,0.082,0.090` — blue the largest channel) with
@@ -121,9 +152,10 @@ pub fn font_bold(size: f32) -> TextFont {
 // reads as the reference while the ground under it is the wrong colour.
 //
 // The olive it replaces was described as measured off "the reference's own
-// options screen" — a frame that is not in `Rust Images/` and cannot be
+// options screen" — a frame that is not in the reference set and cannot be
 // re-checked. If the options screen really does select in olive, that is a
-// per-screen exception to add back with the frame committed beside it; it is
+// per-screen exception to add back once that frame is in the set and the
+// measurement is recorded in `ART.md` beside the others; it is
 // not the inventory's colour, and the inventory is the screen a player lives
 // in. `DECISIONS.md` "menu skin v0" carries the change.
 //
@@ -149,6 +181,27 @@ pub const ACCENT: Color = Color::srgb(0.224, 0.510, 0.729);
 pub const ACCENT_HOVER: Color = Color::srgb(0.290, 0.580, 0.800);
 /// Hairline borders.
 pub const RULE: Color = Color::srgba(0.75, 0.72, 0.62, 0.28);
+/// The shell's two grounds, and they are the same family as `BG` rather than
+/// new hues: the reference's front end is a scrim over footage, so its panels
+/// are *darker* than the scene behind them and read as depth.
+///
+/// **Both are translucent, and that is what makes the backdrop worth having.**
+/// Opaque panels cover five sixths of the frame, so footage behind them shows
+/// only in the nav column — measured on the first cut, which looked like a
+/// photograph peeking round a wall. The alphas are high enough that type over
+/// them is unaffected and low enough that the sea moves behind the server
+/// list, which is the reference's own arrangement. With no backdrop present
+/// they composite over `BG`, a shade they are within a hair of anyway, so the
+/// no-asset case looks exactly as it did before footage existed.
+pub const PANEL_BG: Color = Color::srgba(0.145, 0.133, 0.118, 0.90);
+pub const PANE_BG: Color = Color::srgba(0.086, 0.078, 0.070, 0.86);
+/// The wordmark's block. The one saturated thing on the front screen, and the
+/// reference makes the same call — its logo mark is the only colour on an
+/// otherwise grey menu.
+pub const MARK: Color = Color::srgb(0.804, 0.243, 0.176);
+/// A nav entry at rest. Dimmer than `DIM`, because the whole effect depends
+/// on the picked entry being obviously brighter than the rest.
+pub const NAV_IDLE: Color = Color::srgba(0.62, 0.60, 0.57, 0.65);
 /// Type, in three weights of attention.
 pub const TITLE: Color = Color::srgb(0.93, 0.92, 0.90);
 pub const TEXT: Color = Color::srgb(0.92, 0.90, 0.85);
@@ -197,22 +250,44 @@ pub fn hover(mut q: Query<(&Interaction, &Hover, &mut BackgroundColor), Changed<
 /// Absolute and 100% on both axes so it covers whatever is behind it — which
 /// in the loading screen and the Esc menu is the world, still rendering.
 pub fn screen(bg: Color) -> impl Bundle {
-    (
-        Node {
-            position_type: PositionType::Absolute,
-            width: Val::Percent(100.0),
-            height: Val::Percent(100.0),
-            flex_direction: FlexDirection::Column,
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            row_gap: Val::Px(10.0),
-            ..default()
-        },
-        BackgroundColor(bg),
-    )
+    (screen_node(), BackgroundColor(bg))
 }
 
-/// GATES, at the top of whichever screen the player is on.
+/// [`screen`]'s layout, on its own, so a screen that needs ONE field
+/// different can spread it (`Node { padding: …, ..ui::SCREEN_NODE }`)
+/// instead of restating a full-viewport centred column.
+///
+/// Split out when the death screen grew a map and needed one field moved.
+/// ⚠ **The obvious way to do that does not work**: `(screen(bg),
+/// Node { padding })` puts two `Node`s in one bundle, and Bevy 0.18 does
+/// not merge or replace them — it **panics at spawn**, at runtime, from
+/// inside a command queue, with the system name elided unless the `debug`
+/// feature is on. `cargo build` and every headless gate stay green. So the
+/// composable half is this function, and a screen that wants a variant
+/// spreads it: `Node { padding: …, ..ui::screen_node() }`.
+///
+/// A function rather than a `const`, because `Node` holds types with
+/// destructors and a `const Node` does not compile.
+pub fn screen_node() -> Node {
+    Node {
+        position_type: PositionType::Absolute,
+        width: Val::Percent(100.0),
+        height: Val::Percent(100.0),
+        flex_direction: FlexDirection::Column,
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::Center,
+        row_gap: Val::Px(10.0),
+        ..default()
+    }
+}
+
+/// A screen's own heading — `YOU DIED`, `DISCONNECTED`.
+///
+/// **Not the wordmark**, which is [`wordmark`] and is the game's identity
+/// rather than a screen's. The two were the same call until the shell landed
+/// and every screen's heading was the word GATES; they are different jobs, and
+/// a screen that shouts its own name where the reference shouts what just
+/// happened to you is a screen that has nothing to say.
 pub fn title(text: &str) -> impl Bundle {
     (
         Text::new(text.to_string()),
@@ -260,6 +335,368 @@ pub fn row(width_px: f32) -> impl Bundle {
         BorderColor::all(RULE),
         Hover::default(),
     )
+}
+
+// ---- the shell ------------------------------------------------------------
+//
+// **The five reference frames the operator pasted are one screen, not five.**
+// Main menu, PLAY GAME, NEWS, INVENTORY and WORKSHOP all draw: a wordmark
+// pinned top-left, a vertical nav column under it that never moves and never
+// re-orders, and — for every entry except the bare menu — a tinted control
+// panel plus a wide content pane filling the rest. Picking a nav entry swaps
+// what is in those two columns and touches nothing else. That single fact is
+// why their front end reads as one product and why ours read as five
+// unrelated screens: we had five independent full-screen states, each
+// centring its own column, each rebuilding its own title.
+//
+// So the shell is the thing worth copying, ahead of any individual screen.
+// What is deliberately NOT copied is their nav's length — NEWS, INVENTORY,
+// ITEM STORE, WORKSHOP and RUST+ are five entries with a live service behind
+// each, and drawing a dead one is the greyed-row dishonesty `settings.rs`
+// already refuses.
+
+/// The scene behind the front end, and the scrim over it.
+///
+/// **The reference plays a video here** (operator, 2026-08-09: *"rust uses a
+/// video for the background if thats what ur talking about"*) — which is a
+/// correction worth writing down, because the note this replaces proposed
+/// rendering the island live behind the menu and that is the expensive way to
+/// get the cheap thing. A backdrop is *footage*: it has no camera to drive, no
+/// streaming ring to keep fed, no `WorldId` to insert and tear down, and it
+/// costs one texture.
+///
+/// **A still, and the shape is a frame index so motion is a drop-in.** Bevy
+/// decodes no video and this repo is not adding a decoder for a title screen;
+/// what it does decode is images, so a loop is a sequence of them and the
+/// difference between one frame and sixty is which handle this node is
+/// pointing at. Sizes, since they decide it: a 1280×720 JPEG is ~200 KB, so a
+/// three-second loop at 20 fps is ~12 MB in the depot for a screen a player
+/// looks at for four seconds. That trade is the operator's to make, not this
+/// file's, and the still is what ships until it is made.
+///
+/// **Absent is a supported state.** `assets/menu/backdrop.jpg` may simply not
+/// be there — on a source checkout, in a trimmed depot — and the menu must
+/// still be a menu. Bevy draws nothing for an unresolved image handle, so the
+/// `BG` behind it is what shows through and the screen looks exactly like it
+/// did before backdrops existed.
+///
+/// The scrim is not optional and is the half that makes it a menu rather than
+/// a screenshot: the reference's own frame is dark enough that its nav reads
+/// as white type on near-black, and the footage is texture rather than
+/// subject.
+#[derive(Resource)]
+pub struct Backdrop(pub Handle<Image>);
+
+/// Where the footage lives. One path, named once, so the loader and the
+/// depot's packing list cannot drift.
+pub const BACKDROP_PATH: &str = "menu/backdrop.jpg";
+
+/// Ask for it at `Startup`, beside the textures and the icons — it is wanted
+/// on the very first screen after the splash, and warming it while the client
+/// warms everything else is free time.
+pub fn load_backdrop(mut commands: Commands, server: Res<AssetServer>) {
+    commands.insert_resource(Backdrop(server.load(BACKDROP_PATH)));
+}
+
+pub fn backdrop(image: Handle<Image>) -> impl Bundle {
+    (
+        ImageNode::new(image),
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            ..default()
+        },
+        // Behind every panel. A negative index rather than relying on spawn
+        // order, because the shell's children are spawned by three different
+        // functions and "first" is not a property any of them can promise.
+        ZIndex(-2),
+    )
+}
+
+/// The wash over the backdrop. Its alpha is the whole contrast budget of the
+/// front end: too little and the nav is unreadable over a bright frame, too
+/// much and there is no point having footage.
+pub const SCRIM: Color = Color::srgba(0.055, 0.051, 0.043, 0.82);
+
+pub fn scrim() -> impl Bundle {
+    (
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            ..default()
+        },
+        BackgroundColor(SCRIM),
+        ZIndex(-1),
+    )
+}
+
+/// The wordmark, top-left, at the size the reference draws its own.
+///
+/// A text mark rather than an image: this repo has no logo asset and an
+/// invented one is a brand decision, not a render one. The block that
+/// precedes it is the reference's own arrangement — a mark, then the word —
+/// and it is the one piece of visual identity the shell needs to stop looking
+/// like a debug overlay.
+pub fn wordmark() -> impl Bundle {
+    (
+        Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(12.0),
+            ..default()
+        },
+        children![
+            (
+                Node {
+                    width: Val::Px(38.0),
+                    height: Val::Px(38.0),
+                    ..default()
+                },
+                BackgroundColor(MARK),
+            ),
+            strong("GATES", 40.0, TITLE),
+        ],
+    )
+}
+
+/// One entry in the nav column.
+///
+/// **Dim at rest, bright when picked** — the reference's exact treatment, and
+/// the reason its menu has no buttons on it: the type *is* the button, so the
+/// screen carries no chrome it does not need. `Hover` handles the pointer,
+/// and the colour a nav entry rests at is carried per entity because the
+/// picked one must not be repainted on the way past it (the same reason
+/// [`Hover`] exists at all).
+pub fn nav_item(text: &str, picked: bool) -> impl Bundle {
+    (
+        Button,
+        Node {
+            padding: UiRect::axes(Val::Px(0.0), Val::Px(7.0)),
+            ..default()
+        },
+        // Transparent, not a panel: the nav floats over the backdrop.
+        BackgroundColor(Color::NONE),
+        Hover::new(Color::NONE, Color::NONE),
+        children![strong(
+            text.to_string(),
+            26.0,
+            if picked { TITLE } else { NAV_IDLE },
+        )],
+    )
+}
+
+/// The tinted control column — the reference's filter panel, its YOUR ITEMS
+/// column, its resource header.
+///
+/// **Its tint is ours, and that is stated rather than hidden.** The
+/// reference's is a warm red at low alpha over the blurred scene; the frames
+/// that show it are not in the reference set, so it cannot be sampled the way
+/// every colour in the palette above was, and inventing a number while
+/// claiming a measurement is the failure mode `ART.md` exists to prevent.
+/// This is [`PANEL`] — measured, off `crafting.png` — until a frame lands
+/// beside it to re-derive from.
+pub fn panel(width_px: f32) -> impl Bundle {
+    (
+        Node {
+            width: Val::Px(width_px),
+            // **No `height: 100%`, and that was a real bug rather than a
+            // tidy-up.** A column inside a flex ROW already fills the cross
+            // axis — `align-items: stretch` is the default — and the explicit
+            // percentage resolved against the wrong box, so the panel ran
+            // past the bottom of the window and everything pinned to its
+            // end with `margin-top: auto` went with it. Measured: the store
+            // pane's OPEN IN LAUNCHER button was not on the screen at all.
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(10.0),
+            padding: UiRect::all(Val::Px(16.0)),
+            ..default()
+        },
+        BackgroundColor(PANEL_BG),
+    )
+}
+
+/// The wide content column beside it.
+///
+/// The right padding is not cosmetic slack: without it a right-aligned column
+/// — the server list's PING — sits flush against the window edge, which reads
+/// as a table that has been cut off rather than one that ends. The reference
+/// leaves the same margin.
+pub fn pane() -> impl Bundle {
+    (
+        Node {
+            flex_grow: 1.0,
+            // Stretched by the row, not sized by a percentage — see `panel`.
+            flex_direction: FlexDirection::Column,
+            padding: UiRect::new(Val::Px(0.0), Val::Px(20.0), Val::Px(0.0), Val::Px(0.0)),
+            ..default()
+        },
+        BackgroundColor(PANE_BG),
+    )
+}
+
+/// A small heading over a group of controls — the reference's `PLAYER SLOTS`
+/// and `WIPE SCHEDULE`.
+pub fn group(text: &str) -> impl Bundle {
+    (
+        strong(text.to_string(), 12.0, FAINT),
+        Node {
+            margin: UiRect::top(Val::Px(6.0)),
+            ..default()
+        },
+    )
+}
+
+/// Empty, and it eats whatever space is left.
+///
+/// **This replaces `margin-top: auto`, which did not work here.** An auto
+/// margin absorbs a flex container's free space only when that container's
+/// main size is definite, and every column in this shell gets its height by
+/// being *stretched* by the row above it — so the bars pinned to the bottom
+/// of a panel were laid out against content height and ended up past the
+/// window. Measured: the store pane's OPEN IN LAUNCHER button, and the line
+/// explaining it, were not on the screen at all, and the server browser's
+/// CLEAR FILTERS sat ~45 px short of where it belonged. A sibling that grows
+/// is the same intent with no dependency on how the parent got its height.
+pub fn spacer() -> Node {
+    Node {
+        flex_grow: 1.0,
+        ..default()
+    }
+}
+
+/// Pin a node to the bottom of the panel it is in, `up` pixels clear of the
+/// padding box.
+///
+/// **Absolute, because flex measurement could not be relied on here.** Three
+/// attempts at the flex version failed in sequence and each failure was
+/// invisible rather than wrong-looking: `margin-top: auto` under a *stretched*
+/// parent, then a `flex_grow` spacer beside it, then `flex_shrink: 0` on the
+/// bar. Tinting the spacer green showed why — it ran past the bottom edge of
+/// the window, so the bar was being laid out off-screen rather than
+/// mis-sized, and the panel's own height came out larger than the area it
+/// draws in. An absolutely positioned child is measured against the padding
+/// box directly, which is the one thing in that chain that is definite.
+///
+/// The caller supplies `up` per element rather than nesting them in a
+/// wrapper, because a wrapper whose only content is text is exactly what
+/// measured zero in attempt two.
+pub fn pinned_bottom(up: f32, width_px: f32) -> Node {
+    Node {
+        position_type: PositionType::Absolute,
+        left: Val::Px(16.0),
+        bottom: Val::Px(up),
+        width: Val::Px(width_px),
+        ..default()
+    }
+}
+
+/// The box a flat button occupies. Split out from [`button`] so a *pinned*
+/// one can reposition it without ending up with two `Node`s in one bundle —
+/// which is a hard panic in Bevy, not a warning.
+fn button_node(width_px: f32) -> Node {
+    Node {
+        width: Val::Px(width_px),
+        // An explicit height, not padding around a measured glyph: a node
+        // sized only by text measurement can come out ZERO in an
+        // intrinsic-sizing pass, which is one of the two things that put a
+        // whole bottom bar off the screen (see `pinned_bottom`).
+        height: Val::Px(BUTTON_H),
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::Center,
+        flex_shrink: 0.0,
+        ..default()
+    }
+}
+
+/// How tall a flat button is. Public so a caller pinning something *above*
+/// one knows the offset without guessing.
+pub const BUTTON_H: f32 = 34.0;
+
+fn button_skin(accent: bool) -> (BackgroundColor, Hover) {
+    (
+        BackgroundColor(if accent { ACCENT } else { ROW_IDLE }),
+        Hover::new(
+            if accent { ACCENT } else { ROW_IDLE },
+            if accent { ACCENT_HOVER } else { ROW_HOVER },
+        ),
+    )
+}
+
+/// A wide flat button — CLEAR FILTERS, REFRESH, OPEN IN LAUNCHER.
+pub fn button(width_px: f32, accent: bool) -> impl Bundle {
+    let (bg, hover) = button_skin(accent);
+    (Button, button_node(width_px), bg, hover)
+}
+
+/// The same button, pinned to the bottom of its panel — see [`pinned_bottom`]
+/// for why that is absolute rather than flexed.
+pub fn pinned_button(width_px: f32, accent: bool, up: f32) -> impl Bundle {
+    let (bg, hover) = button_skin(accent);
+    let mut node = button_node(width_px);
+    node.position_type = PositionType::Absolute;
+    node.left = Val::Px(16.0);
+    node.bottom = Val::Px(up);
+    (Button, node, bg, hover)
+}
+
+/// A checkable filter row — the reference's radio group drawn as a mark plus
+/// a label, because a filter that is a toggle should not draw a radio.
+pub fn check(on: bool) -> impl Bundle {
+    (
+        Button,
+        Node {
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(9.0),
+            padding: UiRect::axes(Val::Px(2.0), Val::Px(5.0)),
+            ..default()
+        },
+        BackgroundColor(Color::NONE),
+        Hover::new(Color::NONE, ROW_IDLE),
+        children![(
+            Node {
+                width: Val::Px(13.0),
+                height: Val::Px(13.0),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(if on { ACCENT } else { Color::NONE }),
+            BorderColor::all(RULE),
+        )],
+    )
+}
+
+/// A table row in the content pane — the server list's, and whatever comes
+/// after it. Full width, hairline-separated, hovering as one object.
+pub fn table_row() -> impl Bundle {
+    (
+        Button,
+        Node {
+            width: Val::Percent(100.0),
+            flex_direction: FlexDirection::Row,
+            align_items: AlignItems::Center,
+            column_gap: Val::Px(10.0),
+            padding: UiRect::axes(Val::Px(12.0), Val::Px(9.0)),
+            border: UiRect::bottom(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(ROW_IDLE),
+        BorderColor::all(RULE),
+        Hover::default(),
+    )
+}
+
+/// A fixed-width right-aligned column — `PLAYERS` and `PING`, header and cell
+/// alike, so the two cannot drift apart by being sized independently.
+pub fn column(width_px: f32) -> Node {
+    Node {
+        width: Val::Px(width_px),
+        flex_direction: FlexDirection::Column,
+        align_items: AlignItems::FlexEnd,
+        ..default()
+    }
 }
 
 /// A small square button — the `-` and `+` either side of a numeric setting.

@@ -15,7 +15,7 @@
 //! worth asserting on.
 
 use client::args::{self, Parsed};
-use client::scry::Scry;
+use client::elo::Elo;
 use client::{client_endpoint, Session};
 use std::time::{Duration, Instant};
 
@@ -39,13 +39,13 @@ async fn main() {
     // it was, because an address off a launcher and an address off the command
     // line are equally unverified but not equally informative.
     if !a.no_launcher {
-        let scry = Scry::discover(a.identity.as_deref(), env!("CARGO_PKG_VERSION"));
-        println!("client: {}", scry.player.line());
+        let elo = Elo::discover(a.identity.as_deref(), env!("CARGO_PKG_VERSION"));
+        println!("client: {}", elo.player.line());
     } else if let Some(id) = a.identity.as_deref() {
         println!("client: identity {id} (declared, unverified; launcher skipped)");
     }
 
-    let endpoint = match client_endpoint() {
+    let endpoint = match client_endpoint(&server, a.cert_hash.as_deref()) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("client: {e}");
@@ -62,7 +62,7 @@ async fn main() {
     };
     println!("client: connecting to {server}");
     let mut session =
-        match Session::connect(&endpoint, &server, address, client::scry::sign_siwe).await {
+        match Session::connect(&endpoint, &server, address, client::elo::sign_siwe).await {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("client: {e}");

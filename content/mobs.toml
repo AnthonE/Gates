@@ -1,6 +1,11 @@
 # Gates · content/mobs.toml — the animal roster's species table
-# (`sim-core/src/mob.rs`, `reference/ANIMALS.md`). One species; the file
-# exists so a second is a row here and not a commit in `crates/`.
+# (`sim-core/src/mob.rs`, `reference/ANIMALS.md`). Two species — prey and a
+# predator — and the second one measured what the first one's file header
+# had been promising: the BEHAVIOUR was free, the roster was not. Nothing
+# in `crates/sim-core/src/mob.rs` branches on species. A wolf hunts because
+# `brave_pct = 0` is courage with no floor to fall under, so the one
+# rousing timer both animals share always points forward, and because its
+# notice radius is wide enough to start one from across a meadow.
 #
 # Speeds are percentages of the PLAYER's, because that is the only speed an
 # animal can have: it drives `movement::step` through the same `InputFrame`
@@ -12,9 +17,10 @@
 # argued in. The bake converts; nothing in the sim knows what a second is.
 #
 # Every number below is a **proposed default** registered in DECISIONS.md
-# §open ("animals v0"), not a spoken one. Where the reference game is the
-# source, the reference is named — but our pig is not their boar and does
-# not pretend to be: theirs charges and ours only runs.
+# §open ("animals v0" / "mob attack v0"), not a spoken one. Where the
+# reference game is the source, the reference is named — and since
+# 2026-08-11 the pig IS their boar in the one way it wasn't: it charges
+# when whole and runs when hurt.
 
 [[mob]]
 id = "mob.pig"
@@ -35,7 +41,26 @@ name = "Pig"
 # pricing the animal against a *crafted* weapon, which quietly moved the
 # first kill behind a workbench walk. Tools are armed now, and the number
 # comes from the reference rather than from us (`reference/BALANCE.md`).
-hp = 150
+#
+# ⚠ **80, not 150 — the tie is broken and the row ships one number**
+# (operator, 2026-08-10; the tiebreak ladder is `reference/BALANCE.md` §6).
+# The 2026-08-08 pass took 150 from a source that was *already* split
+# 80/150, so "150" was never the better-evidenced reading, it was the one
+# picked first. The 2026-08-09 research put the boar at ~80 inside a
+# complete roster table — chicken 25, stag ~80, wolf 100, bear 400,
+# consistent units, five species — and a complete table beats a single
+# figure quoted in prose (§6 rung 3).
+#
+# **This used to say "carry both until someone breaks the tie", and that
+# sentence is why it sat wrong for two days.** Carrying both is not
+# neutrality: with no tiebreak procedure attached, its only effect is to
+# preserve whichever guess shipped first. The procedure existed three
+# sections up in the same document the whole time — the sulfur 300/200
+# dispute was settled in one pass by scoring each source on the cells we
+# could already check. Nobody pointed it at the boar.
+#
+# Five hatchet swings instead of six at the kit's stone hatchet (25 dmg).
+hp = 80
 
 # 50% of WALK_SPEED = 1.49 m/s, an amble a player outwalks without trying.
 walk_pct = 50
@@ -57,6 +82,23 @@ walk_pct = 50
 flee_pct = 70
 flee_seconds = 3
 
+# **The bite (mob attack v0, 2026-08-11).** The reference boar's shape at
+# tier 3 (search summaries — the same tier rows 1c/1d landed at): it is
+# aggressive when approached too close, and it breaks off and flees once
+# hurt past half health. That mechanism is `brave_pct = 50` — at or above
+# half of max hp a roused pig charges, below it the identical rousing is
+# the flight it always was.
+#
+# The damage number is tier 4 (recollection — no summary would commit to
+# one): 15 per bite sits under the wolf's commonly-cited 20 and prices an
+# AFK naked at ~10 bites over ~20 s. Re-verify against the page if egress
+# ever opens (`RIPLIST.md` §1e's standing caveat). 2 m reach, one bite
+# every 2 s — the cadence is phase-locked in the sim, so it costs no state.
+attack = 15
+attack_range_m = 2
+attack_seconds = 2
+brave_pct = 50
+
 # The leash and the fright radius, and the pair is the whole behaviour.
 # 60 m of roam keeps a pig findable near where the seed put it — the
 # reference game's own fix for animals that "ended up at the coast of the
@@ -64,6 +106,13 @@ flee_seconds = 3
 # player who walks a treeline sends one running before they see it.
 roam_m = 60
 spook_m = 12
+
+# Night changes nothing for prey, and that is a statement rather than a
+# placeholder. The reference game's rework was of its PREDATOR's senses and
+# said nothing about its boar's, so a nocturnal pig would be a difference
+# with no mechanism behind it — which `reference/BALANCE.md` §6.2 refuses in
+# exactly those words. Equal, until something is measured.
+night_spook_m = 12
 
 # Five minutes. Long enough that clearing the pigs near your base is worth
 # doing and short enough that it is not permanent. The slot hatches at its
@@ -92,4 +141,127 @@ drops = [
   { item = "item.raw_meat", count = 5 },
   { item = "item.fat", count = 15 },
   { item = "item.cloth", count = 10 },
+]
+
+# ---------------------------------------------------------------------------
+
+[[mob]]
+id = "mob.wolf"
+name = "Wolf"
+
+# **The island's first predator** (predator v0, `DECISIONS.md` §open). Every
+# number below that has a source names it; the rest are proposed defaults
+# registered there, not spoken.
+#
+# What it is FOR: the map had one animal and it was prey, so outside a PvP
+# encounter the only lethal pressure was a fall or the food bar, and night
+# was darker and nothing else. This is the thing that makes going out at all
+# a decision. It is not a harder pig — a pig answers being crowded and then
+# thinks better of it; this one notices you at range and does not stop.
+
+# **100 — the reference game's wolf**, off the same complete roster table
+# that broke the boar's 80/150 tie (chicken 25, stag ~80, wolf 100, bear
+# 400; `reference/BALANCE.md` §6 rung 3, and the pig's hp comment above is
+# the precedent). Four swings of the kit's stone hatchet at 25 damage — one
+# more than the pig, which is the right order and was not chosen for it.
+hp = 100
+
+# 55% of WALK_SPEED = 1.64 m/s: a patrol, marginally brisker than the pig's
+# amble, so a wolf crossing a meadow reads as going somewhere.
+walk_pct = 55
+
+# **85% of SPRINT_SPEED = 4.67 m/s, and the ceiling here is the pig's own
+# defect running backwards.** At 100 a fleeing pig matched the player's
+# sprint and could never be CAUGHT; at 100 a hunting wolf matches it and can
+# never be ESCAPED, which is the same arithmetic and the worse half of it —
+# an animal you cannot outrun on open ground is not a chase, it is a
+# countdown. At 85 a sprinting player gains 0.83 m/s, so 30 m of notice is
+# ~36 s of pursuit before the leash of `flee_seconds` runs out: losable on
+# flat ground you saw coming, not losable if it caught you wading, climbing
+# or mid-swing at a tree. That is the trade this wants to sell.
+flee_pct = 85
+
+# Six seconds of commitment past the last moment you were inside the notice
+# radius — twice the pig's, because breaking off after three would let a
+# player who ran ten metres and turned around win every encounter for free.
+flee_seconds = 6
+
+# **The hunt, and it is two numbers.**
+#
+# `brave_pct = 0` is the whole predator: courage is a floor a wound has to
+# drop under, and there is nothing under zero, so the rousing that makes a
+# hurt pig run makes this charge at 1 hp. It is the only field that decides
+# which way an animal points and the only place prey and hunter part.
+#
+# 30 m of notice against the pig's 12. Twelve is a flinch — close enough
+# that a player walking a treeline sends one running before they see it.
+# Thirty is a sight line: it starts the encounter at a distance where the
+# player still has every option, which is what makes choosing wrong cost
+# something.
+#
+# 20 damage per bite is our own tree's figure for it — the pig's row prices
+# its 15 as sitting "under the wolf's commonly-cited 20" (tier 4,
+# recollection; `RIPLIST.md` §1e's standing caveat applies and this is the
+# number to re-verify first if egress ever opens). Five bites kills a fresh
+# 100 hp spawn over ~10 s of contact, against the pig's ten over ~20.
+#
+# The 2 s cadence is the pig's, unchanged: nothing about a wolf argues for
+# a different one and differing without a mechanism is what
+# `reference/BALANCE.md` §6.2 refuses.
+attack = 20
+attack_range_m = 2
+attack_seconds = 2
+brave_pct = 0
+
+# A wider territory than the pig's 60, for the reason the animal exists:
+# a predator you only ever meet in one clearing is a hazard sign, not a
+# predator. Still comfortably over the notice radius, which the validator
+# requires — a leash inside the radius that starts a charge is a treadmill.
+roam_m = 90
+spook_m = 30
+
+# **It hunts worse at night, not better, and that is the reference's own
+# direction rather than ours** (nocturnal senses, `DECISIONS.md` §open).
+#
+# The obvious design — a predator that ranges wider in the dark — is the one
+# the reference game shipped and then removed. Its 2024 predator rework cut
+# wolf sight at night on the stated grounds that the old animal "feels a bit
+# like a landmine… that issue is of course amplified in the pitch black
+# night": night danger in this genre is a problem of what the PLAYER can
+# see, and sharpening the animal on top of that is not difficulty, it is an
+# ambush the player was never given the information to avoid. No game in the
+# survey publishes a day→night sense ratio above 1× for one creature. The
+# one published 2× is a night-only *variant* — a different row in this file,
+# not this field.
+#
+# **Half is ours and the §open row says so.** The direction is sourced; the
+# ratio is not, because nobody publishes one. 0.5× is the best-supported
+# number in the survey for the analogous "this creature senses less right
+# now" case: two games independently use it for crouch (30 m sight → 15 m
+# crouched). 30 → 15 borrows that rather than inventing a third figure.
+#
+# What it buys the player is the first decision the CLOCK makes: crossing
+# open ground after dusk is a real tactic against the thing that hunts you,
+# and the cost of taking it is that you cannot see either. Before this, the
+# hour was a colour grade — nothing in the sim read it (`world::is_night`
+# is the door, and this is what walked through it).
+night_spook_m = 15
+
+# The pig's five minutes, deliberately unchanged. Clearing the wolves near
+# your base should be worth the same kind of doing, and no mechanism argues
+# for a rarer respawn — only a wish for one.
+respawn_seconds = 300
+
+# **It pays less than the pig, and that is the reference's own shape** —
+# their boar is the fat-and-cloth animal and their wolf is not. The point
+# is stated by the arithmetic: you kill this because it is already killing
+# you, not because the corpse is worth the walk. No cloth at all (a wolf is
+# not where a sleeping bag comes from), and half the fat.
+#
+# No new item is introduced here on purpose. Their wolf pays bone and hide,
+# we have neither, and inventing two items to dress one animal would drag
+# recipes, icons and `ui::icons::STEMS` into a slice about the roster.
+drops = [
+  { item = "item.raw_meat", count = 4 },
+  { item = "item.fat", count = 8 },
 ]

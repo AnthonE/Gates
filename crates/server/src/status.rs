@@ -11,8 +11,16 @@
 //! (`stats.rs` L5: diagnostics are numbers, not strings):
 //!
 //! ```json
-//! {"players":3,"max_players":100,"tick":123456}
+//! {"players":3,"max_players":100,"tick":123456,
+//!  "dg_out_bytes":0,"dg_out_pkts":0,"dg_in_bytes":0,"dg_in_pkts":0,
+//!  "stream_out_bytes":0,"stream_out_frames":0,
+//!  "stream_in_bytes":0,"stream_in_frames":0,
+//!  "aim_stale_samples":0,"aim_stale_sum":0,"aim_stale_max":0,
+//!  "aim_stale_unacked":0,"aim_stale_refused":0,
+//!  "aim_stale_hist":[0,0,0,0,0,0,0,0]}
 //! ```
+//!
+//! (one line on the wire; wrapped here to fit)
 //!
 //! - `players` — bodies with a live connection, off the `players` gauge the
 //!   sim loop mirrors from `ShardCore::connected` each tick. A gauge and
@@ -24,6 +32,28 @@
 //!   a lie the player discovers at a refused join).
 //! - `tick` — `stats.current_tick`, which doubles as a liveness check: a
 //!   number that stops moving is a shard that stopped ticking.
+//! - the eight **lane byte** counters, straight off `ShardStats` (see the
+//!   lane-bytes block in `stats.rs` for why they are four pairs). They are
+//!   monotonic totals since boot, so a rate is two polls and a subtraction,
+//!   and a **per-client** rate is that divided by `players` — which is why
+//!   they live beside it rather than in a second document. This is the half
+//!   `NOW.md` §0q item 4 was missing: the soak's 16.5 kB/s/client was a
+//!   ceiling derived from budgets because nothing counted a byte.
+//! - the six **aim staleness** readings, off `ShardStats` (see the
+//!   aim-staleness block in `stats.rs`). `aim_stale_sum / aim_stale_samples`
+//!   is the mean `T − S` in ticks, `aim_stale_max` is the tail, and
+//!   `aim_stale_hist` is the distribution — index `n` is exactly `n` ticks
+//!   up to the last, which is "that many **or more**"
+//!   (`stats::AIM_STALE_BUCKETS`). `aim_stale_unacked` and
+//!   `aim_stale_refused` are the two exclusions, published so the sample
+//!   count can be checked against the frames the shard actually ran rather
+//!   than trusted. **These are raw `T − S`**: the interpolation delay is
+//!   not in them and `stats.rs` says why.
+//!
+//!   `aim_stale_hist` is the one array in the document. Integers still
+//!   (`stats.rs` L5 bans strings, not shape) — the alternative was eight
+//!   flat fields whose names would encode the bucket edges, which puts the
+//!   thing a reader must know in a key instead of in a doc comment.
 //!
 //! ## What this thread is allowed to touch
 //!
@@ -160,11 +190,42 @@ fn answer(mut stream: TcpStream, stats: &ShardStats) -> std::io::Result<()> {
     // this thread is not the sim thread — correctness and boundedness over
     // cleverness (the fixed-buffer alternative buys nothing measurable
     // against a poller that asks every few seconds).
+    // The histogram, `[a,b,…]` — built here so the one format! below stays
+    // a flat list of integers like every other field.
+    let mut hist = String::from("[");
+    for (i, b) in stats.aim_stale_hist.iter().enumerate() {
+        if i > 0 {
+            hist.push(',');
+        }
+        hist.push_str(&ShardStats::get(b).to_string());
+    }
+    hist.push(']');
     let body = format!(
-        "{{\"players\":{},\"max_players\":{},\"tick\":{}}}",
+        "{{\"players\":{},\"max_players\":{},\"tick\":{},\
+         \"dg_out_bytes\":{},\"dg_out_pkts\":{},\
+         \"dg_in_bytes\":{},\"dg_in_pkts\":{},\
+         \"stream_out_bytes\":{},\"stream_out_frames\":{},\
+         \"stream_in_bytes\":{},\"stream_in_frames\":{},\
+         \"aim_stale_samples\":{},\"aim_stale_sum\":{},\"aim_stale_max\":{},\
+         \"aim_stale_unacked\":{},\"aim_stale_refused\":{},\
+         \"aim_stale_hist\":{}}}",
         ShardStats::get(&stats.players),
         sim_core::limits::MAX_PLAYERS,
         ShardStats::get(&stats.current_tick),
+        ShardStats::get(&stats.net_dg_out_bytes),
+        ShardStats::get(&stats.net_dg_out_count),
+        ShardStats::get(&stats.net_dg_in_bytes),
+        ShardStats::get(&stats.net_dg_in_count),
+        ShardStats::get(&stats.net_stream_out_bytes),
+        ShardStats::get(&stats.net_stream_out_frames),
+        ShardStats::get(&stats.net_stream_in_bytes),
+        ShardStats::get(&stats.net_stream_in_frames),
+        ShardStats::get(&stats.aim_stale_samples),
+        ShardStats::get(&stats.aim_stale_sum),
+        ShardStats::get(&stats.aim_stale_max),
+        ShardStats::get(&stats.aim_stale_unacked),
+        ShardStats::get(&stats.aim_stale_refused),
+        hist,
     );
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

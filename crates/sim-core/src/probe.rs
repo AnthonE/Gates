@@ -126,6 +126,9 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
     hash_f32(&mut h, haven.x);
     hash_f32(&mut h, haven.z);
     hash_f32(&mut h, haven.y);
+    // The carved floor's level: worldgen state since the carve was armed, and
+    // the datum every seated object and every cut depth is measured from.
+    hash_f32(&mut h, haven.floor_y);
     hash_f32(&mut h, haven.relief);
     h.update(&[haven.phase, haven.shelter]);
     let (sx, sz, syaw) = terrain::haven_shelter(&haven);
@@ -148,6 +151,7 @@ pub extern "C" fn probe_sites(seed: u64) -> u64 {
         hash_f32(&mut h, ws.x);
         hash_f32(&mut h, ws.z);
         hash_f32(&mut h, ws.y);
+        hash_f32(&mut h, ws.floor_y);
         h.update(&[ws.phase, ws.live as u8]);
         let mut c = 0i32;
         while c < terrain::WAYSTATION_CRATES {
@@ -282,12 +286,21 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 cz: own_cell.1,
                 level: ((t / 32) % 2) as u8,
                 loc: ((t / 16) % 4) as u8,
+                freehand: false,
             };
-            // Bot 2 pokes the deploy verb at its own feet: row 4 is out
-            // of range and loc/level cycle, so placements AND every
-            // deploy refusal reason ride the surface; feed mostly hits
-            // the no-hearth refusal, and the successes cover stock. The
-            // gated craft (recipe 2) arms once bot 2's workbench stands.
+            // Bot 2 pokes the deploy verb at its own feet: loc/level
+            // cycle, so placements AND every deploy refusal reason ride
+            // the surface; feed mostly hits the no-hearth refusal, and the
+            // successes cover stock. The gated craft (recipe 2) arms once
+            // bot 2's workbench stands.
+            //
+            // The modulus is the fixture's `def_count` (8 since research
+            // v0), so every archetype the table declares gets placed here
+            // — including the lock, which almost always refuses because no
+            // door stands at the address, and the recycler, whose switch
+            // must NOT refuse for want of fuel. Widening it was the whole
+            // cost of putting the new archetype inside the parity, replay
+            // and alloc surfaces.
             let own2 = {
                 let b = &world.players[1].body;
                 let cx = crate::build::build_cell_of(b.qx as f32 * crate::movement::POS_XZ_Q);
@@ -296,7 +309,7 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
             };
             let place_deploy = Command::PlaceDeploy {
                 id: 2,
-                row: ((t / 16) % 5) as u16,
+                row: ((t / 16) % 8) as u16,
                 cx: own2.0,
                 cz: own2.1,
                 level: ((t / 64) % 2) as u8,
@@ -538,7 +551,7 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
         // the cooldown and the ring fallback all on this surface.
         world.survival = crate::survival::SurvivalContent::probe_fixture();
         world.deploy = crate::deploy::DeployContent::probe_fixture();
-        world.dev_spawn = Some(buildable_near(seq_seed, world.spawn_pos(1)));
+        world.dev_spawn = Some(buildable_near(seq_seed, &world.haven, world.spawn_pos(1)));
         world.tick(&[
             Command::Join { id: 1 },
             Command::Join { id: 2 },
@@ -551,6 +564,7 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
             p.inv[10] = ItemStack {
                 item: 5, // the fixture's bag item (deploy row 3)
                 count: crate::deploy::BAG_CAP as u16,
+                cond: 0,
             };
         }
         let mut rng = Pcg32::new(seq_seed, 13);
@@ -643,7 +657,7 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
 /// it is a search and never a walk to nowhere. No trig and no `sqrt`: the
 /// step direction is normalized by its own largest component, which is a
 /// division (wall 1) and moves along the same ray.
-fn buildable_near(seed: u64, (x, z): (f32, f32)) -> (f32, f32) {
+fn buildable_near(seed: u64, haven: &terrain::Haven, (x, z): (f32, f32)) -> (f32, f32) {
     let c = terrain::ISLAND_SIZE * 0.5;
     let (mut dx, mut dz) = (c - x, c - z);
     let m = if dx < 0.0 { -dx } else { dx }.max(if dz < 0.0 { -dz } else { dz });
@@ -659,7 +673,7 @@ fn buildable_near(seed: u64, (x, z): (f32, f32)) -> (f32, f32) {
         let cz = crate::build::build_cell_of(pz);
         let ax = (cx as f32 + 0.5) * crate::build::BUILD_CELL_M;
         let az = (cz as f32 + 0.5) * crate::build::BUILD_CELL_M;
-        if crate::build::foundation_terrain_ok(seed, ax, az) {
+        if crate::build::foundation_terrain_ok(seed, haven, ax, az) {
             return (ax, az);
         }
         px += dx * crate::build::BUILD_CELL_M;
@@ -718,6 +732,7 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
                 *s = ItemStack {
                     item: (slot % 2) as u16,
                     count: 1,
+                    cond: 0,
                 };
             }
         }

@@ -1,4 +1,4 @@
-//! The craft panel's model — `Rust Images/crafting.png`, read as a list of
+//! The craft panel's model — the reference `crafting.png`, read as a list of
 //! things a panel must be able to answer.
 //!
 //! The reference frame answers six questions at once and ours answered one.
@@ -14,10 +14,13 @@
 //! The reference rail sorts by **item class** — CONSTRUCTION, RESOURCES,
 //! CLOTHING, TOOLS, MEDICAL, WEAPONS, AMMO. We cannot draw that rail
 //! honestly, because **the wire does not carry an item's class.**
-//! `EventMsg::Catalog` ships display names and nothing else
-//! (`protocol/src/event.rs`), so a client-side class would be a guess made
-//! from a string — and a guess in a filter is a recipe the player cannot
-//! find.
+//! `EventMsg::Catalog` ships display names, condition ceilings (v46) and
+//! the two armor columns (v52) — no class among them (`protocol/src/
+//! event.rs`), so a client-side class would be a guess made from a string,
+//! and a guess in a filter is a recipe the player cannot find. Note what
+//! the armor columns are *not*: `wear_slot` says where a piece is worn,
+//! which is CLOTHING for the three rows that carry it and silent about
+//! every other item, so it is one bucket of seven and not a rail.
 //!
 //! So the rail here is built from what the client provably knows, and every
 //! bucket is a fact rather than a category: which station a recipe needs
@@ -33,6 +36,7 @@
 use protocol::event::ItemCatalog;
 use sim_core::craft::{
     inv_count, CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
+    STATION_WORKBENCH2, STATION_WORKBENCH3,
 };
 use sim_core::deploy::DeployContent;
 use sim_core::gather::ItemStack;
@@ -157,6 +161,12 @@ pub struct Row {
     /// dimmed — the reference greys an unaffordable recipe rather than
     /// hiding it, so the player can see what to go and get.
     pub affordable: u32,
+    /// Blueprint-gated and not yet learned (research v0). **Shown, not
+    /// hidden**, for `affordable`'s reason exactly: a recipe you cannot
+    /// craft yet is the thing that tells you what a research table is
+    /// for, and hiding it would make the whole verb invisible to a player
+    /// who has never seen one.
+    pub locked: bool,
 }
 
 /// Does this recipe belong in `cat`?
@@ -165,7 +175,11 @@ pub fn in_category(cat: Cat, recipe: u16, def: &RecipeDef, facts: &Facts, favs: 
         Cat::Favourite => favs.contains(&recipe),
         Cat::All => true,
         Cat::ByHand => def.station == STATION_NONE,
-        Cat::Workbench => def.station == STATION_WORKBENCH1,
+        // Any rung: the bucket answers "do I need a bench", and which
+        // level is the badge's job (bench ladder v0). An equality against
+        // rung 1 here is how a tier-2 recipe silently vanishes from every
+        // station bucket.
+        Cat::Workbench => (STATION_WORKBENCH1..=STATION_WORKBENCH3).contains(&def.station),
         Cat::Furnace => def.station == STATION_FURNACE,
         Cat::Deployable => facts.is_deployable(def.output),
         Cat::Component => facts.is_component(def.output),
@@ -235,6 +249,7 @@ pub fn rows(
     catalog: &ItemCatalog,
     facts: &Facts,
     favs: &[u16],
+    known: u64,
     cat: Cat,
     query: &str,
     out: &mut Vec<Row>,
@@ -263,6 +278,10 @@ pub fn rows(
             out_count: def.out_count,
             station: def.station,
             affordable: affordable(def, inv),
+            // The sim's own predicate, imported rather than re-derived:
+            // one shift written once, so a client cannot disagree with the
+            // server about what a player knows.
+            locked: def.blueprint && !sim_core::research::knows(known, recipe),
         });
     }
 }
@@ -333,6 +352,8 @@ pub fn station_label(station: u8) -> Option<&'static str> {
     match station {
         STATION_NONE => None,
         STATION_WORKBENCH1 => Some("WORKBENCH LEVEL 1 REQUIRED"),
+        STATION_WORKBENCH2 => Some("WORKBENCH LEVEL 2 REQUIRED"),
+        STATION_WORKBENCH3 => Some("WORKBENCH LEVEL 3 REQUIRED"),
         STATION_FURNACE => Some("FURNACE REQUIRED"),
         _ => Some("STATION REQUIRED"),
     }
@@ -356,7 +377,7 @@ pub fn item_name(catalog: &ItemCatalog, item: u16) -> Option<&str> {
 
 /// What a cell or a table row prints for an item: its name, or `#12` for an
 /// index no name has arrived for. Drawing the index is honest; drawing an
-/// empty cell is the dark-panel defect both this repo and scry's launcher
+/// empty cell is the dark-panel defect both this repo and elo's launcher
 /// have a rule against.
 ///
 /// Allocates, and that is the right trade here: it builds the string a

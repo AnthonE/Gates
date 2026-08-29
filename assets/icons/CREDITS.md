@@ -10,8 +10,8 @@ Icons made by:
 
 - carl-olsen
 - delapouite
-- john-redman
 - lorc
+- sbed
 
 Available on https://game-icons.net
 
@@ -51,11 +51,14 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `metal_pickaxe.png` | `delapouite/mining-helmet` |
 | `metal_spear.png` | `lorc/barbed-spear` |
 | `mushrooms.png` | `delapouite/mushrooms` |
+| `junk.png` | `delapouite/two-coins` |
 | `pistol_round.png` | `delapouite/heavy-bullets` |
 | `raw_meat.png` | `delapouite/steak` |
+| `recycler.png` | `lorc/recycle` |
+| `research_table.png` | `lorc/scroll-unfurled` |
 | `revolver.png` | `delapouite/revolver` |
 | `roadsign_vest.png` | `lorc/armor-vest` |
-| `rock.png` | `john-redman/rock` |
+| `rock.png` | `lorc/rock` |
 | `rope.png` | `delapouite/rope-coil` |
 | `satchel_charge.png` | `delapouite/dynamite` |
 | `shape_doorway.png` | `delapouite/door` |
@@ -63,7 +66,12 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `shape_foundation.png` | `delapouite/flat-platform` |
 | `shape_roof.png` | `delapouite/great-pyramid` |
 | `shape_stairs.png` | `delapouite/3d-stairs` |
+| `shape_tri_floor.png` | `delapouite/sail` |
+| `shape_tri_foundation.png` | `delapouite/corner-flag` |
+| `shape_tri_roof.png` | `delapouite/tipi` |
 | `shape_wall.png` | `delapouite/brick-wall` |
+| `shape_wall_frame.png` | `delapouite/gate` |
+| `shape_window.png` | `delapouite/window` |
 | `sleeping_bag.png` | `delapouite/sleeping-bag` |
 | `small_box.png` | `delapouite/wooden-crate` |
 | `stone.png` | `delapouite/stone-pile` |
@@ -77,11 +85,16 @@ Licence: https://creativecommons.org/licenses/by/3.0/
 | `verb_pick_up.png` | `lorc/grab` |
 | `verb_repair.png` | `lorc/auto-repair` |
 | `verb_upgrade.png` | `delapouite/upgrade` |
+| `vital_food.png` | `delapouite/hot-meal` |
+| `vital_hp.png` | `sbed/health-normal` |
+| `vital_water.png` | `sbed/water-drop` |
 | `wood.png` | `delapouite/log` |
 | `wooden_arrow.png` | `delapouite/plain-arrow` |
 | `wooden_door.png` | `delapouite/door` |
 | `wooden_spear.png` | `lorc/spears` |
 | `workbench.png` | `lorc/hammer-nails` |
+| `workbench_2.png` | `lorc/anvil-impact` |
+| `workbench_3.png` | `lorc/gear-hammer` |
 
 ## Not from game-icons.net
 

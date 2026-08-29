@@ -39,6 +39,16 @@ pub struct Item {
     pub tier: u32,
     pub rarity: Rarity,
     pub slot: EquipSlot,
+    /// Maximum condition, **hundredths of a point** (item durability v0,
+    /// DECISIONS.md 2026-08-15 — taken from the reference, per item, never
+    /// one constant: rock 10 000, torch 5 000, stone tools 10 000, metal
+    /// tools 40 000). **Absent means 0 means never wears and can never be
+    /// repaired** — the schema default IS the rule for non-tools, so wood
+    /// and every consumable simply do not write the line. A nonzero value
+    /// requires `stack = 1` (validation rule V7): condition is per-stack
+    /// state and two conditions in one slot is a merge nobody can resolve.
+    #[serde(default)]
+    pub condition_max: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -86,6 +96,16 @@ pub struct Gatherable {
     pub finish_bonus_pct: u32,
     /// Tool item id (or `hand`) → units per hit. BTreeMap: canonical order.
     pub yield_per_hit: BTreeMap<String, u32>,
+    /// Tool item id → condition loss per landed hit, **hundredths of a
+    /// point** (item durability v0; the reference's 0.3/hit is 30). Keyed
+    /// per **(tool, node)** exactly as `yield_per_hit` is, because the
+    /// table IS the wrong-tool predicate (`reference/DURABILITY.md` §2 —
+    /// a metal hatchet pays 0.3 on a tree and 1.0 on flesh, one tool, two
+    /// rates, chosen by what it is swung at). There is no predicate to
+    /// port. Never `hand` (bare hands do not wear — V2), and every
+    /// condition-carrying tool a node pays must have a row (V4).
+    #[serde(default)]
+    pub condition_loss: BTreeMap<String, u32>,
     /// The optional side payout. Absent on every node that pays one thing.
     #[serde(default)]
     pub secondary: Option<Secondary>,
@@ -96,6 +116,12 @@ pub struct Gatherable {
 pub enum Station {
     None,
     Workbench1,
+    /// The bench ladder's second and third rungs (bench ladder v0, the
+    /// pre-Oct-2025 scrap-era shape, operator 2026-08-15). Declared
+    /// between `Workbench1` and `Furnace` so the enum's order stays the
+    /// baked code's order — the furnace moved 2 → 4 with them.
+    Workbench2,
+    Workbench3,
     Furnace,
 }
 
@@ -116,6 +142,46 @@ pub struct Recipe {
     pub station: Station,
     pub seconds: u32,
     pub inputs: Vec<Stack>,
+    /// Locked behind research (`content/research.toml`, research v0):
+    /// nobody may craft this until they have learned it. Defaults false —
+    /// most of the ladder is open, and a gate you have to opt into is a
+    /// gate you cannot apply by accident.
+    #[serde(default)]
+    pub blueprint: bool,
+}
+
+/// One row of `content/research.toml`: an item you can take to a table,
+/// and what learning it costs in the coin the file names.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Research {
+    /// The item consumed. The recipe it unlocks is the one that outputs
+    /// this item — resolved at bake, so the file never names a recipe id
+    /// and the two can never disagree about which thing was learned.
+    pub item: String,
+    /// Units of the coin burned. Zero is legal (a free unlock is a
+    /// tutorial, not a mistake).
+    pub cost: u32,
+    /// The tech tree's edge (tech tree v0): the **item** of another
+    /// research row that must be learned before this node may be bought
+    /// at a bench. Absent means a root. Written as an item rather than a
+    /// recipe id for the same reason `item` is — the file speaks in
+    /// things a player recognises, and the bake resolves the graph.
+    /// Only the tree verb reads it; the research table takes a looted
+    /// sample with no questions asked.
+    #[serde(default)]
+    pub requires: Option<String>,
+}
+
+/// The head of `content/research.toml`: what research is paid in.
+///
+/// One coin for the whole table, named here rather than assumed in code —
+/// `sim-core/research.rs` receives an item index and never learns that it
+/// is currency, which is what keeps `DESIGN.md` §3.1 out of `crates/`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchCoin {
+    pub item: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -127,11 +193,28 @@ pub enum Shape {
     Floor,
     Stairs,
     Roof,
+    /// The two socket shapes (catalogue v1, `reference/BUILDING.md`
+    /// §9.13): openings priced by what they deny net of the insert you
+    /// still owe — window 0.7 of the wall, frame 0.5 (§7b.3).
+    Window,
+    WallFrame,
+    /// The triangle footprint (triangles v0, §9.14): the half-cell along
+    /// a diagonal, at §7b.3's own ratios — tri foundation and tri roof
+    /// 0.5 of the wall, tri floor 0.25. The diagonal WALL that closes a
+    /// hypotenuse is not a shape: it is the wall, on a diagonal slot.
+    TriFoundation,
+    TriFloor,
+    TriRoof,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Material {
+    /// The placement state, not a grade: everything is built as twig and
+    /// a hammer commits it upward (`reference/BUILDING.md` §7b.4). First
+    /// in the enum because the order IS the upgrade ladder — `Ord` here
+    /// is what `decay_pct_per_period`'s map and the ladder checks read.
+    Twig,
     Wood,
     Stone,
     Metal,
@@ -144,7 +227,9 @@ pub struct Piece {
     pub shape: Shape,
     pub material: Material,
     pub hp: u32,
-    /// Direct build cost, and the upgrade-into cost (wood→stone→metal).
+    /// Direct build cost, and the upgrade-into cost. Only a twig row is
+    /// ever paid as a *placement*; the rest are paid on top of it, by the
+    /// hammer (sim-core `build::place` refuses anything else).
     pub cost: Vec<Stack>,
 }
 
@@ -157,9 +242,27 @@ pub enum WeaponKind {
     Throwable,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+/// One round, and **the object its own ballistics belong to**.
+///
+/// This used to be a `[weapon.ballistic]` block on the bow, and moving it
+/// here is `reference/PROJECTILES.md` §9.3 (operator, 2026-08-10). The
+/// reference game hangs ballistics off `ItemModProjectile` — a mod on the
+/// *ammo item* — which is why one bow there fires four arrows that differ
+/// in speed, drop and impact while the bow stays one object. With the
+/// numbers on the weapon, an arrow variant is unreachable at any values:
+/// the bow decides how fast its arrow flies, so every arrow it fires flies
+/// the same.
+///
+/// Damage stays on the weapon. That is not the reference's split — theirs
+/// scales the weapon's damage by the round's — but the multiplier is a
+/// number nobody has spoken, and inventing one is `DECISIONS.md` §open's
+/// job rather than this struct's.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Ballistic {
+pub struct Ammo {
+    /// Item id this row arms — ammo is an item first, exactly as weapons
+    /// are. An `[[ammo]]` row naming no item is refused at boot.
+    pub id: String,
     pub speed_mps: u32,
     pub drop_mps2: u32,
 }
@@ -179,9 +282,17 @@ pub struct Weapon {
     pub headshot_mult: u32,
     pub rate_per_min: u32,
     pub range_m: u32,
-    /// Required for projectile kinds; absent on a firearm = hitscan.
-    pub ballistic: Option<Ballistic>,
-    pub ammo: Option<String>,
+    /// The rounds this weapon can fire, in **preference order** — the sim
+    /// spends the first one the shooter is actually carrying. Required on
+    /// `bow`, refused on melee and throwable.
+    ///
+    /// A list rather than one id because the reference game's bow is a
+    /// `BaseProjectile` with `SwitchAmmoTo`: one weapon, several rounds.
+    /// We have the *capacity* here and not yet the verb — there is no way
+    /// to ask for a particular arrow, so order in this list is the whole
+    /// of the policy. Every shipped row names exactly one round today, so
+    /// nothing about what a bow fires has changed with the schema.
+    pub ammo: Option<Vec<String>>,
     /// Fuse seconds — required on `throwable`, refused on every other
     /// kind (`validate.rs`), because it is the one column a swing has no
     /// meaning for. The bake turns it into ticks against `TICK_HZ` the
@@ -253,6 +364,22 @@ pub enum DeployArchetype {
     /// bolts onto a door's address and lives in the sim's lock store
     /// (`sim-core/lock.rs`, `reference/DOORS.md` §9.1).
     Lock,
+    /// A recycler (recycler v0): a container that converts without
+    /// burning. An oven in the sim (`sim-core/oven.rs`) minus the fuel,
+    /// and the economy's first faucet — what it pays is rows in
+    /// `content/cooking.toml`, never code.
+    Recycler,
+    /// A research table (research v0). A **station** rather than a
+    /// container — checked by proximity like the workbench, holding
+    /// nothing (`sim-core/research.rs` says why) — and the coin's sink.
+    Research,
+    /// The bench ladder's upper rungs (bench ladder v0): stations like
+    /// `Workbench`, one tier each. Their own archetypes rather than a
+    /// tier field, because the archetype is what the wire carries, the
+    /// client silhouettes and `bench_near` scans — `sim-core/deploy.rs`
+    /// `bench_tier` is the one place the rung order is written.
+    Workbench2,
+    Workbench3,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -285,25 +412,45 @@ pub struct Fuel {
     pub byproduct_pct: u32,
 }
 
-/// Which oven runs a cook row. The archetype names of
-/// `content/deployables.toml`, narrowed to the two that burn — a row that
-/// named `box` would be a transformation with no station.
+/// Which container runs a cook row. The archetype names of
+/// `content/deployables.toml`, narrowed to the three that convert — a row
+/// that named `box` would be a transformation with no station.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CookStation {
     Fire,
     Furnace,
+    /// Converts without burning (recycler v0). The station that makes this
+    /// table the economy's arming point: a row here is a faucet.
+    Recycler,
 }
 
-/// One transformation an oven performs: one unit in, one unit out, over
-/// `seconds`, at `station`.
+/// One transformation a container performs: one unit in, `count` units of
+/// `output` out, over `seconds`, at `station`.
+///
+/// **Several rows may share one `(station, input)`** — that is how a
+/// component recycles into metal *and* coin — and when they do, the sim
+/// fires all of them together on one clock. `validate::structural`
+/// therefore holds such a set to a single `seconds` and refuses two rows
+/// that pay the same output.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cook {
     pub input: String,
     pub output: String,
+    /// Units of `output` one conversion pays. Defaults to 1, which is
+    /// every cooking row — the field exists for the recycler, where a
+    /// component is worth eight fragments.
+    #[serde(default = "one")]
+    pub count: u32,
     pub seconds: u32,
     pub station: CookStation,
+}
+
+/// `Cook::count`'s default. A free function because `serde(default = …)`
+/// takes a path and not a literal.
+fn one() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -353,14 +500,34 @@ pub struct Mob {
     pub hp: u32,
     /// Amble speed, percent of `WALK_SPEED`.
     pub walk_pct: u32,
-    /// Flight speed, percent of `SPRINT_SPEED`.
+    /// Flight-and-charge speed, percent of `SPRINT_SPEED` — one fast gait
+    /// for both directions of a rousing.
     pub flee_pct: u32,
-    /// How long one fright lasts.
+    /// How long one rousing lasts — the fright's span and the charge's
+    /// commitment.
     pub flee_seconds: u32,
+    /// Damage per bite. Zero = this species never fights (the pacifist
+    /// row stays expressible; validate refuses the half-armed states).
+    pub attack: u32,
+    /// Bite reach, metres.
+    pub attack_range_m: u32,
+    /// Seconds between bites.
+    pub attack_seconds: u32,
+    /// Percent of max hp at which courage runs out: at or above it a
+    /// roused animal charges its tormentor, below it the same rousing is
+    /// a flight. The reference boar's rule — fights whole, flees hurt.
+    pub brave_pct: u32,
     /// Leash radius from the home the seed chose.
     pub roam_m: u32,
-    /// A player closer than this starts a flight.
+    /// A player closer than this starts a flight — in daylight.
     pub spook_m: u32,
+    /// The same radius after dusk. Required, like every other field here:
+    /// a species that did not say what it does at night would be defaulted
+    /// into an answer, and the whole point of the field is that the hour is
+    /// a content decision. Free to be larger, smaller or equal — validate
+    /// holds the reachability bands at *both* hours and takes no view on
+    /// the direction.
+    pub night_spook_m: u32,
     /// Time between a death and the same slot standing up again at the
     /// same home.
     pub respawn_seconds: u32,
@@ -370,13 +537,13 @@ pub struct Mob {
     pub drops: Vec<Stack>,
 }
 
-/// Bare tickers only (CLAUDE.md wall 8) — the enum cannot spell `$SCRY`.
+/// Bare tickers only (CLAUDE.md wall 8) — the enum cannot spell `$ELO`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub enum Coin {
-    #[serde(rename = "SCRY")]
-    Scry,
-    #[serde(rename = "MYRRH")]
-    Myrrh,
+    #[serde(rename = "ELO")]
+    Elo,
+    #[serde(rename = "ORBS")]
+    Orbs,
 }
 
 /// Appearance only: no stat field exists to write (DESIGN.md §3.3).
@@ -405,6 +572,18 @@ pub struct Globals {
     /// A map rather than three fields so a fourth grade is a data change
     /// (`Material`'s own set is what validate checks it against).
     pub decay_pct_per_period: BTreeMap<Material, u32>,
+    /// Chance in 100 that an arrow is destroyed where it lands rather
+    /// than becoming an item on the ground (arrow recovery v0). A
+    /// *global* and not an ammo column on purpose: `[[ammo]]` carries no
+    /// damage column either (`content/weapons.toml` says why), and one
+    /// break rate for every round is the same posture one tick further
+    /// out. §9.3's per-round ballistics table is where a per-round break
+    /// chance would go the day one is wanted.
+    pub arrow_break_pct: u32,
+    /// Seconds an arrow that dealt damage lies in its target before it
+    /// may be taken back; a missed arrow is takeable at once. Seconds so
+    /// the file stays free of the tick rate, exactly like `fuse_s`.
+    pub arrow_lodge_s: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]

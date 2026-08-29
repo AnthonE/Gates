@@ -1,6 +1,6 @@
 //! Item, building-shape and hammer-verb icons.
 //!
-//! **Why this exists.** Every cell in `Rust Images/crafting.png` is a picture
+//! **Why this exists.** Every cell in the reference `crafting.png` is a picture
 //! of the thing; every cell of ours was a clipped word (`Gunpowde`,
 //! `Workbenc`). That is the difference between a screen you scan and a screen
 //! you read, and it is why the panels looked like a spreadsheet no matter
@@ -20,8 +20,9 @@
 //!
 //! ## The key is the item's NAME, and that is forced
 //!
-//! `protocol::ItemCatalog` carries display names and nothing else — there is
-//! no content id on the wire. So a cell finds its icon by normalising the
+//! `protocol::ItemCatalog` carries display names, condition ceilings (v46)
+//! and the armor columns (v52) — there is
+//! no content id on the wire, and none of the numeric columns is one. So a cell finds its icon by normalising the
 //! name the server sent (`"Low Grade Fuel"` → `low_grade_fuel`) and the baker
 //! writes its files under the same normalisation, derived from
 //! `content/items.toml` rather than typed twice. 21 of the 48 items have a
@@ -51,6 +52,17 @@ pub struct Icons {
 }
 
 impl Icons {
+    /// Every handle this set asked the asset server for.
+    ///
+    /// Exists for the boot splash, which is the one caller that cares about
+    /// the *set* rather than about any icon in it: it lifts when every handle
+    /// has settled (`render/boot.rs`). Order-independent by construction — it
+    /// is folded with `all`, never indexed — so iterating the map is safe
+    /// here in a way wall 1 forbids inside the sim.
+    pub fn handles(&self) -> impl Iterator<Item = &Handle<Image>> {
+        self.by_name.values()
+    }
+
     /// The icon for an item's display name, if one was baked.
     pub fn item(&self, name: &str) -> Option<Handle<Image>> {
         self.by_name.get(&stem(name)).cloned()
@@ -68,6 +80,13 @@ impl Icons {
     /// the wire, and which map a call site is reading is worth being able to
     /// grep for.
     pub fn verb(&self, key: &str) -> Option<Handle<Image>> {
+        self.by_name.get(key).cloned()
+    }
+
+    /// A UI glyph borrowed from the item set by literal stem — the tech
+    /// tree's padlock is `code_lock` worn as an overlay (tech tree v0).
+    /// [`Self::shape`]'s lookup, its own name for its own grep.
+    pub fn glyph(&self, key: &str) -> Option<Handle<Image>> {
         self.by_name.get(key).cloned()
     }
 }

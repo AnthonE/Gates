@@ -4,23 +4,23 @@
 //! A shard that forgets you on every disconnect cannot be authenticated
 //! into meaning anything: you could prove who you are perfectly and still
 //! lose everything when your connection drops. So this is the slice that
-//! had to come first, and it needs nothing from scry to land.
+//! had to come first, and it needs nothing from elo to land.
 //!
 //! ## The key is opaque, and that is the point
 //!
 //! A save is filed under a [`PlayerKey`]: bytes the admission seam returned
 //! (`auth::verify`), which this module never interprets. Whether they come
-//! from a SIWE signature, a scry player id or a dev flag is that seam's
+//! from a SIWE signature, an elo player id or a dev flag is that seam's
 //! business — change it and nothing here moves. The debate about *which*
 //! identity scheme wins was therefore never a blocker for persistence; it
 //! is one function's return type, and SIWE won (`DECISIONS.md` 2026-08-07).
 //!
-//! ## What this stores, and what scry stores
+//! ## What this stores, and what elo stores
 //!
 //! This holds where your body stood and what was in its hands. It holds no
 //! profile, no balance, no item entitlement: those live in the launcher's
 //! world, and a shard that cached them would be a second, stale copy of
-//! somebody else's ledger. The division is the same one `scry_overlay.rs`
+//! somebody else's ledger. The division is the same one `elo_overlay.rs`
 //! draws for keys — the game process never holds what it is not the
 //! authority for.
 //!
@@ -62,7 +62,7 @@ use xxhash_rust::xxh3::xxh3_64;
 ///
 /// Covers every identity anyone has proposed for this game with room over:
 /// a lowercase `0x…` Ethereum address (42 bytes — what `auth::verify`
-/// actually returns), a 32-byte scry player id, a UUID, or a dev shard's
+/// actually returns), a 32-byte elo player id, a UUID, or a dev shard's
 /// bare name. Deliberately too small to hold a self-describing credential —
 /// a key is a lookup handle, and a store that could hold a JWT would invite
 /// somebody to read claims out of one.
@@ -71,7 +71,7 @@ use xxhash_rust::xxh3::xxh3_64;
 /// today, so a cap under 42 would leave every verified player unnameable —
 /// persistence silently doing nothing for everybody, with every gate green.
 /// It stays at 48 rather than shrinking to 42 because the key is
-/// deliberately opaque to everything but `auth.rs` — the day scry maps an
+/// deliberately opaque to everything but `auth.rs` — the day elo maps an
 /// address to a player id, that id lands here and nothing else moves.
 /// Proposed default, DECISIONS.md §open ("player persistence v0").
 pub const PLAYER_KEY_MAX_BYTES: usize = 48;
@@ -134,7 +134,18 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// a file instead of a packet. The header check below is what makes a
 /// forgotten bump a loud refusal instead of a silent reinterpretation of
 /// somebody's inventory.
-pub const SAVE_FORMAT: u16 = 1;
+///
+/// **1 → 2 at research v0**: `PlayerSave` grew the blueprint mask, so the
+/// record went 260 → 268 bytes. There is no migrator by design — a save
+/// written by an older build is moved aside, which is what a wipe is.
+/// **3 — an inventory slot carries its condition** (item durability v0):
+/// `PlayerSave`'s slot stride 4 → 6 B, 196 → 256 per record, and the
+/// canonical-empty rule widens with it (`persist.rs`).
+/// **4 — a body saves what it is wearing** (armor v0): `PlayerSave` grew
+/// `worn`, `WEAR_SLOTS` stacks at the inventory's own six-byte stride, so
+/// the record went 256 → 268 per player. The layout moved and nothing on
+/// disk announces it, which is the whole reason this number exists.
+pub const SAVE_FORMAT: u16 = 4;
 
 /// Header size. Fixed so record `i` is at a computable offset.
 pub const SAVE_HEADER_BYTES: usize = 48;
@@ -220,10 +231,13 @@ impl PlayerKey {
 pub struct SaveLoad {
     /// Records loaded and admitted.
     pub live: usize,
-    /// Records refused: a bad checksum (a torn write) or a field the sim's
-    /// own validator would not accept. The slot is treated as empty and is
-    /// free to be reused, so a corrupt record costs one player their save
-    /// and nothing else.
+    /// Records refused: a bad checksum (a torn write), a field the sim's
+    /// own validator would not accept, or a condition the loaded content
+    /// could not have minted (`crate::cond` — the decoder runs without the
+    /// content tables, so the ceiling check has to happen here, where they
+    /// are in scope). The slot is treated as empty and is free to be
+    /// reused, so a corrupt record costs one player their save and nothing
+    /// else.
     pub corrupt: usize,
     /// True when the file did not exist and was created empty.
     pub created: bool,
@@ -540,7 +554,19 @@ fn rotate_backups(path: &Path) {
 /// `.sav.1` may itself be corrupt, because corruption can predate the newest
 /// backup by several save cycles — which is why a depth of one is not worth
 /// having and 2 is their documented minimum (`reference/SAVES.md` §6).
-pub fn open(path: &Path, seed: u64, content_hash: u64) -> Result<(Saves, SaveLoad), String> {
+///
+/// `gather` is the baked content this shard runs, and it is here for one
+/// check the decoder cannot make: a record whose condition no command could
+/// have minted (`crate::cond` carries the refuse-not-clamp policy) is
+/// counted corrupt, exactly as a torn write is. `content_hash` already
+/// pinned the content this file was written under, so the ceilings asked of
+/// `gather` are the ceilings the save was played under.
+pub fn open(
+    path: &Path,
+    seed: u64,
+    content_hash: u64,
+    gather: &sim_core::gather::GatherContent,
+) -> Result<(Saves, SaveLoad), String> {
     // Before the handle is taken, and before any validation: a file this boot
     // is about to refuse is exactly the file an operator most wants a copy of.
     if path.exists() {
@@ -672,6 +698,14 @@ pub fn open(path: &Path, seed: u64, content_hash: u64) -> Result<(Saves, SaveLoa
             .map_err(|e| format!("save file {}: reading record {index}: {e}", path.display()))?;
         match decode_record(&rec) {
             Ok(None) => {}
+            // The condition wall (`crate::cond`): the decoder bounded every
+            // field it could see without content; this is the one it could
+            // not. Refused as corrupt, never clamped — the module header
+            // there says why, and per-record rather than per-file because
+            // one edited save is one player's, not everyone's.
+            Ok(Some((_, _, save))) if crate::cond::violation(&save.inv, gather).is_some() => {
+                found.corrupt += 1;
+            }
             Ok(Some((key, stamp, save))) => {
                 found.live += 1;
                 store.put(&key, stamp, save);
@@ -825,7 +859,10 @@ mod tests {
     fn the_layout_is_the_size_the_header_declares() {
         assert_eq!(REC_SUM + 8, SAVE_RECORD_BYTES);
         assert_eq!(REC_SAVE, 64, "the save body's offset moved");
-        assert_eq!(SAVE_RECORD_BYTES, 260);
+        // 268 → 328 at SAVE_FORMAT 3: the save body grew 60 bytes (an
+        // inventory slot is six bytes since item durability v0). 328 → 340
+        // at SAVE_FORMAT 4: two worn slots at the same stride (armor v0).
+        assert_eq!(SAVE_RECORD_BYTES, 340);
         let head = encode_header(7, 0xdead_beef);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,

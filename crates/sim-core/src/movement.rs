@@ -89,8 +89,8 @@ pub struct Body {
 }
 
 impl Body {
-    pub fn at(seed: u64, x: f32, z: f32) -> Self {
-        let y = terrain::height(seed, x, z);
+    pub fn at(seed: u64, haven: &terrain::Haven, x: f32, z: f32) -> Self {
+        let y = terrain::ground(seed, haven, x, z);
         Self {
             qx: quant_xz(x),
             qy: quant_y(y),
@@ -116,7 +116,14 @@ fn climbable(from_y: f32, to_ground: f32, run: f32) -> bool {
 /// `occ` is the scattered-world collision bundle (occupy.rs) and is here for
 /// the same reason `cols` is: a wall only one side knows about is a
 /// misprediction every time a player leans on a tree.
-pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, frame: &InputFrame) {
+pub fn step(
+    seed: u64,
+    haven: &terrain::Haven,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    body: &mut Body,
+    frame: &InputFrame,
+) {
     let x = body.qx as f32 * POS_XZ_Q;
     let y = body.qy as f32 * POS_Y_Q;
     let z = body.qz as f32 * POS_XZ_Q;
@@ -137,7 +144,14 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
     }
 
     // Wade on the effective ground (a floor over shallows stays dry).
-    let ground_here = terrain::height(seed, x, z).max(collide::piece_ground(seed, cols, x, z, y));
+    // `piece_ground` covers built planes, ramps and solid-deploy tops;
+    // `occ.ground` covers scattered tops — the crate, the boulder, the
+    // shelter plinth (deploy collision v0 / `slot_ground`). Without the
+    // occupant term here, a body standing on one would read the terrain
+    // under it as ground and fall inside on the next vertical pass.
+    let ground_here = terrain::ground(seed, haven, x, z)
+        .max(collide::piece_ground(seed, haven, cols, x, z, y))
+        .max(occ.ground(seed, x, z, y));
     let mut speed = if frame.buttons & BTN_SPRINT != 0 {
         SPRINT_SPEED
     } else {
@@ -155,9 +169,36 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
     let dz = wz * speed * DT;
     let mut nx = x;
     let mut nz = z;
+    // The effective ground under wherever the body ends up. It starts as the
+    // ground under where it started, because that is what "no candidate was
+    // accepted" resolves to, and the accepted candidate overwrites it with
+    // the pair that candidate already had to compute.
+    //
+    // **This is a saved terrain fan per step, not a tidy-up.** The vertical
+    // pass below used to re-derive this from (nx, nz), which is by
+    // construction either (x, z) — the identical expression on the line
+    // above — or a candidate whose `g` and `pg` were computed inside the
+    // loop and thrown away. `terrain::height` is ~12 `noise2` evaluations
+    // (a 2-octave warp on each axis, a 5-octave relief, the ridge tap, and
+    // the coast fBm inside `continent`), and it was the single largest line
+    // item in the shard profile: at `MAX_PLAYERS` bodies plus the roster,
+    // 30 times a second, the duplicate was ~30 % of every `noise2` the sim
+    // ran. A body standing still — a sleeper, a corpse on the death screen,
+    // anybody not pressing a key — paid for the whole fan twice.
+    //
+    // Arithmetically identical by construction, which is the only reason it
+    // may land: same `max` of the same two calls at the same coordinates, so
+    // `test_replay`, `test_terrain_golden` and `test_parity_wasm` are the
+    // proof rather than the risk.
+    let mut ground_sel = ground_here;
     // Whether the body is ALREADY inside an occupant, resolved at most once
     // and only if a candidate is vetoed by one. See the veto below.
     let mut inside: Option<bool> = None;
+    // The same latch for solid deployables, separately: being stuck in a
+    // pine must not license walking through a furnace.
+    let mut inside_dep: Option<bool> = None;
+    // ...and for plane flanks, third and apart for the same reason.
+    let mut inside_plane: Option<bool> = None;
     if len2 > 0.0 {
         let clamp_x = |v: f32| v.clamp(BORDER_MARGIN, ISLAND_SIZE - BORDER_MARGIN);
         let candidates = [(x + dx, z + dz), (x + dx, z), (x, z + dz)];
@@ -168,7 +209,7 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
             if run2 <= 0.0 {
                 continue;
             }
-            if collide::blocked(seed, cols, x, z, cx, cz, y) {
+            if collide::blocked(seed, haven, cols, x, z, cx, cz, y) {
                 continue;
             }
             // Trees, boulders, barrels, crates and the shelter's walls
@@ -188,16 +229,57 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
                     continue;
                 }
             }
-            let g = terrain::height(seed, cx, cz);
-            let pg = collide::piece_ground(seed, cols, cx, cz, y);
-            let ok = if pg > g {
-                pg - y <= STEP_UP
+            // Solid deployables — the furnace, the box, the hearth
+            // (collide::deploy_blocked, deploy collision v0). The same
+            // destination test and the same veto-lift, latched apart: a
+            // deploy CAN be placed around a standing body, and walking out
+            // must stay the escape.
+            if collide::deploy_blocked(seed, haven, cols, cx, cz, y) {
+                if inside_dep.is_none() {
+                    inside_dep = Some(collide::deploy_blocked(seed, haven, cols, x, z, y));
+                }
+                if inside_dep != Some(true) {
+                    continue;
+                }
+            }
+            // The flank of a foundation, a floor or a roof (piece flanks
+            // v0, `collide::plane_blocked`). Planes were ground and nothing
+            // else until 2026-08-21, so a body walked into the side of a
+            // base and stood inside the slab and the skirt under it — the
+            // camera in a wall of earth. Third latch, and it is separate
+            // from the other two for their reason: being stuck in a pine
+            // must not license walking through a furnace, and being stuck
+            // in either must not license walking into a foundation.
+            //
+            // A foundation CAN be placed around a standing body — `place`
+            // asks nothing about who is there — so the lift is not
+            // optional. It is the whole of why a base built over somebody
+            // is a thing they walk out of rather than a grave.
+            if collide::plane_blocked(seed, haven, cols, cx, cz, y) {
+                if inside_plane.is_none() {
+                    inside_plane = Some(collide::plane_blocked(seed, haven, cols, x, z, y));
+                }
+                if inside_plane != Some(true) {
+                    continue;
+                }
+            }
+            let g = terrain::ground(seed, haven, cx, cz);
+            let pg = collide::piece_ground(seed, haven, cols, cx, cz, y);
+            let og = occ.ground(seed, cx, cz, y);
+            // A built or hard surface accepts on the step rule alone; bare
+            // terrain keeps the cliff ratio. Occupant tops count as hard
+            // for the reason piece tops do — the rise onto a plinth is
+            // bounded by the lid, not by a slope that does not exist.
+            let hard = pg.max(og);
+            let ok = if hard > g {
+                hard - y <= STEP_UP
             } else {
                 climbable(y, g, run2.sqrt())
             };
             if ok {
                 nx = cx;
                 nz = cz;
+                ground_sel = g.max(hard);
                 break;
             }
         }
@@ -206,7 +288,7 @@ pub fn step(seed: u64, cols: &ColIndex, occ: &mut Occupants, body: &mut Body, fr
     // Vertical: snap within step range, otherwise fall. Built surfaces
     // count as ground only when the step rule already admitted them
     // (piece_ground's lid), so a floor overhead is a ceiling, not a lift.
-    let ground = terrain::height(seed, nx, nz).max(collide::piece_ground(seed, cols, nx, nz, y));
+    let ground = ground_sel;
     let mut ny = y;
     // A jump is the one thing that takes a *grounded* body off the snap and
     // onto the ballistic path. `grounded` is the whole gate: it is recomputed

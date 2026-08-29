@@ -30,8 +30,9 @@
 //! That is the positional-payload class, one table over.
 
 use sim_core::build::{
-    BuildContent, MAT_METAL, MAT_STONE, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR, SHAPE_FOUNDATION,
-    SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
+    BuildContent, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
+    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
+    SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::craft::inv_count;
 use sim_core::gather::ItemStack;
@@ -39,28 +40,43 @@ use sim_core::limits::INV_SLOTS;
 
 /// The outer ring, clockwise from the top. Order is the build order — you
 /// need a foundation before a wall and a wall before a roof — so the wheel
-/// reads as the sequence a base is actually built in.
-pub const SHAPES: [u8; 6] = [
+/// reads as the sequence a base is actually built in; the openings
+/// (catalogue v1) follow the doorway, and each triangle (triangles v0)
+/// sits beside the square it halves, which is where a builder's thumb
+/// already is.
+pub const SHAPES: [u8; 11] = [
     SHAPE_FOUNDATION,
+    SHAPE_TRI_FOUNDATION,
     SHAPE_WALL,
     SHAPE_DOORWAY,
+    SHAPE_WINDOW,
+    SHAPE_FRAME,
     SHAPE_FLOOR,
+    SHAPE_TRI_FLOOR,
     SHAPE_STAIRS,
     SHAPE_ROOF,
+    SHAPE_TRI_ROOF,
 ];
 
 /// The middle ring, clockwise from the top: the upgrade ladder in order, so
-/// "further round" is always "stronger".
-pub const MATERIALS: [u8; 3] = [MAT_WOOD, MAT_STONE, MAT_METAL];
+/// "further round" is always "stronger". Twig leads it since twig v0 — it is
+/// the rung every piece is placed at, so a ladder that started at wood would
+/// be missing the only rung the blueprint can actually reach.
+pub const MATERIALS: [u8; 4] = [MAT_TWIG, MAT_WOOD, MAT_STONE, MAT_METAL];
 
 pub fn shape_label(shape: u8) -> &'static str {
     match shape {
         SHAPE_FOUNDATION => "Foundation",
+        SHAPE_TRI_FOUNDATION => "Tri Foundation",
         SHAPE_WALL => "Wall",
         SHAPE_DOORWAY => "Doorway",
+        SHAPE_WINDOW => "Window",
+        SHAPE_FRAME => "Wall Frame",
         SHAPE_FLOOR => "Floor",
+        SHAPE_TRI_FLOOR => "Tri Floor",
         SHAPE_STAIRS => "Stairs",
         SHAPE_ROOF => "Roof",
+        SHAPE_TRI_ROOF => "Tri Roof",
         _ => "Piece",
     }
 }
@@ -70,11 +86,16 @@ pub fn shape_label(shape: u8) -> &'static str {
 pub fn shape_blurb(shape: u8) -> &'static str {
     match shape {
         SHAPE_FOUNDATION => "The ground floor. Everything else stands on one.",
+        SHAPE_TRI_FOUNDATION => "Half a foundation, along the diagonal. Corners, cheaper.",
         SHAPE_WALL => "Secure your base by enclosing it in walls.",
         SHAPE_DOORWAY => "A wall with a hole for a door. The way in.",
+        SHAPE_WINDOW => "A wall with an eye. Arrows pass; bodies never do.",
+        SHAPE_FRAME => "A wall that is mostly hole, until an insert fills it.",
         SHAPE_FLOOR => "A storey's ceiling and the next one's ground.",
+        SHAPE_TRI_FLOOR => "Half a floor. The cheapest hp a resource buys.",
         SHAPE_STAIRS => "Reach the storey above.",
         SHAPE_ROOF => "Cap the top so nothing builds above you.",
+        SHAPE_TRI_ROOF => "Cap a triangle. Aim a wall at its slant.",
         _ => "",
     }
 }
@@ -92,7 +113,12 @@ pub fn shape_icon(shape: u8) -> &'static str {
         SHAPE_FOUNDATION => "shape_foundation",
         SHAPE_WALL => "shape_wall",
         SHAPE_DOORWAY => "shape_doorway",
+        SHAPE_WINDOW => "shape_window",
+        SHAPE_FRAME => "shape_wall_frame",
         SHAPE_FLOOR => "shape_floor",
+        SHAPE_TRI_FOUNDATION => "shape_tri_foundation",
+        SHAPE_TRI_FLOOR => "shape_tri_floor",
+        SHAPE_TRI_ROOF => "shape_tri_roof",
         SHAPE_STAIRS => "shape_stairs",
         _ => "shape_roof",
     }
@@ -100,6 +126,7 @@ pub fn shape_icon(shape: u8) -> &'static str {
 
 pub fn material_label(material: u8) -> &'static str {
     match material {
+        MAT_TWIG => "Twig",
         MAT_WOOD => "Wood",
         MAT_STONE => "Stone",
         MAT_METAL => "Metal",
@@ -108,6 +135,12 @@ pub fn material_label(material: u8) -> &'static str {
 }
 
 /// **The material a blueprint places in, and it is not a choice.**
+///
+/// **Twig since twig v0 (2026-08-10).** This constant did not move — it is
+/// still `MATERIALS[0]` — but the rung it names is now a real scaffold grade
+/// rather than the wood one, and `sim_core::build::place` refuses anything
+/// else, so the pin below stopped being a client-side courtesy and became
+/// the rule. `reference/BUILDING.md` §7b.4.
 ///
 /// The reference game's building plan places one thing — the cheapest rung —
 /// and the *hammer* is what walks a standing piece up the ladder. Ours had a
@@ -129,8 +162,8 @@ pub const PLACE_MATERIAL: u8 = MATERIALS[0];
 /// (`DECISIONS.md` §open, "build wheel v0").
 ///
 /// **One ring since 2026-08-07** — see [`PLACE_MATERIAL`]. The inner radius
-/// is `0.66 × rim`, which is the ratio measured off `Rust Images/
-/// building.jpeg` (the ring located programmatically, not by eye), and the
+/// is `0.66 × rim`, which is the ratio measured off the reference
+/// `building.jpeg` (the ring located programmatically, not by eye), and the
 /// dead centre it leaves is far roomier than the old 96 — which the readout
 /// needed, because five lines in a 192 px circle was already tight.
 #[derive(Clone, Copy, Debug)]

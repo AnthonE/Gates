@@ -26,13 +26,22 @@
 //! channels, and nondeterministic maps crate-wide (net code included — it
 //! never needed them).
 
+/// Who may run an admin verb, and what one does (admin v0).
+pub mod admin;
+/// The append-only anomaly log — the evidence an alpha produces.
+pub mod anomaly;
 pub mod auth;
 pub mod boot;
 pub mod botclient;
 pub mod client;
+pub mod cond;
 pub mod config;
 pub mod core;
+pub mod entitle;
+/// Class-S interest: the radius a structural walk streams at (`NETCODE.md` §7).
+pub mod interest;
 pub mod net;
+pub mod population;
 pub mod slot;
 pub mod stats;
 pub mod status;
@@ -41,6 +50,14 @@ pub mod worldfile;
 /// The client-side snapshot view lives in `client-core` (the native client
 /// and the bots share one implementation); re-exported for the gates.
 pub use client_core::view;
+
+/// This title's slug in elo's catalog — what its manifest, its depot, its
+/// shard list and its ticket contract are all filed under.
+///
+/// The client has its own copy (`client::elo::SLUG`) and the two are not
+/// shared, because the crates do not depend on each other in that direction
+/// and never should. `crates/server/tests/entitlement.rs` pins them equal.
+pub const ENTITLE_SLUG: &str = "gates";
 
 pub use protocol::PROTO_VER;
 pub use sim_core::limits;

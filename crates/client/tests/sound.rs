@@ -13,7 +13,9 @@
 //! sound at all (energy, no clipping, no click at either end, a continuous
 //! loop seam) before any number about it is read.
 
+use client::sound::birds::Birds;
 use client::sound::mixer::{Mixer, Request};
+use client::sound::music::{self, Director, Mode, Piece, Tier};
 use client::sound::steps::{remote, surface_cue, Steps, STRIDE_M};
 use client::sound::synth;
 use client::sound::{
@@ -89,11 +91,19 @@ fn interface_cues_do_not_vary_in_pitch() {
 /// rule rather than four remembered special cases.
 ///
 /// `Death` is the exemption and it states its own reason: you die once.
+///
+/// **The other exemption is `mixer_started`, and it was written as `is_bed`
+/// until the music landed** — which is the same rule stated too narrowly. The
+/// hazard here is *two starts in one frame*, and the only thing that can
+/// start two of anything in a frame is the mixer; a cue it refuses outright
+/// (`Cue::mixer_started` — the beds and the nine music pieces) is owned by a
+/// render system that holds exactly one voice, and `music::Director::tick`
+/// returns at most one piece per call by construction.
 #[test]
 fn stackable_cues_carry_a_cooldown() {
     for cue in Cue::ALL {
         let d = cue.def();
-        if d.positional || cue.pitch_var() > 0.0 || cue == Cue::Death || cue.is_bed() {
+        if d.positional || cue.pitch_var() > 0.0 || cue == Cue::Death || !cue.mixer_started() {
             continue;
         }
         assert!(
@@ -134,9 +144,11 @@ fn master_scales_every_bus_and_silences_at_zero() {
         master: 0.5,
         game: 0.5,
         ambience: 1.0,
+        music: 0.2,
     };
     assert_eq!(mix.bus_gain(Bus::Game), 0.25);
     assert_eq!(mix.bus_gain(Bus::Ambience), 0.5);
+    assert_eq!(mix.bus_gain(Bus::Music), 0.1);
     let silent = Mix {
         master: 0.0,
         ..Mix::default()
@@ -523,6 +535,163 @@ fn a_remote_step_is_the_same_boot_on_the_same_ground() {
     // The mapping is closed over the step family: a non-step cue has no
     // twin and passes through unchanged.
     assert_eq!(remote(Cue::Swing), Cue::Swing);
+}
+
+/// The swing has a remote twin on the footsteps' rule: same waveform, and
+/// what differs is exactly what should.
+///
+/// **The radius is the interesting assertion.** `Cue::Swing` has carried
+/// `radius_m = 20.0` since the table was written and nothing has ever read
+/// it — a non-positional cue has no distance — so the remote row is where
+/// that number becomes true. Tying the two means a swing cannot carry one
+/// distance in your hands and another in somebody else's.
+#[test]
+fn a_remote_swing_is_the_same_arm_heard_where_the_body_is() {
+    let (l, f) = (Cue::Swing.def(), Cue::RemoteSwing.def());
+    assert_eq!(
+        synth::wav(Cue::Swing),
+        synth::wav(Cue::RemoteSwing),
+        "RemoteSwing is not Swing's own waveform - what makes a swing remote \
+         is its def, not its sound"
+    );
+    assert!(
+        f.positional,
+        "RemoteSwing is an own-fact - it must be a place"
+    );
+    assert!(!l.positional, "Swing grew a position");
+    assert_eq!(
+        f.radius_m, l.radius_m,
+        "the two swing rows drifted on how far an arm carries"
+    );
+    assert_eq!(f.gain, l.gain, "the two swing rows drifted on gain");
+    assert!(
+        f.priority > l.priority,
+        "another player's swing is the sound that decides fights - it must \
+         outrank your own arm"
+    );
+    assert!(
+        f.cooldown_ms < l.cooldown_ms,
+        "the cooldown is per-CUE and therefore shared across every swinger in \
+         earshot - the local swing rate would let one raider mask his crew"
+    );
+    assert!(
+        Cue::RemoteSwing.pitch_var() > 0.0,
+        "RemoteSwing is diegetic and must vary"
+    );
+}
+
+/// The cull is the one falloff law, exactly as it is for a remote step: a
+/// swing is heard at the body, quieter than the table gain, and past the
+/// radius it is no voice at all rather than a quiet one.
+#[test]
+fn a_remote_swing_is_heard_at_the_body_and_culled_by_distance() {
+    let mix = Mix::default();
+    let mut m = Mixer::new();
+    m.push(Request::at(Cue::RemoteSwing, [8.0, 0.0, 0.0]));
+    let starts: Vec<_> = m.tick(16.0, AT_ORIGIN, 0, &mix).to_vec();
+    assert_eq!(starts.len(), 1, "a nearby remote swing was not heard");
+    assert_eq!(
+        starts[0].at,
+        Some([8.0, 0.0, 0.0]),
+        "the swing did not play at the body"
+    );
+    assert!(
+        starts[0].gain < Cue::RemoteSwing.def().gain,
+        "8 m away did not attenuate"
+    );
+
+    let mut m = Mixer::new();
+    m.push(Request::at(
+        Cue::RemoteSwing,
+        [Cue::RemoteSwing.def().radius_m + 1.0, 0.0, 0.0],
+    ));
+    assert!(
+        m.tick(16.0, AT_ORIGIN, 0, &mix).is_empty(),
+        "a swing past its radius was heard"
+    );
+    assert_eq!(m.starved, 0, "a culled swing was counted as starvation");
+}
+
+/// **The cooldown is what one raider costs the rest of his crew**, and that
+/// is the whole reason the remote row does not inherit the local 120 ms.
+///
+/// ⚠ **A first draft of this test asserted two swingers in one frame are two
+/// voices, and that is false** — `a_cooldown_binds_within_one_frame` above
+/// proves the clock binds inside a frame, so a per-CUE cooldown is a hard
+/// rate limit over every swinger in earshot at once, not a per-emitter one.
+/// So the property that actually distinguishes 40 from 120 is the RATE: at
+/// 40 ms a second raider swinging three frames later is heard, and at the
+/// local swing rate he is not.
+#[test]
+fn a_second_swinger_is_not_locked_out_by_the_first() {
+    let mix = Mix::default();
+    let mut m = Mixer::new();
+    m.push(Request::at(Cue::RemoteSwing, [4.0, 0.0, 0.0]));
+    assert_eq!(m.tick(16.0, AT_ORIGIN, 0, &mix).len(), 1);
+
+    // 48 ms later — three frames at 60 Hz — a second raider swings.
+    m.push(Request::at(Cue::RemoteSwing, [-4.0, 0.0, 6.0]));
+    let starts: Vec<_> = m.tick(48.0, AT_ORIGIN, 0, &mix).to_vec();
+    assert_eq!(
+        starts.len(),
+        1,
+        "the second raider was still locked out 64 ms after the first"
+    );
+    assert_eq!(
+        starts[0].at,
+        Some([-4.0, 0.0, 6.0]),
+        "the wrong body was heard"
+    );
+    // And the local row would have refused him: this is the number the
+    // remote row exists to not inherit.
+    assert!(
+        (Cue::Swing.def().cooldown_ms as f32) > 64.0,
+        "Swing's cooldown is no longer long enough for this test to be about \
+         anything - the two rows have converged"
+    );
+}
+
+/// **A cue with no producer is a table row that ships silence**, and every
+/// gate above this one would stay green over it: the def is right, the
+/// waveform is right, the mixer would play it correctly if anybody asked.
+/// Nobody asking is the defect, and it is a missing call site rather than a
+/// wrong value — `CLAUDE.md`'s single-drain trap, one layer out.
+///
+/// Text, because the producer is behind `--features render`.
+#[test]
+fn the_remote_swing_has_a_producer_and_the_local_one_is_not_it() {
+    const AUDIO: &str = include_str!("../src/render/audio.rs");
+    const REGISTER: &str = include_str!("../src/render/mod.rs");
+    const INPUT: &str = include_str!("../src/render/input.rs");
+
+    assert!(
+        AUDIO.contains("Cue::RemoteSwing,"),
+        "render/audio.rs asks for no RemoteSwing - the row is silent"
+    );
+    assert!(
+        REGISTER.contains("audio::remote_swings,"),
+        "render/mod.rs no longer schedules audio::remote_swings - the system \
+         exists and never runs, which is the same silence with a longer fuse"
+    );
+
+    // And the local row stays the local player's. Reusing `Cue::Swing` for a
+    // remote is the exact defect `NOW.md` §0sw named: non-positional means
+    // full gain at both ears with no pan, so every swing on the island would
+    // arrive as if it were in your hands.
+    assert!(
+        INPUT.contains("Cue::Swing"),
+        "the local swing lost its producer"
+    );
+    for (name, src) in [("render/audio.rs", AUDIO)] {
+        for line in src.lines() {
+            assert!(
+                !line.contains("Request::at(Cue::Swing")
+                    && !line.contains("Request::own(Cue::Swing"),
+                "{name} plays the LOCAL swing cue: {}",
+                line.trim()
+            );
+        }
+    }
 }
 
 /// The mixer hears a remote step where the body is and not past the radius:
@@ -985,6 +1154,7 @@ fn the_submerged_snapshot_ducks_without_muting() {
         master: 0.5,
         game: 0.8,
         ambience: 0.7,
+        music: 0.2,
     };
     let mut s = Snapshots::default();
     let def = s.tick(Snapshot::Above, 1.0);
@@ -1081,26 +1251,48 @@ fn a_splash_is_a_crossing_not_a_state() {
 /// The snort cadence: primed silently, bounded, deterministic, and **not a
 /// metronome** — a fixed period is the tell that gives away a generated
 /// voice, the same way a clock-driven footstep gives away a footstep system.
+///
+/// **Every slot here is a pig slot, deliberately.** `mob::kind_of` makes one
+/// roster slot in four a wolf, and slot 0 — which this test used until
+/// 2026-08-14, when it was the only species there was — is one of them. A
+/// cadence test that reads slot 0 is now testing a howl at 75 s and would
+/// have quietly stopped covering the number in its own name.
 #[test]
 fn the_snort_cadence_is_not_a_metronome() {
-    use client::sound::pig::{Snorts, SNORT_JITTER, SNORT_PERIOD_S};
-    let lo = SNORT_PERIOD_S * (1.0 - SNORT_JITTER);
-    let hi = SNORT_PERIOD_S * (1.0 + SNORT_JITTER);
+    use client::sound::voice::{Voices, SNORT_PERIOD_S, VOICE_JITTER};
+    let lo = SNORT_PERIOD_S * (1.0 - VOICE_JITTER);
+    let hi = SNORT_PERIOD_S * (1.0 + VOICE_JITTER);
     let dt = 0.05f32;
+    // The pig slots, in `kind_of` order: 1, 2, 3, 5, 6, 7, 9, 10.
+    let pigs: Vec<usize> = (0..sim_core::limits::MAX_MOBS)
+        .filter(|&s| sim_core::mob::kind_of(s) == sim_core::mob::MOB_PIG)
+        .take(8)
+        .collect();
+    let one = pigs[0];
+    // Every call this test counts must actually be a snort — the assertion
+    // that keeps it honest if the routing ever changes under it.
+    let snorted = |c: Option<Cue>| match c {
+        Some(Cue::Snort) => true,
+        Some(other) => panic!("a pig slot said {other:?}"),
+        None => false,
+    };
 
     // First sight primes and says nothing — a world join must not be
     // sixty-four pigs clearing their throats at once (the `Steps` /
     // `Waterline` pattern: the first observation establishes state).
-    let mut s = Snorts::default();
-    assert!(!s.due(0, dt), "a pig snorted the instant it was seen");
+    let mut s = Voices::default();
+    assert!(
+        !snorted(s.due(one, false, dt)),
+        "a pig snorted the instant it was seen"
+    );
 
     // Ten minutes of frames for one animal: every interval inside the
     // declared band, and the band actually used.
-    let mut s = Snorts::default();
+    let mut s = Voices::default();
     let mut t = 0.0f32;
     let mut fires = Vec::new();
     while t < 600.0 {
-        if s.due(0, dt) {
+        if snorted(s.due(one, false, dt)) {
             fires.push(t);
         }
         t += dt;
@@ -1128,11 +1320,11 @@ fn the_snort_cadence_is_not_a_metronome() {
     // Two animals never share a schedule: across eight slots the first
     // calls spread out rather than landing together.
     let mut firsts = Vec::new();
-    for slot in 0..8 {
-        let mut s = Snorts::default();
+    for &slot in &pigs {
+        let mut s = Voices::default();
         let mut t = 0.0f32;
         loop {
-            if s.due(slot, dt) {
+            if snorted(s.due(slot, false, dt)) {
                 firsts.push(t);
                 break;
             }
@@ -1151,39 +1343,46 @@ fn the_snort_cadence_is_not_a_metronome() {
     // Deterministic: same slot, same frames, same schedule — the property
     // that keeps the voice out of the OS's random stream.
     let run = |slot: usize| {
-        let mut s = Snorts::default();
+        let mut s = Voices::default();
         let mut t = 0.0f32;
         let mut log = Vec::new();
         while t < 120.0 {
-            if s.due(slot, dt) {
+            if s.due(slot, false, dt).is_some() {
                 log.push(t.to_bits());
             }
             t += dt;
         }
         log
     };
-    assert_eq!(run(5), run(5), "two identical runs spoke differently");
+    assert_eq!(
+        run(pigs[3]),
+        run(pigs[3]),
+        "two identical runs spoke differently"
+    );
 
     // A hitch that swallowed three intervals buys ONE snort, not a banked
     // burst — the step odometer's rule, applied to a voice.
-    let mut s = Snorts::default();
-    s.due(2, dt); // prime
+    let mut s = Voices::default();
+    s.due(pigs[1], false, dt); // prime
     let mut fired = 0;
-    if s.due(2, 100.0) {
+    if snorted(s.due(pigs[1], false, 100.0)) {
         fired += 1;
     }
     for _ in 0..20 {
-        if s.due(2, 0.016) {
+        if snorted(s.due(pigs[1], false, 0.016)) {
             fired += 1;
         }
     }
     assert_eq!(fired, 1, "a 100s hitch banked {fired} snorts");
 
     // A reset forgets the schedule: the next world's herd primes afresh.
-    let mut s = Snorts::default();
-    s.due(1, dt);
+    let mut s = Voices::default();
+    s.due(one, false, dt);
     s.reset();
-    assert!(!s.due(1, dt), "a reset herd spoke on first sight");
+    assert!(
+        !snorted(s.due(one, false, dt)),
+        "a reset herd spoke on first sight"
+    );
 }
 
 /// **The place cue's supply line: a placement broadcast rings, a sync walk
@@ -1321,20 +1520,7 @@ fn only_the_feed_drain_pops_the_core() {
         files.len()
     );
 
-    // The destructive verbs. `pop_chat` is deliberately NOT here: chat is a
-    // single-reader surface by nature (one composer) and `render/chat.rs` owns
-    // it — if a second reader ever wants it, it joins the feed and joins this
-    // list in the same commit.
-    const DESTRUCTIVE: [&str; 8] = [
-        "pop_hit(",
-        "pop_death(",
-        "pop_toast(",
-        "pop_craft_toast(",
-        "pop_craft_refusal(",
-        "pop_build_refusal(",
-        "pop_deploy_refusal(",
-        "pop_placed(",
-    ];
+    let destructive = destructive_verbs();
 
     let mut offenders = Vec::new();
     for (path, text) in &files {
@@ -1348,7 +1534,7 @@ fn only_the_feed_drain_pops_the_core() {
             if code.starts_with("//") {
                 continue;
             }
-            for verb in DESTRUCTIVE {
+            for verb in &destructive {
                 if code.contains(verb) {
                     offenders.push(format!("{path}:{}: {}", n + 1, code.trim()));
                 }
@@ -1363,16 +1549,939 @@ fn only_the_feed_drain_pops_the_core() {
     );
 
     // And the drain must actually still be there, or this test passes by
-    // asserting that nobody reads the events at all.
+    // asserting that nobody reads the events at all. Derived, so this half
+    // is also the check that a NEW ring on `ClientCore` joined the one
+    // drain: a `pop_*` nothing here calls is either a fact with no reader
+    // (`NOW.md` §0eat's defect, which shipped) or a fact with a private one
+    // (this test's own defect, which also shipped).
     let drain = files
         .iter()
         .find(|(p, _)| p.ends_with("feed.rs"))
         .map(|(_, t)| t)
         .expect("render/feed.rs must exist");
-    for verb in DESTRUCTIVE {
+    for verb in &destructive {
         assert!(
             drain.contains(verb),
             "render/feed.rs no longer calls {verb} - the drain has stopped draining"
         );
     }
+}
+
+/// The destructive verbs, **read off `ClientCore` rather than remembered**.
+///
+/// This was a `[&str; 9]` literal, and by 2026-08-15 it had drifted: the
+/// core carries fifteen `pop_*` and the list named nine, so `pop_toast`'s
+/// rule was enforced and `pop_knock`, `pop_auth`, `pop_shot`,
+/// `pop_research_toast` and `pop_research_refusal` — the five newest, which
+/// are exactly the ones a second reader is most likely to want next — were
+/// unwatched. That is the same failure `ui::refusals`'s header records
+/// happening twice on the other side of the wire, and it has the same fix:
+/// a hand-kept mirror of another crate's surface goes stale, so read the
+/// surface.
+///
+/// The needle is `pop_x(` with the paren, so a doc line naming `pop_hit`
+/// in prose is not a call and the offender scan above stays about call
+/// sites.
+///
+/// **`pop_chat` is the one exemption and it is exempt BY NAME**, which is
+/// the point of a named list over a forgotten one: chat is a single-reader
+/// surface by nature (one composer) and `render/chat.rs` owns it. If a
+/// second reader ever wants it, it joins the feed and leaves this list in
+/// the same commit.
+fn destructive_verbs() -> Vec<String> {
+    const EXEMPT: [&str; 1] = ["pop_chat"];
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../client-core/src/core.rs");
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("pub fn pop_") else {
+            // A ring declared any other way — `pub(crate) fn pop_x`,
+            // `pub(super) fn pop_x` — would be skipped in silence, and the
+            // floor below has a slot of slack, so the dropped ring would
+            // always be the newest one. Refuse to classify instead: this is
+            // the same slack-floor hole `tests/ui.rs`'s variant parser had.
+            assert!(
+                !line.trim_start().contains("fn pop_"),
+                "`{}` declares a pop_* this scrape cannot read - the one-drain rule \
+                 would be enforced on one ring fewer",
+                line.trim()
+            );
+            continue;
+        };
+        let Some(end) = rest.find('(') else { continue };
+        let name = format!("pop_{}", &rest[..end]);
+        if !EXEMPT.contains(&name.as_str()) {
+            out.push(format!("{name}("));
+        }
+    }
+    assert!(
+        out.len() >= 13,
+        "only found {} pop_* on ClientCore - the scrape has lost the shape of the source \
+         and this gate would be enforcing the one-drain rule on nothing: {out:?}",
+        out.len()
+    );
+    out
+}
+
+// ---------------------------------------------------------------------------
+// The score. `reference/AUDIO.md` §8's design, one rule per test.
+// ---------------------------------------------------------------------------
+
+/// Drive a director for `secs` at 60 Hz and return every piece it started,
+/// with the second it started at. A whole session's music in a few thousand
+/// float adds — the reason `sound::music` is pure.
+fn run(d: &mut Director, secs: f32) -> Vec<(f32, Piece)> {
+    let dt = 1.0 / 60.0;
+    let mut out = Vec::new();
+    let mut t = 0.0;
+    while t < secs {
+        if let Some(p) = d.tick(dt) {
+            out.push((t, p));
+        }
+        t += dt;
+    }
+    out
+}
+
+/// **Music is not continuous, and this is the whole point of the system.**
+/// The reference's `music.songgapmin` / `songgapmax` are 240 and 480 seconds;
+/// a director that played back to back would be a soundtrack, which is the
+/// thing §8 says it deliberately is not.
+#[test]
+fn songs_are_separated_by_minutes_of_silence() {
+    let mut d = Director::new(Mode::World);
+    let played = run(&mut d, 3_600.0);
+    assert!(
+        played.len() > 8,
+        "only {} pieces in an hour - the director stalled",
+        played.len()
+    );
+    // Every gap between two consecutive pieces is either a section boundary
+    // or a real gap; there is nothing in between.
+    let mut gaps = 0;
+    for w in played.windows(2) {
+        let d_s = w[1].0 - w[0].0;
+        if d_s < music::SECTION_S * 1.5 {
+            continue;
+        }
+        gaps += 1;
+        // The gap is measured from the END of the last piece's body, so the
+        // interval between two STARTS is one section longer.
+        let gap = d_s - music::SECTION_S;
+        assert!(
+            (music::SONG_GAP_MIN_S - 1.0..=music::SONG_GAP_MAX_S + 1.0).contains(&gap),
+            "a gap of {gap:.0}s is outside the reference's {}..{}",
+            music::SONG_GAP_MIN_S,
+            music::SONG_GAP_MAX_S
+        );
+    }
+    assert!(gaps >= 3, "only {gaps} gaps in an hour");
+}
+
+/// The first song is the one departure, and it is a knob rather than an
+/// accident: at the reference's own gap a player who joins for three minutes
+/// hears no music at all, including the operator on the pass that decides
+/// whether it is any good.
+#[test]
+fn the_first_song_does_not_wait_four_minutes() {
+    let mut d = Director::new(Mode::World);
+    let played = run(&mut d, music::FIRST_GAP_S + 1.0);
+    assert_eq!(played.len(), 1, "the first song did not open on time");
+    assert!((played[0].0 - music::FIRST_GAP_S).abs() < 0.1);
+}
+
+/// A song walks the theme's sections **in order**, wrapping, and a new song
+/// starts at the top of the theme. That is what makes several pieces a song
+/// rather than several stings — and it is why `SONG_SECTIONS_MIN` is four:
+/// A-B-C-A is the shortest walk that has come round.
+#[test]
+fn a_song_walks_the_theme_in_order() {
+    // A WORLD director, because its gaps are what delimit one song from the
+    // next — on the menus a song runs straight into the one after it and
+    // "where did this song end" has no observable answer.
+    let mut d = Director::new(Mode::World);
+    let played = run(&mut d, 7_200.0);
+    let mut songs: Vec<Vec<usize>> = vec![vec![]];
+    let mut last = 0.0f32;
+    for (t, p) in &played {
+        if !songs.last().unwrap().is_empty() && t - last > music::SECTION_S * 1.5 {
+            songs.push(vec![]);
+        }
+        songs.last_mut().unwrap().push(p.section);
+        last = *t;
+    }
+    assert!(songs.len() >= 8, "only {} songs in two hours", songs.len());
+    // The last one is still running when the clock stops.
+    songs.pop();
+    for song in &songs {
+        assert!(
+            song.len() >= music::SONG_SECTIONS_MIN as usize
+                && song.len() <= music::SONG_SECTIONS_MAX as usize,
+            "a song of {} sections: {song:?}",
+            song.len()
+        );
+        for (i, s) in song.iter().enumerate() {
+            assert_eq!(
+                *s,
+                i % music::SECTIONS,
+                "the theme is out of order: {song:?}"
+            );
+        }
+    }
+}
+
+/// On the menus there is no gap and nothing to be tense about.
+#[test]
+fn the_menu_plays_continuously_and_calm() {
+    let mut d = Director::new(Mode::Menu);
+    let played = run(&mut d, 600.0);
+    for w in played.windows(2) {
+        let gap = w[1].0 - w[0].0;
+        assert!(
+            (gap - music::SECTION_S).abs() < 0.1,
+            "a {gap:.1}s gap on the menu - it is supposed to be continuous"
+        );
+    }
+    // 600 s of menu at one piece per section.
+    assert!(played.len() > 70, "only {} pieces", played.len());
+}
+
+/// **Taking damage is the biggest bump and a swing is the smallest** — the
+/// reference's published order, which is the part of §8 that is a design
+/// rather than a number.
+#[test]
+fn the_bumps_are_ordered_as_the_reference_orders_them() {
+    const { assert!(music::BUMP_SWING < music::BUMP_HIT) };
+    const { assert!(music::BUMP_HIT < music::BUMP_HURT) };
+    // A single swing must not reach a tier: a player chopping wood is not in
+    // a fight, and the small bump's whole job is to be small.
+    assert_eq!(Tier::of(music::BUMP_SWING), Tier::Calm);
+    // Two of the biggest, inside two sections, is the top tier. That is what
+    // makes the tier reachable at all — a threshold nothing can cross is a
+    // clip that never plays.
+    assert_eq!(Tier::of(music::BUMP_HURT * 2.0), Tier::Combat);
+}
+
+/// **The intensity is read at a section boundary and nowhere else.** This is
+/// the mechanism §8 calls the good one: bumps land whenever they land, and
+/// the music changes only where a change can sound like a change.
+#[test]
+fn intensity_moves_the_music_only_at_a_boundary() {
+    let mut d = Director::new(Mode::Menu);
+    // One tick to open the first piece, which is calm.
+    let first = d.tick(0.001).expect("the menu opens immediately");
+    assert_eq!(first.tier, Tier::Calm);
+
+    // Get hurt twice, mid-section. Nothing may start.
+    d.tick(1.0);
+    d.bump(music::BUMP_HURT);
+    d.bump(music::BUMP_HURT);
+    assert_eq!(d.tier(), Tier::Combat, "the bumps did not land");
+    for _ in 0..100 {
+        assert!(
+            d.tick(1.0 / 60.0).is_none(),
+            "a piece started mid-section - the music lurched"
+        );
+    }
+    // The boundary is where it shows up.
+    let next = run(&mut d, music::SECTION_S);
+    assert_eq!(next.len(), 1);
+    assert_eq!(
+        next[0].1.tier,
+        Tier::Combat,
+        "the boundary did not read the intensity"
+    );
+}
+
+/// **If nothing happens during a section, the intensity falls at the end of
+/// it** — a musical boundary, not a timer. And it decays in the gap too, on
+/// the same cadence: a fight during four minutes of silence must not open the
+/// next song in combat.
+#[test]
+fn intensity_decays_at_boundaries_and_in_the_gap() {
+    let mut d = Director::new(Mode::Menu);
+    d.tick(0.001);
+    d.bump(music::BUMP_HURT);
+    d.bump(music::BUMP_HURT);
+    let hot = d.intensity();
+    // **The section the bumps landed in does not decay** — that is the rule,
+    // and it is the first boundary this crosses. The second one is quiet, and
+    // it must fall by exactly one step rather than by a per-frame fraction of
+    // one.
+    run(&mut d, music::SECTION_S + 0.1);
+    assert_eq!(
+        d.intensity(),
+        hot,
+        "the section the damage landed in decayed anyway"
+    );
+    run(&mut d, music::SECTION_S);
+    let after = d.intensity();
+    assert!(
+        (hot - after - music::SECTION_DECAY).abs() < 1e-3,
+        "one quiet section took {hot} to {after} - not one decay step"
+    );
+    // Bumping keeps it up: a section in which something happened does not
+    // decay, however long it is.
+    let held = d.intensity();
+    for _ in 0..(60.0 * music::SECTION_S) as u32 {
+        d.tick(1.0 / 60.0);
+        d.bump(0.0001);
+    }
+    assert!(
+        d.intensity() >= held,
+        "a section with events in it decayed anyway"
+    );
+
+    // And in the gap, where there is no section playing at all.
+    let mut w = Director::new(Mode::World);
+    w.bump(music::BUMP_HURT);
+    run(&mut w, music::SECTION_S * 3.0);
+    assert_eq!(w.intensity(), 0.0, "intensity survived the silence");
+}
+
+/// A director in a gap is not playing a song, and one that just started a
+/// song is. The flag the render layer reads has to mean what it says.
+#[test]
+fn the_gap_and_the_song_are_distinguishable() {
+    let mut d = Director::new(Mode::World);
+    assert!(!d.in_song(), "a fresh world director is mid-song");
+    run(&mut d, music::FIRST_GAP_S + 0.1);
+    assert!(d.in_song(), "the first song did not start");
+}
+
+/// Leaving a world starts the director over, and the mode is what makes the
+/// menus continuous. The random stream must NOT reset with it — every world
+/// in a session drawing the identical gap sequence is the one thing this
+/// determinism is not for.
+#[test]
+fn a_reset_changes_the_mode_and_keeps_the_stream() {
+    let mut a = Director::new(Mode::World);
+    let first = run(&mut a, 1_200.0);
+    a.reset(Mode::World);
+    let second = run(&mut a, 1_200.0);
+    let starts = |v: &[(f32, Piece)]| v.iter().map(|(t, _)| *t).collect::<Vec<_>>();
+    assert_ne!(
+        starts(&first),
+        starts(&second),
+        "two worlds in one session drew the same gaps"
+    );
+
+    // And the mode takes effect immediately.
+    let mut m = Director::new(Mode::World);
+    m.reset(Mode::Menu);
+    assert!(m.tick(0.001).is_some(), "the menu did not open on music");
+}
+
+/// At most one piece per call, which is what lets the render layer spawn
+/// without a loop and what exempts the music from
+/// `stackable_cues_carry_a_cooldown`.
+#[test]
+fn a_tick_starts_at_most_one_piece() {
+    let mut d = Director::new(Mode::Menu);
+    // A ten-minute frame. Absurd, and the point: no `dt` may produce two.
+    assert!(d.tick(600.0).is_some());
+    assert!(d.tick(600.0).is_some());
+}
+
+/// The table is the only place the mapping lives, and `piece_of` is the only
+/// reader — so the two cannot drift, and `Cue::is_music` cannot be a
+/// remembered list.
+#[test]
+fn every_piece_is_findable_and_only_pieces_are_music() {
+    let mut seen = 0;
+    for cue in Cue::ALL {
+        if !cue.is_music() {
+            continue;
+        }
+        seen += 1;
+        let (s, t) = music::piece_of(cue).expect("is_music but not in PIECES");
+        assert_eq!(music::PIECES[s][t.idx()], cue);
+        assert_eq!(cue.def().bus, Bus::Music, "{cue:?} is not on the music bus");
+        assert!(!cue.def().positional, "{cue:?} is somewhere - music is not");
+    }
+    assert_eq!(
+        seen,
+        music::SECTIONS * music::TIERS,
+        "the enum and the table disagree about how many pieces there are"
+    );
+    // And nothing else may claim to be music.
+    assert!(!Cue::BedWind.is_music());
+    assert!(!Cue::Swing.is_music());
+}
+
+/// **The mixer never starts a piece.** It would be scored against
+/// `STARTS_PER_FRAME` and `VOICE_CAP`, so a busy frame could refuse the score
+/// — or the score could refuse an axe.
+#[test]
+fn the_mixer_refuses_a_piece_of_music() {
+    let mut m = Mixer::new();
+    for cue in Cue::ALL.iter().filter(|c| c.is_music()) {
+        m.push(Request::own(*cue));
+    }
+    let starts = m.tick(16.0, AT_ORIGIN, 0, &Mix::default());
+    assert!(starts.is_empty(), "the mixer started a piece of music");
+    assert_eq!(m.dropped, (music::SECTIONS * music::TIERS) as u32);
+}
+
+/// **The music bus opens at a fifth, and that is the reference's number.**
+/// Their `audio.musicvolume` defaults to 0.2 where master and game default to
+/// 1 — a score at parity with footsteps is a score players turn off.
+#[test]
+fn the_music_bus_opens_where_the_reference_opens_it() {
+    let mix = Mix::default();
+    assert_eq!(mix.music, 0.2);
+    assert_eq!(mix.bus_gain(Bus::Music), 0.2);
+    assert!(
+        mix.bus_gain(Bus::Music) < mix.bus_gain(Bus::Game),
+        "music is not under the game bus"
+    );
+}
+
+/// **Every piece is `SECTION_S` of body and `TAIL_S` of ring-out**, and the
+/// ring-out is not decoration: it is what lets the director cut from any
+/// piece to any other without stopping playback and without fading
+/// (`reference/AUDIO.md` §8). A piece whose length drifted from the table
+/// would have the next one starting over its body.
+#[test]
+fn a_piece_is_a_body_and_a_tail() {
+    let body = (music::SECTION_S * SAMPLE_RATE as f32) as usize;
+    for cue in Cue::ALL.iter().filter(|c| c.is_music()) {
+        let s = pcm(&synth::wav(*cue));
+        let secs = s.len() as f32 / SAMPLE_RATE as f32;
+        assert!(
+            (secs - music::PIECE_S).abs() < 0.05,
+            "{cue:?} is {secs:.2}s, not {:.2}",
+            music::PIECE_S
+        );
+        // The tail must be quieter than the body — it is a decay, not more
+        // music — and it must not be silence, or there is nothing covering
+        // the join.
+        let tail = rms(&s[body..]);
+        let mid = rms(&s[body / 4..body]);
+        assert!(
+            tail < mid * 0.6,
+            "{cue:?}'s tail ({tail:.3}) is as loud as its body ({mid:.3}) - it is not a tail"
+        );
+        assert!(
+            tail > 0.002,
+            "{cue:?} has no tail ({tail:.4}) - a cut to the next piece would be audible"
+        );
+    }
+}
+
+/// The tiers have to be **audibly** ordered or the whole intensity system is
+/// a table nobody can hear.
+///
+/// Measured on the body rather than the tail, and **through the cue's gain**,
+/// because that is what reaches the mixer: `synth::PEAK` normalizes every cue
+/// in the bank to one peak, so the waveforms alone say nothing about level and
+/// a test that read them would be measuring crest factor — under which a
+/// sustained calm pad scores *above* a transient-heavy combat piece. The level
+/// is the table's (`M_CALM` / `M_TENSE` / `M_COMBAT`), which is the module's
+/// own law, and this is the gate on it.
+#[test]
+fn the_tiers_get_louder_as_they_climb() {
+    let body = (music::SECTION_S * SAMPLE_RATE as f32) as usize;
+    for (s, row) in music::PIECES.iter().enumerate() {
+        let e: Vec<f32> = row
+            .iter()
+            .map(|c| rms(&pcm(&synth::wav(*c))[..body]) * c.def().gain)
+            .collect();
+        assert!(
+            e[1] > e[0] * 1.1 && e[2] > e[1] * 1.1,
+            "section {s} is not audibly ordered by intensity: {e:?}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The forest layer.
+// ---------------------------------------------------------------------------
+
+/// **A layer is sparse, and a bed is not.** The whole distinction
+/// `reference/AUDIO.md` §3 draws between the two is that a layer's timing is
+/// its own: in the woods a call every few seconds, on the beach one every
+/// couple of minutes, and never twice the same interval.
+#[test]
+fn the_forest_layer_is_sparser_in_the_open() {
+    let count = |cover: f32| {
+        let mut b = Birds::default();
+        let dt = 1.0 / 60.0;
+        let mut n = 0;
+        for _ in 0..(60.0 * 600.0) as u32 {
+            if b.due(cover, dt) {
+                n += 1;
+            }
+        }
+        n
+    };
+    let wood = count(1.0);
+    let beach = count(0.0);
+    assert!(wood > 30, "only {wood} calls in ten minutes of forest");
+    assert!(beach > 0, "the open ground is silent, not sparse");
+    assert!(
+        wood > beach * 5,
+        "a wood ({wood}) is not meaningfully busier than a beach ({beach})"
+    );
+}
+
+/// The first frame in a world must be silent: a countdown that started at
+/// zero would greet every join with a dawn chorus, which is the rule
+/// `Steps`, `Waterline` and `voice::Voices` all already state.
+#[test]
+fn the_forest_layer_primes_silently_and_resets() {
+    let mut b = Birds::default();
+    assert!(!b.due(1.0, 1.0 / 60.0), "a bird called on the first frame");
+    // Run it to a call, then reset: the next world must prime again rather
+    // than firing on the last one's schedule.
+    let mut fired = false;
+    for _ in 0..(60.0 * 120.0) as u32 {
+        fired |= b.due(1.0, 1.0 / 60.0);
+    }
+    assert!(fired, "no bird in two minutes of forest");
+    b.reset();
+    assert!(!b.due(1.0, 1.0 / 60.0), "a reset layer called immediately");
+}
+
+/// The perch index has to land inside the candidate set, including the empty
+/// set — a call with no perch is a call with no position, and the mixer
+/// refuses one of those (`reference/AUDIO.md` §6's origin bug).
+#[test]
+fn a_perch_is_always_in_range() {
+    let mut b = Birds::default();
+    for _ in 0..2_000 {
+        b.due(1.0, 1.0 / 60.0);
+        for n in [0usize, 1, 3, 40] {
+            let i = b.perch(n);
+            assert!(i < n.max(1), "perch {i} of {n}");
+        }
+    }
+}
+
+/// The bird is ambience, not game: a player who turns the bed down means the
+/// birds too. And it carries no further than the surf does.
+#[test]
+fn the_bird_is_ambience_and_is_positional() {
+    let d = Cue::Bird.def();
+    assert_eq!(d.bus, Bus::Ambience);
+    assert!(d.positional, "a bird has to be somewhere");
+    assert!(d.radius_m <= MAX_AUDIBLE_M);
+    assert!(
+        d.priority <= 1,
+        "a bird outranks a footstep - it must never be why an axe was refused"
+    );
+    // A single sample retriggered at its own pitch for minutes on end is the
+    // machine-gun tell, and this is the widest variation in the table.
+    assert!(Cue::Bird.pitch_var() > 0.10);
+}
+
+// ---------------------------------------------------------------------------
+// The wolf's two voices (2026-08-14). Until this landed, `render/audio.rs`
+// played `Cue::Snort` for every drawn animal and every wolf on the island
+// snorted — a bug no gate here could see, because nothing in this file knew
+// that a roster slot had a species.
+// ---------------------------------------------------------------------------
+
+/// **Every species says its own thing, and the routing is the roster's.**
+///
+/// The gate that would have caught the original defect. `voice::cue_of` reads
+/// `mob::kind_of` itself rather than taking a species argument, so this walks
+/// the whole roster and checks the two agree at every slot — a wolf slot can
+/// never produce a snort and a pig slot can never produce a howl.
+#[test]
+fn every_species_speaks_with_its_own_voice() {
+    use client::sound::voice::cue_of;
+    use sim_core::mob;
+
+    let mut seen = Vec::new();
+    let (mut wolves, mut pigs) = (0, 0);
+    for slot in 0..sim_core::limits::MAX_MOBS {
+        for near in [false, true] {
+            let cue = cue_of(slot, near);
+            if !seen.contains(&cue) {
+                seen.push(cue);
+            }
+            match mob::kind_of(slot) {
+                mob::MOB_WOLF => assert!(
+                    cue == Cue::Howl || cue == Cue::Growl,
+                    "wolf slot {slot} says {cue:?}"
+                ),
+                _ => assert_eq!(cue, Cue::Snort, "pig slot {slot} says {cue:?}"),
+            }
+        }
+        match mob::kind_of(slot) {
+            mob::MOB_WOLF => wolves += 1,
+            _ => pigs += 1,
+        }
+    }
+    assert_eq!(seen.len(), 3, "the roster speaks {seen:?} - expected three");
+    assert!(wolves > 0 && pigs > 0, "the roster is one species");
+
+    // The pig ignores the register — one call at every range — and the wolf
+    // does not. Both halves matter: the first is why a caller cannot get a
+    // pig wrong, the second is the encounter.
+    let pig = (0..sim_core::limits::MAX_MOBS)
+        .find(|&s| mob::kind_of(s) == mob::MOB_PIG)
+        .expect("no pig slot");
+    let wolf = (0..sim_core::limits::MAX_MOBS)
+        .find(|&s| mob::kind_of(s) == mob::MOB_WOLF)
+        .expect("no wolf slot");
+    assert_eq!(
+        cue_of(pig, false),
+        cue_of(pig, true),
+        "a pig changed register"
+    );
+    assert_ne!(
+        cue_of(wolf, false),
+        cue_of(wolf, true),
+        "the wolf sounds the same close up as it does across the valley"
+    );
+    assert_eq!(
+        cue_of(wolf, true),
+        Cue::Growl,
+        "the near register is not the growl"
+    );
+    assert_eq!(
+        cue_of(wolf, false),
+        Cue::Howl,
+        "the far register is not the howl"
+    );
+}
+
+/// **The register switch is not a knob — it is the growl's own radius.**
+///
+/// The invariant that keeps the two halves from drifting. There is exactly one
+/// distance in this design and it is read out of `CUES`, so the two ways a
+/// separate "switch distance" could go wrong are both unrepresentable:
+/// a switch *wider* than the radius picks a growl the mixer then culls (a wolf
+/// that goes silent as it closes on you), and a switch *narrower* leaves a
+/// band where a howl plays from an animal near enough to bite.
+#[test]
+fn the_register_switch_is_the_growls_own_radius() {
+    use client::sound::voice::switch_m;
+
+    assert_eq!(
+        switch_m(),
+        CUES[Cue::Growl.idx()].radius_m,
+        "the switch distance has become a second number"
+    );
+    // Chosen implies audible: at the switch distance the growl's falloff must
+    // not already be zero.
+    assert!(
+        client::sound::falloff(switch_m() - 0.01, Cue::Growl.def().radius_m) > 0.0,
+        "a growl is chosen at a distance the mixer culls it at"
+    );
+    // And the far register must carry further than the near one, or crossing
+    // the boundary outward is a wolf that vanishes.
+    assert!(
+        Cue::Howl.def().radius_m > switch_m(),
+        "the howl ({} m) does not out-carry the switch ({} m)",
+        Cue::Howl.def().radius_m,
+        switch_m()
+    );
+}
+
+/// **A wolf closing on you does not wait out a howl's countdown.**
+///
+/// The failure this rule exists for: a howl interval is 37–113 s, so a wolf
+/// that walks into growl range carrying one would be silent through the whole
+/// encounter — the one moment the cue exists for is the one moment it says
+/// nothing. Entering the near register therefore *shortens* a pending call to
+/// at most a growl interval.
+///
+/// The mirror is asserted too, and it is the half a naive "redraw on change"
+/// would break: leaving the near register must NOT stretch a call that was
+/// nearly due. Shorten only.
+#[test]
+fn a_wolf_closing_does_not_wait_out_a_howl() {
+    use client::sound::voice::{Voices, GROWL_PERIOD_S, HOWL_PERIOD_S, VOICE_JITTER};
+
+    let wolf = (0..sim_core::limits::MAX_MOBS)
+        .find(|&s| sim_core::mob::kind_of(s) == sim_core::mob::MOB_WOLF)
+        .expect("no wolf slot");
+    let dt = 0.05f32;
+    let growl_max = GROWL_PERIOD_S * (1.0 + VOICE_JITTER);
+    let howl_min = HOWL_PERIOD_S * (1.0 - VOICE_JITTER);
+
+    // Sighted far — primes on a howl interval — then closes.
+    let mut s = Voices::default();
+    assert!(
+        s.due(wolf, false, dt).is_none(),
+        "a wolf spoke on first sight"
+    );
+    let mut t = 0.0f32;
+    let first = loop {
+        if let Some(cue) = s.due(wolf, true, dt) {
+            break (t, cue);
+        }
+        t += dt;
+        assert!(
+            t < howl_min,
+            "the closing wolf was silent for {t:.1}s - it waited out its howl"
+        );
+    };
+    assert_eq!(first.1, Cue::Growl, "the closing wolf howled in your face");
+    assert!(
+        first.0 <= growl_max + dt * 2.0,
+        "the first growl took {:.2}s, past the growl band's {growl_max:.2}s",
+        first.0
+    );
+
+    // The mirror: near, nearly due, then it walks away. The call it was
+    // already about to make must still land on the growl's schedule — with
+    // the far register's *cue*, because the register is read at fire time.
+    let mut s = Voices::default();
+    s.due(wolf, true, dt); // prime near
+    while s.due(wolf, true, dt).is_none() {} // spend the first growl
+    let mut t = 0.0f32;
+    let next = loop {
+        if let Some(cue) = s.due(wolf, false, dt) {
+            break (t, cue);
+        }
+        t += dt;
+        assert!(
+            t < howl_min,
+            "walking away stretched a pending call to {t:.1}s - min() is not shortening only"
+        );
+    };
+    assert_eq!(next.1, Cue::Howl, "an out-of-range wolf still growled");
+    assert!(
+        next.0 <= growl_max + dt * 2.0,
+        "the pending call was pushed out to {:.2}s",
+        next.0
+    );
+}
+
+/// **The two wolf cadences are an order apart, and both are bounded.**
+///
+/// A howl is an event and a growl is a state, so they cannot share a register:
+/// a howl every few seconds is a pack that never stops talking, and a growl
+/// every minute is an animal that has lost interest. Same band check the pig
+/// gets, twice, plus the separation between them.
+#[test]
+fn the_wolf_cadences_are_an_order_apart() {
+    use client::sound::voice::{
+        Voices, GROWL_PERIOD_S, HOWL_PERIOD_S, SNORT_PERIOD_S, VOICE_JITTER,
+    };
+
+    // The two separations are pure arithmetic over three constants, so they
+    // are checked where arithmetic over constants belongs — at compile time.
+    // A `const` block cannot format, hence the flat messages.
+    const {
+        assert!(
+            HOWL_PERIOD_S > SNORT_PERIOD_S * 4.0,
+            "the howl is in the snort's register - an event at ambience's rate"
+        );
+    }
+    const {
+        assert!(
+            GROWL_PERIOD_S * 2.0 < SNORT_PERIOD_S,
+            "the growl is not appreciably tighter than an ambient snort - a \
+             threat that speaks at ambience's rate is ambience"
+        );
+    }
+    // And it must not machine-gun either. Measured against the **rendered**
+    // buffer rather than a repeated literal: the shortest interval the
+    // cadence can draw has to outlast the call itself, or a wolf growls over
+    // its own last growl, and lengthening `synth::growl` must be what breaks
+    // this rather than someone remembering to update a number here.
+    let growl_s = pcm(&synth::wav(Cue::Growl)).len() as f32 / SAMPLE_RATE as f32;
+    assert!(
+        GROWL_PERIOD_S * (1.0 - VOICE_JITTER) > growl_s,
+        "the growl's shortest interval ({:.2}s) is under the growl's own length ({growl_s:.2}s)",
+        GROWL_PERIOD_S * (1.0 - VOICE_JITTER)
+    );
+
+    let wolf = (0..sim_core::limits::MAX_MOBS)
+        .find(|&s| sim_core::mob::kind_of(s) == sim_core::mob::MOB_WOLF)
+        .expect("no wolf slot");
+    let dt = 0.05f32;
+
+    for (near, period, want) in [
+        (false, HOWL_PERIOD_S, Cue::Howl),
+        (true, GROWL_PERIOD_S, Cue::Growl),
+    ] {
+        let lo = period * (1.0 - VOICE_JITTER);
+        let hi = period * (1.0 + VOICE_JITTER);
+        let mut s = Voices::default();
+        let mut t = 0.0f32;
+        let mut fires = Vec::new();
+        while t < period * 30.0 {
+            if let Some(cue) = s.due(wolf, near, dt) {
+                assert_eq!(cue, want, "the {want:?} register produced {cue:?}");
+                fires.push(t);
+            }
+            t += dt;
+        }
+        assert!(
+            fires.len() >= 12,
+            "only {} {want:?}s in thirty periods",
+            fires.len()
+        );
+        let intervals: Vec<f32> = fires.windows(2).map(|w| w[1] - w[0]).collect();
+        for i in &intervals {
+            assert!(
+                *i >= lo - dt * 2.0 && *i <= hi + dt * 2.0,
+                "{want:?} interval {i:.2}s left the declared band [{lo:.2}, {hi:.2}]"
+            );
+        }
+        let min = intervals.iter().cloned().fold(f32::MAX, f32::min);
+        let max = intervals.iter().cloned().fold(0.0f32, f32::max);
+        assert!(
+            max - min > period * 0.1,
+            "the {want:?} is a metronome: every interval within {:.2}s of every other",
+            max - min
+        );
+    }
+}
+
+/// **A howl rises onto its note and falls off it.**
+///
+/// The measured contour, not a taste call: maximum F0 falls in the first
+/// quarter of 79 % of real howls and minimum F0 in the last quarter of 78 %,
+/// so the pitch must be *lower at both ends than in the middle* — and by
+/// construction the fall must end under where the rise began, which is what
+/// separates a call ending from a note being switched off.
+///
+/// Zero-crossing rate is the proxy, as it is for the footstep surfaces: no
+/// FFT, and for a harmonic stack it tracks the fundamental.
+#[test]
+fn a_howl_rises_onto_its_note_and_falls_off_it() {
+    let s = pcm(&synth::wav(Cue::Howl));
+    let at = |u: f32| ((u * s.len() as f32) as usize).min(s.len());
+    let zcr = |w: &[f32]| {
+        w.windows(2)
+            .filter(|p| (p[0] < 0.0) != (p[1] < 0.0))
+            .count() as f32
+            / w.len() as f32
+    };
+    let rise = zcr(&s[at(0.02)..at(0.14)]);
+    let plateau = zcr(&s[at(0.25)..at(0.68)]);
+    let fall = zcr(&s[at(0.80)..at(0.98)]);
+    assert!(
+        rise < plateau * 0.8,
+        "the howl does not rise onto its note: {rise:.4} against a plateau of {plateau:.4}"
+    );
+    assert!(
+        fall < plateau * 0.8,
+        "the howl does not fall off its note: {fall:.4} against a plateau of {plateau:.4}"
+    );
+    assert!(
+        fall < plateau && rise < plateau,
+        "the contour is an arc the wrong way up"
+    );
+    // Long enough to be a howl at all — under ~1.5 s it does not read as one,
+    // and it must out-last every other animal call in the bank.
+    let secs = s.len() as f32 / SAMPLE_RATE as f32;
+    assert!(secs > 1.5, "the howl is {secs:.2}s - that is a yelp");
+    assert!(
+        s.len() > pcm(&synth::wav(Cue::Snort)).len(),
+        "the howl is shorter than a snort"
+    );
+}
+
+/// **The growl is the darkest voice in the bank, and a held one.**
+///
+/// Two claims, both of which the pair has to satisfy to be two registers of
+/// one animal rather than two names for one sound:
+///
+/// - **Dark.** A growl's source is 70–110 Hz where the howl's plateau is
+///   ~430 Hz, so a growl must sit well below it on the same zero-crossing
+///   proxy that separates a rock step from sand — and below the snort too.
+/// - **Held.** A growl is a state, not an event: its energy in the last third
+///   must be close to its first, where a snort is a transient that has
+///   essentially finished. This is the assertion that fails if either voice
+///   ever regresses into "a footstep with a species name".
+#[test]
+fn a_growl_is_the_darkest_voice_and_a_held_one() {
+    let zcr = |cue: Cue| {
+        let s = pcm(&synth::wav(cue));
+        s.windows(2)
+            .filter(|p| (p[0] < 0.0) != (p[1] < 0.0))
+            .count() as f32
+            / s.len() as f32
+    };
+    let (growl, howl, snort, rock) = (
+        zcr(Cue::Growl),
+        zcr(Cue::Howl),
+        zcr(Cue::Snort),
+        zcr(Cue::StepRock),
+    );
+    assert!(
+        growl < howl * 0.5,
+        "the growl ({growl:.4}) is not darker than the howl ({howl:.4}) - one animal, one sound"
+    );
+    assert!(
+        growl < snort && howl < rock,
+        "the wolf is brighter than the pig ({growl:.4}/{howl:.4} against {snort:.4}/{rock:.4})"
+    );
+
+    let sustain = |cue: Cue| {
+        let s = pcm(&synth::wav(cue));
+        let third = s.len() / 3;
+        rms(&s[2 * third..]) / rms(&s[..third])
+    };
+    assert!(
+        sustain(Cue::Growl) > 0.7,
+        "the growl decays like a burst: {:.3} of its opening third survives",
+        sustain(Cue::Growl)
+    );
+    assert!(
+        sustain(Cue::Howl) > 0.3,
+        "the howl does not hold: {:.3}",
+        sustain(Cue::Howl)
+    );
+    assert!(
+        sustain(Cue::Snort) < 0.2,
+        "the snort has stopped being a transient: {:.3}",
+        sustain(Cue::Snort)
+    );
+}
+
+/// **The table rows are a pair**, in the ways the mixer will read them.
+///
+/// Both are places in the world, the far one out-carries the near one, the
+/// near one outranks ambience because it is information a player's life turns
+/// on, and both vary in pitch because they are diegetic — a chorus of
+/// identical howls is the machine-gun tell `Cue::pitch_var` exists for.
+#[test]
+fn the_wolf_registers_are_a_table_pair() {
+    for cue in [Cue::Howl, Cue::Growl] {
+        let d = cue.def();
+        assert!(d.positional, "{cue:?} happens at an animal, not to you");
+        assert!(
+            d.bus == Bus::Game,
+            "{cue:?} is on the ambience bus - a predator is not scenery"
+        );
+        assert!(
+            cue.pitch_var() > 0.0,
+            "{cue:?} must vary - a pack in unison is one wolf"
+        );
+        assert!(
+            !cue.is_bed() && !cue.is_music(),
+            "{cue:?} is not a one-shot"
+        );
+        assert!(
+            d.radius_m > 0.0 && d.radius_m <= MAX_AUDIBLE_M,
+            "{cue:?} carries {} m",
+            d.radius_m
+        );
+    }
+    assert!(
+        Cue::Howl.def().radius_m > Cue::Snort.def().radius_m,
+        "the howl does not out-carry a snort"
+    );
+    assert!(
+        Cue::Howl.def().radius_m < Cue::TreeFall.def().radius_m,
+        "the howl carries past the loudest thing in the forest"
+    );
+    assert!(
+        Cue::Growl.def().priority > Cue::Snort.def().priority,
+        "a growl loses a voice to a pig"
+    );
+    assert!(
+        Cue::Growl.def().priority < Cue::Hit.def().priority,
+        "a growl outranks the hitmarker"
+    );
 }

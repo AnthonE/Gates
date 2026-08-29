@@ -25,9 +25,26 @@ pub const DATAGRAM_BUDGET_BYTES: usize = 1100;
 /// oldest** — the client keeps only the newest `MAX_INPUT_FRAMES` unacked.
 pub const MAX_INPUT_FRAMES: usize = 10;
 
-/// Class-D entities in one client's interest set, hard cap (NETCODE.md §9
-/// budgets table: typical ~15 / cap 64). Overflow policy: **defer** — the
-/// priority accumulator keeps accruing what didn't fit (DESIGN.md §5.5).
+/// Class-D entity records **one snapshot** may carry — a per-datagram wire
+/// count, not a world cap (NETCODE.md §9 budgets table: typical ~15 / cap
+/// 64). It is what `COUNT_BITS = 7` can name and what 1,100 B can hold, and
+/// the encoder refuses the 65th record of a single datagram.
+/// Overflow policy: **defer** — the priority accumulator keeps accruing
+/// what didn't fit (DESIGN.md §5.5).
+///
+/// ⚠ **It reads like an interest-set cap and it is not one by itself.** A
+/// client's interest set is cumulative across snapshots — a delta names
+/// only what moved and the client keeps the rest — so the set of entities
+/// a client knows about is the *union* of many datagrams, and
+/// `MAX_PLAYERS + MAX_MOBS` is what bounds a union. Until 2026-08-10 two
+/// places read it as the world cap it is not: `update_interest` marked
+/// every body in the 176 m radius interesting (up to 164 of them), and the
+/// client's `Interp` table was sized on it while being filled cumulatively,
+/// so the 65th distinct id since the last zero-state was accepted by the
+/// view, refused by the interpolator, and never drawn.
+/// `AOI_RANK_ENTER`/`AOI_RANK_EXIT` below are what make the number true of
+/// the interest set as well; `client-core`'s `INTERP_SLOTS` is what stops
+/// the client depending on it being true.
 pub const MAX_SNAPSHOT_ENTITIES: usize = 64;
 
 /// `state_hash` cadence in ticks (DESIGN.md §7).
@@ -43,6 +60,67 @@ pub const SNAPSHOT_INTERVAL_TICKS: u64 = 2;
 /// the band. Centimeters so distance² compares stay in exact i64.
 pub const AOI_ENTER_CM: i64 = 17_600;
 pub const AOI_EXIT_CM: i64 = 20_800;
+
+/// AOI v0's **second** band, in rank rather than in metres — the one that
+/// makes `MAX_SNAPSHOT_ENTITIES` true of the interest set instead of only
+/// of one datagram (wall 4).
+///
+/// A radius alone cannot bound the set: `MAX_PLAYERS + MAX_MOBS` is 164 and
+/// a fight, a raid or a spawn cluster puts far more than 64 of them inside
+/// 176 m of each other, at which point the accumulator is ranking a set the
+/// wire could never carry and the client is holding ids it will never see
+/// move. So the set is additionally capped to the **nearest**
+/// `AOI_RANK_EXIT`, ranked by planar distance with the packed candidate
+/// index as the tiebreak (unique, so the ordering is total and the cap is
+/// exact).
+///
+/// **Two ranks, for the reason there are two radii.** A single rank
+/// threshold makes two bodies a metre apart at the boundary swap places at
+/// 15 Hz, and clearing an interest bit is welded to a wire removal: the
+/// client destroys that entity's interpolation history, freezes the body
+/// for the 133–200 ms until it is re-sent, and rebuilds its mannequin. So
+/// an entity enters at rank < `AOI_RANK_ENTER` and only leaves at rank ≥
+/// `AOI_RANK_EXIT`, exactly as it enters at 176 m and leaves at 208 m.
+///
+/// The band width is **derived from the radii rather than picked**: at
+/// uniform density the count inside a radius goes as its square, so a rank
+/// band with the same forgiveness as the distance band is the same ratio in
+/// area — `AOI_ENTER_CM² / AOI_EXIT_CM²` of the exit rank, which is 45 of
+/// 64. A body must therefore improve by 19 places to re-enter after being
+/// crowded out, the rank equivalent of walking 32 m closer.
+///
+/// Overflow policy: **evict by rank**, into the same pending-removal set a
+/// distance exit uses — one path out of a client's world, not two. The cost
+/// is stated rather than hidden: on a shard denser than this, a client sees
+/// 45–64 of its neighbours and not the rest. *Near*, not *nearest* — the
+/// hysteresis above makes the set path-dependent on purpose, so an incumbent
+/// at rank 60 is kept while a newcomer at rank 46 is refused, and only a body
+/// that improves 19 places takes a held slot.
+/// Proposed default, DECISIONS.md §open (interest rank cap v0).
+pub const AOI_RANK_EXIT: usize = MAX_SNAPSHOT_ENTITIES;
+/// **Written as the number it is, with its derivation asserted beside it
+/// rather than substituted for it.** It shipped as the expression itself,
+/// which read well and cost the whole gate suite: `ci/knob_registry.mjs`
+/// pins a registry claim against the constant a source file actually
+/// declares, and it cannot evaluate arithmetic — so a computed initializer
+/// is not a value it can check, and it fails loudly rather than passing
+/// over one. `ci/gates.sh` was red on a clean `main` because of it (found
+/// 2026-08-10, merging the tracer branch).
+///
+/// The literal is what the registry pins; the `assert!` below is what
+/// keeps the literal honest, and it is strictly stronger than the
+/// expression was — it fails at compile time if either radius or
+/// `MAX_SNAPSHOT_ENTITIES` moves without this number moving with them,
+/// which is the drift the expression existed to prevent and the gate
+/// could not see.
+pub const AOI_RANK_ENTER: usize = 45;
+const _: () = assert!(
+    AOI_RANK_ENTER
+        == (MAX_SNAPSHOT_ENTITIES as i64 * AOI_ENTER_CM * AOI_ENTER_CM
+            / (AOI_EXIT_CM * AOI_EXIT_CM)) as usize,
+    "AOI_RANK_ENTER must stay the enter/exit area ratio of AOI_RANK_EXIT — \
+     a radius or the entity cap moved and this number did not"
+);
 
 /// Per-client ring of sent snapshots the server deltas against
 /// (NETCODE.md §3: "the last 32 sent states"). An ack that falls outside
@@ -124,6 +202,20 @@ pub const PENDING_REMOVALS_CAP: usize = 256;
 /// default, DECISIONS.md §open (gather bounds row).
 pub const MAX_ITEM_DEFS: usize = 64;
 
+/// Rounds one weapon may list in `weapons.toml`'s `ammo` (`RangedDef::ammo`).
+///
+/// Four because that is what the reference game's bow actually carries —
+/// wooden, bone, high-velocity and fire arrows (`reference/PROJECTILES.md`
+/// §4) — and a fifth would be a content row nobody has argued for. The bake
+/// refuses a longer list rather than truncating it: a silently dropped
+/// round is a weapon that stops firing when its first three run out, which
+/// reads as a bug in the quiver and not in the table.
+///
+/// Structural, not a balance number: it sizes a fixed array inside
+/// `RangedDef`, so it is a cap in the `MAX_ITEM_DEFS` sense.
+/// Proposed default, DECISIONS.md §open (ballistics-on-ammo row).
+pub const MAX_WEAPON_AMMO: usize = 4;
+
 /// Stacks a fresh character may be granted at spawn (`content/balance.toml`
 /// `[[spawn_kit]]`). Bounded like everything else on a content-driven path:
 /// the kit lands in `INV_SLOTS`, so a kit longer than the inventory could
@@ -133,6 +225,23 @@ pub const MAX_SPAWN_KIT: usize = INV_SLOTS;
 
 /// Inventory slots per player: 6 hotbar + 24 backpack (ALPHA.md §1).
 pub const INV_SLOTS: usize = 30;
+
+/// Worn-equipment slots per player (`Player::worn`) — one head, one body,
+/// in that order, and the array is **indexed by the slot** rather than
+/// appended to.
+///
+/// Two because `content/armor.toml`'s `ArmorSlot` has exactly two variants
+/// and every row in the shipped set is one of them. It is not a guess at a
+/// future roster: a legs or boots rung is a content schema change and a
+/// widening here, in one commit, exactly as a new container kind is.
+///
+/// Overflow policy: **there is none, by construction.** Nothing is ever
+/// pushed — a piece goes into the slot its baked row names (`ArmorDef::slot`,
+/// one-based) and replaces whatever was there, so the only way to exceed the
+/// cap is to name a slot the array does not have, which `combat::worn_pct`
+/// refuses by ignoring the stack. Wall 4 wants the cap stated; this is it.
+/// Proposed default, DECISIONS.md §open ("armor reduction v0").
+pub const WEAR_SLOTS: usize = 2;
 
 /// Hotbar width — the first `HOTBAR_SLOTS` inventory slots, the only ones
 /// the held-item selector may name (ALPHA.md §1). The wire carries the
@@ -207,10 +316,12 @@ pub const MAX_SLOT_LIVES: usize = 16_384;
 /// Proposed default, DECISIONS.md §open (occupant collision v0 row).
 pub const SLOT_CACHE_SLOTS: usize = 1_024;
 
-/// Building-piece definitions the sim preallocates for (the alpha set is
-/// 18 rows — 6 shapes × 3 materials, content/building.toml). The content
-/// bake refuses a set past this. Structural cap like `MAX_ITEM_DEFS`.
-pub const MAX_PIECE_DEFS: usize = 32;
+/// Building-piece definitions the sim preallocates for (the shipped set
+/// is 44 rows — 11 shapes × 4 materials, content/building.toml, since
+/// triangles v0). The content bake refuses a set past this. Structural
+/// cap like `MAX_ITEM_DEFS`; 48 keeps headroom without widening the
+/// wire's `PIECE_DEFS_TOTAL_BITS` (6 bits, 63).
+pub const MAX_PIECE_DEFS: usize = 48;
 
 /// Cost rows one building piece may carry (alpha data uses 1). The bake
 /// refuses past it. Structural cap, not a knob.
@@ -281,6 +392,21 @@ pub const UPKEEP_SWEEP_PER_TICK: usize = 64;
 /// with a reset batch, catalog restarts, the inventory shadow already
 /// re-diffs), the same recovery path a fresh join uses. Proposed default,
 /// DECISIONS.md §open (gather wire row).
+///
+/// ⚠ **This number and `AOI_RANK_EXIT` are both 64, and that is not a
+/// coincidence worth relying on.** A broadcast arm in `pump_events` costs
+/// one push into *this* ring per connected client, so the per-client
+/// fan-in from a class-D-filtered arm (`ShardCore::body_event_visible`;
+/// `EV_SWING` today) is bounded by the interest set, which the rank band
+/// caps at `AOI_RANK_EXIT`. Filtered, the worst case exactly meets this
+/// cap and leaves **zero** headroom for the twenty-odd unfiltered arms and
+/// the drip's thirteen send sites. Widening the rank band without widening
+/// this makes the ring the smaller of the two silently;
+/// `server/tests/snapshot_budget.rs::the_filter_buys_nothing_on_a_clustered_shard`
+/// asserts the equality so that drift is loud. The overflow is also
+/// self-amplifying — a refused push calls `ev_resync`, and the recovery
+/// drip pushes *more* messages into the ring that just refused — so the
+/// number to argue about is this one, not the retry.
 pub const EVENT_RING_CAP: usize = 64;
 
 /// Slot-life entries the per-client harvested-set walk scans per tick
@@ -308,6 +434,23 @@ pub const MAX_BACKPACKS: usize = 256;
 /// here for the same reason: nothing is lost by refusing a box that was
 /// never placed. Proposed default, DECISIONS.md §open (box v0).
 pub const MAX_BOXES: usize = 256;
+
+/// Authored world containers that have ever been opened at once
+/// (`worldcont.rs`: the haven pad's crates, a waystation's caches). Not a
+/// budget for how many terrain places — `terrain::scatter` decides that,
+/// and this store only ever holds the ones a player has actually reached.
+/// The island authors nine today, so the cap is ~7× the live set and the
+/// overflow branch is unreachable; `tests/worldcont.rs`'s
+/// `the_cap_is_above_what_terrain_authors` is what keeps that true when
+/// a monument lands.
+///
+/// Overflow policy: **refuse** the open — the container does not open and
+/// the panel closes, exactly as it does for a bag that despawned. Never
+/// **evict**: an emptied record carries the tick it may roll again, so
+/// dropping one and re-minting it on the next open would re-roll the loot
+/// immediately, which turns the cap into a dupe rather than a limit.
+/// Proposed default, DECISIONS.md §open (world containers v0).
+pub const MAX_WORLD_CONTS: usize = 64;
 
 /// Slots inside one deployed box. Deliberately under `INV_SLOTS`: a box
 /// is a place to put things down, not a second inventory, and the whole
@@ -413,6 +556,26 @@ pub const MAX_BOX_SPILL_PER_TICK: usize = 16;
 /// sim never sees is a transformation a player is told about by the
 /// catalog and cannot perform.
 pub const MAX_COOK_ROWS: usize = 32;
+
+/// Research rows the sim preallocates for (`content/research.toml`,
+/// `research.rs`). Structural cap like [`MAX_COOK_ROWS`], and bounded by
+/// [`MAX_RECIPES`] for a stronger reason than symmetry: a research row
+/// unlocks exactly one recipe and `Player::known` is a bitmask over recipe
+/// indices, so a table longer than the recipe set could only be naming a
+/// recipe twice. The bake refuses past it.
+pub const MAX_RESEARCH_ROWS: usize = MAX_RECIPES;
+
+/// The width of `Player::known`, and therefore the hard ceiling on how
+/// many recipes a blueprint can gate. Asserted equal to [`MAX_RECIPES`]
+/// rather than assumed: the mask is a `u64` in the sim, in the save file
+/// and on the wire, so a 65th recipe is a widening in three places and
+/// must fail here rather than silently become unlockable.
+pub const KNOWN_MASK_BITS: usize = 64;
+const _: () = assert!(
+    MAX_RECIPES <= KNOWN_MASK_BITS,
+    "Player::known is a u64 mask over recipe indices — a recipe past bit 63 \
+     could never be researched, and nothing else would say so"
+);
 
 /// Loot tables the sim preallocates for — one per container archetype
 /// (`content/loot.toml` ships 2: barrel and crate). The content bake
@@ -530,6 +693,14 @@ pub const MAX_REMOVALS_PER_TICK: usize = 64;
 /// Proposed default, DECISIONS.md §open (satchel fuse v0).
 pub const MAX_LIVE_CHARGES: usize = 64;
 
+/// The widest blast any content may declare, centimetres — one build cell
+/// (satchel blast v0). Not a tuning knob: `charge::detonate`'s 3×3 column
+/// ring is *complete* only while a blast cannot reach past one cell from
+/// its epicentre, the const block there restates it, and `validate`
+/// refuses a `blast_m` above it at boot. Widening this means widening the
+/// ring in the same commit — the pair is one decision.
+pub const BLAST_MAX_CM: u16 = 300;
+
 /// Arrows in flight across the whole shard (`ranged.rs`). Sized off the
 /// fire rate, not off `MAX_PLAYERS`: a bow is 30 rounds/min (2 shots a
 /// second at 30 Hz is 60 ticks apart) and an arrow lives at most
@@ -544,6 +715,36 @@ pub const MAX_LIVE_CHARGES: usize = 64;
 /// must never do.
 /// Proposed default, DECISIONS.md §open (ranged v0).
 pub const MAX_ARROWS: usize = 128;
+
+/// Spent arrows lying on the ground across the whole shard
+/// (`spent.rs`, arrow recovery v0). Four full skies of arrows: nothing
+/// reaches this store without leaving `MAX_ARROWS` first, so the cap says
+/// how many landings the world remembers, and 4 × 128 is the number that
+/// keeps every arrow from two whole volleys collectable while the third
+/// is still in the air.
+///
+/// Overflow policy: **drop the one that has been takeable longest** — the
+/// entry with the smallest `ready_at` is evicted to make room, and
+/// `SpentArrows::evictions` counts it so the policy is measurable rather
+/// than assumed (`World::evictions`' argument, one store over: an
+/// eviction's only evidence is an absence).
+///
+/// It is deliberately not *refuse*, which is the policy one const up and
+/// is right there and wrong here. `MAX_ARROWS` refuses because the thing
+/// being refused is a shot that has not happened yet, and the shooter
+/// pays nothing. Here the arrow has already landed, so refusing would
+/// destroy the newest arrow — the one whose owner is walking toward it —
+/// because of litter somebody else left on the far side of the island.
+/// Evicting the oldest takeable arrow instead is also the closest thing
+/// this store has to the despawn timer the reference presumably has and
+/// `reference/PROJECTILES.md` §5 does not give a number for.
+///
+/// Note it is `ready_at` and not a landing tick, so a **lodged** arrow is
+/// protected for its lodge window: the arrow you have just shot someone
+/// with cannot be evicted out from under you by a busy shard, which is
+/// the one case where losing it would read as the game cheating.
+/// Proposed default, DECISIONS.md §open (arrow recovery v0).
+pub const MAX_SPENT_ARROWS: usize = 512;
 
 /// Ticks an arrow may stay in flight before it expires, whatever the
 /// weapon's own derived life. The backstop that makes `MAX_ARROWS` a
@@ -584,6 +785,62 @@ pub const ARROW_STEP_MM: i32 = 170;
 /// clamp from ever binding at tick time.
 /// Proposed default, DECISIONS.md §open (ranged v0).
 pub const MAX_ARROW_SUBSTEPS: usize = 16;
+
+/// Collision samples one **hitscan** shot may take, over its whole reach
+/// (`ranged::hitscan`). A bullet has no flight: the trace that an arrow
+/// spreads over forty ticks at `MAX_ARROW_SUBSTEPS` a tick, a firearm pays
+/// in one, so the two caps are the same idea against different clocks and
+/// neither can be the other.
+///
+/// With `ARROW_STEP_MM` this is a **content wall**, exactly as
+/// `MAX_ARROW_SUBSTEPS` is for a round's muzzle speed: a firearm whose
+/// `range_m` exceeds `ARROW_STEP_MM * MAX_HITSCAN_SAMPLES` (54.4 m) cannot
+/// be traced at the spacing a trunk needs, and `bake_combat` refuses it at
+/// boot rather than shipping a gun that shoots through cover past some
+/// distance nothing writes down. The revolver is 50 m — 295 samples — so it
+/// sits inside this with room and nothing else in `content/` is a firearm.
+///
+/// Overflow policy: **none reachable at tick time** — the bake refusal is
+/// what keeps the clamp from ever binding, the same posture
+/// `MAX_ARROW_SUBSTEPS` states.
+///
+/// The per-tick bound this leaves is **derived rather than declared**, which
+/// is why there is no separate shots-per-tick cap: one player fires at most
+/// one shot a tick (`RangedDef::rate_ticks` gates it and the pass reads one
+/// slot once), so the shard-wide worst case is `MAX_PLAYERS *
+/// MAX_HITSCAN_SAMPLES` samples and it is already bounded by a cap that
+/// exists. A queue would be the wrong shape here anyway: a hitscan shot
+/// leaves no entity behind to store, so there is nothing to overflow.
+/// Proposed default, DECISIONS.md §open (hitscan v0).
+pub const MAX_HITSCAN_SAMPLES: usize = 320;
+
+/// How far past the shooter a **missed** shot still marks the world, in
+/// samples of `ARROW_STEP_MM` — 64 of them, 10.9 m.
+///
+/// This is a *cosmetic* bound and it is the only number here that admits to
+/// being one, so it is worth saying exactly what it buys. `ranged::hitscan`
+/// walks the world only as far as the nearest body in the line, because
+/// nothing past that body can change who was hit; a shot with nobody in
+/// front of it therefore owes no walk at all, and the only reason to take
+/// one is `EV_IMPACT` — the puff of dirt where the bullet landed.
+///
+/// Measured, and this is why the bound exists: the walk is a
+/// `terrain::ground` evaluation per sample at ~370 ns, so a hundred players
+/// holding the trigger at open sky on one tick is **~20 ms of a 33 ms
+/// tick** at the full 320 (`DECISIONS.md` §open, hitscan v0). A decal must
+/// not own the tick. At 64 it is ~2.4 ms, and what is lost is the mark on a
+/// hillside more than eleven metres away — which is the mark nobody is
+/// standing close enough to read.
+///
+/// It does **not** bound a shot that hits: where the trace was already owed
+/// for the hit decision, the mark is free and is emitted wherever the stop
+/// fell. So the rule is *the mark is free where the walk was already paid
+/// for, and bounded where it would otherwise be the reason for one*.
+///
+/// Overflow policy: none — a shot past it is a miss with no decal, never a
+/// shot that stops early. Nothing about a hit reads this.
+/// Proposed default, DECISIONS.md §open (hitscan v0).
+pub const MAX_HITSCAN_MARK_SAMPLES: usize = 64;
 
 /// Live animals one shard simulates, hard cap and roster length
 /// (`mob.rs`). Not a queue: the roster is a fixed array of slots, each
@@ -638,6 +895,61 @@ pub const MOB_ID_TAG: u32 = 0x8000_0000;
 ///
 /// No overflow policy: it is a cadence, not a queue.
 pub const MOB_THINK_TICKS: u64 = 15;
+
+/// One full day/night cycle, in ticks — 45 minutes at `TICK_HZ`
+/// (`ALPHA.md` §1's knob; day/night v0, `DECISIONS.md` §open).
+///
+/// **Time of day is a pure function of the tick, and that is the design,
+/// not a shortcut.** The snapshot header already carries the tick on
+/// every datagram and the client already tracks a smoothed estimate of
+/// it (`client-core/clock.rs`), so shipping a second field would be
+/// redundant bytes carrying a derivable number — `NETCODE.md` §3's "time
+/// of day rides the G channel" is satisfied by the tick itself plus this
+/// constant. What the choice costs is a set-time admin verb: with no
+/// offset field anywhere, shifting the clock means shifting the tick,
+/// which nothing may do. That is a wire field away if ever wanted.
+pub const DAY_TICKS: u64 = 144_000;
+
+/// Phase offset into the cycle at tick zero, so a fresh world — and every
+/// capture probe — boots mid-morning with the sun well up, not at the
+/// dawn terminator. Exactly halfway from dawn to noon: noon is
+/// `DAY_PORTION * 0.5` = 43.75% in, so this is 21.875% of the cycle.
+/// **Derived from the two constants around it, not chosen** — it moved with
+/// them on 2026-08-15 and would be wrong if it had not.
+pub const DAY_PHASE_TICKS: u64 = 31_500;
+
+/// The daylight fraction of the cycle: the first 87.5% is day (70 min),
+/// the rest night (10 min).
+///
+/// **Operator, 2026-08-15, on their own research: the reference's current
+/// cycle is ~70 min day + ~10 min night = 80 min.** This is the second value
+/// spoken that day and it supersedes the first (60 min as 45 + 15) by the
+/// operator's own better source: March 2026's Shipshape update added roughly
+/// 20 minutes of daylight and left the ~10-minute night alone. Three
+/// generations are now named — 45/15 is the oldest, 50/10 was the 60-minute
+/// era, 70/10 is current.
+///
+/// What moved before this: `NOW.md` §0sun carried "~45 min day + ~15 min
+/// night = 60 min" as *measured 2026-08-15* with **no source, no URL and no
+/// tier**, and the commit that added it (b59d85e) cited none either. It read
+/// as a measurement and was not one. Corrected here rather than only there,
+/// because this is the file a builder reads.
+///
+/// ⚠ **The night SHORTENS.** Read as "a longer day" this looks additive, and
+/// it is not: 13.5 min of night becomes 10. Anything tuned against the old
+/// night — mob wake windows, `render/audio.rs`'s night threshold, the barrel
+/// and bag respawn windows a player waits out in the dark — got a third of
+/// its darkness taken away, and none of that was re-derived here.
+pub const DAY_PORTION: f32 = 0.875;
+
+/// The most bites one tick can land across the whole roster (mob.rs
+/// `Bites`). Derived, generously: only a *thinking* animal can bite, so
+/// the true per-tick ceiling is `MAX_MOBS / MOB_THINK_TICKS` ≈ 4 plus
+/// rounding — 8 is that with headroom, not a tuning knob. **Overflow
+/// drops the bite**: a full buffer is one merciful tick, and the phase
+/// lock retries the same pair two seconds later. Never a queue — a bite
+/// carried across ticks would land on a player who has already left.
+pub const MAX_MOB_BITES_PER_TICK: usize = 8;
 
 /// How close a player must be for an animal to be awake, in centimeters.
 ///

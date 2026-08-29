@@ -1,13 +1,12 @@
 # Build output
 /target/
 **/target/
-/web/node_modules/
 **/node_modules/
-/web/dist/
-**/pkg/
 *.wasm.map
-# Copied wasm artifact (dev.sh / ci/gates.sh place it; cargo owns it)
-/web/public/client_wasm.wasm
+# The `/web/` entries that stood here are gone with the browser client
+# (operator, 2026-08-06) — `web/` is not in the tree and is not coming back.
+# `wasm32-unknown-unknown` is still built, but only as `test_parity_wasm`'s
+# second target under `target/`, so it needs no rule of its own.
 
 # Cargo.lock IS committed — ashfall ships binaries, not a library.
 
@@ -40,3 +39,31 @@ anomaly.log
 # python bytecode (reference/rip-hooks.py)
 __pycache__/
 *.pyc
+
+# Fetched texture candidates: 188 files, ~1.3 GB of other people's pristine
+# source images, pulled by assets/textures/fetch_gates_texture_candidates.py.
+# The QUEUE is committed (CANDIDATES.md + the csv/xlsx beside it); the pixels
+# are not — they are re-fetchable from the URLs in the csv, and a selected one
+# earns its place in the tree only after it is measured, packed and recorded in
+# MANIFEST.md with its licence. This rule lived in `.git/info/exclude`, which is
+# per-clone and uncommitted, so a second clone saw 1.3 GB of untracked files
+# with nothing warning it off.
+assets/textures/candidates/
+
+# Vendor deliveries under review: `assets/models/To Examine/` is where a
+# generated character or animation set lands before it is imported, and it is
+# ~600 MB of zips and 28 MB GLBs — the same class as the texture candidates
+# above, and kept out for the same two reasons. It is re-downloadable from the
+# vendor, and what earns a place in the tree is the IMPORTED file plus its row
+# in `assets/models/MANIFEST.md`. `ci/depot.py` already stages from
+# `git ls-files` rather than walking, so this is not what stops it shipping —
+# it is what stops a second clone finding 600 MB of untracked files with
+# nothing warning it off (`CLAUDE.md`'s packager trap says why that rule lived
+# in the wrong place once already).
+assets/models/To Examine/
+
+# Agent worktrees the harness parks under .claude/ while parallel lanes run.
+# Each is a whole duplicate checkout; they are transient and auto-cleaned, and
+# committing one would be the depot-walk trap one directory up from where it
+# was paid for. Scoped: .claude/skills/ is tracked and ships.
+.claude/worktrees/

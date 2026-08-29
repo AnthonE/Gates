@@ -11,7 +11,7 @@
 //!
 //! ## The palette is a claim, not a starting point
 //!
-//! Read off `Rust Images/mapraw.jpg`, the one reference frame that is a map
+//! Read off the reference `mapraw.jpg`, the one reference frame that is a map
 //! and nothing else. The four ground colours are close in VALUE and far apart
 //! in HUE deliberately: the reference map reads as terrain because relief does
 //! the work and the biome tint is a wash over it, so a palette with strong
@@ -21,9 +21,9 @@
 
 use protocol::event::WireBag;
 use sim_core::build::BUILD_CELL_M;
-use sim_core::deploy::{DeployContent, DeployRec, ARCH_BAG, ARCH_HEARTH};
+use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_BAG, ARCH_HEARTH, BAG_CAP};
 use sim_core::movement::POS_XZ_Q;
-use sim_core::terrain::{self, Haven, ISLAND_SIZE, SEA_LEVEL};
+use sim_core::terrain::{self, Haven, ISLAND_SIZE, SEA_LEVEL, WAYSTATIONS};
 
 /// Metres per grid square. 2048 / 128 = 16 squares a side.
 pub const GRID_M: f32 = 128.0;
@@ -50,16 +50,20 @@ pub const SEA_SHALLOW: [f32; 3] = [47.0, 106.0, 142.0];
 /// Open water at [`DEEP_M`] and below.
 pub const SEA_DEEP: [f32; 3] = [23.0, 50.0, 74.0];
 
-/// The hillshade's light, as a unit vector in world axes (x east, y up,
+/// The hillshade's light, as a unit vector in world axes (**x WEST**, y up,
 /// z north).
 ///
 /// Up and to the LEFT of the image, which is north-west — the convention
-/// every printed relief map uses and the one `mapraw.jpg` follows. North-west
-/// in world axes is `-x, +z`, and the map's north is `+z`
-/// (`DECISIONS.md` §open, compass axes v0 — the same call the compass strip
-/// rests on), so the sign of the z term here is the same fact the bearing
-/// readout is.
-pub const LIGHT: [f32; 3] = [-0.5, std::f32::consts::FRAC_1_SQRT_2, 0.5];
+/// every printed relief map uses and the one `mapraw.jpg` follows. The map's
+/// north is `+z` and its east is `-x` (`DECISIONS.md` 2026-08-15 — the same
+/// call the compass strip rests on), so north-west in world axes is
+/// `+x, +z` and **both terms here are positive**.
+///
+/// Both signs are the bearing readout's fact restated in a second place,
+/// which is why they moved in the 2026-08-15 commit rather than after it: a
+/// map whose x term flipped and whose light did not would be lit from the
+/// north-EAST, and nothing but a person looking at it would say so.
+pub const LIGHT: [f32; 3] = [0.5, std::f32::consts::FRAC_1_SQRT_2, 0.5];
 
 /// The lambert term becomes a gain: `SHADE_FLOOR + SHADE_GAIN * lambert`,
 /// clamped.
@@ -81,14 +85,15 @@ pub const SHADE_CLAMP: (f32, f32) = (0.45, 1.35);
 /// The grid square a world position is in — `"H11"`, or `""` off the island.
 ///
 /// Columns are letters west to east; rows are numbers north to south from 1.
-/// **The row direction is the load-bearing half**: our north is `+z`, so row 1
-/// is the `+z` edge and the row index counts DOWN in z — the same flip
-/// [`paint`] applies to the image, which is why both live in one file.
+/// **Both directions are load-bearing and both count DOWN**: our north is
+/// `+z` and our east is `-x` (`DECISIONS.md` 2026-08-15), so row 1 is the
+/// `+z` edge and column A is the `+x` edge — the same two flips [`paint`]
+/// applies to the image, which is why they live in one file.
 pub fn grid_label(x: f32, z: f32) -> String {
     if !(0.0..ISLAND_SIZE).contains(&x) || !(0.0..ISLAND_SIZE).contains(&z) {
         return String::new();
     }
-    let col = ((x / GRID_M) as usize).min(GRID_COLS - 1);
+    let col = (((ISLAND_SIZE - x) / GRID_M) as usize).min(GRID_COLS - 1);
     let row = (((ISLAND_SIZE - z) / GRID_M) as usize).min(GRID_COLS - 1);
     let letter = GRID_LETTERS.as_bytes()[col] as char;
     format!("{letter}{}", row + 1)
@@ -102,7 +107,9 @@ pub fn grid_label(x: f32, z: f32) -> String {
 pub fn world_to_map(x: f32, z: f32, size: usize) -> (f32, f32) {
     let s = size as f32;
     (
-        x / ISLAND_SIZE * s,
+        // East is -x and image columns grow east, so this flips too — a
+        // north-up map has east on the right only if east is `-x`.
+        (ISLAND_SIZE - x) / ISLAND_SIZE * s,
         // North is +z and image rows grow south, so this flips.
         (ISLAND_SIZE - z) / ISLAND_SIZE * s,
     )
@@ -110,12 +117,18 @@ pub fn world_to_map(x: f32, z: f32, size: usize) -> (f32, f32) {
 
 /// Paint the island into an RGBA buffer, `size × size`.
 ///
-/// **Two positional facts, both of which have cost a pass elsewhere.**
+/// **Three positional facts, each of which has cost a pass somewhere.**
 ///
 /// 1. Sample row `j` grows with `+z`, which is NORTH, and image row `py`
 ///    grows DOWNWARD, which is SOUTH. So `py = size - 1 - j`. Get it wrong
 ///    and the map is right about everything and upside down.
-/// 2. **Samples sit at pixel CENTRES.** A fill starting at 0 puts sample
+/// 2. Sample column `i` grows with `+x`, which is **WEST**
+///    (`DECISIONS.md` 2026-08-15), and image column `px` grows RIGHTWARD,
+///    which is east. So `px = size - 1 - i`, the same flip on the other
+///    axis. Get *this* one wrong and the map is right about everything and
+///    mirrored — which is what it was until 2026-08-15, undetectably,
+///    because it agreed with a compass that was mirrored too.
+/// 3. **Samples sit at pixel CENTRES.** A fill starting at 0 puts sample
 ///    `(i, j)` on the low-x, low-z corner of the pixel it fills; the pixel's
 ///    extent then runs from that sample to the next, so the painted island is
 ///    half a cell out on both axes — and on the flipped axis `world_to_map`
@@ -137,6 +150,7 @@ pub fn paint(seed: u64, size: usize, out: &mut [u8]) {
         let py = size - 1 - j;
         for i in 0..size {
             let x = half + i as f32 * step;
+            let px = size - 1 - i;
             let h = terrain::height(seed, x, z);
 
             // Central differences at the map's own step. A smoothed slope
@@ -184,7 +198,7 @@ pub fn paint(seed: u64, size: usize, out: &mut [u8]) {
                 (mix(0) * shade, mix(1) * shade, mix(2) * shade)
             };
 
-            let o = (py * size + i) * 4;
+            let o = (py * size + px) * 4;
             out[o] = r.clamp(0.0, 255.0) as u8;
             out[o + 1] = g.clamp(0.0, 255.0) as u8;
             out[o + 2] = b.clamp(0.0, 255.0) as u8;
@@ -222,6 +236,26 @@ pub fn paint(seed: u64, size: usize, out: &mut [u8]) {
 /// [`Marks`] rather than discarded — a cap that truncates silently reads as
 /// "everything is drawn" when it is not. `DECISIONS.md` §open, map markers v1.
 pub const MAP_MARKS_MAX: usize = 64;
+/// …and a full rack of bags fits inside it with room to spare, so
+/// [`resolve_wake_marks`]' drop is unreachable by an ordinary player.
+/// Compile-time rather than a test for `protocol`'s reason: a cap that is
+/// only correct while another crate's constant stays put is not a cap, and
+/// raising `BAG_CAP` past this would make the death screen silently stop
+/// drawing one of a player's own beds.
+const _: () = assert!(
+    BAG_CAP <= MAP_MARKS_MAX,
+    "BAG_CAP outgrew the map's marker cap — a player's own bag would be dropped"
+);
+/// …and the whole OWN tier of [`resolve_marks`] — authored destinations,
+/// the own death bag, and every own bed (at most `BAG_CAP`) — fits ahead
+/// of the cap. This is what makes "the cap can never eat what is yours" a
+/// property rather than a probability, and it is compile-time for the
+/// assert above's reason: two of the three terms are other crates'
+/// constants.
+const _: () = assert!(
+    1 + WAYSTATIONS + 1 + BAG_CAP <= MAP_MARKS_MAX,
+    "the own tier outgrew the marker cap — a player's own bed would be dropped"
+);
 
 /// What a mark is a mark OF. `None` is the zero so a stale array slot cannot
 /// draw a bed — [`Marks::a`] is fixed-size and reused.
@@ -235,6 +269,16 @@ pub enum MarkKind {
     Waystation,
     /// A deployed sleeping bag: where you WAKE.
     Bed,
+    /// One of **your own** bags whose cooldown has not lapsed — a bed the
+    /// next death will skip over.
+    ///
+    /// Its own kind rather than a flag on [`MarkKind::Bed`] because the
+    /// renderer's `match` is the gate: a state with no draw branch fails
+    /// to compile, and a bool would have drawn a ready bag over a spent
+    /// one with nothing to notice. Only [`resolve_wake_marks`] can produce
+    /// it — readiness is an own-fact and the island-wide deploy mirror
+    /// does not carry it (`protocol`'s `SUB_BAGS`).
+    BedSpent,
     /// A hearth: the base's anchor, and what its upkeep is paid into.
     Hearth,
     /// A standing death backpack: where your stuff is.
@@ -257,7 +301,12 @@ impl MarkKind {
             // bug that draws it anyway is visible instead of plausible.
             MarkKind::None => [0.0, 0.0, 0.0],
             MarkKind::Haven | MarkKind::Waystation => [232.0, 228.0, 218.0],
-            MarkKind::Bed => [127.0, 179.0, 255.0],
+            // A spent bag is the SAME blue as a ready one: the colour says
+            // "this is a bed of yours", and the renderer's shape says
+            // whether it will answer. Two blues would be the one channel a
+            // player reading a small panel in a hurry cannot tell apart,
+            // which is the rule this whole table is built on.
+            MarkKind::Bed | MarkKind::BedSpent => [127.0, 179.0, 255.0],
             MarkKind::Hearth => [255.0, 157.0, 92.0],
             MarkKind::Backpack => [232.0, 215.0, 106.0],
         }
@@ -314,13 +363,41 @@ impl Marks {
 /// Fill `out` with every marker the map draws.
 ///
 /// Push ORDER is the drop policy: authored destinations first, so the cap
-/// (drop-newest) can never cost the haven; then the player's anchors off the
-/// deploy mirror; then the standing bags.
+/// (drop-newest) can never cost the haven; then what is YOURS — the own
+/// death bag, then your own beds; then the standing bags; then the anchors
+/// off the deploy mirror. Both maps draw in reverse resolve order, so cap
+/// rank and draw-on-top rank stay one rule.
+///
+/// Bags outrank the anchor tier deliberately (`NOW.md` §0die): the deploy
+/// mirror is island-wide, so on a busy shard beds and hearths alone can fill
+/// the cap — and a bag is the one mark on a clock, dropped newest, which
+/// made your own bag the first thing the cap ate. `WireBag` carries no owner
+/// (the server's broadcast drops the victim id at `WireBag::of`), so the map
+/// cannot rank a STRANGER'S bag by whose it is — but the client can tag its
+/// OWN (`ClientCore::own_bag`, the death-position join), and `own_bag` here
+/// is that tag: the one bag pushed ahead of every other, directly behind the
+/// authored tier, so it survives any cap the authored marks leave room in —
+/// which is all of them, the compile-time assert above [`MarkKind`].
+/// Stranger bags still pay the cap against each other, newest first among
+/// the marks behind them. The cap itself does not move and drop-newest
+/// stays stated.
+///
+/// `own_beds` is the same fix for the anchor tier (`NOW.md` §0die remainder
+/// 1: beds did not get the ranking backpacks did). `DeployRec::owner` is
+/// deliberately not on the wire, so the mirror cannot say whose a bed is —
+/// but `ClientCore::own_bags()` (the `SUB_BAGS` own-fact, the death map's
+/// data) can, and a mirror record matching an anchor by address
+/// `(cx, cz, level)` is tagged as yours and pushed directly behind the own
+/// bag, ahead of every stranger's bag and bed. The mirror stays the truth:
+/// an anchor with no mirror record draws nothing (the bed was destroyed
+/// since the list was sent), and readiness stays the death screen's fact —
+/// [`MarkKind::BedSpent`] is still only [`resolve_wake_marks`]'s to make.
 ///
 /// `have` is `ClientCore::deploy_defs_have`, and the guard is load-bearing:
 /// an undripped row reads as `DeployDef::INERT`, whose arch is `ARCH_BAG` —
 /// so without it a not-yet-known deployable is drawn as somebody's bed.
 /// `interact::resolve` skips for the same reason.
+#[allow(clippy::too_many_arguments)] // two own-fact tags rode in on one fix each
 pub fn resolve_marks(
     out: &mut Marks,
     haven: &Haven,
@@ -328,6 +405,8 @@ pub fn resolve_marks(
     defs: &DeployContent,
     have: u16,
     bags: &[WireBag],
+    own_bag: u32,
+    own_beds: &[BagAnchor],
 ) {
     out.count = 0;
     out.dropped = 0;
@@ -339,6 +418,53 @@ pub fn resolve_marks(
 
     let have = have.min(defs.def_count);
     let half = BUILD_CELL_M * 0.5;
+    // A mirror record that one of YOUR anchors names — same address, and
+    // only for the bag archetype, so a hearth sharing the cell is not
+    // swept into the tier.
+    let is_own_bed = |rec: &DeployRec| {
+        defs.defs[rec.row as usize].arch == ARCH_BAG
+            && own_beds
+                .iter()
+                .any(|b| b.cx == rec.cx && b.cz == rec.cz && b.level == rec.level)
+    };
+
+    // The own bag first (zero = none, the store's own sentinel), so the cap
+    // can never eat it behind a shard's worth of strangers.
+    if own_bag != 0 {
+        if let Some(bag) = bags.iter().find(|b| b.id == own_bag) {
+            out.push(
+                MarkKind::Backpack,
+                bag.qx as f32 * POS_XZ_Q,
+                bag.qz as f32 * POS_XZ_Q,
+            );
+        }
+    }
+    // Your own beds next — at most `BAG_CAP` of them, inside the compile-time
+    // budget above, so the cap can never eat one behind a busy shard's mirror.
+    for rec in deploys {
+        if (rec.row as u16) >= have || !is_own_bed(rec) {
+            continue;
+        }
+        out.push(
+            MarkKind::Bed,
+            rec.cx as f32 * BUILD_CELL_M + half,
+            rec.cz as f32 * BUILD_CELL_M + half,
+        );
+    }
+    for bag in bags {
+        if own_bag != 0 && bag.id == own_bag {
+            continue; // already pushed, ahead of the cap
+        }
+        // A bag carries a quantized world position, not a grid cell — it is
+        // dropped where its owner died. y is the one term a map has no axis
+        // for.
+        out.push(
+            MarkKind::Backpack,
+            bag.qx as f32 * POS_XZ_Q,
+            bag.qz as f32 * POS_XZ_Q,
+        );
+    }
+
     for rec in deploys {
         if (rec.row as u16) >= have {
             continue;
@@ -349,6 +475,9 @@ pub fn resolve_marks(
             // Everything else is deliberately unmarked — see the module note.
             _ => continue,
         };
+        if kind == MarkKind::Bed && is_own_bed(rec) {
+            continue; // already pushed, ahead of the cap
+        }
         // The cell CENTRE — where `interact::resolve` measures reach to and
         // where the mesh stands. A marker on the corner sits up to half a
         // cell off the thing it names.
@@ -358,15 +487,48 @@ pub fn resolve_marks(
             rec.cz as f32 * BUILD_CELL_M + half,
         );
     }
+}
 
-    for bag in bags {
-        // A bag carries a quantized world position, not a grid cell — it is
-        // dropped where its owner died. y is the one term a map has no axis
-        // for.
+/// Fill `out` with **your own bags** and nothing else — the death
+/// screen's map (bag choice v0).
+///
+/// A different function from [`resolve_marks`] rather than a flag on it,
+/// and the difference is the whole point of the screen:
+///
+///   · [`resolve_marks`] draws the island — every bed and hearth anyone
+///     placed, off the broadcast deploy mirror, which cannot say whose
+///     they are;
+///   · this draws the **answers to the question on screen**, off the
+///     own-fact bag list, which is the only thing that can.
+///
+/// So no haven, no waystations, no other player's bed, and — the one that
+/// is a rule rather than a choice — **no marker for where you fell.**
+/// `ALPHA.md` §1: "who/what killed you — range and weapon, no map
+/// position". A raider standing over your body is looking at your screen's
+/// twin on their own machine; the reason the death screen never carried a
+/// position is that yours would pin the base they just cleared. Adding a
+/// map here does not repeal that, and `no_wake_map_marks_the_corpse` is
+/// what keeps someone from helpfully adding it back.
+///
+/// The cap is [`resolve_marks`]'s and cannot be reached: `BAG_CAP` is 8
+/// against [`MAP_MARKS_MAX`]'s 64. It is checked anyway, because a cap
+/// that is only correct as long as another crate's constant does not move
+/// is not a cap.
+pub fn resolve_wake_marks(out: &mut Marks, bags: &[BagAnchor]) {
+    out.count = 0;
+    out.dropped = 0;
+    let half = BUILD_CELL_M * 0.5;
+    for b in bags {
         out.push(
-            MarkKind::Backpack,
-            bag.qx as f32 * POS_XZ_Q,
-            bag.qz as f32 * POS_XZ_Q,
+            if b.ready {
+                MarkKind::Bed
+            } else {
+                MarkKind::BedSpent
+            },
+            // The cell CENTRE, `resolve_marks`' metric — the two maps put
+            // the same bag on the same pixel or one of them is lying.
+            b.cx as f32 * BUILD_CELL_M + half,
+            b.cz as f32 * BUILD_CELL_M + half,
         );
     }
 }
@@ -390,22 +552,57 @@ mod tests {
         assert!((flat - 1.0).abs() < 1e-6, "flat ground shades to {flat}");
     }
 
+    /// West is `+x` and north is `+z` (`DECISIONS.md` 2026-08-15), so both
+    /// terms are positive — and the assertion names the compass point rather
+    /// than the sign, so it goes red if the axes are ever re-decided without
+    /// this file being read.
     #[test]
     fn the_light_is_a_unit_vector_from_the_north_west() {
         let len = (LIGHT[0] * LIGHT[0] + LIGHT[1] * LIGHT[1] + LIGHT[2] * LIGHT[2]).sqrt();
         assert!((len - 1.0).abs() < 1e-6, "light is not unit: {len}");
-        const { assert!(LIGHT[0] < 0.0, "the light must come from the west") };
-        const { assert!(LIGHT[2] > 0.0, "the light must come from the north") };
+        // A point one metre toward the light, read back as a bearing: the
+        // light must stand in the north-west quadrant of the same card the
+        // compass strip prints. This is `LIGHT` checked against the
+        // convention's owner, not against a remembered sign.
+        let deg = crate::look::bearing_of(LIGHT[0], LIGHT[2]);
+        assert!(
+            (270.0..360.0).contains(&deg),
+            "the light bears {deg}°, which is not north-west"
+        );
     }
 
-    /// Row 1 is the +z edge and rows count DOWN in z. The half of
-    /// `grid_label` that is load-bearing.
+    /// Row 1 is the `+z` edge and column A is the `+x` edge — both count
+    /// DOWN, because north is `+z` and east is `-x`. Both halves of
+    /// `grid_label` are load-bearing.
     #[test]
-    fn row_one_is_the_north_edge() {
-        assert_eq!(grid_label(1.0, ISLAND_SIZE - 1.0), "A1");
-        assert_eq!(grid_label(1.0, 1.0), format!("A{GRID_COLS}"));
-        // Columns run west to east.
-        assert_eq!(grid_label(ISLAND_SIZE - 1.0, ISLAND_SIZE - 1.0), "P1");
+    fn a_one_is_the_north_west_corner() {
+        // North-west: the largest z AND the largest x.
+        assert_eq!(
+            grid_label(ISLAND_SIZE - 1.0, ISLAND_SIZE - 1.0),
+            "A1",
+            "A1 is the north-west corner"
+        );
+        // Due south of it: same column, last row.
+        assert_eq!(grid_label(ISLAND_SIZE - 1.0, 1.0), format!("A{GRID_COLS}"));
+        // Due east of it: last column, first row.
+        assert_eq!(grid_label(1.0, ISLAND_SIZE - 1.0), "P1");
+    }
+
+    /// The lettering agrees with the compass: walking east must walk up the
+    /// alphabet, and the direction "east" comes from `look::bearing_of`
+    /// rather than from a sign written down twice.
+    #[test]
+    fn the_columns_run_west_to_east() {
+        let mid = ISLAND_SIZE * 0.5;
+        // Two steps in the direction the compass calls east (90°).
+        let east = (-1.0f32, 0.0f32);
+        assert!((crate::look::bearing_of(east.0, east.1) - 90.0).abs() < 0.01);
+        let a = grid_label(mid, mid);
+        let b = grid_label(mid + east.0 * GRID_M, mid + east.1 * GRID_M);
+        assert!(
+            b.as_bytes()[0] > a.as_bytes()[0],
+            "a step east went {a} → {b}, which runs the alphabet backwards"
+        );
     }
 
     #[test]
@@ -414,14 +611,53 @@ mod tests {
         assert_eq!(grid_label(10.0, ISLAND_SIZE), "");
     }
 
+    /// North is up and east is right — **stated as compass points and
+    /// resolved through `look::bearing_of`**, not as two world coordinates
+    /// with directional variable names.
+    ///
+    /// The line this replaces was `px_west < px_east` over `x = 1` and
+    /// `x = ISLAND_SIZE - 1`, which is a monotonicity claim wearing a
+    /// compass's clothes: it is green whichever way the x term runs, so it
+    /// held while the map was mirrored and would have held after a fix that
+    /// mirrored it back. `NOW.md` §0gj named it; this is the version that
+    /// can fail.
     #[test]
-    fn world_to_map_flips_north_to_the_top() {
-        let (_, py_north) = world_to_map(0.0, ISLAND_SIZE - 1.0, 256);
-        let (_, py_south) = world_to_map(0.0, 1.0, 256);
-        assert!(py_north < py_south, "north must be nearer the top");
-        let (px_west, _) = world_to_map(1.0, 0.0, 256);
-        let (px_east, _) = world_to_map(ISLAND_SIZE - 1.0, 0.0, 256);
-        assert!(px_west < px_east);
+    fn the_map_is_north_up_and_east_right() {
+        let c = ISLAND_SIZE * 0.5;
+        let step = 100.0;
+        for (name, want) in [
+            ("north", 0.0f32),
+            ("east", 90.0),
+            ("south", 180.0),
+            ("west", 270.0),
+        ] {
+            // The unit direction the compass gives that name, taken from the
+            // owner rather than assumed here.
+            let (dx, dz) = match name {
+                "north" => (0.0, 1.0),
+                "east" => (-1.0, 0.0),
+                "south" => (0.0, -1.0),
+                _ => (1.0, 0.0),
+            };
+            assert!(
+                (crate::look::bearing_of(dx, dz) - want).abs() < 0.01,
+                "{name} is not {want}° on the card"
+            );
+            let (px0, py0) = world_to_map(c, c, 256);
+            let (px1, py1) = world_to_map(c + dx * step, c + dz * step, 256);
+            match name {
+                "north" => assert!(py1 < py0, "north must move UP the image"),
+                "south" => assert!(py1 > py0, "south must move DOWN the image"),
+                "east" => assert!(px1 > px0, "east must move RIGHT across the image"),
+                _ => assert!(px1 < px0, "west must move LEFT across the image"),
+            }
+            // And the other axis must not move at all.
+            if dx == 0.0 {
+                assert_eq!(px0, px1, "{name} moved the column");
+            } else {
+                assert_eq!(py0, py1, "{name} moved the row");
+            }
+        }
     }
 
     /// The painted image and `world_to_map` must agree about which pixel a
@@ -435,7 +671,11 @@ mod tests {
         for (i, j) in [(0usize, 0usize), (17, 5), (63, 63), (31, 32)] {
             let (x, z) = (half + i as f32 * step, half + j as f32 * step);
             let (px, py) = world_to_map(x, z, size);
-            assert_eq!(px.floor() as usize, i, "column for sample ({i},{j})");
+            assert_eq!(
+                px.floor() as usize,
+                size - 1 - i,
+                "column for sample ({i},{j})"
+            );
             assert_eq!(
                 py.floor() as usize,
                 size - 1 - j,
@@ -536,7 +776,7 @@ mod tests {
         let haven = terrain::haven(42);
         let (defs, have) = defs_with(&[]);
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &[], &defs, have, &[]);
+        resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0, &[]);
 
         assert_eq!(out.count, AUTHORED, "haven + {WAYSTATIONS} waystations");
         assert_eq!(out.dropped, 0);
@@ -566,7 +806,8 @@ mod tests {
     }
 
     /// A bed marks the cell CENTRE — `interact::resolve`'s metric — and a bag
-    /// marks its dequantized drop position, both through `world_to_map`.
+    /// marks its dequantized drop position, both through `world_to_map`. The
+    /// bag lands FIRST after the authored tier — the rank the cap enforces.
     #[test]
     fn anchors_mark_where_the_thing_stands() {
         let haven = terrain::haven(42);
@@ -579,23 +820,23 @@ mod tests {
             qz: 20_000,
         }];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags);
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0, &[]);
 
         assert_eq!(out.count, AUTHORED + 3);
         let half = BUILD_CELL_M * 0.5;
-        let bed = &out.a[AUTHORED];
-        assert_eq!(bed.kind, MarkKind::Bed);
-        assert_eq!(
-            (bed.px, bed.py),
-            world_to_map(100.0 * BUILD_CELL_M + half, 200.0 * BUILD_CELL_M + half, 1)
-        );
-        assert_eq!(out.a[AUTHORED + 1].kind, MarkKind::Hearth);
-        let bag = &out.a[AUTHORED + 2];
+        let bag = &out.a[AUTHORED];
         assert_eq!(bag.kind, MarkKind::Backpack);
         assert_eq!(
             (bag.px, bag.py),
             world_to_map(40_000.0 * POS_XZ_Q, 20_000.0 * POS_XZ_Q, 1)
         );
+        let bed = &out.a[AUTHORED + 1];
+        assert_eq!(bed.kind, MarkKind::Bed);
+        assert_eq!(
+            (bed.px, bed.py),
+            world_to_map(100.0 * BUILD_CELL_M + half, 200.0 * BUILD_CELL_M + half, 1)
+        );
+        assert_eq!(out.a[AUTHORED + 2].kind, MarkKind::Hearth);
     }
 
     /// Boxes, doors and fires stay off the map — the marked set is the two
@@ -606,7 +847,7 @@ mod tests {
         let (defs, have) = defs_with(&[ARCH_BOX, ARCH_DOOR, ARCH_FIRE]);
         let deploys = [rec_at(10, 10, 0), rec_at(11, 10, 1), rec_at(12, 10, 2)];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[]);
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &[]);
         assert_eq!(out.count, AUTHORED, "only the authored tier");
     }
 
@@ -620,7 +861,7 @@ mod tests {
         let (defs, _) = defs_with(&[ARCH_BAG]);
         let deploys = [rec_at(10, 10, 0)];
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &deploys, &defs, 0, &[]);
+        resolve_marks(&mut out, &haven, &deploys, &defs, 0, &[], 0, &[]);
         assert_eq!(out.count, AUTHORED, "an unknown row must not mark");
     }
 
@@ -640,16 +881,203 @@ mod tests {
             })
             .collect();
         let mut out = Marks::default();
-        resolve_marks(&mut out, &haven, &[], &defs, have, &bags);
+        resolve_marks(&mut out, &haven, &[], &defs, have, &bags, 0, &[]);
 
         assert_eq!(out.count, MAP_MARKS_MAX);
         assert_eq!(out.dropped, AUTHORED + over);
         assert_eq!(out.a[0].kind, MarkKind::Haven, "authored is never dropped");
         // A second resolve on the same `Marks` starts clean — the reuse bug
         // the browser gated (an accumulating set draws yesterday's bags).
-        resolve_marks(&mut out, &haven, &[], &defs, have, &[]);
+        resolve_marks(&mut out, &haven, &[], &defs, have, &[], 0, &[]);
         assert_eq!(out.count, AUTHORED);
         assert_eq!(out.dropped, 0);
+    }
+
+    /// `NOW.md` §0die: on a busy shard the deploy mirror alone can fill the
+    /// cap, and bags used to push LAST — so your own bag, arriving newest,
+    /// was the first mark the cap ate. `WireBag` carries no owner (the
+    /// server's broadcast drops the victim id at `WireBag::of`), so the map
+    /// cannot rank YOUR bag above a stranger's; what it can do is rank every
+    /// bag above the anchor tier, and this holds it: the cap full of
+    /// strangers' beds, the owner's bag arriving last, and the bag survives.
+    #[test]
+    fn a_bag_outranks_a_wall_of_strangers_beds() {
+        let haven = terrain::haven(42);
+        let (defs, have) = defs_with(&[ARCH_BAG]);
+        // Enough beds to fill the cap on their own.
+        let deploys: Vec<DeployRec> = (0..MAP_MARKS_MAX).map(|i| rec_at(i as u16, 7, 0)).collect();
+        // The owner's bag: dropped newest, handed to the resolve last.
+        let bags = [WireBag {
+            id: 1,
+            qx: 40_000,
+            qy: 0,
+            qz: 20_000,
+        }];
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &bags, 0, &[]);
+
+        assert_eq!(out.count, MAP_MARKS_MAX);
+        assert_eq!(out.dropped, AUTHORED + 1 + deploys.len() - MAP_MARKS_MAX);
+        let n = out.a[..out.count]
+            .iter()
+            .filter(|m| m.kind == MarkKind::Backpack)
+            .count();
+        assert_eq!(n, 1, "the bag must survive a cap full of beds");
+    }
+
+    /// The whole of §0die's ask, now that the client can tag its own bag:
+    /// a cap-full of STRANGER BAGS — the one flood the bags-above-anchors
+    /// rank cannot beat — and the owner's, dropped newest and handed to
+    /// the resolve last, still survives, because the tagged bag is pushed
+    /// directly behind the authored tier. Red under the untagged ordering
+    /// (own_bag = 0 drops it: the newest bag is the first one eaten).
+    #[test]
+    fn the_owners_own_bag_outranks_a_shard_of_strangers_bags() {
+        let haven = terrain::haven(42);
+        let (defs, _) = defs_with(&[]);
+        let mut bags: Vec<WireBag> = (0..MAP_MARKS_MAX)
+            .map(|i| WireBag {
+                id: 100 + i as u32,
+                qx: 30_000 + i as i32,
+                qy: 0,
+                qz: 30_000,
+            })
+            .collect();
+        bags.push(WireBag {
+            id: 7,
+            qx: 40_000,
+            qy: 0,
+            qz: 20_000,
+        });
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &[], &defs, 0, &bags, 7, &[]);
+
+        assert_eq!(out.count, MAP_MARKS_MAX);
+        let (px, py) = world_to_map(40_000.0 * POS_XZ_Q, 20_000.0 * POS_XZ_Q, 1);
+        assert!(
+            out.a[..out.count].iter().any(|m| (m.px, m.py) == (px, py)),
+            "the owner's bag must survive a cap full of strangers' bags"
+        );
+    }
+
+    /// The rank is not an exemption: bags still pay the cap against each
+    /// other. A shard with more standing bags than slots drops the newest
+    /// bag — a stranger's, the owner's, the policy cannot tell and does not
+    /// bend (wall 4: the cap does not move, drop-newest stays stated).
+    #[test]
+    fn a_strangers_bag_is_still_cappable() {
+        let haven = terrain::haven(42);
+        let (defs, have) = defs_with(&[]);
+        let bags: Vec<WireBag> = (0..MAP_MARKS_MAX + 1)
+            .map(|i| WireBag {
+                id: i as u32,
+                qx: 30_000 + i as i32,
+                qy: 0,
+                qz: 30_000,
+            })
+            .collect();
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &[], &defs, have, &bags, 0, &[]);
+
+        assert_eq!(out.count, MAP_MARKS_MAX);
+        assert_eq!(out.dropped, AUTHORED + 1, "the overflow is counted");
+        // Drop-newest with the authored tier pushed first: the last
+        // AUTHORED + 1 bags are all refused; the very last is the cheapest
+        // to name, so the assert names it.
+        let last = bags.last().unwrap();
+        let (px, py) = world_to_map(last.qx as f32 * POS_XZ_Q, last.qz as f32 * POS_XZ_Q, 1);
+        assert!(
+            !out.a[..out.count].iter().any(|m| (m.px, m.py) == (px, py)),
+            "drop-newest means the LAST bag is the one refused"
+        );
+    }
+
+    /// `NOW.md` §0die remainder 1: beds did not get the ranking backpacks
+    /// did. The deploy mirror cannot say whose a bed is, but the `SUB_BAGS`
+    /// own-fact can — a mirror record matching an own anchor by address is
+    /// pushed ahead of the stranger tier. Here a cap-full of STRANGER beds
+    /// arrives first and the owner's bed is handed to the resolve last;
+    /// under the unranked ordering (own_beds = &[]) it is the first mark
+    /// the cap eats, and the second resolve below proves exactly that.
+    #[test]
+    fn your_own_bed_outranks_a_shard_of_strangers_beds() {
+        let haven = terrain::haven(42);
+        let (defs, have) = defs_with(&[ARCH_BAG]);
+        // Enough stranger beds to fill the cap on their own, then yours.
+        let mut deploys: Vec<DeployRec> =
+            (0..MAP_MARKS_MAX).map(|i| rec_at(i as u16, 7, 0)).collect();
+        deploys.push(rec_at(500, 400, 0));
+        let own = [anchor(500, 400, true)];
+        let half = BUILD_CELL_M * 0.5;
+        let (px, py) = world_to_map(500.0 * BUILD_CELL_M + half, 400.0 * BUILD_CELL_M + half, 1);
+
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &own);
+        assert_eq!(out.count, MAP_MARKS_MAX);
+        assert_eq!(
+            out.a[..out.count]
+                .iter()
+                .filter(|m| (m.px, m.py) == (px, py))
+                .count(),
+            1,
+            "the owner's bed must survive the cap, drawn exactly once"
+        );
+        // Directly behind the authored tier — the rank that makes the
+        // survival a property, and (reverse draw order) draws it on top.
+        assert_eq!(out.a[AUTHORED].kind, MarkKind::Bed);
+        assert_eq!((out.a[AUTHORED].px, out.a[AUTHORED].py), (px, py));
+
+        // The same shard with no tag: drop-newest eats exactly this bed —
+        // the defect this test exists to hold closed.
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &[]);
+        assert!(
+            !out.a[..out.count].iter().any(|m| (m.px, m.py) == (px, py)),
+            "untagged, the newest bed is the first mark the cap eats"
+        );
+    }
+
+    /// The tag re-ranks, never duplicates or invents: with room for
+    /// everyone the mark count is unchanged, an own anchor whose bed the
+    /// mirror no longer holds draws nothing (the mirror is the truth), and
+    /// a hearth is not swept into the tier by sharing an address.
+    #[test]
+    fn an_own_bed_is_reranked_not_redrawn() {
+        let haven = terrain::haven(42);
+        let (defs, have) = defs_with(&[ARCH_BAG, ARCH_HEARTH]);
+        // A STRANGER's bed first in the mirror, then yours, then a hearth
+        // on your bed's cell — so "yours is first" below can only pass if
+        // the tag re-ranked it past the stranger's.
+        let mut deploys = [rec_at(11, 20, 0), rec_at(10, 20, 0), rec_at(10, 20, 1)];
+        let own = [anchor(10, 20, true), anchor(900, 900, true)];
+        let mut out = Marks::default();
+        resolve_marks(&mut out, &haven, &deploys, &defs, have, &[], 0, &own);
+
+        assert_eq!(out.count, AUTHORED + 3, "re-ranked, not duplicated");
+        assert_eq!(out.a[AUTHORED].kind, MarkKind::Bed, "yours is first");
+        let half = BUILD_CELL_M * 0.5;
+        let (px, py) = world_to_map(10.0 * BUILD_CELL_M + half, 20.0 * BUILD_CELL_M + half, 1);
+        assert_eq!((out.a[AUTHORED].px, out.a[AUTHORED].py), (px, py));
+        // The destroyed bed's anchor (900, 900) drew nothing: no mark
+        // stands at its cell.
+        let (gx, gy) = world_to_map(900.0 * BUILD_CELL_M + half, 900.0 * BUILD_CELL_M + half, 1);
+        assert!(
+            !out.a[..out.count].iter().any(|m| (m.px, m.py) == (gx, gy)),
+            "an anchor with no mirror record must draw nothing"
+        );
+        // The hearth on the shared cell stayed a hearth in the anchor tier.
+        assert_eq!(
+            out.a[..out.count]
+                .iter()
+                .filter(|m| m.kind == MarkKind::Hearth)
+                .count(),
+            1
+        );
+
+        // An undripped row cannot be tagged either — the INERT-reads-as-bag
+        // guard holds inside the own tier too.
+        deploys[0].row = 1; // hearth row, but pretend the drip is behind
+        resolve_marks(&mut out, &haven, &deploys, &defs, 0, &[], 0, &own);
+        assert_eq!(out.count, AUTHORED, "an unknown row must not mark");
     }
 
     /// No marker fill may sit near a ground colour — a marker that shares
@@ -662,6 +1090,7 @@ mod tests {
             MarkKind::Haven,
             MarkKind::Waystation,
             MarkKind::Bed,
+            MarkKind::BedSpent,
             MarkKind::Hearth,
             MarkKind::Backpack,
         ] {
@@ -680,5 +1109,104 @@ mod tests {
         assert_eq!(MarkKind::default(), MarkKind::None);
         assert_eq!(Mark::default().kind, MarkKind::None);
         assert_eq!(MarkKind::None.fill(), [0.0, 0.0, 0.0]);
+    }
+
+    // ---- the death screen's map (bag choice v0) --------------------------
+
+    fn anchor(cx: u16, cz: u16, ready: bool) -> BagAnchor {
+        BagAnchor {
+            cx,
+            cz,
+            level: 0,
+            ready,
+        }
+    }
+
+    /// A ready bag and a spent one are different KINDS, so the renderer's
+    /// exhaustive match has to draw them differently — a bool would have
+    /// drawn one over the other with nothing to notice.
+    #[test]
+    fn a_spent_bag_is_not_the_same_mark_as_a_ready_one() {
+        let mut out = Marks::default();
+        resolve_wake_marks(&mut out, &[anchor(10, 20, true), anchor(11, 20, false)]);
+        assert_eq!(out.count, 2);
+        assert_eq!(out.a[0].kind, MarkKind::Bed);
+        assert_eq!(out.a[1].kind, MarkKind::BedSpent);
+        // …and the same blue either way: shape is the channel, not colour.
+        assert_eq!(MarkKind::Bed.fill(), MarkKind::BedSpent.fill());
+    }
+
+    /// **`ALPHA.md` §1: no map position.** The death screen grew a map and
+    /// that rule did not move — a marker for where you fell would hand the
+    /// raider standing over your body a pin to the base they just cleared.
+    /// Structural, because the way this breaks is somebody helpfully adding
+    /// a "you died here" dot.
+    #[test]
+    fn no_wake_map_marks_the_corpse() {
+        let mut out = Marks::default();
+        resolve_wake_marks(&mut out, &[anchor(10, 20, true)]);
+        assert_eq!(out.count, 1, "the wake map drew something besides the bags");
+        assert!(
+            out.a[..out.count]
+                .iter()
+                .all(|m| matches!(m.kind, MarkKind::Bed | MarkKind::BedSpent)),
+            "the wake map drew a kind that is not one of your own bags"
+        );
+        // No bags is an empty map and not a haven ring: this screen answers
+        // "where can I wake", and with no answer there is nothing to draw.
+        resolve_wake_marks(&mut out, &[]);
+        assert_eq!(out.count, 0);
+        assert_eq!(out.dropped, 0);
+    }
+
+    /// The two maps put the same bag on the same pixel. They are separate
+    /// functions over separate data — the island map reads the broadcast
+    /// deploy mirror, this reads the own-fact list — and a projection that
+    /// disagreed between them would be right on one screen and wrong on
+    /// the other, which is the positional-payload defect class exactly.
+    #[test]
+    fn the_two_maps_agree_about_where_a_bag_is() {
+        let (defs, have) = defs_with(&[ARCH_BAG]);
+        let haven = terrain::haven(42);
+        let mut island = Marks::default();
+        resolve_marks(
+            &mut island,
+            &haven,
+            &[rec_at(37, 91, 0)],
+            &defs,
+            have,
+            &[],
+            0,
+            &[],
+        );
+        let bed = island.a[..island.count]
+            .iter()
+            .find(|m| m.kind == MarkKind::Bed)
+            .expect("the island map drew the bed");
+
+        let mut wake = Marks::default();
+        resolve_wake_marks(&mut wake, &[anchor(37, 91, true)]);
+        assert_eq!(wake.count, 1);
+        assert_eq!(
+            (wake.a[0].px, wake.a[0].py),
+            (bed.px, bed.py),
+            "the death screen and the island map disagree about where a bag is"
+        );
+    }
+
+    /// The cap holds here too. It cannot be reached today — `BAG_CAP` is 8
+    /// against `MAP_MARKS_MAX`'s 64 — and it is asserted anyway, because a
+    /// cap that is only correct while another crate's constant stays put is
+    /// not a cap (wall 4).
+    #[test]
+    fn the_wake_map_is_bounded_and_says_so() {
+        let over = 5;
+        let bags: Vec<BagAnchor> = (0..MAP_MARKS_MAX + over)
+            .map(|i| anchor((i % 1000) as u16, 7, i % 2 == 0))
+            .collect();
+        let mut out = Marks::default();
+        resolve_wake_marks(&mut out, &bags);
+        assert_eq!(out.count, MAP_MARKS_MAX);
+        assert_eq!(out.dropped, over);
     }
 }

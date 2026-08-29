@@ -115,7 +115,6 @@ const SKIP_DIRS = new Set([
   "dist",
   ".git",
   "pkg",
-  "Rust Images",
 ]);
 
 function* sources(dir) {

@@ -49,20 +49,103 @@ use std::path::{Path, PathBuf};
 /// header. `DECISIONS.md` §open, "settings v0".
 pub const SETTINGS_VERSION: u32 = 1;
 
-/// The eight values that survive a restart. A plain struct rather than the
+/// How much the renderer is asked to do. **The one setting on this screen
+/// that is a budget rather than a preference.**
+///
+/// It lives here rather than in `render/quality.rs` — which owns what each
+/// tier actually *means* in Bevy components — for this module's own stated
+/// reason: parse and serialize are pure arithmetic and must build without
+/// Bevy, and a settings file that wrote `quality = 2` would be a file nobody
+/// can hand-edit. The names are the file format; the table is the renderer's.
+///
+/// **[`Quality::High`] is what the client shipped before tiers existed**, so
+/// the default frame did not move on the day this landed —
+/// `crates/client/tests/quality.rs` holds that against the literal values.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Quality {
+    /// Everything off that can be off: no ambient occlusion, no bloom, no
+    /// anti-aliasing, two short shadow cascades at half the map size, and
+    /// trees that become hulls at 35 m.
+    Low,
+    /// The middle: cheap ambient occlusion, the post chain intact, three
+    /// cascades.
+    Medium,
+    /// What ships. Four cascades to 200 m, SSAO medium, SMAA, bloom.
+    #[default]
+    High,
+}
+
+impl Quality {
+    /// The file's spelling, and the screen's.
+    pub fn name(self) -> &'static str {
+        match self {
+            Quality::Low => "low",
+            Quality::Medium => "medium",
+            Quality::High => "high",
+        }
+    }
+
+    /// The inverse. `None` for anything else — a hand-typed `quality = ultra`
+    /// keeps the default rather than guessing which end of the ladder was
+    /// meant, which is `flag`'s posture one type over.
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s {
+            "low" => Some(Quality::Low),
+            "medium" => Some(Quality::Medium),
+            "high" => Some(Quality::High),
+            _ => None,
+        }
+    }
+
+    /// The ladder, cheapest first. The screen steps along it and
+    /// `tests/quality.rs` walks it to check the tiers only ever get cheaper.
+    pub const LADDER: [Quality; 3] = [Quality::Low, Quality::Medium, Quality::High];
+}
+
+/// The values that survive a restart. A plain struct rather than the
 /// render module's `Settings` because that type also carries UI state (the
 /// selected rail row, where Esc returns to) that has no business on disk —
 /// and because this module must build without Bevy.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Persisted {
     pub fov_deg: f32,
+    /// How much the renderer is asked to do; see [`Quality`].
+    pub quality: Quality,
     pub sensitivity: f32,
     pub invert_look: bool,
     pub vsync: bool,
+    /// Frames per second ceiling; **0 means uncapped**, and then vsync is the
+    /// only thing holding the loop down.
+    ///
+    /// Bevy's focused update mode is `Continuous` — as fast as it possibly
+    /// can — so with vsync off there was nothing between the render loop and
+    /// the hardware. A menu with nothing in it would spin a core and a GPU at
+    /// four figures to draw the same still frame. (Its *unfocused* mode is
+    /// already `reactive_low_power(1/60)`, so a backgrounded client was never
+    /// the problem; a focused one on a menu was.)
+    pub max_fps: u16,
     pub fullscreen: bool,
     pub vol_master: f32,
     pub vol_game: f32,
     pub vol_ambience: f32,
+    pub vol_music: f32,
+    /// Tell Discord what the player is doing (`crate::discord`). On by
+    /// default, and that is safe rather than presumptuous for two reasons:
+    /// the whole path is dark unless the build carries an application id,
+    /// and what it says at this level — the verb, the place, the party
+    /// count — locates no machine and names no person.
+    pub discord_presence: bool,
+    /// Put the shard's name and address in that presence, which is what
+    /// makes Discord's **Ask to Join** appear.
+    ///
+    /// **Off by default, and it is the one setting here that is a
+    /// disclosure rather than a preference.** A presence line is visible to
+    /// everyone who can see the profile, so this hands strangers the address
+    /// of the box the player is on. The operator opened the door
+    /// (2026-08-16, *"nothing wrong with that if the player enables it"*) —
+    /// opt-in is what "enables it" means, and `reference/VOICE.md` §9.1 is
+    /// what the other default costs.
+    pub discord_share_server: bool,
 }
 
 /// What a parse hands back: the values (defaults where the file was silent
@@ -73,6 +156,15 @@ pub struct Loaded {
     pub values: Persisted,
     pub version: u32,
     pub unknown: Vec<String>,
+    /// The starred shard ids, in file order.
+    ///
+    /// **Not on [`Persisted`]**, which is `Copy` and eight scalars, and would
+    /// stop being either. It is also not the same *kind* of thing: every field
+    /// up there is a knob with a range, and this is a list whose bound and
+    /// whose deduplication live beside the star that writes it
+    /// (`crate::ui::servers::Favourites::from_disk`) for the same reason the
+    /// numeric clamps live beside the steppers — two sanitizers drift.
+    pub favourites: Vec<String>,
 }
 
 /// Parse settings text over `defaults`. Never fails: a line that does not
@@ -84,6 +176,7 @@ pub struct Loaded {
 pub fn parse(text: &str, defaults: Persisted) -> Loaded {
     let mut v = defaults;
     let mut version = SETTINGS_VERSION;
+    let mut favourites: Vec<String> = Vec::new();
     // (key, full line) so a duplicated unknown key keeps only its last value
     // — the same last-wins the known keys get from being plain assignments.
     let mut unknown: Vec<(String, String)> = Vec::new();
@@ -107,13 +200,40 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
                 }
             }
             "fov_deg" => num(&mut v.fov_deg, value),
+            // A NAME, not an index: a file is something a person may open.
+            // An unrecognised one keeps the default and is not preserved,
+            // which is what every known-key-bad-value does here.
+            "quality" => {
+                if let Some(q) = Quality::from_name(value) {
+                    v.quality = q;
+                }
+            }
             "sensitivity" => num(&mut v.sensitivity, value),
             "invert_look" => flag(&mut v.invert_look, value),
             "vsync" => flag(&mut v.vsync, value),
+            "max_fps" => count(&mut v.max_fps, value),
             "fullscreen" => flag(&mut v.fullscreen, value),
             "vol_master" => num(&mut v.vol_master, value),
             "vol_game" => num(&mut v.vol_game, value),
             "vol_ambience" => num(&mut v.vol_ambience, value),
+            "vol_music" => num(&mut v.vol_music, value),
+            "discord_presence" => flag(&mut v.discord_presence, value),
+            "discord_share_server" => flag(&mut v.discord_share_server, value),
+            // A comma-separated list, because the format is `key = value` and
+            // a list of ids does not earn a second one. An id may not contain
+            // a comma — `shardlist::parse` caps every field at
+            // `MAX_FIELD_BYTES` and this file is written from ids that came
+            // through it — so the split is lossless for anything the game
+            // itself wrote, and a hand-typed comma costs that entry its star
+            // rather than the file its meaning.
+            "favourites" => {
+                favourites = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+            }
             _ => {
                 if key_shaped(key) {
                     unknown.retain(|(k, _)| k != key);
@@ -126,6 +246,7 @@ pub fn parse(text: &str, defaults: Persisted) -> Loaded {
         values: v,
         version,
         unknown: unknown.into_iter().map(|(_, line)| line).collect(),
+        favourites,
     }
 }
 
@@ -150,6 +271,14 @@ fn flag(slot: &mut bool, value: &str) {
     }
 }
 
+/// A whole non-negative count. Out-of-range or non-numeric keeps the default
+/// rather than guessing — `num`'s posture for a field that is not a float.
+fn count(slot: &mut u16, value: &str) {
+    if let Ok(n) = value.parse::<u16>() {
+        *slot = n;
+    }
+}
+
 /// Is this something a future build could plausibly have written as a key?
 /// ASCII word characters only — the preserve policy is for another version's
 /// knobs, not for arbitrary bytes to ride the file forever.
@@ -161,20 +290,33 @@ fn key_shaped(key: &str) -> bool {
 /// whichever of that and `SETTINGS_VERSION` is higher, so saving from an
 /// older build under a newer file never claims the preserved keys are older
 /// than they are.
-pub fn serialize(v: &Persisted, version: u32, unknown: &[String]) -> String {
+pub fn serialize(v: &Persisted, version: u32, favourites: &[String], unknown: &[String]) -> String {
     let mut s = String::with_capacity(512);
     s.push_str("# gates client settings. Written by the game on every change;\n");
     s.push_str("# hand edits are read at the next launch. A key this build does\n");
     s.push_str("# not know is kept as it is, not dropped.\n");
     s.push_str(&format!("version = {}\n", version.max(SETTINGS_VERSION)));
     s.push_str(&format!("fov_deg = {}\n", v.fov_deg));
+    s.push_str(&format!("quality = \"{}\"\n", v.quality.name()));
     s.push_str(&format!("sensitivity = {}\n", v.sensitivity));
     s.push_str(&format!("invert_look = {}\n", v.invert_look));
     s.push_str(&format!("vsync = {}\n", v.vsync));
+    s.push_str(&format!("max_fps = {}\n", v.max_fps));
     s.push_str(&format!("fullscreen = {}\n", v.fullscreen));
     s.push_str(&format!("vol_master = {}\n", v.vol_master));
     s.push_str(&format!("vol_game = {}\n", v.vol_game));
     s.push_str(&format!("vol_ambience = {}\n", v.vol_ambience));
+    s.push_str(&format!("vol_music = {}\n", v.vol_music));
+    s.push_str(&format!("discord_presence = {}\n", v.discord_presence));
+    s.push_str(&format!(
+        "discord_share_server = {}\n",
+        v.discord_share_server
+    ));
+    // Written unconditionally, empty list included: a `favourites = ""` line
+    // is how un-starring the last shard *sticks*. Omitting the key when the
+    // list is empty would leave the previous file's line in place on a
+    // rewrite, and the star would come back at the next launch.
+    s.push_str(&format!("favourites = \"{}\"\n", favourites.join(",")));
     for line in unknown {
         s.push_str(line);
         s.push('\n');
@@ -192,6 +334,7 @@ pub fn load(path: &Path, defaults: Persisted) -> Loaded {
             values: defaults,
             version: SETTINGS_VERSION,
             unknown: Vec::new(),
+            favourites: Vec::new(),
         },
     }
 }
@@ -262,33 +405,75 @@ mod tests {
         // are owned by `render/settings.rs` and asserted there.
         Persisted {
             fov_deg: 75.0,
+            // Not the shipped default, for this fixture's stated reason: a
+            // parser that read nothing would return `High` and pass.
+            quality: Quality::Low,
             sensitivity: 1.0,
             invert_look: false,
             vsync: true,
+            max_fps: 60,
             fullscreen: false,
             vol_master: 1.0,
             vol_game: 1.0,
             vol_ambience: 1.0,
+            vol_music: 1.0,
+            discord_presence: false,
+            discord_share_server: true,
         }
     }
 
     fn changed() -> Persisted {
         Persisted {
             fov_deg: 90.0,
+            quality: Quality::Medium,
             sensitivity: 0.55,
             invert_look: true,
             vsync: false,
+            max_fps: 0,
             fullscreen: true,
             vol_master: 0.7,
             vol_game: 0.3,
             vol_ambience: 0.0,
+            vol_music: 0.45,
+            discord_presence: true,
+            discord_share_server: false,
+        }
+    }
+
+    /// The one key on this file that is a NAME rather than a number, so the
+    /// two failure modes a number cannot have are worth pinning: a spelling
+    /// nobody ships, and a case nobody typed.
+    #[test]
+    fn quality_is_a_name_and_an_unknown_one_keeps_the_default() {
+        for q in Quality::LADDER {
+            let mut want = defaults();
+            want.quality = q;
+            let text = serialize(&want, SETTINGS_VERSION, &[], &[]);
+            assert!(
+                text.contains(&format!("quality = \"{}\"", q.name())),
+                "a settings file must spell the tier out; {q:?} wrote:\n{text}"
+            );
+            assert_eq!(parse(&text, defaults()).values.quality, q);
+        }
+        // Unknown, mis-cased and empty all keep the default rather than
+        // guessing which end of the ladder was meant.
+        for bad in ["ultra", "HIGH", "", "2", "lo"] {
+            let got = parse(&format!("quality = {bad}"), defaults())
+                .values
+                .quality;
+            assert_eq!(
+                got,
+                defaults().quality,
+                "`quality = {bad}` resolved to {got:?} rather than keeping the \
+                 default — a name this build does not know must not be guessed"
+            );
         }
     }
 
     #[test]
     fn a_round_trip_is_identity() {
         let unknown = vec!["future_knob = 3".to_string()];
-        let text = serialize(&changed(), SETTINGS_VERSION, &unknown);
+        let text = serialize(&changed(), SETTINGS_VERSION, &[], &unknown);
         let back = parse(&text, defaults());
         assert_eq!(back.values, changed());
         assert_eq!(back.version, SETTINGS_VERSION);
@@ -329,7 +514,7 @@ mod tests {
         let text = "vol_game = 0.5\nfuture_knob = 3\n# a comment\nnot a line\nfuture_knob = 4\n";
         let got = parse(text, defaults());
         assert_eq!(got.unknown, vec!["future_knob = 4".to_string()]);
-        let out = serialize(&got.values, got.version, &got.unknown);
+        let out = serialize(&got.values, got.version, &got.favourites, &got.unknown);
         assert!(out.contains("future_knob = 4"), "{out}");
         assert!(!out.contains("not a line"), "{out}");
     }
@@ -342,7 +527,7 @@ mod tests {
         let got = parse(text, defaults());
         assert_eq!(got.version, 9);
         assert_eq!(got.values.fov_deg, 80.0);
-        let out = serialize(&got.values, got.version, &got.unknown);
+        let out = serialize(&got.values, got.version, &got.favourites, &got.unknown);
         assert!(out.contains("version = 9"), "{out}");
     }
 
@@ -353,7 +538,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gates-settings-test-{}", std::process::id()));
         let path = dir.join("deeper").join("settings.toml");
         assert_eq!(load(&path, defaults()).values, defaults());
-        save(&path, &serialize(&changed(), SETTINGS_VERSION, &[])).expect("save");
+        save(&path, &serialize(&changed(), SETTINGS_VERSION, &[], &[])).expect("save");
         assert_eq!(load(&path, defaults()).values, changed());
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -1,0 +1,310 @@
+name: release
+
+# **The download.** A tag starting `v` builds the desktop client and the shard
+# for three platforms and attaches them to a GitHub Release.
+#
+# This is the one workflow whose output a stranger touches, so two properties
+# matter more than speed:
+#
+# 1. **The gates run first, on the tagged commit, and a red gate stops the
+#    release.** A tag is not a promise that main was green when it was cut —
+#    somebody can tag anything — so the tag re-earns it. `ci/gates.sh` is the
+#    same script CI and a local merge run, and it is never allowed to
+#    skip-pass (its own header says why).
+# 2. **The version in the tag must equal the version in the tree.** They are
+#    typed by different hands at different times and nothing else compares
+#    them, so `v0.2.0` cut against a workspace still reading `0.1.0` would
+#    ship a binary whose corner disagrees with its own download page — and
+#    the shard's `min_client` floor would be measured against the wrong one.
+#    `check` below is that comparison and it fails the run.
+#
+# Publishing remains an operator act (CLAUDE.md): this builds and attaches,
+# and the release is created as a **draft**. A person opens it, reads what is
+# attached, and presses publish. That is the same posture `ci/depot.py` takes
+# about `published.json` and for the same reason.
+#
+#   git tag -a v0.1.0 -m "..." && git push --no-verify origin v0.1.0
+#
+# The elo depot path (`nightly.yml`'s `depot` job) is NOT this and is not
+# replaced by it: a depot is how the launcher installs a build, this is how a
+# person downloads one. Both key on the same `<version>-g<sha>` build id, so
+# a bug report names something both can find.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (must already exist)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # Cheap, and first: a tag that disagrees with the tree is a bad release and
+  # there is no reason to spend three builds discovering it.
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - id: v
+        name: the tag and the tree must say the same version
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          tree=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "tag=$tag tree=$tree"
+          if [ "$tag" != "v$tree" ]; then
+            echo "::error::tag $tag does not match the workspace version $tree."
+            echo "::error::Bump [workspace.package] version in Cargo.toml, or retag."
+            exit 1
+          fi
+          echo "version=$tree" >> "$GITHUB_OUTPUT"
+
+  gates:
+    needs: check
+    runs-on: ubuntu-latest
+    # **60, and 30 is what it was when v0.4.0's run died.** Measured, not
+    # padded: run 31974102692's `gates` job ran 21:38:56Z → 22:09:12Z and was
+    # cancelled at exactly 30:16 while `test_parity_wasm`'s `probe` was still
+    # running — so `build` skipped, `release` downloaded 0 artifacts, and the
+    # tag produced no draft at all. v0.3.0's run fit; the suite grew past the
+    # budget between the two releases and nothing was watching the margin.
+    # The failure mode is the reason this is generous rather than tight: a
+    # timeout here reads as "the release is broken" and is really a clock.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: toolchain
+        run: |
+          # `rust-toolchain.toml` pins the version, the profile, the two
+          # components and the wasm target, so rustup installs exactly that on
+          # first use and this step only has to exist to make it happen early
+          # (and to fail here rather than mid-gate). Installing `stable` by
+          # name is what this repo did until 2026-08-11, and it is what let CI
+          # and the developer's box drift three releases apart while the gates
+          # read green locally.
+          rustup show active-toolchain || rustup toolchain install
+      - name: cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-gates-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+      - name: the three -dev packages --features render needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev
+      - name: the gates
+        run: ./ci/gates.sh
+
+  build:
+    needs: [check, gates]
+    timeout-minutes: 90
+    strategy:
+      # One platform failing must not delete the other two: a Linux-only
+      # release is a partial release, which is a thing an operator can look at
+      # and decide about. A cancelled matrix is not.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+            client: gates
+            shard: shard
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: windows-x86_64
+            client: gates.exe
+            shard: shard.exe
+            archive: zip
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-aarch64
+            client: gates
+            shard: shard
+            archive: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          # `protocol/build.rs` stamps the sha into the binary, and the corner
+          # of the client shows it. A shallow clone still has HEAD, but the
+          # history is what makes the id reproducible from the tag.
+          fetch-depth: 0
+      - name: toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ matrix.name }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+      # Linux only. Each of these fails identically without its package — a
+      # `pkg-config exited with status code 1` panic from a *-sys build script
+      # with the crate named only in the backtrace. Windows and macOS get
+      # these capabilities from the OS.
+      - name: the three -dev packages --features render needs
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwayland-dev libasound2-dev libudev-dev
+      - name: build the client and the shard
+        run: |
+          cargo build --release -p client --features render --bin gates
+          cargo build --release -p server --bin shard
+      # **`assets/` and `content/` are load-bearing and their absence does not
+      # look like an error.**
+      #
+      # The client resolves its asset root to `assets/` beside the executable
+      # (`bin/gates.rs` says so, and says what it cost to learn): a missing
+      # texture is not a crash, it is a white fallback the renderer draws
+      # while logging a line nobody reads — three material changes once
+      # measured byte-identical because of it. `ci/depot.py` exits rather than
+      # staging a client without them, in those words, and this does the same.
+      #
+      # `content/` is the shard's: it is read and validated at boot and hashed
+      # into the WAL header (wall 7), so a shard shipped without it does not
+      # start at all. That is the *better* failure of the two, and still not
+      # one to discover after downloading.
+      - name: stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${{ needs.check.outputs.version }}"
+          dir="gates-$v-${{ matrix.name }}"
+          mkdir -p "$dir"
+          cp "target/release/${{ matrix.client }}" "$dir/"
+          cp "target/release/${{ matrix.shard }}" "$dir/"
+
+          test -d assets || { echo "::error::assets/ is missing — the client would ship untextured"; exit 1; }
+          test -d content || { echo "::error::content/ is missing — the shard would not boot"; exit 1; }
+          cp -r assets "$dir/assets"
+          cp -r content "$dir/content"
+          test -n "$(find "$dir/assets" -type f -print -quit)" || {
+            echo "::error::assets/ staged empty — the client would ship untextured"; exit 1; }
+
+          cp shard.toml.example "$dir/"
+          cp README.md "$dir/"
+          # The licence and the notices that must travel with what ships
+          # (CLAUDE.md, third-party credit). MIT requires its own text to
+          # accompany every copy; the icon set is CC BY and the UI face is
+          # Apache-2.0, and both of those are *notice* licences — the credit
+          # IS the condition, so a missing one is a licence breach and not a
+          # cosmetic gap. Hard failures for that reason.
+          cp LICENSE "$dir/"
+          cp NOTICE "$dir/"
+          cp assets/icons/CREDITS.md "$dir/ICONS-CREDITS.md"
+          cp crates/client/fonts/LICENSE-ROBOTO.txt "$dir/"
+
+          echo "STAGE=$dir" >> "$GITHUB_ENV"
+          du -sh "$dir"
+      - name: archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a -tzip "$STAGE.zip" "$STAGE"
+          else
+            tar czf "$STAGE.tar.gz" "$STAGE"
+          fi
+      # A checksum beside every artifact, because the whole point of a download
+      # page is that somebody who is not us fetched the bytes.
+      - name: checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="$STAGE.${{ matrix.archive }}"
+          if command -v sha256sum >/dev/null; then sha256sum "$f" > "$f.sha256"
+          else shasum -a 256 "$f" > "$f.sha256"; fi
+          cat "$f.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gates-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            ${{ env.STAGE }}.${{ matrix.archive }}
+            ${{ env.STAGE }}.${{ matrix.archive }}.sha256
+
+  release:
+    needs: [check, build]
+    # **`fail-fast: false` was not enough, and the `build` job's own comment
+    # claimed otherwise.** It keeps a failing leg from cancelling the others,
+    # so their artifacts still upload — but a matrix job whose legs did not
+    # all pass concludes as *failure*, and a `needs:` on it skips this job
+    # outright. The result was the opposite of the stated intent: one bad
+    # platform meant NO draft rather than a partial one. `!cancelled()` runs
+    # this on whatever actually built; the "what is about to be attached"
+    # step below already refuses an empty `dist`, so a total failure still
+    # drafts nothing.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: what is about to be attached
+        run: |
+          set -euo pipefail
+          ls -la dist
+          test -n "$(ls -A dist)" || { echo "::error::nothing was built"; exit 1; }
+      # Draft, always. A person reads what is attached and presses publish —
+      # publishing is an operator act and a release page is the most public
+      # thing this repo produces.
+      - name: draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          notes=$(mktemp)
+          {
+            echo "Desktop client and shard server for Gates ${{ needs.check.outputs.version }}."
+            echo
+            echo "| platform | file |"
+            echo "|---|---|"
+            echo "| Linux x86_64 | \`gates-${{ needs.check.outputs.version }}-linux-x86_64.tar.gz\` |"
+            echo "| Windows x86_64 | \`gates-${{ needs.check.outputs.version }}-windows-x86_64.zip\` |"
+            echo "| macOS (Apple Silicon) | \`gates-${{ needs.check.outputs.version }}-macos-aarch64.tar.gz\` |"
+            echo
+            echo "Each archive holds the client (\`gates\`), the shard server (\`shard\`),"
+            echo "\`assets/\` — which the client loads from beside the executable — "
+            echo "\`content/\` — which the shard needs to boot — and \`shard.toml.example\`."
+            echo "Keep the layout: a client run without \`assets/\` beside it draws white."
+            echo "A \`.sha256\` sits beside every archive."
+            echo
+            echo "**Linux** additionally needs \`libwayland\`, \`libasound2\` and \`libudev\`"
+            echo "from the distribution; the client says which one is missing if it cannot start."
+            echo
+            echo "The build prints its own id in the top-left corner and on the menu —"
+            echo "quote that string in a bug report. A shard states the same id at boot."
+          } > "$notes"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --draft \
+              --title "Gates ${{ needs.check.outputs.version }}" \
+              --notes-file "$notes"
+          fi
+          echo "Drafted $TAG — open it, read it, press publish." >> "$GITHUB_STEP_SUMMARY"

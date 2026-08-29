@@ -1,0 +1,61 @@
+The MinGW-w64 runtime that ships beside gates.exe
+=================================================
+
+The Windows build of Gates is compiled with the MinGW-w64 GCC toolchain
+(`x86_64-pc-windows-gnu`). Three runtime libraries it needs are not present on
+a Windows machine, so they are redistributed inside the depot, beside the
+executable:
+
+    libstdc++-6.dll        the GNU Standard C++ Library
+    libgcc_s_seh-1.dll     the GCC low-level runtime (unwinder, SEH)
+    libwinpthread-1.dll    mingw-w64's POSIX threads implementation
+
+They are reached through `basis-universal-sys`, the C++ transcoder Bevy uses
+for KTX2/Basis textures. They are somebody else's work and carry their own
+terms; this file is the notice that travels with them.
+
+
+libstdc++-6.dll and libgcc_s_seh-1.dll
+--------------------------------------
+Part of GCC. Copyright (C) the Free Software Foundation, Inc. and contributors.
+
+GPL version 3 or later, **with the GCC Runtime Library Exception, version
+3.1**. The Exception is the term that matters here: it grants permission to
+propagate the compiled output of an Eligible Compilation Process — and to
+combine and convey these runtime libraries with it — without the propagation
+being subject to GPLv3's conditions on the resulting work. Gates is built with
+unmodified GCC, which is an Eligible Compilation Process, so the Exception
+applies and no part of Gates' own source becomes subject to the GPL.
+
+  GPLv3:      https://www.gnu.org/licenses/gpl-3.0.html
+  Exception:  https://www.gnu.org/licenses/gcc-exception-3.1.html
+
+GCC's own copyright file, as shipped by the toolchain that built the DLLs, is
+the authoritative text; on a Debian/Ubuntu build box it is
+`/usr/share/doc/gcc-mingw-w64-base/copyright`.
+
+
+libwinpthread-1.dll
+-------------------
+mingw-w64's winpthreads. Copyright (C) 2011-2016 the mingw-w64 project.
+
+MIT/Expat, with parts under BSD-3-clause (including material
+Copyright (C) 2010 Lockless Inc. and Copyright (C) 1992, 1993 The Regents of
+the University of California) and parts in the public domain.
+
+Expat and BSD-3-clause are **notice** licences — the credit is the condition,
+which is why this file exists and why it ships rather than merely being
+recorded in the repository.
+
+  https://www.mingw-w64.org/
+  https://opensource.org/license/mit
+
+
+Why these are here at all
+-------------------------
+`ci/depot.py` measures what the built binary imports and sorts each name by
+whether the toolchain owns a copy of it. Windows' own DLLs are left to the
+player's machine; these three are not Windows', so they ride along. Removing
+them from the depot does not remove the obligation — it produces a build that
+cannot start, which is the defect this arrangement was introduced to fix
+(`NOW.md` §0win).

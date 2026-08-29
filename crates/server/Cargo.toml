@@ -1,6 +1,6 @@
 [package]
 name = "server"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -29,6 +29,22 @@ wtransport = { git = "https://github.com/BiagioFesta/wtransport", rev = "a11e6a8
     "quinn",
 ] }
 rtrb = "0.3"
+# The UDP socket buffers NETCODE.md §2.2 asks for, and the readback that says
+# what the OS actually granted. std::net::UdpSocket exposes no setsockopt;
+# quinn already depends on this crate, so it is a direct edge on something
+# already in the tree rather than a new one.
+socket2 = "0.6"
+# The entitlement check (`entitle.rs`): does this player own a copy? One GET
+# at join and one POST per roster sweep, against elo's ticket routes.
+#
+# `rustls` rather than a system TLS, and the reason is the client's reason
+# next door: one trust store the build controls, on a box that may have no
+# OpenSSL. Same crate, same version and the same two features the client
+# already builds for the shard list, so this adds a line to a manifest and
+# nothing to the lock. Blocking on purpose — it runs on the handshake task
+# (already waiting on a network) and on the sweep's own thread, never on the
+# sim thread (wall 3) and never on the accept loop.
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
 # Save-record integrity only (store.rs): a torn write has to be detectable at
 # load. Same crate and version `sim-core` and `content` already build, so this
 # adds a line to a manifest and nothing to the tree.
@@ -37,3 +53,11 @@ xxhash-rust = { version = "0.8", default-features = false, features = ["xxh3"] }
 [dev-dependencies]
 k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
 tiny-keccak = { version = "2", features = ["keccak"] }
+# **A DEV-dependency, and the direction still holds.** `client` must never
+# depend on `server` (that would ship the authoritative sim inside the client
+# binary), and it does not; this is the other way round and only for tests.
+# `tests/tls_posture.rs` is the reason: what the client trusts can only be
+# proven against a real shard serving a real certificate, so the gate needs
+# both halves in one binary. Default features, so no Bevy — this costs the
+# server's test build one small rlib, not the renderer tier.
+client = { path = "../client" }

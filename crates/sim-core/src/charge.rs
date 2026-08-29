@@ -23,12 +23,20 @@
 //! defender gets exactly the same seconds you do. It comes from content
 //! (`fuse_s`, baked to ticks) and never from a literal here.
 //!
-//! **What v0 deliberately does not do**, registered in `DECISIONS.md`
-//! §open ("satchel fuse v0"): no blast radius — a charge damages the one
-//! address it was planted on and nothing around it, so a raider pays per
-//! wall and the anchor's arithmetic is exactly `piece hp ÷ structure`; no
-//! damage to players standing in it; no dud chance; no defusing. Each of
-//! those is a separate verb and each would want its own knob.
+//! **The blast (satchel blast v0, 2026-08-11).** A detonation is an area
+//! now, not an address: everything structural inside `blast_cm` of the
+//! planted anchor takes `structure` scaled by linear falloff, and every
+//! *body* inside it takes `damage` the same way — the planter included,
+//! because standing at your own bomb is the reference's lesson too. The
+//! planted wall is simply the target at distance zero, so it still takes
+//! the full number and `balance.toml` anchor 1's arithmetic
+//! (`piece hp ÷ structure`) is undisturbed. Two consequences of "area,
+//! not address" are deliberate: a charge whose wall was broken before
+//! the fuse ran out **still detonates** (a bomb is not defused by its
+//! excuse disappearing), and standing on a charge is no longer free —
+//! `DEATH_BY_CHARGE` is the sixth cause and the death screen names the
+//! planter. Still not built, each its own verb: no dud chance, no
+//! defusing.
 
 use crate::build::{
     anchor, BuildContent, Pieces, BUILD_REACH_M, REFUSE_B_COST, REFUSE_B_FULL, REFUSE_B_PIECE,
@@ -58,8 +66,15 @@ pub struct ChargeRec {
     /// Which store the address names — `build::repair`'s bit, for
     /// `build::repair`'s reason.
     pub deploy: bool,
-    /// Damage the blast takes off its target.
+    /// Damage the blast takes off a structure at the epicentre; falloff
+    /// scales it toward zero at `blast_cm`.
     pub structure: u16,
+    /// Damage the blast takes off a *body* at the epicentre, the same
+    /// falloff. Copied at plant time for `structure`'s stated reason.
+    pub damage: u16,
+    /// The blast radius, planar-and-vertical centimetres. Copied at plant
+    /// time — the hole a charge clears was decided when it was planted.
+    pub blast_cm: u16,
     /// The tick the fuse runs out. Absolute, never a countdown that is
     /// decremented: a decrement is state that a dropped tick can corrupt,
     /// and an absolute deadline against `world.tick` cannot drift.
@@ -96,6 +111,8 @@ impl Charges {
                 loc: 0,
                 deploy: false,
                 structure: 0,
+                damage: 0,
+                blast_cm: 0,
                 fires_at: 0,
                 owner: 0,
             }; MAX_LIVE_CHARGES],
@@ -258,6 +275,8 @@ pub fn place(
         loc,
         deploy,
         structure: def.structure,
+        damage: def.damage,
+        blast_cm: def.blast_cm,
         fires_at,
         owner: p.id,
     });
@@ -279,6 +298,59 @@ pub fn place(
     );
 }
 
+/// One body the blast finished, parked for `World::tick` to lay down —
+/// `mob::Bites`' split for `mob::Bites`' reason: `die` needs the whole
+/// world and this function holds only its parts.
+///
+/// **Exactly bounded, no overflow policy owed**: a body dies at most once
+/// per tick (`hp == 0` skips it thereafter), so `MAX_PLAYERS` entries
+/// cannot be exceeded — wall 4 satisfied by construction rather than by a
+/// drop rule.
+pub struct BlastKills {
+    entries: [(u8, u32, u16); crate::limits::MAX_PLAYERS],
+    len: usize,
+}
+
+impl Default for BlastKills {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BlastKills {
+    pub const fn new() -> Self {
+        Self {
+            entries: [(0, 0, 0); crate::limits::MAX_PLAYERS],
+            len: 0,
+        }
+    }
+
+    /// `(victim slot, planter id, range_cm)` per finished body.
+    #[inline]
+    pub fn entries(&self) -> &[(u8, u32, u16)] {
+        &self.entries[..self.len]
+    }
+
+    #[inline]
+    fn push(&mut self, victim: u8, owner: u32, range_cm: u16) {
+        if self.len < self.entries.len() {
+            self.entries[self.len] = (victim, owner, range_cm);
+            self.len += 1;
+        }
+    }
+}
+
+/// Linear falloff: the number at the epicentre, scaled toward zero at the
+/// blast's edge. Integer arithmetic over centimetres, so both ends of the
+/// wire would compute the identical value if a client ever predicted one.
+#[inline]
+fn falloff(full: u16, d_cm: i64, blast_cm: u16) -> u16 {
+    if d_cm >= blast_cm as i64 || blast_cm == 0 {
+        return 0;
+    }
+    ((full as i64 * (blast_cm as i64 - d_cm)) / blast_cm as i64) as u16
+}
+
 /// Run every burning fuse one tick, detonating what is due.
 ///
 /// Called once a tick, after the player loop that can light one and before
@@ -286,26 +358,39 @@ pub fn place(
 /// exist (`validate` refuses `fuse_s = 0`), so nothing detonates on the
 /// tick it was planted.
 ///
+/// **A detonation is an area** (satchel blast v0 — the module header has
+/// the design). The scan is bounded and deterministic: the 3×3 column
+/// ring around the epicentre for pieces (blast_cm ≤ one build cell, the
+/// const block below proves the ring covers it), one pass over the deploy
+/// store, one over the players — target addresses are collected first and
+/// re-resolved one at a time before damage, because `damage_piece`
+/// swap-removes and a held index would point at a stranger's wall.
+///
 /// `budget` is the tick's shared `MAX_REMOVALS_PER_TICK`, taken by
 /// reference for the reason `combat::raid` takes it: a blast that brings a
 /// wall down spends the same structural-removal allowance a swing does,
 /// and a tick that has spent it leaves the wall standing at one hp for the
 /// next one. Wall 4 does not get a second allowance because the damage
 /// arrived on a fuse.
-// The arity allow `place` and `build::repair` carry, for their reason: two
-// content tables, two stores, the charge list, the clock, the budget and
-// the ring are six distinct owners, and bundling them into a context struct
-// here would put a second definition of "the tick's mutable world" beside
-// the one `World` already is.
+// The arity allow `place` and `build::repair` carry, for their reason: the
+// content tables, the stores, the players, the clock, the budget and the
+// ring are distinct owners, and bundling them into a context struct here
+// would put a second definition of "the tick's mutable world" beside the
+// one `World` already is.
 #[allow(clippy::too_many_arguments)]
 pub fn tick_fuses(
+    seed: u64,
+    haven: &crate::terrain::Haven,
     bc: &BuildContent,
     dc: &DeployContent,
+    cc: &crate::combat::CombatContent,
     charges: &mut Charges,
     pieces: &mut Pieces,
     deploys: &mut Deploys,
+    players: &mut [Player; crate::limits::MAX_PLAYERS],
     tick: u64,
     budget: &mut usize,
+    kills: &mut BlastKills,
     events: &mut EventQueue,
 ) {
     let mut i = 0;
@@ -315,32 +400,167 @@ pub fn tick_fuses(
             i += 1;
             continue;
         }
-        // The target is resolved *now*, not remembered as a store index:
-        // between the plant and the blast the store has been swap-removed
-        // by every other removal in the world, so a remembered index would
-        // point at a stranger's wall. An address cannot go stale that way
-        // — it either still names something or it does not.
-        let found = if c.deploy {
-            deploys.find_index(c.cx, c.cz, c.level, c.loc)
-        } else {
-            pieces.find_index(c.cx, c.cz, c.level, c.loc)
-        };
-        // Nothing there any more — somebody else broke it first, or it
-        // decayed. The charge is spent either way and the raider is out an
-        // item: a charge that survived its target and waited for a rebuild
-        // would be a trap with no counter-play, and one that refunded
-        // would make planting free whenever a wall was already falling.
-        // No event: the client drops the charge when the piece it was
-        // stuck to leaves on `EV_PIECE_REMOVED`.
-        if let Some(t) = found {
-            if c.deploy {
-                damage_deploy(dc, pieces, deploys, t, c.structure, events);
-            } else {
-                damage_piece(dc, bc, pieces, deploys, t, c.structure, budget, events);
-            }
-        }
+        detonate(
+            seed, haven, bc, dc, cc, &c, pieces, deploys, players, budget, kills, events,
+        );
         // Swap-remove without advancing: the entry now at `i` is the one
         // that was last, and it has not been tested yet.
         charges.remove_at(i);
     }
 }
+
+/// The candidate structural targets one blast can touch, collected before
+/// any damage lands. 3×3 columns × 8 levels × (1 plane + 1 riser + 2
+/// edges) is the exact ceiling; the array is that size, so there is no
+/// overflow arm to get wrong.
+const BLAST_TARGET_CAP: usize = 9 * crate::limits::MAX_BUILD_LEVELS * 4;
+
+#[allow(clippy::too_many_arguments)]
+fn detonate(
+    seed: u64,
+    haven: &crate::terrain::Haven,
+    bc: &BuildContent,
+    dc: &DeployContent,
+    cc: &crate::combat::CombatContent,
+    c: &ChargeRec,
+    pieces: &mut Pieces,
+    deploys: &mut Deploys,
+    players: &mut [Player; crate::limits::MAX_PLAYERS],
+    budget: &mut usize,
+    kills: &mut BlastKills,
+    events: &mut EventQueue,
+) {
+    use crate::build::{LEVEL_H_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE, LOC_RISER};
+    use crate::limits::{MAX_BUILD_COORD, MAX_BUILD_LEVELS};
+
+    let (ax, az) = anchor(c.cx, c.cz, c.loc);
+    let ay = crate::collide::col_base_y(seed, haven, pieces.cols(), c.cx, c.cz)
+        + c.level as f32 * LEVEL_H_M;
+    let blast = c.blast_cm;
+
+    // Distance from the epicentre to a point, centimetres. Planar plus
+    // vertical in one metric, f32 sqrt (wall 1's list) cast back to the
+    // integer centimetres the falloff divides in.
+    let dist_cm = |x: f32, y: f32, z: f32| -> i64 {
+        let (dx, dy, dz) = (x - ax, y - ay, z - az);
+        ((dx * dx + dy * dy + dz * dz).sqrt() * 100.0) as i64
+    };
+
+    // --- structures: collect addresses, then re-resolve and damage. The
+    // planted target is found by the same scan at distance ~zero, so it
+    // takes the full number and needs no special case.
+    let mut targets: [(u16, u16, u8, u8, bool, u16); BLAST_TARGET_CAP] =
+        [(0, 0, 0, 0, false, 0); BLAST_TARGET_CAP];
+    let mut n = 0usize;
+    let bcx = c.cx as i32;
+    let bcz = c.cz as i32;
+    let mut dz = -1i32;
+    while dz <= 1 {
+        let mut dx = -1i32;
+        while dx <= 1 {
+            let (cx, cz) = (bcx + dx, bcz + dz);
+            dx += 1;
+            if cx < 0 || cz < 0 || cx >= MAX_BUILD_COORD as i32 || cz >= MAX_BUILD_COORD as i32 {
+                continue;
+            }
+            let (cx, cz) = (cx as u16, cz as u16);
+            let m = pieces.cols().get(cx, cz);
+            let base = crate::collide::col_base_y(seed, haven, pieces.cols(), cx, cz);
+            for level in 0..MAX_BUILD_LEVELS as u8 {
+                let bit = 1u8 << level;
+                let ly = base + level as f32 * LEVEL_H_M;
+                let mut consider = |loc: u8, present: bool| {
+                    if !present || n >= BLAST_TARGET_CAP {
+                        return;
+                    }
+                    let (tx, tz) = anchor(cx, cz, loc);
+                    let d = dist_cm(tx, ly, tz);
+                    let scaled = falloff(c.structure, d, blast);
+                    if scaled > 0 {
+                        targets[n] = (cx, cz, level, loc, false, scaled);
+                        n += 1;
+                    }
+                };
+                consider(LOC_PLANE, m.planes & bit != 0);
+                consider(LOC_RISER, m.stairs & bit != 0);
+                consider(LOC_EDGE_XLO, (m.walls_xlo | m.doors_xlo) & bit != 0);
+                consider(LOC_EDGE_ZLO, (m.walls_zlo | m.doors_zlo) & bit != 0);
+            }
+        }
+        dz += 1;
+    }
+    // Deployables: one pass over the store, addresses only — the same
+    // full scan `combat::raid` makes per swing.
+    for rec in deploys.entries() {
+        if n >= BLAST_TARGET_CAP {
+            break;
+        }
+        let (tx, tz) = anchor(rec.cx, rec.cz, rec.loc);
+        let ly = crate::collide::col_base_y(seed, haven, pieces.cols(), rec.cx, rec.cz)
+            + rec.level as f32 * LEVEL_H_M;
+        let d = dist_cm(tx, ly, tz);
+        let scaled = falloff(c.structure, d, blast);
+        if scaled > 0 {
+            targets[n] = (rec.cx, rec.cz, rec.level, rec.loc, true, scaled);
+            n += 1;
+        }
+    }
+    for &(cx, cz, level, loc, is_deploy, scaled) in targets.iter().take(n) {
+        // Re-resolve immediately before damaging: an earlier target's
+        // removal may have swap-moved this one, or taken it down with a
+        // collapsing doorway — an address cannot go stale, an index can.
+        if is_deploy {
+            if let Some(t) = deploys.find_index(cx, cz, level, loc) {
+                damage_deploy(dc, pieces, deploys, t, scaled, events);
+            }
+        } else if let Some(t) = pieces.find_index(cx, cz, level, loc) {
+            damage_piece(dc, bc, pieces, deploys, t, scaled, budget, events);
+        }
+    }
+
+    // --- bodies. The planter is not exempt: standing at your own bomb is
+    // the oldest lesson the reference's raiders learn. Sleepers are hit
+    // too — a body is a body, and a wall-adjacent sleeper in a raid was
+    // always going to be part of the bill.
+    let player_hp = cc.player_hp;
+    if c.damage == 0 || player_hp == 0 {
+        return; // a wall-only charge, or unarmed combat content
+    }
+    for (slot, p) in players.iter_mut().enumerate() {
+        if !p.active || p.hp == 0 {
+            continue;
+        }
+        let px = p.body.qx as f32 * crate::movement::POS_XZ_Q;
+        let py = p.body.qy as f32 * crate::movement::POS_Y_Q;
+        let pz = p.body.qz as f32 * crate::movement::POS_XZ_Q;
+        let d = dist_cm(px, py, pz);
+        let scaled = falloff(c.damage, d, blast);
+        if scaled == 0 {
+            continue;
+        }
+        // The funnel, reduced. No `EV_HIT`: a blast has no hitmarker to
+        // draw, which is why the funnel does not own the event set.
+        let crate::combat::Hurt { left, died, .. } = crate::combat::hurt(cc, p, scaled);
+        let victim_id = p.id;
+        events.push(
+            crate::world::EV_HEALTH,
+            victim_id,
+            left as u32,
+            player_hp as u32,
+        );
+        if died {
+            events.push(crate::world::EV_DEATH, victim_id, c.owner, 0);
+            kills.push(slot as u8, c.owner, d.clamp(0, u16::MAX as i64) as u16);
+        }
+    }
+}
+
+const _: () = {
+    // The 3×3 piece ring is complete iff no blast can reach a fourth
+    // column: the farthest in-cell anchor sits within one cell of the
+    // epicentre's column, so the reach is blast + one cell, and the ring
+    // covers two. `validate` bounds `blast_m` at the build cell; this is
+    // the sim-side restatement so a widened content bound cannot silently
+    // outrun the scan.
+    assert!(crate::limits::BLAST_MAX_CM as f32 * 0.01 <= crate::build::BUILD_CELL_M);
+};

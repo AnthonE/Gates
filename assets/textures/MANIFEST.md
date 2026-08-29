@@ -1,5 +1,14 @@
 # assets/textures — CC0 PBR source set
 
+**This file records what SHIPS. The queue of what does not exist yet is
+`CANDIDATES.md` beside it** — 84 rows for the six foliage/bark sets, 80 CC0 and
+4 CC-BY, with the fetch script, the CSV and the sheet in this directory and the
+CC-BY notice drafts in `CANDIDATES_CC_BY.md`. Same split as
+`assets/models/{MANIFEST,WANTED}.md`. Fetched candidates land in
+`candidates/`, which is **gitignored** (~1.3 GB of other people's pristine
+source); a candidate earns a line here only once it is measured, packed and its
+licence recorded.
+
 **Every file here is CC0 / public domain.** Sources: [Poly Haven](https://polyhaven.com)
 and [ambientCG](https://ambientcg.com), both of which release all assets under CC0
 — no attribution required, no license file to carry, no restriction on commercial
@@ -12,7 +21,9 @@ final art pass — the point is that the renderer finally has real measured
 detail to sample. Replacing one is a file swap, not a code change.
 
 Fetched at 1K, re-encoded: albedo 1024 q82, normal 1024 q90, roughness and AO
-512 greyscale q80. **9 materials, 34 files, 6.5 MB total.**
+512 greyscale q80. **10 materials, 38 files, 7.1 MB total.** (`twig` is the
+tenth, 2026-08-22, encoded to that same spec — a file joining a documented set
+matches the set, and re-spec'ing is the separate call the ⚠ below describes.)
 
 ⚠ **That encode spec was chosen for a first-visit browser download and the
 constraint is gone** (the browser client was cut 2026-08-06; the client
@@ -24,8 +35,19 @@ size and quality number below as a browser-era artifact, not a budget.**
 **`rock` is the one exception to that encode spec — albedo q74, normal q82.** It
 holds the swap at **553 KB against `cliff_side`'s 562 KB**, so the only identity
 here that costs client boot time does not cost more of it than what it replaced.
-(Only the four ground identities are bundled; `stone`/`metal`/`wood`/`bark` are
-not loaded by the client at all today.) It is cheap — span 1.03 and keep 0.97 are
+(⚠ **Every number in this paragraph and the three below it is `Rock023`'s** —
+the encode spec, the 553 KB, the 1.03 span, the 0.0942 → 0.0933 sd, the join
+times. It is history and it stays: it records why the encode was trimmed and
+that the theory behind the trim was measured false. But `rock` is `Gravel004`
+since 2026-08-27, so read none of it in the present tense — the shipped file's
+statistics are the prop-bind table's, and those are gated
+[`crates/client/tests/manifest_measured.rs`].)
+(⚠ This parenthetical used to say only the four ground identities were bundled
+and `stone`/`metal`/`wood`/`bark` were "not loaded by the client at all today".
+That went stale twice: the props bound all four on 2026-08-11 — the **bundled**
+paragraph below has said so since — and the build pieces bound the last three
+on 2026-08-16. Eight of nine roles are loaded; `gravel` is the one that is not.)
+It is cheap — span 1.03 and keep 0.97 are
 unchanged, albedo sd moves 0.0942 → 0.0933 — so it is kept as margin.
 
 **It is margin, not a fix, and the record should say so.** The trim was first made
@@ -63,22 +85,119 @@ were fetched, manifested and then read by nothing for four days: a
 `StandardMaterial` has one base-colour slot and **no procedural mesh in the
 client carried a UV**, so no prop could sample a map however many shipped. The
 UV half is solved on the CPU (`props::Soup` box-projects per triangle, which a
-triangle soup makes free), and those four are bound now. `gravel` is the one
-role still unbundled — it is a slope/scree identity for the GROUND, which is
-still single-map and still waiting on the splat material.
+triangle soup makes free), and those four are bound now.
+
+⚠ **`gravel` is still the one unbundled role, and the reason recorded here was
+wrong.** This said it was "waiting on the splat material". The splat material
+landed 2026-08-15 (`render/ground_splat.rs`) and gravel is no closer, because
+what it actually waits on is a **classifier slot**: `terrain::splat` resolves
+exactly four identities — sand · grass · litter · rock — and gravel is not one
+of them. Binding it is a `sim-core` change (a fifth weight on the wire the mesh
+carries, and a fifth band in `splat_from`), not a client one. The single-map
+limitation it was blamed on is gone and gravel did not move, which is the
+evidence that the diagnosis was wrong.
+
+✅ **The four ground roughness maps are read (2026-08-16)** — `sand`, `grass`,
+`litter`, `rock` at shader bindings 110–113, sampled per texel. They had been
+loaded, uploaded and resident since the day the set landed and nothing sampled
+them, so this cost four bindings, zero samplers and **zero new VRAM**. Measured
+raw (a roughness map is data, loaded `is_srgb = false`): **sand 0.9631 · grass
+0.9364 · litter 0.9197 · rock 0.6108**, and `tests/ground_splat.rs` re-measures
+all four off the files, so swapping a source changes the island's specular
+loudly instead of silently. The reason recorded against them for four days —
+the glTF-packed ORM slot whose B channel is metallic — was a constraint of that
+slot and never of these files; **the same false reason is still recorded in
+`render/props.rs` against the other five**, where it is false for a second
+reason as well (Bevy multiplies `metallic` by that channel, and it defaults to
+0.0). `NOW.md` §0gp item 6.
+
+⚠ **The maps had no detectable effect on the frame** (contrast −0.4% over six
+vantages, inside the harness's own ~0.3% run-to-run spread — `RENDER.md` §5)
+and that is not about the files: the ground material's
+`reflectance: 0.18` puts specular F0 at 0.52% where a dielectric is ~4%, so
+roughness has almost nothing to shape. Recorded because it is the next thing
+and it belongs to the coupled lighting owner — `DECISIONS.md` §open "ground
+specular v0".
+
+**What the splat material DID change here:** the four ground identities each
+sample their own albedo and normal now, instead of all four sharing
+`ground_detail.jpg` and `grass`'s normal map. So `sand`, `litter` and `rock`
+went from *bundled but only as a colour* to bundled as surfaces. Measured at a
+pinned spawn with the mix stated (litter 611‰, rock 329‰): near-ground
+neighbour contrast **6.43 → 8.53, +32.8%**. `ground_detail.jpg` is the
+casualty — it is grass's baked luminance field, the shader computes the same
+thing from `grass_albedo.jpg`, and **nothing loads it now**; it still ships and
+is still gated as a file.
 
 | role | source | ao | bundled | note |
 |---|---|---|---|---|
-| `bark` | PH [bark_brown_02](https://polyhaven.com/a/bark_brown_02) | | ✓ | vertical fissures + moss — the reference asks for exactly this |
-| `grass` | PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01) | ✓ | ✓ | turf with dirt wear — matches ART §3 lit-grass band once tinted. Its AO is the strongest of the set (mean 0.477, sd 0.162) and it owns ~99% of the near ring. |
+| `bark` | PH [bark_brown_02](https://polyhaven.com/a/bark_brown_02) | | ✓ | vertical fissures + moss — the reference asks for exactly this, **on a tree**. It wore the twig building tier as well until 2026-08-22; see the `twig` row. Authored at 1000 mm, and the shared 0.55 drew it over 1.82 m, so a twig base was a photograph of a trunk at 1.8× life size. |
+| `grass` | PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01) | ✓ | ✓ | **Authored at 2000 mm** → `terrain_mesh::GROUND_TILE_M[1]` is 2.0 m. It was drawn over the shared 4 m ground reference until 2026-08-28, i.e. at twice life size. turf with dirt wear — matches ART §3 lit-grass band once tinted. Its AO is the strongest of the set (mean 0.477, sd 0.150) — strength here is how far the mean falls below 1, not the sd, and on that reading it leads litter's 0.775, rock's 0.839 and sand's 0.943 by a distance while its sd is only third. It owns ~99% of the near ring. |
 | `gravel` | PH [bicolour_gravel](https://polyhaven.com/a/bicolour_gravel) | ✓ | | fine scree; slope/scree identity and path scuff |
-| `litter` | PH [brown_mud_leaves_01](https://polyhaven.com/a/brown_mud_leaves_01) | ✓ | ✓ | forest floor, red-leaning; forest identity |
+| `litter` | PH [brown_mud_leaves_01](https://polyhaven.com/a/brown_mud_leaves_01) | ✓ | ✓ | **Authored at 1300 mm** → `terrain_mesh::GROUND_TILE_M[2]` is 1.3 m. At the old shared 4 m it drew at 3.1× life size — leaves the size of a hand. forest floor, red-leaning; forest identity |
 | `metal` | aCG [CorrugatedSteel009](https://ambientcg.com/view?id=CorrugatedSteel009) | ✓ | ✓ | replaced `green_metal_rust` 2026-08-04. Photoscanned ribbed steel: albedo sd 0.0090 → **0.0709**, i.e. the old one was a flat swatch. Grey industrial rather than rusty — ambientCG's rusty corrugated sheets are all `PBRProcedural` and their albedos are flat paint with screw dots, the very defect being replaced, so the rust has to come from the wear layer. |
-| `rock` | aCG [Rock023](https://ambientcg.com/view?id=Rock023) | ✓ | ✓ | replaced `cliff_side` 2026-08-04 — see below. |
-| `sand` | PH [coast_sand_01](https://polyhaven.com/a/coast_sand_01) | ✓ | ✓ | fine coastal sand, close to ART §3's 42°/10% sample |
+| `rock` | aCG [Gravel004](https://ambientcg.com/view?id=Gravel004) | ✓ | ✓ | CC0. **No authored size published** — `dimensionX/Y/Z` are all `0`, ambientCG's sentinel for unknown and the same answer `CorrugatedSteel009` gives `structures::TIER`. `GROUND_TILE_M[3]` keeps the 4 m reference on the counted cross-check that row's shape asks for: the median-energy wavelength of the shipped albedo is 14.4 texels, so a clast draws 5.6 cm at 4 m, inside real crushed-aggregate grading (20–63 mm). Replaced `Rock023` 2026-08-27, which replaced `cliff_side` 2026-08-04 — **both of those were cliffs**; see below. |
+| `sand` | PH [coast_sand_01](https://polyhaven.com/a/coast_sand_01) | ✓ | ✓ | **Authored at 15000 mm and it is the one ground row that refuses its own size**: 15 m is over the 4 m ceiling `tests/pieces.rs` holds piece surfaces to, and drawing it there costs `ART.md` rule 1's near-field grain — the share of its linear-luma variance under 5 cm falls **79.8% → 47.6%**. `GROUND_TILE_M[0]` is 4.0 m, and `terrain_mesh.rs` carries the measurement. fine coastal sand, close to ART §3's 42°/10% sample |
 | `stone` | aCG [Bricks089](https://ambientcg.com/view?id=Bricks089) | ✓ | ✓ | replaced `castle_brick_01` 2026-08-04. Photoscanned medieval stacked field stone — the identity ART asks for, not brick. sd 0.0947 → **0.1253**, anisotropy 1.34 → **1.09** (less row-banding). |
-| `ground_detail` | **derived** from `grass` (PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01)) | | ✓ | Rec.601 luma of the source's LINEAR albedo, re-encoded to sRGB greyscale, 1024 q88, 342 KB. The ground's near-field grain: `ART.md` §7 asks a modifier that sets a colour to multiply the surface's own **mean-1 luminance field**, and a luminance field has gain span **1.000 by construction** where the four colour sources measure 2.454 / 2.073 / 3.586 / 1.054 (grass / sand / litter / rock) against a ×1 ceiling. Linear luma mean 0.2464, sd 0.0762. Derived, never edited: the source stays pristine and swappable, and regenerating is a luma convert. |
-| `wood` | PH [brown_planks_03](https://polyhaven.com/a/brown_planks_03) | | ✓ | weathered grey planks; building tier 1 |
+| `ground_detail` | **derived** from `grass` (PH [forrest_ground_01](https://polyhaven.com/a/forrest_ground_01)) | | ✓ | Rec.601 luma of the source's LINEAR albedo, re-encoded to sRGB greyscale, 1024 q88, 342 KB. The ground's near-field grain: `ART.md` §7 asks a modifier that sets a colour to multiply the surface's own **mean-1 luminance field**, and a luminance field has gain span **1.000 by construction** where the four colour sources measure 2.444 / 2.066 / 3.559 / 1.108 (grass / sand / litter / rock) against a ×1 ceiling. Linear luma mean 0.2466, sd 0.0768. Derived, never edited: the source stays pristine and swappable, and regenerating is a luma convert. |
+| `twig` | PH [bamboo_wall](https://polyhaven.com/a/bamboo_wall) | | ✓ | lashed vertical poles; building tier 0 — **the straw/lashed-pole set the `wood` row below had been waiting for since 2026-08-12**, landed 2026-08-22 because the tier nobody chooses is the tier everybody sees (`build.rs`: every piece enters the world as twig) and it was wearing a photograph of a living tree, moss and all. Authored at 2000 mm, so `structures::Tier::tiles_per_m` is 0.5 and its poles draw ~4 cm — a sapling. Linear mean rgb 0.242 0.153 0.091, luma **0.167**, sd 0.0552, measured on the shipped file: in `ALBEDO_LUMA_BAND` on its own, so it ships its colour whole at gain 1.0 and *is* the paler of the first two tiers without the ×1.6 `bark` needed to fake it. |
+| `wood` | PH [brown_planks_03](https://polyhaven.com/a/brown_planks_03) | | ✓ | weathered grey planks; building tier 1 — **and it is that tier's map since 2026-08-16**, four days after this note was written as an intention. `stone` is tier 2, `metal` tier 3. (⚠ This row also said `bark` doubled as tier 0 "for want of a straw/lashed-pole set". It did, for six days short of a fortnight; the `twig` row above is the want being filled, and `bark` is a tree's map again and nothing else's.) Authored at 1000 mm → `tiles_per_m` 1.0, which puts a plank at ~11 cm; it drew at 20 cm under the shared 0.55 every tier used until 2026-08-22. `structures::TIER` |
+
+### ⚠ `rock` was a wall twice over, and the gate that would have said so was measured and not shipped
+
+**2026-08-27, from an operator screenshot: *"the texture has a pattern to it,
+like rows and lines"*.** It did. `Rock023` is a photograph of a stratified
+cliff face — horizontal bedding, edge to edge — and ambientCG tags it
+`cliff`, `stone`, **`wall`**. The ground lays it flat on a planar XZ
+projection, so the bedding became rows running across the terrain, and above
+60 m the alpine band saturates so the worst identity dressed every summit.
+
+**The selection below is not wrong about its own numbers; it is wrong about
+one of them, and that one was never gated.** It records "anisotropy (>1.3 =
+strata)" at **1.05** for `Rock023` and rejects `Rock022` at 1.58 for exactly
+this defect — then says in as many words that the figure "is not a shipped
+gate". Measured now under the repo's own convention (`DECISIONS.md` materials
+v4: a ratio of `|dx|` to `|dy|`), `Rock023` is **0.762** on a 256² reduction,
+where the other three ground identities sit at 0.957 / 1.040 / 1.003. Nobody
+can reproduce 1.05, the estimator was never published, and nothing in CI could
+see the disagreement. `client/tests/ground_splat.rs::
+no_ground_identity_is_a_photograph_of_a_wall` is that gate now, proven red on
+the file it describes.
+
+**The replacement is `Gravel004`** — crushed angular aggregate, which is what
+alpine scree is — chosen off the same 74-candidate method re-run over 87
+ground-tagged CC0 aCG materials with the estimator validated against this
+file's own published numbers first (it reproduces `Rock023`'s span 1.054 and
+linear means 0.273/0.269/0.259 to the digit). Four passed every rail; two of
+those landed inside ART §3's granite band.
+
+| | Rock023 (out) | **Gravel004 (in)** | Gravel005 (runner-up) |
+|---|---|---|---|
+| anisotropy @256 (1.0 = isotropic) | **0.762** | **0.953** | 1.022 |
+| tile visibility (sd of an 8×8 box, % of mean) | **4.1%** | **2.2%** | 1.9% |
+| albedo sd (measured detail) | 0.083 | **0.129** | 0.084 |
+| gain span → chroma keep | 1.054 → 0.97 | 1.109 → 0.90 | 1.050 → 0.97 |
+| albedo hue / luma | 43.5° / 140 | 48.7° / 129 | 35.2° / 141 |
+
+`Gravel005` wins every published rail and was passed over on the one the rails
+do not carry: it reads as fine asphalt, and `rock` also dresses cliff faces
+(the slope veto forces it) and ore nodes. `Gravel004` buys 55% more measured
+detail and a real scree identity for 7% of the chroma and 5.7° of hue — and the
+hue band, as this file already argues for `Rock023`'s saturation miss, was
+measured on *lit* reference frames rather than on albedo.
+
+**Two things this swap moved, both re-measured by their own gates rather than
+by hand:** `GRAIN_GAIN[3]` 3.7128 → 4.0820 (the map's mean linear luma fell
+0.2693 → 0.2450) and `ROUGH_MEAN[3]` 0.6108 → 0.5359. Sizes grew — albedo 239 →
+328 KB, normal 279 → 613 KB — because scree carries far more high-frequency
+normal detail than a smooth face; the ⚠ above retires the browser-era size
+spec as a budget, so this is recorded rather than corrected.
+
+**The normal convention is `NormalGL`, and it was undocumented until now.**
+Determined by measurement rather than by guessing: the shipped `rock_normal.jpg`
+differs from aCG's `Rock023_NormalGL` by a mean |ΔG| of **1.64** (JPEG
+re-encode noise) and from `NormalDX` by **38.98**. Picking the wrong one
+inverts every bump on the ground and nothing in this repo would have said so.
 
 **The three marginal picks are gone, and `rock` is why the others went with it.**
 `cliff_side` was layered sandstone standing in for granite. Its gain span was
@@ -114,17 +233,46 @@ When a better source is found, drop it in with the same name.
 against `ALBEDO_LUMA_BAND = [0.05, 0.55]`. A prop has one identity, so the map
 IS its colour and no mean-placing gain is applied; the gain is 1, so §7's
 "deviation may not be stretched more than ×1" is satisfied by construction
-rather than by a correction. All five clear the band off the raw file:
+rather than by a correction. All six clear the band off the raw file:
 
 | role | linear mean rgb | luma | albedo sd | gain span |
 |---|---|---|---|---|
-| `rock` | 0.273 0.269 0.259 | 0.269 | 0.0933 | 1.054 |
-| `bark` | 0.128 0.105 0.064 | 0.107 | 0.0676 | 2.000 |
-| `wood` | 0.161 0.139 0.112 | 0.142 | 0.0661 | 1.442 |
-| `stone` | 0.237 0.202 0.106 | 0.203 | 0.1139 | 2.223 |
-| `metal` | 0.230 0.228 0.228 | 0.228 | 0.0689 | 1.009 |
+| `rock` | 0.250 0.245 0.226 | 0.245 | 0.1379 | 1.108 |
+| `bark` | 0.128 0.105 0.064 | 0.107 | 0.0676 | 1.995 |
+| `twig` | 0.242 0.153 0.091 | 0.167 | 0.0552 | 2.654 |
+| `wood` | 0.161 0.139 0.112 | 0.141 | 0.0661 | 1.441 |
+| `stone` | 0.237 0.202 0.107 | 0.203 | 0.1138 | 2.215 |
+| `metal` | 0.230 0.227 0.228 | 0.228 | 0.0688 | 1.012 |
 
-The span column is recorded but **not binding for these four**, because nothing
+(`twig` joined 2026-08-22, measured the same way and off the SHIPPED file. The
+five above it were re-derived at the same time as a check on the method rather
+than trusted: all five reproduce to the digit, span included — `max(mean_rgb) /
+min(mean_rgb)`, which is what `materials.js`'s `baseGainSpan` computes.)
+
+⚠ **`rock`'s row was `Rock023`'s for a day, and re-deriving it by hand is what
+this table had instead of a gate.** The 2026-08-27 swap to `Gravel004` moved
+`GRAIN_GAIN[3]` and `ROUGH_MEAN[3]` correctly, because both have a test that
+re-measures them off the file; it moved the `rock` row two hundred lines above,
+because `GROUND_TILE_M[3]` has one too. This table had neither, so it kept
+describing a texture the repo no longer ships — a mean 10% high, an sd 32% low
+and a span that was the whole basis for "the ground can only take `rock`".
+Corrected 2026-08-28 and **gated**: `crates/client/tests/manifest_measured.rs`
+re-measures every number in this table off the file it names, at the precision
+the row prints it to. Two more of the same swap's leftovers went with it — the
+`ground_detail` row's four spans, and the ground-source table in
+`render/terrain_mesh.rs`.
+
+**The basis is stated because these statistics move with it.** Every number in
+this table is the full-resolution shipped `.jpg` (1024²), linearised from sRGB,
+Rec.709 luma; `sd` is the sd of that per-texel luma. That is not pedantry — the
+same `rock_albedo.jpg` reads sd 0.1379 at 1024², 0.1287 at 512² and 0.1131 at
+256², a 1.22× span across three honest readings of one file. **The candidate
+table further up is on a 512² basis** (its 0.129 and 1.109 for `Gravel004` are
+that file at 512², reproduced), which is why it and this table differ in the
+last place or two and why neither should be "corrected" into the other. An sd
+quoted without its resolution is not a number anyone can check.
+
+The span column is recorded but **not binding for any of these**, because nothing
 divides by their means — it is what the correction WOULD have cost had one been
 needed, and it is why the ground (which does need one) can only take `rock`.
 

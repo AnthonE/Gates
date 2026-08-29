@@ -1,6 +1,6 @@
 # Gates · content/skins.toml — the skin catalog (CONTENT.md §1). Content
 # too, but dark until A3 (ALPHA.md §2): the catalog ships empty and rows
-# land only by operator act, priced in bare SCRY or MYRRH — one coin per
+# land only by operator act, priced in bare ELO or ORBS — one coin per
 # row. The schema can never carry a stat field; that absence is the
 # never-table (DESIGN.md §3.3) enforced at the schema layer.
 

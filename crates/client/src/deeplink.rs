@@ -1,4 +1,4 @@
-//! Join links — `scry://join/gates/host:port`, and the game's own
+//! Join links — `elo://join/gates/host:port`, and the game's own
 //! `gates://host:port`.
 //!
 //! **The thing a player actually wants: a friend pastes a link, and the game
@@ -8,7 +8,7 @@
 //!
 //! ## Two schemes, and the platform one is canonical
 //!
-//! - **`scry://join/<slug>/<host:port>`** — the form to share. The launcher
+//! - **`elo://join/<slug>/<host:port>`** — the form to share. The launcher
 //!   owns it: it is the binary a player installs, it already knows how to
 //!   start a title with `{server}` substituted into its launch args
 //!   (`scry-depot`'s `ARG_VARS`), it already holds the identity the shard will
@@ -46,14 +46,22 @@
 
 use crate::shardlist::{check_addr, MAX_URL_BYTES};
 
-/// The two schemes a join link may use. `scry` is canonical; see the module
-/// docs for why `gates` exists as well.
-pub const SCHEMES: [&str; 2] = ["scry", "gates"];
+/// The schemes a join link may use. `elo` is canonical; see the module docs
+/// for why `gates` exists as well.
+///
+/// **`scry` is the platform's former spelling and is still accepted.** The
+/// rename landed here before it landed in the launcher, and a link is a
+/// string a stranger already sent: one sitting in a chat log, a forum post or
+/// a bookmark keeps working, and there is nothing to gain by refusing it.
+/// It resolves through the same arm as `elo`, so it grants nothing extra —
+/// the slug check, `check_addr` and the "an address and nothing else" rule
+/// are one code path for all three. Delete it once no launcher mints it.
+pub const SCHEMES: [&str; 3] = ["elo", "scry", "gates"];
 
 /// This game's slug on the platform, as `data/launcher/gates.manifest.json`
-/// spells it. A `scry://join/<slug>/…` naming any other title is refused
+/// spells it. A `elo://join/<slug>/…` naming any other title is refused
 /// here: this binary can only join Gates shards, and silently ignoring the
-/// slug would make `scry://join/some-other-game/evil:1` a Gates join link.
+/// slug would make `elo://join/some-other-game/evil:1` a Gates join link.
 pub const SLUG: &str = "gates";
 
 /// What a join link resolves to. Two facts, and deliberately no more.
@@ -95,7 +103,7 @@ pub fn parse(link: &str) -> Result<Join, String> {
         ));
     }
     let (scheme, rest) = raw.split_once("://").ok_or_else(|| {
-        format!("{raw:?} is not a join link — expected scry://join/{SLUG}/host:port")
+        format!("{raw:?} is not a join link — expected elo://join/{SLUG}/host:port")
     })?;
     let scheme = scheme.to_ascii_lowercase();
     if !SCHEMES.contains(&scheme.as_str()) {
@@ -119,7 +127,7 @@ pub fn parse(link: &str) -> Result<Join, String> {
         .unwrap_or("")
         .trim_end_matches('/');
 
-    // `scry://join/gates/h:1` → ["join", "gates", "h:1"]
+    // `elo://join/gates/h:1` → ["join", "gates", "h:1"]
     // `gates://h:1`           → ["h:1"]
     // `gates://join/h:1`      → ["join", "h:1"]
     //
@@ -133,27 +141,27 @@ pub fn parse(link: &str) -> Result<Join, String> {
     let bad_shape = || {
         format!(
             "{raw:?} has nothing joinable in it — expected \
-             scry://join/{SLUG}/host:port or {SLUG}://host:port"
+             elo://join/{SLUG}/host:port or {SLUG}://host:port"
         )
     };
     let (slug, addr) = match scheme.as_str() {
-        // The canonical form. The verb is required on `scry://` because that
+        // The canonical form. The verb is required on `elo://` because that
         // scheme is the whole platform's and `join` is one of the things it
         // could mean.
-        "scry" if verb_is("join") => match parts.as_slice() {
+        "elo" | "scry" if verb_is("join") => match parts.as_slice() {
             [_, slug, addr] => (Some((*slug).to_string()), *addr),
             _ => {
                 return Err(format!(
-                    "a scry join link names a title and an address — \
-                     expected scry://join/{SLUG}/host:port"
+                    "an elo join link names a title and an address — \
+                     expected elo://join/{SLUG}/host:port"
                 ))
             }
         },
-        "scry" => {
+        "elo" | "scry" => {
             return Err(match parts.first() {
                 Some(verb) => format!(
-                    "scry://{verb}/… is not a join link — \
-                     expected scry://join/{SLUG}/host:port"
+                    "{scheme}://{verb}/… is not a join link — \
+                     expected elo://join/{SLUG}/host:port"
                 ),
                 None => bad_shape(),
             })
@@ -227,10 +235,10 @@ fn percent_decode(s: &str) -> Result<String, String> {
 /// button puts on the clipboard, and what the in-game menu shows.
 ///
 /// The canonical scheme, always: a shared link should work for a player who
-/// has the launcher and not this game, and only `scry://` can offer to install
+/// has the launcher and not this game, and only `elo://` can offer to install
 /// it.
 pub fn link_for(addr: &str) -> String {
-    format!("scry://join/{SLUG}/{addr}")
+    format!("elo://join/{SLUG}/{addr}")
 }
 
 #[cfg(test)]
@@ -239,18 +247,40 @@ mod tests {
 
     #[test]
     fn the_canonical_form_is_what_a_friend_shares() {
-        let j = parse("scry://join/gates/game.moreright.xyz:61234").expect("canonical");
+        let j = parse("elo://join/gates/game.elopros.com:61234").expect("canonical");
         assert_eq!(j.slug.as_deref(), Some("gates"));
-        assert_eq!(j.addr, "game.moreright.xyz:61234");
+        assert_eq!(j.addr, "game.elopros.com:61234");
         // ...and it round-trips through the thing that writes it.
         assert_eq!(
-            link_for("game.moreright.xyz:61234"),
-            "scry://join/gates/game.moreright.xyz:61234"
+            link_for("game.elopros.com:61234"),
+            "elo://join/gates/game.elopros.com:61234"
         );
         assert_eq!(
-            parse(&link_for("game.moreright.xyz:61234")).unwrap().addr,
-            "game.moreright.xyz:61234"
+            parse(&link_for("game.elopros.com:61234")).unwrap().addr,
+            "game.elopros.com:61234"
         );
+    }
+
+    #[test]
+    fn the_platforms_former_scheme_still_resolves_and_grants_nothing_extra() {
+        // The rename landed here before it landed in the launcher, so a link
+        // minted yesterday says `scry://`. It must keep working, and it must
+        // arrive through the same door: same slug check, same refusals.
+        let j = parse("scry://join/gates/game.elopros.com:61234").expect("legacy");
+        assert_eq!(j.slug.as_deref(), Some("gates"));
+        assert_eq!(j.addr, "game.elopros.com:61234");
+        assert_eq!(j, parse("elo://join/gates/game.elopros.com:61234").unwrap());
+
+        // Not a wider door. Another title is refused on the old spelling too,
+        // which is the assertion that would fail if the arm were duplicated
+        // rather than shared.
+        parse("scry://join/some-other-game/evil.test:1").expect_err("wrong slug");
+        parse("scry://join/gates/h:1/--identity/0x1").expect_err("trailing field");
+        parse("scry://install/gates").expect_err("not a join verb");
+
+        // And `link_for` still mints the canonical spelling: we accept the old
+        // one, we never write it.
+        assert!(link_for("h:1").starts_with("elo://"));
     }
 
     #[test]
@@ -265,7 +295,7 @@ mod tests {
     fn a_link_for_another_title_is_refused_and_not_ignored() {
         // The one that matters. Ignoring the slug would make every other
         // title's join link a Gates join link pointing wherever it said.
-        let why = parse("scry://join/some-other-game/evil.test:1").expect_err("wrong slug");
+        let why = parse("elo://join/some-other-game/evil.test:1").expect_err("wrong slug");
         assert!(why.contains("some-other-game"), "{why}");
         assert!(why.contains("gates"), "{why}");
     }
@@ -276,12 +306,12 @@ mod tests {
         // are refused rather than dropped: a silently ignored segment is how
         // an unnoticed field becomes a supported one.
         for bad in [
-            "scry://join/gates/h:1/0xdeadbeef",
-            "scry://join/gates/h:1/--identity/0x1",
-            "scry://join/gates",
-            "scry://join",
-            "scry://install/gates/h:1",
-            "scry://gates/h:1",
+            "elo://join/gates/h:1/0xdeadbeef",
+            "elo://join/gates/h:1/--identity/0x1",
+            "elo://join/gates",
+            "elo://join",
+            "elo://install/gates/h:1",
+            "elo://gates/h:1",
             "gates://join/h:1/extra",
         ] {
             assert!(parse(bad).is_err(), "{bad:?} should be refused");
@@ -292,36 +322,36 @@ mod tests {
     fn a_query_string_is_dropped_rather_than_refused() {
         // A link that survived a chat client arrives with junk stapled on,
         // and that is not the player's fault. Dropped — never read.
-        assert_eq!(parse("scry://join/gates/h:1?utm=x").unwrap().addr, "h:1");
-        assert_eq!(parse("scry://join/gates/h:1#frag").unwrap().addr, "h:1");
-        assert_eq!(parse("scry://join/gates/h:1/").unwrap().addr, "h:1");
+        assert_eq!(parse("elo://join/gates/h:1?utm=x").unwrap().addr, "h:1");
+        assert_eq!(parse("elo://join/gates/h:1#frag").unwrap().addr, "h:1");
+        assert_eq!(parse("elo://join/gates/h:1/").unwrap().addr, "h:1");
     }
 
     #[test]
     fn an_encoded_colon_still_joins() {
         // The practical half: some chat clients encode the one special
         // character a host:port has.
-        assert_eq!(parse("scry://join/gates/h%3A1").unwrap().addr, "h:1");
+        assert_eq!(parse("elo://join/gates/h%3A1").unwrap().addr, "h:1");
         // ...and decoding cannot smuggle anything past check_addr, because
         // check_addr runs after it.
-        assert!(parse("scry://join/gates/h%2Fx:1").is_err()); // a slash
-        assert!(parse("scry://join/gates/h%20x:1").is_err()); // a space
-        assert!(parse("scry://join/gates/h:1%00").is_err()); // a NUL
-        assert!(parse("scry://join/gates/h:%").is_err()); // half an escape
+        assert!(parse("elo://join/gates/h%2Fx:1").is_err()); // a slash
+        assert!(parse("elo://join/gates/h%20x:1").is_err()); // a space
+        assert!(parse("elo://join/gates/h:1%00").is_err()); // a NUL
+        assert!(parse("elo://join/gates/h:%").is_err()); // half an escape
     }
 
     #[test]
     fn the_address_gets_the_same_shape_check_as_a_typed_one() {
         // A link is a way of spelling an address, not a second way in.
         for bad in [
-            "scry://join/gates/nonsense",
-            "scry://join/gates/h:0",
-            "scry://join/gates/h:port",
-            "scry://join/gates/::1:4433",
+            "elo://join/gates/nonsense",
+            "elo://join/gates/h:0",
+            "elo://join/gates/h:port",
+            "elo://join/gates/::1:4433",
         ] {
             assert!(parse(bad).is_err(), "{bad:?} should be refused");
         }
-        assert!(parse("scry://join/gates/[::1]:4433").is_ok());
+        assert!(parse("elo://join/gates/[::1]:4433").is_ok());
     }
 
     #[test]
@@ -329,18 +359,18 @@ mod tests {
         for junk in [
             "",
             "://",
-            "scry://",
+            "elo://",
             "gates://",
             "http://example.test/join",
             "javascript:alert(1)",
-            "scry:/join/gates/h:1",
+            "elo:/join/gates/h:1",
             "not a link at all",
-            "scry://join/gates/",
+            "elo://join/gates/",
         ] {
             assert!(parse(junk).is_err(), "{junk:?} should be refused");
         }
         // Over the cap, and it must say so rather than work on a truncation.
-        let long = format!("scry://join/gates/{}:1", "h".repeat(MAX_URL_BYTES));
+        let long = format!("elo://join/gates/{}:1", "h".repeat(MAX_URL_BYTES));
         assert!(parse(&long).is_err());
     }
 
@@ -349,12 +379,12 @@ mod tests {
         // `is_link` decides which error the player sees. A malformed link
         // must reach `parse` and be refused as a bad LINK, not fall through
         // to the address parser and be refused as a bad address.
-        assert!(is_link("scry://join/gates/h:1"));
+        assert!(is_link("elo://join/gates/h:1"));
         assert!(is_link("gates://h:1"));
-        assert!(is_link("SCRY://join/gates/h:1"));
-        assert!(is_link("scry://nonsense")); // malformed, but still a link
+        assert!(is_link("ELO://join/gates/h:1"));
+        assert!(is_link("elo://nonsense")); // malformed, but still a link
         assert!(!is_link("h:1"));
-        assert!(!is_link("game.moreright.xyz:61234"));
+        assert!(!is_link("game.elopros.com:61234"));
         assert!(!is_link("--server"));
         assert!(!is_link(""));
         // The one that would misfire on a naive `contains("://")`.
@@ -363,7 +393,7 @@ mod tests {
 
     #[test]
     fn a_scheme_is_case_insensitive_because_a_url_is() {
-        assert_eq!(parse("SCRY://JOIN/GATES/h:1").unwrap().addr, "h:1");
+        assert_eq!(parse("ELO://JOIN/GATES/h:1").unwrap().addr, "h:1");
         assert_eq!(parse("Gates://h:1").unwrap().addr, "h:1");
     }
 }

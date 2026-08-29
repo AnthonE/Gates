@@ -28,6 +28,9 @@ pub struct Anchors {
     /// not charge yet.
     pub farm_rates: Vec<(String, u32, u32)>,
     pub satchel_minutes: f64,
+    /// What the starter base costs to BUILD, twig skeleton included —
+    /// which is the number a raid is priced against, because the raider
+    /// is destroying everything the builder paid for.
     pub starter_minutes: f64,
     /// Satchel cost to break one wall over starter cost: wood, stone, metal.
     pub raid_ratio: [f64; 3],
@@ -35,13 +38,26 @@ pub struct Anchors {
     pub door_breach_swings: u32,
     /// Melee swings to break a wall, best melee weapon: wood, stone, metal.
     pub wall_breach_swings: [u32; 3],
+    /// What the starter base costs to KEEP, per day. Deliberately not
+    /// `starter_minutes × the rate`: since twig v0 the sweep never charges
+    /// a scaffold upkeep (`deploy::upkeep_sweep`), so the twig half of the
+    /// build bill has no upkeep face at all and charging the anchor for it
+    /// would price a wall nobody pays for.
     pub upkeep_daily_minutes: f64,
     pub wood_wall_minutes: f64,
 }
 
 /// Body hits to kill: ceil(hp / damage), integer-exact. `reduction_pct`
 /// is the armor's cut of every body hit.
-fn hits_to_kill(hp: u32, damage: u32, reduction_pct: u32) -> u32 {
+///
+/// **Public since armor v0, and only so it can be pinned.** This divides by
+/// the exact rational `damage × (100 − pct) / 100`; the sim floors that
+/// number once and subtracts it (`sim_core::combat::reduce`), and the two
+/// are not the same function. They agree on every (weapon, armor) pair we
+/// ship — `crates/content/tests/content.rs` asserts it rather than assuming
+/// it — and the day they stop agreeing, the band describes a fight nobody
+/// has.
+pub fn hits_to_kill(hp: u32, damage: u32, reduction_pct: u32) -> u32 {
     let effective = damage * (100 - reduction_pct);
     let scaled_hp = hp * 100;
     scaled_hp.div_ceil(effective)
@@ -91,6 +107,35 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
 
     // Anchor 2 — TTK per weapon kind, body hits, no armor; then every
     // single armor piece may add at most `armor_extra_hits_max` hits.
+    //
+    // ⚠ **Known-misleading since armor v0 (2026-08-19), deliberately left
+    // standing, and it is not a bug that a green run hides — it is the
+    // green run that is the problem.** Applying armor changes no content
+    // number, so this anchor cannot go red for it; what it says just stops
+    // being true. Three ways, and each is one somebody will otherwise
+    // rediscover:
+    //
+    // 1. **Slot-blind.** The loop below runs every armor row against a
+    //    *body* hits-to-kill, so `item.armor_burlap_head` — a head piece —
+    //    is credited with reducing body hits. The sim happens to agree
+    //    today (`combat::worn_pct` sums both slots because aim is planar),
+    //    so this is right by coincidence and wrong the day hit areas land.
+    // 2. **A ceiling with no floor.** A worn set adding *zero* hits
+    //    satisfies `armor_extra_hits_max` perfectly, so armor could be
+    //    entirely decorative with every gate green.
+    // 3. **It cannot see a set.** The band is per piece, by its own
+    //    comment, and `Player::worn` holds one head plus one body: burlap
+    //    head 10 % + roadsign 25 % is **+3 hits** on rock, spear_wood,
+    //    revolver and the stone tools, against a band of 2.
+    //
+    // Fixing (3) reddens the run, which is why it is not fixed here:
+    // `armor_extra_hits_max` has to be re-spoken (2 → 3) or the ladder
+    // re-priced, and both are operator acts (`DECISIONS.md` §open, "armor
+    // reduction v0"; `NOW.md` §0pvp item 4). What DID land is the half
+    // that moves no band — `hits_to_kill` and the sim's own reducer are
+    // pinned equal for every (weapon, set) pair in
+    // `crates/content/tests/content.rs`, because two arithmetics that
+    // disagree describe a fight nobody has.
     for w in &c.weapons {
         let band = match w.kind {
             WeaponKind::Melee => bands.ttk_melee,
@@ -221,7 +266,9 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
             .push((item.clone(), *declared, at_node as u32));
     }
 
-    // "A full wood wall ≈ 7 min of wood at T1 tools" (CONTENT §4 anchor 3).
+    // "A full wood wall ≈ 4 min of wood at T1 tools" (CONTENT §4 anchor 3).
+    // It read 7 until 2026-08-10, when the cost column was taken from the
+    // reference and the band was re-spoken under `BALANCE.md` §7.
     let wall_cost = |material: Material| -> Result<(u32, f64), String> {
         let wall = c
             .pieces
@@ -256,6 +303,9 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
     anchors.satchel_minutes = farm_minutes(c, &satchel.id, 1.0, 0)?;
 
     let mut starter = 0.0;
+    // The graded half of the same bill — what upkeep is actually charged
+    // on, see `Anchors::upkeep_daily_minutes`.
+    let mut starter_upkept = 0.0;
     for pc in &c.balance.starter_base.pieces {
         let piece = c
             .pieces
@@ -263,7 +313,35 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
             .find(|p| p.id == pc.piece)
             .expect("validated");
         for cost in &piece.cost {
-            starter += farm_minutes(c, &cost.item, f64::from(cost.count * pc.count), 0)?;
+            let m = farm_minutes(c, &cost.item, f64::from(cost.count * pc.count), 0)?;
+            starter += m;
+            if piece.material != Material::Twig {
+                starter_upkept += m;
+            }
+        }
+        // **And the twig under it.** Since twig v0 a piece cannot be
+        // placed at its finished grade — it goes down as twig and the
+        // hammer pays the grade on top (`reference/BUILDING.md` §7b.4) —
+        // so the bill for a stone wall is the twig wall plus the stone
+        // wall, and an anchor that priced only the second would understate
+        // every base on the shard. Read off the table rather than added to
+        // the bill by hand, so the day a shape's twig rung is re-priced
+        // this moves with it and nobody has to remember.
+        if piece.material != Material::Twig {
+            let twig = c
+                .pieces
+                .iter()
+                .find(|p| p.shape == piece.shape && p.material == Material::Twig)
+                .ok_or_else(|| {
+                    format!(
+                        "starter base names `{}`, whose shape has no twig rung — \
+                         nothing could ever place it",
+                        pc.piece
+                    )
+                })?;
+            for cost in &twig.cost {
+                starter += farm_minutes(c, &cost.item, f64::from(cost.count * pc.count), 0)?;
+            }
         }
     }
     for it in &c.balance.starter_base.items {
@@ -371,9 +449,13 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
         ));
     }
 
-    // Anchor 3's upkeep face: a solo starter's daily upkeep in farm-min.
+    // Anchor 3's upkeep face: a solo starter's daily upkeep in farm-min,
+    // charged on the graded pieces only (twig pays none).
+    for it in &c.balance.starter_base.items {
+        starter_upkept += farm_minutes(c, &it.item, f64::from(it.count), 0)?;
+    }
     anchors.upkeep_daily_minutes =
-        starter * f64::from(c.balance.globals.upkeep_pct_per_day) / 100.0;
+        starter_upkept * f64::from(c.balance.globals.upkeep_pct_per_day) / 100.0;
     if anchors.upkeep_daily_minutes > f64::from(bands.upkeep_solo_daily_max_min) {
         return Err(format!(
             "band break: daily upkeep {:.1} farm-min, ceiling {}",

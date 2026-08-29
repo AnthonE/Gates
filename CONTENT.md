@@ -42,33 +42,67 @@ properly. The short version:
   and **both percentages move when it arrives, never how much**: the
   weak spot spends budget faster (skill buys speed), the finish share is
   withheld for whoever lands the last swing
-- **recipe**: output, station (`none|workbench1|furnace`), inputs, seconds
-- **building_piece**: shape (foundation/wall/doorway/floor/stairs/roof/
-  door), per-material hp + upgrade cost (wood→stone→metal). One `cost` row
+- **recipe**: output, station (`none|workbench1|workbench2|workbench3|furnace`), inputs, seconds,
+  and `blueprint` — locked until researched (see **research** below)
+- **building_piece**: shape (foundation/wall/doorway/window/wall_frame/
+  floor/stairs/roof/tri_foundation/tri_floor/tri_roof — the door is a
+  deployable), per-material hp + upgrade cost (wood→stone→metal). One `cost` row
   serves three verbs: build it, upgrade into it, and **mend it** — a repair
   is charged that cost pro-rata against the hp being restored, scaled by
   `globals.repair_cost_pct` (100 = the damage's worth exactly, validated
   1..=100), rounded up and floored at one unit so no repair is ever free.
 - **weapon**: kind (`melee|bow|firearm|throwable`), damage, headshot ×,
-  rate, range falloff curve, ballistic (speed, drop) or hitscan, ammo id
+  rate, range falloff curve, ballistic (speed, drop) or hitscan, ammo id.
+  What a *spent* arrow does is not on this row and is two `globals`
+  instead — `arrow_break_pct` (chance in 100 that a landing destroys it)
+  and `arrow_lodge_s` (seconds an arrow that dealt damage waits before it
+  may be taken; a miss waits none). Globals rather than an ammo column for
+  `[[ammo]]`'s own stated reason: it carries no damage column either, so
+  one break rate for every round is that posture one step out
 - **armor**: slot, damage reduction %, movement penalty
 - **consumable**: health/food/water deltas over seconds
-- **mob**: one animal species — hp, speeds as a percentage of the player's
-  own, the leash and fright radii in metres, the respawn in seconds, and
-  the stacks a kill pays. `content/mobs.toml`; the sim's side is
+- **mob**: one row per animal species — hp, speeds as a percentage of the
+  player's own, the leash in metres, **two notice radii** (day and night,
+  the only content number the *hour* selects — `night_spook_m`), the
+  respawn in seconds, and the stacks a kill pays. Two species ship, prey
+  and hunter, and they differ by content numbers alone: nothing in
+  `mob.rs` branches on species. `content/mobs.toml`; the sim's side is
   `sim-core/src/mob.rs` and the design is `reference/ANIMALS.md` §9.
 - **deployable**: entity archetype (bag, hearth, cupboard, box, furnace,
-  workbench), placement rules, hp
+  workbench, door, lock, recycler, research), placement rules, hp
 - **fuel / cook** (`cooking.toml`): what an oven burns — item, seconds per
   unit, byproduct + `byproduct_pct` (hundredths of a unit per unit burned,
   banked and paid whole, never rolled) — and one row per transformation:
-  input → output, seconds, `station` (`fire|furnace`). A campfire and a
-  furnace are one thing in the sim (`oven.rs`); the station column is the
-  only thing that separates them. **No cook row ships yet**: cooking wants
-  a raw food and the island pays none (§2's food line), so the table is
-  the machinery arriving before its first row.
+  input → output, `count` (units paid, default 1), seconds, `station`
+  (`fire|furnace|recycler`). All three are one thing in the sim
+  (`oven.rs`); the station column is the only thing that separates them,
+  and the recycler is the one that burns nothing.
+  **Several rows may share a `(station, input)` and they fire together**
+  off one slot timer — the bake holds such a set to a single `seconds` and
+  refuses two rows paying the same output. That is what lets one component
+  pay a material *and* a coin, and it is why arming `ALPHA.md`'s A2 faucet
+  is an edit to this file rather than to `crates/`.
+- **research** (`research.toml`): `[coin]` names what research is paid in
+  (one item for the whole table — `sim-core` never learns it is currency),
+  and `[[research]] item + cost` is what may be learned. The recipe a row
+  unlocks is the one that **outputs** that item, resolved at bake, so the
+  file never names a recipe id and the two cannot drift. A recipe's
+  `blueprint = true` is the other half; the two are checked against each
+  other both ways — a gated recipe with no row is uncraftable forever, a
+  row for an item nothing crafts is a coin sink that unlocks nothing, and
+  `validate::structural` refuses both. **`requires` (2026-08-15) is the
+  ladder**: item ids that must already be known, resolved at bake into a
+  mask in `Player::known`'s own bit space. It is authored but not
+  free-form — a blueprint-gated recipe whose *inputs* include another
+  blueprint-gated item implies that edge, and a row that omits one is
+  refused, so the tree can add to the recipes' dependencies and never
+  contradict them. One fixpoint walk from the empty known-set refuses a
+  cycle and a row stranded behind one as the same thing, because
+  "unreachable" is what a player experiences and a cycle is one cause.
+  ⚠ The BENCH tier (workbench 2/3, the tree UI) is a different system and
+  is unbuilt — `NOW.md` §0tt, and the era is a spoken knob.
 - **loot_table**: container archetype → weighted entries + count range
-- **skin**: id, covers (item id), price (SCRY or MYRRH — one coin per
+- **skin**: id, covers (item id), price (ELO or ORBS — one coin per
   row, bare tickers), season — the catalog is content too (dark until A3)
 
 ## 1.5 · The spawn kit
@@ -196,8 +230,18 @@ reference's.
    every melee weapon's. `test_content` asserts all of it.
 2. **TTK bands** (body hits, no armor): melee 3–5 · bow 3–4 · revolver
    4–6; headshot × 2. Armor may add at most +2 hits. Asserted from data.
-3. **Farm rate** — one node ≈ 300 units over ~10 swings; a full wood wall
-   ≈ 7 min of wood at T1 tools. Upkeep (DESIGN §2) prices decay in these
+3. **Farm rate** — a node pays the reference game's total over ~10 swings
+   (2026-08-10: stone 1000, metal 600, sulfur 300, large tree 870 — it
+   read "≈ 300 units" for every node before that); a full wood wall ≈ **4**
+   min of wood at T1 tools. **That figure was 7 and moved the same day the
+   build costs were taken** (`DECISIONS.md` §open "twig v0"): their wood
+   wall is 200 wood where ours was 350, and 350 had never been compared to
+   anything — the 2026-08-08 balance pass took the hp ladder out of
+   `building.toml` and left the `cost` column alone. What made it visible
+   was the node take: once a tree paid *their* 810 wood, a wall priced at
+   *ours* cost 1.75× theirs in trees, the unit a player actually feels. So
+   the pair now comes from one game. The band moved [5, 9] → [3, 5] and
+   that is `BALANCE.md` §7's rule, not a loosening. Upkeep (DESIGN §2) prices decay in these
    same farm-minutes; the band keeps a solo's daily upkeep under ~15 min
    **(knob)**.
 

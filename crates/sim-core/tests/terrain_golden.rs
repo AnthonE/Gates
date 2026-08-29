@@ -20,26 +20,51 @@ const PROBE_SEEDS: [u64; 3] = [GOLDEN_SEED, 0x1, 0xDEAD_BEEF];
 /// Pinned fingerprint for GOLDEN_SEED. Regenerates only with an intentional
 /// worldgen change, in the same commit (CLAUDE.md walls 5/6 discipline).
 ///
-/// Regenerated here from `0xB48C_A5C2_A979_096A` because the road shoulder's
-/// barrel rate stopped being one number and became two — dense on the coast's
-/// sheltered arcs, sparse on the open shore (`terrain::in_bay`, TERRAIN.md §1
-/// stage 7's "junk piles at bay mouths" line).
+/// Regenerated here from `0xA217_658A_C65D_F3CB` because **the site carve was
+/// armed** (operator, 2026-08-16): `SITE_STAMP_STRENGTH` 0.0 → 1.0, so the pad
+/// and both waystations now MAKE their flat ground instead of standing on
+/// whatever the argmax found. That is the largest-reach worldgen change since
+/// this pin existed and it moves this digest by design.
 ///
-/// Nothing else moved, and the reach is narrow by construction: heights are
-/// untouched (`in_bay` only READS `height`), the ring is untouched, and every
-/// authored slot — pad, crates, waystations, canopies — returns before the
-/// road branch is reached. Only `RoadBand::Shoulder` cells can differ. This
-/// digest sees them at all because `hash_scatter_window` covers the pad and
-/// both waystations, and all three sit ON the ring by construction, so their
-/// windows straddle the shoulder. `tests/road.rs` measures the whole delta:
-/// 239 barrels islandwide under the old flat rate, 236 under the split, over
-/// the same 2,033 shoulder cells.
+/// **The reach is bounded and the bound is asserted elsewhere**, which is worth
+/// stating because "the carve moved the golden" could hide anything. It moves
+/// exactly three discs: `probe_sites` hashes windows over the pad and both
+/// waystations, and all three stand on the road ring, so their windows sit
+/// inside the carve. `tests/carve.rs` §C holds that no ground outside a site's
+/// `blend_m` changes at all, bit for bit, islandwide — so what this digest sees
+/// is the whole of what moved.
 ///
-/// The previous regeneration, kept because it explains the value above: the
-/// scatter pass stopped choosing a biome row and started blending four
+/// Regenerated again the same day, from `0x97E7_4336_299A_D2FD`, for the second
+/// half of the same work: a site's floor is cut to the level of LOWEST ERROR
+/// over the ground it flattens (`Haven::floor_y`, `site_floor_y`) rather than
+/// to the raw height at its centre — the reference's own terrain anchoring,
+/// `reference/MONUMENTS.md` §9.2b. `probe_sites` hashes the new datum, and the
+/// three seated arrangements move with it.
+///
+/// A previous regeneration, kept because it explains the value it replaced: the
+/// road shoulder's barrel rate stopped being one number and became two — dense
+/// on the coast's sheltered arcs, sparse on the open shore (`terrain::in_bay`,
+/// TERRAIN.md §1 stage 7's "junk piles at bay mouths" line). And before that,
+/// the scatter pass stopped choosing a biome row and started blending four
 /// (`terrain::scatter_row`), a delta confined to the ~11% of land cells no
 /// single splat channel owns outright.
-const GOLDEN_TERRAIN_HASH: u64 = 0xA217_658A_C65D_F3CB;
+/// Regenerated here from `0x7356_4E57_06B4_74D9` for **the shape of the
+/// island itself** (2026-08-26): `remap` stopped being piecewise-linear
+/// between its knots and became a monotone cubic, the highland's ridged blend
+/// became a three-octave ridged multifractal on a `fade`d gate, and a detail
+/// ladder was added after the curve. The island had been rendering as a
+/// stack of terraces with a contour line at every one of the LUT's 16 knots;
+/// `terrain.rs`'s own `remap` docs carry the mechanism.
+///
+/// This is a bigger move than the carve was — the carve touched three discs
+/// and this touches every sample above the waterline — so what bounds it is
+/// stated rather than implied: the **coast does not move**, because
+/// `REMAP_LUT`'s first three segments have equal secants (the cubic through
+/// them IS the old straight line) and the detail rides on `shelf`, which is 0
+/// at sea level. The road ring, the haven solve and the clutter waterline
+/// veto are all gated on that and all stayed green through the change without
+/// a tolerance moving.
+const GOLDEN_TERRAIN_HASH: u64 = 0x9033_206F_0ECB_E2A4;
 
 #[test]
 fn test_terrain_golden() {

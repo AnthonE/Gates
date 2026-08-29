@@ -33,10 +33,39 @@ use sim_core::build::{foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_PLA
 use sim_core::deploy::{box_key, DeployContent, DeployDef, ARCH_BOX, PLACE_FOUNDATION};
 use sim_core::gather::{GatherContent, ItemStack};
 use sim_core::inventory::{
-    CONT_BAG, CONT_BOX, CONT_SELF, REFUSE_M_NO_CONTAINER, REFUSE_M_REACH, REFUSE_M_SLOT,
+    CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, REFUSE_M_NO_CONTAINER, REFUSE_M_REACH, REFUSE_M_SLOT,
 };
 use sim_core::limits::{BOX_SLOTS, INV_SLOTS, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS};
 use sim_core::world::{Command, World, EV_MOVED, EV_MOVE_REFUSED};
+
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
 
 const SEED: u64 = 0x6000_00B0;
 const PLAYER: u32 = 3;
@@ -80,7 +109,7 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
                 let cx = (512 + dx).clamp(0, 1023) as u16;
                 let cz = (512 + dz).clamp(0, 1023) as u16;
                 let (x, z) = cell_center(cx, cz);
-                if foundation_terrain_ok(seed, x, z) {
+                if foundation_terrain_ok(seed, hv(seed), x, z) {
                     return (cx, cz);
                 }
             }
@@ -110,12 +139,17 @@ fn box_world() -> (World, u32, u16, u16) {
     let (x, z) = cell_center(cx, cz);
     w.dev_spawn = Some((x, z));
     w.tick(&[Command::Join { id: PLAYER }]);
-    w.players[0].body = sim_core::movement::Body::at(SEED, x, z);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), x, z);
 
-    w.players[0].inv[0] = ItemStack { item: 0, count: 5 };
+    w.players[0].inv[0] = ItemStack {
+        item: 0,
+        count: 5,
+        cond: 0,
+    };
     w.players[0].inv[1] = ItemStack {
         item: BOX_ITEM,
         count: 1,
+        cond: 0,
     };
     w.tick(&[Command::Place {
         id: PLAYER,
@@ -124,6 +158,7 @@ fn box_world() -> (World, u32, u16, u16) {
         cz,
         level: 0,
         loc: LOC_PLANE,
+        freehand: false,
     }]);
     assert_eq!(w.pieces.len(), 1, "the fixture needs its foundation");
     w.tick(&[Command::PlaceDeploy {
@@ -228,26 +263,65 @@ fn a_placed_box_takes_a_record_and_an_address() {
 #[test]
 fn items_move_into_and_out_of_a_box() {
     let (mut w, key, _, _) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 40,
+        cond: 0,
+    };
 
     let (code, _, _) = do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 0, 25);
     assert_eq!(code, EV_MOVED, "a legal deposit must be applied");
-    assert_eq!(w.players[0].inv[4], ItemStack { item: 1, count: 15 });
-    assert_eq!(w.deploys.box_slot(0, 0), ItemStack { item: 1, count: 25 });
+    assert_eq!(
+        w.players[0].inv[4],
+        ItemStack {
+            item: 1,
+            count: 15,
+            cond: 0,
+        }
+    );
+    assert_eq!(
+        w.deploys.box_slot(0, 0),
+        ItemStack {
+            item: 1,
+            count: 25,
+            cond: 0,
+        }
+    );
 
     // Back out, into a different slot, so the return path is not just the
     // deposit read backwards.
     let (code, _, _) = do_move(&mut w, key, CONT_BOX, 0, CONT_SELF, 7, 10);
     assert_eq!(code, EV_MOVED, "a legal withdrawal must be applied");
-    assert_eq!(w.deploys.box_slot(0, 0), ItemStack { item: 1, count: 15 });
-    assert_eq!(w.players[0].inv[7], ItemStack { item: 1, count: 10 });
+    assert_eq!(
+        w.deploys.box_slot(0, 0),
+        ItemStack {
+            item: 1,
+            count: 15,
+            cond: 0,
+        }
+    );
+    assert_eq!(
+        w.players[0].inv[7],
+        ItemStack {
+            item: 1,
+            count: 10,
+            cond: 0,
+        }
+    );
 
     // And within the box, which is the case that reads and writes the
     // same array twice through the same index.
     let (code, _, _) = do_move(&mut w, key, CONT_BOX, 0, CONT_BOX, 11, 15);
     assert_eq!(code, EV_MOVED);
     assert_eq!(w.deploys.box_slot(0, 0), ItemStack::default());
-    assert_eq!(w.deploys.box_slot(0, 11), ItemStack { item: 1, count: 15 });
+    assert_eq!(
+        w.deploys.box_slot(0, 11),
+        ItemStack {
+            item: 1,
+            count: 15,
+            cond: 0,
+        }
+    );
     // The foundation and the box each spent their own cost at placement,
     // so the forty deposited units are all that is left to conserve.
     let total: u16 = (0..BOX_SLOTS)
@@ -265,7 +339,11 @@ fn items_move_into_and_out_of_a_box() {
 #[test]
 fn a_box_slot_past_its_size_is_refused_and_writes_nothing() {
     let (mut w, key, _, _) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 40,
+        cond: 0,
+    };
 
     for s in BOX_SLOTS..INV_SLOTS {
         let before = contents(&w);
@@ -278,7 +356,14 @@ fn a_box_slot_past_its_size_is_refused_and_writes_nothing() {
             "a refused move at slot {s} moved something"
         );
         // The source is intact, so nothing was taken and dropped either.
-        assert_eq!(w.players[0].inv[4], ItemStack { item: 1, count: 40 });
+        assert_eq!(
+            w.players[0].inv[4],
+            ItemStack {
+                item: 1,
+                count: 40,
+                cond: 0,
+            }
+        );
         // And the same slot as a *source* is equally not an address.
         let (code, why, _) = do_move(&mut w, key, CONT_BOX, s as u8, CONT_SELF, 5, 1);
         assert_eq!(code, EV_MOVE_REFUSED);
@@ -304,7 +389,11 @@ fn a_box_slot_past_its_size_is_refused_and_writes_nothing() {
 #[test]
 fn an_absent_or_distant_box_refuses_rather_than_disconnects() {
     let (mut w, key, cx, cz) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 40,
+        cond: 0,
+    };
 
     // Right cell, wrong storey: the level is part of the address, which is
     // the whole reason `box_key` is not `gather::cell_key`.
@@ -319,7 +408,7 @@ fn an_absent_or_distant_box_refuses_rather_than_disconnects() {
     // Real box, player walked away. Reach is judged when the move
     // resolves, never when a panel opened.
     let (fx, fz) = cell_center(cx + 7, cz);
-    w.players[0].body = sim_core::movement::Body::at(SEED, fx, fz);
+    w.players[0].body = sim_core::movement::Body::at(SEED, hv(SEED), fx, fz);
     let (code, why, _) = do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 0, 1);
     assert_eq!(code, EV_MOVE_REFUSED);
     assert_eq!(why, REFUSE_M_REACH, "a box 21 m away is out of reach");
@@ -333,13 +422,21 @@ fn an_absent_or_distant_box_refuses_rather_than_disconnects() {
 #[test]
 fn a_move_between_two_ground_containers_is_refused() {
     let (mut w, key, _, _) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 40,
+        cond: 0,
+    };
     // A bag at the player's feet, dropped the way one reaches the world in
     // play — `drop_for` is the only route, so a fixture that reached into
     // the store could pass while the real one was broken.
     let mut body = w.players[0];
     body.inv = [ItemStack::default(); INV_SLOTS];
-    body.inv[0] = ItemStack { item: 1, count: 9 };
+    body.inv[0] = ItemStack {
+        item: 1,
+        count: 9,
+        cond: 0,
+    };
     let tick = w.tick;
     let bag = w
         .backpacks
@@ -375,7 +472,11 @@ fn a_move_between_two_ground_containers_is_refused() {
 #[test]
 fn emptying_a_box_leaves_it_standing() {
     let (mut w, key, _, _) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 6 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 6,
+        cond: 0,
+    };
     // A bag in the store at the same index the box holds in *its* store.
     // The two are addressed by different handles into different arrays, so
     // an emptied-container check aimed at the wrong one would remove this
@@ -383,7 +484,11 @@ fn emptying_a_box_leaves_it_standing() {
     // is the actual failure mode, not the box disappearing.
     let mut body = w.players[0];
     body.inv = [ItemStack::default(); INV_SLOTS];
-    body.inv[0] = ItemStack { item: 2, count: 3 };
+    body.inv[0] = ItemStack {
+        item: 2,
+        count: 3,
+        cond: 0,
+    };
     let tick = w.tick;
     let bag = w
         .backpacks
@@ -422,8 +527,16 @@ fn emptying_a_box_leaves_it_standing() {
 #[test]
 fn a_broken_box_spills_its_contents_onto_the_floor() {
     let (mut w, key, _, _) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 30 };
-    w.players[0].inv[5] = ItemStack { item: 2, count: 7 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 30,
+        cond: 0,
+    };
+    w.players[0].inv[5] = ItemStack {
+        item: 2,
+        count: 7,
+        cond: 0,
+    };
     do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 0, 30);
     do_move(&mut w, key, CONT_SELF, 5, CONT_BOX, 6, 7);
     let bags_before = w.backpacks.len();
@@ -453,8 +566,16 @@ fn a_broken_box_spills_its_contents_onto_the_floor() {
     let bag = w.backpacks.entries()[bags_before];
     let got: Vec<_> = bag.items.iter().filter(|s| s.count > 0).collect();
     assert_eq!(got.len(), 2, "both stacks survived the break");
-    assert!(got.contains(&&ItemStack { item: 1, count: 30 }));
-    assert!(got.contains(&&ItemStack { item: 2, count: 7 }));
+    assert!(got.contains(&&ItemStack {
+        item: 1,
+        count: 30,
+        cond: 0,
+    }));
+    assert!(got.contains(&&ItemStack {
+        item: 2,
+        count: 7,
+        cond: 0,
+    }));
     assert_eq!(bag.owner, PLAYER, "the spill belongs to whoever placed it");
     // Drained exactly once: a second tick must not stand a second bag up.
     w.tick(&[]);
@@ -490,7 +611,11 @@ fn a_broken_empty_box_leaves_no_bag() {
 #[test]
 fn box_contents_are_in_the_state_hash() {
     let (mut w, key, _, _) = box_world();
-    w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+    w.players[0].inv[4] = ItemStack {
+        item: 1,
+        count: 40,
+        cond: 0,
+    };
     let before = w.state_hash();
     do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 0, 20);
     assert_ne!(before, w.state_hash(), "a deposit must move the state hash");
@@ -510,9 +635,20 @@ fn box_contents_are_in_the_state_hash() {
 fn two_boxes_differing_only_in_slot_order_hash_differently() {
     fn deposit_into(slot: u8) -> u64 {
         let (mut w, key, _, _) = box_world();
-        w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+        w.players[0].inv[4] = ItemStack {
+            item: 1,
+            count: 40,
+            cond: 0,
+        };
         do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, slot, 20);
-        assert_eq!(w.players[0].inv[4], ItemStack { item: 1, count: 20 });
+        assert_eq!(
+            w.players[0].inv[4],
+            ItemStack {
+                item: 1,
+                count: 20,
+                cond: 0,
+            }
+        );
         w.state_hash()
     }
     assert_ne!(
@@ -536,7 +672,11 @@ fn two_boxes_differing_only_in_slot_order_hash_differently() {
 fn the_same_commands_land_on_the_same_box_state() {
     fn run() -> u64 {
         let (mut w, key, _, _) = box_world();
-        w.players[0].inv[4] = ItemStack { item: 1, count: 40 };
+        w.players[0].inv[4] = ItemStack {
+            item: 1,
+            count: 40,
+            cond: 0,
+        };
         do_move(&mut w, key, CONT_SELF, 4, CONT_BOX, 2, 11);
         do_move(&mut w, key, CONT_BOX, 2, CONT_BOX, 9, 4);
         w.state_hash()
@@ -612,4 +752,64 @@ fn the_zero_handle_never_resolves_to_a_box() {
         None,
         "handle 0 resolved to a box; the client cannot tell it from 'nothing open'"
     );
+}
+
+/// **Armor goes from a box straight onto the body**, and that is the test
+/// `inventory::is_own` exists for.
+///
+/// The move verb carries **one** container handle, so at most one side of
+/// a move may be a container standing in the world — `move_item` refuses
+/// two of them as `REFUSE_M_NO_CONTAINER` because the message has no room
+/// to address the second. For four kinds "stands in the world" was
+/// spelled `kind != CONT_SELF`, which was correct and became wrong the
+/// moment a player carried a *second* container: `CONT_WEAR` is on the
+/// body, has no handle and nothing to be out of reach of, so under the
+/// old spelling this move names two ground containers and is refused.
+///
+/// `is_own` is the fix and this is the only test that can see it. Every
+/// self-to-wear case agrees under both spellings — `CONT_SELF` is own
+/// either way — so a suite without a real ground container on one side
+/// passes with `is_own` reverted, which is exactly what happened when
+/// this was run as a mutant against `tests/armor.rs`: 21 green.
+///
+/// The claim is a *success*, not a refusal, which is the direction that
+/// matters: opening a raided box and putting the loot on is the move.
+#[test]
+fn armor_moves_from_a_box_onto_the_body() {
+    let (mut w, key, _, _) = box_world();
+    // The armor table, so `wearable_in` has rows to answer from. Item 5
+    // is `probe_fixture`'s body piece.
+    w.combat = sim_core::combat::CombatContent::probe_fixture();
+    const PLATE: u16 = 5;
+    let plate = ItemStack {
+        item: PLATE,
+        count: 1,
+        cond: 0,
+    };
+    let bi = w.deploys.box_index(key).expect("the fixture's box");
+    w.deploys.set_box_slot(bi, 3, plate);
+
+    let (code, why, _) = do_move(&mut w, key, CONT_BOX, 3, CONT_WEAR, 1, 1);
+
+    assert_eq!(
+        (code, why),
+        (
+            EV_MOVED,
+            sim_core::inventory::addr(CONT_BOX, 3, CONT_WEAR, 1)
+        ),
+        "a plate must move from the box onto the body"
+    );
+    assert_eq!(w.players[0].worn[1], plate, "worn");
+    assert_eq!(
+        w.deploys.box_slot(bi, 3),
+        ItemStack::default(),
+        "and gone from the box"
+    );
+
+    // The reverse, so stripping into storage works too — and so the
+    // `ground` selection is exercised with the wear kind on each side.
+    let (code, _, _) = do_move(&mut w, key, CONT_WEAR, 1, CONT_BOX, 3, 1);
+    assert_eq!(code, EV_MOVED, "and back into the box");
+    assert_eq!(w.deploys.box_slot(bi, 3), plate);
+    assert_eq!(w.players[0].worn[1], ItemStack::default());
 }

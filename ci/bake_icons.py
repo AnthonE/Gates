@@ -76,9 +76,23 @@ SHAPES = {
     "shape_foundation": "delapouite/flat-platform",
     "shape_wall": "delapouite/brick-wall",
     "shape_doorway": "delapouite/door",
+    # Catalogue v1's two openings. The window is the obvious pick; the
+    # wall frame is a GATE on purpose — a big opening something else will
+    # fill — and not `broken-wall`, for the rule the hammer verbs already
+    # follow: it shares `brick-wall`'s drawing family and a shape that
+    # looks like another shape is the positional trap wearing a menu.
+    "shape_window": "delapouite/window",
+    "shape_wall_frame": "delapouite/gate",
     "shape_floor": "delapouite/floor-hatch",
     "shape_stairs": "delapouite/3d-stairs",
     "shape_roof": "delapouite/great-pyramid",
+    # Triangles v0. Picked for silhouette at 38 px against their square
+    # siblings: the corner flag plants a triangle at ground level, the
+    # sail is a bare right triangle, the tipi is a peaked shelter that
+    # does not share great-pyramid's stepped-mass drawing.
+    "shape_tri_foundation": "delapouite/corner-flag",
+    "shape_tri_floor": "delapouite/sail",
+    "shape_tri_roof": "delapouite/tipi",
 }
 
 # The four verbs on the hammer's wheel, keyed as `ui::hammer::verb_icon`
@@ -120,7 +134,18 @@ ITEMS = {
     "gears": "lorc/gears",
     "rope": "delapouite/rope-coil",
     "tarp": "delapouite/camping-tent",
-    "rock": "john-redman/rock",
+    # **Not `john-redman/rock`**, which was the mapping until 2026-08-18 and
+    # is the rock of rock-paper-scissors: a closed FIST. The game's starting
+    # tool — the one item every player wakes holding — drew a punch in the
+    # hotbar, on a shipped build, and no gate could see it because
+    # `tests/ui.rs` §G asks whether a picture EXISTS, never whether it is a
+    # picture of the thing. Booting the client and looking at the hotbar is
+    # what found it, which is the whole argument for that being the visual
+    # gate. `lorc/rock` is one angular stone; picked over `lorc/stone-block`
+    # (a cube reads as a building material), `lorc/stone-sphere` (a football
+    # at 38 px) and `delapouite/stone-pile`, which is already `stone` and
+    # would collide in silhouette with the resource the rock harvests.
+    "rock": "lorc/rock",
     "torch": "delapouite/torch",
     "spear_wood": "lorc/spears",
     "hatchet_stone": "delapouite/hatchet",
@@ -132,6 +157,11 @@ ITEMS = {
     "box_small": "delapouite/wooden-crate",
     "fire_pit": "lorc/campfire",
     "workbench1": "lorc/hammer-nails",
+    # The bench ladder (bench ladder v0): the glyphs climb with the rungs
+    # — hammer-and-nails, the struck anvil, the gear-hammer — so the
+    # three read as one tool family at a glance and still rank.
+    "workbench2": "lorc/anvil-impact",
+    "workbench3": "lorc/gear-hammer",
     "hearth": "delapouite/fireplace",
     "hatchet_metal": "delapouite/sharp-axe",
     "pickaxe_metal": "delapouite/mining-helmet",
@@ -139,6 +169,13 @@ ITEMS = {
     "furnace": "delapouite/furnace",
     "box_large": "delapouite/cargo-crate",
     "lock_code": "delapouite/dial-padlock",
+    "recycler": "lorc/recycle",
+    # The blueprint you unroll, not the bench you unroll it on: a table at
+    # 44 px is a rectangle, and the thing the verb produces reads.
+    "research_table": "lorc/scroll-unfurled",
+    # The coin that pays the ferryman (DESIGN.md §3.1). Two coins rather
+    # than one because a single disc at 44 px reads as a full stop.
+    "junk": "delapouite/two-coins",
     "door_wood": "delapouite/door",
     "building_plan": "delapouite/notebook",
     "hammer": "lorc/claw-hammer",
@@ -163,6 +200,31 @@ ITEMS = {
     # loudly and *meat* not at all; it lost on that.)
     "raw_meat": "delapouite/steak",
     "cooked_meat": "lorc/chicken-leg",
+}
+
+# The three vitals, bottom right, in every frame of play.
+#
+# **A separate map and not `ITEMS`, for a structural reason rather than a
+# tidiness one.** `ITEMS` is checked for equality against `content/items.toml`
+# — a stem in it that no item declares exits nonzero — because the wire carries
+# an item's display name and a missing picture must fail here rather than
+# silently in a cell. A vital is not an item and never will be, so it belongs
+# with `SHAPES` and `VERBS`: stems the interface needs that the content does
+# not name.
+#
+# They were the ASCII characters `+`, `~` and `*` until 2026-08-25 — the code
+# named itself a placeholder and pointed at this file — beside three carefully
+# measured coloured bars, which was the loudest prototype tell left in the
+# interface.
+#
+# `hot-meal` is the steaming cloche `ITEMS` REJECTED for `cooked_meat` above,
+# and the reason it lost there is the reason it wins here: it says *meal* and
+# not *meat*. A hunger vital is about eating rather than about a cut, so the
+# two read as different things in a frame holding both.
+VITALS = {
+    "vital_hp": "sbed/health-normal",
+    "vital_water": "sbed/water-drop",
+    "vital_food": "delapouite/hot-meal",
 }
 
 # THE SECOND SOURCE, AND WHY IT IS NOT THE FIRST
@@ -244,6 +306,7 @@ if unknown:
 
 ALL = dict(SHAPES)
 ALL.update(VERBS)
+ALL.update(VITALS)
 for item_id, icon in ITEMS.items():
     ALL[norm(BY_ID[item_id])] = icon
 MINE = {norm(BY_ID[item_id]): f for item_id, f in OURS.items()}

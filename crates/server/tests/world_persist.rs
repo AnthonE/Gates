@@ -37,9 +37,45 @@ use sim_core::world::World;
 use sim_core::worldsave::WORLD_SAVE_MAX_BYTES;
 use std::path::{Path, PathBuf};
 
+/// The solved authored sites for `seed` — what `terrain::ground` needs in order
+/// to know where the carve is.
+///
+/// Memoized per seed, and that is not premature: `terrain::haven` is a few
+/// thousand `height` taps (a shoreline march, a bisect and a rosette per
+/// candidate bearing), these suites call it from inside assertion loops, and
+/// the first draft of this helper resolved it per call and took the workspace
+/// test run past five minutes. It is a pure function of the seed, so caching
+/// cannot change a result.
+fn hv(seed: u64) -> &'static sim_core::terrain::Haven {
+    use std::cell::RefCell;
+    // A thread-local rather than a `Mutex`: `std::sync::Mutex` is on
+    // `sim-core/clippy.toml`'s disallowed list (wall 3), and that list is
+    // crate-scoped, so it binds this suite too. Per-thread is the right shape
+    // anyway — the cache exists to stop a per-assertion recompute, not to be
+    // shared.
+    thread_local! {
+        static CACHE: RefCell<Vec<(u64, &'static sim_core::terrain::Haven)>> =
+            const { RefCell::new(Vec::new()) };
+    }
+    let hit = CACHE.with(|c| c.borrow().iter().find(|(s, _)| *s == seed).map(|&(_, h)| h));
+    if let Some(h) = hit {
+        return h;
+    }
+    let h: &'static sim_core::terrain::Haven = Box::leak(Box::new(sim_core::terrain::haven(seed)));
+    CACHE.with(|c| c.borrow_mut().push((seed, h)));
+    h
+}
+
 const SEED: u64 = 20_260_807;
 const CONTENT: u64 = 0x0123_4567_89ab_cdef;
 const INTERVAL: u64 = 1_800;
+/// The island `SEED` actually generates, as `worldfile`'s header pins it.
+/// A literal would be a second copy of a number the sim already computes, and
+/// the whole point of the field is that it tracks worldgen rather than being
+/// declared beside it.
+fn world_digest() -> u64 {
+    sim_core::probe::probe_terrain(SEED)
+}
 
 fn id_of(slot: usize) -> u32 {
     (1 << 8) | slot as u32
@@ -79,8 +115,8 @@ fn install_content(w: &mut World) {
     w.combat = CombatContent::probe_fixture();
 }
 
-fn armed_core() -> ShardCore {
-    let mut core = ShardCore::new(SEED);
+fn armed_core() -> Box<ShardCore> {
+    let mut core = Box::new(ShardCore::new(SEED));
     install_content(&mut core.world);
     core
 }
@@ -102,8 +138,8 @@ fn stand_somewhere_buildable(core: &mut ShardCore, slot: usize) -> (u16, u16) {
                 }
                 let ax = (cx as f32 + 0.5) * BUILD_CELL_M;
                 let az = (cz as f32 + 0.5) * BUILD_CELL_M;
-                if foundation_terrain_ok(SEED, ax, az) {
-                    core.world.players[slot].body = Body::at(SEED, ax, az);
+                if foundation_terrain_ok(SEED, hv(SEED), ax, az) {
+                    core.world.players[slot].body = Body::at(SEED, hv(SEED), ax, az);
                     return (cx as u16, cz as u16);
                 }
             }
@@ -139,8 +175,9 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
     let (want_hash, want_body, cell) = {
         let mut trial = World::new(SEED);
         install_content(&mut trial);
-        let (boot, found) = worldfile::open(&path, &mut trial, SEED, CONTENT, INTERVAL)
-            .expect("a fresh file opens");
+        let (boot, found) =
+            worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL)
+                .expect("a fresh file opens");
         assert!(found.created, "the first open must create nothing yet");
         let mut file = boot.file;
 
@@ -152,7 +189,7 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
             Some(Admitted::Fresh),
             "a first visit"
         );
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
 
         // Build something worth coming back to.
         let slot = core
@@ -165,10 +202,12 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
         core.world.players[slot].inv[0] = ItemStack {
             item: 0,
             count: 500,
+            cond: 0,
         };
         core.world.players[slot].inv[1] = ItemStack {
             item: 1,
             count: 500,
+            cond: 0,
         };
         // Through the action lane, which is the path a real client takes.
         core.push_action(
@@ -179,15 +218,16 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
                 cz: cell.1,
                 level: 0,
                 loc: LOC_PLANE,
+                freehand: false,
             },
         );
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         assert_eq!(core.world.pieces.len(), 1, "the fixture built nothing");
 
         // Log off. The body stays as a sleeper — that is the previous
         // slice — and this one is about it surviving the process too.
         core.disconnect(0);
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         assert_eq!(core.world.sleepers(), 1);
         let body = core.world.players[slot].body;
 
@@ -199,8 +239,15 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
     // --- session two: a different process, the same file ------------------
     let mut boot_world = World::new(SEED);
     install_content(&mut boot_world);
-    let (boot, found) =
-        worldfile::open(&path, &mut boot_world, SEED, CONTENT, INTERVAL).expect("the file reopens");
+    let (boot, found) = worldfile::open(
+        &path,
+        &mut boot_world,
+        SEED,
+        CONTENT,
+        world_digest(),
+        INTERVAL,
+    )
+    .expect("the file reopens");
     assert!(!found.created, "the second open must find the file");
     assert_eq!(found.bodies, 1, "the shard forgot the only body it had");
     assert_eq!(found.claimable, 1, "the body came back with no name on it");
@@ -226,7 +273,7 @@ fn a_shard_restart_is_a_world_you_walk_back_into() {
         Some(Admitted::TookOver),
         "the returning player did not get their body back"
     );
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     let p = core
         .world
         .players
@@ -254,14 +301,15 @@ fn a_body_with_no_identity_beside_it_is_unclaimable() {
     let blob = {
         let mut core = armed_core();
         assert!(core.connect(0, id_of(0)), "a keyless join");
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         core.disconnect(0);
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         assert_eq!(core.world.sleepers(), 1);
 
         let mut trial = World::new(SEED);
         install_content(&mut trial);
-        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, INTERVAL).expect("opens");
+        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL)
+            .expect("opens");
         let mut file = boot.file;
         // A keyless session leaves a body and no name for it — which is
         // exactly what a guest does on a shard with `require_auth = false`.
@@ -311,7 +359,7 @@ fn the_shutdown_flush_takes_the_world_before_it_drops_the_players() {
             .map(|(how, _)| how),
         Some(Admitted::Fresh)
     );
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
 
     let mut ids = vec![(PlayerKey::PLACEHOLDER, 0u32); sim_core::limits::MAX_PLAYERS];
     assert_eq!(
@@ -331,7 +379,7 @@ fn the_shutdown_flush_takes_the_world_before_it_drops_the_players() {
 
     // And once the `Leave` has actually been applied, they are back — as a
     // sleeper, through the other table.
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.sleepers(), 1);
     assert_eq!(
         core.identities(&mut ids),
@@ -351,20 +399,32 @@ fn a_wrong_world_file_is_refused_by_reason() {
     {
         let mut trial = World::new(SEED);
         install_content(&mut trial);
-        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, INTERVAL).expect("opens");
+        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL)
+            .expect("opens");
         let mut file = boot.file;
         let stats = ShardStats::default();
         let mut core = armed_core();
         assert!(core.connect(0, id_of(0)));
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         write_world(&core, &mut file);
     }
-    let reopen = |seed: u64, content: u64| {
+    let reopen_with = |seed: u64, content: u64, digest: u64| {
         let mut w = World::new(seed);
         install_content(&mut w);
-        worldfile::open(&path, &mut w, seed, content, INTERVAL).map(|(_, f)| f)
+        worldfile::open(&path, &mut w, seed, content, digest, INTERVAL).map(|(_, f)| f)
     };
+    let reopen = |seed: u64, content: u64| reopen_with(seed, content, world_digest());
     assert!(reopen(SEED, CONTENT).is_ok(), "the base file must be legal");
+
+    // **The island moved under the same seed.** The seed test above cannot
+    // see this one: worldgen changing is not an operator pointing at the
+    // wrong file, it is the ground under every base changing shape while
+    // every coordinate in the file stays where it was. A worldgen change is
+    // a wipe (operator, 2026-08-10) and this is what makes that a refusal
+    // rather than something everyone has to remember.
+    let e = reopen_with(SEED, CONTENT, world_digest() ^ 1).expect_err("a moved island must refuse");
+    assert!(e.contains("island digest"), "{e}");
+    assert!(e.contains("wipe"), "the message must name the remedy: {e}");
 
     // A different island: every base in the file stands where there is now
     // sea. Refused, and the message says which seed the file was made on.
@@ -406,18 +466,19 @@ fn a_refused_file_does_not_half_load_the_world() {
     {
         let mut trial = World::new(SEED);
         install_content(&mut trial);
-        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, INTERVAL).expect("opens");
+        let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL)
+            .expect("opens");
         let mut file = boot.file;
         let stats = ShardStats::default();
         let mut core = armed_core();
         assert!(core.connect(0, id_of(0)));
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         write_world(&core, &mut file);
     }
     let mut w = World::new(SEED);
     install_content(&mut w);
     let before = w.state_hash();
-    assert!(worldfile::open(&path, &mut w, SEED + 9, CONTENT, INTERVAL).is_err());
+    assert!(worldfile::open(&path, &mut w, SEED + 9, CONTENT, world_digest(), INTERVAL).is_err());
     assert_eq!(w.state_hash(), before, "a refused boot wrote to the world");
     sweep(&path);
 }
@@ -430,12 +491,13 @@ fn a_successful_write_leaves_no_temp_file_behind() {
     let path = scratch("atomic");
     let mut trial = World::new(SEED);
     install_content(&mut trial);
-    let (boot, _) = worldfile::open(&path, &mut trial, SEED, CONTENT, INTERVAL).expect("opens");
+    let (boot, _) =
+        worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL).expect("opens");
     let mut file = boot.file;
     let stats = ShardStats::default();
     let mut core = armed_core();
     assert!(core.connect(0, id_of(0)));
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     write_world(&core, &mut file);
 
     let mut tmp = path.as_os_str().to_os_string();
@@ -457,7 +519,7 @@ fn no_world_file_is_a_no_op_and_not_a_failure() {
     let stats = ShardStats::default();
     let mut core = armed_core();
     assert!(core.connect(0, id_of(0)));
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
 
     let mut off = WorldFile::closed();
     assert!(!off.is_open());
@@ -468,4 +530,119 @@ fn no_world_file_is_a_no_op_and_not_a_failure() {
             .expect("no error"),
         "a closed file must report that it wrote nothing"
     );
+}
+
+/// **The condition wall, world-file half** (NOW.md §0dur remainder 4): the
+/// blob decoder runs without the content tables, so a file can carry a
+/// stack whose `cond` no command can mint — above the item's ceiling, or
+/// nonzero on an item whose `condition_max` is 0. `worldfile::open` sweeps
+/// the loaded world against the ceilings the caller installed and refuses
+/// the boot whole (`server::cond` carries the refuse-not-clamp policy).
+///
+/// Driven through the REAL path: a seated player's inventory is poked into
+/// the un-mintable state (the encoder is a pure read and writes it
+/// verbatim, which is exactly the hole), saved by the same writer the store
+/// thread uses, and rebooted. Proven red by deleting the sweep in
+/// `worldfile::open` — the file then loads with every other check green.
+#[test]
+fn a_world_carrying_over_ceiling_condition_refuses_the_boot() {
+    let path = scratch("cond-over");
+    let me = key("dev-anthone");
+    let mut trial = World::new(SEED);
+    install_content(&mut trial);
+    let (boot, _) =
+        worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL).expect("opens");
+    let mut file = boot.file;
+
+    let stats = ShardStats::default();
+    let mut core = armed_core();
+    assert_eq!(
+        core.connect_as(0, id_of(0), Some(me), None)
+            .map(|(how, _)| how),
+        Some(Admitted::Fresh)
+    );
+    core.tick_bare(&stats, |_, _, _| true);
+    let slot = core
+        .world
+        .players
+        .iter()
+        .position(|p| p.active && p.id == id_of(0))
+        .expect("seated");
+    let ceiling = core.world.gather.cond_max_of(0);
+    assert!(ceiling > 0, "the fixture's item 0 must carry condition");
+    core.world.players[slot].inv[0] = ItemStack {
+        item: 0,
+        count: 1,
+        cond: ceiling + 1,
+    };
+    core.disconnect(0);
+    core.tick_bare(&stats, |_, _, _| true);
+    write_world(&core, &mut file);
+
+    let mut reboot = World::new(SEED);
+    install_content(&mut reboot);
+    let err = match worldfile::open(&path, &mut reboot, SEED, CONTENT, world_digest(), INTERVAL) {
+        Err(e) => e,
+        Ok(_) => panic!("a condition past its content ceiling must refuse the boot"),
+    };
+    assert!(
+        err.contains("condition") && err.contains("player inventory"),
+        "the refusal must say what and where: {err}"
+    );
+    assert!(
+        err.contains(&format!("{}", ceiling + 1)) && err.contains(&format!("{ceiling}")),
+        "the refusal must show the number against its ceiling: {err}"
+    );
+    sweep(&path);
+}
+
+/// The other smuggled shape: nonzero `cond` on an item whose ceiling is 0 —
+/// state the sim never mints (`inv_add` mints conditionless items at 0 and
+/// wear only subtracts) — planted in a death bag to drive the container arm
+/// of the sweep rather than the player one. Same red proof as above.
+#[test]
+fn a_world_bag_with_condition_on_a_conditionless_item_refuses_the_boot() {
+    let path = scratch("cond-ghost");
+    let mut trial = World::new(SEED);
+    install_content(&mut trial);
+    let (boot, _) =
+        worldfile::open(&path, &mut trial, SEED, CONTENT, world_digest(), INTERVAL).expect("opens");
+    let mut file = boot.file;
+
+    let mut core = armed_core();
+    // Arm the bag module, then stand a bag up holding the un-mintable
+    // stack: probe fixture item 2 carries no condition (`cond_max_of` = 0).
+    let bc = sim_core::backpack::BackpackContent::probe_fixture();
+    assert_eq!(
+        core.world.gather.cond_max_of(2),
+        0,
+        "item 2 must be conditionless"
+    );
+    let mut items = [ItemStack::default(); sim_core::limits::INV_SLOTS];
+    items[0] = ItemStack {
+        item: 2,
+        count: 3,
+        cond: 7,
+    };
+    let q = sim_core::movement::quant_xz(1000.0);
+    let tick = core.world.tick;
+    let id = core
+        .world
+        .backpacks
+        .stand_up(&bc, q, 0, q, 0, &items, tick, &mut core.world.events)
+        .expect("the bag stands");
+    assert_ne!(id, 0);
+    write_world(&core, &mut file);
+
+    let mut reboot = World::new(SEED);
+    install_content(&mut reboot);
+    let err = match worldfile::open(&path, &mut reboot, SEED, CONTENT, world_digest(), INTERVAL) {
+        Err(e) => e,
+        Ok(_) => panic!("condition on a conditionless item must refuse the boot"),
+    };
+    assert!(
+        err.contains("condition") && err.contains("death bag"),
+        "the refusal must say what and where: {err}"
+    );
+    sweep(&path);
 }

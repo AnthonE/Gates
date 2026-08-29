@@ -1,5 +1,5 @@
 //! The craft half of the inventory screen — the frame in
-//! `Rust Images/crafting.png`, built out of `crate::ui::craft`'s arithmetic.
+//! the reference `crafting.png`, built out of `crate::ui::craft`'s arithmetic.
 //!
 //! Four regions, each answering one of the questions the reference frame
 //! answers and ours did not (`MENUS.md` §3):
@@ -106,6 +106,7 @@ fn rail(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore) {
                     &core.catalog,
                     &ui.facts,
                     &ui.favs,
+                    core.known(),
                     *cat,
                     &ui.query,
                     &mut buf,
@@ -159,6 +160,7 @@ fn browser(parent: &mut ChildSpawnerCommands, ui: &Ui, core: &ClientCore, icons:
         &core.catalog,
         &ui.facts,
         &ui.favs,
+        core.known(),
         ui.cat,
         &ui.query,
         &mut list,
@@ -240,7 +242,10 @@ fn recipe_cell(
     icons: &Icons,
     row: &Row,
 ) {
-    let can = row.affordable > 0;
+    // Locked outranks unaffordable: a blueprint you have not learned
+    // cannot be paid for at any price, so the cell must not read as "go
+    // and get more wood" (research v0).
+    let can = row.affordable > 0 && !row.locked;
     let picked = ui.selected == Some(row.recipe);
     parent
         .spawn((
@@ -294,6 +299,24 @@ fn recipe_cell(
                     Pickable::IGNORE,
                 )),
             };
+            // A locked row says so in a word, because a dim cell alone is
+            // the same picture as an unaffordable one and the two want
+            // opposite actions from the player: one says farm, this says
+            // go and find one.
+            if row.locked {
+                c.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(3.0),
+                        bottom: Val::Px(2.0),
+                        ..default()
+                    },
+                    Text::new("LOCKED"),
+                    font_bold(8.0),
+                    TextColor(BADGE),
+                    Pickable::IGNORE,
+                ));
+            }
         });
 }
 

@@ -255,10 +255,12 @@ fn every_site_carries_its_containers() {
                      that the site is marginal",
                     s.y
                 );
+                // The CARVED ground, since the carve was armed: a cache sits on
+                // the waystation's made floor, not on the hill it replaced.
                 assert_eq!(
                     s.y,
-                    terrain::height(seed, s.x, s.z),
-                    "seed {seed}: a waystation crate's y is not the terrain \
+                    terrain::ground(seed, &haven, s.x, s.z),
+                    "seed {seed}: a waystation crate's y is not the ground \
                      under it"
                 );
                 // Placed, not drawn: no jitter, no size wobble.

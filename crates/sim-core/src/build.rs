@@ -11,7 +11,7 @@
 //! world-axis-aligned 3 m cells × 3 m levels. Each (cell, level) holds one
 //! **plane** piece (foundation at level 0, floor/roof above) and one
 //! **riser** (stairs); each cell boundary holds one **edge** piece (wall/
-//! doorway) per level, canonicalized to the cell's west/north side. Pieces
+//! doorway) per level, canonicalized to the cell's low-x/low-z side. Pieces
 //! are movement collision (collide.rs): the store keeps a derived column
 //! index in lockstep so the tick's collision queries are O(1), and the
 //! client's mirror keeps its own copy for the predictor.
@@ -27,6 +27,15 @@
 //! Upgrade-in-place (`upgrade`) moves a standing piece up the material
 //! ladder without tearing it down: same shape, same address, same
 //! collision, a higher material's hp and upkeep. Piece damage is M2.
+//!
+//! **Placement and grade are two acts** (twig v0, 2026-08-10,
+//! `reference/BUILDING.md` §7b.4). A piece enters the world as **twig**
+//! and only as twig — `place` refuses every other rung — so the shape of
+//! a base is drafted at a tenth of its price and `upgrade` is what
+//! commits it, paying the grade on top of the twig already spent. Twig
+//! is 10 hp and is the one material `upkeep_sweep` never protects: a
+//! scaffold nobody pays rent on rots on its own clock (`deploy.rs`).
+//! That is what makes it a draft rather than a cheap permanent base.
 
 use crate::craft::{inv_count, inv_take};
 use crate::deploy::{DeployContent, Deploys, UPKEEP_PERIOD_TICKS};
@@ -47,35 +56,160 @@ pub const SHAPE_DOORWAY: u8 = 2;
 pub const SHAPE_FLOOR: u8 = 3;
 pub const SHAPE_STAIRS: u8 = 4;
 pub const SHAPE_ROOF: u8 = 5;
+/// The two socket shapes (`reference/BUILDING.md` §9.13, catalogue v1):
+/// openings that will one day hold an insert the way a doorway holds a
+/// door. Until the inserts exist they are holes with rules — the window
+/// **blocks a body and not an arrow** (its aperture is `collide.rs`'s
+/// `WINDOW_SILL_M..WINDOW_HEAD_M` band), the frame blocks neither. Edge
+/// pieces like the wall; they filled the 3-bit shape field's last two
+/// codes, which is what forced the field to 4 bits when triangles landed.
+pub const SHAPE_WINDOW: u8 = 6;
+pub const SHAPE_FRAME: u8 = 7;
+/// The triangle footprint (triangles v0, `reference/BUILDING.md` §9.14 —
+/// the one item the research priced as a **grid change**). Ours is the
+/// square grid's own triangle: a **half-cell along a diagonal**, not the
+/// reference's equilateral — an equilateral cannot address into a square
+/// lattice at all (their catalogue runs on a free socket graph), and the
+/// half-cell keeps every wall this crate is built on: cell addressing,
+/// O(1) occupancy, bounded flood fills, the claim BFS. What it buys is
+/// what their triangle buys — diagonal enclosure, half-price corners,
+/// octagonal towers where they build round ones — and the area ratio is
+/// *exactly* the ½ their prices charge, where their equilateral is 0.43
+/// of its square. §7b.3's ratios apply unchanged: tri foundation and tri
+/// roof 0.5, tri floor 0.25. A triangle occupies one `LOC_TRI_*` slot;
+/// the wall that closes its hypotenuse occupies the matching `LOC_DIAG_*`.
+pub const SHAPE_TRI_FOUNDATION: u8 = 8;
+pub const SHAPE_TRI_FLOOR: u8 = 9;
+pub const SHAPE_TRI_ROOF: u8 = 10;
 
-/// Material codes (schema order: wood → stone → metal).
-pub const MAT_WOOD: u8 = 0;
-pub const MAT_STONE: u8 = 1;
-pub const MAT_METAL: u8 = 2;
+/// Material codes (schema order: twig → wood → stone → metal). The order
+/// is the ladder: `upgrade` climbs it by comparing these numbers, so a
+/// rung inserted below wood has to renumber everything above it — which
+/// is what twig did (wire v34, `protocol/src/lib.rs`).
+///
+/// **`MAT_TWIG` is not a grade, it is the placement state.** Every piece
+/// enters the world as twig and nothing else (`place` refuses any other
+/// row); a hammer commits it upward. `reference/BUILDING.md` §7b.4 is the
+/// model and DECISIONS.md §open "twig v0" is the row.
+pub const MAT_TWIG: u8 = 0;
+pub const MAT_WOOD: u8 = 1;
+pub const MAT_STONE: u8 = 2;
+pub const MAT_METAL: u8 = 3;
+
+/// How many damage bands a structure's condition is told in on the wire —
+/// 8, so it rides in 3 bits (`protocol`'s `DMG_BAND_BITS`).
+///
+/// **Why a band and not the hp.** A client draws a wall; it does not
+/// adjudicate one (`Pieces::placed`'s rule, applied from the other side).
+/// Exact hp is 16 bits per record against 3, it changes on every swing where
+/// a band changes on one swing in eight, and shipping it would hand a raider
+/// a readout of precisely how many more hits a wall needs — a mechanic, not a
+/// cosmetic, and not one anybody has spoken for. The band is what the
+/// renderer can actually show and what `ui::structure::Target::damaged` needs.
+pub const DMG_BANDS: u8 = 8;
+
+/// The damage band of a structure standing at `hp` out of `max`: **0 is
+/// untouched**, 7 is nearly gone.
+///
+/// Integer arithmetic throughout — this is `sim-core`, so wall 1's float
+/// restriction applies, and a band computed two ways on two sides of the wire
+/// is the mirror-drift shape this repo keeps paying for. One function, called
+/// by the encoder and by nothing else that could disagree with it.
+///
+/// **It rounds the loss UP**, so a wall one point down from full reports band
+/// 1 rather than 0. A structure that has been hit must never draw untouched:
+/// that is the whole point of the field, and the rounding that loses it is
+/// the rounding that hides the first swing of a raid.
+///
+/// `max == 0` is the undripped-def case (`PieceDef::INERT`) and answers 0 —
+/// the client is told "no damage" rather than a fraction of an unknown, which
+/// is `hud::struct_hit_line`'s rule: a fraction over an unknown maximum is
+/// worse than silence.
+pub fn damage_band(hp: u16, max: u16) -> u8 {
+    if max == 0 || hp >= max {
+        return 0;
+    }
+    let lost = (max - hp) as u32;
+    let top = (DMG_BANDS - 1) as u32;
+    // Ceil, so any loss at all is at least band 1.
+    let band = (lost * top).div_ceil(max as u32);
+    if band > top {
+        top as u8
+    } else {
+        band as u8
+    }
+}
 
 /// Grid locations within a cell. Planes and risers occupy the cell body;
-/// edge pieces are canonical to the cell's west (x = cx·3 m) or north
-/// (z = cz·3 m) boundary — the same physical edge is never addressable
-/// twice.
+/// edge pieces are canonical to the cell's **low-x** (x = cx·3 m) or
+/// **low-z** (z = cz·3 m) boundary — the same physical edge is never
+/// addressable twice.
+///
+/// **The names are axes on purpose, and a gate holds them that way.**
+/// They read `LOC_EDGE_XLO`/`LOC_EDGE_ZLO` until 2026-08-15, when the compass
+/// was re-pinned (`DECISIONS.md` 2026-08-15) and both suffixes came to
+/// name the bearing opposite the one they meant — the constant and the
+/// sentence defining it went false together. No value moved then and none
+/// moves now (2 and 3; `test_protocol_golden` stayed green untouched, which
+/// is what proves it was a rename). An axis is what these always meant, and
+/// unlike a bearing it cannot be re-decided out from under them.
+///
+/// The defect was a *name*, so no value gate could see it: hence
+/// `tests/edge_names.rs`, which reads this doc block and `collide.rs`'s
+/// `ColMasks` — the masks carried the same lie one crate over — and fails
+/// if either grows a bearing-named edge again, or if `anchor` stops putting
+/// these two on the planes they claim.
 pub const LOC_PLANE: u8 = 0;
 pub const LOC_RISER: u8 = 1;
-pub const LOC_EDGE_W: u8 = 2;
-pub const LOC_EDGE_N: u8 = 3;
+pub const LOC_EDGE_XLO: u8 = 2;
+pub const LOC_EDGE_ZLO: u8 = 3;
+/// The triangle half-cells (triangles v0): four addresses named by the
+/// corner their right angle sits in, on the grid's own compass — north
+/// is the **low-z** boundary, exactly as [`LOC_EDGE_ZLO`] says. In
+/// cell-local metres (dx, dz ∈ 0..3):
+///
+/// - `NW` = {dx + dz ≤ 3}, right angle at (0, 0); sides on the W and N
+///   edges, hypotenuse on [`LOC_DIAG_B`];
+/// - `SE` = {dx + dz ≥ 3}, right angle at (3, 3); sides on the E and S
+///   edges (the neighbours' canonical W/N), hypotenuse on `LOC_DIAG_B`;
+/// - `NE` = {dz ≤ dx}, right angle at (3, 0); sides N and E, hypotenuse
+///   [`LOC_DIAG_A`];
+/// - `SW` = {dz ≥ dx}, right angle at (0, 3); sides W and S, hypotenuse
+///   `LOC_DIAG_A`.
+///
+/// Two may coexist only across one diagonal — NW+SE, or NE+SW; any other
+/// pair overlaps, and a triangle beside a full plane overlaps too:
+/// [`cell_body_conflict`] is the one place that says so and `place`
+/// refuses on it. Unlike edges these are wholly inside their cell —
+/// nothing is shared with a neighbour.
+pub const LOC_TRI_XLO_ZLO: u8 = 4;
+pub const LOC_TRI_XHI_ZLO: u8 = 5;
+pub const LOC_TRI_XLO_ZHI: u8 = 6;
+pub const LOC_TRI_XHI_ZHI: u8 = 7;
+/// The two diagonal edge slots: A runs corner (0,0)→(3,3) — NE and SW's
+/// shared hypotenuse — and B runs (3,0)→(0,3), NW and SE's. They cross
+/// at the cell centre, so one refuses while the other stands, and either
+/// refuses through a triangle it would bisect ([`cell_body_conflict`]).
+/// Only [`SHAPE_WALL`] fits them: a diagonal doorway/window wants its
+/// own pass and its own inserts — stated in §open, not smuggled.
+pub const LOC_DIAG_A: u8 = 8;
+pub const LOC_DIAG_B: u8 = 9;
 
 /// Integer refusal reasons (CLAUDE.md wall 3), carried by
 /// EV_BUILD_REFUSED / the build-refused wire subtype.
 ///
-/// **Growing this list is a two-file act, and the second file is not this
-/// lane's.** `ci/ui_smoke.mjs` §W walks these constants by name and by value
-/// against `BUILD_REFUSE_TEXT` in `web/src/interact.js`, and a code with no
-/// sentence reaches the player as `can't build: code N`. The sim lane owns
-/// this file and may not touch `web/`, so a commit that adds a reason here
-/// turns `ui smoke` red in *every* lane's `ci/gates.sh` until the client half
-/// lands separately. It has happened twice — `REFUSE_B_INTACT` (9), which is
-/// what §W was written for, and `REFUSE_B_UNPRICED` (10), which cost the
-/// following pass in this lane a recovery. Adding a reason means filing the
-/// sentence on `NOW.md` for the ui lane in the same commit; the red between
-/// the two is expected, not a defect.
+/// **Growing this list is still a two-file act, but NOTHING ENFORCES IT
+/// ANY MORE.** This comment used to say `ci/ui_smoke.mjs` §W walked these
+/// constants by name and by value against `BUILD_REFUSE_TEXT` in
+/// `web/src/interact.js`, so a code with no sentence turned a gate red.
+/// That gate went with the browser client (operator, 2026-08-06) and has
+/// no native replacement — `ci/` holds no `.mjs` of that name. The
+/// *hazard* is unchanged and is now unwatched: a code with no sentence
+/// reaches the player as `can't build: code N`, and the only thing
+/// standing between here and that is remembering to add the sentence in
+/// `crates/client/src/ui/` in the same commit. It went wrong twice while
+/// the gate existed (`REFUSE_B_INTACT`, `REFUSE_B_UNPRICED`), which is
+/// the measure of how easy it is to forget without one.
 pub const REFUSE_B_PIECE: u32 = 0;
 pub const REFUSE_B_SPOT: u32 = 1;
 pub const REFUSE_B_SUPPORT: u32 = 2;
@@ -84,8 +218,10 @@ pub const REFUSE_B_REACH: u32 = 4;
 pub const REFUSE_B_COST: u32 = 5;
 pub const REFUSE_B_FULL: u32 = 6;
 pub const REFUSE_B_CLAIM: u32 = 7;
-/// The upgrade verb's own refusal: the named material is not a rung above
-/// this piece's, or the table holds no such rung for its shape.
+/// **The ladder said no**, for either of the two verbs that climb it. On
+/// `upgrade`: the named material is not a rung above this piece's, or the
+/// table holds no such rung for its shape. On `place`: the named row is
+/// not twig, and twig is the only thing a placement may be (twig v0).
 pub const REFUSE_B_TIER: u32 = 8;
 /// The repair verb's own refusal: the piece is already at its baked hp, so
 /// there is nothing to buy. Also the answer on an unbaked table
@@ -105,6 +241,15 @@ pub const REFUSE_B_UNPRICED: u32 = 10;
 pub const REFUSE_B_WINDOW: u32 = 11;
 /// The address holds nothing to take down.
 pub const REFUSE_B_EMPTY: u32 = 12;
+/// The plate the neighbouring base carries would stand more than
+/// [`PLATE_RISE_MAX_BANDS`] over this column's own ground — the land fell
+/// away faster than a leg can follow (build plate v1). Build a storey and
+/// come back over the top, or start a new plate lower down.
+pub const REFUSE_B_PLATE_HIGH: u32 = 13;
+/// The plate the neighbouring base carries would sit more than
+/// [`PLATE_SINK_MAX_BANDS`] under this column's own ground — the hill rises
+/// into the floor (build plate v1). Terrace: start a new plate higher up.
+pub const REFUSE_B_PLATE_LOW: u32 = 14;
 
 /// Build cell size in meters (v0: one foundation spans one cell).
 /// Proposed default, DECISIONS.md §open ("build grid v0").
@@ -119,6 +264,250 @@ pub const BUILD_REACH_M: f32 = 5.0;
 /// (the spawn walkability shape). Proposed defaults, same §open row.
 pub const FOUNDATION_MIN_H_M: f32 = 1.5;
 pub const FOUNDATION_MAX_SLOPE: f32 = 1.0;
+
+/// The vertical build lattice: a column's floor height is its cell-center
+/// terrain sample snapped to multiples of this, so neighbouring cells whose
+/// ground falls in the same band share ONE floor height — bit-equal, not
+/// approximately — and a row of foundations is a plate instead of a
+/// staircase of per-cell terrain samples (the 2026-08-15 playtest's
+/// "pieces don't line up"). Proposed default, `DECISIONS.md` §open
+/// ("build base lattice v0").
+///
+/// Three constraints picked the number and all three are load-bearing:
+/// - **Exactly representable in f32** (0.5 = 2⁻¹), so `k·q` for equal `k`
+///   is the same bits on every path and flushness is `==`, never epsilon.
+/// - **`BUILD_BASE_Q_M / 2 + PIECE_LIFT_M ≤ movement::STEP_UP`**
+///   (0.25 + 0.3 = 0.55 ≤ 0.6): round-to-nearest puts a slab top at most
+///   `q/2 + lift` above the ground under it, so a lone foundation can
+///   always be stepped onto. `tests/base_lattice.rs` holds the inequality.
+/// - **Under `STEP_UP` itself**, so where two plates meet, the 0.5 m band
+///   step is walked up like a stair rather than jumped.
+///
+/// `LEVEL_H_M / 6` exactly, so six bands stack to a storey.
+pub const BUILD_BASE_Q_M: f32 = 0.5;
+
+/// The world y of a column's level-0 floor surface — **the one
+/// implementation** of the piece height rule, and deliberately the only
+/// one: `collide::col_base_y` (the sim's movement/raid/charge walks), the
+/// client renderer's `level_base_y` and `deploy::box_drop_pos` all call
+/// this rather than restating the formula, because the formula existed in
+/// two crates before this function did and a third copy is how the drawn
+/// world and the collided world drift apart (`CLAUDE.md`'s hand-kept-mirror
+/// trap).
+///
+/// Cell-center terrain plus [`crate::collide::PIECE_LIFT_M`], snapped to
+/// [`BUILD_BASE_Q_M`] round-to-nearest — **the lift is folded INTO the
+/// snap**, so the returned height is itself an exact multiple of the
+/// quantum. Adding 0.3 after snapping was the first version and its gate
+/// caught it the day it was written: 0.3 is not exactly representable, so
+/// `k·q + 0.3` rounds differently at different magnitudes and two plates
+/// one band apart differed by 1.499999 — a step that is *almost* the
+/// quantum is the crack this function exists to close. Pure in
+/// (seed, cx, cz) — no piece height ever rides the wire, which is what
+/// lets the sim, the predictor and the renderer agree by construction
+/// instead of by sync. Allowed float ops only (÷ + × and floor-by-cast):
+/// wall 1. The delivered lift over the raw sample spans
+/// `PIECE_LIFT_M ± q/2` — `tests/base_lattice.rs` holds both ends against
+/// `movement::STEP_UP`.
+#[inline]
+pub fn column_floor_y(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16, plate: i8) -> f32 {
+    band_y(terrain_band(seed, haven, cx, cz) + plate as i32)
+}
+
+/// The band a column's level-0 floor takes with **nothing built on it** —
+/// cell-centre terrain plus [`crate::collide::PIECE_LIFT_M`], snapped to
+/// [`BUILD_BASE_Q_M`] round-to-nearest, as an integer count of quanta.
+///
+/// An integer, and that is the point: a band is what the plate is measured in
+/// (`plate_for`), what the wire carries, and what makes flushness an identity
+/// rather than a comparison. Pure in (seed, cx, cz) — no plate, no store —
+/// which is what lets the client recompute it and receive only the offset.
+#[inline]
+pub fn terrain_band(seed: u64, haven: &terrain::Haven, cx: u16, cz: u16) -> i32 {
+    let half = BUILD_CELL_M * 0.5;
+    let h = terrain::ground(
+        seed,
+        haven,
+        cx as f32 * BUILD_CELL_M + half,
+        cz as f32 * BUILD_CELL_M + half,
+    );
+    floor_i32((h + crate::collide::PIECE_LIFT_M) / BUILD_BASE_Q_M + 0.5)
+}
+
+/// The world y of band `b` — the lattice's only multiplication, so two
+/// callers cannot disagree about where a band is.
+#[inline]
+pub fn band_y(b: i32) -> f32 {
+    b as f32 * BUILD_BASE_Q_M
+}
+
+/// How many bands a plate may stand ABOVE its own column's ground: the stilt
+/// limit, and the answer to "how far can a base carry its floor downhill".
+///
+/// **Half a storey, which is the reference game's number** — Devblog 187
+/// (Dec 2017): *"I started by allowing foundations to snap to each other at a
+/// vertical offset of half a wall."* Their wall is 3 m and so is our storey,
+/// so half a wall is `LEVEL_H_M / 2` = 3 bands. `BALANCE.md` §6's default
+/// applies and needs no case; what follows is why keeping our own 6 would
+/// have needed one it does not have.
+///
+/// **They tried the bigger allowance and reverted it.** Devblog 85 proposed a
+/// three-metre gradient for `foundation.steps` so *"you did not end up with
+/// walls ending at different heights as soon as you built on uneven terrain"*
+/// — our exact problem — and the test result was *"while it worked perfectly
+/// for mountain bases where slope angle reach 45 degrees easily, building on
+/// flat became harder"*. A generous vertical allowance degrades the common
+/// case to serve the rare one.
+///
+/// **Measured here, and their setting wins on our island too.** Swept over
+/// 1 598 buildable starts on the shipped seed, symmetric ±3 against our first
+/// draft's 6 up / 2 down: a whole 4×4 goes 86.7% → **91.3%** of starts, a 6×6
+/// 74.7% → **81.7%**, an 8×8 62.1% → **70.8%** — and the deepest leg any base
+/// carries halves, 3.0 m → 1.5 m. It reads backwards until you notice which
+/// knob binds: [`PLATE_SINK_MAX_BANDS`] is the one that decides how much
+/// island a base covers, the rise is nearly inert beside it, and a symmetric
+/// pair buys a third band of sink at the price of three bands of rise nobody
+/// was using.
+///
+/// The drawn skirt still bounds it from the other side and now with room to
+/// spare: `3 · 0.5 + SKIRT_SINK_M = 1.85 m ≤ SKIRT_MAX_M` 4.0 m, held by
+/// `client/tests/lattice_geom.rs` because the two constants live in two
+/// crates.
+///
+/// Proposed default, `DECISIONS.md` §open ("build plate v1").
+pub const PLATE_RISE_MAX_BANDS: i32 = 3;
+
+/// How many bands a plate may sit BELOW its own column's ground — how far a
+/// base may cut into a rising hill before it must terrace.
+///
+/// Tight where the rise is generous, and asymmetric on purpose: a plate over
+/// its ground is a leg, which is drawable and standable; a plate under its
+/// ground is the hill coming up through the floor, which nothing hides.
+///
+/// **Three, and it is [`PLATE_RISE_MAX_BANDS`]'s twin** — the reference's
+/// offset is one symmetric half-wall, not a pair of numbers, so this is that
+/// number seen from the other side (`LEVEL_H_M / 2`).
+///
+/// **It is also the knob that binds.** Swept over 1 598 buildable starts on
+/// the shipped seed: moving the RISE 6 → 8 does not change a single whole
+/// footprint, where moving this one 1 → 2 takes a whole 4×4 from 74.3% of
+/// starts to 86.7% and 2 → 3 takes it to 91.3%. Mean cell coverage is 96–98%,
+/// so a refusal is a cell or two at an edge rather than a spot you cannot
+/// use. The reason for the asymmetry in the FIRST draft — that a plate over
+/// its ground is a leg and a plate under it is the hill through the floor —
+/// is a true statement about what the two look like and was the wrong reason
+/// to price them differently: the leg was buying nothing and the cut was
+/// buying most of the island.
+///
+/// Going further does keep paying (6/6 reaches 95.8/92.4/85.9) and that is
+/// exactly what Devblog 85 warns about: at six bands the far cell is 3 m
+/// inside the hill, which is a room made of dirt, and *"building on flat
+/// became harder"* is the cost their own test measured.
+///
+/// Proposed default, `DECISIONS.md` §open ("build plate v1").
+pub const PLATE_SINK_MAX_BANDS: i32 = 3;
+
+/// The plate a piece placed at (cx, cz) must adopt, or the refusal.
+///
+/// **This is the whole of "when the foundation is down, everything builds
+/// relative to it"** (build plate v1, `NOW.md` §0bl item 2 — the reference's
+/// model). Three cases, in order:
+///
+/// 1. The column already holds something → its plate, always. Every piece in
+///    a column shares one floor by construction, so a wall can never base
+///    itself a band off the floor it stands on.
+/// 2. Nothing here, but an orthogonal neighbour is built → **latch to it**:
+///    take the neighbour's ABSOLUTE band and express it against this column's
+///    own terrain. That is what makes a base a plate instead of a staircase.
+/// 3. Nothing anywhere near → band 0, this column's own ground. A base starts
+///    where the first foundation is put down, which is the only place the
+///    terrain gets a vote.
+///
+/// **Which neighbour, when they disagree.** Inside one base they cannot — a
+/// connected component is one plate by construction — so this is the case
+/// where two separately-started bases grow into each other. The scan is a
+/// fixed axis order and takes the HIGHEST absolute band among the built
+/// neighbours. Order first, because determinism is wall 5 and "whichever one
+/// the player was looking at" is not a fact the sim has. Highest second,
+/// because the two limits are asymmetric for a physical reason: a plate above
+/// this column's ground is a LEG, which the foundation skirt draws and a body
+/// walks under, and a plate below it is the hill coming up through the floor,
+/// which nothing hides. Given the choice, stilt.
+///
+/// Measured on the shipped seed over 1 598 buildable starts, highest against
+/// lowest leaves the whole-footprint rate identical (the first cell's plate
+/// dominates) and lifts mean cell coverage — an 8×8's worst case goes 59.4%
+/// → 65.6%. So the argument is the physical one and the numbers do not
+/// contradict it.
+///
+/// **`freehand` declines case 2, and only case 2** (freehand placement v0,
+/// `DECISIONS.md` 2026-08-22). A player who wants a foundation at its own
+/// ground beside somebody else's plate — the first thing anyone tries on a
+/// slope, and the root of the reference's floor stacking, bunkers and bridge
+/// bases — sets it, and this returns band 0 without scanning the neighbours.
+/// The two limits cannot fire for a freehand placement because band 0 is
+/// neither a stilt nor a cut, so a refusal about height is exactly a refusal
+/// about a LATCH the player asked for.
+///
+/// **Case 1 is deliberately not declinable.** A piece entering a column that
+/// already holds one still takes that column's plate, whatever the bit says,
+/// so a wall can never base itself a band off the floor it stands on. That is
+/// the invariant `plate.rs` and the ghost preview both lean on, and the
+/// reference keeps it too: freehand there is a foundation and floor technique
+/// because their walls must still take a socket (`reference/BUILDING.md`
+/// §7c.3). Declining is about starting a NEW plate beside an old one.
+///
+/// Pure in (index, seed, cell, bit): the client's ghost calls it against its
+/// own mirror to preview the height a placement will get, which is the only
+/// way a preview can tell the truth about a stilt.
+pub fn plate_for(
+    cols: &crate::collide::ColIndex,
+    seed: u64,
+    haven: &terrain::Haven,
+    cx: u16,
+    cz: u16,
+    freehand: bool,
+) -> Result<i8, u32> {
+    if let Some(p) = cols.plate(cx, cz) {
+        return Ok(p);
+    }
+    if freehand {
+        return Ok(0);
+    }
+    let here = terrain_band(seed, haven, cx, cz);
+    let mut best: Option<i32> = None;
+    // Checked both ways. The upper bound is range-checked below, but the
+    // ADDITION is not — this is called from the client's ghost too, on an
+    // address a look ray produced, and `u16::MAX + 1` is a debug panic on a
+    // path a player can aim at.
+    for (nx, nz) in [
+        (cx.checked_sub(1), Some(cz)),
+        (cx.checked_add(1), Some(cz)),
+        (Some(cx), cz.checked_sub(1)),
+        (Some(cx), cz.checked_add(1)),
+    ] {
+        let (Some(nx), Some(nz)) = (nx, nz) else {
+            continue;
+        };
+        if (nx as usize) >= MAX_BUILD_COORD || (nz as usize) >= MAX_BUILD_COORD {
+            continue;
+        }
+        let Some(np) = cols.plate(nx, nz) else {
+            continue;
+        };
+        let abs = terrain_band(seed, haven, nx, nz) + np as i32;
+        best = Some(best.map_or(abs, |b: i32| b.max(abs)));
+    }
+    let Some(abs) = best else { return Ok(0) };
+    let plate = abs - here;
+    if plate > PLATE_RISE_MAX_BANDS {
+        return Err(REFUSE_B_PLATE_HIGH);
+    }
+    if plate < -PLATE_SINK_MAX_BANDS {
+        return Err(REFUSE_B_PLATE_LOW);
+    }
+    Ok(plate as i8)
+}
 
 /// One baked piece row. `hp == 0` ⇒ inert (the empty-table row).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,7 +524,7 @@ pub struct PieceDef {
 impl PieceDef {
     pub const INERT: Self = Self {
         shape: SHAPE_FOUNDATION,
-        material: MAT_WOOD,
+        material: MAT_TWIG,
         hp: 0,
         n_costs: 0,
         costs: [(0, 0); MAX_PIECE_COSTS],
@@ -173,9 +562,21 @@ impl BuildContent {
     /// row 4 is row 1's stone rung, so the upgrade verb has somewhere to
     /// climb to (the upgrade slice) — and it costs the second item, so an
     /// upgrade's payment is distinguishable from the wall's own.
+    ///
+    /// **Rows 0-3 are twig** since twig v0, because those are the rows
+    /// everything *places* and a placement may not be anything else. Row
+    /// 2 keeps the second cost item that is its whole reason for
+    /// existing; only its rung moved. Rows 4, 5 and 6 are the stone rungs
+    /// of rows 1, 0 and 2, so they are both the upgrade verb's targets
+    /// and — being unplaceable — what drives `REFUSE_B_TIER` through the
+    /// probes, which cycle rows `0..6`. Every hp and every cost of rows
+    /// 0-4 is unchanged from when rows 0-3 were labelled wood: nothing
+    /// about the probes' arithmetic moved, only which rung the label
+    /// names. The **doorway is the one shape with nothing above it**,
+    /// which is what a missing-rung refusal is tested against.
     pub fn probe_fixture() -> Self {
         let mut b = Self::EMPTY;
-        b.piece_count = 5;
+        b.piece_count = 7;
         // The shipped default, so a repair driven through this fixture is
         // priced the way a shard prices one. Setting it makes the verb
         // *possible* here and nothing more — what puts it inside the
@@ -186,28 +587,28 @@ impl BuildContent {
         b.repair_pct = 100;
         b.pieces[0] = PieceDef {
             shape: SHAPE_FOUNDATION,
-            material: MAT_WOOD,
+            material: MAT_TWIG,
             hp: 100,
             n_costs: 1,
             costs: [(0, 5), (0, 0)],
         };
         b.pieces[1] = PieceDef {
             shape: SHAPE_WALL,
-            material: MAT_WOOD,
+            material: MAT_TWIG,
             hp: 100,
             n_costs: 1,
             costs: [(0, 3), (0, 0)],
         };
         b.pieces[2] = PieceDef {
             shape: SHAPE_FLOOR,
-            material: MAT_STONE,
+            material: MAT_TWIG,
             hp: 150,
             n_costs: 1,
             costs: [(1, 3), (0, 0)],
         };
         b.pieces[3] = PieceDef {
             shape: SHAPE_DOORWAY,
-            material: MAT_WOOD,
+            material: MAT_TWIG,
             hp: 100,
             n_costs: 1,
             costs: [(0, 3), (0, 0)],
@@ -219,14 +620,45 @@ impl BuildContent {
             n_costs: 1,
             costs: [(1, 4), (0, 0)],
         };
+        // Row 5 is row 0's stone rung — the foundation ladder, added with
+        // twig v0. Before it, the shape every fixture base stands on had
+        // nowhere to climb, so no gate could hold a foundation that a
+        // hearth actually pays upkeep for: twig is never protected
+        // (`deploy::upkeep_sweep`), and twig was all a foundation could
+        // ever be. That made "a covered piece survives the sweep"
+        // unprovable for the commonest shape in the world.
+        b.pieces[5] = PieceDef {
+            shape: SHAPE_FOUNDATION,
+            material: MAT_STONE,
+            hp: 200,
+            n_costs: 1,
+            costs: [(0, 5), (0, 0)],
+        };
+        // Row 6 is row 2's stone rung, and it costs the SECOND item on
+        // purpose: rows 5 and 6 are then two graded pieces priced in two
+        // different materials, which is what the per-material upkeep rule
+        // needs to be about anything (`deploy::upkeep_sweep` charges row
+        // by row, so a hearth stocked with one of them must protect one
+        // and rot the other). Before twig v0 the twig-labelled rows did
+        // that job; they cannot now, because twig is never upkept.
+        b.pieces[6] = PieceDef {
+            shape: SHAPE_FLOOR,
+            material: MAT_STONE,
+            hp: 200,
+            n_costs: 1,
+            costs: [(1, 4), (0, 0)],
+        };
         b
     }
 }
 
 /// One placed piece. Its grid address (cx, cz, level, loc) is its
 /// identity — pieces don't move and the wire refers to them by address.
-/// `hp` and `uh` are sim-only (the wire carries address + row; clients
-/// learn of decay by the removal broadcast, not by watching hp).
+/// `hp` and `uh` are sim-only; what a client learns of them is [`dmg`], the
+/// 3-bit band, and decay still arrives as a removal broadcast rather than as
+/// a watched hp.
+///
+/// [`dmg`]: PieceRec::dmg
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PieceRec {
     pub cx: u16,
@@ -235,10 +667,60 @@ pub struct PieceRec {
     pub loc: u8,
     /// Baked piece row this address holds.
     pub row: u8,
+    /// Which way the piece's SOFT side faces (hard/soft v0,
+    /// `reference/BUILDING.md` §7b.5): 1 ⇒ soft toward **+axis** (+x for
+    /// a west edge, +z for a north edge), 0 ⇒ soft toward −axis. Set once
+    /// at placement — soft faces the placer, because you build from
+    /// inside — and never moved (no rotate verb yet: inside the demolish
+    /// window a wrong facing is a free re-place). Meaningful on edge
+    /// shapes only; 0 elsewhere. On the wire (a client says which side
+    /// you are on) and in `state_hash` (a swing's damage reads it).
+    pub facing: u8,
     /// Current hp (decay drains it; piece damage lands in M2).
     pub hp: u16,
     /// Last upkeep period processed (`tick / UPKEEP_PERIOD_TICKS`).
     pub uh: u16,
+    /// The damage band this record was **sent** at ([`damage_band`], 0 =
+    /// untouched). Wire v44.
+    ///
+    /// ⚠ **This is a wire field, and on the SERVER it is not maintained.**
+    /// The store leaves it 0 forever; the encode site fills it from `hp` and
+    /// the row's baked maximum, on the copy it hands the writer. Read it on
+    /// a client, never on a shard — `hp` is the truth there and this would
+    /// be a stale zero.
+    ///
+    /// Filling it at encode rather than tracking it is deliberate, and it is
+    /// the cheaper half of a trade this repo has paid for before: a stored
+    /// band must be updated at every site that moves `hp` — a swing, decay,
+    /// upkeep, a repair — and the one that gets forgotten is a wall drawing
+    /// untouched while the sim knows it is nearly through, with every gate
+    /// green. Derived at the boundary, it cannot drift from `hp` because it
+    /// does not exist apart from it.
+    ///
+    /// It is deliberately **absent from `state_hash`**, which walks an
+    /// explicit field list rather than the struct — so this field cannot move
+    /// a hash, and a shard that never fills it is bit-identical to one that
+    /// does.
+    pub dmg: u8,
+    /// The **plate**: how many [`BUILD_BASE_Q_M`] bands this piece's column
+    /// stands above the band its own terrain would give it (build plate v1,
+    /// [`plate_for`]). Zero is the pre-plate rule exactly.
+    ///
+    /// ⚠ **A property of the COLUMN, carried on the piece.** Every record in
+    /// one column holds the same value — `place` adopts it from the column
+    /// before inserting and `plate_for` is its only source — so this is a
+    /// redundant copy on purpose, and the redundancy is what pays for
+    /// itself three times: the wire needs no second sync lane and no removal
+    /// message (a column's plate arrives with its pieces and leaves with its
+    /// last one), the save format needs no second store, and
+    /// `Pieces::restore` rebuilds `ColIndex` from the records alone.
+    ///
+    /// Unlike [`dmg`], it IS sim truth and IS hashed: it decides where every
+    /// collision surface in the column is, so two shards that disagree about
+    /// it disagree about where players stand.
+    ///
+    /// [`dmg`]: PieceRec::dmg
+    pub plate: i8,
 }
 
 /// The placed-piece store: dense, insertion-ordered (command order, so
@@ -385,8 +867,14 @@ impl Pieces {
             level,
             loc,
             row,
+            facing: 0,
             hp: bc.pieces[row as usize].hp,
             uh: 0,
+            dmg: 0,
+            // The fixture stands on bare ground by construction (it takes no
+            // neighbour into account), which is plate 0 — the pre-plate rule,
+            // so every gate written before build plate v1 keeps its numbers.
+            plate: 0,
         };
         assert!(
             self.insert(rec, bc.pieces[row as usize].shape, 0),
@@ -401,7 +889,8 @@ impl Pieces {
         self.entries[self.len] = rec;
         self.placed[self.len] = tick;
         self.len += 1;
-        self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
+        self.cols
+            .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
         self.gen += 1;
         true
     }
@@ -437,6 +926,13 @@ impl Pieces {
         self.cols.set_door(cx, cz, level, loc, shut);
     }
 
+    /// Set or clear the solid-deployable nibble at (column, level) —
+    /// `set_door`'s twin (deploy collision v0; deploy.rs owns when:
+    /// placement, removal, and the load path's `World::rebuild_doors`).
+    pub(crate) fn set_solid(&mut self, cx: u16, cz: u16, level: u8, arch: Option<u8>) {
+        self.cols.set_solid(cx, cz, level, arch);
+    }
+
     /// Replace the store from a decoded world save, rebuilding the column
     /// index from the records rather than reading one out of the file.
     ///
@@ -466,7 +962,8 @@ impl Pieces {
             // `piece_count`; this index is the one `worldsave.rs`
             // `BadContentRow` exists to make safe.
             let shape = bc.pieces[rec.row as usize].shape;
-            self.cols.add(rec.cx, rec.cz, rec.level, rec.loc, shape);
+            self.cols
+                .add(rec.cx, rec.cz, rec.level, rec.loc, shape, rec.plate);
         }
     }
 }
@@ -487,10 +984,61 @@ fn edge_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     pieces.find(cx, cz, level, loc).is_some()
 }
 
+/// Does the cell body at (bx, bz, level) bear the canonical edge `loc`
+/// from this side — a full plane, or a triangle whose SIDE lies on that
+/// edge? `canonical` distinguishes the edge's own cell from its low
+/// neighbour, because each side has its own pair of touching halves
+/// (triangles v0; the `LOC_TRI_*` doc draws the map).
+fn bears_edge(pieces: &Pieces, bx: u16, bz: u16, level: u8, loc: u8, canonical: bool) -> bool {
+    if plane_at(pieces, bx, bz, level) {
+        return true;
+    }
+    let (t1, t2) = match (loc, canonical) {
+        (LOC_EDGE_XLO, true) => (LOC_TRI_XLO_ZLO, LOC_TRI_XLO_ZHI),
+        (LOC_EDGE_XLO, false) => (LOC_TRI_XHI_ZLO, LOC_TRI_XHI_ZHI),
+        (LOC_EDGE_ZLO, true) => (LOC_TRI_XLO_ZLO, LOC_TRI_XHI_ZLO),
+        _ => (LOC_TRI_XLO_ZHI, LOC_TRI_XHI_ZHI),
+    };
+    pieces.find(bx, bz, level, t1).is_some() || pieces.find(bx, bz, level, t2).is_some()
+}
+
+/// A triangle's two side-edge addresses and its hypotenuse loc — the
+/// three things that can hold it up one level down (`LOC_TRI_*`'s map).
+type EdgeAddr = (u16, u16, u8);
+fn tri_bearings(cx: u16, cz: u16, loc: u8) -> (EdgeAddr, EdgeAddr, u8) {
+    match loc {
+        LOC_TRI_XLO_ZLO => ((cx, cz, LOC_EDGE_XLO), (cx, cz, LOC_EDGE_ZLO), LOC_DIAG_B),
+        LOC_TRI_XHI_ZLO => (
+            (cx, cz, LOC_EDGE_ZLO),
+            (cx.saturating_add(1), cz, LOC_EDGE_XLO),
+            LOC_DIAG_A,
+        ),
+        LOC_TRI_XLO_ZHI => (
+            (cx, cz, LOC_EDGE_XLO),
+            (cx, cz.saturating_add(1), LOC_EDGE_ZLO),
+            LOC_DIAG_A,
+        ),
+        _ => (
+            (cx.saturating_add(1), cz, LOC_EDGE_XLO),
+            (cx, cz.saturating_add(1), LOC_EDGE_ZLO),
+            LOC_DIAG_B,
+        ),
+    }
+}
+
+/// The two triangle halves a diagonal is the hypotenuse of.
+fn diag_pair(loc: u8) -> (u8, u8) {
+    if loc == LOC_DIAG_A {
+        (LOC_TRI_XHI_ZLO, LOC_TRI_XLO_ZHI)
+    } else {
+        (LOC_TRI_XLO_ZLO, LOC_TRI_XHI_ZHI)
+    }
+}
+
 /// The two cells an edge piece adjoins: the canonical cell and its west or
 /// north neighbor (None past the grid's low border).
 fn edge_neighbors(cx: u16, cz: u16, loc: u8) -> ((u16, u16), Option<(u16, u16)>) {
-    if loc == LOC_EDGE_W {
+    if loc == LOC_EDGE_XLO {
         ((cx, cz), cx.checked_sub(1).map(|x| (x, cz)))
     } else {
         ((cx, cz), cz.checked_sub(1).map(|z| (cx, z)))
@@ -514,9 +1062,18 @@ pub fn anchor(cx: u16, cz: u16, loc: u8) -> (f32, f32) {
     let x0 = cx as f32 * BUILD_CELL_M;
     let z0 = cz as f32 * BUILD_CELL_M;
     let half = BUILD_CELL_M * 0.5;
+    // A triangle's anchor is its centroid — thirds, exactly, so reach and
+    // raid measure to a point inside the half rather than a corner two
+    // halves share. The diagonals anchor at the cell centre, where they
+    // cross.
+    let third = BUILD_CELL_M / 3.0;
     match loc {
-        LOC_EDGE_W => (x0, z0 + half),
-        LOC_EDGE_N => (x0 + half, z0),
+        LOC_EDGE_XLO => (x0, z0 + half),
+        LOC_EDGE_ZLO => (x0 + half, z0),
+        LOC_TRI_XLO_ZLO => (x0 + third, z0 + third),
+        LOC_TRI_XHI_ZLO => (x0 + 2.0 * third, z0 + third),
+        LOC_TRI_XLO_ZHI => (x0 + third, z0 + 2.0 * third),
+        LOC_TRI_XHI_ZHI => (x0 + 2.0 * third, z0 + 2.0 * third),
         _ => (x0 + half, z0 + half),
     }
 }
@@ -527,12 +1084,86 @@ pub fn build_cell_of(v: f32) -> i32 {
     floor_i32(v / BUILD_CELL_M)
 }
 
+/// Whether an edge shape occupies this address's facing at all — planes
+/// and risers have no sides.
+#[inline]
+pub fn shape_has_facing(shape: u8) -> bool {
+    matches!(
+        shape,
+        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME
+    )
+}
+
+/// The facing a placement gets: 1 when the placer stands on the edge's
+/// **+axis** side, 0 otherwise — soft toward the builder, because a base
+/// is built from inside (`PieceRec::facing`'s doc). Exactly on the plane
+/// counts as −axis; the tie is impossible to stand on and the arm has to
+/// pick something deterministic.
+///
+/// `pub` because the client needs the same answer twice: the ghost says
+/// which side the soft face will land on before the key is pressed, and
+/// the structure readout says which side you are looking at. A second
+/// copy of this comparison is the positional-payload trap with a sign bit.
+#[inline]
+pub fn facing_of(loc: u8, cx: u16, cz: u16, px: f32, pz: f32) -> u8 {
+    let x0 = cx as f32 * BUILD_CELL_M;
+    let z0 = cz as f32 * BUILD_CELL_M;
+    let plus = match loc {
+        LOC_EDGE_XLO => px > x0,
+        LOC_EDGE_ZLO => pz > z0,
+        // A diagonal's sides are its two halves: +side is SW of A
+        // ({dz > dx}) and SE of B ({dx + dz > cell}) — arbitrary but
+        // fixed, like the straight edges' +axis.
+        LOC_DIAG_A => (pz - z0) > (px - x0),
+        LOC_DIAG_B => (px - x0) + (pz - z0) > BUILD_CELL_M,
+        _ => false,
+    };
+    plus as u8
+}
+
+/// Is a toucher standing at (`px`, `pz`) on the piece's SOFT side? The
+/// one comparison `combat::raid` prices a swing with and the client's
+/// readout labels a wall with — the same function, so the label can
+/// never disagree with the bill.
+#[inline]
+pub fn soft_side(rec: &PieceRec, px: f32, pz: f32) -> bool {
+    facing_of(rec.loc, rec.cx, rec.cz, px, pz) == rec.facing
+}
+
+/// What a structure hit on `rec` actually charges, struck from
+/// (`px`, `pz`) by a tool whose own number is `full` — hard/soft v0,
+/// `reference/BUILDING.md` §7b.5. A sided shape met on its HARD face pays
+/// `combat::HARD_SIDE_STRUCTURE` whatever swung or fired it; a plane, a
+/// riser, or any face that is the soft one pays `full`.
+///
+/// **One body because two callers held the same three lines verbatim.**
+/// `combat::raid` (the swing) and `World::chip` (the shot) each wrote out
+/// `shape_has_facing` -> `soft_side` -> pick, and ranged structure damage v0
+/// claimed in its own commit body that the rule was "reused, not
+/// restated" while it was in fact copied — the judge's finding on that
+/// pass. A rule that lives twice is a rule that changes once, and the
+/// failure that buys is a bow and a hatchet disagreeing about a wall's
+/// hard face with every gate green.
+///
+/// **A blast is deliberately not a caller.** `charge::detonate` prices by
+/// distance alone, because a satchel is a point and not a stance — that
+/// exemption is stated in `combat::raid`'s own comment and is preserved
+/// here by omission rather than by a flag nobody would read.
+#[inline]
+pub fn structure_price(rec: &PieceRec, shape: u8, px: f32, pz: f32, full: u16) -> u16 {
+    if shape_has_facing(shape) && !soft_side(rec, px, pz) {
+        crate::combat::HARD_SIDE_STRUCTURE
+    } else {
+        full
+    }
+}
+
 /// Will this ground hold a foundation? One definition — `place` refuses on
 /// it, and a fixture that needs buildable ground finds it with it, so the
 /// two can never drift apart.
-pub fn foundation_terrain_ok(seed: u64, ax: f32, az: f32) -> bool {
-    terrain::height(seed, ax, az) >= FOUNDATION_MIN_H_M
-        && terrain::slope(seed, ax, az) < FOUNDATION_MAX_SLOPE
+pub fn foundation_terrain_ok(seed: u64, haven: &terrain::Haven, ax: f32, az: f32) -> bool {
+    terrain::ground(seed, haven, ax, az) >= FOUNDATION_MIN_H_M
+        && terrain::ground_slope(seed, haven, ax, az) < FOUNDATION_MAX_SLOPE
 }
 
 /// Whether `loc` is the kind of slot `shape` occupies.
@@ -540,34 +1171,128 @@ fn loc_fits_shape(shape: u8, loc: u8) -> bool {
     match shape {
         SHAPE_FOUNDATION | SHAPE_FLOOR | SHAPE_ROOF => loc == LOC_PLANE,
         SHAPE_STAIRS => loc == LOC_RISER,
-        SHAPE_WALL | SHAPE_DOORWAY => loc == LOC_EDGE_W || loc == LOC_EDGE_N,
+        // The wall alone also fits the diagonals (their doc says why the
+        // openings do not).
+        SHAPE_WALL => {
+            loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO || loc == LOC_DIAG_A || loc == LOC_DIAG_B
+        }
+        SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME => loc == LOC_EDGE_XLO || loc == LOC_EDGE_ZLO,
+        SHAPE_TRI_FOUNDATION | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF => {
+            (LOC_TRI_XLO_ZLO..=LOC_TRI_XHI_ZHI).contains(&loc)
+        }
         _ => false,
     }
 }
 
+/// Whether an occupant of `loc` overlaps an occupant of `other` in the
+/// same cell body (triangles v0). The full plane overlaps every
+/// triangle; triangles overlap each other except across their own
+/// diagonal (NW+SE, NE+SW); a diagonal wall overlaps the two triangles
+/// it would bisect and the diagonal it crosses. Straight edges and the
+/// riser overlap nothing here — the riser's "needs a full plane" is a
+/// SUPPORT rule and stays one.
+fn body_overlaps(loc: u8, other: u8) -> bool {
+    matches!(
+        (loc.min(other), loc.max(other)),
+        (LOC_PLANE, LOC_TRI_XLO_ZLO..=LOC_TRI_XHI_ZHI)
+            | (LOC_TRI_XLO_ZLO, LOC_TRI_XHI_ZLO)
+            | (LOC_TRI_XLO_ZLO, LOC_TRI_XLO_ZHI)
+            | (LOC_TRI_XHI_ZLO, LOC_TRI_XHI_ZHI)
+            | (LOC_TRI_XLO_ZHI, LOC_TRI_XHI_ZHI)
+            | (LOC_TRI_XLO_ZLO, LOC_DIAG_A)
+            | (LOC_TRI_XHI_ZHI, LOC_DIAG_A)
+            | (LOC_TRI_XHI_ZLO, LOC_DIAG_B)
+            | (LOC_TRI_XLO_ZHI, LOC_DIAG_B)
+            | (LOC_DIAG_A, LOC_DIAG_B)
+    )
+}
+
+/// The cell-body locs `loc` must find EMPTY for a placement to be legal —
+/// [`body_overlaps`] read as a candidate list. Returns how many of `out`
+/// are live.
+fn body_conflicts(loc: u8, out: &mut [u8; 5]) -> usize {
+    let mut n = 0;
+    for other in [
+        LOC_PLANE,
+        LOC_TRI_XLO_ZLO,
+        LOC_TRI_XHI_ZLO,
+        LOC_TRI_XLO_ZHI,
+        LOC_TRI_XHI_ZHI,
+        LOC_DIAG_A,
+        LOC_DIAG_B,
+    ] {
+        if other != loc && body_overlaps(loc, other) {
+            out[n] = other;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Does anything stand in the cell body where `loc`'s occupant would
+/// overlap it? The `place` refusal triangles v0 added — a spot check
+/// like "the address is taken", not a support rule.
+pub(crate) fn cell_body_conflict(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
+    let mut c = [0u8; 5];
+    let n = body_conflicts(loc, &mut c);
+    c.iter()
+        .take(n)
+        .any(|&other| occupied_at(pieces, cx, cz, level, other))
+}
+
 /// Support rule v0 for a piece of `shape` at the address. Foundations
-/// carry no support requirement (terrain is their check).
+/// carry no support requirement (terrain is their check), and the
+/// triangle foundation is a foundation.
 fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     match shape {
-        SHAPE_FOUNDATION => true,
+        SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION => true,
         SHAPE_FLOOR | SHAPE_ROOF => {
-            // An edge piece under any of the cell's four sides.
+            // An edge piece under any of the cell's four sides. A diagonal
+            // wall below deliberately does NOT bear a full plane — its
+            // span crosses the middle, not a side.
             level >= 1
-                && (edge_at(pieces, cx, cz, level - 1, LOC_EDGE_W)
-                    || edge_at(pieces, cx + 1, cz, level - 1, LOC_EDGE_W)
-                    || edge_at(pieces, cx, cz, level - 1, LOC_EDGE_N)
-                    || edge_at(pieces, cx, cz + 1, level - 1, LOC_EDGE_N))
+                && (edge_at(pieces, cx, cz, level - 1, LOC_EDGE_XLO)
+                    || edge_at(pieces, cx + 1, cz, level - 1, LOC_EDGE_XLO)
+                    || edge_at(pieces, cx, cz, level - 1, LOC_EDGE_ZLO)
+                    || edge_at(pieces, cx, cz + 1, level - 1, LOC_EDGE_ZLO))
+        }
+        SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF => {
+            // One of its two sides, or the diagonal wall under its own
+            // hypotenuse (triangles v0).
+            if level == 0 {
+                return false;
+            }
+            let below = level - 1;
+            let ((e1x, e1z, e1l), (e2x, e2z, e2l), hyp) = tri_bearings(cx, cz, loc);
+            edge_at(pieces, e1x, e1z, below, e1l)
+                || edge_at(pieces, e2x, e2z, below, e2l)
+                || pieces.find(cx, cz, below, hyp).is_some()
         }
         SHAPE_STAIRS => plane_at(pieces, cx, cz, level),
-        SHAPE_WALL | SHAPE_DOORWAY => {
+        // The diagonal wall: the cell body it stands across — a full
+        // plane or one of its own pair — or the diagonal below it.
+        SHAPE_WALL if loc == LOC_DIAG_A || loc == LOC_DIAG_B => {
+            let (t1, t2) = diag_pair(loc);
+            let body_at = |lvl: u8| {
+                plane_at(pieces, cx, cz, lvl)
+                    || pieces.find(cx, cz, lvl, t1).is_some()
+                    || pieces.find(cx, cz, lvl, t2).is_some()
+            };
+            if level == 0 {
+                body_at(0)
+            } else {
+                pieces.find(cx, cz, level - 1, loc).is_some() || body_at(level)
+            }
+        }
+        SHAPE_WALL | SHAPE_DOORWAY | SHAPE_WINDOW | SHAPE_FRAME => {
             let ((ax, az), other) = edge_neighbors(cx, cz, loc);
             if level == 0 {
-                plane_at(pieces, ax, az, 0)
-                    || other.is_some_and(|(bx, bz)| plane_at(pieces, bx, bz, 0))
+                bears_edge(pieces, ax, az, 0, loc, true)
+                    || other.is_some_and(|(bx, bz)| bears_edge(pieces, bx, bz, 0, loc, false))
             } else {
                 edge_at(pieces, cx, cz, level - 1, loc)
-                    || plane_at(pieces, ax, az, level)
-                    || other.is_some_and(|(bx, bz)| plane_at(pieces, bx, bz, level))
+                    || bears_edge(pieces, ax, az, level, loc, true)
+                    || other.is_some_and(|(bx, bz)| bears_edge(pieces, bx, bz, level, loc, false))
             }
         }
         _ => false,
@@ -577,8 +1302,11 @@ fn supported(pieces: &Pieces, shape: u8, cx: u16, cz: u16, level: u8, loc: u8) -
 /// A grid address: (cx, cz, level, loc). What the collapse front carries.
 type Addr = (u16, u16, u8, u8);
 
-/// The most addresses `dependents` can name — a plane's five.
-const MAX_DEPENDENTS: usize = 5;
+/// The most addresses `dependents` can name — a plane's seven since
+/// triangles v0 (the four edges, the riser, and the two diagonals), tied
+/// by an edge's seven (two planes and one edge above, and the four
+/// triangle halves whose side it is).
+const MAX_DEPENDENTS: usize = 7;
 
 /// The inverse of `supported()`: every address whose support test **reads**
 /// `(cx, cz, level, loc)`. Change one of the two and you must change the
@@ -586,14 +1314,19 @@ const MAX_DEPENDENTS: usize = 5;
 /// and it is the whole reason the pair sits in one place.
 ///
 /// Read straight off `supported()` above, clause by clause:
-/// - the stairs branch probes `plane_at(cx, cz, level)`, and both wall
-///   branches probe `plane_at(.., level)` in the two cells the edge
-///   adjoins — so a **plane** is read by the riser in its own cell and by
-///   the four edges of its own cell, all at its own level;
-/// - the floor/roof branch probes four edges at `level - 1`, and the wall
-///   branch probes `edge_at(cx, cz, level - 1, loc)` — so an **edge** is
-///   read by the planes one level up in the two cells it adjoins and by
-///   the edge directly above it;
+/// - the stairs branch probes `plane_at(cx, cz, level)`, both straight
+///   edge branches probe the cell bodies beside them at their own level
+///   (`bears_edge`), and the diagonal branch probes the body it stands
+///   across — so a **plane** is read by the riser, the four edges of its
+///   own cell and the two diagonals, all at its own level;
+/// - the floor/roof branch probes four edges at `level - 1`, the tri
+///   floor/roof branch probes its two sides and its hypotenuse there,
+///   and the edge branches probe the piece below — so an **edge** is
+///   read by the planes and touching triangle halves one level up in the
+///   two cells it adjoins and by the edge directly above it, and a
+///   **diagonal** by its own pair and the diagonal above;
+/// - a **triangle half** is read by its two side edges and its
+///   hypotenuse at its own level (`bears_edge` / the diag body probe);
 /// - nothing anywhere probes `LOC_RISER`, so a **riser** is read by
 ///   nothing: take the stairs out and the floor above still stands.
 ///
@@ -603,31 +1336,75 @@ fn dependents(cx: u16, cz: u16, level: u8, loc: u8, out: &mut [Addr; MAX_DEPENDE
     match loc {
         LOC_PLANE => {
             out[0] = (cx, cz, level, LOC_RISER);
-            out[1] = (cx, cz, level, LOC_EDGE_W);
-            out[2] = (cx.saturating_add(1), cz, level, LOC_EDGE_W);
-            out[3] = (cx, cz, level, LOC_EDGE_N);
-            out[4] = (cx, cz.saturating_add(1), level, LOC_EDGE_N);
-            5
+            out[1] = (cx, cz, level, LOC_EDGE_XLO);
+            out[2] = (cx.saturating_add(1), cz, level, LOC_EDGE_XLO);
+            out[3] = (cx, cz, level, LOC_EDGE_ZLO);
+            out[4] = (cx, cz.saturating_add(1), level, LOC_EDGE_ZLO);
+            out[5] = (cx, cz, level, LOC_DIAG_A);
+            out[6] = (cx, cz, level, LOC_DIAG_B);
+            7
         }
-        LOC_EDGE_W | LOC_EDGE_N => {
+        LOC_TRI_XLO_ZLO | LOC_TRI_XHI_ZLO | LOC_TRI_XLO_ZHI | LOC_TRI_XHI_ZHI => {
+            // Its two side edges (their bears_edge clause reads this half
+            // at the same level) and its hypotenuse (the diag body probe).
+            let ((e1x, e1z, e1l), (e2x, e2z, e2l), hyp) = tri_bearings(cx, cz, loc);
+            out[0] = (e1x, e1z, level, e1l);
+            out[1] = (e2x, e2z, level, e2l);
+            out[2] = (cx, cz, level, hyp);
+            3
+        }
+        LOC_EDGE_XLO | LOC_EDGE_ZLO => {
             let up = level.saturating_add(1);
             if up >= MAX_BUILD_LEVELS as u8 {
                 return 0; // nothing can be addressed above the top storey
             }
             out[0] = (cx, cz, up, LOC_PLANE);
             out[1] = (cx, cz, up, loc);
-            let other = if loc == LOC_EDGE_W {
+            // The triangle halves one level up whose SIDE this edge is —
+            // the canonical cell's pair, then the low neighbour's
+            // (`bears_edge`'s two maps, inverted).
+            let (c1, c2, n1, n2) = if loc == LOC_EDGE_XLO {
+                (
+                    LOC_TRI_XLO_ZLO,
+                    LOC_TRI_XLO_ZHI,
+                    LOC_TRI_XHI_ZLO,
+                    LOC_TRI_XHI_ZHI,
+                )
+            } else {
+                (
+                    LOC_TRI_XLO_ZLO,
+                    LOC_TRI_XHI_ZLO,
+                    LOC_TRI_XLO_ZHI,
+                    LOC_TRI_XHI_ZHI,
+                )
+            };
+            out[2] = (cx, cz, up, c1);
+            out[3] = (cx, cz, up, c2);
+            let other = if loc == LOC_EDGE_XLO {
                 cx.checked_sub(1).map(|x| (x, cz))
             } else {
                 cz.checked_sub(1).map(|z| (cx, z))
             };
             match other {
                 Some((bx, bz)) => {
-                    out[2] = (bx, bz, up, LOC_PLANE);
-                    3
+                    out[4] = (bx, bz, up, LOC_PLANE);
+                    out[5] = (bx, bz, up, n1);
+                    out[6] = (bx, bz, up, n2);
+                    7
                 }
-                None => 2, // the grid's low border: the edge adjoins one cell
+                None => 4, // the grid's low border: the edge adjoins one cell
             }
+        }
+        LOC_DIAG_A | LOC_DIAG_B => {
+            let up = level.saturating_add(1);
+            if up >= MAX_BUILD_LEVELS as u8 {
+                return 0;
+            }
+            let (t1, t2) = diag_pair(loc);
+            out[0] = (cx, cz, up, loc);
+            out[1] = (cx, cz, up, t1);
+            out[2] = (cx, cz, up, t2);
+            3
         }
         _ => 0,
     }
@@ -646,8 +1423,14 @@ fn occupied_at(pieces: &Pieces, cx: u16, cz: u16, level: u8, loc: u8) -> bool {
     let field = match loc {
         LOC_PLANE => m.planes,
         LOC_RISER => m.stairs,
-        LOC_EDGE_W => m.walls_w | m.doors_w,
-        _ => m.walls_n | m.doors_n,
+        LOC_EDGE_XLO => m.walls_xlo | m.doors_xlo | m.wins_xlo | m.frames_xlo,
+        LOC_EDGE_ZLO => m.walls_zlo | m.doors_zlo | m.wins_zlo | m.frames_zlo,
+        LOC_TRI_XLO_ZLO => m.tri_xlo_zlo,
+        LOC_TRI_XHI_ZLO => m.tri_xhi_zlo,
+        LOC_TRI_XLO_ZHI => m.tri_xlo_zhi,
+        LOC_TRI_XHI_ZHI => m.tri_xhi_zhi,
+        LOC_DIAG_A => m.diag_a,
+        _ => m.diag_b,
     };
     field & (1u8 << level) != 0
 }
@@ -788,6 +1571,7 @@ pub(crate) fn support_sweep(
 #[allow(clippy::too_many_arguments)]
 pub fn place(
     seed: u64,
+    haven: &terrain::Haven,
     bc: &BuildContent,
     deploys: &Deploys,
     pieces: &mut Pieces,
@@ -798,6 +1582,7 @@ pub fn place(
     cz: u16,
     level: u8,
     loc: u8,
+    freehand: bool,
     events: &mut EventQueue,
 ) {
     if row >= bc.piece_count {
@@ -809,14 +1594,32 @@ pub fn place(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_PIECE, 0);
         return;
     }
+    // Everything enters the world as twig, and a finished grade is only
+    // ever reached by `upgrade` (twig v0, `reference/BUILDING.md` §7b.4).
+    // The client offers no other row, so in normal play this is
+    // unreachable — it is here because the wire is not the client, and a
+    // forged row is how a placement would otherwise skip the skeleton it
+    // is supposed to cost.
+    if def.material != MAT_TWIG {
+        events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TIER, 0);
+        return;
+    }
     let level_ok = (level as usize) < MAX_BUILD_LEVELS
-        && (def.shape != SHAPE_FOUNDATION || level == 0)
-        && (!matches!(def.shape, SHAPE_FLOOR | SHAPE_ROOF) || level >= 1);
+        && (!matches!(def.shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION) || level == 0)
+        && (!matches!(
+            def.shape,
+            SHAPE_FLOOR | SHAPE_ROOF | SHAPE_TRI_FLOOR | SHAPE_TRI_ROOF
+        ) || level >= 1);
     if (cx as usize) >= MAX_BUILD_COORD
         || (cz as usize) >= MAX_BUILD_COORD
         || !level_ok
         || !loc_fits_shape(def.shape, loc)
         || pieces.find(cx, cz, level, loc).is_some()
+        // The cell-body overlap set (triangles v0): a full plane over a
+        // half, two crossed halves, a diagonal through either — the same
+        // "spot taken" refusal the address check gives, because to a
+        // player they are one fact.
+        || cell_body_conflict(pieces, cx, cz, level, loc)
     {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
         return;
@@ -833,10 +1636,27 @@ pub fn place(
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_CLAIM, 0);
         return;
     }
-    if def.shape == SHAPE_FOUNDATION && !foundation_terrain_ok(seed, ax, az) {
+    if matches!(def.shape, SHAPE_FOUNDATION | SHAPE_TRI_FOUNDATION)
+        && !foundation_terrain_ok(seed, haven, ax, az)
+    {
+        // The anchor is the shape's own: the cell centre for a square,
+        // the half's centroid for a triangle — the ground actually under
+        // the piece.
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_TERRAIN, 0);
         return;
     }
+    // The column's floor, decided BEFORE support and cost so a refusal about
+    // height is told as one (build plate v1). A piece in a built column takes
+    // that column's plate; the first piece of a base latches to whatever it
+    // touches, or takes its own ground — unless `freehand` declined the latch,
+    // which only the client can tell us (freehand placement v0).
+    let plate = match plate_for(pieces.cols(), seed, haven, cx, cz, freehand) {
+        Ok(p) => p,
+        Err(why) => {
+            events.push(EV_BUILD_REFUSED, p.id, why, 0);
+            return;
+        }
+    };
     if !supported(pieces, def.shape, cx, cz, level, loc) {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SUPPORT, 0);
         return;
@@ -853,8 +1673,19 @@ pub fn place(
         level,
         loc,
         row: row as u8,
+        // Soft toward the builder (hard/soft v0). Planes and risers have
+        // no sides and carry 0, so two replays cannot disagree about a
+        // bit that means nothing.
+        facing: if shape_has_facing(def.shape) {
+            facing_of(loc, cx, cz, px, pz)
+        } else {
+            0
+        },
         hp: def.hp,
         uh: (tick / UPKEEP_PERIOD_TICKS) as u16,
+        // Wire-only; the store never maintains it (`PieceRec::dmg`).
+        dmg: 0,
+        plate,
     };
     if !pieces.insert(rec, def.shape, tick) {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_FULL, 0);
@@ -1013,12 +1844,31 @@ const _: () = assert!(
 ///    about whose base is whose.
 /// 3. **A full refund**, in the piece's own cost rows. It is an undo, not
 ///    a salvage: a fraction would make misplacing a foundation a tax, and
-///    the reference does not charge one either.
+///    the reference does not charge one either. A refund a full pack
+///    cannot hold falls at the demolisher's feet rather than ceasing to
+///    exist (`spill`, 2026-08-14) — see the `spill` parameter for why the
+///    feet and not the wall.
 ///
 /// The removal is `drop_piece` + `collapse_from` — the **same** path decay
 /// and a raid take, cascade included. A verb with its own removal is a
 /// second chance for a floating floor to survive something that should
 /// have brought it down.
+///
+/// `spill` is the caller's buffer, exactly `gather::swing`'s: this module
+/// owns no container store and is not about to acquire one, so the
+/// remainder goes out as data and `world.rs`'s single drain point stands
+/// the bag up.
+///
+/// **The fall-point is the player's feet, and the wall is not a rival
+/// answer.** `NOW.md` §0sp2 left this path open on the ground that a
+/// demolished wall's refund belongs where the wall was; the arithmetic
+/// says the two addresses cannot be far enough apart to matter. This verb
+/// refuses beyond `BUILD_REACH_M` (below), `backpack::LOOT_REACH_M` **is**
+/// `BUILD_REACH_M` (one `pub use`, not two knobs), and that is the radius
+/// `spill_at` merges within — so a bag minted at the wall is always inside
+/// the merge reach of the feet and the reverse. Picking the feet therefore
+/// costs nothing a player could find, needs no piece-anchor geometry on
+/// the drain, and keeps every give-back in one tick to one bag.
 #[allow(clippy::too_many_arguments)]
 pub fn demolish(
     dc: &DeployContent,
@@ -1034,6 +1884,7 @@ pub fn demolish(
     loc: u8,
     budget: &mut usize,
     events: &mut EventQueue,
+    spill: &mut [crate::gather::ItemStack; crate::limits::INV_SLOTS],
 ) {
     let Some(i) = pieces.find_index(cx, cz, level, loc) else {
         events.push(EV_BUILD_REFUSED, p.id, REFUSE_B_SPOT, 0);
@@ -1071,7 +1922,14 @@ pub fn demolish(
     // Refund before removal: `drop_piece` invalidates the index, and a
     // refund computed after it would be pricing a swapped-in neighbour.
     for &(item, count) in def.costs.iter().take(def.n_costs as usize) {
-        crate::gather::inv_add(&mut p.inv, item, count, gc.stack_max_of(item));
+        crate::gather::inv_add_spilling(
+            &mut p.inv,
+            spill,
+            item,
+            count,
+            gc.stack_max_of(item),
+            gc.cond_max_of(item),
+        );
     }
     crate::deploy::drop_piece(dc, pieces, deploys, i, def.shape, events);
     *budget -= 1;
@@ -1243,7 +2101,60 @@ mod tests {
     use super::*;
     use crate::deploy::UPKEEP_PERIOD_TICKS;
     use crate::gather::ItemStack;
-    use crate::limits::MAX_REMOVALS_PER_TICK;
+    use crate::limits::{INV_SLOTS, MAX_REMOVALS_PER_TICK};
+
+    /// The damage band's four edges, and the one that matters is the second:
+    /// **a structure one point down from full must not report untouched.**
+    /// That is the first swing of a raid, and a band that rounds it away
+    /// hides exactly the moment the field exists to show.
+    #[test]
+    fn the_damage_band_holds_its_edges() {
+        for max in [10u16, 50, 250, 500, 1000, 65535] {
+            assert_eq!(damage_band(max, max), 0, "full is untouched (max {max})");
+            assert!(
+                damage_band(max, max) == 0 && damage_band(max - 1, max) >= 1,
+                "max {max}: one point of damage rounded away to untouched"
+            );
+            assert_eq!(
+                damage_band(0, max),
+                DMG_BANDS - 1,
+                "max {max}: a dead structure is not at the worst band"
+            );
+            // Over-full is a repair landing before a decay tick, not a bug.
+            //
+            // `saturating_add` and not `+ 1`: at `max = u16::MAX` the sum
+            // wraps to 0 in a release build and the case silently inverts
+            // into "a dead structure", which is how this line first failed
+            // — green in debug, red under `ci/gates.sh`. Saturating keeps
+            // the assertion pointed at what it means (hp at or above the
+            // maximum bands to untouched) at every maximum.
+            assert_eq!(damage_band(max.saturating_add(1), max), 0);
+        }
+        // An undripped def row has no maximum, and a fraction of an unknown
+        // is worse than silence (`hud::struct_hit_line`'s rule).
+        assert_eq!(damage_band(0, 0), 0);
+        assert_eq!(damage_band(500, 0), 0);
+    }
+
+    /// It is monotonic and stays in range across a whole hp sweep — the
+    /// property a renderer indexing an array of `DMG_BANDS` materials needs,
+    /// and the one an off-by-one in the ceil would break at exactly one hp.
+    #[test]
+    fn the_damage_band_is_monotonic_and_bounded() {
+        for max in [7u16, 10, 64, 250, 999] {
+            let mut prev = DMG_BANDS - 1;
+            for hp in 0..=max {
+                let b = damage_band(hp, max);
+                assert!(b < DMG_BANDS, "max {max} hp {hp}: band {b} out of range");
+                assert!(
+                    b <= prev,
+                    "max {max}: band rose from {prev} to {b} as hp rose to {hp}"
+                );
+                prev = b;
+            }
+            assert_eq!(prev, 0, "max {max}: full hp did not land on band 0");
+        }
+    }
 
     /// One tick's structural removal budget, as `World::tick` hands it
     /// out. These fixtures collapse or raid one structure at a time and
@@ -1260,6 +2171,17 @@ mod tests {
     /// A seed whose island center is buildable (the browser-smoke seed;
     /// `world::tests` guards its walkability natively).
     const SEED: u64 = 20260731;
+
+    /// The solved authored sites for `SEED`, memoized.
+    ///
+    /// `terrain::haven` is a few thousand `height` taps and these cases call
+    /// the carved-ground path from nearly every assertion, so resolving it
+    /// once per suite is the difference between a fast test and a slow one.
+    /// It is a pure function of the seed, so caching it cannot change a result.
+    fn hv() -> &'static crate::terrain::Haven {
+        static HV: std::sync::OnceLock<crate::terrain::Haven> = std::sync::OnceLock::new();
+        HV.get_or_init(|| crate::terrain::haven(SEED))
+    }
     /// The smoke spawn's build cell: (1024 m, 1024 m) / 3 m.
     const CX: u16 = 341;
     const CZ: u16 = 341;
@@ -1270,13 +2192,18 @@ mod tests {
             active: true,
             body: Body::at(
                 SEED,
+                hv(),
                 (CX as f32 + 0.5) * BUILD_CELL_M,
                 (CZ as f32 + 0.5) * BUILD_CELL_M,
             ),
             ..Player::default()
         };
         for (i, &(item, count)) in items.iter().enumerate() {
-            p.inv[i] = ItemStack { item, count };
+            p.inv[i] = ItemStack {
+                item,
+                count,
+                cond: 0,
+            };
         }
         p
     }
@@ -1296,6 +2223,7 @@ mod tests {
 
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1306,6 +2234,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(
@@ -1320,6 +2249,7 @@ mod tests {
 
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1329,7 +2259,8 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -1338,6 +2269,7 @@ mod tests {
         // Floor at level 1 stands on the wall below.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1348,6 +2280,7 @@ mod tests {
             CZ,
             1,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -1357,6 +2290,7 @@ mod tests {
         // Wall at level 1 stacks on the wall at level 0.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1366,7 +2300,8 @@ mod tests {
             CX,
             CZ,
             1,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -1383,13 +2318,14 @@ mod tests {
         // Bad row; wrong loc for the shape; foundation above ground.
         let cases: [(u16, u8, u8, u32); 4] = [
             (9, 0, LOC_PLANE, REFUSE_B_PIECE),
-            (0, 0, LOC_EDGE_W, REFUSE_B_SPOT),
+            (0, 0, LOC_EDGE_XLO, REFUSE_B_SPOT),
             (0, 1, LOC_PLANE, REFUSE_B_SPOT),
             (2, 0, LOC_PLANE, REFUSE_B_SPOT), // floor at level 0
         ];
         for (row, level, loc, reason) in cases {
             place(
                 SEED,
+                hv(),
                 &bc,
                 &nod,
                 &mut pieces,
@@ -1400,6 +2336,7 @@ mod tests {
                 CZ,
                 level,
                 loc,
+                false,
                 &mut ev,
             );
             assert_eq!(last(&ev), (crate::world::EV_BUILD_REFUSED, 7, reason));
@@ -1408,6 +2345,7 @@ mod tests {
         // Reach: a cell 20 m away.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1418,6 +2356,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).1, 7);
@@ -1426,6 +2365,7 @@ mod tests {
         // Support: a wall with no foundation beside it.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1435,13 +2375,15 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_SUPPORT);
         // Floor with no wall below it.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1452,6 +2394,7 @@ mod tests {
             CZ,
             1,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_SUPPORT);
@@ -1460,6 +2403,7 @@ mod tests {
         let mut poor = player_at_cell_center(&[]);
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1470,6 +2414,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_COST);
@@ -1477,6 +2422,7 @@ mod tests {
         // Occupied: place the foundation twice.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1487,11 +2433,13 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1502,10 +2450,487 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_SPOT);
         assert_eq!(pieces.len(), 1, "refusals inserted nothing");
+    }
+
+    /// Catalogue v1's two shapes hold the wall's slots and the wall's
+    /// rules: an edge loc, wall support, a refusal on a plane loc — and
+    /// the upgrade verb climbs them like any other shape.
+    #[test]
+    fn window_and_frame_place_as_edges_and_climb_the_ladder() {
+        let mut bc = BuildContent::probe_fixture();
+        // Rows 7..10: twig window, twig frame, stone window — the probe
+        // fixture's shape, extended rather than replaced.
+        bc.piece_count = 10;
+        bc.pieces[7] = PieceDef {
+            shape: SHAPE_WINDOW,
+            material: MAT_TWIG,
+            hp: 100,
+            n_costs: 1,
+            costs: [(0, 3), (0, 0)],
+        };
+        bc.pieces[8] = PieceDef {
+            shape: SHAPE_FRAME,
+            material: MAT_TWIG,
+            hp: 100,
+            n_costs: 1,
+            costs: [(0, 3), (0, 0)],
+        };
+        bc.pieces[9] = PieceDef {
+            shape: SHAPE_WINDOW,
+            material: MAT_STONE,
+            hp: 200,
+            n_costs: 1,
+            costs: [(1, 4), (0, 0)],
+        };
+        let mut pieces = Pieces::new();
+        let nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell_center(&[(0, 40), (1, 10)]);
+
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            false,
+            &mut ev,
+        );
+        // A window on a plane loc is a spot refusal, not a support one.
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            7,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            false,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
+        );
+        // On the edge beside the foundation, both place.
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            7,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            false,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            8,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_ZLO,
+            false,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        assert_eq!(pieces.cols().get(CX, CZ).wins_xlo, 1, "window in the index");
+        assert_eq!(
+            pieces.cols().get(CX, CZ).frames_zlo,
+            1,
+            "frame in the index"
+        );
+
+        // The hammer climbs the window to stone; the frame has no rung
+        // above twig in this table and refuses by name.
+        upgrade(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        let w = pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
+        assert_eq!(w.row, 9, "the window re-rowed to its stone rung");
+        upgrade(
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_ZLO,
+            MAT_STONE,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_TIER)
+        );
+    }
+
+    /// Hard/soft v0: a placement's soft side faces the builder, on both
+    /// edge axes; planes carry no facing; and `soft_side` answers the
+    /// builder's own stance as soft — the label `combat::raid` prices by.
+    #[test]
+    fn facing_is_set_toward_the_builder_and_only_on_edges() {
+        let bc = BuildContent::probe_fixture();
+        let mut pieces = Pieces::new();
+        let nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        // The builder stands at the cell centre: east of the west edge,
+        // south of the north edge.
+        let mut p = player_at_cell_center(&[(0, 50), (1, 10)]);
+
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            false,
+            &mut ev,
+        );
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            false,
+            &mut ev,
+        );
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_ZLO,
+            false,
+            &mut ev,
+        );
+
+        let plane = pieces.find(CX, CZ, 0, LOC_PLANE).unwrap();
+        assert_eq!(plane.facing, 0, "a plane has no sides");
+        let w = *pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
+        assert_eq!(w.facing, 1, "west edge: builder east => soft east");
+        let n = *pieces.find(CX, CZ, 0, LOC_EDGE_ZLO).unwrap();
+        assert_eq!(n.facing, 1, "north edge: builder south => soft south");
+
+        // The builder's own stance is the soft side of both walls; a
+        // stranger across the edge is on the hard one.
+        let px = (CX as f32 + 0.5) * BUILD_CELL_M;
+        let pz = (CZ as f32 + 0.5) * BUILD_CELL_M;
+        assert!(soft_side(&w, px, pz));
+        assert!(soft_side(&n, px, pz));
+        assert!(!soft_side(&w, px - BUILD_CELL_M, pz), "west of the wall");
+        assert!(!soft_side(&n, px, pz - BUILD_CELL_M), "north of the wall");
+    }
+
+    /// Triangles v0: the placement matrix. Two halves coexist across
+    /// their own diagonal and refuse everything else they overlap; the
+    /// diagonal wall stands on its pair and refuses through the crossed
+    /// pair; a tri floor stands on a side edge OR its hypotenuse's wall;
+    /// and the whole family upgrades like any shape.
+    #[test]
+    fn triangles_pair_across_their_diagonal_and_refuse_the_rest() {
+        let mut bc = BuildContent::probe_fixture();
+        // Rows 7..10: twig tri foundation, twig tri floor, twig wall
+        // stand-ins for the fixture (the probe fixture's shape, extended).
+        bc.piece_count = 10;
+        bc.pieces[7] = PieceDef {
+            shape: SHAPE_TRI_FOUNDATION,
+            material: MAT_TWIG,
+            hp: 100,
+            n_costs: 1,
+            costs: [(0, 2), (0, 0)],
+        };
+        bc.pieces[8] = PieceDef {
+            shape: SHAPE_TRI_FLOOR,
+            material: MAT_TWIG,
+            hp: 100,
+            n_costs: 1,
+            costs: [(0, 2), (0, 0)],
+        };
+        bc.pieces[9] = PieceDef {
+            shape: SHAPE_TRI_ROOF,
+            material: MAT_TWIG,
+            hp: 100,
+            n_costs: 1,
+            costs: [(0, 2), (0, 0)],
+        };
+        let mut pieces = Pieces::new();
+        let nod = Deploys::new();
+        let mut ev = EventQueue::default();
+        let mut p = player_at_cell_center(&[(0, 200), (1, 50)]);
+
+        // NW and SE pair across diagonal B.
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            7,
+            CX,
+            CZ,
+            0,
+            LOC_TRI_XLO_ZLO,
+            false,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            7,
+            CX,
+            CZ,
+            0,
+            LOC_TRI_XHI_ZHI,
+            false,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        // NE overlaps both standing halves: refused as a spot.
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            7,
+            CX,
+            CZ,
+            0,
+            LOC_TRI_XHI_ZLO,
+            false,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
+        );
+        // A full foundation over the pair: same refusal.
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            0,
+            CX,
+            CZ,
+            0,
+            LOC_PLANE,
+            false,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
+        );
+        // Diagonal A would bisect both halves: refused. Diagonal B is
+        // their shared hypotenuse: it stands.
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_DIAG_A,
+            false,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
+        );
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            1,
+            CX,
+            CZ,
+            0,
+            LOC_DIAG_B,
+            false,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        assert_eq!(pieces.cols().get(CX, CZ).diag_b, 1, "diag in the index");
+
+        // A tri floor one storey up, on the hypotenuse wall alone: the NW
+        // half's own hyp is B, which is exactly what stands below.
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            8,
+            CX,
+            CZ,
+            1,
+            LOC_TRI_XLO_ZLO,
+            false,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev).0,
+            crate::world::EV_PIECE_PLACED,
+            "the diagonal wall bears the tri floor above it"
+        );
+        // A crossed sibling in THIS cell is a spot conflict with the
+        // standing NW floor; the honest support case is next door, where
+        // a tri floor has neither a side edge nor a hypotenuse below.
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            8,
+            CX,
+            CZ,
+            1,
+            LOC_TRI_XHI_ZLO,
+            false,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SPOT)
+        );
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            8,
+            CX + 1,
+            CZ,
+            1,
+            LOC_TRI_XLO_ZLO,
+            false,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_SUPPORT)
+        );
+
+        // Knock the diagonal out: the tri floor above falls with it.
+        let di = pieces.find_index(CX, CZ, 0, LOC_DIAG_B).unwrap();
+        let mut budget = 8;
+        crate::deploy::drop_piece(
+            &crate::deploy::DeployContent::probe_fixture(),
+            &mut pieces,
+            &mut Deploys::new(),
+            di,
+            SHAPE_WALL,
+            &mut ev,
+        );
+        collapse_from(
+            &crate::deploy::DeployContent::probe_fixture(),
+            &bc,
+            &mut pieces,
+            &mut Deploys::new(),
+            (CX, CZ, 0, LOC_DIAG_B),
+            &mut budget,
+            &mut ev,
+        );
+        assert!(
+            pieces.find(CX, CZ, 1, LOC_TRI_XLO_ZLO).is_none(),
+            "the tri floor lost its hypotenuse and fell"
+        );
     }
 
     #[test]
@@ -1517,9 +2942,10 @@ mod tests {
         // Cell (1,1) is deep sea on every island seed (coast radius starts
         // ~800 m in); stand the player there to isolate the terrain rule.
         let mut p = player_at_cell_center(&[(0, 100)]);
-        p.body = Body::at(SEED, 1.5 * BUILD_CELL_M, 1.5 * BUILD_CELL_M);
+        p.body = Body::at(SEED, hv(), 1.5 * BUILD_CELL_M, 1.5 * BUILD_CELL_M);
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1530,6 +2956,7 @@ mod tests {
             1,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_TERRAIN);
@@ -1547,8 +2974,11 @@ mod tests {
                     level: 0,
                     loc: LOC_PLANE,
                     row: 0,
+                    facing: 0,
                     hp: 1,
                     uh: 0,
+                    dmg: 0,
+                    plate: 0,
                 },
                 SHAPE_FOUNDATION,
                 0
@@ -1562,6 +2992,7 @@ mod tests {
         let mut p = player_at_cell_center(&[(0, 100)]);
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -1572,13 +3003,14 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_FULL);
         assert_eq!(inv_count(&p.inv, 0), 100, "nothing paid on a full store");
     }
 
-    /// Stand a wood wall at the smoke cell's west edge and hand back the
+    /// Stand a wood wall at the smoke cell's low-x edge and hand back the
     /// player who built it (foundation + wall paid from `items`).
     fn walled(items: &[(u16, u16)]) -> (BuildContent, Pieces, Deploys, EventQueue, Player) {
         let bc = BuildContent::probe_fixture();
@@ -1586,9 +3018,10 @@ mod tests {
         let nod = Deploys::new();
         let mut ev = EventQueue::default();
         let mut p = player_at_cell_center(items);
-        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_W)] {
+        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_XLO)] {
             place(
                 SEED,
+                hv(),
                 &bc,
                 &nod,
                 &mut pieces,
@@ -1599,6 +3032,7 @@ mod tests {
                 CZ,
                 0,
                 loc,
+                false,
                 &mut ev,
             );
             assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -1635,7 +3069,7 @@ mod tests {
         }
 
         let half = BUILD_CELL_M * 0.5;
-        for loc in [LOC_EDGE_W, LOC_EDGE_N] {
+        for loc in [LOC_EDGE_XLO, LOC_EDGE_ZLO] {
             let (ax, az) = anchor(CX, CZ, loc);
             let (dx, dz) = (ax - centre.0, az - centre.1);
             assert_eq!(
@@ -1653,7 +3087,7 @@ mod tests {
         // the anchor is offset away from. Placement is exactly in range;
         // repair is half a cell out of it. Both verbs compare planar squared
         // distance against BUILD_REACH_M, so this is their arithmetic.
-        let (ax, az) = anchor(CX, CZ, LOC_EDGE_W);
+        let (ax, az) = anchor(CX, CZ, LOC_EDGE_XLO);
         let (px, pz) = (centre.0 + BUILD_REACH_M, centre.1);
         let place_d2 = (px - centre.0) * (px - centre.0) + (pz - centre.1) * (pz - centre.1);
         let repair_d2 = (px - ax) * (px - ax) + (pz - az) * (pz - az);
@@ -1686,7 +3120,7 @@ mod tests {
         let full = BuildContent::probe_fixture().pieces[1].hp;
         for standing in [1u16, 40, full - 1] {
             let (bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 100)]);
-            let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+            let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
             pieces.set_upkeep(i, standing, 3);
             repair(
                 &bc,
@@ -1698,10 +3132,10 @@ mod tests {
                 CX,
                 CZ,
                 0,
-                LOC_EDGE_W,
+                LOC_EDGE_XLO,
                 &mut ev,
             );
-            let rec = *pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
+            let rec = *pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
             assert_eq!(
                 rec.hp, full,
                 "a wall repaired from {standing} stands at its baked hp, \
@@ -1725,7 +3159,7 @@ mod tests {
                 CX,
                 CZ,
                 0,
-                LOC_EDGE_W,
+                LOC_EDGE_XLO,
                 &mut ev,
             );
             assert_eq!(
@@ -1736,7 +3170,7 @@ mod tests {
         }
 
         let (bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 100)]);
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         pieces.set_hp(i, full + 50);
         let before = inv_count(&p.inv, 0);
         repair(
@@ -1749,7 +3183,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -1757,7 +3191,7 @@ mod tests {
             (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_INTACT)
         );
         assert_eq!(
-            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp,
+            pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().hp,
             full + 50,
             "an over-hp record is left alone, not trimmed to the row"
         );
@@ -1776,7 +3210,7 @@ mod tests {
     fn repair_is_priced_pro_rata_rounded_up_and_never_free() {
         // 100 wood in, 5 for the foundation and 3 for the wall: 92 left.
         let (bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 100)]);
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         pieces.set_hp(i, 40);
         repair(
             &bc,
@@ -1788,7 +3222,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -1808,7 +3242,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -1820,7 +3254,7 @@ mod tests {
 
         // Exactly enough wood to build, and none to mend with.
         let (bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 8)]);
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         pieces.set_hp(i, 40);
         repair(
             &bc,
@@ -1832,7 +3266,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -1840,7 +3274,7 @@ mod tests {
             (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_COST)
         );
         assert_eq!(
-            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp,
+            pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().hp,
             40,
             "a refused repair heals nothing"
         );
@@ -1858,7 +3292,7 @@ mod tests {
     #[test]
     fn an_unpriced_table_refuses_the_repair_rather_than_giving_it_away() {
         let (mut bc, mut pieces, mut nod, mut ev, mut p) = walled(&[(0, 100)]);
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         pieces.set_hp(i, 40);
         bc.repair_pct = 0;
         let before = inv_count(&p.inv, 0);
@@ -1872,14 +3306,14 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
             last(&ev),
             (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_INTACT)
         );
-        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp, 40);
+        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().hp, 40);
         assert_eq!(inv_count(&p.inv, 0), before);
     }
 
@@ -1907,6 +3341,7 @@ mod tests {
         let before = crate::craft::inv_count(&p.inv, 0);
         place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -1917,6 +3352,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         assert_eq!(pieces.len(), 1, "the foundation stands");
@@ -1939,6 +3375,7 @@ mod tests {
             LOC_PLANE,
             &mut budget,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(pieces.len(), 0, "the foundation came down");
         assert_eq!(
@@ -1951,6 +3388,7 @@ mod tests {
         // Place another and let the window lapse.
         place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -1961,6 +3399,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         let held = crate::craft::inv_count(&p.inv, 0);
@@ -1979,6 +3418,7 @@ mod tests {
             LOC_PLANE,
             &mut budget,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(
             (last(&ev).0, last(&ev).2),
@@ -2004,6 +3444,7 @@ mod tests {
             LOC_PLANE,
             &mut budget,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(pieces.len(), 0, "the second piece has its own clock");
     }
@@ -2035,12 +3476,14 @@ mod tests {
             LOC_PLANE,
             &mut budget,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(last(&ev).2, REFUSE_B_SPOT, "nothing at that address");
         let _ = &mut ev;
 
         place(
             SEED,
+            hv(),
             &bc,
             &deploys,
             &mut pieces,
@@ -2051,6 +3494,7 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         let mut far = Player {
@@ -2058,6 +3502,7 @@ mod tests {
             active: true,
             body: Body::at(
                 SEED,
+                hv(),
                 (CX as f32 + 7.5) * BUILD_CELL_M,
                 (CZ as f32 + 0.5) * BUILD_CELL_M,
             ),
@@ -2077,6 +3522,7 @@ mod tests {
             LOC_PLANE,
             &mut budget,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(last(&ev).2, REFUSE_B_REACH, "demolish has the build reach");
 
@@ -2084,6 +3530,7 @@ mod tests {
         // passer-by undoing a fresh base inside its own window.
         crate::deploy::place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2113,6 +3560,7 @@ mod tests {
             LOC_PLANE,
             &mut budget,
             &mut ev,
+            &mut [ItemStack::default(); INV_SLOTS],
         );
         assert_eq!(
             (last(&ev).0, last(&ev).2),
@@ -2130,9 +3578,10 @@ mod tests {
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
         let mut owner = player_at_cell_center(&[(0, 100), (1, 100), (2, 100), (3, 100)]);
-        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_W)] {
+        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_XLO)] {
             place(
                 SEED,
+                hv(),
                 &bc,
                 &deploys,
                 &mut pieces,
@@ -2143,6 +3592,7 @@ mod tests {
                 CZ,
                 0,
                 loc,
+                false,
                 &mut ev,
             );
             assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2152,6 +3602,7 @@ mod tests {
             .expect("fixture holds a hearth");
         crate::deploy::place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2166,7 +3617,7 @@ mod tests {
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_DEPLOY_PLACED, "hearth stands");
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         pieces.set_hp(i, 40);
 
         let mut stranger = player_at_cell_center(&[(0, 100)]);
@@ -2181,7 +3632,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
@@ -2189,7 +3640,7 @@ mod tests {
             (crate::world::EV_BUILD_REFUSED, 9, REFUSE_B_CLAIM)
         );
         assert_eq!(
-            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp,
+            pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().hp,
             40,
             "a stranger inside someone's claim cannot mend their wall"
         );
@@ -2205,11 +3656,11 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             &mut ev,
         );
         assert_eq!(
-            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().hp,
+            pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().hp,
             bc.pieces[1].hp,
             "the hearth's owner mends their own wall"
         );
@@ -2218,7 +3669,7 @@ mod tests {
     #[test]
     fn upgrade_pays_re_rows_in_place_and_carries_damage() {
         let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 20), (1, 10)]);
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         // Standing damage: half the wall's life is gone (the decay sweep
         // is what does this in the live sim).
         pieces.set_upkeep(i, 50, 0);
@@ -2232,7 +3683,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2241,17 +3692,81 @@ mod tests {
             (
                 crate::world::EV_PIECE_PLACED,
                 crate::gather::cell_key(CX, CZ),
-                ((LOC_EDGE_W as u32) << 8) | 4
+                ((LOC_EDGE_XLO as u32) << 8) | 4
             ),
             "the upgrade announces the address's new row"
         );
         assert_eq!(inv_count(&p.inv, 1), 6, "the stone rung's whole cost paid");
         assert_eq!(inv_count(&p.inv, 0), 12, "the wood cost was not re-paid");
         assert_eq!(pieces.len(), before, "an upgrade is not a placement");
-        let rec = *pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let rec = *pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         assert_eq!(rec.row, 4, "the address holds the stone row now");
         assert_eq!(rec.hp, 100, "half a 100 hp wall is half a 200 hp wall");
         assert_eq!(rec.uh, 0, "the upkeep clock is not reset by an upgrade");
+    }
+
+    /// **A placement is twig or it is refused** (twig v0,
+    /// `reference/BUILDING.md` §7b.4). The rule that makes the skeleton
+    /// cost something, and the one a forged row would otherwise skip: the
+    /// client offers no other rung, so nothing but the wire can ask for
+    /// one, and this is what answers it.
+    #[test]
+    fn a_placement_is_twig_or_it_is_refused() {
+        let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100), (1, 100)]);
+        let before_pieces = pieces.len();
+        let (before_0, before_1) = (inv_count(&p.inv, 0), inv_count(&p.inv, 1));
+
+        // Row 4 is the stone wall — a real row, a legal address, a
+        // supported spot, an affordable price. Only the rung is wrong.
+        assert_eq!(bc.pieces[4].material, MAT_STONE);
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            4,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_ZLO,
+            false,
+            &mut ev,
+        );
+        assert_eq!(
+            last(&ev),
+            (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_TIER),
+            "a finished grade may only be reached by upgrading into it"
+        );
+        assert_eq!(pieces.len(), before_pieces, "and nothing was placed");
+        assert_eq!(
+            (inv_count(&p.inv, 0), inv_count(&p.inv, 1)),
+            (before_0, before_1),
+            "nor paid for — a refusal costs nothing"
+        );
+
+        // The same address takes the twig doorway, so the refusal above is
+        // about the rung and not about the spot.
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            3,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_ZLO,
+            false,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
+        assert_eq!(pieces.len(), before_pieces + 1);
     }
 
     #[test]
@@ -2267,7 +3782,7 @@ mod tests {
                 CX,
                 CZ,
                 0,
-                LOC_EDGE_W,
+                LOC_EDGE_XLO,
                 mat,
                 &mut ev,
             );
@@ -2276,7 +3791,28 @@ mod tests {
                 (crate::world::EV_BUILD_REFUSED, 7, REFUSE_B_TIER)
             );
         }
-        // The foundation's shape has no stone rung in the fixture either.
+        // A shape with nothing above twig refuses the same way, and the
+        // **doorway** is that shape — twig v0 gave the foundation and the
+        // floor stone rungs of their own (rows 5 and 6), so the doorway is
+        // the only one left with a ceiling at twig. Put one on the other
+        // edge and ask it to climb.
+        place(
+            SEED,
+            hv(),
+            &bc,
+            &nod,
+            &mut pieces,
+            &mut p,
+            0,
+            3,
+            CX,
+            CZ,
+            0,
+            LOC_EDGE_ZLO,
+            false,
+            &mut ev,
+        );
+        assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
         upgrade(
             &bc,
             &nod,
@@ -2285,7 +3821,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_PLANE,
+            LOC_EDGE_ZLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2299,7 +3835,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2312,13 +3848,13 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_WOOD,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_TIER);
         assert_eq!(
-            pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row,
+            pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().row,
             4,
             "a refused downgrade left the stone standing"
         );
@@ -2327,7 +3863,7 @@ mod tests {
     #[test]
     fn upgrade_refuses_empty_air_distance_and_an_empty_purse() {
         let (bc, mut pieces, nod, mut ev, mut p) = walled(&[(0, 100), (1, 2)]);
-        // Nothing at the north edge.
+        // Nothing at the low-z edge.
         upgrade(
             &bc,
             &nod,
@@ -2336,7 +3872,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2351,18 +3887,19 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
         assert_eq!(last(&ev).2, REFUSE_B_COST);
         assert_eq!(inv_count(&p.inv, 1), 2, "a refusal charged nothing");
-        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row, 1);
+        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().row, 1);
 
         // Rich, but standing 20 m off.
         let mut far = player_at_cell_center(&[(1, 100)]);
         far.body = Body::at(
             SEED,
+            hv(),
             (CX as f32 + 7.5) * BUILD_CELL_M,
             (CZ as f32 + 0.5) * BUILD_CELL_M,
         );
@@ -2374,7 +3911,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2388,6 +3925,7 @@ mod tests {
         // A doorway beside the wall, sealed the way a placed door seals it.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2397,11 +3935,12 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_N,
+            LOC_EDGE_ZLO,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
-        pieces.set_door(CX, CZ, 0, LOC_EDGE_N, true);
+        pieces.set_door(CX, CZ, 0, LOC_EDGE_ZLO, true);
         let before = pieces.cols().get(CX, CZ);
 
         upgrade(
@@ -2412,7 +3951,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2432,9 +3971,10 @@ mod tests {
         let mut deploys = Deploys::new();
         let mut ev = EventQueue::default();
         let mut owner = player_at_cell_center(&[(0, 100), (1, 100), (2, 100), (3, 100)]);
-        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_W)] {
+        for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_XLO)] {
             place(
                 SEED,
+                hv(),
                 &bc,
                 &deploys,
                 &mut pieces,
@@ -2445,6 +3985,7 @@ mod tests {
                 CZ,
                 0,
                 loc,
+                false,
                 &mut ev,
             );
             assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2455,6 +3996,7 @@ mod tests {
             .expect("fixture holds a hearth");
         crate::deploy::place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -2480,7 +4022,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2488,7 +4030,7 @@ mod tests {
             last(&ev),
             (crate::world::EV_BUILD_REFUSED, 9, REFUSE_B_CLAIM)
         );
-        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row, 1);
+        assert_eq!(pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().row, 1);
 
         // The hearth's owner may still climb their own wall's ladder.
         upgrade(
@@ -2499,7 +4041,7 @@ mod tests {
             CX,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
             MAT_STONE,
             &mut ev,
         );
@@ -2513,11 +4055,12 @@ mod tests {
         let nod = Deploys::new();
         let mut ev = EventQueue::default();
         let mut p = player_at_cell_center(&[(0, 100)]);
-        // Foundation in the cell EAST of the wall's canonical cell: the
-        // wall at (CX+1, W) adjoins cells CX and CX+1 — support must come
+        // Foundation in the cell at +x from the wall's canonical cell: the
+        // wall at (CX+1, XLO) adjoins cells CX and CX+1 — support must come
         // from either side.
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2528,10 +4071,12 @@ mod tests {
             CZ,
             0,
             LOC_PLANE,
+            false,
             &mut ev,
         );
         place(
             SEED,
+            hv(),
             &bc,
             &nod,
             &mut pieces,
@@ -2541,7 +4086,8 @@ mod tests {
             CX + 1,
             CZ,
             0,
-            LOC_EDGE_W,
+            LOC_EDGE_XLO,
+            false,
             &mut ev,
         );
         assert_eq!(last(&ev).0, crate::world::EV_PIECE_PLACED);
@@ -2567,7 +4113,7 @@ mod tests {
         for (row, &shape) in shapes.iter().enumerate() {
             b.pieces[row] = PieceDef {
                 shape,
-                material: MAT_WOOD,
+                material: MAT_TWIG,
                 hp: 100,
                 n_costs: 0,
                 costs: [(0, 0); MAX_PIECE_COSTS],
@@ -2583,6 +4129,7 @@ mod tests {
         if !loc_fits_shape(shape, loc)
             || level >= MAX_BUILD_LEVELS as u8
             || pieces.find(cx, cz, level, loc).is_some()
+            || cell_body_conflict(pieces, cx, cz, level, loc)
             || !supported(pieces, shape, cx, cz, level, loc)
         {
             return false;
@@ -2594,8 +4141,11 @@ mod tests {
                 level,
                 loc,
                 row: shape,
+                facing: 0,
                 hp: 100,
                 uh: 0,
+                dmg: 0,
+                plate: 0,
             },
             shape,
             0,
@@ -2625,17 +4175,24 @@ mod tests {
                             // `supported()` treats the two alike but the
                             // column index files them in different masks,
                             // and a fixture that only ever puts doorways on
-                            // north edges never probes the west one.
+                            // low-z edges never probes the low-x one.
                             let alt = (x as u32 + z as u32 + level as u32).is_multiple_of(2);
-                            let (we, ne) = if alt {
+                            let (xe, ze) = if alt {
                                 (SHAPE_WALL, SHAPE_DOORWAY)
                             } else {
                                 (SHAPE_DOORWAY, SHAPE_WALL)
                             };
+                            // The diagonals ride the same pass (triangles
+                            // v0): B is attempted after A and the body
+                            // conflict refuses the cross, so the fixture
+                            // holds diagonal walls without ever holding an
+                            // impossible pair.
                             for &(loc, shape) in &[
                                 (LOC_RISER, SHAPE_STAIRS),
-                                (LOC_EDGE_W, we),
-                                (LOC_EDGE_N, ne),
+                                (LOC_EDGE_XLO, xe),
+                                (LOC_EDGE_ZLO, ze),
+                                (LOC_DIAG_A, SHAPE_WALL),
+                                (LOC_DIAG_B, SHAPE_WALL),
                             ] {
                                 if pieces.len() >= target {
                                     return;
@@ -2643,13 +4200,28 @@ mod tests {
                                 try_put(pieces, x, z, level, loc, shape);
                             }
                         } else if level < top {
-                            // Then the planes those edges now carry.
-                            let shape = if level + 1 == top {
-                                SHAPE_ROOF
+                            // Then the planes those edges now carry — and
+                            // where a full plane cannot stand (or already
+                            // does), the triangle halves try the same
+                            // storey, so the fixed point walks tri floors
+                            // and their diagonal bearers too.
+                            let (shape, tri) = if level + 1 == top {
+                                (SHAPE_ROOF, SHAPE_TRI_ROOF)
                             } else {
-                                SHAPE_FLOOR
+                                (SHAPE_FLOOR, SHAPE_TRI_FLOOR)
                             };
                             try_put(pieces, x, z, level + 1, LOC_PLANE, shape);
+                            for tloc in [
+                                LOC_TRI_XLO_ZLO,
+                                LOC_TRI_XHI_ZLO,
+                                LOC_TRI_XLO_ZHI,
+                                LOC_TRI_XHI_ZHI,
+                            ] {
+                                if pieces.len() >= target {
+                                    return;
+                                }
+                                try_put(pieces, x, z, level + 1, tloc, tri);
+                            }
                         }
                     }
                 }
@@ -2669,17 +4241,17 @@ mod tests {
         assert!(try_put(pieces, CX, CZ, 0, LOC_RISER, SHAPE_STAIRS));
         for level in 0..MAX_BUILD_LEVELS as u8 {
             // Both roles on both edge locs — all four edge masks live.
-            assert!(try_put(pieces, CX, CZ, level, LOC_EDGE_W, SHAPE_WALL));
-            assert!(try_put(pieces, CX, CZ, level, LOC_EDGE_N, SHAPE_DOORWAY));
+            assert!(try_put(pieces, CX, CZ, level, LOC_EDGE_XLO, SHAPE_WALL));
+            assert!(try_put(pieces, CX, CZ, level, LOC_EDGE_ZLO, SHAPE_DOORWAY));
             assert!(try_put(
                 pieces,
                 CX + 1,
                 CZ,
                 level,
-                LOC_EDGE_W,
+                LOC_EDGE_XLO,
                 SHAPE_DOORWAY
             ));
-            assert!(try_put(pieces, CX, CZ + 1, level, LOC_EDGE_N, SHAPE_WALL));
+            assert!(try_put(pieces, CX, CZ + 1, level, LOC_EDGE_ZLO, SHAPE_WALL));
         }
     }
 
@@ -2922,9 +4494,16 @@ mod tests {
             SHAPE_FOUNDATION
         ));
         // Adjoins only the foundation that is about to go.
-        assert!(try_put(&mut pieces, CX, CZ, 0, LOC_EDGE_W, SHAPE_WALL));
+        assert!(try_put(&mut pieces, CX, CZ, 0, LOC_EDGE_XLO, SHAPE_WALL));
         // The shared boundary: adjoins both cells, so it keeps a leg.
-        assert!(try_put(&mut pieces, CX + 1, CZ, 0, LOC_EDGE_W, SHAPE_WALL));
+        assert!(try_put(
+            &mut pieces,
+            CX + 1,
+            CZ,
+            0,
+            LOC_EDGE_XLO,
+            SHAPE_WALL
+        ));
         assert!(try_put(&mut pieces, CX + 1, CZ, 0, LOC_RISER, SHAPE_STAIRS));
         assert!(try_put(&mut pieces, CX + 1, CZ, 1, LOC_PLANE, SHAPE_FLOOR));
 
@@ -2941,8 +4520,8 @@ mod tests {
         );
 
         assert_eq!(fell, 1, "only the wall standing on one leg should fall");
-        assert!(pieces.find(CX, CZ, 0, LOC_EDGE_W).is_none());
-        assert!(pieces.find(CX + 1, CZ, 0, LOC_EDGE_W).is_some());
+        assert!(pieces.find(CX, CZ, 0, LOC_EDGE_XLO).is_none());
+        assert!(pieces.find(CX + 1, CZ, 0, LOC_EDGE_XLO).is_some());
         assert!(pieces.find(CX + 1, CZ, 1, LOC_PLANE).is_some());
         assert!(pieces.find(CX + 1, CZ, 0, LOC_RISER).is_some());
     }
@@ -3135,13 +4714,18 @@ mod tests {
         let mut p = Player {
             id: 7,
             active: true,
-            body: Body::at(SEED, 0.5 * BUILD_CELL_M, 0.5 * BUILD_CELL_M),
+            body: Body::at(SEED, hv(), 0.5 * BUILD_CELL_M, 0.5 * BUILD_CELL_M),
             ..Player::default()
         };
-        p.inv[0] = ItemStack { item: 0, count: 9 };
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 9,
+            cond: 0,
+        };
 
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3168,6 +4752,7 @@ mod tests {
         ev.clear();
         place_deploy(
             SEED,
+            hv(),
             &dc,
             &bc,
             &mut pieces,
@@ -3289,13 +4874,13 @@ mod tests {
         let mut ev = EventQueue::default();
 
         assert!(try_put(&mut pieces, CX, CZ, 0, LOC_PLANE, SHAPE_FOUNDATION));
-        assert!(try_put(&mut pieces, CX, CZ, 0, LOC_EDGE_W, SHAPE_WALL));
+        assert!(try_put(&mut pieces, CX, CZ, 0, LOC_EDGE_XLO, SHAPE_WALL));
         assert!(try_put(&mut pieces, CX, CZ, 1, LOC_PLANE, SHAPE_FLOOR));
-        assert!(try_put(&mut pieces, CX, CZ, 1, LOC_EDGE_W, SHAPE_WALL));
+        assert!(try_put(&mut pieces, CX, CZ, 1, LOC_EDGE_XLO, SHAPE_WALL));
         assert!(try_put(&mut pieces, CX, CZ, 2, LOC_PLANE, SHAPE_FLOOR));
         assert_eq!(pieces.len(), 5);
 
-        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_W).unwrap();
+        let i = pieces.find_index(CX, CZ, 0, LOC_EDGE_XLO).unwrap();
         let died = crate::deploy::damage_piece(
             &dc,
             &bc,

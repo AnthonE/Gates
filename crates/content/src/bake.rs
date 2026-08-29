@@ -8,37 +8,63 @@
 //! in this module runs on the sim thread.
 
 use crate::schema::{
-    CookStation, DeployArchetype, Material, NodeArchetype, Placement, Shape, Station, Weapon,
-    WeaponKind,
+    Ammo, Armor, ArmorSlot, CookStation, DeployArchetype, Material, NodeArchetype, Placement,
+    Shape, Station, Weapon, WeaponKind,
 };
 use crate::Content;
 use sim_core::backpack::BackpackContent;
 use sim_core::build::{
-    BuildContent, PieceDef, MAT_METAL, MAT_STONE, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
-    SHAPE_FOUNDATION, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_WALL,
+    BuildContent, PieceDef, MAT_METAL, MAT_STONE, MAT_TWIG, MAT_WOOD, SHAPE_DOORWAY, SHAPE_FLOOR,
+    SHAPE_FOUNDATION, SHAPE_FRAME, SHAPE_ROOF, SHAPE_STAIRS, SHAPE_TRI_FLOOR, SHAPE_TRI_FOUNDATION,
+    SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
-use sim_core::combat::{CombatContent, MeleeDef, RangedDef, ThrowDef};
-use sim_core::craft::{CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1};
+use sim_core::combat::{
+    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, WEAR_BODY, WEAR_HEAD,
+    WEAR_NONE,
+};
+use sim_core::craft::{
+    CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2,
+    STATION_WORKBENCH3,
+};
 use sim_core::deploy::{
     DeployContent, DeployDef, ARCH_BAG, ARCH_BOX, ARCH_DOOR, ARCH_FIRE, ARCH_FURNACE, ARCH_HEARTH,
-    ARCH_LOCK, ARCH_WORKBENCH, PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION,
-    PLACE_GROUND,
+    ARCH_LOCK, ARCH_RECYCLER, ARCH_RESEARCH, ARCH_WORKBENCH, ARCH_WORKBENCH2, ARCH_WORKBENCH3,
+    PLACE_ANY, PLACE_DOOR, PLACE_DOORWAY, PLACE_FOUNDATION, PLACE_GROUND,
 };
 use sim_core::gather::ItemStack;
 use sim_core::gather::{GatherContent, NodeDef, MAX_TOOLS_PER_NODE, NO_ITEM};
 use sim_core::inventory::SpawnKit;
 use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
-    ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS,
-    MAX_DEPLOY_COSTS, MAX_DEPLOY_DEFS, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
-    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS, TICK_HZ,
+    ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
+    MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
+    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
+    MAX_RESEARCH_ROWS, MAX_WEAPON_AMMO, TICK_HZ,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
 };
-use sim_core::mob::{MobContent, MobDef, MOB_LOOT_ROWS, MOB_PIG};
+use sim_core::mob::{MobContent, MobDef, MOB_LOOT_ROWS, MOB_PIG, MOB_WOLF};
 use sim_core::oven::{CookContent, CookRow};
+use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
 use sim_core::survival::{ConsumableDef, SurvivalContent, TICKS_PER_MIN};
+
+/// Container name → baked `loot::LOOT_*` index, for exactly the containers
+/// the sim owns an open verb for: a barrel is smashed (`gather::smash`) and
+/// a crate or a cache is opened (`worldcont::open`, world containers v0,
+/// 2026-08-14). One authority on purpose — `bake_loot` resolves through it
+/// and `validate`'s reachability set widens by it — so "which containers a
+/// verb opens" cannot drift between the two the way a hand-kept list would
+/// (the CLAUDE.md mirror trap). `ci/haven_prize.mjs` greps this match for
+/// the literal `"<container>" => LOOT_*` arms, so keep them spelled bare.
+pub fn container_index(name: &str) -> Option<usize> {
+    Some(match name {
+        "barrel" => LOOT_BARREL,
+        "crate" => LOOT_CRATE,
+        "cache" => LOOT_CACHE,
+        _ => return None,
+    })
+}
 
 /// Gatherable index (terrain `Occupant as usize - 1`) of each archetype.
 fn node_slot(a: NodeArchetype) -> usize {
@@ -82,6 +108,12 @@ impl Content {
             let idx = self.item_index(&item.id).expect("own id") as usize;
             gc.stack_max[idx] = u16::try_from(item.stack)
                 .map_err(|_| format!("bake: `{}` stack {} overflows u16", item.id, item.stack))?;
+            gc.cond_max[idx] = u16::try_from(item.condition_max).map_err(|_| {
+                format!(
+                    "bake: `{}` condition_max {} overflows u16 hundredths",
+                    item.id, item.condition_max
+                )
+            })?;
         }
         for g in &self.gatherables {
             let slot = node_slot(g.archetype);
@@ -103,6 +135,7 @@ impl Content {
                 finish_pct: u16::try_from(g.finish_bonus_pct)
                     .map_err(|_| format!("bake: `{}` finish bonus overflows u16", g.id))?,
                 tools: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
+                wear: [(NO_ITEM, 0); MAX_TOOLS_PER_NODE],
                 secondary: match &g.secondary {
                     None => (NO_ITEM, 0),
                     Some(s) => (
@@ -133,6 +166,26 @@ impl Content {
                     .ok_or_else(|| format!("bake: `{}` tool `{tool}` missing", g.id))?;
                 def.tools[tool_n] = (idx, per);
                 tool_n += 1;
+            }
+            // The wear table, resolved to item indices exactly as the
+            // tool rows are. `validate` (V2–V6) has already refused a
+            // `hand` row, a zero loss, an orphan tool and a tool with no
+            // condition; what this adds is the width refusal and the
+            // capacity one — the same posture as the tool loop above.
+            for (wear_n, (tool, loss)) in g.condition_loss.iter().enumerate() {
+                let per = u16::try_from(*loss).map_err(|_| {
+                    format!("bake: `{}` condition_loss for `{tool}` overflows u16", g.id)
+                })?;
+                if wear_n == MAX_TOOLS_PER_NODE {
+                    return Err(format!(
+                        "bake: `{}` has more than {MAX_TOOLS_PER_NODE} condition_loss rows",
+                        g.id
+                    ));
+                }
+                let idx = self
+                    .item_index(tool)
+                    .ok_or_else(|| format!("bake: `{}` wear tool `{tool}` missing", g.id))?;
+                def.wear[wear_n] = (idx, per);
             }
             gc.nodes[slot] = def;
         }
@@ -186,6 +239,7 @@ impl Content {
                 ));
             }
             let mut def = RecipeDef {
+                blueprint: r.blueprint,
                 output: self
                     .item_index(&r.output)
                     .ok_or_else(|| format!("bake: `{}` output missing", r.id))?,
@@ -194,6 +248,8 @@ impl Content {
                 station: match r.station {
                     Station::None => STATION_NONE,
                     Station::Workbench1 => STATION_WORKBENCH1,
+                    Station::Workbench2 => STATION_WORKBENCH2,
+                    Station::Workbench3 => STATION_WORKBENCH3,
                     Station::Furnace => STATION_FURNACE,
                 },
                 n_inputs: r.inputs.len() as u8,
@@ -258,8 +314,14 @@ impl Content {
                     Shape::Floor => SHAPE_FLOOR,
                     Shape::Stairs => SHAPE_STAIRS,
                     Shape::Roof => SHAPE_ROOF,
+                    Shape::Window => SHAPE_WINDOW,
+                    Shape::WallFrame => SHAPE_FRAME,
+                    Shape::TriFoundation => SHAPE_TRI_FOUNDATION,
+                    Shape::TriFloor => SHAPE_TRI_FLOOR,
+                    Shape::TriRoof => SHAPE_TRI_ROOF,
                 },
                 material: match p.material {
+                    Material::Twig => MAT_TWIG,
                     Material::Wood => MAT_WOOD,
                     Material::Stone => MAT_STONE,
                     Material::Metal => MAT_METAL,
@@ -383,6 +445,10 @@ impl Content {
                     DeployArchetype::Workbench => ARCH_WORKBENCH,
                     DeployArchetype::Door => ARCH_DOOR,
                     DeployArchetype::Lock => ARCH_LOCK,
+                    DeployArchetype::Recycler => ARCH_RECYCLER,
+                    DeployArchetype::Research => ARCH_RESEARCH,
+                    DeployArchetype::Workbench2 => ARCH_WORKBENCH2,
+                    DeployArchetype::Workbench3 => ARCH_WORKBENCH3,
                 },
                 placement: match d.placement {
                     Placement::Ground => PLACE_GROUND,
@@ -425,6 +491,7 @@ impl Content {
         dc.mat_count = mats.len() as u8;
         for (m, pct) in &self.balance.globals.decay_pct_per_period {
             let idx = match m {
+                Material::Twig => sim_core::build::MAT_TWIG,
                 Material::Wood => sim_core::build::MAT_WOOD,
                 Material::Stone => sim_core::build::MAT_STONE,
                 Material::Metal => sim_core::build::MAT_METAL,
@@ -452,13 +519,15 @@ impl Content {
     /// weapon that silently cannot raid is the bug the column exists to
     /// prevent.
     ///
-    /// Melee, **bow** and throwable cross. Firearm rows are still
-    /// deliberately dropped rather than half-baked, on the rule this
-    /// comment has carried since melee v0: a projectile the sim can read
-    /// but not fire is a number that looks armed and is not. The revolver
-    /// is hitscan in the content (no `ballistic` block at all,
-    /// CONTENT.md §1) and a hitscan shot wants the rewound raycast that is
-    /// M2's lag-comp work.
+    /// **Every kind crosses now.** Firearm rows were dropped here until
+    /// 2026-08-19, on the rule this comment carried since melee v0 — a
+    /// projectile the sim can read but not fire is a number that looks
+    /// armed and is not — and the rule was right while `sim-core` had no
+    /// hitscan path. What made it stop being right is that the revolver
+    /// was not inert data: it is a barrel drop with a recipe, a research
+    /// rung and a craftable round, so a player could pay three times over
+    /// for a gun that could not shoot. `ranged::hitscan` is the path, and
+    /// a firearm bakes through the same `bake_ranged` a bow does.
     ///
     /// The throwable stopped being one of those the tick `charge.rs`
     /// landed — its `structure` is what the raid ratio divides wall hp by,
@@ -487,9 +556,46 @@ impl Content {
         if cc.player_hp == 0 {
             return Err("bake: player_hp 0 would disarm combat entirely".to_string());
         }
+        // `validate::structural` has already pinned this to 0..=100, so the
+        // narrow cannot fail on shipped content; it is written as a bake
+        // refusal anyway for `repair_cost_pct`'s reason one function over —
+        // `bake_combat` is reachable from fixtures that never validated.
+        cc.arrow_break_pct = u16::try_from(self.balance.globals.arrow_break_pct)
+            .ok()
+            .filter(|&p| p <= 100)
+            .ok_or_else(|| {
+                format!(
+                    "bake: arrow_break_pct {} is not a percentage",
+                    self.balance.globals.arrow_break_pct
+                )
+            })?;
+        // Seconds → ticks, checked, exactly like a throwable's `fuse_s`.
+        // A lodge nobody could outlive is a lodge that never expires, so
+        // the overflow is refused rather than saturated.
+        cc.arrow_lodge_ticks = self
+            .balance
+            .globals
+            .arrow_lodge_s
+            .checked_mul(TICK_HZ)
+            .ok_or_else(|| {
+                format!(
+                    "bake: arrow_lodge_s {} overflows a tick count",
+                    self.balance.globals.arrow_lodge_s
+                )
+            })?;
+        // Rounds before weapons: a bow's row is meaningless without the
+        // ballistics its rounds carry, and baking them first means a
+        // failure names the round rather than the weapon that happened to
+        // list it.
+        for a in &self.ammo {
+            self.bake_ammo(a, &mut cc)?;
+        }
+        for a in &self.armors {
+            self.bake_armor(a, &mut cc)?;
+        }
         for w in &self.weapons {
-            if w.kind == WeaponKind::Bow {
-                self.bake_bow(w, &mut cc)?;
+            if w.kind == WeaponKind::Bow || w.kind == WeaponKind::Firearm {
+                self.bake_ranged(w, &mut cc)?;
                 continue;
             }
             if w.kind != WeaponKind::Melee && w.kind != WeaponKind::Throwable {
@@ -583,91 +689,226 @@ impl Content {
         Ok(cc)
     }
 
-    /// One `kind = "bow"` row into the sim's ranged table.
+    /// One `kind = "bow"` or `kind = "firearm"` row into the sim's ranged
+    /// table. **One function for both, and the difference is one flag.**
     ///
-    /// `validate.rs` has already refused a bow without a `ballistic` block
-    /// or without an ammo item that exists, so both unwraps below are
-    /// re-checks rather than the first check — kept because a bake that
-    /// trusts a validator it does not call is one refactor away from
-    /// panicking at boot.
+    /// The two kinds are the same row — damage, a preference-ordered round
+    /// list, a cadence and a reach — differing only in when the shot
+    /// resolves: a bow stands an arrow up and the flight decides, a firearm
+    /// decides on the tick the trigger is pulled. `RangedDef::hitscan`
+    /// carries that and nothing else does, so the sim never re-derives it
+    /// from whether a round happens to own ballistics.
     ///
-    /// The refusal that is genuinely new here is the **sampler wall**. An
-    /// arrow is traced by point samples `ARROW_STEP_MM` apart, at most
-    /// `MAX_ARROW_SUBSTEPS` of them in a tick, so a muzzle speed past their
-    /// product cannot be traced honestly — it would fly through a wall
-    /// between two taps. Content that fast is refused at boot rather than
-    /// shipped and silently clamped, because a clamped projectile is a
+    /// `validate.rs` has already refused a bow whose round has no
+    /// `[[ammo]]` row, a firearm whose round *has* one, and either without
+    /// an ammo item that exists, so the lookups below are re-checks rather
+    /// than the first check — kept because a bake that trusts a validator
+    /// it does not call is one refactor away from panicking at boot.
+    ///
+    /// The refusals that are genuinely new here are the two **sampler
+    /// walls**, one per kind, and they are the same wall against different
+    /// clocks. An arrow is traced by point samples `ARROW_STEP_MM` apart,
+    /// at most `MAX_ARROW_SUBSTEPS` of them in a tick, so a muzzle speed
+    /// past their product cannot be traced honestly — that one lives in
+    /// `bake_ammo`, on the round. A bullet pays its whole reach in one
+    /// tick, so the same spacing bounds `range_m` instead, at
+    /// `MAX_HITSCAN_SAMPLES`. Content past either is refused at boot rather
+    /// than shipped and silently clamped, because a clamped shot is a
     /// weapon whose reach is a lie the data does not admit to.
-    fn bake_bow(&self, w: &Weapon, cc: &mut CombatContent) -> Result<(), String> {
+    fn bake_ranged(&self, w: &Weapon, cc: &mut CombatContent) -> Result<(), String> {
         let idx = self
             .item_index(&w.id)
             .ok_or_else(|| format!("bake: weapon `{}` arms no item", w.id))?
             as usize;
-        let b = w
-            .ballistic
-            .as_ref()
-            .ok_or_else(|| format!("bake: bow `{}` has no ballistic block", w.id))?;
-        let ammo_id = w
+        let round_ids = w
             .ammo
-            .as_ref()
-            .ok_or_else(|| format!("bake: bow `{}` names no ammo", w.id))?;
-        let ammo = self
-            .item_index(ammo_id)
-            .ok_or_else(|| format!("bake: bow `{}` ammo `{ammo_id}` is not an item", w.id))?;
+            .as_deref()
+            .filter(|a| !a.is_empty())
+            .ok_or_else(|| format!("bake: ranged weapon `{}` names no ammo", w.id))?;
+        // Refused, never truncated: a list past the cap silently losing its
+        // tail is a bow that stops firing when its first rounds run out,
+        // which reads as a bug in the quiver rather than in the table.
+        if round_ids.len() > MAX_WEAPON_AMMO {
+            return Err(format!(
+                "bake: ranged weapon `{}` lists {} rounds, past the {MAX_WEAPON_AMMO} a weapon \
+                 may carry",
+                w.id,
+                round_ids.len()
+            ));
+        }
+        let mut ammo = [NO_ITEM; MAX_WEAPON_AMMO];
+        for (slot, id) in ammo.iter_mut().zip(round_ids) {
+            *slot = self.item_index(id).ok_or_else(|| {
+                format!("bake: ranged weapon `{}` ammo `{id}` is not an item", w.id)
+            })?;
+        }
 
         let damage = u16::try_from(w.damage)
             .map_err(|_| format!("bake: `{}` damage {} overflows u16", w.id, w.damage))?;
+        // The melee arm's rule on the melee arm's column: refused, never
+        // truncated. A `structure` past `u16` silently wrapping is a wall
+        // that a bow opens in one shot.
+        let structure = u16::try_from(w.structure)
+            .map_err(|_| format!("bake: `{}` structure {} overflows u16", w.id, w.structure))?;
         if damage == 0 {
-            return Err(format!("bake: bow `{}` deals no damage", w.id));
+            return Err(format!("bake: ranged weapon `{}` deals no damage", w.id));
         }
-        // m/s -> mm/tick. Floor: an arrow that flies a hair slower than the
-        // data says is honest, one that flies faster than it was sampled
-        // for is not.
-        let speed_mmpt = b.speed_mps * 1000 / TICK_HZ;
-        if speed_mmpt == 0 {
+        if w.rate_per_min == 0 {
             return Err(format!(
-                "bake: bow `{}` fires slower than one mm a tick",
+                "bake: ranged weapon `{}` never fires (rate 0)",
                 w.id
             ));
         }
-        let ceiling = ARROW_STEP_MM as u32 * MAX_ARROW_SUBSTEPS as u32;
-        if speed_mmpt > ceiling {
-            return Err(format!(
-                "bake: bow `{}` at {} m/s is {speed_mmpt} mm/tick, past the {ceiling} mm/tick \
-                 the collision sampler can trace ({ARROW_STEP_MM} mm x {MAX_ARROW_SUBSTEPS} \
-                 samples); it would pass through a wall between two taps",
-                w.id, b.speed_mps
-            ));
-        }
-        let speed_mmpt = u16::try_from(speed_mmpt)
-            .map_err(|_| format!("bake: bow `{}` speed overflows u16 mm/tick", w.id))?;
-        // m/s^2 -> mm/tick^2, over the square of the rate.
-        let drop_mmpt2 = u16::try_from(b.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ))
-            .map_err(|_| format!("bake: bow `{}` drop overflows u16 mm/tick^2", w.id))?;
-        if w.rate_per_min == 0 {
-            return Err(format!("bake: bow `{}` never fires (rate 0)", w.id));
-        }
         let rate_ticks = u16::try_from((TICK_HZ * 60 / w.rate_per_min).max(1))
-            .map_err(|_| format!("bake: bow `{}` rate overflows u16 ticks", w.id))?;
-        // Ticks to cross `range_m` at the muzzle speed, clamped to the
-        // store's backstop. Derived rather than authored so the one number
-        // the data states about reach — `range_m` — is the one that governs
-        // it, exactly as `reach_cm` does for melee.
-        let life = (w.range_m * 1000 / speed_mmpt as u32).max(1);
-        let life_ticks = u16::try_from(life)
-            .unwrap_or(MAX_ARROW_LIFE_TICKS)
-            .min(MAX_ARROW_LIFE_TICKS);
+            .map_err(|_| format!("bake: ranged weapon `{}` rate overflows u16 ticks", w.id))?;
+        // A reach of zero would be a weapon that fires into its own muzzle:
+        // an arrow whose derived life is one tick, or a hitscan segment with
+        // no length. Refused here rather than left to read as a strange
+        // weapon, because both are silent — neither errors, and neither can
+        // ever hit anything.
+        if w.range_m == 0 {
+            return Err(format!("bake: ranged weapon `{}` has no reach", w.id));
+        }
+        let hitscan = w.kind == WeaponKind::Firearm;
+        if hitscan {
+            // The hitscan sampler wall. `ranged::hitscan` walks the reach at
+            // `ARROW_STEP_MM`, and a gun that needs more taps than
+            // `MAX_HITSCAN_SAMPLES` cannot be traced at the spacing a trunk
+            // needs — it would shoot through cover past some distance
+            // nothing writes down.
+            let taps = w.range_m as usize * 1000 / ARROW_STEP_MM as usize + 1;
+            if taps > MAX_HITSCAN_SAMPLES {
+                return Err(format!(
+                    "bake: firearm `{}` reaches {} m, which is {taps} collision samples, past \
+                     the {MAX_HITSCAN_SAMPLES} one hitscan shot may take ({ARROW_STEP_MM} mm \
+                     apart); it would shoot through cover",
+                    w.id, w.range_m
+                ));
+            }
+        }
 
         if cc.ranged[idx].damage != 0 {
             return Err(format!("bake: duplicate weapon row for `{}`", w.id));
         }
         cc.ranged[idx] = RangedDef {
             damage,
-            speed_mmpt,
-            drop_mmpt2,
             ammo,
             rate_ticks,
-            life_ticks,
+            hitscan,
+            // Reach in millimetres. Flight time is no longer derived here
+            // because it is no longer the weapon's to derive: with the
+            // speed on the round, `range_m` over *which* speed? The sim
+            // divides by the round it actually fires (`ranged::draw`).
+            range_mm: w.range_m * 1000,
+            // The structure column, carried at last. It has been on the
+            // bow, the crossbow and the revolver in `weapons.toml` since
+            // the content crate and been dropped here every bake — parsed,
+            // range-checked, `canon`-hashed, and thrown away one line
+            // before the sim could read it. `RangedDef::structure` says
+            // what that cost.
+            structure,
+        };
+        Ok(())
+    }
+
+    /// One `[[ammo]]` row into the sim's ballistics table.
+    ///
+    /// **The sampler wall lives here now, and moving it is the point.** It
+    /// used to guard a bow, which meant a round too fast for the collision
+    /// tracer was only refused if some *weapon* declared that speed. With
+    /// ballistics on the round, the refusal belongs to the round: an arrow
+    /// that outruns the sampler would pass through a wall between two taps
+    /// whichever bow launched it.
+    fn bake_ammo(&self, a: &Ammo, cc: &mut CombatContent) -> Result<(), String> {
+        let idx =
+            self.item_index(&a.id)
+                .ok_or_else(|| format!("bake: ammo `{}` arms no item", a.id))? as usize;
+        // m/s -> mm/tick. Floor: a round that flies a hair slower than the
+        // data says is honest, one that flies faster than it was sampled
+        // for is not.
+        let speed_mmpt = a.speed_mps * 1000 / TICK_HZ;
+        if speed_mmpt == 0 {
+            return Err(format!(
+                "bake: ammo `{}` flies slower than one mm a tick",
+                a.id
+            ));
+        }
+        let ceiling = ARROW_STEP_MM as u32 * MAX_ARROW_SUBSTEPS as u32;
+        if speed_mmpt > ceiling {
+            return Err(format!(
+                "bake: ammo `{}` at {} m/s is {speed_mmpt} mm/tick, past the {ceiling} mm/tick \
+                 the collision sampler can trace ({ARROW_STEP_MM} mm x {MAX_ARROW_SUBSTEPS} \
+                 samples); it would pass through a wall between two taps",
+                a.id, a.speed_mps
+            ));
+        }
+        let speed_mmpt = u16::try_from(speed_mmpt)
+            .map_err(|_| format!("bake: ammo `{}` speed overflows u16 mm/tick", a.id))?;
+        // m/s^2 -> mm/tick^2, over the square of the rate.
+        let drop_mmpt2 = u16::try_from(a.drop_mps2 * 1000 / (TICK_HZ * TICK_HZ))
+            .map_err(|_| format!("bake: ammo `{}` drop overflows u16 mm/tick^2", a.id))?;
+
+        if cc.ammo[idx].speed_mmpt != 0 {
+            return Err(format!("bake: duplicate ammo row for `{}`", a.id));
+        }
+        cc.ammo[idx] = AmmoDef {
+            speed_mmpt,
+            drop_mmpt2,
+        };
+        Ok(())
+    }
+
+    /// One `content/armor.toml` row into the sim's worn-protection table.
+    ///
+    /// **This is the function that stopped `armor.toml` from being priced,
+    /// validated, hashed, balance-anchored and unread** (2026-08-19). Every
+    /// column it does *not* carry across is a deliberate omission with a
+    /// consumer that does not exist: `move_penalty_pct` reaches no line of
+    /// `movement.rs`, and there is no damage-type vector because the
+    /// reference's own Protection tables put Projectile and Melee at the
+    /// same value on all three pieces we ship (`reference/RIPLIST.md` §1h).
+    ///
+    /// The slot crosses too, and it is not decoration: `Player::worn` is
+    /// indexed *by* slot, so this is what makes a head piece protect from
+    /// the head slot and nowhere else. Baked one-based
+    /// (`combat::WEAR_HEAD`/`WEAR_BODY`) so that a zeroed table is an inert
+    /// one — item index 0 is a real item, and a zero *slot* has to mean
+    /// "not armor" rather than "a headpiece".
+    ///
+    /// The two refusals are the pattern `bake_ammo` set: a duplicate row
+    /// (validation catches it upstream; this catches a table that was
+    /// filled twice by a future caller) and a row the sim cannot represent.
+    /// A zero reduction is refused here rather than at validation because
+    /// the sentinel is the sim's — a zero row *is* "not armor" in
+    /// `CombatContent`, so content that declares a piece protecting nothing
+    /// would silently become an unwearable item rather than a useless one.
+    fn bake_armor(&self, a: &Armor, cc: &mut CombatContent) -> Result<(), String> {
+        let idx = self
+            .item_index(&a.id)
+            .ok_or_else(|| format!("bake: armor `{}` arms no item", a.id))?
+            as usize;
+        if cc.armor[idx].slot != WEAR_NONE {
+            return Err(format!("bake: duplicate armor row for `{}`", a.id));
+        }
+        if a.reduction_pct == 0 {
+            return Err(format!("bake: armor `{}` protects from nothing", a.id));
+        }
+        // `validate` already refuses a row over 90, so this cannot fail on
+        // shipped content — it is here because the sim's field is a `u8`
+        // and a bake that truncated would hand back a *lower* protection
+        // than the data declares, which is the silent-wrong class.
+        let reduction_pct = u8::try_from(a.reduction_pct).map_err(|_| {
+            format!(
+                "bake: armor `{}` reduction {} overflows the sim's u8 percent",
+                a.id, a.reduction_pct
+            )
+        })?;
+        cc.armor[idx] = ArmorDef {
+            reduction_pct,
+            slot: match a.slot {
+                ArmorSlot::Head => WEAR_HEAD,
+                ArmorSlot::Body => WEAR_BODY,
+            },
         };
         Ok(())
     }
@@ -724,7 +965,21 @@ impl Content {
             }
             let count = u16::try_from(e.count)
                 .map_err(|_| format!("bake: spawn_kit `{}` count overflows u16", e.item))?;
-            if !kit.set(i, ItemStack { item: idx, count }) {
+            // The kit's stack is minted at the item's own condition
+            // ceiling, NOT 0 (item durability v0). Inert while the kit is
+            // a rock and a torch — but a kit tool minted at 0 would be a
+            // dead tool on every spawn, a one-line trap with a two-week
+            // fuse the day a hatchet goes back in it.
+            let cond = u16::try_from(def.condition_max)
+                .map_err(|_| format!("bake: spawn_kit `{}` condition_max overflows u16", e.item))?;
+            if !kit.set(
+                i,
+                ItemStack {
+                    item: idx,
+                    count,
+                    cond,
+                },
+            ) {
                 return Err(format!("bake: spawn_kit slot {i} refused"));
             }
         }
@@ -839,18 +1094,98 @@ impl Content {
                 .seconds
                 .checked_mul(TICK_HZ)
                 .ok_or_else(|| format!("bake: cook `{}` {} s overflows", c.input, c.seconds))?;
+            let count = u16::try_from(c.count).map_err(|_| {
+                format!(
+                    "bake: cook `{}` pays {} units, past a u16",
+                    c.input, c.count
+                )
+            })?;
             cc.rows[i] = CookRow {
                 input,
                 output,
+                count,
                 ticks,
                 arch: match c.station {
                     CookStation::Fire => ARCH_FIRE,
                     CookStation::Furnace => ARCH_FURNACE,
+                    CookStation::Recycler => ARCH_RECYCLER,
                 },
             };
         }
         cc.row_count = self.cooks.len() as u16;
         Ok(cc)
+    }
+
+    /// The research table: what may be learned, what it unlocks, and what
+    /// it is paid in (`content/research.toml`, `sim-core/research.rs`).
+    ///
+    /// The recipe is resolved HERE, from the item, which is the whole
+    /// reason the file names an item and never a recipe id: the two cannot
+    /// then disagree about which thing was learned, and a row for an item
+    /// nothing crafts is a bake error rather than a coin sink that unlocks
+    /// nothing.
+    pub fn bake_research(&self) -> Result<ResearchContent, String> {
+        let mut rc = ResearchContent::EMPTY;
+        rc.coin = self.item_index(&self.research_coin.item).ok_or_else(|| {
+            format!(
+                "bake: research coin `{}` names no item",
+                self.research_coin.item
+            )
+        })?;
+        if self.research.len() > MAX_RESEARCH_ROWS {
+            return Err(format!(
+                "bake: {} research rows exceed the sim's {MAX_RESEARCH_ROWS}-row table",
+                self.research.len()
+            ));
+        }
+        for (i, r) in self.research.iter().enumerate() {
+            let item = self
+                .item_index(&r.item)
+                .ok_or_else(|| format!("bake: research item `{}` names no item", r.item))?;
+            let recipe_id = self
+                .recipes
+                .iter()
+                .find(|c| c.output == r.item)
+                .ok_or_else(|| {
+                    format!(
+                        "bake: research row `{}` unlocks nothing — no recipe outputs it",
+                        r.item
+                    )
+                })?;
+            let recipe = self.recipe_index(&recipe_id.id).expect("own id resolves");
+            let cost = u16::try_from(r.cost)
+                .map_err(|_| format!("bake: research `{}` costs {}, past a u16", r.item, r.cost))?;
+            // The tree edge: the parent is named by ITEM and stored as the
+            // parent row's RECIPE index, because the mask the sim checks
+            // is over recipes (tech tree v0). Validate has already walked
+            // the graph — this resolve can only fail on a bug there, so
+            // it errors rather than defaulting.
+            let requires = match &r.requires {
+                None => NO_RECIPE,
+                Some(parent_item) => {
+                    let parent = self
+                        .recipes
+                        .iter()
+                        .find(|c| &c.output == parent_item)
+                        .ok_or_else(|| {
+                            format!(
+                                "bake: research row `{}` requires `{parent_item}`, \
+                                 which no recipe outputs",
+                                r.item
+                            )
+                        })?;
+                    self.recipe_index(&parent.id).expect("own id resolves")
+                }
+            };
+            rc.rows[i] = ResearchRow {
+                item,
+                recipe,
+                cost,
+                requires,
+            };
+        }
+        rc.row_count = self.research.len() as u16;
+        Ok(rc)
     }
 
     pub fn bake_backpack(&self) -> Result<BackpackContent, String> {
@@ -915,17 +1250,12 @@ impl Content {
         }
         let mut lc = LootContent::EMPTY;
         for l in &self.loot_tables {
-            let which = match l.container.as_str() {
-                "barrel" => LOOT_BARREL,
-                "crate" => LOOT_CRATE,
-                "cache" => LOOT_CACHE,
-                other => {
-                    return Err(format!(
-                        "bake: loot `{}` names container `{other}`, which the sim has no verb for",
-                        l.id
-                    ))
-                }
-            };
+            let which = container_index(&l.container).ok_or_else(|| {
+                format!(
+                    "bake: loot `{}` names container `{}`, which the sim has no verb for",
+                    l.id, l.container
+                )
+            })?;
             if l.entries.len() > MAX_LOOT_ENTRIES {
                 return Err(format!(
                     "bake: loot `{}` has {} rows, past the sim's {MAX_LOOT_ENTRIES}",
@@ -990,6 +1320,7 @@ impl Content {
         for m in &self.mobs {
             let which = match m.id.as_str() {
                 "mob.pig" => MOB_PIG as usize,
+                "mob.wolf" => MOB_WOLF as usize,
                 other => {
                     return Err(format!(
                         "bake: mobs names species `{other}`, which the sim has no roster kind for"
@@ -1025,8 +1356,19 @@ impl Content {
                         .ok_or_else(|| format!("bake: mob `{}` flee span overflows", m.id))?,
                     "flee_seconds",
                 )?,
+                attack: small(m.attack, "attack")?,
+                attack_range_cm: m.attack_range_m as i64 * 100,
+                attack_ticks: small(
+                    m.attack_seconds
+                        .checked_mul(TICK_HZ)
+                        .ok_or_else(|| format!("bake: mob `{}` bite cadence overflows", m.id))?,
+                    "attack_seconds",
+                )?,
+                // Validate bounded it to 0..=100; the cast cannot truncate.
+                brave_pct: m.brave_pct as u8,
                 roam_cm: m.roam_m as i64 * 100,
                 spook_cm: m.spook_m as i64 * 100,
+                night_spook_cm: m.night_spook_m as i64 * 100,
                 respawn_ticks: m
                     .respawn_seconds
                     .checked_mul(TICK_HZ)
@@ -1034,15 +1376,22 @@ impl Content {
                 loot: [ItemStack {
                     item: NO_ITEM,
                     count: 0,
+                    cond: 0,
                 }; MOB_LOOT_ROWS],
             };
             for (i, d) in m.drops.iter().enumerate() {
                 let item = self
                     .item_index(&d.item)
                     .ok_or_else(|| format!("bake: mob `{}` drops unknown `{}`", m.id, d.item))?;
+                // A drop is a mint, so it arrives at its own ceiling —
+                // 0 for meat, and whole the day a species drops a tool.
                 def.loot[i] = ItemStack {
                     item,
                     count: small(d.count, "drop count")?,
+                    cond: u16::try_from(self.item(&d.item).map(|it| it.condition_max).unwrap_or(0))
+                        .map_err(|_| {
+                            format!("bake: mob `{}` drop `{}` condition overflows", m.id, d.item)
+                        })?,
                 };
             }
             mc.defs[which] = def;

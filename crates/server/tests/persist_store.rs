@@ -40,6 +40,14 @@ fn key(s: &str) -> PlayerKey {
     PlayerKey::new(s.as_bytes()).expect("fits")
 }
 
+/// The ceilings every `store::open` in this file validates against
+/// (`server::cond`). The probe fixture, because it is what `armed_core`
+/// installs — so the ceilings the boot checks are the ceilings the sim in
+/// these tests actually mints under.
+fn gc() -> GatherContent {
+    GatherContent::probe_fixture()
+}
+
 /// A scratch path under the test binary's temp dir. Named per test so the
 /// suite can run in parallel, and cleared on the way in rather than the way
 /// out — a failed test that leaves its file behind is evidence.
@@ -63,8 +71,8 @@ fn sweep(path: &Path) {
     }
 }
 
-fn armed_core() -> ShardCore {
-    let mut core = ShardCore::new(SEED);
+fn armed_core() -> Box<ShardCore> {
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.combat = CombatContent::probe_fixture();
     core.world.craft = CraftContent::probe_fixture();
     core.world.gather = GatherContent::probe_fixture();
@@ -95,7 +103,7 @@ fn a_shard_restart_remembers_a_player() {
 
     // --- session one -----------------------------------------------------
     let (want_inv, want_body) = {
-        let (saves, found) = store::open(&path, SEED, CONTENT).expect("a fresh file opens");
+        let (saves, found) = store::open(&path, SEED, CONTENT, &gc()).expect("a fresh file opens");
         assert!(found.created, "the first open must create the file");
         assert_eq!(found.live, 0, "a new file remembers nobody");
         let mut store = saves.store;
@@ -104,16 +112,17 @@ fn a_shard_restart_remembers_a_player() {
         let stats = ShardStats::default();
         let mut core = armed_core();
         assert!(core.connect(0, id_of(0)), "a fresh join");
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
 
         // Do something worth keeping.
         let slot = world_slot(&core, id_of(0));
         core.world.players[slot].inv[0] = ItemStack {
             item: 3,
             count: 128,
+            cond: 0,
         };
         core.world.players[slot].hp = 37;
-        core.tick(&stats, |_, _, _| true);
+        core.tick_bare(&stats, |_, _, _| true);
         let want_inv = core.world.players[slot].inv;
         let want_body = core.world.players[slot].body;
 
@@ -128,7 +137,7 @@ fn a_shard_restart_remembers_a_player() {
     }; // both halves dropped: the file is closed, the index is gone
 
     // --- session two: a different process, the same file -----------------
-    let (saves, found) = store::open(&path, SEED, CONTENT).expect("the file reopens");
+    let (saves, found) = store::open(&path, SEED, CONTENT, &gc()).expect("the file reopens");
     assert!(!found.created, "the second open must find the file");
     assert_eq!(found.corrupt, 0, "a clean write must read back clean");
     assert_eq!(found.live, 1, "the shard forgot the only player it had");
@@ -146,7 +155,7 @@ fn a_shard_restart_remembers_a_player() {
         Some(Admitted::Restored),
         "a restoring join"
     );
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
 
     let slot = world_slot(&core, id_of(0));
     let p = core.world.players[slot];
@@ -179,7 +188,7 @@ fn an_unknown_key_is_a_fresh_character() {
         Some(Admitted::Fresh),
         "a keyless join"
     );
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     let p = core.world.players[world_slot(&core, id_of(0))];
     assert_eq!(p.hp, core.world.combat.player_hp, "a fresh body is whole");
     assert!(p.inv.iter().all(|s| s.count == 0), "naked spawn");
@@ -195,7 +204,7 @@ fn the_autosave_sweep_is_bounded_and_skips_the_unchanged() {
     let stats = ShardStats::default();
     let mut core = armed_core();
     assert!(core.connect(0, id_of(0)));
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
 
     // A full lap of the cursor: exactly one record for the one connected
     // player, whatever else the lap visits.
@@ -256,6 +265,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
     let carried = ItemStack {
         item: 3,
         count: 128,
+        cond: 0,
     };
 
     // Session one: join keyed, carry something, log off. The disconnect's
@@ -267,13 +277,13 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
             .map(|(how, _)| how),
         Some(Admitted::Fresh)
     );
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     let slot = world_slot(&core, id_of(0));
     core.world.players[slot].inv[0] = carried;
     let (_, frozen) = core.disconnect(0).expect("a leaving player has a record");
     assert_eq!(frozen.inv[0], carried);
     store.put(&me, 1, frozen);
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.sleepers(), 1);
 
     // The raid, after the record froze: the sleeper is looted where it
@@ -284,7 +294,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
     for s in 1..MAX {
         assert!(core.connect(s, id_of(s)), "filler {s}");
     }
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.sleepers(), 1, "the fill must not evict");
 
     // The join that needs the sleeper's slot. Phase one hands back the
@@ -305,7 +315,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
     );
     // File it exactly as `drain_saves` would: by key, over the frozen one.
     store.put(&me, 2, current);
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(
         core.world.evictions, 1,
         "the evict must land under the join"
@@ -324,7 +334,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
     // logging off; its keyless sleeper is the next eviction's victim,
     // which also pins the guest arm: no key, no record, still evicted.
     core.disconnect(5);
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     let restored = store.find(&me).expect("the eviction filed a record");
     assert_eq!(restored.inv[0], ItemStack::default());
     let (how, evicted) = core
@@ -339,7 +349,7 @@ fn an_evicted_sleeper_comes_back_from_the_current_body_not_the_stale_record() {
         evicted.is_none(),
         "a keyless victim has no record to file — and never had one"
     );
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     let p = core.world.players[world_slot(&core, id2_of(5))];
     assert_eq!(
         p.inv[0],
@@ -366,17 +376,17 @@ fn two_joins_in_one_window_evict_two_different_sleepers() {
     // is the longest asleep and must be the first pick.
     assert!(core.connect_as(0, id_of(0), Some(a), None).is_some());
     assert!(core.connect_as(1, id_of(1), Some(b), None).is_some());
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     core.disconnect(0);
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     core.disconnect(1);
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.sleepers(), 2);
 
     for s in 2..MAX {
         assert!(core.connect(s, id_of(s)), "filler {s}");
     }
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
 
     // One window, no tick between: the second pick must see the first's
     // queued `Evict` and pass over its victim.
@@ -398,7 +408,7 @@ fn two_joins_in_one_window_evict_two_different_sleepers() {
          body, and the second join seats nobody"
     );
 
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.evictions, 2);
     assert_eq!(core.world.sleepers(), 0);
     for id in [id2_of(0), id2_of(1)] {
@@ -426,13 +436,13 @@ fn a_takeover_under_slot_pressure_evicts_nobody() {
     let me = key("comes-back");
 
     assert!(core.connect_as(0, id_of(0), Some(me), None).is_some());
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     core.disconnect(0);
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     for s in 1..MAX {
         assert!(core.connect(s, id_of(s)), "filler {s}");
     }
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.sleepers(), 1);
 
     let (how, evicted) = core
@@ -440,7 +450,7 @@ fn a_takeover_under_slot_pressure_evicts_nobody() {
         .expect("admitted");
     assert_eq!(how, Admitted::TookOver);
     assert!(evicted.is_none(), "a takeover charged somebody a body");
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert_eq!(core.world.evictions, 0);
     assert_eq!(core.world.sleepers(), 0, "the body is awake, not gone");
 }
@@ -453,7 +463,7 @@ fn a_second_disconnect_hands_back_nothing() {
     let stats = ShardStats::default();
     let mut core = armed_core();
     assert!(core.connect(0, id_of(0)));
-    core.tick(&stats, |_, _, _| true);
+    core.tick_bare(&stats, |_, _, _| true);
     assert!(core.disconnect(0).is_some(), "the first leave has a record");
     assert!(
         core.disconnect(0).is_none(),
@@ -472,17 +482,17 @@ fn a_second_disconnect_hands_back_nothing() {
 fn a_mismatched_file_refuses_to_boot_and_says_why() {
     let path = scratch("mismatch");
     {
-        let (_saves, found) = store::open(&path, SEED, CONTENT).expect("creates");
+        let (_saves, found) = store::open(&path, SEED, CONTENT, &gc()).expect("creates");
         assert!(found.created);
     }
 
-    let other_seed = store::open(&path, SEED + 1, CONTENT).expect_err("another island");
+    let other_seed = store::open(&path, SEED + 1, CONTENT, &gc()).expect_err("another island");
     assert!(
         other_seed.contains("seed") && other_seed.contains("island"),
         "a seed mismatch must say so: {other_seed}"
     );
 
-    let other_content = store::open(&path, SEED, CONTENT + 1).expect_err("moved content");
+    let other_content = store::open(&path, SEED, CONTENT + 1, &gc()).expect_err("moved content");
     assert!(
         other_content.contains("content") && other_content.contains("wipe"),
         "a content mismatch must name the content and the way out: {other_content}"
@@ -495,14 +505,14 @@ fn a_mismatched_file_refuses_to_boot_and_says_why() {
     // what is really a knob pointing at the wrong file.
     let junk = scratch("junk");
     std::fs::write(&junk, b"not a save file, a certificate").expect("write");
-    let too_short = store::open(&junk, SEED, CONTENT).expect_err("too short");
+    let too_short = store::open(&junk, SEED, CONTENT, &gc()).expect_err("too short");
     assert!(
         too_short.contains("too short to be a gates save file"),
         "a short file must say so: {too_short}"
     );
     let junk_long = scratch("junk-long");
     std::fs::write(&junk_long, vec![b'x'; store::SAVE_HEADER_BYTES * 4]).expect("write");
-    let bad_magic = store::open(&junk_long, SEED, CONTENT).expect_err("not a save file");
+    let bad_magic = store::open(&junk_long, SEED, CONTENT, &gc()).expect_err("not a save file");
     assert!(
         bad_magic.contains("not a gates save file"),
         "bad magic must say so: {bad_magic}"
@@ -512,7 +522,7 @@ fn a_mismatched_file_refuses_to_boot_and_says_why() {
     let truncated = scratch("truncated");
     let whole = std::fs::read(&path).expect("read");
     std::fs::write(&truncated, &whole[..whole.len() / 2]).expect("write");
-    let short = store::open(&truncated, SEED, CONTENT).expect_err("truncated");
+    let short = store::open(&truncated, SEED, CONTENT, &gc()).expect_err("truncated");
     assert!(
         short.contains("bytes") && short.contains("header describes"),
         "a truncated file must say so rather than reading records out of it: {short}"
@@ -532,7 +542,7 @@ fn one_corrupt_record_costs_one_player_and_boots() {
     let path = scratch("corrupt");
     let (good, bad) = (key("keeps-theirs"), key("loses-theirs"));
     {
-        let (saves, _) = store::open(&path, SEED, CONTENT).expect("creates");
+        let (saves, _) = store::open(&path, SEED, CONTENT, &gc()).expect("creates");
         let mut store = saves.store;
         let mut file = saves.file;
         for (i, k) in [good, bad].iter().enumerate() {
@@ -552,7 +562,8 @@ fn one_corrupt_record_costs_one_player_and_boots() {
     raw[second] ^= 0xff;
     std::fs::write(&path, &raw).expect("write");
 
-    let (saves, found) = store::open(&path, SEED, CONTENT).expect("a torn record must still boot");
+    let (saves, found) =
+        store::open(&path, SEED, CONTENT, &gc()).expect("a torn record must still boot");
     assert_eq!(found.corrupt, 1, "the torn record was not counted");
     assert_eq!(found.live, 1, "the intact record was lost with it");
     assert!(
@@ -575,7 +586,7 @@ fn two_keys_never_share_a_save() {
     let path = scratch("two");
     let (a, b) = (key("player-a"), key("player-b"));
     {
-        let (saves, _) = store::open(&path, SEED, CONTENT).expect("creates");
+        let (saves, _) = store::open(&path, SEED, CONTENT, &gc()).expect("creates");
         let mut store = saves.store;
         let mut file = saves.file;
         for (i, k) in [a, b].iter().enumerate() {
@@ -584,6 +595,7 @@ fn two_keys_never_share_a_save() {
             save.inv[0] = ItemStack {
                 item: i as u16 + 1,
                 count: (i as u16 + 1) * 10,
+                cond: 0,
             };
             let put = store.put(k, 1_700_000_000, save);
             assert!(!put.evicted);
@@ -591,15 +603,23 @@ fn two_keys_never_share_a_save() {
                 .expect("writes");
         }
     }
-    let (saves, found) = store::open(&path, SEED, CONTENT).expect("reopens");
+    let (saves, found) = store::open(&path, SEED, CONTENT, &gc()).expect("reopens");
     assert_eq!(found.live, 2);
     assert_eq!(
         saves.store.find(&a).expect("a").inv[0],
-        ItemStack { item: 1, count: 10 }
+        ItemStack {
+            item: 1,
+            count: 10,
+            cond: 0
+        }
     );
     assert_eq!(
         saves.store.find(&b).expect("b").inv[0],
-        ItemStack { item: 2, count: 20 }
+        ItemStack {
+            item: 2,
+            count: 20,
+            cond: 0
+        }
     );
     sweep(&path);
 }
@@ -613,7 +633,7 @@ fn the_file_is_a_fixed_size_and_writes_do_not_grow_it() {
     let path = scratch("size");
     let expect = (store::SAVE_HEADER_BYTES + MAX_SAVED_PLAYERS * store::SAVE_RECORD_BYTES) as u64;
     {
-        let (saves, _) = store::open(&path, SEED, CONTENT).expect("creates");
+        let (saves, _) = store::open(&path, SEED, CONTENT, &gc()).expect("creates");
         let mut store = saves.store;
         let mut file = saves.file;
         assert_eq!(
@@ -636,7 +656,7 @@ fn the_file_is_a_fixed_size_and_writes_do_not_grow_it() {
         expect,
         "500 saves grew the file — the record is not being written in place"
     );
-    let (saves, found) = store::open(&path, SEED, CONTENT).expect("reopens");
+    let (saves, found) = store::open(&path, SEED, CONTENT, &gc()).expect("reopens");
     assert_eq!(found.live, 1, "500 saves of one player are one record");
     assert_eq!(
         saves.store.find(&key("busy")).expect("there").body.qx,
@@ -672,7 +692,7 @@ fn boots_rotate_the_backups_oldest_first() {
     // the file held at the end of generation g.
     let mut history: Vec<Vec<u8>> = Vec::new();
     for gen in 1..=4u16 {
-        let (saves, _) = store::open(&path, SEED, CONTENT).expect("opens");
+        let (saves, _) = store::open(&path, SEED, CONTENT, &gc()).expect("opens");
         let mut store = saves.store;
         let mut file = saves.file;
         let mut save = PlayerSave::EMPTY;
@@ -730,7 +750,7 @@ fn a_boot_survives_a_backup_it_cannot_write() {
     let path = dir.join("players.save");
     // One boot to create the file, then make the directory unwritable so the
     // rotation's rename and copy both fail.
-    store::open(&path, SEED, CONTENT).expect("first boot creates");
+    store::open(&path, SEED, CONTENT, &gc()).expect("first boot creates");
     let mut perms = std::fs::metadata(&dir).expect("stat").permissions();
     #[cfg(unix)]
     {
@@ -739,7 +759,7 @@ fn a_boot_survives_a_backup_it_cannot_write() {
     }
     std::fs::set_permissions(&dir, perms).expect("chmod");
 
-    let booted = store::open(&path, SEED, CONTENT);
+    let booted = store::open(&path, SEED, CONTENT, &gc());
 
     // Restore write permission before asserting, so a failure still cleans up.
     let mut perms = std::fs::metadata(&dir).expect("stat").permissions();
@@ -808,9 +828,97 @@ fn the_save_file_knob_defaults_off_and_refuses_empty() {
 #[test]
 fn an_unopenable_path_is_a_boot_error() {
     let bad = Path::new("/this/directory/does/not/exist/players.save");
-    let err = store::open(bad, SEED, CONTENT).expect_err("an unwritable path must refuse");
+    let err = store::open(bad, SEED, CONTENT, &gc()).expect_err("an unwritable path must refuse");
     assert!(
         err.contains("players.save"),
         "the refusal must name the path: {err}"
     );
+}
+
+/// **The condition wall** (NOW.md §0dur remainder 4, review finding
+/// 2026-08-16): `PlayerSave::read_le` runs without the content tables, so a
+/// save file could smuggle a `cond` above the item's `condition_max`
+/// ceiling, or a nonzero `cond` onto an item whose ceiling is 0 — states no
+/// command can mint, arriving through the one non-command path into
+/// `World`. `store::open` now checks the loaded record against the baked
+/// ceilings (`server::cond` — refused as corrupt, never clamped; the
+/// module header carries the why) and this test drives it through the REAL
+/// boot path under the REAL shipped content, indices read off the baked
+/// table rather than hardcoded.
+///
+/// Proven red by making `server::cond::violation` return `None`: both
+/// forged records then load live and reach the index.
+#[test]
+fn a_record_with_unmintable_condition_is_refused_as_corrupt() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../content");
+    let content = content::Content::load_dir(&dir).expect("shipped content loads");
+    let gather = content.bake_gather().expect("shipped content bakes");
+    let hash = content.hash();
+
+    // Indices from the shipped table itself: one item that wears, one that
+    // carries no condition at all.
+    let worn = (0..gather.item_count)
+        .find(|&i| gather.cond_max[i as usize] > 0)
+        .expect("shipped content has a wearing item (the kit's rock)");
+    let inert = (0..gather.item_count)
+        .find(|&i| gather.cond_max[i as usize] == 0)
+        .expect("shipped content has a conditionless item (wood)");
+    let ceiling = gather.cond_max[worn as usize];
+
+    let mk = |item: u16, cond: u16| {
+        let mut s = PlayerSave::EMPTY;
+        s.hp = 1;
+        s.hp_max = 100;
+        s.inv[0] = ItemStack {
+            item,
+            count: 1,
+            cond,
+        };
+        s
+    };
+
+    let path = scratch("cond-wall");
+    {
+        // Written through the store's own writer — the checksum is valid,
+        // so what refuses these can only be the wall, not the torn-write
+        // detector.
+        let (mut saves, found) = store::open(&path, SEED, hash, &gather).expect("creates");
+        assert!(found.created);
+        for (i, (who, save)) in [
+            ("over", mk(worn, ceiling + 1)), // (i) above the ceiling
+            ("ghost", mk(inert, 1)),         // (ii) cond on a conditionless item
+            ("legal", mk(worn, ceiling)),    // control: exactly at the ceiling
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let put = saves.store.put(&key(who), i as u64 + 1, save);
+            assert!(saves
+                .file
+                .write(put.index, &key(who), i as u64 + 1, &save)
+                .expect("writes"));
+        }
+    }
+
+    let (saves, found) = store::open(&path, SEED, hash, &gather)
+        .expect("a file with forged records still boots — the blast radius is per record");
+    assert_eq!(
+        found.corrupt, 2,
+        "both un-mintable records must be refused as corrupt"
+    );
+    assert_eq!(found.live, 1, "the legal record must survive the wall");
+    assert!(
+        saves.store.find(&key("over")).is_none(),
+        "a condition past its ceiling reached the index"
+    );
+    assert!(
+        saves.store.find(&key("ghost")).is_none(),
+        "condition on a conditionless item reached the index"
+    );
+    assert_eq!(
+        saves.store.find(&key("legal")).map(|s| s.inv[0].cond),
+        Some(ceiling),
+        "a tool at exactly its ceiling is mintable and must load"
+    );
+    sweep(&path);
 }

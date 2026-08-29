@@ -11,7 +11,7 @@ use client_core::core::{
 use protocol::{ActionMsg, ItemCatalog};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
-use sim_core::build::{BuildContent, LOC_EDGE_W, LOC_PLANE, REFUSE_B_SPOT, REFUSE_B_TIER};
+use sim_core::build::{BuildContent, LOC_EDGE_XLO, LOC_PLANE, REFUSE_B_SPOT, REFUSE_B_TIER};
 use sim_core::gather::GatherContent;
 
 const SEED: u64 = 20_260_731;
@@ -32,7 +32,6 @@ fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientC
     let mut buf = [0u8; 1100];
     for (slot, c) in clients.iter_mut() {
         c.advance(1000.0 / 30.0);
-        c.predict.decay_error();
         let n = c.poll_input(&mut buf);
         if n > 0 {
             let dg = protocol::decode_input(&buf[..n]).expect("client encodes valid input");
@@ -41,7 +40,7 @@ fn pump(core: &mut ShardCore, stats: &ShardStats, clients: &mut [(usize, ClientC
     }
     let mut snaps: Vec<(usize, Vec<u8>)> = Vec::new();
     let mut events: Vec<(usize, Vec<u8>)> = Vec::new();
-    core.tick(stats, |lane, slot, bytes| {
+    core.tick_bare(stats, |lane, slot, bytes| {
         match lane {
             Lane::Snapshot => snaps.push((slot, bytes.to_vec())),
             Lane::Event => events.push((slot, bytes.to_vec())),
@@ -80,7 +79,7 @@ fn act(core: &mut ShardCore, slot: usize, a: ActionMsg) {
 fn build_rides_the_wire() {
     let fixture = BuildContent::probe_fixture();
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.build = fixture;
     core.world.dev_spawn = Some(SPAWN);
@@ -113,7 +112,11 @@ fn build_rides_the_wire() {
     // Grant the builder its materials server-side (gather_wire covers how
     // resources are earned; this gate is about the build lane).
     let w0 = world_slot(&core, id_of(0));
-    core.world.players[w0].inv[0] = sim_core::gather::ItemStack { item: 0, count: 20 };
+    core.world.players[w0].inv[0] = sim_core::gather::ItemStack {
+        item: 0,
+        count: 20,
+        cond: 0,
+    };
 
     // Foundation at the spawn cell: the piece lands for the placer AND
     // the bystander (placed pieces broadcast), and the cost is paid.
@@ -126,6 +129,7 @@ fn build_rides_the_wire() {
             cz: CZ,
             level: 0,
             loc: LOC_PLANE,
+            freehand: false,
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);
@@ -150,7 +154,7 @@ fn build_rides_the_wire() {
         "foundation cost unpaid"
     );
 
-    // A wall on the foundation's west edge rides the same lane.
+    // A wall on the foundation's low-x edge rides the same lane.
     act(
         &mut core,
         0,
@@ -159,7 +163,8 @@ fn build_rides_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
+            freehand: false,
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);
@@ -176,6 +181,7 @@ fn build_rides_the_wire() {
             cz: CZ,
             level: 0,
             loc: LOC_PLANE,
+            freehand: false,
         },
     );
     let flags = pump(&mut core, &stats, &mut clients);
@@ -222,7 +228,7 @@ fn build_rides_the_wire() {
 fn upgrade_rides_the_wire() {
     let fixture = BuildContent::probe_fixture();
     let stats = ShardStats::default();
-    let mut core = ShardCore::new(SEED);
+    let mut core = Box::new(ShardCore::new(SEED));
     core.world.gather = GatherContent::probe_fixture();
     core.world.build = fixture;
     core.world.dev_spawn = Some(SPAWN);
@@ -238,9 +244,17 @@ fn upgrade_rides_the_wire() {
     }
 
     let w0 = world_slot(&core, id_of(0));
-    core.world.players[w0].inv[0] = sim_core::gather::ItemStack { item: 0, count: 20 };
-    core.world.players[w0].inv[1] = sim_core::gather::ItemStack { item: 1, count: 10 };
-    for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_W)] {
+    core.world.players[w0].inv[0] = sim_core::gather::ItemStack {
+        item: 0,
+        count: 20,
+        cond: 0,
+    };
+    core.world.players[w0].inv[1] = sim_core::gather::ItemStack {
+        item: 1,
+        count: 10,
+        cond: 0,
+    };
+    for (row, loc) in [(0u16, LOC_PLANE), (1u16, LOC_EDGE_XLO)] {
         act(
             &mut core,
             0,
@@ -250,6 +264,7 @@ fn upgrade_rides_the_wire() {
                 cz: CZ,
                 level: 0,
                 loc,
+                freehand: false,
             },
         );
         pump(&mut core, &stats, &mut clients);
@@ -265,7 +280,7 @@ fn upgrade_rides_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
             material: sim_core::build::MAT_STONE,
         },
     );
@@ -284,7 +299,7 @@ fn upgrade_rides_the_wire() {
     assert_eq!(
         core.world
             .pieces
-            .find(CX, CZ, 0, LOC_EDGE_W)
+            .find(CX, CZ, 0, LOC_EDGE_XLO)
             .expect("wall stands")
             .row,
         4
@@ -300,7 +315,7 @@ fn upgrade_rides_the_wire() {
             .pieces
             .entries()
             .iter()
-            .find(|r| r.loc == LOC_EDGE_W)
+            .find(|r| r.loc == LOC_EDGE_XLO)
             .unwrap_or_else(|| panic!("slot {slot} lost the wall"));
         assert_eq!(rec.row, 4, "slot {slot} still mirrors the wood row");
         assert_eq!(
@@ -319,7 +334,7 @@ fn upgrade_rides_the_wire() {
             cx: CX,
             cz: CZ,
             level: 0,
-            loc: LOC_EDGE_W,
+            loc: LOC_EDGE_XLO,
             material: sim_core::build::MAT_WOOD,
         },
     );
@@ -336,7 +351,7 @@ fn upgrade_rides_the_wire() {
         "refusal leaked to a bystander"
     );
     assert_eq!(
-        core.world.pieces.find(CX, CZ, 0, LOC_EDGE_W).unwrap().row,
+        core.world.pieces.find(CX, CZ, 0, LOC_EDGE_XLO).unwrap().row,
         4
     );
 

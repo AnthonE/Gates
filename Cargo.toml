@@ -13,6 +13,18 @@ members = [
 edition = "2021"
 license = "MIT"
 publish = false
+# **The one place a version number is typed.** Every crate inherits it with
+# `version.workspace = true`, so a release is this line plus a tag and nothing
+# else — there is no second copy to forget. `protocol::version` reads it back
+# out of `CARGO_PKG_VERSION` at compile time, which is what the client prints
+# in its corner and what the shard's minimum-client gate compares against, so
+# bumping here moves the displayed build, the wire's `ver` field and the depot
+# id together. `ci/depot.py` reads the same value off `crates/client`.
+#
+# Semver, and the middle field is where alpha work lands: the wire's own
+# compatibility is `PROTO_VER`, not this, so this number is free to describe
+# the *release* rather than the packet layout.
+version = "0.6.0"
 
 # Release profile keeps debug assertions off but stays deterministic: no
 # fast-math anywhere, ever. opt-level 3 + thin LTO for the wasm artifact size.
@@ -44,6 +56,28 @@ codegen-units = 1
 # Workspace members are NOT covered by `"*"`, so sim-core, protocol and the
 # server keep their fast debug rebuild — and every gate runs `--release`
 # anyway, so no wall moves.
+# Debug info for OUR crates, which is where it was actually going.
+#
+# `[profile.dev.package."*"]` below has said `debug = false` for a long time
+# and reads as if debug info were handled — it covers DEPENDENCIES only, so
+# every workspace crate still emitted full DWARF. Measured 2026-08-29: a
+# `target/debug` of 23 GB, 20 GB of it `deps/`, with single test binaries at
+# 200-300 MB. On a 49 GB volume that is not slack, it is the volume.
+#
+# It stopped being a tidiness question the same day. A full disk does not
+# fail as ENOSPC — the linker mmaps its output and dies as
+# `ld terminated with signal 7 [Bus error]` under an LLVM crash banner
+# inviting you to file a bug upstream. It took the release build down mid-
+# flight and then took the loop's health gate down twice.
+#
+# `line-tables-only` keeps the half that is load-bearing here: a panic still
+# names its file and line, so a red suite is still diagnosable. What goes is
+# the variable-level DWARF nothing in this repo's workflow reads — there is
+# no interactive debugging step in `ci/gates.sh`, and the loop reads panics,
+# not cores.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 3
 debug = false

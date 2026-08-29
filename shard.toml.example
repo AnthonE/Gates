@@ -4,6 +4,20 @@
 # crates/server/src/config.rs.
 
 bind = "127.0.0.1:4433"
+
+# The island. **Examined and KEPT on 2026-08-14**, after a pass reported it as
+# the flattest of forty and the re-measurement found the opposite: over the
+# whole world square it tops out at 106.00 m with a max slope of 2.665 and
+# paints granite on **100‰ of its land** against a 44-island median of 72‰ —
+# upper third, not an outlier. The "pancake" numbers came from a sweep window
+# of `-1024..1024`, whose corner is the island's centre (`terrain::continent`
+# centres on 1024,1024), so it measured ONE QUADRANT — and, at x 1155, not even
+# the quadrant the capture camera stands in.
+#
+# `cargo run -p sim-core --release --example seed_scan` reproduces the ranking,
+# and `--at x,z,r` restricts it to what a camera at one point can see.
+# `crates/sim-core/tests/relief.rs` re-measures whatever seed ships here
+# against the set every run and goes red if it becomes an outlier.
 seed = 20260731
 
 # Dev only — never on a public shard. Fixed spawn "x,z" in meters: every
@@ -11,6 +25,28 @@ seed = 20260731
 # local clients on one box) put players inside AOI range without a walk.
 # DECISIONS.md §open "dev spawn override".
 # dev_spawn = "1024,1024"
+
+# Dev only — never on a public shard. Replaces content/balance.toml's
+# [[spawn_kit]] wholesale for this shard, on fresh spawns AND on respawns.
+#
+# The shipped kit is a rock and a torch (DECISIONS.md 2026-08-15), which is
+# the game. This key is what is left of the nine-entry kit that used to ship
+# in content and called itself testing scaffolding: with a naked spawn the
+# build wheel reads `350 Wood (0)`, so the build, hammer and upgrade verbs
+# are unreachable to anyone testing them. Set it for that session, delete it
+# after. The line below is exactly the kit that used to ship, so a build
+# pass gets what it always had:
+#
+# dev_spawn_kit = "item.building_plan:1, item.hammer:1, item.hatchet_stone:1, item.pickaxe_stone:1, item.torch:1, item.bandage:3, item.wood:900, item.stone:500, item.metal_frags:100"
+#
+# Ids and counts are checked against the loaded content at boot — an unknown
+# id, a zero, a count past the item's stack, or a repeated id refuses the
+# boot rather than granting nothing. The first entries land on the hotbar in
+# the order written.
+#
+# ⚠ It is `dev_spawn`'s shape and carries `dev_spawn`'s caveat: nothing
+# records it, so a shard run with this set is not reproducible from its seed
+# and content hash alone.
 
 # Require a proven identity to join. Default false = this shard takes
 # guests, which is what every test and the local dev flow need.
@@ -111,3 +147,152 @@ seed = 20260731
 # 2026-08-03 row in DECISIONS.md for why ufw alone buys nothing there).
 # DECISIONS.md §open "shard status endpoint v0".
 # status_addr = "127.0.0.1:8080"
+
+# The ticket door (crates/server/src/entitle.rs): does a joiner own a copy?
+#
+# Unset — the default — checks NOTHING, and that is the state every test,
+# every community shard and the local dev flow run on. `DECISIONS.md`
+# 2026-08-04 is why that is a posture rather than a gap: one build, two
+# populations. An OFFICIAL shard is armed and its economy is real; a
+# community or training shard runs unarmed and open, and has nothing worth
+# cheating for.
+#
+# Armed, this shard asks elo two questions, both one `balanceOf` underneath:
+# `GET /api/ticket/<slug>/of/<wallet>` at join, and
+# `POST /api/ticket/<slug>/check` for the whole roster every sweep — because
+# a player can sell the ticket and stay logged in.
+#
+# THREE ANSWERS, NEVER TWO, and this is the part to not get wrong: a shard
+# refuses (and kicks) on a definite on-chain zero and NEVER on a failed read.
+# An RPC outage that booted every paying player would be worse than the
+# freeloader it was trying to catch, so an unanswerable check ADMITS and
+# bumps `entitle_unknown` instead. Watch that counter: armed, climbing, with
+# `refused_ticket` at zero is a shard checking nothing.
+#
+# Needs require_auth = true and the shard REFUSES TO BOOT without it — a
+# guest has no wallet, so a ticket door over an open door checks nobody.
+# entitle_origin = "https://elopros.com"
+
+# This title's slug in elo's catalog. Defaults to "gates"; set it only if a
+# staging origin files this game under another name.
+# entitle_slug = "gates"
+
+# How long one check may take, and how long between roster sweeps. The sweep
+# interval IS the security property — it is how long a sold copy keeps
+# playing — so it is posted rather than hidden. The timeout must be SHORTER
+# than the sweep or a slow origin stacks rounds; the shard refuses the pair
+# at boot rather than clamping a number an operator typed.
+# entitle_timeout_secs = 6
+# entitle_sweep_secs = 120
+
+# ---------------------------------------------------------------------------
+# The oldest CLIENT RELEASE this shard admits. Unset ⇒ 0 ⇒ every client that
+# can talk to this shard at all, which is the shipping default and is not a
+# hole: `PROTO_VER` is an exact gate one step above this and refuses anyone
+# whose bytes disagree, before this key is consulted.
+#
+# THREE VERSION NUMBERS, and this is the third — `crates/protocol/src/version.rs`
+# carries the table. The wire's number (`PROTO_VER`) answers "can these two
+# parse each other"; it is deliberately stingy and two releases a month apart
+# can share it. This answers the question it cannot: "is this client old enough
+# to be WRONG about something that is not a byte" — a prediction rule that
+# moved, a number that changed in `content/`. That is a judgement about a
+# release, which is why it is a config key an operator sets rather than a
+# constant somebody has to rebuild to change.
+#
+# A MINIMUM, not an equality: a client NEWER than this shard is admitted. That
+# direction is what keeps a release shippable — a player who updated first must
+# not be locked out of a shard nobody has restarted yet — and the incompatibility
+# that would actually matter is `PROTO_VER`'s to refuse.
+#
+# Raising it locks out every installed client below it, so publish the release
+# FIRST and raise this after. The `refused_build` counter is how you find out
+# you got that order wrong: a number still climbing days later means the build
+# you told players to get was never actually published.
+# min_client = "0.1.0"
+
+# ---------------------------------------------------------------------------
+# The admin lane (admin v0, ALPHA.md §3) and the anomaly log.
+# ---------------------------------------------------------------------------
+#
+# WALLETS TRUSTED WITH ADMIN COMMANDS. Comma-separated, 0x-prefixed. Unset
+# means NOBODY is an admin, which is what every test and every community
+# shard runs — the same one-build-two-populations posture `entitle_origin`
+# takes.
+#
+# Admin rights are checked against the address SIWE proved at the handshake
+# (`auth.rs`), so a client cannot claim them: it never asserts them at all.
+# There is no in-game promotion verb and there is not going to be one — a
+# shard whose admin list grows at runtime is a shard where one compromised
+# key is every key. Case does not matter; a checksummed address pasted from
+# a block explorer matches.
+#
+# A BAD ENTRY REFUSES THE BOOT, whole. A typo'd admin address is an operator
+# expecting a privilege they do not have, and finding out now is cheaper than
+# finding out during a raid.
+#
+# The verbs, typed into the game's own chat box (no client build needed —
+# the lane is the chat lane, and nothing on the wire moved for it):
+#
+#   /kick <id>          drop that player now; their body stays as a sleeper
+#   /ban <id>           kick, and refuse the wallet for the rest of uptime
+#   /say <text>         a line from the house, to everybody, marked [server]
+#   /tp <id>            put yourself at that player's feet
+#   /give <item> <n>    put items in your own pockets (n defaults to 1)
+#   /save               write the world now rather than at the cadence
+#
+# The id is the number the death screen and the chat prefix already show.
+# A ban is remembered as the WALLET (an id means nothing after a reconnect)
+# and is MEMORY ONLY at v0: a restart forgets it. Persisting one wants its
+# own file with its own format version, which is not built.
+# admin_wallets = "0xabc...,0xdef..."
+
+# WHERE THE ANOMALY LOG IS APPENDED. Unset means no log, and every push
+# becomes a no-op that costs nothing.
+#
+# This is the file ALPHA.md §6's gate is about — "zero silent failures in
+# the anomaly log" — and it is what turns fifty-odd counters into a
+# timeline. One JSON object per line: a watched counter that moved (with
+# its delta), every admin act and every refused one, and every `/bug` a
+# player filed with the tick and position stamped by the server.
+#
+# APPEND, never truncated, and it grows without bound by design: it is a
+# wipe-cycle artifact you rotate or delete, and shortening the record of a
+# bad hour to save bytes is the opposite of the point. A configured log
+# that cannot be opened REFUSES THE BOOT rather than downgrading silently —
+# an operator who asked for a log and got none would be reading an empty
+# file after the incident they wanted it for.
+# anomaly_file = "gates-anomaly.jsonl"
+
+# HOW MANY RESIDENT INHABITANTS THIS SHARD SEATS ITSELF. Unset ⇒ 0, and a
+# shard seats nobody but the players who dial it.
+#
+# Bots, dialled over this shard's own wire after the bind — the full
+# QUIC handshake, `Address::GUEST`, and the same `run_bot` a load test uses,
+# so the server cannot tell one from a player. Half own (build a twig base,
+# deploy a box, arm a code lock) and half attack (select a charge, plant it,
+# guess the code, take the goods). Which half a post is depends on its index
+# and never changes, so a base outlives the raider shooting at it.
+#
+# IT EXISTS BECAUSE THE OPPOSITE STATE WAS WORSE. Three consecutive
+# merge-gate judges ranked the same thing the largest playable gap in the
+# game: every opponent in this tree lived inside a `#[test]` or needed an
+# operator to start `bin/bots` by hand, so a human who joined the alpha shard
+# met a silent island. This is the key that makes four passes of raid work
+# reachable by a player.
+#
+# It is SCAFFOLDING, not a feature, and zero is the shipping default for that
+# reason: a population is for a world that does not have enough players yet,
+# and an operator who has players does not want bots eating their slots.
+#
+# Two refusals at boot rather than a surprise later:
+#   * over MAX_PLAYERS - 1 — a shard whose every slot is a bot refuses the
+#     player it was seated for, so at least one seat stays a person's;
+#   * together with `require_auth = true` — an inhabitant joins as a guest,
+#     so an authenticating shard refuses every one of them and the population
+#     would re-dial its own closed door forever.
+#
+# The shard's report line grows a `population` row when this is set: live
+# against configured, shifts started/ended/errored, and what the finished
+# shifts placed. `live` below the configured count is the health signal.
+# population = 8

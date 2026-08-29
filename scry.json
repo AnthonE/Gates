@@ -1,0 +1,50 @@
+{
+ "scry": 1,
+ "game": "gates",
+ "version": "0.6.0",
+ "_version": "The workspace version in Cargo.toml. scry never copies this onto the store row \u2014 it serves it beside the version actually published in its depot and flags the gap, so a tag ahead of a build shows up as a gap instead of vanishing. ci/scry_manifest.py --self-test keeps this equal to Cargo.toml, the same check release.yml already makes against a tag.",
+ "listing": {
+  "kind": "survival \u2014 100-player shards",
+  "blurb": "Wake with nothing on a hostile island. Gather, craft, build, raid, lose it all, again. 100-player shards, one desktop binary, and a public server that is up right now.",
+  "about": "A survival game in the Rust tradition: an authoritative Rust-language server, a native Rust desktop client, WebTransport. The core is deterministic \u2014 same build, same seed, same input log, same world, hash for hash \u2014 so a round is one replayable file and a server can be checked instead of trusted. The skeleton is the product: netcode and determinism outrank every feature. Agents build it in public and agents play it; the same determinism makes the sim a training environment.",
+  "tags": [
+   "survival",
+   "multiplayer",
+   "open source",
+   "deterministic",
+   "agents build it",
+   "agents play it"
+  ],
+  "repo": "https://github.com/AnthonE/Gates",
+  "repo_public": true
+ },
+ "_listing": "These fields are now THIS REPO's to write: whatever is here wins on the next pull, so editing them at scry's store desk is temporary and editing them here is permanent. Seeded byte-for-byte from the row as it stood 2026-08-11, so wiring this up changed no copy. Fields deliberately NOT claimed: state and play_url (the house decides when a title reads live), and capsule/hero/media (art is uploaded, not committed \u2014 a manifest is text and cannot ship bytes). band/hidden/placeholder/lane/note are the house's and a manifest may not write them at all.",
+ "updates": [
+  {
+   "id": "v0.6.0",
+   "kind": "release",
+   "title": "0.6.0 \u2014 armor goes on, arrows come back, and a base has a floor to build from",
+   "body": "0.5.0 said armor was priced and the sim blunted a hit with it, but nothing could put a piece on. You can now. Wearing is a move rather than a button: drag a helmet onto your head the way you drag anything into a box. The slot lights when it will take the item and reddens when it will not, so a wrong-slot drag is answered before you let go. The wear panel says what a set is worth \u2014 each piece and a total \u2014 and the body is its own view now, so opening a box no longer undresses you.\n\nAn arrow you fired is an arrow you can pick up. It survives the shot about six times in seven, and one that hit somebody lies in them for ten seconds before it can be taken back \u2014 so an archer cannot re-collect the arrow they just shot you with mid-fight, and a bow still runs dry in a long one while losing almost nothing to a day of hunting. Arrows also stop passing through every floor on the island, which they had been doing.\n\nShots land on things. An arrow chips the wall it stops on, a bullet stops on the furnace it flies at instead of through it, and a hatchet marks the plank it hits.\n\nBuilding has a floor to start from: a foundation pins the plate and everything latches to it, stairs walk the tread you can see rather than an invisible ramp beside it, a base has sides so the camera stays out of it, and a placement can decline the latch when you want it freehand. Twig stops wearing a photograph of a tree.\n\nWhat you hold looks held. The item sits in the palm instead of the wrist, a rock is hand-sized, the revolver shows its profile, and the arm that is not holding anything is hidden. The island's ground is laid at its photographs' real size, a distant tree is a hull inside a triangle budget, and the renderer has a quality knob whose top rung is what shipped.\n\nF7 writes a bug report a stranger can act on.\n\nThe platform is elo now and lives at elopros.com; the old host answers 410.\n\nThis one breaks the wire \u2014 the packet layout went from 48 to 52, so a 0.5.0 client is refused at the door rather than quietly misread \u2014 and the world is wiped with it, because the content moved. 75 commits since 0.5.0."
+  },
+  {
+   "id": "v0.5.0",
+   "kind": "release",
+   "title": "0.5.0 \u2014 the revolver fires, bodies fall, and a hit tells you where",
+   "body": "The revolver was a dead end you could pay for: it dropped from barrels, it had a recipe, it sat on the research ladder behind gunpowder, and its rounds both dropped and crafted \u2014 and pulling the trigger did nothing. It fires now. Five shots to a kill, resolved on the server through the same path the bow already used, so what the shard says happened is what happened. There is no tracer yet.\n\nA fight reads better. A killed body falls over instead of standing there. A hit body flinches, and a remote's swing is audible where it happened rather than at your ear. Arrows and swings leave marks on what they hit. A swing lands at the waist of anything shorter than you, which is what a stone hatchet against a boar should always have done. And the shard now tells the client how stale your aim was, in ticks, so a trade that felt wrong is something you can read instead of argue about.\n\nYou have a body: a face, hands you can see, and 53 clips behind them. First-person arms are the same mesh split by skin weight, not a camera trick. The streaming client stops paying for ground it already resolved, input is latched between sim ticks, and the frame is capped rather than spinning.\n\nThe wire is v48 and the save format moved with it, so this release wipes the public shard and an older client is refused at the door rather than quietly misread. Armor is priced and the sim blunts a hit with it, but nothing can put a piece on yet \u2014 that is the next thing."
+  },
+  {
+   "id": "v0.4.0",
+   "kind": "release",
+   "title": "0.4.0 \u2014 tools wear out, pieces line up, and the Windows build starts",
+   "body": "Tools have condition. Every paying swing wears the thing in your hand, the wire carries the number so the client can show it, and a spent tool refuses the swing and says why instead of quietly doing nothing. A hatchet is a resource now, and one you logged off with comes back as worn as you left it.\n\nBuilding lines up: pieces share a lattice, a solid deployable's top obeys the same step rule as every other surface you stand on, and structure damage reaches the client \u2014 so a wall coming apart is something you watch rather than infer.\n\nThe death screen offers the bag you actually have. The controls are the reference game's layout now, so eat is J. A panel that takes the pointer gives it back.\n\nThe island keeps getting its own paint: four ground surfaces with their own photographs and their own relief, and building pieces that wear one instead of a tier colour.\n\nDiscord can show what you are doing, if you turn it on. Presence carries the verb, the biome and your party size and locates nothing; sharing the shard's name and address is a second setting, off by default, and it is what makes Ask to Join appear.\n\nWindows: the 0.3.0 Windows build could not start. It wanted a C++ runtime a stock Windows box does not ship, and died with 0xc000007b before a frame. The depot carries that runtime beside the exe now, and CI boots the staged build under wine before publishing it \u2014 the first check here that has ever confirmed a Windows build starts.\n\nThis one breaks the wire \u2014 0.3.0 clients cannot join a 0.4.0 shard, so update before you connect \u2014 and the world is wiped with it, because the content moved. 34 commits since 0.3.0."
+  },
+  {
+   "id": "v0.3.0",
+   "kind": "release",
+   "title": "0.3.0 \u2014 raiding, the research board, and an island with its colour back",
+   "body": "You wake with a rock and a torch now, and bare hands gather nothing \u2014 the rock is the bootstrap tool, and it is re-granted every time you come back. Eat and drink were dead buttons and are verbs again. The day/night cycle is 80 minutes, 70 of them light.\n\nRaiding works end to end: a satchel planted on a real base breaches it on the live wire, a swing pays by stance and by which face of the wall you hit, and a hundred bots can raid at once without a cap giving way. Research is a board instead of a list \u2014 the scrap era's ladder, workbench tiers 2 and 3, and the blueprint-gated items that previously had no way in. Dying no longer deletes the blueprints you paid for.\n\nThe island reads properly now: four ground surfaces that were quietly sharing one texture, undergrowth that grows instead of reading as gravel, and a sun, a compass and a map that agree on which way east is. F12 takes a screenshot.\n\nThis one breaks the wire \u2014 0.2.0 clients cannot join a 0.3.0 shard, so update before you connect. 124 commits since 0.2.0."
+  }
+ ],
+ "_updates": "No posts in the first manifest on purpose \u2014 a post is public the moment it is pulled. Add entries here on a release: {\"id\": \"v0.2.0\", \"kind\": \"release\", \"title\": ..., \"body\": ...}. The id is what makes re-reading this file idempotent, so old entries are harmless to leave.",
+ "_next": "Signed by scry.sig.json beside this file, over these exact bytes. Edit this and it must be re-signed \u2014 ci/gates.sh fails otherwise. Standard: https://scry.moreright.xyz/api/library/GAME-REPO.md"
+}

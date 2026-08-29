@@ -870,8 +870,9 @@ fn the_lintel_and_the_roof_are_overhead() {
 }
 
 /// The interior is enclosed and reachable, by flood fill rather than by
-/// inspection — the same question `ci/haven_shelter.mjs` asks of the mesh,
-/// asked here of the sim's volume so the two answers can be compared.
+/// inspection — the same question `ci/haven_shelter.mjs` asked of the mesh
+/// before it went with the browser client, asked here of the sim's volume.
+/// This side is the one that survived, so it is now the only side.
 ///
 /// Reachable from outside AND enclosed except through the door is one
 /// property, not two: seal the door and the fill must fail; leave a gap in a

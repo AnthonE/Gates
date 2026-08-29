@@ -9,8 +9,11 @@
 //!
 //! **What is NOT copied is the row count.** The reference's GRAPHICS tab lists
 //! shadow cascades, anisotropic filtering, parallax mapping and a dozen more
-//! because it has a renderer with those switches. Ours has five settings that
-//! do something, and this screen shows five settings. A category with nothing
+//! because it has a renderer with those switches. Ours has ten settings that
+//! do something, and this screen shows ten settings — and the tenth is a
+//! LADDER rather than a panel: `render/quality.rs` states the case for one
+//! knob, which is that six independent toggles is six ways to build a frame
+//! nobody has ever looked at. A category with nothing
 //! behind it says so in a sentence instead of drawing greyed rows that imply
 //! a feature exists — the same rule the HUD already obeys, where "a 0-max
 //! meter is undrawn, not drawn empty", and the same rule the intro screen
@@ -42,7 +45,9 @@
 use bevy::prelude::*;
 use bevy::window::{PresentMode, PrimaryWindow, WindowMode};
 
-use crate::config::{self, Persisted};
+use super::quality;
+use crate::config::{self, Persisted, Quality};
+use crate::ui::servers::Favourites;
 
 use super::menu::Screen;
 use super::rig::{EyeCam, FOV_DEG};
@@ -69,25 +74,39 @@ pub const VOL_STEP: f32 = 0.1;
 /// it has rows — the rail is a map of the game's surface, and a category that
 /// vanished when it was empty would make the screen change shape as features
 /// land.
-pub const CATEGORIES: [&str; 6] = [
-    "GAMEPLAY", "AUDIO", "SCREEN", "GRAPHICS", "CONTROLS", "KEYBINDS",
+pub const CATEGORIES: [&str; 7] = [
+    "GAMEPLAY", "AUDIO", "SCREEN", "GRAPHICS", "CONTROLS", "SOCIAL", "KEYBINDS",
 ];
 
 /// What the player can change. Client-side every one of them; see the header.
 #[derive(Resource)]
 pub struct Settings {
     pub fov_deg: f32,
+    /// How much the renderer is asked to do — `render/quality.rs` is the
+    /// table, `config::Quality` is the ladder and the file format.
+    pub quality: Quality,
     /// A multiplier on `input::MOUSE_RAD_PER_PX`, not a replacement for it.
     pub sensitivity: f32,
     pub invert_look: bool,
     pub vsync: bool,
+    /// Frames-per-second ceiling; 0 is uncapped. See [`MAX_FPS_LADDER`].
+    pub max_fps: u16,
     pub fullscreen: bool,
-    /// The three audio buses, 0..1. The reference's `audio.master`,
-    /// `audio.game` and `audio.ambience` — `crate::sound::Mix` is what reads
-    /// them, and `render/audio.rs` is the only thing that builds one.
+    /// The audio buses, 0..1. The reference's `audio.master`, `audio.game`,
+    /// `audio.ambience` and `audio.musicvolume` — `crate::sound::Mix` is what
+    /// reads them, and `render/audio.rs` is the only thing that builds one.
     pub vol_master: f32,
     pub vol_game: f32,
     pub vol_ambience: f32,
+    /// The reference's `audio.musicvolume`, which is the one bus that does
+    /// not open at full — see [`crate::sound::MUSIC_DEFAULT`].
+    pub vol_music: f32,
+    /// Tell Discord what the player is doing (`crate::discord`).
+    pub discord_presence: bool,
+    /// Let that presence carry the shard's name and address, which is what
+    /// makes Discord's **Ask to Join** appear. The one row on this screen
+    /// that discloses something rather than setting a preference.
+    pub discord_share_server: bool,
     /// Which rail row is selected.
     pub cat: usize,
     /// Where Esc returns to. Settings is reachable from the intro screen and
@@ -105,16 +124,66 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             fov_deg: FOV_DEG,
+            // The frame the client drew before tiers existed. Anything else
+            // as a default would be a visual change nobody asked for,
+            // arriving as a side effect of a performance feature.
+            quality: Quality::default(),
             sensitivity: 1.0,
             invert_look: false,
             vsync: true,
-            fullscreen: false,
+            // **Uncapped** (operator, 2026-08-17, revising the same day's
+            // "cant we cap thigns at like 60 fps?" with *"client can go faster
+            // than 60 we cant stop that"*). The cap is a tool on this screen,
+            // not a policy: a player who bought a 144 Hz panel did so on
+            // purpose, and a default that quietly halves it reads as the game
+            // feeling worse than it is.
+            //
+            // **What made that safe to choose was fixing the real problem
+            // underneath it.** The reason a frame cap looked like the answer
+            // was that drawing faster genuinely cost you input:
+            // `ClientCore::set_input` overwrote, so a press that began and
+            // ended between two 30 Hz ticks never reached the sim, and a frame
+            // at 400 fps is 2.5 ms against a 33 ms tick. That is latched now
+            // (`ClientCore::sticky_buttons`), gated at every framerate from 30
+            // to 400 by `client-core/tests/input_sampling.rs`, so frame rate
+            // and input fidelity are no longer traded against each other and
+            // the ceiling can go back to being the player's choice.
+            //
+            // What is still true, and is why `limit_frames` stays: with vsync
+            // off, a menu holding one still image is redrawn as fast as the
+            // hardware allows. That is a real cost and now it has a switch.
+            max_fps: 0,
+            // **On** (operator, 2026-08-13). A survival game opens filling
+            // the screen; the windowed default was Bevy's, never a choice.
+            // Borderless rather than exclusive, which is what `apply_window`
+            // already resolves this to — an alt-tab must not change a video
+            // mode.
+            //
+            // Safe to move because this is a DEFAULT and not an assignment:
+            // `load` only reaches it for a key the settings file does not
+            // carry, so a player who already turned fullscreen off keeps it
+            // off. The one path that takes the defaults wholesale is a
+            // `--capture` run, and `render::mod` pins that one windowed on
+            // purpose — a probe's frame size is the visual gate's unit.
+            fullscreen: true,
             // The reference opens master and game at 1. Ours opens the bed
             // lower than either of them, but that belongs to the cue's own
             // gain rather than to a bus a player would then have to put back.
             vol_master: 1.0,
             vol_game: 1.0,
             vol_ambience: 1.0,
+            // On: the whole path is dark without an application id, and at
+            // this level it locates no machine and names no person.
+            discord_presence: true,
+            // **Off, and this one is a disclosure rather than a
+            // preference** — the operator opened the door on condition the
+            // player enables it (2026-08-16), and opt-in is what that means.
+            discord_share_server: false,
+            // **Not 1, and it is the reference's number rather than a
+            // taste call**: their `audio.musicvolume` ships at 0.2 while
+            // master and game ship at 1. A score at parity with footsteps
+            // is a score players turn off.
+            vol_music: crate::sound::MUSIC_DEFAULT,
             cat: 0,
             back: Screen::Menu,
             dirty: false,
@@ -126,7 +195,11 @@ impl Default for Settings {
 /// match rather than five queries.
 #[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Knob {
+    Quality,
+    DiscordPresence,
+    DiscordShareServer,
     Vsync,
+    MaxFps,
     Fullscreen,
     Fov,
     Sensitivity,
@@ -134,6 +207,7 @@ pub enum Knob {
     VolMaster,
     VolGame,
     VolAmbience,
+    VolMusic,
 }
 
 impl Settings {
@@ -145,8 +219,40 @@ impl Settings {
     /// reach a different clamp than the mouse path.
     pub fn adjust(&mut self, knob: Knob, delta: i32) {
         match knob {
+            // Steps along `Quality::LADDER` and STOPS at each end rather than
+            // wrapping. A wrap would put a player who clicked once too often
+            // on the far end of the ladder from where they were looking —
+            // which for this knob means the frame changing completely on a
+            // click that was meant to nudge it.
+            Knob::Quality => {
+                let at = Quality::LADDER
+                    .iter()
+                    .position(|q| *q == self.quality)
+                    .unwrap_or(Quality::LADDER.len() - 1) as i32;
+                let want = (at + delta.signum()).clamp(0, Quality::LADDER.len() as i32 - 1);
+                self.quality = Quality::LADDER[want as usize];
+            }
             Knob::Vsync => self.vsync = !self.vsync,
+            Knob::MaxFps => self.max_fps = step_fps(self.max_fps, delta),
             Knob::Fullscreen => self.fullscreen = !self.fullscreen,
+            // **Turning presence off takes sharing with it**, and that is the
+            // behaviour rather than a note beside it. A latent "share my
+            // address" left true under an off master is how a player who
+            // turns presence back on months later gets a disclosure they
+            // last consented to under different circumstances.
+            Knob::DiscordPresence => {
+                self.discord_presence = !self.discord_presence;
+                self.discord_share_server &= self.discord_presence;
+            }
+            // Sharing implies presence: a player who clicks the row that
+            // says "so friends can Ask to Join" has asked for the thing that
+            // carries it, and a toggle that silently does nothing because a
+            // master switch above it is off is worse than one that turns the
+            // master on.
+            Knob::DiscordShareServer => {
+                self.discord_share_server = !self.discord_share_server;
+                self.discord_presence |= self.discord_share_server;
+            }
             Knob::InvertLook => self.invert_look = !self.invert_look,
             Knob::Fov => {
                 self.fov_deg =
@@ -165,6 +271,7 @@ impl Settings {
             Knob::VolMaster => self.vol_master = step_vol(self.vol_master, delta),
             Knob::VolGame => self.vol_game = step_vol(self.vol_game, delta),
             Knob::VolAmbience => self.vol_ambience = step_vol(self.vol_ambience, delta),
+            Knob::VolMusic => self.vol_music = step_vol(self.vol_music, delta),
         }
         self.dirty = true;
     }
@@ -172,14 +279,25 @@ impl Settings {
     /// What the control on this row currently reads.
     fn value(&self, knob: Knob) -> String {
         match knob {
+            Knob::Quality => self.quality.name().to_uppercase(),
             Knob::Vsync => on_off(self.vsync),
+            Knob::MaxFps => {
+                if self.max_fps == 0 {
+                    "UNCAPPED".to_string()
+                } else {
+                    format!("{}", self.max_fps)
+                }
+            }
             Knob::Fullscreen => on_off(self.fullscreen),
+            Knob::DiscordPresence => on_off(self.discord_presence),
+            Knob::DiscordShareServer => on_off(self.discord_share_server),
             Knob::InvertLook => on_off(self.invert_look),
             Knob::Fov => format!("{:.0}", self.fov_deg),
             Knob::Sensitivity => format!("{:.2}", self.sensitivity),
             Knob::VolMaster => pct(self.vol_master),
             Knob::VolGame => pct(self.vol_game),
             Knob::VolAmbience => pct(self.vol_ambience),
+            Knob::VolMusic => pct(self.vol_music),
         }
     }
 
@@ -189,13 +307,18 @@ impl Settings {
     fn persisted(&self) -> Persisted {
         Persisted {
             fov_deg: self.fov_deg,
+            quality: self.quality,
             sensitivity: self.sensitivity,
             invert_look: self.invert_look,
             vsync: self.vsync,
+            max_fps: self.max_fps,
             fullscreen: self.fullscreen,
             vol_master: self.vol_master,
             vol_game: self.vol_game,
             vol_ambience: self.vol_ambience,
+            vol_music: self.vol_music,
+            discord_presence: self.discord_presence,
+            discord_share_server: self.discord_share_server,
         }
     }
 
@@ -209,13 +332,39 @@ impl Settings {
         let step = |v: f32, s: f32| (v / s).round() * s;
         Self {
             fov_deg: p.fov_deg.clamp(FOV_MIN_DEG, FOV_MAX_DEG),
+            // No clamp owed: the parser only produces a value that is on the
+            // ladder (`Quality::from_name` refuses anything else and keeps
+            // the default), so unlike every numeric row above there is no
+            // out-of-range state to sanitize here.
+            quality: p.quality,
             sensitivity: step(p.sensitivity, SENS_STEP).clamp(SENS_MIN, SENS_MAX),
             invert_look: p.invert_look,
             vsync: p.vsync,
+            // **Floored, not snapped to a rung.** The bounds live beside the
+            // stepper like every other row's, but the rule differs on purpose:
+            // a value off the ladder is honoured as long as it is a rate a
+            // person could mean, because unlike fov or a volume there is a
+            // legitimate reason to hand-edit this one — a 165 Hz panel is not
+            // on any ladder anybody would ship. What is refused is the range
+            // below the floor, where a typo'd `max_fps = 1` would present as
+            // the game having hung.
+            max_fps: if p.max_fps == 0 {
+                0
+            } else {
+                p.max_fps.max(MIN_FPS_CAP)
+            },
             fullscreen: p.fullscreen,
             vol_master: step(p.vol_master, VOL_STEP).clamp(0.0, 1.0),
             vol_game: step(p.vol_game, VOL_STEP).clamp(0.0, 1.0),
             vol_ambience: step(p.vol_ambience, VOL_STEP).clamp(0.0, 1.0),
+            vol_music: step(p.vol_music, VOL_STEP).clamp(0.0, 1.0),
+            discord_presence: p.discord_presence,
+            // **Sanitized, not just loaded.** A hand-edited file could carry
+            // sharing on under presence off, which no sequence of clicks can
+            // reach — and the pair is a consent, so the loader resolves it
+            // the same way `adjust` does rather than honouring a state the
+            // screen cannot show.
+            discord_share_server: p.discord_share_server && p.discord_presence,
             ..Self::default()
         }
     }
@@ -239,49 +388,121 @@ pub struct Disk {
     /// out-of-range value on disk is corrected in memory at load and on disk
     /// only at the player's next change — a boot must not write.
     written: Persisted,
+    /// The starred shards as last written. Compared the same way `written`
+    /// is, and for the same reason: a star is a click on a different screen
+    /// entirely, so this file has two writers' worth of state in it and
+    /// exactly one writer.
+    written_favs: Vec<String>,
 }
 
 /// Read the settings file once, before the first frame that applies
 /// anything. Missing or corrupt is the defaults, silently; no resolvable
 /// path is the defaults with persistence off for the run (`None`).
-pub fn load() -> (Settings, Option<Disk>) {
+pub fn load() -> (Settings, Favourites, Option<Disk>) {
     let Some(path) = config::settings_path() else {
-        return (Settings::default(), None);
+        return (Settings::default(), Favourites::default(), None);
     };
     let loaded = config::load(&path, Settings::default().persisted());
     let settings = Settings::from_persisted(loaded.values);
+    // Bounded and deduplicated where the star is, not where the file is —
+    // `config::parse`'s own header says range work does not live there, and a
+    // hand-edited list of a thousand ids must reach the browser as the same
+    // thing a thousand clicks could have produced.
+    let favs = Favourites::from_disk(loaded.favourites);
     let disk = Disk {
         path,
         version: loaded.version,
         unknown: loaded.unknown,
         written: settings.persisted(),
+        written_favs: favs.ids().to_vec(),
     };
-    (settings, Some(disk))
+    (settings, favs, Some(disk))
 }
 
 /// Save on change, not on exit: a crash must not cost the player their
 /// settings, and a change is a click on a menu screen, not a hot path — the
 /// write is a few hundred bytes behind a change-detection early-out and a
 /// field compare, so an idle frame pays one branch.
-pub fn save_on_change(settings: Res<Settings>, disk: Option<ResMut<Disk>>) {
+/// **One writer, two watched resources.** The settings screen owns eight
+/// knobs and the server browser owns the favourite list, and both live in one
+/// file — so the alternative was two systems serializing the whole document,
+/// which is the shape where the last one to run silently drops the other's
+/// change. `Browse` is read here rather than `Settings` growing a list,
+/// because a favourite is not a knob and `Settings::adjust` has no arm that
+/// could take one.
+pub fn save_on_change(
+    settings: Res<Settings>,
+    browse: Res<super::menu::Browse>,
+    disk: Option<ResMut<Disk>>,
+) {
     let Some(mut disk) = disk else {
         return;
     };
-    if !settings.is_changed() {
+    if !settings.is_changed() && !browse.is_changed() {
         return;
     }
     let now = settings.persisted();
-    if now == disk.written {
+    let favs = browse.favourites.ids();
+    if now == disk.written && favs == disk.written_favs {
         return;
     }
-    let text = config::serialize(&now, disk.version, &disk.unknown);
+    let text = config::serialize(&now, disk.version, favs, &disk.unknown);
     match config::save(&disk.path, &text) {
-        Ok(()) => disk.written = now,
+        Ok(()) => {
+            disk.written = now;
+            disk.written_favs = favs.to_vec();
+        }
         // Warn and keep `written` as it was, so the next change retries.
         // Never a panic and never a dialog: a full disk must not cost the
         // player the fov they just picked, only its survival.
         Err(e) => warn!("gates: settings not saved - {e}"),
     }
+}
+
+/// The frame-rate ceilings this screen offers, ascending, with **0 last and
+/// meaning uncapped**.
+///
+/// A ladder rather than a `+1 fps` stepper: the values a player actually wants
+/// are their monitor's refresh rate or a clean divisor of it, and 210 clicks
+/// to get from 30 to 240 is not a setting, it is a punishment. The rungs are
+/// the common panel rates plus the two halves that matter (30 for a laptop on
+/// battery, 120 for a 240 Hz panel at half).
+///
+/// **Uncapped is on the ladder and is not the default** (operator,
+/// 2026-08-17). It has to be reachable — a player who bought a 360 Hz panel
+/// did so on purpose, and vsync alone is the old behaviour — but it is the end
+/// of the ladder rather than the start, because the thing it costs is a core
+/// and a GPU spinning to redraw a menu that is not moving.
+pub const MAX_FPS_LADDER: [u16; 6] = [30, 60, 120, 144, 240, 0];
+
+/// The lowest cap the loader will honour from a file, frames per second.
+///
+/// It is the ladder's own bottom rung, so the screen cannot reach below it
+/// either. Under about this the client stops reading as slow and starts
+/// reading as hung — a hand-edited `max_fps = 1` would present as a bug
+/// report about the game freezing, which is an expensive way to learn that a
+/// setting was honoured too literally.
+pub const MIN_FPS_CAP: u16 = MAX_FPS_LADDER[0];
+
+/// One click of the FPS row: step along [`MAX_FPS_LADDER`], clamped at both
+/// ends rather than wrapping. Wrapping would put "uncapped" one click below
+/// 30, which is the single most surprising place to land by accident.
+fn step_fps(v: u16, delta: i32) -> u16 {
+    let at = MAX_FPS_LADDER
+        .iter()
+        .position(|&f| f == v)
+        // A value the ladder does not carry (a hand-edited settings file, or
+        // a rung removed by a later build) steps from the nearest rung at or
+        // above it rather than resetting — the file said something and it is
+        // not this function's place to discard it.
+        .unwrap_or_else(|| {
+            MAX_FPS_LADDER
+                .iter()
+                .position(|&f| f >= v && f != 0)
+                .unwrap_or(MAX_FPS_LADDER.len() - 1)
+        });
+    let next = (at as i32 + delta).clamp(0, MAX_FPS_LADDER.len() as i32 - 1);
+    MAX_FPS_LADDER[next as usize]
 }
 
 /// One click of a volume slider, rounded onto the step and clamped to 0..1.
@@ -310,6 +531,11 @@ enum Row {
     /// A read-only row: a label and a value nobody can change here. The
     /// keybind list is all of these, and so is anything the client fixes.
     Fact(&'static str, &'static str),
+    /// A read-only row whose value is DERIVED from the settings rather than
+    /// written beside them — what a knob one row up actually resolves to.
+    /// A function pointer rather than a string so the screen cannot state a
+    /// consequence the renderer does not have.
+    FactOf(&'static str, fn(&Settings) -> String),
     /// A sentence, for a category with nothing in it.
     Note(&'static str),
 }
@@ -326,48 +552,142 @@ fn rows(cat: usize) -> Vec<Row> {
         "AUDIO" => vec![
             Row::Number("MASTER VOLUME", Knob::VolMaster, "of full"),
             Row::Number("GAME VOLUME", Knob::VolGame, "steps, tools, hits"),
-            Row::Number("AMBIENCE VOLUME", Knob::VolAmbience, "the wind bed"),
-            // Two facts rather than two dead sliders, and both are the same
-            // rule this screen already obeys: a category with nothing behind
-            // it says so. There is no music and no voice chat, so there is no
-            // music slider and no voice slider.
-            Row::Fact("MUSIC", "None yet - see NOW.md"),
-            Row::Fact("VOICE CHAT", "Not implemented"),
+            Row::Number("AMBIENCE VOLUME", Knob::VolAmbience, "wind, surf, birds"),
+            Row::Number("MUSIC VOLUME", Knob::VolMusic, "the score"),
+            // A fact rather than a dead slider, which is the rule this
+            // screen already obeys: a category with nothing behind it says
+            // so. There is no voice chat, so there is no voice slider.
+            // **There is also only ONE music slider** where the reference
+            // has two - it ships `audio.musicvolume` and
+            // `audio.menumusicvolume` separately, and ours is one number for
+            // both until somebody wants the menu louder than the world.
             Row::Fact("SOUND OCCLUSION", "Off - walls do not muffle sound yet"),
         ],
         "SCREEN" => vec![
             Row::Toggle("VSYNC", Knob::Vsync),
+            Row::Number("FPS LIMIT", Knob::MaxFps, "frames per second"),
             Row::Toggle("FULLSCREEN", Knob::Fullscreen),
         ],
+        // **The readout is DERIVED, not written out beside the knob.** Three
+        // of these rows used to be `Row::Fact`s reading "SMAA, always on",
+        // "SSAO medium, always on" and a fixed render distance — true when
+        // nothing could change them and false the moment a tier could. A
+        // screen that states what a setting does has to read the same table
+        // the renderer does, or it becomes the most confidently wrong thing
+        // in the game.
         "GRAPHICS" => vec![
+            Row::Number("QUALITY", Knob::Quality, "the renderer's budget"),
+            Row::FactOf("  ambient occlusion", |s| {
+                match quality::tier(s.quality).ssao {
+                    Some(q) => format!("SSAO {q:?}").to_lowercase(),
+                    None => "off".to_string(),
+                }
+            }),
+            Row::FactOf("  anti-aliasing", |s| {
+                if quality::tier(s.quality).smaa {
+                    "SMAA".to_string()
+                } else {
+                    "off".to_string()
+                }
+            }),
+            Row::FactOf("  bloom", |s| {
+                on_off(quality::tier(s.quality).bloom).to_string()
+            }),
+            Row::FactOf("  shadows", |s| {
+                let t = quality::tier(s.quality);
+                format!(
+                    "{} cascades to {:.0} m at {}px",
+                    t.cascades, t.shadow_m, t.shadow_map_px
+                )
+            }),
+            Row::FactOf("  far trees", |s| {
+                format!(
+                    "one hull past {:.0} m",
+                    quality::tier(s.quality).tree_lod_swap_m
+                )
+            }),
             Row::Number("FIELD OF VIEW", Knob::Fov, "vertical degrees"),
+            // Still fixed, and still a fact: the rings decide which tiles
+            // EXIST, so moving one is a streaming change rather than a draw
+            // change — and `ART.md` rule 4 is a floor a tier may not cross.
             Row::Fact(
                 "RENDER DISTANCE",
                 "160 m near ring, 2 km far mesh - fixed by the streaming budget",
             ),
-            Row::Fact("ANTI-ALIASING", "SMAA, always on"),
-            Row::Fact("AMBIENT OCCLUSION", "SSAO medium, always on"),
         ],
         "CONTROLS" => vec![
             Row::Number("MOUSE SENSITIVITY", Knob::Sensitivity, "x base"),
             Row::Toggle("INVERT LOOK", Knob::InvertLook),
+        ],
+        "SOCIAL" => vec![
+            Row::Toggle("DISCORD STATUS", Knob::DiscordPresence),
+            Row::Fact(
+                "  what it says",
+                "What you are doing and roughly where - never your address",
+            ),
+            Row::Toggle("SHOW MY SERVER", Knob::DiscordShareServer),
+            Row::Fact(
+                "  what it says",
+                "The shard name and address, so friends can Ask to Join",
+            ),
+            // Said out loud on the screen that turns it on, because the cost
+            // is not obvious from the label: a presence line is public to
+            // everyone who can see the profile, not just to friends.
+            Row::Fact(
+                "  who can see it",
+                "Anyone who can see your Discord profile - not only friends",
+            ),
         ],
         "KEYBINDS" => BINDS.iter().map(|(k, v)| Row::Fact(k, v)).collect(),
         _ => vec![Row::Note("Nothing here yet.")],
     }
 }
 
-/// The binds, read off `input::gather` and `pause::keys`. Read-only: rebinding
-/// needs a stored map and a conflict check, which is its own slice. Drawn
-/// anyway, because **a bind the player is never told about is a bind that does
-/// not exist** — the rule the intro screen's numbered rows already obey.
-pub const BINDS: [(&str, &str); 8] = [
+/// The binds, read off `input::gather`, `verbs::keys`, `panels::keys`,
+/// `map::open`, `chat::keys`, `pause::keys`, `shot::take` and `report::keys`. Read-only: rebinding needs a
+/// stored map and a conflict check, which is its own slice. Drawn anyway,
+/// because **a bind the player is never told about is a bind that does not
+/// exist** — the rule the intro screen's numbered rows already obey.
+///
+/// ⚠ **This array is a HAND-KEPT MIRROR of six systems and nothing gates it**
+/// — `CLAUDE.md`'s own recurring defect, the shape of the `props.js` count and
+/// the `pop_*` verb list. It had already drifted before this edit: it named
+/// eight binds against roughly twenty in the code, so every in-world verb the
+/// client has — `E`, the map, chat, the inventory — was absent from the only
+/// screen that tells a player what the keys are. Growing it is the fix for
+/// today; deriving it is the fix, and `tests/ui.rs` §H now at least fails if a
+/// row here names a key no system reads.
+///
+/// **CROUCH is listed as doing nothing on purpose.** `BTN_CROUCH` crosses the
+/// wire and no sim code reads it (`sim-core/input.rs`), so the row states that
+/// rather than implying a stance the player will go looking for.
+pub const BINDS: [(&str, &str); 19] = [
     ("MOVE", "W A S D"),
     ("SPRINT", "Left Shift"),
+    (
+        "CROUCH",
+        "Left Ctrl (sent, no effect until the combat pass)",
+    ),
     ("JUMP", "Space"),
-    ("USE / ATTACK", "Left Mouse"),
-    ("HOTBAR", "1 - 6"),
+    (
+        "FREE LOOK",
+        "Hold Left Alt (the head turns, the body does not)",
+    ),
     ("LOOK", "Mouse (click to capture the pointer)"),
+    ("USE / ATTACK", "Left Mouse"),
+    ("INTERACT / OPEN", "E"),
+    ("HOTBAR", "1 - 6, or the scroll wheel"),
+    ("INVENTORY / CRAFTING", "Tab, I or Q  (Tab or Esc closes)"),
+    ("MAP", "Hold G"),
+    ("CHAT", "T or Enter"),
+    ("EAT / DRINK", "J / H"),
+    ("BUILD", "Hold Right Mouse with a plan; Left Mouse places"),
+    ("REPAIR / UPGRADE", "R / U, or Left Mouse with a hammer"),
+    ("SCREENSHOT", "F12"),
+    (
+        "REPORT A BUG",
+        "F7 (writes a file next to your screenshots)",
+    ),
     ("MENU", "Esc"),
     ("QUIT", "Esc from the server list"),
 ];
@@ -582,6 +902,19 @@ fn spawn_row(
                 ],
             ));
         }
+        // The same row, with the value resolved against the settings the
+        // pane was built from. `rebuild` re-spawns the pane on every change
+        // (`Settings::dirty`), so these follow the knob above them.
+        Row::FactOf(label, of) => {
+            pane.spawn((
+                frame(),
+                BackgroundColor(ui::ROW_IDLE),
+                children![
+                    ui::strong(*label, 15.0, ui::TEXT),
+                    ui::label(of(settings), 13.0, ui::FAINT),
+                ],
+            ));
+        }
         Row::Toggle(label, knob) => {
             pane.spawn((
                 frame(),
@@ -732,9 +1065,125 @@ pub fn apply_window(settings: Res<Settings>, mut window: Query<&mut Window, With
     }
 }
 
+/// The frame deadline the limiter is pacing toward. `None` while uncapped.
+///
+/// A resource rather than a `Local` so a test can read it and so the reset on
+/// a settings change has somewhere to live.
+#[derive(Resource, Default)]
+pub struct FrameDeadline(pub Option<std::time::Instant>);
+
+/// Hold the render loop to `Settings::max_fps`.
+///
+/// **Why this exists at all.** Bevy's focused update mode is
+/// `UpdateMode::Continuous` — "over and over, as fast as it possibly can" —
+/// and `WinitSettings::default()` is `game()`, so nothing but vsync stood
+/// between this loop and the hardware. Vsync is a row on this very screen, so
+/// turning it off uncapped the client, and a menu screen with one still image
+/// on it would spin a core and a GPU at four figures. (The *unfocused* mode
+/// was already `reactive_low_power(1/60)`, so a backgrounded client was never
+/// the waste; a focused one looking at a menu was.)
+///
+/// **Deadline-based, not sleep-a-fixed-amount**, which is the same shape the
+/// shard's tick loop uses (`server/src/net.rs`): advancing from the target
+/// rather than from "now" keeps the average rate honest instead of drifting
+/// slower by however much each sleep overshoots. `std::thread::sleep` is
+/// granular to about a millisecond here, so a 60 cap measures 58-60 rather
+/// than exactly 60 — and the alternative, spinning down the last millisecond,
+/// burns the core this system exists to give back.
+///
+/// **It re-bases rather than catching up.** After a stall the deadline is
+/// behind by more than a frame, and sprinting through uncapped frames to
+/// repay that debt is precisely the behaviour a cap is for preventing. The
+/// lost frames stay lost.
+///
+/// Runs in `Last` because a cap has to be the final thing a frame does; put
+/// it earlier and it sleeps *before* the render it is supposed to be pacing.
+pub fn limit_frames(settings: Res<Settings>, mut deadline: ResMut<FrameDeadline>) {
+    use std::time::{Duration, Instant};
+    if settings.max_fps == 0 {
+        // Uncapped: drop the deadline so re-enabling the cap starts from now
+        // rather than from a stale instant, which would otherwise spend one
+        // frame thinking it was hours behind.
+        deadline.0 = None;
+        return;
+    }
+    let frame = Duration::from_nanos(1_000_000_000 / settings.max_fps as u64);
+    let now = Instant::now();
+    let target = deadline.0.unwrap_or(now);
+    if now < target {
+        std::thread::sleep(target - now);
+    }
+    let mut next = target + frame;
+    let after = Instant::now();
+    if next < after {
+        next = after;
+    }
+    deadline.0 = Some(next);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two Discord rows are a **consent**, not two independent knobs,
+    /// and the pair has one rule in both directions: sharing implies
+    /// presence, and turning presence off withdraws sharing with it.
+    ///
+    /// The state this forbids is `share = true` under `presence = false` —
+    /// a latent "publish my address" that no row on the screen is showing,
+    /// waiting for the master to come back on months later and disclose
+    /// something the player last agreed to under other circumstances.
+    #[test]
+    fn the_discord_pair_cannot_reach_a_latent_disclosure() {
+        let mut s = Settings::default();
+        // Shipped: presence on, sharing off.
+        assert!(s.discord_presence);
+        assert!(!s.discord_share_server);
+
+        // Sharing on pulls presence with it, from either starting point.
+        s.adjust(Knob::DiscordPresence, 0);
+        assert!(!s.discord_presence);
+        s.adjust(Knob::DiscordShareServer, 0);
+        assert!(s.discord_share_server);
+        assert!(s.discord_presence, "sharing implies presence");
+
+        // Presence off withdraws sharing.
+        s.adjust(Knob::DiscordPresence, 0);
+        assert!(!s.discord_presence);
+        assert!(!s.discord_share_server, "presence off withdraws sharing");
+
+        // No sequence of clicks reaches the forbidden pair.
+        let mut s = Settings::default();
+        for i in 0..64 {
+            s.adjust(
+                if i % 3 == 0 {
+                    Knob::DiscordPresence
+                } else {
+                    Knob::DiscordShareServer
+                },
+                0,
+            );
+            assert!(
+                !(s.discord_share_server && !s.discord_presence),
+                "reached a latent disclosure after {i} clicks"
+            );
+        }
+    }
+
+    /// …and a hand-edited settings file cannot reach it either, which is the
+    /// half a click test cannot cover: the file is plain text a player can
+    /// open, so the loader resolves the pair the same way `adjust` does.
+    #[test]
+    fn a_hand_edited_file_cannot_smuggle_the_latent_disclosure() {
+        let mut p = Settings::default().persisted();
+        p.discord_presence = false;
+        p.discord_share_server = true;
+        let s = Settings::from_persisted(p);
+        assert!(
+            !s.discord_share_server,
+            "sharing under an off master must not load"
+        );
+    }
 
     #[test]
     fn a_stepper_cannot_walk_a_setting_out_of_range() {
@@ -807,7 +1256,7 @@ mod tests {
         s.adjust(Knob::VolMaster, -2);
         s.adjust(Knob::VolGame, -5);
         s.adjust(Knob::VolAmbience, -10);
-        let text = config::serialize(&s.persisted(), config::SETTINGS_VERSION, &[]);
+        let text = config::serialize(&s.persisted(), config::SETTINGS_VERSION, &[], &[]);
         let back =
             Settings::from_persisted(config::parse(&text, Settings::default().persisted()).values);
         assert_eq!(back.persisted(), s.persisted(), "{text}");
@@ -834,6 +1283,81 @@ mod tests {
         assert_eq!(s.vol_master, 1.0);
         assert_eq!(s.vol_game, 0.0);
         assert_eq!(s.value(Knob::VolAmbience), "40%");
+    }
+
+    /// The ladder clamps at both ends rather than wrapping, and UNCAPPED is
+    /// only ever one click from the top rung.
+    ///
+    /// Wrapping is the tempting implementation and it is the wrong one here:
+    /// it puts "uncapped" one click below 30, so a player easing the cap down
+    /// on a laptop lands on the single setting that spins the fan hardest.
+    #[test]
+    fn the_fps_ladder_clamps_and_hides_uncapped_at_the_top() {
+        assert_eq!(step_fps(30, -1), 30, "the bottom rung does not wrap");
+        assert_eq!(step_fps(30, 1), 60);
+        assert_eq!(step_fps(60, -1), 30);
+        assert_eq!(step_fps(240, 1), 0, "uncapped is past the top rung");
+        assert_eq!(step_fps(0, 1), 0, "and it is the end of the ladder");
+        assert_eq!(step_fps(0, -1), 240, "stepping back off uncapped is a rate");
+        // A rate no rung carries — a hand-edited file, or a rung a later
+        // build dropped — steps from the nearest rung at or above it rather
+        // than being discarded.
+        assert_eq!(step_fps(144, 0), 144);
+        assert_eq!(
+            step_fps(100, -1),
+            60,
+            "an off-ladder rate still steps sanely"
+        );
+    }
+
+    /// A file may set a rate the ladder does not carry — a 165 Hz panel is on
+    /// nobody's ladder — but not one that reads as a hang.
+    #[test]
+    fn a_hand_edited_cap_is_honoured_unless_it_looks_like_a_freeze() {
+        let odd = Persisted {
+            max_fps: 165,
+            ..Settings::default().persisted()
+        };
+        assert_eq!(
+            Settings::from_persisted(odd).max_fps,
+            165,
+            "an off-ladder rate a real panel runs at must survive the loader"
+        );
+        let silly = Persisted {
+            max_fps: 1,
+            ..Settings::default().persisted()
+        };
+        assert_eq!(
+            Settings::from_persisted(silly).max_fps,
+            MIN_FPS_CAP,
+            "one frame a second is indistinguishable from a hung client"
+        );
+        let off = Persisted {
+            max_fps: 0,
+            ..Settings::default().persisted()
+        };
+        assert_eq!(
+            Settings::from_persisted(off).max_fps,
+            0,
+            "0 is uncapped, not a rate to be floored"
+        );
+    }
+
+    /// The default is the operator's spoken UNCAPPED, and it is ON the ladder
+    /// — a default off its own ladder would mean the first click of `-` jumped
+    /// somewhere unrelated. (It is the ladder's last rung, so `-` steps to 240
+    /// and `+` stays put, which is the intended shape: there is nothing above
+    /// uncapped to reach for.)
+    #[test]
+    fn the_default_cap_is_uncapped_and_is_a_rung() {
+        assert_eq!(Settings::default().max_fps, 0);
+        assert!(MAX_FPS_LADDER.contains(&Settings::default().max_fps));
+        assert_eq!(Settings::default().value(Knob::MaxFps), "UNCAPPED");
+        let uncapped = Settings {
+            max_fps: 0,
+            ..Settings::default()
+        };
+        assert_eq!(uncapped.value(Knob::MaxFps), "UNCAPPED");
     }
 
     #[test]

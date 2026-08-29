@@ -85,7 +85,11 @@ fn bag_at_feet(w: &mut World, stacks: &[(u16, u16)]) -> u32 {
     let mut body = w.players[0];
     body.inv = [ItemStack::default(); INV_SLOTS];
     for (i, &(item, count)) in stacks.iter().enumerate() {
-        body.inv[i] = ItemStack { item, count };
+        body.inv[i] = ItemStack {
+            item,
+            count,
+            cond: 0,
+        };
     }
     let tick = w.tick;
     w.backpacks
@@ -213,6 +217,7 @@ fn refused_moves_never_mutate() {
         w.players[0].inv[s] = ItemStack {
             item: (s as u16) % ITEMS,
             count: (10 + s as u16 * 13) % STACK_MAX + 1,
+            cond: 0,
         };
     }
 
@@ -295,6 +300,7 @@ fn moves_conserve_every_item() {
         w.players[0].inv[s] = ItemStack {
             item: rng.next_bounded(ITEMS as u32) as u16,
             count: rng.next_bounded(STACK_MAX as u32) as u16 + 1,
+            cond: 0,
         };
     }
 
@@ -379,8 +385,16 @@ fn moves_conserve_every_item() {
 fn every_move_answers_and_none_panics() {
     let mut w = move_world();
     let bag = bag_at_feet(&mut w, &[(4, 20)]);
-    w.players[0].inv[0] = ItemStack { item: 4, count: 60 };
-    w.players[0].inv[1] = ItemStack { item: 1, count: 5 };
+    w.players[0].inv[0] = ItemStack {
+        item: 4,
+        count: 60,
+        cond: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: 1,
+        count: 5,
+        cond: 0,
+    };
 
     // One past every live bound on all four address axes, so a decoder that
     // is bypassed (a WAL, a bot, a test) still lands on a refusal.
@@ -419,8 +433,16 @@ fn every_move_answers_and_none_panics() {
 #[test]
 fn a_whole_stack_onto_another_item_swaps() {
     let mut w = move_world();
-    w.players[0].inv[0] = ItemStack { item: 1, count: 9 };
-    w.players[0].inv[7] = ItemStack { item: 4, count: 3 };
+    w.players[0].inv[0] = ItemStack {
+        item: 1,
+        count: 9,
+        cond: 0,
+    };
+    w.players[0].inv[7] = ItemStack {
+        item: 4,
+        count: 3,
+        cond: 0,
+    };
 
     let (code, b, c) = do_move(&mut w, 0, CONT_SELF, 7, CONT_SELF, 0, 3);
     assert_eq!(code, EV_MOVED);
@@ -434,8 +456,22 @@ fn a_whole_stack_onto_another_item_swaps() {
         (3u32 << 16) | 4,
         "count << 16 | the item that left `from`"
     );
-    assert_eq!(w.players[0].inv[0], ItemStack { item: 4, count: 3 });
-    assert_eq!(w.players[0].inv[7], ItemStack { item: 1, count: 9 });
+    assert_eq!(
+        w.players[0].inv[0],
+        ItemStack {
+            item: 4,
+            count: 3,
+            cond: 0,
+        }
+    );
+    assert_eq!(
+        w.players[0].inv[7],
+        ItemStack {
+            item: 1,
+            count: 9,
+            cond: 0,
+        }
+    );
 }
 
 /// Splitting a stack into an empty slot, and the emptied source zeroing
@@ -444,12 +480,30 @@ fn a_whole_stack_onto_another_item_swaps() {
 #[test]
 fn a_partial_move_splits_and_empties_canonically() {
     let mut w = move_world();
-    w.players[0].inv[2] = ItemStack { item: 6, count: 30 };
+    w.players[0].inv[2] = ItemStack {
+        item: 6,
+        count: 30,
+        cond: 0,
+    };
 
     let (code, _, _) = do_move(&mut w, 0, CONT_SELF, 2, CONT_SELF, 9, 12);
     assert_eq!(code, EV_MOVED);
-    assert_eq!(w.players[0].inv[2], ItemStack { item: 6, count: 18 });
-    assert_eq!(w.players[0].inv[9], ItemStack { item: 6, count: 12 });
+    assert_eq!(
+        w.players[0].inv[2],
+        ItemStack {
+            item: 6,
+            count: 18,
+            cond: 0,
+        }
+    );
+    assert_eq!(
+        w.players[0].inv[9],
+        ItemStack {
+            item: 6,
+            count: 12,
+            cond: 0,
+        }
+    );
 
     // Now move the rest: the source must end as a canonical empty.
     let (code, _, _) = do_move(&mut w, 0, CONT_SELF, 2, CONT_SELF, 9, 18);
@@ -459,7 +513,14 @@ fn a_partial_move_splits_and_empties_canonically() {
         ItemStack::default(),
         "an emptied slot zeroes item as well as count"
     );
-    assert_eq!(w.players[0].inv[9], ItemStack { item: 6, count: 30 });
+    assert_eq!(
+        w.players[0].inv[9],
+        ItemStack {
+            item: 6,
+            count: 30,
+            cond: 0,
+        }
+    );
 }
 
 /// **Never partially.** A merge that does not fit entirely is refused, not
@@ -472,10 +533,12 @@ fn a_merge_that_does_not_fit_is_refused_not_clamped() {
     w.players[0].inv[0] = ItemStack {
         item: 3,
         count: STACK_MAX,
+        cond: 0,
     };
     w.players[0].inv[1] = ItemStack {
         item: 3,
         count: STACK_MAX - 10,
+        cond: 0,
     };
 
     let (code, b, _) = do_move(&mut w, 0, CONT_SELF, 0, CONT_SELF, 1, 40);
@@ -510,7 +573,14 @@ fn a_bag_can_be_taken_from_a_slot_at_a_time_and_put_back() {
     let (code, _, c) = do_move(&mut w, bag, CONT_BAG, 0, CONT_SELF, 0, 12);
     assert_eq!(code, EV_MOVED);
     assert_eq!(c, (12u32 << 16) | 1);
-    assert_eq!(w.players[0].inv[0], ItemStack { item: 1, count: 12 });
+    assert_eq!(
+        w.players[0].inv[0],
+        ItemStack {
+            item: 1,
+            count: 12,
+            cond: 0,
+        }
+    );
     assert_eq!(w.backpacks.entries()[0].items[0].count, 38);
     assert_eq!(
         w.backpacks.entries()[0].items[1].count,
@@ -521,7 +591,14 @@ fn a_bag_can_be_taken_from_a_slot_at_a_time_and_put_back() {
     // Put five back.
     let (code, _, _) = do_move(&mut w, bag, CONT_SELF, 0, CONT_BAG, 0, 5);
     assert_eq!(code, EV_MOVED);
-    assert_eq!(w.players[0].inv[0], ItemStack { item: 1, count: 7 });
+    assert_eq!(
+        w.players[0].inv[0],
+        ItemStack {
+            item: 1,
+            count: 7,
+            cond: 0,
+        }
+    );
     assert_eq!(w.backpacks.entries()[0].items[0].count, 43);
 }
 
@@ -578,13 +655,24 @@ fn a_bag_out_of_reach_refuses_with_its_own_reason() {
 #[test]
 fn a_slot_moved_onto_itself_is_refused() {
     let mut w = move_world();
-    w.players[0].inv[4] = ItemStack { item: 2, count: 10 };
+    w.players[0].inv[4] = ItemStack {
+        item: 2,
+        count: 10,
+        cond: 0,
+    };
     let before = ledger(&w);
 
     let (code, b, _) = do_move(&mut w, 0, CONT_SELF, 4, CONT_SELF, 4, 5);
     assert_eq!(code, EV_MOVE_REFUSED);
     assert_eq!(b, REFUSE_M_SLOT);
-    assert_eq!(w.players[0].inv[4], ItemStack { item: 2, count: 10 });
+    assert_eq!(
+        w.players[0].inv[4],
+        ItemStack {
+            item: 2,
+            count: 10,
+            cond: 0,
+        }
+    );
     assert_eq!(ledger(&w), before, "and it invented nothing");
 }
 
@@ -598,6 +686,7 @@ fn an_item_off_the_ladder_refuses() {
     w.players[0].inv[0] = ItemStack {
         item: ITEMS + 5,
         count: 3,
+        cond: 0,
     };
     let (code, b, _) = do_move(&mut w, 0, CONT_SELF, 0, CONT_SELF, 1, 1);
     assert_eq!(code, EV_MOVE_REFUSED);
@@ -610,7 +699,11 @@ fn an_item_off_the_ladder_refuses() {
 #[test]
 fn a_corpse_cannot_move_anything() {
     let mut w = move_world();
-    w.players[0].inv[0] = ItemStack { item: 1, count: 4 };
+    w.players[0].inv[0] = ItemStack {
+        item: 1,
+        count: 4,
+        cond: 0,
+    };
     w.players[0].dead = true;
     let before = snapshot(&w);
 
@@ -651,10 +744,12 @@ fn resolve_conserves_over_the_whole_small_space() {
                         let src = ItemStack {
                             item: src_item,
                             count: src_count,
+                            cond: 0,
                         };
                         let dst = ItemStack {
                             item: dst_item,
                             count: dst_count,
+                            cond: 0,
                         };
                         let Ok(plan) = plan_move(8, src, dst, count) else {
                             continue;
@@ -696,9 +791,21 @@ fn resolve_conserves_over_the_whole_small_space() {
 /// coverage assertion.
 #[test]
 fn the_planner_names_each_refusal() {
-    let full = ItemStack { item: 1, count: 8 };
-    let some = ItemStack { item: 1, count: 3 };
-    let other = ItemStack { item: 2, count: 3 };
+    let full = ItemStack {
+        item: 1,
+        count: 8,
+        cond: 0,
+    };
+    let some = ItemStack {
+        item: 1,
+        count: 3,
+        cond: 0,
+    };
+    let other = ItemStack {
+        item: 2,
+        count: 3,
+        cond: 0,
+    };
     let empty = ItemStack::default();
 
     assert_eq!(plan_move(8, empty, some, 1), Err(REFUSE_M_EMPTY));
@@ -719,5 +826,84 @@ fn the_planner_names_each_refusal() {
     assert_eq!(
         plan_move(8, some, empty, 2),
         Ok(MovePlan::Transfer { item: 1, count: 2 })
+    );
+}
+
+/// **A moved tool keeps its condition** (item durability v0, gate 1).
+///
+/// `resolve`'s Transfer splice is the item-move trap's exact anatomy: it
+/// built the destination from `item` and `count` alone, dropped `cond`,
+/// and **compiled either way** — so a worn hatchet dragged to another
+/// slot arrived dead with the goldens, replay and clippy all green.
+/// Proven red by reverting the splice to `ItemStack { item, count: … }`
+/// with `cond: 0` — which still compiles, and reads 0 here.
+///
+/// V7 (condition ⇒ stack of 1) is what guarantees no merge ever
+/// reconciles two conditions, so the splice fix is for correctness of the
+/// field, not merge semantics — the second half below pins that a
+/// condition tool's merge is unreachable (`REFUSE_M_NO_ROOM` at cap 1),
+/// and the third that a same-slot split of a plain stack carries the
+/// source's cond both ways.
+#[test]
+fn a_moved_tool_keeps_its_condition() {
+    let worn = ItemStack {
+        item: 5,
+        count: 1,
+        cond: 4_321,
+    };
+    let empty = ItemStack::default();
+
+    // Into an empty slot: the whole point.
+    let plan = plan_move(1, worn, empty, 1).expect("a tool moves into an empty slot");
+    let (src, dst) = resolve(plan, worn, empty);
+    assert_eq!(src, empty, "the source empties canonically");
+    assert_eq!(
+        dst.cond, 4_321,
+        "the moved tool arrived with a different condition than it left with"
+    );
+    assert_eq!(dst, worn, "everything else travels too");
+
+    // A merge is unreachable for a condition tool: cap 1, slot occupied.
+    let other = ItemStack {
+        item: 5,
+        count: 1,
+        cond: 9_000,
+    };
+    assert_eq!(
+        plan_move(1, worn, other, 1),
+        Err(REFUSE_M_NO_ROOM),
+        "two conditions can never be asked to reconcile (V7's arithmetic)"
+    );
+
+    // A partial split of a PLAIN stack: both halves keep the source cond
+    // (0 for every stackable item by V7, so this is the field's identity
+    // rather than a semantic).
+    let pile = ItemStack {
+        item: 2,
+        count: 10,
+        cond: 0,
+    };
+    let plan = plan_move(20, pile, empty, 4).expect("a split plans");
+    let (src, dst) = resolve(plan, pile, empty);
+    assert_eq!((src.count, dst.count), (6, 4));
+    assert_eq!((src.cond, dst.cond), (0, 0));
+
+    // A swap carries both stacks whole, conditions included.
+    let a = ItemStack {
+        item: 5,
+        count: 1,
+        cond: 111,
+    };
+    let b = ItemStack {
+        item: 6,
+        count: 1,
+        cond: 222,
+    };
+    let plan = plan_move(1, a, b, 1).expect("whole stacks swap");
+    let (src, dst) = resolve(plan, a, b);
+    assert_eq!(
+        (src, dst),
+        (b, a),
+        "a swap moves conditions with the stacks"
     );
 }

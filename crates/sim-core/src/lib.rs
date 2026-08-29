@@ -29,11 +29,14 @@ pub mod persist;
 mod pitch_lut;
 pub mod probe;
 pub mod ranged;
+pub mod research;
 pub mod rng;
 pub mod roster;
+pub mod spent;
 pub mod survival;
 pub mod terrain;
 pub mod world;
+pub mod worldcont;
 pub mod worldsave;
 mod yaw_lut;
 

@@ -139,6 +139,18 @@ pub struct SlotCache {
     /// The seed the lines were resolved under. A cache handed a different
     /// seed is not stale, it is wrong, so it is emptied rather than trusted.
     seed: u64,
+    /// How many times this cache has actually run `terrain::scatter` — the
+    /// work it exists to avoid, counted so "it is cached" is a measurement
+    /// rather than a claim. Monotonic across `reset`, because a seed change
+    /// does not un-spend the taps already made.
+    ///
+    /// **A statistic, not sim state**, exactly like the lines it counts: it
+    /// is never hashed, and two peers whose caches disagree about it still
+    /// answer every query identically. It is what lets a gate assert a cold
+    /// scan costs nine resolves and the next one at the same position costs
+    /// none — a COUNT, which is quotable on any box, unlike the elapsed time
+    /// that motivated the cache.
+    resolves: u32,
     lines: [Line; SLOT_CACHE_SLOTS],
 }
 
@@ -146,11 +158,17 @@ impl SlotCache {
     pub fn new() -> Self {
         Self {
             seed: 0,
+            resolves: 0,
             lines: [Line {
                 key: NO_KEY,
                 slot: EMPTY_SLOT,
             }; SLOT_CACHE_SLOTS],
         }
+    }
+
+    /// The running count of `terrain::scatter` calls this cache has made.
+    pub fn resolves(&self) -> u32 {
+        self.resolves
     }
 
     /// Drop every line. Not a tick path — only a seed change reaches it.
@@ -190,6 +208,7 @@ impl SlotCache {
             return self.lines[ix].slot;
         }
         let slot = terrain::scatter(seed, table, haven, cx, cz);
+        self.resolves = self.resolves.wrapping_add(1);
         self.lines[ix] = Line { key, slot };
         slot
     }
@@ -219,6 +238,45 @@ impl Occupants<'_> {
     /// occupant plus a capsule against `CELL_SIZE` in a const block.
     pub fn blocks(&mut self, seed: u64, x: f32, z: f32, feet_y: f32) -> bool {
         self.blocks_volume(seed, x, z, feet_y, CAPSULE_RADIUS_M, CAPSULE_HEIGHT_M)
+    }
+
+    /// The highest scattered surface a capsule at `feet_y` may stand on
+    /// under (`x`, `z`), or `collide::NO_SURFACE` — `blocks`'s twin over
+    /// [`terrain::slot_ground`], and the query that makes a crate top, a
+    /// boulder top and the shelter's plinth ground instead of geometry a
+    /// body sinks through (`NOW.md` §0q item 3).
+    ///
+    /// The same 3×3 scan, complete for the same reason with margin: a
+    /// ground footprint is the occupant's own, which reaches strictly
+    /// less far than the capsule-inflated blocking footprint the probe
+    /// bound was proved against. Harvested is asked last and only for a
+    /// slot that would otherwise answer, `blocks`'s own cost argument.
+    pub fn ground(&mut self, seed: u64, x: f32, z: f32, feet_y: f32) -> f32 {
+        let pcx = floor_i32(x / CELL_SIZE);
+        let pcz = floor_i32(z / CELL_SIZE);
+        let mut best = crate::collide::NO_SURFACE;
+        let mut dz = -terrain::OCCUPANT_PROBE_CELLS;
+        while dz <= terrain::OCCUPANT_PROBE_CELLS {
+            let mut dx = -terrain::OCCUPANT_PROBE_CELLS;
+            while dx <= terrain::OCCUPANT_PROBE_CELLS {
+                let (cx, cz) = (pcx + dx, pcz + dz);
+                dx += 1;
+                let slot = self.cache.slot(seed, self.table, self.haven, cx, cz);
+                if slot.occupant == Occupant::None {
+                    continue;
+                }
+                let g = terrain::slot_ground(&slot, x, z, feet_y);
+                if g <= best {
+                    continue;
+                }
+                if self.harvested.is_harvested(cx as u16, cz as u16) {
+                    continue;
+                }
+                best = g;
+            }
+            dz += 1;
+        }
+        best
     }
 
     /// The same question for a volume that is not a player. `blocks` is this
@@ -298,6 +356,7 @@ impl Scratch<Barren> {
                 x: -1.0e6,
                 z: -1.0e6,
                 y: 0.0,
+                floor_y: 0.0,
                 relief: 0.0,
                 phase: 0,
                 shelter: 0,

@@ -262,11 +262,13 @@ was written, so what follows is the survivors plus what closing them exposed.
 2. **No butchering verb.** The reference's actual interaction is a
    tool-gated harvest on the body, paying more to a better tool. The corpse
    bag is the landing place for it and did not exist until now.
-3. **Nothing fights back** (§7). Still the biggest fidelity gap. Needs a
-   mob→player damage path and a combat-feel answer to being hit by something
-   you cannot reliably hit back — and, measured since this file was written,
-   **the wire's death-cause field has been saturated at 2 bits since v24**,
-   so it is a widening rather than a spare code.
+3. ~~**Nothing fights back**~~ (§7). **DONE 2026-08-11** — mob attack v0
+   (`DECISIONS.md` §open): rousing is one timer, courage splits it (charge
+   whole, flee below half — the boar's own rule, §7), the bite is
+   phase-locked so it costs no state, and the widening this item measured
+   landed as wire v36's 2 → 3 bit death-cause field with `DEATH_BY_MOB`
+   riding it. What §7 still holds over us: packs, and hunting — a pig
+   answers provocation, it never seeks.
 4. ~~**No meat.**~~ **DONE 2026-08-08.** Cut because there was no cooking;
    `sim-core/oven.rs` landed the same day with an empty cook table for the
    mirror-image reason, so the two halves closed each other. The pig drops

@@ -76,6 +76,14 @@ impl Predictor {
         &self.tail[..self.tail_len]
     }
 
+    /// The seed this predictor steps under — the one `movement::step` is
+    /// handed, and therefore the one the shared `SlotCache` holds lines for.
+    /// Read by `ClientCore::island`, so a caller asking the cache about a
+    /// cell cannot supply a *different* seed and silently flush it.
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
     /// One local input: append to the tail and, once started, step the
     /// predicted body and record it under the frame's seq. `cols` is the
     /// client piece mirror's collision index — the predictor collides
@@ -89,7 +97,13 @@ impl Predictor {
         self.tail[self.tail_len] = frame;
         self.tail_len += 1;
         if self.started {
-            movement::step(self.seed, cols, occ, &mut self.body, &frame);
+            // The haven comes off `occ` rather than being threaded in
+            // separately, so the ground the predictor steps on is by
+            // construction the same one its collision bundle was built
+            // against — two sources for one island is how a client and a
+            // server come to disagree about where the floor is.
+            let haven = occ.haven;
+            movement::step(self.seed, haven, cols, occ, &mut self.body, &frame);
             self.record(frame.seq);
         }
     }
@@ -149,9 +163,10 @@ impl Predictor {
 
         let old = self.position();
         self.body = Self::adopt(own);
+        let haven = occ.haven;
         for i in 0..self.tail_len {
             let f = self.tail[i];
-            movement::step(self.seed, cols, occ, &mut self.body, &f);
+            movement::step(self.seed, haven, cols, occ, &mut self.body, &f);
             self.record(f.seq);
         }
         if self.started {
@@ -239,6 +254,7 @@ mod tests {
             qvy: p.body.qvy,
             grounded: p.body.grounded,
             sleeping: p.sleeping,
+            dead: p.dead,
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
         }
@@ -273,7 +289,7 @@ mod tests {
     /// pins both at the slab with zero mispredictions.
     #[test]
     fn prediction_collides_bit_exact_through_the_mirror() {
-        use sim_core::build::{BuildContent, LOC_EDGE_W, LOC_PLANE};
+        use sim_core::build::{BuildContent, LOC_EDGE_XLO, LOC_PLANE};
         use sim_core::gather::ItemStack;
         use sim_core::world::Command;
 
@@ -283,7 +299,11 @@ mod tests {
         world.build = BuildContent::probe_fixture();
         world.dev_spawn = Some((1024.5, 1024.5));
         world.tick(&[Command::Join { id: 7 }]);
-        world.players[0].inv[0] = ItemStack { item: 0, count: 50 };
+        world.players[0].inv[0] = ItemStack {
+            item: 0,
+            count: 50,
+            cond: 0,
+        };
         world.tick(&[
             Command::Place {
                 id: 7,
@@ -292,6 +312,7 @@ mod tests {
                 cz: 341,
                 level: 0,
                 loc: LOC_PLANE,
+                freehand: false,
             },
             Command::Place {
                 id: 7,
@@ -299,7 +320,8 @@ mod tests {
                 cx: 341,
                 cz: 341,
                 level: 0,
-                loc: LOC_EDGE_W,
+                loc: LOC_EDGE_XLO,
+                freehand: false,
             },
         ]);
         assert_eq!(world.pieces.len(), 2, "fixture placements must land");
@@ -308,7 +330,7 @@ mod tests {
         let mut cols = Box::new(ColIndex::new());
         for r in world.pieces.entries() {
             let shape = world.build.pieces[r.row as usize].shape;
-            cols.add(r.cx, r.cz, r.level, r.loc, shape);
+            cols.add(r.cx, r.cz, r.level, r.loc, shape, r.plate);
         }
 
         // The predictor collides with the same island the server does.
@@ -316,7 +338,7 @@ mod tests {
         let mut p = Predictor::new(seed);
         p.reconcile(&own_state(&world, 7), 0, &cols, &mut occ.occupants());
         for seq in 1..=150u16 {
-            // Strafe -x into the west wall, forever.
+            // Strafe -x into the low-x wall, forever.
             let f = InputFrame {
                 seq,
                 move_x: -127,

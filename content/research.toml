@@ -1,0 +1,116 @@
+# Gates · content/research.toml — the blueprint table (CONTENT.md §1,
+# research). The sink JUNK exists for: you find the thing, you take it to a
+# table with a fistful of coin, and from then on you can make it yourself.
+# The sim's side is `sim-core/research.rs`; every number here is a knob with
+# this file as its documented default (DECISIONS.md §open, "research v0").
+#
+# **What research is paid in, named here rather than assumed in code.**
+# `sim-core` receives an item index and never learns it is currency —
+# `DESIGN.md` §3.1's coin stays out of `crates/` the same way every other
+# number does. And to be clear about which JUNK this is: the carried,
+# item-stack kind, which is scrap (operator, 2026-08-10). Nothing in this
+# file touches a wallet, a ledger or a chain.
+[coin]
+item = "item.junk"
+
+# --- what may be learned ------------------------------------------------
+#
+# `[[research]] item` is the thing you consume; the recipe it unlocks is
+# the one that OUTPUTS that item, resolved at bake. The file never names a
+# recipe id, so the two cannot drift, and a row for an item nothing crafts
+# is a bake error rather than a coin sink that unlocks nothing
+# (`bake_research`). A recipe marked `blueprint` with no row here is the
+# same error from the other end and `validate::structural` refuses it:
+# that combination is a recipe nobody could ever craft.
+#
+# **`requires` is the ladder, and it is a floor rather than a free hand**
+# (2026-08-15). A row may name blueprints that must already be held; the
+# ids resolve at bake into `Player::known`'s own bits. What may NOT happen
+# is the tree disagreeing with the recipes: if a blueprint-gated recipe
+# consumes another blueprint-gated item, that edge is already a fact of the
+# data and `validate::structural` refuses a row that omits it. Authoring
+# MORE edges than the recipes imply is a design call and stays legal — the
+# revolver behind gunpowder is the obvious candidate and is deliberately
+# NOT written here, because it is a knob nobody has spoken
+# (`DECISIONS.md` §open, "research ladder v0").
+#
+# **Which rows are gated is the whole design decision, and it is small on
+# purpose.** Only the powder era — the things a player would go raiding
+# for — is behind research; the whole T0 and workbench ladder stays open,
+# because gating the hatchet you need to gather the wood to build the bench
+# to research the hatchet is the kind of circle a tech tree gets wrong
+# once and never lives down. Everything here is reachable as loot before it
+# is craftable (`content/loot.toml`: the crate table pays gunpowder, the
+# medkit, pistol ammo and metal arrows), which is what makes the verb a
+# reason to walk to the haven rather than a tax on crafting.
+#
+# **The prices are ours, and as of 2026-08-18 their TOTAL is theirs by
+# accident** — which is a better place to be than the reason they used to
+# carry. That reason read: theirs are 75/125/250/500 pre-Oct-2025 and
+# 15/30/60/120 post-cut (`reference/RIPLIST.md` §2 row 7, page tier
+# 2026-08-14), "both priced against a ~10-scrap barrel where ours pays
+# ~0.85 junk, so neither lands raw". **The ~10 was never measured and is
+# wrong**: their barrel pays ~2.42 scrap (§1f — 2 direct at 100 % plus a
+# 1.4 % gear roll recycled), and taking their recycler yields the same day
+# put ours at 2.727 junk a barrel. One junk now buys about what one scrap
+# buys. Priced in barrels over the four researchable items we both have —
+# their Research Table column, page-read 2026-08-18: HV arrow 15,
+# revolver 30, satchel 60, gunpowder 120 — **this ladder cost 2.66× theirs
+# before that take and 0.83× after it.** No price moved; the justification
+# did, and the total is now theirs to within a sixth.
+#
+# **The SHAPE is still ours and is the open half.** Their spread is 8×
+# (15 → 120) against our 3.75× (20 → 75), and the two disagree on where
+# gunpowder sits: theirs is the most expensive blueprint in the game's
+# early ladder, ours is the middle rung, while their revolver is cheap
+# (30) where ours is 75. Taking their per-item ordering is a real row and
+# nobody has opened it (`reference/RIPLIST.md` §2 row 1g); until then
+# this ladder still reads reachable, a session, a project, and it still
+# moves with the faucet counts or the ratio breaks (DECISIONS.md §open,
+# "JUNK faucet v0").
+#
+# **`requires` is the tech tree** (tech tree v0 — spoken 2026-08-14, the
+# pre-Oct-2025 era 2026-08-15). Two verbs read this table: the research
+# TABLE takes a looted sample plus the cost and ignores `requires`
+# entirely — research what you loot — and the tree verb at a workbench
+# takes the cost alone, along these edges, at a bench of the recipe's
+# tier. One cost column serves both, the reference's own pre-Oct-2025
+# arrangement; the tree "costs more" only as the path total (a satchel
+# via the tree is gunpowder's 40 + its own 75 = 115, against 75 with a
+# sample in hand — and there IS no satchel sample, which is the point:
+# the tree is how the two rows nothing drops became learnable at all).
+# Three roots, two paths: powder (gunpowder → revolver / satchel) and
+# field kit (medkit → roadsign plate); metal arrows stand alone.
+
+# 20 — a handful of barrels. The first thing most players will research,
+# and cheap because it is the one that teaches what the verb IS.
+[[research]]
+item = "item.medkit"
+cost = 20
+
+[[research]]
+item = "item.arrow_metal"
+cost = 20
+
+# 40 — a session. The powder chain proper.
+[[research]]
+item = "item.gunpowder"
+cost = 40
+
+[[research]]
+item = "item.armor_roadsign_body"
+cost = 40
+requires = "item.medkit"
+
+# 75 — a project, and both of these are what a raid is made of. The
+# revolver is also a rare barrel drop (`loot.toml`), so the fastest route
+# to owning one is still luck; this is the route to owning several.
+[[research]]
+item = "item.revolver"
+cost = 75
+requires = "item.gunpowder"
+
+[[research]]
+item = "item.satchel_charge"
+cost = 75
+requires = "item.gunpowder"

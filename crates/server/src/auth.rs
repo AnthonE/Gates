@@ -22,7 +22,7 @@
 //! public key, hash it to an address, and compare.
 //!
 //! No network call. No issuer to be unreachable. No "what does a shard do
-//! when it cannot reach scry" policy question, which is the one the token
+//! when it cannot reach elo" policy question, which is the one the token
 //! model could not answer and the reason it kept not landing. The identity
 //! is a public key hash and the proof is arithmetic over bytes we already
 //! have.
@@ -94,6 +94,41 @@ fn address_of(vk: &VerifyingKey) -> Address {
     Address(a)
 }
 
+/// EIP-55: the same 42 characters as [`Address::to_hex`], re-cased.
+///
+/// A hex digit goes uppercase when the matching nibble of `keccak256` over
+/// the **lowercase hex text** (no `0x`) is 8 or more. Digits `0-9` have no
+/// case and are left alone.
+///
+/// **Why a shard needs this at all.** The identity we store stays lowercase —
+/// `Address::to_hex` says why, and a save filed under a checksummed key would
+/// depend on how the address was capitalised where it came from. But the
+/// *message* is elo's, and elo's launcher binds the checksummed spelling
+/// into the bytes it signs, because EIP-4361 requires it and reference SIWE
+/// parsers reject an all-lowercase address outright. So the case matters in
+/// exactly one place — recomputing what was signed — and nowhere else.
+pub(crate) fn checksum_hex(address: &Address) -> [u8; 42] {
+    let lower = address.to_hex();
+    let h = keccak256(&lower[2..]); // the hex text, without `0x`
+    let mut out = lower;
+    for i in 0..40 {
+        let c = out[2 + i];
+        if !c.is_ascii_alphabetic() {
+            continue;
+        }
+        // Nibble i of the digest: high nibble for even i, low for odd.
+        let nib = if i % 2 == 0 {
+            h[i / 2] >> 4
+        } else {
+            h[i / 2] & 0xf
+        };
+        if nib >= 8 {
+            out[2 + i] = c.to_ascii_uppercase();
+        }
+    }
+    out
+}
+
 /// The EIP-191 `personal_sign` digest: the message under its length-prefixed
 /// envelope, keccaked.
 ///
@@ -144,7 +179,13 @@ pub fn verify(
         return Err(AuthError::Guest);
     }
     let mut text = [0u8; SIWE_MESSAGE_MAX];
-    let len = siwe_message(domain, &auth.address, nonce, issued_at, &mut text);
+    // EIP-55, not `Address::to_hex`'s lowercase: the launcher binds the
+    // checksummed spelling into the bytes it signs, so recomputing with a
+    // lowercase address recovers a different digest and every honest login
+    // fails as `WrongSigner`. The case is part of the message.
+    let checksummed = checksum_hex(&auth.address);
+    let addr = core::str::from_utf8(&checksummed).map_err(|_| AuthError::Malformed)?;
+    let len = siwe_message(domain, addr, protocol::SLUG, nonce, issued_at, &mut text);
     let len = len.min(SIWE_MESSAGE_MAX);
     let digest = personal_sign_digest(&text[..len]);
 
@@ -202,7 +243,12 @@ mod tests {
     fn sign_as(sk: &SigningKey, nonce: &[u8; NONCE_BYTES], issued_at: u64, v_style: u8) -> Auth {
         let address = address_of(sk.verifying_key());
         let mut text = [0u8; SIWE_MESSAGE_MAX];
-        let len = siwe_message(DOMAIN, &address, nonce, issued_at, &mut text);
+        // Checksummed, exactly as `verify` recomputes it and a launcher signs
+        // it — a test that signed the lowercase form would pass against a
+        // verifier that did the same and fail against every real wallet.
+        let checksummed = checksum_hex(&address);
+        let addr = core::str::from_utf8(&checksummed).expect("utf-8");
+        let len = siwe_message(DOMAIN, addr, protocol::SLUG, nonce, issued_at, &mut text);
         let digest = personal_sign_digest(&text[..len]);
         let (sig, rec) = sk.sign_prehash_recoverable(&digest).expect("signs");
         let mut raw = [0u8; 65];
@@ -339,5 +385,45 @@ mod tests {
         let auth = sign_as(&sk, &nonce, 7, 27);
         let verified = verify(DOMAIN, &nonce, 7, &auth).expect("verifies");
         assert_eq!(Some(verified), key_of(&auth.address));
+    }
+}
+
+#[cfg(test)]
+mod checksum_tests {
+    use super::*;
+
+    /// The four canonical EIP-55 vectors from the spec itself.
+    ///
+    /// Pinned against published values rather than against our own output,
+    /// because a checksum that is self-consistent and wrong re-cases every
+    /// address the same way and fails every login identically — which reads
+    /// as "signing is broken" and not as "this function is wrong".
+    #[test]
+    fn checksum_matches_the_eip55_vectors() {
+        for want in [
+            "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+            "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",
+            "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB",
+            "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb",
+        ] {
+            let a = Address::from_hex(want.as_bytes()).expect("a valid address");
+            let got = checksum_hex(&a);
+            assert_eq!(
+                core::str::from_utf8(&got).expect("utf-8"),
+                want,
+                "EIP-55 vector"
+            );
+        }
+    }
+
+    /// The address the launcher reports for the dev wallet, re-cased here.
+    /// This is the one that actually has to match in production.
+    #[test]
+    fn the_dev_wallet_rechecksums_to_what_the_launcher_reports() {
+        let a = Address::from_hex(b"0x24445efddb08d4938e3e3627042b2cf4063d9092").unwrap();
+        assert_eq!(
+            core::str::from_utf8(&checksum_hex(&a)).unwrap(),
+            "0x24445EFddB08d4938E3E3627042B2Cf4063d9092"
+        );
     }
 }

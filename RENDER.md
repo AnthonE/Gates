@@ -32,7 +32,7 @@ procedural cloud deck in the sky, resolves with SSAO + SMAA + bloom, draws a
 HUD and a viewmodel, and captures a fixed vantage list headless under Xvfb +
 lavapipe.
 
-`ci/native_bar.py` reads our captures and `Rust Images/` **in the same run,
+`ci/native_bar.py` reads our captures and the reference set **in the same run,
 through the same estimator** — a bar computed a different way than the frame
 it judges is not a bar. Medians over the six vantages:
 
@@ -75,8 +75,20 @@ Two gaps remain, both named by the table:
   frame lost its accidental darks and what is left is the fill's true shape: a
   uniform ambient term buys rule 3's 0.30 floor at the price of the bottom of
   the range. A hemisphere (sky half cool, earth half warm) is what gets both.
-  Bevy's `AmbientLight` is uniform, so that is a second light or a shader —
-  and this is now the top-ranked visual gap rather than the second.
+  ✅ **LANDED 2026-08-15 — `crates/client/src/render/fill.rs`**, and the
+  sentence that used to end this bullet ("Bevy's `AmbientLight` is uniform, so
+  that is a second light or a shader") was **true about `AmbientLight` and
+  wrong about the conclusion**, which is worth keeping because it is the kind
+  of error that costs a whole slice. `pbr_ambient.wgsl` really does ignore its
+  `world_normal` argument — but `environment_map.wgsl` samples its diffuse
+  cubemap **by the world normal**, so an `EnvironmentMapLight` holding
+  `fill_at(n)` is a hemisphere exactly, with no second light, no
+  `AsBindGroup` and no WGSL. Gated by `crates/client/tests/fill.rs`.
+  **What is NOT claimed: that this moved the p10.** The sky half is carried
+  across unchanged so up-facing ground does not move, which is what made the
+  change safe to land without a frame in front of anyone; the darks it
+  restores are on down-facing faces. The p10 gap is still open and its
+  remaining half is the transfer, not the fill.
 
 ## 1 · The rule the path hangs on: Bevy draws, it does not decide
 
@@ -103,6 +115,53 @@ assertion rather than a grep: **a headless run must produce a byte-identical
 state hash with the renderer attached and detached, on the same seed and WAL.**
 If the ECS ever decides anything, that equality breaks. It is not built; it is
 the right gate, and it is listed in §5 as R-G4.
+
+### 1.0 · The front door is four states, and the window comes first
+
+The path a player walks before any of the slices below draw a pixel:
+
+```text
+  Boot ──ready──▶ Menu ──pick──▶ Connecting ──welcome──▶ Loading ──▶ InWorld
+   └──chosen──────────────────────▲
+```
+
+**`Boot` exists because a double-click used to show nothing.** On the launcher
+path the client did a blocking elo handshake and a blocking QUIC connect
+*before the window existed*, and `exit(1)`'d on failure — into a terminal a
+double-clicked game does not have. Both are states now (`render/boot.rs`), so
+the window is the first thing that happens and everything slow is drawn while
+it happens. It ends on observable state — every `Startup` asset handle
+settled, the handshake answered — never on a clock, which is §1.1's rule one
+screen earlier and `CLAUDE.md`'s rule generally.
+
+**`--capture` is the one door that skips it** and still connects before the
+window. The probe harness is a gate: a client that draws a world it is not
+connected to lies for its first few frames, and a harness that could
+photograph a half-finished handshake is a harness whose frames depend on the
+network.
+
+What the splash still cannot cover is its own first ~3 s — wgpu adapter
+enumeration and window creation precede the first Bevy frame (measured under
+llvmpipe on this box). Covering that needs a second process; not taken, and
+`DECISIONS.md` §open says so.
+
+The screens themselves share one **shell** — wordmark, nav column, tinted
+control panel, content pane — owned by `render/ui.rs`, because the five
+reference frames the operator handed over are one screen with five payloads.
+Nothing in it decides: the browser's filtering, sort and favourites are
+`crate::ui::servers`, gated headless, and the launcher-backed entries are
+`crate::ui::hub`.
+
+**The backdrop is footage, and that is a correction.** The reference plays a
+video behind its menu (operator, 2026-08-10), so the note that used to sit
+here — render the island live behind the shell — was the expensive way to buy
+the cheap thing. A backdrop has no camera to drive, no ring to feed and no
+`WorldId` to insert and tear down; it costs one texture under a scrim, and it
+is absent-tolerant. Motion is a frame sequence and a size trade, not a
+renderer feature; `DECISIONS.md` §open "menu backdrop v0" has the numbers.
+`--capture --no-hud` shoots a clean plate, which is how the shipped still was
+made — the island is a pure function of the seed, so its title art is
+reproducible like everything else here.
 
 ### 1.1 · The corollary: nothing is loaded until the server says what
 
@@ -177,10 +236,16 @@ that rediscovers one of these has failed, not learned.
   chroma or luma neutrality, and a featureless wash satisfies all three.
   **Structural assertions run BEFORE any statistic** (§5), and a ranked visual
   gap is not evidence about shading until someone has looked at the frame.
-- **Median fps hides shader-compile stalls.** Lazy pipeline specialization is
-  Bevy's version of the lazy WebGL program link that cost 700 ms+ worst-frames
-  while the benchmark read 90 fps. The gate is a **COUNT** — no new pipelines
-  created after the world is up — never a frame-time threshold.
+- **Median fps hides shader-compile stalls, and the native symptom is a POP.**
+  Lazy pipeline specialization is Bevy's version of the lazy WebGL program link
+  that cost 700 ms+ worst-frames while the benchmark read 90 fps — but
+  `synchronous_pipeline_compilation` is false by default, so a draw whose
+  pipeline is not ready is skipped rather than waited for (measured 2026-08-20;
+  `CLAUDE.md`'s trap entry said "a bigger stall" and was corrected). The gate is
+  still a **COUNT** — no new pipelines created after the world is up — never a
+  frame-time threshold, and it still needs a GPU. `render/prewarm.rs` closes
+  most of it by drawing every `StandardMaterial` once, tiny, when it is
+  created; skinned meshes are a different key and are not covered.
 - **A gate that waits on a clock is not a gate on this box.** Assert on
   observable state (`inWorld`, `snapshots > n`, frames rendered), never on
   elapsed milliseconds. Under lavapipe this is not a nicety: a CPU rasterizer
@@ -315,7 +380,7 @@ lane.** (§2, first bullet — this is the rule that was measured, not a style.)
 - `Atmosphere` on the camera, sun as a `DirectionalLight` in the 30–40° band
   (§3's unblock), shadows on with cascades, `pcss` if it is cheap enough on
   the gate box.
-- Tonemapper chosen by *measurement* against `ci/reference_bar.mjs`'s frames,
+- Tonemapper chosen by *measurement* against the reference set's frames,
   not by name. The paid-for datum: a transfer with a quadratic toe over the
   shaded range (Khronos PBR Neutral, `x - 6.25x²` under 0.08) squares the
   shadows and is why a shaded face arrived at 8/255. `ART.md` rule 3's floor —
@@ -324,7 +389,12 @@ lane.** (§2, first bullet — this is the rule that was measured, not a style.)
 - Ambient is not one number: a hemisphere lands `mix(ground, sky, 0.5+0.5·N·y)`,
   so the **sky half lights up-facing ground in shadow** and the **ground half
   lights every down-facing prop face**. Moving them together is the mistake
-  that cost a pass; they are two knobs.
+  that cost a pass; they are two knobs. ✅ **Landed 2026-08-15** as `fill.rs`,
+  in that exact form — and the two halves went in at different standings, which
+  is the "two knobs" rule being obeyed rather than sidestepped: the sky half is
+  the shipped uniform term carried across untouched, the ground half is the
+  island's own measured albedo under its own irradiance. Only the *split* is
+  new, so exactly one thing moved.
 - **Probe (R-G2)**: `ART.md` rule 3 as an assertion (shaded/lit ratio ≥ 0.30 on
   a probe object), plus sky-brighter-than-ground, plus the far third lighter,
   bluer and less saturated than the near third.
@@ -349,7 +419,7 @@ hard parts now.
      tolerates. Nothing but a measurement catches this — the sky looked better
      the whole time.
 
-**Do not meter the tonal bar here.** p10/p50/p90 against `Rust Images/` is R5's
+**Do not meter the tonal bar here.** p10/p50/p90 against the reference set is R5's
 job, after there is content in the frame. A bar measured on an empty world is
 the beige-smear trap with a different file name.
 
@@ -394,15 +464,52 @@ tuft had one lit blade and one black one. Blades are also `NotShadowCaster`:
 two triangles a few centimetres wide against a cascade sized for 200 m is not
 a shadow, it is acne, and the first capture was full of it.
 
-### R4 · Materials — the photograph, on the surface — **LANDED (single-map)**
+### R4 · Materials — the photograph, on the surface — **LANDED (4-way splat, 2026-08-15)**
 
 The CC0 set in `assets/textures/` already exists, is manifested, and its
 *selection* was already measured (gain span, albedo sd, anisotropy). None of
 that work is lost; it moves to WGSL.
 
+**The first WGSL in the tree is `assets/shaders/ground_splat.wgsl`**, bound by
+`render/ground_splat.rs` as an `ExtendedMaterial<StandardMaterial, GroundSplat>`
+whose extension deliberately does not declare `#[bindless]` — which is what
+forces the whole material non-bindless and retires the blocker `terrain_mesh.rs`
+had recorded against exactly this slice. Four albedo and four normal maps, one
+shared sampler, per-identity roughness. Landed with `tests/ground_splat.rs`.
+
+Three things it settled that are worth not re-deriving:
+
+  · **The weights ride `ATTRIBUTE_COLOR`, not a packed `UV_1`.** Packing two
+    `u8` per `f32` was scouted and is wrong — the rasterizer interpolates the
+    packed value and `floor(p/256)` mixes the low byte into the high one. Exact
+    at both vertices, 50% wrong mid-triangle, i.e. at identity boundaries.
+    `UV_1` carries the two scalar modifiers (break-up, waterline) instead.
+  · **Each map contributes LUMINANCE, never colour**, which is the §7 deviation
+    rule satisfied by construction rather than by a correction: a mean-1
+    luminance field has gain span 1.000, where only `rock` clears the rule as
+    colour (grass 2.454, sand 2.073, litter 3.586).
+  · **The height blend is a tie-breaker and measured as a no-op.**
+    `splat_from` is near-binary (92.2% of samples over 0.8) so the contested
+    band is a sliver. Kept as insurance, not as a live setting.
+
 - Terrain: 4-way splat blend from the vertex weights, biplanar projection with
   §2's two rules, per-identity tint bounded by the deviation rule, macro
-  break-up at 0.5–1 m and near-field grain under 5 cm (rule 1).
+  break-up at 0.5–1 m and near-field grain under 5 cm (rule 1). **The blend and
+  the grain landed; the projection is still planar XZ, not biplanar** — a
+  vertical face still stretches, and that is what R4 has left.
+- **Built pieces were the last flat surface, and landed 2026-08-16** (piece
+  surface v0, `DECISIONS.md` §open · `NOW.md` §0ps). A wall is the largest
+  flat thing a player stands in front of and it drew as a `base_color` until
+  now, while props and the viewmodel had sampled the same maps since
+  2026-08-11. Four tiers × (albedo + normal), no new file: the paths are
+  `MapSet::load`'s, so the handles are `PropMaps`' own. The three
+  prerequisites are the transferable part — **0..1 UVs became metre-scaled**
+  (a stretched tile reads as no texture), **meshes gained tangents** (Bevy
+  drops `normal_map_texture` without them, silently), and a **mean-1 per-face
+  vertex tint** carries the cap-vs-side separation a second draw call would
+  otherwise cost. It also found a defect nothing could see: the tier table had
+  three rows against the sim's four materials, so every piece drew one rung
+  off and twig had no look at all. Gate `client/tests/pieces.rs`.
 - AO maps become `indirectDiffuse *= ao` — indirect only, medium scale — and
   `min(bakedAO, ssAO)` where SSAO also runs, never a sum or a product. Micro
   occlusion stays baked in albedo and *does* apply to direct light. Specular
@@ -418,9 +525,12 @@ that work is lost; it moves to WGSL.
 
 ### R5 · The light rig, metered — the tonal bar
 
-Now that the frame has content, meter it. `ci/reference_bar.mjs` reads the six
+Now that the frame has content, meter it. `ci/native_bar.py` reads the
 outdoor-daylight reference frames with the same code path that reads ours;
-port that discipline, not the numbers. Targets are `ART.md` §3's.
+port that discipline, not the numbers. Targets are `ART.md` §3's. (The browser
+tier's `ci/reference_bar.mjs` did this first and is deleted — it needed a page
+this repo no longer opens. The frames it read are out of the tree too, so
+`native_bar` wants `GATES_REFERENCE_DIR`; `ART.md` §0 has the posture.)
 
 ### R9 · Bodies and the held item — **LANDED**
 
@@ -458,9 +568,24 @@ number on it is the server's (`hp`/`hp_max`, `food`, `water` off `ClientCore`),
 and the zero-max rule `core.rs` states is honoured: a shard whose content
 disarms combat draws no bar rather than an empty one.
 
-Still owed: item icons in the cells (the hotbar knows only which cell is
-selected, not what is in it), status chips (`WET 36%`), and a viewmodel that
-is the held item rather than a stand-in.
+**The viewmodel is the held item since 2026-08-11, and the sentence that used
+to stand here was wrong about why it was not.** It read "the hotbar knows only
+which cell is selected, not what is in it", which sounded like a wire gap and
+was not one: `ClientCore.inv` has carried every slot's `ItemStack` since the
+container slice, filled from `EventMsg::Inv`, and `catalog` carries the display
+names. Nothing needed to be added to the wire — the data was already arriving
+and no reader had asked for it. `ui::hold::held_model` resolves the selected
+slot to a model by the same normalised display name the icons key off, and
+`render::viewmodel::swap` puts it in the hand.
+
+Three pictures, deliberately distinct: a modelled item draws its model; an item
+with no model yet draws the generic stand-in tool; an **empty hand draws
+neither**, because a tool that appears when you are carrying nothing is a lie
+about your own inventory.
+
+Still owed: item icons in the cells — same data, same lookup, and now clearly a
+UI slice rather than a wire one — status chips (`WET 36%`), and per-item pose
+tuning, since one grip offset serves a 20 cm rock and a 1.8 m spear.
 
 **The face landed 2026-08-07 and `render/ui.rs` owns it**, the same way it
 owns the palette and for a worse-founded reason: nothing owned it before, so
@@ -580,16 +705,113 @@ Both are fixed and both directions are measured: exit 1 with a frame missing,
 exit 0 with six verified on disk. A gate reading that exit code would have
 called the first one a pass.
 
+**The probe photographs a scene now, not just terrain** (2026-08-20). One
+process is the whole population, so every frame the harness had ever taken was
+a picture of ground — and the two things anybody actually asks to see, another
+player and a building, were the two it could not reach. Nothing new was
+needed in the sim: `population = N` seats bots that build a twig base over the
+shard's own wire, `dev_spawn` makes them the camera's neighbours instead of
+scattering them round the coast by id hash, and `dev_spawn_kit` pays for the
+wood a foundation costs. `render/capture.rs` grew a **scene pass** after the
+verb pass — nearest body at eye height as `7-player.png`, nearest base
+(centroid of one cluster, from `BUILD_STANDOFF_M` back) as `8-build.png` —
+and `ci/scene.sh` arranges both halves. Both shots are conditional and skip
+loudly; the tail check verifies them beside the vantages.
+
+Four things it cost, and three of them are already-paid traps re-collected:
+
+- **Animals are on the body lane.** The first run of the scene pass, against a
+  shard with a population of ZERO, reported *"player at 67.3 m"* and
+  photographed a wolf — `bodies.rs`'s own scar (`mob::slot_of_id`), reproduced
+  exactly, in the file next to it.
+- **The probe dies in the pile.** `dev_spawn` puts every body on one point,
+  which is what makes the scene and also what puts the camera inside six bots.
+  Measured: dead at frame 32 with the HUD reading `CHARGE · 2s · N 11M`. So
+  the rig does not arm the raiders by default, and lets the world run first —
+  the bots walk continuously and are spread within a couple of minutes.
+- **`world_running` is true for a corpse**, so a dead probe used to shoot six
+  vantages of the death wash and exit 0. It now says so and exits nonzero.
+  This is the §"wolves kill it" failure below, finally made loud.
+- **Aiming at a body is not seeing one, and it took four runs to believe it.**
+  Bodies at 9.9 m, 25.9 m and 5.6 m were each aimed at correctly and each
+  photographed as foliage or a wall — which reads exactly like "remote bodies
+  do not render", and is not. The camera now RANKS candidates by whether the
+  line to them is clear (`sight_is_clear`), and the fifth run put three
+  mannequins in frame with one at the crosshair. Two things worth keeping:
+  a tree's `occupant_volume` radius is **0.2398 m — the bark, not the
+  canopy**, so a sight test against it passes straight through a tree that
+  fills the frame (the proxy is trunk-to-line distance at `CANOPY_CLEAR_M`);
+  and a piece is a blocker only when `loc != LOC_PLANE`, because the
+  horizontal one is the floor the body is standing on.
+
+⚠ **`live` is never true for a remote body under lavapipe** — 20 of 20, 17 of
+17, every run. The probe renders at about 1 fps while the shard ticks at 30,
+so every sample is a clamp. It is recorded and printed, never obeyed:
+`bodies::stream` reads the same interpolator with no `live` check, so it draws
+the mannequin at the clamp, and a camera that skipped stale bodies would
+refuse to photograph one that is on screen. An early cut of this filtered on
+it and skipped every body on the island.
+
 **Landed: the harness and the measurement. NOT landed: the assertions.**
 `gates --capture <dir>` settles on observable state (all three rings full —
 25 chunks, 25 scatter parents, 25 clutter tiles, reported at the frame it
 happens), warms 30 frames, shoots six vantages and exits; `ci/native_bar.py`
-reads those captures and `Rust Images/` through one estimator. What neither
+reads those captures and the reference set through one estimator. What neither
 does yet is FAIL. Nothing in `ci/gates.sh` runs either, and until it does the
 render path's coverage is `cargo clippy -p client --features render` and a
 human looking at a PNG. That is the top of §8's list, it is the pivot's stated
 debt, and calling it anything other than open would be the "pass it didn't
 earn" this repo names as its worst bug class.
+
+⚠ **The probe is a player, and wolves kill it.** Recorded 2026-08-16, after it
+had cost several runs and been diagnosed as everything else first. A capture
+run connects as an ordinary client and its body stands in the world, unarmed
+and unmoving, from the moment the shard places it until the sixth vantage is
+written. That is long enough to be found.
+
+**The tell is that the kill rate tracks the BUILD, not the seed: 3 of 4 runs
+carrying a heavy change died, against 0 of 2 baseline runs on the same seed and
+the same spawn.** Nothing about the wolves changed. A heavier build takes longer
+in wall-clock to fill three rings and warm 30 frames — that is the whole
+mechanism — so the probe stands there longer and the leash brings something to
+it. Which makes this worse than a flake: **the measurement's failure rate is a
+function of the size of the thing being measured.** The captures you most want
+are the ones least likely to reach disk, and the bias points the wrong way for
+every purpose the harness has. Anyone reading a run of missing vantages as
+"expensive change, must have hung" would be reading the correlation exactly
+backwards.
+
+**Pin `dev_spawn` in `shard.toml`.** A pinned spawn is already the rule for a
+different reason — the shard hashes a spawn per player id, so two unpinned runs
+compare two places and not two builds (`render/ground_splat.rs` states where
+that already cost a before/after). It also happens to fix this, by letting you
+choose ground the roster has not homed on.
+
+**Not to `1024,1024`.** The island centre is the obvious pin and it is the
+worst one available: `mob::home_of` draws each slot's home from the seed and
+rejects it against `HOME_MAX_SLOPE`, so homes concentrate on exactly the flat
+walkable interior the centre is the middle of, and every one of them is leashed
+to return there. `1500,600` is the spawn the ground material's own measurements
+were taken at and it has been quiet across runs.
+
+**The harness has a noise floor of roughly 0.3%, and it had never been
+measured.** Re-running the *same build* twice through `ci/native_bar.py`'s
+estimator moves near-band neighbour contrast by −0.3% and near saturation by
+−0.6% — the probe is a live client against a live shard, so wind phase, clutter
+animation and mob positions do not repeat between runs, and only `5-sky` (which
+frames nothing that moves) comes back bit-stable. Anything a change buys under
+about a percent is therefore **not a result**, and the way to know which side of
+the line you are on is to run the unchanged build twice and subtract, rather
+than to trust one A/B. This is the same lesson as the clock rule above wearing
+different clothes: the number that looks like a measurement is the one to check
+against a second source. Measured 2026-08-16 while landing the ground roughness
+maps, whose whole reported effect (−0.4%) turned out to sit inside it.
+
+**What would actually fix it** is making the probe not a target — a capture
+client that the sim does not treat as huntable, or a shard flag that stands the
+roster down for a capture run. Both are sim-core changes for a harness's
+benefit, which is the wrong direction for a wall, so the pin is the answer
+until the harness is a gate rather than a measurement.
 
 Also landed, and it is the cheapest thing in the document: **the render
 feature now compiles under a lint gate.** `cargo clippy -p client --features
@@ -613,8 +835,34 @@ in the ~106 s code tier. Use `bevy/dynamic_linking` for local iteration.
 
 - Fresh process per shot. Fixed seed, fixed dev spawn, one shard per vantage,
   **one live renderer at a time** (two was the browser tier's whole problem).
+  **The fixed seed is 20260731**, and this line names it because for four
+  passes nothing did: the probe has no seed of its own — it photographs
+  whatever the shard it dialled sends in the welcome (`bin/gates.rs`), so the
+  shard configs *were* the instrument setting, silently, and
+  `gates-loop/art/capture-native.sh` carries a second copy of the value as its
+  own default. Both say 20260731. It nearly moved on 2026-08-14 on a
+  measurement that turned out to sweep a quarter of the island
+  (`sim-core/tests/relief.rs` header); if it ever does move, **frames are not
+  comparable across the change**, exactly as re-aiming a vantage makes them
+  incomparable — say so in the report rather than letting the next reader
+  compare them.
 - Settle on observable state — welcome received, `snapshots > n`, chunk queue
   drained — and never on elapsed time. Budget in **frames**, not milliseconds.
+- **Fixed hour, and it is pinned in the client rather than the harness** (2026-08-15,
+  `DECISIONS.md` §open "capture clock v0"). `rig::DayPin` puts a `--capture` run's
+  tick at `CAPTURE_DAY_FRAC = DAY_PORTION * 0.5` — the arch's peak, the one
+  fraction where `sun_elevation` returns `RIG_SUN_ELEVATION` exactly. **Since
+  the bearing started sweeping (2026-08-15) it is also the one fraction where
+  `sun_azimuth` returns `RIG_SUN_AZIMUTH` exactly**, which is why the sweep
+  cost no scored frame its comparability: naming the hour now fixes both
+  coordinates, where naming an elevation would fix only one. Until then
+  the hour was *whatever tick the shard had reached* when the probe fired, i.e. a
+  function of how long the build took: **24.47° at tick 0, 27.33° typical, 30.36°**
+  on a slow box, rising monotonically, so a slower box scored a brighter frame and
+  no scored frame was ever taken at the authored register. It pins the tick and not
+  the sun, because `render/audio.rs` reads the same clock through `is_night`.
+  Same consequence as the seed clause above: **frames either side of 2026-08-15 are
+  not tonally comparable.**
 - Render off-screen and read back (Bevy's headless renderer path). No Xvfb, no
   `xwd`, no window server dependency.
 - A missing Vulkan ICD is a **loud failure**, not a skip: this container has
@@ -674,17 +922,60 @@ never a number quietly edited into this table.
 |---|---|---|
 | triangles | < 1.5 M | `DESIGN.md` §9 — **browser-era, not re-derived** |
 | draw calls | < 300 | `DESIGN.md` §9 — **browser-era, not re-derived** |
-| frame | 60 fps on a mid laptop iGPU | `DESIGN.md` §9 — survives the move; **measured on a GPU, never on the gate box** |
+| frame | 60 fps on a mid laptop iGPU | `DESIGN.md` §9 — survives the move; **measured on a GPU, never on the gate box**. Since 2026-08-20 there is a mechanism under it rather than only a hope: `render/quality.rs`'s LOW/MEDIUM/HIGH ladder, whose top rung is this table's frame exactly (`DECISIONS.md` §open, graphics tiers v0) |
 | texture payload | < 12 MB before compression | `ART.md` §7 — **retired**: it was a first-visit download, and a depot install is not one |
 | clutter ring | 5×5 tiles of 16 m, 721 elements/tile peak | `sim-core::terrain`, and it is frame-budget-bound, not design-bound |
 | eye height | 1.6 m | `DECISIONS.md` §open, client cosmetics |
 
-The first thing to actually press on the triangle ceiling is the generated
-conifer: a full 328-tree scatter ring at 5.9 k tris a tree is 1.9 M.
-`crates/client/tests/tree.rs` asserts the affordable ~80 m band and *prints*
-the ring rather than asserting it, precisely because 1.5 M is the number this
-table is unsure of. The billboard LOD (`TERRAIN.md` §4) closes it either way;
-which of the two is the real fix is a measurement nobody has taken.
+**Every budget above is the GPU's, and the client's CPU frame had never been
+measured at all** — a table of triangle and draw-call ceilings says nothing
+about what the main thread spends before the first draw call is issued. It was
+measured on 2026-08-11 and two of the three biggest items were waste rather
+than work: `water::animate` resolved its wave field three times a vertex
+(1.01 → 0.38 ms **every frame**), and one 65² ground chunk cost 28 ms to build
+— a whole dropped frame, one per streaming frame — of which mikktspace was 12
+and duplicated `terrain::height` taps most of the rest (now 5.4 ms).
+
+**The ranked remainder was taken on 2026-08-19** and the shape of the answer
+changed the paragraph above rather than extending it: the largest remaining
+costs were not arithmetic to sharpen but work to refuse or to move.
+`clutter_fill` is 2.87 → 1.02 ms a tile (a caller-owned lattice memo, plus a
+stratum that now refuses on its own hash before resolving the ground it would
+be tested against); the far mesh's ~190 ms `Loading` frame is off the main
+thread entirely (`AsyncComputeTaskPool`); the sea carries its last sweep across
+a snap instead of re-tapping it; and two per-frame systems that reconciled a
+whole mirror now run on a `Feed::applied` bit. Every one is bit-identical or
+non-numeric — `sim-core/tests/lattice.rs`, `client/tests/ground_async.rs` and
+`client/tests/water_carry.rs` are the evidence, and the last two exist because
+`tests/ground.rs` and `tests/water.rs` call the pure functions directly and can
+see nothing about when or on which thread a system calls them.
+
+`NOW.md` §0pf carries what is left and `findings/client-frame-20260819.md` the
+method; the numbers are release, on the gate box, and **no GPU has ever run
+this client**, which is why they sit here as a note rather than as rows in the
+table.
+
+The first thing to actually press on the triangle ceiling was the generated
+conifer: a full 328-tree scatter ring at 5.9 k tris a tree is 1.9 M, and
+`crates/client/tests/tree.rs` *printed* the ring rather than asserting it,
+precisely because 1.5 M is the number this table is unsure of.
+
+**It fits now — 1.94 M → 510 k, landed 2026-08-20** (`DECISIONS.md` §open,
+tree LOD v0). Past `TREE_LOD_SWAP_M` a tree is one opaque hull lathed through
+its own vertices (`tree::impostor_of`, 105 tris) instead of a 5.9 k bark mesh
+plus an alpha-masked canopy, swapped by `VisibilityRange` with a 15 m dithered
+crossfade. The gate asserts the fit and asserts it would NOT fit without the
+swap, so an impostor that quietly became a copy of the tree goes red.
+
+Two notes that outlive the number. **The triangle count is the smaller half of
+the win**: SSAO carries `#[require(DepthPrepass, NormalPrepass)]`, so the same
+geometry is rasterized in two prepasses, the main pass and each of §R5's four
+shadow cascades — and `bevy_light`'s `check_dir_light_mesh_visibility` consults
+`VisibleEntityRanges` exactly as the camera's own check does, so the swap is
+paid back in every one of them. **And none of it is measured on a GPU** (the
+paragraph above), so this is counts × passes like every other budget here.
+The billboard (`TERRAIN.md` §4) is still unbuilt and is still the cheaper end;
+the hull is the step that needed no new material, no bake and no render target.
 
 Every constant this path invents beyond these is **PROPOSED** and goes to
 `DECISIONS.md` §open in the commit that ships it — as a `` `NAME = value` ``
@@ -779,8 +1070,18 @@ missing it survivable.
      `piece_defs.pieces[row]`, and **that read must be gated on
      `piece_defs_have`**: an undripped row is `INERT`, whose shape is
      `SHAPE_FOUNDATION`, so an ungated read draws a foundation slab in mid-air
-     where a wall belongs. Base height is resampled locally —
-     `terrain::height(seed, cx*3+1.5, cz*3+1.5) + PIECE_LIFT_M + level*3` —
+     where a wall belongs. Base height is resampled locally by calling
+     `sim_core::build::column_floor_y(seed, cx, cz, plate) + level*3` — the
+     sim's one implementation (cell-center terrain snapped to
+     `BUILD_BASE_Q_M`, 2026-08-15; this line restated the raw formula until
+     then, and the day the sim's rule changed is the day a restated copy
+     would have drawn every floor off the surface the sim walks) — where
+     **`plate` is the record's own** (build plate v1, 2026-08-21): a base's
+     floor is a stored choice its first foundation made, so it rides the
+     wire and only the terrain band under it is still derived from
+     (seed, cell). A deployable's record carries none and reads its column's
+     out of the piece mirror, which is why the deploy loop treats the plate
+     as redraw state —
      at the CELL CENTRE for every `loc`, including edge pieces, so the two
      cells an edge adjoins cannot disagree. A plane's slab hangs BELOW its
      walk surface (centre at `base_y - 0.15`, top at `base_y`); getting that
@@ -812,8 +1113,9 @@ missing it survivable.
 3. **R4, the near-field grain.** Contrast 2.44 → 5.40 needs the photograph on
    the ground, which is the CC0 set already in `assets/textures/` plus the
    biplanar rules §2 carries.
-4. **A hemisphere fill.** Rule 3's floor and the p10 both, instead of one at
-   the other's expense (§0).
+4. ~~**A hemisphere fill.**~~ Landed 2026-08-15 (`render/fill.rs`). It bought
+   the *direction*, not the p10 — see §0. What is left of this row is the
+   transfer half, which is item 6.
 5. **Per-instance tint.** `ART.md` rule 7 — the forest is four meshes at many
    yaws and scales, which is variation but not colour variation.
 
@@ -845,12 +1147,16 @@ missing it survivable.
   generated WAV would have panicked with `UnrecognizedFormat` at the moment
   it played. Audio's boundary rule is this document's rule one surface over —
   **Bevy plays, it does not decide** — with the model in
-  `crates/client/src/sound/` (pure, code tier, 29 assertions) and
+  `crates/client/src/sound/` (pure, code tier, 63 assertions) and
   `render/audio.rs` owning nothing but the bank, the listener and the voices.
-  Still genuinely unused: **`bevy_gltf`** (every mesh in the tree is
-  procedural), **`bevy_scene`** and **`bevy_animation`** (bodies are capsules;
-  this one is wanted eventually and blocked on rigged meshes rather than on a
-  decision). Trimming is a build-time and payload win, not a picture win — it
+  **The score (2026-08-11) is the same rule under load**: `sound::music` is a
+  gap-and-intensity director (`reference/AUDIO.md` §8) that decides which
+  piece plays and when, headless and testable; `render/audio.rs::music` spawns
+  what it names and holds the level. It is also the one audio system with no
+  run condition at all, because the menus have music and have no world.
+  **`bevy_gltf`, `bevy_scene` and `bevy_animation` stopped being unused with
+  the mannequin** (2026-08-07, `render/anim.rs`) — this paragraph named all
+  three as trim candidates and only the reasoning survives. Trimming is a build-time and payload win, not a picture win — it
   happens when it is in the way.
 - **`bevy_scene` is a decided no, not an unexamined gap.** Its three
   advertised wins each land on a wall here. *Entity-ID-preserving save
@@ -870,8 +1176,15 @@ missing it survivable.
   bought for a feature already ruled out.
 - **The unused Bevy capability that actually points at a ranked gap is
   custom materials.** There is not one `AsBindGroup` or line of WGSL in the
-  tree, and both remaining gaps in §0 — the hemisphere fill (`AmbientLight`
-  is uniform, so rule 3's floor and the p10 fight each other) and per-instance
-  tint (`ART.md` rule 7) — are `ExtendedMaterial<StandardMaterial, _>` work.
-  It is not scheduled here because it is inside the coupled lighting set §2
-  reserves for one owner and one iteration.
+  tree, and per-instance tint (`ART.md` rule 7) is
+  `ExtendedMaterial<StandardMaterial, _>` work. It is not scheduled here
+  because it is inside the coupled lighting set §2 reserves for one owner and
+  one iteration.
+  ⚠ **This bullet listed the hemisphere fill as the second such gap and that
+  was wrong** — it landed 2026-08-15 with no custom material at all, because
+  `EnvironmentMapLight`'s diffuse cubemap is sampled by the world normal and
+  therefore already *is* a per-normal term. The general lesson, since this doc
+  is where a future pass sizes its slice: **"`StandardMaterial` cannot express
+  this" is a claim about `StandardMaterial`, not about Bevy.** Check the
+  built-in light and probe components for the quantity before concluding a
+  shader is owed; the wrong answer here would have cost a slice.

@@ -4,115 +4,174 @@
 //! produces them byte-for-byte. Content is deterministic (sim-core Pcg32,
 //! fixed seeds), so "regenerate" is reproducible on any box.
 //!
-//! Regenerating fixtures is only ever legitimate alongside a `PROTO_VER`
-//! bump in the same commit (CLAUDE.md wall 6). A diff here without a bump
-//! is the wire drifting by accident — the exact thing the gate exists to
-//! catch.
+//! Regenerating fixtures is legitimate for exactly two reasons, the diff
+//! looks the same either way, and that is why each takes its own commit.
+//! **The encoder moved** — a layout or a meaning change — takes a
+//! `PROTO_VER` bump in the same commit (CLAUDE.md wall 6); a diff here
+//! without one is the wire drifting by accident, the exact thing the gate
+//! exists to catch. **The fixture's INPUT moved** — a fuzz draw widened, a
+//! deliberate value pinned — takes no bump, because a constructor in this
+//! module is the test's coverage and not a fact about the wire
+//! (`PROTO_VER`'s own doc carries that rule, decided 2026-08-18 under
+//! NOW.md §5c). Never both at once: the bytes would then move for two
+//! reasons and no reader afterwards can tell which byte answers to which.
 
 use crate::{
-    ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, Nudge, Refuse,
+    ChatText, EntityState, Hello, InputDatagram, InvSlot, ItemCatalog, ItemRow, Nudge, Refuse,
     SnapshotHeader, Welcome, WireBag, BAG_SYNC_BATCH, DEPLOY_SYNC_BATCH, PIECE_SYNC_BATCH,
-    SLOT_SYNC_BATCH,
+    PLATE_BIAS, PLATE_BITS, SLOT_SYNC_BATCH,
 };
 use sim_core::build::{BuildContent, PieceDef, PieceRec};
+use sim_core::combat::{ARMOR_MAX_PCT, WEAR_BODY, WEAR_HEAD, WEAR_NONE};
 use sim_core::craft::{
     CraftContent, CraftJob, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1,
+    STATION_WORKBENCH2, STATION_WORKBENCH3,
 };
-use sim_core::deploy::{DeployContent, DeployRec};
+use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
 use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
 use sim_core::limits::{
     INV_SLOTS, MAX_INPUT_FRAMES, MAX_PIECE_COSTS, MAX_RECIPE_INPUTS, MAX_SNAPSHOT_ENTITIES,
 };
+use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
-pub const FIXTURES: [&str; 82] = [
-    "v30_input_acks_only.bin",
-    "v30_input_full.bin",
-    "v30_snapshot_keyframe.bin",
-    "v30_snapshot_delta.bin",
-    "v30_snapshot_cap.bin",
-    "v30_hello.bin",
-    "v30_welcome.bin",
-    "v30_refuse_full.bin",
-    "v30_event_gather.bin",
-    "v30_event_inv.bin",
-    "v30_event_slot_harvested.bin",
-    "v30_event_slot_respawned.bin",
-    "v30_event_slot_sync.bin",
-    "v30_event_catalog.bin",
-    "v30_event_weak_mark.bin",
-    "v30_event_craft_q.bin",
-    "v30_event_craft_done.bin",
-    "v30_event_craft_refused.bin",
-    "v30_event_recipes.bin",
-    "v30_action_craft.bin",
-    "v30_action_cancel.bin",
-    "v30_action_place.bin",
-    "v30_event_piece_placed.bin",
-    "v30_event_piece_sync.bin",
-    "v30_event_build_refused.bin",
-    "v30_event_piece_defs.bin",
-    "v30_action_deploy.bin",
-    "v30_action_feed.bin",
-    "v30_event_deploy_placed.bin",
-    "v30_event_deploy_sync.bin",
-    "v30_event_deploy_refused.bin",
-    "v30_event_deploy_defs.bin",
-    "v30_event_piece_removed.bin",
-    "v30_event_deploy_removed.bin",
-    "v30_event_stock.bin",
-    "v30_action_use.bin",
-    "v30_action_access.bin",
-    "v30_event_door.bin",
-    "v30_action_upgrade.bin",
-    "v30_chat.bin",
-    "v30_event_chat.bin",
-    "v30_event_hit.bin",
-    "v30_event_health.bin",
-    "v30_event_death.bin",
-    "v30_action_loot.bin",
-    "v30_event_bag_dropped.bin",
-    "v30_event_bag_sync.bin",
-    "v30_event_bag_removed.bin",
-    "v30_event_struct_hit_piece.bin",
-    "v30_event_struct_hit_deploy.bin",
-    "v30_event_vitals.bin",
-    "v30_event_consumed.bin",
-    "v30_event_consume_refused.bin",
-    "v30_action_consume.bin",
-    "v30_event_drank.bin",
-    "v30_action_drink.bin",
-    "v30_event_respawn.bin",
-    "v30_action_respawn.bin",
-    "v30_action_move.bin",
-    "v30_event_moved.bin",
-    "v30_event_move_refused.bin",
-    "v30_action_move_box.bin",
-    "v30_action_container.bin",
-    "v30_action_container_close.bin",
-    "v30_event_cont_sync.bin",
-    "v30_event_cont_close.bin",
-    "v30_action_repair_piece.bin",
-    "v30_action_repair_deploy.bin",
-    "v30_event_piece_repaired_piece.bin",
-    "v30_event_piece_repaired_deploy.bin",
-    "v30_action_throw_piece.bin",
-    "v30_action_throw_deploy.bin",
-    "v30_event_charge_placed_piece.bin",
-    "v30_event_charge_placed_deploy.bin",
-    "v30_challenge.bin",
-    "v30_auth.bin",
-    "v30_event_oven_lit.bin",
-    "v30_event_oven_out.bin",
+pub const FIXTURES: [&str; 100] = [
+    "v52_input_acks_only.bin",
+    "v52_input_full.bin",
+    "v52_snapshot_keyframe.bin",
+    "v52_snapshot_delta.bin",
+    "v52_snapshot_cap.bin",
+    "v52_hello.bin",
+    "v52_welcome.bin",
+    "v52_refuse_full.bin",
+    "v52_event_gather.bin",
+    "v52_event_inv.bin",
+    "v52_event_slot_harvested.bin",
+    "v52_event_slot_respawned.bin",
+    "v52_event_slot_sync.bin",
+    "v52_event_catalog.bin",
+    "v52_event_weak_mark.bin",
+    "v52_event_craft_q.bin",
+    "v52_event_craft_done.bin",
+    "v52_event_craft_refused.bin",
+    "v52_event_recipes.bin",
+    "v52_action_craft.bin",
+    "v52_action_cancel.bin",
+    "v52_action_place.bin",
+    "v52_event_piece_placed.bin",
+    "v52_event_piece_sync.bin",
+    "v52_event_build_refused.bin",
+    "v52_event_piece_defs.bin",
+    "v52_action_deploy.bin",
+    "v52_action_feed.bin",
+    "v52_event_deploy_placed.bin",
+    "v52_event_deploy_sync.bin",
+    "v52_event_deploy_refused.bin",
+    "v52_event_deploy_defs.bin",
+    "v52_event_piece_removed.bin",
+    "v52_event_deploy_removed.bin",
+    "v52_event_stock.bin",
+    "v52_action_use.bin",
+    "v52_action_access.bin",
+    "v52_event_door.bin",
+    "v52_action_upgrade.bin",
+    "v52_chat.bin",
+    "v52_event_chat.bin",
+    "v52_event_hit.bin",
+    "v52_event_health.bin",
+    "v52_event_death.bin",
+    "v52_action_loot.bin",
+    "v52_event_bag_dropped.bin",
+    "v52_event_bag_sync.bin",
+    "v52_event_bag_removed.bin",
+    "v52_event_struct_hit_piece.bin",
+    "v52_event_struct_hit_deploy.bin",
+    "v52_event_vitals.bin",
+    "v52_event_consumed.bin",
+    "v52_event_consume_refused.bin",
+    "v52_action_consume.bin",
+    "v52_event_drank.bin",
+    "v52_action_drink.bin",
+    "v52_event_respawn.bin",
+    "v52_action_respawn.bin",
+    "v52_action_move.bin",
+    "v52_event_moved.bin",
+    "v52_event_move_refused.bin",
+    "v52_action_move_box.bin",
+    "v52_action_container.bin",
+    "v52_action_container_close.bin",
+    "v52_event_cont_sync.bin",
+    "v52_event_cont_close.bin",
+    "v52_action_repair_piece.bin",
+    "v52_action_repair_deploy.bin",
+    "v52_event_piece_repaired_piece.bin",
+    "v52_event_piece_repaired_deploy.bin",
+    "v52_action_throw_piece.bin",
+    "v52_action_throw_deploy.bin",
+    "v52_event_charge_placed_piece.bin",
+    "v52_event_charge_placed_deploy.bin",
+    "v52_challenge.bin",
+    "v52_auth.bin",
+    "v52_event_oven_lit.bin",
+    "v52_event_oven_out.bin",
     // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
-    "v30_event_knock.bin",
-    "v30_event_auth.bin",
-    "v30_action_access_crew.bin",
-    "v30_action_demolish.bin",
+    "v52_event_knock.bin",
+    "v52_event_auth.bin",
+    "v52_action_access_crew.bin",
+    "v52_action_demolish.bin",
+    "v52_event_shot.bin",
+    // World containers v0 (v37): the fourth container kind. Three
+    // fixtures and not one, because `action_move_box`'s own doc records
+    // what happens otherwise — the third kind crossed the wire for a
+    // whole version with only the *open* pinned, so the bytes that mean
+    // "take it out of the box" were checked by nothing. Kind 3 gets its
+    // open, its move and its sync in the commit that legalises it.
+    "v52_action_container_world.bin",
+    "v52_action_move_world.bin",
+    "v52_event_cont_sync_world.bin",
+    // The bench ladder + tech tree (v38): the unlock action and the
+    // research-rows drip, plus the three research-lane events that had
+    // ridden unpinned since v32 — the role gate checked their payloads
+    // and nothing checked their bytes, which is the exact seat the v37
+    // world-container note called out as empty.
+    "v52_action_unlock.bin",
+    "v52_event_research_rows.bin",
+    "v52_event_research.bin",
+    "v52_event_research_refused.bin",
+    "v52_event_known.bin",
+    // The table verb's own action, pinned by the local branch and kept
+    // through the 2026-08-15 integration: `encode_action_research` is
+    // still live (the client's `verbs.rs` calls it), so
+    // `every_encoder_has_a_golden` requires these bytes.
+    "v52_action_research.bin",
+    // The gather refusal (v42) — appended, because the manifest is
+    // positional and a name in the middle silently renumbers every
+    // writer after it.
+    "v52_event_gather_refused.bin",
+    // Bag choice v0 (v43): the own-fact bag list the death screen shapes
+    // itself around. Appended for the same positional reason.
+    "v52_event_bags.bin",
+    // Surface marks v0 (v45): where an arrow stopped, and on what.
+    // Appended, like the two above — `gen_goldens` writes this list by
+    // INDEX, so inserting anywhere but the end silently re-points every
+    // fixture after the insertion at another message's bytes.
+    "v52_event_impact.bin",
+    "v52_event_swing.bin",
+    // Armor v1 (v51): the fifth container kind, and the first that is
+    // carried on the player rather than standing in the world. Four
+    // fixtures on the v37 precedent above — its open, its move and its
+    // sync in the commit that legalises it — plus the refusal, because
+    // `REFUSE_M_WEAR` is a reason no fixture has ever carried and the
+    // refusal message is the only one that pins a container kind inside
+    // an *address* rather than as a field of its own.
+    "v52_action_container_wear.bin",
+    "v52_action_move_wear.bin",
+    "v52_event_cont_sync_wear.bin",
+    "v52_event_move_refused_wear.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -211,17 +270,29 @@ pub fn event_cont_sync() -> (u8, u32, bool, [InvSlot; 3]) {
         [
             InvSlot {
                 slot: 2,
-                stack: ItemStack { item: 5, count: 40 },
+                stack: ItemStack {
+                    item: 5,
+                    count: 40,
+                    cond: 0,
+                },
             },
             InvSlot {
                 slot: 17,
-                stack: ItemStack { item: 31, count: 3 },
+                stack: ItemStack {
+                    item: 31,
+                    count: 3,
+                    // A worn tool in a container: nonzero, distinct from
+                    // every other field in the batch, so a codec that
+                    // wrote the halves in the wrong order moves bytes.
+                    cond: 4_321,
+                },
             },
             InvSlot {
                 slot: 28,
                 stack: ItemStack {
                     item: 12,
                     count: 77,
+                    cond: 9_876,
                 },
             },
         ],
@@ -262,6 +333,11 @@ fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
         // the draw sequence where it was, so this field alone does not
         // reshuffle every other field of every later entity.
         sleeping: false,
+        // Alive, and drawn from no `rng` call for `sleeping`'s reason
+        // exactly: the cases below set this bit deliberately and say which
+        // encoder path each one covers, and a random draw here would both
+        // document nothing and reshuffle every later field.
+        dead: false,
         yaw: rng.next_bounded(0x1_0000) as u16,
         pitch: rng.next_bounded(0x100) as u8,
     }
@@ -275,17 +351,47 @@ pub fn input_acks_only() -> InputDatagram {
 
 /// A full input datagram: `MAX_INPUT_FRAMES` consecutive frames with
 /// varied field content, seq run crossing the u16 wrap.
+///
+/// **`buttons` is drawn across the whole octet, and it was drawn from
+/// `next_bounded(4)` until 2026-08-18** — so from v0 to v46 the only
+/// fixture that carries a button pinned bits 0–1 and nothing else.
+/// `BTN_PRIMARY` and `BTN_JUMP` were outside the draw, and so was every
+/// unmeant bit. Nothing on the wire was wrong: the field is eight bits
+/// wide either way and the layout was pinned. What no fixture could see is
+/// an encoder that masks or reorders the high nibble on its way out —
+/// `decode_input`'s doc calls a silently narrowed octet the one wrong
+/// answer, and the golden was blind to precisely that.
+///
+/// The draw is the **wire width**, not `BTN_MASK`: bits 4–7 name no button
+/// and the codec carries them whole on purpose, so a fixture that stopped
+/// at the mask would re-open half the hole. The seed happens to cover all
+/// eight bits set and all eight clear across the ten frames — happens to,
+/// so `the_input_golden_fuzzes_the_whole_button_octet` checks it off the
+/// fixture bytes rather than trusting it. If a future draw change loses a
+/// bit, set it deliberately on a named frame (`rng_entity`'s `sleeping`
+/// precedent) rather than rerolling until it comes back.
+///
+/// Widening it changed this fixture's bytes and **turned no `PROTO_VER`**:
+/// what a test feeds an encoder is the test's coverage, not the wire's
+/// meaning (`PROTO_VER`'s narrowing-rule section, third clause).
 pub fn input_full() -> InputDatagram {
     let mut rng = Pcg32::new(0x0047_4154_4553, 11);
     let mut dg = InputDatagram::new(0x0102, 0xFFFF_FFFF, 0xFFFF_FFFE);
     for i in 0..MAX_INPUT_FRAMES as u16 {
         let f = InputFrame {
             seq: 0xFFFC_u16.wrapping_add(i),
-            buttons: rng.next_bounded(4) as u8,
+            buttons: rng.next_bounded(0x100) as u8,
             yaw: rng.next_bounded(0x1_0000) as u16,
             pitch: rng.next_bounded(0x100) as u8,
             move_x: rng.next_bounded(255) as i32 as i8,
             move_z: (rng.next_bounded(255) as i32 - 127) as i8,
+            // 6 is `HOTBAR_SLOTS`, i.e. the whole encodable domain and not
+            // a narrowed one: `encode_input` refuses 6–7 and `decode_input`
+            // refuses them back, so a wider draw here would make the
+            // fixture unencodable rather than better covered. Read that
+            // beside `buttons` above, where the same-looking bound WAS the
+            // defect — the two differ because the codec is total over
+            // `sel` and deliberately not over `buttons`.
             sel: rng.next_bounded(6) as u8,
         };
         dg.push(f).expect("golden construction is in-cap by design");
@@ -331,6 +437,14 @@ pub fn snapshot_keyframe() -> SnapshotCase {
     // face: a byte-golden pins bytes, not meanings, and a field that is
     // only ever zero has no byte to pin.
     entities[2].sleeping = true;
+    // One corpse, so the absolute encoder's `dead` bit is pinned at **true**
+    // by some fixture — the same argument the sleeper above is here for, and
+    // a different entity so the two bits are never on together and a swap
+    // between them cannot pass. A body still falling at the moment it is
+    // killed is the case: the record keeps the position and the velocity it
+    // had, which is exactly why the bit has to be carried rather than
+    // inferred from any of the others.
+    entities[0].dead = true;
     SnapshotCase {
         header: SnapshotHeader {
             tick: 96,
@@ -356,8 +470,9 @@ pub fn snapshot_delta() -> SnapshotCase {
         *slot = rng_entity(&mut rng, 1 + i as u32);
     }
     let mut entities = [EntityState::default(); MAX_SNAPSHOT_ENTITIES];
-    // id 1: unchanged — the minimal record, 38 bits since v26 added the
-    // sleeping bit beside `grounded` (it was 37).
+    // id 1: unchanged — the minimal record. 39 bits: it was 37, then v26
+    // added the sleeping bit beside `grounded` and v48 the dead bit beside
+    // that, and neither is delta-gated, so the floor rises by one each time.
     entities[0] = baseline[0];
     // id 2: one snapshot interval of sprint + a look turn.
     entities[1] = baseline[1];
@@ -366,6 +481,14 @@ pub fn snapshot_delta() -> SnapshotCase {
     entities[1].qz += 7;
     entities[1].yaw = entities[1].yaw.wrapping_add(0x0400);
     entities[1].pitch = entities[1].pitch.wrapping_add(3);
+    // …and was killed on the way — the delta encoder's `dead` bit at
+    // **true**, as a TRANSITION (baseline alive → record dead) rather than a
+    // body that was already a corpse in both. That is the case a
+    // change-gated bit would have got wrong, and it is the ordinary one: a
+    // player dies mid-stride and the body keeps moving for the ticks it
+    // takes to settle (`sim-core/world.rs` — a corpse still falls, it just
+    // does not act).
+    entities[1].dead = true;
     // id 3: starts falling, and its owner disconnected on the same
     // snapshot — the delta encoder's sleeping bit at **true**, and the
     // transition (baseline awake → record asleep) rather than a body that
@@ -405,6 +528,16 @@ pub fn snapshot_delta() -> SnapshotCase {
 pub fn hello() -> Hello {
     Hello {
         proto_ver: crate::PROTO_VER,
+        // **Literals, not `version::VER`/`version::BUILD`.** A fixture keyed
+        // on this build's own version would change bytes on every release and
+        // on every commit, so the golden would need regenerating for reasons
+        // that have nothing to do with the wire — which is the one thing a
+        // byte-golden must never do. These are stand-ins whose only job is to
+        // exercise the field widths: 1_002_003 is 1.2.3 packed, and the digest
+        // is a fixed pattern that is asymmetric across its two halves so a
+        // swapped-halves encoder cannot pass.
+        ver: 1_002_003,
+        build: 0x0123_4567_89ab_cdef,
     }
 }
 
@@ -468,6 +601,14 @@ pub fn event_gather() -> (u16, u16) {
     (7, 13)
 }
 
+/// The gather refusal (wire v42): the held item and the reason, both
+/// nonzero and distinct so a transposed pair moves bytes — and the item
+/// deliberately NOT `NO_ITEM`, because the whole point of the field is
+/// naming the torch rather than saying "bare hands".
+pub fn event_gather_refused() -> (u16, u8) {
+    (23, 2)
+}
+
 /// A worst-shape inventory update: every slot changed.
 pub fn event_inv() -> ([InvSlot; INV_SLOTS], usize) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 16);
@@ -478,6 +619,10 @@ pub fn event_inv() -> ([InvSlot; INV_SLOTS], usize) {
             stack: ItemStack {
                 item: rng.next_bounded(64) as u16,
                 count: rng.next_bounded(1000) as u16,
+                // The condition field (wire v42), drawn from the same
+                // stream so the fixture pins it in thirty different
+                // states rather than one.
+                cond: rng.next_bounded(40_001) as u16,
             },
         };
     }
@@ -503,27 +648,50 @@ pub fn event_weak_mark() -> (u16, u16, u8, bool) {
 }
 
 /// A catalog whose first batch is exactly `CATALOG_BATCH` names of mixed
-/// length — the fixture encodes the batch at `first = 0`.
+/// length — the fixture encodes the batch at `first = 0`. The ceilings
+/// (v46) mix 0 (no condition) with real values and the u16 corner so the
+/// golden pins the column's width and order, not just its presence; the
+/// armor columns (v52) do the same across both slots, the cap, the
+/// not-armor row and a named slot with a zero reduction.
 pub fn event_catalog() -> ItemCatalog {
     let mut cat = ItemCatalog::EMPTY;
     cat.count = 11;
-    let names: [&[u8]; 11] = [
-        b"Wood",
-        b"Stone",
-        b"Metal Ore",
-        b"Sulfur Ore",
-        b"Cloth",
-        b"Animal Fat",
-        b"Charcoal",
-        b"Fixture Name Of Width 24",
-        b"Sulfur",
-        b"Gunpowder",
-        b"Low Grade Fuel",
+    let rows: [(&[u8], ItemRow); 11] = [
+        (b"Wood", row(0, 0, WEAR_NONE)),
+        (b"Stone", row(0, 0, WEAR_NONE)),
+        (b"Metal Ore", row(0, 0, WEAR_NONE)),
+        (b"Sulfur Ore", row(0, 0, WEAR_NONE)),
+        (b"Cloth", row(0, 0, WEAR_NONE)),
+        // Rows 5..8 are the armor columns' coverage (v52): a head piece, a
+        // body piece, the cap itself, and — row 8 — a piece whose slot is
+        // named with no reduction behind it, which is legal and is the
+        // half a fixture full of protective armor would not pin.
+        (b"Burlap Headwrap", row(0, 10, WEAR_HEAD)),
+        (b"Charcoal", row(40_000, 0, WEAR_NONE)),
+        (
+            b"Fixture Name Of Width 24",
+            row(u16::MAX, ARMOR_MAX_PCT as u8, WEAR_BODY),
+        ),
+        (b"Bare Slot", row(0, 0, WEAR_HEAD)),
+        (b"Gunpowder", row(1, 0, WEAR_NONE)),
+        (b"Low Grade Fuel", row(0, 0, WEAR_NONE)),
     ];
-    for (i, n) in names.iter().enumerate() {
-        cat.set(i, n).expect("golden names are in-cap by design");
+    for (i, (n, r)) in rows.iter().enumerate() {
+        cat.set(i, n, *r)
+            .expect("golden rows are in-cap and coherent by design");
     }
     cat
+}
+
+/// The three catalog columns in their declared order, so the table above
+/// reads as a table. Positional by necessity here and named at the type —
+/// the point of [`ItemRow`] is that the *setter* cannot be got wrong.
+fn row(cond_max: u16, armor_pct: u8, wear_slot: u8) -> ItemRow {
+    ItemRow {
+        cond_max,
+        armor_pct,
+        wear_slot,
+    }
 }
 
 /// A part-full craft queue (head mid-batch) with a live head timer.
@@ -567,16 +735,19 @@ pub fn event_recipes() -> CraftContent {
     let rows: [Row; 6] = [
         (4, 1, 15 * 30, STATION_NONE, &[(0, 100), (1, 50)]),
         (9, 3, 5 * 30, STATION_NONE, &[(0, 25), (1, 10)]),
-        (20, 10, 5 * 30, STATION_WORKBENCH1, &[(6, 20), (8, 10)]),
+        // The two ladder rungs v38 minted, in the first batch so the
+        // widened station field is pinned at values a v37 decoder never
+        // accepted (bench ladder v0).
+        (20, 10, 5 * 30, STATION_WORKBENCH2, &[(6, 20), (8, 10)]),
         (
             31,
             1,
             30 * 30,
-            STATION_WORKBENCH1,
+            STATION_WORKBENCH3,
             &[(20, 240), (12, 2), (13, 1), (5, 4)],
         ),
         (7, 1, 2 * 30, STATION_FURNACE, &[(2, 1)]),
-        (63, 255, 65_535 * 30, STATION_NONE, &[(62, 65_535)]),
+        (63, 255, 65_535 * 30, STATION_WORKBENCH1, &[(62, 65_535)]),
     ];
     for (i, &(output, out_count, ticks, station, inputs)) in rows.iter().enumerate() {
         let mut def = RecipeDef {
@@ -584,6 +755,10 @@ pub fn event_recipes() -> CraftContent {
             out_count,
             ticks,
             station,
+            // Alternating, so the golden pins the bit in BOTH positions:
+            // a fixture where every row agreed would be byte-identical
+            // under an encoder that wrote a constant (research v0).
+            blueprint: i % 2 == 1,
             n_inputs: inputs.len() as u8,
             inputs: [(0, 0); MAX_RECIPE_INPUTS],
         };
@@ -598,15 +773,104 @@ pub fn action_craft() -> (u16, u16) {
     (33, 5)
 }
 
+/// A tech-tree unlock request naming recipe 21 (tech tree v0) — a value
+/// sharing no byte with `action_craft`'s, so a transposed encoder cannot
+/// pass both.
+pub fn action_unlock() -> u16 {
+    21
+}
+
+/// A five-row research table whose first batch is exactly
+/// `RESEARCH_BATCH` rows: a free root, a priced root, and two chained
+/// nodes — so the wire's `0xFF`-means-no-parent spelling is pinned in
+/// both positions, exactly as the recipes fixture alternates its
+/// blueprint bit.
+pub fn event_research_rows() -> ResearchContent {
+    let mut rc = ResearchContent::EMPTY;
+    rc.coin = 9;
+    rc.row_count = 5;
+    let rows: [(u16, u16, u16, u16); 5] = [
+        (11, 3, 0, NO_RECIPE),
+        (23, 21, 20, NO_RECIPE),
+        (31, 33, 40, 21),
+        (47, 55, 120, 33),
+        (60, 63, 65_535, 55),
+    ];
+    for (i, &(item, recipe, cost, requires)) in rows.iter().enumerate() {
+        rc.rows[i] = ResearchRow {
+            item,
+            recipe,
+            cost,
+            requires,
+        };
+    }
+    rc
+}
+
+/// A blueprint learned: (recipe, cost burned).
+pub fn event_research() -> (u16, u16) {
+    (33, 40)
+}
+
+/// A research refusal carrying `REFUSE_R_PARENT` — a reason v38 minted,
+/// so the fixture pins a byte no earlier version could produce.
+pub fn event_research_refused() -> u8 {
+    sim_core::research::REFUSE_R_PARENT as u8
+}
+
+/// A known-mask restate. Bits 0, 4, 21, 33 and 63: both ends of the
+/// field and the two recipes the fixtures above unlock, so a halved or
+/// byte-swapped mask cannot reproduce it.
+pub fn event_known() -> u64 {
+    (1 << 0) | (1 << 4) | (1 << 21) | (1 << 33) | (1 << 63)
+}
+
+/// Your own bags: a **partial** rack, so the count is pinned as something
+/// other than zero and other than `BAG_CAP`, and a **mixed** one, so the
+/// ready bit is pinned in both states.
+///
+/// Every field is distinguishable from every other for `action_move`'s
+/// reason — this is a positional payload with three numbers per entry, the
+/// shape `reference/FINDINGS.md` §1 counts ~27 shipped transpositions of.
+/// So no two entries share a `cx`, no `cx` equals its own `cz`, the levels
+/// differ, and the ready bits alternate: a swapped pair moves bytes.
+pub fn event_bags() -> ([BagAnchor; BAG_CAP], usize) {
+    let mut bags = [BagAnchor::default(); BAG_CAP];
+    bags[0] = BagAnchor {
+        cx: 341,
+        cz: 682,
+        level: 0,
+        ready: true,
+    };
+    bags[1] = BagAnchor {
+        cx: 17,
+        cz: 900,
+        level: 3,
+        ready: false,
+    };
+    bags[2] = BagAnchor {
+        cx: 1023,
+        cz: 4,
+        level: 7,
+        ready: true,
+    };
+    (bags, 3)
+}
+
 /// A cancel of queue job 2.
 pub fn action_cancel() -> u16 {
     2
 }
 
 /// A place request: (row, cx, cz, level, loc) — a stone wall on a cell's
-/// north edge, one storey up.
-pub fn action_place() -> (u16, u16, u16, u8, u8) {
-    (13, 341, 682, 1, sim_core::build::LOC_EDGE_N)
+/// low-z edge, one storey up.
+/// The freehand bit is pinned **true** here, not defaulted false: a fixture
+/// whose new field carries the zero value is a fixture that cannot tell a
+/// live bit from a dropped one, which is the positional-payload trap
+/// (CLAUDE.md) one field over. Proven by deleting the `w.write` in
+/// `encode_action_place` — with `false` the bytes are unchanged.
+pub fn action_place() -> (u16, u16, u16, u8, u8, bool) {
+    (13, 341, 682, 1, sim_core::build::LOC_EDGE_ZLO, true)
 }
 
 /// The piece record behind the placed broadcast.
@@ -615,8 +879,19 @@ pub fn event_piece_placed() -> PieceRec {
         cx: 341,
         cz: 682,
         level: 1,
-        loc: sim_core::build::LOC_EDGE_N,
+        loc: sim_core::build::LOC_EDGE_ZLO,
         row: 13,
+        // Set, not defaulted: the fixture pins the facing bit's live value
+        // (wire v39) the way the defs fixture pins shape 7 — a bit that
+        // never carries a 1 is a bit nothing gates.
+        facing: 1,
+        // And the plate NEGATIVE (build plate v1, wire v49), for the same
+        // rule one line up and one turn sharper: `plate` is the only signed
+        // field on this record, it is written biased, and every way of
+        // getting a bias wrong — the wrong constant, an unsigned read, a
+        // width one short — agrees with a correct encoder on zero. A fixture
+        // carrying 0 would pin bytes that cannot tell the two apart.
+        plate: -1,
         ..PieceRec::default()
     }
 }
@@ -625,12 +900,38 @@ pub fn event_piece_placed() -> PieceRec {
 /// message at its cap.
 pub fn event_piece_sync() -> (bool, [PieceRec; PIECE_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 18);
-    let recs = core::array::from_fn(|_| PieceRec {
+    let recs = core::array::from_fn(|i| PieceRec {
         cx: rng.next_bounded(1024) as u16,
         cz: rng.next_bounded(1024) as u16,
         level: rng.next_bounded(8) as u8,
-        loc: rng.next_bounded(4) as u8,
+        // All ten live locs since v40, so the batch pins triangle and
+        // diagonal addresses in golden bytes, not just the square four.
+        loc: rng.next_bounded(10) as u8,
         row: rng.next_bounded(32) as u8,
+        facing: rng.next_bounded(2) as u8,
+        // The whole FIELD, both signs — the batch is where a width is pinned
+        // across many records, so it covers the range rather than a value
+        // (`event_piece_placed` pins the single deliberate one).
+        //
+        // **The wire's range, not the sim's knobs.** `PLATE_BITS` is
+        // deliberately wider than `build::PLATE_RISE_MAX_BANDS` and
+        // `PLATE_SINK_MAX_BANDS`, and its own doc says why: those two are
+        // balance knobs, and a wire field sized to today's knob is a
+        // `PROTO_VER` bump for every balance pass. A fixture cycled off the
+        // knobs has the same defect one layer up, and it fired the day it was
+        // written — adopting the reference's ±half-a-wall offset moved every
+        // byte of this golden for a reason that has nothing to do with the
+        // wire. The field's own width pins what the LAYOUT can carry, which
+        // is what a wire golden is for, and it stays put while balance moves.
+        //
+        // **Cycled off the index, deliberately NOT drawn from `rng`.** Every
+        // field above shares one stream, so an extra draw per record shifts
+        // every later one — and the first version of this line did draw,
+        // which slid the `loc` sequence far enough that one of the ten
+        // addresses stopped appearing in the batch at all.
+        // `the_loc_fuzz_covers_each_stores_whole_domain` caught it, which is
+        // that gate's whole reason for existing.
+        plate: (i as i32 % (1 << PLATE_BITS) - PLATE_BIAS) as i8,
         ..PieceRec::default()
     });
     (true, recs)
@@ -652,9 +953,19 @@ pub fn event_piece_defs() -> BuildContent {
         (sim_core::build::SHAPE_FOUNDATION, 0, 750, &[(0, 350)]),
         (sim_core::build::SHAPE_WALL, 1, 1750, &[(1, 350)]),
         (sim_core::build::SHAPE_DOORWAY, 2, 3000, &[(7, 160)]),
-        (sim_core::build::SHAPE_FLOOR, 0, 750, &[(0, 350), (4, 10)]),
-        (sim_core::build::SHAPE_STAIRS, 1, 1750, &[(1, 200)]),
-        (sim_core::build::SHAPE_ROOF, 2, 65_535, &[(65_535, 65_535)]),
+        // The window keeps this row's two costs: the 2-bit n_costs field
+        // stays pinned at its top by the same row that now pins a
+        // catalogue-v1 shape code.
+        (sim_core::build::SHAPE_WINDOW, 0, 750, &[(0, 350), (4, 10)]),
+        // The tri roof is 10 — the TOP live code of the 4-bit shape field
+        // since v40 (the frame held this seat while the field was 3 bits),
+        // pinned here the way the roof row pins material's top: a width
+        // that never carries its widest value is a width nothing gates.
+        (sim_core::build::SHAPE_TRI_ROOF, 1, 1750, &[(1, 200)]),
+        // The max-everything row, and the one that pins the TOP of the
+        // 2-bit material field: metal is 3 since twig v0, and a fixture
+        // that never wrote a 3 would leave the widest rung ungated.
+        (sim_core::build::SHAPE_ROOF, 3, 65_535, &[(65_535, 65_535)]),
         (sim_core::build::SHAPE_WALL, 0, 750, &[(0, 350)]),
     ];
     for (i, &(shape, material, hp, costs)) in rows.iter().enumerate() {
@@ -672,9 +983,9 @@ pub fn event_piece_defs() -> BuildContent {
 }
 
 /// A deploy-place request: (row, cx, cz, level, loc) — a door into a
-/// doorway on a cell's west edge.
+/// doorway on a cell's low-x edge.
 pub fn action_deploy() -> (u16, u16, u16, u8, u8) {
-    (9, 341, 682, 0, sim_core::build::LOC_EDGE_W)
+    (9, 341, 682, 0, sim_core::build::LOC_EDGE_XLO)
 }
 
 /// A feed of the hearth at (cx, cz, level).
@@ -701,6 +1012,18 @@ pub fn event_deploy_placed() -> DeployRec {
 }
 
 /// A full deploy-sync batch with the reset bit set.
+///
+/// `loc`'s `next_bounded(4)` **looks like `input_full`'s old button draw
+/// and is not the same thing** (checked 2026-08-18, NOW.md §5c). The
+/// deployable store lives on the plane and the two straight edges, so its
+/// whole domain is `0..=LOC_EDGE_ZLO` — `loc_max(true)`, which
+/// `encode_event_deploy_sync` enforces — and a wider draw would make this
+/// fixture *unencodable*, not better covered. The field's own width is
+/// four bits since v40 and its top two are pinned elsewhere:
+/// `event_piece_sync` draws `next_bounded(10)`, the piece store's whole
+/// domain including the diagonals. So the octet-shaped hole does not exist
+/// here; every value either store can send appears in some fixture, and
+/// `the_loc_fuzz_covers_each_stores_whole_domain` is what says so.
 pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
     let mut rng = Pcg32::new(0x0047_4154_4553, 19);
     let recs = core::array::from_fn(|_| DeployRec {
@@ -717,9 +1040,9 @@ pub fn event_deploy_sync() -> (bool, [DeployRec; DEPLOY_SYNC_BATCH]) {
     (true, recs)
 }
 
-/// A use request: the address of a door on a cell's west edge.
+/// A use request: the address of a door on a cell's low-x edge.
 pub fn action_use() -> (u16, u16, u8, u8) {
-    (341, 682, 0, sim_core::build::LOC_EDGE_W)
+    (341, 682, 0, sim_core::build::LOC_EDGE_XLO)
 }
 
 /// A lock request: the same address, setting a code. Both payload fields
@@ -735,7 +1058,7 @@ pub fn action_access() -> (u16, u16, u8, u8, u8, u16) {
         341,
         682,
         0,
-        sim_core::build::LOC_EDGE_W,
+        sim_core::build::LOC_EDGE_XLO,
         sim_core::deploy::ACCESS_OP_SET_CODE,
         4207,
     )
@@ -748,7 +1071,7 @@ pub fn action_access() -> (u16, u16, u8, u8, u8, u16) {
 /// half) for `action_lock`'s reason: at 0 the frame is byte-identical to
 /// one whose encoder never wrote the field.
 pub fn action_demolish() -> (bool, u16, u16, u8, u8) {
-    (true, 341, 682, 0, sim_core::build::LOC_EDGE_W)
+    (true, 341, 682, 0, sim_core::build::LOC_EDGE_XLO)
 }
 
 /// A crew op: the same cell, on the **body** rather than an edge, joining
@@ -772,16 +1095,17 @@ pub fn action_access_crew() -> (u16, u16, u8, u8, u8, u16) {
 }
 
 /// An upgrade request: the same address again, climbing to metal. The
-/// material is **2** on purpose — at 0 the frame would be byte-identical
-/// to one whose encoder never wrote the field (the padding absorbs the
-/// width), so wire v9's only new C→S field would cross the golden gate
-/// ungated.
+/// material is **nonzero** on purpose — at 0 the frame would be
+/// byte-identical to one whose encoder never wrote the field (the padding
+/// absorbs the width), so wire v9's only new C→S field would cross the
+/// golden gate ungated. It reads 3 since twig v0 took code 0 and pushed
+/// the ladder up, which is one of the two reasons v34's bytes moved.
 pub fn action_upgrade() -> (u16, u16, u8, u8, u8) {
     (
         341,
         682,
         0,
-        sim_core::build::LOC_EDGE_W,
+        sim_core::build::LOC_EDGE_XLO,
         sim_core::build::MAT_METAL,
     )
 }
@@ -790,7 +1114,7 @@ pub fn action_upgrade() -> (u16, u16, u8, u8, u8) {
 /// still carrying its keypad — the state its owner sees after swinging
 /// their own door. All three bits are **1** for `action_access`'s reason.
 pub fn event_door() -> (u16, u16, u8, u8, bool, bool, bool) {
-    (341, 682, 0, sim_core::build::LOC_EDGE_W, true, true, true)
+    (341, 682, 0, sim_core::build::LOC_EDGE_XLO, true, true, true)
 }
 
 /// A knock: the same door, and player 9 outside it. The knocker is
@@ -799,7 +1123,7 @@ pub fn event_door() -> (u16, u16, u8, u8, bool, bool, bool) {
 /// site shows up as a changed golden rather than as a coincidence
 /// (`reference/FINDINGS.md` §1).
 pub fn event_knock() -> (u16, u16, u8, u8, u32) {
-    (341, 682, 0, sim_core::build::LOC_EDGE_W, 9)
+    (341, 682, 0, sim_core::build::LOC_EDGE_XLO, 9)
 }
 
 /// A grant: the same door, at full rights. `GRANT_FULL` is 2, so the
@@ -810,7 +1134,7 @@ pub fn event_auth() -> (u16, u16, u8, u8, u8) {
         341,
         682,
         0,
-        sim_core::build::LOC_EDGE_W,
+        sim_core::build::LOC_EDGE_XLO,
         sim_core::lock::GRANT_FULL,
     )
 }
@@ -939,11 +1263,20 @@ pub fn event_bag_removed() -> (u32, u8) {
 /// or a repeat anywhere would let a decoder reading the wrong field pass.
 /// `(deploy, cx, cz, level, loc, row, damage, left)`.
 pub fn event_struct_hit_piece() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
-    (false, 341, 347, 3, sim_core::build::LOC_EDGE_N, 7, 4, 1_746)
+    (
+        false,
+        341,
+        347,
+        3,
+        sim_core::build::LOC_EDGE_ZLO,
+        7,
+        4,
+        1_746,
+    )
 }
 
 pub fn event_struct_hit_deploy() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
-    (true, 512, 128, 1, sim_core::build::LOC_EDGE_W, 5, 3, 197)
+    (true, 512, 128, 1, sim_core::build::LOC_EDGE_XLO, 5, 3, 197)
 }
 
 /// A refusal carrying `sim_core::deploy::REFUSE_D_CLAIM`.
@@ -959,7 +1292,7 @@ pub fn event_deploy_defs() -> DeployContent {
 
 /// The removed-piece address: (cx, cz, level, loc).
 pub fn event_removed() -> (u16, u16, u8, u8) {
-    (341, 682, 0, sim_core::build::LOC_EDGE_N)
+    (341, 682, 0, sim_core::build::LOC_EDGE_ZLO)
 }
 
 /// A feed ack: hearth address + three stock rows.
@@ -1008,11 +1341,11 @@ pub fn snapshot_cap() -> SnapshotCase {
 /// wrong branch cannot land on the same bytes.
 /// `(deploy, cx, cz, level, loc)`.
 pub fn action_repair_piece() -> (bool, u16, u16, u8, u8) {
-    (false, 341, 682, 2, sim_core::build::LOC_EDGE_N)
+    (false, 341, 682, 2, sim_core::build::LOC_EDGE_ZLO)
 }
 
 pub fn action_repair_deploy() -> (bool, u16, u16, u8, u8) {
-    (true, 512, 128, 1, sim_core::build::LOC_EDGE_W)
+    (true, 512, 128, 1, sim_core::build::LOC_EDGE_XLO)
 }
 
 /// A repair landing: the address, what the payment bought back, and where
@@ -1034,7 +1367,7 @@ pub fn event_piece_repaired_piece() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
         341,
         682,
         2,
-        sim_core::build::LOC_EDGE_N,
+        sim_core::build::LOC_EDGE_ZLO,
         200,
         610,
         1750,
@@ -1042,7 +1375,7 @@ pub fn event_piece_repaired_piece() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
 }
 
 pub fn event_piece_repaired_deploy() -> (bool, u16, u16, u8, u8, u8, u16, u16) {
-    (true, 512, 128, 1, sim_core::build::LOC_EDGE_W, 11, 37, 60)
+    (true, 512, 128, 1, sim_core::build::LOC_EDGE_XLO, 11, 37, 60)
 }
 
 /// The plant request. `action_repair_*`'s layout to the bit, which is
@@ -1090,4 +1423,253 @@ pub fn event_oven_lit() -> (u16, u16, u8, bool, u32) {
 
 pub fn event_oven_out() -> (u16, u16, u8, bool, u32) {
     (64, 900, 3, false, 0)
+}
+
+/// An arrow leaving a bow (wire v33): shooter, yaw, pitch, speed, drop.
+///
+/// **Every field is a distinct value and none is a round number**, which
+/// is the positional-payload rule (`reference/FINDINGS.md` §1) applied to
+/// a message with two pairs of same-typed neighbours. `yaw`/`pitch` and
+/// `speed`/`drop` are each two integers side by side, so a fixture that
+/// used 0 for the pitch or shared a value between the pair would encode
+/// identically under a transposition and the golden would bless the swap.
+/// The yaw also deliberately exceeds a byte, so a decoder that read it at
+/// the pitch's width would truncate visibly rather than plausibly.
+pub fn event_shot() -> (u32, u16, u8, u16, u16) {
+    (0x0000_2B17, 41_234, 203, 1_333, 22)
+}
+
+/// Where an arrow stopped (wire v44): x, y, z in the entity lane's quanta
+/// and a `ranged::SURF_*`.
+///
+/// **Three same-typed neighbours, so the positional rule bites hardest
+/// here** (`reference/FINDINGS.md` §1, and it is the trap `event_roles.rs`
+/// exists for on the sim side). `qx` and `qz` are the pair a transposition
+/// would silently swap, so they differ in both halves and neither is a
+/// round number; `qy` is **negative**, which is this fixture's real job —
+/// it is the only signed field on the event lane, it rides a bias, and a
+/// decoder that forgot either would produce a plausible positive altitude
+/// rather than a visibly wrong one. −312 is 3.12 m under datum: a shot
+/// into a riverbed, well inside the window and nowhere near its edge, so
+/// the fixture proves the bias rather than the clamp.
+///
+/// `surf` is `SURF_WORLD` — the middle of the three, so a decoder that
+/// read the field one bit narrow or wide lands on a different live kind
+/// instead of on a value the refusal would have caught for free.
+pub fn event_impact() -> (i32, i32, i32, u8) {
+    (0x0000_A179, -312, 0x0000_58A3, 1)
+}
+
+/// The swinger of the broadcast swing fact (wire v47).
+///
+/// Distinguishable in **both** 16-bit halves and in all four bytes, and
+/// neither zero nor a small index: a field read one bit narrow or wide, or
+/// a decoder that swapped the halves, cannot coincide with the right
+/// answer. The same reasoning `event_shot`'s shooter is picked under —
+/// this lane's failures are positional, not arithmetic.
+pub fn event_swing() -> u32 {
+    0x5A3C_91E7
+}
+
+/// Opening a **world container** (wire v37) — the fourth kind, and the
+/// first whose open reaches the sim rather than only the subscription.
+///
+/// The handle is a real `gather::cell_key(147, 92)` — `cx << 16 | cz` on
+/// a 256×256 grid — and both halves are chosen to be distinguishable from
+/// each other and from every other handle in this file: a `cell_key`
+/// whose two 8-bit cells were transposed, or read at the wrong width,
+/// moves bytes here. It is deliberately unlike `action_container`'s
+/// `box_key`, which packs three fields into the same 32 bits; two
+/// different packings sharing a constant is how a decoder that used the
+/// wrong one would still pass.
+pub fn action_container_world() -> (u8, u32) {
+    (3, 0x0093_005C)
+}
+
+/// Taking something **out of** a world container (wire v37).
+///
+/// Withdrawal rather than deposit, so the direction that actually matters
+/// for a crate is the one pinned — and the reverse of `action_move_box`'s
+/// deposit, so a copy-paste between the two shows as drifted bytes. The
+/// handle is a third distinct `cell_key`, `(31, 208)`, for the reason
+/// `action_move_box` gives about sharing a constant.
+///
+/// The source slot is 23: inside `INV_SLOTS` and past `BOX_SLOTS`, which
+/// is the one address a world container accepts and a box does not, so a
+/// decoder that resolved kind 3's width against the box's table would
+/// refuse this fixture rather than quietly narrow the container.
+pub fn action_move_world() -> (u32, u8, u8, u8, u8, u16) {
+    (0x001F_00D0, 3, 23, 0, 4, 9)
+}
+
+/// A world container's contents arriving as an opening `reset`
+/// (wire v37) — the shape a crate always sends first, since the roll is
+/// what the open produced and the client has nothing to diff against.
+///
+/// `reset` is true here where `event_cont_sync`'s is false, so the fourth
+/// kind is pinned in the state the third one is not. The slot indices
+/// again reach past `BOX_SLOTS` and up to 29 — the last addressable slot
+/// of the widest container — because the ceiling is exactly what a
+/// per-kind width check gets wrong.
+pub fn event_cont_sync_world() -> (u8, u32, bool, [InvSlot; 3]) {
+    (
+        3,
+        0x0093_005C,
+        true,
+        [
+            InvSlot {
+                slot: 0,
+                stack: ItemStack {
+                    item: 19,
+                    count: 64,
+                    cond: 0,
+                },
+            },
+            InvSlot {
+                slot: 14,
+                stack: ItemStack {
+                    item: 7,
+                    count: 2,
+                    cond: 12_345,
+                },
+            },
+            InvSlot {
+                slot: 29,
+                stack: ItemStack {
+                    item: 44,
+                    count: 11,
+                    cond: 40_000,
+                },
+            },
+        ],
+    )
+}
+
+// ---------------------------------------------------------------------
+// Research (wire v32), pinned at v37 — five versions late.
+//
+// `ACT_RESEARCH`, `SUB_RESEARCH`, `SUB_RESEARCH_REFUSED` and `SUB_KNOWN`
+// all landed in v32 and crossed v33–v37 with **no fixture**, so the only
+// thing asserting their bytes was the absence of a complaint. That is the
+// same shape `action_move_box`'s doc records for the third container kind
+// and the same shape twice more in the research lane itself (a bake with
+// no caller, then three encoders with no `decode_event` arm) — a verb
+// proven correct in the sim and unchecked on the wire. Pinning them does
+// not move a byte, so no `PROTO_VER` bump is owed: these are the bytes
+// v32 through v37 already sent. `every_encoder_has_a_golden` is the gate
+// that makes the next one impossible to forget.
+
+/// Learning at a table: the inventory slot holding the sample.
+///
+/// `23` rather than a small index — it is `0b10111`, so it fills all five
+/// of `ACTION_SLOT_BITS` and a field narrowed to four would truncate it to
+/// `7` instead of staying plausible. Under `INV_SLOTS` (30) and clear of
+/// both ends.
+pub fn action_research() -> u8 {
+    23
+}
+
+// `event_research`, `event_research_refused` and `event_known` were
+// declared a second time here by the local branch that pinned this lane on
+// 2026-08-15. The integrated branch declares all three above (with the same
+// intent and its own reasoning), so the duplicates are gone and the
+// survivors are the ones `FIXTURES` names. `action_research` above has no
+// counterpart there and stays: it is the fifth encoder of this lane, and
+// `every_encoder_has_a_golden` is why it may not quietly lose its bytes.
+
+/// Opening the **wear** container (wire v51, armor v1).
+///
+/// Kind 4 with handle **zero**, and the zero is the fixture's whole
+/// point: `CONT_WEAR` is an own container (`inventory::is_own`), so
+/// unlike the box and the crate above it there is no address to name —
+/// the body is wherever the sender is. Every other container fixture in
+/// this file carries a deliberately distinctive handle so a transposition
+/// moves bytes; this one carries the absence of a handle, which is the
+/// thing a decoder that treated kind 4 as ground would get wrong first.
+///
+/// Note what this pins about the *encoder's* one handle rule: it refuses
+/// a nonzero handle on `CONT_SELF` only, so kind 4 is legal here purely
+/// because it is a kind and not because anything special-cases it.
+pub fn action_container_wear() -> (u8, u32) {
+    (4, 0)
+}
+
+/// **Putting armor on** (wire v51) — the verb equipment actually is.
+///
+/// `CONT_SELF` slot 19 → `CONT_WEAR` slot 1, one piece. There is no
+/// `ACT_EQUIP` to pin because there is no `ACT_EQUIP`: these are the
+/// bytes that make a body wear something, and they are `ACT_MOVE`'s
+/// (`reference/ARMOR.md` §9.2).
+///
+/// The count is **1 and honestly 1** — a wear slot holds one piece and
+/// `stack_max` says so — rather than a number picked to differ from
+/// everything else the way `action_move`'s 42 is. So the transposition
+/// defence here rests on the other three fields instead, and they carry
+/// it: the kinds differ (0 → 4, the two ends of the widened field), the
+/// slots differ and are far apart (19 → 1), and swapping either
+/// `(kind, slot)` pair for the other yields `(4, 1, 0, 19)`, which is
+/// different bytes. The handle is zero for the reason above.
+///
+/// Slot 19 is also past `BOX_SLOTS`, so a decoder resolving the source
+/// width against the wrong container's table refuses this fixture.
+pub fn action_move_wear() -> (u32, u8, u8, u8, u8, u16) {
+    (0, 0, 19, 4, 1, 1)
+}
+
+/// What a body is wearing, arriving as an opening `reset` (wire v51).
+///
+/// Two slots, which is all `WEAR_SLOTS` has, and they are **both filled
+/// and both non-zero items** so the head/body pair cannot be read in
+/// either order without moving bytes: slot 0 carries item 4 and slot 1
+/// carries item 5, which are `combat.rs`'s two probe armor rows, in the
+/// one arrangement `worn_pct` scores as a full set.
+///
+/// `reset` is true, matching `event_cont_sync_world` and unlike
+/// `event_cont_sync`, because a wear container has no incremental state
+/// to diff against on open either.
+pub fn event_cont_sync_wear() -> (u8, u32, bool, [InvSlot; 2]) {
+    (
+        4,
+        0,
+        true,
+        [
+            InvSlot {
+                slot: 0,
+                stack: ItemStack {
+                    item: 4,
+                    count: 1,
+                    cond: 9_100,
+                },
+            },
+            InvSlot {
+                slot: 1,
+                stack: ItemStack {
+                    item: 5,
+                    count: 1,
+                    cond: 10_000,
+                },
+            },
+        ],
+    )
+}
+
+/// A move refused because **that is not where that goes** (wire v51):
+/// `REFUSE_M_WEAR`, carrying the address that was asked for.
+///
+/// Two firsts in five bytes, which is why it is pinned separately from
+/// `event_move_refused`. The reason is **9** — the first value to need
+/// `REFUSE_M_BITS`' fourth bit for a reason rather than for headroom, so
+/// a field narrowed back to three bits truncates it into
+/// `REFUSE_M_SLOT`'s neighbourhood and says "resync" where the sim said
+/// "wrong slot". And the destination kind is 4 *inside an address*: the
+/// refusal packs two `(kind, slot)` pairs, so this is the message where a
+/// container kind travels without a `cont` handle beside it to make the
+/// width obvious.
+///
+/// The address is `action_move_wear`'s with the destination slot changed
+/// from 1 to 0 — the body piece offered to the head slot, which is
+/// exactly what `combat::wearable_in` refuses — so the two fixtures read
+/// as the same drag succeeding and failing.
+pub fn event_move_refused_wear() -> (u8, u8, u8, u8, u8) {
+    (9, 0, 19, 4, 0)
 }

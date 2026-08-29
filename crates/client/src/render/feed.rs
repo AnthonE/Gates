@@ -26,10 +26,16 @@
 //! ## The bound
 //!
 //! Every array here is [`FEED_CAP`] long, which is `client_core`'s own
-//! `TOAST_RING` — the core cannot hand over more per frame than its rings
-//! hold, so the cap is exact rather than generous. Overflow policy: **drop the
-//! newest and count it** ([`Feed::dropped`]), matching `sound::CUE_QUEUE_CAP`.
-//! A non-zero count means the core grew a ring and this file did not follow.
+//! `TOAST_RING`. For the single-source arrays that cap is exact — the core
+//! cannot hand over more per frame than the one ring holds. The shared
+//! refusal queue is the exception and this line used to deny it: SIX verb
+//! rings drain into it (research, craft, gather, build, deploy, consume),
+//! so a frame can offer more refusals than one array holds with nothing
+//! drifted anywhere. Overflow policy: **drop the newest and count it**
+//! ([`Feed::dropped`]), matching `sound::CUE_QUEUE_CAP` — a seventh
+//! refusal in one frame is noise, not news. A non-zero count on a
+//! single-source array still means the core grew a ring and this file did
+//! not follow.
 
 use bevy::prelude::*;
 use client_core::core::TOAST_RING;
@@ -40,9 +46,15 @@ use super::Net;
 /// a full drain always fits.
 pub const FEED_CAP: usize = TOAST_RING;
 
-/// Which verb a refusal answers. The three refusal queues are separate on the
+/// Which verb a refusal answers. The refusal queues are separate on the
 /// wire and stay separate here, because the HUD turns each into a different
 /// sentence (`ui::refusals`) — the audio side is the one that does not care.
+///
+/// **Adding a variant is green on `cargo test --workspace` and red at the
+/// Bevy gate**, because the one exhaustive `match` over this type lives in
+/// `render/hud.rs`, on the same side of `--features render` as the enum
+/// (`CLAUDE.md`'s feature-line trap). `tests/ui.rs` §H moves that failure
+/// into the code tier by reading both files as text.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Refused {
     // The default only exists so `Feed` can derive one for its fixed array;
@@ -51,6 +63,21 @@ pub enum Refused {
     Craft,
     Build,
     Deploy,
+    Research,
+    /// An eat (`J`) or a drink (`H`) that did nothing —
+    /// `sim_core::survival`'s `REFUSE_C_*`.
+    ///
+    /// **One variant for two verbs**, because the sim answers both on one
+    /// `EV_CONSUME_REFUSED` and one of its three codes belongs to the drink
+    /// alone. `ui::refusals::CONSUME` words all three so neither verb reads
+    /// as the other.
+    Consume,
+    /// A gather swing the node refused (wire v42) —
+    /// `sim_core::gather`'s `REFUSE_G_*`. The one variant whose entry
+    /// carries an **item** beside the code (the held tool, `NO_ITEM` =
+    /// bare hands), because its sentence names it: *your torch cannot
+    /// harvest this* (`ui::refusals::GATHER`).
+    Gather,
 }
 
 /// One frame of own-facts. Cleared and refilled by [`drain`]; read-only to
@@ -62,15 +89,51 @@ pub struct Feed {
     /// prints it and the mixer only asks whether it is non-zero.
     pub damage: u16,
     pub hits: u16,
+    /// The bodies this frame's own hits landed on, oldest first — an
+    /// **own-fact**, because `EV_HIT` is unicast to the attacker.
+    ///
+    /// Beside the sum rather than replacing it: the two readers of `damage`
+    /// and `hits` want the total (the HUD prints it, the mixer asks only
+    /// whether it is non-zero) and the flinch wants the identities, and
+    /// neither can be recovered from the other. A hit on a wall
+    /// (`EV_STRUCT_HIT`) shares the core's ring and carries
+    /// `client_core::core::NO_VICTIM`, which is filtered out here rather
+    /// than handed on — nothing downstream should have to know the
+    /// sentinel exists.
+    hit_victims: [u32; FEED_CAP],
+    n_hit_victims: usize,
     deaths: [(u32, u32); FEED_CAP],
     n_deaths: usize,
     refusals: [Refused; FEED_CAP],
     refusal_codes: [u8; FEED_CAP],
+    /// The item a refusal names, `sim_core::gather::NO_ITEM` when the
+    /// sentence needs none — only `Refused::Gather` carries one today.
+    refusal_items: [u16; FEED_CAP],
     n_refusals: usize,
     gathered: [(u16, u16); FEED_CAP],
     n_gathered: usize,
     crafted: [(u16, u16); FEED_CAP],
     n_crafted: usize,
+    /// Items that did not fit and went to the ground this frame — a gather
+    /// or a craft whose payout the pack could not hold. Own-fact, like the
+    /// two rings above it and unlike `knocks`/`shots`.
+    ///
+    /// The item index only: the wire says what reached the hands and never
+    /// what was paid, so there is no amount to carry (`client-core`'s
+    /// `spills` says why in full).
+    spills: [u16; FEED_CAP],
+    n_spills: usize,
+    /// `(recipe, coin burned)` per blueprint learned this frame.
+    learned: [(u16, u16); FEED_CAP],
+    n_learned: usize,
+    /// Eats that landed this frame: (item index, the slot it was spent
+    /// from). Own-fact; the refused half rides `refusals` as
+    /// `Refused::Consume`. A ring since 2026-08-15 — it was a latched field
+    /// pair (`last_eat` / `last_eat_refused`), and two consume answers in
+    /// one drain window collapsed, which one frame reaches from the
+    /// keyboard (`KeyJ` + `KeyH` are answered by one `World::tick`).
+    consumed: [(u16, u16); FEED_CAP],
+    n_consumed: usize,
     /// Knocks heard this frame: the door's address and who knocked (lock
     /// v1). Broadcast, so this is the one entry here that can be somebody
     /// else's action — the mixer wants the address, the HUD wants to say
@@ -80,6 +143,29 @@ pub struct Feed {
     /// Grants earned this frame: address + `sim_core::lock::GRANT_*`.
     auths: [(u16, u16, u8, u8, u8); FEED_CAP],
     n_auths: usize,
+    /// Arrows loosed this frame (wire v33): shooter id, yaw, pitch, and the
+    /// round's speed and drop in mm/tick. Broadcast, like `knocks`.
+    ///
+    /// Cosmetic only. The tracer spawned from this decides nothing — the
+    /// arrow that can kill you is the server's, and its hit arrives on its
+    /// own events whether or not anything drew a streak.
+    shots: [(u32, u16, u8, u16, u16); FEED_CAP],
+    n_shots: usize,
+    /// Arrow impacts heard this frame: the stop point in the wire's quanta
+    /// (3 cm x/z, 1 cm y, y signed) and what it stopped on
+    /// (`sim_core::ranged::SURF_*`).
+    ///
+    /// Broadcast, like `shots` and `knocks` above it and unlike the own-fact
+    /// rings — every arrow on the island that stops on something lands here,
+    /// not only this player's. Cosmetic only: what reads this leaves a mark,
+    /// and a mark decides nothing.
+    impacts: [(i32, i32, i32, u8); FEED_CAP],
+    n_impacts: usize,
+    /// Bodies whose arm started to move this frame, by wire entity id
+    /// (broadcast, wire v47). Cosmetic and unvalidated: an id naming no
+    /// live body matches nothing when `bodies::stream` walks its set.
+    swings: [u32; FEED_CAP],
+    n_swings: usize,
     /// Placements that happened this frame: address + which store (`true` =
     /// deployable). Broadcast-only by construction — the core's ring is fed
     /// by `PiecePlaced`/`DeployPlaced` and never by a sync walk, so a join
@@ -102,6 +188,14 @@ pub struct Feed {
     pub applied2: u32,
     /// Facts refused for want of room since the last reset — see the header.
     pub dropped: u32,
+    /// The client's smoothed estimate of the server tick
+    /// (`client-core/clock.rs` `server_est`), copied here each drain so
+    /// render systems can read the world's clock as a `Res<Feed>` instead
+    /// of each taking the non-send `Net`. The day/night rig derives the
+    /// time of day from it (`sim_core::world::day_frac`); zero until the
+    /// first snapshot, which reads as the boot phase — mid-morning — and
+    /// is exactly what a loading world should look like.
+    pub server_tick_est: f64,
 }
 
 impl Feed {
@@ -109,10 +203,18 @@ impl Feed {
     pub fn deaths(&self) -> &[(u32, u32)] {
         &self.deaths[..self.n_deaths]
     }
-    /// `(which verb, reason code)` pairs, oldest first. The code is the
-    /// verb's own `REFUSE_*` integer — `ui::refusals` owns the sentences.
-    pub fn refusals(&self) -> impl Iterator<Item = (Refused, u8)> + '_ {
-        (0..self.n_refusals).map(|i| (self.refusals[i], self.refusal_codes[i]))
+    /// `(which verb, reason code, named item)` triples, oldest first. The
+    /// code is the verb's own `REFUSE_*` integer — `ui::refusals` owns the
+    /// sentences — and the item is `NO_ITEM` for every verb whose sentence
+    /// names none (all but `Gather` today).
+    pub fn refusals(&self) -> impl Iterator<Item = (Refused, u8, u16)> + '_ {
+        (0..self.n_refusals).map(|i| {
+            (
+                self.refusals[i],
+                self.refusal_codes[i],
+                self.refusal_items[i],
+            )
+        })
     }
     /// `(item index, units)` gathered this frame.
     pub fn gathered(&self) -> &[(u16, u16)] {
@@ -122,11 +224,44 @@ impl Feed {
     pub fn crafted(&self) -> &[(u16, u16)] {
         &self.crafted[..self.n_crafted]
     }
+
+    /// Item indices the pack could not hold this frame, oldest first.
+    pub fn spills(&self) -> &[u16] {
+        &self.spills[..self.n_spills]
+    }
+
+    /// `(recipe index, coin burned)` learned this frame (research v0).
+    pub fn learned(&self) -> &[(u16, u16)] {
+        &self.learned[..self.n_learned]
+    }
+    /// `(item index, slot)` eaten or used this frame, oldest first.
+    pub fn consumed(&self) -> &[(u16, u16)] {
+        &self.consumed[..self.n_consumed]
+    }
     /// Knocks heard this frame, oldest first.
     pub fn knocks(&self) -> &[(u16, u16, u8, u8, u32)] {
         &self.knocks[..self.n_knocks]
     }
     /// Grants earned this frame, oldest first.
+    /// `(shooter, yaw, pitch, speed mm/tick, drop mm/tick²)` this frame.
+    pub fn shots(&self) -> &[(u32, u16, u8, u16, u16)] {
+        &self.shots[..self.n_shots]
+    }
+    /// Arrow impacts heard this frame, oldest first.
+    pub fn impacts(&self) -> &[(i32, i32, i32, u8)] {
+        &self.impacts[..self.n_impacts]
+    }
+
+    /// Bodies that swung this frame, oldest first.
+    pub fn swings(&self) -> &[u32] {
+        &self.swings[..self.n_swings]
+    }
+
+    /// Bodies this player's blows landed on this frame, oldest first.
+    /// Never contains `client_core::core::NO_VICTIM` — see the field.
+    pub fn hit_victims(&self) -> &[u32] {
+        &self.hit_victims[..self.n_hit_victims]
+    }
     pub fn auths(&self) -> &[(u16, u16, u8, u8, u8)] {
         &self.auths[..self.n_auths]
     }
@@ -138,22 +273,30 @@ impl Feed {
     fn clear(&mut self) {
         self.damage = 0;
         self.hits = 0;
+        self.n_hit_victims = 0;
         self.n_deaths = 0;
         self.n_refusals = 0;
         self.n_gathered = 0;
         self.n_crafted = 0;
+        self.n_spills = 0;
+        self.n_learned = 0;
+        self.n_consumed = 0;
         self.n_knocks = 0;
         self.n_auths = 0;
+        self.n_shots = 0;
+        self.n_impacts = 0;
+        self.n_swings = 0;
         self.n_placed = 0;
     }
 
-    fn push_refusal(&mut self, which: Refused, code: u8) {
+    fn push_refusal(&mut self, which: Refused, code: u8, item: u16) {
         if self.n_refusals >= FEED_CAP {
             self.dropped = self.dropped.saturating_add(1);
             return;
         }
         self.refusals[self.n_refusals] = which;
         self.refusal_codes[self.n_refusals] = code;
+        self.refusal_items[self.n_refusals] = item;
         self.n_refusals += 1;
     }
 }
@@ -174,10 +317,22 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     feed.applied = core::mem::take(&mut net.session.applied);
     feed.applied2 = core::mem::take(&mut net.session.applied2);
     let core = &mut net.session.core;
+    feed.server_tick_est = core.clock.server_est;
 
-    while let Some(d) = core.pop_hit() {
+    while let Some((victim, d)) = core.pop_hit() {
         feed.damage = feed.damage.saturating_add(d);
         feed.hits = feed.hits.saturating_add(1);
+        // A wall took it, not a person: the sentinel stops here.
+        if victim == client_core::core::NO_VICTIM {
+            continue;
+        }
+        if feed.n_hit_victims >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_hit_victims;
+            feed.hit_victims[n] = victim;
+            feed.n_hit_victims += 1;
+        }
     }
     while let Some(victim) = core.pop_death() {
         // `last_death_killer` is set by the pop, so one pop yields a whole
@@ -191,14 +346,53 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             feed.n_deaths += 1;
         }
     }
+    while let Some(t) = core.pop_research_toast() {
+        if feed.n_learned < FEED_CAP {
+            let n = feed.n_learned;
+            feed.learned[n] = t;
+            feed.n_learned += 1;
+        }
+    }
+    while let Some(code) = core.pop_research_refusal() {
+        feed.push_refusal(Refused::Research, code, sim_core::gather::NO_ITEM);
+    }
     while let Some(code) = core.pop_craft_refusal() {
-        feed.push_refusal(Refused::Craft, code);
+        feed.push_refusal(Refused::Craft, code, sim_core::gather::NO_ITEM);
+    }
+    while let Some((item, code)) = core.pop_gather_refusal() {
+        feed.push_refusal(Refused::Gather, code, item);
     }
     while let Some(code) = core.pop_build_refusal() {
-        feed.push_refusal(Refused::Build, code);
+        feed.push_refusal(Refused::Build, code, sim_core::gather::NO_ITEM);
     }
     while let Some(code) = core.pop_deploy_refusal() {
-        feed.push_refusal(Refused::Deploy, code);
+        feed.push_refusal(Refused::Deploy, code, sim_core::gather::NO_ITEM);
+    }
+    // The consume verbs, rings since 2026-08-15. They were a latched field
+    // pair (`last_eat` / `last_eat_refused`) plus `APPLIED_CONSUME`, and two
+    // answers in one drain window collapsed — `Consumed` zeroed the reason,
+    // `ConsumeRefused` overwrote it — which one frame reaches from the
+    // keyboard, because `KeyJ` and `KeyH` are two independent presses that
+    // one `World::tick` answers together. `client-core`'s
+    // `two_consume_answers_in_one_drain_window_both_surface` holds it.
+    //
+    // The refusal joins the shared queue rather than a private surface, and
+    // that is the point: a refusal in this queue is a refusal to every
+    // reader, so `render::audio` plays the refusal cue for a dry shoreline
+    // without knowing the verb exists. Zero never arrives — it is not a
+    // refusal on this wire and the encoder refuses it; the landed half is
+    // its own ring below.
+    while let Some(code) = core.pop_consume_refusal() {
+        feed.push_refusal(Refused::Consume, code, sim_core::gather::NO_ITEM);
+    }
+    while let Some(t) = core.pop_consume_toast() {
+        if feed.n_consumed >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_consumed;
+            feed.consumed[n] = t;
+            feed.n_consumed += 1;
+        }
     }
     while let Some(k) = core.pop_knock() {
         if feed.n_knocks >= FEED_CAP {
@@ -216,6 +410,33 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_auths;
             feed.auths[n] = a;
             feed.n_auths += 1;
+        }
+    }
+    while let Some(sh) = core.pop_shot() {
+        if feed.n_shots >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_shots;
+            feed.shots[n] = sh;
+            feed.n_shots += 1;
+        }
+    }
+    while let Some(im) = core.pop_impact() {
+        if feed.n_impacts >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_impacts;
+            feed.impacts[n] = im;
+            feed.n_impacts += 1;
+        }
+    }
+    while let Some(sw) = core.pop_swing() {
+        if feed.n_swings >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_swings;
+            feed.swings[n] = sw;
+            feed.n_swings += 1;
         }
     }
     while let Some(p) = core.pop_placed() {
@@ -243,6 +464,15 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             let n = feed.n_crafted;
             feed.crafted[n] = t;
             feed.n_crafted += 1;
+        }
+    }
+    while let Some(item) = core.pop_spill() {
+        if feed.n_spills >= FEED_CAP {
+            feed.dropped = feed.dropped.saturating_add(1);
+        } else {
+            let n = feed.n_spills;
+            feed.spills[n] = item;
+            feed.n_spills += 1;
         }
     }
 }

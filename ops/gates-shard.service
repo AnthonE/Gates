@@ -1,0 +1,86 @@
+# The public Gates shard as a systemd service — `ALPHA.md` §3 "Supervision".
+#
+#   sudo cp gates-shard.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gates-shard
+#   systemctl status gates-shard ; journalctl -u gates-shard -f
+#
+# **It does not run out of the repo, on purpose.** `ExecStart` and
+# `WorkingDirectory` point at `/home/master/gates-deploy`, which `ci/
+# deploy_shard.sh` stages: the binary, `content/`, and a copy of
+# `shard-public.toml`. Three reasons, and the third is the one that bites:
+#
+#   1. `target/` is a build directory. A `cargo clean` in the tree would
+#      delete the file this unit restarts, and the failure arrives days
+#      later as a restart that cannot find its own binary.
+#   2. Three lanes build in this checkout continuously (`CLAUDE.md`, the
+#      loop). A running public shard must not depend on which branch a
+#      worktree is on.
+#   3. **`content_dir` is resolved against the CWD and the content hash is
+#      pinned into the save files.** Point the CWD at the live tree and an
+#      ordinary edit to `content/*.toml` makes the next restart REFUSE to
+#      boot (`store.rs`, and that refusal is correct — it is wall 7 keeping
+#      a replay honest). Staging content with the binary is what makes a
+#      deploy a decision rather than an accident.
+#
+# A deploy is therefore: `./ci/deploy_shard.sh`, which builds, stages, and
+# restarts. The data it writes is somewhere else again (`/home/master/
+# gates-data`), because a wipe deletes the world and keeps the players.
+
+[Unit]
+Description=Gates public shard — game.elopros.com:61234
+Documentation=https://github.com/AnthonE/Gates
+After=network-online.target
+Wants=network-online.target
+# A crash loop must not hammer the box. Five starts in five minutes and
+# systemd stops trying; `systemctl reset-failed gates-shard` clears it.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=master
+Group=master
+WorkingDirectory=/home/master/gates-deploy
+ExecStart=/home/master/gates-deploy/shard /home/master/gates-deploy/shard-public.toml
+
+# `DESIGN.md` L7, the crash contract: a sim panic is a fast abort and the
+# supervisor brings it back, restart target under 10 s. RestartSec=2 plus a
+# ~1 s boot (worldgen off a seed, or a world file read) sits inside that.
+Restart=always
+RestartSec=2
+
+# **SIGTERM IS THE SAVE, and this is the block to not delete.**
+# `bin/shard.rs` catches SIGTERM and flushes the player store and the world
+# before it returns; systemd's default kill would take the process where it
+# stands and cost every player up to an autosave sweep and every base up to
+# a whole `world_save_interval_ticks`. The flush was written long before
+# anything sent the signal — this unit is what makes it reachable.
+# TimeoutStopSec is generous because the alternative to waiting is losing
+# the write: a hundred player records and a world file, on a disk that may
+# be busy.
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=120
+
+# `ALPHA.md` §3 "ulimits". quinn is ONE udp socket for every connection, so
+# the fd budget is not sockets-per-player; this is generous and costs nothing.
+LimitNOFILE=65536
+
+# Modest hardening. The shard needs exactly two writable things — the data
+# directory and its own /tmp — and reads the Let's Encrypt copies in
+# /home/master/gates-certs, which ProtectHome=read-only still permits.
+# (A certbot renewal needs a RESTART for the shard to see it: the PEMs are
+# read once at boot. `shard-public.toml` says so too.)
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/master/gates-data
+PrivateTmp=true
+NoNewPrivileges=true
+
+# The 10-second stats line and every refusal go to the journal.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gates-shard
+
+[Install]
+WantedBy=multi-user.target

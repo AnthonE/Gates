@@ -40,17 +40,19 @@
 //! fail, so no two fields may share a value.
 
 use client_core::core::{
-    ClientCore, APPLIED2_CONT, APPLIED2_MOVE, APPLIED_BAGS, APPLIED_DEATH, APPLIED_HIT,
+    ClientCore, APPLIED2_CONT, APPLIED2_MOVE, APPLIED_BAGS, APPLIED_DEATH, APPLIED_HIT, NO_VICTIM,
 };
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
-    encode_event_cont_sync, encode_event_death, encode_event_hit, encode_event_move_refused,
-    encode_event_moved, encode_event_respawn, encode_event_struct_hit, encode_event_vitals,
-    InvSlot, WireBag, MAX_EVENT_MSG_BYTES,
+    encode_event_cont_sync, encode_event_death, encode_event_hit, encode_event_impact,
+    encode_event_move_refused, encode_event_moved, encode_event_respawn, encode_event_shot,
+    encode_event_struct_hit, encode_event_swing, encode_event_vitals, InvSlot, WireBag,
+    MAX_EVENT_MSG_BYTES,
 };
 use sim_core::backpack::{BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{addr, CONT_BAG, CONT_BOX, CONT_SELF, REFUSE_M_NO_ROOM};
+use sim_core::ranged::{SURF_GROUND, SURF_WORLD};
 use sim_core::world::{DEATH_BY_ARROW, DEATH_BY_HAND};
 
 /// The player this core is. Distinct from every other id below, because
@@ -90,11 +92,19 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
     let rows = [
         InvSlot {
             slot: 0,
-            stack: ItemStack { item: 5, count: 40 },
+            stack: ItemStack {
+                item: 5,
+                count: 40,
+                cond: 0,
+            },
         },
         InvSlot {
             slot: 11,
-            stack: ItemStack { item: 31, count: 3 },
+            stack: ItemStack {
+                item: 31,
+                count: 3,
+                cond: 0,
+            },
         },
     ];
     let len = encode_event_cont_sync(CONT_BOX, BOX, true, &rows, &mut buf).unwrap();
@@ -107,8 +117,22 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
          address is the container divergence the reference answered by \
          disconnecting the client"
     );
-    assert_eq!(c.cont[0], ItemStack { item: 5, count: 40 });
-    assert_eq!(c.cont[11], ItemStack { item: 31, count: 3 });
+    assert_eq!(
+        c.cont[0],
+        ItemStack {
+            item: 5,
+            count: 40,
+            cond: 0,
+        }
+    );
+    assert_eq!(
+        c.cont[11],
+        ItemStack {
+            item: 31,
+            count: 3,
+            cond: 0,
+        }
+    );
     assert_eq!(
         c.cont[2],
         ItemStack::default(),
@@ -127,7 +151,11 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
     assert_eq!(c.cont[0], ItemStack::default(), "an emptied slot clears");
     assert_eq!(
         c.cont[11],
-        ItemStack { item: 31, count: 3 },
+        ItemStack {
+            item: 31,
+            count: 3,
+            cond: 0,
+        },
         "a diff must not disturb the slots it did not name"
     );
 
@@ -136,7 +164,11 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
     // thing an echo check can get wrong.
     let foreign = [InvSlot {
         slot: 11,
-        stack: ItemStack { item: 7, count: 99 },
+        stack: ItemStack {
+            item: 7,
+            count: 99,
+            cond: 0,
+        },
     }];
     let len = encode_event_cont_sync(CONT_BOX, BOX ^ 1, false, &foreign, &mut buf).unwrap();
     feed(&mut c, &buf[..len]);
@@ -147,7 +179,11 @@ fn a_container_sync_opens_diffs_and_closes_and_a_foreign_batch_is_dropped() {
     );
     assert_eq!(
         c.cont[11],
-        ItemStack { item: 31, count: 3 },
+        ItemStack {
+            item: 31,
+            count: 3,
+            cond: 0,
+        },
         "a foreign diff reached this panel's slots"
     );
 
@@ -233,8 +269,176 @@ fn the_hit_ring_fills_and_drains() {
 
     let len = encode_event_hit(9, 37, &mut buf).unwrap();
     assert_eq!(feed(&mut c, &buf[..len]) & APPLIED_HIT, APPLIED_HIT);
-    assert_eq!(c.pop_hit(), Some(37), "hitmarker damage mismatch");
+    // **The victim rides with the damage since 2026-08-18** and the two are
+    // distinct numbers here on purpose: the arm used to write `let _ =
+    // victim` and a ring that carried the damage twice would look identical
+    // to one that carried both.
+    assert_eq!(
+        c.pop_hit(),
+        Some((9, 37)),
+        "hitmarker (victim, damage) mismatch"
+    );
     assert_eq!(c.pop_hit(), None, "the hit ring must drain");
+}
+
+/// A shot crosses whole and drains once (wire v33).
+///
+/// **The five fields are the test.** `EV_SHOT` carries two pairs of
+/// same-typed neighbours — (yaw, pitch) and (speed, drop) — and the tracer
+/// flies the arc they describe, so a transposition inside either pair is an
+/// arrow that leaves at the wrong angle or falls at its own muzzle speed.
+/// The fixture picks values no two of which could be mistaken for each
+/// other, and asserts each by name rather than asserting the tuple is
+/// non-default.
+///
+/// It also pins the ring's contract: drained exactly once. `render::feed`
+/// is the single consumer, and CLAUDE.md's clean-merge trap is what a
+/// second one costs.
+#[test]
+fn a_shot_crosses_whole_and_drains_once() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    assert_eq!(c.pop_shot(), None, "the shot ring starts empty");
+
+    // A yaw past a byte, a pitch that is not the level default, and a
+    // speed two orders off the drop: every field distinguishable from
+    // every other.
+    let (shooter, yaw, pitch, speed, drop) = (0x2B17u32, 41_234u16, 203u8, 1_333u16, 22u16);
+    let len = encode_event_shot(shooter, yaw, pitch, speed, drop, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(
+        c.pop_shot(),
+        Some((shooter, yaw, pitch, speed, drop)),
+        "the shot arrived with a field in the wrong seat"
+    );
+    assert_eq!(c.pop_shot(), None, "the shot ring must drain");
+}
+
+/// An impact crosses whole, keeps its axes and its sign, and drains once.
+///
+/// **The fixture is chosen against a transposition, not against zero.**
+/// `qx` and `qz` are the same kind of number in the same units — two axes
+/// of one point — so the only thing that can catch them swapped is a
+/// fixture where they differ in both halves and an assertion that names
+/// which is which. `EV_SHOT` above makes the same argument about its two
+/// pairs; this is the same trap with the pair spread across two fields.
+///
+/// **The negative `qy` is the other half of the test.** This is the only
+/// signed coordinate on the event lane: it rides `POS_Y_BIAS` across the
+/// wire and comes back through an `i32` cast on both sides. A decoder that
+/// forgot the bias, or read the field unsigned, produces a *plausible*
+/// altitude rather than an obviously broken one — which is exactly the
+/// class of bug a byte-golden cannot see.
+#[test]
+fn an_impact_crosses_whole_and_drains_once() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    assert_eq!(c.pop_impact(), None, "the impact ring starts empty");
+
+    // Two axes distinguishable in both halves, and a Y below datum.
+    let (qx, qy, qz, surf) = (0xA179i32, -312i32, 0x58A3i32, SURF_WORLD);
+    let len = encode_event_impact(qx, qy, qz, surf, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(
+        c.pop_impact(),
+        Some((qx, qy, qz, surf)),
+        "the impact arrived with an axis in the wrong seat, or a Y that \
+         lost its sign"
+    );
+    assert_eq!(c.pop_impact(), None, "the impact ring must drain");
+}
+
+/// A surface kind this build does not know is refused, not guessed at.
+///
+/// `SURF_BITS` is two, the sim makes three kinds, and the fourth value is
+/// dead. Dead is not the same as spare: a decoder that accepted it would
+/// turn a forged byte into a fact, and the mark it produced would be
+/// whatever the renderer's fallback happens to be. Both ends refuse —
+/// `encode_event_impact` returns `Range`, and this is the decoder's half.
+///
+/// **The forge is bit-exact and paired with a control**, `a_shot_with_no_
+/// speed_is_malformed`'s discipline: the header is 10 bits and the writer
+/// packs LSB-first, so the fields land at bit 10 (qx, 17), 27 (qy, 14), 41
+/// (qz, 17) and **58 (surf, 2)**. Setting both surf bits makes 3; the
+/// control sets only the low one, which is `SURF_WORLD` and must still
+/// decode.
+#[test]
+fn an_unknown_impact_surface_is_malformed() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    let len = encode_event_impact(0xA179, -312, 0x58A3, SURF_GROUND, &mut buf).unwrap();
+
+    // Control: bit 58 is byte 7, offset 2 — set it alone and the surface
+    // reads as `SURF_WORLD`, a kind this build knows.
+    let mut control = buf[..len].to_vec();
+    control[7] |= 0b0000_0100;
+    assert!(
+        c.on_stream(&control).is_ok(),
+        "the control must decode, or the forge below proves nothing"
+    );
+    assert_eq!(
+        c.pop_impact().map(|i| i.3),
+        Some(SURF_WORLD),
+        "and it must reach the ring as the kind the control set"
+    );
+
+    // Forge: set both bits, which is the fourth value nothing emits.
+    let mut forged = buf[..len].to_vec();
+    forged[7] |= 0b0000_1100;
+    assert!(
+        c.on_stream(&forged).is_err(),
+        "a surface kind past SURF_BUILT must be refused, not drawn"
+    );
+    assert_eq!(c.pop_impact(), None, "and nothing may reach the ring");
+}
+
+/// A round with no muzzle speed is refused rather than drawn.
+///
+/// Zero speed is a tracer that hangs at the shooter's eye forever, and
+/// `content::validate` refuses such a round at boot, so the value can only
+/// reach a client from a forged or corrupted datagram. Both ends refuse it:
+/// the encoder returns `Range`, and this is the decoder's half.
+///
+/// **The forge is bit-exact and paired with a control**, because a test that
+/// corrupted the frame at large would be refused for any number of reasons
+/// and prove nothing about this one. The event header is 10 bits
+/// (`KIND_BITS` 4 + `SUB_BITS` 6) and the writer packs LSB-first, so the
+/// fields land at bit 10 (shooter, 32), 42 (yaw, 16), 58 (pitch, 8), 66
+/// (speed, 16), 82 (drop, 16). Only bits 66..=81 are cleared; the control
+/// clears a strict subset that leaves the speed nonzero and must still
+/// decode. If the control ever starts failing, this test has stopped
+/// isolating the zero.
+#[test]
+fn a_shot_with_no_speed_is_malformed() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    // speed = 1, so the field's only set bit is its bit 0, at wire
+    // position 66 — byte 8, offset 2.
+    let len = encode_event_shot(0x2B17, 41_234, 203, 1, 22, &mut buf).unwrap();
+
+    // Control: clear the speed's middle byte only. Speed stays 1, and the
+    // whole frame must still decode — which is what proves the assertion
+    // below is about the zero and not about the tampering.
+    let mut control = buf[..len].to_vec();
+    control[9] = 0;
+    assert!(
+        c.on_stream(&control).is_ok(),
+        "the control must decode, or the forge below proves nothing"
+    );
+    assert!(c.pop_shot().is_some(), "and it must reach the ring");
+
+    // Forge: clear exactly bits 66..=81. Byte 8 keeps its low two bits
+    // (the top of `pitch`), byte 10 keeps everything above its low two
+    // (the bottom of `drop`).
+    let mut forged = buf[..len].to_vec();
+    forged[8] &= 0b0000_0011;
+    forged[9] = 0;
+    forged[10] &= 0b1111_1100;
+    assert!(
+        c.on_stream(&forged).is_err(),
+        "a zero-speed shot must be refused, not drawn"
+    );
+    assert_eq!(c.pop_shot(), None, "and nothing may reach the ring");
 }
 
 /// The kill feed and the death screen are two different things, and the
@@ -345,6 +549,98 @@ fn the_bag_set_adds_syncs_and_removes() {
     assert_eq!(ids, vec![92], "an unknown removal disturbed the set");
 }
 
+/// The decode-side narrowing (NOW.md §5b): a `why` or `reason` the sim's
+/// ledger has no name for is refused at the pump — counted
+/// (`event_errors`), dropped, applied to nothing, never a panic. The wire
+/// widths hold values past both ledgers (`BAG_GONE_*` tops at 2 in 2 bits,
+/// `REFUSE_C_*` at 3 in 4), so the patterns are forgeable; until
+/// 2026-08-17 they decoded intact and reached the HUD as values no rule
+/// owns.
+///
+/// **The forge is bit-exact and paired with a control**, because a frame
+/// corrupted at large would be refused for any number of reasons and
+/// prove nothing about this one. The event header is 10 bits (`KIND_BITS`
+/// 4 + `SUB_BITS` 6, LSB-first). Bag removal: `id` at bits 10..41, `why`
+/// at 42..43 — byte 5, offsets 2–3. Consume refusal: `reason` at bits
+/// 10..13 — byte 1, offsets 2–5.
+#[test]
+fn a_forged_refusal_reason_is_counted_and_dropped_at_the_pump() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+
+    // A bag this client knows about, so a removal has something to lose.
+    let bag = WireBag {
+        id: 11,
+        qx: 1_000,
+        qy: 2_000,
+        qz: 3_000,
+    };
+    let len = encode_event_bag_dropped(&bag, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(c.bags.entries().len(), 1);
+
+    let len = encode_event_bag_removed(11, BAG_GONE_EMPTIED as u8, &mut buf).unwrap();
+    // Control: flip why 1 → 2 (`BAG_GONE_EVICTED`), a value this build
+    // knows. It must decode and remove the bag, which is what proves the
+    // forge below is refused for its value and not for the tampering.
+    let mut control = buf[..len].to_vec();
+    control[5] = (control[5] & !0b0000_0100) | 0b0000_1000;
+    assert!(
+        c.on_stream(&control).is_ok(),
+        "the control must decode, or the forge below proves nothing"
+    );
+    assert!(c.bags.entries().is_empty(), "and it must remove the bag");
+
+    // Re-announce, then forge: both why bits set — the fourth value,
+    // which no BAG_GONE_* names.
+    let len2 = encode_event_bag_dropped(&bag, &mut buf).unwrap();
+    feed(&mut c, &buf[..len2]);
+    let errors_before = c.event_errors;
+    let len = encode_event_bag_removed(11, BAG_GONE_EMPTIED as u8, &mut buf).unwrap();
+    let mut forged = buf[..len].to_vec();
+    forged[5] |= 0b0000_1100;
+    assert!(
+        c.on_stream(&forged).is_err(),
+        "why == 3 names no BAG_GONE_* and must be refused, not applied"
+    );
+    assert_eq!(
+        c.event_errors,
+        errors_before + 1,
+        "the drop must be counted"
+    );
+    assert_eq!(c.bags.entries().len(), 1, "and the bag must survive it");
+
+    // The consume refusal: reason 9 (0b1001) — inside the 4-bit width,
+    // outside `REFUSE_C_MAX` — against a control at reason 3, the highest
+    // live code.
+    let len = protocol::encode_event_consume_refused(2, &mut buf).unwrap();
+    let mut control = buf[..len].to_vec();
+    control[1] = (control[1] & !0b0011_1100) | (3 << 2);
+    assert!(
+        c.on_stream(&control).is_ok(),
+        "the control must decode, or the forge below proves nothing"
+    );
+    assert_eq!(c.pop_consume_refusal(), Some(3), "and reach the ring");
+
+    let errors_before = c.event_errors;
+    let mut forged = buf[..len].to_vec();
+    forged[1] = (forged[1] & !0b0011_1100) | (9 << 2);
+    assert!(
+        c.on_stream(&forged).is_err(),
+        "reason 9 names no REFUSE_C_* and must be refused, not toasted"
+    );
+    assert_eq!(
+        c.event_errors,
+        errors_before + 1,
+        "the drop must be counted"
+    );
+    assert_eq!(
+        c.pop_consume_refusal(),
+        None,
+        "and nothing may reach the ring"
+    );
+}
+
 /// The struct-hit readout, including the one field the wire does not
 /// carry: `max` is resolved from the def table this client holds, and a
 /// row it has not received yet reports 0 rather than a guess.
@@ -370,8 +666,8 @@ fn a_struct_hit_carries_its_address_and_never_guesses_a_maximum() {
     );
     assert_eq!(
         c.pop_hit(),
-        Some(40),
-        "a raid swing must still feed the hitmarker ring"
+        Some((NO_VICTIM, 40)),
+        "a raid swing must still feed the hitmarker ring, and a wall is not a body"
     );
 }
 
@@ -416,4 +712,71 @@ fn garbage_is_refused_rather_than_applied() {
     assert_eq!(c.cont_kind, CONT_SELF);
     assert_eq!(c.pop_hit(), None);
     assert!(!c.dead);
+}
+
+/// A swing crosses whole and drains exactly once.
+///
+/// The payload is one `u32` and the failure it can have is positional in a
+/// different way from the packed events: a field read one bit narrow halves
+/// the id, one bit wide doubles it, and either way the arc plays on the
+/// wrong body or on none. The fixture id is chosen with bits in all four
+/// bytes for exactly that (`goldens::event_swing`).
+///
+/// Mutants: `w.read(32)` → `w.read(31)` in the decoder and the id comes
+/// back halved; drop `swing_len -= 1` in `pop_swing` and the drains-once
+/// half fails.
+#[test]
+fn a_swing_crosses_whole_and_drains_once() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    assert_eq!(c.pop_swing(), None, "the swing ring starts empty");
+
+    let swinger = protocol::goldens::event_swing();
+    let len = encode_event_swing(swinger, &mut buf).unwrap();
+    feed(&mut c, &buf[..len]);
+    assert_eq!(
+        c.pop_swing(),
+        Some(swinger),
+        "the swinger arrived at the wrong width or in the wrong seat"
+    );
+    assert_eq!(c.pop_swing(), None, "the swing ring must drain");
+}
+
+/// **The swing ring is bounded and says so** (wall 4).
+///
+/// A broadcast lane has no upper bound on how many bodies swing in the
+/// window between two frames, so the ring's overflow policy is load-bearing
+/// rather than theoretical. It is drop-OLDEST, and the assertion is about
+/// IDENTITY and not merely count: a ring that kept the oldest would also
+/// return `SWING_RING` entries and would draw the arcs that already
+/// finished instead of the ones that just started.
+///
+/// Red-proof: swap the drop-oldest block for an early `continue` (drop
+/// newest) and the identity assert fails while the count assert still
+/// passes — which is exactly why counting alone is not the gate.
+#[test]
+fn the_swing_ring_is_bounded_and_says_so() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    let n = client_core::core::SWING_RING + 3;
+    for i in 0..n {
+        let len = encode_event_swing(1000 + i as u32, &mut buf).unwrap();
+        feed(&mut c, &buf[..len]);
+    }
+    let mut got = Vec::new();
+    while let Some(s) = c.pop_swing() {
+        got.push(s);
+    }
+    assert_eq!(
+        got.len(),
+        client_core::core::SWING_RING,
+        "the ring must hold exactly its cap, never grow"
+    );
+    let want: Vec<u32> = (n - client_core::core::SWING_RING..n)
+        .map(|i| 1000 + i as u32)
+        .collect();
+    assert_eq!(
+        got, want,
+        "drop-oldest: the ring must keep the NEWEST swings, in order"
+    );
 }

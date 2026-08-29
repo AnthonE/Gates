@@ -29,11 +29,12 @@ pub const CLIFF_SLOPE_RATIO: f32 = 1.191_753_6;
 
 // Noise channels: independent fields from one seed (TERRAIN.md §0).
 const CH_RELIEF: u32 = 0; // +octave index, 5 octaves
+const CH_DETAIL: u32 = 8; // +octave index, DETAIL_OCTAVES of them
 const CH_WARP_X: u32 = 16;
 const CH_WARP_Z: u32 = 24;
 const CH_COAST: u32 = 32;
 const CH_MOIST: u32 = 40;
-const CH_RIDGE: u32 = 48;
+const CH_RIDGE: u32 = 48; // +octave index, RIDGE_OCTAVES of them
 const CH_SCATTER: u32 = 64;
 const CH_CLUMP: u32 = 72; // +octave index, 3 octaves
 const CH_CLUTTER: u32 = 80; // the sub-metre ground population
@@ -55,6 +56,72 @@ const RIDGE_FREQ: f32 = 1.0 / 220.0;
 const RIDGE_AMP: f32 = 16.0;
 const RIDGE_START_H: f32 = 52.0;
 const RIDGE_FULL_H: f32 = 80.0;
+/// Octaves of ridged noise the highland blend stacks, each weighted by the
+/// one above it (Musgrave's ridged multifractal). One octave draws a single
+/// scale of crest and nothing between them; three draw a crest, its spurs,
+/// and the grain on the spurs, which is the shape erosion leaves.
+const RIDGE_OCTAVES: u32 = 3;
+/// How strongly a crest opens the octave below it. At 1.0 detail follows the
+/// crest exactly and the flanks stay bare; above ~2 the weight saturates over
+/// most of the field and the multifractal degenerates back into plain fBm.
+const RIDGE_WEIGHT_GAIN: f32 = 1.6;
+
+// --- Post-curve detail (TERRAIN.md §1 stage 4b) --------------------------
+//
+// **`remap` squashes the fine octaves along with the coarse ones, and that is
+// why the shelves were billiard tables.** The curve's middle segments run at
+// 14 m of height per unit of its input where its steep ones run at 259, so the
+// five-octave fBm's finest scales are worth ~1.7 m on a shelf and ~30 m on a
+// transition: the island's smallest legible feature was ~100 m across, and
+// what relief the flats did have arrived as a step at the shelf edge. So a
+// detail ladder is added AFTER the curve, where nothing can flatten it.
+//
+// The form is still the same five octaves it always was — the split is between
+// what the curve shapes and what rides on top of it, not between two fBms.
+/// Detail base wavelength, metres⁻¹ — `RELIEF_FREQ * 8`, so the ladder runs
+/// 75 → 37.5 → 18.75 m.
+///
+/// ⚠ **18.75 m is a floor set by the renderer, not by taste.** The far
+/// terrain mesh samples the ground every `FAR_STEP` = 8 m
+/// (`render/terrain_mesh.rs`), so ground detail below ~16 m of wavelength is
+/// past that mesh's Nyquist limit: it cannot be drawn out there, and what it
+/// would do instead is alias — a shimmer that changes as the near ring swaps a
+/// chunk to the far mesh. Worldgen may not author relief the client cannot
+/// resolve at range.
+const DETAIL_FREQ: f32 = RELIEF_FREQ * 8.0;
+const DETAIL_OCTAVES: u32 = 3;
+/// Detail amplitude in metres, as a modulation of `AMPLITUDE` rather than a
+/// term added to it, and weighted by `shelf` **squared**:
+/// `land = shelf × (AMPLITUDE + shelf × detail × DETAIL_AMP)`.
+///
+/// Multiplicative because `shelf` is 0 exactly at the waterline, so a detail
+/// term *added* to `land` would push land below sea level in the flats and pit
+/// the island with ponds the water pass has no way to draw. Multiplied,
+/// **`land ≥ 0` holds by construction** for any `DETAIL_AMP < AMPLITUDE`, and
+/// the disturbance at the shoreline falls off as `shelf²` instead of being
+/// uniform — **1.8 cm** at the LUT's 2.7 m contour. That is why the road ring,
+/// the haven solve, the clutter waterline veto and the beach measurements all
+/// kept their bands through this change without a tolerance moving.
+///
+/// **Squared rather than linear, and that is measured rather than pretty.**
+/// Detail costs traversability, and two behavioural gates price it: the wolf
+/// hunt (`server/tests/hunt.rs` — 25 m closed in 60 s) and the shelter doorway
+/// (`tests/walk.rs` — a body walking in from 9 m). Under a **linear** weight
+/// they hold at 8 m and **both go red at 10**. That is the buildable-shelf
+/// design pushing back and it should — but a linear weight was charging the
+/// LOW country for roughness the MOUNTAINS wanted, because it still puts 16%
+/// of the amplitude on a 14 m shelf. Squared, that shelf keeps 2.6% and the
+/// summit keeps all of it: the same two gates are green at **40 m** and the
+/// hunt goes at 55.
+///
+/// 20 is half the last measured-green value and a third of where it breaks.
+/// What buys that margin is that the island barely changes at it: slope
+/// p50 0.122 → 0.127, p90 0.571 → 0.581, cliff share 17.4‰ → 17.6‰ over four
+/// seeds (`examples/slope_stats`), and **buildability does not move** — 969.3‰
+/// → 970.0‰ of land cells hold a foundation and 950.8‰ → 950.9‰ hold a whole
+/// 3×3, worst relative change over five seeds **0.4%** (`examples/buildable`).
+/// This is relief the player walks over, not relief that stops them.
+const DETAIL_AMP: f32 = 20.0;
 
 // The grove/clearing field (`clump`, DECISIONS.md §open: scatter clumping v0).
 /// Base wavelength of the field in meters — the size of one grove, and of
@@ -107,24 +174,213 @@ const GRAD8: [[f32; 2]; 8] = [
     [-DIAG, -DIAG],
 ];
 
+// ── The lattice draw, and the memo a caller may bring to it ────────────────
+//
+// Every noise field below reads its four surrounding lattice corners through
+// this one seam. It exists because the corner draw is the ONLY part of the
+// stack a second sample can legitimately share: `cell_hash` is a pure
+// function of `(seed, channel, cx, cz)`, so remembering an answer IS the
+// answer — bit for bit, on both targets, with nothing to drift.
+//
+// **The share is worth having because a caller almost never samples once.**
+// `ground_slope` is four `height` evaluations 2 m apart; `terrain_mesh`'s far
+// ring is seven taps a vertex; `clutter_fill` resolves 625 cells inside one
+// 16 m tile. The coarsest lattice this stack reads is 1,200 m across and the
+// finest is 24 m, so a 16 m tile touches ~70 DISTINCT corner quads and draws
+// them tens of thousands of times. Measured on the far mesh's own traversal:
+// 99.25% of the draws are repeats.
+//
+// Two implementations, one copy of the arithmetic, chosen by monomorphization
+// so neither pays a branch for the other:
+//
+//  - `Direct` hashes every corner every time. It is what this file has always
+//    done and it is what every `pub fn` without a memo still does, so no
+//    existing caller changes cost or answer.
+//  - `Lattice` is a caller-owned, fixed-size, direct-mapped table. It
+//    allocates nothing, holds no clock and spawns no thread — it is scratch,
+//    the same standing `clutter_fill`'s output buffer already has (wall 2,
+//    wall 3), and it is `&mut` rather than static so two threads cannot share
+//    one.
+//
+// `tests/lattice.rs` is the gate, and it holds the only property that matters:
+// the memo and the direct draw return the same f32 BITS everywhere, including
+// with several seeds interleaved through one table.
+
+/// The four corner gradient indices for one lattice quad, packed three bits
+/// each: `(cx, cz)`, `(cx+1, cz)`, `(cx, cz+1)`, `(cx+1, cz+1)`.
+///
+/// Only the low three bits of each `cell_hash` were ever read here — the
+/// `& 7` that indexes `GRAD8` — so packing four of them into a `u16` throws
+/// nothing away and makes one memo slot cover a whole quad instead of a
+/// corner. That is what turns four hashes into one lookup rather than four.
+type Quad = u16;
+
+#[inline(always)]
+fn draw_quad(seed: u64, channel: u32, cx: i32, cz: i32) -> Quad {
+    (cell_hash(seed, cx, cz, channel) & 7) as Quad
+        | (((cell_hash(seed, cx + 1, cz, channel) & 7) as Quad) << 3)
+        | (((cell_hash(seed, cx, cz + 1, channel) & 7) as Quad) << 6)
+        | (((cell_hash(seed, cx + 1, cz + 1, channel) & 7) as Quad) << 9)
+}
+
+/// Where a noise field's corner gradients come from. See the note above.
+trait Corners {
+    fn quad(&mut self, seed: u64, channel: u32, cx: i32, cz: i32) -> Quad;
+}
+
+/// Hash every corner, every time — the draw this file shipped before the memo
+/// existed, and still the one behind every un-memoized `pub fn`.
+struct Direct;
+
+impl Corners for Direct {
+    #[inline(always)]
+    fn quad(&mut self, seed: u64, channel: u32, cx: i32, cz: i32) -> Quad {
+        draw_quad(seed, channel, cx, cz)
+    }
+}
+
+/// How many quads a [`Lattice`] remembers. Direct-mapped, so a power of two.
+///
+/// 1,024 is the measured knee on the far mesh's own traversal (257² vertices
+/// at 8 m, seven `ground` taps each): 97.5% hit at 256, 99.25% at 1,024 and
+/// 99.79% at 4,096, with under 1% of wall clock between the last two. It is
+/// also 20 KB of slots, which is small enough to stand on a wasm build's
+/// shadow stack — 1 MiB with no guard page, and a struct built in a frame is
+/// how this repo has blown it before (CLAUDE.md).
+pub const LATTICE_SLOTS: usize = 1024;
+
+#[derive(Clone, Copy)]
+struct LatticeSlot {
+    cx: i32,
+    cz: i32,
+    channel: u32,
+    /// Which fill this slot belongs to. A slot is live only while it matches
+    /// the table's own counter, so changing seed invalidates 1,024 slots in
+    /// one increment instead of a sweep — and a slot from an older seed can
+    /// never be mistaken for a hit.
+    epoch: u32,
+    quad: Quad,
+}
+
+/// A caller-owned memo of the worldgen lattice draw.
+///
+/// Bring one to any of the `*_memo` functions below and every corner hash it
+/// has already drawn is a table lookup instead of three `splitmix64` rounds.
+/// It changes no answer — see the note above the trait — so a caller adopts
+/// it for speed alone and a gate can hold the two implementations equal.
+///
+/// **Scope it to the work, not to the frame.** The table is small on purpose:
+/// what it is built to hold is the handful of quads a *locality* touches (a
+/// mesh chunk, a clutter tile, a slope stencil), and a caller that jumps
+/// across the island between samples will simply miss and pay the draw. One
+/// per streaming pass, held in a `Local` or on the streamer's own state, is
+/// the shape every caller in this tree uses.
+pub struct Lattice {
+    slots: [LatticeSlot; LATTICE_SLOTS],
+    seed: u64,
+    epoch: u32,
+}
+
+impl Default for Lattice {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Lattice {
+    pub const fn new() -> Self {
+        Self {
+            slots: [LatticeSlot {
+                cx: 0,
+                cz: 0,
+                channel: 0,
+                epoch: 0,
+                quad: 0,
+            }; LATTICE_SLOTS],
+            seed: 0,
+            // Slots start at epoch 0, so the table is cold at 1 without a
+            // sweep. 0 is never a live epoch, which is what `reseed` protects.
+            epoch: 1,
+        }
+    }
+
+    /// Which slot a quad lands in. Integer only, and deliberately cheaper than
+    /// the draw it is standing in for: three multiplies and an xor-shift
+    /// against `cell_hash`'s three chained `splitmix64` rounds. A collision
+    /// costs a miss and never a wrong answer — the key is compared in full.
+    #[inline(always)]
+    fn slot_of(channel: u32, cx: i32, cz: i32) -> usize {
+        let h = (cx as u32).wrapping_mul(0x9E37_79B1)
+            ^ (cz as u32).wrapping_mul(0x85EB_CA77)
+            ^ channel.wrapping_mul(0xC2B2_AE3D);
+        ((h ^ (h >> 15)) as usize) & (LATTICE_SLOTS - 1)
+    }
+
+    /// A different world arrived. Bump the epoch so every slot goes cold at
+    /// once; on the wraparound — which needs 2³² seed changes through one
+    /// table and will never happen — sweep, because an epoch that came back
+    /// around would resurrect another seed's answers as this seed's.
+    #[inline(never)]
+    fn reseed(&mut self, seed: u64) {
+        self.seed = seed;
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            for s in self.slots.iter_mut() {
+                s.epoch = 0;
+            }
+            self.epoch = 1;
+        }
+    }
+}
+
+impl Corners for Lattice {
+    #[inline(always)]
+    fn quad(&mut self, seed: u64, channel: u32, cx: i32, cz: i32) -> Quad {
+        if self.seed != seed {
+            self.reseed(seed);
+        }
+        let i = Self::slot_of(channel, cx, cz);
+        let s = self.slots[i];
+        if s.epoch == self.epoch && s.cx == cx && s.cz == cz && s.channel == channel {
+            return s.quad;
+        }
+        let quad = draw_quad(seed, channel, cx, cz);
+        self.slots[i] = LatticeSlot {
+            cx,
+            cz,
+            channel,
+            epoch: self.epoch,
+            quad,
+        };
+        quad
+    }
+}
+
 /// Gradient noise, one octave, quintic-smoothed, output ~[-1, 1].
 /// `fx`/`fz` are already frequency-scaled lattice coordinates.
-fn noise2(seed: u64, channel: u32, fx: f32, fz: f32) -> f32 {
+///
+/// The four corner gradients arrive through `Corners`, so this one body
+/// serves the direct draw and the memoized one. Nothing else changed when the
+/// memo landed: the corners are read `& 7` here exactly as they were read
+/// `& 7` inside the old nested `corner`.
+fn noise2<C: Corners>(c: &mut C, seed: u64, channel: u32, fx: f32, fz: f32) -> f32 {
     let x0 = floor_i32(fx);
     let z0 = floor_i32(fz);
     let tx = fx - x0 as f32;
     let tz = fz - z0 as f32;
 
+    let q = c.quad(seed, channel, x0, z0);
+
     #[inline]
-    fn corner(seed: u64, channel: u32, cx: i32, cz: i32, dx: f32, dz: f32) -> f32 {
-        let g = GRAD8[(cell_hash(seed, cx, cz, channel) & 7) as usize];
+    fn corner(q: Quad, shift: u32, dx: f32, dz: f32) -> f32 {
+        let g = GRAD8[((q >> shift) & 7) as usize];
         g[0] * dx + g[1] * dz
     }
 
-    let d00 = corner(seed, channel, x0, z0, tx, tz);
-    let d10 = corner(seed, channel, x0 + 1, z0, tx - 1.0, tz);
-    let d01 = corner(seed, channel, x0, z0 + 1, tx, tz - 1.0);
-    let d11 = corner(seed, channel, x0 + 1, z0 + 1, tx - 1.0, tz - 1.0);
+    let d00 = corner(q, 0, tx, tz);
+    let d10 = corner(q, 3, tx - 1.0, tz);
+    let d01 = corner(q, 6, tx, tz - 1.0);
+    let d11 = corner(q, 9, tx - 1.0, tz - 1.0);
 
     let u = fade(tx);
     let v = fade(tz);
@@ -134,14 +390,22 @@ fn noise2(seed: u64, channel: u32, fx: f32, fz: f32) -> f32 {
 /// Fractal Brownian motion: `octaves` octaves, lacunarity 2, gain 0.5,
 /// normalized to ~[-1, 1]. Octave index offsets the channel so octaves
 /// decorrelate (TERRAIN.md §1: 5-octave fBm for relief).
-fn fbm(seed: u64, channel: u32, x: f32, z: f32, base_freq: f32, octaves: u32) -> f32 {
+fn fbm<C: Corners>(
+    c: &mut C,
+    seed: u64,
+    channel: u32,
+    x: f32,
+    z: f32,
+    base_freq: f32,
+    octaves: u32,
+) -> f32 {
     let mut sum = 0.0;
     let mut amp = 1.0;
     let mut norm = 0.0;
     let mut freq = base_freq;
     let mut o = 0;
     while o < octaves {
-        sum += noise2(seed, channel + o, x * freq, z * freq) * amp;
+        sum += noise2(c, seed, channel + o, x * freq, z * freq) * amp;
         norm += amp;
         amp *= 0.5;
         freq *= 2.0;
@@ -152,58 +416,233 @@ fn fbm(seed: u64, channel: u32, x: f32, z: f32, base_freq: f32, octaves: u32) ->
 
 /// Height remap LUT (TERRAIN.md §1 stage 4): flattens mid-elevations into
 /// buildable shelves, steepens transitions. 17 entries over n ∈ [0, 1].
-const REMAP_LUT: [f32; 17] = [
+///
+/// **The knots are unchanged and they are the game design** — this curve is
+/// what manufactures base spots and the cliffs between them. What changed is
+/// only how the space *between* two knots is filled; see `remap`.
+pub const REMAP_LUT: [f32; 17] = [
     0.000, 0.030, 0.060, 0.090, 0.115, 0.135, 0.150, 0.160, 0.240, 0.330, 0.370, 0.390, 0.400,
     0.520, 0.700, 0.850, 1.000,
 ];
 
-fn remap(n: f32) -> f32 {
+/// The tangent at each knot, in the LUT's own units per segment — i.e. already
+/// multiplied by the 1/16 knot spacing, so the Hermite basis below needs no
+/// scale factor. Authored offline; `tests/relief.rs` re-derives it from
+/// [`REMAP_LUT`] and fails on a drift, the discipline `CLIFF_SLOPE_RATIO`
+/// carries.
+///
+/// Fritsch–Carlson: the harmonic mean of the two neighbouring secants at an
+/// interior knot, capped at 3× the smaller of them. That cap is what makes the
+/// interpolant **monotone with no overshoot**, which a Catmull–Rom over these
+/// knots is not: the LUT holds long near-flat runs against 12× steps, and an
+/// unconstrained cubic answers a step like that with a bulge above the knot —
+/// a lip around every shelf, which is worse than the crease it replaced.
+///
+/// ⚠ **The TOP tangent is 0, and that is a requirement rather than a taste.**
+/// `remap` clamps its input to [0, 1], so outside that domain the curve is a
+/// constant — and a curve is C¹ across a clamp **iff its derivative is zero at
+/// the rail**. The standard Fritsch–Carlson end formula gives 0.150 here, i.e.
+/// 216 metres of height per unit of n meeting a flat: a hard rim at exactly
+/// `AMPLITUDE` around the summit of every mountain that reaches it. Zeroing it
+/// rounds the summit instead, and the gate that holds it is exact rather than
+/// statistical (`tests/contour.rs`) because the *statistic* is seed-dependent
+/// — islandwide peak curvature moves 0%, −3% and −14% on seeds 20260731, 1 and
+/// 0xDEADBEEF, since it depends on how much of a given island reaches the rail
+/// at all.
+///
+/// **The bottom tangent is NOT zeroed, deliberately.** It leaves a rail of the
+/// same kind at `remap(0) = 0`, which is `land = 0`, which is the waterline —
+/// a crease under the sea. What it buys is that `REMAP_LUT`'s first three
+/// segments have equal secants, so the cubic through them is the old straight
+/// line and the whole low country is bit-for-bit where it was: the road ring,
+/// the haven solve, the clutter waterline veto and the beach measurements all
+/// keep their bands without a tolerance moving. Zeroing it was tried and it
+/// moved the coastline enough to redden four of them.
+pub const REMAP_TAN: [f32; 17] = [
+    0.03,
+    0.03,
+    0.03,
+    0.027_272_7,
+    0.022_222_2,
+    0.017_142_9,
+    0.012,
+    0.017_777_8,
+    0.084_705_9,
+    0.055_384_6,
+    0.026_666_7,
+    0.013_333_3,
+    0.018_461_5,
+    0.144,
+    0.163_636_4,
+    0.15,
+    0.0,
+];
+
+/// The remap curve: monotone cubic Hermite (PCHIP) through [`REMAP_LUT`].
+///
+/// ⚠ **This was `lerp` between the knots until 2026-08-26, and that is the
+/// whole of why the island rendered as a contour map.** A piecewise-linear
+/// curve is C⁰ and not C¹: its slope jumps at every one of the 16 knots, by up
+/// to **12×** (knot 12, where the LUT leaves a shelf for a cliff). The
+/// renderer takes its normal analytically from this function's gradient
+/// (`render/terrain_mesh.rs` — "normals are analytic, never from the
+/// triangulation"), so a slope jump is a *normal* jump, and a normal jump
+/// along a set of constant elevation is a topographic contour line drawn on
+/// the mountain in shading. Sixteen knots, sixteen rings, nested exactly the
+/// way a survey map nests them. It cost nothing to find once it was drawn:
+/// `examples/hillshade` renders |∇‖∇h‖| and the island came out as a
+/// contour map.
+///
+/// Cubic Hermite is C¹ by construction — the tangent at a knot is one value
+/// shared by the segments on both sides of it — so there is no crease to
+/// shade. The knots themselves are untouched, and the curve stays within
+/// **0.0222** of the old straight lines everywhere — 2.00 m of 90, and its
+/// worst point is n = 0.979, which is 87.5 m: the whole of the deviation is
+/// the summit rounding the top rail asks for. The shelves are the same
+/// shelves and no base spot moved.
+pub fn remap(n: f32) -> f32 {
     let t = n.clamp(0.0, 1.0) * 16.0;
     let i = floor_i32(t).clamp(0, 15) as usize;
-    lerp(REMAP_LUT[i], REMAP_LUT[i + 1], t - i as f32)
+    let u = t - i as f32;
+    let u2 = u * u;
+    let u3 = u2 * u;
+    // Hermite basis, written out: no `powi`, wall 1's float set only.
+    let h00 = 2.0 * u3 - 3.0 * u2 + 1.0;
+    let h10 = u3 - 2.0 * u2 + u;
+    let h01 = -2.0 * u3 + 3.0 * u2;
+    let h11 = u3 - u2;
+    h00 * REMAP_LUT[i] + h01 * REMAP_LUT[i + 1] + h10 * REMAP_TAN[i] + h11 * REMAP_TAN[i + 1]
+}
+
+/// Ridged multifractal in [0, 1] — the highland's fake erosion (TERRAIN.md §1
+/// stage 4), and the direct analogue of what the reference game calls
+/// "pseudo-erosion" (Devblog 63).
+///
+/// Three things happen here that `1 − |noise|` alone did not do:
+///
+/// - **Squared.** `(1 − |n|)²` pinches the crest and opens the valley floor,
+///   which is the asymmetry erosion actually produces — a sharp divide above,
+///   a wide filled trough below. `1 − |n|` is symmetric and reads as corrugation.
+/// - **Weighted by the octave above.** Each octave is multiplied by the
+///   previous octave's signal, so spurs and grain appear *on* the ridges and
+///   the valley floors stay smooth. This is the whole of Musgrave's
+///   multifractal idea and it is what separates a mountain from a crumpled
+///   sheet: detail is not uniform over a landscape, it is concentrated where
+///   there is relief to erode.
+/// - **Three octaves**, so a summit carries a crest line, spurs off it, and
+///   grain on the spurs.
+///
+/// The crease along each crest is deliberate and is *not* the defect `remap`
+/// carries: a crest is a line following the noise's zero set — an arête, which
+/// is a thing mountains have — where a contour ring is a line of constant
+/// elevation, which is a thing only maps have.
+fn ridged<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
+    let mut sum = 0.0;
+    let mut norm = 0.0;
+    let mut amp = 1.0;
+    let mut freq = RIDGE_FREQ;
+    let mut weight = 1.0;
+    let mut o = 0;
+    while o < RIDGE_OCTAVES {
+        let n = 1.0 - fabs(noise2(c, seed, CH_RIDGE + o, x * freq, z * freq));
+        let s = n * n * weight;
+        // `fade`d, not a bare clamp: this file's whole argument is that a
+        // rail is C⁰ and a C⁰ term in a field the renderer differentiates is a
+        // crease. `s * GAIN` rails wherever `s > 1/GAIN`, which is most of a
+        // crest, so a bare clamp would draw one along the ridge noise's own
+        // level sets — Musgrave's original does exactly that. `fade` has zero
+        // slope at both ends, so both rails vanish and the weighting gets more
+        // contrast at the same time, which is the direction it wanted anyway.
+        weight = fade((s * RIDGE_WEIGHT_GAIN).clamp(0.0, 1.0));
+        sum += s * amp;
+        norm += amp;
+        amp *= 0.5;
+        freq *= 2.0;
+        o += 1;
+    }
+    sum / norm
 }
 
 /// Continent mask (TERRAIN.md §1 stage 1): radial falloff, coastline
 /// wobbled by low-frequency noise. 1 inland, 0 at sea.
-fn continent(seed: u64, x: f32, z: f32) -> f32 {
+fn continent<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
     let dx = x - ISLAND_SIZE * 0.5;
     let dz = z - ISLAND_SIZE * 0.5;
     let d = (dx * dx + dz * dz).sqrt();
-    let wobble = fbm(seed, CH_COAST, x, z, COAST_FREQ, 2) * COAST_WOBBLE;
+    let wobble = fbm(c, seed, CH_COAST, x, z, COAST_FREQ, 2) * COAST_WOBBLE;
     let t = ((CONTINENT_RADIUS + wobble - d) / COAST_EDGE_WIDTH).clamp(0.0, 1.0);
     fade(t)
 }
 
 /// The authoritative height function: TERRAIN.md §1 stages 1–4 composed.
 pub fn height(seed: u64, x: f32, z: f32) -> f32 {
-    let wx = x + fbm(seed, CH_WARP_X, x, z, WARP_FREQ, 2) * WARP_AMP;
-    let wz = z + fbm(seed, CH_WARP_Z, x, z, WARP_FREQ, 2) * WARP_AMP;
-    let relief = fbm(seed, CH_RELIEF, wx, wz, RELIEF_FREQ, 5);
+    height_in(&mut Direct, seed, x, z)
+}
+
+/// [`height`] against a caller-owned [`Lattice`]. Same bits, fewer hashes.
+pub fn height_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
+    height_in(lat, seed, x, z)
+}
+
+fn height_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
+    let wx = x + fbm(c, seed, CH_WARP_X, x, z, WARP_FREQ, 2) * WARP_AMP;
+    let wz = z + fbm(c, seed, CH_WARP_Z, x, z, WARP_FREQ, 2) * WARP_AMP;
+
+    let relief = fbm(c, seed, CH_RELIEF, wx, wz, RELIEF_FREQ, 5);
     let shelfed = remap(relief * RELIEF_GAIN * 0.5 + 0.5);
-    let mut land = shelfed * AMPLITUDE;
+
+    // Stage 4b: the detail the curve flattened, added back where it cannot be
+    // flattened. `shelfed` is 0 at the waterline, so this cannot dig a pond,
+    // and it is strongest on the high ground.
+    let detail = fbm(c, seed, CH_DETAIL, wx, wz, DETAIL_FREQ, DETAIL_OCTAVES);
+    let mut land = shelfed * (AMPLITUDE + shelfed * detail * DETAIL_AMP);
 
     // Ridged blend above the treeline: fakes erosion, no simulation.
-    let ridge_t = ((land - RIDGE_START_H) / (RIDGE_FULL_H - RIDGE_START_H)).clamp(0.0, 1.0);
+    //
+    // ⚠ The gate is `fade`d and was a bare `clamp`. A linear ramp is C⁰ at
+    // both its ends, so the two rails put a crease at exactly `RIDGE_START_H`
+    // and `RIDGE_FULL_H` — two more contour rings, on the two elevations most
+    // likely to be looked at. `fade` is quintic with zero first *and* second
+    // derivative at 0 and 1, so both joins vanish.
+    let ridge_t = fade(((land - RIDGE_START_H) / (RIDGE_FULL_H - RIDGE_START_H)).clamp(0.0, 1.0));
     if ridge_t > 0.0 {
-        let ridged = 1.0 - fabs(noise2(seed, CH_RIDGE, wx * RIDGE_FREQ, wz * RIDGE_FREQ));
-        land += ridge_t * ridged * RIDGE_AMP;
+        land += ridge_t * ridged(c, seed, wx, wz) * RIDGE_AMP;
     }
 
-    let m = continent(seed, x, z);
+    let m = continent(c, seed, x, z);
     m * land - (1.0 - m) * SEA_FLOOR_DEPTH
 }
 
 /// Slope as rise/run from central finite differences at 1 m (TERRAIN.md §1
 /// stage 5 — derived, never stored).
 pub fn slope(seed: u64, x: f32, z: f32) -> f32 {
-    let sx = (height(seed, x + 1.0, z) - height(seed, x - 1.0, z)) * 0.5;
-    let sz = (height(seed, x, z + 1.0) - height(seed, x, z - 1.0)) * 0.5;
+    slope_in(&mut Direct, seed, x, z)
+}
+
+/// [`slope`] against a caller-owned [`Lattice`]. Its four taps sit 2 m apart,
+/// so they share nearly every lattice corner — this is the memo's best case.
+pub fn slope_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
+    slope_in(lat, seed, x, z)
+}
+
+fn slope_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
+    let sx = (height_in(c, seed, x + 1.0, z) - height_in(c, seed, x - 1.0, z)) * 0.5;
+    let sz = (height_in(c, seed, x, z + 1.0) - height_in(c, seed, x, z - 1.0)) * 0.5;
     (sx * sx + sz * sz).sqrt()
 }
 
 /// Moisture channel in ~[-1, 1] (TERRAIN.md §1 stage 5).
 pub fn moisture(seed: u64, x: f32, z: f32) -> f32 {
-    fbm(seed, CH_MOIST, x, z, MOIST_FREQ, 2)
+    moisture_in(&mut Direct, seed, x, z)
+}
+
+/// [`moisture`] against a caller-owned [`Lattice`].
+pub fn moisture_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
+    moisture_in(lat, seed, x, z)
+}
+
+fn moisture_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
+    fbm(c, seed, CH_MOIST, x, z, MOIST_FREQ, 2)
 }
 
 /// The grove/clearing field: a multiplier on the scatter weight row, mean 1
@@ -229,7 +668,16 @@ pub fn moisture(seed: u64, x: f32, z: f32) -> f32 {
 /// an independent draw delivers an orchard. `tests/scatter.rs` gates both
 /// halves of the fix against that same closed-form null.
 pub fn clump(seed: u64, x: f32, z: f32) -> f32 {
-    let n = fbm(seed, CH_CLUMP, x, z, CLUMP_FREQ, CLUMP_OCTAVES);
+    clump_in(&mut Direct, seed, x, z)
+}
+
+/// [`clump`] against a caller-owned [`Lattice`].
+pub fn clump_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> f32 {
+    clump_in(lat, seed, x, z)
+}
+
+fn clump_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> f32 {
+    let n = fbm(c, seed, CH_CLUMP, x, z, CLUMP_FREQ, CLUMP_OCTAVES);
     let t = (n * CLUMP_GAIN * 0.5 + 0.5).clamp(0.0, 1.0);
     let f = CLUMP_FLOOR + (1.0 - CLUMP_FLOOR) * t;
     // Squared, per `SPAWN.md` §9.4: the reference accepts a decor candidate
@@ -330,6 +778,16 @@ pub enum RoadBand {
 /// The coast road as a pure function of (seed, x, z) — no state, no memo,
 /// so it costs the same in the server, the wasm client and the golden.
 pub fn road_band(seed: u64, x: f32, z: f32) -> RoadBand {
+    road_band_in(&mut Direct, seed, x, z)
+}
+
+/// [`road_band`] against a caller-owned [`Lattice`]. Off the ring it answers
+/// in one compare and never draws; on it, it is up to six `height` taps.
+pub fn road_band_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> RoadBand {
+    road_band_in(lat, seed, x, z)
+}
+
+fn road_band_in<C: Corners>(co: &mut C, seed: u64, x: f32, z: f32) -> RoadBand {
     let c = ISLAND_SIZE * 0.5;
     let dx = x - c;
     let dz = z - c;
@@ -346,7 +804,7 @@ pub fn road_band(seed: u64, x: f32, z: f32) -> RoadBand {
     // One probe first. If the ground there is far from sea level, no
     // crossing can be inside the shoulder window without a grade steeper
     // than ROAD_MAX_GRADE, so most of the island answers in one tap.
-    let hp = height(seed, c + ux * r, c + uz * r);
+    let hp = height_in(co, seed, c + ux * r, c + uz * r);
     if fabs(hp) > ROAD_SHOULDER_HALF_W * ROAD_MAX_GRADE {
         return RoadBand::Off;
     }
@@ -355,18 +813,30 @@ pub fn road_band(seed: u64, x: f32, z: f32) -> RoadBand {
     // costs one more tap per width tested, not two.
     let band = if hp > SEA_LEVEL {
         let w = ROAD_SHOULDER_HALF_W;
-        if height(seed, c + ux * (r + ROAD_HALF_W), c + uz * (r + ROAD_HALF_W)) <= SEA_LEVEL {
+        if height_in(
+            co,
+            seed,
+            c + ux * (r + ROAD_HALF_W),
+            c + uz * (r + ROAD_HALF_W),
+        ) <= SEA_LEVEL
+        {
             RoadBand::Carriageway
-        } else if height(seed, c + ux * (r + w), c + uz * (r + w)) <= SEA_LEVEL {
+        } else if height_in(co, seed, c + ux * (r + w), c + uz * (r + w)) <= SEA_LEVEL {
             RoadBand::Shoulder
         } else {
             RoadBand::Off
         }
     } else {
         let w = ROAD_SHOULDER_HALF_W;
-        if height(seed, c + ux * (r - ROAD_HALF_W), c + uz * (r - ROAD_HALF_W)) > SEA_LEVEL {
+        if height_in(
+            co,
+            seed,
+            c + ux * (r - ROAD_HALF_W),
+            c + uz * (r - ROAD_HALF_W),
+        ) > SEA_LEVEL
+        {
             RoadBand::Carriageway
-        } else if height(seed, c + ux * (r - w), c + uz * (r - w)) > SEA_LEVEL {
+        } else if height_in(co, seed, c + ux * (r - w), c + uz * (r - w)) > SEA_LEVEL {
             RoadBand::Shoulder
         } else {
             RoadBand::Off
@@ -377,7 +847,7 @@ pub fn road_band(seed: u64, x: f32, z: f32) -> RoadBand {
     // 40 m out of an inlet's far shore satisfies the window while the sample
     // itself sits in the water — measured, not hypothetical (the ring dipped
     // to 0.00 m before this guard). Costs one tap, and only on the ring.
-    if band != RoadBand::Off && height(seed, x, z) < LAND_MIN_H {
+    if band != RoadBand::Off && height_in(co, seed, x, z) < LAND_MIN_H {
         return RoadBand::Off;
     }
     band
@@ -447,6 +917,10 @@ const _: () = {
 /// or open shore? Pure, two `height` taps, and meaningful only near the ring
 /// (it asks about the coastline the sample's own radial crosses).
 pub fn in_bay(seed: u64, x: f32, z: f32) -> bool {
+    in_bay_in(&mut Direct, seed, x, z)
+}
+
+fn in_bay_in<C: Corners>(co: &mut C, seed: u64, x: f32, z: f32) -> bool {
     let c = ISLAND_SIZE * 0.5;
     let dx = x - c;
     let dz = z - c;
@@ -467,8 +941,8 @@ pub fn in_bay(seed: u64, x: f32, z: f32) -> bool {
     let (ax, az) = (ux * cs - uz * sn, ux * sn + uz * cs);
     let (bx, bz) = (ux * cs + uz * sn, uz * cs - ux * sn);
 
-    height(seed, c + ax * r, c + az * r) > SEA_LEVEL
-        && height(seed, c + bx * r, c + bz * r) > SEA_LEVEL
+    height_in(co, seed, c + ax * r, c + az * r) > SEA_LEVEL
+        && height_in(co, seed, c + bx * r, c + bz * r) > SEA_LEVEL
 }
 
 // --- The haven pad (TERRAIN.md §1 stage 8) --------------------------------
@@ -511,9 +985,9 @@ pub fn in_bay(seed: u64, x: f32, z: f32) -> bool {
 // own rate, so the loop paid what standing still paid). It also gives
 // `content/loot.toml`'s `loot.crate` its first spawn site — that table was
 // parsed, validated and hashed with nothing in the world able to produce
-// its container. What it does NOT do is open one: no verb opens a container
-// yet (`crates/content/src/validate.rs`), so the table is reachable content
-// rather than reachable loot, and that half is the systems lane's.
+// its container. Opening one was the systems lane's half and it landed
+// (world containers v0, 2026-08-14, `worldcont.rs`), so `loot.crate` is
+// reachable loot now and not merely reachable content.
 
 /// Pad radius in meters: inside this, scatter places nothing. Sized to read
 /// as a clearing rather than a gap — 32 m across clears ~12 scatter cells
@@ -576,8 +1050,9 @@ pub const HAVEN_PHASE_TRIES: i32 = 16;
 pub const HAVEN_PHASE_STEP: i32 = 256 / HAVEN_CRATES / HAVEN_PHASE_TRIES;
 
 /// Half the shelter's outer footprint, meters — the one number the sim knows
-/// about the greybox standing on the pad, and the one the client's mesh is
-/// gated against (`ci/haven_shelter.mjs`, the `PINE_MAX_R` pattern).
+/// about the greybox standing on the pad, and the one the client's mesh was
+/// gated against (`ci/haven_shelter.mjs`, the `PINE_MAX_R` pattern — that gate
+/// went with the browser client and has no native replacement).
 ///
 /// The sim does not care what the structure looks like; it cares that the
 /// thing occupies its corner of the pad without reaching a container or the
@@ -703,12 +1178,44 @@ pub const WAYSTATION_CRATES: i32 = 2;
 ///
 /// The floor is arithmetic: density stays below the pad's iff
 /// `WAYSTATION_CRATES / R² < HAVEN_CRATES / HAVEN_RADIUS_M²`, so
-/// `R > sqrt(2 × 256 / 5) = 10.12 m`. 11.0 clears it with margin, stays well
-/// inside `HAVEN_RADIUS_M` so the lesser tier still reads as a smaller place
-/// on sight, and the const block below asserts the inequality itself rather
-/// than the number — widen the crate count and it is the ASSERT that fails,
-/// not the design (knob, DECISIONS.md §open: waystations v0).
-pub const WAYSTATION_RADIUS_M: f32 = 11.0;
+/// `R > sqrt(2 × 256 / 5) = 10.12 m`, and the const block below asserts the
+/// inequality itself rather than the number — widen the crate count and it is
+/// the ASSERT that fails, not the design.
+///
+/// **11.0 m until 2026-08-16, when arming the carve moved it to the pad's own
+/// mask** (operator: *"widen WAYSTATION_RADIUS_M and arm the carve"*). The
+/// density floor above never bound it; the carve's blend does, and it binds
+/// harder here than at the pad for a reason worth stating, because it is the
+/// second tier's defining property showing up as a number.
+///
+/// A site's carve has to blend from its made floor back to raw ground before
+/// the scatter mask, and this tier's floor already reaches 11.10 m (the canopy
+/// is footed at `WAYSTATION_CANOPY_OFF_M + WAYSTATION_CANOPY_R_M`). What is
+/// left over is the ramp — and **a ramp that is steeper than the island's own
+/// cliff threshold is not a blend, it is a wall**. `WAYSTATIONS` are the
+/// *losers* of the same flatness argmax that picks the pad (`pick_minor` keeps
+/// the runners-up), so the lesser tier stands on measurably rougher ground —
+/// 0.372 rise/run against the pad's 0.209, over the 16 `tests/haven.rs` seeds —
+/// and therefore has more height to blend across a shorter band. Measured at
+/// full strength, worst carved rise/run over those seeds against
+/// `CLIFF_SLOPE_RATIO` = 1.1918:
+///
+/// | mask | band | worst carved slope | |
+/// |---|---|---|---|
+/// | 13.66 (the bare minimum band) | 2.56 | 1.660 | over the cliff |
+/// | 15.01 (the pad's own band width) | 3.91 | 1.246 | over the cliff |
+/// | 15.30 | 4.20 | 1.187 | the floor |
+/// | **16.00** | **4.90** | **1.075** | ships |
+///
+/// So it is `HAVEN_RADIUS_M`: 0.70 m clear of the measured floor, and one
+/// blend distance in the world rather than two. **The cost is real and is the
+/// operator's to have accepted** — a waystation's *clearing* is now the pad's
+/// size, so "the lesser tier reads as a smaller place on sight" no longer rides
+/// on the exclusion zone. It still rides on everything a player actually looks
+/// at: two containers against five, a 6.5 m ring against 10.0, and a 4.1 m
+/// canopy against a 9.2 m tower. `tests/carve.rs` §H holds the cliff claim.
+/// (knob, DECISIONS.md: waystations v0 · site carve v0.)
+pub const WAYSTATION_RADIUS_M: f32 = 15.0102;
 /// Radius of the container ring, meters. Bounded on both sides by arithmetic,
 /// the same way `HAVEN_CRATE_R_M` is. Below `CELL_SIZE`, so an anchor is
 /// never more than one scatter cell from the site center and `scatter`'s
@@ -851,6 +1358,9 @@ pub struct Waystation {
     pub x: f32,
     pub z: f32,
     pub y: f32,
+    /// The level this site's carved floor sits at — `site_floor_y`, not `y`.
+    /// See `Haven::floor_y`.
+    pub floor_y: f32,
     /// Rotation of the container pair, as a yaw-LUT index — carried for the
     /// same reason `Haven::phase` is: `waystation_crate` must be a pure
     /// function of the site, and the client, the server and the gate all ask
@@ -872,6 +1382,7 @@ impl Waystation {
         x: 0.0,
         z: 0.0,
         y: 0.0,
+        floor_y: 0.0,
         phase: 0,
         canopy: 0,
         live: false,
@@ -888,6 +1399,18 @@ pub struct Haven {
     pub x: f32,
     pub z: f32,
     pub y: f32,
+    /// The level this site's carved floor sits at.
+    ///
+    /// **Separate from `y` on purpose, and the separation is the whole reason
+    /// this could be taken cheaply.** `y` is a *selection* input — the stage 8
+    /// score reads it (`relief + HAVEN_HEIGHT_W * (y - LAND_MIN_H)`), and the
+    /// determinism probe hashes it — so redefining it would move which sites
+    /// the argmax picks and ripple through everything that has ever asked where
+    /// a haven is. `floor_y` answers a different question that only exists
+    /// because the carve exists: not "how high is the ground here" but "what
+    /// level is this site's floor". One field per question; nothing that read
+    /// `y` had to change.
+    pub floor_y: f32,
     pub relief: f32,
     /// Rotation of the container ring, as a yaw-LUT index. Carried rather
     /// than recomputed because `haven_crate` must be a pure function of the
@@ -912,6 +1435,52 @@ pub struct Haven {
     /// answer rather than one pad: the pad is `x`/`z`, the lesser tier is
     /// here, and no signature moved.
     pub minor: [Waystation; WAYSTATIONS],
+}
+
+/// The altitude a site's floor is cut to — **the level of lowest error over
+/// the ground the carve flattens**, not the height at the site's centre.
+///
+/// Taken from the reference (`reference/MONUMENTS.md` §9.2b): Devblog 54's
+/// terrain anchoring "looks for the perfect placement altitude in every
+/// attempt", sharpened by Devblog 167 to "the placement height that results in
+/// the lowest possible error for any given placement position". Ours used the
+/// raw height at the centre, which is an arbitrary sample on a sloped site and
+/// — since the carve was armed — is also the level the floor cuts to, so it set
+/// how deep every cut had to be.
+///
+/// **The midpoint of min and max, which is the minimax optimum**: it minimises
+/// the WORST deviation over the floor, and the worst deviation is exactly what
+/// the carve pays for, because `max_cut` bounds the deepest cut and the ramp's
+/// steepest gradient is set by it. A mean would minimise total error instead
+/// and measures worse here — 4.664 m worst against the midpoint's 4.028 m,
+/// over 384 sites on 128 seeds, where the centre datum gives 4.909 m.
+///
+/// Sampled on the disc the carve actually flattens (`SiteFootprint::stamp_m`),
+/// centre plus two rings, which is 17 taps — paid once per site at world init,
+/// for the three sites that exist, and never on a candidate. It is cheaper than
+/// the `haven_relief` rosette that runs on every candidate already.
+fn site_floor_y(seed: u64, x: f32, z: f32, stamp_m: f32) -> f32 {
+    let h0 = height(seed, x, z);
+    let mut lo = h0;
+    let mut hi = h0;
+    let step = (256 / HAVEN_PROBES) as u16;
+    // Two rings: the floor's edge, and half way out. One ring would miss a
+    // dome or a dip in the middle of the pad, which is the shape a rim-only
+    // rosette is blindest to.
+    let mut ring = 1i32;
+    while ring <= 2 {
+        let r = stamp_m * (ring as f32 * 0.5);
+        let mut j = 0i32;
+        while j < HAVEN_PROBES {
+            let (dx, dz) = crate::yaw_lut::yaw_dir((j as u16 * step) << 8);
+            let h = height(seed, x + dx * r, z + dz * r);
+            lo = lo.min(h);
+            hi = hi.max(h);
+            j += 1;
+        }
+        ring += 1;
+    }
+    (lo + hi) * 0.5
 }
 
 /// Max−min height over the pad footprint at (x, z): center plus a rim
@@ -949,6 +1518,9 @@ fn haven_ring_phase(seed: u64, x: f32, z: f32) -> Option<u8> {
             x,
             z,
             y: 0.0,
+            // Inert: this fixture exists to answer `haven_crate`, which reads
+            // x/z/phase only. Nothing here carves.
+            floor_y: 0.0,
             relief: 0.0,
             phase,
             shelter: 0,
@@ -994,6 +1566,8 @@ fn haven_shelter_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8> {
         x,
         z,
         y: 0.0,
+        // Inert, as in `haven_ring_phase` above.
+        floor_y: 0.0,
         relief: 0.0,
         phase,
         shelter: 0,
@@ -1160,6 +1734,10 @@ pub fn haven(seed: u64) -> Haven {
             x,
             z,
             y,
+            // The floor the carve will cut, resolved for the site that is
+            // actually taken rather than for every candidate: this is 17 taps
+            // and `haven()` scores `HAVEN_CANDIDATES` of them.
+            floor_y: site_floor_y(seed, x, z, HAVEN_FOOTPRINT.stamp_m),
             relief,
             phase,
             shelter,
@@ -1183,6 +1761,7 @@ pub fn haven(seed: u64) -> Haven {
         x: c,
         z: c,
         y: height(seed, c, c),
+        floor_y: site_floor_y(seed, c, c, HAVEN_FOOTPRINT.stamp_m),
         relief: 0.0,
         phase: 0,
         shelter: 0,
@@ -1264,6 +1843,7 @@ fn pick_minor(seed: u64, pad: &Haven, cand: &[(f32, f32, f32, f32)]) -> [Waystat
                 x,
                 z,
                 y,
+                floor_y: site_floor_y(seed, x, z, WAYSTATION_FOOTPRINT.stamp_m),
                 phase,
                 canopy,
                 live: true,
@@ -1308,6 +1888,8 @@ fn waystation_ring_phase(seed: u64, x: f32, z: f32) -> Option<(u8, u8)> {
             x,
             z,
             y: 0.0,
+            // Inert: read for x/z/phase by `waystation_crate` only.
+            floor_y: 0.0,
             phase,
             canopy: 0,
             live: true,
@@ -1361,6 +1943,8 @@ fn waystation_canopy_bearing(seed: u64, x: f32, z: f32, phase: u8) -> Option<u8>
         x,
         z,
         y: 0.0,
+        // Inert, as in `waystation_ring_phase` above.
+        floor_y: 0.0,
         phase,
         canopy: 0,
         live: true,
@@ -1426,7 +2010,8 @@ pub fn waystation_crate(ws: &Waystation, k: i32) -> (f32, f32, u8) {
     )
 }
 
-/// True if (x, z) stands inside any live waystation's exclusion zone.
+/// True if (x, z) stands inside any live waystation's **scatter** mask
+/// (`WAYSTATION_FOOTPRINT.scatter_m`) — the exclusion zone the grid reads.
 /// Squared compare throughout, `in_haven`'s posture and `SPAWN.md` §9.4's
 /// point: the squared form is the acceptance test, not an optimization of one.
 pub fn in_waystation(haven: &Haven, x: f32, z: f32) -> bool {
@@ -1439,7 +2024,8 @@ pub fn in_waystation(haven: &Haven, x: f32, z: f32) -> bool {
         }
         let dx = x - ws.x;
         let dz = z - ws.z;
-        if dx * dx + dz * dz < WAYSTATION_RADIUS_M * WAYSTATION_RADIUS_M {
+        let r = WAYSTATION_FOOTPRINT.scatter_m;
+        if dx * dx + dz * dz < r * r {
             return true;
         }
     }
@@ -1488,13 +2074,17 @@ pub fn sites_live(haven: &Haven) -> u32 {
     n
 }
 
-/// True if (x, z) stands inside the pad — the exclusion zone. Squared
-/// compare, no sqrt (and `SPAWN.md` §9.4's point: the squared form is the
-/// acceptance test, not an optimization of one).
+/// True if (x, z) stands inside the pad's **scatter** mask
+/// (`HAVEN_FOOTPRINT.scatter_m`) — the exclusion zone the grid reads. It is
+/// one of the pad's masks and no longer all of them: `site_sweep` answers the
+/// ground-clutter question, which used to be nobody's. Squared compare, no
+/// sqrt (and `SPAWN.md` §9.4's point: the squared form is the acceptance test,
+/// not an optimization of one).
 pub fn in_haven(haven: &Haven, x: f32, z: f32) -> bool {
     let dx = x - haven.x;
     let dz = z - haven.z;
-    dx * dx + dz * dz < HAVEN_RADIUS_M * HAVEN_RADIUS_M
+    let r = HAVEN_FOOTPRINT.scatter_m;
+    dx * dx + dz * dz < r * r
 }
 
 /// Anchor `k` of the pad's container ring: position and the yaw that faces
@@ -1583,6 +2173,513 @@ pub fn waystation_canopy(ws: &Waystation) -> (f32, f32, u8) {
         // Facing in: half a turn from the outward bearing it stands on.
         ws.canopy.wrapping_add(128),
     )
+}
+
+// --- Site footprints: one site, several masks ------------------------------
+//
+// `reference/MONUMENTS.md` §2 and §9.2. Until this block existed an authored
+// site had exactly ONE footprint — a single radius (`HAVEN_RADIUS_M`,
+// `WAYSTATION_RADIUS_M`) answering a single question, "does the scatter grid
+// stand anything here" — and every other world system that should have asked
+// the site something either asked that same circle or was never wired to the
+// site list at all.
+//
+// The measured consequence was ground clutter: `clutter_fill` had no `Haven`
+// parameter, so grass, twigs and scree grew straight across the haven pad and
+// both waystations while the carriageway running through them was correctly
+// swept to grit — 661 grass-and-litter elements on the default seed's pad
+// floor alone. The road got an override; the destinations it leads to did not.
+//
+// The shape of the fix is the reference game's own conclusion after ten years
+// of the opposite (`MONUMENTS.md` §3): a site publishes a SET of masks, not a
+// radius, and each world system reads the mask that is its business. Two are
+// declared here because two are consumed; `MONUMENTS.md` §9.2 lists the rest
+// (build-block, height stamp, nav, water) as rows this struct gains when the
+// system that would read one exists. A mask nobody reads is a circle nobody
+// checks.
+
+/// The radii one authored site publishes, one per job the world asks it.
+///
+/// **Ordered outside-in and asserted so** (the const block below): a mask that
+/// grew past the one outside it would be a site whose swept floor reached
+/// beyond the ground it cleared, which is a footprint drawn against nothing.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SiteFootprint {
+    /// Where the scatter grid stops. No tree, node, bush or barrel stands
+    /// inside this — the site's containers are authored instead
+    /// (`haven_crate`, `waystation_crate`), which is what makes a destination
+    /// read as arranged where the island reads as weather.
+    pub scatter_m: f32,
+    /// Where the ground is SWEPT — made floor rather than weather. Inside it
+    /// the clutter population is grit, exactly as the carriageway's is, and
+    /// the richness stratum is refused outright.
+    ///
+    /// Derived, not chosen: the container ring plus one clutter cell, so the
+    /// swept floor is *the ground the site's own arrangement stands on* and
+    /// nothing else. A site that moves its ring drags its floor with it, the
+    /// same way `skirt_base_r` reaches off `occupant_volume`.
+    pub swept_m: f32,
+    /// Where the CARVE's flat floor stops — the ground the site's authored
+    /// structures are footed on, before the blend out to `scatter_m` begins.
+    ///
+    /// **Not `swept_m`, and the difference is a measured defect rather than a
+    /// refinement.** `swept_m` is derived from the *container ring*, and it was
+    /// the obvious radius to carve to; the containers are point-like, so it
+    /// covers them. The structures are not. The waystation canopy stands at
+    /// `WAYSTATION_CANOPY_OFF_M` = 6.5 m with `WAYSTATION_CANOPY_R_M` = 3.96 m
+    /// of eave, so its footing spans 2.54 m .. **10.46 m** while that site's
+    /// `swept_m` is 7.14 — three and a third metres of it out on the blend
+    /// ramp, which is *steeper than the hill it replaced* because the ramp
+    /// compresses the whole raw delta into the band. Measured over the 16
+    /// `tests/haven.rs` seeds at full strength: the haven shelter's worst
+    /// footing spread goes **1.374 m → 0.063 m** (the carve doing its job), and
+    /// the waystation canopy's goes **1.795 m → 1.889 m** — *worse*, by the
+    /// mechanism the carve exists to fix. `tests/carve.rs` §G is that
+    /// measurement as a gate.
+    ///
+    /// Derived, not chosen, exactly as `swept_m` is: the furthest edge of
+    /// anything the site seats — its container ring, and its structure's
+    /// offset plus that structure's own broad-phase radius — plus one clutter
+    /// cell, so the floor covers the arrangement rather than ending under it.
+    pub stamp_m: f32,
+    /// Where the CARVE has returned to raw ground — the outer end of the blend
+    /// ramp, and the only radius here that is **not** bounded by `scatter_m`.
+    ///
+    /// **The blend does not have to end where the scatter grid resumes, and
+    /// trapping it there is what made the first armed draft build walls.** The
+    /// ramp has to absorb the whole difference between the made floor and the
+    /// hill around it, and smoothstep's steepest slope is `1.5 / band` — so a
+    /// short band turns a few metres of relief into a cliff. Measured over 128
+    /// seeds with the ramp confined to the scatter mask: worst carved gradient
+    /// **2.09 rise/run at the waystations, 1.28 at the pad**, against
+    /// `CLIFF_SLOPE_RATIO` = 1.19. The carve was ringing each destination with
+    /// a ~64° wall. (Sixteen seeds read 1.07 / 0.80 and showed none of it.)
+    ///
+    /// Nothing ever required the two to be equal. `scatter_m` answers "does the
+    /// grid stand anything here", and the answer past the floor is *yes* — a
+    /// tree on the outer half of a gentle blend is exactly what stops the blend
+    /// being visible, which is `MONUMENTS.md` §3's whole finding: the reference
+    /// game's terrain blending is authored masks, not a flattened circle. So
+    /// the ramp runs long and shallow, out past the vegetation line, and the
+    /// vegetation grows over it.
+    pub blend_m: f32,
+}
+
+/// The pad's masks.
+pub const HAVEN_FOOTPRINT: SiteFootprint = SiteFootprint {
+    scatter_m: HAVEN_RADIUS_M,
+    blend_m: HAVEN_RADIUS_M + SITE_BLEND_M,
+    swept_m: HAVEN_CRATE_R_M + CLUTTER_CELL_M,
+    // The shelter reaches furthest: 6.5 m out, 4.9498 m of corner. 12.09 m,
+    // inside the 16 m mask with 3.91 m of band left to blend across.
+    stamp_m: HAVEN_SHELTER_R_M + SHELTER_CORNER_R_M + CLUTTER_CELL_M,
+};
+
+/// The lesser tier's masks — the same derivation on the smaller site, which is
+/// the point of deriving it: `WAYSTATION_RADIUS_M` and `WAYSTATION_CRATE_R_M`
+/// are already the pad's numbers scaled down, so the swept floor scales too
+/// without a second knob being spoken.
+pub const WAYSTATION_FOOTPRINT: SiteFootprint = SiteFootprint {
+    scatter_m: WAYSTATION_RADIUS_M,
+    blend_m: WAYSTATION_RADIUS_M + SITE_BLEND_M,
+    swept_m: WAYSTATION_CRATE_R_M + CLUTTER_CELL_M,
+    // ⚠ 11.10 m, against an 11.0 m mask — this one does NOT fit, and that is
+    // the finding rather than a typo. The const block below refuses to compile
+    // an armed carve because of it; see `DECISIONS.md` §open "site carve v0".
+    stamp_m: WAYSTATION_CANOPY_OFF_M + WAYSTATION_CANOPY_R_M + CLUTTER_CELL_M,
+};
+
+// Wall 4 at the definition, as the haven and waystation blocks do it.
+const _: () = {
+    // Outside-in, with room for the band between them to be a band. Both
+    // margins are wider than one clutter cell, so the ramp is never a single
+    // cell wide — a one-cell ramp is a hard edge that cost a dither.
+    assert!(HAVEN_FOOTPRINT.swept_m + CLUTTER_CELL_M < HAVEN_FOOTPRINT.scatter_m);
+    assert!(WAYSTATION_FOOTPRINT.swept_m + CLUTTER_CELL_M < WAYSTATION_FOOTPRINT.scatter_m);
+    // Outside-in, all four now: swept floor, carved floor, scatter mask, and
+    // the blend running past all of them. The carved floor must clear the
+    // scatter mask or the grid stands a tree on made ground; the blend must
+    // clear the carved floor or there is no ramp to blend across.
+    assert!(HAVEN_FOOTPRINT.stamp_m < HAVEN_FOOTPRINT.scatter_m);
+    assert!(WAYSTATION_FOOTPRINT.stamp_m < WAYSTATION_FOOTPRINT.scatter_m);
+    assert!(HAVEN_FOOTPRINT.scatter_m < HAVEN_FOOTPRINT.blend_m);
+    assert!(WAYSTATION_FOOTPRINT.scatter_m < WAYSTATION_FOOTPRINT.blend_m);
+    // `WAYSTATION_RADIUS_M` is a LITERAL that is really a derivation, and this
+    // is what stops the two coming apart. It is written out because
+    // `ci/knob_registry.mjs` pins every knob `DECISIONS.md` declares against
+    // its source value, and that parser reads numbers and ratios rather than
+    // arithmetic over named constants — a knob it cannot read is a hard failure
+    // by design, so the choice is a literal it can pin or a gate that cannot
+    // see this number at all. The derivation: the site's own carved floor, plus
+    // the pad's blend band, so both tiers blend over the same distance.
+    {
+        let derived = (WAYSTATION_CANOPY_OFF_M + WAYSTATION_CANOPY_R_M + CLUTTER_CELL_M)
+            + (HAVEN_RADIUS_M - (HAVEN_SHELTER_R_M + SHELTER_CORNER_R_M + CLUTTER_CELL_M));
+        let d = WAYSTATION_RADIUS_M - derived;
+        assert!(
+            d < 0.001 && d > -0.001,
+            "WAYSTATION_RADIUS_M has drifted from its derivation — it is its own \
+             carved floor plus the pad's blend band, and one of those moved"
+        );
+    }
+    // The swept floor covers the arrangement that stands on it: every
+    // container, and the structure in the ring's gap.
+    assert!(HAVEN_FOOTPRINT.swept_m > HAVEN_CRATE_R_M);
+    assert!(HAVEN_FOOTPRINT.swept_m > HAVEN_SHELTER_R_M);
+    assert!(WAYSTATION_FOOTPRINT.swept_m > WAYSTATION_CRATE_R_M);
+    assert!(WAYSTATION_FOOTPRINT.swept_m > WAYSTATION_CANOPY_OFF_M);
+    // The scatter mask is the number `in_haven` / `in_waystation` have always
+    // used. Stated as an assert rather than trusted, because the two readings
+    // diverging is exactly how a footprint stops being one thing.
+    assert!(HAVEN_FOOTPRINT.scatter_m == HAVEN_RADIUS_M);
+    assert!(WAYSTATION_FOOTPRINT.scatter_m == WAYSTATION_RADIUS_M);
+};
+
+/// How swept the ground at (x, z) is: 1.0 on an authored site's made floor,
+/// 0.0 out in the world, smoothstepped across the band between each site's
+/// `swept_m` and its `scatter_m`.
+///
+/// **A scalar with a profile, not a circle** — `MONUMENTS.md` §3's whole
+/// lesson, which the reference game learned by shipping monuments that sat on
+/// visible circular plateaus for years. A hard boundary at one radius would
+/// draw the pad's edge as a ring on the ground; the band, plus the per-element
+/// dither its consumers apply, makes the same transition without an edge to
+/// see. `ramp` is the smoothstep the splat already uses, so the profile is the
+/// one the ground's own material identities get.
+///
+/// Max over the sites rather than a sum: two overlapping swept floors are one
+/// swept floor, and `WAYSTATION_MIN_SEP_M` puts them far enough apart that the
+/// case cannot arise anyway.
+///
+/// Cost is a squared reject per site for every point off a site — one multiply
+/// pair and a compare, which is what lets `clutter_cell` call this 625 times a
+/// tile. The `sqrt` runs only for a point actually inside a footprint.
+pub fn site_sweep(haven: &Haven, x: f32, z: f32) -> f32 {
+    let mut s = sweep_of(&HAVEN_FOOTPRINT, haven.x, haven.z, x, z);
+    let mut w = 0usize;
+    while w < WAYSTATIONS {
+        let ws = &haven.minor[w];
+        w += 1;
+        if !ws.live {
+            continue;
+        }
+        s = s.max(sweep_of(&WAYSTATION_FOOTPRINT, ws.x, ws.z, x, z));
+    }
+    s
+}
+
+/// One site's contribution to `site_sweep`.
+fn sweep_of(fp: &SiteFootprint, sx: f32, sz: f32, x: f32, z: f32) -> f32 {
+    let dx = x - sx;
+    let dz = z - sz;
+    let d2 = dx * dx + dz * dz;
+    if d2 >= fp.scatter_m * fp.scatter_m {
+        return 0.0;
+    }
+    1.0 - ramp(fp.swept_m, fp.scatter_m, d2.sqrt())
+}
+
+/// How far an authored site's carve pulls the ground toward the site's own
+/// reference height, as a fraction: 0.0 leaves the raw terrain alone, 1.0
+/// makes the swept floor dead flat at `Haven::y` / `Waystation::y`.
+///
+/// **Zero, deliberately, and this is the seam landing before the cut does.**
+/// `TERRAIN.md` §1 stage 8 has asked for "carve a flat pad with a smooth blend
+/// radius" since the file was written, and every pass declined it for the same
+/// reason: a carve is a write to the ground, `height` is read from sixty-odd
+/// places, and a client mesh that sees the pad while a collision path does not
+/// is a player standing in the air. That is a cross-cutting edit and a
+/// behaviour change at once, which is the shape this repo has learned to
+/// refuse — so they are split. This pass converts every consumer to `ground`
+/// and leaves the strength at zero, which makes `ground` return `height`'s own
+/// bits (see `ground`) and leaves `test_terrain_golden`, `test_replay` and
+/// `test_parity_wasm` untouched. Arming it is one constant, and it is the
+/// operator's (`DECISIONS.md` §open, "site carve v0").
+///
+/// The measurement that will price it already exists and is already published:
+/// `Haven::relief` is the max−min over the pad footprint that the stage 8
+/// argmax settled for by *finding* — worst 3.76 m over a 32 m pad across 16
+/// seeds. At strength 1.0 that number is 0 by construction, and `tests/relief.rs`
+/// is where the before/after belongs.
+pub const SITE_STAMP_STRENGTH: f32 = 1.0;
+
+/// Share of the island's cliff budget (`CLIFF_SLOPE_RATIO`) the carve's own
+/// blend ramp may spend, leaving the rest for the raw ground it is blending
+/// into — the two gradients add, and only one of them is knowable from a
+/// footprint. Measured: at 1.0 the worst carved gradient over 128 seeds sits
+/// right on the threshold, which is a bound with no room in it; 0.5 puts the
+/// worst at roughly half the cliff and every site the suites drive still
+/// flattens completely (knob, DECISIONS.md: site carve v0).
+pub const SITE_CUT_HEADROOM: f32 = 0.5;
+
+/// How far past its scatter mask a site's carve keeps blending, metres —
+/// the length of the ramp, and the number that decides how deep a cut is safe.
+///
+/// Sized by measurement rather than picked, because the thing it trades against
+/// is a cliff. `max_cut` is `(blend - stamp) * CLIFF_SLOPE_RATIO * headroom /
+/// 1.5`, so the ramp length IS the cut budget: at the old scatter-mask-bound
+/// band (~3.9 m) the budget was 1.55 m and 40% of sites over 128 seeds came out
+/// only partly levelled, which is a carve that does not carve. Swept over 128
+/// seeds for the smallest value that both flattens every site and keeps the
+/// worst carved gradient clear of the cliff (`DECISIONS.md`: site carve v0).
+pub const SITE_BLEND_M: f32 = 12.0;
+
+/// The carve, as a height delta: how far the authored sites move the ground at
+/// (x, z) away from the raw worldgen underneath it.
+///
+/// **It takes `raw` and not `seed`, and that is the whole defence against the
+/// circularity this change exists to avoid.** `haven(seed)` is *built out of*
+/// `height` taps — a shoreline march, a bisect, a flatness rosette, a ring
+/// check chain — so a carve applied inside `height` would have the site solver
+/// scoring ground it had already carved. Every other guard against that is a
+/// convention someone has to keep; this one is the type system: with no seed in
+/// scope, this function *cannot* call `height`, so the stamp can never depend
+/// on the terrain it is stamping. `MONUMENTS.md` §9.5's rule — candidates,
+/// score, solve, reserve, *then* everything else — expressed as a signature.
+///
+/// Summed over the live sites rather than maxed, which `site_sweep` cannot do
+/// because a sweep is a 0..1 coverage and two would saturate. A stamp is a
+/// signed delta, and the const block below holds the sites far enough apart
+/// that no point is ever inside two footprints — so the sum has exactly one
+/// non-zero term wherever it has any, and it carries no dependence on the
+/// order the waystations happen to sit in the array.
+///
+/// Cost is `sweep_of`'s: a squared reject per site, one multiply pair and a
+/// compare, with the `sqrt` paid only inside a footprint. That matters because
+/// `ground` stands in front of the mesh builder and the movement step.
+pub fn site_stamp(haven: &Haven, raw: f32, x: f32, z: f32) -> f32 {
+    site_stamp_with(SITE_STAMP_STRENGTH, haven, raw, x, z)
+}
+
+/// `site_stamp` at a strength the caller names, which is how the carve is
+/// tested at full depth while the shipped constant stays at zero.
+///
+/// Without this the mechanism would ship untested: every assertion reachable
+/// through `site_stamp` at strength 0.0 is satisfied by a function that returns
+/// a constant, so the gate would prove only that zero is zero and the arming
+/// pass would be the first time the arithmetic ever ran. `tests/carve.rs`
+/// drives *this* entry point at 1.0 and proves the flatten, the blend profile
+/// and the footprint bound on the real code path; `site_stamp` above then
+/// differs from what the gate exercised by exactly one constant.
+pub fn site_stamp_with(strength: f32, haven: &Haven, raw: f32, x: f32, z: f32) -> f32 {
+    let mut s = stamp_of(
+        strength,
+        &HAVEN_FOOTPRINT,
+        haven.floor_y,
+        haven.x,
+        haven.z,
+        raw,
+        x,
+        z,
+    );
+    let mut w = 0usize;
+    while w < WAYSTATIONS {
+        let ws = &haven.minor[w];
+        w += 1;
+        if !ws.live {
+            continue;
+        }
+        s += stamp_of(
+            strength,
+            &WAYSTATION_FOOTPRINT,
+            ws.floor_y,
+            ws.x,
+            ws.z,
+            raw,
+            x,
+            z,
+        );
+    }
+    s
+}
+
+/// One site's contribution to `site_stamp` — `sweep_of`'s profile read the
+/// other way up, so the carve and the swept floor share an edge by
+/// construction rather than by two constants agreeing.
+///
+/// `1.0 - ramp(..)` is 1 on the made floor and 0 at the scatter mask, which is
+/// exactly `sweep_of`'s return; the blend radius `TERRAIN.md` §1 stage 8 asks
+/// for is therefore the band the clutter population is already dithered across,
+/// and a pad cannot grow a visible plateau edge that its own ground cover does
+/// not also fade over. That is `MONUMENTS.md` §3's lesson — the reference game
+/// shipped monuments on visible circular plateaus for years — and getting it
+/// for free is the reason `SiteFootprint` publishes a band and not a radius.
+#[allow(clippy::too_many_arguments)]
+fn stamp_of(
+    strength: f32,
+    fp: &SiteFootprint,
+    sy: f32,
+    sx: f32,
+    sz: f32,
+    raw: f32,
+    x: f32,
+    z: f32,
+) -> f32 {
+    // A footprint whose floor does not fit inside its mask carves NOTHING,
+    // stated rather than emergent. `ramp(lo, hi, ..)` with `hi < lo` divides by
+    // a negative span and saturates to 1 everywhere, so `1 - ramp` is 0 and the
+    // site is silently left alone — the safe answer, arrived at by accident.
+    // Saying it out loud is what stops the next reader taking a working
+    // waystation for granted: today that site really is uncarved, and the const
+    // block above is what will not let it be armed in that state.
+    if fp.stamp_m >= fp.blend_m {
+        return 0.0;
+    }
+    let dx = x - sx;
+    let dz = z - sz;
+    let d2 = dx * dx + dz * dz;
+    if d2 >= fp.blend_m * fp.blend_m {
+        return 0.0;
+    }
+    // Clamped, because a cut the band cannot carry is a wall.
+    //
+    // The band has to return the made floor to raw ground, and smoothstep's
+    // steepest slope is `1.5 / band` — so a cut of `depth` contributes at most
+    // `depth * 1.5 / band` to the gradient there. Left unbounded that is a
+    // function of how rough the site's surroundings are, and the sites are on
+    // the coast road rather than on ground anybody chose for its skirts:
+    // measured over 128 seeds at full strength and no clamp, the worst carved
+    // gradient was **2.09 rise/run at the waystations and 1.28 at the pad**,
+    // against `CLIFF_SLOPE_RATIO` = 1.19 — i.e. the carve was building a ~64°
+    // wall around the destination it was smoothing. Sixteen seeds did not show
+    // it (1.07 / 0.80, both under), which is why this is clamped rather than
+    // sized: a band picked off the seeds that measured it is exactly the sweep
+    // that agrees with itself.
+    //
+    // So the cut is capped at what the band can carry, and the cap is derived
+    // rather than picked. Under it a site flattens completely, as every seed
+    // the suites drive does; over it the site is *levelled as far as is safe*
+    // and keeps the rest of its slope. `tests/carve.rs` §H holds the cliff.
+    let depth = (sy - raw).clamp(-max_cut(fp), max_cut(fp));
+    depth * (1.0 - ramp(fp.stamp_m, fp.blend_m, d2.sqrt())) * strength
+}
+
+/// The deepest cut a footprint's blend band can carry without the ramp itself
+/// reading as a cliff.
+///
+/// `SITE_CUT_HEADROOM` is the share of the cliff budget the carve may spend;
+/// the rest is left for the raw ground's own gradient, which adds to the
+/// ramp's and is not knowable here.
+pub fn max_cut(fp: &SiteFootprint) -> f32 {
+    (fp.blend_m - fp.stamp_m) * CLIFF_SLOPE_RATIO * SITE_CUT_HEADROOM / 1.5
+}
+
+// Wall 4 at the definition. `site_stamp` sums its sites, which is only equal
+// to "the site containing this point" while no point can be inside two
+// footprints — so the disjointness is asserted rather than eyeballed off the
+// current numbers. `WAYSTATION_MIN_SEP_M` is the floor `haven`'s second tier
+// is selected against, pad-to-waystation and waystation-to-waystation alike.
+const _: () = {
+    assert!(WAYSTATION_MIN_SEP_M > HAVEN_FOOTPRINT.scatter_m + WAYSTATION_FOOTPRINT.scatter_m);
+    assert!(WAYSTATION_MIN_SEP_M > WAYSTATION_FOOTPRINT.scatter_m * 2.0);
+};
+
+/// The narrowest blend an armed carve may have, metres.
+///
+/// Not a taste number: one clutter cell is the width at which the dithered
+/// population that hides the boundary (`swept_here`) has a single cell to do it
+/// in, which the `SiteFootprint` block above already refuses for `swept_m` in
+/// the same words — "a one-cell ramp is a hard edge that cost a dither".
+/// Four of them is the floor here because the carve's ramp carries metres of
+/// height rather than a 0..1 coverage, so its edge is visible geometry and not
+/// a thinning of tufts.
+pub const SITE_STAMP_MIN_BAND_M: f32 = CLUTTER_CELL_M * 4.0;
+
+// The carve is ARMED (operator, 2026-08-16). What the block below held before
+// arming — that a site's floor must fit inside its scatter mask with a band to
+// spare — is retired, because the band it was protecting no longer lives there:
+// `blend_m` runs the ramp out past the mask, and `max_cut` bounds the cut to
+// what that ramp can carry. Both replacements are asserted above and measured
+// by `tests/carve.rs` §D and §H.
+const _: () = {
+    assert!(HAVEN_FOOTPRINT.stamp_m >= HAVEN_FOOTPRINT.swept_m);
+    assert!(WAYSTATION_FOOTPRINT.stamp_m >= WAYSTATION_FOOTPRINT.swept_m);
+    assert!(HAVEN_FOOTPRINT.stamp_m >= HAVEN_SHELTER_R_M + SHELTER_CORNER_R_M);
+    assert!(HAVEN_FOOTPRINT.stamp_m >= HAVEN_CRATE_R_M);
+    assert!(WAYSTATION_FOOTPRINT.stamp_m >= WAYSTATION_CANOPY_OFF_M + WAYSTATION_CANOPY_R_M);
+    assert!(WAYSTATION_FOOTPRINT.stamp_m >= WAYSTATION_CRATE_R_M);
+};
+
+/// The ground everything **stands on**: raw worldgen plus every carve over it.
+///
+/// This is the consumer half of the split named on `site_stamp`. The rule that
+/// decides which of the two a call site wants is a role and not a location:
+///
+/// - **Solvers read [`height`]** — anything that *locates* the world. Where a
+///   site goes (`haven`, `pick_minor`), where the road runs (`road_band`),
+///   where a player spawns (`World::spawn_pos`'s bisect), and the determinism
+///   probe, which must hash worldgen truth rather than what was laid over it.
+/// - **Consumers read `ground`** — anything that *stands on* the world. The
+///   surface under a body (`movement`), the drawn mesh (`terrain_mesh`), a
+///   projectile's ground hit (`ranged`), a foundation's footing (`build`,
+///   `deploy`) and the ghost that predicts it (`ui::place`), and the `y` an
+///   authored crate or shelter is seated at.
+///
+/// `sim-core/tests/height_roles.rs` holds that rule as a gate, because it is
+/// the kind of rule a new call site breaks silently: both functions typecheck
+/// everywhere, and the failure is a floating crate or a player in the air
+/// rather than a red test.
+///
+/// **Returns `height`'s own bits when nothing carves here**, which is not a
+/// micro-optimisation but the property that lets this land dark: off every
+/// footprint the stamp is a literal `0.0` and the raw value is returned
+/// untouched, so no `+ 0.0` ever rounds or re-signs a worldgen height. While
+/// `SITE_STAMP_STRENGTH` is zero that is *every* point on the island, so this
+/// whole seam is provably a no-op at the bit level and the goldens do not move.
+pub fn ground(seed: u64, haven: &Haven, x: f32, z: f32) -> f32 {
+    ground_in(&mut Direct, seed, haven, x, z)
+}
+
+/// [`ground`] against a caller-owned [`Lattice`].
+pub fn ground_memo(lat: &mut Lattice, seed: u64, haven: &Haven, x: f32, z: f32) -> f32 {
+    ground_in(lat, seed, haven, x, z)
+}
+
+fn ground_in<C: Corners>(c: &mut C, seed: u64, haven: &Haven, x: f32, z: f32) -> f32 {
+    let raw = height_in(c, seed, x, z);
+    let s = site_stamp(haven, raw, x, z);
+    if s == 0.0 {
+        return raw;
+    }
+    raw + s
+}
+
+/// Slope of the carved ground, as `slope` is of the raw.
+///
+/// Split from `slope` for the same reason `ground` is split from `height`: the
+/// stage 8 argmax scores candidate sites on `slope`, so a carved slope inside
+/// the solver would flatten the very term that chose the site. Consumers that
+/// shade or veto against steepness want this one; the site search wants the
+/// other.
+pub fn ground_slope(seed: u64, haven: &Haven, x: f32, z: f32) -> f32 {
+    ground_slope_in(&mut Direct, seed, haven, x, z)
+}
+
+/// [`ground_slope`] against a caller-owned [`Lattice`]. Four `ground` taps
+/// 2 m apart: the memo's best case, and 81% of what a clutter tile spends.
+pub fn ground_slope_memo(lat: &mut Lattice, seed: u64, haven: &Haven, x: f32, z: f32) -> f32 {
+    ground_slope_in(lat, seed, haven, x, z)
+}
+
+fn ground_slope_in<C: Corners>(c: &mut C, seed: u64, haven: &Haven, x: f32, z: f32) -> f32 {
+    let sx = (ground_in(c, seed, haven, x + 1.0, z) - ground_in(c, seed, haven, x - 1.0, z)) * 0.5;
+    let sz = (ground_in(c, seed, haven, x, z + 1.0) - ground_in(c, seed, haven, x, z - 1.0)) * 0.5;
+    (sx * sx + sz * sz).sqrt()
+}
+
+/// Whether a clutter element drawn at (x, z) with dither byte `d` stands on
+/// swept ground.
+///
+/// The dither is what turns `site_sweep`'s profile into a population: each
+/// element rolls its own already-drawn hash byte against the local sweep, so
+/// the swept floor thins outward across the band instead of ending on a line.
+/// This is `NOW.md` §0a's recipe for the clutter ring's fade, applied to the
+/// one place in the world that already had a boundary worth hiding.
+///
+/// `/ 256.0` rather than `/ 255.0` so the two ends are exact: at sweep 0.0 no
+/// byte passes, and at sweep 1.0 every byte does.
+fn swept_here(haven: &Haven, x: f32, z: f32, d: u8) -> bool {
+    (d as f32) * (1.0 / 256.0) < site_sweep(haven, x, z)
 }
 
 /// What a scatter cell holds (TERRAIN.md §1 stage 9's occupant list).
@@ -1685,6 +2782,31 @@ pub struct Slot {
 /// 65,536 times for one island. Callers resolve it once and hold it —
 /// `World` at init, the bridge per chunk batch.
 pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell_z: i32) -> Slot {
+    scatter_in(&mut Direct, seed, table, haven, cell_x, cell_z)
+}
+
+/// [`scatter`] against a caller-owned [`Lattice`]. One cell is a `ground`
+/// tap, a four-tap `ground_slope` fan, a `moisture` and a `clump` — all
+/// within 2 m, so the memo answers nearly every corner after the first.
+pub fn scatter_memo(
+    lat: &mut Lattice,
+    seed: u64,
+    table: &ScatterTable,
+    haven: &Haven,
+    cell_x: i32,
+    cell_z: i32,
+) -> Slot {
+    scatter_in(lat, seed, table, haven, cell_x, cell_z)
+}
+
+fn scatter_in<C: Corners>(
+    c: &mut C,
+    seed: u64,
+    table: &ScatterTable,
+    haven: &Haven,
+    cell_x: i32,
+    cell_z: i32,
+) -> Slot {
     let none = Slot {
         occupant: Occupant::None,
         x: 0.0,
@@ -1722,7 +2844,7 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
             return Slot {
                 occupant: Occupant::HavenShelter,
                 x: sx,
-                y: height(seed, sx, sz),
+                y: ground_in(c, seed, haven, sx, sz),
                 z: sz,
                 yaw: syaw,
                 scale: 1.0,
@@ -1744,7 +2866,7 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
             return Slot {
                 occupant: Occupant::CrateSlot,
                 x: ax,
-                y: height(seed, ax, az),
+                y: ground_in(c, seed, haven, ax, az),
                 z: az,
                 yaw,
                 // Authored, not drawn: a monument's containers are placed,
@@ -1790,7 +2912,7 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
             return Slot {
                 occupant: Occupant::WaystationCanopy,
                 x: kx,
-                y: height(seed, kx, kz),
+                y: ground_in(c, seed, haven, kx, kz),
                 z: kz,
                 yaw: kyaw,
                 // Authored, not drawn — a structure is built, and a size
@@ -1814,7 +2936,7 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
                 // — unvetoable, first-anchor-wins, no scale wobble.
                 occupant: Occupant::CacheSlot,
                 x: ax,
-                y: height(seed, ax, az),
+                y: ground_in(c, seed, haven, ax, az),
                 z: az,
                 yaw,
                 scale: 1.0,
@@ -1830,14 +2952,17 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
     let x = cell_x as f32 * CELL_SIZE + 4.0 + jx;
     let z = cell_z as f32 * CELL_SIZE + 4.0 + jz;
 
-    let hy = height(seed, x, z);
+    let hy = ground_in(c, seed, haven, x, z);
     // Split from the slope veto so `sl` can be bound and reused by the mix
     // below without paying `slope`'s four height taps on water cells — the
     // `||` short-circuit did that for free and the binding must not lose it.
     if hy < LAND_MIN_H {
         return none;
     }
-    let sl = slope(seed, x, z);
+    // Carved, to match `hy` above. One expression, one surface: `hy` is the
+    // seat AND the veto, and a raw slope beside a carved height is a cell
+    // vetoed against one island and seated on another.
+    let sl = ground_slope_in(c, seed, haven, x, z);
     if sl > CLIFF_SLOPE_RATIO {
         return none;
     }
@@ -1853,14 +2978,14 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
     // carriageway stays clear so the loop is walkable, and the shoulder
     // draws barrels off its own bits so the route is worth walking.
     let mut occupant = Occupant::None;
-    match road_band(seed, x, z) {
+    match road_band_in(c, seed, x, z) {
         RoadBand::Carriageway => return none,
         RoadBand::Shoulder => {
             // Same draw, two thresholds: the bay concentrates what the open
             // coast gives up, so the loop's total pay is unmoved and its
             // shape is not. The roll is untouched, so which cells change is
             // decided by the coastline, never by a reshuffle.
-            let rate = if in_bay(seed, x, z) {
+            let rate = if in_bay_in(c, seed, x, z) {
                 ROAD_BAY_BARREL_PERMILLE
             } else {
                 ROAD_OPEN_BARREL_PERMILLE
@@ -1873,7 +2998,7 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
     }
 
     if occupant == Occupant::None {
-        let row = scatter_row(table, hy, moisture(seed, x, z), sl);
+        let row = scatter_row(table, hy, moisture_in(c, seed, x, z), sl);
         // The grove/clearing field scales the whole row, not the tree entry
         // alone: a clearing is a clearing, not a clearing with the rocks
         // left standing in it. It also leaves the mix a biome draws
@@ -1883,7 +3008,7 @@ pub fn scatter(seed: u64, table: &ScatterTable, haven: &Haven, cell_x: i32, cell
         // Deliberately below the road and the pad: a shoulder barrel is the
         // road's own rate (`ROAD_BARREL_PERMILLE`) and a pad crate is
         // authored, and neither is weather. Only the biome draw is.
-        let g = clump(seed, x, z);
+        let g = clump_in(c, seed, x, z);
         let roll = (h % 1000) as u16;
         let mut acc = 0u16;
         for (i, w) in row.iter().enumerate() {
@@ -1970,9 +3095,10 @@ pub const CLUTTER_CELLS_PER_TILE: i32 = 25;
 /// the count rule 4's structural argument is about, and it is uniform by
 /// construction — which is exactly what makes it insufficient on its own
 /// (see `CLUTTER_RICH_PER_TILE`).
-/// A literal, not the product, because `ci/clutter_shape.mjs` reads these
-/// numbers out of this source text to hold the JS mirror equal — and the
-/// const-assert below is what keeps the literal honest.
+/// A literal, not the product, because `ci/clutter_shape.mjs` read these
+/// numbers out of this source text to hold the JS mirror equal. That gate and
+/// that mirror are both gone; **the const-assert below is what keeps the
+/// literal honest, and it is now the whole of the enforcement.**
 pub const CLUTTER_BASE_PER_TILE: usize = 625;
 /// The RICHNESS stratum's per-tile budget — a bound, not a measurement, and
 /// the reason the grid layer's cap is no longer just `25 × 25`.
@@ -1990,7 +3116,8 @@ pub const CLUTTER_BASE_PER_TILE: usize = 625;
 ///
 /// 96 is NOT a design number — it is what the frame budget left, and the
 /// first draft asked for 256 and was refused by a gate. The arithmetic, so a
-/// later pass does not have to rediscover it: `ci/clutter_shape.mjs` §4 caps
+/// later pass does not have to rediscover it: `ci/clutter_shape.mjs` §4 (now
+/// deleted, so this is a derivation on record rather than a live cap) capped
 /// the worst kind's whole-ring fleet at 20% of DESIGN §9's 1.5 M triangles,
 /// the worst kind is the tuft at 12 tris, and the ring is `CLUTTER_RING = 2`
 /// — 5×5 tiles. That gives 300 k / 12 = 25 000 instances of pool, / 25 tiles
@@ -2079,7 +3206,20 @@ pub fn splat_from(h: f32, moist: f32, slope: f32) -> [u8; 4] {
 /// The client's terrain worker already holds all three per vertex and calls
 /// the law directly; this is for callers that hold only (x, z).
 pub fn splat(seed: u64, x: f32, z: f32) -> [u8; 4] {
-    splat_from(height(seed, x, z), moisture(seed, x, z), slope(seed, x, z))
+    splat_in(&mut Direct, seed, x, z)
+}
+
+/// [`splat`] against a caller-owned [`Lattice`].
+pub fn splat_memo(lat: &mut Lattice, seed: u64, x: f32, z: f32) -> [u8; 4] {
+    splat_in(lat, seed, x, z)
+}
+
+fn splat_in<C: Corners>(c: &mut C, seed: u64, x: f32, z: f32) -> [u8; 4] {
+    splat_from(
+        height_in(c, seed, x, z),
+        moisture_in(c, seed, x, z),
+        slope_in(c, seed, x, z),
+    )
 }
 
 /// The scatter mix at a point: the four biome weight rows blended by the
@@ -2183,16 +3323,74 @@ pub const CLUTTER_NONE: ClutterElem = ClutterElem {
 ///
 /// `roll_bits` is the caller's already-drawn hash, shifted to whichever slice
 /// it is spending here, so this adds no draw of its own.
-fn clutter_kind_at(seed: u64, x: f32, z: f32, y: f32, roll_bits: u64) -> Clutter {
+///
+/// `swept` is the caller's answer to `swept_here` — the authored-site override,
+/// passed in rather than computed here because each caller owns a different
+/// dither byte and the sites are the caller's `Haven` to know about.
+/// **Published so the gate can call the law rather than re-implement it.**
+/// The richness stratum no longer routes through this function — it resolves
+/// the splat once and calls [`kind_from_splat`]'s tail directly — so the claim
+/// that the two still agree is a claim about two code paths, and
+/// `tests/lattice.rs` can only check it from outside.
+pub fn clutter_kind_at(
+    seed: u64,
+    haven: &Haven,
+    x: f32,
+    z: f32,
+    y: f32,
+    roll_bits: u64,
+    swept: bool,
+) -> Clutter {
+    clutter_kind_at_in(&mut Direct, seed, haven, x, z, y, roll_bits, swept)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn clutter_kind_at_in<C: Corners>(
+    c: &mut C,
+    seed: u64,
+    haven: &Haven,
+    x: f32,
+    z: f32,
+    y: f32,
+    roll_bits: u64,
+    swept: bool,
+) -> Clutter {
     // The carriageway keeps its grit and loses its grass. This is the one
     // place clutter overrides the splat, and it is the same override the
     // scatter grid already makes for the same reason: a road that grows a
     // continuous lawn is not a road, and `TERRAIN.md` §1 stage 7 wants the
     // ring legible from a distance without a road material existing yet.
-    if road_band(seed, x, z) == RoadBand::Carriageway {
+    if road_band_in(c, seed, x, z) == RoadBand::Carriageway {
         return Clutter::Pebble;
     }
-    let w = splat_from(y, moisture(seed, x, z), slope(seed, x, z));
+    // An authored site's swept floor is the second, and it is the same
+    // override for the same reason one level up: a destination that grows the
+    // same lawn as the wilderness around it does not read as made. It is
+    // Pebble rather than `None` deliberately — the coverage guarantee (rule 4,
+    // no bare disc) is a property of this population and a hole punched here
+    // would be a hole in it, measured by `tests/clutter.rs`. Swept ground is
+    // still ground; it is grit.
+    if swept {
+        return Clutter::Pebble;
+    }
+    // `y` reached here from `ground`, so its slope is `ground_slope`.
+    let w = splat_from(
+        y,
+        moisture_in(c, seed, x, z),
+        ground_slope_in(c, seed, haven, x, z),
+    );
+    kind_from_splat(w, roll_bits)
+}
+
+/// The kind law's TAIL: the weighted draw, over a splat already in hand.
+///
+/// Split out so the richness stratum can resolve the splat once and spend it
+/// twice — its acceptance rate and its kind are both functions of the same
+/// four weights at the same point, and resolving them separately was a second
+/// `moisture` and a second four-tap `ground_slope` on every accepted cell.
+/// The split moves no arithmetic: this is `clutter_kind_at`'s own body from
+/// the total downwards, unchanged.
+pub fn kind_from_splat(w: [u8; 4], roll_bits: u64) -> Clutter {
     let mut total: u32 = 0;
     for v in w.iter() {
         total += *v as u32;
@@ -2227,7 +3425,22 @@ fn clutter_kind_at(seed: u64, x: f32, z: f32, y: f32, roll_bits: u64) -> Clutter
 /// it) is what keeps the grid invisible while leaving the coverage guarantee
 /// intact: the element never leaves its own cell, so a disc that contains a
 /// cell contains an element, whatever the draw did.
-pub fn clutter_cell(seed: u64, cell_x: i32, cell_z: i32) -> ClutterElem {
+///
+/// Takes the `Haven` for the reason `skirt_fill` beside it already does: an
+/// authored site sweeps its own floor (`site_sweep`), and a population that
+/// cannot see the site list grows a lawn across the pad — which is exactly
+/// what this one did until `reference/MONUMENTS.md` §9.2 was built.
+pub fn clutter_cell(seed: u64, haven: &Haven, cell_x: i32, cell_z: i32) -> ClutterElem {
+    clutter_cell_in(&mut Direct, seed, haven, cell_x, cell_z)
+}
+
+fn clutter_cell_in<C: Corners>(
+    c: &mut C,
+    seed: u64,
+    haven: &Haven,
+    cell_x: i32,
+    cell_z: i32,
+) -> ClutterElem {
     if !(0..CLUTTER_CELLS_PER_SIDE).contains(&cell_x)
         || !(0..CLUTTER_CELLS_PER_SIDE).contains(&cell_z)
     {
@@ -2240,12 +3453,24 @@ pub fn clutter_cell(seed: u64, cell_x: i32, cell_z: i32) -> ClutterElem {
     let x = cell_x as f32 * CLUTTER_CELL_M + jx;
     let z = cell_z as f32 * CLUTTER_CELL_M + jz;
 
-    let y = height(seed, x, z);
+    let y = ground_in(c, seed, haven, x, z);
     if y < LAND_MIN_H {
         return CLUTTER_NONE;
     }
 
-    let kind = clutter_kind_at(seed, x, z, y, h >> 32);
+    // Bits 0..7 are this draw's one unspent slice — every other byte of `h` is
+    // already carrying jitter, kind, yaw or scale — so the sweep dither costs
+    // no second hash, which is the rule this whole population is built on.
+    let kind = clutter_kind_at_in(
+        c,
+        seed,
+        haven,
+        x,
+        z,
+        y,
+        h >> 32,
+        swept_here(haven, x, z, h as u8),
+    );
 
     ClutterElem {
         kind,
@@ -2280,19 +3505,53 @@ const CH_CLUTTER_RICH: u32 = 104;
 ///     this reading as dust (`SPAWN.md` §9.3). `clump` is already squared per
 ///     §9.4, so the tail is soft and a rich edge is ragged rather than a
 ///     contour line of the noise.
-fn clutter_richness_at(seed: u64, x: f32, z: f32, y: f32) -> u32 {
+///
+/// **Public because three files outside this one cite it by name** —
+/// `render/clutter.rs`, `client/tests/cover.rs` and `tests/clutter.rs` all
+/// reason about which channels it counts — and because the early-out in
+/// `clutter_rich_cell` leans on its RANGE, which is a claim a gate has to be
+/// able to measure rather than read. `tests/lattice.rs` sweeps the island
+/// against `RICH_ACCEPT_MAX` through this entry point.
+pub fn clutter_richness_at(seed: u64, haven: &Haven, x: f32, z: f32, y: f32) -> u32 {
+    let mut c = Direct;
     // The carriageway is grit and stays grit: the road override that
     // `clutter_kind_at` makes for kind, made here for count. A road that
     // grows a thicker lawn than its verge is not a road.
-    if road_band(seed, x, z) == RoadBand::Carriageway {
+    if road_band_in(&mut c, seed, x, z) == RoadBand::Carriageway {
         return 0;
     }
-    let w = splat_from(y, moisture(seed, x, z), slope(seed, x, z));
+    // `y` reached here from `ground`, so its slope is `ground_slope`.
+    let w = splat_from(
+        y,
+        moisture_in(&mut c, seed, x, z),
+        ground_slope_in(&mut c, seed, haven, x, z),
+    );
+    richness_from_splat_in(&mut c, seed, w, x, z)
+}
+
+/// The richness rate over a splat already in hand, and the CARRIAGEWAY case
+/// removed — `clutter_richness_at` above keeps the road check because that is
+/// its published contract, and `clutter_rich_cell` makes the same check once
+/// for both of its own consumers.
+///
+/// Split for `kind_from_splat`'s reason and split at the same seam: the four
+/// weights are the expensive part and the two laws that read them are cheap.
+fn richness_from_splat_in<C: Corners>(c: &mut C, seed: u64, w: [u8; 4], x: f32, z: f32) -> u32 {
     let grow = w[1] as u32 + w[2] as u32; // grass + forest litter
-    let g = clump(seed, x, z).clamp(0.0, 1.0);
+    let g = clump_in(c, seed, x, z).clamp(0.0, 1.0);
     // `grow` is already 0..=255 (the weights normalize to 255 on land) and `g`
     // is 0..=1, so the product is a clean 0..=255 before the rate scales it.
-    floor_i32(grow as f32 * g * (RICH_ACCEPT_MAX as f32 / 255.0)).clamp(0, 255) as u32
+    //
+    // **The ceiling is load-bearing, not decorative.** `clutter_rich_cell`
+    // refuses a cell whose acceptance byte is `>= RICH_ACCEPT_MAX` WITHOUT
+    // resolving any of this, which is exact only while this function cannot
+    // return more than `RICH_ACCEPT_MAX`. It cannot: `splat_from` normalizes
+    // its four bytes to 255, so `grow <= 256` even after each byte rounds up,
+    // `g <= 1`, and `256 * 32 / 255` floors to 32. The assert says so in a
+    // debug build; `tests/lattice.rs` says so over the island.
+    let r = floor_i32(grow as f32 * g * (RICH_ACCEPT_MAX as f32 / 255.0)).clamp(0, 255) as u32;
+    debug_assert!(r <= RICH_ACCEPT_MAX);
+    r
 }
 
 /// The richness stratum's acceptance ceiling, out of 256 — what the ground at
@@ -2312,7 +3571,7 @@ fn clutter_richness_at(seed: u64, x: f32, z: f32, y: f32) -> u32 {
 /// backstop should be. `test_richness_is_spread_across_its_tile` is the gate
 /// that says so, and it is the one that reddens if this number is raised
 /// without the budget moving with it.
-const RICH_ACCEPT_MAX: u32 = 32;
+pub const RICH_ACCEPT_MAX: u32 = 32;
 
 /// The richness stratum's draw for one cell: a SECOND element, or none.
 ///
@@ -2328,38 +3587,154 @@ const RICH_ACCEPT_MAX: u32 = 32;
 /// ever ADDS to a cell that the coverage stratum has already populated, so
 /// the largest bare disc is unchanged by construction and the wall in
 /// `tests/clutter.rs` re-measures it anyway.
-pub fn clutter_rich_cell(seed: u64, cell_x: i32, cell_z: i32) -> ClutterElem {
+pub fn clutter_rich_cell(seed: u64, haven: &Haven, cell_x: i32, cell_z: i32) -> ClutterElem {
+    clutter_rich_cell_in(&mut Direct, seed, haven, cell_x, cell_z)
+}
+
+/// The richness stratum's per-cell draw, before any terrain is touched: the
+/// acceptance byte, the jittered position, and the sweep dither.
+///
+/// **Published so the gate can re-derive this stratum's refusals from
+/// outside.** `clutter_rich_cell` now refuses most cells on the roll alone,
+/// and the only honest evidence that the early refusal is the SAME refusal is
+/// a rebuild of the whole chain — roll, ground, rate, sweep — written
+/// independently of the function under test. `tests/lattice.rs` does that, and
+/// it was written the other way first: its rebuild called `clutter_rich_cell`
+/// for the per-cell law and was therefore green under a mutant that moved the
+/// threshold by one. A gate that reached in through a `pub` channel number
+/// instead would be re-implementing the bit layout rather than reading it,
+/// which is the positional-payload failure `CLAUDE.md` keeps a trap for.
+///
+/// One layout, one place: `clutter_rich_cell` calls this.
+///
+/// **Every slice is NAMED rather than returned as a tuple of bytes**, which is
+/// the whole point of publishing it. A gate handed `(u32, f32, f32, u8, u64)`
+/// would be re-deriving which shift means what, and a doc line that says
+/// `a = roll, b = dither` is exactly the positional payload `CLAUDE.md` keeps
+/// a trap for — three green gates over a swapped pair.
+pub fn clutter_rich_draw(seed: u64, cell_x: i32, cell_z: i32) -> RichDraw {
+    let h = cell_hash(seed, cell_x, cell_z, CH_CLUTTER_RICH);
+    let jx = ((h >> 16) & 0xFF) as f32 * (CLUTTER_CELL_M / 255.0);
+    let jz = ((h >> 24) & 0xFF) as f32 * (CLUTTER_CELL_M / 255.0);
+    RichDraw {
+        roll: ((h >> 8) & 0xFF) as u32,
+        x: cell_x as f32 * CLUTTER_CELL_M + jx,
+        z: cell_z as f32 * CLUTTER_CELL_M + jz,
+        dither: h as u8,
+        kind_bits: h >> 32,
+        yaw: ((h >> 40) & 0xFF) as u8,
+        scale: 0.75 + ((h >> 48) & 0xFF) as f32 * (0.5 / 255.0),
+    }
+}
+
+/// What one hash draw of the richness stratum decides, before any terrain is
+/// touched. See [`clutter_rich_draw`].
+#[derive(Clone, Copy, Debug)]
+pub struct RichDraw {
+    /// Tested against [`clutter_richness_at`]: `roll >= rate` refuses the cell.
+    pub roll: u32,
+    /// The jittered world position the element would stand at.
+    pub x: f32,
+    /// The jittered world position the element would stand at.
+    pub z: f32,
+    /// The sweep dither, rolled against `site_sweep` at that position.
+    pub dither: u8,
+    /// The slice the kind draw spends (`clutter_kind_at`'s `roll_bits`).
+    pub kind_bits: u64,
+    /// The element's facing, and its visual scale in [0.75, 1.25].
+    pub yaw: u8,
+    pub scale: f32,
+}
+
+fn clutter_rich_cell_in<C: Corners>(
+    c: &mut C,
+    seed: u64,
+    haven: &Haven,
+    cell_x: i32,
+    cell_z: i32,
+) -> ClutterElem {
     if !(0..CLUTTER_CELLS_PER_SIDE).contains(&cell_x)
         || !(0..CLUTTER_CELLS_PER_SIDE).contains(&cell_z)
     {
         return CLUTTER_NONE;
     }
-    let h = cell_hash(seed, cell_x, cell_z, CH_CLUTTER_RICH);
 
-    let jx = ((h >> 16) & 0xFF) as f32 * (CLUTTER_CELL_M / 255.0);
-    let jz = ((h >> 24) & 0xFF) as f32 * (CLUTTER_CELL_M / 255.0);
-    let x = cell_x as f32 * CLUTTER_CELL_M + jx;
-    let z = cell_z as f32 * CLUTTER_CELL_M + jz;
+    // ── The refusal, BEFORE the ground it would have been tested against ──
+    //
+    // The acceptance test below is `roll >= richness`, and `richness` cannot
+    // exceed `RICH_ACCEPT_MAX` — see `richness_from_splat_in`, which asserts
+    // it. So a roll at or above the ceiling refuses this cell whatever the
+    // ground says, and every tap that would have resolved the ground is
+    // spent proving something the hash already decided.
+    //
+    // It is 224 of 256 cells: the coverage stratum answers the whole tile
+    // either way, and this stratum's own header says it is "REFUSED most of
+    // the time, at a rate the ground itself sets". Refusing early is the
+    // same refusal, one tap sooner — 42% of a clutter tile's whole `height`
+    // bill, and not one drawn element moves. `tests/lattice.rs` holds the
+    // fill against a naive rebuild bit for bit, which is the only evidence
+    // that sentence is worth.
+    let d = clutter_rich_draw(seed, cell_x, cell_z);
+    let (roll, x, z) = (d.roll, d.x, d.z);
+    if roll >= RICH_ACCEPT_MAX {
+        return CLUTTER_NONE;
+    }
 
-    let y = height(seed, x, z);
+    let y = ground_in(c, seed, haven, x, z);
     if y < LAND_MIN_H {
         return CLUTTER_NONE;
     }
 
+    // ── One splat, two laws ───────────────────────────────────────────────
+    //
+    // The acceptance rate and the kind are both functions of the four weights
+    // at THIS point, and resolving them apart cost a second `moisture` and a
+    // second four-tap `ground_slope` on every cell that got this far. The
+    // carriageway override is the same check for both — `clutter_richness_at`
+    // returns 0 on it (so the cell is always refused) and `clutter_kind_at`
+    // returns `Pebble` — so making it once and refusing here is exactly what
+    // the two made separately.
+    if road_band_in(c, seed, x, z) == RoadBand::Carriageway {
+        return CLUTTER_NONE;
+    }
+    let w = splat_from(
+        y,
+        moisture_in(c, seed, x, z),
+        ground_slope_in(c, seed, haven, x, z),
+    );
+
     // The acceptance draw. `SPAWN.md` §9.6: the roll is seeded per cell, so
     // the same cell accepts or refuses identically however the tile is
     // reached — a streamed tile and a brute-forced query agree.
-    if ((h >> 8) & 0xFF) as u32 >= clutter_richness_at(seed, x, z, y) {
+    if roll >= richness_from_splat_in(c, seed, w, x, z) {
+        return CLUTTER_NONE;
+    }
+
+    // The understory is REFUSED on swept ground rather than turned to grit.
+    // The two strata answer the site differently on purpose: coverage is a
+    // guarantee and must survive the override as grit (`clutter_kind_at`),
+    // richness is a second element the ground earned and a made floor has not
+    // earned one. Its own dither byte, so the two decisions are independent
+    // and the band thins in both populations without them agreeing cell by
+    // cell — which would put the hard edge back one stratum down.
+    if swept_here(haven, x, z, d.dither) {
         return CLUTTER_NONE;
     }
 
     ClutterElem {
-        kind: clutter_kind_at(seed, x, z, y, h >> 32),
+        // `swept` is false here by the branch above and the carriageway by the
+        // one above that, so this is `clutter_kind_at`'s tail and nothing else.
+        kind: kind_from_splat(w, d.kind_bits),
         x,
         y,
         z,
-        yaw: ((h >> 40) & 0xFF) as u8,
-        scale: 0.75 + ((h >> 48) & 0xFF) as f32 * (0.5 / 255.0),
+        // From the draw, not re-sliced here: one hash, one layout, one place
+        // that knows which byte is the yaw. The first cut hashed the cell
+        // twice — once in `clutter_rich_draw` and once for these two fields —
+        // which is a wasted draw AND a second copy of the thing the published
+        // struct exists to be the only copy of.
+        yaw: d.yaw,
+        scale: d.scale,
     }
 }
 
@@ -2379,9 +3754,44 @@ pub fn clutter_rich_cell(seed: u64, cell_x: i32, cell_z: i32) -> ClutterElem {
 /// never an overrun. The richness stratum carries its own bound on top of
 /// that: `CLUTTER_RICH_PER_TILE` is the budget a client pool is sized for, so
 /// a tile that is rich everywhere stops adding rather than overrunning it.
-pub fn clutter_fill(seed: u64, tile_x: i32, tile_z: i32, out: &mut [ClutterElem]) -> usize {
+pub fn clutter_fill(
+    seed: u64,
+    haven: &Haven,
+    tile_x: i32,
+    tile_z: i32,
+    out: &mut [ClutterElem],
+) -> usize {
+    let mut lat = Lattice::new();
+    clutter_fill_memo(&mut lat, seed, haven, tile_x, tile_z, out)
+}
+
+/// [`clutter_fill`] against a caller-owned [`Lattice`].
+///
+/// `clutter_fill` builds one on its stack per call, which is already almost
+/// all of the win — a tile's 625 cells sit inside 16 m and touch under a
+/// hundred distinct lattice quads. This entry point exists for the caller
+/// that streams a RING of tiles and would rather not pay the table's
+/// initialisation, or lose the neighbours' quads, once per tile:
+/// `render/clutter.rs` holds one on its ring resource.
+pub fn clutter_fill_memo(
+    lat: &mut Lattice,
+    seed: u64,
+    haven: &Haven,
+    tile_x: i32,
+    tile_z: i32,
+    out: &mut [ClutterElem],
+) -> usize {
     let cx0 = tile_x * CLUTTER_CELLS_PER_TILE;
     let cz0 = tile_z * CLUTTER_CELLS_PER_TILE;
+    // Off-island tiles answer as a tile rather than 625 times. Both cell
+    // functions range-check every cell and return `CLUTTER_NONE`; a tile whose
+    // whole span is outside is 625 pairs of compares reaching the same answer.
+    // Exact: the span is contiguous, so if neither end is inside, none is.
+    let cx1 = cx0 + CLUTTER_CELLS_PER_TILE - 1;
+    let cz1 = cz0 + CLUTTER_CELLS_PER_TILE - 1;
+    if cx1 < 0 || cz1 < 0 || cx0 >= CLUTTER_CELLS_PER_SIDE || cz0 >= CLUTTER_CELLS_PER_SIDE {
+        return 0;
+    }
     let mut n = 0usize;
     let mut rich = 0usize;
     for j in 0..CLUTTER_CELLS_PER_TILE {
@@ -2389,7 +3799,7 @@ pub fn clutter_fill(seed: u64, tile_x: i32, tile_z: i32, out: &mut [ClutterElem]
             if n >= out.len() {
                 return n;
             }
-            let e = clutter_cell(seed, cx0 + i, cz0 + j);
+            let e = clutter_cell_in(lat, seed, haven, cx0 + i, cz0 + j);
             if e.kind != Clutter::None {
                 out[n] = e;
                 n += 1;
@@ -2397,7 +3807,7 @@ pub fn clutter_fill(seed: u64, tile_x: i32, tile_z: i32, out: &mut [ClutterElem]
             if rich >= CLUTTER_RICH_PER_TILE || n >= out.len() {
                 continue;
             }
-            let r = clutter_rich_cell(seed, cx0 + i, cz0 + j);
+            let r = clutter_rich_cell_in(lat, seed, haven, cx0 + i, cz0 + j);
             if r.kind != Clutter::None {
                 out[n] = r;
                 n += 1;
@@ -2460,7 +3870,8 @@ pub const SKIRT_TILE_CELLS: i32 = 2;
 /// apron, because a prop jittered toward the edge skirts across it.
 pub const SKIRT_SCAN_CELLS: i32 = SKIRT_TILE_CELLS + 2;
 /// Skirt elements one tile can produce. A literal so `ci/clutter_shape.mjs`
-/// can read it out of this source, and a bound rather than a measurement:
+/// could read it out of this source — that gate is deleted, so the literal is
+/// now only a literal — and a bound rather than a measurement:
 /// every scanned cell holding a max-reach prop, all of it landing inside.
 pub const SKIRT_PER_TILE: usize = 256;
 /// Elements one tile can produce in total — the fill buffer's real cap, and
@@ -2512,12 +3923,35 @@ pub fn skirt_count(o: Occupant) -> usize {
 /// native and wasm by construction.
 pub fn skirt_elem(
     seed: u64,
+    haven: &Haven,
     cell_x: i32,
     cell_z: i32,
     slot: &Slot,
     i: usize,
     n: usize,
 ) -> ClutterElem {
+    let (h, x, z) = skirt_pos(seed, cell_x, cell_z, slot, i, n);
+    skirt_at(&mut Direct, seed, haven, h, x, z)
+}
+
+/// Where element `i` of `n` LANDS, and the draw that put it there — the half
+/// of [`skirt_elem`] that costs no terrain.
+///
+/// Split out because `skirt_fill` throws away three quarters of what it asks
+/// for on a test that needs no ground at all: an element belongs to exactly
+/// one of the tiles its prop straddles, and the other tiles were paying a
+/// `ground` tap and a four-tap `ground_slope` fan to build an element they
+/// then dropped on a coordinate compare. Asking WHERE first and only then
+/// asking WHAT is the same element by construction — this is `skirt_elem`'s
+/// own body, cut at the line before its first tap.
+fn skirt_pos(
+    seed: u64,
+    cell_x: i32,
+    cell_z: i32,
+    slot: &Slot,
+    i: usize,
+    n: usize,
+) -> (u64, f32, f32) {
     let h = cell_hash(seed, cell_x, cell_z, CH_SKIRT + i as u32);
 
     // Angle: stratum base + full-stratum jitter, in LUT steps.
@@ -2528,18 +3962,41 @@ pub fn skirt_elem(
 
     // Radius: the band OUTSIDE the footprint edge, uniformly drawn.
     let r = skirt_base_r(slot.occupant) + ((h >> 24) & 0xFF) as f32 * (SKIRT_BAND_M / 255.0);
-    let x = slot.x + dx * r;
-    let z = slot.z + dz * r;
+    (h, slot.x + dx * r, slot.z + dz * r)
+}
 
-    let y = height(seed, x, z);
+/// What stands at a skirt position — [`skirt_elem`]'s terrain half.
+fn skirt_at<C: Corners>(
+    c: &mut C,
+    seed: u64,
+    haven: &Haven,
+    h: u64,
+    x: f32,
+    z: f32,
+) -> ClutterElem {
+    let y = ground_in(c, seed, haven, x, z);
     if y < LAND_MIN_H {
         // A prop on the waterline skirts only the half of its ring that is on
         // land. Cheaper and truer than vetoing the whole skirt.
         return CLUTTER_NONE;
     }
 
+    // The prop this rings stands outside the site's scatter mask by
+    // construction, but its skirt reaches inward up to `SKIRT_BAND_M` past a
+    // footprint that can be metres wide — so an element of it CAN land on
+    // swept ground, and the site's floor has to be able to say so. Bits 0..7,
+    // this draw's unspent slice, exactly as `clutter_cell`'s.
     ClutterElem {
-        kind: clutter_kind_at(seed, x, z, y, h >> 32),
+        kind: clutter_kind_at_in(
+            c,
+            seed,
+            haven,
+            x,
+            z,
+            y,
+            h >> 32,
+            swept_here(haven, x, z, h as u8),
+        ),
         x,
         y,
         z,
@@ -2562,6 +4019,23 @@ pub fn skirt_fill(
     tile_z: i32,
     out: &mut [ClutterElem],
 ) -> usize {
+    let mut lat = Lattice::new();
+    skirt_fill_memo(&mut lat, seed, table, haven, tile_x, tile_z, out)
+}
+
+/// [`skirt_fill`] against a caller-owned [`Lattice`]. Its sixteen `scatter`
+/// resolves are five `height` taps each and its elements ring props metres
+/// apart, so the whole tile sits inside a handful of lattice quads.
+#[allow(clippy::too_many_arguments)]
+pub fn skirt_fill_memo(
+    lat: &mut Lattice,
+    seed: u64,
+    table: &ScatterTable,
+    haven: &Haven,
+    tile_x: i32,
+    tile_z: i32,
+    out: &mut [ClutterElem],
+) -> usize {
     let x0 = tile_x as f32 * CLUTTER_TILE_M;
     let z0 = tile_z as f32 * CLUTTER_TILE_M;
     let x1 = x0 + CLUTTER_TILE_M;
@@ -2576,19 +4050,26 @@ pub fn skirt_fill(
         for dx in 0..SKIRT_SCAN_CELLS {
             let cx = c0x + dx;
             let cz = c0z + dz;
-            let slot = scatter(seed, table, haven, cx, cz);
+            let slot = scatter_in(lat, seed, table, haven, cx, cz);
             let count = skirt_count(slot.occupant);
             for i in 0..count {
                 if n >= out.len() {
                     return n;
                 }
-                let e = skirt_elem(seed, cx, cz, &slot, i, count);
-                if e.kind == Clutter::None {
+                // Tile ownership FIRST: half-open on both axes, so an element
+                // on a shared edge belongs to exactly one of the two tiles —
+                // and the three tiles that do not own it now say so before
+                // paying a `ground` tap and a four-tap slope fan to build an
+                // element they were always going to drop. The position is the
+                // same draw either way (`skirt_pos`), so the surviving set is
+                // unchanged; a scanned cell's apron means three quarters of
+                // what this loop asked for was discarded on this compare.
+                let (h, ex, ez) = skirt_pos(seed, cx, cz, &slot, i, count);
+                if ex < x0 || ex >= x1 || ez < z0 || ez >= z1 {
                     continue;
                 }
-                // Tile ownership: half-open on both axes, so an element on a
-                // shared edge belongs to exactly one of the two tiles.
-                if e.x < x0 || e.x >= x1 || e.z < z0 || e.z >= z1 {
+                let e = skirt_at(lat, seed, haven, h, ex, ez);
+                if e.kind == Clutter::None {
                     continue;
                 }
                 out[n] = e;
@@ -2629,8 +4110,10 @@ pub fn skirt_fill(
 /// y = 0 and the doorway on +Z.
 ///
 /// A row-for-row mirror of `web/src/props.js`'s `HAVEN_SHELTER_PARTS` minus
-/// the part name, and `ci/haven_shelter.mjs` holds the two equal number for
-/// number. That gate is the whole reason this is a table rather than a shape:
+/// the part name, and `ci/haven_shelter.mjs` held the two equal number for
+/// number. **Both went with the browser client, so this table is unmirrored
+/// and ungated now.** That gate was the whole reason this is a table rather
+/// than a shape:
 /// a building is the one occupant whose volume cannot be checked by eye
 /// against its mesh, because the interesting part is the hole in it. Drift
 /// here is not a wrong radius, it is a doorway the client draws and the
@@ -2671,10 +4154,10 @@ pub const SHELTER_BOXES: [[f32; 6]; 14] = [
 /// thing the walls stand on. Widen it into a wall and it stops being the
 /// floor line and the build stops.
 ///
-/// **What this costs today:** nothing here makes a body stand on the plinth
-/// either, so at 0.2 m the floor reads as a kerb a player sinks into rather
-/// than steps onto. That is the ground-query half of the same seam and it
-/// lives in the systems lane's `collide.rs`; this table is what it will need.
+/// The ground-query half of the seam is [`slot_ground`] (deploy collision
+/// v0): the blocking loop skips this row, the ground loop reads it, so the
+/// plinth is a floor a body steps onto rather than a kerb it sinks into —
+/// `tests/solid_deploy.rs` walks it.
 pub const SHELTER_FLOOR_IX: usize = 0;
 
 /// Bounding radius of the shelter's boxes about the slot, meters — the
@@ -2693,9 +4176,10 @@ pub const SHELTER_PEAK_M: f32 = 9.2;
 
 /// The lesser tier's greybox, as a box list on `SHELTER_BOXES`' terms:
 /// `[cx, cy, cz, sx, sy, sz]`, center and full size, in the slot's own frame,
-/// y measured from the slot's ground. `web/src/props.js` holds the same nine
-/// rows as `WAYSTATION_CANOPY_PARTS` and `ci/waystation_canopy.mjs` refuses a
-/// drift between them.
+/// y measured from the slot's ground. `web/src/props.js` held the same nine
+/// rows as `WAYSTATION_CANOPY_PARTS` and `ci/waystation_canopy.mjs` refused a
+/// drift between them; both went with the browser client, so nothing refuses a
+/// drift now.
 ///
 /// **It is an open canopy because it must not be a second shelter.**
 /// `NOW.md` §4b states the rule — "a second copy of `HAVEN_SHELTER` makes the
@@ -2879,22 +4363,73 @@ const fn boxes_peak(boxes: &[[f32; 6]]) -> f32 {
 /// no bush. It reads as cover and costs nothing to cross, which is what the
 /// reference does with the same prop.
 ///
-/// Every row is held to the mesh by `ci/occupant_volume.mjs`, which measures
-/// the vertex buffer `ARCHETYPES` actually builds and sandwiches each row
-/// between the mesh's widest horizontal extent below the blocking top and the
-/// mesh's own bound. Nothing in the Rust workspace can see a triangle, so the
-/// asserts below prove only that this file agrees with itself. The gate found
-/// the `CrateSlot` row inward: it read 0.68 against a measured half-diagonal
-/// of 0.680074, which is the bug this doc names, so it is 0.6801 now.
+/// **Every row is held to the mesh by `crates/client/tests/greybox.rs`**,
+/// which builds the archetype's real mesh through `props::archetype_mesh` and
+/// measures its vertices. ⚠ This paragraph used to cite
+/// `ci/occupant_volume.mjs` and say "nothing in the Rust workspace can see a
+/// triangle, so the asserts below prove only that this file agrees with
+/// itself" — that gate went with the browser client and the sentence stayed,
+/// which is the dead-citation failure `CLAUDE.md` warns about: the doc read as
+/// covered while nothing checked it. It is covered again, in Rust, and the
+/// claim is now the stronger one — every row is measured against the drawn
+/// mesh in BOTH directions, so a row wider than what it blocks reddens the
+/// gate rather than becoming an invisible collision skirt.
+///
+/// The old gate found the `CrateSlot` row inward — it read 0.68 against a
+/// measured half-diagonal of 0.680074, so it is 0.6801 now. The new one found
+/// the three generated blobs the same way and larger: `blob_mesh` displaces
+/// vertices INWARD from its nominal radius, so rows written off the nominal
+/// ("DodecahedronGeometry(1.5)") blocked up to 0.39 m wider than anything a
+/// player could see. Those rows are the measured bounds now (operator,
+/// 2026-08-10), and the gate holds them there.
+///
+/// **The barrel is the third correction and it came from outside the tree.**
+/// Row 7 read 0.45 and cited `CylinderGeometry(0.45, 0.45, 0.95)` — the
+/// deleted browser client's geometry, a guess carried forward — and 0.9 m
+/// across by 0.95 tall is near-spherical where a 55-gallon drum is half again
+/// taller than it is wide. It is the measured object now: **0.585 m across by
+/// 0.88 tall**, so 0.585/2 here, 0.88 in `OCCUPANT_TOP_M`, and the client's
+/// `archetype_lift` set to the half-height so the drum's base is the slot's
+/// ground. Two independent sources agree on the pair — the reference set's
+/// `barrelroad`, and Meshy's `auto_size` vision estimate, which returned it
+/// unprompted (`DECISIONS.md` §open, barrel proportions v1). The mesh could
+/// not move without this row: `greybox.rs` refuses a mesh narrower than the
+/// volume, because an invisible collision skirt is a player passing through
+/// geometry — so the pair moved in one commit and `test_replay`'s golden
+/// moved with it.
 pub const OCCUPANT_R_M: [f32; 13] = [
-    0.0,                // None
-    0.26,               // Tree — the TRUNK, not the canopy: `CylinderGeometry(0.13, 0.26)`
-    1.0,                // StoneNode  — DodecahedronGeometry(1.0)
-    1.0,                // MetalNode  — DodecahedronGeometry(1.0)
-    1.0,                // SulfurNode — DodecahedronGeometry(1.0)
+    0.0, // None
+    // Tree — the TRUNK, not the canopy, measured off the drawn bark mesh at
+    // its base by `client/tests/tree.rs`. **It read 0.26 until 2026-08-17,
+    // citing `CylinderGeometry(0.13, 0.26)`** — three.js, i.e. the bottom
+    // radius of the BROWSER client's hand-authored cone pine, a mesh that no
+    // longer exists. The native client draws `bevy_procedural_tree` output
+    // (~0.19 m pine, 0.2398 m broadleaf), so the sim was blocking a cylinder
+    // up to 0.11 m proud of the bark at chest height: an invisible skirt,
+    // reported from play as a trunk standing to the side of the thing that
+    // stopped you. Nobody re-measured it when the mesh was replaced, and the
+    // gate that holds every other row to its mesh **excused** this one on a
+    // claim about a test that did not check it (`greybox.rs::excused`).
+    //
+    // The base, because a trunk tapers upward and is therefore widest there
+    // inside the capsule's band. The LIMBS are deliberately outside this and
+    // always will be — they reach 0.86 m on a pine and 2.38 m on a broadleaf
+    // within the same band, and a cylinder covering them would seal a forest
+    // meant to be walked through. A tree is the one archetype whose drawn
+    // geometry intentionally exceeds its collision; `tree.rs`'s two gates say
+    // so in both directions.
+    0.2398,
+    // The three ore nodes share one mesh, so they share one measurement:
+    // `blob_mesh(1.0, 0.46, …)` reaches 0.914739 m, NOT the nominal 1.0 —
+    // the jitter displaces inward. Rounded outward at 4 dp, the convention
+    // `SHELTER_CORNER_R_M` states: erring outward costs a wasted narrow-phase
+    // test, erring inward lets a body stand inside the mesh.
+    0.9148,             // StoneNode  — measured off blob_mesh(1.0, 0.46)
+    0.9148,             // MetalNode  — the same mesh
+    0.9148,             // SulfurNode — the same mesh
     0.0,                // Bush — deliberately passable
-    1.5,                // Rock — DodecahedronGeometry(1.5)
-    0.45,               // BarrelSlot — CylinderGeometry(0.45, 0.45, 0.95)
+    1.1145,             // Rock — measured off blob_mesh(1.5, 0.52); nominal was 1.5
+    0.2925,             // BarrelSlot — the drum is 0.585 m across, so 0.585/2
     0.0,                // 8: the client's stump. Not a sim occupant; the hole is the point.
     0.6801,             // CrateSlot — BoxGeometry(1.1, 0.8) half-diagonal, 0.55/0.4 in xz
     SHELTER_CORNER_R_M, // HavenShelter — broad phase; SHELTER_BOXES is the volume
@@ -2920,14 +4455,17 @@ pub const OCCUPANT_R_M: [f32; 13] = [
 /// costs nothing today and is the correct shape when something flies or a
 /// tree falls. (knob, DECISIONS.md §open: occupant volume v0.)
 pub const OCCUPANT_TOP_M: [f32; 13] = [
-    0.0,            // None
-    5.7,            // Tree — PINE_TRUNK_H
-    1.5,            // StoneNode  — lift 0.5 + radius 1.0
-    1.5,            // MetalNode
-    1.5,            // SulfurNode
+    0.0, // None
+    5.7, // Tree — PINE_TRUNK_H
+    // `lift + the mesh's own max y`, measured, not `lift + the nominal
+    // radius` — the same correction the radii above take, and for the same
+    // reason: the blob never reaches its nominal radius in any axis.
+    1.1269,         // StoneNode  — lift 0.5 + 0.626858; was 1.5 off the nominal
+    1.1269,         // MetalNode
+    1.1269,         // SulfurNode
     0.0,            // Bush
-    2.05,           // Rock — lift 0.55 + radius 1.5
-    0.975,          // BarrelSlot — lift 0.5 + half-height 0.475
+    1.5403,         // Rock — lift 0.55 + 0.990298; was 2.05 off the nominal
+    0.88,           // BarrelSlot — lift 0.44 + half-height 0.44
     0.0,            // 8: the stump
     0.8,            // CrateSlot — lift 0.4 + half-height 0.4
     SHELTER_PEAK_M, // HavenShelter — tower-cap at 9.0 + 0.2
@@ -2985,13 +4523,16 @@ pub const OCCUPANT_PROBE_CELLS: i32 = 1;
 pub const fn occupant_volume(o: Occupant) -> (f32, f32) {
     match o {
         Occupant::None => (0.0, 0.0),
-        Occupant::Tree => (0.26, 5.7),
-        Occupant::StoneNode => (1.0, 1.5),
-        Occupant::MetalNode => (1.0, 1.5),
-        Occupant::SulfurNode => (1.0, 1.5),
+        // The trunk at its base, measured off the drawn bark by
+        // `client/tests/tree.rs`. See `OCCUPANT_R_M`'s row 1 for why it is
+        // not the 0.26 a deleted three.js cylinder used to justify.
+        Occupant::Tree => (0.2398, 5.7),
+        Occupant::StoneNode => (0.9148, 1.1269),
+        Occupant::MetalNode => (0.9148, 1.1269),
+        Occupant::SulfurNode => (0.9148, 1.1269),
         Occupant::Bush => (0.0, 0.0),
-        Occupant::Rock => (1.5, 2.05),
-        Occupant::BarrelSlot => (0.45, 0.975),
+        Occupant::Rock => (1.1145, 1.5403),
+        Occupant::BarrelSlot => (0.2925, 0.88),
         Occupant::CrateSlot => (0.6801, 0.8),
         Occupant::HavenShelter => (SHELTER_CORNER_R_M, SHELTER_PEAK_M),
         Occupant::CacheSlot => (0.5701, 0.55),
@@ -3180,6 +4721,73 @@ pub fn slot_blocks(
         ),
         _ => true,
     }
+}
+
+/// The highest surface of this slot's occupant a capsule at `feet_y` may
+/// stand on, or `collide::NO_SURFACE` — `slot_blocks`'s twin, and the
+/// `slot_ground` `terrain.rs:1126`'s note and `NOW.md` §0q item 3 named
+/// as missing: until it existed a crate top, a boulder top and the
+/// shelter's plinth were all drawn geometry a body sank through, because
+/// the vertical pass had no occupant surface to snap to.
+///
+/// "May stand on" is `piece_ground`'s lid rule — a top more than
+/// `STEP_UP` above the feet is a wall face, not a floor — which is what
+/// keeps a pine's 10 m crown from ever being ground while letting a jump
+/// arc land on a barrel. The footprint is the occupant's own (NOT
+/// inflated by the capsule): a body stands on a crate with its centre
+/// over the crate, the same rule a floor slab applies at its cell edge.
+pub fn slot_ground(slot: &Slot, x: f32, z: f32, feet_y: f32) -> f32 {
+    let (r, top) = occupant_volume(slot.occupant);
+    if r <= 0.0 {
+        return crate::collide::NO_SURFACE;
+    }
+    let lid = feet_y + crate::movement::STEP_UP;
+    let dx = x - slot.x;
+    let dz = z - slot.z;
+    match slot.occupant {
+        Occupant::HavenShelter => boxes_ground(slot, &SHELTER_BOXES, dx, dz, lid),
+        Occupant::WaystationCanopy => boxes_ground(slot, &WAYSTATION_CANOPY_BOXES, dx, dz, lid),
+        _ => {
+            let reach = r * slot.scale;
+            if dx * dx + dz * dz >= reach * reach {
+                return crate::collide::NO_SURFACE;
+            }
+            let t = slot.y + top * slot.scale;
+            if t <= lid {
+                t
+            } else {
+                crate::collide::NO_SURFACE
+            }
+        }
+    }
+}
+
+/// The box-list half of [`slot_ground`]: the highest box top under the
+/// point, floor box included — that row is exactly the plinth/deck the
+/// blocking loop skips, and standing on it is this function's whole job.
+fn boxes_ground(slot: &Slot, boxes: &[[f32; 6]], dx: f32, dz: f32, lid: f32) -> f32 {
+    // World → local, `boxes_block`'s inverse basis.
+    let (s, c) = crate::yaw_lut::yaw_dir((slot.yaw as u16) << 8);
+    let lx = dx * c - dz * s;
+    let lz = dx * s + dz * c;
+    let mut best = crate::collide::NO_SURFACE;
+    let mut i = 0;
+    while i < boxes.len() {
+        let b = &boxes[i];
+        i += 1;
+        let hx = b[3] * 0.5 * slot.scale;
+        let hz = b[5] * 0.5 * slot.scale;
+        let cx = b[0] * slot.scale;
+        let cz = b[2] * slot.scale;
+        if fabs(lx - cx) > hx || fabs(lz - cz) > hz {
+            continue;
+        }
+        let t = slot.y + (b[1] + b[4] * 0.5) * slot.scale;
+        if t <= lid && t > best {
+            best = t;
+        }
+    }
+    best
 }
 
 /// The box-list narrow phase, called only after a greybox's bounding circle

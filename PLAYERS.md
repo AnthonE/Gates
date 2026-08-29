@@ -1,10 +1,13 @@
 # PLAYERS.md — the agent player
 
-**DESIGN, 2026-08-05. None of this is built.** `crates/sim-core/src/bots.rs`
+**DESIGN, 2026-08-05. One wall of it is built.** `crates/sim-core/src/bots.rs`
 drives deterministic synthetic input and the `bots` bin runs it at scale, so a
-non-human client is already first-class; what does not exist is the intent API
-above it, the verb table, or any of the gates below. This doc owns that surface
-and nothing else. `DESIGN.md` still owns the product, `NETCODE.md` the wire,
+non-human client is already first-class, and **wall 3's event exists**
+(`EV_TRUST`, 2026-08-18) — which is deliberate ordering rather than a
+convenient place to start: the online field cannot be retrofitted onto a
+record already written. What does not exist is the intent API, the verb table,
+the other three gates, or anything that reads a trust row. This doc owns that
+surface and nothing else. `DESIGN.md` still owns the product, `NETCODE.md` the wire,
 `CONTENT.md` the numbers.
 
 The research half — why a survival game is a field site, what the measurement
@@ -26,9 +29,10 @@ computes.
 
 ## The four walls
 
-Each with its enforcement, because a law without a gate is a mood. All four
-gates are unbuilt; each is a small test, and none of them should land after the
-verb API rather than with it.
+Each with its enforcement, because a law without a gate is a mood. **Wall 3's
+is built** (2026-08-18, `NOW.md` §5d); the other three are unbuilt, each is a
+small test, and none of them should land after the verb API rather than with
+it.
 
 1. **Agent verbs are a subset of human verbs.** An agent must never have an
    affordance a human client lacks — no extra reach, no wallhack, no state a
@@ -47,18 +51,25 @@ verb API rather than with it.
    this costs nothing the genre wanted. → a test that no response carries a
    cross-ladder total, and no ladder exposes a weight.
 
-3. **Every trust-bearing verb is an event with a role-checked payload.** Door
-   opened, TC authorized, container taken from, item given, damage dealt to a
-   base-mate — each an integer event code with its `/// EV_*: a = … b = …` line
-   in `world.rs`, and each carrying **whether the counterparty was online**.
-   The gate already exists: `crates/sim-core/tests/event_roles.rs` role-checks
-   most of the lane's codes, proves each field is a channel and not a constant,
-   and refuses an unearned coverage claim (`NOW.md` §4). This is the surface
-   that most needs it — an `a`/`b` swap at a betrayal site silently corrupts
-   the whole record the measurement reads while every other wall stays green.
-   → new social codes land **inside** `event_roles.rs` in the commit that adds
-   them, never after; two causes per code, so the online/offline field is
-   proven to vary.
+3. **Every trust-bearing verb is an event with a role-checked payload.**
+   **BUILT** — `EV_TRUST` (`world.rs`, 2026-08-18): a = the actor, b = the
+   counterparty, c = `TRUST_*` verb << 8 | `PRESENCE_*`, pushed wherever a
+   verb answered to somebody else's record — a leaf worked, a lock's code
+   accepted, a hearth crew seat taken, a container moved through. This is the
+   surface that most needs the gate: an `a`/`b` swap at a betrayal site
+   silently corrupts the whole record the measurement reads while every other
+   wall stays green, and nothing encodes this event, so not even a byte-golden
+   is watching. It landed **inside** `crates/sim-core/tests/event_roles.rs`
+   with four causes, five proven silences and a closed-ledger parse of both
+   value domains, every assertion reproduced red under its own mutant
+   (`NOW.md` §4's discipline).
+   Two things this doc got wrong and the build corrected. **The online field
+   is not a bool**: a sleeper and an evicted body are different facts about a
+   counterparty, so presence is awake / asleep / gone. **`item given` has no
+   code**, because there is no player-to-player give verb in the sim —
+   `TRUST_GIVE` lands with the verb, not before it. → the next social verb
+   lands the same way; two causes per code, and the presence field proven to
+   vary across them.
 
 4. **Determinism holds with agents in the loop.** An agent client is an input
    source like any other; the sim must not learn it exists. No clock, no I/O,
@@ -89,7 +100,9 @@ The last field is deliberate and it is the one to get right. It is ordinary
 game state — a human sees it in the same moment — and it is also the condition
 the whole measurement turns on (`SUBSTRATE.md` §3). It must be logged at every
 trust-bearing verb from the first shard that runs; retrofitting it makes the
-early record worthless.
+early record worthless. The **logging** half is built (wall 3 above); the
+encoder is not, and neither is a sink for the rows — the sim mints them and
+`ShardCore`'s event drain currently ignores the code.
 
 ## The model does not drive at frame rate
 
@@ -104,7 +117,7 @@ capture path of its own.
 ## What this does not decide
 
 The economy side — what an agent pays to enter, what it earns, whether an
-agent's coins are its owner's — is `ALPHA.md` and the scry side, not this doc.
-The vow (what an agent declares it plays for) lives in scry's `VOWS.md` and
+agent's coins are its owner's — is `ALPHA.md` and the elo side, not this doc.
+The vow (what an agent declares it plays for) lives in elo's `VOWS.md` and
 binds through `playauth`; nothing about it belongs in `sim-core`, which must
 not learn that vows exist.
