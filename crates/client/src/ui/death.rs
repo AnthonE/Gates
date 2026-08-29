@@ -13,7 +13,8 @@
 use protocol::event::ItemCatalog;
 use sim_core::mob;
 use sim_core::world::{
-    DEATH_BY_ARROW, DEATH_BY_CHARGE, DEATH_BY_CLOCK, DEATH_BY_HAND, DEATH_BY_MOB, DEATH_BY_SALT,
+    DEATH_BY_ARROW, DEATH_BY_BULLET, DEATH_BY_CHARGE, DEATH_BY_CLOCK, DEATH_BY_HAND, DEATH_BY_MOB,
+    DEATH_BY_SALT,
 };
 
 use super::craft::item_name;
@@ -63,13 +64,22 @@ pub fn sentence(d: &Death, catalog: &ItemCatalog) -> String {
         // branch for it here would be unreachable code asserting a rule
         // that is already a wall one crate down.
         //
-        // A bullet arrives here too (hitscan v0) and needs no arm of its
-        // own, because the sentence was already exact: the weapon is a wire
-        // field, so this reads "shot you with the revolver from 12.4 m"
-        // and "shot you with the bow from 34.0 m" off one branch. Whether
-        // a firearm should be its own *cause* is a wire question, and
-        // `world.rs`'s `DEATH_BY_ARROW` carries the answer.
-        DEATH_BY_ARROW => {
+        // **Two causes, one sentence, and that is the point.** A bullet
+        // shared `DEATH_BY_ARROW` outright from hitscan v0 to arrow
+        // recovery v1, and the reason it went unnoticed for twenty-three
+        // days is written right here: the sentence was already exact,
+        // because the weapon is a wire field, so this reads "shot you with
+        // the revolver from 12.4 m" and "shot you with the bow from
+        // 34.0 m" off one branch either way. What was wrong was never the
+        // words — it was the *cause code* underneath them, which is what
+        // anything reading the cause rather than the sentence sees.
+        //
+        // So `DEATH_BY_BULLET` is named here rather than given an arm: the
+        // fix upstream was to stop lying about which cause it was, not to
+        // say something different to the player. Leaving it unnamed would
+        // have been the actual regression — it falls to `other` and prints
+        // "killed by cause 6".
+        DEATH_BY_ARROW | DEATH_BY_BULLET => {
             let weapon = match item_name(catalog, d.item) {
                 Some(n) => format!(" with {n}"),
                 None => String::new(),

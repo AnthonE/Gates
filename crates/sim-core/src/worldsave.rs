@@ -259,9 +259,9 @@ const BACKPACK_BYTES: usize = 28 + INV_SLOTS * 6;
 const WORLD_CONT_BYTES: usize = 2 + 2 + 4 + 4 + 1 + 8 + INV_SLOTS * 6;
 /// One spent arrow (format 10, `spent.rs`): three millimetre coordinates,
 /// the round it is, and the tick it becomes takeable. Millimetres and not
-/// the body's coarser quanta because the reach test the pickup verb will
-/// run measures against this number, and a 3 cm floor on where an arrow
-/// lies is a 3 cm floor on how precisely you can reach for it.
+/// the body's coarser quanta because the reach test `spent::pickup` runs
+/// measures against this number, and a 3 cm floor on where an arrow lies
+/// is a 3 cm floor on how precisely you can reach for it.
 const SPENT_BYTES: usize = 4 + 4 + 4 + 2 + 8;
 /// A burning fuse: address + store bit + the three copied-at-plant
 /// numbers (structure, damage, blast — format 4) + deadline + planter.

@@ -578,3 +578,63 @@ fn buildable_cell(seed: u64) -> (u16, u16) {
     }
     panic!("no buildable cell within 64 cells of centre");
 }
+
+/// **A firearm kill says it was a firearm** (arrow recovery v1, wire v53).
+///
+/// The rest of this file drives `ranged::hitscan` directly, which is the
+/// right level for ballistics and is blind to the one thing asserted here:
+/// `hitscan` produces a `Kill`, and it is `World`'s drain that decides what
+/// *cause* to lay on the body. From hitscan v0 to arrow recovery v1 that
+/// drain wrote `DEATH_BY_ARROW`, so a rifle told its victim they had been
+/// shot with an arrow — and no test in the tree could see it, because no
+/// firearm kill had ever been driven through `World::tick`.
+///
+/// It went unnoticed for twenty-three days for a reason worth keeping: the
+/// death **screen** was already correct. `ui/death.rs` builds its sentence
+/// from `death_item`, a wire field, so it read "shot you with the revolver
+/// from 12.4 m" under the wrong cause and the right one alike. Only the
+/// code underneath was lying, and only something reading the code could
+/// tell. This is that something.
+///
+/// Mutant: put `DEATH_BY_ARROW` back on `world.rs`'s hitscan drain and this
+/// is the only assertion in the workspace that reddens.
+#[test]
+fn a_firearm_kill_reports_a_bullet_and_not_an_arrow() {
+    use sim_core::world::{Command, World, DEATH_BY_ARROW, DEATH_BY_BULLET};
+
+    let mut w = Box::new(World::new(SEED));
+    w.combat = gun_fixture();
+    w.tick(&[Command::Join { id: 1 }, Command::Join { id: 2 }]);
+
+    // `face_off`'s geometry, moved onto a `World`: the shooter at a known
+    // place looking down +z, the target ten metres along it with its body
+    // dropped so the level ray crosses it. Set by hand rather than by
+    // `Body::at`, because the whole point of the offset is that the two
+    // bodies are aligned to each other rather than to the ground.
+    w.players[0] = shooter(1, 0.0, 400.0, 0.0, 0, LEVEL, 6);
+    w.players[1] = target(2, 0.0, 400.0 + ARROW_EYE_MM as f32 / 1000.0 - 1.2, 10.0);
+    w.players[1].hp = 1; // one round from the end
+
+    let frame = InputFrame {
+        seq: 1,
+        buttons: BTN_PRIMARY,
+        yaw: 0,
+        pitch: LEVEL,
+        sel: 0,
+        ..InputFrame::default()
+    };
+    w.tick(&[Command::Input { id: 1, frame }]);
+
+    let v = &w.players[1];
+    assert!(v.dead, "the shot did not land — the geometry moved");
+    assert_eq!(
+        v.death_cause, DEATH_BY_BULLET,
+        "a firearm kill must report a bullet"
+    );
+    assert_ne!(
+        v.death_cause, DEATH_BY_ARROW,
+        "and must not report the arrow it borrowed for twenty-three days"
+    );
+    assert_eq!(v.death_by, 1, "the shooter");
+    assert_eq!(v.death_item, GUN, "the weapon, never the round");
+}

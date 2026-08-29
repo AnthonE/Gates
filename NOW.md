@@ -60,6 +60,27 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 # Buildable now — a loop can pick any of these
 
 
+## 0shot · A gun still makes no sound and no light *(systems lane)*
+
+*From `findings/pass-20260828-175853-01-judge.md` §Ranked gaps 2 — a GAP
+PASS item. Two of its three thirds landed at arrow recovery v1 (wire v53,
+2026-08-29): the pickup verb (§5 item 2) and `DEATH_BY_BULLET`. This is
+the third.*
+
+1. **`EV_SHOT` does not fire on the hitscan path, and that is a refusal
+   with a stated reason rather than an omission.** `ranged::hitscan`'s doc
+   holds it: the event's payload is a muzzle speed and a drop in mm/tick
+   and `render/tracer.rs` re-flies exactly those integers, so a zero in
+   both hangs a motionless tracer at the muzzle for four seconds. A
+   firearm therefore announces itself only by what it *reaches* —
+   `EV_IMPACT`, `EV_HIT` — with no muzzle flash, no crack and no beam.
+   **It needs a decision, not a slice**: either a new event, or a spoken
+   reading of `EV_SHOT`'s spare bit patterns (e.g. speed 0 meaning
+   *instant*, which the client would draw as a beam rather than fly).
+   `DECISIONS.md` §open carries the question. Arrow recovery v1
+   deliberately did not bundle this into its bump, and `spent.rs`'s header
+   says why.
+
 ## 0eq · Equipment, after armor v1 *(systems+client lane)*
 
 *Gap pass, from `findings/pass-20260828-065501-05-judge.md` ranked gap 1
@@ -187,18 +208,15 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    roll keyed on (seed, tick, slot), the 10 s lodge for an arrow that drew
    blood. Both numbers are §5's, taken whole into `content/balance.toml`.
    Hashed and saved (`WORLD_SAVE_FORMAT` 10).
-   **Nobody can pick one up.** §9.7's pieces 3 and 4 are the verb — the
-   first addressed to a world position rather than a build cell — and its
-   `PROTO_VER` bump, and §9.7 asks for them **with** `EV_SHOT` (§9.2)
-   rather than after it: one bump, one set of goldens.
-   `SpentArrows::take_near` is the whole of what that verb calls and is
-   gated; the reach it measures is deliberately the verb's knob, beside
-   `BUILD_REACH_M`, not the store's.
+   ✅ **And you can pick one up** (arrow recovery v1, 2026-08-29, wire
+   v53) — `V`, `spent::pickup`, reach aliased to `BUILD_REACH_M`, in 3D.
    Two stated gaps, both in `spent.rs`: a lodged arrow does not travel
    with the body it is in (it lies at the impact point), and an arrow that
    expires in mid-air leaves nothing, because it has no landing point.
-   §9.6 is still blocked until the verb lands — ammunition you cannot pick
-   up has not come back.
+   **§9.6 is unblocked and not done**: their ~35 bow damage was refused
+   only because our ammunition never came back, and now it does — so the
+   row is a `RIPLIST.md` take against `CONTENT.md` §4's bands, not a
+   research question.
 3. **`headshot_mult` is armed and unread** since the content crate (§9.4);
    §7 says take the most significant body part, never the first
    intersection.
