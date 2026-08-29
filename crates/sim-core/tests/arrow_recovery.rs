@@ -1,15 +1,16 @@
 //! Arrows come back — the store, the break roll and the lodge timer
 //! (`reference/PROJECTILES.md` §5 and §9.7, arrow recovery v0).
 //!
-//! **What this suite can gate and what it deliberately cannot.** §9.7
-//! decomposes recovery into four pieces; pieces 1 and 2 landed and pieces
-//! 3 and 4 — the pickup verb and its `PROTO_VER` bump — did not, because
-//! §9.7 asks for them together with `EV_SHOT` rather than after it. So no
-//! player can press anything here. What is checkable is everything the
-//! verb will stand on: that a landing produces a record, that the record
-//! carries the round rather than the bow, that the lodge is exact, that
-//! the odds are the odds, that the cap evicts by its stated rule, and that
-//! a world remembers all of it across a save.
+//! **What this suite gates, and where the other half went.** §9.7
+//! decomposes recovery into four pieces; this file is 1 and 2 — that a
+//! landing produces a record, that the record carries the round rather
+//! than the bow, that the lodge is exact, that the odds are the odds, that
+//! the cap evicts by its stated rule, and that a world remembers all of it
+//! across a save. It said "no player can press anything here" until arrow
+//! recovery v1 built pieces 3 and 4; **the verb is gated next door**, in
+//! `tests/arrow_pickup.rs`, and the split is deliberate — this file drives
+//! the store directly and that one drives `World::tick`, which is the only
+//! path a player has.
 //!
 //! **Every assertion below was run against a mutant** and the file's own
 //! header used to be able to say that without it being true, which is why

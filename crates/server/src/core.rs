@@ -976,6 +976,7 @@ impl ShardCore {
                         loc,
                     },
                     ActionMsg::Loot => Command::Loot { id: c.id },
+                    ActionMsg::Pickup => Command::Pickup { id: c.id },
                     ActionMsg::Consume { slot } => Command::Consume { id: c.id, slot },
                     ActionMsg::Research { slot } => Command::Research { id: c.id, slot },
                     ActionMsg::Unlock { recipe } => Command::Unlock { id: c.id, recipe },

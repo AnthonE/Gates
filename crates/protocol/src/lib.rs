@@ -713,7 +713,7 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// garbage. All 100 fixtures re-key; `event_catalog` is the only one whose
 /// bytes move for a reason other than the version prefix, and none are
 /// added or removed.
-pub const PROTO_VER: u16 = 52;
+pub const PROTO_VER: u16 = 53;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1163,6 +1163,16 @@ const ACT_RESEARCH: u32 = 17;
 /// (`research::unlock`), so the only thing the client may claim is
 /// *which node it is pointing at*.
 const ACT_UNLOCK: u32 = 18;
+/// Take the nearest ready spent arrow in reach back into the quiver
+/// (`sim-core/spent.rs`). **Payload-free, `ACT_LOOT`'s shape and its whole
+/// argument** — an arrow lies wherever it stopped, so it has no grid
+/// address to name, and the sim re-derives the pick from the sender's own
+/// body. Nothing to forge and nothing to reach past a wall.
+///
+/// The nineteenth code, and the first spent since `ACT_UNLOCK`. It is what
+/// `reference/PROJECTILES.md` §9.7 calls piece 3, and the `PROTO_VER` bump
+/// it costs is piece 4.
+const ACT_PICKUP: u32 = 19;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -1172,7 +1182,7 @@ const ACT_UNLOCK: u32 = 18;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_UNLOCK;
+const ACT_MAX: u32 = ACT_PICKUP;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -1456,6 +1466,13 @@ pub enum ActionMsg {
     /// there is no id here to forge, no address to aim past a wall, and
     /// no way to loot something the sender is not standing on.
     Loot,
+    /// Take the nearest ready spent arrow in reach (`sim-core/spent.rs`).
+    /// **Payload-free for `Loot`'s reason exactly**, and it is the second
+    /// message on this lane to be so: the thing it acts on lies where it
+    /// fell rather than at an address. The one way it differs from `Loot`
+    /// is invisible from here — the sim's pick is a three-dimensional one,
+    /// because an arrow can be lodged above your head.
+    Pickup,
     /// Eat what is in inventory slot `slot` (survival.rs). The slot is
     /// shape-checked here — past the sim's array it does not decode — and
     /// everything else is the sim's verdict: an empty hand, a stack of
@@ -1661,6 +1678,15 @@ pub fn encode_action_loot(buf: &mut [u8]) -> Result<usize, WireError> {
     let mut w = BitWriter::new(buf);
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_LOOT, ACTION_SUB_BITS)?;
+    Ok(w.finish())
+}
+
+/// `ActionMsg::Pickup` — take the nearest ready spent arrow in reach.
+/// Payload-free, so this is the whole frame: a kind and a subtype.
+pub fn encode_action_pickup(buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_PICKUP, ACTION_SUB_BITS)?;
     Ok(w.finish())
 }
 
@@ -2152,6 +2178,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             }
         }
         ACT_LOOT => ActionMsg::Loot,
+        ACT_PICKUP => ActionMsg::Pickup,
         ACT_CONSUME => {
             let slot = r.read(ACTION_SLOT_BITS)? as u8;
             if slot as usize >= sim_core::limits::INV_SLOTS {
@@ -3296,10 +3323,10 @@ mod tests {
     /// not slip in against a stale one.
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
-        assert_eq!(ACT_MAX, ACT_UNLOCK);
+        assert_eq!(ACT_MAX, ACT_PICKUP);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            13,
+            12,
             "the spare action codes moved — say so where the count is written"
         );
     }

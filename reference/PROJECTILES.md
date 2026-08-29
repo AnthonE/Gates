@@ -492,16 +492,20 @@ So recovery is four pieces, and only the first is small:
    is deterministic, which is what the 15 % would need (§5).
 2. **The lodge timer** — 10 s at `TICK_HZ` is 300 ticks, and the rule is
    theirs: an arrow that dealt damage waits, an arrow that missed does not.
-3. **A pickup verb the wire can carry.** This is the real work. Either a new
-   `ActionMsg` variant addressed by world position or by store index — the
-   first non-grid-addressed verb in the protocol, so its shape sets a
-   precedent — or proximity auto-pickup, which needs no wire at all.
-   **The operator's direction settles which**: as close to theirs as we can,
-   and theirs is a deliberate press, so it is the verb.
-4. **A protocol bump** for that verb, and it should ride with `EV_SHOT`
-   (§9.2) rather than after it. Both are wire changes to the same system;
-   two bumps for one feature is two sets of regenerated goldens and two
-   chances to get wall 6 wrong.
+3. ✅ **A pickup verb the wire can carry** (arrow recovery v1, wire v53).
+   `ActionMsg::Pickup` — and the shape it set as a precedent is the one
+   this section did not list: **payload-free**, neither a world position
+   nor a store index, because `ActionMsg::Loot` had already answered the
+   question. The sim re-derives the pick from the sender's own body, so
+   there is no id to forge and nothing reachable through a wall. A
+   deliberate press, as the operator's direction requires.
+4. ✅ **A protocol bump** (52 → 53), and it did **not** ride with
+   `EV_SHOT`. That advice was right about the cost and wrong about the
+   blocker: `EV_SHOT` carries a muzzle speed and a drop that the client
+   re-flies, a hitscan has neither, and refusing to invent a meaning for
+   those fields is a live refusal in `ranged::hitscan`'s own doc rather
+   than a scheduling matter. Bundling would have held *"arrows come back"*
+   behind an unmade decision. One extra bump, paid knowingly.
 
 **The economy consequence, stated because it is the reason to want this.**
 Our arrow is spent permanently, so our ammunition is strictly harsher than

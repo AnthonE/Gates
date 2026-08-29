@@ -607,6 +607,13 @@ pub const DEATH_BY_SALT: u8 = 2;
 /// different reason: `event_roles.rs` and `protocol/src/event.rs` narrate
 /// the 2026-08-05 failure by this name, and a rename would falsify three
 /// histories to tidy one word.
+///
+/// **That refusal was conditional and the condition is now met.** It said
+/// the bump, the goldens and the pin land together or not at all and that
+/// *that* slice did not bump; arrow recovery v1 bumps, so
+/// `DEATH_BY_BULLET` lands in this merge window on that bump, exactly the
+/// way `DEATH_BY_MOB` and `DEATH_BY_CHARGE` did on v36's. This constant is
+/// the arrow's again, and now only the arrow's.
 pub const DEATH_BY_ARROW: u8 = 3;
 /// An animal's bite (mob.rs — the pig that fights back). `death_by` is
 /// the roster slot's **tagged** id (`mob::mob_id`), which is how the
@@ -646,7 +653,24 @@ pub const DEATH_BY_CHARGE: u8 = 5;
 /// (And it was not an accident when it happened: `DEATH_BY_MOB` is the
 /// cause that saturated the two-bit field, and wire v36 widened it;
 /// `DEATH_BY_CHARGE` landed in the same merge window on the same bump.)
-pub const DEATH_BY_MAX: u8 = DEATH_BY_CHARGE;
+/// A firearm's hitscan round (`ranged::hitscan`). `death_by` is the
+/// shooter, `death_item` the weapon, `death_range_cm` the distance the
+/// shot crossed — the same three facts an arrow death carries, which is
+/// why this is a seventh *cause* and not a seventh event.
+///
+/// **The seventh, and it was refused once.** `DEATH_BY_ARROW`'s doc holds
+/// the refusal in full: a cause fits `DEATH_CAUSE_BITS` with room to
+/// spare, but minting one turns a bit pattern both ends currently refuse
+/// as forged into a live fact, so an old client and a new server would
+/// disagree about a packet whose bytes are identical. That is a wire
+/// change with no layout move — the hardest kind to notice — and the
+/// answer is the `PROTO_VER` bump, the regenerated goldens and the
+/// `live_max` pin in one commit. Until arrow recovery v1 there was no
+/// bump to ride, and a firearm kill told the victim they were shot with
+/// an arrow for twenty-three days.
+pub const DEATH_BY_BULLET: u8 = 6;
+
+pub const DEATH_BY_MAX: u8 = DEATH_BY_BULLET;
 
 /// Where in the day/night cycle a tick falls, `0.0..1.0` — 0 is dawn,
 /// `limits::DAY_PORTION` is dusk (day/night v0, `DECISIONS.md` §open).
@@ -1203,6 +1227,17 @@ pub enum Command {
     /// (backpack.rs). No target crosses: the pick is the sim's, the same
     /// shape a swing's is.
     Loot {
+        id: u32,
+    },
+    /// Take the nearest ready spent arrow in reach back into the quiver
+    /// (spent.rs — arrow recovery v1, the verb `take_near` was gated for).
+    ///
+    /// `Loot`'s shape and for `Loot`'s reason: no target crosses, so there
+    /// is no id to forge and nothing can be picked up that the sender is
+    /// not standing on. It is the first verb whose pick is resolved in
+    /// **three** dimensions — an arrow lodged up a trunk is out of reach
+    /// where a backpack at your feet never is.
+    Pickup {
         id: u32,
     },
     /// Open the authored world container at cell key `cont`
@@ -3202,6 +3237,17 @@ impl World {
                     );
                 }
             }
+            Command::Pickup { id } => {
+                if let Some(slot) = self.live_slot_of(id) {
+                    crate::spent::pickup(
+                        &mut self.spent,
+                        &self.gather,
+                        self.tick,
+                        &mut self.players[slot],
+                        &mut self.events,
+                    );
+                }
+            }
             Command::OpenWorldCont { id, cont } => {
                 if let Some(slot) = self.live_slot_of(id) {
                     self.world_conts.open(
@@ -3653,7 +3699,10 @@ impl World {
             self.chip(c, &mut removals);
         }
         for k in kills.iter().take(n_shot) {
-            self.die(k.victim, k.by, DEATH_BY_ARROW, k.item, k.range_cm);
+            // Was `DEATH_BY_ARROW` from hitscan v0 to arrow recovery v1,
+            // under the refusal that constant's doc states and this bump
+            // lifts. A rifle no longer reports an arrow.
+            self.die(k.victim, k.by, DEATH_BY_BULLET, k.item, k.range_cm);
         }
         let (n_kills, n_chips) = ranged::step(
             seed,

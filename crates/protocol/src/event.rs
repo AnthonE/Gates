@@ -4745,12 +4745,17 @@ mod wire_domains {
             prefix: "pub const DEATH_BY_",
             ty: ": u8 = ",
             exempt: &["MAX"],
-            min_members: 6,
+            min_members: 7,
             bits: DEATH_CAUSE_BITS,
             // 4 = DEATH_BY_MOB and 5 = DEATH_BY_CHARGE, the meanings the
             // v36 field widening was minted for — pin moved in the same
-            // merge window as the bump, once per cause.
-            live_max: 5,
+            // merge window as the bump, once per cause. 6 =
+            // DEATH_BY_BULLET at v53, which is the third time this pin has
+            // moved and the second time it did the job it exists for: it
+            // is what refused a firearm cause at hitscan v0, and it let
+            // this one through only because arrow recovery v1 spent the
+            // bump it demanded.
+            live_max: 6,
         },
         Domain {
             what: "move refusal",

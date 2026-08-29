@@ -21,9 +21,9 @@ use crate::net::{client_handshake, read_event_frame, write_frame, FRAME_PREFIX_B
 use crate::view::{Applied, ClientView};
 use protocol::{
     decode_event, encode_action_access, encode_action_demolish, encode_action_deploy,
-    encode_action_loot, encode_action_move, encode_action_place, encode_action_repair,
-    encode_action_throw, encode_input, peek_kind, EventMsg, InputDatagram, Welcome, WireError,
-    KIND_SNAPSHOT, MAX_STREAM_MSG_BYTES,
+    encode_action_loot, encode_action_move, encode_action_pickup, encode_action_place,
+    encode_action_repair, encode_action_throw, encode_input, peek_kind, EventMsg, InputDatagram,
+    Welcome, WireError, KIND_SNAPSHOT, MAX_STREAM_MSG_BYTES,
 };
 use sim_core::bots::{bot_frame, raid_step, RaidPlan, RaidRows, RAID_CYCLE};
 use sim_core::build::build_cell_of;
@@ -250,6 +250,7 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
             ..
         } => encode_action_move(cont, from_kind, from_slot, to_kind, to_slot, count, buf),
         Command::Loot { .. } => encode_action_loot(buf),
+        Command::Pickup { .. } => encode_action_pickup(buf),
         _ => return None,
     })
 }
