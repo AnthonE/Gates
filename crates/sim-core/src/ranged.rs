@@ -112,9 +112,7 @@ use crate::occupy::Occupants;
 use crate::pitch_lut::pitch_dir;
 use crate::spent::{SpentArrows, SpentRec};
 use crate::terrain;
-use crate::world::{
-    EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_SHOT,
-};
+use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_SHOT};
 use crate::yaw_lut::yaw_dir;
 
 /// Height above the feet an arrow leaves from, millimetres. The eye, not
@@ -1070,8 +1068,10 @@ pub fn hitscan(
             let h = crate::combat::hurt(cc, v, def.damage);
             let died = h.died;
             let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
-            let sector =
-                crate::combat::bearing_sector(qx as i64 - v.body.qx as i64, qz as i64 - v.body.qz as i64);
+            let sector = crate::combat::bearing_sector(
+                qx as i64 - v.body.qx as i64,
+                qz as i64 - v.body.qz as i64,
+            );
             events.push(EV_HIT, id, vid, def.damage as u32);
             // A beam has no flight to reverse, so this is the muzzle itself —
             // the shooter's body this tick, which is where they still are.

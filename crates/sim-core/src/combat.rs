@@ -892,9 +892,9 @@ pub fn bearing_sector(dx: i64, dz: i64) -> u8 {
     // eastern quadrants, k == 0 is due south in both southern ones), which
     // is what makes the seams here unobservable.
     match (dx <= 0, dz >= 0) {
-        (true, true) => k,           // N..E
-        (true, false) => 8 - k,      // E..S
-        (false, false) => 8 + k,     // S..W
+        (true, true) => k,              // N..E
+        (true, false) => 8 - k,         // E..S
+        (false, false) => 8 + k,        // S..W
         (false, true) => (16 - k) % 16, // W..N
     }
 }

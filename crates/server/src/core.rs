@@ -17,9 +17,8 @@ use protocol::{
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_gather_refused,
     encode_event_health, encode_event_hit, encode_event_hurt, encode_event_impact,
-    encode_event_inv,
-    encode_event_knock, encode_event_known, encode_event_move_refused, encode_event_moved,
-    encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
+    encode_event_inv, encode_event_knock, encode_event_known, encode_event_move_refused,
+    encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_removed, encode_event_research, encode_event_research_refused,
     encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
@@ -47,10 +46,11 @@ use sim_core::world::{
     Command, Player, World, DEATH_BY_CLOCK, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN,
-    EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED, EV_PIECE_REPAIRED,
-    EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED,
-    EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_VITALS, EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
+    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK,
+    EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
+    EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED,
+    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_VITALS, EV_WEAK_MARK,
+    STRUCT_DEPLOY_BIT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.

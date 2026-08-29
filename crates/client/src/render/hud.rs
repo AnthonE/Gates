@@ -129,6 +129,10 @@ pub const HITMARK_SECS: f32 = 0.25;
 /// the only thing on screen telling you where to turn. It has to survive
 /// the turn.
 pub const HURT_MARK_SECS: f32 = 1.4;
+// A compile error rather than a test, because it is a relation between two
+// constants and nothing at runtime can change it: the mark that says where to
+// turn must outlive the one that confirms what you already did.
+const _: () = assert!(HURT_MARK_SECS > HITMARK_SECS);
 /// How far off the crosshair the arc sits, px, and how big one of its
 /// blocks is. Outside the prompt line and well inside the hotbar.
 const HURT_RADIUS_PX: f32 = 116.0;
@@ -1226,7 +1230,7 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     Pickable::IGNORE,
                 ));
             }
-    // The hurt arc rides the same centred wrapper — it is measured from
+            // The hurt arc rides the same centred wrapper — it is measured from
             // the same point, so hanging it anywhere else would be two places
             // that have to agree about where the middle of the screen is.
             // Spawned once and moved, never respawned: a mark that appears and
@@ -2632,11 +2636,8 @@ mod tests {
     /// and the weight it is drawn at rises with the blow.
     #[test]
     fn the_hurt_arc_holds_longer_than_the_hitmarker() {
-        assert!(
-            HURT_MARK_SECS > HITMARK_SECS,
-            "the mark that says where to turn must outlive the one that \
-             confirms what you already did"
-        );
+        // The ordering itself is asserted at compile time beside the
+        // constant; this is about what the clock does with it.
         let mut t = Toast::default();
         t.hurt(3, 40);
         assert_eq!(t.hurt_from, 3);
@@ -2721,8 +2722,16 @@ mod tests {
         let bearing = sector as f32 * step;
         for (facing, want, what) in [
             (bearing, (0.0, -HURT_RADIUS_PX), "looking straight at them"),
-            (bearing - 90.0, (HURT_RADIUS_PX, 0.0), "they are on our right"),
-            (bearing + 90.0, (-HURT_RADIUS_PX, 0.0), "they are on our left"),
+            (
+                bearing - 90.0,
+                (HURT_RADIUS_PX, 0.0),
+                "they are on our right",
+            ),
+            (
+                bearing + 90.0,
+                (-HURT_RADIUS_PX, 0.0),
+                "they are on our left",
+            ),
             (bearing + 180.0, (0.0, HURT_RADIUS_PX), "they are behind us"),
         ] {
             let at = hurt_arc_px(sector, facing);

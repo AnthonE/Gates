@@ -3391,7 +3391,9 @@ fn the_direction_a_blow_came_from_reaches_the_screen() {
 #[test]
 fn the_hurt_gate_can_see_the_reader_go_away() {
     let (_, hud) = feed_and_hud();
-    let doctored = hud.replace("hurt_from", "hurt_gone").replace("hurt_arc_px(", "gone(");
+    let doctored = hud
+        .replace("hurt_from", "hurt_gone")
+        .replace("hurt_arc_px(", "gone(");
     assert_ne!(
         doctored, hud,
         "nothing in hud.rs matches the hurt reader - this proof is scanning \
