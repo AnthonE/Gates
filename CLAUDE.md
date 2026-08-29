@@ -814,8 +814,8 @@ which is neither.
 
 ## Vendored, and not to be edited here
 
-- `crates/client/src/scry_overlay.rs` is **elo's SDK, byte-for-byte**
-  (`sdk/rust/scry_overlay.rs` in **`AnthonE/scry-forge`** — this line said
+- `crates/client/src/elo_overlay.rs` is **elo's SDK, byte-for-byte**
+  (`sdk/rust/elo_overlay.rs` in **`AnthonE/scry-forge`** — this line said
   `AnthonE/scry` until 2026-08-14, which is a different repo). It is how this game reaches
   a running elo launcher for identity and signatures with no key in the game
   process and no crate added to the tree. `elo::VENDORED_SHA256` pins it and
@@ -829,7 +829,7 @@ which is neither.
   transport (it `use`d `std::os::unix::net` unconditionally, so a Windows
   build of this client could not compile), no `prove`, no `profile`. Nothing
   gates a file in another repo, so the check is a command you run when you
-  touch this seam: `sha256sum crates/client/src/scry_overlay.rs` must appear
+  touch this seam: `sha256sum crates/client/src/elo_overlay.rs` must appear
   in `sdk/SHA256SUMS` upstream. Re-vendoring is `cp` + re-pin + `cargo test
   -p client --lib elo`, and check the CALL SITES, not just the compile —
   `Overlay::title` changed shape under us and only luck kept it uncalled.
@@ -843,7 +843,21 @@ which is neither.
   changed the bytes a wallet signs (`vow:` → lowercased `wallet:`, upstream
   2026-08-12), which two sides can disagree about while both compile. It is
   re-exported by `elo.rs` and called nowhere, so again nothing broke, and
-  again that was luck. The trees are on morr: `/data/apps/scry-forge`
+  again that was luck. **On 2026-08-29 the luck ran out**, and it ran out
+  on the one thing a stale copy cannot survive: upstream's platform rename
+  (`elo-broker` 575a273b, 2026-08-21 — the same day as ours) moved **the door**,
+  all four spellings of it — `SCRY_LAUNCHER_SOCKET` → `ELO_LAUNCHER_SOCKET`,
+  `$XDG_RUNTIME_DIR/scry/launcher.sock` → `…/elo/…`, `~/.cache/scry/launcher/`
+  → `~/.cache/elo/…`, `\\.\pipe\scry-launcher-<user>` → `elo-launcher-<user>`.
+  A game on the old copy then finds no launcher on a machine running one, which
+  is the failure the vendored file's own `default_socket` doc calls *"the worst
+  shape of bug here"* — the game says "playing anonymously", nothing is red, and
+  it lands two hops away as a **login** failure: no launcher → `sign_siwe` is
+  `None` → guest → a `require_auth` shard answers `REFUSE_AUTH`, which is what a
+  bad signature looks like. **So the drift class to fear is not an API that
+  stops compiling — it is a CONSTANT that still compiles and no longer points at
+  anything.** Neither the sha pin, nor `cargo test`, nor `ci/gates.sh` can see
+  it, and the eight days it survived were paid for in one command nobody ran. The trees are on morr: `/data/apps/scry-forge`
   (`launcher-rs/`, `sdk/`) is the one that is edited and built from.
 - The depot the launcher installs is written by `ci/depot.py`, gated by
   `--self-test` in `ci/gates.sh`. It deliberately does **not** compute the

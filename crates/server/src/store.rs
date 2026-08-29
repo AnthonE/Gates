@@ -20,7 +20,7 @@
 //! This holds where your body stood and what was in its hands. It holds no
 //! profile, no balance, no item entitlement: those live in the launcher's
 //! world, and a shard that cached them would be a second, stale copy of
-//! somebody else's ledger. The division is the same one `scry_overlay.rs`
+//! somebody else's ledger. The division is the same one `elo_overlay.rs`
 //! draws for keys — the game process never holds what it is not the
 //! authority for.
 //!

@@ -1512,13 +1512,21 @@ One item the arc does not carry, still unbuilt — no visibility test exists in
    against.
 
 2. **The vendored SDK seam is ours and has no gate for upstream movement.**
-   `crates/client/src/scry_overlay.rs` must stay byte-identical to
-   `scry-forge`'s `sdk/rust/scry_overlay.rs` (`CLAUDE.md` §vendored); the pin
-   catches a LOCAL edit and is blind to upstream moving, and it sat 326 lines
-   behind once already. The check is a command you run when you touch it:
-   `sha256sum` must appear in upstream `sdk/SHA256SUMS` — in `scry-forge`,
-   never the `scryward` mirror, which lags and gives a false green. Derive
-   the launcher's real state from elo, never from this file.
+   `crates/client/src/elo_overlay.rs` must stay byte-identical to
+   `scry-forge`'s `sdk/rust/elo_overlay.rs` (`CLAUDE.md` §vendored); the pin
+   catches a LOCAL edit and is blind to upstream moving. The check is a command
+   you run when you touch it: `sha256sum` must appear in upstream
+   `sdk/SHA256SUMS` — in `scry-forge`, never the `scryward` mirror, which lags
+   and gives a false green. Derive the launcher's real state from elo, never
+   from this file.
+   ⚠ **This is no longer hypothetical.** It sat 326 lines behind once (2026-08-09,
+   caught before it cost anything), and on 2026-08-29 the second drift had been
+   breaking **every login** for eight days: upstream's rename moved the socket
+   env and all three default paths, so the client found no launcher on a box
+   running one and the shard refused it as a guest. Re-vendored the same day.
+   A gate is still owed and CI cannot hold it (the number lives in another repo,
+   on morr); the cheap half is a nightly job that fetches `sdk/SHA256SUMS` and
+   compares — that is the shape to build, not another in-tree assertion.
 
 Standing rule: anything a playtest breaks jumps this queue; anything a wall
 catches jumps the playtest.
@@ -1707,10 +1715,18 @@ each blocked on something outside this tree.
    `ci/elo_manifest.py` now. Both are inside the signed bytes, so nothing here
    may touch them — the key is on morr. Filenames and the `"scry": 1` key stay
    whatever `/api/library/GAME-REPO.md` says on the day it is signed.
-2. **The SDK is re-vendored, never renamed.** `crates/client/src/scry_overlay.rs`
-   is still sha-pinned against `scry-forge`. When the launcher's rename lands,
-   `cp` + re-pin + check the CALL SITES — `Overlay::title` and `play_message`
-   both changed shape under us before while everything compiled.
+2. ✅ **Done 2026-08-29 — and it was load-bearing, not cosmetic.** The launcher's
+   rename had landed on 2026-08-21, the same day as ours, and the re-vendor did
+   not follow: `SCRY_LAUNCHER_SOCKET` → `ELO_LAUNCHER_SOCKET` plus all three
+   default socket paths, so the client looked for a door that no longer exists
+   and **every login had been refused for eight days** (no launcher → guest →
+   `REFUSE_AUTH`, which reads as a signature failure). Re-vendored to
+   `934a2b5d…`, and the file takes upstream's name with it —
+   `crates/client/src/elo_overlay.rs`, because the local name tracks upstream's,
+   which is what "never renamed" meant. Call sites checked: no shape changed;
+   `play_message`'s first line moved (`scry play` → `elo play`) and is still
+   called nowhere. The signed bytes were re-checked against
+   `elo-broker::protocol::prove_message` and **had not moved at all**.
 3. **The coins are being redeployed and are not out yet** (operator,
    2026-08-21), and **the listing copy left the tree with them** — `marketing/`
    is deleted, so there is nothing here to keep in step. `/api/onchain` naming

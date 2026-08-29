@@ -1,8 +1,8 @@
 //! Reaching the elo launcher — identity and signatures, with no key in this
 //! process and no crate added to the tree.
 //!
-//! `scry_overlay.rs` beside this file is **vendored byte-for-byte** from
-//! `sdk/rust/scry_overlay.rs` in **`AnthonE/scry-forge`** (first vendored
+//! `elo_overlay.rs` beside this file is **vendored byte-for-byte** from
+//! `sdk/rust/elo_overlay.rs` in **`AnthonE/scry-forge`** (first vendored
 //! 2026-08-05; this line said `AnthonE/scry` until 2026-08-14, see below). It is
 //! `std`-only by design, so vendoring costs nothing and adds no dependency —
 //! which is the whole reason that file was written the way it was.
@@ -26,14 +26,14 @@
 //! Windows transport (the file `use`d `std::os::unix::net::UnixStream`
 //! unconditionally, so a Windows build of this client could not compile at
 //! all), no `prove`, no `profile`. Upstream's own gate — elo's
-//! `crates/scry-broker/tests/sdk_parity.rs` — compiles `sdk/rust/…` and calls
+//! `crates/elo-broker/tests/sdk_parity.rs` — compiles `sdk/rust/…` and calls
 //! it *"what Gates has compiled into its binary byte-for-byte"*, which was a
 //! claim about a file in another repo that nothing checked. So the drift check
 //! is a **command somebody runs**, not a gate either repo owns, and it is one
 //! line against a number elo publishes beside the SDK:
 //!
 //! ```text
-//! sha256sum crates/client/src/scry_overlay.rs
+//! sha256sum crates/client/src/elo_overlay.rs
 //! # must appear in sdk/SHA256SUMS in AnthonE/scry-forge — if it does not,
 //! # upstream has moved: re-vendor, re-pin, and run the client's tests.
 //! ```
@@ -72,6 +72,26 @@
 //! tree** — luck for the second re-vendor running. The drift also carried the
 //! doc-path fix `docs/SDK.md` → `docs/client/SDK.md`.
 //!
+//! Re-vendored 2026-08-29 (`3df3d41a…` → `934a2b5d…`), and this is the one the
+//! two warnings above were written for: **not luck this time — every login was
+//! failing.** Upstream's rename (`elo-broker` 575a273b, 2026-08-21) moved the
+//! DOOR, all four spellings of it: `SCRY_LAUNCHER_SOCKET` →
+//! `ELO_LAUNCHER_SOCKET`, `$XDG_RUNTIME_DIR/scry/launcher.sock` → `…/elo/…`,
+//! `~/.cache/scry/launcher/` → `~/.cache/elo/launcher/`, and the Windows pipe
+//! `\\.\pipe\scry-launcher-<user>` → `elo-launcher-<user>`. So a client on
+//! the old copy finds no launcher on a machine that is running one — which the
+//! vendored file's own `default_socket` doc calls *"the worst shape of bug
+//! here"*, because the game reports the ordinary "playing anonymously" and
+//! nothing anywhere is red.
+//!
+//! It surfaces two hops away as a SIGNING bug: no launcher means [`sign_siwe`]
+//! returns `None`, `None` means guest, and a `require_auth` shard answers
+//! `REFUSE_AUTH` — indistinguishable from a bad signature, with no signature
+//! ever composed. **Nothing about the signed bytes moved**:
+//! `protocol::siwe_message` still equals `elo_broker::protocol::prove_message`
+//! byte for byte, chain 4663 and the EIP-55 address included (re-checked
+//! against upstream the same day). The client never got as far as asking.
+//!
 //! ## What the launcher is for, and what it is not
 //!
 //! It answers *who is playing* and it produces *signatures*. It is not a login,
@@ -109,7 +129,7 @@
 //! recompute what it verifies against. `prove` arrived with the 2026-08-09
 //! re-vendor and has no call site here yet.
 
-#[path = "scry_overlay.rs"]
+#[path = "elo_overlay.rs"]
 pub mod overlay;
 
 pub use overlay::{play_message, Overlay, Proof, SignError, Signature};
@@ -123,12 +143,12 @@ pub use overlay::{play_message, Overlay, Proof, SignError, Signature};
 /// chances to disagree.
 pub use protocol::SLUG;
 
-/// sha256 of the vendored `scry_overlay.rs`, byte-for-byte as it ships in
+/// sha256 of the vendored `elo_overlay.rs`, byte-for-byte as it ships in
 /// `AnthonE/scry-forge` (the source — **not** the `AnthonE/scryward` mirror,
 /// which lags). Regenerate ONLY when re-vendoring an upstream change:
-/// `sha256sum crates/client/src/scry_overlay.rs`.
+/// `sha256sum crates/client/src/elo_overlay.rs`.
 pub const VENDORED_SHA256: &str =
-    "4b97954b04c2378bff16e0e4d8b55cdf6981c9d698f8442bdc7ccc71bac97dec";
+    "934a2b5def89309ff15eef3990df13704fdab536470c6b5f3d7f08bb79baa773";
 
 /// Who is playing, and how we came to believe it. The variants are kept
 /// distinct because they carry different weight and a single `Option<String>`
@@ -313,22 +333,59 @@ mod tests {
     fn vendored_sdk_has_not_been_edited_here() {
         // A tiny sha256 rather than a dependency — `sha2` is not in this
         // crate's tree and this test is not a reason to put it there.
-        let bytes = include_bytes!("scry_overlay.rs");
+        let bytes = include_bytes!("elo_overlay.rs");
         assert_eq!(
             sha256_hex(bytes),
             VENDORED_SHA256,
-            "crates/client/src/scry_overlay.rs has been edited. It is VENDORED from \
-             AnthonE/scry-forge sdk/rust/scry_overlay.rs — fix it there and re-vendor, or \
+            "crates/client/src/elo_overlay.rs has been edited. It is VENDORED from \
+             AnthonE/scry-forge sdk/rust/elo_overlay.rs — fix it there and re-vendor, or \
              every other game keeps the broken version. If this IS a re-vendor, \
              update elo::VENDORED_SHA256 in the same commit."
         );
+    }
+
+    /// **The door, pinned — the drift the sha cannot see.**
+    ///
+    /// `VENDORED_SHA256` says the bytes are upstream's; it says nothing about
+    /// whether upstream MOVED, and the socket constants are the shape of drift
+    /// that survives every other check: they still compile, they still type,
+    /// they simply stop pointing at anything. On 2026-08-29 all four had moved
+    /// (`scry` → `elo`, upstream 2026-08-21) and every login had been refused
+    /// for eight days — no API changed, so nothing could be red.
+    ///
+    /// This does **not** claim the launcher listens here; nothing in this repo
+    /// can check a path in another repo. It is a tripwire on the re-vendor: the
+    /// next `cp` that moves the door turns this red instead of silent, and
+    /// whoever sees it goes and reads `elo-broker/src/transport.rs` rather than
+    /// hearing about it from a player. Scraped from the source text rather than
+    /// asserted against `default_socket()`, because the Windows arm is
+    /// `#[cfg(windows)]` and a compile on this box cannot see it at all.
+    #[test]
+    fn the_launchers_door_has_not_moved_under_us() {
+        assert_eq!(overlay::SOCKET_ENV, "ELO_LAUNCHER_SOCKET");
+        let src = core::str::from_utf8(include_bytes!("elo_overlay.rs")).expect("utf-8");
+        for door in [
+            r#"join("elo").join("launcher.sock")"#,
+            ".cache/elo/launcher/launcher.sock",
+            r"\\.\pipe\elo-launcher-{user}",
+        ] {
+            assert!(
+                src.contains(door),
+                "the vendored SDK no longer opens `{door}`. The launcher's door \
+                 moved under us — read elo-broker/src/transport.rs, confirm where \
+                 it listens now, and update this list in the same commit. Do NOT \
+                 just delete the row: a game that cannot find a running launcher \
+                 reports `playing anonymously` and every login is refused as a \
+                 guest, with nothing else red."
+            );
+        }
     }
 
     #[test]
     fn no_launcher_is_a_normal_state_and_yields_a_playable_game() {
         // The socket env is pointed at nothing, which is what a machine with
         // no launcher looks like.
-        std::env::set_var("SCRY_LAUNCHER_SOCKET", "/nonexistent/elo-gates-test.sock");
+        std::env::set_var(overlay::SOCKET_ENV, "/nonexistent/elo-gates-test.sock");
         let s = Elo::discover(None, "0.1.0");
         assert_eq!(s.player, Player::Anonymous);
         assert!(!s.connected());

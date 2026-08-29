@@ -1,6 +1,6 @@
-//! scry overlay — the Rust reference client. One file, `std` only.
+//! elo overlay — the Rust reference client. One file, `std` only.
 //!
-//! What a native game (Gates) uses to reach a running scry launcher: who is
+//! What a native game (Gates) uses to reach a running elo launcher: who is
 //! playing, a signature, the catalog, the shard list. **It holds no key and
 //! has no code path that could.** See `sdk/PROTOCOL.md` and `docs/client/SDK.md`.
 //!
@@ -10,21 +10,21 @@
 //! example that cannot build is a small lie in the one file a game reads first.
 //!
 //! ```ignore
-//! let mut scry = scry_overlay::Overlay::connect("gates", "0.1.0");
-//! match scry {
+//! let mut elo = elo_overlay::Overlay::connect("gates", "0.1.0");
+//! match elo {
 //!     Ok(mut ov) => {
 //!         let who = ov.address();                     // Option<String>
-//!         let msg = scry_overlay::play_message("duel", "vow_x", "ETH up 5", None);
+//!         let msg = elo_overlay::play_message("duel", "vow_x", "ETH up 5", None);
 //!         match ov.sign(&msg, "settling round 41") {
 //!             Ok(sig)                          => submit(&sig.signature),
-//!             Err(scry_overlay::SignError::Handoff(url)) => show_link(&url),
+//!             Err(elo_overlay::SignError::Handoff(url)) => show_link(&url),
 //!             Err(e)                           => show(&e.to_string()),
 //!         }
 //!     }
 //!     // No launcher is a NORMAL state. Play anyway. Never fall back to
 //!     // asking the player for a private key — there is no third option and
 //!     // this file deliberately does not offer one.
-//!     Err(why) => log(&format!("no scry launcher: {why}")),
+//!     Err(why) => log(&format!("no elo launcher: {why}")),
 //! }
 //! ```
 //!
@@ -58,7 +58,7 @@ type Stream = UnixStream;
 type Stream = std::fs::File;
 
 pub const PROTOCOL: i64 = 1;
-pub const SOCKET_ENV: &str = "SCRY_LAUNCHER_SOCKET";
+pub const SOCKET_ENV: &str = "ELO_LAUNCHER_SOCKET";
 /// A consent prompt waits for a person, so the read timeout is generous.
 /// A short one here turns "the player was reading the message" into a bug.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
@@ -335,7 +335,7 @@ pub fn play_message(action: &str, wallet: &str, detail: &str, day: Option<&str>)
         }
     };
     let wallet = wallet.to_ascii_lowercase();
-    format!("scry play\naction: {action}\nwallet: {wallet}\nday: {day}\ndetail: {detail}")
+    format!("elo play\naction: {action}\nwallet: {wallet}\nday: {day}\ndetail: {detail}")
 }
 
 /// UTC `YYYY-MM-DD` from the clock, with no `chrono`. Civil-from-days is
@@ -495,10 +495,10 @@ impl std::error::Error for SignError {}
 /// Where the door is when nobody named one.
 ///
 /// ⚠ **This must agree with the launcher's own default exactly**
-/// (`scry-broker/src/transport.rs`). A mismatch is the worst shape of bug
+/// (`elo-broker/src/transport.rs`). A mismatch is the worst shape of bug
 /// here: a game finds no launcher on a machine that is running one, reports
 /// the normal "playing anonymously", and nothing anywhere is red.
-/// `$SCRY_LAUNCHER_SOCKET` is set by the launcher on every native build it
+/// `$ELO_LAUNCHER_SOCKET` is set by the launcher on every native build it
 /// starts and wins over both defaults, which is why that is the path a game
 /// should actually end up using.
 pub fn default_socket() -> PathBuf {
@@ -514,10 +514,10 @@ pub fn default_socket() -> PathBuf {
 fn platform_default() -> PathBuf {
     if let Ok(rt) = env::var("XDG_RUNTIME_DIR") {
         if !rt.is_empty() {
-            return PathBuf::from(rt).join("scry").join("launcher.sock");
+            return PathBuf::from(rt).join("elo").join("launcher.sock");
         }
     }
-    PathBuf::from(env::var("HOME").unwrap_or_default()).join(".cache/scry/launcher/launcher.sock")
+    PathBuf::from(env::var("HOME").unwrap_or_default()).join(".cache/elo/launcher/launcher.sock")
 }
 
 /// One pipe per user, because the Windows pipe namespace is machine-wide. Two
@@ -535,7 +535,7 @@ fn platform_default() -> PathBuf {
     } else {
         user
     };
-    PathBuf::from(format!(r"\\.\pipe\scry-launcher-{user}"))
+    PathBuf::from(format!(r"\\.\pipe\elo-launcher-{user}"))
 }
 
 /// Open the door, or say there is none. **`Err` is a normal state** — it means
@@ -697,7 +697,7 @@ impl Overlay {
     /// which is a claim anything can make.
     ///
     /// The reply is a **SIWE (EIP-4361) message and signature**, so your
-    /// backend needs no scry-specific code — hand both to any `siwe` library
+    /// backend needs no elo-specific code — hand both to any `siwe` library
     /// (JS, Python, Rust, Go; built into viem and ethers):
     ///
     /// ```text
@@ -826,7 +826,7 @@ impl Overlay {
     /// library and hooks the graphics API because Steam does not own the
     /// games. This platform does, so the overlay is **the game rendering its
     /// own HUD** from this call — which is why this file has carried the name
-    /// `scry_overlay` since before the feature existed. No injection, nothing
+    /// `elo_overlay` since before the feature existed. No injection, nothing
     /// to break on a driver update, nothing that reads as malware to an
     /// anti-cheat.
     ///
@@ -968,7 +968,7 @@ mod tests {
     fn play_message_matches_the_servers_format() {
         assert_eq!(
             play_message("answer", "0xAbC1", "abc", Some("2026-08-04")),
-            "scry play\naction: answer\nwallet: 0xabc1\nday: 2026-08-04\ndetail: abc"
+            "elo play\naction: answer\nwallet: 0xabc1\nday: 2026-08-04\ndetail: abc"
         );
     }
 
@@ -983,7 +983,7 @@ mod tests {
     #[test]
     fn missing_launcher_is_an_error_not_a_panic() {
         let e = Overlay::connect_at(
-            std::path::Path::new("/nonexistent/scry.sock"),
+            std::path::Path::new("/nonexistent/elo.sock"),
             "t",
             "1",
             Duration::from_millis(50),
