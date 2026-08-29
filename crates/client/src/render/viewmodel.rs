@@ -785,7 +785,7 @@ pub fn hand_light(
 ) {
     let want = net.as_deref().and_then(|n| {
         let core = &n.session.core;
-        crate::ui::hold::held_model_in_hand(&core.catalog, &core.inv, n.sel)
+        crate::ui::hold::lit_model_in_hand(&core.catalog, &core.inv, n.sel, n.light)
     });
     apply_hand_light(want, q);
 }
@@ -798,6 +798,13 @@ pub fn hand_light(
 /// no third state: an emitter that is off is a zero, not a hidden entity,
 /// so nothing here can leave a light burning for an item that is no longer
 /// in the hand.
+///
+/// Since torch fuel v0 the caller narrows it further — `hold::lit_model_in_hand`
+/// hands `None` for a torch whose latch is off or whose condition has run
+/// out — and that is deliberately *its* job rather than a fourth branch
+/// here: this function's contract is "draw the light this row declares",
+/// and whether a flame is burning is a question about the sim's three
+/// facts, not about a `PointLight`.
 pub fn apply_hand_light(
     want: Option<usize>,
     mut q: Query<(&mut PointLight, &mut Transform), With<HandLight>>,

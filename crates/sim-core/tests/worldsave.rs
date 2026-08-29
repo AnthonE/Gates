@@ -761,12 +761,22 @@ fn a_worn_tool_survives_the_world_and_an_empty_slot_may_not_wear() {
     );
 
     // The empty-slot half, at the byte level. The first body's inventory
-    // starts at HEAD + SCALARS(60) + jobs(16); slot 4 is empty (nothing
-    // granted there), and its cond bytes are the last two of its six.
+    // starts at HEAD + the scalar head + the craft queue; slot 4 is empty
+    // (nothing granted there), and its cond bytes are the last two of its
+    // six.
+    //
+    // **The scalar head is DERIVED, not typed.** It was the literal `60`
+    // until torch fuel v0 grew it to 64, and the poke then landed four
+    // bytes short of the field it meant — caught here only because the
+    // fixture-rot guard below happened to notice, which is luck. Every
+    // term is a public constant, so the offset moves when the record does.
     let mut blob = vec![0u8; WORLD_SAVE_MAX_BYTES];
     let n = w.save_world(&mut blob).expect("encodes");
     blob.truncate(n);
-    let inv0 = sim_core::worldsave::HEAD_BYTES + 60 + 16;
+    let jobs_bytes = sim_core::limits::CRAFT_QUEUE * 4;
+    let stacks_bytes = (sim_core::limits::INV_SLOTS + sim_core::limits::WEAR_SLOTS) * 6;
+    let scalars = sim_core::persist::PLAYER_SAVE_BYTES - jobs_bytes - stacks_bytes;
+    let inv0 = sim_core::worldsave::HEAD_BYTES + scalars + jobs_bytes;
     let slot4_cond = inv0 + 4 * 6 + 4;
     assert_eq!(
         &blob[slot4_cond - 4..slot4_cond],

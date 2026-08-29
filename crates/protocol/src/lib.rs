@@ -724,7 +724,26 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// report and keep every arrow. `input.rs`'s v22 note is the precedent for
 /// a bump with no layout change — the golden that moves is `hello`, which
 /// carries this number, and nothing else in the 100 shifts a byte.
-pub const PROTO_VER: u16 = 54;
+///
+/// **v55 — a torch can be put out, and it burns while it is not** (torch
+/// fuel v0, `sim-core/light.rs`). `BTN_LIGHT` takes bit 4 of the input
+/// frame's `buttons` octet, which is `input.rs`'s v22 case exactly: the
+/// field was already eight bits wide and unmasked, so **no byte moves** —
+/// what changed is that a bit crossed as garbage before and is a verb now.
+///
+/// It is a version turn for v22's reason turned around. `server/net.rs`'s
+/// `accept_input` drops any datagram carrying a bit outside `BTN_MASK` and
+/// counts it as forgery, so a **v55 client against a v54 shard has every
+/// frame it lights a torch in thrown away** — not a missing feature, a
+/// movement stall for as long as the key is held. The handshake refusing
+/// the pairing is the only correct outcome, and it is why joining
+/// `BTN_MASK` and turning this number are one commit.
+///
+/// Nothing else on the wire learns about a flame: it is derived from the
+/// latch, the item's content row and its `cond`, all three of which both
+/// ends already hold, so there is no `lit` field anywhere and the golden
+/// that moves is `hello`.
+pub const PROTO_VER: u16 = 55;
 
 /// This game's slug in the elo catalog.
 ///

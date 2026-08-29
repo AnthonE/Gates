@@ -1449,7 +1449,11 @@ pub fn poll_connect(
             // through the world directly. `Net` is non-send because the
             // session owns tokio channel receivers (`render::mod`).
             commands.queue(move |world: &mut World| {
-                world.insert_non_send_resource(super::Net { session, sel: 0 });
+                world.insert_non_send_resource(super::Net {
+                    session,
+                    sel: 0,
+                    light: false,
+                });
             });
             // `Loading`, not `InWorld`: the welcome names a seed and the seed
             // is not a world. What comes next is three rings and a far mesh at

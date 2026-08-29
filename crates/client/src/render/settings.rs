@@ -661,7 +661,7 @@ fn rows(cat: usize) -> Vec<Row> {
 /// **CROUCH is listed as doing nothing on purpose.** `BTN_CROUCH` crosses the
 /// wire and no sim code reads it (`sim-core/input.rs`), so the row states that
 /// rather than implying a stance the player will go looking for.
-pub const BINDS: [(&str, &str); 19] = [
+pub const BINDS: [(&str, &str); 20] = [
     ("MOVE", "W A S D"),
     ("SPRINT", "Left Shift"),
     (
@@ -682,6 +682,10 @@ pub const BINDS: [(&str, &str); 19] = [
     ("CHAT", "T or Enter"),
     ("EAT / DRINK", "J / H"),
     ("BUILD", "Hold Right Mouse with a plan; Left Mouse places"),
+    (
+        "LIGHT / SNUFF A TORCH",
+        "Right Mouse with a torch in hand (it burns while it is lit)",
+    ),
     ("REPAIR / UPGRADE", "R / U, or Left Mouse with a hammer"),
     ("SCREENSHOT", "F12"),
     (

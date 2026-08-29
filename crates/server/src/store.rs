@@ -145,7 +145,12 @@ pub const SAVE_MAGIC: [u8; 8] = *b"GATESAV\0";
 /// `worn`, `WEAR_SLOTS` stacks at the inventory's own six-byte stride, so
 /// the record went 256 → 268 per player. The layout moved and nothing on
 /// disk announces it, which is the whole reason this number exists.
-pub const SAVE_FORMAT: u16 = 4;
+/// **5 — a burning torch keeps its remainder** (torch fuel v0): the
+/// scalar head grew `light_acc`, 60 → 64 B, so the record went 268 → 272.
+/// Four bytes, and they buy the same thing `food_acc` buys — a restore
+/// that zeroed the remainder would hand back six seconds of flame on
+/// every reconnect (`sim-core/light.rs`).
+pub const SAVE_FORMAT: u16 = 5;
 
 /// Header size. Fixed so record `i` is at a computable offset.
 pub const SAVE_HEADER_BYTES: usize = 48;
@@ -862,7 +867,8 @@ mod tests {
         // 268 → 328 at SAVE_FORMAT 3: the save body grew 60 bytes (an
         // inventory slot is six bytes since item durability v0). 328 → 340
         // at SAVE_FORMAT 4: two worn slots at the same stride (armor v0).
-        assert_eq!(SAVE_RECORD_BYTES, 340);
+        // 340 → 344 at SAVE_FORMAT 5: the torch's remainder (torch fuel v0).
+        assert_eq!(SAVE_RECORD_BYTES, 344);
         let head = encode_header(7, 0xdead_beef);
         assert_eq!(
             u16::from_le_bytes([head[10], head[11]]) as usize,

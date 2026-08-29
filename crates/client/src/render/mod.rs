@@ -151,6 +151,17 @@ pub struct Net {
     /// The selected hotbar slot, held here because it is a client-side
     /// latch rather than a per-frame key state.
     pub sel: u8,
+    /// **The torch is up** (torch fuel v0). `sel`'s neighbour in every
+    /// sense: a client-side latch the player toggles, sent to the sim
+    /// every frame as `BTN_LIGHT`, and never a fact the server hands back.
+    ///
+    /// It is intent, not state. Whether a flame is actually burning is
+    /// `sim_core::light::is_lit` server-side and
+    /// `viewmodel::apply_hand_light`'s three-way gate here, and both read
+    /// the same three facts — this latch, the held row's `light`, and the
+    /// stack's `cond`. So a torch that runs dry goes dark on both sides
+    /// off the same `SUB_INV`, with nothing stored anywhere to disagree.
+    pub light: bool,
 }
 
 /// The world's identity, resolved once from the welcome and then read-only.

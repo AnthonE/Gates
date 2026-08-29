@@ -728,7 +728,7 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 26] = [
+    pub const RE_DERIVED: [&str; 27] = [
         "body",
         "inv",
         // **The corpse does not keep its plates.** `worn` is here rather
@@ -763,6 +763,15 @@ mod carried_through_death {
         "death_range_cm",
         "sleeping",
         "slept_at",
+        // **A corpse is not holding a torch up.** `light_acc` is the
+        // sub-point remainder of a flame, and the flame is derived from a
+        // held stack the backpack has just taken (`inv`, four lines up),
+        // so carrying the remainder would be keeping change for a purchase
+        // somebody else now owns. Six seconds of light, and the decision
+        // is about where it lives rather than what it is worth: a
+        // remainder without the item it was burning is state nothing can
+        // spend.
+        "light_acc",
     ];
 }
 

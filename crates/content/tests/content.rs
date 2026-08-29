@@ -1144,6 +1144,69 @@ fn the_durability_rules_refuse_what_they_name() {
     );
 }
 
+/// The two torch-fuel rules (torch fuel v0), each proven against the
+/// shipped set with one edit.
+///
+/// Both exist because `light_burn` is a **predicate as well as a price** —
+/// nonzero is what makes an item a light at all (`sim_core::light::is_lit`
+/// fact 2) — so the two ways to write a nonsense light are a light that
+/// cannot pay and a light that pays impossibly fast.
+#[test]
+fn the_torch_fuel_rules_refuse_what_they_name() {
+    // V8: a light must have condition to spend. Strip the torch's ceiling
+    // and leave its burn rate, and the shard ships a flame that burns
+    // forever for nothing — the free light the field exists to forbid.
+    refuses(
+        "items.toml",
+        "condition_max = 5000
+# Hundredths of condition per minute",
+        "condition_max = 0
+# Hundredths of condition per minute",
+        "(V8)",
+    );
+    // V9: the rate fits `u16`, which is what bounds the sim's per-tick
+    // debit to one point without a clamp anywhere (wall 4).
+    refuses(
+        "items.toml",
+        "light_burn = 1000",
+        "light_burn = 200000",
+        "(V9)",
+    );
+}
+
+/// The shipped torch is **five minutes**, asserted off the two shipped
+/// numbers rather than off either one.
+///
+/// `condition_max` and `light_burn` are each individually plausible at any
+/// value and neither states the duration, which is the thing taken from
+/// the reference (`reference/BALANCE.md` §6: 1/6 of a point a second off a
+/// max of 50). A balance pass that moved one and not the other would leave
+/// both bands green and quietly hand the player a 30-second torch.
+#[test]
+fn the_shipped_torch_is_five_minutes_of_light() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let torch = c
+        .items
+        .iter()
+        .find(|i| i.id == "item.torch")
+        .expect("content/items.toml no longer ships a torch");
+    assert!(torch.light_burn > 0, "the torch stopped being a light");
+    // Hundredths / (hundredths per minute) = minutes, exactly — and the
+    // exactness is the point: the reference's rate divides its ceiling
+    // whole, so a remainder here would mean one of the two moved off it.
+    assert_eq!(
+        torch.condition_max % torch.light_burn,
+        0,
+        "the torch's ceiling is no longer a whole number of minutes at \
+         its own burn rate"
+    );
+    assert_eq!(
+        torch.condition_max / torch.light_burn,
+        5,
+        "the shipped torch is no longer the reference's five minutes"
+    );
+}
+
 /// The ladder's two failure modes are refused at the boot edge: a base
 /// nobody set, and a ladder that does not rise. A falling ladder would
 /// make a rarer bag despawn *sooner* than a common one — the exact

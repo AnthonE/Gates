@@ -38,11 +38,31 @@ pub const BTN_SPRINT: u8 = 1 << 0;
 pub const BTN_CROUCH: u8 = 1 << 1;
 pub const BTN_PRIMARY: u8 = 1 << 2;
 pub const BTN_JUMP: u8 = 1 << 3;
+/// **Hold the light in your hand up, lit** (torch fuel v0, `light.rs`).
+///
+/// A *latch*, not an edge: the client keeps the bit set for as long as the
+/// flame should burn and clears it to put the flame out, exactly as
+/// [`InputFrame::sel`] is a latch for which slot is in the hand rather
+/// than a "switch slots" verb. That is what makes this a button bit
+/// instead of an `ActionMsg`, and the reason is prediction rather than
+/// wire economy: both sides have to agree, every tick, on whether a
+/// torch is burning, and a one-shot toggle would leave the two ends
+/// holding separate copies of a flag that a single dropped datagram could
+/// invert (`EV_OVEN`'s own argument, one layer down).
+///
+/// The sim never stores it. Whether a flame is actually burning is
+/// `light::is_lit` — this bit **and** a held stack whose content row
+/// declares a `light_burn` **and** condition left to spend — so the
+/// authority stays with the server while the *intent* stays with the
+/// hand that pressed the key, and the client can compute the same
+/// predicate from facts it already mirrors (its own latch, its own
+/// `HELD_MODELS` row, and the `cond` `SUB_INV` gives it).
+pub const BTN_LIGHT: u8 = 1 << 4;
 
-/// Every button bit the sim means — the closed set of the four above.
+/// Every button bit the sim means — the closed set of the five above.
 ///
 /// The wire carries `buttons` as a full unmasked octet (see the JUMP note),
-/// so bits 4–7 cross intact and mean nothing: no verb reads them, but
+/// so bits 5–7 cross intact and mean nothing: no verb reads them, but
 /// `state_hash` hashes the stored frame, so an unmasked garbage bit would be
 /// client-writable state that no rule owns (NOW.md §5b's forgery slack).
 /// The server refuses a wire frame carrying one (`net.rs` `accept_input`);
@@ -50,7 +70,7 @@ pub const BTN_JUMP: u8 = 1 << 3;
 /// A new button joins this mask in the same commit that declares its bit,
 /// or every press of it is refused at the door;
 /// `tests/domain_ledger.rs` fails if the two drift apart.
-pub const BTN_MASK: u8 = BTN_SPRINT | BTN_CROUCH | BTN_PRIMARY | BTN_JUMP;
+pub const BTN_MASK: u8 = BTN_SPRINT | BTN_CROUCH | BTN_PRIMARY | BTN_JUMP | BTN_LIGHT;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct InputFrame {

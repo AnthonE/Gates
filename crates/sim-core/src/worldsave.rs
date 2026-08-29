@@ -153,7 +153,15 @@ use crate::worldcont::WorldContRec;
 /// on a hillside is ammunition somebody earned. Both are in `state_hash`,
 /// so the distinction is only about which one survives a save, and
 /// getting it backwards either way is wall 5 failing at the origin.
-pub const WORLD_SAVE_FORMAT: u16 = 10;
+///
+/// **11 — a burning torch keeps its remainder** (torch fuel v0): no new
+/// section and no new head field, but `PlayerSave`'s scalar head grew
+/// `light_acc`, so a player record is 320 → 324 bytes and every section
+/// after the players moved. That is exactly the silent reinterpretation
+/// this number exists to refuse — an old file read as a new one would
+/// take four bytes of the first player's craft queue as their torch and
+/// slide every byte after it.
+pub const WORLD_SAVE_FORMAT: u16 = 11;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
 /// the next bag id, and the ten section counts.
@@ -868,6 +876,10 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
             heal_total: save.heal_total,
             heal_span: save.heal_span,
             heal_acc: save.heal_acc,
+            // Yes, a world remembers it — the decision this block's own
+            // comment demands. It is the survival accumulators' answer for
+            // the survival accumulators' reason (torch fuel v0).
+            light_acc: save.light_acc,
             dead: save.dead,
             // No `..Player::default()`, and clippy is what pointed it out:
             // every field is named, so the struct-update syntax was a
@@ -1471,9 +1483,11 @@ mod tests {
     fn the_ceiling_is_what_the_caps_add_up_to() {
         assert_eq!(PLAYER_TAIL_BYTES, 52);
         // 308 → 320 at format 8: `PlayerSave` carries `WEAR_SLOTS` worn
-        // stacks at the inventory's six-byte stride (armor v0).
+        // stacks at the inventory's six-byte stride (armor v0). 320 → 324
+        // at format 11: the torch's remainder in its scalar head (torch
+        // fuel v0).
         assert_eq!(
-            PLAYER_BYTES, 320,
+            PLAYER_BYTES, 324,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -1484,7 +1498,7 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 62                    // head
-            + 100 * 320                     // players (6 B a stack, + 2 worn at format 8)
+            + 100 * 324                     // players (6 B a stack, 2 worn at format 8, light_acc at 11)
             + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 33                    // deploys + bag_ready + placed
             + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
@@ -1539,8 +1553,10 @@ mod tests {
         // its column's plate out of the pieces rather than storing a copy.
         // Moved 630_456 → 641_726 at format 10: a whole new section
         // (`MAX_SPENT_ARROWS` × 22) plus six bytes of head.
+        // Moved 641_726 → 642_126 at format 11: four bytes a player for the
+        // torch's remainder, over `MAX_PLAYERS`.
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 641_726,
+            WORLD_SAVE_MAX_BYTES, 642_126,
             "the world save ceiling moved"
         );
     }

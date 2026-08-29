@@ -52,7 +52,25 @@ const TICKS: u64 = 900;
 /// with an intentional sim change, in the same commit (CLAUDE.md wall 5).
 ///
 /// Regenerated this commit, and **structurally rather than
-/// behaviourally**: the deployed box became a container, so the box
+/// behaviourally, for the second time running**: `Player` gained
+/// `light_acc`, the torch's sub-point remainder (torch fuel v0), and
+/// `state_hash`'s heal buffer widened 8 → 12 bytes to fold it. Not one
+/// bot on this surface lights anything — `bots::bot_frame` draws
+/// `BTN_SPRINT`, `BTN_PRIMARY` and `BTN_JUMP` and never `BTN_LIGHT` — so
+/// the remainder is zero in all 100 records and the number below moved by
+/// exactly four zero bytes a player. The same distinction the note below
+/// draws: this regeneration is **not** evidence that a torch burns on
+/// this surface, and `crates/sim-core/tests/torch.rs` is what owns that
+/// behaviour.
+///
+/// `BTN_MASK` widening is inert here for the same reason and it is worth
+/// saying separately, because it is the half that *could* have been
+/// behavioural: `world::apply` masks a non-wire frame's buttons, so a bit
+/// entering the mask changes what a bot's frame stores — but bit 4 is
+/// never in one of these draws, so nothing was being masked off.
+///
+/// The regeneration before it was **structural** too: the deployed box
+/// became a container, so the box
 /// store's length entered the digest. This script places no box, so the
 /// number below moved by exactly eight zero bytes — one `u64` count and
 /// not one record. That distinction is the whole value of the note: this
@@ -437,7 +455,7 @@ const TICKS: u64 = 900;
 /// on the ground, and every `y` in the trace moved with it. No verb, no
 /// ordering and no rule changed; the equality assert above it stayed green on
 /// the same run, which is what says the drift is the world and not the sim.
-const GOLDEN_FINAL_HASH: u64 = 0xC473_3C6D_8776_3266;
+const GOLDEN_FINAL_HASH: u64 = 0xA018_DD45_2908_5415;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -473,7 +491,13 @@ const GOLDEN_FINAL_HASH: u64 = 0xC473_3C6D_8776_3266;
 /// Regenerated 2026-08-26 beside `GOLDEN_FINAL_HASH`, for the same worldgen
 /// change and with the same reading: the trace stamps positions, positions
 /// include `y`, and the ground under this run moved.
-const GOLDEN_TRACE_HASH: u64 = 0x57D0_F9E3_88F8_9D18;
+///
+/// Regenerated again beside it at torch fuel v0, and structurally: every
+/// stamped hash folds the same four new zero bytes a player that the final
+/// one does. Both moving together is what says the change is in the
+/// digest's SHAPE — a behavioural drift on this surface would move the
+/// trace at the tick it started and the final hash once.
+const GOLDEN_TRACE_HASH: u64 = 0xC991_6660_A595_BC1B;
 
 /// Fold a stamped trace into one number.
 ///

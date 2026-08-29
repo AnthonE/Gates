@@ -62,12 +62,13 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 ## 0tl · The torch lights the ground — what it still cannot do *(client+systems lane)*
 
-*Gap pass, from `findings/pass-20260829-153230-03-judge.md` ranked gap 1
-("night is a pressure with no counter, and the torch you spawn holding is
-an inert prop"). The light landed 2026-08-29 (torch light v0): the row
-declares it, `viewmodel::hand_light` hangs a `PointLight` on the hand, and
-`hand_light.rs` gates it — 6 tests, 8 mutants red. No wire and no content
-change. What is below is what that opened.*
+*Two gap passes deep. The light landed 2026-08-29 (torch light v0) and
+**items 3 and 4 landed the same day** (torch fuel v0, wire v55): a torch
+burns 1 000 hundredths of condition a minute — the reference's 1/6 point a
+second, so five minutes exactly — and right-click puts it out. There is no
+`lit` flag: a flame is derived on both sides from the `BTN_LIGHT` latch,
+the item's `light_burn` row and its `cond`. `DECISIONS.md` §open has the
+reading and the two save formats it cost.*
 
 1. **Nobody has seen it, and no gate here can.** `rig::CAPTURE_DAY_FRAC`
    pins every capture to noon, so no frame any visual judge has scored was
@@ -80,18 +81,19 @@ change. What is below is what that opened.*
    failure `threejs-exposure-color-grading` names. The fix is one owner over
    `rig`'s coupled set (`CLAUDE.md` §traps) and a look only a person can
    judge. Do not touch it from a lane that is also changing a light.
-3. **It costs nothing to burn.** The reference's torch is `Ignite`/
-   `Extinguish` RPCs setting one flag bit, burning **condition** as fuel at
-   1/6 per second off a max of 50 — five minutes, and ~7 condition per
-   landed hit on top. Ours has `condition_max = 5000` and wears nowhere
-   (`content/items.toml`). That is a sim slice: a per-tick debit while lit.
-4. **There is no lit/unlit state**, so it cannot be put out — which is the
-   whole tradeoff `ALPHA.md` §1 names (*"light = visibility = target"*). The
-   reference does it as a flag on the replicated entity, which is why other
-   players see your torch without a light ever crossing the wire.
+3. **A torch still wears nothing when you HIT with it.** The reference
+   charges ~7 condition a landed swing on top of the burn; ours has no
+   `condition_loss` row naming it and V3 forbids an unreachable one, so
+   this wants a node or a combat row first, not a number.
+4. **Nothing says a torch went out.** The client learns it from `cond`
+   arriving at 0 on `SUB_INV`, which is one round trip late and silent —
+   no cue, no toast, no flicker. The mixer has no `Cue` for either edge.
 5. **No other player's torch lights anything.** `RemoteState` carries no
    held item and `bodies.rs` draws no held mesh, so a torch is first-person
-   only. Item 4 is the cheap version of this: one bit, not an item id.
+   only — and now that it is a real tradeoff, this is the half that makes
+   *"light = visibility = target"* true. One bit on `EntityState` beside
+   `sleeping`/`dead` is the cheap version; a held mesh is the real one.
+   Ranked **first** by `findings/pass-20260829-153230-04-judge.md`.
 6. **The flame is not drawn.** No emissive and no flame geometry — the head
    is lit from 4 cm above its crown instead. `nothing_held_glows` still
    holds and did not have to move; a real flame is a VFX slice.
@@ -266,11 +268,14 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    blueprint ITEM (learning is instant and personal, so there is nothing to
    trade), and the wipe schedule `DESIGN.md` §8 promises blueprints will
    outlive.
-6. **Day/night reads nothing but the mobs and the hand.** ⚠ `mob::think` is
-   nocturnal and a held torch lights the ground (torch light v0, `§0tl`) —
-   but the torch cannot be put out and costs nothing to burn, so it is a
-   light without the tradeoff. Still missing: crops, moon and stars in the
-   night sky, and a set-time verb — moving the clock means moving the tick.
+6. **Day/night reads nothing but the mobs and the hand.** `mob::think` is
+   nocturnal, a held torch lights the ground, and since torch fuel v0 it
+   burns five minutes and can be put out (`§0tl`) — so night has a counter
+   with a price. ⚠ What it still has **no reason** is the other half, and
+   no item owns it: nothing in `content/` can only be had after dark
+   (`findings/pass-20260829-153230-04-judge.md` gap 2). Still missing:
+   crops, moon and stars in the night sky, and a set-time verb — moving
+   the clock means moving the tick.
 
 
 ## 0pvp · What a fight still cannot do *(systems lane)*

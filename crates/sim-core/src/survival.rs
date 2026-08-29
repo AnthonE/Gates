@@ -246,8 +246,13 @@ pub const REFUSE_C_MAX: u32 = 3;
 ///
 /// `den == 0` yields zero units and leaves `acc` alone — the inert-content
 /// path, and the reason no caller needs its own divide-by-zero guard.
+///
+/// `pub(crate)` since torch fuel v0, and for the sentence above rather
+/// than for convenience: `light::step` is a fourth meter over the same
+/// rational step, and a second copy of these five lines would be a second
+/// place an exactness bug could live.
 #[inline]
-fn tick_units(acc: &mut u32, num: u32, den: u32) -> u32 {
+pub(crate) fn tick_units(acc: &mut u32, num: u32, den: u32) -> u32 {
     if den == 0 || num == 0 {
         return 0;
     }
