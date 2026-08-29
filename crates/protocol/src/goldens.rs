@@ -31,136 +31,137 @@ use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
 use sim_core::gather::ItemStack;
 use sim_core::input::InputFrame;
 use sim_core::limits::{
-    INV_SLOTS, MAX_INPUT_FRAMES, MAX_PIECE_COSTS, MAX_RECIPE_INPUTS, MAX_SNAPSHOT_ENTITIES,
+    INV_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_PIECE_COSTS, MAX_RECIPE_INPUTS,
+    MAX_SNAPSHOT_ENTITIES,
 };
 use sim_core::research::{ResearchContent, ResearchRow, NO_RECIPE};
 use sim_core::rng::Pcg32;
 
 /// Fixture file names, keyed by wire version (`PROTO_VER` 10 ⇒ `v10_*`).
 pub const FIXTURES: [&str; 101] = [
-    "v55_input_acks_only.bin",
-    "v55_input_full.bin",
-    "v55_snapshot_keyframe.bin",
-    "v55_snapshot_delta.bin",
-    "v55_snapshot_cap.bin",
-    "v55_hello.bin",
-    "v55_welcome.bin",
-    "v55_refuse_full.bin",
-    "v55_event_gather.bin",
-    "v55_event_inv.bin",
-    "v55_event_slot_harvested.bin",
-    "v55_event_slot_respawned.bin",
-    "v55_event_slot_sync.bin",
-    "v55_event_catalog.bin",
-    "v55_event_weak_mark.bin",
-    "v55_event_craft_q.bin",
-    "v55_event_craft_done.bin",
-    "v55_event_craft_refused.bin",
-    "v55_event_recipes.bin",
-    "v55_action_craft.bin",
-    "v55_action_cancel.bin",
-    "v55_action_place.bin",
-    "v55_event_piece_placed.bin",
-    "v55_event_piece_sync.bin",
-    "v55_event_build_refused.bin",
-    "v55_event_piece_defs.bin",
-    "v55_action_deploy.bin",
-    "v55_action_feed.bin",
-    "v55_event_deploy_placed.bin",
-    "v55_event_deploy_sync.bin",
-    "v55_event_deploy_refused.bin",
-    "v55_event_deploy_defs.bin",
-    "v55_event_piece_removed.bin",
-    "v55_event_deploy_removed.bin",
-    "v55_event_stock.bin",
-    "v55_action_use.bin",
-    "v55_action_access.bin",
-    "v55_event_door.bin",
-    "v55_action_upgrade.bin",
-    "v55_chat.bin",
-    "v55_event_chat.bin",
-    "v55_event_hit.bin",
-    "v55_event_health.bin",
-    "v55_event_death.bin",
-    "v55_action_loot.bin",
-    "v55_event_bag_dropped.bin",
-    "v55_event_bag_sync.bin",
-    "v55_event_bag_removed.bin",
-    "v55_event_struct_hit_piece.bin",
-    "v55_event_struct_hit_deploy.bin",
-    "v55_event_vitals.bin",
-    "v55_event_consumed.bin",
-    "v55_event_consume_refused.bin",
-    "v55_action_consume.bin",
-    "v55_event_drank.bin",
-    "v55_action_drink.bin",
-    "v55_event_respawn.bin",
-    "v55_action_respawn.bin",
-    "v55_action_move.bin",
-    "v55_event_moved.bin",
-    "v55_event_move_refused.bin",
-    "v55_action_move_box.bin",
-    "v55_action_container.bin",
-    "v55_action_container_close.bin",
-    "v55_event_cont_sync.bin",
-    "v55_event_cont_close.bin",
-    "v55_action_repair_piece.bin",
-    "v55_action_repair_deploy.bin",
-    "v55_event_piece_repaired_piece.bin",
-    "v55_event_piece_repaired_deploy.bin",
-    "v55_action_throw_piece.bin",
-    "v55_action_throw_deploy.bin",
-    "v55_event_charge_placed_piece.bin",
-    "v55_event_charge_placed_deploy.bin",
-    "v55_challenge.bin",
-    "v55_auth.bin",
-    "v55_event_oven_lit.bin",
-    "v55_event_oven_out.bin",
+    "v56_input_acks_only.bin",
+    "v56_input_full.bin",
+    "v56_snapshot_keyframe.bin",
+    "v56_snapshot_delta.bin",
+    "v56_snapshot_cap.bin",
+    "v56_hello.bin",
+    "v56_welcome.bin",
+    "v56_refuse_full.bin",
+    "v56_event_gather.bin",
+    "v56_event_inv.bin",
+    "v56_event_slot_harvested.bin",
+    "v56_event_slot_respawned.bin",
+    "v56_event_slot_sync.bin",
+    "v56_event_catalog.bin",
+    "v56_event_weak_mark.bin",
+    "v56_event_craft_q.bin",
+    "v56_event_craft_done.bin",
+    "v56_event_craft_refused.bin",
+    "v56_event_recipes.bin",
+    "v56_action_craft.bin",
+    "v56_action_cancel.bin",
+    "v56_action_place.bin",
+    "v56_event_piece_placed.bin",
+    "v56_event_piece_sync.bin",
+    "v56_event_build_refused.bin",
+    "v56_event_piece_defs.bin",
+    "v56_action_deploy.bin",
+    "v56_action_feed.bin",
+    "v56_event_deploy_placed.bin",
+    "v56_event_deploy_sync.bin",
+    "v56_event_deploy_refused.bin",
+    "v56_event_deploy_defs.bin",
+    "v56_event_piece_removed.bin",
+    "v56_event_deploy_removed.bin",
+    "v56_event_stock.bin",
+    "v56_action_use.bin",
+    "v56_action_access.bin",
+    "v56_event_door.bin",
+    "v56_action_upgrade.bin",
+    "v56_chat.bin",
+    "v56_event_chat.bin",
+    "v56_event_hit.bin",
+    "v56_event_health.bin",
+    "v56_event_death.bin",
+    "v56_action_loot.bin",
+    "v56_event_bag_dropped.bin",
+    "v56_event_bag_sync.bin",
+    "v56_event_bag_removed.bin",
+    "v56_event_struct_hit_piece.bin",
+    "v56_event_struct_hit_deploy.bin",
+    "v56_event_vitals.bin",
+    "v56_event_consumed.bin",
+    "v56_event_consume_refused.bin",
+    "v56_action_consume.bin",
+    "v56_event_drank.bin",
+    "v56_action_drink.bin",
+    "v56_event_respawn.bin",
+    "v56_action_respawn.bin",
+    "v56_action_move.bin",
+    "v56_event_moved.bin",
+    "v56_event_move_refused.bin",
+    "v56_action_move_box.bin",
+    "v56_action_container.bin",
+    "v56_action_container_close.bin",
+    "v56_event_cont_sync.bin",
+    "v56_event_cont_close.bin",
+    "v56_action_repair_piece.bin",
+    "v56_action_repair_deploy.bin",
+    "v56_event_piece_repaired_piece.bin",
+    "v56_event_piece_repaired_deploy.bin",
+    "v56_action_throw_piece.bin",
+    "v56_action_throw_deploy.bin",
+    "v56_event_charge_placed_piece.bin",
+    "v56_event_charge_placed_deploy.bin",
+    "v56_challenge.bin",
+    "v56_auth.bin",
+    "v56_event_oven_lit.bin",
+    "v56_event_oven_out.bin",
     // Appended rather than slotted beside `v30_event_door`: the
     // fixture list is positional (`gen_goldens` indexes it), so a new
     // name in the middle silently renumbers every writer after it.
-    "v55_event_knock.bin",
-    "v55_event_auth.bin",
-    "v55_action_access_crew.bin",
-    "v55_action_demolish.bin",
-    "v55_event_shot.bin",
+    "v56_event_knock.bin",
+    "v56_event_auth.bin",
+    "v56_action_access_crew.bin",
+    "v56_action_demolish.bin",
+    "v56_event_shot.bin",
     // World containers v0 (v37): the fourth container kind. Three
     // fixtures and not one, because `action_move_box`'s own doc records
     // what happens otherwise — the third kind crossed the wire for a
     // whole version with only the *open* pinned, so the bytes that mean
     // "take it out of the box" were checked by nothing. Kind 3 gets its
     // open, its move and its sync in the commit that legalises it.
-    "v55_action_container_world.bin",
-    "v55_action_move_world.bin",
-    "v55_event_cont_sync_world.bin",
+    "v56_action_container_world.bin",
+    "v56_action_move_world.bin",
+    "v56_event_cont_sync_world.bin",
     // The bench ladder + tech tree (v38): the unlock action and the
     // research-rows drip, plus the three research-lane events that had
     // ridden unpinned since v32 — the role gate checked their payloads
     // and nothing checked their bytes, which is the exact seat the v37
     // world-container note called out as empty.
-    "v55_action_unlock.bin",
-    "v55_event_research_rows.bin",
-    "v55_event_research.bin",
-    "v55_event_research_refused.bin",
-    "v55_event_known.bin",
+    "v56_action_unlock.bin",
+    "v56_event_research_rows.bin",
+    "v56_event_research.bin",
+    "v56_event_research_refused.bin",
+    "v56_event_known.bin",
     // The table verb's own action, pinned by the local branch and kept
     // through the 2026-08-15 integration: `encode_action_research` is
     // still live (the client's `verbs.rs` calls it), so
     // `every_encoder_has_a_golden` requires these bytes.
-    "v55_action_research.bin",
+    "v56_action_research.bin",
     // The gather refusal (v42) — appended, because the manifest is
     // positional and a name in the middle silently renumbers every
     // writer after it.
-    "v55_event_gather_refused.bin",
+    "v56_event_gather_refused.bin",
     // Bag choice v0 (v43): the own-fact bag list the death screen shapes
     // itself around. Appended for the same positional reason.
-    "v55_event_bags.bin",
+    "v56_event_bags.bin",
     // Surface marks v0 (v45): where an arrow stopped, and on what.
     // Appended, like the two above — `gen_goldens` writes this list by
     // INDEX, so inserting anywhere but the end silently re-points every
     // fixture after the insertion at another message's bytes.
-    "v55_event_impact.bin",
-    "v55_event_swing.bin",
+    "v56_event_impact.bin",
+    "v56_event_swing.bin",
     // Armor v1 (v51): the fifth container kind, and the first that is
     // carried on the player rather than standing in the world. Four
     // fixtures on the v37 precedent above — its open, its move and its
@@ -168,14 +169,14 @@ pub const FIXTURES: [&str; 101] = [
     // `REFUSE_M_WEAR` is a reason no fixture has ever carried and the
     // refusal message is the only one that pins a container kind inside
     // an *address* rather than as a field of its own.
-    "v55_action_container_wear.bin",
-    "v55_action_move_wear.bin",
-    "v55_event_cont_sync_wear.bin",
-    "v55_event_move_refused_wear.bin",
+    "v56_action_container_wear.bin",
+    "v56_action_move_wear.bin",
+    "v56_event_cont_sync_wear.bin",
+    "v56_event_move_refused_wear.bin",
     // Appended, never inserted: `protocol_golden.rs` and `gen_goldens.rs`
     // address this array by literal index, so a name landing in the middle
     // would silently re-point ~14 existing fixtures at each other's bytes.
-    "v55_action_pickup.bin",
+    "v56_action_pickup.bin",
 ];
 
 /// The move action: container handle (a bag id, or a packed
@@ -344,6 +345,15 @@ fn rng_entity(rng: &mut Pcg32, id: u32) -> EntityState {
         dead: false,
         yaw: rng.next_bounded(0x1_0000) as u16,
         pitch: rng.next_bounded(0x100) as u8,
+        // Empty-handed and unlit, from no `rng` call, for the reason
+        // `sleeping` and `dead` are: a random hand pins whichever id the
+        // generator happened to produce and documents nothing, and a draw
+        // here would reshuffle every later field of every later entity.
+        // The cases below fill the hand deliberately and say what each
+        // one covers — including that `snapshot_cap` walks every code
+        // point the field has.
+        held: None,
+        lit: false,
     }
 }
 
@@ -449,6 +459,17 @@ pub fn snapshot_keyframe() -> SnapshotCase {
     // had, which is exactly why the bit has to be carried rather than
     // inferred from any of the others.
     entities[0].dead = true;
+    // Two hands on the absolute path, and they are two different pins.
+    // id 101 carries an item id with the flame OFF and id 100 an id with
+    // the flame ON, so neither the field nor the bit can be read as the
+    // other, and neither is the sentinel: a `held` that were only ever
+    // `None` would spend seven bits on a constant, which is exactly the
+    // byte-golden hole the sleeper above is here to close. The two ids
+    // differ in more than one bit (41 is 0b0101001, 6 is 0b0000110) so a
+    // rotation or a truncation cannot land on the other.
+    entities[1].held = Some(41);
+    entities[0].held = Some(6);
+    entities[0].lit = true;
     SnapshotCase {
         header: SnapshotHeader {
             tick: 96,
@@ -474,9 +495,12 @@ pub fn snapshot_delta() -> SnapshotCase {
         *slot = rng_entity(&mut rng, 1 + i as u32);
     }
     let mut entities = [EntityState::default(); MAX_SNAPSHOT_ENTITIES];
-    // id 1: unchanged — the minimal record. 39 bits: it was 37, then v26
-    // added the sleeping bit beside `grounded` and v48 the dead bit beside
-    // that, and neither is delta-gated, so the floor rises by one each time.
+    // id 1: unchanged — the minimal record. 40 bits: it was 37, then v26
+    // added the sleeping bit beside `grounded`, v48 the dead bit beside
+    // that — neither delta-gated, so the floor rises by one each time —
+    // and v56 the `hand_changed` flag, which IS a gate and still costs the
+    // floor a bit. It buys eight back on every record that does not flip
+    // it, which is why it is a gate and the other two are not.
     entities[0] = baseline[0];
     // id 2: one snapshot interval of sprint + a look turn.
     entities[1] = baseline[1];
@@ -485,6 +509,12 @@ pub fn snapshot_delta() -> SnapshotCase {
     entities[1].qz += 7;
     entities[1].yaw = entities[1].yaw.wrapping_add(0x0400);
     entities[1].pitch = entities[1].pitch.wrapping_add(3);
+    // …and switched hotbar slots on the way — `hand_changed` with the
+    // ITEM moving and the flame off in both, which is the ordinary case
+    // (a player reaching for a weapon). Set on the baseline as well so
+    // the transition is a change and not an arrival.
+    baseline[1].held = Some(6);
+    entities[1].held = Some(41);
     // …and was killed on the way — the delta encoder's `dead` bit at
     // **true**, as a TRANSITION (baseline alive → record dead) rather than a
     // body that was already a corpse in both. That is the case a
@@ -503,10 +533,26 @@ pub fn snapshot_delta() -> SnapshotCase {
     entities[2].qvy = -450;
     entities[2].grounded = false;
     entities[2].sleeping = true;
+    // …carrying a lit torch when they went. `hand_changed` with the item
+    // UNCHANGED and only the flame moving — the case a per-field flag
+    // would encode differently and a single flag must still get right,
+    // and a true one: `light::is_lit` refuses a body nobody is driving,
+    // so the flame dies on the same record the sleeper bit arrives.
+    baseline[2].held = Some(41);
+    baseline[2].lit = true;
+    entities[2].held = Some(41);
+    entities[2].lit = false;
     // id 4: teleported beyond the delta window — absolute fallback, and
     // asleep in both baseline and record, so the absolute path is pinned
     // carrying a true it did not have to change to.
     baseline[3].sleeping = true;
+    // Holding a lit torch in baseline and record both, so the absolute
+    // FALLBACK path is pinned carrying a hand it did not have to change
+    // to — `sleeping`'s argument one field over. (A sleeper is never lit
+    // in the sim; this record exists to pin an encoder path, and the
+    // encoder does not consult `light.rs`.)
+    baseline[3].held = Some(6);
+    baseline[3].lit = true;
     entities[3] = baseline[3];
     entities[3].qx += 600;
     entities[3].qz -= 600;
@@ -1316,6 +1362,15 @@ pub fn snapshot_cap() -> SnapshotCase {
         if e.qvy == 0 {
             e.qvy = -1; // keep every velocity on the wire
         }
+        // **Every code point the held field can legally take, once.**
+        // `MAX_SNAPSHOT_ENTITIES` and `MAX_ITEM_DEFS` are both 64, so this
+        // walks 0..=63 across the 64 records and the sentinel is pinned
+        // by the two fixtures above. It costs nothing in bytes — an
+        // absolute record spends `HELD_BITS` whatever the value is — and
+        // it means a decoder that mis-shifted this field by a bit lands
+        // on a different id in 63 records rather than passing on a zero.
+        e.held = Some((i % MAX_ITEM_DEFS) as u16);
+        e.lit = i % 3 == 0;
         *slot = e;
     }
     SnapshotCase {

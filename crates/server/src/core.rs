@@ -31,12 +31,12 @@ use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{damage_band, BuildContent, PieceRec, LOC_PLANE};
 use sim_core::craft::CraftJob;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, BAG_CAP};
-use sim_core::gather::{ItemStack, NO_ITEM};
+use sim_core::gather::{GatherContent, ItemStack, NO_ITEM};
 use sim_core::inventory::{slots_in, CONT_BAG, CONT_BOX, CONT_SELF, CONT_WEAR, CONT_WORLD};
 use sim_core::limits::{
     AOI_ENTER_CM, AOI_EXIT_CM, AOI_RANK_ENTER, AOI_RANK_EXIT, CHAT_LOCAL_CM, CRAFT_QUEUE,
-    DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, INV_SLOTS, MAX_COMMANDS_PER_TICK, MAX_MOBS,
-    MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
+    DATAGRAM_BUDGET_BYTES, HEARTH_STOCK_ROWS, HOTBAR_SLOTS, INV_SLOTS, MAX_COMMANDS_PER_TICK,
+    MAX_MOBS, MAX_PLAYERS, MAX_SNAPSHOT_ENTITIES, SNAPSHOT_INTERVAL_TICKS, STALENESS_CEILING,
     SYNC_SCAN_PER_TICK, WEAR_SLOTS,
 };
 use sim_core::mob;
@@ -3490,7 +3490,16 @@ impl ShardCore {
         }
     }
 
-    fn wire_entity(p: &Player) -> EntityState {
+    /// One player as the wire sees them.
+    ///
+    /// **`gc` is here for the hand and nothing else** (wire v56). `held`
+    /// and `lit` are the only two fields on this record a client cannot
+    /// derive for a body that is not its own: `SUB_INV` carries condition
+    /// for your own bag, the `BTN_LIGHT` latch is your own input, and the
+    /// content row that says a torch burns at all lives in `GatherContent`.
+    /// So the server resolves both once per record, on the same values the
+    /// sim ran on — the quantize-both-sides law applied to a flag.
+    fn wire_entity(p: &Player, gc: &GatherContent) -> EntityState {
         EntityState {
             id: p.id,
             qx: p.body.qx,
@@ -3502,7 +3511,35 @@ impl ShardCore {
             dead: p.dead,
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
+            held: Self::held_of(p),
+            lit: sim_core::light::is_lit(p, gc),
         }
+    }
+
+    /// What is in this body's selected hotbar slot, or nothing.
+    ///
+    /// **Bounded here rather than trusted**, `light::is_lit`'s reason
+    /// exactly: `sel` arrives from a datagram on one path and from a WAL
+    /// on another, `world::apply` clamps the wire's three bits, and this
+    /// is the second of the two places that must hold whichever one fed
+    /// it. An empty stack is an empty hand — `count == 0` is a slot with
+    /// a stale item id in it, and drawing the tool a player just spent
+    /// would be the inventory lying about itself, one body over.
+    ///
+    /// A corpse keeps its hand. `dead` and `sleeping` are their own bits
+    /// on this record and it is the client that decides what a body in
+    /// either state is drawn holding — the wire says what is true, and
+    /// hiding a fact here would put a render policy in the sim's answer.
+    fn held_of(p: &Player) -> Option<u16> {
+        let sel = p.frame.sel as usize;
+        if sel >= HOTBAR_SLOTS {
+            return None;
+        }
+        let s = p.inv[sel];
+        if s.count == 0 || s.item == NO_ITEM {
+            return None;
+        }
+        Some(s.item)
     }
 
     /// One animal as the same record. Four of the ten fields have no
@@ -3528,6 +3565,13 @@ impl ShardCore {
             dead: false,
             yaw: m.yaw,
             pitch: 0,
+            // Six of twelve now. A pig has no hotbar, so the hand is
+            // empty and the flame is off — and unlike the four above,
+            // these two would be *wrong* rather than merely meaningless
+            // if they were ever filled: `held` is an index into the item
+            // catalog and a mob has no inventory to index it from.
+            held: None,
+            lit: false,
         }
     }
 
@@ -3621,7 +3665,7 @@ impl ShardCore {
             .sort_unstable_by(|a, b| b.2.cmp(&a.2).then(b.1.total_cmp(&a.1)).then(a.0.cmp(&b.0)));
 
         let mut n_sent = 0usize;
-        let own = Self::wire_entity(&self.world.players[c.own_wslot]);
+        let own = Self::wire_entity(&self.world.players[c.own_wslot], &self.world.gather);
         match enc.add_entity(&own) {
             Ok(()) => {
                 self.sent_buf[n_sent] = own;
@@ -3637,7 +3681,7 @@ impl ShardCore {
         for &(w, _, _) in order[..n_cand].iter() {
             let w = w as usize;
             let e = if w < MAX_PLAYERS {
-                Self::wire_entity(&self.world.players[w])
+                Self::wire_entity(&self.world.players[w], &self.world.gather)
             } else {
                 Self::wire_mob(w - MAX_PLAYERS, &self.world.mobs.m[w - MAX_PLAYERS])
             };

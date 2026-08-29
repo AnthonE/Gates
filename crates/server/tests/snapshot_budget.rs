@@ -250,8 +250,9 @@ fn test_snapshot_budget() {
 /// so is the point. This scene used to be the clustered shard as it stood:
 /// a radius-only AOI marked all 99 peers interesting, and the fill refused
 /// the 65th record — so what was measured was the *wire's* record cap, not
-/// the 1,100 B budget (49 absolute records measure 671 B; the byte budget
-/// would hold ~80). With the interest set now rank-capped it fits its own
+/// the 1,100 B budget (49 absolute records measured 671 B at v55 and 720 B
+/// at v56, which added the hand; the byte budget would hold ~75). With the
+/// interest set now rank-capped it fits its own
 /// snapshot by construction, which is the slice's whole claim, and the
 /// clustered shard sheds nothing. The reachable worst case left is a set
 /// **at the eviction rank** — `AOI_RANK_EXIT` entities plus the client's

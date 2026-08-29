@@ -680,6 +680,38 @@ pub fn arms_report(
 /// Handles are loaded once into [`Models`] rather than per swap: `AssetServer`
 /// dedups, but a `load` per frame still walks a path and hashes it, and this
 /// runs every frame by construction.
+/// Where a held row sits relative to the fist that holds it, in metres.
+///
+/// The whole pose is a property of the ITEM, so all of it is here and none
+/// of it at spawn: lay a tool forward, keep a carried thing upright, then
+/// slide the model so its grip point — `grip_m` up its own +Y — lands on
+/// `palm`. The grip vector is rotated WITH the model; writing it on a fixed
+/// axis is the bug this replaces, which hung every tool `grip_m` below the
+/// hand (63 cm, for the spear).
+///
+/// **`palm` is a parameter because there are two fists now.** The
+/// viewmodel's is [`VIEWMODEL_PALM`], an offset in eye space; a remote
+/// body's is `bodies::BODY_PALM`, an offset in that body's own space. The
+/// arithmetic between them is identical and a second copy of it is the
+/// mirror-drift `CLAUDE.md` warns about on every hand-kept duplicate — so
+/// there is one, and the caller says where the hand is.
+pub fn pose(def: &crate::ui::hold::HeldModelDef, palm: Vec3) -> Transform {
+    let lay = if def.lay_forward {
+        Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)
+    } else {
+        Quat::IDENTITY
+    };
+    // The presentation yaw composes in the hand's frame, so it turns the
+    // item about the fist rather than about its own foot, and the grip
+    // point below stays in the palm under any yaw.
+    let rot = Quat::from_rotation_y(def.pose_yaw) * lay;
+    Transform {
+        translation: palm - (rot * (Vec3::Y * def.grip_m())),
+        rotation: rot,
+        scale: Vec3::splat(def.scale),
+    }
+}
+
 pub fn swap(
     net: Option<NonSend<Net>>,
     models: Res<Models>,
@@ -711,30 +743,10 @@ pub fn swap(
         if held.shown != want {
             match want {
                 Some(i) => {
-                    let def = &crate::ui::hold::HELD_MODELS[i];
-                    mesh.0 = models.mesh[i].clone();
-                    mat.0 = models.mat[i].clone();
-                    // The whole pose is a property of the ITEM, so all of it
-                    // is written here and none at spawn: lay a tool forward,
-                    // keep a carried thing upright, then slide the model so
-                    // its grip point — `grip_m` up its own +Y — lands on this
-                    // entity's origin, which is where the fist is. The grip
-                    // vector is rotated WITH the model; writing it on a fixed
-                    // axis is the bug this replaces, which hung every tool
-                    // `grip_m` below the hand (63 cm, for the spear).
-                    let lay = if def.lay_forward {
-                        Quat::from_rotation_x(MODEL_UPRIGHT_TO_HELD)
-                    } else {
-                        Quat::IDENTITY
-                    };
-                    // The presentation yaw composes in the hand's frame, so
-                    // it turns the item about the fist rather than about its
-                    // own foot, and the grip point below stays in the palm
-                    // under any yaw.
-                    let rot = Quat::from_rotation_y(def.pose_yaw) * lay;
-                    tf.rotation = rot;
-                    tf.translation = VIEWMODEL_PALM - (rot * (Vec3::Y * def.grip_m()));
-                    tf.scale = Vec3::splat(def.scale);
+                    let (m, mt) = models.row(i);
+                    mesh.0 = m;
+                    mat.0 = mt;
+                    *tf = pose(&crate::ui::hold::HELD_MODELS[i], VIEWMODEL_PALM);
                 }
                 None => {
                     mesh.0 = Handle::default();
@@ -840,6 +852,22 @@ pub fn apply_hand_light(
 pub struct Models {
     mesh: Vec<Handle<Mesh>>,
     mat: Vec<Handle<StandardMaterial>>,
+}
+
+impl Models {
+    /// The geometry and the surface for one [`crate::ui::hold::HELD_MODELS`]
+    /// row, cloned handles.
+    ///
+    /// Read by `swap` through the fields directly and by
+    /// `bodies::stream` through here — the second reader is what makes
+    /// this an accessor rather than two `pub` fields. Both vectors are
+    /// built by [`load_models`] at the same index, so one bounds check
+    /// answers for both, and a row index that is out of them is a
+    /// `HELD_MODELS` change that skipped the loader (`tests/
+    /// held_assets.rs`), not a runtime condition to recover from.
+    pub fn row(&self, i: usize) -> (Handle<Mesh>, Handle<StandardMaterial>) {
+        (self.mesh[i].clone(), self.mat[i].clone())
+    }
 }
 
 /// Load every held model once at startup. For the `.glb` rows, the same

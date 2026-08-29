@@ -74,6 +74,17 @@ pub struct RemoteState {
     /// player for an extra ~100 ms after the server stopped treating it as
     /// one.
     pub dead: bool,
+    /// **What this body is holding** — the content item id in its selected
+    /// hotbar slot, or `None` for an empty hand (`protocol::EntityState`,
+    /// wire v56). Taken from the newer sample for `sleeping`'s reason: an
+    /// id is an identity, not a quantity, and there is no item halfway
+    /// between a bow and a hatchet to lerp to.
+    pub held: Option<u16>,
+    /// That item is alight (`sim-core/light.rs` `is_lit`, resolved on the
+    /// server). Newer sample again, and in the same direction the other
+    /// two facts go: the flame goes out at the start of the window rather
+    /// than burning for an extra ~100 ms after the sim put it out.
+    pub lit: bool,
 }
 
 fn dequant(s: &Sample, out: &mut RemoteState) {
@@ -85,6 +96,8 @@ fn dequant(s: &Sample, out: &mut RemoteState) {
     out.pitch = s.e.pitch as f32;
     out.sleeping = s.e.sleeping;
     out.dead = s.e.dead;
+    out.held = s.e.held;
+    out.lit = s.e.lit;
 }
 
 pub struct Interp {
@@ -253,6 +266,8 @@ impl Interp {
                 // one.
                 out.sleeping = s1.e.sleeping;
                 out.dead = s1.e.dead;
+                out.held = s1.e.held;
+                out.lit = s1.e.lit;
                 out.live = true;
                 return true;
             }
@@ -283,6 +298,8 @@ mod tests {
             dead: false,
             yaw,
             pitch: 100,
+            held: None,
+            lit: false,
         }
     }
 
@@ -295,6 +312,52 @@ mod tests {
         assert!(it.sample(5, 11.0, &mut r));
         assert!(r.live);
         assert!((r.x - 1500.0 * 0.03).abs() < 1e-3);
+    }
+
+    /// **The hand is a fact, so it is taken and not blended** — wire v56,
+    /// `sleeping`'s rule applied to an id and a bit.
+    ///
+    /// There is no item halfway between a torch and a hatchet, so a
+    /// midpoint sample must land on the NEWER one in both directions: a
+    /// body that just raised a weapon is drawn holding it for the
+    /// interpolation window rather than empty-handed for another ~100 ms,
+    /// and a flame that just died is dark for that window rather than
+    /// burning. Both directions are asserted, because "take the newer"
+    /// and "take the one that is set" are the same code on half the cases.
+    #[test]
+    fn the_hand_comes_from_the_newer_sample_in_both_directions() {
+        let lit = |held, lit| {
+            let mut e = ent(5, 1000, 0);
+            e.held = held;
+            e.lit = lit;
+            e
+        };
+        // Empty → torch alight: the midpoint already has it.
+        let mut it = Interp::new();
+        it.push(10, &lit(None, false));
+        it.push(12, &lit(Some(3), true));
+        let mut r = RemoteState::default();
+        assert!(it.sample(5, 11.0, &mut r));
+        assert_eq!(r.held, Some(3));
+        assert!(r.lit);
+        // Torch alight → put out: the midpoint is already dark, and the
+        // stick is still in the hand.
+        let mut it = Interp::new();
+        it.push(10, &lit(Some(3), true));
+        it.push(12, &lit(Some(3), false));
+        let mut r = RemoteState::default();
+        assert!(it.sample(5, 11.0, &mut r));
+        assert_eq!(r.held, Some(3));
+        assert!(!r.lit, "a blended bit would round the flame back on");
+        // And a clamp (buffer dry) carries it too, not just the blend —
+        // the two branches copy the record separately.
+        let mut it = Interp::new();
+        it.push(10, &lit(Some(3), true));
+        let mut r = RemoteState::default();
+        assert!(it.sample(5, 99.0, &mut r));
+        assert!(!r.live, "one sample past its window is a clamp");
+        assert_eq!(r.held, Some(3));
+        assert!(r.lit);
     }
 
     #[test]

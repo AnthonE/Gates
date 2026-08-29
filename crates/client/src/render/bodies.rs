@@ -20,8 +20,30 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 
 use super::anim::{BodyAnim, Reshade, Rig};
+use super::viewmodel::Models;
 use super::Net;
+use crate::ui::hold::{held_model_of, lit_model_of, HELD_MODELS};
 use sim_core::mob;
+
+/// Where a remote body's right fist is, in metres, in that body's own
+/// frame — the third-person twin of `viewmodel::VIEWMODEL_PALM`.
+/// **(knob)**, registered in `DECISIONS.md` §open ("remote hands v0").
+///
+/// The rig stands on its own origin facing +Z with +Y up
+/// (`bodies::stream`'s note on `facing`), so right is +X: 22 cm out, 1.25 m
+/// up and 18 cm forward is a hand carrying something in front of the chest
+/// on a 1.8 m figure (`anim::ANIM_BODY_H_M`).
+///
+/// ⚠ **A fixed offset and not a bone**, and the compromise is deliberate.
+/// The rig has one bound bone in this client — `anim::HEAD_BONE` — and
+/// binding a second means a name that must exist in `models/stumpy.glb` or
+/// the whole feature is invisible; the local viewmodel does not attach to
+/// its hand bone either (`viewmodel.rs`, the `"RightHand"` lookup it
+/// deliberately does not parent to). So the item does not swing with the
+/// arm: it rides the body's root, which reads correctly at the distance
+/// this exists for — across a clearing — and reads as floating up close.
+/// `NOW.md` §0tl carries the bone bind.
+pub const BODY_PALM: Vec3 = Vec3::new(0.22, 1.25, 0.18);
 
 /// Wire yaw is `0..65536` over a full turn (`interp::RemoteState`), and this
 /// is the one place it becomes radians. The sim's convention is yaw 0 facing
@@ -49,6 +71,30 @@ fn wire_pitch_to_radians(p: f32) -> f32 {
 #[derive(Component)]
 pub struct Body(pub u32);
 
+/// The item in a remote body's hand — one child entity per body, spawned
+/// empty and hidden, and given geometry the first time that body holds
+/// something with a model.
+///
+/// **One entity that outlives every swap**, `viewmodel::HandLight`'s shape
+/// exactly: a body that changes hotbar slots swaps two handles and a
+/// transform, and never spawns or despawns anything. The alternative —
+/// spawn on pick-up, despawn on empty — puts a command queue round trip
+/// between a player raising a weapon and the weapon appearing, on the one
+/// event this whole record exists to disclose.
+#[derive(Component)]
+pub struct HeldOnBody;
+
+/// The light that item casts when the sim says it is burning.
+///
+/// A sibling of [`HeldOnBody`] rather than a child of it, because the
+/// item's transform carries `def.scale` and a light parented under it
+/// would have its offset scaled by the model's in-hand cheat — the
+/// deployables are down at 0.2, so a flame 4 cm above a box's crown would
+/// sit 8 mm above it. Both hang off the body root and neither reads the
+/// other.
+#[derive(Component)]
+pub struct BodyFlame;
+
 /// One drawn remote, with the frame it was last seen on.
 struct Live {
     entity: Entity,
@@ -60,6 +106,38 @@ struct Live {
     /// cost on the client's hot path for a value that changes twice in a
     /// body's life.
     sleeping: bool,
+    /// The two hand entities, kept rather than looked up: this system
+    /// already owns the map from wire id to `Entity` and a `Children`
+    /// walk per body per frame would be a scan on the client's hot path
+    /// for a value that never moves.
+    hand: Entity,
+    flame: Entity,
+    /// Which `HELD_MODELS` row the hand and the flame are currently
+    /// showing, `sleeping`'s reason exactly — written on a TRANSITION.
+    /// Assigning `Mesh3d` unconditionally marks it changed 60 times a
+    /// second for every remote, and a `PointLight` written every frame is
+    /// re-extracted into the render world every frame.
+    held: Option<usize>,
+    lit: Option<usize>,
+}
+
+/// The pose and the two handles for one held row, in the body's own
+/// (rig-scaled) frame.
+///
+/// **Everything is divided by the rig's uniform scale**, and it has to be
+/// here rather than at the call site: these are children of a root that
+/// carries `Transform::with_scale(rig.scale)`, so a child's local metre is
+/// `rig.scale` world metres. `viewmodel::pose` answers in world metres —
+/// it is shared with the first-person hand, which hangs off an unscaled
+/// camera — so this is the one place the two frames meet. The ratio is
+/// 1.0 today (`ANIM_BODY_H_M / ANIM_RIG_H_M`, 1.8 / 1.8) and writing the
+/// division anyway is what keeps a re-measured rig from silently moving
+/// every held item.
+pub fn hand_pose(row: usize, scale: f32) -> Transform {
+    let mut t = super::viewmodel::pose(&HELD_MODELS[row], BODY_PALM);
+    t.translation /= scale;
+    t.scale /= scale;
+    t
 }
 
 #[derive(Resource, Default)]
@@ -70,12 +148,20 @@ pub struct Bodies {
     gen: u64,
 }
 
+/// Eight parameters, which clippy counts — `viewmodel::dress_arms` carries
+/// the same allow and the same argument. A `SystemParam` struct would exist
+/// only to satisfy the count: `models` is the eighth and it is the held
+/// item's geometry, which is as distinct from the rig's scene as `feed` is
+/// from `time`. Bundling two of them would hide which of the eight a future
+/// reader has to think about.
+#[allow(clippy::too_many_arguments)]
 pub fn stream(
     mut commands: Commands,
     mut store: ResMut<Bodies>,
     mut q: Query<(&Body, &mut Transform, &mut BodyAnim)>,
     time: Res<Time>,
     rig: Res<Rig>,
+    models: Res<Models>,
     net: NonSend<Net>,
     feed: Res<super::feed::Feed>,
 ) {
@@ -180,6 +266,13 @@ pub fn stream(
                         anim.flinch();
                     }
                 }
+                // **The hand, and it is the one thing on this record a
+                // client cannot work out for itself.** Everything else
+                // above is either interpolated position or a bit; this is
+                // an id the wire started carrying at v56 precisely because
+                // the holder's inventory and the holder's latch are not
+                // ours to read.
+                update_hand(&mut commands, &mut store, id, &models, rig.scale, &rs, core);
                 if was_sleeping != rs.sleeping {
                     // The shade lives on the scene's descendants now, so the
                     // swap is a marker the walk consumes rather than a
@@ -225,12 +318,56 @@ pub fn stream(
                             .with_scale(Vec3::splat(rig.scale)),
                     ))
                     .id();
+                // Both hand entities exist from the body's first frame,
+                // dark and empty — see `HeldOnBody`. Children of the root,
+                // so they inherit its position, its facing and its
+                // despawn, and `hand_pose` divides out its scale.
+                let mut hand = Entity::PLACEHOLDER;
+                let mut flame = Entity::PLACEHOLDER;
+                commands.entity(entity).with_children(|b| {
+                    hand = b
+                        .spawn((
+                            HeldOnBody,
+                            Mesh3d::default(),
+                            MeshMaterial3d::<StandardMaterial>::default(),
+                            Transform::default(),
+                            Visibility::Hidden,
+                        ))
+                        .id();
+                    flame = b
+                        .spawn((
+                            BodyFlame,
+                            PointLight {
+                                color: super::structures::FIRE_COLOR,
+                                intensity: 0.0,
+                                range: 0.0,
+                                // Off for `HandLight`'s reason and one
+                                // more: there can be a torch per remote
+                                // in the interest set, so this is the
+                                // light most likely to arrive in bulk.
+                                shadows_enabled: false,
+                                ..default()
+                            },
+                            Transform::IDENTITY,
+                        ))
+                        .id();
+                });
                 store.live.insert(
                     id,
                     Live {
                         entity,
                         seen: gen,
                         sleeping: rs.sleeping,
+                        hand,
+                        flame,
+                        // Deliberately not resolved here. The body is
+                        // spawned this frame and its children are queued
+                        // commands; `update_hand` runs on the NEXT frame
+                        // against a `None` it can honestly compare
+                        // against, which is one frame of empty hand and
+                        // no ordering assumption about a command queue.
+                        held: None,
+                        lit: None,
                     },
                 );
             }
@@ -245,4 +382,117 @@ pub fn stream(
         commands.entity(live.entity).despawn();
         false
     });
+}
+
+/// Point a remote body's hand and flame at what the wire says it is
+/// holding, writing only on a transition.
+///
+/// **Two questions, not one**, and they are asked in this order because
+/// the second is a narrowing of the first: `held_model_of` says what item
+/// this body carries, and `lit_model_of` says whether that item is
+/// burning — a fact the server resolved (`sim-core/light.rs` `is_lit`)
+/// because two of its three inputs are the holder's own. An item with no
+/// model draws nothing and still lights nothing, which is the honest
+/// pairing: a glow with no source is worse than neither.
+///
+/// Writes go through `Commands` rather than a second `Query`, and that is
+/// not laziness — a `Query<&mut Transform, With<HeldOnBody>>` beside this
+/// system's `Query<&mut Transform>` over bodies is not provably disjoint
+/// to Bevy's scheduler and would need a `Without` on the body query to
+/// compile, i.e. a filter on the hot query to serve the cold one. These
+/// inserts fire on a hotbar switch and a flame edge, so a command per
+/// transition is a command per second at worst.
+/// Which rows a remote body's hand and flame should be showing — the half
+/// of [`update_hand`] that is arithmetic, split out for
+/// `viewmodel::apply_hand_light`'s reason: the socket is the only thing
+/// the system adds, and a decision a gate cannot call is a decision
+/// nothing checks.
+///
+/// **A corpse drops what it was holding, and this is the only place that
+/// happens.** The wire sends the hand of a dead body because that is what
+/// is true (`server/core.rs` `held_of` — hiding it there would put a
+/// render policy inside the sim's answer), and this is the policy over
+/// it: the death clip lays the rig out flat and an item posed off a
+/// standing chest would hang in the air above the body. A **sleeper keeps
+/// theirs** — that body is still upright, and a sleeping player with a
+/// weapon in hand is a fact a raider should be able to read.
+pub fn hand_wants(
+    catalog: &protocol::ItemCatalog,
+    rs: &client_core::interp::RemoteState,
+) -> (Option<usize>, Option<usize>) {
+    if rs.dead {
+        return (None, None);
+    }
+    (
+        held_model_of(catalog, rs.held),
+        lit_model_of(catalog, rs.held, rs.lit),
+    )
+}
+
+fn update_hand(
+    commands: &mut Commands,
+    store: &mut Bodies,
+    id: u32,
+    models: &Models,
+    scale: f32,
+    rs: &client_core::interp::RemoteState,
+    core: &client_core::core::ClientCore,
+) {
+    let Some(live) = store.live.get_mut(&id) else {
+        return;
+    };
+    let (want, want_lit) = hand_wants(&core.catalog, rs);
+    if live.held != want {
+        let mut e = commands.entity(live.hand);
+        match want {
+            Some(row) => {
+                let (mesh, mat) = models.row(row);
+                e.insert((
+                    Mesh3d(mesh),
+                    MeshMaterial3d(mat),
+                    hand_pose(row, scale),
+                    Visibility::Inherited,
+                ));
+            }
+            // Hidden AND cleared. Hiding alone leaves the last item's
+            // mesh and material handles alive on a body that put them
+            // down, which keeps an asset resident for a hand that is
+            // empty; clearing alone leaves a visible nothing that still
+            // costs a draw-call cull.
+            None => {
+                e.insert((
+                    Mesh3d::default(),
+                    MeshMaterial3d::<StandardMaterial>::default(),
+                    Visibility::Hidden,
+                ));
+            }
+        }
+        live.held = want;
+    }
+    if live.lit != want_lit {
+        let (lumens, range, lift) = match want_lit.and_then(|row| {
+            HELD_MODELS[row]
+                .light
+                .map(|l| (l, HELD_MODELS[row].flame_m()))
+        }) {
+            Some((l, flame)) => (l.lumens, l.range_m, flame),
+            None => (0.0, 0.0, 0.0),
+        };
+        commands.entity(live.flame).insert((
+            PointLight {
+                color: super::structures::FIRE_COLOR,
+                intensity: lumens,
+                range,
+                shadows_enabled: false,
+                ..default()
+            },
+            // Up the body's own +Y from the fist, divided by the rig
+            // scale for `hand_pose`'s reason. An unlit hand parks the
+            // emitter back at the origin rather than leaving it where the
+            // last flame was — a zero-intensity light is invisible, but a
+            // stale transform is a value a later reader could trust.
+            Transform::from_translation((BODY_PALM + Vec3::Y * lift) / scale),
+        ));
+        live.lit = want_lit;
+    }
 }

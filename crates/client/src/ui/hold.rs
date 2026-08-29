@@ -555,6 +555,58 @@ pub fn lit_model_in_hand(
     Some(row)
 }
 
+/// The [`HELD_MODELS`] row **another player's** hand draws, from the item
+/// id wire v56 puts on their entity record.
+///
+/// The remote twin of [`held_model_in_hand`], and the asymmetry between
+/// them is the point: your own hand is an index into an inventory this
+/// client mirrors, and theirs is a single id, because their inventory is
+/// not yours to see. One id is also all a remote hand can honestly show —
+/// `count` is theirs, `cond` is theirs, and the wire deliberately carries
+/// neither.
+///
+/// `None` covers an empty hand and an item with no model, exactly as
+/// [`held_model`] does and for the same reason: a stand-in tool on someone
+/// else's body is a *worse* lie than an empty one, because it is the fact
+/// a fight opens by reading.
+pub fn held_model_of(catalog: &ItemCatalog, held: Option<u16>) -> Option<usize> {
+    // `count: 1` because the wire already answered the question `count`
+    // exists to answer here — the server sends `None` for an empty slot
+    // (`server/core.rs` `held_of`), so a stack that reaches this call is
+    // one somebody is holding. `cond` is unread by `held_model`.
+    held_model(
+        catalog,
+        ItemStack {
+            item: held?,
+            count: 1,
+            cond: 1,
+        },
+    )
+}
+
+/// The row **another player's** hand is burning, or `None`.
+///
+/// The remote twin of [`lit_model_in_hand`], and it reads ONE fact where
+/// that one reads three: the latch and the fuel are the holder's own, so
+/// the server resolved all three once (`sim-core/light.rs` `is_lit`) and
+/// sent the answer. This side only re-asks the question that is about
+/// *drawing* — does this row declare a light at all — which is why a
+/// content row with `light_burn` and no [`HeldLight`] shows a lit item
+/// and no glow rather than a glow from nowhere.
+///
+/// **Not derived from `held` alone, and that is the disclosure.** A torch
+/// with no fuel left is still a torch in the hand; if this returned a
+/// light for every torch, `ALPHA.md` §1's *light = visibility = target*
+/// would run backwards — the one thing another player must not be able
+/// to fake is being dark.
+pub fn lit_model_of(catalog: &ItemCatalog, held: Option<u16>, lit: bool) -> Option<usize> {
+    if !lit {
+        return None;
+    }
+    let row = held_model_of(catalog, held)?;
+    HELD_MODELS[row].light.is_some().then_some(row)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

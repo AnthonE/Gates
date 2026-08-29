@@ -88,15 +88,26 @@ reading and the two save formats it cost.*
 4. **Nothing says a torch went out.** The client learns it from `cond`
    arriving at 0 on `SUB_INV`, which is one round trip late and silent —
    no cue, no toast, no flicker. The mixer has no `Cue` for either edge.
-5. **No other player's torch lights anything.** `RemoteState` carries no
-   held item and `bodies.rs` draws no held mesh, so a torch is first-person
-   only — and now that it is a real tradeoff, this is the half that makes
-   *"light = visibility = target"* true. One bit on `EntityState` beside
-   `sleeping`/`dead` is the cheap version; a held mesh is the real one.
-   Ranked **first** by `findings/pass-20260829-153230-04-judge.md`.
+5. ~~No other player's torch lights anything.~~ **Landed 2026-08-29**
+   (remote hands v0, wire v56): `EntityState` carries `held` (the item id
+   in the selected hotbar slot, or nothing) and `lit` (`light::is_lit`,
+   server-resolved because two of its three facts are the holder's own),
+   and `bodies.rs` hangs a posed mesh and a `PointLight` off every remote.
+   Three residuals, each its own slice:
+   · **The item does not swing with the arm.** `BODY_PALM` is a fixed
+     offset on the body root — the rig has one bound bone (`HEAD_BONE`)
+     and `models/stumpy.glb`'s hand bone name is unverified. Reads across
+     a clearing, reads as floating up close.
+   · **Nobody has seen it.** No capture contains two players, and the one
+     that would is a night vantage (item 1). `§LOOK`.
+   · **The worst-case datagram is now 1058 B of 1100** (`snapshot_cap`,
+     994 B at v55). The record cap still binds first, but the next field
+     on this record is ~5 B/bit of headroom, not free.
 6. **The flame is not drawn.** No emissive and no flame geometry — the head
    is lit from 4 cm above its crown instead. `nothing_held_glows` still
-   holds and did not have to move; a real flame is a VFX slice.
+   holds and did not have to move; a real flame is a VFX slice. **Now two
+   hands wide**: `bodies::BodyFlame` is the same lightless flame on every
+   remote.
 
 ## 0shot · A gun is heard — what it still cannot be *seen* doing *(client lane)*
 
