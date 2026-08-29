@@ -17,9 +17,22 @@
 //! `tests/held_assets.rs` holds a generated row's measured HEIGHT to its
 //! declared `height_m` exactly as it holds a file's.
 //!
-//! Nothing here glows: a carried light source is forbidden by name
-//! (`tests/held_assets.rs::nothing_held_glows`), and the torch is an inert
-//! prop until the flashlight question is answered (`NOW.md` §0pvp item 3).
+//! **Nothing here glows, and that is now a narrower claim than it was.**
+//! `tests/held_assets.rs::nothing_held_glows` forbids a carried EMISSIVE —
+//! a material that is bright in its own right — and it still holds over
+//! every row including the torch. What it never forbade, and what this
+//! module's own header claimed it did until torch light v0, is a carried
+//! **light**: since that slice the torch's row declares one
+//! (`ui::hold::TORCH_LIGHT`) and `render::viewmodel::hand_light` hangs a
+//! `PointLight` off the hand for it. The two are different mechanisms and
+//! the mis-citation here was the exact class `CLAUDE.md` opens with —
+//! prose reading as covered while nothing checked it.
+//!
+//! So the torch has no flame GEOMETRY and no emissive material: it is lit
+//! from just above its own crown (`ui::hold::FLAME_LIFT_M`) so its head
+//! reads bright without emitting, and a real flame primitive is a VFX
+//! slice nobody has looked at yet (`NOW.md` §0tl,
+//! `assets/models/MANIFEST.md`).
 
 use bevy::prelude::*;
 
@@ -190,9 +203,12 @@ pub(super) fn head_mesh() -> Mesh {
 }
 
 /// The torch: a wrapped head on a stick, authored standing so it is carried
-/// upright (`lay_forward: false` on its row). No flame and no glow — the
-/// item is inert (`NOW.md` §0pvp item 3) and `nothing_held_glows` is the
-/// gate that keeps a carried emissive out.
+/// upright (`lay_forward: false` on its row). No flame geometry and no
+/// emissive — `nothing_held_glows` keeps a carried emissive out and still
+/// does. It is no longer inert, though: its row declares a light and the
+/// hand carries a `PointLight` for it (torch light v0), sitting
+/// `FLAME_LIFT_M` above the crown of the wrap below, which is what makes
+/// this head read as the source without being one.
 fn torch_mesh() -> Mesh {
     let mut s = Soup::tiling(3.0);
     // Absolute albedos, NOT `tint1`: the stand-in's tints are mean-1 because
@@ -299,7 +315,8 @@ pub fn mesh(name: &str) -> Mesh {
 /// Models` pairs them by index); the mesh's vertex tints carry the part
 /// break-up, so wood and steel share whichever response fits the row's
 /// dominant read. Emissive stays at its default — black — and
-/// `tests/held_assets.rs` asserts that.
+/// `tests/held_assets.rs` asserts that, for the torch too: what a lit row
+/// carries is a `PointLight` on the hand, never a bright material.
 pub fn material(name: &str) -> StandardMaterial {
     match name {
         "torch" => StandardMaterial {

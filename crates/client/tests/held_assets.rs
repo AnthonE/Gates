@@ -86,8 +86,13 @@ fn nothing_held_glows() {
     // Same rule `deploy_assets.rs` states at length: the generator ships
     // `emissiveFactor = [1,1,1]` on nearly everything and its map is junk —
     // the spear here measured a 0.53 peak before the import stripped it.
-    // Nothing a player carries emits light. A torch would be the first, and
-    // it would need this list to grow rather than this test to go.
+    // Nothing a player carries emits light. **The torch did not become the
+    // exception**, which is worth stating because this comment predicted it
+    // would: torch light v0 gave its row a `PointLight` on the hand
+    // (`ui::hold::TORCH_LIGHT`) and left its material black, so a carried
+    // light and a carried emissive turned out to be different mechanisms
+    // and this test needed neither to grow nor to go.
+    // `tests/hand_light.rs` gates the other half.
     //
     // This is also why `fire.glb` — reused for the other deployables' rows —
     // has NO row of its own: the world's fire pit is lit and bakes a full

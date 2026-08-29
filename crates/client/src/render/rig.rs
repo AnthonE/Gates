@@ -456,9 +456,20 @@ pub const NIGHT_DIP: f32 = 0.35;
 
 /// Ambient at deep night, lux. "Genuinely dark" (`ALPHA.md` §1) against
 /// the fixed ev100 14.2 exposure: shapes read at arm's length, the ridge
-/// line is gone, and a torch will one day be worth carrying. Moonlight is
-/// ~0.25 lux; this is far brighter because the exposure never adapts —
-/// the number is a look, not a photometric claim.
+/// line is gone, and a torch is worth carrying since torch light v0.
+/// Moonlight is ~0.25 lux; this is far brighter because the exposure never
+/// adapts — the number is a look, not a photometric claim.
+///
+/// ⚠ **It is also the ceiling on every flame in this client, which nobody
+/// had measured until a torch needed one.** A point source stops beating a
+/// uniform ambient at `sqrt(lumens / 4π·ambient)`
+/// (`ui::hold::pool_radius_m`), so against 60 lux the campfire's 900 lm
+/// reaches **1.09 m** and the torch's 600 lm reaches **0.89 m** — both are
+/// pools you stand in rather than lights you see by, and no honest lumen
+/// figure fixes that from the other end: a real pitch torch is ~250 lm and
+/// this one is already 2.4× it. 240× moonlight is where the ratio went.
+/// Changing it is one owner over this file's coupled set (`CLAUDE.md`
+/// §traps) and a look only a person can judge — `NOW.md` §0tl.
 pub const NIGHT_AMBIENT_LUX: f32 = 60.0;
 
 /// The sun's elevation at a point in the cycle: a sine arch over the day

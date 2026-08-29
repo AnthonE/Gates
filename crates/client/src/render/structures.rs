@@ -1944,7 +1944,22 @@ pub struct FireLight {
 /// mesh, which is a measured ember orange this file has been carrying since
 /// before there was a model. Reused rather than re-picked so the light and the
 /// thing it comes out of cannot drift.
-const FIRE_COLOR: Color = Color::srgb(1.0, 0.62, 0.28);
+///
+/// **`pub` since torch light v0**, and for exactly the sentence above: a
+/// held torch and a fire pit burn the same thing, so
+/// `render::viewmodel::spawn_item` reads this rather than declaring a
+/// second ember orange that would drift from it. It is the only flame
+/// colour in the client and `tests/hand_light.rs` holds it to that.
+///
+/// **It survived a cross-check it was never picked against**, which is
+/// worth writing down because it was luck rather than method. A sooting
+/// diffusion flame — candle, match, pitch torch, wood fire — runs
+/// 1 700–1 900 K, and the Planckian locus at 1 800 K is roughly linear
+/// sRGB (1.00, 0.42, 0.10). These sRGB-encoded channels are linear
+/// (1.00, 0.34, 0.06): the same hue, a little deeper, so the tint a
+/// greybox row happened to carry lands inside the physical band rather
+/// than beside it.
+pub const FIRE_COLOR: Color = Color::srgb(1.0, 0.62, 0.28);
 
 /// How far the pool of light reaches, metres. **(knob)**
 ///

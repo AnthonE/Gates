@@ -60,6 +60,42 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 # Buildable now — a loop can pick any of these
 
 
+## 0tl · The torch lights the ground — what it still cannot do *(client+systems lane)*
+
+*Gap pass, from `findings/pass-20260829-153230-03-judge.md` ranked gap 1
+("night is a pressure with no counter, and the torch you spawn holding is
+an inert prop"). The light landed 2026-08-29 (torch light v0): the row
+declares it, `viewmodel::hand_light` hangs a `PointLight` on the hand, and
+`hand_light.rs` gates it — 6 tests, 8 mutants red. No wire and no content
+change. What is below is what that opened.*
+
+1. **Nobody has seen it, and no gate here can.** `rig::CAPTURE_DAY_FRAC`
+   pins every capture to noon, so no frame any visual judge has scored was
+   shot after dark. A night vantage needs a per-vantage day fraction, which
+   is capture plumbing, not a `VANTAGES` row — and capture is off. `§LOOK`.
+2. **The ambient is the ceiling, not the lumens.** `pool_radius_m` says the
+   torch beats 60-lux night out to **0.89 m** and the campfire to 1.09 m —
+   pools you stand in, not lights you see by. `NIGHT_AMBIENT_LUX` is 240×
+   moonlight by its own doc, and raising a flame to compensate is the
+   failure `threejs-exposure-color-grading` names. The fix is one owner over
+   `rig`'s coupled set (`CLAUDE.md` §traps) and a look only a person can
+   judge. Do not touch it from a lane that is also changing a light.
+3. **It costs nothing to burn.** The reference's torch is `Ignite`/
+   `Extinguish` RPCs setting one flag bit, burning **condition** as fuel at
+   1/6 per second off a max of 50 — five minutes, and ~7 condition per
+   landed hit on top. Ours has `condition_max = 5000` and wears nowhere
+   (`content/items.toml`). That is a sim slice: a per-tick debit while lit.
+4. **There is no lit/unlit state**, so it cannot be put out — which is the
+   whole tradeoff `ALPHA.md` §1 names (*"light = visibility = target"*). The
+   reference does it as a flag on the replicated entity, which is why other
+   players see your torch without a light ever crossing the wire.
+5. **No other player's torch lights anything.** `RemoteState` carries no
+   held item and `bodies.rs` draws no held mesh, so a torch is first-person
+   only. Item 4 is the cheap version of this: one bit, not an item id.
+6. **The flame is not drawn.** No emissive and no flame geometry — the head
+   is lit from 4 cm above its crown instead. `nothing_held_glows` still
+   holds and did not have to move; a real flame is a VFX slice.
+
 ## 0shot · A gun is heard — what it still cannot be *seen* doing *(client lane)*
 
 *The sound half landed at gun report v0 (wire v54, 2026-08-29):
@@ -230,10 +266,11 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    blueprint ITEM (learning is instant and personal, so there is nothing to
    trade), and the wipe schedule `DESIGN.md` §8 promises blueprints will
    outlive.
-6. **Day/night reads nothing but mobs.** ⚠ `mob::think` is nocturnal now
-   (`world::is_night`). Still missing: no crops, no torch, no moon or stars
-   in the night sky, and no set-time verb — moving the clock means moving
-   the tick.
+6. **Day/night reads nothing but the mobs and the hand.** ⚠ `mob::think` is
+   nocturnal and a held torch lights the ground (torch light v0, `§0tl`) —
+   but the torch cannot be put out and costs nothing to burn, so it is a
+   light without the tradeoff. Still missing: crops, moon and stars in the
+   night sky, and a set-time verb — moving the clock means moving the tick.
 
 
 ## 0pvp · What a fight still cannot do *(systems lane)*
@@ -418,9 +455,11 @@ unbuilt, and a key that does nothing is worse than an absent one.
 2. **ADS / secondary (RMB).** No `BTN_SECONDARY`; `BTN_MASK` holds four
    bits, and RMB is already deploy-place, the build wheel and the half-stack
    grab. Needs a held-item modality answer before a bit (`PROTO_VER` bump).
-3. **Flashlight (`F`).** No held light source; `item.torch` is inert and
-   `tests/held_assets.rs::nothing_held_glows` forbids a carried emissive by
-   name — so this starts by deciding that test's fate.
+3. **Flashlight (`F`).** The light exists now (torch light v0) and burns
+   whenever the torch is in the hand — what `F` needs is the *toggle*, which
+   is `§0tl` items 3 and 4: a lit bit and a fuel debit. `nothing_held_glows`
+   turned out not to be in the way at all; it forbids a carried EMISSIVE,
+   which is a different mechanism from a carried light.
 ⚠ **Both keys are already conditionally bound**: `ghost.rs:153/156` give `R`
 and `F` the build ghost's level up/down while the wheel is up, and
 `verbs.rs:245` is `R`'s repair arm otherwise. Bind over them knowingly.
@@ -1563,7 +1602,7 @@ builder; they sit at the bottom of the file so a pass reaches pickable work
 first.
 
 
-## LOOK · Boot it on a GPU and look — the act 25 items are waiting on *(operator)*
+## LOOK · Boot it on a GPU and look — the act 26 items are waiting on *(operator)*
 
 **This is the queue's largest single blocker and it had never been counted.**
 `CLAUDE.md` retired the pixel gate on purpose — `vantages.mjs` passed all 36
@@ -1589,6 +1628,14 @@ Two of these are not taste, they are unresolved defects:
   hillshades; the operator's own screenshot of the terraced mountain has not
   been re-shot. This is the one item here where looking could find a
   regression rather than an unseen feature.
+
+- **Nobody has stood in the dark holding a torch** (§0tl). Every capture in
+  this repo's history is pinned to noon by `rig::CAPTURE_DAY_FRAC`, so the
+  ten minutes in eighty that are night have never been photographed at all —
+  with or without a light in the hand. Two questions only a frame answers:
+  does a 600 lm pool at 0.89 m read as *carrying a light*, and does the
+  torch's own head read as the source now that it is lit from 4 cm above its
+  crown rather than emitting? Gated as arithmetic and one call-site scrape.
 
 - **Nobody has watched a wall come down under arrow fire** (§5.1, ranged
   structure damage v0, 2026-08-28). The sim's half is gated to the payload
