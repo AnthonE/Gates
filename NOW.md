@@ -1787,9 +1787,13 @@ found. A question for Discord, not a step, and nothing above depends on it.
 
 The packager stages the mingw runtime (`ci/depot.py` `runtime_dlls`) and
 `nightly.yml`'s two-platform `depot` job runs the staged exe under wine, so
-the loader is covered. ⚠ This item still names `0.4.0-g193a8d2a6` as the
-live `win-x86_64` row; **0.5.0 published everywhere 2026-08-20**
-(`DECISIONS.md`), so read the served document before quoting a row.
+the loader is covered. ✅ **And it is now SHIPPED, which it was not before:**
+`0.6.0-gb069a63b8` published to both platforms 2026-08-29, staging
+`libstdc++-6.dll`, `libgcc_s_seh-1.dll` and `libwinpthread-1.dll` — the
+build before it named `libstdc++-6.dll` in `requires.libs` and could not
+start (`0xc000007b`). Smoke-run under wine before publishing, cold prefix,
+`gates.exe --help` exit 0 with real help on stdout. Read the served
+document before quoting a row: this line has named a stale one twice.
 
 1. **Unmeasured**: nobody has started the depot build on a real Windows
    machine. The wine leg is a cold prefix answering `--help` — the loader
@@ -1799,8 +1803,12 @@ live `win-x86_64` row; **0.5.0 published everywhere 2026-08-20**
    and nobody has checked whether it needs the VC++ redist.
    `release.yml`'s notes name Linux's three `-dev` packages and say
    nothing for Windows.
-3. **Not ours to fix**: elo's launcher manifest on morr still tells a
-   player the Windows row bundles nothing and has never been run.
+3. **Not ours to fix, and now actively WRONG rather than merely thin**:
+   elo's launcher manifest on morr tells a player the Windows row bundles
+   nothing. That was true when written and stopped being true on
+   2026-08-29 — three DLLs ship beside the exe. The "never been run" half
+   still stands (wine is a loader check, not Windows). The copy is morr's,
+   not in `scry.json`, so no re-sign here can fix it.
 
 
 ## 0rl · The release path — two operator acts, and a tester's question *(platform lane)*
