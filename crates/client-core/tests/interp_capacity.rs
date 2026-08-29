@@ -52,6 +52,11 @@ fn ent(id: u32) -> EntityState {
         dead: false,
         yaw: 0,
         pitch: 0,
+        // Empty hand: this suite is about the interpolator's table, and a
+        // held item would put a second reason for two records to differ
+        // into a file whose whole subject is the first.
+        held: None,
+        lit: false,
     }
 }
 

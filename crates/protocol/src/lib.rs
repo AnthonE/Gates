@@ -69,7 +69,7 @@ pub use event::{
     PIECE_SYNC_BATCH, RECIPE_BATCH, RESEARCH_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::input::InputFrame;
-use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
+use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSHOT_ENTITIES};
 
 /// Wire protocol version. Bumps only with a packet-layout change and
 /// regenerated goldens in the same commit (CLAUDE.md wall 6). v1 added
@@ -743,7 +743,21 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_SNAPSHOT_ENTITIES};
 /// latch, the item's content row and its `cond`, all three of which both
 /// ends already hold, so there is no `lit` field anywhere and the golden
 /// that moves is `hello`.
-pub const PROTO_VER: u16 = 55;
+///
+/// v56 put the **hand on the entity record**: `EntityState` gains `held`
+/// (the content item id in the body's selected hotbar slot, or nothing —
+/// `HELD_BITS` seven, `HELD_NONE` the sentinel) and `lit` (`sim-core`'s
+/// `light::is_lit`, resolved server-side). Both were derivable for your
+/// own body and unknowable for anyone else's: `SUB_INV` is your bag, the
+/// `BTN_LIGHT` latch is your input, and nothing about another player's
+/// hand had ever crossed. The absolute record grows eight bits; the delta
+/// grows one, behind a `hand_changed` flag beside `look_changed`, because
+/// eight is worth gating and one is not (`EntityState::held`'s doc has the
+/// arithmetic, and `sleeping`'s has the other side of it). Worst case is
+/// `snapshot_cap`, 64 absolute records — still inside
+/// `DATAGRAM_BUDGET_BYTES`, and `test_snapshot_cap_within_budget` is the
+/// gate that says so rather than this sentence.
+pub const PROTO_VER: u16 = 56;
 
 /// This game's slug in the elo catalog.
 ///
@@ -829,6 +843,27 @@ pub const POS_Y_BITS: u32 = 14;
 pub const POS_Y_BIAS: i32 = 2048;
 pub const VEL_BITS: u32 = 14;
 pub const VEL_BIAS: i32 = 8192;
+
+/// Width of the held-item field on an entity record (v56).
+///
+/// Seven bits because six do not fit the sentinel: `MAX_ITEM_DEFS` is 64,
+/// so the ids alone fill a six-bit field exactly and "empty hand" needs a
+/// value the ids cannot take. Derived-adjacent rather than typed — the
+/// gate `held_bits_hold_every_item_the_sim_can_define` fails if
+/// `MAX_ITEM_DEFS` ever grows past what this width can carry alongside
+/// [`HELD_NONE`], which is the shape a `KIND_BITS` widening took at v27.
+pub const HELD_BITS: u32 = 7;
+
+/// The wire's "empty hand" — the all-ones code point in [`HELD_BITS`],
+/// deliberately the far end of the field from id 0 so a truncated or
+/// zeroed read reads as *holding item 0* and fails a golden rather than
+/// silently meaning "nothing" (the byte-golden hole `CLAUDE.md` names:
+/// a field that is only ever zero has no byte to pin).
+///
+/// Everything between `MAX_ITEM_DEFS` and this is refused by the decoder
+/// — `ed1cff2`'s rule, the decoder stops taking values the sim can never
+/// mean.
+pub const HELD_NONE: u16 = (1 << HELD_BITS) - 1;
 
 // Delta records: per-axis position deltas vs baseline, ±3.81 m x/z and
 // ±5.11 m y — a sprint covers 0.37 m and terminal fall 3.33 m between
@@ -2488,7 +2523,7 @@ pub struct SnapshotHeader {
 
 /// One class-D entity as the wire sees it: the quantized body (the sim
 /// runs on exactly these values — NETCODE.md §3) plus view yaw/pitch.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EntityState {
     pub id: u32,
     /// Position in world-absolute quanta (3 cm x/z, 1 cm y — `movement.rs`).
@@ -2532,6 +2567,80 @@ pub struct EntityState {
     pub dead: bool,
     pub yaw: u16,
     pub pitch: u8,
+    /// **What this body is holding**, as the content item id in its
+    /// selected hotbar slot, or `None` for an empty hand.
+    ///
+    /// The item id and not a model index, because the alternative is a
+    /// *client* table on the wire: `client/ui/hold.rs`'s `HELD_MODELS` is
+    /// keyed on the normalised display name and its doc already refuses
+    /// this — "an item→model id on the wire, which is wall 6 for a fact
+    /// the client can already derive". The catalog crosses the wire
+    /// already, so an id is a fact both ends hold and a row index is a
+    /// second authority for the same thing.
+    ///
+    /// **`Option` rather than a sentinel, and that is the field's one
+    /// design decision.** `EntityState::default()` fills a baseline buffer
+    /// in two places (`server/core.rs`, and every golden's zero baseline),
+    /// and a `u16` sentinel would have to be *typed* into each of them —
+    /// a derived `Default` would say `held: 0`, which is not "empty hand",
+    /// it is item id 0. The wire still spends a sentinel
+    /// ([`HELD_NONE`]) because bits have no niche; the type is what keeps
+    /// the default honest.
+    ///
+    /// Delta-gated behind one `hand_changed` bit, unlike
+    /// [`Self::sleeping`] and [`Self::dead`] — and the difference is
+    /// arithmetic, not taste. Those are one bit each, so a change flag
+    /// would spend a bit to save a bit; this pair is eight, so the flag
+    /// spends one to save eight on every record of every body that did
+    /// not switch hotbar slots this snapshot, which is nearly all of them.
+    /// Same shape as `look_changed`, which is here for the same reason.
+    pub held: Option<u16>,
+    /// **And it is on fire.** `sim-core/light.rs` `is_lit` — the latch,
+    /// the content row and the fuel, resolved server-side once a tick.
+    ///
+    /// Derived on the server and sent, rather than derived on the client
+    /// from [`Self::held`], because two of `is_lit`'s three facts are
+    /// *not* on this record: the `BTN_LIGHT` latch is the holder's own
+    /// input and the stack's `cond` is the holder's own inventory.
+    /// `SUB_INV` carries condition for your own bag and nobody else's, so
+    /// a client asked to derive this would have to guess, and the guess it
+    /// would make is "a torch is always lit" — which is the whole of
+    /// `ALPHA.md` §1's disclosure running backwards.
+    pub lit: bool,
+}
+
+impl EntityState {
+    /// The zero record: at the origin, on the ground, awake, alive,
+    /// **empty-handed and unlit**.
+    ///
+    /// A `const` and not only a `Default` because the baseline buffers are
+    /// fixed arrays (`server/core.rs`, `goldens.rs`) and one of them wants
+    /// to be built in a const context; both spellings resolve here, so
+    /// there is one place that decides what an unfilled record claims.
+    pub const EMPTY: Self = Self {
+        id: 0,
+        qx: 0,
+        qy: 0,
+        qz: 0,
+        qvy: 0,
+        grounded: false,
+        sleeping: false,
+        dead: false,
+        yaw: 0,
+        pitch: 0,
+        held: None,
+        lit: false,
+    };
+}
+
+impl Default for EntityState {
+    /// **Hand-written, and that is the point** — see [`Self::held`]. A
+    /// derived `Default` fills `held` with `Some`-shaped nothing in the
+    /// `u16` spelling this field deliberately does not use; here the empty
+    /// hand is the default because [`Self::EMPTY`] says so once.
+    fn default() -> Self {
+        Self::EMPTY
+    }
 }
 
 /// Incremental snapshot encoder — the priority-fill loop's tool
@@ -2746,9 +2855,15 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         let pos_changed = dx != 0 || dy != 0 || dz != 0;
         let vel_changed = e.qvy != b.qvy;
         let look_changed = e.yaw != b.yaw || e.pitch != b.pitch;
+        // One flag over both hand facts, not two. They move together in
+        // every case that matters — a hotbar switch changes what is held
+        // and puts the flame out in the same tick — and a torch that
+        // burns out changes `lit` alone, which is one flag either way.
+        let hand_changed = e.held != b.held || e.lit != b.lit;
         self.w.write_bit(pos_changed)?;
         self.w.write_bit(vel_changed)?;
         self.w.write_bit(look_changed)?;
+        self.w.write_bit(hand_changed)?;
         self.w.write_bit(e.grounded)?;
         self.w.write_bit(e.sleeping)?;
         self.w.write_bit(e.dead)?;
@@ -2767,6 +2882,9 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
             self.w.write(e.yaw as u32, 16)?;
             self.w.write(e.pitch as u32, 8)?;
         }
+        if hand_changed {
+            self.write_hand(e)?;
+        }
         Ok(())
     }
 
@@ -2781,6 +2899,17 @@ impl<'a, 'b> SnapshotEncoder<'a, 'b> {
         self.write_vel(e.qvy)?;
         self.w.write(e.yaw as u32, 16)?;
         self.w.write(e.pitch as u32, 8)?;
+        self.write_hand(e)?;
+        Ok(())
+    }
+
+    /// The hand, both facts, in the order the decoder reads them.
+    /// `check_ranges` has already refused an id this field cannot hold,
+    /// so the `unwrap_or` below is the sentinel and never a truncation.
+    fn write_hand(&mut self, e: &EntityState) -> Result<(), WireError> {
+        self.w
+            .write(e.held.unwrap_or(HELD_NONE) as u32, HELD_BITS)?;
+        self.w.write_bit(e.lit)?;
         Ok(())
     }
 
@@ -2814,6 +2943,14 @@ fn check_ranges(e: &EntityState) -> Result<(), WireError> {
         || !in_window(e.qz as i64, 0, POS_XZ_BITS)
         || !in_window(e.qvy as i64, VEL_BIAS, VEL_BITS)
     {
+        return Err(WireError::Range);
+    }
+    // The hand, checked here for the reason the header states: up front,
+    // so a `Range` refusal never needs a rollback. An id at or past
+    // `MAX_ITEM_DEFS` is not a truncation risk — it would fit seven bits
+    // — it is a value the sim cannot mean, and the decoder refuses the
+    // same band, so the two ends agree about what is representable.
+    if e.held.is_some_and(|h| h as usize >= MAX_ITEM_DEFS) {
         return Err(WireError::Range);
     }
     Ok(())
@@ -2942,6 +3079,8 @@ fn decode_entity(
             dead,
             yaw: r.read(16)? as u16,
             pitch: r.read(8)? as u8,
+            held: read_held(r)?,
+            lit: r.read_bit()?,
         });
     }
     if baseline_age == 0 {
@@ -2955,6 +3094,7 @@ fn decode_entity(
     let pos_changed = r.read_bit()?;
     let vel_changed = r.read_bit()?;
     let look_changed = r.read_bit()?;
+    let hand_changed = r.read_bit()?;
     e.grounded = r.read_bit()?;
     e.sleeping = r.read_bit()?;
     e.dead = r.read_bit()?;
@@ -2974,7 +3114,28 @@ fn decode_entity(
         e.yaw = r.read(16)? as u16;
         e.pitch = r.read(8)? as u8;
     }
+    if hand_changed {
+        e.held = read_held(r)?;
+        e.lit = r.read_bit()?;
+    }
     Ok(e)
+}
+
+/// The held-item field, with the band the sim cannot mean refused.
+///
+/// `MAX_ITEM_DEFS..HELD_NONE` is 63 unreachable code points and a decoder
+/// that accepted them would hand the renderer an id no catalog row
+/// answers — a silent empty hand at best, and at worst a lookup that
+/// depends on which crate's bounds check runs first.
+fn read_held(r: &mut BitReader) -> Result<Option<u16>, WireError> {
+    let v = r.read(HELD_BITS)? as u16;
+    if v == HELD_NONE {
+        return Ok(None);
+    }
+    if v as usize >= MAX_ITEM_DEFS {
+        return Err(WireError::Range);
+    }
+    Ok(Some(v))
 }
 
 fn read_vel(r: &mut BitReader) -> Result<i32, WireError> {
@@ -3022,6 +3183,8 @@ mod tests {
             dead: false,
             yaw: 0x1234,
             pitch: 7,
+            held: None,
+            lit: false,
         }
     }
 
@@ -3112,21 +3275,199 @@ mod tests {
         let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &baseline).expect("begin");
         for b in &baseline {
             // Identical to its baseline record: a found delta writes the id
-            // plus seven flag bits and nothing else — six until v48 added
-            // `dead` beside `sleeping`.
+            // plus eight flag bits and nothing else — six until v48 added
+            // `dead` beside `sleeping`, seven until v56 added
+            // `hand_changed` beside `look_changed`.
             assert_eq!(enc.add_entity(b), Ok(()), "entity {} did not fit", b.id);
         }
         let len = enc.finish().expect("finish");
-        // 64 entities × (32 id bits + 7 delta bits) plus the header; an
-        // absolute record is 32 + 67 bits, so a single missed lookup adds
-        // 60 bits and this bound catches it.
+        // 64 entities × (32 id bits + 8 delta bits) plus the header. An
+        // at-rest absolute record is 32 + 85 (1 is_delta + 17 + 14 + 17 +
+        // 3 flags + 1 at-rest + 16 + 8 + `HELD_BITS` + 1 lit), so a single
+        // missed lookup adds 77 bits and this bound catches it.
         let head_bits = KIND_BITS + 32 + 8 + 16 + 2 + COUNT_BITS * 2;
-        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 39).div_ceil(8);
+        let want = (head_bits as usize + MAX_SNAPSHOT_ENTITIES * 40).div_ceil(8);
         assert_eq!(
             len, want,
             "the encoder wrote {len} B where {want} B is every entity delta-coded \
              — a baseline id the index failed to find fell back to absolute"
         );
+    }
+
+    /// **The width is a claim about `sim-core`, so it is checked against
+    /// `sim-core`.** `HELD_BITS` is seven because six hold the ids and
+    /// none hold the sentinel; if `MAX_ITEM_DEFS` ever grows past what
+    /// this field can carry alongside `HELD_NONE`, that is a wire
+    /// widening and a `PROTO_VER` turn, exactly as `KIND_BITS` was at
+    /// v27 — and it must fail here rather than silently truncating an id
+    /// into another item.
+    #[test]
+    fn held_bits_hold_every_item_the_sim_can_define() {
+        assert!(
+            MAX_ITEM_DEFS <= HELD_NONE as usize,
+            "MAX_ITEM_DEFS is {MAX_ITEM_DEFS}, which does not fit \
+             {HELD_BITS} bits beside the {HELD_NONE} sentinel"
+        );
+        // And the sentinel is genuinely out of the sim's reach, not just
+        // at its edge: an id equal to `HELD_NONE` would decode as an
+        // empty hand.
+        assert!(HELD_NONE as usize >= MAX_ITEM_DEFS);
+    }
+
+    /// **An unfilled record is empty-handed**, which is the whole reason
+    /// `held` is an `Option` and not a `u16` with a typed sentinel. Two
+    /// baseline buffers in this repo are `[EntityState::default(); N]`
+    /// (`server/core.rs`, every golden's zero baseline) and a derived
+    /// `Default` would fill them with `held: 0` — a real item id.
+    #[test]
+    fn an_unfilled_record_is_empty_handed() {
+        assert_eq!(EntityState::default().held, None);
+        assert!(!EntityState::default().lit);
+        assert_eq!(EntityState::default(), EntityState::EMPTY);
+    }
+
+    /// **The hand survives both encoder paths, and the delta gate is
+    /// checked for its EFFECT and not only its correctness.**
+    ///
+    /// `CLAUDE.md`'s water-carry trap is the reason for the second half:
+    /// a `hand_changed` flag that were always `true` would produce
+    /// bit-identical *values* on the other side and buy nothing, and
+    /// every round-trip assertion here would still pass. So the size is
+    /// asserted too, and asserted **exactly** — eight records at a time,
+    /// so the eight bits each one saves come to a whole byte and the
+    /// tail padding cancels instead of hiding the difference.
+    #[test]
+    fn the_hand_survives_both_encoder_paths() {
+        let hdr = SnapshotHeader {
+            tick: 7,
+            baseline_age: 0,
+            last_executed_seq: 0,
+            nudge: Nudge::Ok,
+        };
+        // Eight bodies, so a per-record bit difference lands on a byte
+        // boundary. The first three carry the cases that matter on the
+        // absolute path: an item with the flame on, an item with it off,
+        // and an empty hand — so neither field can be read as the other.
+        let mut want: Vec<EntityState> = (1..=8).map(ent).collect();
+        want[0].held = Some(41);
+        want[0].lit = true;
+        want[1].held = Some(6);
+        want[2].held = None;
+        let mut buf = [0u8; 512];
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
+        for e in &want {
+            enc.add_entity(e).unwrap();
+        }
+        let len = enc.finish().unwrap();
+        let got = decode_snapshot(&buf[..len], &[]).unwrap();
+        assert_eq!(got.entities(), &want[..], "absolute path");
+
+        // Delta, against those eight as the baseline.
+        let hdr = SnapshotHeader {
+            baseline_age: 1,
+            ..hdr
+        };
+        let encode = |set: &[EntityState]| -> usize {
+            let mut buf = [0u8; 512];
+            let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &want).unwrap();
+            for e in set {
+                enc.add_entity(e).unwrap();
+            }
+            let len = enc.finish().unwrap();
+            let got = decode_snapshot(&buf[..len], &want).unwrap();
+            assert_eq!(got.entities(), set, "delta path");
+            len
+        };
+        // Nothing moved: eight floor records.
+        let still = encode(&want);
+        // Every hand moved, one per kind of change, cycling so all three
+        // directions are covered and every record pays the field.
+        let moved: Vec<EntityState> = want
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let mut e = *e;
+                match i % 3 {
+                    0 => e.lit = !e.lit,               // the flame alone
+                    1 => e.held = Some(7),             // the item alone
+                    _ => e.held = e.held.xor(Some(9)), // to and from empty
+                }
+                e
+            })
+            .collect();
+        let hands = encode(&moved);
+        assert_eq!(
+            hands - still,
+            8,
+            "eight changed hands cost {} B over eight unchanged ones, not 8 \
+             — one byte per record is the field, so this is the gate on the \
+             flag doing anything at all",
+            hands - still
+        );
+        // …and the floor itself: an unchanged record is 40 bits, 32 id +
+        // 8 flags. If it is 47 the hand is not gated and every still body
+        // pays for it on every snapshot.
+        let one = encode(&want[..1]);
+        let two = encode(&want[..2]);
+        assert_eq!((two - one) * 8, 40, "the unchanged floor moved");
+    }
+
+    /// **The encoder refuses an item id the sim cannot mean**, up front,
+    /// so a `Range` never needs a rollback — `check_ranges`' contract,
+    /// extended to the field v56 added.
+    #[test]
+    fn an_item_id_past_the_catalog_is_refused_not_truncated() {
+        let hdr = SnapshotHeader {
+            tick: 1,
+            baseline_age: 0,
+            last_executed_seq: 0,
+            nudge: Nudge::Ok,
+        };
+        let mut buf = [0u8; 128];
+        let mut enc = SnapshotEncoder::begin(&mut buf, &hdr, &[]).unwrap();
+        let mut bad = ent(1);
+        bad.held = Some(MAX_ITEM_DEFS as u16);
+        assert_eq!(enc.add_entity(&bad), Err(WireError::Range));
+        // The last legal id still fits, so the bound is exact rather than
+        // conservative.
+        let mut ok = ent(2);
+        ok.held = Some(MAX_ITEM_DEFS as u16 - 1);
+        assert_eq!(enc.add_entity(&ok), Ok(()));
+    }
+
+    /// **And the decoder refuses the same band**, which is the half a
+    /// hostile datagram reaches. `MAX_ITEM_DEFS..HELD_NONE` is 63 code
+    /// points no catalog row answers; accepting one hands the renderer an
+    /// id whose behaviour depends on which crate's bounds check runs
+    /// first.
+    ///
+    /// Driven at `read_held` rather than through a patched packet, and
+    /// the reason is that `read_held` is the **only** reader of this
+    /// field — both `decode_entity` paths call it and nothing else does
+    /// (`grep`), so an exhaustive sweep here is an exhaustive sweep of
+    /// the wire. What a packet-level test would add is coverage of the
+    /// field's *position*, and that is what the goldens pin.
+    #[test]
+    fn the_decoder_refuses_the_unreachable_item_band() {
+        let read = |v: u16| -> Result<Option<u16>, WireError> {
+            let mut buf = [0u8; 4];
+            let n = {
+                let mut w = BitWriter::new(&mut buf);
+                w.write(v as u32, HELD_BITS).expect("the field fits");
+                w.finish()
+            };
+            read_held(&mut BitReader::new(&buf[..n]))
+        };
+        // Every unreachable code point, all 63 of them.
+        for v in MAX_ITEM_DEFS as u16..HELD_NONE {
+            assert_eq!(read(v), Err(WireError::Range), "id {v} was accepted");
+        }
+        // Both ends of the legal range are taken, so the bound is exact
+        // and not conservative in either direction.
+        assert_eq!(read(0), Ok(Some(0)));
+        assert_eq!(read(MAX_ITEM_DEFS as u16 - 1), Ok(Some(63)));
+        // And the sentinel is an empty hand rather than an id.
+        assert_eq!(read(HELD_NONE), Ok(None));
     }
 
     #[test]

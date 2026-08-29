@@ -257,6 +257,12 @@ mod tests {
             dead: p.dead,
             yaw: p.frame.yaw,
             pitch: p.frame.pitch,
+            // The predictor reconciles the OWN body, whose hand this
+            // client already knows from `SUB_INV` — v56's two fields are
+            // for the bodies that are not yours, and neither is part of
+            // what a misprediction can be about.
+            held: None,
+            lit: false,
         }
     }
 
