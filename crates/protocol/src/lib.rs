@@ -56,7 +56,8 @@ pub use event::{
     encode_event_craft_refused, encode_event_death, encode_event_deploy_defs,
     encode_event_deploy_placed, encode_event_deploy_refused, encode_event_deploy_sync,
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_gather_refused,
-    encode_event_health, encode_event_hit, encode_event_impact, encode_event_inv,
+    encode_event_health, encode_event_hit, encode_event_hurt, encode_event_impact,
+    encode_event_inv,
     encode_event_knock, encode_event_known, encode_event_move_refused, encode_event_moved,
     encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
@@ -757,7 +758,18 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// `snapshot_cap`, 64 absolute records — still inside
 /// `DATAGRAM_BUDGET_BYTES`, and `test_snapshot_cap_within_budget` is the
 /// gate that says so rather than this sentence.
-pub const PROTO_VER: u16 = 56;
+/// v57 gave the **victim** a fact. A landed blow raised `EV_HIT` to the
+/// attacker and `EV_HEALTH` to the body, and `EV_HEALTH` is an absolute
+/// number with no author and no direction — so being shot, bitten, and
+/// starving all read the same on the receiving screen, and the one thing a
+/// player needs in that second (*which way do I turn*) was the one thing the
+/// wire never carried. `EV_HURT` is the mirror of `EV_HIT`: a `SUB_HURT` of
+/// twenty bits — a four-bit bearing sector and the damage — unicast to the
+/// victim, one packet per landed blow to exactly one recipient. It is
+/// deliberately not the bystander broadcast `DECISIONS.md` §open
+/// ("attacker-side flinch v0") refuses; that refusal is about fan-out and
+/// this has none.
+pub const PROTO_VER: u16 = 57;
 
 /// This game's slug in the elo catalog.
 ///

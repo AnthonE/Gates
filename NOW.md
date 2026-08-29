@@ -60,6 +60,32 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 # Buildable now — a loop can pick any of these
 
 
+## 0hrt · Being hit points somewhere — the rest of the fight *(systems+client lane)*
+
+*From `findings/pass-20260829-153230-06-judge.md` gap 2, which named three
+slices; this was the first.* Wire v57 gave the **victim** a fact: `EV_HURT`,
+unicast to the body that took the blow, carrying a 16-sector world bearing
+and the damage, drawn as a fading arc around the crosshair. What is left:
+
+1. **Being shot is silent** — §0pvp item 2's flesh cue, the judge's second
+   slice. `render/audio.rs:659` still derives "I was hurt" from a fall in
+   `core.hp`, which cannot separate two blows in one tick; `Feed::hurt_damage`
+   is the fact that can and **nothing reads it yet**. No camera shake either.
+2. **One arc, latest wins** — two attackers on opposite sides collapse to
+   whichever blow the sim resolved second. `ClientCore`'s ring carries both
+   and `render/feed.rs` keeps only the last. No wire change owed.
+3. **`headshot_mult` is still unread** — the judge's third slice, and
+   §5's standing item. Parsed, banded and hashed since the content crate;
+   `bake.rs:689`/`:799` drop it, and `MeleeDef`/`RangedDef` have no field.
+4. **Nobody has seen the arc.** No capture vantage stands anywhere a shot
+   can land on the camera, so this shipped unlooked-at (§LOOK).
+5. **Two damage routes still say nothing.** A mob bite (`world.rs:3660`)
+   and a blast (`charge.rs:541`) raise no `EV_HURT` — both comments there
+   are about `EV_HIT`, which a pig and a fuse genuinely cannot draw, and
+   the victim's half is a different question. A predator in the dark is
+   the exact case the mark exists for.
+
+
 ## 0tl · The torch lights the ground — what it still cannot do *(client+systems lane)*
 
 *Two gap passes deep. The light landed 2026-08-29 (torch light v0) and
@@ -291,9 +317,10 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
 
 ## 0pvp · What a fight still cannot do *(systems lane)*
 
-1. **The flinch is attacker-side only** — `EV_HIT` is unicast, so the recoil is
-   on one screen; the symmetric version is a new broadcast, unpriced
-   (`DECISIONS.md` §open "attacker-side flinch v0"). Nobody has seen the pose.
+1. **The flinch is attacker-side only** — `EV_HIT` is unicast, so the recoil
+   is on one screen and nobody has seen the pose. The *victim's* half landed
+   as `EV_HURT` (wire v57, §0hrt); a **bystander** flinch is still refused on
+   fan-out grounds (`DECISIONS.md` §open "attacker-side flinch v0").
 2. **No positional hit sound** — a flesh impact needs a waveform `sound/
    synth.rs` does not generate. Nobody has heard `Cue::RemoteSwing` either.
 3. **A gun is heard but not seen** — the crack landed (gun report v0, wire

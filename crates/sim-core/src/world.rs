@@ -511,6 +511,33 @@ pub const EV_TRUST: u8 = 39;
 /// reads is a field nobody maintains (`validate.rs` names that shape).
 pub const EV_SWING: u8 = 40;
 
+/// EV_HURT: a = victim player id, b = the world bearing sector from the
+/// victim toward whatever hurt them, c = damage dealt.
+///
+/// **The victim's fact, and the mirror of `EV_HIT`.** A hit has two people
+/// in it and the wire only ever told one of them: `EV_HIT` is unicast to
+/// the attacker (its own doc says so, and it drops field `a` at encode for
+/// that reason), so the whole of being shot was `EV_HEALTH` — an absolute
+/// number, with no direction and no author. You could not tell a sniper
+/// from a bear from starving. This is the other half, unicast to `a`.
+///
+/// **`b` is a sector, not an angle, and that is a disclosure decision.**
+/// `combat::HURT_SECTORS` of them, 22.5° each, clockwise from north on
+/// `look::bearing_of`'s axes (+Z north, −X east). It is enough to turn
+/// toward and not enough to aim with, which is the same reasoning
+/// `reference/VOICE.md` §9.1 applies to a voice radius: a client handed a
+/// precise position it did not earn is a wallhack whatever the UI does
+/// with it. Absolute rather than relative to the victim's own facing, so
+/// the client subtracts its own yaw at draw time and the mark stays
+/// anchored in the world while the player turns to look.
+///
+/// **Not a broadcast.** `DECISIONS.md` §open ("attacker-side flinch v0")
+/// refuses a bystander flinch on fan-out grounds — one message per landed
+/// blow per player, unfiltered, on a fight's hottest path — and that
+/// refusal stands. This is one message per landed blow to exactly one
+/// recipient, the person it happened to.
+pub const EV_HURT: u8 = 41;
+
 /// Which trust-bearing verb `EV_TRUST.c` is about, in its high byte.
 ///
 /// A leaf someone else placed, worked by this hand (`deploy::use_door`).
@@ -575,7 +602,7 @@ pub const PRESENCE_MAX: u8 = PRESENCE_GONE;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_SWING;
+pub const EV_MAX: u8 = EV_HURT;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server

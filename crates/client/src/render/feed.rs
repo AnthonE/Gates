@@ -102,6 +102,26 @@ pub struct Feed {
     /// sentinel exists.
     hit_victims: [u32; FEED_CAP],
     n_hit_victims: usize,
+    /// Blows landed on **you** this frame, and where the last one came
+    /// from: `hurt_from` is an absolute world bearing sector
+    /// (`sim_core::combat::bearing_sector`), `hurt_damage` the total taken,
+    /// `hurts` how many arrived.
+    ///
+    /// An `Option` rather than a sector beside a count, because sector 0 is
+    /// **north** and not "nothing" — a reader that forgot the count would
+    /// get a confident wrong answer every quiet frame. The type is the
+    /// guard.
+    ///
+    /// **Latest wins, and that is a stated v0 limit rather than an
+    /// oversight.** Two attackers on opposite sides collapse to whichever
+    /// blow the sim resolved second, so the mark points at one of two real
+    /// threats — wrong about the other, never wrong about nothing. A list
+    /// would keep both and is what `NOW.md` §0hrt owes; the ring above it
+    /// already carries them, so nothing is thrown away here that a second
+    /// slice cannot pick up.
+    pub hurt_from: Option<u8>,
+    pub hurt_damage: u16,
+    pub hurts: u16,
     deaths: [(u32, u32); FEED_CAP],
     n_deaths: usize,
     refusals: [Refused; FEED_CAP],
@@ -274,6 +294,9 @@ impl Feed {
         self.damage = 0;
         self.hits = 0;
         self.n_hit_victims = 0;
+        self.hurt_from = None;
+        self.hurt_damage = 0;
+        self.hurts = 0;
         self.n_deaths = 0;
         self.n_refusals = 0;
         self.n_gathered = 0;
@@ -333,6 +356,13 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             feed.hit_victims[n] = victim;
             feed.n_hit_victims += 1;
         }
+    }
+    // The other half of the same blow. No sentinel to filter: a sector is
+    // always a real direction, because a wall does not get hurt.
+    while let Some((sector, d)) = core.pop_hurt() {
+        feed.hurt_damage = feed.hurt_damage.saturating_add(d);
+        feed.hurts = feed.hurts.saturating_add(1);
+        feed.hurt_from = Some(sector);
     }
     while let Some(victim) = core.pop_death() {
         // `last_death_killer` is set by the pop, so one pop yields a whole

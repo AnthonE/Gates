@@ -1017,7 +1017,11 @@ impl Plugin for GatesRenderPlugin {
                     // `InWorld`: a refusal that arrived while the Esc menu was
                     // up is still owed to the player, and a ring nobody drains
                     // is a ring that overflows and drops the newest.
-                    hud::feedback,
+                    // Paired into one element on purpose: the tuple below is
+                    // at Bevy's twenty-one limit, and these two are the halves
+                    // of one fact — `feedback` latches the blow, `hurt_arc`
+                    // draws where it came from.
+                    (hud::feedback, hud::hurt_arc),
                     // The pinned readout: `Feed`'s second HUD reader,
                     // which the drain architecture exists to make free
                     // (`feed.rs` — a reader borrows, only the drain pops).

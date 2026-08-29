@@ -96,7 +96,7 @@ use sim_core::world::{
     Command, SimEvent, World, DEATH_BY_MAX, EV_AUTH, EV_BAG_DROPPED, EV_BAG_REMOVED,
     EV_BUILD_REFUSED, EV_CHARGE_PLACED, EV_CONSUMED, EV_CONSUME_REFUSED, EV_CRAFT_DONE,
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
-    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_IMPACT, EV_KNOCK, EV_KNOWN,
+    EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK, EV_KNOWN,
     EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
     EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED,
     EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_TRUST, EV_VITALS, EV_WEAK_MARK,
@@ -738,6 +738,45 @@ fn hit_names_the_attacker_then_the_victim_then_the_damage() {
     assert_eq!(hit.a, ATTACKER, "EV_HIT.a is the ATTACKER, not the victim");
     assert_eq!(hit.b, VICTIM, "EV_HIT.b is the VICTIM, not the attacker");
     assert_eq!(hit.c, DAMAGE, "EV_HIT.c is the damage dealt");
+}
+
+/// `EV_HURT: a = victim id, b = bearing sector toward the attacker,
+/// c = damage`.
+///
+/// `EV_HIT`'s mirror, and the transposition to fear is between the two
+/// events rather than inside one: `EV_HIT.a` is the attacker and this one's
+/// is the victim, so a copy-paste of the emit line one row up sends the
+/// arrow marker to the person who fired it and leaves the person who was
+/// shot with nothing. That swap is invisible to the golden (both are `u32`
+/// ids), invisible to the replay (the queue is out of `state_hash`) and
+/// invisible to clippy.
+///
+/// The sector is asserted as a **number**, not as a re-run of
+/// `bearing_sector`: the fixture stands the victim one metre along the
+/// attacker's facing at `YAW = 0`, which is `+Z`, so the attacker is due
+/// SOUTH of the body that was hit and south is sector 8 of 16. A flipped
+/// axis, a swapped quadrant, or a delta taken attacker-minus-victim where
+/// it should be the other way all land somewhere else.
+#[test]
+fn hurt_names_the_victim_then_the_bearing_then_the_damage() {
+    let mut w = duel_world();
+    until(&mut w, EV_HURT);
+    let hurt = only(&w, EV_HURT);
+    distinct3(hurt, "EV_HURT");
+    assert_eq!(
+        hurt.a, VICTIM,
+        "EV_HURT.a is the VICTIM — this is the half of the blow addressed \
+         to the person it happened to. `EV_HIT.a` is the attacker; if this \
+         is too, the server unicasts the direction back to the shooter."
+    );
+    assert_eq!(
+        hurt.b, 8,
+        "EV_HURT.b is the bearing sector from the victim TOWARD the \
+         attacker, clockwise from north out of {} sectors. The fixture \
+         puts the attacker due south of the victim, which is 8.",
+        sim_core::combat::HURT_SECTORS
+    );
+    assert_eq!(hurt.c, DAMAGE, "EV_HURT.c is the damage dealt");
 }
 
 /// `EV_HEALTH: a = player id, b = hp after the change, c = max hp`.
@@ -3576,7 +3615,7 @@ fn swing_names_the_swinger_and_nothing_else() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 40] = [
+    const COVERED: [(&str, u8); 41] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -3617,6 +3656,7 @@ fn coverage_is_stated_not_implied() {
         ("EV_IMPACT", EV_IMPACT),
         ("EV_TRUST", EV_TRUST),
         ("EV_SWING", EV_SWING),
+        ("EV_HURT", EV_HURT),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next

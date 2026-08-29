@@ -112,7 +112,9 @@ use crate::occupy::Occupants;
 use crate::pitch_lut::pitch_dir;
 use crate::spent::{SpentArrows, SpentRec};
 use crate::terrain;
-use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_IMPACT, EV_SHOT};
+use crate::world::{
+    EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_SHOT,
+};
 use crate::yaw_lut::yaw_dir;
 
 /// Height above the feet an arrow leaves from, millimetres. The eye, not
@@ -554,6 +556,15 @@ pub fn step(
             let died = h.died;
             let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
             events.push(EV_HIT, a.owner, vid, a.damage as u32);
+            // Where it came FROM, which for something still in flight is the
+            // reverse of where it was going — truer than the archer's current
+            // position, because the archer has had the whole flight to move.
+            events.push(
+                EV_HURT,
+                vid,
+                crate::combat::bearing_sector(-(dx as i64), -(dz as i64)) as u32,
+                a.damage as u32,
+            );
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
                 events.push(EV_DEATH, vid, a.owner, 0);
@@ -1059,7 +1070,12 @@ pub fn hitscan(
             let h = crate::combat::hurt(cc, v, def.damage);
             let died = h.died;
             let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
+            let sector =
+                crate::combat::bearing_sector(qx as i64 - v.body.qx as i64, qz as i64 - v.body.qz as i64);
             events.push(EV_HIT, id, vid, def.damage as u32);
+            // A beam has no flight to reverse, so this is the muzzle itself —
+            // the shooter's body this tick, which is where they still are.
+            events.push(EV_HURT, vid, sector as u32, def.damage as u32);
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
                 events.push(EV_DEATH, vid, id, 0);

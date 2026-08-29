@@ -108,6 +108,120 @@ const HOTBAR_CELL_PX: f32 = 46.0;
 /// confirmation, not a readout.
 pub const HITMARK_SECS: f32 = 0.25;
 
+// ---- the hurt arc ------------------------------------------------------
+//
+// The mark that says *someone is over there and they just hit you*. Wire
+// v57's `EV_HURT` is what feeds it; before that a body being shot learned
+// only that its hp had fallen, which is the same sentence starvation writes.
+//
+// Drawn as an arc of blocks on a circle around the crosshair rather than as
+// a rotated wedge, and the reason is arithmetic rather than taste: Bevy's UI
+// has no arc primitive, so `panels/ring.rs` bakes its wedges into a texture
+// at plugin-build time, and a mark that must point in sixteen directions
+// would need sixteen of them or a rotation this file has never asked a UI
+// node for. Five square children on a circle need neither, and their
+// placement is a pure function this file can test without a window.
+
+/// How long a hurt mark holds before it is gone, seconds.
+///
+/// Long next to `HITMARK_SECS` on purpose and by an order of magnitude: a
+/// hitmarker confirms something you already knew you did, and this one is
+/// the only thing on screen telling you where to turn. It has to survive
+/// the turn.
+pub const HURT_MARK_SECS: f32 = 1.4;
+/// How far off the crosshair the arc sits, px, and how big one of its
+/// blocks is. Outside the prompt line and well inside the hotbar.
+const HURT_RADIUS_PX: f32 = 116.0;
+const HURT_BLOCK_PX: f32 = 7.0;
+/// How many blocks the arc is made of, and the angle between two of them.
+/// Five at 7° spans 28° — a little wider than the 22.5° sector it reports,
+/// so the arc reads as *about there* rather than as a claim of precision the
+/// sector does not have.
+pub const HURT_ARC_MARKS: usize = 5;
+const HURT_ARC_STEP_DEG: f32 = 7.0;
+/// The damage at which a mark is drawn at full strength. Below it the arc
+/// fades toward `HURT_ALPHA_MIN` of its colour, so a graze and a rifle round
+/// do not read the same (`DECISIONS.md` §open, hurt direction v0).
+const HURT_FULL_DMG: f32 = 35.0;
+const HURT_ALPHA_MIN: f32 = 0.45;
+/// The fraction of `HURT_MARK_SECS` the arc holds at full strength before
+/// it starts to go. A mark that fades from the first frame is dimmest
+/// exactly while the player is still hunting for it.
+const HURT_HOLD_FRAC: f32 = 0.5;
+/// The arc's colour. Cosmetics (`DECISIONS.md` §open, client cosmetics),
+/// and deliberately `CROSSHAIR_HIT`'s red rather than a second one: the
+/// palette already says "flesh took damage" in exactly this hue.
+const HURT_MARK_COLOR: Color = Color::srgba(0.98, 0.30, 0.24, 0.92);
+
+/// Where the arc's blocks sit, px from the crosshair centre, for a blow that
+/// arrived on world bearing `sector` seen by a body facing `facing_deg`.
+///
+/// The screen angle is `sector's bearing − facing`, which is the whole
+/// reason `EV_HURT` carries an **absolute** bearing: the subtraction happens
+/// here, every frame, against the yaw the client is drawing with, so the
+/// mark stays on the attacker while the player turns rather than sliding
+/// with them. Zero is up and the angle grows clockwise —
+/// `panels/wheel.rs`'s convention, and `ui::build::pick`'s.
+///
+/// `facing_deg` is a compass bearing (`crate::look::bearing_deg`), so both
+/// sides of the subtraction are clockwise-from-north and the axes are
+/// `look::bearing_of`'s. `tests/hurt_arc.rs` checks that against the sim's
+/// integer twin rather than restating either.
+pub fn hurt_arc_px(sector: u8, facing_deg: f32) -> [(f32, f32); HURT_ARC_MARKS] {
+    let bearing = sector as f32 * (360.0 / sim_core::combat::HURT_SECTORS as f32);
+    let centre = bearing - facing_deg;
+    let mut out = [(0.0, 0.0); HURT_ARC_MARKS];
+    for (i, o) in out.iter_mut().enumerate() {
+        let off = i as f32 - (HURT_ARC_MARKS - 1) as f32 * 0.5;
+        let a = (centre + off * HURT_ARC_STEP_DEG).to_radians();
+        *o = (HURT_RADIUS_PX * a.sin(), -HURT_RADIUS_PX * a.cos());
+    }
+    out
+}
+
+/// A block of the hurt arc, by index along it.
+#[derive(Component)]
+pub struct HurtMark(pub usize);
+
+/// Point the hurt arc at whatever last hit you, and fade it out.
+///
+/// Reads [`Toast`] and never writes it: the latch is `feedback`'s, one
+/// system earlier, for the single-owner reason `feed.rs`'s header gives.
+/// Runs whether or not a mark is live, because the frame after the last one
+/// expires is the frame that has to blank it.
+pub fn hurt_arc(
+    toast: Res<Toast>,
+    look: Res<super::input::Look>,
+    mut marks: Query<(&HurtMark, &mut Node, &mut BackgroundColor)>,
+) {
+    let alpha = if toast.hurt_left <= 0.0 {
+        0.0
+    } else {
+        let t = (toast.hurt_left / HURT_MARK_SECS).clamp(0.0, 1.0);
+        toast.hurt_weight * (t / HURT_HOLD_FRAC).min(1.0)
+    };
+    let want = HURT_MARK_COLOR.with_alpha(HURT_MARK_COLOR.alpha() * alpha);
+    // Nothing on screen: recolour and stop. Moving an invisible node is the
+    // trig of a whole arc, every frame, for a frame nobody can see.
+    if alpha <= 0.0 {
+        for (_, _, mut bg) in marks.iter_mut() {
+            if bg.0 != want {
+                bg.0 = want;
+            }
+        }
+        return;
+    }
+    let at = hurt_arc_px(toast.hurt_from, crate::look::bearing_deg(look.yaw));
+    for (mark, mut node, mut bg) in marks.iter_mut() {
+        let (x, y) = at[mark.0.min(HURT_ARC_MARKS - 1)];
+        node.left = Val::Px(x - HURT_BLOCK_PX * 0.5);
+        node.top = Val::Px(y - HURT_BLOCK_PX * 0.5);
+        if bg.0 != want {
+            bg.0 = want;
+        }
+    }
+}
+
 // ---- the announce stack's geometry --------------------------------------
 //
 // **Four knobs that are coupled, and nothing checked the coupling.**
@@ -313,6 +427,17 @@ pub struct Toast {
     pub hit_left: f32,
     /// Damage the last landed hit dealt, drawn beside the marker.
     pub hit_damage: u16,
+    /// Seconds left on the hurt arc, and the world bearing sector it points
+    /// at. `hit_*`'s pair from the other side of the blow (wire v57).
+    ///
+    /// One arc, latest wins. Two attackers on opposite sides collapse to
+    /// whichever blow the sim resolved second — wrong about one real threat,
+    /// never wrong about nothing, and the ring under `Feed` still carries
+    /// both for whoever draws the second one.
+    pub hurt_left: f32,
+    pub hurt_from: u8,
+    /// How solid to draw it, `HURT_ALPHA_MIN`..=1, from the damage taken.
+    pub hurt_weight: f32,
 }
 
 impl Default for Toast {
@@ -325,6 +450,9 @@ impl Default for Toast {
             overflow: String::new(),
             hit_left: 0.0,
             hit_damage: 0,
+            hurt_left: 0.0,
+            hurt_from: 0,
+            hurt_weight: 0.0,
         }
     }
 }
@@ -447,6 +575,9 @@ impl Toast {
         if self.hit_left > 0.0 {
             self.hit_left = (self.hit_left - dt).max(0.0);
         }
+        if self.hurt_left > 0.0 {
+            self.hurt_left = (self.hurt_left - dt).max(0.0);
+        }
     }
 
     /// The line drawn in row `row`, newest first. `None` past the live end,
@@ -500,6 +631,18 @@ impl Toast {
     pub fn hit(&mut self, damage: u16) {
         self.hit_left = HITMARK_SECS;
         self.hit_damage = damage;
+    }
+
+    /// Something hurt you, from `sector`, for `damage`.
+    ///
+    /// Restarts the clock rather than adding to it: a second blow from the
+    /// same direction should read as *still happening*, not as a mark that
+    /// outlives the fight by twice as long.
+    pub fn hurt(&mut self, sector: u8, damage: u16) {
+        self.hurt_left = HURT_MARK_SECS;
+        self.hurt_from = sector;
+        self.hurt_weight = HURT_ALPHA_MIN
+            + (1.0 - HURT_ALPHA_MIN) * (damage as f32 / HURT_FULL_DMG).clamp(0.0, 1.0);
     }
 }
 
@@ -1083,6 +1226,26 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
                     Pickable::IGNORE,
                 ));
             }
+    // The hurt arc rides the same centred wrapper — it is measured from
+            // the same point, so hanging it anywhere else would be two places
+            // that have to agree about where the middle of the screen is.
+            // Spawned once and moved, never respawned: a mark that appears and
+            // disappears is a spawn on a fight's hot path.
+            for i in 0..HURT_ARC_MARKS {
+                c.spawn((
+                    HurtMark(i),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(-HURT_BLOCK_PX * 0.5),
+                        top: Val::Px(-HURT_BLOCK_PX * 0.5),
+                        width: Val::Px(HURT_BLOCK_PX),
+                        height: Val::Px(HURT_BLOCK_PX),
+                        ..default()
+                    },
+                    BackgroundColor(HURT_MARK_COLOR.with_alpha(0.0)),
+                    Pickable::IGNORE,
+                ));
+            }
         });
 
     // The centre prompt and the toast beneath it. Both sit BELOW the
@@ -1430,6 +1593,12 @@ pub fn feedback(
     // Hits first: the marker is the only feedback with a deadline on it.
     if feed.hits > 0 {
         toast.hit(feed.damage);
+    }
+    // And the same blow from the other end. Guarded on the sector rather
+    // than on the count, because `Feed::hurt_from` is an `Option` precisely
+    // so that a reader cannot mistake north for silence.
+    if let Some(sector) = feed.hurt_from {
+        toast.hurt(sector, feed.hurt_damage);
     }
 
     // Refusals. Each store answers a different verb, and the reason codes are
@@ -2457,6 +2626,132 @@ mod tests {
         t.tick(HITMARK_SECS + 0.01);
         assert_eq!(t.hit_left, 0.0, "the marker is off");
         assert_eq!(t.len(), 1, "…while the line it landed with is still up");
+    }
+
+    /// The hurt arc keeps its own clock, longer than the hitmarker's,
+    /// and the weight it is drawn at rises with the blow.
+    #[test]
+    fn the_hurt_arc_holds_longer_than_the_hitmarker() {
+        assert!(
+            HURT_MARK_SECS > HITMARK_SECS,
+            "the mark that says where to turn must outlive the one that \
+             confirms what you already did"
+        );
+        let mut t = Toast::default();
+        t.hurt(3, 40);
+        assert_eq!(t.hurt_from, 3);
+        let heavy = t.hurt_weight;
+        assert!(
+            (heavy - 1.0).abs() < 1e-6,
+            "a blow at or past HURT_FULL_DMG draws at full weight, got {heavy}"
+        );
+        t.hurt(3, 1);
+        assert!(
+            t.hurt_weight < heavy && t.hurt_weight >= HURT_ALPHA_MIN,
+            "a graze is fainter than a rifle round and never invisible, \
+             got {}",
+            t.hurt_weight
+        );
+        t.tick(HITMARK_SECS + 0.01);
+        assert!(t.hurt_left > 0.0, "still up when a hitmarker would be gone");
+        t.tick(HURT_MARK_SECS);
+        assert_eq!(t.hurt_left, 0.0, "and gone on its own clock");
+    }
+
+    /// The sim's integer bearing and this client's float one are the same
+    /// bearing.
+    ///
+    /// **This is the gate the sector exists to earn.** `sim-core` may not
+    /// call `atan2` (wall 1), so `combat::bearing_sector` decides sixteen
+    /// sectors with four `i64` compares against scaled tangents, and there
+    /// is no way to look at that function and see whether its quadrants are
+    /// wired the right way round. `look::bearing_of` is the same question
+    /// answered in floats, by the module that owns the axes — so the check
+    /// is the angular error between them, which is boundary-safe (a sample
+    /// sitting exactly on a sector edge may round either way and is still
+    /// inside half a sector) and does not care how either one is spelled.
+    ///
+    /// Proven red: flipping the east sign in `bearing_sector` puts the
+    /// error at 180° for every off-axis sample; swapping either of its two
+    /// southern quadrant arms puts it past 45°.
+    #[test]
+    fn the_integer_bearing_and_the_float_bearing_are_the_same_bearing() {
+        let half = 360.0 / sim_core::combat::HURT_SECTORS as f32 * 0.5;
+        let mut n = 0;
+        for dx in -20i64..=20 {
+            for dz in -20i64..=20 {
+                if dx == 0 && dz == 0 {
+                    continue;
+                }
+                let sector = sim_core::combat::bearing_sector(dx * 137, dz * 137);
+                assert!(
+                    sector < sim_core::combat::HURT_SECTORS,
+                    "sector {sector} is outside the domain the wire's four \
+                     bits carry"
+                );
+                let want = crate::look::bearing_of(dx as f32, dz as f32);
+                let got = sector as f32 * (360.0 / sim_core::combat::HURT_SECTORS as f32);
+                let err = ((got - want + 180.0).rem_euclid(360.0) - 180.0).abs();
+                assert!(
+                    err <= half + 1e-3,
+                    "({dx}, {dz}): the sim says sector {sector} ({got}°) and \
+                     look::bearing_of says {want}° — {err}° apart, past the \
+                     {half}° a sixteenth of a circle allows"
+                );
+                n += 1;
+            }
+        }
+        assert_eq!(n, 41 * 41 - 1, "the sweep stopped early");
+    }
+
+    /// The arc lands where the attacker is on screen, not where they are in
+    /// the world.
+    ///
+    /// The subtraction in [`hurt_arc_px`] is the whole point of `EV_HURT`
+    /// carrying an absolute bearing, and it has two ways to be wrong that
+    /// look identical at rest: the wrong sign (the mark mirrors as you turn)
+    /// and the wrong zero (it sits a quarter-turn off). Facing four
+    /// directions at one attacker separates both.
+    #[test]
+    fn the_arc_points_at_the_attacker_and_not_at_north() {
+        let step = 360.0 / sim_core::combat::HURT_SECTORS as f32;
+        let mid = HURT_ARC_MARKS / 2;
+        // An attacker due east of us, sector 4 of 16.
+        let sector = 4u8;
+        let bearing = sector as f32 * step;
+        for (facing, want, what) in [
+            (bearing, (0.0, -HURT_RADIUS_PX), "looking straight at them"),
+            (bearing - 90.0, (HURT_RADIUS_PX, 0.0), "they are on our right"),
+            (bearing + 90.0, (-HURT_RADIUS_PX, 0.0), "they are on our left"),
+            (bearing + 180.0, (0.0, HURT_RADIUS_PX), "they are behind us"),
+        ] {
+            let at = hurt_arc_px(sector, facing);
+            let (x, y) = at[mid];
+            assert!(
+                (x - want.0).abs() < 0.01 && (y - want.1).abs() < 0.01,
+                "{what}: the arc's middle block is at ({x:.2}, {y:.2}), \
+                 wanted ({:.2}, {:.2}). Screen y grows DOWN, so straight \
+                 ahead is negative.",
+                want.0,
+                want.1
+            );
+            // Every block is on the circle, and they are laid out in order
+            // rather than piled at one end.
+            for (i, &(bx, by)) in at.iter().enumerate() {
+                let r = (bx * bx + by * by).sqrt();
+                assert!(
+                    (r - HURT_RADIUS_PX).abs() < 0.01,
+                    "block {i} is {r} from the centre, not {HURT_RADIUS_PX}"
+                );
+            }
+            let spread = (HURT_ARC_MARKS - 1) as f32 * HURT_ARC_STEP_DEG;
+            assert!(
+                spread > step,
+                "the arc spans {spread}°, which is narrower than the {step}° \
+                 sector it reports — it would claim precision the wire does \
+                 not carry"
+            );
+        }
     }
 
     /// `E` outranks the swing and the swing fills the silence. Asserted

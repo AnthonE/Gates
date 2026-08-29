@@ -94,7 +94,7 @@ use crate::limits::{
     MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS, MAX_PLAYERS, MAX_WEAPON_AMMO, WEAR_SLOTS,
 };
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
-use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT};
+use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT};
 use crate::yaw_lut::yaw_dir;
 
 /// One item's melee row. `damage == 0` ⇒ the item is not a weapon (the
@@ -833,6 +833,72 @@ pub enum Strike {
 /// eligible target inside the weapon's reach and gather's aim cone wins,
 /// exactly as a node does; the attacker is never a candidate, so no weapon
 /// can ever hit its own holder.
+/// How many world-bearing sectors an `EV_HURT` is quantized to.
+///
+/// Sixteen, so a sector is 22.5° — the eight compass points a player can
+/// name, halved once so "front-left" is expressible. The width is the
+/// disclosure: it is enough to turn toward and not enough to aim with, and
+/// widening it is a decision about what a victim learns, not a cosmetic
+/// one (`world.rs`, `EV_HURT`).
+pub const HURT_SECTORS: u8 = 16;
+
+/// The sector of the world bearing along `(dx, dz)`, clockwise from north.
+///
+/// `dx`/`dz` are a delta *toward* the thing being pointed at, in any units
+/// so long as both axes share them — only the ratio is read. North is `+Z`
+/// and east is `−X` (`DECISIONS.md` 2026-08-15, and `client/src/look.rs`
+/// `bearing_of` is the float twin this must agree with, and
+/// `client/src/render/hud.rs`'s
+/// `the_integer_bearing_and_the_float_bearing_are_the_same_bearing` checks
+/// the two against each other rather than restating either — it lives on
+/// that side because this crate cannot reach `atan2` to check itself).
+///
+/// **Integer only, because wall 1 forbids the obvious spelling.** There is
+/// no `atan2` in this crate and there is not going to be one. A bearing
+/// quantized to sixteen sectors does not need one: the sector is decided by
+/// four comparisons against `tan(11.25°)`, `tan(33.75°)`, `tan(56.25°)` and
+/// `tan(78.75°)`, each held as a millionth so the compare is an `i64`
+/// multiply. That is exact — the same integers on native and on wasm — where
+/// a float `atan2` is the one thing `test_parity_wasm` exists to catch.
+///
+/// A zero delta has no bearing. It happens (two bodies standing inside each
+/// other is point-blank, which `strike` explicitly allows), and the answer
+/// is sector 0: arbitrary, documented, and no more wrong than any other
+/// direction when the attacker is on top of you.
+pub fn bearing_sector(dx: i64, dz: i64) -> u8 {
+    if dx == 0 && dz == 0 {
+        return 0;
+    }
+    // |east| is |dx| and |north| is |dz|, so the quadrant is read off the
+    // signs below and the magnitudes never need the negation.
+    let a = dx.saturating_abs();
+    let b = dz.saturating_abs();
+    // How far off the north/south axis, in sectors: 0 is on it, 4 is square
+    // onto the east/west one. `tan(11.25°) = 0.198912` and its three
+    // siblings, scaled by a million.
+    let k = if a.saturating_mul(1_000_000) < b.saturating_mul(198_912) {
+        0
+    } else if a.saturating_mul(1_000_000) < b.saturating_mul(668_179) {
+        1
+    } else if a.saturating_mul(1_000_000) < b.saturating_mul(1_496_606) {
+        2
+    } else if a.saturating_mul(1_000_000) < b.saturating_mul(5_027_339) {
+        3
+    } else {
+        4
+    };
+    // East is `−X`, so `dx <= 0` is the eastern half. The two axis cases
+    // land on the same sector from either side (k == 4 is due east in both
+    // eastern quadrants, k == 0 is due south in both southern ones), which
+    // is what makes the seams here unobservable.
+    match (dx <= 0, dz >= 0) {
+        (true, true) => k,           // N..E
+        (true, false) => 8 - k,      // E..S
+        (false, false) => 8 + k,     // S..W
+        (false, true) => (16 - k) % 16, // W..N
+    }
+}
+
 pub fn strike(
     cc: &CombatContent,
     attacker: usize,
@@ -855,6 +921,9 @@ pub fn strike(
     let az = a.body.qz as f32 * POS_XZ_Q;
     let (fx, fz) = yaw_dir(a.frame.yaw);
     let attacker_id = a.id;
+    // Read before the victim is borrowed mutably, and in the body's own
+    // quanta rather than the metres above: `bearing_sector` wants integers.
+    let (aqx, aqz) = (a.body.qx as i64, a.body.qz as i64);
 
     let mut best: Option<(f32, usize)> = None;
     for (j, t) in players.iter().enumerate() {
@@ -886,9 +955,12 @@ pub fn strike(
 
     let v = &mut players[victim];
     let victim_id = v.id;
+    let sector = bearing_sector(aqx - v.body.qx as i64, aqz - v.body.qz as i64);
     // The funnel, reduced: a swing is the route armor exists to blunt.
     let Hurt { left, died, .. } = hurt(cc, v, def.damage);
     events.push(EV_HIT, attacker_id, victim_id, def.damage as u32);
+    // The other half of the same blow, addressed to the other person in it.
+    events.push(EV_HURT, victim_id, sector as u32, def.damage as u32);
     events.push(EV_HEALTH, victim_id, left as u32, cc.player_hp as u32);
     if died {
         events.push(EV_DEATH, victim_id, attacker_id, 0);
