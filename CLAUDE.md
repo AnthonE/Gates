@@ -648,7 +648,8 @@ recovery pass against a green tree; the steward that woke measured silence
 against a *previous* run's log and reported 22790s about a four-minute-old
 runner; and the sweep meant to file pre-2026-08 reports had been eating the
 current ones, so `loop-status.sh` read `0 PASS / 0 FAIL` over 70 real verdicts.
-All three are fixed and gated (`watchdog-test.sh`, 23 checks, six mutants);
+All three are fixed and gated — run `gates-loop/watchdog-test.sh`, and note
+that the count that stood here for one commit was wrong within the hour;
 **why the linker took a SIGBUS is still unknown** and a health run now traces
 disk, RAM and swap so the next one is diagnosable —
 `gates-loop/findings/note-20260829-the-loop-died-of-the-box-not-the-tree.md`.
