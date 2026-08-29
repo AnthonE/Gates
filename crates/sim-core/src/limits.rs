@@ -393,8 +393,17 @@ pub const UPKEEP_SWEEP_PER_TICK: usize = 64;
 /// re-diffs), the same recovery path a fresh join uses. Proposed default,
 /// DECISIONS.md §open (gather wire row).
 ///
-/// **It is [`BODY_BROADCAST_ARMS`] × [`AOI_RANK_EXIT`], and that product is
-/// the whole argument** — this is a derived number, not a chosen one.
+/// **It is authored as `BODY_BROADCAST_ARMS × AOI_RANK_EXIT` and typed as a
+/// literal, which is deliberate and was wrong for one commit.** The product
+/// is the whole argument for the value; writing the product *as the
+/// definition* is what makes the argument uncheckable, because the assertion
+/// that pins the relation
+/// (`server/tests/snapshot_budget.rs::the_filter_buys_nothing_on_a_clustered_shard`)
+/// then compares an expression to itself and is green for every value of
+/// every term. It was `BODY_BROADCAST_ARMS * AOI_RANK_EXIT` here between
+/// wire v54 and this line; the mutant sweep is in the judge report for pass
+/// `20260829-153230-02`. Two independently authored numbers, one assertion
+/// between them — the shape every cross-check in this file has.
 ///
 /// A broadcast arm in `pump_events` costs one push into *this* ring per
 /// connected client, so the per-client fan-in from one class-D-filtered arm
@@ -417,7 +426,7 @@ pub const UPKEEP_SWEEP_PER_TICK: usize = 64;
 /// — which is why this is sized against the worst case rather than the
 /// common one. Overflow policy is unchanged: **resync**.
 /// Proposed default, DECISIONS.md §open (event-lane fan-out v0).
-pub const EVENT_RING_CAP: usize = BODY_BROADCAST_ARMS * AOI_RANK_EXIT;
+pub const EVENT_RING_CAP: usize = 128;
 
 /// How many `pump_events` arms broadcast a **body's** fact to the whole
 /// class-D interest set, each therefore able to fan in `AOI_RANK_EXIT`
@@ -428,13 +437,22 @@ pub const EVENT_RING_CAP: usize = BODY_BROADCAST_ARMS * AOI_RANK_EXIT;
 /// exactly the tick everyone is co-located — a raid — so the filter buys
 /// nothing precisely when the ring is fullest.
 ///
-/// **This is a count of code sites, so it rots the way a hand-kept mirror
-/// always does** (`CLAUDE.md`'s `props.js` line). What stands against that
-/// is not this doc but
-/// `server/tests/snapshot_budget.rs::the_filter_buys_nothing_on_a_clustered_shard`,
-/// which pins `EVENT_RING_CAP == BODY_BROADCAST_ARMS * AOI_RANK_EXIT` as an
-/// equality: a third broadcast arm added without touching this constant
-/// leaves the product wrong, and the storm fixture is what notices.
+/// **This is a count of code sites, so it would rot the way a hand-kept
+/// mirror always does** (`CLAUDE.md`'s `props.js` line) — and the answer is
+/// the one that file gives: read the surface, do not remember it.
+/// `server/tests/snapshot_budget.rs::every_body_broadcast_arm_is_counted`
+/// scrapes `server/src/core.rs` for the filter's own call sites and asserts
+/// the count equals this constant, so a third arm is red at the arm, in the
+/// commit that adds it, whether or not anyone thought about the ring.
+///
+/// A second assertion in the same file
+/// (`the_filter_buys_nothing_on_a_clustered_shard`) then pins
+/// `EVENT_RING_CAP == BODY_BROADCAST_ARMS * AOI_RANK_EXIT`, which is the
+/// sizing law. The two are a chain and both links are needed: the scrape
+/// catches an uncounted arm, the equality catches a counted arm nobody
+/// resized the ring for, and a widened rank band. For one commit the second
+/// link was the ring's own definition and therefore held nothing — see
+/// [`EVENT_RING_CAP`].
 /// Proposed default, DECISIONS.md §open (event-lane fan-out v0).
 pub const BODY_BROADCAST_ARMS: usize = 2;
 

@@ -11,11 +11,22 @@
 //! trade `CLAUDE.md` forbids; this is that gate, one layer out.
 //!
 //! **Driven as arithmetic, not through a window**, which is `tests/fell.rs`'s
-//! stated posture: the two decisions are split out of their systems
-//! (`protocol::shot_is_instant`, `render::audio::shot_cue`) precisely so they
-//! can be driven at both ends without a socket, a GPU or a shard. What no test
-//! here claims is that the systems are *scheduled* — `tests/frame_gates.rs`
-//! owns that question for the render app as a whole.
+//! stated posture: the decisions are split out of their systems
+//! (`protocol::shot_is_instant`, `render::audio::shot_cue`,
+//! `render::tracer::Tracers::claim`) precisely so they can be driven at both
+//! ends without a socket, a GPU or a shard. What no test here claims is that
+//! the systems are *scheduled* — `tests/frame_gates.rs` owns that question for
+//! the render app as a whole.
+//!
+//! ⚠ **The refusal itself went ungated for one commit, which is the whole
+//! lesson of the file.** Everything below the predicate tests was written
+//! first and all of it passed with `render/tracer.rs`'s
+//! `if protocol::shot_is_instant(speed) { continue; }` deleted — because the
+//! refusal was a line inside `launch`, a Bevy system taking `NonSend<Net>`
+//! and a live session, and no test could reach it. Gating the predicate a
+//! call site happens to call is gating the wrong thing. The law moved into
+//! `Tracers::claim`, which takes a pool and five integers, and the last three
+//! tests here drive it.
 //!
 //! Feature-gated like every other test that names `client::render`: the
 //! module is behind `--features render` (`crates/client/Cargo.toml` says
@@ -24,8 +35,16 @@
 #![cfg(feature = "render")]
 
 use client::render::audio::shot_cue;
+use client::render::tracer::{Tracers, TRACERS};
 use client::sound::{Cue, CUES, MAX_AUDIBLE_M};
 use protocol::shot_is_instant;
+
+/// A shooter's feet. Where a tracer starts is not what any test here is
+/// about, so every one of them looses from the origin.
+const FEET: [f32; 3] = [0.0, 0.0, 0.0];
+/// An arrow's muzzle speed and drop in the wire's units — `content/`'s bow
+/// rounded, and any non-zero pair would do.
+const ARROW: (u16, u16) = (1_333, 8);
 
 /// Zero is the instant reading and **nothing else is**.
 ///
@@ -114,5 +133,96 @@ fn the_ceiling_is_the_loudest_cue_and_that_cue_is_the_gun() {
         CUES[Cue::ShotGun as usize].radius_m,
         MAX_AUDIBLE_M,
         "the gunshot is the cue that sets the ceiling"
+    );
+}
+
+/// **The refusal, at the only layer that can be driven.**
+///
+/// This is the gate the module header is about. `sim-core/tests/gun.rs` used
+/// to hold the same property by forbidding the event outright; wire v54 makes
+/// the event legal and this is where the property landed. The failure it
+/// prevents is not subtle — a slot claimed at `speed == 0` integrates
+/// `v.y -= drop; q += v` with `v` all zeroes for `MAX_ARROW_LIFE_TICKS`, so a
+/// rifle leaves a bright motionless streak hanging at the shooter's eye for
+/// four seconds and one of sixteen slots is gone until it expires.
+///
+/// The assertion is on `live()`, not on the returned bool: a refusal is a
+/// slot that was not taken, and a test that reads only the return value is
+/// checking the branch it just read rather than its effect.
+///
+/// Mutant: delete `claim`'s `if protocol::shot_is_instant(speed_mmpt)` →
+/// `live()` is 1 → red.
+#[test]
+fn an_instant_shot_claims_no_tracer_slot() {
+    let mut pool = Tracers::default();
+    assert_eq!(pool.live(), 0, "a fresh pool draws nothing");
+    assert!(
+        !pool.claim(FEET, 0, 0, 0, 0),
+        "a shot with no flight has nothing to draw, so nothing was claimed"
+    );
+    assert_eq!(
+        pool.live(),
+        0,
+        "a beam took one of {TRACERS} tracer slots and will hold it for \
+         MAX_ARROW_LIFE_TICKS, drawing a motionless streak at the muzzle - \
+         this is the exact failure `gun.rs` used to prevent by refusing the \
+         event, and wire v54 moved the refusal here"
+    );
+}
+
+/// The control, and it is not decoration: every assertion above is satisfied
+/// by a `claim` that refuses everything.
+///
+/// Mutant: `return false` at the top of `claim` → the instant-shot test above
+/// stays green and this one goes red.
+#[test]
+fn an_arrow_claims_one_and_flies_it() {
+    let mut pool = Tracers::default();
+    let (speed, drop) = ARROW;
+    assert!(
+        pool.claim(FEET, 0, 0, speed, drop),
+        "an arrow in flight is what the pool is for"
+    );
+    assert_eq!(pool.live(), 1, "the arrow claimed no slot");
+    assert!(
+        pool.claim(FEET, 0x4000, 32, speed, drop),
+        "a second archer is not a refusal"
+    );
+    assert_eq!(pool.live(), 2, "two arrows, two slots");
+}
+
+/// **The overflow policy is refuse-the-newest, and it had no gate at all.**
+///
+/// `TRACERS`' own doc states it — *"the overflow policy is to refuse the
+/// newest tracer — never to steal a live one, because a streak that vanishes
+/// mid-flight reads as a bug where a missing one reads as nothing at all"* —
+/// and until this test that was a comment. Wall 4 asks for a cap with a
+/// stated overflow policy; a stated policy nothing checks is the mood the
+/// walls list warns about.
+///
+/// Mutant: make `free()` fall back to slot 0 when full → the 17th volley
+/// steals a live flight, `live()` stays at `TRACERS` and the returned bool
+/// says it was claimed → red on the bool.
+#[test]
+fn a_full_pool_refuses_the_newest_rather_than_stealing() {
+    let mut pool = Tracers::default();
+    let (speed, drop) = ARROW;
+    for n in 0..TRACERS {
+        assert!(
+            pool.claim(FEET, 0, 0, speed, drop),
+            "slot {n} of {TRACERS} was refused while the pool still had room"
+        );
+    }
+    assert_eq!(pool.live(), TRACERS, "the pool did not fill");
+    assert!(
+        !pool.claim(FEET, 0, 0, speed, drop),
+        "the {}th arrow was accepted into a pool of {TRACERS} - something was \
+         stolen, and a streak that vanishes mid-flight reads as a bug",
+        TRACERS + 1
+    );
+    assert_eq!(
+        pool.live(),
+        TRACERS,
+        "the pool grew past its own cap, or a live flight was overwritten"
     );
 }

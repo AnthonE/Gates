@@ -709,7 +709,9 @@ const M_COMBAT: CueDef = music_row(1.0);
 /// the far side of rodio's clamp and get *louder* with distance.
 ///
 /// **Set by [`Cue::ShotGun`] since v54**, at the reference's own hundred
-/// metres; the falling tree's 88 m held it before that. It is a derived
+/// metres; the falling tree's 96 m held it before that (this line said 88 m
+/// for one commit, which is the howl's radius — the maximum of a table is
+/// the kind of claim to re-read off the table). It is a derived
 /// number and not a taste one — it is the maximum of the table, and the
 /// test that asserts so is what makes raising a radius force this line
 /// rather than silently invert a cue's falloff.

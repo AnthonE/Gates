@@ -1488,18 +1488,25 @@ fn a_connection_whose_body_is_gone_still_hears_the_shard() {
 /// The recorded consequence: post-filter peak fan-in per client is
 /// `AOI_RANK_EXIT` **per broadcast arm**, and `EVENT_RING_CAP` is sized as
 /// exactly that band times the number of such arms. If a later pass widens
-/// the rank band, or adds a third body-broadcast arm without saying so in
-/// `BODY_BROADCAST_ARMS`, this goes red and that is the point — the ring
-/// would then be smaller than its own worst case with nothing saying so.
+/// the rank band, or bumps `BODY_BROADCAST_ARMS` without resizing the ring,
+/// this goes red — the ring would then be smaller than its own worst case
+/// with nothing saying so.
 ///
-/// ⚠ **This was `assert_eq!(AOI_RANK_EXIT, EVENT_RING_CAP)` until wire
-/// v54, and the change is a tightening rather than a loosening.** The old
-/// form pinned an equality that happened to hold while exactly one arm
-/// broadcast a body's fact; it could not have caught the second arm being
-/// added, which is precisely what overflowed the ring (82 offered against
-/// 64). The relation asserted now is the mechanism the old one was a
-/// snapshot of, so it still fails on a widened rank band **and** on an arm
-/// nobody counted.
+/// ⚠ **The other direction — an arm added and never counted — is NOT this
+/// assertion's, and believing it was is what failed pass
+/// `20260829-153230-02`.** Nothing here reads `core.rs`, so a third arm
+/// silently leaves `BODY_BROADCAST_ARMS` at 2 and every term of this
+/// equality unchanged. `every_body_broadcast_arm_is_counted` below is the
+/// gate for that half, and the two are a chain: the scrape holds the count
+/// against the source, this holds the ring against the count.
+///
+/// ⚠ **And it was `assert_eq!(AOI_RANK_EXIT, EVENT_RING_CAP)` until wire
+/// v54, then briefly a tautology.** For one commit `EVENT_RING_CAP` was
+/// *defined* as `BODY_BROADCAST_ARMS * AOI_RANK_EXIT` while this line
+/// asserted that product, so it read `X == X` and passed for every value of
+/// both terms — including the two failures its own doc named. The cap is an
+/// authored literal again (`limits.rs`), which is the whole of what makes
+/// this an assertion rather than a restatement. Do not re-derive it.
 #[test]
 fn the_filter_buys_nothing_on_a_clustered_shard() {
     assert_eq!(
@@ -1521,6 +1528,89 @@ fn the_filter_buys_nothing_on_a_clustered_shard() {
         players > AOI_RANK_ENTER,
         "slot 0 can see only {players} of the 99 bodies stood on top of it — \
          the clustered fixture is not clustered, so the no-op claim is untested"
+    );
+}
+
+/// **`BODY_BROADCAST_ARMS` is a count of code sites, so it is READ off the
+/// code rather than remembered.**
+///
+/// This is the link the constant's own doc says it needs and did not have.
+/// `the_filter_buys_nothing_on_a_clustered_shard` holds the ring against the
+/// count; nothing held the count against the source, so the failure the whole
+/// chain exists to catch — a third `pump_events` arm broadcasting a body's
+/// fact to the interest set, added without touching `limits.rs` — left every
+/// assertion in the tree green while the ring became smaller than its worst
+/// case. That is `CLAUDE.md`'s hand-kept-mirror trap, and its answer is the
+/// one `client/tests/sound.rs` uses for the `pop_*` rings: scrape the
+/// surface, and make a site you cannot classify a loud failure rather than a
+/// skip.
+///
+/// **What is counted.** `ShardCore::body_event_visible` is the class-D filter
+/// every body-addressed broadcast passes each connected client through, so a
+/// call to it inside `pump_events` *is* a broadcast arm. Each such arm calls
+/// it exactly once, which is what makes a call-site count an arm count — and
+/// an arm that called it twice would read high, which is red here too, not
+/// silently absorbed. Over-counting is the safe direction anyway: it sizes
+/// the ring up.
+///
+/// **Deliberately not counted:** the `fn` that defines the filter, and the
+/// comments that name it (the needle carries its opening paren, and a comment
+/// line is skipped before the shape check). A call written any other way —
+/// `let ok = self.body_event_visible(…)`, a helper, a closure — fails here
+/// with the line quoted, which is the point: the next author decides whether
+/// it is an arm, in the commit that writes it.
+///
+/// Mutant: delete either `if !self.body_event_visible(…)` arm in
+/// `pump_events` → count 1 against `BODY_BROADCAST_ARMS` 2 → red. Add a third
+/// → 3 against 2 → red.
+#[test]
+fn every_body_broadcast_arm_is_counted() {
+    const SRC: &str = include_str!("../src/core.rs");
+    /// The filter's call shape. The paren is load-bearing: without it this
+    /// matches the prose that names the function.
+    const NEEDLE: &str = "body_event_visible(";
+    /// The one shape a broadcast arm is written in.
+    const CALL: &str = "if !self.body_event_visible(";
+
+    let mut arms = 0usize;
+    for (n, line) in SRC.lines().enumerate() {
+        let t = line.trim_start();
+        if !t.contains(NEEDLE) {
+            continue;
+        }
+        // Prose naming the filter, and the filter's own definition. Both are
+        // matched by name and neither is a broadcast.
+        if t.starts_with("//") || t.contains("fn body_event_visible(") {
+            continue;
+        }
+        assert!(
+            t.starts_with(CALL),
+            "core.rs:{} calls `body_event_visible` in a shape this scrape \
+             cannot classify, so `BODY_BROADCAST_ARMS` would be gated on one \
+             arm fewer and `EVENT_RING_CAP` sized for a fan-in nobody counted. \
+             Widen this gate in the commit that widens the call: {}",
+            n + 1,
+            t
+        );
+        arms += 1;
+    }
+
+    // Anti-vacuity first: a scrape that matched nothing agrees with a
+    // constant of zero and disagrees with nothing else.
+    assert!(
+        arms > 0,
+        "the scrape found no broadcast arm at all in core.rs — it has lost \
+         the shape of the source and is gating nothing"
+    );
+    assert_eq!(
+        arms,
+        sim_core::limits::BODY_BROADCAST_ARMS,
+        "`pump_events` filters {arms} whole-population broadcasts through \
+         `body_event_visible` and `BODY_BROADCAST_ARMS` says {}. Whichever is \
+         right, `EVENT_RING_CAP` is sized from the constant — fix the count \
+         and the ring together, or the next firefight overflows a ring that \
+         no longer knows how many arms fill it",
+        sim_core::limits::BODY_BROADCAST_ARMS
     );
 }
 
@@ -1780,21 +1870,27 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
 /// at its real cap** — `EVENT_RING_CAP` lives in `net.rs` as an `rtrb`, so
 /// every other suite hands `tick_bare` a closure returning `true` and can
 /// therefore never see a refusal. The closure's bool *is* the ring's
-/// verdict (`tick_bare`'s own doc says so), so counting pushes per slot
-/// per tick and refusing past 64 is the ring, not a model of it.
+/// verdict (`tick_bare`'s own doc says so), so counting pushes per slot per
+/// tick and refusing past `EVENT_RING_CAP` is the ring, not a model of it.
 ///
-/// Measured 2026-08-24 on the fixture above:
+/// Re-measured 2026-08-29 on the fixture above, at wire v54 — every number
+/// here moved when the firearm became the second broadcast arm, and the
+/// table said 144/50 for one commit after it did:
 ///
 /// | cap | what it bounds | peak | headroom |
 /// |---|---|---|---|
-/// | `MAX_EVENTS_PER_TICK` 256 | sim events in one tick | **144** | 1.8× |
-/// | `EVENT_RING_CAP` 64 | pushes to one client in one tick | **50** | 1.28× |
+/// | `MAX_EVENTS_PER_TICK` 256 | sim events in one tick | **196** | 1.31× |
+/// | `EVENT_RING_CAP` 128 | pushes to one client in one tick | **81** | 1.58× |
 ///
-/// So the per-connection ring is the binding cap, by a wide margin, and
-/// the sim's own queue is not close. That is the evidence for
-/// `DECISIONS.md` §open "event-lane fan-out v0": the number to argue about
-/// is `EVENT_RING_CAP`, and 50 of 64 is what "zero headroom for the other
-/// arms" looks like when it is measured rather than reasoned about.
+/// (2026-08-24, one broadcast arm: 144 and 50 against a 64-slot ring.)
+///
+/// So the per-connection ring is still the binding cap and the sim's own
+/// queue is not close, but the margin narrowed rather than widened: the
+/// second arm cost the events row a third of its headroom. That is the
+/// evidence for `DECISIONS.md` §open "event-lane fan-out v0" — the number
+/// to argue about is `EVENT_RING_CAP`, 50 of 64 was what "zero headroom for
+/// the other arms" looked like when the other arm arrived, and 81 of 128 is
+/// what buying that headroom bought.
 ///
 /// **`ev_interest_skipped` is 0 here and that is the point of the
 /// fixture, not a defect.** Bodies at arm's length are inside each other's
