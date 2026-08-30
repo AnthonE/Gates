@@ -14,15 +14,16 @@
 //! loop seam) before any number about it is read.
 
 use client::sound::birds::Birds;
-use client::sound::hurt;
 use client::sound::mixer::{Mixer, Request};
 use client::sound::music::{self, Director, Mode, Piece, Tier};
 use client::sound::steps::{remote, surface_cue, Steps, STRIDE_M};
 use client::sound::synth;
+use client::sound::{hit, hurt};
 use client::sound::{
     Bus, Cue, Mix, CUES, CUE_COUNT, CUE_QUEUE_CAP, MAX_AUDIBLE_M, SAMPLE_RATE, STARTS_PER_FRAME,
     VOICE_CAP,
 };
+use sim_core::collide::Part;
 
 const AT_ORIGIN: [f32; 3] = [0.0, 0.0, 0.0];
 
@@ -2809,6 +2810,201 @@ fn the_hurt_cue_has_exactly_one_producer_and_it_reads_both_witnesses() {
     assert!(
         found > 0,
         "the source walk found no mention of Cue::Hurt at all - it is not \
+         reading the tree it thinks it is"
+    );
+}
+
+// ─── The hitmarker's rung (v58) ────────────────────────────────────────────
+//
+// `NOW.md` §0hs item 3. The ladder has paid x2 / x1 / x0.5 off the body part
+// a shot crossed since limb band v0 and the wire carried only the product, so
+// the fight had three rungs of arithmetic and no way for a player to learn
+// any of them. These gate the ear's half of the fix; `render/hud.rs`'s
+// `every_rung_draws_its_own_marker` gates the eye's.
+
+/// A frame in which nothing landed is silent.
+#[test]
+fn a_frame_with_no_hit_makes_no_marker() {
+    assert!(hit::request(0, None).is_none());
+    // …including one carrying a rung, which is the shape a stale `hit_part`
+    // would arrive in if `Feed::clear` ever stopped clearing it.
+    assert!(
+        hit::request(0, Some(Part::Head)).is_none(),
+        "a rung with no hits is a stale field, not a marker"
+    );
+}
+
+/// Each rung is its own cue, and a wall is the identity.
+#[test]
+fn every_rung_is_its_own_voice() {
+    assert_eq!(hit::cue(Some(Part::Head)), Cue::HitHead);
+    assert_eq!(hit::cue(Some(Part::Limb)), Cue::HitLimb);
+    assert_eq!(hit::cue(Some(Part::Chest)), Cue::Hit);
+    // A wall shares the core's hitmarker ring and has no rung. The identity
+    // is the right answer and not a fallback: a structure takes the unscaled
+    // blow, which is exactly what `Cue::Hit` has always meant.
+    assert_eq!(hit::cue(None), Cue::Hit);
+}
+
+/// The three markers are three *different sounds*, not one sound relabelled.
+///
+/// The mistake this exists to catch is a `synth::render` arm that delegates
+/// (`Cue::RemoteSwing => render(Cue::Swing)` is a real and correct instance
+/// of that pattern in this file's subject, which is why copying it here would
+/// look right). Three rungs delegating to one waveform passes every other
+/// assertion in this file — the table has three rows, the enum has three
+/// variants, the producer picks between them — and the player hears one
+/// click for all three.
+#[test]
+fn the_three_markers_do_not_share_a_waveform() {
+    let banks: Vec<Vec<u8>> = [Cue::Hit, Cue::HitHead, Cue::HitLimb]
+        .into_iter()
+        .map(synth::wav)
+        .collect();
+    assert!(
+        banks[0] != banks[1] && banks[1] != banks[2] && banks[0] != banks[2],
+        "two of the three hitmarkers are byte-identical waveforms"
+    );
+    // And none of them is empty, which is the way a `chime` with a bad
+    // argument would satisfy the inequality above by being uniquely broken.
+    for (cue, w) in [Cue::Hit, Cue::HitHead, Cue::HitLimb]
+        .into_iter()
+        .zip(&banks)
+    {
+        assert!(w.len() > 44, "{cue:?} rendered to a header and no samples");
+    }
+}
+
+/// The rungs obey every rule the identity marker obeys.
+///
+/// Derived from `Cue::Hit` rather than typed as literals, so the two rules
+/// this bank keeps about signal cues — they do not wobble, and a
+/// non-positional cue that does not wobble must carry a cooldown — cannot be
+/// satisfied here by a number that happens to match today.
+#[test]
+fn the_rung_markers_are_signal_cues_like_the_one_they_join() {
+    let base = Cue::Hit.def();
+    for cue in [Cue::HitHead, Cue::HitLimb] {
+        let d = cue.def();
+        assert_eq!(
+            cue.pitch_var(),
+            0.0,
+            "{cue:?} wobbles - a symbol that drifts stops being a symbol, \
+             and it is also what makes two in a frame not bit-identical, \
+             which is the assumption the cooldown below is buying"
+        );
+        assert!(
+            d.cooldown_ms > 0,
+            "{cue:?} is non-positional with no pitch variation and no \
+             cooldown: two in one frame are identical samples in phase, \
+             which ADD rather than blend"
+        );
+        assert!(!d.positional, "{cue:?} is a signal, not a place");
+        assert_eq!(
+            d.radius_m, base.radius_m,
+            "{cue:?} must carry the identity marker's radius"
+        );
+        assert_eq!(
+            d.priority, base.priority,
+            "{cue:?} must outrank and be outranked by exactly what the \
+             identity marker is - a rung is not more important than a hit"
+        );
+    }
+    // The limb rung is the one the whole item turns on: a x0.5 blow already
+    // reads as a miss, so its cue must be quieter than the identity and
+    // audibly so, without tapering toward silence. The head brackets it on
+    // the other side.
+    assert!(
+        Cue::HitLimb.def().gain < base.gain,
+        "the limb marker must be lighter than the identity"
+    );
+    assert!(
+        Cue::HitHead.def().gain > base.gain,
+        "the head marker must be heavier than the identity"
+    );
+    assert!(
+        Cue::HitLimb.def().gain >= 0.40,
+        "the limb marker has faded toward silence, which says MISS - the \
+         exact misreading this rung exists to prevent"
+    );
+}
+
+/// The hitmarker cue has exactly one producer, and it reads the rung.
+///
+/// `the_hurt_cue_has_exactly_one_producer_and_it_reads_both_witnesses`'
+/// shape, for the same reason: the judgement lives in a pure function so a
+/// headless test can drive it, and a second producer would bypass that
+/// without touching a line this file otherwise reads.
+#[test]
+fn the_hit_cue_has_exactly_one_producer_and_it_reads_the_rung() {
+    const AUDIO: &str = include_str!("../src/render/audio.rs");
+    const REGISTER: &str = include_str!("../src/render/mod.rs");
+    const FEED: &str = include_str!("../src/render/feed.rs");
+
+    assert!(
+        AUDIO.contains("crate::sound::hit::request("),
+        "render/audio.rs no longer asks sound::hit what to play - the rung \
+         is back in a Bevy system where nothing headless can check it"
+    );
+    assert!(
+        REGISTER.contains("audio::feed,"),
+        "render/mod.rs no longer schedules audio::feed - the system exists \
+         and never runs, which is silence with a longer fuse"
+    );
+    // Both witnesses by name. Dropping `feed.hit_part` is a one-word edit
+    // that leaves every other test in this file green and silently returns
+    // the game to one marker for all three rungs.
+    for needle in ["feed.hits", "feed.hit_part"] {
+        assert!(
+            AUDIO.contains(needle),
+            "render/audio.rs stopped reading `{needle}` - sound::hit is \
+             being fed a witness it cannot see is missing"
+        );
+    }
+    // And the rung has to survive the drain to get there. `max` and not
+    // assignment: the frame's best hit is the one the marker reports.
+    assert!(
+        FEED.contains("feed.hit_part = feed.hit_part.max("),
+        "render/feed.rs no longer merges the frame's rungs by max - a \
+         headshot in a frame with two body hits stops reading as one"
+    );
+
+    // Nothing else in the client builds a hit request by hand.
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut stack = vec![src_dir];
+    let mut found = 0usize;
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("readable src tree") {
+            let p = entry.expect("readable entry").path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if p.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            // `sound/hit.rs` is the owner; it is allowed to name the cues.
+            if p.ends_with("sound/hit.rs") || p.ends_with("sound/synth.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).expect("readable source");
+            for line in text.lines() {
+                for cue in ["Cue::Hit", "Cue::HitHead", "Cue::HitLimb"] {
+                    assert!(
+                        !line.contains(&format!("Request::own({cue})"))
+                            && !line.contains(&format!("Request::at({cue})")),
+                        "{} builds a hitmarker request by hand: {}",
+                        p.display(),
+                        line.trim()
+                    );
+                }
+                found += line.matches("Cue::Hit").count();
+            }
+        }
+    }
+    assert!(
+        found > 0,
+        "the source walk found no mention of Cue::Hit at all - it is not \
          reading the tree it thinks it is"
     );
 }

@@ -768,7 +768,22 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// deliberately not the bystander broadcast `DECISIONS.md` §open
 /// ("attacker-side flinch v0") refuses; that refusal is about fan-out and
 /// this has none.
-pub const PROTO_VER: u16 = 57;
+/// v58 told the attacker **where** it landed. The ladder has paid x2 /
+/// x1 / x0.5 off the body part a shot crossed since limb band v0, and the
+/// wire carried only the product — so a leg hit and a graze were the same
+/// number, a headshot read as luck, and aim was the one thing in this
+/// game a player could not learn by playing it. `SUB_HIT` grows by two
+/// bits: `sim_core::collide::Part`, spent as the width that lives beside
+/// the enum rather than a wire-side copy of it. The bits were already
+/// there — `EV_HIT`'s `c` is a `u16` damage in a `u32` field — so this
+/// costs the packet two bits and the payload nothing.
+///
+/// The fourth value those two bits can hold is **refused** by the decoder
+/// rather than folded onto `Chest`. That is what makes a fourth rung (an
+/// arm, `NOW.md` §0hs item 2) a wire decision: it reddens
+/// `a_part_the_ladder_does_not_price_is_refused` instead of quietly
+/// drawing an arm hit as a chest hit.
+pub const PROTO_VER: u16 = 58;
 
 /// This game's slug in the elo catalog.
 ///

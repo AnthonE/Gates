@@ -40,7 +40,8 @@
 //! fail, so no two fields may share a value.
 
 use client_core::core::{
-    ClientCore, APPLIED2_CONT, APPLIED2_MOVE, APPLIED_BAGS, APPLIED_DEATH, APPLIED_HIT, NO_VICTIM,
+    ClientCore, HitFact, APPLIED2_CONT, APPLIED2_MOVE, APPLIED_BAGS, APPLIED_DEATH, APPLIED_HIT,
+    NO_VICTIM,
 };
 use protocol::{
     encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
@@ -50,6 +51,7 @@ use protocol::{
     MAX_EVENT_MSG_BYTES,
 };
 use sim_core::backpack::{BAG_GONE_DESPAWN, BAG_GONE_EMPTIED};
+use sim_core::collide::Part;
 use sim_core::gather::ItemStack;
 use sim_core::inventory::{addr, CONT_BAG, CONT_BOX, CONT_SELF, REFUSE_M_NO_ROOM};
 use sim_core::ranged::{SURF_GROUND, SURF_WORLD};
@@ -267,7 +269,10 @@ fn the_hit_ring_fills_and_drains() {
     let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
     assert_eq!(c.pop_hit(), None, "the hit ring starts empty");
 
-    let len = encode_event_hit(9, 37, &mut buf).unwrap();
+    // `Part::Head` and not `Chest`: the identity rung is what
+    // `world::hit_part` falls back to and what a wall reports, so a ring
+    // that dropped the part entirely would still satisfy a `Chest` fixture.
+    let len = encode_event_hit(9, Part::Head, 37, &mut buf).unwrap();
     assert_eq!(feed(&mut c, &buf[..len]) & APPLIED_HIT, APPLIED_HIT);
     // **The victim rides with the damage since 2026-08-18** and the two are
     // distinct numbers here on purpose: the arm used to write `let _ =
@@ -275,9 +280,49 @@ fn the_hit_ring_fills_and_drains() {
     // to one that carried both.
     assert_eq!(
         c.pop_hit(),
-        Some((9, 37)),
-        "hitmarker (victim, damage) mismatch"
+        Some(HitFact {
+            victim: 9,
+            part: Some(Part::Head),
+            damage: 37
+        }),
+        "hitmarker fact mismatch"
     );
+    assert_eq!(c.pop_hit(), None, "the hit ring must drain");
+}
+
+/// Each rung reaches the ring as itself (v58).
+///
+/// The gate the marker's whole point rests on: three shots, three rungs, and
+/// the reader must be able to tell them apart. A wire that dropped the two
+/// bits, or a decoder that folded them onto the identity, passes
+/// `the_hit_ring_fills_and_drains` with a single-rung fixture and fails here.
+#[test]
+fn every_rung_survives_the_wire_and_the_ring() {
+    let mut c = core();
+    let mut buf = [0u8; MAX_EVENT_MSG_BYTES];
+    // Distinct damages as well as distinct parts, so a ring that paired the
+    // wrong part with the wrong blow is visible rather than symmetric.
+    for (i, (part, dmg)) in [(Part::Limb, 11u16), (Part::Chest, 22), (Part::Head, 44)]
+        .into_iter()
+        .enumerate()
+    {
+        let len = encode_event_hit(70 + i as u32, part, dmg, &mut buf).unwrap();
+        assert_eq!(feed(&mut c, &buf[..len]) & APPLIED_HIT, APPLIED_HIT);
+    }
+    for (i, (part, dmg)) in [(Part::Limb, 11u16), (Part::Chest, 22), (Part::Head, 44)]
+        .into_iter()
+        .enumerate()
+    {
+        assert_eq!(
+            c.pop_hit(),
+            Some(HitFact {
+                victim: 70 + i as u32,
+                part: Some(part),
+                damage: dmg
+            }),
+            "rung {part:?} did not survive the wire"
+        );
+    }
     assert_eq!(c.pop_hit(), None, "the hit ring must drain");
 }
 
@@ -695,7 +740,13 @@ fn a_struct_hit_carries_its_address_and_never_guesses_a_maximum() {
     );
     assert_eq!(
         c.pop_hit(),
-        Some((NO_VICTIM, 40)),
+        Some(HitFact {
+            victim: NO_VICTIM,
+            // No rung: a wall has no head and no legs. `None` and not
+            // `Some(Chest)`, so merging a frame cannot promote a leg hit.
+            part: None,
+            damage: 40
+        }),
         "a raid swing must still feed the hitmarker ring, and a wall is not a body"
     );
 }

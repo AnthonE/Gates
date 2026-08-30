@@ -17,6 +17,7 @@
 //! draw an empty bar for a player who cannot be hurt.
 
 use bevy::prelude::*;
+use sim_core::collide::Part;
 use sim_core::limits::HOTBAR_SLOTS;
 
 use super::verbs::Aimed;
@@ -479,6 +480,9 @@ pub struct Toast {
     pub hit_left: f32,
     /// Damage the last landed hit dealt, drawn beside the marker.
     pub hit_damage: u16,
+    /// The rung that hit landed on (v58), or `None` for a wall — which is
+    /// what picks the marker's colour. See [`mark_colour`].
+    pub hit_part: Option<Part>,
     /// The live hurt arcs — `hit_*`'s pair from the other side of the blow
     /// (wire v57), one entry per direction currently being pointed at.
     ///
@@ -499,6 +503,7 @@ impl Default for Toast {
             overflow: String::new(),
             hit_left: 0.0,
             hit_damage: 0,
+            hit_part: None,
             hurts: [HurtArc::default(); HURT_ARCS],
         }
     }
@@ -677,9 +682,15 @@ impl Toast {
         self.dropped
     }
 
-    pub fn hit(&mut self, damage: u16) {
+    /// A blow of yours landed, for `damage`, on `part` (`None` = a wall).
+    ///
+    /// The rung is latched with the clock and not merged with whatever was
+    /// there: the marker is a statement about the shot the player just
+    /// took, and a headshot four frames ago must not colour a leg hit now.
+    pub fn hit(&mut self, damage: u16, part: Option<Part>) {
         self.hit_left = HITMARK_SECS;
         self.hit_damage = damage;
+        self.hit_part = part;
     }
 
     /// Something hurt you, from `sector`, for `damage`.
@@ -737,6 +748,37 @@ impl Toast {
 /// Cosmetics (`DECISIONS.md` §open, client cosmetics).
 const CROSSHAIR: Color = Color::srgba(0.94, 0.93, 0.89, 0.72);
 const CROSSHAIR_HIT: Color = Color::srgba(0.98, 0.42, 0.30, 0.95);
+/// The head rung (v58): hotter and brighter than the identity, and pushed
+/// toward gold rather than further into red — red is already spent on "a
+/// hit", so a *redder* red would be a difference of degree where the player
+/// needs a difference of kind.
+const CROSSHAIR_HIT_HEAD: Color = Color::srgba(1.00, 0.84, 0.36, 1.00);
+/// The limb rung (v58): the identity, desaturated and dimmed — but only
+/// partway, and this is the number the whole item turns on. A x0.5 blow is
+/// already easy to misread as a MISS, so the failure to avoid is a marker
+/// that fades toward the resting crosshair. It stays plainly hotter than
+/// [`CROSSHAIR`] and plainly cooler than [`CROSSHAIR_HIT`].
+const CROSSHAIR_HIT_LIMB: Color = Color::srgba(0.80, 0.55, 0.44, 0.92);
+
+/// The marker's colour for a rung: three symbols, one per rung of the
+/// ladder, and the resting crosshair when nothing has landed.
+///
+/// A free function rather than a `match` inside the system so a headless
+/// test can drive it — the system needs a Bevy `World` and this is the only
+/// judgement in it.
+pub fn mark_colour(hot: bool, part: Option<Part>) -> Color {
+    if !hot {
+        return CROSSHAIR;
+    }
+    match part {
+        Some(Part::Head) => CROSSHAIR_HIT_HEAD,
+        Some(Part::Limb) => CROSSHAIR_HIT_LIMB,
+        // A wall shares the hitmarker ring and has no rung; it took the
+        // unscaled blow, so it reads as the identity — which is exactly
+        // what it read as before there were rungs.
+        Some(Part::Chest) | None => CROSSHAIR_HIT,
+    }
+}
 
 /// A hotbar cell, by index.
 #[derive(Component)]
@@ -1679,7 +1721,7 @@ pub fn feedback(
 
     // Hits first: the marker is the only feedback with a deadline on it.
     if feed.hits > 0 {
-        toast.hit(feed.damage);
+        toast.hit(feed.damage, feed.hit_part);
     }
     // And the same blow from the other end — every direction it came from,
     // not just the last one. `Feed::hurt_from` is a list precisely so that a
@@ -1860,8 +1902,8 @@ pub fn feedback(
     toast.tick(time.delta_secs());
 
     let hot = toast.hit_left > 0.0;
+    let want = mark_colour(hot, toast.hit_part);
     for mut bg in marks.iter_mut() {
-        let want = if hot { CROSSHAIR_HIT } else { CROSSHAIR };
         if bg.0 != want {
             bg.0 = want;
         }
@@ -2709,12 +2751,58 @@ mod tests {
     #[test]
     fn the_hitmarker_is_not_a_toast() {
         let mut t = Toast::default();
-        t.hit(37);
+        t.hit(37, Some(Part::Head));
         t.say("+1 × WOOD");
         assert_eq!(t.hit_damage, 37);
+        assert_eq!(t.hit_part, Some(Part::Head));
         t.tick(HITMARK_SECS + 0.01);
         assert_eq!(t.hit_left, 0.0, "the marker is off");
         assert_eq!(t.len(), 1, "…while the line it landed with is still up");
+    }
+
+    /// Three rungs are three colours, and none of them is the resting
+    /// crosshair (v58).
+    ///
+    /// The whole of `NOW.md` §0hs item 3 on the screen side: a x0.5 blow
+    /// and a x2 blow drew the identical marker, so the ladder was
+    /// arithmetic the player could not perceive. The assertions are about
+    /// *distinctness* rather than about which colour is which — the hues
+    /// are a taste call (`DECISIONS.md` §open) and will move; that they
+    /// are four different things is the property.
+    #[test]
+    fn every_rung_draws_its_own_marker() {
+        let hot: Vec<Color> = [Some(Part::Head), Some(Part::Chest), Some(Part::Limb), None]
+            .into_iter()
+            .map(|p| mark_colour(true, p))
+            .collect();
+        // A wall (`None`) reads as the identity: it took the unscaled blow
+        // and has no head to miss. Three distinct symbols, not four.
+        assert_eq!(hot[1], hot[3], "a wall reads as the identity rung");
+        assert!(
+            hot[0] != hot[1] && hot[1] != hot[2] && hot[0] != hot[2],
+            "the three rungs must not share a colour, or the marker cannot \
+             teach the difference it exists to teach: {hot:?}"
+        );
+        // And every one of them is plainly not the resting crosshair. The
+        // failure this guards is the limb rung being dimmed toward the
+        // idle state until it reads as a MISS, which is the exact
+        // misreading the item is about.
+        for (i, c) in hot.iter().enumerate() {
+            assert_ne!(
+                *c,
+                mark_colour(false, None),
+                "rung {i} is indistinguishable from the resting crosshair"
+            );
+        }
+        // Cold is cold whatever landed: an expired marker does not keep a
+        // rung's colour on the crosshair.
+        for part in [Some(Part::Head), Some(Part::Chest), Some(Part::Limb), None] {
+            assert_eq!(
+                mark_colour(false, part),
+                CROSSHAIR,
+                "an expired marker must return to the resting crosshair"
+            );
+        }
     }
 
     /// The hurt arc keeps its own clock, longer than the hitmarker's,

@@ -23,6 +23,7 @@ use sim_core::backpack::BackpackRec;
 use sim_core::build::{
     BuildContent, PieceDef, PieceRec, DMG_BANDS, LOC_EDGE_ZLO, MAT_METAL, SHAPE_TRI_ROOF,
 };
+use sim_core::collide::{Part, PART_BITS};
 use sim_core::combat::{ARMOR_MAX_PCT, HURT_SECTORS, WEAR_NONE};
 use sim_core::craft::{CraftContent, CraftJob, RecipeDef, STATION_MAX};
 use sim_core::deploy::{
@@ -982,11 +983,23 @@ pub enum EventMsg {
         global: bool,
         text: ChatText,
     },
-    /// Your swing landed on `victim` for `damage` (combat.rs). The
-    /// attacker's fact and the attacker's alone — a hitmarker, not a
+    /// Your shot landed on `victim` for `damage`, on `part` (combat.rs).
+    /// The attacker's fact and the attacker's alone — a hitmarker, not a
     /// health readout; the victim's own `Health` is the truth about the
     /// victim, and it goes only to them.
-    Hit { victim: u32, damage: u16 },
+    ///
+    /// `part` is the rung the ladder priced the blow at (v58), and it is
+    /// carried rather than inferred because `damage` alone cannot say it:
+    /// a x0.5 leg hit from a strong weapon and a x1 chest hit from a weak
+    /// one are the same number, and the client does not hold the victim's
+    /// armor or the shooter's row to divide it back out. A swing sends
+    /// `Part::Chest`, which is the identity rung and what melee actually
+    /// pays.
+    Hit {
+        victim: u32,
+        part: Part,
+        damage: u16,
+    },
     /// Something took `damage` off you, and it came from `sector`
     /// (`sim_core::combat::bearing_sector`, clockwise from north, absolute
     /// world bearing). The victim's fact and the victim's alone — the
@@ -2399,9 +2412,22 @@ pub fn encode_event_move_refused(
     Ok(w.finish())
 }
 
-pub fn encode_event_hit(victim: u32, damage: u16, buf: &mut [u8]) -> Result<usize, WireError> {
+/// The attacker's half: `damage` landed on `victim`, on `part`.
+///
+/// `part` is a [`Part`] and not a raw pair of bits on purpose — the two
+/// spare bits `EV_HIT`'s payload had are only spare while the value in
+/// them is one of three, and a `u8` parameter here would push that check
+/// out to every caller. The server unpacks `world::hit_part` and hands
+/// over a type that cannot be a fourth rung.
+pub fn encode_event_hit(
+    victim: u32,
+    part: Part,
+    damage: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
     let mut w = begin(buf, SUB_HIT)?;
     w.write(victim, 32)?;
+    w.write(part.bits() as u32, PART_BITS)?;
     w.write(damage as u32, 16)?;
     Ok(w.finish())
 }
@@ -3225,10 +3251,23 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
                 text: read_text(&mut r)?,
             }
         }
-        SUB_HIT => EventMsg::Hit {
-            victim: r.read(32)?,
-            damage: r.read(16)? as u16,
-        },
+        SUB_HIT => {
+            let victim = r.read(32)?;
+            // Range-checked, not masked — `PART_BITS` holds four values
+            // and the ladder prices three, so the fourth is refused here
+            // rather than folded onto a rung it did not mean. The
+            // `HURT_SECTOR_BITS` posture: a marker on the wrong rung
+            // teaches the player the wrong thing about their aim, which
+            // is worse than no marker.
+            let Some(part) = Part::from_bits(r.read(PART_BITS)? as u8) else {
+                return Err(WireError::Malformed);
+            };
+            EventMsg::Hit {
+                victim,
+                part,
+                damage: r.read(16)? as u16,
+            }
+        }
         SUB_HEALTH => {
             let hp = r.read(16)? as u16;
             let max = r.read(16)? as u16;
@@ -5324,6 +5363,89 @@ mod wire_domains {
     /// ten and still green. So this reads this file's own `*_BITS` block
     /// and forces each width into one of two named sets. A width that is
     /// in neither fails, and the fix is a sentence either way.
+    /// The fourth value `PART_BITS` can hold is not a rung, and the decoder
+    /// refuses it rather than folding it onto one (v58).
+    ///
+    /// **This is the pin that makes a fourth rung a wire decision.** `Part`
+    /// is an enum, so `DOMAINS` cannot scrape a member block off it the way
+    /// it does off a `pub const DEATH_BY_*` block — the growth guard is
+    /// therefore a compile-time assert beside the enum (`collide.rs`) and
+    /// this value pin here. Add an arm (`NOW.md` §0hs item 2) and this test
+    /// goes red, which is the point: it forces the question *does the
+    /// marker still fit two bits* instead of silently drawing an arm hit as
+    /// a chest hit.
+    ///
+    /// Refusing rather than masking is the `HURT_SECTOR_BITS` posture. A
+    /// marker on the wrong rung teaches a player the wrong thing about
+    /// their aim, which is worse than no marker at all.
+    #[test]
+    fn a_part_the_ladder_does_not_price_is_refused() {
+        let mut buf = [0u8; 64];
+
+        // Built with the encoder's own layout rather than by patching a
+        // byte at a guessed offset: kind, subtype, victim, part, damage.
+        // A shape change here is a compile error, not a test that keeps
+        // passing while it corrupts the wrong field.
+        let write = |part: u32, buf: &mut [u8]| -> usize {
+            let mut w = BitWriter::new(buf);
+            w.write(KIND_EVENT, KIND_BITS).unwrap();
+            w.write(SUB_HIT, SUB_BITS).unwrap();
+            w.write(4_242, 32).unwrap();
+            w.write(part, PART_BITS).unwrap();
+            w.write(25, 16).unwrap();
+            w.finish()
+        };
+
+        // First prove the harness builds a message the decoder accepts, so
+        // the refusal below cannot be passing for an unrelated reason —
+        // the vacuous-gate trap in its usual clothes.
+        let len = write(Part::Head.bits() as u32, &mut buf);
+        assert_eq!(
+            decode_event(&buf[..len]).unwrap(),
+            EventMsg::Hit {
+                victim: 4_242,
+                part: Part::Head,
+                damage: 25
+            },
+            "the hand-built message must be the one the encoder makes, or \
+             the refusal below proves nothing"
+        );
+        assert_eq!(
+            &buf[..len],
+            {
+                let mut enc = [0u8; 64];
+                let n = encode_event_hit(4_242, Part::Head, 25, &mut enc).unwrap();
+                enc[..n].to_vec()
+            }
+            .as_slice(),
+            "the hand-built layout has drifted from `encode_event_hit`"
+        );
+
+        // Now the value the ladder does not price.
+        let len = write(3, &mut buf);
+        assert!(
+            matches!(decode_event(&buf[..len]), Err(WireError::Malformed)),
+            "a part of 3 is not a rung and must be refused, never folded \
+             onto Chest — it decoded as {:?}",
+            decode_event(&buf[..len])
+        );
+
+        // And every value that IS a rung still round-trips, so the check
+        // above cannot be satisfied by refusing everything.
+        for part in Part::ALL {
+            let len = write(part.bits() as u32, &mut buf);
+            assert_eq!(
+                decode_event(&buf[..len]).unwrap(),
+                EventMsg::Hit {
+                    victim: 4_242,
+                    part,
+                    damage: 25
+                },
+                "{part:?} must survive the wire"
+            );
+        }
+    }
+
     #[test]
     fn every_enumeration_width_is_classified() {
         const WIRE_SRC: &str = include_str!("event.rs");

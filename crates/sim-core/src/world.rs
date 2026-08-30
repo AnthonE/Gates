@@ -138,10 +138,53 @@ pub const EV_STOCK: u8 = 13;
 /// the same lane (locks on boxes): the event is addressed, and a box's
 /// `open` bit is simply always 0.
 pub const EV_DOOR: u8 = 14;
-/// EV_HIT: a = attacker player id, b = victim player id, c = damage dealt.
+/// EV_HIT: a = attacker player id, b = victim player id, c = the part in
+/// the high bits over the damage dealt (`hit_c`, v58).
 /// The attacker's fact — the hitmarker, not the truth; EV_HEALTH is what
 /// the victim's bar reads (combat.rs).
+///
+/// `c` is **packed**, and that is the whole of the "two spare bits" this
+/// event had: `a` is what the server routes on and `b` already carries a
+/// mob tag in its own high bits (`mob::mob_id`), so the only field with
+/// room was the damage — a `u16` sitting in a `u32`. Read it with
+/// [`hit_part`] and [`hit_damage`], never by hand.
+///
+/// Why the part rides here at all: the ladder pays x2 / x1 / x0.5 off
+/// where the line crossed the cylinder, and until v58 the wire carried
+/// only the product. A halved number is easier to misread as a miss than
+/// a doubled one is to read as a skull, so aim was unlearnable in play —
+/// three rungs of arithmetic with no way to perceive any of them.
 pub const EV_HIT: u8 = 15;
+
+/// Where the part sits in [`EV_HIT`]'s `c`. Sixteen, because the damage
+/// below it is a `u16` and occupies the whole low half.
+pub const HIT_PART_SHIFT: u32 = 16;
+
+/// Pack an `EV_HIT` payload: the part above the damage it already scaled.
+#[inline]
+pub fn hit_c(part: crate::collide::Part, damage: u16) -> u32 {
+    ((part.bits() as u32) << HIT_PART_SHIFT) | damage as u32
+}
+
+/// The rung out of an `EV_HIT` payload.
+///
+/// Total, unlike [`crate::collide::Part::from_bits`], because the only
+/// producer is [`hit_c`] and a value it cannot make is a sim bug rather
+/// than an untrusted input — `Chest` is the identity rung and the
+/// documented fallback, so a garbled read costs the marker its colour and
+/// never its existence. The wire does **not** inherit this leniency; the
+/// decoder range-checks (`protocol::event`).
+#[inline]
+pub fn hit_part(c: u32) -> crate::collide::Part {
+    crate::collide::Part::from_bits(((c >> HIT_PART_SHIFT) & 0b11) as u8)
+        .unwrap_or(crate::collide::Part::Chest)
+}
+
+/// The scaled damage out of an `EV_HIT` payload.
+#[inline]
+pub fn hit_damage(c: u32) -> u16 {
+    (c & 0xffff) as u16
+}
 /// EV_HEALTH: a = player id, b = hp after the change, c = max hp. Own-fact,
 /// absolute: a client that misses one hears the whole truth from the next.
 pub const EV_HEALTH: u8 = 16;

@@ -39,6 +39,7 @@
 
 use bevy::prelude::*;
 use client_core::core::TOAST_RING;
+use sim_core::collide::Part;
 
 use super::Net;
 
@@ -116,6 +117,21 @@ pub struct Feed {
     /// prints it and the mixer only asks whether it is non-zero.
     pub damage: u16,
     pub hits: u16,
+    /// The **most significant** rung any of this frame's own hits landed
+    /// on, or `None` if none of them touched a body (`PROJECTILES.md` §7 —
+    /// the same rule the sim uses to pick one part out of one shot's span,
+    /// applied here to pick one marker out of a frame's shots).
+    ///
+    /// `max` and not the last one, because the marker is a single symbol
+    /// and the shot worth telling the player about is the best one they
+    /// landed. It merges through `Part`'s derived `Ord`, which is why
+    /// `Part::bits` is numbered to match: a headshot in a frame with two
+    /// body hits still reads as a headshot.
+    ///
+    /// A wall hit contributes to `damage` and `hits` and **not** to this —
+    /// `HitFact::part` is `None` for a structure, and a `Some(Chest)`
+    /// there would promote a leg hit landed in the same frame.
+    pub hit_part: Option<Part>,
     /// The bodies this frame's own hits landed on, oldest first — an
     /// **own-fact**, because `EV_HIT` is unicast to the attacker.
     ///
@@ -375,6 +391,7 @@ impl Feed {
     fn clear(&mut self) {
         self.damage = 0;
         self.hits = 0;
+        self.hit_part = None;
         self.n_hit_victims = 0;
         self.n_hurt = 0;
         self.hurt_damage = 0;
@@ -424,18 +441,20 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     let core = &mut net.session.core;
     feed.server_tick_est = core.clock.server_est;
 
-    while let Some((victim, d)) = core.pop_hit() {
-        feed.damage = feed.damage.saturating_add(d);
+    while let Some(h) = core.pop_hit() {
+        feed.damage = feed.damage.saturating_add(h.damage);
         feed.hits = feed.hits.saturating_add(1);
+        // The best rung of the frame, not the last. `None` merges away.
+        feed.hit_part = feed.hit_part.max(h.part);
         // A wall took it, not a person: the sentinel stops here.
-        if victim == client_core::core::NO_VICTIM {
+        if h.victim == client_core::core::NO_VICTIM {
             continue;
         }
         if feed.n_hit_victims >= FEED_CAP {
             feed.dropped = feed.dropped.saturating_add(1);
         } else {
             let n = feed.n_hit_victims;
-            feed.hit_victims[n] = victim;
+            feed.hit_victims[n] = h.victim;
             feed.n_hit_victims += 1;
         }
     }

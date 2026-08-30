@@ -208,11 +208,20 @@ landed, because shipped content agrees with a band by construction.*
    Every row carries the band, so the override §0 names exists and nothing
    exercises it; the first weapon that should differ is the case that says
    whether the geometry should widen.
-3. **Nothing tells you which part it was.** `EV_HIT` and `EV_HURT` carry
-   the scaled damage and nothing carries the *fact* — and a halved number
-   is easier to misread as a miss than a doubled one is to read as a
-   skull. Two spare bits on an existing event, not a field; a wire read
-   nobody has spoken. §LOOK.
+3. ~~Nothing tells you which part it was~~ **Landed 2026-08-30 (hit rung
+   v0)**, judge gap 1 of `pass-20260829-153230-17`. The rung rides two
+   spare bits of `EV_HIT.c` (`world::hit_c`; the damage is a `u16` in a
+   `u32` and `a`/`b` were both spent), `PROTO_VER` 57 → 58, and reaches
+   the screen as three marker colours and three cues. Eight mutants red.
+   `DECISIONS.md` §open has the four cosmetic knobs. Three residuals:
+   · **Nobody has seen or heard it** (§LOOK) — capture is off and this box
+     has no sound card, so whether gold reads as a skull and whether the
+     limb cue reads as *lighter* rather than *quieter* is unmeasured.
+   · **The marker changes colour and not shape.** A rung is one channel
+     wide on screen; the reference pushes the ticks outward too, which is
+     a `Node` mutation per tick rather than a `BackgroundColor` write.
+   · **`Toast::hit_damage` is still stored and never drawn** — the free
+     surface a number-per-rung would use, unchanged by this slice.
 
 ## 0tl · The torch lights the ground — what it still cannot do *(client+systems lane)*
 
@@ -1834,9 +1843,11 @@ Then, in the order a player would notice:
 2. **A body falling** (§0chr) — `Death01` is gated end to end and unseen; kill
    something and watch.
 3. **The flinch, and the remote swing's sound** (§0pvp 1–2). Also **the
-   hurt arc** (§0hrt 4) and **a headshot** (§0hs 3) — no capture vantage
-   stands anywhere a shot can land, and nothing distinguishes a doubled
-   hit from a lucky one on screen, so both shipped unlooked-at.
+   hurt arc** (§0hrt 4) and **the three hitmarker rungs** (§0hs 3) — no
+   capture vantage stands anywhere a shot can land, and hit rung v0 shipped
+   three marker colours and three cues that nobody has seen or heard: this
+   box has no sound card, so the *limb* cue in particular is unmeasured
+   against the one thing it must not read as, which is a miss.
 4. **The whole audio bank** (§0x, §0pr) — nobody has heard one cue, and nine
    of them are music. `cargo run -p client --bin soundbank -- <dir>`.
 5. **LOW and MEDIUM** (§0gq) — the ladder's order is arithmetic, where each

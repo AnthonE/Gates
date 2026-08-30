@@ -14,7 +14,7 @@ use protocol::{
     decode_event, encode_input, ChatText, EventMsg, InputDatagram, ItemCatalog, WireBag, WireError,
 };
 use sim_core::build::{BuildContent, PieceRec};
-use sim_core::collide::ColIndex;
+use sim_core::collide::{ColIndex, Part};
 use sim_core::craft::CraftContent;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_DOOR, BAG_CAP};
 use sim_core::gather::{cell_key, ItemStack, NO_CELL};
@@ -94,6 +94,28 @@ pub const SWING_RING: usize = 8;
 /// `limits::MOB_ID_TAG | slot` with `slot < MAX_MOBS`, so neither family can
 /// reach it.
 pub const NO_VICTIM: u32 = u32::MAX;
+
+/// One landed blow of this client's own, as the hitmarker ring holds it.
+///
+/// A **struct and not a tuple**, which it was until v58 carried a third
+/// thing. `(u32, u16, Part)` is exactly the positional payload
+/// `CLAUDE.md`'s trap list says a byte-golden cannot see: two of the three
+/// are numbers, and a reader that took them in the wrong order would type
+/// check, decode and draw. Named fields make that a compile error instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HitFact {
+    /// Who took it, or [`NO_VICTIM`] when the thing struck was a wall.
+    pub victim: u32,
+    /// The rung the ladder priced it at (v58). [`None`] for a structure:
+    /// a wall has no head and no legs, and the marker must not claim
+    /// otherwise. It is not `Some(Part::Chest)` because that would let a
+    /// wall hit in the same frame *raise* a leg hit to the identity rung
+    /// when the two are merged, which is a lie about the shot that
+    /// mattered.
+    pub part: Option<Part>,
+    /// The damage dealt, after the ladder scaled it.
+    pub damage: u16,
+}
 
 /// What one event-lane message changed, as bit flags the bridge hands JS.
 pub const APPLIED_INV: u32 = 1 << 0;
@@ -1035,8 +1057,7 @@ pub struct ClientCore {
     /// hook — an id it did not predict means its picture of the container
     /// had drifted, so it redraws rather than trusting the drag it drew.
     pub last_move_count: u32,
-    /// Own landed hits, oldest first: `(victim, damage dealt)`. The
-    /// hitmarker ring.
+    /// Own landed hits, oldest first ([`HitFact`]). The hitmarker ring.
     ///
     /// **The victim was thrown away until 2026-08-18** — the `EV_HIT` arm
     /// read `let _ = victim; // v0 marks the hit, not who took it` — which
@@ -1047,7 +1068,7 @@ pub struct ClientCore {
     ///
     /// [`NO_VICTIM`] for the structure half of this ring, which names an
     /// address rather than a person.
-    hits: [(u32, u16); TOAST_RING],
+    hits: [HitFact; TOAST_RING],
     hit_head: usize,
     hit_len: usize,
     /// Blows landed on **you**, oldest first: `(bearing sector, damage)`.
@@ -1317,7 +1338,11 @@ impl ClientCore {
             last_move: 0,
             last_move_refused: 0,
             last_move_count: 0,
-            hits: [(NO_VICTIM, 0); TOAST_RING],
+            hits: [HitFact {
+                victim: NO_VICTIM,
+                part: None,
+                damage: 0,
+            }; TOAST_RING],
             hit_head: 0,
             hit_len: 0,
             hurts: [(0, 0); TOAST_RING],
@@ -1885,7 +1910,14 @@ impl ClientCore {
                     self.hit_head = (self.hit_head + 1) % TOAST_RING;
                     self.hit_len -= 1;
                 }
-                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = (NO_VICTIM, damage);
+                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = HitFact {
+                    victim: NO_VICTIM,
+                    // No rung: a wall is not a body. `None` rather than
+                    // the identity so merging a frame cannot promote a
+                    // leg hit to a chest one.
+                    part: None,
+                    damage,
+                };
                 self.hit_len += 1;
                 let addressed =
                     |r: &(u16, u16, u8, u8)| r.0 == cx && r.1 == cz && r.2 == level && r.3 == loc;
@@ -2114,7 +2146,11 @@ impl ClientCore {
                 self.hurt_len += 1;
                 flags |= APPLIED_HIT;
             }
-            EventMsg::Hit { victim, damage } => {
+            EventMsg::Hit {
+                victim,
+                part,
+                damage,
+            } => {
                 // **The victim is kept, and it used to be dropped here.**
                 // `EV_HIT` is unicast to the attacker, so this names the
                 // body *your* blow landed on — which is the whole of what
@@ -2125,7 +2161,11 @@ impl ClientCore {
                     self.hit_head = (self.hit_head + 1) % TOAST_RING;
                     self.hit_len -= 1;
                 }
-                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = (victim, damage);
+                self.hits[(self.hit_head + self.hit_len) % TOAST_RING] = HitFact {
+                    victim,
+                    part: Some(part),
+                    damage,
+                };
                 self.hit_len += 1;
                 flags |= APPLIED_HIT;
             }
@@ -2557,9 +2597,6 @@ impl ClientCore {
         Some(r)
     }
 
-    /// Oldest buffered hitmarker, if any: `(victim, damage)` this client's
-    /// blow dealt. The victim is [`NO_VICTIM`] when the thing struck was a
-    /// wall rather than a body — see the `hits` field.
     /// The oldest blow landed on you: `(bearing sector, damage)`.
     ///
     /// Destructive, single-consumer, `pop_hit`'s contract exactly —
@@ -2575,7 +2612,13 @@ impl ClientCore {
         Some(h)
     }
 
-    pub fn pop_hit(&mut self) -> Option<(u32, u16)> {
+    /// Oldest buffered hitmarker, if any: the [`HitFact`] this client's own
+    /// blow made. The victim is [`NO_VICTIM`] and the part [`None`] when
+    /// the thing struck was a wall rather than a body.
+    ///
+    /// Destructive, single-consumer — `render/feed.rs` is the one drain and
+    /// `client/tests/sound.rs` is what keeps it that way.
+    pub fn pop_hit(&mut self) -> Option<HitFact> {
         if self.hit_len == 0 {
             return None;
         }

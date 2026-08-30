@@ -628,12 +628,10 @@ pub fn step(
             // shots — the band is always measured off the cylinder the hit
             // was decided against (`BodyHit::qy`).
             let feet_mm = feet_q as f32 * (POS_Y_Q * MM_PER_M);
-            let dmg = crate::combat::part_damage(
-                a.damage,
-                part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t)),
-                a.head_mult,
-                a.limb_pct,
-            );
+            // Hoisted, because the rung is now a fact the shooter is told
+            // and not only a multiplier: `EV_HIT` carries it (v58).
+            let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t));
+            let dmg = crate::combat::part_damage(a.damage, part, a.head_mult, a.limb_pct);
             // The funnel, reduced: an arrow is a hit like any other.
             let h = crate::combat::hurt(cc, v, dmg);
             let died = h.died;
@@ -642,7 +640,7 @@ pub fn step(
             // `EV_HIT` is the attacker's hitmarker and `EV_HURT` the
             // victim's arc, and each is answering "how hard was that",
             // which is the blow that arrived and not the one on the row.
-            events.push(EV_HIT, a.owner, vid, dmg as u32);
+            events.push(EV_HIT, a.owner, vid, crate::world::hit_c(part, dmg));
             // Where it came FROM, which for something still in flight is the
             // reverse of where it was going — truer than the archer's current
             // position, because the archer has had the whole flight to move.
@@ -1439,12 +1437,10 @@ pub fn hitscan(
             // clear of the body the bullet met. At favour 0 this is the
             // live `qy` to the bit.
             let feet_mm = feet_q as f32 * (POS_Y_Q * MM_PER_M);
-            let dmg = crate::combat::part_damage(
-                def.damage,
-                part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t)),
-                def.headshot_mult,
-                def.limb_pct,
-            );
+            // Hoisted for the same reason as the arrow's: the rung reaches
+            // the shooter's screen now, not just their damage number.
+            let part = part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t));
+            let dmg = crate::combat::part_damage(def.damage, part, def.headshot_mult, def.limb_pct);
             // The funnel, reduced: a bullet is a hit like any other, and
             // armor blunts it (armor v0, 2026-08-19 — this said "the day
             // armor lands" for exactly one day).
@@ -1455,7 +1451,7 @@ pub fn hitscan(
                 qx as i64 - v.body.qx as i64,
                 qz as i64 - v.body.qz as i64,
             );
-            events.push(EV_HIT, id, vid, dmg as u32);
+            events.push(EV_HIT, id, vid, crate::world::hit_c(part, dmg));
             // A beam has no flight to reverse, so this is the muzzle itself —
             // the shooter's body this tick, which is where they still are.
             // **And the victim's live body, not the rewound one**, which is

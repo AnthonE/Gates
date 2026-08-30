@@ -131,6 +131,72 @@ pub enum Part {
     /// `[CAPSULE_HEIGHT_M - HEAD_BAND_M, CAPSULE_HEIGHT_M]` above the feet.
     Head,
 }
+
+/// Bits a [`Part`] occupies on the wire and in an event payload (v58).
+///
+/// Two, for three values, and the fourth is deliberately unrepresentable
+/// rather than folded onto `Chest`: [`Part::from_bits`] returns `None` for
+/// it so a sim that started making a part it never declared is refused at
+/// the boundary instead of drawing the wrong rung. Same posture as
+/// `HURT_SECTOR_BITS` — range-check, never mask.
+pub const PART_BITS: u32 = 2;
+
+impl Part {
+    /// Every part, least significant first — the order the derived `Ord`
+    /// gives and the order [`Part::bits`] numbers them in.
+    ///
+    /// It exists so the guards below are over the *set* rather than over a
+    /// variant named by hand, and **its completeness is checked rather
+    /// than trusted**: a fourth rung (`NOW.md` §0hs item 2 wants an arm)
+    /// added to the enum forces an arm in `bits` and `from_bits`, which
+    /// the compiler demands, and the second assert below then fails
+    /// unless it is added here too. A hand-kept mirror of a type's own
+    /// surface is the drift `CLAUDE.md` names twice; this one has a
+    /// build-time reader.
+    pub const ALL: [Part; 3] = [Part::Limb, Part::Chest, Part::Head];
+
+    /// The part as a small integer, **ordered the way the type is**:
+    /// `Limb < Chest < Head` numerically as well as by the derived `Ord`,
+    /// so a `max` taken over the bits is the same most-significant-part
+    /// rule as a `max` taken over the values (`PROJECTILES.md` §7). A
+    /// reader that merges several hits into one marker depends on that.
+    #[inline]
+    pub const fn bits(self) -> u8 {
+        match self {
+            Part::Limb => 0,
+            Part::Chest => 1,
+            Part::Head => 2,
+        }
+    }
+
+    /// The inverse, total on nothing: `3` is not a part and never becomes
+    /// one. The caller decides what a value it did not declare costs —
+    /// `WireError::Malformed` on the wire, a panic in a test.
+    #[inline]
+    pub const fn from_bits(bits: u8) -> Option<Part> {
+        match bits {
+            0 => Some(Part::Limb),
+            1 => Some(Part::Chest),
+            2 => Some(Part::Head),
+            _ => None,
+        }
+    }
+}
+
+// The width holds the set. `protocol::event` spends `PART_BITS` directly
+// rather than declaring a wire-side copy, because a copy is a second
+// number that can disagree with this one — and `Part` is an *enum*, so
+// `event.rs`'s DOMAINS table cannot scrape a member block off it the way
+// it does off a `pub const DEATH_BY_*` block. The guard is therefore here,
+// beside the thing that grows, and it is the compiler rather than a
+// scrape: a fourth rung widens `ALL`, and a fifth stops fitting and fails
+// this assert at build time instead of truncating a marker on the wire.
+const _: () = assert!(Part::ALL.len() <= (1usize << PART_BITS));
+// And `ALL` holds every rung there is. A variant given a `bits` arm but
+// left out of the array would otherwise go unseen by every loop over the
+// set — including the wire's round-trip check — while the assert above
+// stayed happily true.
+const _: () = assert!(Part::from_bits(Part::ALL.len() as u8).is_none());
 /// Edge-piece slab thickness (scene.js WALL_T, now sim truth).
 pub const WALL_THICKNESS_M: f32 = 0.24;
 /// Doorway post width from each end of the edge; the opening between is

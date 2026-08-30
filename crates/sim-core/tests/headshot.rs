@@ -124,7 +124,7 @@ use sim_core::ranged::{self, part_crossed, Arrows, Kill};
 use sim_core::rewind::Rewind;
 use sim_core::spent::SpentArrows;
 use sim_core::terrain;
-use sim_core::world::{EventQueue, Player, EV_HIT, EV_HURT};
+use sim_core::world::{self, EventQueue, Player, EV_HIT, EV_HURT};
 
 /// The seed the shard ships, and `gun.rs`'s memoized haven for it — a
 /// `terrain::haven` is a few thousand `height` taps and these checks call
@@ -446,13 +446,123 @@ fn both_events_report_the_multiplied_blow() {
         .iter()
         .find(|e| e.code == EV_HIT)
         .expect("a landed shot pushes EV_HIT");
-    assert_eq!(hit.c, dealt, "EV_HIT must report the blow that arrived");
+    // `EV_HIT.c` packs the rung over the damage since v58, so the damage
+    // is read through the accessor rather than off the raw field.
+    assert_eq!(
+        world::hit_damage(hit.c) as u32,
+        dealt,
+        "EV_HIT must report the blow that arrived"
+    );
     let hurt = events
         .entries()
         .iter()
         .find(|e| e.code == EV_HURT)
         .expect("a landed shot pushes EV_HURT");
     assert_eq!(hurt.c, dealt, "EV_HURT must report the blow that arrived");
+}
+
+/// Every rung the ladder prices reaches the shooter as *itself* (v58).
+///
+/// **This is the gate `NOW.md` §0hs item 3 exists for.** The ladder has
+/// paid x2 / x1 / x0.5 off the body part a shot crossed since limb band
+/// v0, and `EV_HIT` carried only the product — so a leg hit and a graze
+/// were the same fact on the attacker's screen, a headshot read as luck,
+/// and aim was the one thing in this game a player could not learn by
+/// playing it. The rung now rides two spare bits of the payload, and this
+/// is what says it is the rung that was actually crossed rather than one
+/// re-derived from the number.
+///
+/// The three placements come out of `sweep`, which knows nothing about the
+/// bands — it walks a body down through a fixed shot and records what each
+/// centimetre cost. So the fixture finds the head, chest and leg by their
+/// *price*, and the assertion is that the payload's part agrees. A `hit_c`
+/// that packed a constant, or packed the parts in the wrong order, or read
+/// its span off the wrong end of the body, disagrees here.
+///
+/// Mutants watched red, and both are the ones a byte-golden cannot see:
+/// `hit_c` writing `Part::Chest` at every site (the head and leg rows come
+/// back as Chest), and `Part::bits`' `Head` and `Limb` arms swapped (the
+/// three rows come back in the wrong order while every damage still
+/// matches).
+#[test]
+fn every_rung_the_ladder_prices_reaches_the_hitmarker() {
+    let cc = fixture();
+    let rows = sweep(&cc, GUN, ROUND, 10.0);
+
+    // Found by price, not by geometry: 40 is the doubled blow, 20 the
+    // row's own, 10 the halved one. `run_of` returns the run of rows that
+    // cost exactly that, and the middle of a run is the safest placement.
+    let want = [(Part::Head, 40u16), (Part::Chest, 20), (Part::Limb, 10)];
+    for (part, dmg) in want {
+        let (i, n) = run_of(&rows, dmg);
+        assert!(
+            n > 0,
+            "no placement costs {dmg}, so the fixture cannot reach {part:?}              — the ladder or the sweep moved, not this assertion"
+        );
+        let feet = rows[i + n / 2].0;
+
+        let mut players = Box::new([Player::default(); MAX_PLAYERS]);
+        players[0] = shooter(1, 0.0, 400.0, 0.0, GUN, ROUND, LEVEL);
+        players[1] = target(2, 0.0, feet, 10.0);
+        let events = pull(&cc, &mut players);
+        let dealt = 100 - players[1].hp;
+        assert_eq!(dealt, dmg, "the placement must still cost {dmg}");
+
+        let hit = events
+            .entries()
+            .iter()
+            .find(|e| e.code == EV_HIT)
+            .expect("a landed shot pushes EV_HIT");
+        assert_eq!(
+            world::hit_part(hit.c),
+            part,
+            "a blow that cost {dmg} must reach the shooter as {part:?}"
+        );
+        assert_eq!(
+            world::hit_damage(hit.c),
+            dmg,
+            "the pack must not disturb the damage it sits above"
+        );
+    }
+}
+
+/// The three rungs are three *distinct* payloads, which is the property the
+/// marker actually needs (v58).
+///
+/// Separate from the test above on purpose. That one checks each rung is
+/// labelled correctly; this one checks the labels are not all the same
+/// value — a `Part::bits` that returned a constant would satisfy "the head
+/// row is Head" only if `want` is read one row at a time, and this is the
+/// cheap assertion that closes it. It also pins the ORDER, which is what
+/// `Feed::hit_part`'s `max` depends on: merging a frame's hits by
+/// `Ord` is only the most-significant-part rule if the bits agree with it.
+#[test]
+fn the_rungs_are_distinct_and_ordered_the_way_the_marker_merges_them() {
+    let (limb, chest, head) = (
+        world::hit_c(Part::Limb, 7),
+        world::hit_c(Part::Chest, 7),
+        world::hit_c(Part::Head, 7),
+    );
+    assert!(
+        limb != chest && chest != head && limb != head,
+        "two rungs pack to the same payload ({limb}, {chest}, {head}), so          the marker cannot tell them apart"
+    );
+    assert!(
+        Part::Limb < Part::Chest && Part::Chest < Part::Head,
+        "the derived Ord is the most-significant-part rule and          `Feed::hit_part` merges a frame with `max` over it"
+    );
+    assert!(
+        Part::Limb.bits() < Part::Chest.bits() && Part::Chest.bits() < Part::Head.bits(),
+        "the bits must be ordered the way the values are, or a max taken          over one is not a max over the other"
+    );
+    // The damage half survives every rung untouched.
+    for part in Part::ALL {
+        assert_eq!(
+            world::hit_damage(world::hit_c(part, 65_535)),
+            65_535,
+            "{part:?} must not steal a bit from the damage below it"
+        );
+    }
 }
 
 /// An arrow obeys the same band as a bullet, from the multiplier it copied

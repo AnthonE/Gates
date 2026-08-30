@@ -261,6 +261,20 @@ fn render(cue: Cue) -> Vec<f32> {
         Cue::Hit => chime(&[(2_100.0, 0.0, 0.035), (3_150.0, 0.004, 0.028)]),
         // Being hurt: a thud with a downward sweep in it. Down, because every
         // organism on earth reads a falling pitch as damage.
+        // The head rung: the same shape as `Hit` and a fifth above it,
+        // with a third partial so it reads as *brighter* rather than
+        // merely higher — pitch alone is what `pitch_var` would have done,
+        // and a symbol that only differs by pitch is a symbol that drifts.
+        Cue::HitHead => chime(&[
+            (3_150.0, 0.0, 0.040),
+            (4_720.0, 0.004, 0.032),
+            (6_300.0, 0.009, 0.022),
+        ]),
+        // The limb rung: lower, shorter, and one partial instead of two —
+        // duller, which is the honest read of a x0.5 blow. It stays a
+        // chime and not a thud, because the thing it must never be
+        // confused with is a miss.
+        Cue::HitLimb => chime(&[(1_400.0, 0.0, 0.030)]),
         Cue::Hurt => sweep(&mut r, 0.42, 240.0, 130.0, 0.55),
         Cue::Death => sweep(&mut r, 1.10, 190.0, 55.0, 0.35),
 

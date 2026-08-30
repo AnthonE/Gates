@@ -217,8 +217,8 @@ fn main() {
     let len = encode_event_chat(from, global, &text, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[40], &buf[..len]);
 
-    let (victim, damage) = goldens::event_hit();
-    let len = encode_event_hit(victim, damage, &mut buf).unwrap();
+    let (victim, part, damage) = goldens::event_hit();
+    let len = encode_event_hit(victim, part, damage, &mut buf).unwrap();
     write_fixture(goldens::FIXTURES[41], &buf[..len]);
 
     let (hp, max) = goldens::event_health();

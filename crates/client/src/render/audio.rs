@@ -463,12 +463,18 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
     // One marker per frame however many landed — `Cue::Hit`'s own cooldown
     // would refuse the rest anyway, and asking for four identical clicks so
     // three can be thrown away is work the queue does not need to do.
-    if feed.hits > 0 {
-        sound.play(Request::own(Cue::Hit));
+    //
+    // WHICH marker is `sound::hit`'s judgement and not this system's, the
+    // shape `sound::hurt` established: the rung arrives already merged in
+    // `feed.hit_part` and the choice of cue is a pure function a headless
+    // test can drive.
+    if let Some(req) = crate::sound::hit::request(feed.hits, feed.hit_part) {
+        sound.play(req);
         // The middle bump. One per frame however many landed, for the same
         // reason the marker is: the director reads its tier once a section,
         // so four bumps in one frame and one bump in one frame are the same
-        // musical fact.
+        // musical fact. Rung-blind on purpose — a headshot is not a
+        // different musical event, it is the same fight going better.
         sound.music.bump(music::BUMP_HIT);
     }
     for &(victim, _killer) in feed.deaths() {

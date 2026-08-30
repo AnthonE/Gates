@@ -1204,7 +1204,16 @@ pub fn strike(
     let sector = bearing_sector(aqx - v.body.qx as i64, aqz - v.body.qz as i64);
     // The funnel, reduced: a swing is the route armor exists to blunt.
     let Hurt { left, died, .. } = hurt(cc, v, def.damage);
-    events.push(EV_HIT, attacker_id, victim_id, def.damage as u32);
+    // `Part::Chest` and not a spare "no part" value: a swing has no line
+    // to cross (`part_damage`'s own doc), so it pays the identity rung and
+    // the marker says exactly that. A fourth part meaning "unknown" would
+    // be a value the ladder cannot price.
+    events.push(
+        EV_HIT,
+        attacker_id,
+        victim_id,
+        crate::world::hit_c(crate::collide::Part::Chest, def.damage),
+    );
     // The other half of the same blow, addressed to the other person in it.
     events.push(EV_HURT, victim_id, sector as u32, def.damage as u32);
     events.push(EV_HEALTH, victim_id, left as u32, cc.player_hp as u32);
