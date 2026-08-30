@@ -44,9 +44,18 @@
 //! The throwable's `damage` is **0**: bodies are not in this storm. A
 //! blast that killed the players would end the storm in a few ticks and
 //! the gate would measure a graveyard instead of a cap. `blast.rs` owns
-//! the body arithmetic and owns it properly. The consequence is that
-//! `MAX_BACKPACKS` and the death/respawn ring are the one client-driven
-//! family this storm does not reach — named in `NOW.md`, not papered over.
+//! the body arithmetic and owns it properly.
+//!
+//! `MAX_BACKPACKS` and the death/respawn ring were the consequence, and
+//! **they are no longer un-driven**: `tests/combat_storm.rs` (2026-08-30)
+//! is the sibling that reaches them, at every seat the world has. It is a
+//! second file rather than a flag on this one for a reason worth keeping
+//! — the five equality assertions below (`peak_charges`, `peak_removals`,
+//! `peak_events`) were sized for a plot whose owner is alive to rebuild,
+//! so arming this fixture would have desaturated them and the gate would
+//! have gone quiet while staying green. What neither storm has is the
+//! *third* case, a blast that takes a wall and the person behind it:
+//! `NOW.md` §0rs, not papered over.
 //!
 //! Inventories are topped up every `RAID_CYCLE` ticks by writing slots
 //! directly, the way `blast.rs` stocks its raider. The storm is about the
@@ -513,9 +522,11 @@ fn the_storm_walks_the_raid_verbs() {
         (EV_DEPLOY_REFUSED, "a deploy verb refused somebody"),
         (EV_AUTH, "a lock answered a correct code"),
         // The only source of body damage in this fixture: the throwable's
-        // `damage` is 0, nobody swings, and there are no mobs. So this
-        // code means `lock::shock` — the keypad's answer to a wrong guess
-        // — which is a ladder no other test drives at population.
+        // `damage` is 0, nobody swings here, and there are no mobs. So
+        // this code means `lock::shock` — the keypad's answer to a wrong
+        // guess — which is a ladder no other test drives at population.
+        // (Swinging at population is `tests/combat_storm.rs`; the header
+        // says why the two are siblings rather than one file.)
         (EV_HEALTH, "a wrong code shocked somebody"),
         (EV_MOVED, "goods moved"),
         (EV_MOVE_REFUSED, "a move was refused"),

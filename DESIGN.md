@@ -667,7 +667,11 @@ drives 64 synthetic players through build/lock/plant/guess/move/loot at the
 tick's full command ceiling and asserts every store's cap per tick — it fills
 the charge store to 64 of 64, pins the removal budget at 64 of 64 and
 overflows the event ring on 90 of 400 ticks, so the caps are held *under
-pressure* rather than observed at rest.
+pressure* rather than observed at rest. **Its sibling landed 2026-08-30**:
+`crates/sim-core/tests/combat_storm.rs` takes the family that fixture
+deliberately excluded — it seats all 100 seats as 50 duels, banks 954
+deaths over 600 ticks, and pins the backpack store at `MAX_BACKPACKS`
+evicting through `World::die`, which nothing had ever driven from a world.
 
 ⚠ **`NETCODE.md` §11 names a different gate by the same name and it is still
 absent.** That one is the *wire* storm — 20 subscribers, coalescing caps,
