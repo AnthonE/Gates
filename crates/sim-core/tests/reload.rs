@@ -542,15 +542,64 @@ fn a_death_sheds_the_cylinder_into_the_bag() {
         PACK - MAG
     );
     assert_eq!(bagged(GUN), 1, "and the gun went with them");
-    // Ammunition arrives as ammunition. `cond_max_of(ROUND)` is 0 here as
-    // it is for every real round (content rule V7: a stack past 1 carries
-    // no condition), so this pins the shed stack to the mint rather than
-    // to whatever `ItemStack::default()` happened to hold.
-    for b in w.backpacks.entries() {
-        for s in b.items.iter().filter(|s| s.item == ROUND && s.count > 0) {
-            assert_eq!(s.cond, 0, "a shed round is minted at cond_max, not scrap");
-        }
-    }
+}
+
+/// **A shed round arrives as ammunition, not as scrap** — the condition
+/// half, and it needs a pack with nothing left in it.
+///
+/// This exists as its own test because the obvious place for it does not
+/// work, and the mutant is what said so. Asserting the shed stack's `cond`
+/// inside `a_death_sheds_the_cylinder_into_the_bag` **survives** a mutant
+/// that stamps the wrong condition entirely: four loose rounds are already
+/// in the bag by then (`drop_for` copies `inv` wholesale), so the shed
+/// stack merges as a *top-up*, and `inv_add` stamps `cond` on the
+/// empty-slot pass only — by design, since an item that stacks past 1
+/// carries no condition and there would be two to reconcile. The
+/// assertion read the pack's zero and called it the magazine's.
+///
+/// So the pack is drained to exactly one magazine: the reload empties it,
+/// the body falls carrying no loose rounds, and the shed stack is the
+/// first of its kind to reach the bag. Now the stamp is observable and a
+/// wrong condition is red.
+#[test]
+fn a_shed_round_arrives_as_ammunition_not_scrap() {
+    let mut w = armed();
+    w.backpack = sim_core::backpack::BackpackContent::probe_fixture();
+    w.gather.stack_max[ROUND as usize] = 128;
+    w.gather.stack_max[GUN as usize] = 1;
+    // Exactly a magazine, so the fill takes all of it. `cond_max` stays 0
+    // for `ROUND`, which is the shipped truth for every round (rule V7)
+    // and is what the shed must reproduce.
+    w.players[0].inv[1] = ItemStack {
+        item: ROUND,
+        count: MAG,
+        cond: 0,
+    };
+
+    w.tick(&[Command::Reload { id: ME }]);
+    assert_eq!(w.players[0].mag[0], MAG, "the cylinder filled");
+    assert_eq!(
+        inv_count(&w.players[0].inv, ROUND),
+        0,
+        "the pack must be empty, or the shed stack merges and the stamp is invisible"
+    );
+
+    starve(&mut w);
+
+    let shed: Vec<_> = w
+        .backpacks
+        .entries()
+        .iter()
+        .flat_map(|b| b.items.iter())
+        .filter(|s| s.item == ROUND && s.count > 0)
+        .collect();
+    assert_eq!(shed.len(), 1, "one fresh stack of rounds, got {shed:?}");
+    assert_eq!(shed[0].count, MAG, "and it is the whole cylinder");
+    assert_eq!(
+        shed[0].cond,
+        w.gather.cond_max_of(ROUND),
+        "a shed round is minted at cond_max, not at whatever the buffer held"
+    );
 }
 
 /// The store is exactly as wide as the cap says, and `NO_MAG` is out of it.
