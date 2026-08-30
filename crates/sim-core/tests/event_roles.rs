@@ -365,6 +365,7 @@ fn step(w: &mut World, seq: &mut u16) {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }]);
     *seq = seq.wrapping_add(1);
 }
@@ -486,6 +487,7 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }]);
 
     let shot = only(&w, EV_SHOT);
@@ -571,6 +573,7 @@ fn an_instant_shot_reads_zero_speed_and_a_reach() {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }]);
 
     let shot = only(&w, EV_SHOT);
@@ -681,6 +684,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }]);
     until(&mut w, EV_IMPACT);
     let im = only(&w, EV_IMPACT);
@@ -1078,6 +1082,7 @@ fn gather_refused_names_the_player_then_item_over_reason() {
                 move_z: 0,
                 sel: 0,
             },
+            favour: 0,
         }]);
         seq = seq.wrapping_add(1);
         if w.events
@@ -1789,6 +1794,7 @@ fn raid_until(w: &mut World, cx: u16, cz: u16, code: u8) {
                 move_z: 0,
                 sel: 0,
             },
+            favour: 0,
         }]);
         seq = seq.wrapping_add(1);
         if count(w, code) > 0 {
@@ -2380,6 +2386,7 @@ fn piece_repaired_names_the_cell_then_the_address_then_healed_over_hp() {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }]);
     let hurt = w
         .pieces
@@ -2534,6 +2541,7 @@ fn repairing_a_deployable_sets_the_deploy_bit() {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }]);
     let hurt = w
         .deploys
@@ -2882,6 +2890,7 @@ fn charge_placed_names_the_cell_then_the_address_then_the_fuse() {
             move_z: 0,
             sel: CHARGE_SLOT,
         },
+        favour: 0,
     }]);
     w.tick(&[Command::Throw {
         id: BUILDER,
@@ -3002,6 +3011,7 @@ fn until_facing(w: &mut World, yaw: u16, code: u8) {
                 move_z: 0,
                 sel: 0,
             },
+            favour: 0,
         }]);
         seq = seq.wrapping_add(1);
         if count(w, code) > 0 {
@@ -3301,6 +3311,7 @@ fn bag_removed_names_the_bag_then_why() {
                 move_z: 0,
                 sel: 0,
             },
+            favour: 0,
         },
         Command::Respawn {
             id: VICTIM,
@@ -3571,6 +3582,7 @@ fn swing_names_the_swinger_and_nothing_else() {
                 move_z: 0,
                 sel: 0,
             },
+            favour: 0,
         }]);
         seq = seq.wrapping_add(1);
         if count(&w, EV_SWING) > 0 {

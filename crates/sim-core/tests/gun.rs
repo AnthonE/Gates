@@ -660,7 +660,11 @@ fn a_firearm_kill_reports_a_bullet_and_not_an_arrow() {
         sel: 0,
         ..InputFrame::default()
     };
-    w.tick(&[Command::Input { id: 1, frame }]);
+    w.tick(&[Command::Input {
+        id: 1,
+        frame,
+        favour: 0,
+    }]);
 
     let v = &w.players[1];
     assert!(v.dead, "the shot did not land — the geometry moved");

@@ -106,6 +106,7 @@ fn tick_cmds(
             Command::Input {
                 id: i as u32 + 1,
                 frame: f,
+                favour: 0,
             }
         } else if i == MAX_PLAYERS {
             Command::Craft {
@@ -556,6 +557,7 @@ fn test_alloc_zero() {
                     move_z: 0,
                     sel: 0,
                 },
+                favour: 0,
             };
         }
         // Bot 6 stands still. It is the body staged to starve on top of its
@@ -570,6 +572,7 @@ fn test_alloc_zero() {
                 seq: t,
                 ..InputFrame::default()
             },
+            favour: 0,
         };
         // Both duelists reach for a bag every tick. The command array
         // grows on the stack rather than stealing a bot's input slot —

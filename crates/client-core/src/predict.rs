@@ -282,7 +282,11 @@ mod tests {
         for seq in 1..=200u16 {
             let f = frame(seq, 127);
             p.step(f, &cols, &mut occ.occupants());
-            world.tick(&[Command::Input { id: 7, frame: f }]);
+            world.tick(&[Command::Input {
+                id: 7,
+                frame: f,
+                favour: 0,
+            }]);
             p.reconcile(&own_state(&world, 7), seq, &cols, &mut occ.occupants());
         }
         assert_eq!(p.mispredictions, 0);
@@ -351,7 +355,11 @@ mod tests {
                 ..InputFrame::default()
             };
             p.step(f, &cols, &mut occ.occupants());
-            world.tick(&[Command::Input { id: 7, frame: f }]);
+            world.tick(&[Command::Input {
+                id: 7,
+                frame: f,
+                favour: 0,
+            }]);
             p.reconcile(&own_state(&world, 7), seq, &cols, &mut occ.occupants());
         }
         assert_eq!(p.mispredictions, 0, "mirror and server must agree");
@@ -384,7 +392,11 @@ mod tests {
             move_z: -127,
             ..frame(1, 127)
         };
-        world.tick(&[Command::Input { id: 7, frame: lie }]);
+        world.tick(&[Command::Input {
+            id: 7,
+            frame: lie,
+            favour: 0,
+        }]);
         let auth = own_state(&world, 7);
         p.reconcile(&auth, 1, &cols, &mut occ.occupants());
         assert_eq!(p.mispredictions, 1);

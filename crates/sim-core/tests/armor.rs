@@ -135,6 +135,7 @@ fn swings_to_kill(w: &mut World, yaw: u16) -> u32 {
         w.tick(&[Command::Input {
             id: 1,
             frame: swing_frame(seq, yaw),
+            favour: 0,
         }]);
         hits += 1;
         if w.players[1].hp == 0 {
@@ -196,6 +197,7 @@ fn every_hit_arrives_reduced_not_only_the_killing_one() {
     w.tick(&[Command::Input {
         id: 1,
         frame: swing_frame(1, yaw),
+        favour: 0,
     }]);
     assert_eq!(
         w.players[1].hp,

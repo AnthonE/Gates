@@ -181,6 +181,7 @@ pub fn raid_step(plan: &mut RaidPlan, rng: &mut Pcg32, rows: RaidRows) -> Comman
                     sel: rows.charge_slot,
                     ..InputFrame::default()
                 },
+                favour: 0,
             },
             1 => Command::Throw {
                 id,

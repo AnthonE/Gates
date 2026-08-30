@@ -167,6 +167,7 @@ fn plant(w: &mut World, cx: u16, cz: u16, loc: u8) {
             sel: 1,
             ..sim_core::input::InputFrame::default()
         },
+        favour: 0,
     }]);
     w.tick(&[Command::Throw {
         id: RAIDER,
@@ -292,6 +293,7 @@ fn a_fuse_survives_a_save_and_still_blasts() {
             sel: 1,
             ..sim_core::input::InputFrame::default()
         },
+        favour: 0,
     }]);
     // Plant from in reach, then step away before the save.
     w.players[0].body = Body::at(SEED, hv(SEED), x - 1.0, z);

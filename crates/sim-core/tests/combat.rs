@@ -96,6 +96,7 @@ fn swing_once(w: &mut World, attacker_id: u32, yaw: u16, seq: u16) {
     w.tick(&[Command::Input {
         id: attacker_id,
         frame: swing_frame(seq, yaw),
+        favour: 0,
     }]);
 }
 
@@ -404,10 +405,12 @@ fn a_fight_replays_to_the_same_hash() {
                 Command::Input {
                     id: 1,
                     frame: swing_frame(seq, 0),
+                    favour: 0,
                 },
                 Command::Input {
                     id: 2,
                     frame: swing_frame(seq, 0),
+                    favour: 0,
                 },
             ]);
             for _ in 0..SWING_INTERVAL_TICKS {
@@ -422,5 +425,291 @@ fn a_fight_replays_to_the_same_hash() {
     assert!(
         deaths > 0,
         "the arrangement never killed anyone — this test would pass on a world with no combat at all"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Lag compensation — `strike` resolves against where the target USED to be
+// (slice 4, `findings/lagcomp-design-20260818.md` §7).
+//
+// The arrangement every test below shares, and the reason for each step. The
+// victim stands inside reach for exactly one tick, then jumps out to `FAR_M`
+// and stays there while the ring fills. `Rewind::write_row` runs at the *end*
+// of a tick, so the tick numbered `T` records the pose the victim held during
+// `T`; the swing then happens `WALK_TICKS` ticks later, when the ring holds
+// `S-1 ..= S-7` and row `S - WALK_TICKS` is the near one.
+//
+// The victim is teleported rather than driven with `move_z`, which is worth
+// saying out loud because it looks like the lazy choice. It is the honest
+// one here: what is under test is whether the scan reads the ring, and a
+// walked body makes the near/far gap a function of `movement::step`'s speed
+// and the ground under this seed — so a later balance change to walk speed
+// would redden a lag-compensation gate for a reason that has nothing to do
+// with lag compensation. The positions are asserted below rather than
+// assumed.
+
+/// One tick inside the 2 m fixture reach.
+const NEAR_M: f32 = 1.0;
+/// Well outside it, and outside it by more than any rounding in the quantized
+/// body can close.
+const FAR_M: f32 = 4.5;
+/// How far back the near pose ends up. Equal to `REWIND_MAX_TICKS`, so these
+/// tests also pin that the deepest legal rewind actually reaches.
+const WALK_TICKS: u64 = 7;
+
+/// Build the duel, park the victim near for one tick, then far for
+/// `WALK_TICKS - 1` more. Returns the world with the swing tick not yet run.
+fn victim_walked_out_of_reach() -> World {
+    let mut w = duel_world();
+    // The one near tick. Nobody swings — this tick exists only to be recorded.
+    place_in_front(&mut w, 0, 1, 0, NEAR_M);
+    w.tick(&[]);
+    // …and out, for the rest of the window.
+    place_in_front(&mut w, 0, 1, 0, FAR_M);
+    for _ in 1..WALK_TICKS {
+        w.tick(&[]);
+    }
+    w
+}
+
+/// Swing once at `favour` and report whether the victim lost hp.
+fn swing_with_favour(w: &mut World, favour: u8) -> bool {
+    let before = w.players[1].hp;
+    w.tick(&[Command::Input {
+        id: 1,
+        frame: swing_frame(0, 0),
+        favour,
+    }]);
+    w.players[1].hp < before
+}
+
+/// The fixture actually does what the comment above claims: the victim is
+/// inside reach at the recorded tick and outside it at the swing.
+///
+/// Without this the two tests below are a pair of unfalsifiable claims — a
+/// "miss at favour 0" is satisfied by a victim who was never reachable at
+/// any depth, and the whole file would still be green.
+#[test]
+fn the_lag_comp_fixture_really_moves_the_victim_out_of_reach() {
+    let mut w = duel_world();
+    place_in_front(&mut w, 0, 1, 0, NEAR_M);
+    let near = w.players[1].body;
+    place_in_front(&mut w, 0, 1, 0, FAR_M);
+    let far = w.players[1].body;
+    let a = w.players[0].body;
+    let d = |b: &sim_core::movement::Body| {
+        let dx = (b.qx - a.qx) as f32 * POS_XZ_Q;
+        let dz = (b.qz - a.qz) as f32 * POS_XZ_Q;
+        (dx * dx + dz * dz).sqrt()
+    };
+    // 2 m is the fixture spear's reach; assert against it from both sides.
+    assert!(
+        d(&near) < 2.0,
+        "the near pose must be inside reach, was {} m",
+        d(&near)
+    );
+    assert!(
+        d(&far) > 2.0,
+        "the far pose must be outside reach, was {} m",
+        d(&far)
+    );
+    // And the body genuinely stays put across the ticks that record it —
+    // if `movement::step` drifted it, the ring would hold a third position
+    // and neither test below would mean what it says.
+    let mut w2 = victim_walked_out_of_reach();
+    assert_eq!(
+        w2.players[1].body.qx, far.qx,
+        "the victim drifted while the ring was filling"
+    );
+    assert_eq!(w2.players[1].body.qz, far.qz);
+    let _ = &mut w2;
+}
+
+/// **The feature.** The same swing, at the same tick, against the same
+/// standing bodies: it misses at favour 0 and lands at favour 7.
+///
+/// This is the only shape that proves lag compensation rather than the
+/// plumbing that carries it. A test that only asserted the hit would pass on
+/// a world where the victim never left reach; a test that only asserted the
+/// miss would pass on a `strike` that ignores the ring entirely. Both, on one
+/// fixture, is the claim.
+#[test]
+fn a_swing_lands_on_where_the_target_was_and_misses_where_it_is() {
+    let mut present = victim_walked_out_of_reach();
+    assert!(
+        !swing_with_favour(&mut present, 0),
+        "favour 0 must resolve against the live body, which is {FAR_M} m away and out of the 2 m reach"
+    );
+
+    let mut rewound = victim_walked_out_of_reach();
+    assert!(
+        swing_with_favour(&mut rewound, WALK_TICKS as u8),
+        "favour {WALK_TICKS} must resolve against the pose {WALK_TICKS} ticks back, which is {NEAR_M} m away and well inside reach"
+    );
+}
+
+/// A favour deeper than the ring can honour buys the shooter *less* help,
+/// never more — and the clamp is where that is decided.
+///
+/// `apply` clamps to `Rewind::max_back()`, so 255 and 7 are the same swing;
+/// `pose_at` would independently fall back to the live body on an aliased
+/// row, so this is belt and braces on purpose. What it pins is that the two
+/// mechanisms agree rather than cancel: if the clamp were dropped, 255 would
+/// land on a cold or overwritten row and MISS, which is the opposite of what
+/// this asserts.
+#[test]
+fn a_favour_past_the_ceiling_is_clamped_to_the_ceiling() {
+    let mut clamped = victim_walked_out_of_reach();
+    assert!(
+        swing_with_favour(&mut clamped, u8::MAX),
+        "a favour of 255 must be clamped to the ceiling and hit exactly as 7 does"
+    );
+
+    // Same swing, same tick, same fixture — so the two must agree on damage
+    // and not merely on landing.
+    let mut at_ceiling = victim_walked_out_of_reach();
+    at_ceiling.tick(&[Command::Input {
+        id: 1,
+        frame: swing_frame(0, 0),
+        favour: WALK_TICKS as u8,
+    }]);
+    assert_eq!(
+        clamped.players[1].hp, at_ceiling.players[1].hp,
+        "a clamped favour must be the ceiling favour, not merely another hit"
+    );
+}
+
+/// The favour is spent inside the tick it arrived in.
+///
+/// **The hole this closes is a production one, not a test-shaped one.**
+/// `Player::frame` persists: a client that sends one input with `BTN_PRIMARY`
+/// held and then drops a datagram still swings on every tick the cooldown
+/// allows, with **no command behind that swing at all**. If the favour were
+/// stored anywhere that outlived the tick, those command-less swings would
+/// keep spending the last favour the player happened to send — so a client
+/// could buy a deep rewind once and then stop talking, and every swing after
+/// it would be lag-compensated for free.
+///
+/// So the swing under test here is deliberately one that receives **no
+/// `Command::Input`**. An earlier draft sent `favour: 0` explicitly on the
+/// swing tick, which overwrites a stale value and made the test unable to
+/// fail — a mutant that carried the array across ticks passed all fourteen
+/// cases in this file. This shape reddens it.
+#[test]
+fn a_favour_does_not_survive_into_the_next_tick() {
+    // The whole sequence, driven twice: once with a generous favour on the
+    // FIRST swing only (the stale-favour case), and once with the same favour
+    // supplied again on the second swing (the control that says the geometry
+    // can land a hit at all).
+    let run = |favour_on_second: Option<u8>| {
+        let mut w = duel_world();
+        place_in_front(&mut w, 0, 1, 0, FAR_M);
+
+        // First swing, with the generous favour. It misses — the victim is
+        // far and has been all along — and its only job is to leave a favour
+        // behind and to arm `next_swing`.
+        let first = w.tick;
+        w.tick(&[Command::Input {
+            id: 1,
+            frame: swing_frame(0, 0),
+            favour: WALK_TICKS as u8,
+        }]);
+        let second = first + SWING_INTERVAL_TICKS;
+
+        // Ride the cooldown with NO commands, parking the victim inside reach
+        // for exactly the one tick the deepest legal rewind will read.
+        while w.tick < second {
+            if w.tick == second - WALK_TICKS {
+                place_in_front(&mut w, 0, 1, 0, NEAR_M);
+                w.tick(&[]);
+                place_in_front(&mut w, 0, 1, 0, FAR_M);
+            } else {
+                w.tick(&[]);
+            }
+        }
+        assert_eq!(
+            w.tick, second,
+            "the cooldown walk overshot the second swing"
+        );
+
+        // The second swing. `frame.buttons` still holds `BTN_PRIMARY` from the
+        // first command, so this fires whether or not a command arrives.
+        let before = w.players[1].hp;
+        match favour_on_second {
+            None => w.tick(&[]),
+            Some(f) => w.tick(&[Command::Input {
+                id: 1,
+                frame: swing_frame(1, 0),
+                favour: f,
+            }]),
+        }
+        (before, w.players[1].hp)
+    };
+
+    // The control first: with the favour supplied again, this exact geometry
+    // lands. Without it the assertion below would be satisfied by a swing that
+    // never happened, which is the failure mode this pair exists to rule out.
+    let (before, after) = run(Some(WALK_TICKS as u8));
+    assert!(
+        after < before,
+        "the control must land — otherwise the stale-favour case below proves nothing"
+    );
+
+    // The claim: no command, so no favour, so no rewind, so no hit.
+    let (before, after) = run(None);
+    assert_eq!(
+        after, before,
+        "a swing with no command behind it must resolve at favour 0 — last tick's favour is spent"
+    );
+}
+
+/// **Only the targets rewind.** The attacker's own body is read live.
+///
+/// This is the design decision `strike`'s doc states, and it is the natural
+/// thing to get wrong: rewinding everything is one fewer special case to
+/// write and it is wrong in a way no other test in this file can see, because
+/// every other fixture holds the attacker still. Lag compensation exists to
+/// undo the interpolation delay a client applies to **other** people; a
+/// player's own body is predicted locally and is exactly where he thinks it
+/// is, so putting it back in time would make his own swing resolve from a
+/// doorway he has already walked out of.
+///
+/// Here the attacker is the one who moved. The victim stands still, so the
+/// victim's rewound pose and live pose are the same and the favour can only
+/// act through the attacker.
+#[test]
+fn the_attacker_does_not_rewind_with_the_target() {
+    let mut w = duel_world();
+    // Victim one metre in front of where the attacker will end up, and it
+    // never moves again.
+    place_in_front(&mut w, 0, 1, 0, NEAR_M);
+    let home = w.players[0].body;
+
+    // The attacker spends the whole ring window well out of reach, behind
+    // where it started.
+    let (fx, fz) = yaw_dir(0);
+    let away = 3.5;
+    w.players[0].body = Body::at(
+        SEED,
+        hv(SEED),
+        home.qx as f32 * POS_XZ_Q - fx * away,
+        home.qz as f32 * POS_XZ_Q - fz * away,
+    );
+    for _ in 0..WALK_TICKS {
+        w.tick(&[]);
+    }
+
+    // …then steps back onto its mark and swings, at the deepest favour.
+    w.players[0].body = home;
+    let before = w.players[1].hp;
+    w.tick(&[Command::Input {
+        id: 1,
+        frame: swing_frame(0, 0),
+        favour: WALK_TICKS as u8,
+    }]);
+    assert!(
+        w.players[1].hp < before,
+        "the swing must resolve from where the attacker IS ({NEAR_M} m away), not from where the ring says he was ({} m)",
+        NEAR_M + away
     );
 }

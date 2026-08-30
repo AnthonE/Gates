@@ -82,6 +82,7 @@ fn standing_world() -> World {
         world.tick(&[Command::Input {
             id: 1,
             frame: frame(0),
+            favour: 0,
         }]);
     }
     world
@@ -118,6 +119,7 @@ fn run_with(world: &mut World, ticks: u32, buttons_at: impl Fn(u32) -> u8) -> (f
         world.tick(&[Command::Input {
             id: 1,
             frame: frame(buttons_at(t)),
+            favour: 0,
         }]);
         let b = body_of(world);
         if was_grounded && !b.grounded && b.qvy > 0 {
@@ -304,8 +306,16 @@ fn bots_actually_leave_the_ground() {
         yaws = [f1.yaw, f2.yaw];
         let was = world.players[0].body.grounded;
         world.tick(&[
-            Command::Input { id: 1, frame: f1 },
-            Command::Input { id: 2, frame: f2 },
+            Command::Input {
+                id: 1,
+                frame: f1,
+                favour: 0,
+            },
+            Command::Input {
+                id: 2,
+                frame: f2,
+                favour: 0,
+            },
         ]);
         let b = world.players[0].body;
         if was && !b.grounded && b.qvy > 0 {

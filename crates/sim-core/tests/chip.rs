@@ -339,6 +339,7 @@ fn shoot_until(w: &mut World, slot: u8, yaw: u16, code: u8) -> Vec<SimEvent> {
                 sel: slot,
                 ..InputFrame::default()
             },
+            favour: 0,
         }]);
         seq = seq.wrapping_add(1);
         if w.events.entries().iter().any(|e| e.code == code) {
@@ -807,6 +808,7 @@ fn shoot_down_until(w: &mut World, slot: u8, code: u8) -> Vec<SimEvent> {
                 sel: slot,
                 ..InputFrame::default()
             },
+            favour: 0,
         }]);
         seq = seq.wrapping_add(1);
         if w.events.entries().iter().any(|e| e.code == code) {

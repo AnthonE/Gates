@@ -137,7 +137,11 @@ fn a_sprinting_player_can_catch_and_kill_a_pig() {
         frame.yaw = yaw_toward((bx - px) as f32 * POS_XZ_Q, (bz - pz) as f32 * POS_XZ_Q);
         frame.move_z = 127;
         frame.buttons = BTN_SPRINT | BTN_PRIMARY;
-        core.world.tick(&[Command::Input { id: 0x100, frame }]);
+        core.world.tick(&[Command::Input {
+            id: 0x100,
+            frame,
+            favour: 0,
+        }]);
         if !core.world.mobs.m[slot].alive {
             // (bx, bz) was read before the killing tick and the strike
             // resolves before the roster steps, so it is the death address.
@@ -287,6 +291,7 @@ fn a_wolf_kills_a_player_who_never_reacts() {
         core.world.tick(&[Command::Input {
             id: 0x100,
             frame: f,
+            favour: 0,
         }]);
         if core.world.players[p].dead {
             killed = Some(t);
@@ -468,6 +473,7 @@ fn stand_off_at(hour: u64, ticks: u32) -> StandOff {
         core.world.tick(&[Command::Input {
             id: 0x100,
             frame: f,
+            favour: 0,
         }]);
         let (px, pz) = (core.world.players[p].body.qx, core.world.players[p].body.qz);
         let (bx, bz) = (

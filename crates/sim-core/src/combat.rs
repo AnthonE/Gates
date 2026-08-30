@@ -96,6 +96,7 @@ use crate::limits::{
     MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_ITEM_DEFS, MAX_PLAYERS, MAX_WEAPON_AMMO, WEAR_SLOTS,
 };
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
+use crate::rewind::{Rewind, RewindPose};
 use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT};
 use crate::yaw_lut::yaw_dir;
 
@@ -958,11 +959,32 @@ pub fn bearing_sector(dx: i64, dz: i64) -> u8 {
     }
 }
 
+/// Resolve one melee swing by `attacker` against the nearest aimed body.
+///
+/// **Lag-compensated since slice 4** (`findings/lagcomp-design-20260818.md`
+/// §7). `favour` is how many ticks back the target scan looks, already
+/// clamped to `Rewind::max_back()` by `world::apply`; `rewind` is the ring
+/// slice 2 fills at the end of every tick.
+///
+/// Only the **targets** rewind. The attacker's own body is read live and
+/// deliberately: this swing is his own input, the server has already
+/// stepped him this tick, and he is exactly where he thinks he is. Lag
+/// compensation exists to undo the *interpolation delay the client applies
+/// to everyone else* — a remote body is drawn `INTERP_DELAY_TICKS` in the
+/// past, so it is remote bodies that have to be put back there.
+///
+/// `favour == 0` returns every candidate's live body (`pose_at` short-
+/// circuits on it), so a zero favour is bit-identical to the sim before
+/// this parameter existed. That is what kept slice 3's hashes still, and it
+/// is why every non-server caller passes zero.
 pub fn strike(
     cc: &CombatContent,
     attacker: usize,
     players: &mut [Player; MAX_PLAYERS],
     events: &mut EventQueue,
+    rewind: &Rewind,
+    tick: u64,
+    favour: u8,
 ) -> Strike {
     if cc.player_hp == 0 {
         return Strike::Missed; // inert content: combat is not armed
@@ -989,9 +1011,16 @@ pub fn strike(
         if j == attacker || !t.active || t.hp == 0 {
             continue;
         }
-        let dx = t.body.qx as f32 * POS_XZ_Q - ax;
-        let dy = t.body.qy as f32 * POS_Y_Q - ay;
-        let dz = t.body.qz as f32 * POS_XZ_Q - az;
+        // Where this body stood when the attacker saw it. The liveness
+        // tests above stay on the LIVE record on purpose: the ring stores
+        // a position, not a life, and a body that has since died or left
+        // is not a target however solid it looked `favour` ticks ago.
+        // `pose_at` falls back to `t`'s own pose whenever it cannot answer
+        // honestly, so `where_it_was` is never a stranger's position.
+        let where_it_was = rewind.pose_at(tick, j, favour, RewindPose::live(t.id, &t.body));
+        let dx = where_it_was.qx as f32 * POS_XZ_Q - ax;
+        let dy = where_it_was.qy as f32 * POS_Y_Q - ay;
+        let dz = where_it_was.qz as f32 * POS_XZ_Q - az;
         let d2 = dx * dx + dz * dz;
         if d2 > reach * reach || fabs(dy) > DY_MAX_M {
             continue;
@@ -1014,6 +1043,17 @@ pub fn strike(
 
     let v = &mut players[victim];
     let victim_id = v.id;
+    // **Live on both ends, and not rewound with the scan above.** The two
+    // reads answer different questions. `range_cm` is a fact about the
+    // blow — what the shooter saw and what the death screen reports — so
+    // it is measured on the geometry the hit was decided on. This bearing
+    // is an instruction to the victim: *turn this way*. They are at their
+    // present position when the arc appears, so the only useful bearing is
+    // from where they are now to where the attacker is now. Rewinding it
+    // would point at where the attacker stood relative to where the victim
+    // stood, which describes neither player's situation — and at a favour
+    // of 7 that is a quarter-second of walking, easily a whole sector of
+    // the sixteen.
     let sector = bearing_sector(aqx - v.body.qx as i64, aqz - v.body.qz as i64);
     // The funnel, reduced: a swing is the route armor exists to blunt.
     let Hurt { left, died, .. } = hurt(cc, v, def.damage);
@@ -2267,11 +2307,17 @@ mod tests {
             p.body = Body::at(SEED, hv(), 512.0, 512.0);
         }
         let mut ev = EventQueue::default();
-        assert_eq!(strike(&cc, 0, &mut players, &mut ev), Strike::Hit);
-        assert_eq!(players[1].hp, 66);
-        assert_eq!(strike(&cc, 0, &mut players, &mut ev), Strike::Hit);
         assert_eq!(
-            strike(&cc, 0, &mut players, &mut ev),
+            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
+            Strike::Hit
+        );
+        assert_eq!(players[1].hp, 66);
+        assert_eq!(
+            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
+            Strike::Hit
+        );
+        assert_eq!(
+            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
             Strike::Killed {
                 victim: 1,
                 // The two bodies stand on the same point, so the blow lands
@@ -2283,7 +2329,7 @@ mod tests {
             "the third of three"
         );
         assert_eq!(
-            strike(&cc, 0, &mut players, &mut ev),
+            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
             Strike::Missed,
             "a corpse is not a target, and the arm is free for a wall"
         );
@@ -2337,7 +2383,10 @@ mod tests {
             };
         }
         let mut ev = EventQueue::default();
-        assert_eq!(strike(&cc, 0, &mut players, &mut ev), Strike::Missed);
+        assert_eq!(
+            strike(&cc, 0, &mut players, &mut ev, &Rewind::new(), 0, 0),
+            Strike::Missed
+        );
         assert_eq!(players[1].hp, 100);
         assert!(ev.is_empty());
     }

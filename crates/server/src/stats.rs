@@ -558,14 +558,21 @@ pub struct ShardStats {
     //
     // **This is the RAW number and it deliberately omits one term.** §2.2's
     // favour formula is `(T − S) + INTERP_DELAY_TICKS − REWIND_ACK_BIAS_TICKS`.
-    // `INTERP_DELAY_TICKS` is a compile-time `4.0` in
-    // `client-core/src/interp.rs` and moving it to `limits.rs` is slice 2's
-    // `sim-core` change, so adding it here would mean this crate mirroring
-    // another crate's constant by hand — the `props.js` drift `CLAUDE.md`
-    // opens with. Adding a constant to a measured number is arithmetic
-    // anybody can do later; measuring the part **only the server knows** is
-    // not. So: read these as raw `T − S`, and add the two constants at the
-    // moment they have one home. **Do not double-count them here.**
+    // **Both constants have one home now** — `sim_core::limits`, since slice
+    // 2 — so the reason this stayed raw has expired and only the instruction
+    // survives it. `INTERP_DELAY_TICKS` (4) and `REWIND_ACK_BIAS_TICKS` (1)
+    // are importable from here, and `client-core/src/interp.rs` declares
+    // neither; this comment said the move was still owed until slice 3
+    // (2026-08-30), which is the drift `CLAUDE.md` opens with, in the file
+    // whose whole job is to hand a number to a later slice.
+    //
+    // It stays raw anyway, and now for a better reason than availability:
+    // adding a constant to a measured number is arithmetic anybody can do,
+    // and the thing worth storing is the part **only the server knows**.
+    // Slice 5 is what applies the formula, at the one site that mints the
+    // favour (`core.rs`). So: read these as raw `T − S`, and **do not
+    // double-count the two constants here** — that is the whole of the
+    // handoff, and it is the sentence slice 5 must not misread.
     //
     // **Aggregate, not per-client**, for the reason the lane-byte block
     // above gives: the per-client half already exists on the other end

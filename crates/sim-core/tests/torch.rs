@@ -75,6 +75,7 @@ fn hold(w: &mut World, buttons: u8, n: u32) -> u16 {
         w.tick(&[Command::Input {
             id: 1,
             frame: frame(t as u16, buttons),
+            favour: 0,
         }]);
     }
     body(w).inv[0].cond
@@ -129,6 +130,7 @@ fn the_light_bit_survives_the_button_mask() {
     w.tick(&[Command::Input {
         id: 1,
         frame: frame(1, BTN_LIGHT),
+        favour: 0,
     }]);
     assert_eq!(
         body(&w).frame.buttons & BTN_LIGHT,
