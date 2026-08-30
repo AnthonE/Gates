@@ -162,34 +162,77 @@ const CONSTRUCTIONS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Which files may call the funnel, and by which name. The name is the
-/// choice: `hurt` is a hit and armor **does** blunt it (armor v0,
-/// 2026-08-19 — this line said "will" until the day it stopped being true),
-/// `hurt_unreduced` is a cost that armor must never touch. A file absent
-/// from this table calling either one fails — a new damage route needs a
-/// person to say which it is.
-const ROUTES: &[(&str, bool, &str)] = &[
-    ("combat.rs", true, "melee — a swing that landed on a person"),
+/// Which files may call the funnel, by which name, and whether the victim
+/// is told which way it came from.
+///
+/// **Two choices per row, and both are written at the call site rather than
+/// inferred.** The name is the first: `hurt` is a hit and armor **does**
+/// blunt it (armor v0, 2026-08-19 — this line said "will" until the day it
+/// stopped being true), `hurt_unreduced` is a cost that armor must never
+/// touch. A file absent from this table calling either one fails — a new
+/// damage route needs a person to say which it is.
+///
+/// The third column is the second choice: does this route push
+/// [`EV_HURT`](sim_core::world::EV_HURT), the victim's half of the blow?
+/// It was added 2026-08-30 because the answer had drifted silently. Wire
+/// v57 gave being hurt a direction and wired it into the three routes that
+/// were open at the time; the bite and the blast kept debiting hp through
+/// the same funnel and telling the body nothing, so a bear in the dark and
+/// a charge on your wall were both "a number going down" for eleven days,
+/// with every gate in the tree green. Nothing could have caught it: the
+/// event queue is outside `state_hash`, the encoder never saw a missing
+/// message, and `ROUTES` classified both files as reduced and was satisfied.
+///
+/// A route that genuinely has no direction says so **here**, with its
+/// reason, and the gate holds it to that — a silent row whose file starts
+/// pushing `EV_HURT` fails just as loudly as an announcing row that stops.
+const ROUTES: &[(&str, bool, bool, &str)] = &[
+    (
+        "combat.rs",
+        true,
+        true,
+        "melee — a swing that landed on a person",
+    ),
     (
         "ranged.rs",
+        true,
         true,
         "an arrow, and since hitscan v0 a bullet — one file, one row, because \
          this table keys by the file that reaches the funnel and both shots \
          are the same module's",
     ),
-    ("charge.rs", true, "a blast"),
-    ("world.rs", true, "a mob bite"),
+    (
+        "charge.rs",
+        true,
+        true,
+        "a blast — the epicentre's horizontal bearing, vertical dropped \
+         (`detonate` says why)",
+    ),
+    (
+        "world.rs",
+        true,
+        true,
+        "a mob bite — the animal's post-step body, which is where it was \
+         standing when it bit",
+    ),
     (
         "survival.rs",
         false,
+        false,
         "starve/dehydrate and the salt-water drink — metabolic, not hits. A \
-         chest plate does not feed you, and a helmet is not a desalinator",
+         chest plate does not feed you, and a helmet is not a desalinator; \
+         and there is no bearing toward being hungry, so the arc would have \
+         to invent one",
     ),
     (
         "deploy.rs",
         false,
+        false,
         "the keypad shock — it floors at 1 hp and never kills (`lock.rs`), and \
-         its whole job is to cost tries, so an armored raider must not be immune",
+         its whole job is to cost tries, so an armored raider must not be \
+         immune. Silent because the source is the thing under your own hand: \
+         an arc pointing at the keypad you are standing at tells a raider \
+         nothing they did not just do",
     ),
 ];
 
@@ -207,6 +250,12 @@ struct Scan {
     writes: Vec<Site>,
     ctors: Vec<Site>,
     calls: Vec<Call>,
+    /// Files holding at least one `EV_HURT,` — an emit, not a mention.
+    /// The trailing comma is what separates the push from the two
+    /// declarations in `world.rs` (`pub const EV_HURT: u8 = 41;` and
+    /// `EV_MAX = EV_HURT;`), which is why the needle carries it and why
+    /// `world.rs` is not permanently and vacuously "announcing".
+    announces: Vec<String>,
     files: usize,
     lines: usize,
 }
@@ -370,11 +419,15 @@ fn scan() -> Scan {
     names.sort();
 
     let (mut writes, mut ctors, mut calls) = (Vec::new(), Vec::new(), Vec::new());
+    let mut announces: Vec<String> = Vec::new();
     let mut lines_seen = 0usize;
     for name in &names {
         let src = fs::read_to_string(format!("{dir}/{name}")).expect("read source");
         for (ln, func, text) in stripped(&src, name) {
             lines_seen += 1;
+            if text.contains("EV_HURT,") && !announces.contains(name) {
+                announces.push(name.clone());
+            }
             let b = text.as_bytes();
             for i in 0..b.len() {
                 if let Some(recv) = hp_write_at(b, i) {
@@ -418,6 +471,7 @@ fn scan() -> Scan {
         writes,
         ctors,
         calls,
+        announces,
         files: names.len(),
         lines: lines_seen,
     }
@@ -430,6 +484,7 @@ fn every_player_hp_write_is_the_funnel_or_is_named() {
         writes,
         ctors,
         calls,
+        announces: _,
         files,
         lines,
     } = scan();
@@ -578,7 +633,7 @@ fn every_player_hp_write_is_the_funnel_or_is_named() {
         let hits: Vec<usize> = ROUTES
             .iter()
             .enumerate()
-            .filter(|(_, (f, r, _))| f == file && r == reduced)
+            .filter(|(_, (f, r, _, _))| f == file && r == reduced)
             .map(|(i, _)| i)
             .collect();
         assert_eq!(
@@ -594,7 +649,7 @@ fn every_player_hp_write_is_the_funnel_or_is_named() {
         );
         used_route[hits[0]] += 1;
     }
-    for (i, (f, reduced, why)) in ROUTES.iter().enumerate() {
+    for (i, (f, reduced, _, why)) in ROUTES.iter().enumerate() {
         assert!(
             used_route[i] > 0,
             "{f} declares an {} route (\"{why}\") and calls \
@@ -607,6 +662,87 @@ fn every_player_hp_write_is_the_funnel_or_is_named() {
                 "armor-exempt"
             },
             if *reduced { "hurt" } else { "hurt_unreduced" }
+        );
+    }
+}
+
+/// Every route that debits a body **tells that body where it came from**,
+/// or is on the record as having nowhere to point.
+///
+/// The mirror of `ROUTES`' second column, and it exists for the same reason:
+/// the choice is per-route, a person has to make it, and until it was
+/// written down the answer drifted. Wire v57 landed `EV_HURT` on the three
+/// routes a duel goes through and left the bite and the blast silent —
+/// eleven days in which a bear in the dark took hp off you and the only
+/// thing on screen was the bar. `ROUTES` already knew both files were
+/// damage routes and had no column to be wrong in.
+///
+/// ## What it refuses
+///
+/// A **disagreement** between the table and the source, in either
+/// direction, per file:
+///
+/// - a route declared announcing whose file emits no `EV_HURT` — the
+///   regression that was actually shipped, and the one a new route repeats
+///   by copying the emit-less liturgy from the file next door;
+/// - a route declared silent whose file emits one — either a real direction
+///   was found for it (good, and the row's stated reason is now a lie that
+///   the next reader will believe) or an emit landed in the wrong module.
+///
+/// ## Anti-vacuity
+///
+/// Three things, because a scrape that stops matching is the failure this
+/// crate's own trap list calls the worst bug class. The needle must find
+/// *some* announcing file; every announcing file it finds must be a
+/// declared route, so an emit in an unclassified module is a loud failure
+/// rather than an unnoticed pass; and the table must contain at least one
+/// row of each kind, so deleting the silent rows cannot make the gate
+/// trivially satisfiable.
+#[test]
+fn every_damage_route_points_somewhere_or_says_why_not() {
+    let Scan { announces, .. } = scan();
+
+    assert!(
+        !announces.is_empty(),
+        "no file in `sim-core/src` emits `EV_HURT,` — either the victim's \
+         half of a blow has been deleted from the sim, or the `EV_HURT,` \
+         needle stopped matching and this gate is now guarding nothing"
+    );
+    assert!(
+        ROUTES.iter().any(|(_, _, a, _)| *a) && ROUTES.iter().any(|(_, _, a, _)| !*a),
+        "`ROUTES` no longer holds both an announcing and a silent row — with \
+         one kind left this gate cannot fail in one of its two directions"
+    );
+
+    for f in &announces {
+        assert!(
+            ROUTES.iter().any(|(file, _, _, _)| file == f),
+            "{f} emits `EV_HURT` and is not a declared damage route. Either \
+             it debits a body without going through `combat::hurt` — which \
+             the funnel gate above should already have caught — or the \
+             victim's half of a blow is being raised by a module that does \
+             not deal the blow, which addresses an arc to a body nothing hit"
+        );
+    }
+
+    for (f, _, announce, why) in ROUTES {
+        let emits = announces.iter().any(|a| a == f);
+        assert_eq!(
+            emits,
+            *announce,
+            "{f} is declared {} (\"{why}\") and {} `EV_HURT`. A route that \
+             debits a body either tells that body which way the blow came \
+             from or has a stated reason it cannot — and the reason lives in \
+             `ROUTES`, not in whichever module happened to be edited last. \
+             If this route has just grown a direction, flip its column and \
+             rewrite its reason; if it has just lost one, that is the \
+             regression this gate is here for",
+            if *announce {
+                "as pointing somewhere"
+            } else {
+                "as having nowhere to point"
+            },
+            if emits { "emits" } else { "does not emit" },
         );
     }
 }
