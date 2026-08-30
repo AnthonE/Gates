@@ -64,6 +64,7 @@ use sim_core::limits::{MAX_ARROWS, MAX_PLAYERS};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::occupy::Scratch;
 use sim_core::ranged::{self, head_crossed, Arrows, Kill};
+use sim_core::rewind::Rewind;
 use sim_core::spent::SpentArrows;
 use sim_core::terrain;
 use sim_core::world::{EventQueue, Player, EV_HIT, EV_HURT};
@@ -191,6 +192,12 @@ fn pull(cc: &CombatContent, players: &mut [Player; MAX_PLAYERS]) -> EventQueue {
         &ColIndex::new(),
         &mut sc.occupants(),
         0,
+        // A cold ring and a zero favour: every body resolves live, which is
+        // this suite's whole subject — the band's geometry, not the lag
+        // compensation that decides which cylinder it is measured off.
+        // `tests/gun.rs` owns that pairing.
+        &Rewind::new(),
+        &[0; MAX_PLAYERS],
         cc,
         players,
         &mut events,
