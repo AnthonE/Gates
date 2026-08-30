@@ -1492,10 +1492,17 @@ pub struct World {
     ///
     /// **Read by `combat::strike` since slice 4** of
     /// `findings/lagcomp-design-20260818.md` §7 — the melee target scan
-    /// resolves against `pose_at` at the tick's granted `favour`. It is
-    /// still the only reader: `ranged::hitscan` and `ranged::step` resolve
-    /// against present-tick bodies, which is the largest remaining gap in
-    /// this feature and is `NOW.md` §0lc's own item, not an oversight here.
+    /// resolves against `pose_at` at the tick's granted `favour` — and by
+    /// **`ranged::hitscan` since the gun's slice**, which closes the
+    /// asymmetry the line here used to describe: for one pass melee
+    /// rewound and the firearm did not, so the only fight decided by ping
+    /// was the ranged one, where lead error is largest.
+    ///
+    /// `ranged::step` still resolves against present-tick bodies and that
+    /// is now a **refusal with a type behind it** (`ranged::Pose::Live`),
+    /// not an omission: an arrow in the store was launched on an earlier
+    /// tick. Its *launch* aim is the one question left and it is in
+    /// `DECISIONS.md` §open rather than in a findings note nobody re-reads.
     pub rewind: crate::rewind::Rewind,
     /// Authored world containers a player has opened — sim state, hashed
     /// (`worldcont.rs`). Boxed inside, for `backpacks`' reason: 64 records
@@ -3860,6 +3867,14 @@ impl World {
                 cache: &mut self.slot_cache,
             },
             tick,
+            // Lag compensation, the gun's half (`ranged::hitscan`). Melee
+            // rewound one pass earlier and this did not, which left the
+            // firearm as the only weapon on the shard decided by ping.
+            // `favour` is the same tick-local the melee loop above spends,
+            // read here by the shooter's slot — it is still never a
+            // `World` field and still never in `state_hash`.
+            &self.rewind,
+            &favour,
             &self.combat,
             &mut self.players,
             &mut self.events,

@@ -37,14 +37,16 @@
 
 use sim_core::build::{self, BUILD_CELL_M, LOC_EDGE_ZLO, SHAPE_WALL};
 use sim_core::collide::ColIndex;
+use sim_core::combat;
 use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::limits::{MAX_ARROWS, MAX_PLAYERS};
+use sim_core::limits::{MAX_ARROWS, MAX_PLAYERS, REWIND_MAX_TICKS};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::occupy::{Occupants, Scratch};
 use sim_core::ranged::{self, Arrows, Kill, ARROW_EYE_MM, SURF_BUILT};
+use sim_core::rewind::Rewind;
 use sim_core::terrain;
-use sim_core::world::{EventQueue, Player, EV_DEATH, EV_HIT, EV_IMPACT, EV_SHOT};
+use sim_core::world::{EventQueue, Player, EV_DEATH, EV_HIT, EV_HURT, EV_IMPACT, EV_SHOT};
 
 /// The solved authored sites for `seed`, memoized per seed — `shoot.rs`'s
 /// helper and its reason: `terrain::haven` is a few thousand `height` taps
@@ -166,13 +168,41 @@ struct Shot {
     kill: Kill,
 }
 
-/// Pull the trigger once, on `tick`, against `cols` and `occ`.
+/// Pull the trigger once, on `tick`, against `cols` and `occ`, at a favour
+/// of zero — a cold ring, so every body resolves live and this is the pass
+/// exactly as it read before lag compensation reached it.
 fn pull(
     tick: u64,
     cc: &sim_core::combat::CombatContent,
     cols: &ColIndex,
     occ: &mut Occupants,
     players: &mut [Player; MAX_PLAYERS],
+) -> Shot {
+    pull_rewound(
+        tick,
+        cc,
+        cols,
+        occ,
+        players,
+        &Rewind::new(),
+        &[0; MAX_PLAYERS],
+    )
+}
+
+/// The same pull, against a ring and a per-slot favour.
+///
+/// Every check outside the lag-compensation block below goes through
+/// `pull`, so a mutant that ignores the ring entirely leaves this file's
+/// other twenty checks green — which is the point of keeping the two
+/// spellings apart rather than threading a favour through everything.
+fn pull_rewound(
+    tick: u64,
+    cc: &sim_core::combat::CombatContent,
+    cols: &ColIndex,
+    occ: &mut Occupants,
+    players: &mut [Player; MAX_PLAYERS],
+    rewind: &Rewind,
+    favour: &[u8; MAX_PLAYERS],
 ) -> Shot {
     let mut events = EventQueue::default();
     let mut kills = [Kill::default(); MAX_ARROWS];
@@ -183,6 +213,8 @@ fn pull(
         cols,
         occ,
         tick,
+        rewind,
+        favour,
         cc,
         players,
         &mut events,
@@ -678,4 +710,277 @@ fn a_firearm_kill_reports_a_bullet_and_not_an_arrow() {
     );
     assert_eq!(v.death_by, 1, "the shooter");
     assert_eq!(v.death_item, GUN, "the weapon, never the round");
+}
+
+// ---------------------------------------------------------------------------
+// Lag compensation — the bullet resolves against where the target USED to be.
+//
+// Melee rewound first (`tests/combat.rs`, slice 4) and the gun did not, which
+// for one pass made the firearm the **only** weapon on the shard decided by
+// ping — the asymmetry being worse than the uniform gap, because lead error
+// is largest exactly where the weapon is ranged.
+//
+// The arrangement every check below shares. The victim stands in one pose for
+// exactly the tick `SHOT_TICK - WALK_TICKS` records, then somewhere else for
+// the rest of the window, and the trigger comes down on `SHOT_TICK`.
+// `Rewind::write_row` runs at the *end* of a tick — so row `SHOT_TICK -
+// WALK_TICKS` is the recorded one and `pose_at(SHOT_TICK, .., WALK_TICKS, ..)`
+// is what reaches it.
+//
+// The victim is teleported between the two poses rather than walked, which is
+// `tests/combat.rs`'s choice and its reason: what is under test is whether the
+// scan reads the ring, and a walked body would make the gap a function of
+// `movement::step`'s speed and the ground under this seed, so a balance pass
+// on walk speed would redden a lag-compensation gate.
+//
+// Every check here was watched going red under a one-line mutation of the
+// thing it names; the mutants are listed on each.
+
+/// The tick the trigger comes down on. Large enough that `SHOT_TICK - 255`
+/// is a real subtraction rather than a `checked_sub` underflow — otherwise
+/// `a_favour_past_the_ring_fails_closed` would be testing the wrong guard.
+const SHOT_TICK: u64 = 300;
+
+/// How far back the recorded pose sits. `REWIND_MAX_TICKS`, so these checks
+/// also pin that the deepest legal rewind actually reaches.
+const WALK_TICKS: u8 = REWIND_MAX_TICKS;
+
+/// Ten metres down the barrel and directly in the line — `face_off`'s target,
+/// spelled as a position so the lag-comp checks can move it.
+const LINE_Z: f32 = 10.0;
+/// The feet height that puts the shot line 1.2 m above them at the muzzle:
+/// a body hit, well clear of the `[1.45, 1.70]` head band.
+const CHEST_Y: f32 = 400.0 + ARROW_EYE_MM as f32 / 1000.0 - 1.2;
+/// Far enough off the line that no rounding in the quantized body closes it:
+/// the cylinder is 0.4 m in radius and this is 3 m.
+const OFF_LINE_X: f32 = 3.0;
+
+/// A ring holding `then` at `SHOT_TICK - WALK_TICKS` and `now` on every other
+/// tick of the window, with the players left standing at `now`.
+///
+/// Rows are written the way `World::tick` writes them — `write_row` once per
+/// tick, in tick order — rather than by reaching into `Rewind`, which exposes
+/// nothing to reach into.
+fn ring(now: Player, then: Player) -> (Box<[Player; MAX_PLAYERS]>, Rewind) {
+    let mut players = Box::new([Player::default(); MAX_PLAYERS]);
+    players[0] = shooter(1, 0.0, 400.0, 0.0, 0, LEVEL, 6);
+    let first = SHOT_TICK - WALK_TICKS as u64;
+    let mut rw = Rewind::new();
+    for t in first..SHOT_TICK {
+        players[1] = if t == first { then } else { now };
+        rw.write_row(t, &players);
+    }
+    players[1] = now;
+    (players, rw)
+}
+
+/// Pull once on `SHOT_TICK` at `back` ticks of favour, and report whether the
+/// victim took anything.
+fn pull_at(players: &mut [Player; MAX_PLAYERS], rw: &Rewind, back: u8) -> (bool, u16) {
+    let cc = gun_fixture();
+    let mut sc = Scratch::barren();
+    let before = players[1].hp;
+    let mut fav = [0u8; MAX_PLAYERS];
+    fav[0] = back;
+    let s = pull_rewound(
+        SHOT_TICK,
+        &cc,
+        &ColIndex::new(),
+        &mut sc.occupants(),
+        players,
+        rw,
+        &fav,
+    );
+    let hit = s.events.entries().iter().any(|e| e.code == EV_HIT);
+    (hit, before - players[1].hp)
+}
+
+/// The fixture actually does what the block comment claims: the recorded pose
+/// is in the line and the live one is not, **both judged live**.
+///
+/// Without this, the feature check below is a pair of unfalsifiable claims —
+/// a "miss at favour 0" is satisfied by a target that was never in the line at
+/// any depth, and a "hit at favour 7" by a gun that ignores the ring and shoots
+/// whatever is in front of it.
+#[test]
+fn the_gun_lag_comp_fixture_really_moves_the_target_out_of_the_line() {
+    let cold = Rewind::new();
+    let mut in_line = Box::new([Player::default(); MAX_PLAYERS]);
+    in_line[0] = shooter(1, 0.0, 400.0, 0.0, 0, LEVEL, 6);
+    in_line[1] = target(2, 0.0, CHEST_Y, LINE_Z);
+    assert!(
+        pull_at(&mut in_line, &cold, 0).0,
+        "the recorded pose must be hittable at favour 0 — otherwise the feature check proves nothing"
+    );
+
+    let mut off_line = Box::new([Player::default(); MAX_PLAYERS]);
+    off_line[0] = shooter(1, 0.0, 400.0, 0.0, 0, LEVEL, 6);
+    off_line[1] = target(2, OFF_LINE_X, CHEST_Y, LINE_Z);
+    assert!(
+        !pull_at(&mut off_line, &cold, 0).0,
+        "the live pose must be a clean miss at favour 0, {OFF_LINE_X} m off a 0.4 m cylinder"
+    );
+}
+
+/// **The feature.** The same trigger pull, on the same tick, against the same
+/// standing bodies: it misses at favour 0 and lands at favour 7.
+///
+/// Red under `Pose::Rewound { .. }` → `Pose::Live` at the `hitscan` scan (the
+/// whole slice), and under dropping `favour[i]` to a literal `0`.
+#[test]
+fn a_bullet_lands_on_where_the_target_was_and_misses_where_it_is() {
+    let (mut present, rw) = ring(
+        target(2, OFF_LINE_X, CHEST_Y, LINE_Z),
+        target(2, 0.0, CHEST_Y, LINE_Z),
+    );
+    assert!(
+        !pull_at(&mut present, &rw, 0).0,
+        "favour 0 must resolve against the live body, which is {OFF_LINE_X} m off the line"
+    );
+
+    let (mut rewound, rw) = ring(
+        target(2, OFF_LINE_X, CHEST_Y, LINE_Z),
+        target(2, 0.0, CHEST_Y, LINE_Z),
+    );
+    let (hit, took) = pull_at(&mut rewound, &rw, WALK_TICKS);
+    assert!(
+        hit,
+        "favour {WALK_TICKS} must resolve against the pose {WALK_TICKS} ticks back, which is in the line"
+    );
+    assert_eq!(took, 20, "the revolver's body damage, unscaled");
+}
+
+/// A favour deeper than the ring can honour buys the shooter **less** help,
+/// never more.
+///
+/// `hitscan` does no clamping of its own — `World::apply` clamps what arrives
+/// on the wire — so this is the fail-closed property standing on its own:
+/// `SHOT_TICK - 255` lands on a row the window aliased over, its stamp
+/// disagrees, and `pose_at` hands back the live body. The control run is what
+/// stops this passing on a gun that never rewinds at all.
+#[test]
+fn a_favour_past_the_ring_fails_closed_and_the_shooter_gets_less_help() {
+    let (mut wild, rw) = ring(
+        target(2, OFF_LINE_X, CHEST_Y, LINE_Z),
+        target(2, 0.0, CHEST_Y, LINE_Z),
+    );
+    assert!(
+        !pull_at(&mut wild, &rw, u8::MAX).0,
+        "a favour of 255 must alias onto a row stamped for another tick and fall back to live"
+    );
+
+    let (mut legal, rw) = ring(
+        target(2, OFF_LINE_X, CHEST_Y, LINE_Z),
+        target(2, 0.0, CHEST_Y, LINE_Z),
+    );
+    assert!(
+        pull_at(&mut legal, &rw, WALK_TICKS).0,
+        "the control must land — otherwise the refusal above proves nothing about the ring"
+    );
+}
+
+/// **The head band is measured off the feet the SCAN resolved.**
+///
+/// The half a rewind that stopped at the target scan would have got wrong: the
+/// band is an offset off the top of the same cylinder the hit was solved
+/// against, so reading `players[slot].body.qy` afterwards resolves a
+/// present-tick crown against a past-tick horizontal solve.
+///
+/// The victim holds one x/z the whole window and only *drops* 0.3 m, so the
+/// horizontal solve is identical at every favour and the hit lands either way.
+/// The only thing that can move is which band the line crossed — 1.26 m above
+/// the live feet (chest) and 1.56 m above the recorded ones (inside the
+/// `[1.45, 1.70]` head band).
+///
+/// Red under `qy: at.qy` → `qy: v.body.qy` in `nearest_body` — the exact
+/// mutant the judge's report named — and under `Pose::Rewound` → `Pose::Live`.
+#[test]
+fn the_head_band_is_measured_off_the_feet_the_scan_resolved() {
+    // 0.3 m, in the body's own y quanta so the drop is exact.
+    let crouched_y = CHEST_Y - 0.3;
+    assert!(
+        crouched_y + 1.7 > CHEST_Y + 1.2 && crouched_y + 1.7 - 0.25 < CHEST_Y + 1.2,
+        "the fixture must put the shot line inside the recorded body's head band"
+    );
+
+    let (mut live, rw) = ring(
+        target(2, 0.0, CHEST_Y, LINE_Z),
+        target(2, 0.0, crouched_y, LINE_Z),
+    );
+    let (hit, chest) = pull_at(&mut live, &rw, 0);
+    assert!(hit, "the live pose is in the line and must be hit");
+    assert_eq!(chest, 20, "1.26 m above the live feet is a body shot");
+
+    let (mut rewound, rw) = ring(
+        target(2, 0.0, CHEST_Y, LINE_Z),
+        target(2, 0.0, crouched_y, LINE_Z),
+    );
+    let (hit, head) = pull_at(&mut rewound, &rw, WALK_TICKS);
+    assert!(
+        hit,
+        "the recorded pose is in the same line and must be hit too"
+    );
+    assert_eq!(
+        head, 40,
+        "1.56 m above the RECORDED feet is a headshot: 20 × the revolver's headshot_mult of 2"
+    );
+}
+
+/// **The hurt arc points at the present, and that asymmetry is deliberate.**
+///
+/// `combat::strike`'s rule verbatim: `EV_HURT` is an instruction to the victim
+/// (*turn this way*) and they are at their present position when the arc
+/// appears. The blow's own geometry rewinds — that is the check above — and
+/// the bearing does not.
+///
+/// The victim is hit on a rewound pose due north of the shooter while standing
+/// well east of them, so the two bearings are different sectors and the
+/// assertion can only be satisfied one way. Both are computed with
+/// `combat::bearing_sector` from the two bodies rather than re-derived here,
+/// so this gates the choice of *input* and not the sector arithmetic, which is
+/// `tests/hurt_routes.rs`'s subject.
+///
+/// Red under carrying the scan's `qx`/`qz` through `BodyHit` and pointing the
+/// arc with them — the change someone reaches for when "rewind the hit" is
+/// read as "rewind everything about the hit".
+#[test]
+fn the_hurt_bearing_is_where_the_victim_is_now_not_where_they_were() {
+    let now = target(2, OFF_LINE_X, CHEST_Y, LINE_Z);
+    let then = target(2, 0.0, CHEST_Y, LINE_Z);
+    let (mut players, rw) = ring(now, then);
+
+    let cc = gun_fixture();
+    let mut sc = Scratch::barren();
+    let mut fav = [0u8; MAX_PLAYERS];
+    fav[0] = WALK_TICKS;
+    let s = pull_rewound(
+        SHOT_TICK,
+        &cc,
+        &ColIndex::new(),
+        &mut sc.occupants(),
+        &mut players,
+        &rw,
+        &fav,
+    );
+    let hurt = s
+        .events
+        .entries()
+        .iter()
+        .find(|e| e.code == EV_HURT)
+        .copied()
+        .expect("the rewound shot must land and announce the victim's arc");
+
+    let a = players[0].body;
+    let live =
+        combat::bearing_sector((a.qx - now.body.qx) as i64, (a.qz - now.body.qz) as i64) as u32;
+    let recorded =
+        combat::bearing_sector((a.qx - then.body.qx) as i64, (a.qz - then.body.qz) as i64) as u32;
+    assert_ne!(
+        live, recorded,
+        "the fixture must give the two poses different sectors — otherwise this check cannot fail"
+    );
+    assert_eq!(
+        hurt.b, live,
+        "the arc must point from where the victim IS to where the shooter is"
+    );
 }

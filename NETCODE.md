@@ -489,6 +489,20 @@ don't move; there is nothing to rewind — which is what keeps the ring at
 projectiles are sim entities and need no rewind at all; they hit when and
 where the sim says.
 
+**Built, 2026-08-29/30, and the projectile sentence above needed one word
+splitting off it.** Two verbs rewind and one deliberately does not.
+`combat::strike` (melee) and `ranged::hitscan` (firearms) both resolve their
+target scan against `rewind::pose_at` at the tick's granted favour;
+`ranged::step` — the arrow already in the air — resolves against present
+bodies, which is what the paragraph above means and is now a **type**
+(`ranged::Pose`) rather than a claim. A hitscan is *not* a ballistic
+projectile: it has no flight, it resolves on the tick its trigger came down,
+and for one pass it was the only fight on the shard decided by ping. The
+launch aim of an arrow is refused on the record (`DECISIONS.md` §open) — it
+is not a gap. The favour is minted by the client and clamped by the server
+to `REWIND_MAX_TICKS`; **the server does not compute it yet**, which is the
+part of this section that is still a plan (`NOW.md` §0lc).
+
 ## 9 · Budgets (updated for the classes)
 
 | thing | number |

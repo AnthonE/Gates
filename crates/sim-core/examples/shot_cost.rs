@@ -187,6 +187,11 @@ fn main() {
                 barren.occupants()
             },
             t,
+            // A cold ring, zero favour: this measures the sampler's cost,
+            // and `pose_at` short-circuits on zero, so the rewind adds one
+            // compare per candidate and nothing to time.
+            &sim_core::rewind::Rewind::new(),
+            &[0; MAX_PLAYERS],
             &cc,
             &mut players,
             &mut events,

@@ -1,18 +1,27 @@
 //! Where every body stood, for the last `REWIND_TICKS` ticks.
 //!
-//! Lag compensation's store, and **nothing reads it yet** — slice 2 of
-//! `findings/lagcomp-design-20260818.md` §7. The reader is `combat::strike`
-//! (slice 4) and the favour that indexes it rides `Command::Input` (slice 3).
-//! Landed on its own because a store with a gate is checkable and a store
-//! plus a reader plus a wire field is three things failing at once.
+//! Lag compensation's store — slice 2 of
+//! `findings/lagcomp-design-20260818.md` §7, landed on its own because a
+//! store with a gate is checkable and a store plus a reader plus a wire
+//! field is three things failing at once. **This line said "nothing reads
+//! it yet" for one pass after `combat::strike` began to** (slice 4), which
+//! is the dead-citation drift `CLAUDE.md` opens with, so: the readers are
+//! `combat::strike` (melee) and `ranged::hitscan` (firearms), and the favour
+//! that indexes both rides `Command::Input` (slice 3).
+//!
+//! `ranged::step` — an arrow already in the air — deliberately does **not**
+//! read it, and that refusal is a type rather than a sentence
+//! (`ranged::Pose`, `DECISIONS.md` §open).
 //!
 //! # What is stored, and why it is not a transform
 //!
-//! `strike` reads exactly three things off a victim: `qx`, `qy`, `qz`
-//! (`combat.rs`, the target scan). No yaw, no velocity, no `grounded` — the
-//! test is a planar distance plus a cone, and the cone is the *attacker's*
-//! and stays present-tick. A player in this tree has no orientable collider,
-//! so there is no transform to rewind; there is a position.
+//! Both readers want the same three things off a victim: `qx`, `qy`, `qz`.
+//! No yaw, no velocity, no `grounded` — `strike` is a planar distance plus a
+//! cone, and the cone is the *attacker's* and stays present-tick; `hitscan`
+//! is a planar closest-approach against a segment plus a height band off the
+//! same cylinder, and the shooter's muzzle is likewise live. A player in this
+//! tree has no orientable collider, so there is no transform to rewind; there
+//! is a position.
 //!
 //! `id` is not padding. World slots are reused, and the server keeps a
 //! `tracked_id` per slot for precisely this reason

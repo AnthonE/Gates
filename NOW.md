@@ -59,50 +59,33 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
-## 0lc · Lag compensation — melee rewinds; the gun does not *(sim lane)*
+## 0lc · Lag compensation — the shard rewinds; the server mints nothing *(sim lane)*
 
-From `findings/pass-20260829-153230-10-judge.md` §Ranked gaps 1 — *"a fight is
-decided by ping, and the plan that would fix it does not cover the gun"*,
-its rank-1 gap two reports running.
-
-✅ **Slices 2, 3 and 4 landed** (`findings/lagcomp-design-20260818.md` §7).
-`rewind.rs` records every body's pose for `REWIND_TICKS` (8) ticks; `Command::
-Input` carries a server-minted `favour: u8` clamped into a **tick-local**
-`[u8; MAX_PLAYERS]` (never on `Player`, so `state_hash` did not move — 103
-construction sites, all `favour: 0`); and `combat::strike` resolves its target
-scan against `pose_at`. Gates: 5 new cases in `tests/combat.rs`, every one
-proven red under a mutant — five run, and **one found a real hole**: the
-tick-locality test sent an explicit `favour: 0` on the swing tick, which
-overwrites a stale value, so a mutant that carried the array across ticks
-passed. The shape that reddens it is a swing with **no command behind it**
-(`Player::frame` persists, so a client that stops talking still swings), which
-is the production hole too. `probe_combat` drives a nonzero favour pattern, so
-the rewind rides `test_parity_wasm`; that digest moved and nothing else did.
+The judge's rank-1 gap three reports running is **closed**
+(`pass-20260829-153230-11-judge.md` §1). Slices 2–4 landed 2026-08-29/30 and
+**the gun's slice landed 2026-08-30**: `ranged::hitscan` scans against
+`Pose::Rewound` at the tick's granted `favour`, and the head band is measured
+off the feet the scan resolved (`BodyHit::qy`), so a crown is never solved at
+present-tick altitude against a past-tick horizontal solve. The hurt bearing
+stays live — `strike`'s rule. Five gates in `tests/gun.rs`, four mutants run,
+four caught. The arrow's launch aim is **decided** (`DECISIONS.md` §open);
+`Pose::Live` is that refusal as a type.
 
 Remaining:
 
-1. **The gun does not rewind — this is the judge's actual gap.** `ranged::
-   hitscan` still reads `p.body.qx/qy/qz` live, and lead error is largest
-   exactly there. Harder than `strike` was, for two reasons the melee slice
-   did not meet: the body scan is `nearest_body`, which is **shared with
-   `ranged::step`** (the arrow), so its signature change hits a caller that
-   must NOT rewind; and `hitscan` reads the victim again after the scan for
-   `feet_mm` (the headshot band) and the hurt bearing, so a rewind that stops
-   at the scan resolves a crown at present-tick altitude against a past-tick
-   horizontal solve.
-2. **The arrow's launch direction is a stale aim, and it is refused by
-   omission.** §5.1 reasons only that rewinding the *flight* would be wrong
-   and defers the launch; nothing has decided it. Decide it in `DECISIONS.md`
-   §open rather than leaving it to the next reader of a findings note.
-3. **Slice 5 — the server mints the favour** from slice 1's aim-staleness
-   stamp, plus the `favour_disagree` cross-check. `stats.rs`'s handoff comment
-   is corrected and now says the two constants have one home (`limits.rs`) and
-   must not be double-counted. Land last, alone.
+1. **Slice 5 — the server mints the favour.** Nothing does: `world.rs` clamps
+   whatever arrives on `Command::Input` and the client is trusted to compute
+   it. Slice 1's aim-staleness stamp (`server/src/stats.rs`) is the input,
+   plus the `favour_disagree` cross-check. Land alone.
+2. **The gun's rewind is not on the parity surface.** `probe_combat` drives a
+   nonzero favour and `combat::probe_fixture` has **no hitscan row**, so
+   `test_parity_wasm` covers the melee reader and not this one. No new float
+   op was added, so the risk is low and the coverage claim is still false;
+   arming a `RangedDef` there moves the parity digest and wants its own pass.
 
-⚠ **The clamp is not re-derivable from this box.** Slice 1 measured a favour
-of ~4.1 ticks on loopback, so 7 is roomy there and says nothing about a
-200 ms link — and nobody has ever swung at a moving remote player over a real
-one, which is `§LOOK`'s and gap 3's territory, not a gate's.
+⚠ **The clamp is not re-derivable from this box** — ~4.1 ticks on loopback
+says nothing about a 200 ms link, and nobody has fired at a moving remote
+player over a real one (§LOOK, and the judge's gap 3, not a gate's).
 
 ## 0hrt · Being hit points somewhere — the rest of the fight *(systems+client lane)*
 

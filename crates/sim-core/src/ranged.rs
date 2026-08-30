@@ -46,6 +46,13 @@
 //!
 //! No damage falloff — the schema has no curve to read.
 //!
+//! **A bullet is lag-compensated and an arrow is not, since 2026-08-30**, and
+//! the asymmetry is the design rather than a gap: `hitscan` resolves on the
+//! tick its trigger came down, so its bodies are put back where the shooter's
+//! screen had them (`Pose::Rewound`), while `step` is one tick of a flight
+//! launched earlier and stays present-tick (`Pose::Live`). `Pose`'s own doc
+//! carries the argument and `DECISIONS.md` §open carries the launch half.
+//!
 //! **"No headshots" stood here until 2026-08-30** and is the third clause
 //! of this header to outlive its truth, after the bow and after the wall
 //! chip. A head is a band off the top of the body cylinder
@@ -123,6 +130,7 @@ use crate::limits::{
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
 use crate::pitch_lut::pitch_dir;
+use crate::rewind::{Rewind, RewindPose};
 use crate::spent::{SpentArrows, SpentRec};
 use crate::terrain;
 use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_SHOT};
@@ -571,13 +579,30 @@ pub fn step(
         // comes at or before the world's stop. Solved rather than sampled,
         // so a body is never missed between two taps — and compared against
         // `stop_t`, so a body behind a trunk is never reached.
-        let best = nearest_body(players, (ox, oy, oz), (sx, sy, sz), stop_t, a.owner);
+        //
+        // **`Pose::Live`, and it is a refusal rather than an omission**
+        // (lag comp, the gun's slice). This shaft was launched on an
+        // earlier tick and has been flying since; the client was paid for
+        // its aim at the draw, and rewinding 1.3 m of a four-second journey
+        // against a quarter-second-old world would hit people the arrow
+        // visibly flew past. `Pose`'s own doc has the whole argument and
+        // `DECISIONS.md` §open carries the launch half, which is the part
+        // this does NOT decide.
+        let best = nearest_body(
+            players,
+            (ox, oy, oz),
+            (sx, sy, sz),
+            stop_t,
+            a.owner,
+            Pose::Live,
+        );
 
         if let Some(BodyHit {
             t,
             slot: j,
             enter,
             exit,
+            qy: feet_q,
         }) = best
         {
             let range_cm = ((a.flown as f32 + len_mm * t) / 10.0) as u16;
@@ -586,7 +611,11 @@ pub fn step(
             // clipped against the world's stop first, so an arrow that
             // buries itself in a windowsill at chest height is not credited
             // with the skull that was on the far side of it.
-            let feet_mm = v.body.qy as f32 * (POS_Y_Q * MM_PER_M);
+            // The feet the SCAN resolved, which for an arrow is the live
+            // body and is spelled that way anyway: one rule for both
+            // shots — the band is always measured off the cylinder the hit
+            // was decided against (`BodyHit::qy`).
+            let feet_mm = feet_q as f32 * (POS_Y_Q * MM_PER_M);
             let dmg = if head_crossed(oy, sy, feet_mm, enter, exit.min(stop_t)) {
                 crate::combat::headshot(a.damage, a.head_mult)
             } else {
@@ -851,6 +880,59 @@ fn world_stop(
     (stop_t, surf, built)
 }
 
+/// How a body scan answers *where was this body*.
+///
+/// The two shots in this module need different answers and the difference
+/// is not a depth one caller happens to pass zero for — it is a rule about
+/// each shot's own chronology — so it is a **type**. `Pose::Live` cannot be
+/// given a depth, which is what stops the arrow acquiring one by accident
+/// the next time this signature is edited.
+///
+/// [`Pose::Live`] is the arrow's. `findings/lagcomp-design-20260818.md`
+/// §5.1 is the reasoning and it survives intact: an arrow in the store was
+/// launched on an *earlier* tick and has been travelling ever since, so
+/// rewinding this tick of its flight would resolve 1.3 m of a four-second
+/// journey against a quarter-second-old world — hitting people the shaft
+/// visibly flew past, and doing it to a shooter who has already been paid
+/// for their aim once. The **launch** direction is the open question there
+/// and it is refused deliberately now rather than by omission
+/// (`DECISIONS.md` §open, lag comp — the arrow's launch aim).
+///
+/// [`Pose::Rewound`] is the bullet's, and it is the case lag compensation
+/// exists for: a hitscan resolves on the tick its trigger came down, which
+/// is the tick the client aimed on, against bodies that client was drawing
+/// `INTERP_DELAY_TICKS` in the past.
+#[derive(Clone, Copy)]
+enum Pose<'a> {
+    /// Present tick. Bit-identical to the scan before this type existed.
+    Live,
+    /// `back` ticks before `tick`, out of the ring, per slot.
+    Rewound {
+        rewind: &'a Rewind,
+        tick: u64,
+        back: u8,
+    },
+}
+
+impl Pose<'_> {
+    /// Where slot `slot` was, for this resolver's definition of *was*.
+    ///
+    /// The live pose is built here and handed to `pose_at` as the fallback,
+    /// so every honest-answer refusal in the ring (cold row, wrong stamp,
+    /// empty slot, a stranger's id) lands on the body the scan would have
+    /// read anyway. `back == 0` short-circuits inside `pose_at`, so
+    /// `Rewound { back: 0 }` and `Live` are the same bytes as well as the
+    /// same idea.
+    #[inline]
+    fn of(self, slot: usize, p: &Player) -> RewindPose {
+        let live = RewindPose::live(p.id, &p.body);
+        match self {
+            Self::Live => live,
+            Self::Rewound { rewind, tick, back } => rewind.pose_at(tick, slot, back, live),
+        }
+    }
+}
+
 /// One body the shot reached, and everything the two resolvers need to know
 /// about how it reached it.
 ///
@@ -882,6 +964,21 @@ pub struct BodyHit {
     /// one on one of the two paths.
     pub enter: f32,
     pub exit: f32,
+    /// The victim's **feet**, in `Body`'s own y quanta, as the scan
+    /// resolved them — not as they are now.
+    ///
+    /// Carried rather than re-read at the call site, and that is the whole
+    /// of what makes a rewound headshot coherent. The head band is an
+    /// offset off the top of the same cylinder this scan solved against
+    /// ([`head_crossed`]), so reading `players[slot].body.qy` afterwards
+    /// would test a **present-tick crown** against a **past-tick
+    /// horizontal solve** — a victim who jumped, fell or walked downhill in
+    /// the last quarter-second gets a head floating away from the body the
+    /// bullet was decided against.
+    ///
+    /// At [`Pose::Live`] this is exactly `players[slot].body.qy`, so the
+    /// arrow's arithmetic is unchanged to the bit.
+    pub qy: i32,
 }
 
 /// Did the shot cross the victim's head band while it was inside their body?
@@ -934,12 +1031,19 @@ pub fn head_crossed(oy: f32, sy: f32, feet_mm: f32, t_lo: f32, t_hi: f32) -> boo
 /// without moving a single existing hit/miss assertion in `tests/shoot.rs`
 /// or `tests/gun.rs`. A headshot is a question asked **of a hit**, never a
 /// second way to score one.
+///
+/// **`pose` decides where each candidate stood** (lag comp, the gun's
+/// slice). The liveness tests below stay on the LIVE record and that is
+/// `combat::strike`'s rule word for word: the ring stores a position, not a
+/// life, and a body that has since died or left is not a target however
+/// solid it looked `back` ticks ago.
 fn nearest_body(
     players: &[Player; MAX_PLAYERS],
     o: (f32, f32, f32),
     s: (f32, f32, f32),
     stop_t: f32,
     owner: u32,
+    pose: Pose<'_>,
 ) -> Option<BodyHit> {
     let (ox, oy, oz) = o;
     let (sx, sy, sz) = s;
@@ -949,10 +1053,11 @@ fn nearest_body(
         if !v.active || v.dead || v.hp == 0 || v.id == owner {
             continue;
         }
+        let at = pose.of(j, v);
         let (bx, by, bz) = (
-            v.body.qx as f32 * POS_XZ_Q,
-            v.body.qy as f32 * POS_Y_Q,
-            v.body.qz as f32 * POS_XZ_Q,
+            at.qx as f32 * POS_XZ_Q,
+            at.qy as f32 * POS_Y_Q,
+            at.qz as f32 * POS_XZ_Q,
         );
         let (ax, ay, az) = (ox / MM_PER_M, oy / MM_PER_M, oz / MM_PER_M);
         let (ux, uy, uz) = (sx / MM_PER_M, sy / MM_PER_M, sz / MM_PER_M);
@@ -1009,6 +1114,7 @@ fn nearest_body(
                 slot: j,
                 enter,
                 exit,
+                qy: at.qy,
             });
         }
     }
@@ -1096,6 +1202,29 @@ const _: () = assert!(
 /// multiplier is read from — a bullet takes it off `def` because a beam
 /// has no flight to outlive a rebake, while an arrow copies it onto the
 /// shaft at the draw.
+///
+/// # It is lag-compensated, and it is the only fight that now is
+///
+/// Melee rewound on 2026-08-29 (`combat::strike`, slice 4) and this pass
+/// did not, which made the gun the **only** weapon on the shard decided by
+/// ping — the asymmetry being worse than the uniform gap it replaced,
+/// because lead error is largest exactly where the weapon is ranged. The
+/// body scan now resolves against [`Pose::Rewound`] at the tick's granted
+/// `favour`, and the head band is measured off the same rewound feet
+/// ([`BodyHit::qy`]), so a crown is never solved at present-tick altitude
+/// against a past-tick horizontal solve.
+///
+/// `favour` is indexed by **slot**, minted per tick by `World::tick` from
+/// the shooter's own `Command::Input` and already clamped to
+/// `Rewind::max_back()`. Zero — a slot nobody sent an input for, and every
+/// non-server construction — makes `pose_at` return the live body, so a
+/// zero favour is bit-identical to this pass before the parameter existed.
+///
+/// **The hurt bearing stays live**, `strike`'s rule and `strike`'s reason:
+/// `EV_HURT` is an instruction to the victim (*turn this way*) and they are
+/// at their present position when the arc appears. `range_cm` does rewind,
+/// because it is a fact about the blow and is measured on the geometry the
+/// hit was decided on.
 #[allow(clippy::too_many_arguments)]
 pub fn hitscan(
     seed: u64,
@@ -1103,6 +1232,8 @@ pub fn hitscan(
     cols: &ColIndex,
     occ: &mut Occupants,
     tick: u64,
+    rewind: &Rewind,
+    favour: &[u8; MAX_PLAYERS],
     cc: &CombatContent,
     players: &mut [Player; MAX_PLAYERS],
     events: &mut EventQueue,
@@ -1215,7 +1346,24 @@ pub fn hitscan(
         // tick. Measured, at 100 shooters all firing on one tick: 20 ms
         // when every trace runs its full 50 m, 2.1 ms when a body
         // truncates it (`DECISIONS.md` §open, hitscan v0).
-        let seen = nearest_body(players, (ox, oy, oz), (sx, sy, sz), 1.0, id);
+        //
+        // **Rewound** (lag comp, the gun's slice): this shot was fired on
+        // this tick, so the bodies it is asked about are put back where the
+        // shooter's screen had them. The truncation argument above is
+        // untouched by that — it is about which `t` is the minimum, and the
+        // scan still returns the minimum of whatever positions it resolved.
+        let seen = nearest_body(
+            players,
+            (ox, oy, oz),
+            (sx, sy, sz),
+            1.0,
+            id,
+            Pose::Rewound {
+                rewind,
+                tick,
+                back: favour[i],
+            },
+        );
         let upto = match seen {
             Some(b) => (b.t * n as f32) as usize + 1,
             None => MAX_HITSCAN_MARK_SAMPLES,
@@ -1229,6 +1377,7 @@ pub fn hitscan(
             slot: j,
             enter,
             exit,
+            qy: feet_q,
         }) = best
         {
             let range_cm = (reach * t / 10.0) as u16;
@@ -1238,7 +1387,15 @@ pub fn hitscan(
             // travelling towards it. Clipped against the world's stop for
             // the same reason: a beam that dies in a wall did not reach
             // what was standing behind the wall.
-            let feet_mm = v.body.qy as f32 * (POS_Y_Q * MM_PER_M);
+            //
+            // **The rewound feet, not the live ones**, and this is the
+            // half a rewind that stopped at the scan would have got wrong:
+            // the band is an offset off the top of the cylinder the hit was
+            // solved against, so a victim who jumped or walked downhill in
+            // the last quarter-second would otherwise have a head floating
+            // clear of the body the bullet met. At favour 0 this is the
+            // live `qy` to the bit.
+            let feet_mm = feet_q as f32 * (POS_Y_Q * MM_PER_M);
             let dmg = if head_crossed(oy, sy, feet_mm, enter, exit.min(stop_t)) {
                 crate::combat::headshot(def.damage, def.headshot_mult)
             } else {
@@ -1257,6 +1414,12 @@ pub fn hitscan(
             events.push(EV_HIT, id, vid, dmg as u32);
             // A beam has no flight to reverse, so this is the muzzle itself —
             // the shooter's body this tick, which is where they still are.
+            // **And the victim's live body, not the rewound one**, which is
+            // `strike`'s rule verbatim: this bearing is an instruction to
+            // the person it is sent to, who is at their present position
+            // when the arc appears. At a favour of 7 the rewound bearing
+            // would describe neither player's situation and is easily a
+            // whole sector of the sixteen out.
             events.push(EV_HURT, vid, sector as u32, dmg as u32);
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
