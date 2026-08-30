@@ -59,6 +59,63 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0vs · The newest visual report's ranked gaps are **closed** — steer from the judge *(any lane)*
+
+Checked with commands rather than read, 2026-08-30, because this is a gap pass
+and the visual half is the older half: the newest `-visual.md` is
+`pass-20260815-042118-11`, capture has been off since 2026-08-28, and **two of
+its three ranked gaps no longer describe this tree.**
+
+- Gap 1 (*"the island paints one material"*, 1.09x granite:turf) —
+  `render/ground_splat.rs` exists and `terrain_mesh.rs` documents **2.28x**,
+  past the 2.06x the report asked for, gated by
+  `granite_stands_clear_of_the_ground_it_shares`.
+- Gap 2 (*"`grep -rn DirectionalLightShadowMap|ShadowFilteringMethod|
+  shadow_depth_bias|shadow_normal_bias` returns nothing"*) — it returns
+  `render/quality.rs:42,164` now: cascades, shadow-map size and SSAO are
+  tiered.
+- Gap 3 (no structure, no character, no viewmodel in any frame) — **partly**:
+  `capture.rs` has `Subject::Player` and `Subject::Build` extra shots. The
+  panels-off rule and the missing hands are still real.
+
+The **judge** report's gap 2 is partly stale the same way, and its own grep is
+why: `airdrop|heli|Airdrop` cannot find **site guards v0**, which landed
+2026-08-14 and is gated (`tests/guard.rs`, six sections). What was genuinely
+missing is the half this pass took — the guard roster was **flat** while
+`ci/haven_prize.mjs` gates a strictly rising three-tier prize, so the richest
+site cost the same to rob as the middle one. `HAVEN_GUARDS`/`WAYSTATION_GUARDS`
+now rise with it (`DECISIONS.md` §open, "the guard chain").
+
+Still open from that gap and larger than a pass: a **world event** — a timed,
+announced window at the pad — and a guard **loot tier** (§0m 3, which needs a
+third species and five client arms). The judge's gap 3, no session or wipe
+boundary, is untouched and is the bigger of the two.
+
+## 0h3 · The other flaky dial: `connection closed by peer: 261` *(server lane)*
+
+`ci/gates.sh` went red then green on an unchanged tree (2026-08-30). **Two
+different mechanisms, and only one is fixed.** The reproduced one was ours and
+is closed: `bot_frame` re-rolls `sel` at random every frame, so the satchel a
+raid step selected was clobbered before the throw executed and eight raiders
+armed zero charges on a loaded box (`botclient::HeldSel`, 18/18 clean under the
+load that broke it twice).
+
+The other is **not diagnosed**. `raider 0 failed: connect: connection closed by
+peer: 261` — H3_FRAME_UNEXPECTED (RFC 9114 §8.1), empty reason, so not one of
+our `REFUSE_*` answers (0..=5, always with `refuse_text`). Seen once in a gate
+run, never in ~60 loaded runs here. wtransport's server driver emits 0x105 from
+three sites (`driver/mod.rs:598,637`, `driver/streams/settings.rs:123`), all
+about H3 framing our code never touches; our admission gate is not it
+(`ADMIT_REFUSE_AT` is 400 against 58 bots).
+
+What is done: the raider panic now prints `handshake_errors` / `admit_refused` /
+`admit_retried` off the shard, so the next occurrence is readable in the log
+instead of costing a pass. What is **not** done and should not be guessed:
+widening `is_load_shed` past `0x107` — its own gate asserts `!0x0106` and
+`!0x0108` with the reason, and a predicate widened to a range is how a refusal
+starts being retried. Next step is server-side wtransport tracing on a repro,
+or a pin bump past `a11e6a8` if upstream has a framing fix.
+
 ## 0lc · Lag compensation — **on**, and never fired over a real link *(sim lane)*
 
 **Live since slice 5 (2026-08-30).** `stats::favour_for` mints

@@ -402,12 +402,43 @@ async fn test_bots_raid_over_the_wire() {
 
     let mut reports = Vec::with_capacity(RAIDERS);
     for (i, t) in tasks.into_iter().enumerate() {
-        let report = t
-            .await
-            .expect("bot task join")
-            .unwrap_or_else(|e| panic!("raider {i} failed: {e}"));
+        let report = t.await.expect("bot task join").unwrap_or_else(|e| {
+            // **The shard's own side of the same moment.** A dial that dies
+            // as `connection closed by peer: 261` (H3_FRAME_UNEXPECTED, and
+            // an empty reason, so not one of our `REFUSE_*` answers — those
+            // are 0..=5 and always carry `refuse_text`) was seen once in a
+            // gate run on 2026-08-30 and never reproduced in ~60 loaded runs
+            // here. It is a DIFFERENT mechanism from the selection race this
+            // suite was just fixed for, it is not diagnosed, and guessing it
+            // into `is_load_shed` would widen a predicate whose own gate
+            // says a widened range is how a refusal starts being retried.
+            // What is cheap is making the next one readable in the log
+            // instead of costing a pass: these three separate "our admission
+            // gate turned it away" from "the H3 layer under both ends did".
+            let st = &handle.stats;
+            panic!(
+                "raider {i} failed: {e} (shard: handshake_errors {}, \
+                 admit_refused {}, admit_retried {})",
+                ShardStats::get(&st.handshake_errors),
+                ShardStats::get(&st.admit_refused),
+                ShardStats::get(&st.admit_retried),
+            )
+        });
         reports.push(report);
     }
+    // **How much walking the fleet actually did**, quoted by every assertion
+    // below that can fail for want of it. Until these counters existed a red
+    // here could not distinguish "the bot never took the step" from "it took
+    // the step and the run ended before the answer came back" — opposite
+    // bugs with one symptom, and the reason this gate flipped red and green
+    // on an unchanged tree (2026-08-30).
+    let walked: u64 = reports.iter().map(|r| r.ticks_walked).sum();
+    let steps: u64 = reports.iter().map(|r| r.raid_steps).sum();
+    let truncated = reports.iter().filter(|r| r.walk_truncated).count();
+    let walk = format!(
+        "{walked} ticks / {steps} raid steps across {RAIDERS} raiders, \
+         {truncated} truncated by the box"
+    );
     let window_ticks = ShardStats::get(&handle.stats.ticks) - ticks_before;
 
     // **Why `struct_hits` is not asserted, measured instead of assumed.**
@@ -419,11 +450,18 @@ async fn test_bots_raid_over_the_wire() {
     // 355, so *how many ticks a window held* is the question the
     // unexplained 30 s run never answered.
     //
-    // It is safe against this box's load rule (`CLAUDE.md`: never assert on
-    // elapsed ms) because it can only fail in the impossible direction. At
-    // `TICK_HZ` 30 a 4 s window tops out at ~120 ticks, so a contended box
-    // makes this MORE true, never less; the only way it reddens is a shard
-    // ticking faster than its own rate.
+    // ⚠ **This paragraph used to say the assertion could only fail in the
+    // impossible direction, and that stopped being true on 2026-08-30.**
+    // The claim was that a 4 s window tops out at ~120 ticks so a contended
+    // box makes it MORE true — which held only while the walk was a
+    // wall-clock window. It is a tick budget now (`botclient::walk_ticks`),
+    // so a contended box stretches the window in wall time and the shard
+    // completes MORE ticks inside it, not fewer. The bound is still sound
+    // and is now arithmetic rather than a direction: the walk's ceiling is
+    // `WALK_CEILING` x 4 s plus a 500 ms settle, so ~255 ticks worst case
+    // against a 300-tick fuse. It reddens if that headroom is ever spent,
+    // which is the honest failure — the gate's premise would have broken and
+    // `struct_hits` would owe an assertion — and not a silent pass.
     assert!(
         window_ticks < fuse_ticks,
         "the shard completed {window_ticks} ticks in this window against a \
@@ -455,6 +493,24 @@ async fn test_bots_raid_over_the_wire() {
             "raider {i}: the action stream died mid-raid"
         );
         assert_eq!(r.event_decode_errors, 0, "raider {i}: event decode errors");
+        // **The walk is a count, and this is the gate on that.** Before
+        // 2026-08-30 the run ended on a 4 s clock, so a loaded box silently
+        // bought the profile fewer steps and every assertion below read as
+        // "the sim refused everything". A short walk is now either the
+        // backstop firing — which the report says out loud — or a defect.
+        assert!(
+            r.ticks_walked >= server::botclient::walk_ticks(WINDOW) || r.walk_truncated,
+            "raider {i}: walked {} of {} ticks and the backstop never fired, \
+             so the walk ended for a reason nothing here can name",
+            r.ticks_walked,
+            server::botclient::walk_ticks(WINDOW)
+        );
+        // The settle ran at all: a report read the instant the walk stopped
+        // is the flaky gate this suite is recovering from.
+        assert!(
+            r.settle_polls > 0,
+            "raider {i}: the tally was read with no settle behind it"
+        );
         // The round trip closed: the sim heard this bot's claims and
         // answered them. A naked spawn can afford none of them, so the
         // answer is a refusal — which is the half of wall 4 that had never
@@ -481,7 +537,10 @@ async fn test_bots_raid_over_the_wire() {
     // Fleet-wide: the build verbs specifically were heard, and the server
     // survived the storm with nothing malformed and no forced resync.
     let build_refusals: u64 = reports.iter().map(|r| r.build_refused).sum();
-    assert!(build_refusals > 0, "no raider's Place ever reached the sim");
+    assert!(
+        build_refusals > 0,
+        "no raider's Place ever reached the sim ({walk})"
+    );
 
     // ---- the success half -------------------------------------------------
     //
@@ -500,11 +559,13 @@ async fn test_bots_raid_over_the_wire() {
     let auths: u64 = reports.iter().map(|r| r.auths).sum();
     assert!(
         placed > 0,
-        "no raider ever placed a piece: {per_plot} wood per plot, one stack funds {plots_funded}"
+        "no raider ever placed a piece: {per_plot} wood per plot, one stack \
+         funds {plots_funded} ({walk})"
     );
     assert!(
         deployed > 0,
-        "no raider ever deployed: the box, the lock and the loot verbs all hang off this"
+        "no raider ever deployed: the box, the lock and the loot verbs all \
+         hang off this ({walk})"
     );
     // The code lock's whole point, and the one verb in the profile that is
     // an *authorization* rather than a purchase: the owner set a code on
@@ -514,7 +575,8 @@ async fn test_bots_raid_over_the_wire() {
     // the kit existed.
     assert!(
         auths > 0,
-        "no code was ever accepted: {deployed} deploys landed, so the lock never took or never opened"
+        "no code was ever accepted: {deployed} deploys landed, so the lock \
+         never took or never opened ({walk})"
     );
     // The attacker's half, as far as it is proven: a satchel selected off
     // the hotbar, planted on a structure that had to already be standing
@@ -524,7 +586,7 @@ async fn test_bots_raid_over_the_wire() {
     // measurement nobody has explained is not a gate.
     assert!(
         planted > 0,
-        "no charge ever armed: {placed} pieces stood to plant one on"
+        "no charge ever armed: {placed} pieces stood to plant one on ({walk})"
     );
     let s = &handle.stats;
     assert!(ShardStats::get(&s.actions_ok) > 0, "no action decoded");
