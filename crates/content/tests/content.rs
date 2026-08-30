@@ -1238,6 +1238,70 @@ fn bake_backpack_walks_the_rarity_ladder_the_data_declares() {
 /// repo keeps getting bitten by — and the other five are the dead-row and
 /// width refusals between them.
 #[test]
+/// **The magazine column refuses what it names** (reload v1).
+///
+/// Written because the column is the whole mechanic: a firearm that lost
+/// its `magazine` does not fail — it silently goes back to spending
+/// straight out of the pack, which is a firefight with no rhythm and every
+/// gate green. `RangedDef`'s own doc comments record three columns that
+/// arrived armed and unread; this is what stops a fourth.
+///
+/// The magnitudes are deliberately NOT here. `magazine = 8` and
+/// `reload_ms = 3400` are the reference's published figures for the
+/// revolver (`DECISIONS.md` §open) and a knob's registry must not be argued
+/// with by its own gate — what is pinned is the column's *shape*.
+#[test]
+fn the_magazine_rules_refuse_what_they_name() {
+    // A firearm needs one. Dropping it is the silent regression above.
+    refuses(
+        "weapons.toml",
+        "magazine = 8\nreload_ms = 3400",
+        "reload_ms = 3400",
+        "firearms need a nonzero magazine",
+    );
+    // …and a nonzero one. Zero is the value that MEANS "no magazine", so a
+    // firearm carrying it reads as opting out in data rather than as a
+    // mistake, which is exactly why it has to be refused at the door.
+    refuses(
+        "weapons.toml",
+        "magazine = 8\nreload_ms = 3400",
+        "magazine = 0\nreload_ms = 3400",
+        "firearms need a nonzero magazine",
+    );
+    // A magazine needs a reload time, both ways round: a fill that costs
+    // nothing is the beat the whole mechanic is, absent.
+    refuses(
+        "weapons.toml",
+        "magazine = 8\nreload_ms = 3400",
+        "magazine = 8",
+        "a magazine needs a nonzero reload_ms",
+    );
+    // And a reload that rounds to zero ticks at `TICK_HZ` is the same
+    // absence spelled as a number — 33 ms is one tick, so 16 is none.
+    refuses(
+        "weapons.toml",
+        "magazine = 8\nreload_ms = 3400",
+        "magazine = 8\nreload_ms = 16",
+        "rounds to zero ticks",
+    );
+    // Only a firearm carries either. A bow's magazine would be a second
+    // cadence to keep in step with the nock it already has, and a hatchet's
+    // would be a number nothing reads — the shape `fuse_s` is refused in.
+    refuses(
+        "weapons.toml",
+        "range_m = 60\nammo = [\"item.arrow_wood\"]",
+        "range_m = 60\nammo = [\"item.arrow_wood\"]\nmagazine = 4",
+        "only firearms carry a magazine",
+    );
+    refuses(
+        "weapons.toml",
+        "range_m = 60\nammo = [\"item.arrow_wood\"]",
+        "range_m = 60\nammo = [\"item.arrow_wood\"]\nreload_ms = 1000",
+        "only a weapon with a magazine carries a reload_ms",
+    );
+}
+
+#[test]
 fn the_durability_rules_refuse_what_they_name() {
     // V7: a condition-carrying item must stack to 1. The rock keeps its
     // 10 000 hundredths and grows a stack of 3 — refused, because
