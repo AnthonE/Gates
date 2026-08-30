@@ -22,14 +22,15 @@ use crate::view::{Applied, ClientView};
 use protocol::{
     decode_event, encode_action_access, encode_action_demolish, encode_action_deploy,
     encode_action_loot, encode_action_move, encode_action_pickup, encode_action_place,
-    encode_action_repair, encode_action_throw, encode_input, peek_kind, EventMsg, InputDatagram,
-    Welcome, WireError, KIND_SNAPSHOT, MAX_STREAM_MSG_BYTES,
+    encode_action_reload, encode_action_repair, encode_action_throw, encode_input, peek_kind,
+    EventMsg, InputDatagram, Welcome, WireError, KIND_SNAPSHOT, MAX_STREAM_MSG_BYTES,
 };
 use sim_core::bots::{bot_frame, raid_step, RaidPlan, RaidRows, RAID_CYCLE};
 use sim_core::build::build_cell_of;
 use sim_core::input::InputFrame;
 use sim_core::limits::{DATAGRAM_BUDGET_BYTES, MAX_BUILD_COORD, MAX_INPUT_FRAMES, TICK_HZ};
 use sim_core::movement::POS_XZ_Q;
+use sim_core::ranged::{REFUSE_RL_BUSY, REFUSE_RL_EMPTY};
 use sim_core::rng::Pcg32;
 use sim_core::world::Command;
 use std::net::SocketAddr;
@@ -63,6 +64,23 @@ pub struct BotReport {
     /// the lane like any real client must — an unread lane backpressures).
     pub events_received: u64,
     pub event_decode_errors: u64,
+
+    // ---- the reload lane (NOW.md §0mag item 6) ---------------------------
+    /// Dry clicks heard — a trigger pulled on an empty magazine.
+    pub dry_clicks: u64,
+    /// `Command::Reload` frames this bot wrote.
+    pub reloads_sent: u64,
+    /// Magazines the sim actually filled in answer.
+    pub reloads_confirmed: u64,
+    /// Rounds that left the pack across every confirmed fill.
+    pub rounds_loaded: u64,
+    /// Asks that arrived while the arm was busy — the retries. Expected to
+    /// be nonzero, and that is the mechanic rather than a defect: see the
+    /// reload lane in `run_bot` for why the first ask after a dry click
+    /// cannot succeed.
+    pub reloads_busy: u64,
+    /// Asks refused for a reason that is neither dry nor busy.
+    pub reloads_refused: u64,
 
     // ---- what this client actually cost the wire (NOW.md §0q item 4) -----
     //
@@ -185,10 +203,55 @@ struct EventTally {
     pieces_placed: AtomicU64,
     deploys_placed: AtomicU64,
     charges_planted: AtomicU64,
+    /// Trigger pulls on an empty magazine — `REFUSE_RL_EMPTY`, the dry
+    /// click. **This one is not a statistic: it is the bot's only sense
+    /// organ for its own ammunition**, and the frame loop watches it grow.
+    ///
+    /// A snapshot carries no round count (`EntityState` has `held` and no
+    /// count, deliberately — a broadcast magazine is a wallhack), so the
+    /// event lane is the only place a client of any kind learns it is
+    /// empty. The native client keeps a running count off `EV_SHOT`; a bot
+    /// with no HUD has exactly this, which is also what a *person* has when
+    /// they are not watching the number. You hear the click.
+    dry_clicks: AtomicU64,
+    /// `REFUSE_RL_BUSY` — the arm is mid-cadence, mid-swing or mid-reload.
+    /// **Its own counter because it is the only refusal that means *ask
+    /// again*.** Full, wrong-hand and no-rounds all mean stop, and a lane
+    /// that could not tell them apart would either give up on a full
+    /// magazine or spin forever on an empty pack.
+    reloads_busy: AtomicU64,
+    /// Magazines actually filled — `EventMsg::Reload`, the sim's answer.
+    reloads: AtomicU64,
+    /// Rounds that left the pack, summed. `took` and not a difference this
+    /// side computed: a partial fill off a nearly empty pack is the case
+    /// that makes them differ, and it is the one worth counting.
+    rounds_loaded: AtomicU64,
+    /// Reloads refused for a reason that is neither dry nor busy — full,
+    /// wrong hand, no rounds. The lane stops asking on these.
+    reloads_refused: AtomicU64,
 }
 
 impl EventTally {
     fn note(&self, ev: &EventMsg) {
+        // The reload arms read a *field*, so they cannot ride the table
+        // below: a refusal's meaning is its `reason`, and one counter for
+        // all five would leave the bot unable to tell "you are empty" from
+        // "you are already full" — opposite instructions.
+        if let EventMsg::ReloadRefused { reason, .. } = ev {
+            let c = match *reason as u32 {
+                REFUSE_RL_EMPTY => &self.dry_clicks,
+                REFUSE_RL_BUSY => &self.reloads_busy,
+                _ => &self.reloads_refused,
+            };
+            c.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        if let EventMsg::Reload { took, .. } = ev {
+            self.reloads.fetch_add(1, Ordering::Relaxed);
+            self.rounds_loaded
+                .fetch_add(*took as u64, Ordering::Relaxed);
+            return;
+        }
         let c = match ev {
             EventMsg::BuildRefused { .. } => &self.build_refused,
             EventMsg::DeployRefused { .. } => &self.deploy_refused,
@@ -278,6 +341,12 @@ fn encode_raid(cmd: &Command, buf: &mut [u8]) -> Option<Result<usize, WireError>
         } => encode_action_move(cont, from_kind, from_slot, to_kind, to_slot, count, buf),
         Command::Loot { .. } => encode_action_loot(buf),
         Command::Pickup { .. } => encode_action_pickup(buf),
+        // Not a raid step — the reload lane's, and here because this is the
+        // one table in this file that turns a `Command` into the bytes a
+        // real client writes. Payloadless on the wire on purpose: the sim
+        // picks the weapon and the amount, so there is nothing in the frame
+        // to forge (`Command::Reload`'s own doc says why).
+        Command::Reload { .. } => encode_action_reload(buf),
         _ => return None,
     })
 }
@@ -569,6 +638,15 @@ pub async fn run_bot(
     // hotbar, because that surface is worth covering and is not this one.
     let mut sel_held = HeldSel::default();
     let mut act_buf = [0u8; MAX_STREAM_MSG_BYTES];
+    // Reload-lane events this loop has already answered with an `R`. The
+    // tally is written by the drain task and read here, so the pair is a
+    // monotonic counter and a high-water mark rather than a flag — a flag
+    // would need clearing from two tasks, which is the one shape that can
+    // lose an edge.
+    let mut asks_answered: u64 = 0;
+    // The action stream is gone. `raid` served this for the raid lane and
+    // cannot serve it here, because a bot with no raid rows still shoots.
+    let mut reload_lane = true;
 
     let mut cadence = tokio::time::interval(Duration::from_nanos(1_000_000_000 / TICK_HZ as u64));
     // **`Delay`, not `Skip`, and the difference is the bug.** `Skip` throws
@@ -623,6 +701,80 @@ pub async fn run_bot(
                 }
                 report.last_executed_seq = view.last_executed_seq;
 
+                // ---- the reload lane (NOW.md §0mag item 6) ------------
+                // **The bot hears the click and presses R.** That is the
+                // whole policy, and it has to be a policy rather than a
+                // cadence for a reason `EntityState` makes unavoidable: a
+                // snapshot carries no round count, so a bot cannot know it
+                // is empty until the sim tells it. The one message that
+                // does is `REFUSE_RL_EMPTY` — the dry click, which
+                // `hitscan` raises when `bot_frame`'s `BTN_PRIMARY` finds
+                // an empty magazine. So the bot uses the sense a player
+                // uses with their eyes off the HUD, and nothing here
+                // invents a fact the wire did not carry.
+                //
+                // **It has to keep asking, and that is arithmetic rather
+                // than a taste for realism.** `hitscan` pays `next_swing =
+                // tick + rate_ticks` *before* it refuses — the same line
+                // that bounds the dry click to one per cadence — and
+                // `reload` answers `REFUSE_RL_BUSY` while `tick <
+                // next_swing`. So the reply to a dry click is late by
+                // construction: one round trip is ~1 tick and the
+                // revolver's cadence is 12, so a bot that asked once per
+                // click would be refused **every time, forever**, with a
+                // green gate and a gun that never reloads. Measured: with
+                // the retry removed, four shooters over 150 ticks confirm
+                // zero fills.
+                //
+                // Self-clocking, so it needs no timer and no knob: one ask
+                // per reload-lane event heard. A dry click asks, a BUSY
+                // asks again, and the retry rate is therefore the
+                // round-trip rate rather than a number somebody chose. It
+                // converges because the sim eventually crosses `next_swing`
+                // on a tick whose input frame did not pull the trigger —
+                // `bot_frame` presses `BTN_PRIMARY` a third of the time and
+                // inputs are applied before actions, so two boundary ticks
+                // in three take the fill. Measured: 8–11 asks per click,
+                // one confirmed fill of exactly a cylinder.
+                //
+                // One action per tick is the server's ceiling, not a
+                // choice: `core::wants_action` takes one per client and
+                // `push_action` drops the rest in silence. So a reload
+                // *takes* the tick and the raid step is deferred rather
+                // than sent beside it — sending both would leave which one
+                // survives up to the server, and a raid step lost that way
+                // is invisible to every counter in this file.
+                let mut took_the_tick = false;
+                let asks = tally.dry_clicks.load(Ordering::Relaxed)
+                    + tally.reloads_busy.load(Ordering::Relaxed);
+                if reload_lane && asks > asks_answered {
+                    asks_answered = asks;
+                    let cmd = Command::Reload { id: report.player_id };
+                    match encode_raid(&cmd, &mut act_buf) {
+                        Some(Ok(len)) => {
+                            if write_frame(&mut send, &act_buf[..len]).await.is_ok() {
+                                report.reloads_sent += 1;
+                                report.actions_sent += 1;
+                                report.act_out_bytes += (FRAME_PREFIX_BYTES + len) as u64;
+                                took_the_tick = true;
+                            } else {
+                                // Keep walking: a dead action lane is a
+                                // finding, not a reason to stop measuring
+                                // the snapshot one (the raid lane's rule).
+                                report.action_lane_errors += 1;
+                                reload_lane = false;
+                                raid = None;
+                            }
+                        }
+                        // Counted, never dropped — the raid lane's arm, for
+                        // the raid lane's reason. A `Reload` with no wire
+                        // form would otherwise be a lane that asks for
+                        // nothing in perfect silence, which is this item's
+                        // own failure mode one level down.
+                        Some(Err(_)) | None => report.actions_unencodable += 1,
+                    }
+                }
+
                 // ---- the raid lane -----------------------------------
                 // One action per cadence tick, which is not a chosen
                 // number: `core::wants_action` hands the sim at most one
@@ -631,7 +783,7 @@ pub async fn run_bot(
                 // enforces is the rate. A real client cannot do better,
                 // and a load tool that pretended to would be measuring a
                 // pressure no player can apply.
-                if let Some(rows) = raid {
+                if let Some(rows) = raid.filter(|_| !took_the_tick) {
                     // Re-seat the plot from the live body every cycle. The
                     // bot walks, so a plan pinned at spawn would spend the
                     // whole run out of reach of its own foundation and
@@ -758,6 +910,11 @@ pub async fn run_bot(
     report.pieces_placed = tally.pieces_placed.load(Ordering::Relaxed);
     report.deploys_placed = tally.deploys_placed.load(Ordering::Relaxed);
     report.charges_planted = tally.charges_planted.load(Ordering::Relaxed);
+    report.dry_clicks = tally.dry_clicks.load(Ordering::Relaxed);
+    report.reloads_confirmed = tally.reloads.load(Ordering::Relaxed);
+    report.rounds_loaded = tally.rounds_loaded.load(Ordering::Relaxed);
+    report.reloads_busy = tally.reloads_busy.load(Ordering::Relaxed);
+    report.reloads_refused = tally.reloads_refused.load(Ordering::Relaxed);
     Ok(report)
 }
 

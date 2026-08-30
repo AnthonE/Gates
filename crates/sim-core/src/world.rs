@@ -2725,7 +2725,7 @@ impl World {
                     // rounds — that body was never serialized through here
                     // — and one whose record came back off disk finds the
                     // cylinder empty and presses reload. Stated rather than
-                    // silent; `NOW.md` §0rl carries the remainder.
+                    // silent; `NOW.md` §0mag carries the remainder.
                     mag: [0; MAX_MAGS],
                     mag_round: [NO_ITEM; MAX_MAGS],
                     // `NO_CELL`, not zero: the weak-spot chase names a

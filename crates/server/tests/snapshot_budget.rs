@@ -6,7 +6,7 @@
 //! counted/structural asserts: identical on this box and the reference
 //! VPS.
 
-use protocol::InputDatagram;
+use protocol::{ActionMsg, InputDatagram};
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use server::view::{Applied, ClientView};
@@ -1994,5 +1994,129 @@ fn the_event_lane_holds_at_population() {
         ShardStats::get(&stats.ev_resyncs),
         0,
         "a client's event ring refused a push at population"
+    );
+}
+
+/// **The reload lane at population: a hundred clients holding R.**
+///
+/// `NOW.md` §0mag, and the judge's ranked fix 2 of pass -19. The fixture
+/// above deletes the per-shot `EV_RELOAD` because at a hundred bodies it
+/// doubled the lane to 256/256 (`ranged.rs` carries that finding, and
+/// `storm_core`'s `p.mag[0] = u16::MAX` is the line it left behind). What
+/// replaced it is the same order of magnitude from the other side —
+/// `EV_RELOAD_REFUSED` is one own-fact event per client per press, and a
+/// press is one action per client per tick, which is the server's own
+/// ceiling and therefore reachable by **any** client simply holding R.
+/// Nothing drove it. `sim-core/tests/reload.rs` proves the path with one
+/// player and `probe_combat` rotates it across three bots; neither is a
+/// budget.
+///
+/// It is also no longer hypothetical: `bot_smoke::test_bots_reload_over_
+/// the_wire` landed a bot that answers its own dry click and re-asks on
+/// every BUSY, so a fleet now generates this traffic without a human
+/// holding a key down.
+///
+/// Measured here, 100 clients, 40 ticks:
+///
+/// | cap | what it bounds | peak | headroom |
+/// |---|---|---|---|
+/// | `MAX_EVENTS_PER_TICK` 256 | sim events in one tick | **100** | 2.56x |
+/// | `EVENT_RING_CAP` 128 | pushes to one client in one tick | **2** | 64x |
+///
+/// So the reload lane costs **exactly one event per client per tick** and
+/// the fan-out is genuinely own-fact: 100 events reach 100 clients one
+/// each, where a broadcast would put 100 in every ring and blow the cap on
+/// the first tick. That is the thing asserted below, and it is asserted as
+/// a *ratio* rather than as `== 100` — pinning the measured value is what
+/// the test above warns teaches the next reader to re-baseline instead of
+/// think.
+///
+/// ⚠ **What this does NOT say, and it is the more important half.** The
+/// trigger is not pulled here, and that is a deliberate separation rather
+/// than an easier fixture: this suite's other storm already owns the
+/// firing claim at 196/256. Driving **both at once** — a hundred bodies
+/// firing lethal rounds *and* holding R — was measured on 2026-08-30 and
+/// **overflows**: 256/256 sim events, 88 dropped, and `ev_resyncs` 100,
+/// i.e. every connected client resynced at the same instant, which is the
+/// self-amplifying case `DECISIONS.md` §open names. The two costs are
+/// simply additive (196 + 100 = 296 against a 256 cap) and neither half
+/// is bounded by the other. That is a real finding and it is NOT gated
+/// here, because the answer is a knob nobody has spoken — `NOW.md` §0mag
+/// and `findings/note-20260830-two-storms-are-additive.md` carry it. Do
+/// not "fix" this test by adding the trigger and relaxing a bound.
+#[test]
+fn the_reload_lane_holds_when_everyone_holds_reload() {
+    let stats = ShardStats::default();
+    let mut core = storm_core(&stats);
+    let all: Vec<usize> = (0..MAX_PLAYERS).collect();
+    let active = core.world.players.iter().filter(|p| p.active).count();
+    assert!(active > MAX_PLAYERS / 2, "only {active} bodies seated");
+
+    let mut peak_events = 0usize;
+    let mut peak_push = 0usize;
+    for _ in 0..40 {
+        // One press per client per tick — `push_action` takes one and only
+        // one (`pending_action.is_none()`), so this is not an exaggerated
+        // rate: it is the exact ceiling the net path already enforces, and
+        // a client holding the key reaches it.
+        for &slot in &all {
+            core.push_action(slot, ActionMsg::Reload);
+        }
+        let mut per_slot = [0usize; MAX_PLAYERS];
+        core.tick_bare(&stats, |lane, slot, _| {
+            if lane != Lane::Event {
+                return true;
+            }
+            per_slot[slot] += 1;
+            per_slot[slot] <= EVENT_RING_CAP
+        });
+        peak_events = peak_events.max(core.world.events.len());
+        peak_push = peak_push.max(per_slot.iter().copied().max().unwrap_or(0));
+    }
+
+    // Anti-vacuity first, and it has bitten this file three times: a
+    // fixture that refused nothing satisfies every bound below. Every
+    // seated body pressed and every press was answered, so the floor is
+    // the population itself — `storm_core` seats each magazine full, so
+    // the answer is `REFUSE_RL_FULL` and there is exactly one per press.
+    assert!(
+        peak_events >= active,
+        "peak {peak_events} sim events against {active} bodies each pressing \
+         reload every tick — presses are being dropped before the sim, so \
+         the bounds below prove nothing"
+    );
+
+    // **Own-fact, and this is what says so.** A reload refusal goes to one
+    // client (`core.rs` routes it through `client_slot_of`). If it ever
+    // became a broadcast, every ring would take the whole fleet's traffic
+    // and this ratio would collapse to 1 — which is also the shape a
+    // wallhack takes, since a round count is not another player's business.
+    assert!(
+        peak_push * 8 < peak_events,
+        "one client was offered {peak_push} of the {peak_events} events the \
+         fleet produced in a tick: a refusal that should reach one client is \
+         reaching many, which is both a blown ring and a disclosure"
+    );
+
+    assert!(
+        peak_events < MAX_EVENTS_PER_TICK,
+        "a hundred clients holding R produced {peak_events} events in one \
+         tick against a {MAX_EVENTS_PER_TICK} cap; past it `EventQueue` \
+         drops newest and `pump_events` resyncs EVERY connected client"
+    );
+    assert!(
+        peak_push < EVENT_RING_CAP,
+        "one client was offered {peak_push} event messages in one tick \
+         against a {EVENT_RING_CAP}-slot ring"
+    );
+    assert_eq!(
+        ShardStats::get(&stats.ev_sim_dropped),
+        0,
+        "the per-tick event queue overflowed under reload traffic alone"
+    );
+    assert_eq!(
+        ShardStats::get(&stats.ev_resyncs),
+        0,
+        "a client's event ring refused a push under reload traffic alone"
     );
 }

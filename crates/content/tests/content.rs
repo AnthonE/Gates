@@ -1295,6 +1295,114 @@ fn the_magazine_rules_refuse_what_they_name() {
     );
 }
 
+/// **The ninth magazine is refused at the bake — and this is the first thing
+/// that ever ran that refusal.**
+///
+/// `bake.rs`'s own comment says why the arm exists: a weapon that lost its
+/// `mag_slot` falls back to spending straight out of the pack, which is *the
+/// mechanic silently gone with every gate green*. Nothing drove it.
+/// `the_magazine_rules_refuse_what_they_name` above gates the six **validate**
+/// rules and stops at the crate boundary; `reload.rs`'s store test checks the
+/// array widths and `NO_MAG`'s range, not the bake.
+///
+/// The evidence it had never run is that **the message it prints was
+/// malformed** — a hand-broken string literal missing its `\`, so twenty-two
+/// literal spaces and no noun sat between the count and `` `Player::mag` ``.
+/// Nobody had ever seen the sentence. That is what the last assertion here is
+/// for, and it is not pedantry: a refusal is a thing a *person* reads at boot
+/// while the shard will not start, so a garbled one costs an outage's worth of
+/// confusion at exactly the wrong moment.
+///
+/// It cannot go through `refuses_bake`, and that is a fact about the two
+/// layers rather than an inconvenience: `validate.rs` refuses nine magazine
+/// rows in the *source*, so no `weapons.toml` text reaches this arm. The two
+/// checks are deliberately doubled at the same threshold (validate's comment
+/// says so), which leaves the bake's copy reachable only by handing it rows
+/// the validator has already passed — a built `Content`, mutated. So this test
+/// is also the demonstration that the second of the two is real and not
+/// decoration.
+#[test]
+fn the_ninth_magazine_is_refused_at_the_bake() {
+    // The shipped firearm, cloned. Cloning rather than hand-building keeps
+    // every other column at a shape the bake already accepts, so the only
+    // thing under test is the slot count — a hand-built row that tripped
+    // `range_m` or a missing round would go red here and read as this
+    // refusal firing when it was a different one.
+    let shipped = build(&sources()).expect("the shipped set validates");
+    let proto = shipped
+        .weapons
+        .iter()
+        .find(|w| w.magazine.unwrap_or(0) > 0)
+        .expect("the shipped set carries a weapon with a magazine")
+        .clone();
+    let already = shipped
+        .weapons
+        .iter()
+        .filter(|w| w.magazine.unwrap_or(0) > 0)
+        .count();
+
+    // Item ids that exist and carry no weapon row today — a duplicate row
+    // trips `bake: duplicate weapon row` and would pass an assertion looking
+    // only for "refused".
+    let spare = [
+        "item.wood",
+        "item.stone",
+        "item.metal_ore",
+        "item.sulfur_ore",
+        "item.cloth",
+        "item.fat",
+        "item.charcoal",
+        "item.metal_frags",
+    ];
+    assert!(
+        already + spare.len() > sim_core::limits::MAX_MAGS,
+        "fixture rot: {already} shipped magazines plus {} spares cannot reach          MAX_MAGS ({})",
+        spare.len(),
+        sim_core::limits::MAX_MAGS
+    );
+    let armed = |n: usize| {
+        let mut c = build(&sources()).expect("the shipped set validates");
+        for id in spare.iter().take(n) {
+            let mut w = proto.clone();
+            w.id = (*id).to_string();
+            c.weapons.push(w);
+        }
+        c
+    };
+
+    // Anti-vacuity, and it is the load-bearing half: the cap must be the
+    // thing refusing. A bake that refused the *first* clone — because the
+    // rows were malformed, or because `MAX_MAGS` moved to 1 — satisfies the
+    // refusal below while proving nothing, and it is the shape a mutant
+    // takes. Exactly `MAX_MAGS` magazine rows must still bake.
+    let fits = sim_core::limits::MAX_MAGS - already;
+    armed(fits).bake_combat().unwrap_or_else(|e| {
+        panic!(
+            "{} magazine rows is the cap, not past it: {e}",
+            already + fits
+        )
+    });
+
+    let err = armed(fits + 1)
+        .bake_combat()
+        .expect_err("a weapon past MAX_MAGS was handed a magazine slot");
+    assert!(
+        err.contains("weapon with a magazine"),
+        "the ninth magazine was refused for the wrong reason: {err}"
+    );
+    assert!(
+        err.contains(&format!("{}th", sim_core::limits::MAX_MAGS + 1)),
+        "the refusal must name which row it is refusing, got: {err}"
+    );
+    // The message is a sentence a person reads at a shard that will not
+    // boot. `"  "` is what a hand-broken literal leaves behind, and it is
+    // the exact defect that proved this arm had never executed.
+    assert!(
+        !err.contains("  "),
+        "the refusal is malformed — a run of spaces from a broken string          literal: {err:?}"
+    );
+}
+
 /// The seven durability rules (item durability v0), each proven against
 /// the shipped set with one edit. V7 and V4 are the two the slice's gates
 /// name — the stack law everything else leans on, and the set check this

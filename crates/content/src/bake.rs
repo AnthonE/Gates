@@ -832,7 +832,8 @@ impl Content {
             // which is the shape `limits::MAX_MAGS` is written against.
             if *next_mag as usize >= MAX_MAGS {
                 return Err(format!(
-                    "bake: `{}` is the {}th weapon with a magazine, past the {MAX_MAGS}                      `Player::mag` holds",
+                    "bake: `{}` is the {}th weapon with a magazine, past the \
+                     {MAX_MAGS} slots `Player::mag` holds",
                     w.id,
                     *next_mag as usize + 1
                 ));
