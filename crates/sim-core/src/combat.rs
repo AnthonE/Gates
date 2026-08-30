@@ -569,12 +569,15 @@ impl CombatContent {
             headshot_mult: 2,
             //   limb_pct 50 — the reference's ×0.5 rather than the
             //     identity, so a leg hit is a *different* number in the
-            //     digest and not a chest hit spelled twice. Whether the
-            //     probe's bots ever land one is a measurement and not a
-            //     claim: 0lc slice 6's lesson is that a fixture row which
-            //     nothing reaches rides the parity surface without
-            //     covering anything, so `tests/headshot.rs` counts the
-            //     limb hits rather than trusting this line.
+            //     digest and not a chest hit spelled twice. **And the
+            //     bots reach it**, which is measured rather than assumed:
+            //     0lc slice 6's lesson is that a fixture row nothing
+            //     reaches rides the parity surface while covering
+            //     nothing. Flipping this one line to the identity moves
+            //     the `combat` digest (0x4cbe7083 → 0x3c7b11ac) and its
+            //     rewound-hitscan count (2412 → 2415) at 500×256, so the
+            //     leg band is on the parity surface for a reason and not
+            //     by hope.
             limb_pct: 50,
         };
         c
