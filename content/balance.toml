@@ -74,6 +74,14 @@ ttk_firearm = [4, 6]
 # "headshot × 2" (CONTENT §4) — every banded weapon carries exactly this,
 # so a data edit can't quietly make headshots one-tap past the TTK band.
 headshot_mult = 2
+# And "limb ×0.5" (`reference/PROJECTILES.md` §0), as a percent so this file
+# stays integer-only. Exact for `headshot_mult`'s reason at the other end of
+# the ladder: the TTK band above is measured on **body** hits, so it says
+# nothing about a leg, and a data edit could otherwise take a limb to 100
+# (aim stops mattering downward) or to 1 (a leg hit is a wasted round) with
+# every band still green. The throwable row is skipped — a blast has no
+# anatomy — which is why the satchel carries the identity at both ends.
+limb_pct = 50
 # Any single armor piece may add at most this many hits vs any banded weapon.
 armor_extra_hits_max = 2
 # Anchor 3 — a banded node's total yield and hit count at tier-1 tools.

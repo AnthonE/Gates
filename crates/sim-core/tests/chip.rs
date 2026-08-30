@@ -152,6 +152,7 @@ fn shooter_combat(structure: u16) -> CombatContent {
         range_mm: 60_000,
         structure,
         headshot_mult: 2,
+        limb_pct: 50,
     };
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,
@@ -165,6 +166,7 @@ fn shooter_combat(structure: u16) -> CombatContent {
         range_mm: 50_000,
         structure,
         headshot_mult: 2,
+        limb_pct: 50,
     };
     c
 }

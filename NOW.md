@@ -184,36 +184,35 @@ arc. Items 2, 3 and 5 have landed. What is left:
    two sides each.
 
 
-## 0hs · The head band — what headshot v0 left *(systems lane)*
+## 0hs · The body-part ladder — what limb band v0 left *(systems lane)*
 
-*Headshot v0 landed 2026-08-30: a hit whose line crosses the top 0.25 m of
-the body cylinder pays the weapon's `headshot_mult`. `DECISIONS.md` §open
-has the knob; `reference/PROJECTILES.md` §9.4 has the design and what
-differed. Three things it did not do, smallest first.*
+*Item 2 landed 2026-08-30 (limb band v0): `LIMB_BAND_M = 0.85`, a
+`limb_pct` column on all eleven weapon rows at the reference's 50, and
+`head_crossed` replaced by `ranged::part_crossed` → `collide::Part`, whose
+derived `Ord` **is** §7's most-significant-part rule. `DECISIONS.md` §open
+has the knob; `reference/PROJECTILES.md` §9.4b has the design. Eleven
+mutants run, ten caught outright and the eleventh — `balance.rs`'s `!=`
+weakened to `<` — survived until `the_body_part_ladder_refuses_what_it_names`
+landed, because shipped content agrees with a band by construction.*
 
-1. **One mutant survives the gate.** `exit.min(stop_t)` dropped at both
-   damage sites in `ranged.rs` reddens nothing —
-   `a_stop_before_the_head_is_not_a_headshot` pins the predicate's
-   clipping contract and no check proves the resolvers hand it a clipped
-   span. It needs a world that stops a **rising** shot between a chest and
-   a crown: `tests/chip.rs`'s foundation-and-wall fixture with the victim
-   0.3 m in front of the wall, and the crown check's geometry mirrored
-   upward. The guard is conservative — dropping it can only invent
-   headshots, never delete them — which is why this is a hole and not a
-   bug.
-2. **No limb, so no ×0.5.** The reference is ×2 head / ×1 chest / ×0.5
-   limbs with a per-weapon override (`PROJECTILES.md` §0). We have the
-   first two. A third part is exactly where §7's *most significant part
-   along the segment* stops reducing to an interval overlap and has to be
-   built as a real ordering — and `weapons.toml` has one multiplier
-   column, so the override structure is a schema change too.
-3. **Nothing tells you it was a head.** No hitmarker variant, no cue, no
-   distinct number: `EV_HIT` and `EV_HURT` carry the scaled damage and
-   nothing carries the *fact*. A player learns a headshot happened by
-   noticing the number was bigger, which is the same complaint §0hrt
-   item 1 makes about damage generally. Cheapest shape is a spare bit on
-   an existing event rather than a field, and that is a wire read nobody
-   has spoken. §LOOK.
+1. **The clip's mutant still survives, and the fixture this item used to
+   propose cannot be built.** `exit.min(stop_t)` dropped at both damage
+   sites reddens nothing. Measured this pass: the world must go solid
+   *inside* the far half of the victim's own 0.8 m footprint, which a wall
+   cannot do to a body standing legally in front of it. The route that
+   works is the arrow's tick boundary (`world_stop` returns 1.0 and
+   `BodyHit::exit` is unclipped) — a `tests/shoot.rs`-shaped fixture
+   driving `step`. `tests/headshot.rs`'s header has the arithmetic.
+2. **No arm, and no per-weapon override has been used.** What shipped is a
+   *leg* band — a cylinder cannot tell an arm from the chest beside it.
+   Every row carries the band, so the override §0 names exists and nothing
+   exercises it; the first weapon that should differ is the case that says
+   whether the geometry should widen.
+3. **Nothing tells you which part it was.** `EV_HIT` and `EV_HURT` carry
+   the scaled damage and nothing carries the *fact* — and a halved number
+   is easier to misread as a miss than a doubled one is to read as a
+   skull. Two spare bits on an existing event, not a field; a wire read
+   nobody has spoken. §LOOK.
 
 ## 0tl · The torch lights the ground — what it still cannot do *(client+systems lane)*
 

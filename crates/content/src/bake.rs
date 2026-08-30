@@ -822,6 +822,14 @@ impl Content {
             // band is 2 and `validate` refuses a zero, so a shipped row
             // cannot arrive here as a hit that deals nothing.
             headshot_mult: w.headshot_mult as u16,
+            // The other end of the ladder, and the first column in this
+            // block that was never "armed and unread": it was parsed,
+            // banded, hashed, baked and read by `ranged::part_crossed` in
+            // one commit. `u16` for `headshot_mult`'s reason —
+            // `combat::limb` multiplies in `u32` and divides by 100, and
+            // `validate` holds the value in `1..=100`, so the product
+            // cannot overflow and the quotient cannot exceed the raw.
+            limb_pct: w.limb_pct as u16,
         };
         Ok(())
     }

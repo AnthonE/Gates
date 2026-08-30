@@ -449,6 +449,43 @@ Gates: `crates/sim-core/tests/headshot.rs` (9 checks, ten mutants run and
 the two survivors written down in its header) and `content`'s
 `the_headshot_column_reaches_the_sim`.
 
+### 9.4b · The limb, and the ordering it forced — **BUILT 2026-08-30**
+
+§9.4's reduction was load-bearing and it did not survive the third part.
+"With a head and a body and nothing else, most significant part crossed is
+was the head interval crossed at all" is true and is *why* a bool was
+enough; a leg band makes it false, because a span that misses the head has
+two answers now. So `head_crossed` became `ranged::part_crossed` returning
+`collide::Part`, and §7's rule is that enum's derived `Ord` — the `max`
+over the bands a span touches. The inversion §7 exists for is now
+assertable in one line: a shot crossing a shin **and** a chest is a chest
+hit (`a_shin_on_the_way_into_a_chest_is_a_chest_hit`).
+
+Three things differ from §0's paragraph.
+
+1. **A band again, not a limb.** `LIMB_BAND_M = 0.85` is the bottom half of
+   the same cylinder. A cylinder cannot tell an arm from the chest it hangs
+   beside, so what shipped is *legs*, and §0's own note that the reference's
+   bow figures spread wider than a clean ×2/×1/×0.5 is the reason not to
+   pretend otherwise: the ratio is theirs, the geometry is ours.
+2. **A percent, not a multiplier.** `limb_pct = 50` beside
+   `headshot_mult = 2`, because one `u16` column cannot say both "double"
+   and "half". That gives §0's **per-weapon override** for free at both
+   ends, in data, with the identities (1 and 100) meaning "opts out".
+   The satchel carries both — a blast has no anatomy.
+3. **The band pins it exactly.** `[bands] limb_pct` is checked for equality
+   on every non-throwable row, because the TTK band is measured on the
+   chest and is green whatever a leg is worth.
+
+**What §9.4's own gate could not do, measured.** `balance.rs`'s equality
+weakened to `<` survived the whole workspace: shipped content agrees with
+the band by construction, so a comparison that only fires *below* it never
+fires. `content`'s `the_body_part_ladder_refuses_what_it_names` hands the
+loader a row that disagrees; it did not exist for `headshot_mult` either.
+
+Gates: `tests/headshot.rs` (13 checks; eleven more mutants run, all caught
+once that refusal row existed) and `content`'s two ladder rows.
+
 ### 9.5 · The rest, in the order a player notices
 
 1. **No structure damage.** An arrow that reaches a wall stops dead.
@@ -480,7 +517,7 @@ and no reason of ours to differ takes theirs and cites it. Candidates:
 |---|---|---|
 | bow damage 30 | ~35 | **hold.** §5 — theirs is priced against 85 % arrow recovery and ours against none. Move the recovery loop first, then the number |
 | `rate_per_min = 30` (2.0 s) | ~1 s draw + ~2.75 s reload ≈ 3.75 s | ours is fast. A real candidate once draw exists, because their number is *two* mechanics and ours is one |
-| headshot ×2 | ×2 head, ×1 chest, ×0.5 limbs | **half taken** (§9.4, 2026-08-30): the ×2 head and the ×1 chest are live and already matched. The ×0.5 limb is not — we have no limb, and adding one is a *third* part, which is the point at which the band stops being sufficient and §7's ordering has to be built for real |
+| headshot ×2 | ×2 head, ×1 chest, ×0.5 limbs | **taken whole** (§9.4 + §9.4b, both 2026-08-30): ×2 head, ×1 chest and ×0.5 limbs are all live. The third part did exactly what this row predicted — the band stopped being sufficient and §7's ordering is built for real (`collide::Part`'s `Ord`). What is *not* taken is the per-part **arm**: our limb is a leg band on a cylinder, and their spread is wider than a clean ×2/×1/×0.5 anyway |
 | HV arrow −20 % damage | −20 % | take it whole — but it is blocked on §9.3 |
 
 The bands in `CONTENT.md` §4 still decide whether any of it may land;

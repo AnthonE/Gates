@@ -1639,6 +1639,7 @@ fn bow_fixture() -> CombatContent {
         range_mm: 60_000,
         structure: 0,
         headshot_mult: 2,
+        limb_pct: 50,
     };
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,
@@ -1859,6 +1860,7 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
         range_mm: 50_000,
         structure: 0,
         headshot_mult: 2,
+        limb_pct: 50,
     };
     core.world.combat = c;
     core

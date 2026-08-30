@@ -302,6 +302,17 @@ pub struct Weapon {
     /// laws that hold it; balance.rs asserts them).
     pub structure: u32,
     pub headshot_mult: u32,
+    /// What a hit that reached nothing above the leg band is worth, in
+    /// **percent** of `damage` — the reference's ×0.5 limb
+    /// (`reference/PROJECTILES.md` §0), taken rather than argued
+    /// (`reference/BALANCE.md` §6).
+    ///
+    /// Percent and not a multiplier because the ladder needs a fraction:
+    /// `headshot_mult` says how much *more* a skull is worth and this
+    /// says how much *less* a shin is, and one `u32` column cannot do
+    /// both without every existing row moving. 100 is the identity — a
+    /// weapon that does not discount a leg at all.
+    pub limb_pct: u32,
     pub rate_per_min: u32,
     pub range_m: u32,
     /// The rounds this weapon can fire, in **preference order** — the sim
@@ -616,6 +627,11 @@ pub struct Bands {
     pub ttk_firearm: [u32; 2],
     /// Every banded weapon carries exactly this headshot multiplier.
     pub headshot_mult: u32,
+    /// And exactly this limb percent, for the same reason: a data edit
+    /// must not be able to quietly turn a leg hit into a full one (or
+    /// into nothing) underneath the TTK band, which is measured on body
+    /// hits and says nothing about either end of the ladder.
+    pub limb_pct: u32,
     pub armor_extra_hits_max: u32,
     pub node_yield: [u32; 2],
     pub node_hits: [u32; 2],

@@ -61,7 +61,7 @@
 //! content-hashed since the content crate and dropped at the bake every
 //! time (`reference/PROJECTILES.md` §9.4). The rule is §7's — the most
 //! significant part **along the segment**, so `nearest_body` carries the
-//! span the shot spent inside the body and `head_crossed` is the overlap.
+//! span the shot spent inside the body and `part_crossed` is the overlap.
 //!
 //! **Melee still has none**, and that half of the old sentence stays true
 //! for the reason it always gave: `combat::strike` resolves feet-to-feet in
@@ -118,7 +118,9 @@
 //! vertical step between two taps is at most `ARROW_STEP_MM`, under the band
 //! a slab presents.
 
-use crate::collide::{self, ColIndex, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M, HEAD_BAND_M};
+use crate::collide::{
+    self, ColIndex, Part, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M, HEAD_BAND_M, LIMB_BAND_M,
+};
 use crate::combat::{held_item, CombatContent};
 use crate::craft::{inv_count, inv_take};
 use crate::gather::NO_ITEM;
@@ -245,6 +247,12 @@ pub struct Arrow {
     /// nothing else; a high-velocity arrow flies flatter and hits for what
     /// the bow says.
     pub head_mult: u16,
+    /// What this arrow is multiplied by, in **percent**, if its line
+    /// reached nothing above the leg band — the bow's `limb_pct`, copied
+    /// at the draw for [`Arrow::head_mult`]'s reason word for word: an
+    /// arrow already in the air must not change what it does because
+    /// content was rebaked under it.
+    pub limb_pct: u16,
     /// Ticks of flight left. Zero means the slot is free.
     pub life: u16,
     /// Millimetres flown so far — arc length, summed per tick, which is
@@ -298,6 +306,9 @@ impl Arrows {
             structure: 0,
             // The identity, so an unfilled slot cannot delete a hit.
             head_mult: 1,
+            // The identity at the other end, and the same sentence: a
+            // percent of zero on an unfilled slot would delete one.
+            limb_pct: 100,
             life: 0,
             flown: 0,
         }; MAX_ARROWS],
@@ -433,6 +444,7 @@ pub fn draw(
         damage: def.damage,
         structure: def.structure,
         head_mult: def.headshot_mult,
+        limb_pct: def.limb_pct,
         life,
         flown: 0,
     };
@@ -616,11 +628,12 @@ pub fn step(
             // shots — the band is always measured off the cylinder the hit
             // was decided against (`BodyHit::qy`).
             let feet_mm = feet_q as f32 * (POS_Y_Q * MM_PER_M);
-            let dmg = if head_crossed(oy, sy, feet_mm, enter, exit.min(stop_t)) {
-                crate::combat::headshot(a.damage, a.head_mult)
-            } else {
-                a.damage
-            };
+            let dmg = crate::combat::part_damage(
+                a.damage,
+                part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t)),
+                a.head_mult,
+                a.limb_pct,
+            );
             // The funnel, reduced: an arrow is a hit like any other.
             let h = crate::combat::hurt(cc, v, dmg);
             let died = h.died;
@@ -953,7 +966,7 @@ pub struct BodyHit {
     pub slot: usize,
     /// Segment fraction where the line **enters** that body's radius, and
     /// where it **leaves** it, clamped to `[0, 1]`. Together they are the
-    /// span the shot spent inside the body, which is what [`head_crossed`]
+    /// span the shot spent inside the body, which is what [`part_crossed`]
     /// needs and what `t` alone cannot give: `t` is one point, and §7's
     /// rule is about the whole crossing.
     ///
@@ -970,7 +983,7 @@ pub struct BodyHit {
     /// Carried rather than re-read at the call site, and that is the whole
     /// of what makes a rewound headshot coherent. The head band is an
     /// offset off the top of the same cylinder this scan solved against
-    /// ([`head_crossed`]), so reading `players[slot].body.qy` afterwards
+    /// ([`part_crossed`]), so reading `players[slot].body.qy` afterwards
     /// would test a **present-tick crown** against a **past-tick
     /// horizontal solve** — a victim who jumped, fell or walked downhill in
     /// the last quarter-second gets a head floating away from the body the
@@ -981,41 +994,71 @@ pub struct BodyHit {
     pub qy: i32,
 }
 
-/// Did the shot cross the victim's head band while it was inside their body?
+/// Which body part did the shot's span inside this body reach?
 ///
-/// **The two-part reduction of `reference/PROJECTILES.md` §7's rule**, which
-/// is *damage the most significant body part along the line of sight*, not
-/// the first one intersected. §9.4 states the reduction: with a head and a
-/// body and nothing else, "most significant part crossed" is "was the head
-/// interval crossed at all". So this is an interval overlap and not a
-/// raycast — a shot that clips a shoulder on its way into a skull is a
-/// headshot, which is the inversion §7 says they had to make on purpose (a
-/// limb in front of a torso must not save the torso).
+/// **`reference/PROJECTILES.md` §7's rule, built for real**, which is
+/// *damage the most significant body part along the line of sight*, not
+/// the first one intersected. Until 2026-08-30 this was `head_crossed`, a
+/// bool, and §9.4 stated the reduction that made a bool sufficient: with a
+/// head and a body and nothing else, "most significant part crossed" is
+/// "was the head interval crossed at all". A third band retires that
+/// reduction — a span that misses the head has two answers now — so this
+/// returns a [`Part`] and the ordering is [`Part`]'s own `Ord`.
 ///
-/// Everything is **millimetres**, matching the two call sites' own units, so
-/// nothing here converts and nothing rounds: `oy + sy * t` is the shot's
-/// altitude at fraction `t`, and `feet_mm` is the victim's feet. `t_lo` and
-/// `t_hi` are [`BodyHit::enter`] and [`BodyHit::exit`], the second already
-/// clipped against the world's stop by the caller — a wall between the
-/// chest and the head means the head was never reached.
+/// It is still an interval overlap and still not a raycast: a shot that
+/// clips a shin on its way into a chest is a **chest** hit, which is the
+/// inversion §7 says they had to make on purpose (a limb in front of a
+/// torso must not save the torso). What changed is that the answer is now
+/// a `max` over three bands instead of a single compare against one.
 ///
-/// `y` is linear in `t`, so the altitudes at the two ends **are** the range
-/// over the span and there is nothing to sample. That is the whole reason
-/// this is four adds and a compare rather than a walk.
+/// Everything is **millimetres**, matching the two call sites' own units,
+/// so nothing here converts and nothing rounds: `oy + sy * t` is the
+/// shot's altitude at fraction `t`, and `feet_mm` is the victim's feet.
+/// `t_lo` and `t_hi` are [`BodyHit::enter`] and [`BodyHit::exit`], the
+/// second already clipped against the world's stop by the caller — a wall
+/// between the chest and the head means the head was never reached.
+///
+/// `y` is linear in `t`, so the altitudes at the two ends **are** the
+/// range over the span and there is nothing to sample. That is the whole
+/// reason this is six adds and three compares rather than a walk.
+///
+/// **[`Part::Chest`] is the fallback and that is the shipped behaviour**,
+/// not a new rule: a degenerate span (a stop before the entry) and a span
+/// that lies entirely outside every band both score the raw damage, which
+/// is what a `head_crossed` of `false` has always meant. The bands do not
+/// tile the cylinder's *complement* — an altitude below the feet or above
+/// the crown belongs to no part — so the fallback is doing real work and
+/// is not dead.
 ///
 /// Wall 1: `+ − × min max` only.
 #[inline]
-pub fn head_crossed(oy: f32, sy: f32, feet_mm: f32, t_lo: f32, t_hi: f32) -> bool {
+pub fn part_crossed(oy: f32, sy: f32, feet_mm: f32, t_lo: f32, t_hi: f32) -> Part {
     // A stop before the entry means the shot never got inside this body at
     // all on the part of the segment that survived the world.
     if t_hi < t_lo {
-        return false;
+        return Part::Chest;
     }
     let (a, b) = (oy + sy * t_lo, oy + sy * t_hi);
     let (lo, hi) = (a.min(b), a.max(b));
     let head_lo = feet_mm + (CAPSULE_HEIGHT_M - HEAD_BAND_M) * MM_PER_M;
     let head_hi = feet_mm + CAPSULE_HEIGHT_M * MM_PER_M;
-    hi >= head_lo && lo <= head_hi
+    if hi >= head_lo && lo <= head_hi {
+        return Part::Head;
+    }
+    // The legs, and the order matters: this is asked only after the head
+    // has said no, so a span running shin-to-skull never reaches it.
+    let limb_hi = feet_mm + LIMB_BAND_M * MM_PER_M;
+    if hi >= feet_mm && lo <= limb_hi {
+        // Reaching the legs does not mean stopping there. A span from a
+        // shin to a sternum touches both bands, and §7 scores it at the
+        // chest — so the legs are only the answer when nothing above them
+        // was touched.
+        if hi > limb_hi {
+            return Part::Chest;
+        }
+        return Part::Limb;
+    }
+    Part::Chest
 }
 
 /// The nearest body whose closest approach to the segment `o + s·t` comes at
@@ -1089,7 +1132,7 @@ fn nearest_body(
         // proved the line comes within `R` — but it is `max`ed at zero
         // anyway, because a `sqrt` of a float that is -1e-9 by rounding is
         // a NaN, and a NaN would spread through the span into
-        // `head_crossed` and out of it as a silent false.
+        // `part_crossed` and out of it as a silent chest hit.
         let vv = ux * ux + uz * uz;
         let (enter, exit) = if vv <= 0.0 {
             // A purely vertical shot never leaves its own column, so the
@@ -1396,11 +1439,12 @@ pub fn hitscan(
             // clear of the body the bullet met. At favour 0 this is the
             // live `qy` to the bit.
             let feet_mm = feet_q as f32 * (POS_Y_Q * MM_PER_M);
-            let dmg = if head_crossed(oy, sy, feet_mm, enter, exit.min(stop_t)) {
-                crate::combat::headshot(def.damage, def.headshot_mult)
-            } else {
-                def.damage
-            };
+            let dmg = crate::combat::part_damage(
+                def.damage,
+                part_crossed(oy, sy, feet_mm, enter, exit.min(stop_t)),
+                def.headshot_mult,
+                def.limb_pct,
+            );
             // The funnel, reduced: a bullet is a hit like any other, and
             // armor blunts it (armor v0, 2026-08-19 — this said "the day
             // armor lands" for exactly one day).
