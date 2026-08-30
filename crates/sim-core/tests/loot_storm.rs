@@ -791,8 +791,7 @@ fn test_loot_storm() {
     assert_eq!(
         s.bursts_to_zero, BURSTS,
         "only {} of {BURSTS} bursts took a full store to zero (min held: {})",
-        s.bursts_to_zero,
-        s.min_bags_scavenging
+        s.bursts_to_zero, s.min_bags_scavenging
     );
     // And the drain finishes strictly inside the burst, so `LOOT_BURST` is
     // margin rather than a fit. Gated rather than measured-and-forgotten:
