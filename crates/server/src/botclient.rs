@@ -644,6 +644,10 @@ pub async fn run_bot(
     // would need clearing from two tasks, which is the one shape that can
     // lose an edge.
     let mut asks_answered: u64 = 0;
+    // Fills this loop has already seen answer an ask. Same shape and same
+    // reason as `asks_answered` — a high-water mark over a counter the drain
+    // task writes, never a flag.
+    let mut fills_seen: u64 = 0;
     // The action stream is gone. `raid` served this for the raid lane and
     // cannot serve it here, because a bot with no raid rows still shoots.
     let mut reload_lane = true;
@@ -744,9 +748,32 @@ pub async fn run_bot(
                 // than sent beside it — sending both would leave which one
                 // survives up to the server, and a raid step lost that way
                 // is invisible to every counter in this file.
+                //
+                // **A confirmed fill retires every ask outstanding when it
+                // landed, and without this the lane asks for a magazine it
+                // has already been given.** The ordering three paragraphs up
+                // is the cause: inputs are applied before actions, so on the
+                // tick the fill happens `BTN_PRIMARY` is spent against the
+                // magazine while it is still empty. That raises a dry click
+                // and the confirm follows it in the same batch — one ask
+                // whose reason was gone before the loop could read it, and
+                // `reload` answers the retry `REFUSE_RL_FULL`. It needs both
+                // events in one batch and a trigger pull on that exact tick,
+                // which `bot_frame` presses a third of the time, so it fired
+                // about once in twelve runs and the suite read it as
+                // `reloads_refused` — the counter whose whole meaning is
+                // *the lane asked for something impossible*. Syncing the
+                // mark against the fill is the fix rather than tolerating a
+                // refusal, because a lane that can ask for a full cylinder
+                // cannot be told apart from a sim that fills the wrong one.
                 let mut took_the_tick = false;
                 let asks = tally.dry_clicks.load(Ordering::Relaxed)
                     + tally.reloads_busy.load(Ordering::Relaxed);
+                let fills = tally.reloads.load(Ordering::Relaxed);
+                if fills > fills_seen {
+                    fills_seen = fills;
+                    asks_answered = asks;
+                }
                 if reload_lane && asks > asks_answered {
                     asks_answered = asks;
                     let cmd = Command::Reload { id: report.player_id };
