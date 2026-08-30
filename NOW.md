@@ -2148,10 +2148,12 @@ document before quoting a row: this line has named a stale one twice.
 
 ## 0rl · The release path — two operator acts, and a tester's question *(platform lane)*
 
-1. **The newest draft is unpublished.** `v0.2.0` is the only published
-   release (2026-08-13); `v0.1.0`, `v0.3.0` and `v0.5.0` sit as drafts and
-   `v0.4.0` has no release row at all, while the tree is on 0.5.0. The act
-   is: open the v0.5.0 draft, read what is attached, publish.
+1. **Every draft since is unpublished.** `v0.2.0` is still the only
+   published release (2026-08-13); `v0.1.0`, `v0.3.0`, `v0.5.0` and
+   `v0.6.0` sit as drafts with six assets each and `v0.4.0` has no release
+   row at all, while the tree is on 0.7.0. Read the API rather than this
+   line — it has been stale at every version since it was written. The act
+   is: open the newest draft, read what is attached, publish.
 2. **`min_client` has never been raised on a live shard.** The order is
    publish the release FIRST and raise the floor after; `refused_build`
    climbing days later is how you find out you did it backwards.
