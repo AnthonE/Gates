@@ -111,6 +111,7 @@
 // sim code.
 #![allow(clippy::disallowed_macros)]
 
+use sim_core::combat::NO_MAG;
 use sim_core::collide::{
     ColIndex, Part, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M, HEAD_BAND_M, LIMB_BAND_M,
 };
@@ -169,6 +170,12 @@ fn fixture() -> CombatContent {
         structure: 0,
         headshot_mult: 2,
         limb_pct: 50,
+        // The shipped revolver's magazine (`content/weapons.toml`): eight
+        // rounds and 3.4 s, which is 102 ticks at 30 Hz. Slot 0 — this
+        // fixture bakes no other magazine.
+        magazine: 8,
+        reload_ticks: 102,
+        mag_slot: 0,
     };
     c.ranged[BOW as usize] = RangedDef {
         damage: 30,
@@ -179,6 +186,12 @@ fn fixture() -> CombatContent {
         structure: 0,
         headshot_mult: 2,
         limb_pct: 50,
+        // No magazine: a bow spends straight out of the quiver
+        // (`RangedDef::magazine`), so the arrow path is unchanged by
+        // reload v1 and this fixture is what says so.
+        magazine: 0,
+        reload_ticks: 0,
+        mag_slot: NO_MAG,
     };
     c.ammo[ARROW as usize] = sim_core::combat::AmmoDef {
         speed_mmpt: 1333,
@@ -211,6 +224,15 @@ fn shooter(id: u32, x: f32, feet_y: f32, z: f32, weapon: u16, round: u16, pitch:
         count: 20,
         cond: 0,
     };
+    // And the magazine, loaded (reload v1) — harmless for the bow, which
+    // has no `mag_slot` and spends straight out of the quiver, and
+    // necessary for the gun, which now dry-clicks on an empty cylinder.
+    // Eight is the fixture's ceiling and the shipped revolver's. That is
+    // enough because every sweep in this file builds a fresh shooter per
+    // placement — `pull` fires exactly once per body it is handed — so a
+    // cylinder never has to survive a second shot here.
+    p.mag[0] = 8;
+    p.mag_round[0] = round;
     p.frame = InputFrame {
         seq: 1,
         buttons: BTN_PRIMARY,

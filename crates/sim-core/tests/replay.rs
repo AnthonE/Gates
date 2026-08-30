@@ -257,6 +257,16 @@ const TICKS: u64 = 900;
 /// this value was read off, which is the check that separates the two
 /// shapes: a regenerated golden beside a red equality assert is the drift
 /// this constant exists to catch, beside a green one it is the verb.
+///
+/// Regenerated once more by **reload v1**, and it is the FIRST shape only —
+/// the definition widening, with no verb on this surface. `state_hash` now
+/// folds `Player::mag` and `Player::mag_round`, `MAX_MAGS` `u16` pairs per
+/// body, and the replay script neither fires a magazine weapon nor presses
+/// reload: every one of those pairs is `(0, NO_ITEM)` on every tick of this
+/// run. So the number moved because more bytes are hashed, not because any
+/// body behaved differently — which is checkable, and `hashes_a ==
+/// hashes_b` and `final_a == final_b` were green on the run this value was
+/// read off.
 /// Regenerated once more by the **building-rights** slice, and it is
 /// both shapes at once — which is why they are separated here rather
 /// than asserted together. **The definition widened**: `state_hash` gained
@@ -455,7 +465,7 @@ const TICKS: u64 = 900;
 /// on the ground, and every `y` in the trace moved with it. No verb, no
 /// ordering and no rule changed; the equality assert above it stayed green on
 /// the same run, which is what says the drift is the world and not the sim.
-const GOLDEN_FINAL_HASH: u64 = 0xA018_DD45_2908_5415;
+const GOLDEN_FINAL_HASH: u64 = 0xEB39_5100_9AA1_A923;
 
 /// The whole stamped TRACE, folded — every `STATE_HASH_INTERVAL` hash of the
 /// run, not just the last one.
@@ -497,7 +507,7 @@ const GOLDEN_FINAL_HASH: u64 = 0xA018_DD45_2908_5415;
 /// one does. Both moving together is what says the change is in the
 /// digest's SHAPE — a behavioural drift on this surface would move the
 /// trace at the tick it started and the final hash once.
-const GOLDEN_TRACE_HASH: u64 = 0xC991_6660_A595_BC1B;
+const GOLDEN_TRACE_HASH: u64 = 0x5C84_28EA_CCE5_6E9B;
 
 /// Fold a stamped trace into one number.
 ///

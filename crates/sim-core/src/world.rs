@@ -15,7 +15,8 @@ use crate::input::InputFrame;
 use crate::inventory;
 use crate::limits::{
     BOX_SLOTS, CRAFT_QUEUE, HOTBAR_SLOTS, INV_SLOTS, MAX_ARROWS, MAX_COMMANDS_PER_TICK,
-    MAX_EVENTS_PER_TICK, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL, WEAR_SLOTS,
+    MAX_EVENTS_PER_TICK, MAX_MAGS, MAX_PLAYERS, MAX_REMOVALS_PER_TICK, STATE_HASH_INTERVAL,
+    WEAR_SLOTS,
 };
 use crate::loot::{LootContent, LOOT_BARREL};
 use crate::mob;
@@ -650,6 +651,60 @@ pub const PRESENCE_GONE: u8 = 3;
 /// as a field nobody wrote.
 pub const PRESENCE_MAX: u8 = PRESENCE_GONE;
 
+/// EV_RELOAD: a = player id, b = rounds now loaded << 16 | the magazine's
+/// ceiling (`ranged::mag_pair`), c = rounds taken from the pack — **zero
+/// on a shot**, which is how one code says both halves of the fact.
+/// **Own-fact** — how full your cylinder is is yours, and a broadcast of it
+/// would be a wallhack that told the shard when to push you.
+///
+/// The pair rather than the delta, and `EV_KNOWN`'s reason word for word: a
+/// dropped increment would leave the HUD claiming rounds the sim does not
+/// have, with no later event able to correct it, and the player would find
+/// out by pulling the trigger in a fight. A full statement of the fact is
+/// self-healing — the next one repairs every loss before it — which is also
+/// why the *ceiling* travels on every event instead of once at a catalog
+/// drip: `client-core` holds no content tables, so a client handed only the
+/// loaded count cannot draw `4/6`.
+///
+/// `c` is what actually left the pack, which is not `magazine` and not the
+/// difference the client could compute: a partial reload off a nearly-empty
+/// pack takes fewer rounds than the cylinder wanted, and the toast the
+/// player is owed says how many they got. **Zero partitions the event into
+/// its two causes** — a fill (`c > 0`, worth a sound and a toast) and a
+/// spend (`c == 0`, worth only the readout ticking down) — which is
+/// `EV_SHOT`'s `speed == 0` trick one lane over, and spendable for the same
+/// reason: a fill that moved no rounds is not a fill, so the pattern was
+/// unreachable before it was given a meaning.
+///
+/// **It fires on the shot as well as on the reload, and that is what makes
+/// the readout authoritative rather than predicted.** The alternative was
+/// for the client to decrement its own count on `EV_SHOT` — but `EV_SHOT`
+/// is a broadcast and `client-core` has no notion of which body is its own,
+/// so "was that me" would have had to be invented, and a count the client
+/// maintains is a count that drifts silently the first time a datagram is
+/// lost. One own-fact event per shot to one recipient is cheaper than that
+/// bug, and it costs less than the broadcast `EV_SHOT` beside it.
+pub const EV_RELOAD: u8 = 42;
+
+/// EV_RELOAD_REFUSED: a = player id, b = held item index << 16 |
+/// `ranged::REFUSE_RL_*` reason, c = rounds now loaded << 16 | the
+/// magazine's ceiling. Own-fact, `EV_GATHER_REFUSED`'s posture and its
+/// packing: a button that did nothing says so, and the high half of `b`
+/// names the **held item** rather than only a reason, because the sentence
+/// the client owes is *a bow has no magazine* and not *refused*.
+///
+/// **It carries the count too, and that is the half that matters.** The
+/// dry click — a trigger pulled on an empty cylinder — arrives here rather
+/// than as a shot, so this event is the authoritative statement that the
+/// magazine is at zero. Without `c` the HUD would have to infer emptiness
+/// from a shot that never came, which is the same silence as a dropped
+/// datagram.
+///
+/// Bounded by the weapon's cadence on that path (`ranged::hitscan` pays
+/// `rate_ticks` before refusing) and by one action per client per tick on
+/// the reload path, so a held trigger cannot flood the lane.
+pub const EV_RELOAD_REFUSED: u8 = 43;
+
 /// The highest code above, named rather than counted: the event codes are
 /// `1..=EV_MAX` with no gaps, and `test_event_roles`'s coverage ledger
 /// scans that range. It lived in that test as a literal `25`, which meant a
@@ -657,7 +712,7 @@ pub const PRESENCE_MAX: u8 = PRESENCE_GONE;
 /// classified it. Tying it to the last constant closes half of that; the
 /// other half is the ledger's own `every_event_code_is_in_range`, which
 /// parses this file and fails if a code is declared past this line.
-pub const EV_MAX: u8 = EV_HURT;
+pub const EV_MAX: u8 = EV_RELOAD_REFUSED;
 
 /// Why a body fell (`Player::death_cause`). Sim state on the record rather
 /// than fields on `EV_DEATH`, whose three are already spent — the server
@@ -902,7 +957,38 @@ pub struct Player {
     /// there. Both are spelled `slot == index + 1`, deliberately.
     pub worn: [ItemStack; WEAR_SLOTS],
     /// Tick the next swing is allowed at (gather.rs cadence).
+    ///
+    /// **Reload v1 pays here too, deliberately.** A reload sets this
+    /// forward by `RangedDef::reload_ticks`, so the one field already
+    /// shared by gather, melee and both ranged paths is also the beat you
+    /// are helpless for: a reload stops a swing and a swing stops a
+    /// reload, with no second clock to keep in step and nothing new in
+    /// the hash.
     pub next_swing: u64,
+    /// Rounds loaded, indexed by `RangedDef::mag_slot` — **not** by
+    /// inventory slot and **not** by item index.
+    ///
+    /// Keyed by the weapon row, so nothing has to move it: a gun that
+    /// travels from the hotbar to a box to the ground and back keeps its
+    /// count, because the count was never attached to where the gun was.
+    /// That is the whole reason it is not a field on `ItemStack` — the
+    /// stated cost is in `RangedDef::mag_slot`, and `tests/reload.rs`
+    /// gates it.
+    ///
+    /// Zero on a fresh body, so a spawned revolver starts empty and the
+    /// first thing a player does with a gun is load it.
+    pub mag: [u16; MAX_MAGS],
+    /// Which round is in each magazine, `NO_ITEM` when empty — parallel to
+    /// [`Player::mag`].
+    ///
+    /// A weapon lists up to `MAX_WEAPON_AMMO` rounds in preference order,
+    /// so "six loaded" is not a fact until you say six of *what*: the
+    /// magazine has to remember, or a reload that topped up a partly-full
+    /// cylinder with a different round would fire the wrong damage and an
+    /// unload would return the wrong item to the pack. `ranged::reload`
+    /// refuses to mix — a magazine holding one kind tops up with that kind
+    /// or not at all.
+    pub mag_round: [u16; MAX_MAGS],
     /// Weak-spot chase: the cell this player last landed a hit on
     /// (`NO_CELL` = none) and how many hits they've landed there. The mark
     /// heading derives from these (gather.rs), so they are sim state.
@@ -1017,6 +1103,11 @@ impl Default for Player {
             inv: [ItemStack::default(); INV_SLOTS],
             worn: [ItemStack::default(); WEAR_SLOTS],
             next_swing: 0,
+            mag: [0; MAX_MAGS],
+            // `NO_ITEM` and not 0, for the reason `RangedDef::ammo` is
+            // `NO_ITEM`-padded: item 0 is a real item, so a zeroed round
+            // array would say every empty magazine holds one.
+            mag_round: [NO_ITEM; MAX_MAGS],
             ws_cell: NO_CELL,
             ws_hits: 0,
             jobs: [CraftJob::default(); CRAFT_QUEUE],
@@ -1425,6 +1516,19 @@ pub enum Command {
     Respawn {
         id: u32,
         on_bag: bool,
+    },
+    /// Fill the held weapon's magazine from the pack (`ranged::reload`).
+    ///
+    /// No target and no count: the weapon is whatever is in the selected
+    /// hotbar slot and the amount is however much the cylinder takes, so
+    /// there is nothing here a client could forge that the sim would not
+    /// have decided for itself. That is deliberate and it is why this is
+    /// an action rather than a button bit — a reload is a one-shot intent
+    /// with a *duration*, and `BTN_LIGHT`'s doc gives the rule: a level
+    /// both sides must agree on every tick is a bit, and a one-shot the
+    /// world has to acknowledge is a message.
+    Reload {
+        id: u32,
     },
 }
 
@@ -2613,6 +2717,17 @@ impl World {
                     dead: false,
                     frame: InputFrame::default(),
                     next_swing: 0,
+                    // Not from the save, and for `next_swing`'s reason one
+                    // line up rather than a new one: `PlayerSave` is the
+                    // store's record of a body that has LEFT the world, and
+                    // reload v1 did not widen it. A player who reconnects
+                    // to a sleeper still standing in the world keeps their
+                    // rounds — that body was never serialized through here
+                    // — and one whose record came back off disk finds the
+                    // cylinder empty and presses reload. Stated rather than
+                    // silent; `NOW.md` §0rl carries the remainder.
+                    mag: [0; MAX_MAGS],
+                    mag_round: [NO_ITEM; MAX_MAGS],
                     // `NO_CELL`, not zero: the weak-spot chase names a
                     // cell and cell 0 is a real one, so a `0` here would
                     // restore a player already half-way through chasing
@@ -3461,6 +3576,19 @@ impl World {
                     }
                 }
             }
+            Command::Reload { id } => {
+                // `live_slot_of`: a corpse and a sleeper do not reload,
+                // for the reason `hitscan` restates the same rule — the
+                // arm belongs to a body somebody is driving.
+                if let Some(slot) = self.live_slot_of(id) {
+                    ranged::reload(
+                        self.tick,
+                        &self.combat,
+                        &mut self.events,
+                        &mut self.players[slot],
+                    );
+                }
+            }
         }
     }
 
@@ -4091,6 +4219,19 @@ impl World {
             buf[44..46].copy_from_slice(&p.hp.to_le_bytes());
             buf[46..48].copy_from_slice(&p.deaths.to_le_bytes());
             h.update(&buf);
+            // The magazine, in its own update rather than widening the
+            // buffer above — and hashed at all because it decides whether
+            // a gun fires. Sim state outside the hash is the shape this
+            // repo pays for twice over: two shards could disagree about a
+            // loaded cylinder with `test_replay` green, and a save that
+            // dropped it would restore a world that hashes the same and
+            // plays differently. Both halves: `mag_round` is what the next
+            // shot spends, so a magazine holding the wrong round is a
+            // divergence even at an identical count.
+            for (loaded, round) in p.mag.iter().zip(p.mag_round.iter()) {
+                h.update(&loaded.to_le_bytes());
+                h.update(&round.to_le_bytes());
+            }
             // The survival clock, in its own buffer rather than widening
             // the one above — every byte of it is sim state (the
             // accumulators included: a replay resuming mid-span with a

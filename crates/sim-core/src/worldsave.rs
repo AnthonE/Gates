@@ -72,14 +72,14 @@ use crate::backpack::BackpackRec;
 use crate::build::PieceRec;
 use crate::charge::ChargeRec;
 use crate::deploy::{BoxRec, DeployRec, HearthRec};
-use crate::gather::{ItemStack, SlotLife};
+use crate::gather::{ItemStack, SlotLife, NO_ITEM};
 use crate::input::InputFrame;
 use crate::limits::HOTBAR_SLOTS;
 use crate::limits::{
     BOX_SLOTS, HEARTH_CREW_CAP, HEARTH_STOCK_ROWS, INV_SLOTS, LOCK_AUTH_CAP, LOCK_GUEST_CAP,
     MAX_BACKPACKS, MAX_BOXES, MAX_BUILD_COORD, MAX_BUILD_LEVELS, MAX_DEPLOYS, MAX_HEARTHS,
-    MAX_LIVE_CHARGES, MAX_LOCKS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES, MAX_SPENT_ARROWS,
-    MAX_WORLD_CONTS,
+    MAX_LIVE_CHARGES, MAX_LOCKS, MAX_MAGS, MAX_PIECES, MAX_PLAYERS, MAX_SLOT_LIVES,
+    MAX_SPENT_ARROWS, MAX_WORLD_CONTS,
 };
 use crate::lock::{LockRec, CODE_MAX, CODE_NONE};
 use crate::loot::{LOOT_CACHE, LOOT_CRATE};
@@ -161,7 +161,14 @@ use crate::worldcont::WorldContRec;
 /// this number exists to refuse — an old file read as a new one would
 /// take four bytes of the first player's craft queue as their torch and
 /// slide every byte after it.
-pub const WORLD_SAVE_FORMAT: u16 = 11;
+///
+/// **12 — a body keeps its loaded rounds** (reload v1): `Player` grew
+/// `mag` and `mag_round`, `MAX_MAGS` `u16` pairs written inline after
+/// `next_swing`, so a player record grew and every section after the
+/// players moved again. Saved rather than dropped because `state_hash`
+/// folds the magazine: a snapshot without it restores a world that hashes
+/// differently from the one that was written.
+pub const WORLD_SAVE_FORMAT: u16 = 12;
 
 /// Fixed head: format, tick, the three sweep cursors, the eviction counter,
 /// the next bag id, and the ten section counts.
@@ -203,8 +210,10 @@ pub const SECTION_COUNTS: usize = 10 * 2 + 4;
 /// the round-trip test in `tests/worldsave.rs` is what caught it.
 ///
 /// The tail: id, `slept_at`, the seven input-frame fields, `next_swing`,
-/// the weak-spot pair, the four death-screen facts, and `craft_done_at`.
-const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + 6 + 9 + 8;
+/// **the magazine** (format 12: `MAX_MAGS` pairs of `u16`, the loaded count
+/// and the round in it), the weak-spot pair, the four death-screen facts,
+/// and `craft_done_at`.
+const PLAYER_TAIL_BYTES: usize = 4 + 8 + 9 + 8 + MAX_MAGS * 4 + 6 + 9 + 8;
 /// On-disk stride of one saved body. Public because two byte-poking
 /// tests in `tests/worldsave.rs` have to seek past the player section, and
 /// a hand-copied 240 there is a silent wrong-offset the day `PlayerSave`
@@ -508,6 +517,15 @@ pub fn encode(w: &World, out: &mut [u8]) -> Result<usize, WorldSaveError> {
         o.u8(0); // move_z
         o.u8(p.frame.sel);
         o.u64(p.next_swing);
+        // The magazine (format 12). Written because `state_hash` folds it:
+        // a snapshot that dropped it would restore a world that hashes
+        // differently from the one that was saved, which is wall 5 failing
+        // on a field nobody could see. Both arrays, in slot order, because
+        // "six loaded" is not a fact until you say six of what.
+        for (loaded, round) in p.mag.iter().zip(p.mag_round.iter()) {
+            o.u16(*loaded);
+            o.u16(*round);
+        }
         o.u32(p.ws_cell);
         o.u16(p.ws_hits);
         o.u32(p.death_by);
@@ -822,6 +840,21 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
         let move_z = r.u8()? as i8;
         let sel = r.u8()?;
         let next_swing = r.u64()?;
+        // The magazine (format 12), in the order it was written. Not
+        // bounds-checked here beyond the widths: `mag` is a count the sim
+        // clamps against `RangedDef::magazine` on the next reload and a
+        // forged one can only overstate a cylinder the shooter already
+        // holds, and `mag_round` names an item index that `ranged::hitscan`
+        // spends without lookup — a forged one fires a round the pack was
+        // never debited for, which is the same theft as a forged `inv`
+        // stack and is refused by the same thing that refuses that: a save
+        // file is not a client (`ItemStack`'s bound is the model).
+        let mut mag = [0u16; MAX_MAGS];
+        let mut mag_round = [NO_ITEM; MAX_MAGS];
+        for (loaded, round) in mag.iter_mut().zip(mag_round.iter_mut()) {
+            *loaded = r.u16()?;
+            *round = r.u16()?;
+        }
         let ws_cell = r.u32()?;
         let ws_hits = r.u16()?;
         let death_by = r.u32()?;
@@ -852,6 +885,8 @@ pub fn decode_into(w: &mut World, blob: &[u8]) -> Result<(), WorldSaveError> {
                 sel,
             },
             next_swing,
+            mag,
+            mag_round,
             ws_cell,
             ws_hits,
             death_by,
@@ -1481,13 +1516,17 @@ mod tests {
     /// without this test being read is a buffer that is silently too small.
     #[test]
     fn the_ceiling_is_what_the_caps_add_up_to() {
-        assert_eq!(PLAYER_TAIL_BYTES, 52);
+        // 52 → 84 at format 12: the magazine, `MAX_MAGS` pairs of `u16`
+        // written inline after `next_swing` (reload v1). Saved because
+        // `state_hash` folds it — a snapshot that dropped it would restore
+        // a world that hashes differently from the one it was written from.
+        assert_eq!(PLAYER_TAIL_BYTES, 84);
         // 308 → 320 at format 8: `PlayerSave` carries `WEAR_SLOTS` worn
         // stacks at the inventory's six-byte stride (armor v0). 320 → 324
         // at format 11: the torch's remainder in its scalar head (torch
         // fuel v0).
         assert_eq!(
-            PLAYER_BYTES, 324,
+            PLAYER_BYTES, 356,
             "a body is PlayerSave plus every other hashed field"
         );
         // The sum, spelled out, so the number below is checkable by
@@ -1498,7 +1537,7 @@ mod tests {
         // a stack is four bytes and not two. A constant a reader cannot
         // re-derive is a constant nobody checks twice.
         let by_hand = 62                    // head
-            + 100 * 324                     // players (6 B a stack, 2 worn at format 8, light_acc at 11)
+            + 100 * 356                     // players (6 B a stack, 2 worn at format 8, light_acc at 11, the magazine at 12)
             + 8_192 * 21                    // pieces + plate + placement tick
             + 1_024 * 33                    // deploys + bag_ready + placed
             + 256 * 66                      // hearths (25 + the crew: 1 + 10*4)
@@ -1555,8 +1594,14 @@ mod tests {
         // (`MAX_SPENT_ARROWS` × 22) plus six bytes of head.
         // Moved 641_726 → 642_126 at format 11: four bytes a player for the
         // torch's remainder, over `MAX_PLAYERS`.
+        // Moved 642_126 → 645_326 at format 12: the magazine, `MAX_MAGS`
+        // (8) pairs of `u16` a player over `MAX_PLAYERS` — 3 200 bytes,
+        // and the widest single-slice growth the player section has taken.
+        // It buys a magazine keyed by weapon row rather than a fourth
+        // field on `ItemStack`, which would have widened every stack in
+        // every store instead (format 7 is what that costs: 31 kB).
         assert_eq!(
-            WORLD_SAVE_MAX_BYTES, 642_126,
+            WORLD_SAVE_MAX_BYTES, 645_326,
             "the world save ceiling moved"
         );
     }

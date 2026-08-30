@@ -17,7 +17,7 @@ use sim_core::build::{BuildContent, PieceRec};
 use sim_core::collide::{ColIndex, Part};
 use sim_core::craft::CraftContent;
 use sim_core::deploy::{BagAnchor, DeployContent, DeployRec, ARCH_DOOR, BAG_CAP};
-use sim_core::gather::{cell_key, ItemStack, NO_CELL};
+use sim_core::gather::{cell_key, ItemStack, NO_CELL, NO_ITEM};
 use sim_core::input::InputFrame;
 use sim_core::inventory::{CONT_SELF, CONT_WEAR};
 use sim_core::limits::{
@@ -994,6 +994,46 @@ pub struct ClientCore {
     gather_refusals: [(u16, u8); REFUSAL_RING],
     gather_refusal_head: usize,
     gather_refusal_len: usize,
+    /// `(held item, reason)` per refused reload (wire v59) — the gather
+    /// refusal ring's shape and posture, drop-oldest and cosmetic.
+    reload_refusals: [(u16, u8); REFUSAL_RING],
+    reload_refusal_head: usize,
+    reload_refusal_len: usize,
+    /// Rounds each completed fill took out of the pack (wire v59). Only
+    /// `EV_RELOAD` with a nonzero `took` lands here: the same code arrives
+    /// on every shot to state the count, and a spend is not a fill, so
+    /// ringing it would play the reload cue on every trigger pull.
+    reload_toasts: [u16; TOAST_RING],
+    reload_toast_head: usize,
+    reload_toast_len: usize,
+    /// **The magazine as a LEVEL, not an event** — rounds loaded and the
+    /// weapon's ceiling, last as the server stated them.
+    ///
+    /// A field and not a ring, because the HUD asks this question every
+    /// frame and the answer is a *state* rather than a thing that
+    /// happened: a ring would hand the count to whichever system drained
+    /// it first and leave the readout blank on every frame with no event
+    /// in it, which is the single-consumer trap in `CLAUDE.md`'s list
+    /// arriving by a different road. `mag()` borrows it immutably and
+    /// consumes nothing, so any number of readers is fine.
+    ///
+    /// `(0, 0)` is "no magazine in this hand" and draws nothing — the
+    /// ceiling is what says whether there is a readout to draw at all, so
+    /// a bow reads the same as an empty hand and neither reads as `0/0`.
+    mag: (u16, u16),
+    /// The item the magazine above was last stated for.
+    ///
+    /// **The readout has to expire when the hand changes, and this is how
+    /// it does that without a clearing site to miss.** Nothing on the wire
+    /// announces a hotbar switch — `sel` is client latch state — so a
+    /// `mag` cleared by hand would need a hook at every place the held
+    /// stack can change (the selector, an inventory drip, a move, a
+    /// death), and a missed one leaves a hatchet reading `5/8`. Comparing
+    /// instead means there is nothing to clear: [`ClientCore::mag`] checks
+    /// this against what is actually in the hand and answers `(0, 0)` when
+    /// they disagree, so a stale level is unreachable rather than
+    /// unwritten.
+    mag_item: u16,
     /// Chat lines as received: (speaker id, global, text).
     chats: [(u32, bool, ChatText); CHAT_RING],
     chat_head: usize,
@@ -1415,6 +1455,14 @@ impl ClientCore {
             research_toast_len: 0,
             research_refusals: [0; REFUSAL_RING],
             gather_refusals: [(0, 0); REFUSAL_RING],
+            reload_refusals: [(0, 0); REFUSAL_RING],
+            reload_refusal_head: 0,
+            reload_refusal_len: 0,
+            reload_toasts: [0; TOAST_RING],
+            reload_toast_head: 0,
+            reload_toast_len: 0,
+            mag: (0, 0),
+            mag_item: NO_ITEM,
             gather_refusal_head: 0,
             gather_refusal_len: 0,
             research_refusal_head: 0,
@@ -1484,6 +1532,56 @@ impl ClientCore {
                     // spill and not a swing that earned nothing.
                     self.push_spill(item);
                 }
+            }
+            EventMsg::Reload {
+                loaded,
+                ceiling,
+                took,
+            } => {
+                // The level first and unconditionally — this arrives on
+                // every shot as well as every fill, and the readout is the
+                // half that must never be stale.
+                self.mag = (loaded, ceiling);
+                self.mag_item = self.held_item();
+                if took > 0 {
+                    // A fill. Drop-oldest, the toast rings' posture.
+                    if self.reload_toast_len == TOAST_RING {
+                        self.reload_toast_head = (self.reload_toast_head + 1) % TOAST_RING;
+                        self.reload_toast_len -= 1;
+                    }
+                    self.reload_toasts
+                        [(self.reload_toast_head + self.reload_toast_len) % TOAST_RING] = took;
+                    self.reload_toast_len += 1;
+                    flags |= APPLIED_TOAST;
+                }
+            }
+            EventMsg::ReloadRefused {
+                item,
+                reason,
+                loaded,
+                ceiling,
+            } => {
+                // The count rides the refusal for the dry click's sake:
+                // this event IS the statement that the magazine is at
+                // zero, so the readout must move even though nothing was
+                // loaded. `ceiling == 0` is a hand with no magazine
+                // (`REFUSE_RL_HAND`), which is exactly the "draw nothing"
+                // value the field already means.
+                self.mag = (loaded, ceiling);
+                // The item the SERVER named, not the one in hand: a
+                // refusal can arrive a frame after the player switched
+                // away, and stamping the current hand would attach the old
+                // weapon's count to the new one.
+                self.mag_item = item;
+                if self.reload_refusal_len == REFUSAL_RING {
+                    self.reload_refusal_head = (self.reload_refusal_head + 1) % REFUSAL_RING;
+                    self.reload_refusal_len -= 1;
+                }
+                self.reload_refusals
+                    [(self.reload_refusal_head + self.reload_refusal_len) % REFUSAL_RING] =
+                    (item, reason);
+                self.reload_refusal_len += 1;
+                flags |= APPLIED_TOAST;
             }
             EventMsg::GatherRefused { item, reason } => {
                 if self.gather_refusal_len == REFUSAL_RING {
@@ -2212,6 +2310,25 @@ impl ClientCore {
                 speed_mmpt,
                 drop_mmpt2,
             } => {
+                // **Our own shot spends a round.** The sim raises no
+                // event for the spend — one own-fact message per shot put
+                // a hundred bodies firing at once over
+                // `MAX_EVENTS_PER_TICK` (`ranged::hitscan` carries the
+                // measurement) — so the count is kept here, where the fact
+                // already arrives. Exact rather than approximate: one shot
+                // is one round, and `saturating_sub` is the floor because
+                // a count that went negative would wrap to 65 535.
+                //
+                // Only when the magazine is for the hand that fired: `mag`
+                // reads `(0, 0)` through `mag()` once the hand changes, but
+                // the raw field is what a decrement would touch, so the
+                // same test guards it here.
+                if shooter == self.player_id
+                    && self.mag.1 > 0
+                    && self.mag_item == self.held_item()
+                {
+                    self.mag.0 = self.mag.0.saturating_sub(1);
+                }
                 // Drop-oldest, the knock ring's policy: under a volley
                 // worth more than `REFUSAL_RING`, the newest tracers are
                 // the ones still worth drawing.
@@ -2729,6 +2846,60 @@ impl ClientCore {
         self.research_refusal_head = (self.research_refusal_head + 1) % REFUSAL_RING;
         self.research_refusal_len -= 1;
         Some(r)
+    }
+
+    /// The magazine as a level: `(rounds loaded, the weapon's ceiling)`.
+    ///
+    /// **Not a `pop_`** — it borrows and consumes nothing, so the HUD, the
+    /// mixer and the viewmodel may all read it in the same frame. That is
+    /// the point: a magazine is a state, and the destructive-ring rule
+    /// (`client/tests/sound.rs`) exists for facts that are handed over
+    /// exactly once.
+    ///
+    /// `(0, 0)` means there is no readout to draw — an empty hand, a
+    /// hatchet or a bow. `(0, n)` with `n > 0` is a gun that is dry.
+    pub fn mag(&self) -> (u16, u16) {
+        if self.mag_item != self.held_item() {
+            return (0, 0);
+        }
+        self.mag
+    }
+
+    /// The item index in the selected hotbar slot, `NO_ITEM` for an empty
+    /// hand. The client's own mirror, which is the only place this is
+    /// known — `EntityState::held` is what *others* see of this body.
+    fn held_item(&self) -> u16 {
+        let s = self.inv[self.input.sel as usize];
+        if s.count == 0 {
+            NO_ITEM
+        } else {
+            s.item
+        }
+    }
+
+    /// Oldest buffered reload refusal: `(held item, reason)` —
+    /// `sim_core::ranged::REFUSE_RL_*`.
+    pub fn pop_reload_refusal(&mut self) -> Option<(u16, u8)> {
+        if self.reload_refusal_len == 0 {
+            return None;
+        }
+        let r = self.reload_refusals[self.reload_refusal_head];
+        self.reload_refusal_head = (self.reload_refusal_head + 1) % REFUSAL_RING;
+        self.reload_refusal_len -= 1;
+        Some(r)
+    }
+
+    /// Oldest buffered completed fill: how many rounds it took out of the
+    /// pack. Only a fill lands here; a spend states the level and rings
+    /// nothing.
+    pub fn pop_reload_toast(&mut self) -> Option<u16> {
+        if self.reload_toast_len == 0 {
+            return None;
+        }
+        let t = self.reload_toasts[self.reload_toast_head];
+        self.reload_toast_head = (self.reload_toast_head + 1) % TOAST_RING;
+        self.reload_toast_len -= 1;
+        Some(t)
     }
 
     /// Oldest buffered gather refusal: `(held item, reason)` —

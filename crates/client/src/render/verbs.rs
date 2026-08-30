@@ -242,8 +242,38 @@ pub fn keys(
     if keys.just_pressed(KeyCode::KeyU) {
         upgrade_near(&net, &near.0, &mut toast);
     }
+    // **`R` is modal on the hand since reload v1: hammer repairs, anything
+    // else reloads.** `R` is the genre's reload key and the reference's, so
+    // taking it is the standing instruction rather than a preference — and
+    // the hand is what the rest of this file already switches on
+    // (`hand.repairs()` five lines down, `hand.opens_a_wheel()` at the
+    // wheel). What the move costs is repair-with-no-hammer-out, which the
+    // comment below used to call the point of the binding; what it buys is
+    // that a gun in your hand answers the key every player already reaches
+    // for. Proposed default, `DECISIONS.md` §open (reload v1).
+    let hand =
+        crate::ui::hold::held_in_hand(&net.session.core.catalog, &net.session.core.inv, net.sel);
     if !wheel_up && keys.just_pressed(KeyCode::KeyR) {
-        repair_near(&net, &near.0, &mut toast);
+        if hand.repairs() {
+            repair_near(&net, &near.0, &mut toast);
+        } else {
+            // Payload-free, `V`'s shape: the sim reads the hand it already
+            // has, so there is nothing to aim and no amount for the client
+            // to guess. `just_pressed` for `V`'s reason too — the action
+            // lane holds one pending action per client per tick, so a held
+            // key would send a frame's worth and have all but one dropped
+            // at `push_action`.
+            //
+            // Sent blind, and the refusal is what makes that work: a press
+            // with a rock in hand, a full cylinder or an empty pack each
+            // come back as their own `EV_RELOAD_REFUSED` sentence, so the
+            // key never does nothing silently. Deciding it here off
+            // `mag()` instead would be worse, not better — the readout is
+            // whatever the last event stated, so a revolver just picked up
+            // reads `(0, 0)` and the client would swallow the one press
+            // that matters.
+            send(&net, &mut toast, "reload", protocol::encode_action_reload);
+        }
     }
     // **The hammer's left click is the repair swing** — the reference's own
     // binding, and free because the hammer has no attack (damage total 0).
@@ -252,8 +282,6 @@ pub fn keys(
     //
     // Not while a panel owns the pointer, for the reason `place_key` states:
     // a left click on the wheel is a wedge being chosen.
-    let hand =
-        crate::ui::hold::held_in_hand(&net.session.core.catalog, &net.session.core.inv, net.sel);
     let busy = ui.as_ref().map(|u| u.panel != Panel::None).unwrap_or(false);
     if hand.repairs() && !busy && mouse.just_pressed(MouseButton::Left) {
         repair_near(&net, &near.0, &mut toast);

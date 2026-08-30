@@ -1015,6 +1015,24 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
                     slot: (t % 8) as u8,
                 },
                 Command::Drink { id: (t % 3) + 1 },
+                // …and one bot presses reload every tick, in the same
+                // rotation the loot and the eat use (reload v1). Deliberate
+                // over-pressing, exactly as the drink above is: most
+                // presses land on a full cylinder and raise
+                // `REFUSE_RL_FULL`, a press inside a shot's cadence raises
+                // `REFUSE_RL_BUSY`, and the one after a burst actually
+                // moves rounds out of the pack — so all three outcomes ride
+                // the digest, native and wasm, or none of them do.
+                //
+                // The rotation and not all three, and that is a
+                // *measurement* rather than a taste: a successful fill
+                // pushes `next_swing` forward by `reload_ticks`, which is
+                // the same field a shot pays, so three bots reloading every
+                // tick spend most of the run with the arm locked and the
+                // firearm barely fires. `the_guns_rewind_rides_the_parity_
+                // surface` is the gate that says so — it counts rewound
+                // hitscan shots and goes red at zero.
+                Command::Reload { id: (t % 3) + 1 },
                 Command::Respawn {
                     id: 1,
                     on_bag: false,

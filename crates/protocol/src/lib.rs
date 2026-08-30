@@ -58,6 +58,7 @@ pub use event::{
     encode_event_door, encode_event_drank, encode_event_gather, encode_event_gather_refused,
     encode_event_health, encode_event_hit, encode_event_hurt, encode_event_impact,
     encode_event_inv, encode_event_knock, encode_event_known, encode_event_move_refused,
+    encode_event_reload, encode_event_reload_refused,
     encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
     encode_event_removed, encode_event_research, encode_event_research_refused,
@@ -783,7 +784,17 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// arm, `NOW.md` §0hs item 2) a wire decision: it reddens
 /// `a_part_the_ladder_does_not_price_is_refused` instead of quietly
 /// drawing an arm hit as a chest hit.
-pub const PROTO_VER: u16 = 58;
+///
+/// **v59 — the magazine (reload v1).** Three additions and no field moved:
+/// `ACT_RELOAD` on the action lane, `SUB_RELOAD` and `SUB_RELOAD_REFUSED`
+/// on the event lane. A bump for an *addition* rather than a layout move,
+/// and `goldens.rs`'s rule is why — the subtype space's meaning changed,
+/// so a v58 client reaching a v59 shard would decode a reload refusal as
+/// `Malformed` and a v58 shard would answer `ACT_RELOAD` the same way,
+/// which is a firearm that silently never reloads rather than a mismatch
+/// anyone sees. `PROTO_VER` is exact-match gated precisely so neither side
+/// has to guess.
+pub const PROTO_VER: u16 = 59;
 
 /// This game's slug in the elo catalog.
 ///
@@ -1264,6 +1275,20 @@ const ACT_UNLOCK: u32 = 18;
 /// `reference/PROJECTILES.md` §9.7 calls piece 3, and the `PROTO_VER` bump
 /// it costs is piece 4.
 const ACT_PICKUP: u32 = 19;
+/// Fill the held weapon's magazine from the pack (`Command::Reload`,
+/// wire v59). No payload: the weapon is whatever is in the selected hotbar
+/// slot and the amount is however much the cylinder takes, so there is
+/// nothing here a client could forge that the sim would not have decided
+/// for itself.
+///
+/// **An action rather than a button bit**, and `BTN_LIGHT`'s doc gives the
+/// rule: a *level* both sides must agree on every tick is a bit, because a
+/// one-shot toggle can be inverted by a single dropped datagram; a one-shot
+/// intent the world has to acknowledge is a message, because the action
+/// lane is reliable and the input datagram is not. A reload is the second
+/// kind — it has a duration the server owns and an outcome the player is
+/// owed a sentence about.
+const ACT_RELOAD: u32 = 20;
 /// The highest live action code, named rather than counted — the event
 /// lane's `SUB_MAX` discipline, which this lane did not have.
 ///
@@ -1273,7 +1298,7 @@ const ACT_PICKUP: u32 = 19;
 /// prevents is the worst shape of wire drift there is: an action past the
 /// field width truncates into a *live* code, and both ends then agree on
 /// bytes that mean two different things.
-const ACT_MAX: u32 = ACT_PICKUP;
+const ACT_MAX: u32 = ACT_RELOAD;
 const _: () = assert!(
     ACT_MAX < (1 << ACTION_SUB_BITS),
     "an action subtype past the field width would truncate into a live code"
@@ -1587,6 +1612,10 @@ pub enum ActionMsg {
     /// sender's own body. There is no position here to forge, no reach to
     /// stretch, and no way to drink an ocean from a hilltop.
     Drink,
+    /// Fill the held weapon's magazine from the pack (`Command::Reload`).
+    /// No payload for `Drink`'s reason: the sim already knows the hand and
+    /// the amount, so there is nothing here to forge.
+    Reload,
     /// Answer the death screen: `on_bag` asks to wake on the nearest of
     /// your own ready sleeping bags, false asks for a beach (ALPHA.md §1,
     /// "choose beach or a bag").
@@ -1717,6 +1746,14 @@ pub fn encode_action_respawn(on_bag: bool, buf: &mut [u8]) -> Result<usize, Wire
     w.write(KIND_ACTION, KIND_BITS)?;
     w.write(ACT_RESPAWN, ACTION_SUB_BITS)?;
     w.write_bit(on_bag)?;
+    Ok(w.finish())
+}
+
+/// The reload verb. No payload — see `ActionMsg::Reload`.
+pub fn encode_action_reload(buf: &mut [u8]) -> Result<usize, WireError> {
+    let mut w = BitWriter::new(buf);
+    w.write(KIND_ACTION, KIND_BITS)?;
+    w.write(ACT_RELOAD, ACTION_SUB_BITS)?;
     Ok(w.finish())
 }
 
@@ -2292,6 +2329,7 @@ pub fn decode_action(buf: &[u8]) -> Result<ActionMsg, WireError> {
             ActionMsg::Unlock { recipe }
         }
         ACT_DRINK => ActionMsg::Drink,
+        ACT_RELOAD => ActionMsg::Reload,
         ACT_RESPAWN => ActionMsg::Respawn {
             on_bag: r.read_bit()?,
         },
@@ -3720,10 +3758,10 @@ mod tests {
     /// not slip in against a stale one.
     #[test]
     fn the_action_lane_has_the_room_it_claims() {
-        assert_eq!(ACT_MAX, ACT_PICKUP);
+        assert_eq!(ACT_MAX, ACT_RELOAD);
         assert_eq!(
             (1 << ACTION_SUB_BITS) - 1 - ACT_MAX,
-            12,
+            11,
             "the spare action codes moved — say so where the count is written"
         );
     }

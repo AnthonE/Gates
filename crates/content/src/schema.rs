@@ -315,6 +315,34 @@ pub struct Weapon {
     pub limb_pct: u32,
     pub rate_per_min: u32,
     pub range_m: u32,
+    /// Rounds this weapon holds **loaded**, or absent for a weapon that
+    /// spends straight out of the pack. Required on `firearm`, refused on
+    /// every other kind (`validate.rs`).
+    ///
+    /// This is the column that gives a firefight a rhythm: `rate_per_min`
+    /// alone makes a gun an unbroken stream of clicks, and the reference
+    /// game makes a body-part ladder legible precisely because missing has
+    /// a price — you go dry and you are helpless for a beat
+    /// (`reference/PROJECTILES.md` §1: a bow is a one-round-magazine
+    /// `BaseProjectile`, the same class as every gun, so the magazine is
+    /// the shared mechanism and not a firearm special case).
+    ///
+    /// A bow deliberately does **not** carry one here even though the
+    /// reference models it as a magazine of one: a one-round magazine
+    /// reloaded after every shot is the nock, and the nock is already
+    /// `rate_per_min`. Two names for one wait would be two cadences to
+    /// keep in step.
+    pub magazine: Option<u32>,
+    /// Milliseconds to fill the magazine, baked to ticks against
+    /// `TICK_HZ`. Required wherever `magazine` is, refused without it.
+    ///
+    /// Milliseconds rather than `fuse_s`'s whole seconds because this one
+    /// is felt: it is the length of the hole in a fight, and the tick is
+    /// 33 ms, so a second's granularity would round every reload in the
+    /// catalogue to the same number. No float from a content file reaches
+    /// the sim — the bake does the division (`range_m` → `range_mm`'s
+    /// treatment).
+    pub reload_ms: Option<u32>,
     /// The rounds this weapon can fire, in **preference order** — the sim
     /// spends the first one the shooter is actually carrying. Required on
     /// `bow`, refused on melee and throwable.

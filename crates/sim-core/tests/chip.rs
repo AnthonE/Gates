@@ -27,6 +27,7 @@
 //! a fall lands inside a counted window — `combat::probe_fixture`'s own
 //! reasoning for its 34, one table over.
 
+use sim_core::combat::NO_MAG;
 use sim_core::build::{
     foundation_terrain_ok, BuildContent, BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B,
     LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
@@ -153,6 +154,12 @@ fn shooter_combat(structure: u16) -> CombatContent {
         structure,
         headshot_mult: 2,
         limb_pct: 50,
+        // No magazine: a bow spends straight out of the quiver
+        // (`RangedDef::magazine`), so the arrow path is unchanged by
+        // reload v1 and this fixture is what says so.
+        magazine: 0,
+        reload_ticks: 0,
+        mag_slot: NO_MAG,
     };
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,
@@ -167,6 +174,12 @@ fn shooter_combat(structure: u16) -> CombatContent {
         structure,
         headshot_mult: 2,
         limb_pct: 50,
+        // The shipped revolver's magazine (`content/weapons.toml`): eight
+        // rounds and 3.4 s, which is 102 ticks at 30 Hz. Slot 0 — this
+        // fixture bakes no other magazine.
+        magazine: 8,
+        reload_ticks: 102,
+        mag_slot: 0,
     };
     c
 }
@@ -240,6 +253,15 @@ fn armed_shooter(w: &mut World, structure: u16, dx: f32, dz: f32) -> (u16, u16) 
         count: 200,
         cond: 0,
     };
+    // The magazine, loaded (reload v1). A gun with an empty cylinder does
+    // not fire, so without this the `shoot_until` helpers below run their
+    // whole budget and report "event never landed" — which is the mechanic
+    // working, not the fixture. Filled here rather than reloading in the
+    // test, because what these two suites are about is where a bullet
+    // lands on a wall, and a reload verb in the middle of that would be a
+    // second thing they could fail for.
+    w.players[0].mag[0] = 8;
+    w.players[0].mag_round[0] = ROUND;
     (cx, cz)
 }
 

@@ -296,7 +296,30 @@ const SUB_SWING: u32 = 52;
 /// subtypes rather than one with an audience flag, because the audience is
 /// the server's decision and nothing on the wire should be able to claim it.
 const SUB_HURT: u32 = 53;
-const SUB_MAX: u32 = SUB_HURT;
+/// `EV_RELOAD` (v59): how full your own magazine is, and how many rounds
+/// the last fill took out of the pack.
+///
+/// **Own-fact, unicast**, and that is a disclosure call rather than a fan-out
+/// one: how many rounds the player across the valley has left is exactly
+/// what tells you when to push them, so a broadcast of it would be a
+/// wallhack that the client could not choose not to draw. `SUB_HIT` and
+/// `SUB_HURT` two lines up split for the same reason and it is stated there.
+///
+/// Loaded AND ceiling on every message, never a delta: `client-core` holds
+/// no content tables, so a client told only "four" cannot draw `4/6`, and a
+/// dropped increment would leave the HUD claiming rounds the sim does not
+/// have until the player found out by pulling the trigger. `SUB_KNOWN`'s
+/// self-healing shape (`world.rs`'s `EV_RELOAD` doc says it in full).
+const SUB_RELOAD: u32 = 54;
+/// `EV_RELOAD_REFUSED` (v59): why a reload did nothing, and — on the dry
+/// click — the authoritative statement that the magazine is at zero.
+///
+/// `SUB_GATHER_REFUSED`'s shape with one field more. The count travels
+/// because the trigger pulled on an empty cylinder arrives *here* rather
+/// than as a shot, so without it the HUD would have to infer emptiness from
+/// a shot that never came, which is the same silence as a dropped datagram.
+const SUB_RELOAD_REFUSED: u32 = 55;
+const SUB_MAX: u32 = SUB_RELOAD_REFUSED;
 /// Width of `SUB_IMPACT`'s surface field, and how many values it may say.
 ///
 /// **`SURF_KINDS` is derived from the sim's own last kind rather than
@@ -387,6 +410,16 @@ const _: () = assert!(
 /// zero reserved as "no reason", refused at both ends — `REFUSE_C_BITS`'s
 /// posture exactly).
 const REFUSE_G_BITS: u32 = 4;
+/// Reload-refusal reason width (`ranged::REFUSE_RL_*`: five codes today,
+/// zero reserved as "no reason", refused at both ends — `REFUSE_C_BITS`'s
+/// posture exactly).
+const REFUSE_RL_BITS: u32 = 3;
+const _: () = assert!(
+    sim_core::ranged::REFUSE_RL_MAX < (1 << REFUSE_RL_BITS),
+    "ranged::REFUSE_RL_MAX no longer fits REFUSE_RL_BITS — a new reload \
+     refusal needs the field widened, PROTO_VER bumped and the goldens \
+     regenerated in this same commit (CLAUDE.md wall 6)"
+);
 /// Build-refusal reason width (`build::REFUSE_B_*`: ten codes today, and
 /// zero is a live one — `REFUSE_B_PIECE`).
 ///
@@ -1007,6 +1040,22 @@ pub enum EventMsg {
     /// which way to turn. Quantized to sectors on purpose: enough to face,
     /// not enough to aim (`sim_core::world`, `EV_HURT`).
     Hurt { sector: u8, damage: u16 },
+    /// A magazine changed: `loaded` of `ceiling` now sit in the weapon, and
+    /// `took` rounds left the pack to put them there. `took` is not the
+    /// difference the client could compute — a partial reload off a nearly
+    /// empty pack takes fewer than the cylinder wanted, and the toast the
+    /// player is owed says how many they got.
+    Reload { loaded: u16, ceiling: u16, took: u16 },
+    /// A reload (or a trigger pull on an empty magazine) did nothing.
+    /// `item` names the hand so the sentence can be *a bow has no
+    /// magazine*; `loaded`/`ceiling` restate the count, which is the whole
+    /// point on the dry-click path.
+    ReloadRefused {
+        item: u16,
+        reason: u8,
+        loaded: u16,
+        ceiling: u16,
+    },
     /// Your hp after something changed it, and the max it is measured
     /// against. Absolute, never a delta: a client that misses one hears
     /// the whole truth from the next, exactly like `Door`.
@@ -1186,6 +1235,53 @@ pub fn encode_event_gather_refused(
     let mut w = begin(buf, SUB_GATHER_REFUSED)?;
     w.write(item as u32, 16)?;
     w.write(reason as u32, REFUSE_G_BITS)?;
+    Ok(w.finish())
+}
+
+/// A magazine's new state. `ceiling` must be nonzero: a weapon with no
+/// magazine cannot raise this, and a zero would draw `4/0`.
+pub fn encode_event_reload(
+    loaded: u16,
+    ceiling: u16,
+    took: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    // Refused at the encoder, not clamped. A count over its own ceiling is
+    // a server bug and the whole value of the pair travelling together is
+    // that the client never has to decide which half to believe.
+    if ceiling == 0 || loaded > ceiling || took > ceiling {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_RELOAD)?;
+    w.write(loaded as u32, 16)?;
+    w.write(ceiling as u32, 16)?;
+    w.write(took as u32, 16)?;
+    Ok(w.finish())
+}
+
+/// Why a reload did nothing, plus the count it did nothing to.
+///
+/// `ceiling` may be zero here and only here: `REFUSE_RL_HAND` is raised by
+/// a hand holding no magazine at all, so there is no ceiling to state and
+/// the client draws no readout rather than `0/0`.
+pub fn encode_event_reload_refused(
+    item: u16,
+    reason: u8,
+    loaded: u16,
+    ceiling: u16,
+    buf: &mut [u8],
+) -> Result<usize, WireError> {
+    if reason == 0 || (reason as u32) > sim_core::ranged::REFUSE_RL_MAX {
+        return Err(WireError::Range);
+    }
+    if loaded > ceiling {
+        return Err(WireError::Range);
+    }
+    let mut w = begin(buf, SUB_RELOAD_REFUSED)?;
+    w.write(item as u32, 16)?;
+    w.write(reason as u32, REFUSE_RL_BITS)?;
+    w.write(loaded as u32, 16)?;
+    w.write(ceiling as u32, 16)?;
     Ok(w.finish())
 }
 
@@ -2584,6 +2680,43 @@ pub fn decode_event(buf: &[u8]) -> Result<EventMsg, WireError> {
             item: r.read(16)? as u16,
             added: r.read(16)? as u16,
         },
+        SUB_RELOAD => {
+            let loaded = r.read(16)? as u16;
+            let ceiling = r.read(16)? as u16;
+            let took = r.read(16)? as u16;
+            // The encoder's bound, restated at the door. A forged pair
+            // whose halves disagree is the one thing a self-healing full
+            // statement cannot repair — it would draw `9/6` and stay wrong
+            // until the next reload — so it is refused rather than clamped.
+            if ceiling == 0 || loaded > ceiling || took > ceiling {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::Reload {
+                loaded,
+                ceiling,
+                took,
+            }
+        }
+        SUB_RELOAD_REFUSED => {
+            let item = r.read(16)? as u16;
+            let reason = r.read(REFUSE_RL_BITS)? as u8;
+            let loaded = r.read(16)? as u16;
+            let ceiling = r.read(16)? as u16;
+            // Zero is refused and the upper end deliberately is not —
+            // `SUB_GATHER_REFUSED`'s posture below, for its reason: a shard
+            // newer than this client may legitimately send a reason it has
+            // no word for, and the client prints `code N` rather than
+            // dropping the frame.
+            if reason == 0 || loaded > ceiling {
+                return Err(WireError::Malformed);
+            }
+            EventMsg::ReloadRefused {
+                item,
+                reason,
+                loaded,
+                ceiling,
+            }
+        }
         SUB_GATHER_REFUSED => {
             let item = r.read(16)? as u16;
             let reason = r.read(REFUSE_G_BITS)? as u8;
@@ -4955,6 +5088,18 @@ mod wire_domains {
             live_max: 3,
         },
         Domain {
+            what: "reload refusal",
+            sim_site: "ranged.rs REFUSE_RL_*",
+            wire_site: "REFUSE_RL_BITS",
+            home: "ranged.rs",
+            prefix: "pub const REFUSE_RL_",
+            ty: ": u32 = ",
+            exempt: &["MAX"],
+            min_members: 5,
+            bits: REFUSE_RL_BITS,
+            live_max: 5,
+        },
+        Domain {
             what: "gather refusal",
             sim_site: "gather.rs REFUSE_G_*",
             wire_site: "REFUSE_G_BITS",
@@ -5279,8 +5424,11 @@ mod wire_domains {
     #[test]
     fn the_domain_table_states_its_own_coverage() {
         assert_eq!(
+            // 17 -> 18 at wire v59 (reload v1): `REFUSE_RL_BITS` is a
+            // field width spent on `ranged::REFUSE_RL_*`, so it owes a
+            // row, and this assert is what asked for it.
             DOMAINS.len(),
-            17,
+            18,
             "the wire-domain table changed size. Every entry is a field \
              width spent on a sim-core enumeration; add the new pair here \
              in the same commit that adds the width, or state why the \

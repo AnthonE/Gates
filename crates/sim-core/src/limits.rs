@@ -302,6 +302,25 @@ pub const MAX_ITEM_DEFS: usize = 64;
 /// Proposed default, DECISIONS.md §open (ballistics-on-ammo row).
 pub const MAX_WEAPON_AMMO: usize = 4;
 
+/// Weapons that may carry a **magazine** at once — the width of
+/// `Player::mag`, which is indexed by `RangedDef::mag_slot` rather than by
+/// item index.
+///
+/// The index is dense and assigned at bake time to the weapon rows that
+/// declare `magazine > 0`, so this is not `MAX_ITEM_DEFS`: sixty-four
+/// slots per player would be sixty-four `u16` pairs of which one is used,
+/// and the store is per-player so the waste multiplies by `MAX_PLAYERS`.
+/// Eight because `content/weapons.toml` has one firearm today and the
+/// catalogue a wipe cycle is priced for (`ALPHA.md` §1) is single digits;
+/// the bake **refuses** a ninth rather than dropping it, because a weapon
+/// with no magazine slot would silently fire straight out of the pack —
+/// exactly the mechanic this cap exists to make impossible to lose.
+///
+/// Structural, not a balance number: it sizes a fixed array on `Player`,
+/// so it is a cap in the `MAX_WEAPON_AMMO` sense.
+/// Proposed default, DECISIONS.md §open (reload v1).
+pub const MAX_MAGS: usize = 8;
+
 /// Stacks a fresh character may be granted at spawn (`content/balance.toml`
 /// `[[spawn_kit]]`). Bounded like everything else on a content-driven path:
 /// the kit lands in `INV_SLOTS`, so a kit longer than the inventory could

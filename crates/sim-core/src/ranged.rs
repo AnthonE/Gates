@@ -127,7 +127,7 @@ use crate::gather::NO_ITEM;
 use crate::input::BTN_PRIMARY;
 use crate::limits::{
     ARROW_STEP_MM, MAX_ARROWS, MAX_ARROW_LIFE_TICKS, MAX_ARROW_SUBSTEPS, MAX_HITSCAN_MARK_SAMPLES,
-    MAX_HITSCAN_SAMPLES, MAX_PLAYERS,
+    MAX_HITSCAN_SAMPLES, MAX_MAGS, MAX_PLAYERS,
 };
 use crate::movement::{POS_XZ_Q, POS_Y_Q};
 use crate::occupy::Occupants;
@@ -135,8 +135,176 @@ use crate::pitch_lut::pitch_dir;
 use crate::rewind::{Rewind, RewindPose};
 use crate::spent::{SpentArrows, SpentRec};
 use crate::terrain;
-use crate::world::{EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_SHOT};
+use crate::world::{
+    EventQueue, Player, EV_DEATH, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_RELOAD,
+    EV_RELOAD_REFUSED, EV_SHOT,
+};
 use crate::yaw_lut::yaw_dir;
+
+// ── Reload v1 ────────────────────────────────────────────────────────────
+//
+// The mechanic a body-part ladder needs to be legible. `rate_ticks` alone
+// makes a firefight an unbroken stream of identical clicks, and the
+// difference between a leg and a chest is then only a slightly longer
+// stream; with a magazine, missing has a price. The magazine is per weapon
+// row (`RangedDef::mag_slot`, whose doc states the cost of that choice) and
+// the wait is paid on `Player::next_swing`, the field gather, melee and
+// both ranged paths already share — so a reload stops a swing and a swing
+// stops a reload, with no second clock to keep in step.
+
+/// Not holding a weapon that takes a magazine — bare hands, a hatchet, or
+/// a bow (which spends straight out of the quiver by design; see
+/// `RangedDef::magazine`).
+pub const REFUSE_RL_HAND: u32 = 1;
+/// The arm is busy: mid-cadence from a shot or a swing, or already
+/// reloading. One code for all three because they are one field
+/// (`Player::next_swing`) and the sentence the player is owed is the same.
+pub const REFUSE_RL_BUSY: u32 = 2;
+/// The magazine is already full. Its own code rather than a silent no-op:
+/// a key that did nothing must say so (`EV_CRAFT_REFUSED`'s posture).
+pub const REFUSE_RL_FULL: u32 = 3;
+/// The trigger was pulled on an empty magazine — the dry click.
+///
+/// A refusal and not a shot, and separate from [`REFUSE_RL_DRY`] because
+/// the two sentences differ: this one is *reload*, that one is *you have
+/// no rounds at all*. Bounded by the weapon's cadence — `hitscan` pays
+/// `rate_ticks` before it refuses, exactly as it does for a shot, so a
+/// held trigger raises at most one of these per `rate_ticks`.
+pub const REFUSE_RL_EMPTY: u32 = 4;
+/// A reload was asked for and the pack holds none of the round it needs.
+///
+/// "The round it needs" and not "any round": a magazine that already holds
+/// one kind tops up with that kind or not at all, because mixing would fire
+/// the wrong item and hand back the wrong item on the next unload.
+pub const REFUSE_RL_DRY: u32 = 5;
+/// The highest reason above, named rather than counted — the discipline
+/// `REFUSE_G_MAX` and `EV_MAX` apply to a value domain, so the wire's
+/// field width is checked against a constant and not against a memory.
+pub const REFUSE_RL_MAX: u32 = REFUSE_RL_DRY;
+
+/// Pack a magazine's state into one `u32` event field: loaded in the high
+/// half, the weapon's ceiling in the low half.
+///
+/// Both halves travel together on purpose. `client-core` holds no content
+/// tables at all — it is a wire and prediction layer — so a client told
+/// only "four loaded" cannot draw `4/6`, and a client told the ceiling once
+/// at a catalog drip would have to keep a second table in step with the
+/// content hash. One field, stated in full on every event that moves it,
+/// is `EV_KNOWN`'s self-healing shape: the next statement repairs every
+/// loss before it.
+pub fn mag_pair(loaded: u16, ceiling: u16) -> u32 {
+    (loaded as u32) << 16 | ceiling as u32
+}
+
+/// The loaded count out of [`mag_pair`].
+pub fn mag_loaded(pair: u32) -> u16 {
+    (pair >> 16) as u16
+}
+
+/// The magazine's ceiling out of [`mag_pair`].
+pub fn mag_ceiling(pair: u32) -> u16 {
+    (pair & 0xFFFF) as u16
+}
+
+/// Fill the held weapon's magazine from the pack, and pay the beat.
+///
+/// Returns `true` when rounds moved. Every other path raises exactly one
+/// `EV_RELOAD_REFUSED` and returns `false` — a key that did nothing says
+/// which nothing, because a reload key that is silent when the magazine is
+/// full is indistinguishable from one that is silent because the verb is
+/// unbuilt.
+///
+/// **Order matters and it is the container-verb order, not the arithmetic
+/// one.** `CLAUDE.md`'s trap list: the item-move verb is the most bug-prone
+/// thing in the reference and it fails as a *kick*, because validation ran
+/// against the wrong side of the mutation. So every refusal here is decided
+/// before `inv_take` is called, and the pack is debited by exactly what the
+/// magazine is credited in the same two statements.
+pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Player) -> bool {
+    let item = held_item(p);
+    let refuse = |events: &mut EventQueue, why: u32, pair: u32| {
+        events.push(
+            EV_RELOAD_REFUSED,
+            p.id,
+            (item as u32) << 16 | why,
+            pair,
+        );
+    };
+    // A hand that cannot hold a magazine. `held_ranged` filters on
+    // `damage > 0`, so an unarmed or unbaked row lands here rather than
+    // reaching the slot index below.
+    let Some(def) = cc.held_ranged(item) else {
+        refuse(events, REFUSE_RL_HAND, 0);
+        return false;
+    };
+    // A bow. `magazine == 0` is read as exactly that and never as "unset":
+    // `draw` keeps spending out of the quiver, so the arrow path did not
+    // move for reload v1 and the refusal names the hand rather than
+    // pretending a bow has an empty cylinder.
+    if def.magazine == 0 || def.mag_slot as usize >= MAX_MAGS {
+        refuse(events, REFUSE_RL_HAND, 0);
+        return false;
+    }
+    let slot = def.mag_slot as usize;
+    let loaded = p.mag[slot];
+    let pair = mag_pair(loaded, def.magazine);
+    // Mid-cadence, mid-swing or mid-reload — one field, one sentence.
+    // Checked before the full test so that spamming the key during a
+    // reload reads as "busy" rather than as "full" the instant it lands.
+    if tick < p.next_swing {
+        refuse(events, REFUSE_RL_BUSY, pair);
+        return false;
+    }
+    if loaded >= def.magazine {
+        refuse(events, REFUSE_RL_FULL, pair);
+        return false;
+    }
+    // Which round. A magazine already holding one kind tops up with that
+    // kind or not at all; an empty one takes the first round in the
+    // weapon's preference order the shooter is actually carrying, which is
+    // `draw`'s rule and `hitscan`'s.
+    let round = if p.mag_round[slot] != NO_ITEM && loaded > 0 {
+        p.mag_round[slot]
+    } else {
+        let Some(r) = def
+            .ammo
+            .iter()
+            .copied()
+            .take_while(|&a| a != NO_ITEM)
+            .find(|&a| inv_count(&p.inv, a) > 0)
+        else {
+            refuse(events, REFUSE_RL_DRY, pair);
+            return false;
+        };
+        r
+    };
+    let want = def.magazine - loaded;
+    // `u32` down to `u16`: `inv_count` totals a whole inventory and
+    // `want` is at most a magazine, so the `min` is taken in the wider
+    // type and the result is bounded by `want` before it narrows. Doing
+    // it the other way round would truncate a full pack to nothing.
+    let got = (want as u32).min(inv_count(&p.inv, round)) as u16;
+    if got == 0 {
+        refuse(events, REFUSE_RL_DRY, pair);
+        return false;
+    }
+    // The mutation, after every refusal has had its say. `inv_take` moves
+    // exactly `got` because `got` was clamped to `inv_count` one line up:
+    // the pack is debited by what the magazine is credited, and there is no
+    // ordering in which one happens without the other.
+    inv_take(&mut p.inv, round, got as u32);
+    p.mag[slot] = loaded + got;
+    p.mag_round[slot] = round;
+    // The beat you are helpless for, on the shared cadence field.
+    p.next_swing = tick + def.reload_ticks.max(1) as u64;
+    events.push(
+        EV_RELOAD,
+        p.id,
+        mag_pair(p.mag[slot], def.magazine),
+        got as u32,
+    );
+    true
+}
 
 /// Height above the feet an arrow leaves from, millimetres. The eye, not
 /// the chest: a shot that started at the navel would clear cover the
@@ -1311,26 +1479,79 @@ pub fn hitscan(
         if n > MAX_HITSCAN_SAMPLES {
             continue;
         }
-        // The first round in the weapon's preference order the shooter is
-        // carrying — `draw`'s rule, minus the ballistics lookup, because a
-        // hitscan round has no flight to look up. Read before the cadence
-        // is paid so that ordering stays visible, spent after it.
-        let round = def
-            .ammo
-            .iter()
-            .copied()
-            .take_while(|&a| a != NO_ITEM)
-            .find(|&a| inv_count(&p.inv, a) > 0);
+        // **Where the round comes from, and it is the magazine now.**
+        // A weapon that declares one spends `Player::mag`; a weapon that
+        // does not keeps `draw`'s rule and spends straight out of the pack.
+        // `validate.rs` requires a magazine on every firearm, so the second
+        // arm is unreachable with shipped content — it stays because
+        // `CombatContent::EMPTY` and a bare test fixture can produce a
+        // magazineless hitscan row, and an unguarded index into
+        // `Player::mag` with `NO_MAG` is the aliasing the constant exists
+        // to prevent. Read before the cadence is paid so that ordering
+        // stays visible, spent after it.
+        let mag = (def.magazine > 0 && (def.mag_slot as usize) < MAX_MAGS)
+            .then(|| def.mag_slot as usize);
+        let round = match mag {
+            Some(slot) if p.mag[slot] > 0 => Some(p.mag_round[slot]),
+            Some(_) => None,
+            None => def
+                .ammo
+                .iter()
+                .copied()
+                .take_while(|&a| a != NO_ITEM)
+                .find(|&a| inv_count(&p.inv, a) > 0),
+        };
         let (id, yaw, pitch) = (p.id, p.frame.yaw, p.frame.pitch);
         let (qx, qy, qz) = (p.body.qx, p.body.qy, p.body.qz);
+        let (held, magazine) = (held_item(p), def.magazine);
         // The cadence is the weapon's and it is paid on the pull, not on
         // the hit — `draw`'s rule, for `draw`'s reason: a refused shot must
-        // not be re-attempted every tick.
+        // not be re-attempted every tick. It is also what bounds the dry
+        // click below to one event per `rate_ticks` per player.
         players[i].next_swing = tick + def.rate_ticks.max(1) as u64;
         let Some(round) = round else {
+            // **The dry click.** A trigger pulled on an empty magazine is a
+            // refusal and not a silence: without it the gun going quiet is
+            // indistinguishable from the client having dropped the input,
+            // and the player is owed the sentence that says *press reload*.
+            // The pack path stays silent, as it always has — it has no
+            // magazine to be empty and no reload verb to point at.
+            if let Some(slot) = mag {
+                let pair = mag_pair(players[i].mag[slot], magazine);
+                events.push(
+                    EV_RELOAD_REFUSED,
+                    id,
+                    (held as u32) << 16 | REFUSE_RL_EMPTY,
+                    pair,
+                );
+            }
             continue;
         };
-        inv_take(&mut players[i].inv, round, 1);
+        match mag {
+            // One round out of the cylinder. `mag_round` is left alone at
+            // zero rather than reset to `NO_ITEM`: `reload` only trusts it
+            // when `loaded > 0`, so a spent magazine remembers nothing and
+            // takes whatever the pack offers next.
+            // **No event for the spend, and that is a measurement rather
+            // than a preference.** It emitted `EV_RELOAD` here for one
+            // build, which is one own-fact message per shot and reads as
+            // cheap — until a hundred bodies fire at once:
+            // `snapshot_budget::the_event_lane_holds_at_population` went
+            // from ~128 to **256 sim events in one tick against a 256
+            // cap**, where `EventQueue` drops the newest and `pump_events`
+            // resyncs every connected client at the same instant. The
+            // client counts its own shots instead (`ClientCore`'s
+            // `EventMsg::Shot` arm), which is exact — one shot is one
+            // round — and self-heals against the full statements that
+            // bracket it: a fill and a dry click both carry the pair.
+            // Losing an `EV_SHOT` costs a count that is one high until
+            // then, and it costs the tracer too, so the readout and the
+            // picture stay in agreement.
+            Some(slot) => players[i].mag[slot] -= 1,
+            None => {
+                inv_take(&mut players[i].inv, round, 1);
+            }
+        }
         // **The report, and it is the same event a bow raises.** Announced
         // here for `draw`'s reason, one line later in the same order: the
         // cadence and the ammunition have both had their say, so `EV_SHOT`

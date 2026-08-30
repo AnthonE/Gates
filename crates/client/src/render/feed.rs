@@ -79,6 +79,12 @@ pub enum Refused {
     /// bare hands), because its sentence names it: *your torch cannot
     /// harvest this* (`ui::refusals::GATHER`).
     Gather,
+    /// A reload, or a trigger pulled on an empty magazine (wire v59) —
+    /// `sim_core::ranged`'s `REFUSE_RL_*`. Carries the **held item** beside
+    /// the code for [`Refused::Gather`]'s reason: its sentence names the
+    /// hand (*a rock takes no magazine*, *no rounds left for your
+    /// Revolver*).
+    Reload,
 }
 
 /// One frame's blows from **one direction**, as [`Feed::hurt_from`] hands
@@ -203,6 +209,14 @@ pub struct Feed {
     /// keyboard (`KeyJ` + `KeyH` are answered by one `World::tick`).
     consumed: [(u16, u16); FEED_CAP],
     n_consumed: usize,
+    /// Rounds the magazine took out of the pack this frame, 0 for none
+    /// (wire v59). A scalar and not a ring, unlike `consumed` above, and
+    /// the reason is the sim: the reload verb costs `reload_ticks` on the
+    /// shared cadence field, so a second fill cannot land in one drain
+    /// window the way a `J` and an `H` can. If a weapon ever reloads in
+    /// under a frame this becomes a ring, and the comment above says what
+    /// that failure looked like.
+    pub reloaded: u16,
     /// Knocks heard this frame: the door's address and who knocked (lock
     /// v1). Broadcast, so this is the one entry here that can be somebody
     /// else's action — the mixer wants the address, the HUD wants to say
@@ -403,6 +417,7 @@ impl Feed {
         self.n_spills = 0;
         self.n_learned = 0;
         self.n_consumed = 0;
+        self.reloaded = 0;
         self.n_knocks = 0;
         self.n_auths = 0;
         self.n_shots = 0;
@@ -492,6 +507,12 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     }
     while let Some((item, code)) = core.pop_gather_refusal() {
         feed.push_refusal(Refused::Gather, code, item);
+    }
+    while let Some((item, code)) = core.pop_reload_refusal() {
+        feed.push_refusal(Refused::Reload, code, item);
+    }
+    while let Some(took) = core.pop_reload_toast() {
+        feed.reloaded = took;
     }
     while let Some(code) = core.pop_build_refusal() {
         feed.push_refusal(Refused::Build, code, sim_core::gather::NO_ITEM);
