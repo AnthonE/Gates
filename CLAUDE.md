@@ -671,9 +671,22 @@ runner; and the sweep meant to file pre-2026-08 reports had been eating the
 current ones, so `loop-status.sh` read `0 PASS / 0 FAIL` over 70 real verdicts.
 All three are fixed and gated — run `gates-loop/watchdog-test.sh`, and note
 that the count that stood here for one commit was wrong within the hour;
-**why the linker took a SIGBUS is still unknown** and a health run now traces
-disk, RAM and swap so the next one is diagnosable —
 `gates-loop/findings/note-20260829-the-loop-died-of-the-box-not-the-tree.md`.
+
+⚠ **`rust-lld`'s SIGBUS is ENOSPC, and this line said it was unknown until
+2026-08-30**, when a bump to 0.7.0 reproduced it in one log with the cause
+still in it: `rustc-LLVM ERROR: IO failure on output stream: No space left on
+device` / `(os error 28)` on three crates, then `collect2: fatal error: ld
+terminated with signal 7 [Bus error]` linking `client`'s test binaries, then
+`GATE FAIL: native client suites` — the same three lines, in the same order, as
+the run that died. A full disk is a truncated mmap and a truncated mmap is a
+bus error, so the linker never sees an `ENOSPC` to report. The reason it read
+as unknown for a day is note §4's: the partial outputs are unlinked on the way
+out, so a `df` run afterwards shows a healthy box. **Read the compiler's lines
+above the linker's**, or the box lies to you. What filled it here was ordinary:
+a version bump invalidates every artifact of our six crates, so `target/debug`
+held two full sets at ~1.4 GB per render-tier test binary — 17 GB of a 49 GB
+disk, with 7 GB of `debug/incremental` beside it.
 
 The loop wrote most of the commits in this tree. It lives at
 `/mnt/hive-data/gates-loop` — **outside this repo, deliberately.** The builder is
