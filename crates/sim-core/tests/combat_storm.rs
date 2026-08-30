@@ -44,8 +44,7 @@
 //!    through `World::die`, which no test has ever done. Today the only
 //!    coverage of that overflow policy is `backpack.rs`'s own unit test
 //!    calling `drop_for` on a bare `Backpacks`; every world-level bag
-//!    test asserts `len() == 1`. Delete the cap check in
-//!    `backpack::stand_up` and this goes red.
+//!    test asserts `len() == 1`.
 //! 3. **The event ring overflows and the world survives it.** A death is
 //!    five events on one tick — the swing or the shot, the hit, the
 //!    health, the death, the bag — so a tick on which a dozen duels
@@ -59,10 +58,17 @@
 //!    trip byte for byte**, with the bag store part-full and a hundred
 //!    corpses' worth of loot in it.
 //!
+//! Four mutants were run against it and all four were killed, which is
+//! the check `CLAUDE.md`'s trap list asks for after writing a gate:
+//! `World::die` dropping no bag, `brawl_step` never pressing the trigger,
+//! `Command::Respawn` doing nothing, and the eviction announcing
+//! `BAG_GONE_DESPAWN` instead of `BAG_GONE_EVICTED` — the last of which
+//! only the bag assertions catch.
+//!
 //! ## What it deliberately does NOT do
 //!
-//! Nobody loots. `Command::Loot` empties the nearest bag in reach, and
-//! sixty-four bodies each emptying one bag a tick would hold the store
+//! Nobody loots. `Command::Loot` empties the nearest bag in reach, and a
+//! hundred bodies each emptying one bag a tick would hold the store
 //! near zero — the deposit side is what has never been driven at
 //! population, and the two do not fit in one fixture. The withdrawal side
 //! is `NOW.md`'s, named there.
@@ -76,7 +82,7 @@
 
 #![allow(clippy::disallowed_macros)]
 
-use sim_core::backpack::{BackpackContent, BAG_GONE_DESPAWN, BAG_GONE_EVICTED};
+use sim_core::backpack::{BackpackContent, BAG_GONE_EVICTED};
 use sim_core::bots::{brawl_step, BrawlPlan};
 use sim_core::build::{foundation_terrain_ok, BUILD_CELL_M};
 use sim_core::combat::CombatContent;
@@ -288,7 +294,6 @@ struct Storm {
     /// Ticks on which the event ring refused an event.
     overflow_ticks: usize,
     saw_bag_evicted: bool,
-    saw_bag_despawned: bool,
     /// Deaths summed over every duellist at the end of the storm.
     deaths: u32,
     /// The fewest bodies on their feet on any one tick.
@@ -351,7 +356,6 @@ fn storm() -> Storm {
         peak_events: 0,
         overflow_ticks: 0,
         saw_bag_evicted: false,
-        saw_bag_despawned: false,
         deaths: 0,
         min_standing: PLAYERS,
         codes: [false; 64],
@@ -417,9 +421,6 @@ fn storm() -> Storm {
             }
             if e.code == EV_BAG_REMOVED && e.b == BAG_GONE_EVICTED {
                 s.saw_bag_evicted = true;
-            }
-            if e.code == EV_BAG_REMOVED && e.b == BAG_GONE_DESPAWN {
-                s.saw_bag_despawned = true;
             }
         }
 
@@ -523,7 +524,7 @@ fn the_storm_walks_the_combat_verbs() {
         );
     }
     // The storm is a fight and not a queue: at its worst moment some of
-    // the sixty-four were still upright. A zero here means a kill wave
+    // the hundred were still upright. A zero here means a kill wave
     // took everybody at once and the respawn ring was the only thing
     // running, which would make every cap assertion above a statement
     // about an empty world.
