@@ -80,6 +80,28 @@ pub enum Refused {
     Gather,
 }
 
+/// One frame's blows from **one direction**, as [`Feed::hurt_from`] hands
+/// them out.
+///
+/// `from` is an absolute world bearing sector
+/// (`sim_core::combat::bearing_sector`) — clockwise from north, on the
+/// world's axes rather than the camera's, which is what lets the HUD
+/// subtract its own yaw every frame and keep the mark on the attacker while
+/// the player turns.
+///
+/// `damage` is the total that arrived from that bearing this frame and
+/// `hits` how many blows it took. Both are kept: `damage` is what the arc's
+/// weight reads, and `hits` is the fact a mixer needs to tell one heavy
+/// blow from three light ones (`NOW.md` §0hrt item 1, unbuilt — the sound
+/// path still derives "I was hurt" from a fall in `core.hp`, which cannot
+/// separate two blows in one tick).
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Hurt {
+    pub from: u8,
+    pub damage: u16,
+    pub hits: u16,
+}
+
 /// One frame of own-facts. Cleared and refilled by [`drain`]; read-only to
 /// everything else.
 #[derive(Resource, Default)]
@@ -102,24 +124,30 @@ pub struct Feed {
     /// sentinel exists.
     hit_victims: [u32; FEED_CAP],
     n_hit_victims: usize,
-    /// Blows landed on **you** this frame, and where the last one came
-    /// from: `hurt_from` is an absolute world bearing sector
-    /// (`sim_core::combat::bearing_sector`), `hurt_damage` the total taken,
-    /// `hurts` how many arrived.
+    /// Blows landed on **you** this frame, merged by the direction they
+    /// arrived from. `hurt_damage` is the total across all of them and
+    /// `hurts` how many arrived; [`Feed::hurt_from`] is the list.
     ///
-    /// An `Option` rather than a sector beside a count, because sector 0 is
-    /// **north** and not "nothing" — a reader that forgot the count would
-    /// get a confident wrong answer every quiet frame. The type is the
-    /// guard.
+    /// **Merged by sector, not queued, and the cap is therefore structural
+    /// (wall 4).** A bearing is one of `HURT_SECTORS` values and the wire
+    /// cannot carry another (`HURT_SECTOR_BITS = 4`), so an array with one
+    /// slot per sector cannot overflow however many blows land in a frame:
+    /// a fifth shot from the north is the north entry getting heavier, not
+    /// a sixth entry. There is no drop policy here because there is nothing
+    /// to drop — which is the shape a bounded queue wants whenever the key
+    /// space is small enough to be the bound.
     ///
-    /// **Latest wins, and that is a stated v0 limit rather than an
-    /// oversight.** Two attackers on opposite sides collapse to whichever
-    /// blow the sim resolved second, so the mark points at one of two real
-    /// threats — wrong about the other, never wrong about nothing. A list
-    /// would keep both and is what `NOW.md` §0hrt owes; the ring above it
-    /// already carries them, so nothing is thrown away here that a second
-    /// slice cannot pick up.
-    pub hurt_from: Option<u8>,
+    /// This replaced a single `Option<u8>` that kept the **latest** blow
+    /// (hurt direction v0, 2026-08-29). Two attackers on opposite sides
+    /// collapsed to whichever the sim resolved second: right about one real
+    /// threat, silent about the other, and worst exactly when a fight has
+    /// more than one person in it. `NOW.md` §0hrt item 2 owed the list.
+    ///
+    /// The `Option` it replaced was there because sector 0 is **north** and
+    /// not "nothing"; a list keeps that guarantee for free, since an empty
+    /// slice is unambiguous where a sentinel sector never was.
+    hurt: [Hurt; sim_core::combat::HURT_SECTORS as usize],
+    n_hurt: usize,
     pub hurt_damage: u16,
     pub hurts: u16,
     deaths: [(u32, u32); FEED_CAP],
@@ -286,6 +314,55 @@ impl Feed {
         &self.auths[..self.n_auths]
     }
     /// Placements that happened this frame, oldest first.
+    /// The directions blows arrived from this frame, merged, in the order
+    /// each direction was first seen.
+    ///
+    /// Empty on a quiet frame, and that is the whole of the "is anything
+    /// there" question — no sentinel, because sector 0 is north.
+    pub fn hurt_from(&self) -> &[Hurt] {
+        &self.hurt[..self.n_hurt]
+    }
+
+    /// Fold one blow into the frame's list, merging with the entry for the
+    /// same bearing if there already is one.
+    ///
+    /// A linear scan over at most `HURT_SECTORS` entries. It is the right
+    /// shape at this size and it is also the only shape wall 1's sibling
+    /// rules leave attractive: a map keyed by sector would be a
+    /// `HashMap`, and the array-indexed-by-sector alternative loses the
+    /// arrival order, which is what decides who gets an arc when more
+    /// directions turn up than there are arcs to draw.
+    ///
+    /// A sector the wire cannot produce is dropped rather than clamped —
+    /// `HURT_SECTOR_BITS = 4` means the server range-refuses one before it
+    /// is ever encoded, so reaching this arm is a decode defect and folding
+    /// it into sector 0 would draw a confident north.
+    fn note_hurt(&mut self, sector: u8, damage: u16) {
+        if sector >= sim_core::combat::HURT_SECTORS {
+            return;
+        }
+        for h in self.hurt[..self.n_hurt].iter_mut() {
+            if h.from == sector {
+                h.damage = h.damage.saturating_add(damage);
+                h.hits = h.hits.saturating_add(1);
+                return;
+            }
+        }
+        // Unreachable by construction: one slot per sector, and the loop
+        // above catches every repeat. Kept as a refusal rather than an
+        // index, because "cannot overflow" is an argument and a `[n]` is a
+        // panic when the argument stops being true.
+        if self.n_hurt >= self.hurt.len() {
+            return;
+        }
+        self.hurt[self.n_hurt] = Hurt {
+            from: sector,
+            damage,
+            hits: 1,
+        };
+        self.n_hurt += 1;
+    }
+
     pub fn placed(&self) -> &[(u16, u16, u8, u8, bool)] {
         &self.placed[..self.n_placed]
     }
@@ -294,7 +371,7 @@ impl Feed {
         self.damage = 0;
         self.hits = 0;
         self.n_hit_victims = 0;
-        self.hurt_from = None;
+        self.n_hurt = 0;
         self.hurt_damage = 0;
         self.hurts = 0;
         self.n_deaths = 0;
@@ -362,7 +439,7 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
     while let Some((sector, d)) = core.pop_hurt() {
         feed.hurt_damage = feed.hurt_damage.saturating_add(d);
         feed.hurts = feed.hurts.saturating_add(1);
-        feed.hurt_from = Some(sector);
+        feed.note_hurt(sector, d);
     }
     while let Some(victim) = core.pop_death() {
         // `last_death_killer` is set by the pop, so one pop yields a whole
@@ -504,5 +581,92 @@ pub fn drain(mut net: NonSendMut<Net>, mut feed: ResMut<Feed>) {
             feed.spills[n] = item;
             feed.n_spills += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Blows from one bearing are **one** entry, and blows from different
+    /// bearings are different entries.
+    ///
+    /// The half of hurt direction v1 that lives below the HUD. `Toast::hurt`
+    /// merges by sector too, one layer up, and the two are not redundant:
+    /// this one decides how many times the latch is *called* in a frame, and
+    /// a burst that arrived as four separate calls would evict three other
+    /// directions off a three-arc ring before the latch's own merge could
+    /// help.
+    #[test]
+    fn one_gun_is_one_direction_and_two_guns_are_two() {
+        let mut f = Feed::default();
+        assert!(
+            f.hurt_from().is_empty(),
+            "a quiet frame is an empty list — there is no sentinel sector, \
+             because sector 0 is north"
+        );
+        f.note_hurt(4, 10);
+        f.note_hurt(4, 7);
+        f.note_hurt(12, 3);
+        f.note_hurt(4, 1);
+        assert_eq!(
+            f.hurt_from(),
+            &[
+                Hurt {
+                    from: 4,
+                    damage: 18,
+                    hits: 3
+                },
+                Hurt {
+                    from: 12,
+                    damage: 3,
+                    hits: 1
+                },
+            ],
+            "four blows from two bearings are two entries, in the order the \
+             bearings were first seen, with the damage summed per bearing"
+        );
+    }
+
+    /// Every sector at once still fits, and a frame boundary empties it.
+    ///
+    /// The cap is structural rather than a policy: one slot per bearing and
+    /// the wire cannot carry a bearing outside the set (`HURT_SECTOR_BITS`),
+    /// so there is no overflow arm to get wrong (wall 4). This is that
+    /// argument, run.
+    #[test]
+    fn the_whole_compass_fits_and_the_frame_clears_it() {
+        let mut f = Feed::default();
+        for s in 0..sim_core::combat::HURT_SECTORS {
+            f.note_hurt(s, 1);
+        }
+        assert_eq!(
+            f.hurt_from().len(),
+            sim_core::combat::HURT_SECTORS as usize,
+            "every bearing the wire can carry must have a slot — an entry \
+             dropped here is a threat the ring can never learn about"
+        );
+        // A sector the wire cannot produce is refused, not folded into 0.
+        f.note_hurt(sim_core::combat::HURT_SECTORS, 99);
+        assert_eq!(
+            f.hurt_from().len(),
+            sim_core::combat::HURT_SECTORS as usize,
+            "an out-of-range sector must not open a slot"
+        );
+        assert_eq!(
+            f.hurt_from()[0],
+            Hurt {
+                from: 0,
+                damage: 1,
+                hits: 1
+            },
+            "and must not be folded into north, which would draw a confident \
+             arc at a direction nothing came from"
+        );
+        f.clear();
+        assert!(
+            f.hurt_from().is_empty(),
+            "the list is one frame's blows and the frame ended"
+        );
     }
 }
