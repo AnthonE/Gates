@@ -67,6 +67,24 @@ key_pem = "/home/master/gates-certs/privkey.pem"
 # `systemctl stop` flushes both; a crash costs at most
 # world_save_interval_ticks of the world (60 s by default).
 #
+# ── the release floor ────────────────────────────────────────────────────────
+#
+# **Raised to 0.7.0 on 2026-08-30, after the release was published** — that
+# order is the whole discipline (`CLAUDE.md`: publish first, raise the floor
+# after). Backwards and every player is refused by a shard asking for a build
+# they cannot download yet, which reads as an outage and is found by watching
+# `refused_build` climb days later.
+#
+# `PROTO_VER` already refuses a 0.6.0 client at the wire — 52 against 59 — so
+# this is not what keeps the old build out. It exists for what the protocol
+# number cannot see (`config.rs`): a release that parses fine and is wrong
+# about something that is not a byte. 0.7.0 is exactly that case in both
+# directions — lag compensation moved what the client predicts, and
+# `content/` moved under a wipe — so the floor and the wire happen to agree
+# today, and the floor is the half that still holds when the next release
+# does not bump the wire.
+min_client = "0.7.0"
+
 require_auth = true
 save_file = "/home/master/gates-data/players.save"
 world_file = "/home/master/gates-data/island.world"
