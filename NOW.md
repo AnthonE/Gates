@@ -69,27 +69,29 @@ reload.rs`. `DECISIONS.md` §open has the six knobs. **Item 6 landed
 2026-08-30**: `botclient.rs` answers its own dry click and re-asks on every
 BUSY, gated by `bot_smoke::test_bots_reload_over_the_wire`, which arms the
 fleet because no bot has ever held a firearm. Relabelled from `0rl`, which
-named two sections (judge fix 3, pass -19).*
+named two sections (judge fix 3, pass -19). **Item 1 landed 2026-08-30**:
+`die` sheds `mag`/`mag_round` into the same `shed` buffer `worn` uses, four
+lines and no content lookup — the pair of arrays already names the item and
+counts it. Gated as conservation (`a_death_sheds_the_cylinder_into_the_bag`:
+every round the body owned is in a bag), with the shipped slot cost measured
+at 1 of 28 free (`the_shed_magazines_fit_the_bag_they_shed_into`). Four
+mutants, four kills — and the fourth only after the cond assertion was split
+out, because a top-up never restamps `cond` and it was reading the pack's
+zero as the magazine's.*
 
-1. **The loaded rounds are destroyed on death, not shed into the bag.**
-   `die`'s spill drain moves `ItemStack`s and a magazine is not one
-   (`RangedDef::mag_slot` says why it is not on the stack), so up to a
-   magazine's worth vanishes per death — a killer loots an empty revolver.
-   Gated as the current truth (`tests/persist.rs`'s ledger,
-   `a_death_empties_the_cylinder`), not as the right one.
-2. **A reconnect off `PlayerSave` finds the cylinder empty.** The world
+1. **A reconnect off `PlayerSave` finds the cylinder empty.** The world
    save carries the magazine (it had to — `state_hash` folds it), the
    store's per-player record does not: that is a second format bump in
    `server/src/store.rs` and this slice did not spend it.
-3. **No unload, and no ammo switch.** The reference refunds a partial
+2. **No unload, and no ammo switch.** The reference refunds a partial
    magazine and adopts the new round at `StartReload`; ours refuses to mix
    (`REFUSE_RL_DRY`). Both need `reload` to see a stack ceiling, which
    means `GatherContent` reaching a `CombatContent` caller.
-4. **The dry click rides `rate_ticks`; the reference gives it its own
+3. **The dry click rides `rate_ticks`; the reference gives it its own
    1.0 s.** `BaseProjectile.ServerUse` starts a fixed attack cooldown on an
    empty magazine rather than the weapon's cadence. Ours is 0.4 s on the
    revolver. `DECISIONS.md` §open carries it as an unspoken knob.
-5. **Nobody has seen or heard it** (§LOOK). The readout over the hotbar,
+4. **Nobody has seen or heard it** (§LOOK). The readout over the hotbar,
    whether `R` reading as reload-not-repair is a surprise, and whether
    `Cue::Place` borrowed for a seated magazine reads as a reload are all
    unmeasured — capture is off and this box has no sound card.
@@ -979,10 +981,13 @@ content row, not a mechanic.
    self-amplifying case. The costs are simply additive and neither half bounds
    the other. Not gated, because every answer is an unspoken knob;
    `findings/note-20260830-two-storms-are-additive.md` has the table and a
-   third candidate the registry lacks — suppress a refusal that repeats
+   third candidate, now `DECISIONS.md` §open "refusal coalescing v0"
+   (2026-08-30, judge fix 1 of pass -20): suppress a refusal that repeats
    verbatim, which removes traffic that carries no information rather than
-   buying room for it. **A per-lane budget that each lane passes is not a
-   budget when the cap is shared.**
+   buying room for it. Three things there are unspoken — the window, whether
+   a suppressed refusal is counted, and `pump_events` versus ~40 refusal
+   sites. **A per-lane budget that each lane passes is not a budget when the
+   cap is shared.**
 
 
 ## 0n1 · Class-S interest — the grid is still missing *(server lane)*
