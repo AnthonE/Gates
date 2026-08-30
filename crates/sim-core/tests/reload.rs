@@ -490,3 +490,89 @@ fn the_magazine_store_is_bounded_and_says_so() {
         assert_eq!(*round, NO_ITEM);
     }
 }
+
+/// **A differing magazine is a differing world, and a save carries it.**
+///
+/// Written after the mutation pass, which found the one weak link among
+/// nine: pulling the magazine out of `state_hash` reddened only
+/// `test_replay`, and it did so *tautologically* — any change to the hash's
+/// input breaks a pinned golden, so that gate says the number moved and
+/// never says the field mattered. It is satisfied by regenerating the
+/// golden, which is exactly what an intentional change is supposed to do.
+/// `tests/worldsave.rs` was blind to it outright.
+///
+/// So this asserts the two things a golden cannot. **First: the hash can
+/// SEE a magazine** — two worlds alike in every other respect hash
+/// differently when one cylinder differs, and again when the same count is
+/// loaded with a different round, because `mag_round` is what the next shot
+/// spends. **Second: a save survives it** — the world blob restores to an
+/// equal hash, which is the wall-5 property the format bump was taken for.
+#[test]
+fn the_hash_sees_the_magazine_and_a_save_carries_it() {
+    let base = armed();
+    let h0 = base.state_hash();
+
+    // A different count.
+    let mut loaded = armed();
+    loaded.players[0].mag[0] = 1;
+    loaded.players[0].mag_round[0] = ROUND;
+    assert_ne!(
+        loaded.state_hash(),
+        h0,
+        "two worlds differing only in a loaded round hash the same — the \
+         magazine is sim state outside the hash, so two shards could \
+         disagree about whether a gun fires with every gate green"
+    );
+
+    // The same count, a different round in it. This is the half a naive
+    // hash of `mag` alone would miss.
+    let mut other = armed();
+    other.players[0].mag[0] = 1;
+    other.players[0].mag_round[0] = ROUND + 1;
+    assert_ne!(
+        other.state_hash(),
+        loaded.state_hash(),
+        "one round of X and one of Y hash the same — `mag_round` is what \
+         the next shot spends, so this is a divergence at an identical count"
+    );
+
+    // And the save carries both halves. Not a byte comparison: the point
+    // is that the RESTORED world is the same world, which is what
+    // `WORLD_SAVE_FORMAT` 12 was spent on.
+    // And the save carries both halves into the hash. Compared as two
+    // round-trips rather than against the original, and that is forced
+    // rather than tidy: a live body becomes a sleeper across a save and
+    // `dev_spawn` is not in the blob, so `restored == original` is false
+    // for reasons that have nothing to do with a magazine. What is
+    // wanted is narrower and stronger — **two worlds that differ only in
+    // a loaded round must still differ after a trip through the disk**,
+    // which is exactly the property `WORLD_SAVE_FORMAT` 12 was spent on
+    // and the one a pinned replay golden cannot state.
+    let restored = |w: &World| -> Box<World> {
+        let mut buf = vec![0u8; sim_core::worldsave::WORLD_SAVE_MAX_BYTES];
+        let n = w.save_world(&mut buf).expect("a live world encodes");
+        let mut back = armed();
+        back.load(&buf[..n]).expect("its own bytes must load");
+        back
+    };
+    let a = restored(&loaded);
+    let b = restored(&other);
+    assert_eq!(a.players[0].mag[0], 1, "the count came back");
+    assert_eq!(a.players[0].mag_round[0], ROUND, "and so did the round");
+    assert_eq!(b.players[0].mag_round[0], ROUND + 1, "and the other one's");
+    assert_ne!(
+        a.state_hash(),
+        b.state_hash(),
+        "two saved worlds differing only in which round is chambered came \
+         back hashing the same — the blob dropped the magazine, which is \
+         wall 5 failing on a field nobody can see"
+    );
+    // And the control: the same world twice is the same world, so the
+    // inequality above is about the magazine rather than about the save
+    // being nondeterministic.
+    assert_eq!(
+        restored(&loaded).state_hash(),
+        a.state_hash(),
+        "the same world saved twice restored differently"
+    );
+}
