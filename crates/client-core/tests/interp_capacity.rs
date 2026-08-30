@@ -157,3 +157,62 @@ fn the_table_is_sized_on_the_world_and_says_so() {
     assert_eq!(it.ids().count(), client_core::interp::INTERP_SLOTS);
     assert_eq!(it.drops, 3, "the refusal must be counted, not silent");
 }
+
+/// The interpolation delay has ONE home, and it is `sim_core::limits`.
+///
+/// `interp.rs` carried its own `f64` spelling of it, hand-typed as `4.0`,
+/// until lag compensation needed the same number on the *server*
+/// — to say how stale a client's aim is, which is
+/// `(T - S) + INTERP_DELAY_TICKS - REWIND_ACK_BIAS_TICKS`
+/// (`findings/lagcomp-design-20260818.md` §2.2). Two crates typing one
+/// constant is the `props.js` drift `CLAUDE.md` opens with.
+///
+/// The mirror was **deleted rather than gated**, which is the stronger fix
+/// and was forced by a gate that already existed: `ci/knob_registry.mjs`
+/// pins a registry claim against the constant a source file declares and
+/// cannot evaluate arithmetic, so even a spelling that referred to `limits`
+/// and held no second *value* of its own failed loudly. Two
+/// declarations of one knob is a shape that gate refuses however honest the
+/// second one is, and it was right to.
+///
+/// So what is left to check is not equality between two constants; it is
+/// that the derivation still holds and that the client still reads the one
+/// declaration.
+#[test]
+fn the_interp_delay_has_one_home_and_the_client_reads_it() {
+    // The derivation the number came from (NETCODE.md §3's shipped rule):
+    // 2 x the snapshot interval. If the interval moves, this is the argument
+    // that has to be remade rather than the constant quietly kept.
+    assert_eq!(
+        u64::from(sim_core::limits::INTERP_DELAY_TICKS),
+        sim_core::limits::SNAPSHOT_INTERVAL_TICKS * 2
+    );
+
+    // A re-typed literal anywhere in `client-core` would pass every other
+    // test in this crate — the interpolator would still blend, just at a
+    // delay the server no longer assumes — so the grep IS the assertion.
+    const INTERP_SRC: &str = include_str!("../src/interp.rs");
+    const CORE_SRC: &str = include_str!("../src/core.rs");
+
+    // ⚠ Skip comment lines. The first draft was `contains("const
+    // INTERP_DELAY_TICKS")` and it went red on this file's own module
+    // header, which quotes the declaration it is describing the removal of —
+    // a needle that matches prose is the vacuous-grep shape that turns up in
+    // this tree about once a month, and it fails in whichever direction the
+    // prose happens to sit. A declaration is a line of code.
+    let redeclared = INTERP_SRC.lines().any(|l| {
+        let l = l.trim_start();
+        !l.starts_with("//") && l.contains("const INTERP_DELAY_TICKS")
+    });
+    assert!(
+        !redeclared,
+        "interp.rs re-declared the interpolation delay — it lives in \
+         sim_core::limits, and a second declaration is the drift this test \
+         exists for"
+    );
+    assert!(
+        CORE_SRC.contains("sim_core::limits::INTERP_DELAY_TICKS"),
+        "the render clock stopped reading the sim's delay; if that reader \
+         moved, move this assertion with it rather than deleting it"
+    );
+}

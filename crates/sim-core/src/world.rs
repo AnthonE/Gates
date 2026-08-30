@@ -1457,6 +1457,28 @@ pub struct World {
     /// for its client array — keeps `World`'s stack footprint where this
     /// slice found it. Nothing here allocates in the tick (wall 2).
     pub backpacks: Box<Backpacks>,
+    /// Where every body stood for the last `REWIND_TICKS` ticks
+    /// (`rewind.rs`) — lag compensation's store, and the **one field on
+    /// `World` that is neither hashed nor saved**.
+    ///
+    /// It is derived from state that already is both: the row for tick `T`
+    /// is a copy of poses `state_hash` covered at `T`, so two shards
+    /// agreeing on every hash from tick 0 hold identical rings by
+    /// construction. That is `Pieces::cols`' argument (*"Derived, never
+    /// hashed"*) and the event ring's, and it is why hashing this would be
+    /// adding a second name for a fact the hash already carries.
+    ///
+    /// Not saved either, on `worldsave.rs`'s arrows-in-flight precedent —
+    /// but unlike `cols` it is **not reconstructible at load**, so what
+    /// keeps wall 5 whole is `Rewind::pose_at`'s fallback to the live body
+    /// on a stamp that is not the tick asked for. Read that module's header
+    /// before touching it; the fallback looks like a rough edge and is the
+    /// design.
+    ///
+    /// Nothing reads it yet — slice 2 of
+    /// `findings/lagcomp-design-20260818.md` §7. The reader is
+    /// `combat::strike` (slice 4).
+    pub rewind: crate::rewind::Rewind,
     /// Authored world containers a player has opened — sim state, hashed
     /// (`worldcont.rs`). Boxed inside, for `backpacks`' reason: 64 records
     /// of `INV_SLOTS` stacks is ~8.7 kB of fixed capacity on a stack-built
@@ -1549,6 +1571,7 @@ impl World {
             deploys: Deploys::new(),
             charges: crate::charge::Charges::new(),
             backpacks: Box::new(Backpacks::new()),
+            rewind: crate::rewind::Rewind::new(),
             world_conts: crate::worldcont::WorldConts::new(),
             sweep_piece: 0,
             sweep_deploy: 0,
@@ -3896,6 +3919,18 @@ impl World {
             );
         }
         self.deploys.clear_box_spill();
+        // Every body's pose, recorded for tick `tick` — the last thing the
+        // tick does, and deliberately *after* the phase note above says
+        // positions are final. Three of the four `movement::step` sites are
+        // in the player loop and a death, a respawn or a blast can still
+        // replace a body after it, so a snapshot taken inside that loop
+        // would record a pose the tick then overwrote.
+        //
+        // Here `self.tick` is still `T`, so row `T & (REWIND_TICKS - 1)`
+        // holds end-of-tick poses for `T` and during tick `T + 1` the ring
+        // answers for `T` back to `T - REWIND_TICKS + 1`. Derived output:
+        // it is not hashed and not saved (`rewind.rs`).
+        self.rewind.write_row(self.tick, &self.players);
         self.tick += 1;
         if self.tick.is_multiple_of(STATE_HASH_INTERVAL) {
             self.last_hash = self.state_hash();

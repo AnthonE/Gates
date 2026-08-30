@@ -1,8 +1,23 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 434 kB — fixed-capacity by design (wall 4), and `probe_parity`
-# builds one on the stack per sequence. rustc's wasm32-unknown-unknown ships
-# a 1 MiB shadow stack, which put the parity gate at roughly 99% of it: on
+# `World` is 312 kB — fixed-capacity by design (wall 4), and `probe_parity`
+# builds one on the stack per sequence.
+#
+# ⚠ That number said **434 kB** from 2026-08-08 until 2026-08-30, when the
+# rewind ring's slice measured it and found the note 122 kB stale. Nothing
+# had been wrong with the file; nothing had ever CHECKED it. `Pieces` and
+# `Deploys` moved their big arrays onto the heap (`crate::boxed_array`,
+# `build.rs`) after this was written, `World` shrank, and a measurement
+# carried in prose went on reading as current — `CLAUDE.md`'s hand-kept
+# mirror trap, in the one file whose entire purpose is to hold a
+# measurement. It is gated now:
+# `crates/sim-core/tests/rewind.rs::the_world_size_note_is_measured` derives
+# the kB from `size_of::<World>()` and greps this comment for it, so the
+# next store to move the number reddens a test instead of aging a sentence.
+# Decimal kB, and truncated, because that is how the line reads.
+#
+# rustc's wasm32-unknown-unknown ships a 1 MiB shadow stack, which put the
+# parity gate at roughly 99% of it *at the size World was then*: on
 # 2026-08-08 the oven's 8 kB of per-container state (`oven.rs`) tipped it,
 # and the gate failed as
 #
@@ -16,8 +31,9 @@
 # reading the diff, which is `CLAUDE.md`'s rule for a red gate on a
 # capability question: ask whether the capability is genuinely absent or
 # whether we are asking for one we do not need. Here it is neither — the
-# stack is a link-time number and 1 MiB is simply too small for a sim whose
-# world state is a fixed 434 kB.
+# stack is a link-time number and 1 MiB was simply too small for the sim
+# whose world state was then a fixed 434 kB. (Past tense on purpose — the
+# diagnosis stands, the number it was made against has since moved.)
 #
 # 4 MiB, and the reason it is not 2: the ceiling has to hold a `World` plus
 # the constructor frames plus a copy, and the next store to grow should not

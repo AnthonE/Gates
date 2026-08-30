@@ -189,6 +189,92 @@ pub const INPUT_BUFFER_CAP: usize = 16;
 /// depth above this consumes two inputs in one tick to re-center.
 pub const INPUT_THROTTLE_DEPTH: usize = 6;
 
+/// Rewind ring depth in sim ticks — 8 rows of body history, 267 ms
+/// (NETCODE.md §8, `findings/lagcomp-design-20260818.md` §1.4). A power of
+/// two so the ring index is a mask and never a modulo: wall 1 likes
+/// integers and wall 3 likes no division.
+///
+/// Eight holds the seven `REWIND_MAX_TICKS` can reach plus the row being
+/// overwritten. During tick `T` the rows carry ticks `T-1 ..= T-8`, and the
+/// row for `T` is written at the end of `World::tick` — so a rewind of 0 is
+/// **the live body**, never a row, and that is what makes a favour of zero
+/// bit-identical to the pre-rewind sim.
+///
+/// Overflow policy: **overwrite oldest**. It is a ring by construction and
+/// the row it overwrites is older than `REWIND_MAX_TICKS` can ask for, so
+/// nothing reachable is ever discarded. Cost:
+/// `MAX_PLAYERS * REWIND_TICKS * 16 B = 12,800 B` of poses plus a
+/// `[u64; REWIND_TICKS]` of stamps, all preallocated at construction —
+/// nothing allocates in the tick (wall 2).
+///
+/// Proposed default, DECISIONS.md §open ("lag compensation v0 — the ring").
+pub const REWIND_TICKS: usize = 8;
+
+/// Favouring clamp, in ticks (NETCODE.md §8's 250 ms, Overwatch's bound).
+/// 250 ms is 7.5 ticks at `TICK_HZ` and a rewind is an integer number of
+/// ticks, so this is **7 (233.3 ms)** — under the doc's promise rather than
+/// over it, because that number is a promise to the *victim*: it bounds how
+/// far into their past a shooter may be handed a hit they have already run
+/// out of.
+///
+/// Overflow policy: **clamp**, and a value past it is *also* safe by
+/// construction — `Rewind::pose_at` resolves `tick - back` and checks the
+/// row's stamp, so an out-of-range `back` lands on a row stamped with a
+/// different tick and falls back to the live body. That is deliberate: the
+/// failure of a forged favour is the shooter getting *less* help, never
+/// more (`findings/lagcomp-design-20260818.md` §4.2c, §6.2).
+///
+/// Proposed default, DECISIONS.md §open ("lag compensation v0 — the ring").
+pub const REWIND_MAX_TICKS: u8 = 7;
+
+/// The interpolation delay both ends agree on: remote bodies are drawn this
+/// many ticks in the past (DESIGN.md §5.7, NETCODE.md §3 — 2 x the 66.7 ms
+/// snapshot interval).
+///
+/// It lives **here** rather than in the client because the *server* needs it
+/// to know how stale a client's aim is
+/// (`findings/lagcomp-design-20260818.md` §2.2), and a hand-kept mirror of
+/// another crate's constant is exactly the drift `CLAUDE.md` opens with.
+/// `client-core/src/interp.rs` re-expresses this one as its `f64`; it does
+/// not carry a second copy of the number.
+///
+/// Proposed default, DECISIONS.md §open ("lag compensation v0 — the ring").
+pub const INTERP_DELAY_TICKS: u8 = 4;
+
+/// Correction for the age of the newest snapshot a client had applied when
+/// it made an input. Snapshots land every `SNAPSHOT_INTERVAL_TICKS`, so the
+/// expected age of the newest one is half of that — **derived, not picked**.
+///
+/// Written as the number with its derivation asserted beside it rather than
+/// substituted for it, which is `AOI_RANK_ENTER`'s shape above and for
+/// `AOI_RANK_ENTER`'s reason: `ci/knob_registry.mjs` pins a registry claim
+/// against the constant a source file declares and cannot evaluate
+/// arithmetic, so a computed initializer fails that gate loudly. It shipped
+/// as the expression here for exactly as long as it took to read that
+/// comment.
+///
+/// Proposed default, DECISIONS.md §open ("lag compensation v0 — the ring").
+pub const REWIND_ACK_BIAS_TICKS: u8 = 1;
+const _: () = assert!(
+    REWIND_ACK_BIAS_TICKS as u64 == SNAPSHOT_INTERVAL_TICKS / 2,
+    "REWIND_ACK_BIAS_TICKS must stay half the snapshot interval — the \
+     interval moved and the bias did not, so every favour the server mints \
+     is off by the difference"
+);
+
+const _: () = assert!(
+    REWIND_TICKS.is_power_of_two(),
+    "REWIND_TICKS must be a power of two — the ring index is a mask, and a \
+     non-power-of-two silently aliases two ticks onto one row"
+);
+
+const _: () = assert!(
+    (REWIND_MAX_TICKS as usize) < REWIND_TICKS,
+    "REWIND_TICKS must hold every tick REWIND_MAX_TICKS can ask for plus the \
+     row being overwritten — at equality the deepest rewind reads the row \
+     this tick is about to write"
+);
+
 /// Per-client pending-removal set: entity ids that left the client's
 /// interest, re-sent in every snapshot until a snapshot carrying them is
 /// acked (so a ghost can't survive datagram loss). Overflow policy:

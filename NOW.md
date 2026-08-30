@@ -59,6 +59,42 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0lc · Lag compensation — the ring is in, nothing rewinds yet *(sim lane)*
+
+From `findings/pass-20260829-153230-09-judge.md` §Ranked gaps 1 — *"a fight is
+decided by ping, because nothing rewinds"*, its rank-1 gap and the first time
+this one has been ranked at all.
+
+✅ **Slice 2 landed 2026-08-30** (`findings/lagcomp-design-20260818.md` §7):
+`sim-core/src/rewind.rs` records every body's pose for the last
+`REWIND_TICKS` (8) ticks, written at the end of `World::tick`. Derived output
+— not hashed, not saved — and `pose_at` falls back to the live body on a
+stamp that is not the tick asked for, which is what keeps wall 5 whole across
+a load. **Nothing reads it.** Gate: `sim-core/tests/rewind.rs`, 14 cases,
+every one proven red under a mutant (nine run; the ninth found a real hole in
+the inactive-slot branch and is now gated).
+
+Remaining, in order, and each lands green alone:
+
+1. **Slice 3 — `Command::Input` carries `favour: u8`.** Mechanical: ~98
+   construction sites become `favour: 0`, clamped in the apply arm into a
+   **tick-local** `[u8; MAX_PLAYERS]` on the `removals` precedent, never on
+   `Player`. The whole proof is that `test_replay`'s pinned hash and every
+   `probe_*` digest do **not** move — a field nothing reads changes no state.
+2. **Slice 4 — `strike` rewinds.** `combat::strike` takes `&Rewind` and the
+   favour; the target scan reads `pose_at` instead of the live body. The gate
+   that proves the feature rather than the plumbing: a target that walked out
+   of a 1 m reach over 7 ticks is **hit at favour 7 and missed at favour 0**.
+   Hashes regenerate here, behaviourally, and say so.
+3. **Slice 5 — the server mints it** from slice 1's aim-staleness stamp,
+   plus the `favour_disagree` cross-check. Land last, alone.
+
+⚠ **The clamp is not re-derivable from this box.** Slice 1 measured a favour
+of ~4.1 ticks on loopback, so 7 is roomy there and says nothing about a
+200 ms link — and the judge's own closing line is that nobody has ever fired
+at a moving remote player over a real one.
+
+
 
 ## 0hrt · Being hit points somewhere — the rest of the fight *(systems+client lane)*
 
@@ -376,9 +412,10 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    (`bake.rs:866`), and §9.5 item 4 wants its non-stacking rule spoken
    first. ✅ The paperdoll and the protection readout landed 2026-08-28
    (wire v52, `§0eq`); nobody has looked at either.
-5. **No lag compensation** — slices 2–5 of `findings/lagcomp-design-20260818.md`
-   §7: the ring in `sim-core`, `Command::Input` carrying `favour`, `strike`
-   rewinding, the server minting it. None exists yet; no wire bump is owed.
+5. **No lag compensation, but the ring is in** — `sim-core/src/rewind.rs`
+   landed 2026-08-30 (slice 2) with **no reader**, so a fight is still
+   resolved against present-tick positions. Slices 3–5 are `§0lc`; no wire
+   bump is owed.
 6. **Nothing has fought at population** (`raid_storm.rs:516`: *"nobody
    swings"*). Plan: `findings/combat-soak-design-20260818.md`; the cheapest
    slice is no code — `sim-core/src/bots.rs:53-60` presses `BTN_PRIMARY` 1-in-3.

@@ -2921,7 +2921,7 @@ impl ClientCore {
 
     /// The float server tick remote entities render at.
     pub fn render_tick(&self) -> f64 {
-        self.clock.server_est - crate::interp::INTERP_DELAY_TICKS
+        self.clock.server_est - f64::from(sim_core::limits::INTERP_DELAY_TICKS)
     }
 }
 
