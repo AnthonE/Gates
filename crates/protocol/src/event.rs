@@ -4712,6 +4712,10 @@ mod wire_domains {
             src: include_str!("../../sim-core/src/research.rs"),
         },
         Module {
+            file: "rewind.rs",
+            src: include_str!("../../sim-core/src/rewind.rs"),
+        },
+        Module {
             file: "pitch_lut.rs",
             src: include_str!("../../sim-core/src/pitch_lut.rs"),
         },

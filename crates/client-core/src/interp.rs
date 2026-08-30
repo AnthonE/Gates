@@ -1,6 +1,16 @@
 //! Remote-entity interpolation (DESIGN.md §5.7, NETCODE.md §3): remote
-//! players render `INTERP_DELAY_TICKS` in the past, blended between the
-//! two straddling snapshot samples. Linear, not Hermite, at v0: the wire
+//! players render `limits::INTERP_DELAY_TICKS` in the past, blended between
+//! the two straddling snapshot samples.
+//!
+//! **The delay itself is not declared here, and used to be.** This file
+//! carried its own `f64` constant, hand-typed as `4.0`, until
+//! lag compensation needed the same number on the *server* — the aim
+//! staleness a rewind is minted from is `(T - S) + INTERP_DELAY_TICKS -
+//! REWIND_ACK_BIAS_TICKS` (`findings/lagcomp-design-20260818.md` §2.2) — and
+//! two crates typing one constant is the `props.js` drift `CLAUDE.md` opens
+//! with. It lives in `sim_core::limits` now, as the `u8` it is, and this
+//! module's one reader converts at the point of use. There is no second
+//! spelling to keep in step, which is stronger than a gate on one. Linear, not Hermite, at v0: the wire
 //! carries no horizontal velocity yet (NETCODE §3's Hermite rides the M2
 //! combat-feel pass with it). A buffer that runs dry freezes honestly —
 //! extrapolation likewise waits on wire velocity.
@@ -9,10 +19,6 @@ use protocol::EntityState;
 use sim_core::limits::{MAX_MOBS, MAX_PLAYERS};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 
-/// Default interpolation delay: 2 × the 66.7 ms snapshot interval
-/// (NETCODE.md §3's shipped rule) = 4 sim ticks. The adaptive widening to
-/// 200 ms on lossy links rides the M2 feel pass with the loss telemetry.
-pub const INTERP_DELAY_TICKS: f64 = 4.0;
 /// Per-entity history depth: 16 samples ≈ 1 s at 15 Hz (proposed default,
 /// DECISIONS.md §open, client fill-ins). Overflow policy: drop oldest.
 const HISTORY: usize = 16;

@@ -31,6 +31,7 @@ mod pitch_lut;
 pub mod probe;
 pub mod ranged;
 pub mod research;
+pub mod rewind;
 pub mod rng;
 pub mod roster;
 pub mod spent;
