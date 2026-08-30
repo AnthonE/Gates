@@ -499,9 +499,36 @@ bodies, which is what the paragraph above means and is now a **type**
 projectile: it has no flight, it resolves on the tick its trigger came down,
 and for one pass it was the only fight on the shard decided by ping. The
 launch aim of an arrow is refused on the record (`DECISIONS.md` §open) — it
-is not a gap. The favour is minted by the client and clamped by the server
-to `REWIND_MAX_TICKS`; **the server does not compute it yet**, which is the
-part of this section that is still a plan (`NOW.md` §0lc).
+is not a gap.
+
+⚠ **This paragraph said the favour is "minted by the client" until
+2026-08-30, and that was never true in any version of the code.** `world.rs`
+has said the opposite from the day the field landed — *"`favour` is **not on
+the wire** and never will be … so a client cannot ask for a rewind depth"* —
+and a builder who implemented slice 5 from this sentence would have put a
+rewind depth on the wire, which is the one shape that doc forbids. Caught by
+the judge (`pass-20260829-153230-12-judge.md`, ranked fix 1) rather than by
+anything in CI, because nothing gates a claim about where a number comes
+from.
+
+**The server mints it, and since 2026-08-30 it does** (slice 5,
+`server/src/stats.rs::favour_for`, called at the one site that builds
+`Command::Input`): `favour = min((T − S) + INTERP_DELAY_TICKS −
+REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS)`, where `S` is the client's
+`snapshot_ack` and `T` the tick executing the frame — the pair slice 1
+already measures. The client contributes an ack, which it was sending
+anyway, and nothing else. Zero is minted when the shard cannot measure (no
+acked snapshot, or a staleness past `AIM_STALE_CEILING_TICKS`), and zero is
+the pre-rewind sim bit for bit.
+
+**The ack is now worth lying about**, so it is corroborated: a claim is
+compared against `newest_acked` — the newest snapshot the server has watched
+this client ack, out of its own sent ring — and the *fresher* of the two
+wins, so acking backwards to buy rewind depth buys nothing.
+`favour_disagree` counts a gap past `FAVOUR_DISAGREE_BAND_TICKS`, in
+`anomaly::WATCHED`. The design note asked for a wall-clock RTT comparison
+here instead; `core.rs::push_input` says why that is not buildable and why
+this is better.
 
 ## 9 · Budgets (updated for the classes)
 

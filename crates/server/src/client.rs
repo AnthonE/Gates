@@ -122,6 +122,27 @@ pub struct ClientNetState {
     /// `InputFrame` is the wire's type: this is a fact about the datagram
     /// the frame *arrived in*, which the frame itself does not carry.
     in_view: [Option<u16>; INPUT_BUFFER_CAP],
+    /// Datagrams from this client whose claimed view sat further behind the
+    /// server's own evidence than reordering explains (lagcomp slice 5,
+    /// `ShardCore::push_input`). **A relay, not a statistic**: it is written
+    /// on the datagram path and drained to `ShardStats::favour_disagree` by
+    /// the tick loop, because `push_input` has no `&ShardStats` and giving
+    /// it one to carry a single counter would thread a parameter through
+    /// nineteen call sites for a diagnostic.
+    ///
+    /// **Cap and overflow policy: saturating.** A `u16` holds 65 535
+    /// disagreements between two ticks, which no client can send — the
+    /// input ring is `INPUT_BUFFER_CAP` deep. Saturating rather than
+    /// wrapping so that if one ever could, the counter pins at "very many"
+    /// instead of rolling to zero and reporting innocence.
+    ///
+    /// Drained destructively by exactly one reader
+    /// (`take_ack_regressions`), which is the single-consumer contract
+    /// `CLAUDE.md` keeps a trap entry for; `tests/sound.rs`'s scrape is
+    /// about `ClientCore`'s rings and does not reach here, so the owner is
+    /// named in this sentence and gated by
+    /// `the_disagreement_relay_has_one_reader`.
+    ack_regressions: u16,
     pub last_executed: u16,
     got_input: bool,
     starve_ticks: u32,
@@ -282,6 +303,7 @@ impl ClientNetState {
             in_frames: [InputFrame::default(); INPUT_BUFFER_CAP],
             in_valid: [false; INPUT_BUFFER_CAP],
             in_view: [None; INPUT_BUFFER_CAP],
+            ack_regressions: 0,
             last_executed: 0,
             got_input: false,
             starve_ticks: 0,
@@ -415,6 +437,23 @@ impl ClientNetState {
     }
 
     // --- acks ---------------------------------------------------------
+
+    /// One datagram claimed a staler view than this connection's own ack
+    /// history supports, by more than the band that absorbs reordering
+    /// (`ShardCore::push_input`). Saturating, per the field's policy.
+    pub fn note_ack_regression(&mut self) {
+        self.ack_regressions = self.ack_regressions.saturating_add(1);
+    }
+
+    /// Drain the relay. **The one reader** — `ShardCore::tick`, once per
+    /// client per tick, folding into `ShardStats::favour_disagree`. A
+    /// second caller would silently halve the shard's count of the only
+    /// lag-compensation signal that accuses anybody, which is the
+    /// destructive-read defect `CLAUDE.md` keeps an entry for; the gate is
+    /// a grep for this name, not a value assertion.
+    pub fn take_ack_regressions(&mut self) -> u64 {
+        core::mem::take(&mut self.ack_regressions) as u64
+    }
 
     /// Process the redundant ack header of one input datagram: mark ring
     /// entries acked, advance the newest-acked baseline, and clear pending

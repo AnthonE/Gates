@@ -208,6 +208,14 @@ pub const WATCHED: &[&str] = &[
     // only counter in the aim-staleness set that accuses somebody: the
     // other five are load, and this one is a forged or wildly-wrong ack.
     "aim_stale_refused",
+    // A client whose claimed view sits further behind the server's own ack
+    // history than reordering explains (`stats.rs`,
+    // `FAVOUR_DISAGREE_BAND_TICKS`). Watched for `aim_stale_refused`'s
+    // reason and one sharper: since lagcomp slice 5 the staleness a client
+    // claims BUYS something — up to `REWIND_MAX_TICKS` of rewind — so this
+    // is the counter that says somebody is reaching for it. `DESIGN.md`
+    // §5.8's "outliers surface in the anomaly log", built.
+    "favour_disagree",
 ];
 
 /// The previous tick's reading of every watched counter, so the sweep can
