@@ -35,7 +35,11 @@ use server::core::ShardCore;
 use server::stats::{
     self, ShardStats, AIM_STALE_BUCKETS, AIM_STALE_CEILING_TICKS, FAVOUR_DISAGREE_BAND_TICKS,
 };
-use sim_core::input::InputFrame;
+use sim_core::combat::CombatContent;
+use sim_core::gather::ItemStack;
+use sim_core::input::{InputFrame, BTN_PRIMARY};
+use sim_core::movement::POS_XZ_Q;
+use sim_core::yaw_dir;
 use sim_core::limits::{
     INTERP_DELAY_TICKS, REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS, SNAPSHOT_INTERVAL_TICKS,
 };
@@ -733,5 +737,155 @@ fn the_disagreement_relay_has_one_reader() {
     assert!(
         sites[0].contains("core.rs"),
         "the drain moved out of the tick loop that mints the favour: {sites:?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 9 — the effect, not the arithmetic.
+//
+// Everything above this line can be satisfied without the sim ever hearing
+// a favour, and **that was proven rather than assumed**: restoring the
+// shipped `favour: 0` at `core.rs`'s command construction — the exact
+// literal three judge reports ranked first — leaves all sixteen tests above
+// GREEN. `record_favour` reads the same binding one line earlier, so it
+// keeps reporting a rewind the sim was never told about.
+//
+// That is `CLAUDE.md`'s naive-rebuild trap arriving in a counter, and the
+// only fix is to observe a **consequence**: a swing that lands solely
+// because the server rewound the victim. This gate is the one that goes red
+// under that mutant, and the counters above become what they should have
+// been from the start — a diagnostic, not a proof.
+
+/// The fixture geometry, mirroring `sim-core/tests/combat.rs`'s: one tick
+/// inside the 2 m fixture reach, and far enough outside it that no rounding
+/// in the quantized body can close the gap.
+const NEAR_M: f32 = 1.0;
+const FAR_M: f32 = 4.5;
+
+/// A shard with two connected clients, the combat fixture loaded, and a
+/// spear each. `remote_hand.rs`'s `pair` for the layout, `combat.rs`'s
+/// `duel_world` for the armament.
+fn duel_shard() -> (Box<ShardCore>, ShardStats) {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    core.world.dev_spawn = Some(SPAWN);
+    core.world.combat = CombatContent::probe_fixture();
+    for slot in 0..2 {
+        assert!(core.connect(slot, id_of(slot)), "connect {slot}");
+    }
+    for _ in 0..8 {
+        tick(&mut core, &stats);
+    }
+    for p in core.world.players.iter_mut().take(2) {
+        assert!(p.active, "both fixture players must be in the world");
+        p.inv[0] = ItemStack {
+            item: 0,
+            count: 1,
+            cond: 0,
+        };
+    }
+    (core, stats)
+}
+
+/// Teleport the victim `dist` metres in front of the attacker along yaw 0,
+/// at the attacker's own height so the vertical band is never the variable
+/// under test. `combat.rs::place_in_front`, written against the shard's
+/// quantized body because `ShardCore::world` is what a server test holds.
+fn place_victim(core: &mut ShardCore, dist: f32) {
+    let (fx, fz) = yaw_dir(0);
+    let a = core.world.players[0].body;
+    let v = &mut core.world.players[1].body;
+    v.qx = a.qx + (fx * dist / POS_XZ_Q) as i32;
+    v.qz = a.qz + (fz * dist / POS_XZ_Q) as i32;
+    v.qy = a.qy;
+}
+
+/// Stand the victim near for four ticks and far for four, so the rewind
+/// ring's eight rows split cleanly: `T-1..T-4` is out of reach and
+/// `T-5..T-8` is inside it. A favour of 4 or less therefore misses and 5 or
+/// more hits, with a whole tick of margin on each side of the boundary —
+/// wide enough that the gate is about the favour and not about counting
+/// ticks.
+fn victim_walked_out_of_reach(core: &mut ShardCore, stats: &ShardStats) {
+    place_victim(core, NEAR_M);
+    for _ in 0..4 {
+        tick(core, stats);
+    }
+    place_victim(core, FAR_M);
+    for _ in 0..4 {
+        tick(core, stats);
+    }
+}
+
+/// One swing, through the wire path, acking `snapshot` — which is what
+/// mints the favour. Returns whether the victim lost hp.
+fn swing_acking(core: &mut ShardCore, stats: &ShardStats, snapshot: u64) -> bool {
+    let before = core.world.players[1].hp;
+    let mut dg = InputDatagram::new(snapshot as u16, 0, 21);
+    dg.push(InputFrame {
+        seq: 21,
+        buttons: BTN_PRIMARY,
+        yaw: 0,
+        // `InputFrame::default()`'s pitch 0 is straight DOWN; level is 128
+        // (`snapshot_budget.rs` pays for this one too).
+        pitch: 128,
+        ..InputFrame::default()
+    })
+    .expect("one frame fits");
+    core.push_input(0, &dg);
+    tick(core, stats);
+    core.world.players[1].hp < before
+}
+
+/// **9 · A stale aim lands a swing the live world would have missed.**
+///
+/// The whole feature, end to end and through the real path: a datagram
+/// arrives acking an old snapshot, the shard mints a favour from it, the
+/// sim rewinds the victim, and a spear that would have swung through empty
+/// air takes hp off somebody. Nothing here reads a favour counter — the
+/// assertion is on `hp`, which is the only thing a player experiences.
+///
+/// The control is the same fixture and the same swing under a **fresh**
+/// ack, which mints `0 + 3 = 3` and reaches only as far back as the victim
+/// was already out of reach. Both halves are asserted, because "it hits"
+/// alone is satisfied by a fixture whose victim never left.
+#[test]
+fn a_stale_aim_lands_a_swing_the_live_world_would_have_missed() {
+    // ── Stale: ack a snapshot, then let the fixture's eight ticks age it.
+    let (mut core, stats) = duel_shard();
+    let old = advance_to_snapshot(&mut core, &stats);
+    ack_only(&mut core, old);
+    victim_walked_out_of_reach(&mut core, &stats);
+    let raw = core.world.tick - old;
+    assert!(
+        raw >= 4,
+        "the fixture must age the ack past the clamp's knee; it aged {raw} ticks"
+    );
+    assert!(
+        swing_acking(&mut core, &stats, old),
+        "the victim stood {FAR_M} m away and {NEAR_M} m away four ticks earlier, the shard \
+         minted a favour of {} for a {raw}-tick-old ack, and the swing still missed — \
+         nothing rewound",
+        stats::favour_for(raw as u16, Some(0))
+    );
+
+    // ── Fresh: identical geometry, identical swing, an ack from this tick.
+    let (mut core, stats) = duel_shard();
+    let old = advance_to_snapshot(&mut core, &stats);
+    ack_only(&mut core, old);
+    victim_walked_out_of_reach(&mut core, &stats);
+    let recent = core.world.tick - core.world.tick % SNAPSHOT_INTERVAL_TICKS;
+    ack_only(&mut core, recent);
+    let raw = core.world.tick - recent;
+    let favour = stats::favour_for(raw as u16, Some(0));
+    assert!(
+        favour <= 4,
+        "a {raw}-tick-old ack minted {favour}, which reaches the near window — \
+         this control cannot fail for the reason it exists to test"
+    );
+    assert!(
+        !swing_acking(&mut core, &stats, recent),
+        "a swing at a victim {FAR_M} m away landed on a favour of {favour}, which reaches \
+         only ticks the victim was already out of reach for — the fixture is not falsifiable"
     );
 }
