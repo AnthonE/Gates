@@ -438,6 +438,22 @@ fn the_magazine_pair_round_trips() {
     assert_ne!(mag_pair(5, 8), mag_pair(8, 5));
 }
 
+/// Starve the body through the survival clock — a real death door, so no
+/// test reaches into `hp` by hand and none of them comes through a
+/// different function than the game does. Returns at the tick it died.
+fn starve(w: &mut World) {
+    w.players[0].food = 0;
+    w.players[0].water = 0;
+    let deaths = w.players[0].deaths;
+    for _ in 0..120 * sim_core::limits::TICK_HZ {
+        w.tick(&[]);
+        if w.players[0].deaths > deaths {
+            return;
+        }
+    }
+    panic!("the clock never killed it");
+}
+
 /// A corpse and a sleeper do not reload, and the magazine does not follow a
 /// body to the beach.
 ///
@@ -445,28 +461,96 @@ fn the_magazine_pair_round_trips() {
 /// itself goes to the death bag inside `inv`, so a magazine that stayed
 /// with the player would mean the killer looted an empty revolver while the
 /// dead player respawned holding its rounds.
+///
+/// This is the **player** half only, and it was the whole of the story
+/// until 2026-08-30: the rounds left the player and were destroyed on the
+/// way. `a_death_sheds_the_cylinder_into_the_bag` is the other end, and
+/// the two are separate tests because they fail for different reasons —
+/// this one goes red if a corpse starts keeping rounds, that one if the
+/// rounds stop arriving anywhere.
 #[test]
 fn a_death_empties_the_cylinder() {
     let mut w = armed();
     w.tick(&[Command::Reload { id: ME }]);
     assert_eq!(w.players[0].mag[0], MAG);
-    // Through the clock, which is a real death door and needs no reaching
-    // into `hp` by hand.
-    w.players[0].food = 0;
-    w.players[0].water = 0;
-    let deaths = w.players[0].deaths;
-    for _ in 0..120 * sim_core::limits::TICK_HZ {
-        w.tick(&[]);
-        if w.players[0].deaths > deaths {
-            break;
-        }
-    }
-    assert!(w.players[0].deaths > deaths, "the clock never killed it");
+    starve(&mut w);
     assert_eq!(w.players[0].mag[0], 0, "a corpse keeps no rounds");
     assert_eq!(
         w.players[0].mag_round[0], NO_ITEM,
         "and an emptied magazine names no round — NO_ITEM, not item 0"
     );
+}
+
+/// **The killer gets the rounds that were in the cylinder** (`NOW.md`
+/// §0mag item 1).
+///
+/// The assertion is deliberately a **conservation** one rather than a
+/// count of the shed stack: every round the dead player owned — the six
+/// seated in the magazine and the four still loose in the pack — is in a
+/// bag afterwards, `PACK` of them, and the gun is there with them. That
+/// shape is what makes it hard to satisfy dishonestly. A build that sheds
+/// the magazine but drops the pack passes a "the bag has six" test and
+/// fails this one; a build that destroys the magazine, which is what
+/// shipped until 2026-08-30, reads 4 here and cannot be argued into 10.
+///
+/// `armed()` leaves both halves of the drop disarmed and that is not
+/// incidental — it is why this needs its own fixture. `w.backpack` at
+/// `base_ticks == 0` makes `spill_at` return before it looks at anything
+/// (the module is inert), and `w.gather.stack_max[ROUND]` at 0 makes
+/// `inv_add` add **nothing at all** by its own zero-ceiling guard. Either
+/// one alone turns this test green-on-nothing, so both are set and both
+/// are load-bearing.
+#[test]
+fn a_death_sheds_the_cylinder_into_the_bag() {
+    let mut w = armed();
+    w.backpack = sim_core::backpack::BackpackContent::probe_fixture();
+    // The shipped pistol round stacks 128; the fixture only needs a
+    // ceiling above `PACK` so the whole lot can merge into one slot and
+    // the sum below is not really a test of slot arithmetic.
+    w.gather.stack_max[ROUND as usize] = 128;
+    w.gather.stack_max[GUN as usize] = 1;
+
+    w.tick(&[Command::Reload { id: ME }]);
+    assert_eq!(w.players[0].mag[0], MAG, "the cylinder filled");
+    assert_eq!(
+        inv_count(&w.players[0].inv, ROUND),
+        (PACK - MAG) as u32,
+        "and the pack paid for it"
+    );
+
+    starve(&mut w);
+
+    assert_eq!(w.players[0].mag[0], 0, "the corpse still keeps no rounds");
+    let bagged = |item: u16| -> u32 {
+        w.backpacks
+            .entries()
+            .iter()
+            .flat_map(|b| b.items.iter())
+            .filter(|s| s.item == item)
+            .map(|s| s.count as u32)
+            .sum()
+    };
+    assert!(
+        !w.backpacks.entries().is_empty(),
+        "no bag stood up at all — the fixture is disarmed, not the code under test"
+    );
+    assert_eq!(
+        bagged(ROUND),
+        PACK as u32,
+        "every round the body owned must be in a bag: {} loose in the pack plus \
+         {MAG} seated in the cylinder",
+        PACK - MAG
+    );
+    assert_eq!(bagged(GUN), 1, "and the gun went with them");
+    // Ammunition arrives as ammunition. `cond_max_of(ROUND)` is 0 here as
+    // it is for every real round (content rule V7: a stack past 1 carries
+    // no condition), so this pins the shed stack to the mint rather than
+    // to whatever `ItemStack::default()` happened to hold.
+    for b in w.backpacks.entries() {
+        for s in b.items.iter().filter(|s| s.item == ROUND && s.count > 0) {
+            assert_eq!(s.cond, 0, "a shed round is minted at cond_max, not scrap");
+        }
+    }
 }
 
 /// The store is exactly as wide as the cap says, and `NO_MAG` is out of it.

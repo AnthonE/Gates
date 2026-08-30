@@ -1356,7 +1356,8 @@ fn the_ninth_magazine_is_refused_at_the_bake() {
     ];
     assert!(
         already + spare.len() > sim_core::limits::MAX_MAGS,
-        "fixture rot: {already} shipped magazines plus {} spares cannot reach          MAX_MAGS ({})",
+        "fixture rot: {already} shipped magazines plus {} spares \
+         cannot reach MAX_MAGS ({})",
         spare.len(),
         sim_core::limits::MAX_MAGS
     );
@@ -1399,7 +1400,78 @@ fn the_ninth_magazine_is_refused_at_the_bake() {
     // the exact defect that proved this arm had never executed.
     assert!(
         !err.contains("  "),
-        "the refusal is malformed — a run of spaces from a broken string          literal: {err:?}"
+        "the refusal is malformed — a run of spaces from a broken string \
+         literal: {err:?}"
+    );
+}
+
+/// **Every loaded round the shipped set can put in a body fits the bag
+/// that body sheds into.**
+///
+/// `World::die` shed the magazine into the death spill from 2026-08-30
+/// (`NOW.md` §0mag item 1), through `gather::inv_add` into the same
+/// `[ItemStack; INV_SLOTS]` buffer that already carries `worn`. `inv_add`
+/// is the cap — it returns what fit and destroys the rest — so the
+/// overflow policy is stated and bounded, and this is the check that the
+/// *shipped* set cannot reach it. Wall 4's shape: the bound is a number,
+/// not a hope.
+///
+/// The arithmetic is per firearm `ceil(magazine / stack_max(round))` slots,
+/// summed over every row with a magazine, against `INV_SLOTS - WEAR_SLOTS`
+/// — the two plates are already in the buffer when the rounds arrive.
+/// A set that broke this would be one where eight firearms each carry a
+/// magazine several full stacks of their own ammunition deep; today it is
+/// one revolver, eight rounds, a round that stacks 128, so **one slot
+/// against 28**. The headroom is printed rather than asserted blind,
+/// because the number moving is the interesting event.
+#[test]
+fn the_shed_magazines_fit_the_bag_they_shed_into() {
+    let c = build(&sources()).expect("the shipped set validates");
+    let cc = c.bake_combat().expect("shipped weapons must bake");
+    let gc = c.bake_gather().expect("shipped gather table must bake");
+
+    let free = sim_core::limits::INV_SLOTS - sim_core::limits::WEAR_SLOTS;
+    let mut want = 0usize;
+    let mut armed_rows = 0usize;
+    for (item, def) in cc.ranged.iter().enumerate() {
+        if def.magazine == 0 {
+            continue;
+        }
+        armed_rows += 1;
+        // The round a full magazine holds is the first ammo the weapon
+        // accepts — `reload`'s own preference order — and a ceiling of
+        // zero means the item cannot be carried at all, which `inv_add`
+        // reads as "adds nothing" rather than as an overflow.
+        let round = def.ammo[0];
+        let ceiling = gc.stack_max_of(round) as usize;
+        assert!(
+            ceiling > 0,
+            "item {item} loads a magazine of {} but its round ({round}) has no \
+             stack ceiling, so a shed magazine would silently add nothing",
+            def.magazine
+        );
+        let slots = (def.magazine as usize).div_ceil(ceiling);
+        eprintln!(
+            "  weapon {item}: magazine {} of round {round} (stacks {ceiling}) = {slots} slot(s)",
+            def.magazine
+        );
+        want += slots;
+    }
+
+    // Anti-vacuity, and it is the whole of what makes the sum mean
+    // anything: a bake that dropped every magazine row — which is exactly
+    // what `bake_combat` did to every non-melee row until 2026-08-19 —
+    // sums to zero and satisfies the bound while proving nothing.
+    assert!(
+        armed_rows > 0,
+        "no shipped weapon carries a magazine: the sum below is vacuous"
+    );
+    eprintln!("shed magazines: {armed_rows} armed row(s), {want} slot(s) of {free} free");
+    assert!(
+        want <= free,
+        "{armed_rows} shipped magazine(s) want {want} spill slots and a death bag \
+         has {free} once the two worn plates are in it — the excess would be \
+         destroyed by `inv_add`"
     );
 }
 
