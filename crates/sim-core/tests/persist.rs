@@ -757,7 +757,7 @@ mod carried_through_death {
         // rounds are destroyed, not shed into the bag, because `die`'s
         // spill drain moves `ItemStack`s and the magazine is not one
         // (`RangedDef::mag_slot` says why it is not on the stack). Up to a
-        // magazine's worth per death. `NOW.md` §0rl carries it.
+        // magazine's worth per death. `NOW.md` §0mag carries it.
         "mag",
         "mag_round",
         "ws_cell",

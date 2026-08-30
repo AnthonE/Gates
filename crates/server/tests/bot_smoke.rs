@@ -912,7 +912,7 @@ async fn test_welcome_dev_bit_tracks_dev_spawn() {
 /// **A bot fires until it is empty, hears the click, and presses R** — the
 /// reload verb over a real socket, which nothing had ever driven.
 ///
-/// `NOW.md` §0rl item 6, and the judge's ranked fix 4 of pass -19. Reload v1
+/// `NOW.md` §0mag item 6, and the judge's ranked fix 4 of pass -19. Reload v1
 /// landed the whole path for a *human* client and `probe_combat` drives it
 /// in-process for the parity digest, but `botclient.rs` had no arm for it:
 /// a soak fired its magazines dry and went quiet, so every population number

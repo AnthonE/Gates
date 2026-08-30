@@ -1999,7 +1999,7 @@ fn the_event_lane_holds_at_population() {
 
 /// **The reload lane at population: a hundred clients holding R.**
 ///
-/// `NOW.md` §0rl, and the judge's ranked fix 2 of pass -19. The fixture
+/// `NOW.md` §0mag, and the judge's ranked fix 2 of pass -19. The fixture
 /// above deletes the per-shot `EV_RELOAD` because at a hundred bodies it
 /// doubled the lane to 256/256 (`ranged.rs` carries that finding, and
 /// `storm_core`'s `p.mag[0] = u16::MAX` is the line it left behind). What
@@ -2041,7 +2041,7 @@ fn the_event_lane_holds_at_population() {
 /// self-amplifying case `DECISIONS.md` §open names. The two costs are
 /// simply additive (196 + 100 = 296 against a 256 cap) and neither half
 /// is bounded by the other. That is a real finding and it is NOT gated
-/// here, because the answer is a knob nobody has spoken — `NOW.md` §0rl
+/// here, because the answer is a knob nobody has spoken — `NOW.md` §0mag
 /// and `findings/note-20260830-two-storms-are-additive.md` carry it. Do
 /// not "fix" this test by adding the trigger and relaxing a bound.
 #[test]

@@ -59,13 +59,17 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
-## 0rl · Reload v1 — what the magazine still cannot do *(systems+client lane)*
+## 0mag · Reload v1 — what the magazine still cannot do *(systems+client lane)*
 
 *Landed 2026-08-30, gap 1 of `findings/pass-20260829-153230-18-judge.md`
 (also -17's gap 3): a firearm never reloaded, so a fight was an unbroken
 stream of clicks and three passes of damage-ladder work had nothing to be
 read against. Wire v59, world save format 12, `crates/sim-core/tests/
-reload.rs`. `DECISIONS.md` §open has the six knobs.*
+reload.rs`. `DECISIONS.md` §open has the six knobs. **Item 6 landed
+2026-08-30**: `botclient.rs` answers its own dry click and re-asks on every
+BUSY, gated by `bot_smoke::test_bots_reload_over_the_wire`, which arms the
+fleet because no bot has ever held a firearm. Relabelled from `0rl`, which
+named two sections (judge fix 3, pass -19).*
 
 1. **The loaded rounds are destroyed on death, not shed into the bag.**
    `die`'s spill drain moves `ItemStack`s and a magazine is not one
@@ -89,10 +93,6 @@ reload.rs`. `DECISIONS.md` §open has the six knobs.*
    whether `R` reading as reload-not-repair is a surprise, and whether
    `Cue::Place` borrowed for a seated magazine reads as a reload are all
    unmeasured — capture is off and this box has no sound card.
-6. **The bots do not reload.** `probe_combat` presses the verb every tick
-   in rotation, which is what keeps the gun on the parity surface; the
-   server's `botclient.rs` repertoire has no reload, so a 100-bot soak
-   still fires a magazine dry and stops.
 
 ## 0vs · The newest visual report's ranked gaps are **closed** — steer from the judge *(any lane)*
 
@@ -952,14 +952,14 @@ content row, not a mechanic.
 
 ## 0fan · The event lane's fan-out — four arms filtered, nineteen to go *(server lane)*
 
-1. **Decide `EVENT_RING_CAP`.** Post-filter peak fan-in is `AOI_RANK_EXIT` = 64
-   against a 64-slot ring — zero headroom, measured 50 of 64 under the worst
-   fixture built (`snapshot_budget.rs` asserts the equality). Raise it (322 B a
-   slot per connection) or batch a tick's events (`PROTO_VER` work). Operator's
-   call; `DECISIONS.md` §open (event-lane fan-out v0) has the trade. The
-   other half of the same number: **`EVENT_RING_CAP` (64) is smaller than
-   `MAX_PLAYERS` (100)**, so 65 simultaneous swingers resync every client at
-   once and a resync re-drips seven cursors.
+1. **Decide `EVENT_RING_CAP`.** It was raised to **128** and this item said 64
+   in three places until 2026-08-30 — read `limits.rs`, not this line. Measured
+   81 of 128 under the worst fixture built (`snapshot_budget.rs`). Raise it
+   again (322 B a slot per connection) or batch a tick's events (`PROTO_VER`
+   work). Operator's call; `DECISIONS.md` §open (event-lane fan-out v0) has the
+   trade. The other half of the same number: the ring is still **larger** than
+   `MAX_PLAYERS` (100) now, so the 65-swinger case that motivated it is bought
+   — what is not bought is item 4.
 2. ⚠ **Operator, a game question**: should the OWNER hear their own door
    knocked from anywhere on the island? Nothing has an owner check to hang it
    on (`server/src/core.rs` EV_KNOCK arm, `hud.rs`).
@@ -970,9 +970,19 @@ content row, not a mechanic.
    its counts go red when the seam is aimed. Sizing, so nobody re-derives it:
    the band is **3.2% of the island's area** against `MAX_DEPLOYS` 1024
    (`findings/swing-fanout-20260824.md`).
-4. **The storm is combat only** — three arms of twenty-two. `raid_storm.rs`
-   drives the other verbs at the command ceiling with nobody swinging; the two
-   fixtures want merging.
+4. **The storm is combat only, and the two fixtures do not compose.** Three
+   arms of twenty-two; `raid_storm.rs` drives the other verbs at the command
+   ceiling with nobody swinging. Measured 2026-08-30, and it is now a defect
+   rather than a tidiness argument: firing peaks at 196/256 sim events, a
+   hundred clients holding R at 100/256, **both green alone** — and both at
+   once is 256/256 with 88 dropped and all 100 clients resynced, the
+   self-amplifying case. The costs are simply additive and neither half bounds
+   the other. Not gated, because every answer is an unspoken knob;
+   `findings/note-20260830-two-storms-are-additive.md` has the table and a
+   third candidate the registry lacks — suppress a refusal that repeats
+   verbatim, which removes traffic that carries no information rather than
+   buying room for it. **A per-lane budget that each lane passes is not a
+   budget when the cap is shared.**
 
 
 ## 0n1 · Class-S interest — the grid is still missing *(server lane)*

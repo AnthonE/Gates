@@ -66,7 +66,7 @@ pub struct BotReport {
     pub events_received: u64,
     pub event_decode_errors: u64,
 
-    // ---- the reload lane (NOW.md §0rl item 6) ---------------------------
+    // ---- the reload lane (NOW.md §0mag item 6) ---------------------------
     /// Dry clicks heard — a trigger pulled on an empty magazine.
     pub dry_clicks: u64,
     /// `Command::Reload` frames this bot wrote.
@@ -701,7 +701,7 @@ pub async fn run_bot(
                 }
                 report.last_executed_seq = view.last_executed_seq;
 
-                // ---- the reload lane (NOW.md §0rl item 6) ------------
+                // ---- the reload lane (NOW.md §0mag item 6) ------------
                 // **The bot hears the click and presses R.** That is the
                 // whole policy, and it has to be a policy rather than a
                 // cadence for a reason `EntityState` makes unavoidable: a
