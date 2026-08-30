@@ -59,24 +59,34 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
-## 0lc · Lag compensation — the shard rewinds; the server mints nothing *(sim lane)*
+## 0lc · Lag compensation — **on**, and never fired over a real link *(sim lane)*
 
-The judge's rank-1 gap three reports running is **closed**
-(`pass-20260829-153230-11-judge.md` §1). Slices 2–4 landed 2026-08-29/30 and
-**the gun's slice landed 2026-08-30**: `ranged::hitscan` scans against
-`Pose::Rewound` at the tick's granted `favour`, and the head band is measured
-off the feet the scan resolved (`BodyHit::qy`), so a crown is never solved at
-present-tick altitude against a past-tick horizontal solve. The hurt bearing
-stays live — `strike`'s rule. Five gates in `tests/gun.rs`, four mutants run,
-four caught. The arrow's launch aim is **decided** (`DECISIONS.md` §open);
-`Pose::Live` is that refusal as a type.
+*Gap pass, from `findings/pass-20260829-153230-12-judge.md` gap 1 — "built
+twice over and switched off", rank 1 in four consecutive reports.*
+
+**Slice 5 landed 2026-08-30 and the feature is live.** `stats::favour_for`
+mints `min((T−S)+3, 7)` at the one site that builds `Command::Input`; zero
+for an unacked client and for a staleness past the ceiling. The ack is
+corroborated against `newest_acked` and the fresher wins, so acking
+backwards buys nothing — `favour_disagree`, in `anomaly::WATCHED`. Four
+counters on `/status.json`, because "is it on" had no answer short of
+reading the source. Eight mutants run, seven caught, one equivalent.
+
+**The lesson is bigger than the slice and belongs in a trap list.** The
+sixteen gates the mint landed with are ALL green under the exact `favour: 0`
+literal that shipped — `record_favour` reads the same binding one line
+earlier, so a counter written beside a value cannot witness the value
+reaching its destination. Only
+`a_stale_aim_lands_a_swing_the_live_world_would_have_missed` (two players,
+one swing, hp asserted) goes red. Gate the consequence, not the arithmetic.
 
 Remaining:
 
-1. **Slice 5 — the server mints the favour.** Nothing does: `world.rs` clamps
-   whatever arrives on `Command::Input` and the client is trusted to compute
-   it. Slice 1's aim-staleness stamp (`server/src/stats.rs`) is the input,
-   plus the `favour_disagree` cross-check. Land alone.
+1. **Nobody has fired at a moving remote player over a real link.** ~4.1
+   ticks on loopback says nothing about 200 ms, and the clamp is not
+   re-derivable from this box. Needs one session with two `--features render`
+   clients and `/status.json` read at both ends — `favour_clamped` is the
+   number that says whether 7 is right. §LOOK, and the judge's own caveat.
 2. **The gun's rewind is not on the parity surface.** `probe_combat` drives a
    nonzero favour and `combat::probe_fixture` has **no hitscan row**, so
    `test_parity_wasm` covers the melee reader and not this one. No new float

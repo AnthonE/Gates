@@ -709,6 +709,18 @@ pub struct ShardStats {
     // second time would agree with itself and say nothing about the
     // command (`CLAUDE.md`: a naive rebuild that calls the function under
     // test is a rebuild of nothing).
+    //
+    // ⚠ **And that is still not enough to prove the value arrives, which
+    // was measured rather than assumed.** Binding once makes the counter
+    // honest about the code as written; it does not make it a *gate*,
+    // because the two lines can be separated and every assertion is on
+    // this side of the split. Restoring `favour: 0` at the command leaves
+    // all sixteen arithmetic gates green. These four are a **diagnostic**
+    // — what a shard is doing, on `/status.json` — and the thing that
+    // holds the feature is a gate on the consequence:
+    // `lagcomp_measure::a_stale_aim_lands_a_swing_the_live_world_would_
+    // have_missed` asserts hp, on the far side of the sim.
+    // `findings/note-20260830-the-counter-that-could-not-see-the-command.md`.
     /// Frames minted with a nonzero favour — i.e. verbs that will resolve
     /// against a rewound body. `favour_sum / this` is the mean depth **of
     /// the frames that got one**, which is the honest denominator: folding

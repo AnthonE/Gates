@@ -873,13 +873,17 @@ impl ShardCore {
                     // (`world.rs`'s `Input` arm), `combat::strike`'s
                     // rewound target scan and `ranged::hitscan`'s.
                     //
-                    // **Bound once and used twice**, deliberately. The
-                    // counter reads the same `favour` the command carries,
-                    // so `/status.json` cannot claim a rewind the sim was
-                    // not told about — calling `favour_for` a second time
-                    // for the counter would be a second derivation that
-                    // agrees with itself and proves nothing
+                    // **Bound once and used twice**, deliberately: a
+                    // counter that called `favour_for` a second time would
+                    // be a second derivation agreeing with itself
                     // (`CLAUDE.md`'s naive-rebuild trap, in a counter).
+                    //
+                    // ⚠ It does **not** follow that the counter proves the
+                    // command. Split these two lines and every gate in
+                    // `lagcomp_measure.rs` that reads a counter stays
+                    // green — measured, not supposed. What holds this line
+                    // is the swing gate at the end of that file, which
+                    // asserts hp on the far side of `World::tick`.
                     //
                     // Counted inside the command-room check, unlike the
                     // staleness above it: a frame the buffer had no room

@@ -400,12 +400,25 @@ knowingly; lag compensation gives it back in combat:
 
 ### 5.8 · Lag compensation (hits happen where you saw them)
 
-The sim keeps a ring of the last 8 snapshot-ticks of **collider state only**
-(positions/stances — a few bytes × entities, preallocated). A fire command
-carries the client's interp timestamp; the server clamps it (≤ 250 ms, ≤
-connection RTT + slack), rewinds colliders to that time, raycasts, applies
-damage at present time. Abuse margin is bounded by the clamp; the clamp is
-logged per player and outliers surface in the anomaly log (§10).
+The sim keeps a ring of the last 8 ticks of **collider state only**
+(`sim_core::rewind`, preallocated). **Built 2026-08-29/30.** Two paragraph
+claims here were wrong from the first draft and are corrected rather than
+deleted, because both were load-bearing on how somebody would build it.
+
+**A command does not carry a timestamp** — nothing latency-shaped is on the
+wire, and `world.rs` says it never will be, because a rewind depth a client
+can ask for is a rewind depth a client can forge. The server *mints* it
+from a number the client was already sending: `snapshot_ack`, which says
+which world the shooter was looking at. `favour = min((T − S) + 3, 7)` ticks
+(`server/src/stats.rs::favour_for`; `NETCODE.md` §8 has the derivation).
+`combat::strike` and `ranged::hitscan` resolve their target scan against the
+rewound pose; the arrow in flight deliberately does not.
+
+**The clamp is not logged per player**, and the ambition was wrong rather
+than unbuilt: a per-client table for a diagnostic is a structure invented
+for a counter. What surfaces in the anomaly log (§10) is `favour_disagree` —
+a client claiming a staler view than the server watched it ack, which is the
+shape abuse actually takes once staleness buys something.
 
 ### 5.9 · Join flow
 
