@@ -59,6 +59,33 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0cs · The fight at population — what the combat storm left *(sim lane)*
+
+From the merge-gate judge's ranked gap 3, `findings/pass-20260829-153230-21-judge.md`
+(*"nothing has ever fought — at population, over a link, or in front of a
+person"*). ✅ **The deposit half landed 2026-08-30**:
+`sim-core/tests/combat_storm.rs` seats all 100 seats as 50 duels — 25 knife
+fights, 25 gunfights on `bots::brawl_step` — and over 600 ticks banks 954
+deaths, pins the bag store at `MAX_BACKPACKS` **evicting through
+`World::die`**, and fills the event ring. Four mutants, four kills. What
+remains:
+
+1. **Nobody withdraws.** The storm drops bags and never picks one up:
+   `Command::Loot` empties the nearest bag in reach, and a hundred bodies
+   each emptying one a tick would hold the store near zero, so the two do
+   not fit in one fixture. The withdrawal side — `loot_nearest` and
+   `BAG_GONE_EMPTIED` at population, against a store that is already full —
+   wants its own driver step and its own saturation argument.
+2. **Nobody moves, so the rewind is a lookup and not a correction.**
+   `brawl_step` sends `move_x`/`move_z` zero and every command carries a
+   drawn `favour`, so `Rewind::pose_at` runs a hundred distinct depths a
+   tick against static poses. A duellist that strafes would make the depth
+   change the *answer*, which is the claim `§0lc` still cannot make.
+3. **The raid storm still has no bodies in it** — `§0rs` item 1, unchanged.
+   The two storms are siblings by design (arming the raid fixture would
+   desaturate its five equality assertions), so what is missing is the
+   *third* case: a blast that takes a wall and the person behind it.
+
 ## 0mag · Reload v1 — what the magazine still cannot do *(systems+client lane)*
 
 *Landed 2026-08-30, gap 1 of `findings/pass-20260829-153230-18-judge.md`
@@ -518,9 +545,10 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    landed 2026-08-30 (slice 2) with **no reader**, so a fight is still
    resolved against present-tick positions. Slices 3–5 are `§0lc`; no wire
    bump is owed.
-6. **Nothing has fought at population** (`raid_storm.rs:516`: *"nobody
-   swings"*). Plan: `findings/combat-soak-design-20260818.md`; the cheapest
-   slice is no code — `sim-core/src/bots.rs:53-60` presses `BTN_PRIMARY` 1-in-3.
+6. ✅ **Nothing had fought at population** — closed 2026-08-30 by
+   `sim-core/tests/combat_storm.rs` (`§0cs`), which drives 100 bodies
+   through melee, hitscan, death, the corpse bag and the spawn ring. What
+   it does *not* cover is in `§0cs`; `raid_storm.rs`'s bodies are `§0rs`.
 
 
 ## 0mk · A swing at a piece marks nothing, and a deployable eats no shot *(systems+client lane)*
@@ -800,9 +828,11 @@ The first two need a wire field (`DECISIONS.md` §open):
 1. **Bodies are out of the storm.** `sim-core/tests/raid_storm.rs`'s own
    fixture sets the throwable's `damage` to 0 (`storm_combat`, line 212),
    deliberately — a blast that killed the players would measure a
-   graveyard instead of a cap. The consequence is that `MAX_BACKPACKS`
-   and the death/respawn ring are the one client-driven family the storm
-   does not reach. The shipped charge does 475 and `charge.rs:526` hurts
+   graveyard instead of a cap. `MAX_BACKPACKS` and the death/respawn ring
+   are no longer un-driven — `tests/combat_storm.rs` reaches both at
+   population (`§0cs`, 2026-08-30) — so what is left here is narrower and
+   real: **no fixture takes a wall and the person behind it in one blast.**
+   The shipped charge does 475 and `charge.rs:526` hurts
    bodies, so the arithmetic exists; what is missing is a bounded gate
    that drives it at the tick's command ceiling without the run ending in
    a few ticks.
