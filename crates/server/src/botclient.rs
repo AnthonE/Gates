@@ -138,6 +138,33 @@ pub struct BotReport {
     /// failures ten seconds apart, and one counter cannot tell "the throw
     /// was refused" from "the run ended before the fuse did".
     pub charges_planted: u64,
+
+    // ---- how much walking actually happened -------------------------------
+    //
+    // **The three counters that make a red diagnosable instead of a mystery.**
+    // Every assertion in `bot_smoke` is about how deep into the raid profile
+    // the fleet got, and until these existed a failure could not say whether
+    // the bot never took the step or took it and never heard the answer —
+    // which are opposite bugs with one symptom (`charges_planted == 0`).
+    /// Cadence ticks this bot actually took. The walk ends on this reaching
+    /// [`walk_ticks`], never on a clock, so it is the same on a loaded box
+    /// as on an idle one and a suite that reads it is reading WORK.
+    pub ticks_walked: u64,
+    /// `raid_step` calls issued (one per cadence tick once a plot is
+    /// seated). `ticks_walked - raid_steps` is time spent waiting for a body
+    /// off the snapshot stream, which is the other way a profile starves.
+    pub raid_steps: u64,
+    /// Polls the settle spent waiting for the event lane to go quiet after
+    /// the walk. Non-zero always; at the ceiling means the lane never
+    /// quiesced, so a counter read here may still be short.
+    pub settle_polls: u32,
+    /// The wall-clock backstop fired before the tick budget was spent — the
+    /// box stalled this bot for longer than [`WALK_CEILING`] times its
+    /// nominal walk. **Reported rather than silent**, because a truncated
+    /// walk is the one condition under which a low count is the box's fault
+    /// and not the shard's, and a gate that cannot tell those apart is the
+    /// flaky gate this field was added to retire.
+    pub walk_truncated: bool,
 }
 
 /// Event-lane counters, shared with the drain task. One allocation, so a
@@ -274,6 +301,107 @@ const H3_EXCESSIVE_LOAD: u64 = 0x0107;
 
 /// How many times a dial may be shed before the bot gives up.
 const CONNECT_TRIES: u32 = 4;
+
+/// Wall-clock headroom the walk gets over its nominal length before the
+/// backstop fires, as a multiple. Plumbing bound, `DECISIONS.md` §open row.
+///
+/// **This is a backstop, not the schedule.** The walk ends on a COUNT of
+/// cadence ticks ([`walk_ticks`]); this exists only because "no bound is
+/// wait" — a shard that stops ticking would otherwise hang the suite
+/// forever rather than failing it. When it fires the report says so
+/// ([`BotReport::walk_truncated`]) instead of returning a short count that
+/// reads exactly like a shard which refused everything.
+///
+/// 2 rather than something generous on purpose: `bot_smoke`'s raid gate
+/// asserts that the shard completes fewer ticks than the satchel's fuse
+/// (`content/weapons.toml` `fuse_s = 10`, so 300 ticks at `TICK_HZ` 30). A
+/// 4 s walk stretched to its 8 s ceiling plus the settle's 500 ms worst case
+/// is ~255 shard ticks — inside the fuse with room, where a 3x ceiling's
+/// 12.5 s would be ~375 and would redden that assertion instead.
+const WALK_CEILING: u32 = 2;
+
+/// Gap between settle polls, and how many quiet ones end it / cap it.
+/// Plumbing bounds, `DECISIONS.md` §open row.
+///
+/// `SETTLE_QUIET_POLLS` consecutive polls with no new event ends the settle;
+/// `SETTLE_MAX_POLLS` caps it at 500 ms for a lane that never quiesces
+/// because the rest of the fleet is still walking. Same shape as
+/// `net.rs`'s `SHUTDOWN_DRAIN_TRIES` / `SHUTDOWN_DRAIN_POLL`: the exit is
+/// observable state and the count is only the bound on waiting for it.
+const SETTLE_POLL_MS: u64 = 20;
+const SETTLE_POLL: Duration = Duration::from_millis(SETTLE_POLL_MS);
+const SETTLE_QUIET_POLLS: u32 = 5;
+const SETTLE_MAX_POLLS: u32 = 25;
+
+// **Compile-time rather than a test**, which is the stronger form and is
+// available because every term is a constant — `net.rs`'s admission gate
+// makes the same three checks the same way and says why: get one wrong and
+// the shard does not build, so there is no version of the tree where the
+// settle is a fixed sleep and a suite is merely red.
+//
+// 1. The quiet exit must be reachable before the cap, or the settle is a
+//    fixed sleep wearing a predicate's clothes and the walk has simply been
+//    widened by half a second.
+// 2. Its worst case is wall-clock time every bot pays, so it is bounded at
+//    500 ms — and that bound is load-bearing arithmetic, not taste: it is
+//    inside `WALK_CEILING`'s headroom against the satchel fuse.
+// 3. A backstop under 2x is a schedule, and a schedule is the clock this
+//    module was just taken off.
+const _: () = assert!(SETTLE_QUIET_POLLS < SETTLE_MAX_POLLS);
+const _: () = assert!(SETTLE_POLL_MS * SETTLE_MAX_POLLS as u64 <= 500);
+const _: () = assert!(WALK_CEILING >= 2);
+
+/// The hotbar slot a raid step selected, **held across frames** until the
+/// cycle re-seats it.
+///
+/// A type rather than an `Option<u8>` local because the defect it exists to
+/// prevent is a *call site* and not a value: `Option::take()` reads
+/// identically to this at a glance, compiles, and silently reduces the
+/// selection to a single frame — which is the whole of the 2026-08-30 flaky
+/// gate (see `sel_held` in `run_bot` for the mechanism). There is no `take`
+/// on this type, so the one-shot form cannot be written by accident.
+#[derive(Default, Clone, Copy)]
+struct HeldSel(Option<u8>);
+
+impl HeldSel {
+    /// A raid step chose a slot. Every frame from here carries it.
+    fn set(&mut self, sel: u8) {
+        self.0 = Some(sel);
+    }
+
+    /// The cycle re-seated; the next step re-selects.
+    fn clear(&mut self) {
+        self.0 = None;
+    }
+
+    /// Stamp the held slot onto an outgoing frame, leaving `bot_frame`'s own
+    /// wandering selection alone when nothing is held.
+    fn apply(&self, f: &mut InputFrame) {
+        if let Some(sel) = self.0 {
+            f.sel = sel;
+        }
+    }
+}
+
+/// Cadence ticks a walk of `duration` is worth.
+///
+/// **The caller's `Duration` is read as WORK, not as wall-clock time**, and
+/// that re-reading is the whole of the flaky-gate fix from 2026-08-30.
+/// `run_bot` walks at `TICK_HZ`, one raid step per tick, and every assertion
+/// in `bot_smoke` is about how far down the profile that got — so on a box
+/// that stalls the bot, a wall-clock window silently bought fewer steps and
+/// the gate read "the sim refused everything". `CLAUDE.md`: *assert on
+/// observable state, never on elapsed milliseconds.* A count of ticks is
+/// observable state; four seconds is not.
+///
+/// Saturating, and never zero: a caller asking for a walk gets at least one
+/// tick of it, so no suite can be handed a bot that returns before sending
+/// anything at all.
+pub fn walk_ticks(duration: Duration) -> u64 {
+    let nanos = duration.as_nanos();
+    let per_tick = 1_000_000_000u128 / TICK_HZ as u128;
+    ((nanos / per_tick) as u64).max(1)
+}
 
 /// Is this failure the box saying "not now", rather than the shard saying no?
 ///
@@ -418,23 +546,52 @@ pub async fn run_bot(
     let attacker = seed_stream % 2 == 1;
     let mut plan: Option<RaidPlan> = None;
     let mut steps_in_cycle: u16 = 0;
-    let mut sel_override: Option<u8> = None;
+    // **Held, not one-shot, and that is the second half of the 2026-08-30
+    // flaky-gate fix.** `raid_step` selects the satchel on one step and
+    // throws it on the next, but `bot_frame` re-rolls `sel` at random every
+    // single frame on purpose ("wander the hotbar too, so held-item
+    // selection is inside the alloc/replay/parity surface"). Those two
+    // intents collide: a selection applied to exactly one frame is
+    // overwritten by the next frame's random slot, and the server applies
+    // every input frame it has before the tick's action (`core.rs`: "pending
+    // actions ride after inputs"), so a tick that receives two frames runs
+    // the throw with a random slot in hand and refuses it as `REFUSE_B_COST`.
+    //
+    // On an idle box one frame arrives per tick and roughly half the throws
+    // land. Under load the redundancy tail delivers several at once and
+    // **none** do — 8 raiders spending all 960 of their ticks and arming
+    // zero charges, which is how this read as a starved walk when it was a
+    // clobbered selection.
+    //
+    // Holding it is also what a player does: pressing 3 stays on slot 3.
+    // Cleared when the cycle re-seats, so each cycle re-selects, and never
+    // set at all for a `raid: None` bot — the 50-bot smoke still wanders the
+    // hotbar, because that surface is worth covering and is not this one.
+    let mut sel_held = HeldSel::default();
     let mut act_buf = [0u8; MAX_STREAM_MSG_BYTES];
 
     let mut cadence = tokio::time::interval(Duration::from_nanos(1_000_000_000 / TICK_HZ as u64));
-    cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let deadline = tokio::time::Instant::now() + duration;
+    // **`Delay`, not `Skip`, and the difference is the bug.** `Skip` throws
+    // away a tick the box was too busy to deliver, so a stalled bot walks
+    // permanently less far — the amount of work a run does became a function
+    // of the load on the machine, which is precisely what `CLAUDE.md`'s clock
+    // rule forbids a gate to depend on. `Delay` owes every tick and pays it
+    // late instead, so the walk below is bounded by a COUNT and a slow box
+    // costs wall-clock time rather than coverage.
+    cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let budget = walk_ticks(duration);
+    // The backstop, never the schedule — see `WALK_CEILING`.
+    let ceiling = tokio::time::Instant::now() + duration * WALK_CEILING;
     let mut dg_buf = [0u8; DATAGRAM_BUDGET_BYTES];
 
     loop {
         tokio::select! {
             _ = cadence.tick() => {
+                report.ticks_walked += 1;
                 let mut f = bot_frame(&mut rng, yaw, seq);
                 // A raid's selection step rides the input lane, because that
                 // is the only place a hotbar slot exists on the wire.
-                if let Some(sel) = sel_override.take() {
-                    f.sel = sel;
-                }
+                sel_held.apply(&mut f);
                 yaw = f.yaw;
                 seq = seq.wrapping_add(1);
                 tail.push(f);
@@ -481,6 +638,7 @@ pub async fn run_bot(
                     // measure nothing but `REFUSE_B_REACH`.
                     if steps_in_cycle >= RAID_CYCLE {
                         plan = None;
+                        sel_held.clear();
                     }
                     if plan.is_none() {
                         if let Some(body) = view.get(report.player_id) {
@@ -494,8 +652,9 @@ pub async fn run_bot(
                     if let Some(p) = plan.as_mut() {
                         let cmd = raid_step(p, &mut raid_rng, rows);
                         steps_in_cycle += 1;
+                        report.raid_steps += 1;
                         match cmd {
-                            Command::Input { frame, .. } => sel_override = Some(frame.sel),
+                            Command::Input { frame, .. } => sel_held.set(frame.sel),
                             other => match encode_raid(&other, &mut act_buf) {
                                 Some(Ok(len)) => {
                                     if write_frame(&mut send, &act_buf[..len]).await.is_ok() {
@@ -516,6 +675,11 @@ pub async fn run_bot(
                             },
                         }
                     }
+                }
+                // The walk ends on the budget of ticks being spent, which is
+                // the same amount of walking on every box.
+                if report.ticks_walked >= budget {
+                    break;
                 }
             }
             dg = connection.receive_datagram() => {
@@ -543,23 +707,58 @@ pub async fn run_bot(
                     Err(_) => report.decode_errors += 1,
                 }
             }
-            _ = tokio::time::sleep_until(deadline) => {
-                report.last_executed_seq = view.last_executed_seq;
-                report.events_received = tally.received.load(Ordering::Relaxed);
-                report.event_decode_errors = tally.decode_errors.load(Ordering::Relaxed);
-                report.ev_in_bytes = tally.bytes.load(Ordering::Relaxed);
-                report.build_refused = tally.build_refused.load(Ordering::Relaxed);
-                report.deploy_refused = tally.deploy_refused.load(Ordering::Relaxed);
-                report.move_refused = tally.move_refused.load(Ordering::Relaxed);
-                report.struct_hits = tally.struct_hits.load(Ordering::Relaxed);
-                report.auths = tally.auths.load(Ordering::Relaxed);
-                report.pieces_placed = tally.pieces_placed.load(Ordering::Relaxed);
-                report.deploys_placed = tally.deploys_placed.load(Ordering::Relaxed);
-                report.charges_planted = tally.charges_planted.load(Ordering::Relaxed);
-                return Ok(report);
+            _ = tokio::time::sleep_until(ceiling) => {
+                // Not a schedule and not a widened window: the box stalled
+                // this bot past `WALK_CEILING` times its nominal walk, which
+                // is a finding about the box. Recorded so the suite's red
+                // says that instead of "the sim refused everything".
+                report.walk_truncated = true;
+                break;
             }
         }
     }
+
+    // ---- settle: the answers to the last actions are still in flight -----
+    //
+    // **The counters below are fed by a task this one does not join**, and
+    // the walk's last raid step is answered a tick later by the sim and a
+    // round trip after that by the event lane. Reading the tally at the
+    // instant the walk stops therefore reports a state the bot had not yet
+    // been told about — a `charges_planted` of 0 for a charge that armed —
+    // and that is how `test_bots_raid_over_the_wire` went red on a loaded box
+    // and green on an idle one with nothing changed (2026-08-30).
+    //
+    // The exit is observable state: the event lane stopped advancing. The
+    // poll count is only the bound on waiting for it, because the rest of the
+    // fleet is still walking and a shared broadcast lane may never fall
+    // silent at all.
+    let mut quiet = 0u32;
+    let mut last_seen = tally.received.load(Ordering::Relaxed);
+    while quiet < SETTLE_QUIET_POLLS && report.settle_polls < SETTLE_MAX_POLLS {
+        tokio::time::sleep(SETTLE_POLL).await;
+        report.settle_polls += 1;
+        let seen = tally.received.load(Ordering::Relaxed);
+        if seen == last_seen {
+            quiet += 1;
+        } else {
+            quiet = 0;
+            last_seen = seen;
+        }
+    }
+
+    report.last_executed_seq = view.last_executed_seq;
+    report.events_received = tally.received.load(Ordering::Relaxed);
+    report.event_decode_errors = tally.decode_errors.load(Ordering::Relaxed);
+    report.ev_in_bytes = tally.bytes.load(Ordering::Relaxed);
+    report.build_refused = tally.build_refused.load(Ordering::Relaxed);
+    report.deploy_refused = tally.deploy_refused.load(Ordering::Relaxed);
+    report.move_refused = tally.move_refused.load(Ordering::Relaxed);
+    report.struct_hits = tally.struct_hits.load(Ordering::Relaxed);
+    report.auths = tally.auths.load(Ordering::Relaxed);
+    report.pieces_placed = tally.pieces_placed.load(Ordering::Relaxed);
+    report.deploys_placed = tally.deploys_placed.load(Ordering::Relaxed);
+    report.charges_planted = tally.charges_planted.load(Ordering::Relaxed);
+    Ok(report)
 }
 
 /// The shared client endpoint for a fleet of bots: one UDP socket, many
@@ -623,5 +822,80 @@ mod tests {
         assert!(!code_is_load_shed(0x0106));
         assert!(!code_is_load_shed(0x0108));
         assert!(!code_is_load_shed(0));
+    }
+
+    /// A walk is a count of ticks, and the count is what a suite asserts on.
+    ///
+    /// The property that matters is the one the flaky gate broke: the same
+    /// `Duration` always buys the same amount of walking. A box cannot change
+    /// this function's answer, which is the entire point of it existing —
+    /// `TICK_HZ` and the caller's request are the only inputs.
+    #[test]
+    fn a_walk_is_measured_in_ticks_and_never_in_milliseconds() {
+        // The two windows `bot_smoke` uses, at `TICK_HZ` 30.
+        assert_eq!(walk_ticks(Duration::from_secs(4)), 120);
+        assert_eq!(walk_ticks(Duration::from_secs(3)), 90);
+        // Exactly `TICK_HZ` ticks in a second, whatever `TICK_HZ` is: read
+        // off the constant rather than typed, so a rate change moves this
+        // with it instead of leaving a literal behind.
+        assert_eq!(walk_ticks(Duration::from_secs(1)), TICK_HZ as u64);
+        // Never zero: a caller asking for a walk gets one, so no suite can
+        // be handed a bot that returns before it has sent anything.
+        assert_eq!(walk_ticks(Duration::ZERO), 1);
+        assert_eq!(walk_ticks(Duration::from_nanos(1)), 1);
+        // Monotone in the request — a longer window is never less walking.
+        let mut prev = 0;
+        for ms in [10u64, 100, 500, 1_000, 4_000, 60_000] {
+            let t = walk_ticks(Duration::from_millis(ms));
+            assert!(t >= prev, "{ms} ms bought {t} ticks, less than {prev}");
+            prev = t;
+        }
+    }
+
+    /// A selected slot survives the frames after the one it was chosen on.
+    ///
+    /// **Proven red under the old body**: with `Option::take()` in place of
+    /// this type, frame 2 carries `bot_frame`'s random slot again and the
+    /// second assertion fails. That is exactly the production failure — the
+    /// server applies every input frame it holds before the tick's action
+    /// (`core.rs`: "pending actions ride after inputs"), so a throw issued
+    /// one tick after the selection ran with a random slot in hand and was
+    /// refused, and eight raiders spending all 960 of their ticks armed zero
+    /// charges on a loaded box.
+    #[test]
+    fn a_selected_slot_is_held_until_the_cycle_re_seats_it() {
+        let mut held = HeldSel::default();
+        // Nothing held: `bot_frame`'s own wandering selection is untouched,
+        // which is what a `raid: None` bot walks with.
+        let mut f = InputFrame {
+            sel: 3,
+            ..InputFrame::default()
+        };
+        held.apply(&mut f);
+        assert_eq!(f.sel, 3, "an unheld frame must keep its own slot");
+
+        // A raid step selects the charge slot.
+        held.set(5);
+        // Every frame from here, not just the next one. Four is past the
+        // one-tick gap between `raid_step`'s select and its throw, which is
+        // the gap the one-shot form covered and nothing else.
+        for tick in 0..4 {
+            let mut f = InputFrame {
+                sel: tick as u8,
+                ..InputFrame::default()
+            };
+            held.apply(&mut f);
+            assert_eq!(f.sel, 5, "frame {tick} dropped the held slot");
+        }
+
+        // The cycle re-seats and the hotbar wanders again until the next
+        // step selects — a stale hold would raid the wrong slot forever.
+        held.clear();
+        let mut f = InputFrame {
+            sel: 2,
+            ..InputFrame::default()
+        };
+        held.apply(&mut f);
+        assert_eq!(f.sel, 2, "a cleared hold must stop stamping");
     }
 }
