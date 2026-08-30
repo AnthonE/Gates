@@ -1024,7 +1024,7 @@ async fn test_bots_reload_over_the_wire() {
     tables.spawn_kit = kit;
 
     let handle = spawn_shard(
-        ShardConfig::ephemeral(0x5EED_1E),
+        ShardConfig::ephemeral(0x5EED_1E5E),
         tables,
         Saves::off(),
         server::worldfile::WorldBoot::off(),

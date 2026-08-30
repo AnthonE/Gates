@@ -23,8 +23,7 @@ use protocol::{
     decode_event, encode_action_access, encode_action_demolish, encode_action_deploy,
     encode_action_loot, encode_action_move, encode_action_pickup, encode_action_place,
     encode_action_reload, encode_action_repair, encode_action_throw, encode_input, peek_kind,
-    EventMsg, InputDatagram,
-    Welcome, WireError, KIND_SNAPSHOT, MAX_STREAM_MSG_BYTES,
+    EventMsg, InputDatagram, Welcome, WireError, KIND_SNAPSHOT, MAX_STREAM_MSG_BYTES,
 };
 use sim_core::bots::{bot_frame, raid_step, RaidPlan, RaidRows, RAID_CYCLE};
 use sim_core::build::build_cell_of;
@@ -249,7 +248,8 @@ impl EventTally {
         }
         if let EventMsg::Reload { took, .. } = ev {
             self.reloads.fetch_add(1, Ordering::Relaxed);
-            self.rounds_loaded.fetch_add(*took as u64, Ordering::Relaxed);
+            self.rounds_loaded
+                .fetch_add(*took as u64, Ordering::Relaxed);
             return;
         }
         let c = match ev {

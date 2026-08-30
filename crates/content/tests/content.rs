@@ -1376,9 +1376,12 @@ fn the_ninth_magazine_is_refused_at_the_bake() {
     // refusal below while proving nothing, and it is the shape a mutant
     // takes. Exactly `MAX_MAGS` magazine rows must still bake.
     let fits = sim_core::limits::MAX_MAGS - already;
-    armed(fits)
-        .bake_combat()
-        .unwrap_or_else(|e| panic!("{} magazine rows is the cap, not past it: {e}", already + fits));
+    armed(fits).bake_combat().unwrap_or_else(|e| {
+        panic!(
+            "{} magazine rows is the cap, not past it: {e}",
+            already + fits
+        )
+    });
 
     let err = armed(fits + 1)
         .bake_combat()
