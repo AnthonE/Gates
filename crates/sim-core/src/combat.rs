@@ -232,6 +232,27 @@ pub struct RangedDef {
     /// it as exactly that rather than as "unset": `ranged.rs` skips the
     /// damage write, and the shot still stops and still draws its impact.
     pub structure: u16,
+    /// What a hit that crossed the head band is multiplied by — the
+    /// `headshot_mult` column of `content/weapons.toml`, `= 2` on every
+    /// banded row.
+    ///
+    /// **The third column to arrive here armed and unread**, after the bow
+    /// itself and `structure`, and the longest-standing of the three: it
+    /// has been parsed (`schema.rs`), pinned to exactly the band
+    /// (`balance.rs`), and folded into the content hash (`canon.rs`) since
+    /// the content crate was written, while `bake_ranged` dropped it one
+    /// line before this struct could hold it. `reference/PROJECTILES.md`
+    /// §9.4 named it as a bug of the shape this module keeps repeating —
+    /// a number that looks tuned and does nothing — and the fix is the
+    /// same one `structure` got: carry it.
+    ///
+    /// `MeleeDef` deliberately has no twin. A swing is resolved feet-to-
+    /// feet in a plane (`strike`), so there is no height to test and no
+    /// head to cross; inventing one from `frame.pitch` would be a second
+    /// hit model rather than the same one, and the band on a melee row
+    /// stays what it has always been — content priced for a mechanic that
+    /// does not exist yet, which `balance.rs:122` says in the file.
+    pub headshot_mult: u16,
 }
 
 /// **Hand-written rather than derived, and the reason is the ammo array.**
@@ -253,6 +274,7 @@ impl Default for RangedDef {
             hitscan: false,
             range_mm: 0,
             structure: 0,
+            headshot_mult: 1,
         }
     }
 }
@@ -388,6 +410,9 @@ impl CombatContent {
             hitscan: false,
             range_mm: 0,
             structure: 0,
+            // One, not zero: the empty row's multiplier is the identity, so
+            // a table nothing baked cannot silently delete a hit.
+            headshot_mult: 1,
         }; MAX_ITEM_DEFS],
         ammo: [AmmoDef {
             speed_mmpt: 0,
@@ -641,6 +666,35 @@ pub struct Hurt {
 ///
 /// Wall 1: `min`, `saturating_add` and one `u16` subtraction that cannot
 /// underflow because `dealt <= before`. No float, no clock, no allocation.
+/// The head multiplier, applied to the **raw** damage before the funnel
+/// sees it.
+///
+/// **Before armor and not after, and the order is a decision.** `reduce`
+/// takes a percentage, so scaling first and scaling last differ only by
+/// integer rounding — but they differ in what they *mean*: a plate that
+/// stops 30% of a blow stops 30% of the blow that arrived, and a headshot
+/// is a bigger blow, not a smaller plate. `reference/ARMOR.md` §0 has
+/// protection proportional to damage for exactly this reason. Doing it
+/// here also keeps the funnel's signature a `u16`, so `tests/
+/// damage_routes.rs` still sees one door into a body's hp.
+///
+/// **Not on the funnel itself**, because the funnel is every route and only
+/// two of them have a head to hit. A pig's bite (`world.rs`) and a satchel
+/// blast (`charge.rs`) resolve against a body with no line to cross, and a
+/// `hurt` that took a `head: bool` would ask both of them a question
+/// neither can answer — the shape `hurt`'s own doc refuses for `EV_HIT`.
+///
+/// Saturating rather than wrapping: `u16::MAX` hp does not exist
+/// (`balance.toml` caps a body at three digits) so the clamp is
+/// unreachable with shipped content, and the alternative is a headshot
+/// that heals.
+///
+/// Wall 1: two `u32` multiplies and a `min`. No float, no allocation.
+#[inline]
+pub fn headshot(raw: u16, mult: u16) -> u16 {
+    (raw as u32 * mult as u32).min(u16::MAX as u32) as u16
+}
+
 #[inline]
 pub fn hurt(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
     debit(v, reduce(raw, worn_pct(cc, v)))

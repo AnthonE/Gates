@@ -107,6 +107,7 @@ fn bow_fixture() -> CombatContent {
         // ticks this fixture used to state as a constant.
         range_mm: 60_000,
         structure: 0,
+        headshot_mult: 2,
     };
     // The ballistics belong to the round now (`reference/PROJECTILES.md`
     // §9.3), so the fixture arms the arrow rather than the bow.

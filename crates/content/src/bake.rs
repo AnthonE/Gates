@@ -813,6 +813,15 @@ impl Content {
             // before the sim could read it. `RangedDef::structure` says
             // what that cost.
             structure,
+            // And the last of them, on the same terms. `headshot_mult` has
+            // been parsed, banded and content-hashed since this crate was
+            // written and dropped here every bake — `reference/
+            // PROJECTILES.md` §9.4 named it as the outstanding case of
+            // exactly the disease the lines above record. `u16` because
+            // `combat::headshot` multiplies in `u32` and saturates; the
+            // band is 2 and `validate` refuses a zero, so a shipped row
+            // cannot arrive here as a hit that deals nothing.
+            headshot_mult: w.headshot_mult as u16,
         };
         Ok(())
     }

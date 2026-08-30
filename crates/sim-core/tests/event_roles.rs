@@ -459,6 +459,7 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
+        headshot_mult: 2,
     };
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: SPEED_MMPT,
@@ -547,6 +548,7 @@ fn an_instant_shot_reads_zero_speed_and_a_reach() {
         hitscan: true,
         range_mm: RANGE_MM,
         structure: 0,
+        headshot_mult: 2,
     };
     w.players[0].inv[0] = ItemStack {
         item: GUN,
@@ -639,6 +641,7 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
+        headshot_mult: 2,
     };
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1_333,

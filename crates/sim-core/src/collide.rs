@@ -57,6 +57,25 @@ pub const PIECE_LIFT_M: f32 = 0.3;
 /// v0; the render capsule is 0.4 m, the eye 1.6 m).
 pub const CAPSULE_RADIUS_M: f32 = 0.4;
 pub const CAPSULE_HEIGHT_M: f32 = 1.7;
+/// The head, as a band off the **top** of that same cylinder: a hit whose
+/// line crosses `[CAPSULE_HEIGHT_M - HEAD_BAND_M, CAPSULE_HEIGHT_M]` above
+/// the feet is worth the weapon's `headshot_mult` (`DECISIONS.md` §open,
+/// headshot v0; `reference/PROJECTILES.md` §9.4 is the design).
+///
+/// **A band and not a second collider**, because the body is one cylinder
+/// and a second one buys nothing a band does not: with exactly two parts,
+/// §7's *most significant part along the segment* rule reduces to "was the
+/// head interval crossed at all", which is an interval overlap. `ranged::
+/// head_crossed` is that overlap and `ranged::nearest_body` hands it the
+/// span the shot spent inside the body.
+///
+/// 0.25 of 1.7 is 14.7% of stature, a shade over a real head's ~13%, and
+/// the generosity is deliberate — the reference rebuilt hit detection
+/// around **best-fit rather than exact intersection** (§7) after shipping
+/// the opposite. `ranged::ARROW_EYE_MM` (1.6 m) sits inside this band, so
+/// a level shot between two bodies standing on the same ground is a
+/// headshot, which is the property that makes aim worth anything.
+pub const HEAD_BAND_M: f32 = 0.25;
 /// Edge-piece slab thickness (scene.js WALL_T, now sim truth).
 pub const WALL_THICKNESS_M: f32 = 0.24;
 /// Doorway post width from each end of the edge; the opening between is

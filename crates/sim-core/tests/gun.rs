@@ -76,6 +76,13 @@ const ROUND: u16 = 6;
 /// Level pitch — `shoot.rs`'s constant and its reason: the client's encoding
 /// puts 0 rad between 127 and 128, and 128 is what it actually sends when
 /// you are looking at the horizon.
+///
+/// So it is **not** horizontal, and the gap is load-bearing at range:
+/// 127 is 0.353° down and 128 is 0.353° up. Six centimetres at 10 m, which
+/// is nothing and is where every other check here stands — but 0.31 m over
+/// the revolver's whole 50 m barrel, which is more than the head band is
+/// tall. `the_shot_stops_at_the_weapons_declared_reach` is where that
+/// stops being trivia.
 const LEVEL: u8 = 128;
 
 /// The shipped revolver, converted the way `bake_ranged` converts it: 20
@@ -92,6 +99,7 @@ fn gun_fixture() -> sim_core::combat::CombatContent {
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
+        headshot_mult: 2,
     };
     c
 }
@@ -561,7 +569,17 @@ fn the_shot_stops_at_the_weapons_declared_reach() {
     let mut sc = Scratch::barren();
     let eye = 400.0 + ARROW_EYE_MM as f32 / 1000.0 - 1.2;
 
-    for (dist, expect) in [(45.0f32, 80u16), (55.0, 100)] {
+    // 60 and not 80, because the shot that reaches 45 m arrives at the
+    // victim's **head**. `LEVEL` is half a step above level (its own doc),
+    // so a 50 m barrel climbs 0.277 m over 45 of them: the muzzle leaves
+    // 1.2 m above the target's feet and gets there at 1.477, inside
+    // `collide::HEAD_BAND_M`'s [1.45, 1.70]. `headshot_mult = 2` on the
+    // fixture, so 20 becomes 40. At 10 m — every other check in this file
+    // — the same climb is 0.062 m and the hit is a body hit at 1.262.
+    //
+    // The claim here is still the reach and not the multiplier: what makes
+    // it a reach test is 55 m taking nothing at all.
+    for (dist, expect) in [(45.0f32, 60u16), (55.0, 100)] {
         let mut players = Box::new([Player::default(); MAX_PLAYERS]);
         players[0] = shooter(1, 0.0, 400.0, 0.0, 0, LEVEL, 6);
         players[1] = target(2, 0.0, eye, dist);

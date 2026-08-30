@@ -120,6 +120,7 @@ fn main() {
         hitscan: true,
         range_mm: 50_000,
         structure: 0,
+        headshot_mult: 2,
     };
     let mut pristine = Scratch::with(SEED, Pristine);
     let mut barren = Scratch::barren();
