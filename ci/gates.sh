@@ -220,7 +220,7 @@ diff -u "$debug_out" "$native_out" \
   || fail "test_parity_wasm: debug and release digests differ — the optimizer \
 changed a float result, which is the contraction class wall 1 bans by name"
 grep -q '^parity ' "$native_out" || fail "probe output empty — parity not exercised"
-grep -q '^combat ' "$native_out" || fail "probe output has no combat line — melee not exercised"
+grep -q '^combat ' "$native_out" || fail "probe output has no combat line — the brawl is not exercised"
 grep -q '^bags ' "$native_out" || fail "probe output has no bags line — respawn-on-bag not exercised"
 # The terrain and sites lines, asserted by COUNT rather than presence. The
 # `diff` above cannot see an empty loop: drop the seed table on both sides and
@@ -247,6 +247,23 @@ done
 bag_wakes="$(awk '/^bags /{print $5}' "$native_out")"
 [ -n "$bag_wakes" ] && [ "$bag_wakes" -gt 0 ] \
   || fail "test_parity_wasm: the bags probe woke nobody on a bag (count '$bag_wakes') — the respawn scan is not actually on the parity surface"
+
+# The combat line carries a count too, and it reads the OTHER shot path.
+# `ranged::hitscan` is the only one that consults the lag-comp ring — the
+# arrow deliberately resolves live — so until 2026-08-30 this probe drove a
+# nonzero favour through the melee reader alone while `NOW.md` §0lc read as
+# though it covered both.
+#
+# What is counted is deliberately not "a gun fired": it is a hitscan shot
+# whose shooter was being rewound on that tick, which is the only event that
+# proves `Pose::Rewound` was the pose the scan used. §0lc's own lesson is
+# why — sixteen gates stayed green under a `favour: 0` literal because they
+# watched the arithmetic instead of the consequence. Four things can each
+# close this path silently (the fixture row, `sel` landing on the gun, the
+# shared swing cadence, a round in the pack) and all four read zero here.
+combat_rewound="$(awk '/^combat /{print $5}' "$native_out")"
+[ -n "$combat_rewound" ] && [ "$combat_rewound" -gt 0 ] \
+  || fail "test_parity_wasm: the combat probe fired no rewound shot (count '$combat_rewound') — the gun's lag-comp rewind is not actually on the parity surface"
 
 # WHAT WAS CUT HERE, and what it costs (operator, 2026-08-06).
 #

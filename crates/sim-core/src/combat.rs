@@ -359,7 +359,16 @@ pub struct CombatContent {
 
     /// Indexed the same way. A row here and a row in `melee` are not
     /// exclusive in the type, but nothing in the alpha data is both, and
-    /// `ranged::armed` reads this one first — a bow in hand does not swing.
+    /// the ranged read happens first — a bow in hand does not swing.
+    ///
+    /// ⚠ This line named **`ranged::armed`** until 2026-08-30 and there has
+    /// never been a function by that name in the tree. The two reads that
+    /// actually do the job are `held_ranged` (below — `damage > 0` is the
+    /// whole test) and `ranged::draw`, whose `true` means *the weapon took
+    /// the arm*, which is what `World::tick` uses to skip `gather::swing`.
+    /// Corrected while arming this table's first fixture ranged row; the
+    /// class is `CLAUDE.md`'s dead-citation ⚠, one level down — a doc that
+    /// names a symbol is a claim you can `grep`.
     pub ranged: [RangedDef; MAX_ITEM_DEFS],
     /// Ballistics, indexed by the **round's** item index rather than the
     /// weapon's (`reference/PROJECTILES.md` §9.3). A stack of arrows in a
@@ -485,6 +494,50 @@ impl CombatContent {
         c.armor[5] = ArmorDef {
             reduction_pct: 20,
             slot: WEAR_BODY,
+        };
+        // **Item 6 is a hitscan firearm and item 7 is its round**, and this
+        // row is the whole reason `probe_combat`'s rewind claim is true.
+        // Until 2026-08-30 this table had no `ranged` entry at all, so every
+        // `held_ranged` in that probe answered `None`, every `BTN_PRIMARY`
+        // fell through to `gather::swing`, and `test_parity_wasm` covered
+        // the *melee* reader while `NOW.md` §0lc read as though it covered
+        // both. `ranged::hitscan` is the only shot path that consults the
+        // rewind ring (`Pose::Rewound`); the arrow deliberately stays live.
+        //
+        // Continuing the ladder above rather than picking a free number:
+        // 0–3 are the melee rows, 4–5 the armor rows, 6–7 the gun and its
+        // round. Nothing is two things at once, so a test cannot arm what
+        // it meant to wear or shoot what it meant to swing.
+        //
+        // Every number is chosen for what it *reaches* inside a counted
+        // window, which is this fixture's rule everywhere else:
+        //   damage 25 — four shots to kill against `player_hp`, so a
+        //     gunfight resolves inside 256 ticks without one-shotting the
+        //     melee brawl out of the digest;
+        //   headshot_mult 2 — nonzero and not 1, so `head_crossed`'s band
+        //     changes an outcome rather than being computed and discarded;
+        //   rate_ticks 8 — faster than the shared swing cadence, so holding
+        //     the gun is a different tempo and not a re-skinned club;
+        //   range_mm 20_000 — the melee row's 2 m reason at gun scale. Long
+        //     enough to cross the spawn ring the three bots share, short
+        //     enough not to shoot across the island, and 118 sampler taps
+        //     against `MAX_HITSCAN_SAMPLES` (320), so the backstop at
+        //     `ranged.rs`'s sample check is not what stops the shot;
+        //   structure 0 — a bullet chips nothing here on purpose. The piece
+        //     stores are `probe_parity`'s subject and a fixture that
+        //     demolished them would hollow that probe out, which is the
+        //     same trade `raid_fixture`'s one point of damage refuses.
+        // The round carries **no `ammo` row**, and that is not an omission:
+        // `hitscan` never looks one up, and a firearm whose round had
+        // ballistics is the pairing `content/validate.rs` refuses at boot.
+        c.ranged[6] = RangedDef {
+            damage: 25,
+            ammo: [7, NO_ITEM, NO_ITEM, NO_ITEM],
+            rate_ticks: 8,
+            hitscan: true,
+            range_mm: 20_000,
+            structure: 0,
+            headshot_mult: 2,
         };
         c
     }

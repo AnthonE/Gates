@@ -1,12 +1,18 @@
 //! The rewind ring: where every body stood, for the last `REWIND_TICKS`
 //! ticks.
 //!
-//! Slice 2 of `findings/lagcomp-design-20260818.md` §7, and **nothing in the
-//! sim reads the ring yet** — `combat::strike` is slice 4. So this suite is
-//! the whole of what stands behind it, and it is written to fail under a
-//! mutant rather than to describe the code: every check that could be
-//! satisfied by a ring that never records anything also asserts that the
-//! body it is tracking actually moved.
+//! Slice 2 of `findings/lagcomp-design-20260818.md` §7. This header said
+//! **nothing in the sim reads the ring yet** — true when slice 2 landed and
+//! false since slice 4 — and **two** readers hold it now, not one:
+//! `combat::strike` for a swing and `ranged::hitscan` for a bullet, the
+//! latter reaching the ring through `Pose::Rewound`. The arrow is the
+//! deliberate third case that stays `Pose::Live`.
+//!
+//! The suite is still written to fail under a mutant rather than to describe
+//! the code: every check that could be satisfied by a ring that never
+//! records anything also asserts that the body it is tracking actually
+//! moved. The last check in the file applies that rule to the *probe* —
+//! a digest over a path nobody walked is the same defect one level out.
 //!
 //! The history it compares against is **rebuilt from published parts** — the
 //! world's own `players[s].body`, read after each `tick` returns — not from
@@ -455,5 +461,47 @@ fn the_world_size_note_is_measured() {
          {} B and the note has drifted. Correct the note in the same commit \
          as whatever moved the number.",
         size_of::<World>()
+    );
+}
+
+/// **The gun's rewind is on the parity surface, and this is the check that
+/// says so in `cargo test`.**
+///
+/// `ranged::hitscan` is the only shot path that reads this ring — the arrow
+/// deliberately resolves `Pose::Live` — and until 2026-08-30 the fixture
+/// `probe_combat` installs had no `ranged` row at all. So every
+/// `BTN_PRIMARY` in that probe fell through to `gather::swing`,
+/// `test_parity_wasm` covered the melee reader alone, and `NOW.md` §0lc read
+/// as though it covered both readers.
+///
+/// It asserts the **consequence**, which is §0lc's own expensive lesson:
+/// sixteen gates stayed green under the `favour: 0` literal that shipped,
+/// because a counter written beside a value cannot witness that value
+/// reaching its destination. So a nonzero count here is not "a gun exists"
+/// or "a gun fired" — it is *a hitscan shot resolved while its shooter was
+/// being rewound*, which is the only outcome that proves `Pose::Rewound`
+/// was the pose the scan used.
+///
+/// Four sequences rather than the 500 `examples/probe.rs` drives: this is a
+/// coverage floor, not the digest, and the digest is `ci/gates.sh`'s job on
+/// the full run. Both mutants were watched going red at full size
+/// (2026-08-30, 500 × 256): the fixture's `damage: 25` set to zero, and the
+/// three favour phases collapsed to `[0, 0, 0]`. Each took the count from
+/// **2415 to 0** while leaving a green digest behind it, which is exactly
+/// the pass nobody earned that this assertion exists to refuse.
+#[test]
+fn the_guns_rewind_rides_the_parity_surface() {
+    const SEQUENCES: u32 = 4;
+    const TICKS: u32 = 256;
+    let packed = sim_core::probe::probe_combat(SEED, SEQUENCES, TICKS);
+    let rewound = packed >> 32;
+    println!("probe_combat({SEED}, {SEQUENCES}, {TICKS}) rewound hitscan shots = {rewound}");
+    assert!(
+        rewound > 0,
+        "`probe_combat` fired no hitscan shot at a nonzero lag-comp favour, so \
+         the gun's rewind is NOT on the parity surface whatever its digest \
+         says. Four things can each close that path silently: the fixture's \
+         `ranged` row, `sel` landing on the gun's hotbar slot, the swing \
+         cadence it shares with melee, and a round in the pack."
     );
 }
