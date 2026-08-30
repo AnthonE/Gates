@@ -27,11 +27,11 @@
 // code, and a test harness is not sim code.
 #![allow(clippy::disallowed_macros)]
 
-use sim_core::combat::NO_MAG;
 use sim_core::build::{
     self, BUILD_CELL_M, LEVEL_H_M, LOC_PLANE, PLATE_RISE_MAX_BANDS, SHAPE_FLOOR, SHAPE_FOUNDATION,
 };
 use sim_core::collide::{ColIndex, PLANE_THICKNESS_M};
+use sim_core::combat::NO_MAG;
 // `fmath` only, never `f32::abs`: the walls' clippy list is crate-scoped, so
 // it binds this suite exactly as it binds the sim (`tests/flank.rs` says the
 // same). `i32::abs` is untouched by that list and stays as it is.

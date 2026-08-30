@@ -19,8 +19,8 @@ use sim_core::build::{
     SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::combat::{
-    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, NO_MAG, WEAR_BODY,
-    WEAR_HEAD, WEAR_NONE,
+    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, NO_MAG, WEAR_BODY, WEAR_HEAD,
+    WEAR_NONE,
 };
 use sim_core::craft::{
     CraftContent, RecipeDef, STATION_FURNACE, STATION_NONE, STATION_WORKBENCH1, STATION_WORKBENCH2,
@@ -38,8 +38,8 @@ use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
     ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
     MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
-    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
-    MAX_MAGS, MAX_RESEARCH_ROWS, MAX_WEAPON_AMMO, TICK_HZ,
+    MAX_LOOT_TABLES, MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
+    MAX_RESEARCH_ROWS, MAX_WEAPON_AMMO, TICK_HZ,
 };
 use sim_core::loot::{
     LootContent, LootEntryDef, LootTableDef, LOOT_BARREL, LOOT_CACHE, LOOT_CRATE,
@@ -812,10 +812,13 @@ impl Content {
         // into an index, and it is the only place that index is chosen.
         let magazine = u16::try_from(w.magazine.unwrap_or(0))
             .map_err(|_| format!("bake: `{}` magazine {:?} overflows u16", w.id, w.magazine))?;
-        let reload_ticks = u16::try_from(
-            w.reload_ms.unwrap_or(0) as u64 * TICK_HZ as u64 / 1000,
-        )
-        .map_err(|_| format!("bake: `{}` reload_ms {:?} overflows u16 ticks", w.id, w.reload_ms))?;
+        let reload_ticks = u16::try_from(w.reload_ms.unwrap_or(0) as u64 * TICK_HZ as u64 / 1000)
+            .map_err(|_| {
+            format!(
+                "bake: `{}` reload_ms {:?} overflows u16 ticks",
+                w.id, w.reload_ms
+            )
+        })?;
         if magazine > 0 && reload_ticks == 0 {
             return Err(format!(
                 "bake: `{}` holds {magazine} rounds and reloads in no time at all",

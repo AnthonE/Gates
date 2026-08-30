@@ -1045,7 +1045,11 @@ pub enum EventMsg {
     /// difference the client could compute — a partial reload off a nearly
     /// empty pack takes fewer than the cylinder wanted, and the toast the
     /// player is owed says how many they got.
-    Reload { loaded: u16, ceiling: u16, took: u16 },
+    Reload {
+        loaded: u16,
+        ceiling: u16,
+        took: u16,
+    },
     /// A reload (or a trigger pull on an empty magazine) did nothing.
     /// `item` names the hand so the sentence can be *a bow has no
     /// magazine*; `loaded`/`ceiling` restate the count, which is the whole

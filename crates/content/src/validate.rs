@@ -615,7 +615,8 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if w.magazine.unwrap_or(0) > u16::MAX as u32 {
             return Err(format!("weapon `{}`: magazine over u16", w.id));
         }
-        let reload_ticks = w.reload_ms.unwrap_or(0) as u64 * sim_core::limits::TICK_HZ as u64 / 1000;
+        let reload_ticks =
+            w.reload_ms.unwrap_or(0) as u64 * sim_core::limits::TICK_HZ as u64 / 1000;
         if reload_ticks > u16::MAX as u64 {
             return Err(format!(
                 "weapon `{}`: reload_ms {} is {reload_ticks} ticks, over u16",

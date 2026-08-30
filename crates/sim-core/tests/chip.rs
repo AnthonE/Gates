@@ -27,11 +27,11 @@
 //! a fall lands inside a counted window — `combat::probe_fixture`'s own
 //! reasoning for its 34, one table over.
 
-use sim_core::combat::NO_MAG;
 use sim_core::build::{
     foundation_terrain_ok, BuildContent, BUILD_CELL_M, LEVEL_H_M, LOC_DIAG_A, LOC_DIAG_B,
     LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
 };
+use sim_core::combat::NO_MAG;
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef, HARD_SIDE_STRUCTURE};
 use sim_core::deploy::DeployContent;
 use sim_core::gather::{cell_key, GatherContent, ItemStack, NO_ITEM};

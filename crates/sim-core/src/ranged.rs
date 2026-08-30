@@ -223,12 +223,7 @@ pub fn mag_ceiling(pair: u32) -> u16 {
 pub fn reload(tick: u64, cc: &CombatContent, events: &mut EventQueue, p: &mut Player) -> bool {
     let item = held_item(p);
     let refuse = |events: &mut EventQueue, why: u32, pair: u32| {
-        events.push(
-            EV_RELOAD_REFUSED,
-            p.id,
-            (item as u32) << 16 | why,
-            pair,
-        );
+        events.push(EV_RELOAD_REFUSED, p.id, (item as u32) << 16 | why, pair);
     };
     // A hand that cannot hold a magazine. `held_ranged` filters on
     // `damage > 0`, so an unarmed or unbaked row lands here rather than
@@ -1490,7 +1485,7 @@ pub fn hitscan(
         // to prevent. Read before the cadence is paid so that ordering
         // stays visible, spent after it.
         let mag = (def.magazine > 0 && (def.mag_slot as usize) < MAX_MAGS)
-            .then(|| def.mag_slot as usize);
+            .then_some(def.mag_slot as usize);
         let round = match mag {
             Some(slot) if p.mag[slot] > 0 => Some(p.mag_round[slot]),
             Some(_) => None,

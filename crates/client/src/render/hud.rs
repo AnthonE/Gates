@@ -1520,7 +1520,15 @@ pub fn update(
     mut cells: Query<(&Cell, &mut BorderColor, &mut BackgroundColor)>,
     mut icons: Query<(&CellIcon, &mut ImageNode, &mut Visibility)>,
     mut counts: Query<(&CellCount, &mut Text), (Without<Plan>, Without<VitalNum>)>,
-    mut ammo: Query<&mut Text, (With<AmmoText>, Without<Plan>, Without<VitalNum>, Without<CellCount>)>,
+    mut ammo: Query<
+        &mut Text,
+        (
+            With<AmmoText>,
+            Without<Plan>,
+            Without<VitalNum>,
+            Without<CellCount>,
+        ),
+    >,
     mut pips: Query<(&CellPip, &mut Visibility), Without<CellIcon>>,
     mut pip_fills: Query<
         (&CellPipFill, &mut Node),

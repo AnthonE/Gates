@@ -2323,9 +2323,7 @@ impl ClientCore {
                 // reads `(0, 0)` through `mag()` once the hand changes, but
                 // the raw field is what a decrement would touch, so the
                 // same test guards it here.
-                if shooter == self.player_id
-                    && self.mag.1 > 0
-                    && self.mag_item == self.held_item()
+                if shooter == self.player_id && self.mag.1 > 0 && self.mag_item == self.held_item()
                 {
                     self.mag.0 = self.mag.0.saturating_sub(1);
                 }

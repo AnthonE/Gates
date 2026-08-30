@@ -6,11 +6,11 @@
 //! counted/structural asserts: identical on this box and the reference
 //! VPS.
 
-use sim_core::combat::NO_MAG;
 use protocol::InputDatagram;
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use server::view::{Applied, ClientView};
+use sim_core::combat::NO_MAG;
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
 use sim_core::gather::{ItemStack, NO_ITEM, SWING_INTERVAL_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};

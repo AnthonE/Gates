@@ -20,13 +20,13 @@ use protocol::{
     encode_event_inv, encode_event_knock, encode_event_known, encode_event_move_refused,
     encode_event_moved, encode_event_oven, encode_event_piece_defs, encode_event_piece_placed,
     encode_event_piece_repaired, encode_event_piece_sync, encode_event_recipes,
-    encode_event_reload, encode_event_reload_refused, encode_event_removed,
-    encode_event_research, encode_event_research_refused,
-    encode_event_research_rows, encode_event_respawn, encode_event_shot, encode_event_slot_change,
-    encode_event_slot_sync, encode_event_stock, encode_event_struct_hit, encode_event_swing,
-    encode_event_vitals, encode_event_weak_mark, ActionMsg, ChatMsg, EntityState, InputDatagram,
-    InvSlot, ItemCatalog, SnapshotEncoder, SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH,
-    CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH, MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
+    encode_event_reload, encode_event_reload_refused, encode_event_removed, encode_event_research,
+    encode_event_research_refused, encode_event_research_rows, encode_event_respawn,
+    encode_event_shot, encode_event_slot_change, encode_event_slot_sync, encode_event_stock,
+    encode_event_struct_hit, encode_event_swing, encode_event_vitals, encode_event_weak_mark,
+    ActionMsg, ChatMsg, EntityState, InputDatagram, InvSlot, ItemCatalog, SnapshotEncoder,
+    SnapshotHeader, WireBag, WireError, BAG_SYNC_BATCH, CONT_SYNC_BATCH, DEPLOY_SYNC_BATCH,
+    MAX_EVENT_MSG_BYTES, PIECE_SYNC_BATCH, SLOT_SYNC_BATCH,
 };
 use sim_core::backpack::BAG_GONE_MAX;
 use sim_core::build::{damage_band, BuildContent, PieceRec, LOC_PLANE};
@@ -49,10 +49,9 @@ use sim_core::world::{
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
     EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK,
     EV_KNOWN, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_PIECE_REPAIRED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED,
-    EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED,
-    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_VITALS, EV_WEAK_MARK,
-    STRUCT_DEPLOY_BIT,
+    EV_PIECE_REPAIRED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN,
+    EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_VITALS,
+    EV_WEAK_MARK, STRUCT_DEPLOY_BIT,
 };
 
 /// A piece row's baked maximum hp, or 0 if the row is past the table.

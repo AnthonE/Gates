@@ -1232,12 +1232,6 @@ fn bake_backpack_walks_the_rarity_ladder_the_data_declares() {
     );
 }
 
-/// The seven durability rules (item durability v0), each proven against
-/// the shipped set with one edit. V7 and V4 are the two the slice's gates
-/// name — the stack law everything else leans on, and the set check this
-/// repo keeps getting bitten by — and the other five are the dead-row and
-/// width refusals between them.
-#[test]
 /// **The magazine column refuses what it names** (reload v1).
 ///
 /// Written because the column is the whole mechanic: a firearm that lost
@@ -1301,6 +1295,11 @@ fn the_magazine_rules_refuse_what_they_name() {
     );
 }
 
+/// The seven durability rules (item durability v0), each proven against
+/// the shipped set with one edit. V7 and V4 are the two the slice's gates
+/// name — the stack law everything else leans on, and the set check this
+/// repo keeps getting bitten by — and the other five are the dead-row and
+/// width refusals between them.
 #[test]
 fn the_durability_rules_refuse_what_they_name() {
     // V7: a condition-carrying item must stack to 1. The rock keeps its

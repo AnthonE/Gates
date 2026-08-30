@@ -4228,6 +4228,10 @@ impl World {
             // plays differently. Both halves: `mag_round` is what the next
             // shot spends, so a magazine holding the wrong round is a
             // divergence even at an identical count.
+            for (loaded, round) in p.mag.iter().zip(p.mag_round.iter()) {
+                h.update(&loaded.to_le_bytes());
+                h.update(&round.to_le_bytes());
+            }
             // The survival clock, in its own buffer rather than widening
             // the one above — every byte of it is sim state (the
             // accumulators included: a replay resuming mid-span with a

@@ -111,10 +111,10 @@
 // sim code.
 #![allow(clippy::disallowed_macros)]
 
-use sim_core::combat::NO_MAG;
 use sim_core::collide::{
     ColIndex, Part, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M, HEAD_BAND_M, LIMB_BAND_M,
 };
+use sim_core::combat::NO_MAG;
 use sim_core::combat::{self, CombatContent, RangedDef};
 use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
