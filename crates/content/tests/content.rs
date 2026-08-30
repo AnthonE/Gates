@@ -70,11 +70,14 @@ fn refuses_bake(file: &str, from: &str, to: &str, phrase: &str) {
     );
 }
 
-/// The two recovery globals reach the sim, which is the whole disease
-/// this row was written to avoid: `headshot_mult` has been parsed, banded
-/// and hashed since the content crate and **no sim code reads it**
-/// (`reference/PROJECTILES.md` §9.4). A column nothing bakes is a number
-/// that looks tuned and does nothing.
+/// The two recovery globals reach the sim, which is the disease this row
+/// was written to avoid — a column nothing bakes is a number that looks
+/// tuned and does nothing.
+///
+/// It used to cite `headshot_mult` as the live instance of that. **It is
+/// not one any more** (headshot v0): `bake_ranged` carries it and
+/// `the_headshot_column_reaches_the_sim` below is its own version of this
+/// check. The example moved, the rule did not.
 ///
 /// It pins the *wiring* and not the values — asserting 15 and 10 here
 /// would make a balance pass red for no reason, and `CONTENT.md` §4's
@@ -92,6 +95,52 @@ fn the_arrow_recovery_globals_reach_the_sim() {
         cc.arrow_lodge_ticks,
         c.balance.globals.arrow_lodge_s * sim_core::limits::TICK_HZ,
         "the lodge the sim waits out is not the file's seconds at TICK_HZ"
+    );
+}
+
+/// **The headshot column reaches the sim**, which it did not for the whole
+/// life of this crate: `headshot_mult` was parsed, pinned to exactly the
+/// band and folded into the content hash while `bake_ranged` dropped it one
+/// line before `RangedDef` could hold it (`reference/PROJECTILES.md` §9.4).
+/// A number that is validated, banded and hashed *looks* enforced from
+/// every direction except the only one that matters.
+///
+/// It pins the **wiring** and not the value — asserting `2` here would turn
+/// a balance pass red for no reason, and `CONTENT.md` §4's bands plus
+/// `balance.rs`'s exact-equality check are what decide whether a value may
+/// land. What it asserts is that every ranged row the file declares arrives
+/// in the sim's table carrying the file's own number, whatever that is.
+///
+/// The bow, the crossbow and the revolver — every `WeaponKind` that bakes
+/// through `bake_ranged`. Melee is deliberately absent: `MeleeDef` has no
+/// such field and `sim-core`'s `tests/headshot.rs` is where that decision
+/// is written down and gated.
+///
+/// Mutant watched red: `headshot_mult: 1` hard-coded at the bake.
+#[test]
+fn the_headshot_column_reaches_the_sim() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let cc = c.bake_combat().expect("shipped content must bake");
+    let mut checked = 0;
+    for w in &c.weapons {
+        let idx = c.item_index(&w.id).expect("own id resolves") as usize;
+        if cc.ranged[idx].damage == 0 {
+            continue; // melee or a throwable: no ranged row to carry it
+        }
+        assert_eq!(
+            u32::from(cc.ranged[idx].headshot_mult),
+            w.headshot_mult,
+            "`{}` declares headshot_mult {} and the sim's table says {}",
+            w.id,
+            w.headshot_mult,
+            cc.ranged[idx].headshot_mult
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 3,
+        "the file ships a bow, a crossbow and a revolver: only {checked} \
+         ranged rows reached the table, so this passed by finding nothing"
     );
 }
 

@@ -60,6 +60,7 @@ fn bow(break_pct: u16) -> CombatContent {
         hitscan: false,
         range_mm: 60_000,
         structure: 0,
+        headshot_mult: 2,
     };
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,

@@ -44,9 +44,22 @@
 //!
 //! # What v0 does not do
 //!
-//! No headshots (melee has none either — `frame.pitch` aims the shot but no
-//! part of a body is worth more than another) and no damage falloff (the
-//! schema has no curve to read).
+//! No damage falloff — the schema has no curve to read.
+//!
+//! **"No headshots" stood here until 2026-08-30** and is the third clause
+//! of this header to outlive its truth, after the bow and after the wall
+//! chip. A head is a band off the top of the body cylinder
+//! (`collide::HEAD_BAND_M`) and a hit whose line crosses it pays the
+//! weapon's `headshot_mult`, which had been priced, banded and
+//! content-hashed since the content crate and dropped at the bake every
+//! time (`reference/PROJECTILES.md` §9.4). The rule is §7's — the most
+//! significant part **along the segment**, so `nearest_body` carries the
+//! span the shot spent inside the body and `head_crossed` is the overlap.
+//!
+//! **Melee still has none**, and that half of the old sentence stays true
+//! for the reason it always gave: `combat::strike` resolves feet-to-feet in
+//! a plane, so there is no height for a band to test. `MeleeDef` has no
+//! such field.
 //!
 //! **A shot chips the wall it stops on, since 2026-08-28** (ranged
 //! structure damage v0) — this paragraph said it did not, for as long as
@@ -98,7 +111,7 @@
 //! vertical step between two taps is at most `ARROW_STEP_MM`, under the band
 //! a slab presents.
 
-use crate::collide::{self, ColIndex, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M};
+use crate::collide::{self, ColIndex, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M, HEAD_BAND_M};
 use crate::combat::{held_item, CombatContent};
 use crate::craft::{inv_count, inv_take};
 use crate::gather::NO_ITEM;
@@ -213,6 +226,17 @@ pub struct Arrow {
     /// chips a wall by the same amount — the same rule already in force
     /// for flesh.
     pub structure: u16,
+    /// What this arrow is multiplied by if its line crosses the head band
+    /// — the bow's `headshot_mult`, copied at the draw beside `damage` and
+    /// `structure`, for the same reason those two are copied: an arrow
+    /// already in the air should not change what it does because content
+    /// was rebaked under it.
+    ///
+    /// The **bow's** number, like `damage` and `structure`, and not the
+    /// round's. `weapons.toml`'s `[[ammo]]` rows carry ballistics and
+    /// nothing else; a high-velocity arrow flies flatter and hits for what
+    /// the bow says.
+    pub head_mult: u16,
     /// Ticks of flight left. Zero means the slot is free.
     pub life: u16,
     /// Millimetres flown so far — arc length, summed per tick, which is
@@ -264,6 +288,8 @@ impl Arrows {
             round: 0,
             damage: 0,
             structure: 0,
+            // The identity, so an unfilled slot cannot delete a hit.
+            head_mult: 1,
             life: 0,
             flown: 0,
         }; MAX_ARROWS],
@@ -398,6 +424,7 @@ pub fn draw(
         round,
         damage: def.damage,
         structure: def.structure,
+        head_mult: def.headshot_mult,
         life,
         flown: 0,
     };
@@ -546,14 +573,34 @@ pub fn step(
         // `stop_t`, so a body behind a trunk is never reached.
         let best = nearest_body(players, (ox, oy, oz), (sx, sy, sz), stop_t, a.owner);
 
-        if let Some((t, j)) = best {
+        if let Some(BodyHit {
+            t,
+            slot: j,
+            enter,
+            exit,
+        }) = best
+        {
             let range_cm = ((a.flown as f32 + len_mm * t) / 10.0) as u16;
             let v = &mut players[j];
+            // Did the shaft cross the head on its way through? The span is
+            // clipped against the world's stop first, so an arrow that
+            // buries itself in a windowsill at chest height is not credited
+            // with the skull that was on the far side of it.
+            let feet_mm = v.body.qy as f32 * (POS_Y_Q * MM_PER_M);
+            let dmg = if head_crossed(oy, sy, feet_mm, enter, exit.min(stop_t)) {
+                crate::combat::headshot(a.damage, a.head_mult)
+            } else {
+                a.damage
+            };
             // The funnel, reduced: an arrow is a hit like any other.
-            let h = crate::combat::hurt(cc, v, a.damage);
+            let h = crate::combat::hurt(cc, v, dmg);
             let died = h.died;
             let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
-            events.push(EV_HIT, a.owner, vid, a.damage as u32);
+            // The scaled number on both events, not the bow's column.
+            // `EV_HIT` is the attacker's hitmarker and `EV_HURT` the
+            // victim's arc, and each is answering "how hard was that",
+            // which is the blow that arrived and not the one on the row.
+            events.push(EV_HIT, a.owner, vid, dmg as u32);
             // Where it came FROM, which for something still in flight is the
             // reverse of where it was going — truer than the archer's current
             // position, because the archer has had the whole flight to move.
@@ -561,7 +608,7 @@ pub fn step(
                 EV_HURT,
                 vid,
                 crate::combat::bearing_sector(-(dx as i64), -(dz as i64)) as u32,
-                a.damage as u32,
+                dmg as u32,
             );
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
@@ -804,20 +851,99 @@ fn world_stop(
     (stop_t, surf, built)
 }
 
+/// One body the shot reached, and everything the two resolvers need to know
+/// about how it reached it.
+///
+/// **A named struct rather than the `(f32, usize)` tuple this used to
+/// return**, and the reason is in `CLAUDE.md`'s trap list twice over: a
+/// positional payload is where the reference ecosystem actually bled, and a
+/// gate that re-derives a tuple's layout is checking the layout against
+/// itself. Four values in a tuple would be four chances to swap two of them
+/// at a call site, in a file where `t`, `enter` and `exit` are all segment
+/// fractions of the same segment and all interchangeable to the compiler.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BodyHit {
+    /// Segment fraction of the closest approach, clamped to `[0, 1]`. This
+    /// is what decides *which* body was hit and where the arrow lodges.
+    pub t: f32,
+    /// Slot in `players`, not the network id — the caller already holds the
+    /// array and wants `&mut players[slot]`.
+    pub slot: usize,
+    /// Segment fraction where the line **enters** that body's radius, and
+    /// where it **leaves** it, clamped to `[0, 1]`. Together they are the
+    /// span the shot spent inside the body, which is what [`head_crossed`]
+    /// needs and what `t` alone cannot give: `t` is one point, and §7's
+    /// rule is about the whole crossing.
+    ///
+    /// The caller clips `exit` against the world's stop before using it. It
+    /// is not clipped here because `hitscan` asks this question **before**
+    /// it knows where the world stopped — that is the whole of its
+    /// truncation optimization — so a stop clipped in would be the wrong
+    /// one on one of the two paths.
+    pub enter: f32,
+    pub exit: f32,
+}
+
+/// Did the shot cross the victim's head band while it was inside their body?
+///
+/// **The two-part reduction of `reference/PROJECTILES.md` §7's rule**, which
+/// is *damage the most significant body part along the line of sight*, not
+/// the first one intersected. §9.4 states the reduction: with a head and a
+/// body and nothing else, "most significant part crossed" is "was the head
+/// interval crossed at all". So this is an interval overlap and not a
+/// raycast — a shot that clips a shoulder on its way into a skull is a
+/// headshot, which is the inversion §7 says they had to make on purpose (a
+/// limb in front of a torso must not save the torso).
+///
+/// Everything is **millimetres**, matching the two call sites' own units, so
+/// nothing here converts and nothing rounds: `oy + sy * t` is the shot's
+/// altitude at fraction `t`, and `feet_mm` is the victim's feet. `t_lo` and
+/// `t_hi` are [`BodyHit::enter`] and [`BodyHit::exit`], the second already
+/// clipped against the world's stop by the caller — a wall between the
+/// chest and the head means the head was never reached.
+///
+/// `y` is linear in `t`, so the altitudes at the two ends **are** the range
+/// over the span and there is nothing to sample. That is the whole reason
+/// this is four adds and a compare rather than a walk.
+///
+/// Wall 1: `+ − × min max` only.
+#[inline]
+pub fn head_crossed(oy: f32, sy: f32, feet_mm: f32, t_lo: f32, t_hi: f32) -> bool {
+    // A stop before the entry means the shot never got inside this body at
+    // all on the part of the segment that survived the world.
+    if t_hi < t_lo {
+        return false;
+    }
+    let (a, b) = (oy + sy * t_lo, oy + sy * t_hi);
+    let (lo, hi) = (a.min(b), a.max(b));
+    let head_lo = feet_mm + (CAPSULE_HEIGHT_M - HEAD_BAND_M) * MM_PER_M;
+    let head_hi = feet_mm + CAPSULE_HEIGHT_M * MM_PER_M;
+    hi >= head_lo && lo <= head_hi
+}
+
 /// The nearest body whose closest approach to the segment `o + s·t` comes at
 /// or before `stop_t`, skipping the shooter. Solved rather than sampled, so
 /// a body is never missed between two taps — and compared against the
 /// world's stop, so a body behind a trunk is never reached.
+///
+/// **The hit decision is unchanged by headshots and that is deliberate.**
+/// What the winner now carries as well is the span it spent inside the
+/// body's radius — the same planar quadratic the closest approach already
+/// half-solves, finished. Who is hit is still decided at the closest
+/// approach, exactly as it was before there was a head, so this landed
+/// without moving a single existing hit/miss assertion in `tests/shoot.rs`
+/// or `tests/gun.rs`. A headshot is a question asked **of a hit**, never a
+/// second way to score one.
 fn nearest_body(
     players: &[Player; MAX_PLAYERS],
     o: (f32, f32, f32),
     s: (f32, f32, f32),
     stop_t: f32,
     owner: u32,
-) -> Option<(f32, usize)> {
+) -> Option<BodyHit> {
     let (ox, oy, oz) = o;
     let (sx, sy, sz) = s;
-    let mut best: Option<(f32, usize)> = None;
+    let mut best: Option<BodyHit> = None;
     let planar2 = sx * sx + sz * sz;
     for (j, v) in players.iter().enumerate() {
         if !v.active || v.dead || v.hp == 0 || v.id == owner {
@@ -843,15 +969,47 @@ fn nearest_body(
         let (cx, cy, cz) = (ax + ux * t, ay + uy * t, az + uz * t);
         let (ddx, ddz) = (cx - bx, cz - bz);
         // A cylinder, exactly like `terrain::slot_blocks` — the house
-        // shape. No headshot, so the whole body is one target.
+        // shape. The head is a band off the top of this same cylinder
+        // (`collide::HEAD_BAND_M`), never a second collider, so this test
+        // is what it always was.
         if ddx * ddx + ddz * ddz > CAPSULE_RADIUS_M * CAPSULE_RADIUS_M {
             continue;
         }
         if cy < by || cy > by + CAPSULE_HEIGHT_M {
             continue;
         }
-        if best.is_none_or(|(bt, _)| t < bt) {
-            best = Some((t, j));
+        // The rest of the quadratic the closest approach is the vertex of:
+        // `|w + v·t|² = R²`, with `w` the muzzle-to-body planar offset. The
+        // discriminant cannot be negative here — the compare above already
+        // proved the line comes within `R` — but it is `max`ed at zero
+        // anyway, because a `sqrt` of a float that is -1e-9 by rounding is
+        // a NaN, and a NaN would spread through the span into
+        // `head_crossed` and out of it as a silent false.
+        let vv = ux * ux + uz * uz;
+        let (enter, exit) = if vv <= 0.0 {
+            // A purely vertical shot never leaves its own column, so the
+            // span is the point the hit was decided at — the same `t = 0`
+            // pin above, for the same reason.
+            (t, t)
+        } else {
+            let (wx, wz) = (ax - bx, az - bz);
+            let wv = wx * ux + wz * uz;
+            let ww = wx * wx + wz * wz;
+            let disc = (wv * wv - vv * (ww - CAPSULE_RADIUS_M * CAPSULE_RADIUS_M)).max(0.0);
+            let half = disc.sqrt() / vv;
+            let centre = -wv / vv;
+            (
+                (centre - half).clamp(0.0, 1.0),
+                (centre + half).clamp(0.0, 1.0),
+            )
+        };
+        if best.is_none_or(|b| t < b.t) {
+            best = Some(BodyHit {
+                t,
+                slot: j,
+                enter,
+                exit,
+            });
         }
     }
     best
@@ -929,8 +1087,15 @@ const _: () = assert!(
 ///
 /// It chips a wall exactly as an arrow does (the module header): the shot
 /// stops on a piece, `Chip` carries the address out and `World::chip`
-/// charges the revolver's `structure` against it. No falloff
-/// (`content/weapons.toml` has no curve to read) and no headshot.
+/// charges the revolver's `structure` against it. No falloff —
+/// `content/weapons.toml` has no curve to read.
+///
+/// **It pays the head band exactly as an arrow does**, from the same two
+/// functions and the same clip against the world's stop; this line said
+/// "and no headshot" until headshot v0. The one difference is where the
+/// multiplier is read from — a bullet takes it off `def` because a beam
+/// has no flight to outlive a rebake, while an arrow copies it onto the
+/// shaft at the draw.
 #[allow(clippy::too_many_arguments)]
 pub fn hitscan(
     seed: u64,
@@ -1052,30 +1217,47 @@ pub fn hitscan(
         // truncates it (`DECISIONS.md` §open, hitscan v0).
         let seen = nearest_body(players, (ox, oy, oz), (sx, sy, sz), 1.0, id);
         let upto = match seen {
-            Some((t, _)) => (t * n as f32) as usize + 1,
+            Some(b) => (b.t * n as f32) as usize + 1,
             None => MAX_HITSCAN_MARK_SAMPLES,
         };
         let (stop_t, surf, built) =
             world_stop(seed, haven, cols, occ, (ox, oy, oz), (sx, sy, sz), n, upto);
-        let best = seen.filter(|&(t, _)| t <= stop_t);
+        let best = seen.filter(|b| b.t <= stop_t);
 
-        if let Some((t, j)) = best {
+        if let Some(BodyHit {
+            t,
+            slot: j,
+            enter,
+            exit,
+        }) = best
+        {
             let range_cm = (reach * t / 10.0) as u16;
             let v = &mut players[j];
+            // Same question the arrow asks, from the same two functions —
+            // the head band is a property of the body, not of what is
+            // travelling towards it. Clipped against the world's stop for
+            // the same reason: a beam that dies in a wall did not reach
+            // what was standing behind the wall.
+            let feet_mm = v.body.qy as f32 * (POS_Y_Q * MM_PER_M);
+            let dmg = if head_crossed(oy, sy, feet_mm, enter, exit.min(stop_t)) {
+                crate::combat::headshot(def.damage, def.headshot_mult)
+            } else {
+                def.damage
+            };
             // The funnel, reduced: a bullet is a hit like any other, and
             // armor blunts it (armor v0, 2026-08-19 — this said "the day
             // armor lands" for exactly one day).
-            let h = crate::combat::hurt(cc, v, def.damage);
+            let h = crate::combat::hurt(cc, v, dmg);
             let died = h.died;
             let (vid, left, vmax) = (v.id, h.left as u32, v.hp_max as u32);
             let sector = crate::combat::bearing_sector(
                 qx as i64 - v.body.qx as i64,
                 qz as i64 - v.body.qz as i64,
             );
-            events.push(EV_HIT, id, vid, def.damage as u32);
+            events.push(EV_HIT, id, vid, dmg as u32);
             // A beam has no flight to reverse, so this is the muzzle itself —
             // the shooter's body this tick, which is where they still are.
-            events.push(EV_HURT, vid, sector as u32, def.damage as u32);
+            events.push(EV_HURT, vid, sector as u32, dmg as u32);
             events.push(EV_HEALTH, vid, left, vmax);
             if died {
                 events.push(EV_DEATH, vid, id, 0);

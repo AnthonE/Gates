@@ -74,9 +74,8 @@ and the damage, drawn as a fading arc around the crosshair. What is left:
 2. **One arc, latest wins** — two attackers on opposite sides collapse to
    whichever blow the sim resolved second. `ClientCore`'s ring carries both
    and `render/feed.rs` keeps only the last. No wire change owed.
-3. **`headshot_mult` is still unread** — the judge's third slice, and
-   §5's standing item. Parsed, banded and hashed since the content crate;
-   `bake.rs:689`/`:799` drop it, and `MeleeDef`/`RangedDef` have no field.
+3. ~~`headshot_mult` is still unread~~ **Landed 2026-08-30** (headshot v0,
+   the judge's third slice). What it left open is §0hs.
 4. **Nobody has seen the arc.** No capture vantage stands anywhere a shot
    can land on the camera, so this shipped unlooked-at (§LOOK).
 5. **Two damage routes still say nothing.** A mob bite (`world.rs:3660`)
@@ -85,6 +84,37 @@ and the damage, drawn as a fading arc around the crosshair. What is left:
    the victim's half is a different question. A predator in the dark is
    the exact case the mark exists for.
 
+
+## 0hs · The head band — what headshot v0 left *(systems lane)*
+
+*Headshot v0 landed 2026-08-30: a hit whose line crosses the top 0.25 m of
+the body cylinder pays the weapon's `headshot_mult`. `DECISIONS.md` §open
+has the knob; `reference/PROJECTILES.md` §9.4 has the design and what
+differed. Three things it did not do, smallest first.*
+
+1. **One mutant survives the gate.** `exit.min(stop_t)` dropped at both
+   damage sites in `ranged.rs` reddens nothing —
+   `a_stop_before_the_head_is_not_a_headshot` pins the predicate's
+   clipping contract and no check proves the resolvers hand it a clipped
+   span. It needs a world that stops a **rising** shot between a chest and
+   a crown: `tests/chip.rs`'s foundation-and-wall fixture with the victim
+   0.3 m in front of the wall, and the crown check's geometry mirrored
+   upward. The guard is conservative — dropping it can only invent
+   headshots, never delete them — which is why this is a hole and not a
+   bug.
+2. **No limb, so no ×0.5.** The reference is ×2 head / ×1 chest / ×0.5
+   limbs with a per-weapon override (`PROJECTILES.md` §0). We have the
+   first two. A third part is exactly where §7's *most significant part
+   along the segment* stops reducing to an interval overlap and has to be
+   built as a real ordering — and `weapons.toml` has one multiplier
+   column, so the override structure is a schema change too.
+3. **Nothing tells you it was a head.** No hitmarker variant, no cue, no
+   distinct number: `EV_HIT` and `EV_HURT` carry the scaled damage and
+   nothing carries the *fact*. A player learns a headshot happened by
+   noticing the number was bigger, which is the same complaint §0hrt
+   item 1 makes about damage generally. Cheapest shape is a spare bit on
+   an existing event rather than a field, and that is a wire read nobody
+   has spoken. §LOOK.
 
 ## 0tl · The torch lights the ground — what it still cannot do *(client+systems lane)*
 
@@ -294,9 +324,10 @@ Items 1–3 are a **spoken operator call**, not a builder's proposal — 2026-08
    only because our ammunition never came back, and now it does — so the
    row is a `RIPLIST.md` take against `CONTENT.md` §4's bands, not a
    research question.
-3. **`headshot_mult` is armed and unread** since the content crate (§9.4);
-   §7 says take the most significant body part, never the first
-   intersection.
+3. ~~`headshot_mult` is armed and unread~~ **Landed 2026-08-30** (headshot
+   v0): §7's rule, ranged only. §9.4 has what shipped; §0hs has what did
+   not. The ×0.5 limb is deliberately untaken — a third part is where the
+   two-part reduction stops working.
 4. **A forest-floor pickup archetype, and a farming lane.** Both code.
    `server/tests/farmwalk.rs` measures a gather rate; it is not farming.
 5. **The tech tree is one edge deep.** `requires` and the `validate`
@@ -1645,7 +1676,7 @@ builder; they sit at the bottom of the file so a pass reaches pickable work
 first.
 
 
-## LOOK · Boot it on a GPU and look — the act 26 items are waiting on *(operator)*
+## LOOK · Boot it on a GPU and look — the act 27 items are waiting on *(operator)*
 
 **This is the queue's largest single blocker and it had never been counted.**
 `CLAUDE.md` retired the pixel gate on purpose — `vantages.mjs` passed all 36
@@ -1703,7 +1734,10 @@ Then, in the order a player would notice:
    time somebody swings near you.
 2. **A body falling** (§0chr) — `Death01` is gated end to end and unseen; kill
    something and watch.
-3. **The flinch, and the remote swing's sound** (§0pvp 1–2).
+3. **The flinch, and the remote swing's sound** (§0pvp 1–2). Also **the
+   hurt arc** (§0hrt 4) and **a headshot** (§0hs 3) — no capture vantage
+   stands anywhere a shot can land, and nothing distinguishes a doubled
+   hit from a lucky one on screen, so both shipped unlooked-at.
 4. **The whole audio bank** (§0x, §0pr) — nobody has heard one cue, and nine
    of them are music. `cargo run -p client --bin soundbank -- <dir>`.
 5. **LOW and MEDIUM** (§0gq) — the ladder's order is arithmetic, where each
