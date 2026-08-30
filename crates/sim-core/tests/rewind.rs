@@ -53,6 +53,7 @@ fn walked_world() -> (World, Vec<Body>) {
                 move_z: 127,
                 ..InputFrame::default()
             },
+            favour: 0,
         }]);
         history.push(w.players[0].body);
     }
@@ -204,6 +205,7 @@ fn the_first_ticks_of_a_world_answer_present() {
                 move_z: 127,
                 ..InputFrame::default()
             },
+            favour: 0,
         }]);
     }
     let live = live_of(&w, 0);

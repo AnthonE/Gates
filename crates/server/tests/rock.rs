@@ -168,7 +168,11 @@ fn a_naked_spawn_can_kill_another_player_with_the_rock_it_woke_holding() {
         frame.seq = frame.seq.wrapping_add(1);
         frame.yaw = yaw_toward(bx - ax, bz - az);
         frame.buttons = BTN_PRIMARY;
-        w.tick(&[Command::Input { id: 1, frame }]);
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
         if first_blood.is_none() && w.players[1].hp < full {
             first_blood = Some(t);
         }
@@ -242,7 +246,11 @@ fn the_rocks_reach_is_a_metre_and_not_the_island() {
         frame.buttons = BTN_PRIMARY;
         // No movement: the attacker swings from where they stand, so the
         // gap is the whole of what this measures.
-        w.tick(&[Command::Input { id: 1, frame }]);
+        w.tick(&[Command::Input {
+            id: 1,
+            frame,
+            favour: 0,
+        }]);
     }
     assert_eq!(
         w.players[1].hp, full,

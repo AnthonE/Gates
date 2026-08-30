@@ -566,7 +566,15 @@ fn a_swing_has_no_head_to_find() {
     players[1] = target(2, 0.0, 400.0, 1.0);
 
     let mut events = EventQueue::default();
-    let out = combat::strike(&cc, 0, &mut players, &mut events);
+    let out = combat::strike(
+        &cc,
+        0,
+        &mut players,
+        &mut events,
+        &sim_core::rewind::Rewind::new(),
+        0,
+        0,
+    );
     assert!(
         !matches!(out, combat::Strike::Missed),
         "the swing must land, or this proves nothing"

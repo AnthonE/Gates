@@ -109,6 +109,7 @@ fn kill_player_two(w: &mut World) -> (u64, i32, i32) {
         w.tick(&[Command::Input {
             id: 1,
             frame: swing_frame(seq, yaw),
+            favour: 0,
         }]);
         if w.players[1].deaths > deaths_before {
             return (at, vx, vz);

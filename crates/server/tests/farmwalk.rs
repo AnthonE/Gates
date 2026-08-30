@@ -282,7 +282,11 @@ fn a_walker_can_farm_the_island_and_the_rate_is_measured() {
             frame.move_z = 0;
             frame.buttons = BTN_PRIMARY;
         }
-        core.world.tick(&[Command::Input { id: 0x100, frame }]);
+        core.world.tick(&[Command::Input {
+            id: 0x100,
+            frame,
+            favour: 0,
+        }]);
 
         if carried(&core) >= goal {
             banked = Some(t + 1);

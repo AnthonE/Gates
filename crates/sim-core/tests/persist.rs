@@ -518,6 +518,7 @@ fn a_restore_replays_bit_for_bit() {
                     move_z: 90,
                     ..Default::default()
                 },
+                favour: 0,
             }]);
             hashes.push(w.state_hash());
         }
@@ -541,6 +542,7 @@ fn a_restore_replays_bit_for_bit() {
                     move_z: 90,
                     ..Default::default()
                 },
+                favour: 0,
             }]);
             hashes.push(w.state_hash());
         }

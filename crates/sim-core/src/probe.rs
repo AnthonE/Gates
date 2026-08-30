@@ -326,8 +326,16 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
             // deploy branch would shadow it.
             if t % 64 == 35 {
                 world.tick(&[
-                    Command::Input { id: 1, frame: f1 },
-                    Command::Input { id: 2, frame: f2 },
+                    Command::Input {
+                        id: 1,
+                        frame: f1,
+                        favour: 0,
+                    },
+                    Command::Input {
+                        id: 2,
+                        frame: f2,
+                        favour: 0,
+                    },
                     Command::Feed {
                         id: 2,
                         cx: own2.0,
@@ -344,8 +352,16 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
             }
             if t % 16 == 3 {
                 world.tick(&[
-                    Command::Input { id: 1, frame: f1 },
-                    Command::Input { id: 2, frame: f2 },
+                    Command::Input {
+                        id: 1,
+                        frame: f1,
+                        favour: 0,
+                    },
+                    Command::Input {
+                        id: 2,
+                        frame: f2,
+                        favour: 0,
+                    },
                     place_deploy,
                 ]);
                 continue;
@@ -360,8 +376,16 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 // intact, unpriced, no such address — and refusals are
                 // half of what these gates are for.
                 world.tick(&[
-                    Command::Input { id: 1, frame: f1 },
-                    Command::Input { id: 2, frame: f2 },
+                    Command::Input {
+                        id: 1,
+                        frame: f1,
+                        favour: 0,
+                    },
+                    Command::Input {
+                        id: 2,
+                        frame: f2,
+                        favour: 0,
+                    },
                     Command::Repair {
                         id: 1,
                         deploy: (t / 16) % 2 == 0,
@@ -399,8 +423,16 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 // refusal — plus every empty address and empty purse in
                 // between.
                 world.tick(&[
-                    Command::Input { id: 1, frame: f1 },
-                    Command::Input { id: 2, frame: f2 },
+                    Command::Input {
+                        id: 1,
+                        frame: f1,
+                        favour: 0,
+                    },
+                    Command::Input {
+                        id: 2,
+                        frame: f2,
+                        favour: 0,
+                    },
                     Command::Upgrade {
                         id: 1,
                         cx: own_cell.0,
@@ -412,8 +444,16 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 ]);
             } else if t % 16 == 7 {
                 world.tick(&[
-                    Command::Input { id: 1, frame: f1 },
-                    Command::Input { id: 2, frame: f2 },
+                    Command::Input {
+                        id: 1,
+                        frame: f1,
+                        favour: 0,
+                    },
+                    Command::Input {
+                        id: 2,
+                        frame: f2,
+                        favour: 0,
+                    },
                     craft,
                     Command::Craft {
                         id: 2,
@@ -423,8 +463,16 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 ]);
             } else if t % 16 == 11 {
                 world.tick(&[
-                    Command::Input { id: 1, frame: f1 },
-                    Command::Input { id: 2, frame: f2 },
+                    Command::Input {
+                        id: 1,
+                        frame: f1,
+                        favour: 0,
+                    },
+                    Command::Input {
+                        id: 2,
+                        frame: f2,
+                        favour: 0,
+                    },
                     place,
                 ]);
             } else if t % 16 == 13 {
@@ -434,8 +482,16 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 // way the door command is inside the parity/replay/alloc
                 // surface (loc 2/3 cycle; 0/1 hit the not-a-door arm).
                 world.tick(&[
-                    Command::Input { id: 1, frame: f1 },
-                    Command::Input { id: 2, frame: f2 },
+                    Command::Input {
+                        id: 1,
+                        frame: f1,
+                        favour: 0,
+                    },
+                    Command::Input {
+                        id: 2,
+                        frame: f2,
+                        favour: 0,
+                    },
                     Command::Use {
                         id: 2,
                         cx: own2.0,
@@ -457,8 +513,16 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 // verb) as well as its match.
                 let op_now = ((t / 16) % (crate::deploy::ACCESS_OP_MAX as u32 + 1)) as u8;
                 world.tick(&[
-                    Command::Input { id: 1, frame: f1 },
-                    Command::Input { id: 2, frame: f2 },
+                    Command::Input {
+                        id: 1,
+                        frame: f1,
+                        favour: 0,
+                    },
+                    Command::Input {
+                        id: 2,
+                        frame: f2,
+                        favour: 0,
+                    },
                     Command::Access {
                         id: 2,
                         cx: own2.0,
@@ -487,8 +551,16 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 // the one new kind of state this slice added — under the
                 // parity and replay gates.
                 world.tick(&[
-                    Command::Input { id: 1, frame: f1 },
-                    Command::Input { id: 2, frame: f2 },
+                    Command::Input {
+                        id: 1,
+                        frame: f1,
+                        favour: 0,
+                    },
+                    Command::Input {
+                        id: 2,
+                        frame: f2,
+                        favour: 0,
+                    },
                     Command::Demolish {
                         id: 2,
                         deploy: (t / 64) % 2 == 0,
@@ -500,14 +572,30 @@ pub extern "C" fn probe_parity(master_seed: u64, sequences: u32, ticks: u32) -> 
                 ]);
             } else if t % 64 == 20 {
                 world.tick(&[
-                    Command::Input { id: 1, frame: f1 },
-                    Command::Input { id: 2, frame: f2 },
+                    Command::Input {
+                        id: 1,
+                        frame: f1,
+                        favour: 0,
+                    },
+                    Command::Input {
+                        id: 2,
+                        frame: f2,
+                        favour: 0,
+                    },
                     cancel,
                 ]);
             } else {
                 world.tick(&[
-                    Command::Input { id: 1, frame: f1 },
-                    Command::Input { id: 2, frame: f2 },
+                    Command::Input {
+                        id: 1,
+                        frame: f1,
+                        favour: 0,
+                    },
+                    Command::Input {
+                        id: 2,
+                        frame: f2,
+                        favour: 0,
+                    },
                 ]);
             }
         }
@@ -596,9 +684,21 @@ pub extern "C" fn probe_bags(master_seed: u64, sequences: u32, ticks: u32) -> u6
             // thing that proves the refusal does not spend a bag on one
             // target and does on the other.
             world.tick(&[
-                Command::Input { id: 1, frame: f1 },
-                Command::Input { id: 2, frame: f2 },
-                Command::Input { id: 3, frame: f3 },
+                Command::Input {
+                    id: 1,
+                    frame: f1,
+                    favour: 0,
+                },
+                Command::Input {
+                    id: 2,
+                    frame: f2,
+                    favour: 0,
+                },
+                Command::Input {
+                    id: 3,
+                    frame: f3,
+                    favour: 0,
+                },
                 Command::PlaceDeploy {
                     id: placer as u32 + 1,
                     row: 3,
@@ -770,10 +870,36 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
             // that precedes it, and the press that does nothing, on both
             // targets or on neither. The beach for all three: a bag scan
             // is `probe_bags`'s subject and this world places none.
+            // …and every bot swings with a different, moving lag-comp
+            // favour, which is what puts the rewind on the parity surface.
+            // Three phases that share no period, so in most ticks the three
+            // attackers resolve the same brawl at three different depths
+            // and the ring is read at every offset it holds. The moduli are
+            // chosen for what they reach, not for variety: `% 9` **exceeds**
+            // `REWIND_MAX_TICKS` (7), so `apply`'s clamp is exercised on
+            // both targets; `% 5` and `/ 2 % 8` both include 0, so the
+            // short-circuit-to-live path is too.
+            //
+            // This is arithmetic wall 1 has to hold: a rewound scan is the
+            // same float distance test as before, run against integers read
+            // out of a ring, and if the two targets ever disagreed about a
+            // quantized position the brawl would diverge here first.
             world.tick(&[
-                Command::Input { id: 1, frame: f1 },
-                Command::Input { id: 2, frame: f2 },
-                Command::Input { id: 3, frame: f3 },
+                Command::Input {
+                    id: 1,
+                    frame: f1,
+                    favour: (t % 9) as u8,
+                },
+                Command::Input {
+                    id: 2,
+                    frame: f2,
+                    favour: (t % 5) as u8,
+                },
+                Command::Input {
+                    id: 3,
+                    frame: f3,
+                    favour: (t / 2 % 8) as u8,
+                },
                 Command::Loot { id: (t % 3) + 1 },
                 Command::Consume {
                     id: (t % 3) + 1,

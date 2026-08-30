@@ -179,6 +179,7 @@ fn pinned_pig(dx: f32, dz: f32, slot: usize) -> impl FnMut(&mut World, u16) -> V
                 seq,
                 ..InputFrame::default()
             },
+            favour: 0,
         }]
     }
 }
@@ -336,6 +337,7 @@ fn blasted_from(dx: f32, dz: f32) -> World {
             sel: 1,
             ..InputFrame::default()
         },
+        favour: 0,
     }]);
     w.tick(&[Command::Throw {
         id: RAIDER,

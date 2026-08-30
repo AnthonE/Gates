@@ -135,6 +135,7 @@ fn hold_primary(yaw: u16, seq: u16) -> Command {
             move_z: 0,
             sel: 0,
         },
+        favour: 0,
     }
 }
 

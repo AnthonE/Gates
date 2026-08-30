@@ -727,7 +727,38 @@ fn run(seed: u64) -> (Vec<u64>, u64) {
             }
             let f = bot_frame(&mut rng, yaws[id as usize - 1], t as u16);
             yaws[id as usize - 1] = f.yaw;
-            cmds.push(Command::Input { id, frame: f });
+            cmds.push(Command::Input {
+                id,
+                frame: f,
+                // Lag-compensation depth, driven nonzero and varying — and
+                // **the pinned hashes above must not move because of it.**
+                //
+                // Be precise about what this does and does not prove,
+                // because the digest cannot tell the two apart. It does
+                // NOT exercise the rewind: this script installs no melee
+                // (`player_hp` stays 0 — see the `CombatContent::EMPTY`
+                // note), so `combat::strike` returns on its first line and
+                // no scan is ever rewound here. Arming melee to reach it
+                // would move this file's golden for a second reason, which
+                // the note above refuses on purpose.
+                //
+                // What it does prove is the slice's own claim, and it is
+                // the one a latency-derived number most needs: **a favour
+                // that varies per body and per tick reaches `apply`, is
+                // clamped, is written, and leaves `state_hash` exactly
+                // where it was.** That is only true because the value is a
+                // tick-local. Put it on `Player` instead and this pin moves
+                // the instant the field exists — the shape `GOLDEN_FINAL_
+                // HASH`'s own changelog records for `worn`, where twelve
+                // bytes of nothing moved the digest before anything could
+                // be put in them. The rewind's *behaviour* is gated where
+                // it belongs, against an armed fixture, in `tests/combat.rs`
+                // and on `probe_combat`'s parity digest.
+                //
+                // `% 9` reaches 8, one past `REWIND_MAX_TICKS`, so the
+                // clamp is on this surface too.
+                favour: ((t + id as u64) % 9) as u8,
+            });
             // The craft verb rides the same log: periodic enqueues (row 3
             // is out of range — the refusal path) and rarer cancels.
             if (t + id as u64).is_multiple_of(37) {

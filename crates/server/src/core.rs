@@ -806,7 +806,11 @@ impl ShardCore {
                 // the reverse of what a lag measurement is for.
                 stats.record_aim_stale(now, view);
                 if n < MAX_COMMANDS_PER_TICK {
-                    self.cmd_buf[n] = Command::Input { id: c.id, frame };
+                    self.cmd_buf[n] = Command::Input {
+                        id: c.id,
+                        frame,
+                        favour: 0,
+                    };
                     n += 1;
                 }
             }

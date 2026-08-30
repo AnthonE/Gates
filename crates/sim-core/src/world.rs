@@ -1127,9 +1127,24 @@ pub enum Command {
         item: u16,
         count: u16,
     },
+    /// One client input frame, plus how many ticks of lag compensation the
+    /// server is willing to grant this player's verbs *this tick*.
+    ///
+    /// `favour` is **not on the wire** and never will be: it is minted
+    /// server-side from the client's `snapshot_ack` (slice 5,
+    /// `findings/lagcomp-design-20260818.md` §2.2), so a client cannot ask
+    /// for a rewind depth. Every non-server construction — bots, probes,
+    /// tests, a replayed WAL — passes `0`, which is the present tick and
+    /// therefore the pre-lag-compensation behaviour bit for bit.
+    ///
+    /// It rides on the command rather than on `Player` on purpose: the
+    /// value is spent inside one tick, so storing it would be storing a
+    /// fact `state_hash` has to answer for. `apply` clamps it into a
+    /// tick-local array — the `removals` precedent, see `World::tick`.
     Input {
         id: u32,
         frame: InputFrame,
+        favour: u8,
     },
     /// Enqueue `count` crafts of recipe row `recipe` (craft.rs validates
     /// and refuses by event, never by panic).
@@ -1475,9 +1490,12 @@ pub struct World {
     /// before touching it; the fallback looks like a rough edge and is the
     /// design.
     ///
-    /// Nothing reads it yet — slice 2 of
-    /// `findings/lagcomp-design-20260818.md` §7. The reader is
-    /// `combat::strike` (slice 4).
+    /// **Read by `combat::strike` since slice 4** of
+    /// `findings/lagcomp-design-20260818.md` §7 — the melee target scan
+    /// resolves against `pose_at` at the tick's granted `favour`. It is
+    /// still the only reader: `ranged::hitscan` and `ranged::step` resolve
+    /// against present-tick bodies, which is the largest remaining gap in
+    /// this feature and is `NOW.md` §0lc's own item, not an oversight here.
     pub rewind: crate::rewind::Rewind,
     /// Authored world containers a player has opened — sim state, hashed
     /// (`worldcont.rs`). Boxed inside, for `backpacks`' reason: 64 records
@@ -2860,7 +2878,7 @@ impl World {
         );
     }
 
-    fn apply(&mut self, cmd: &Command, removals: &mut usize) {
+    fn apply(&mut self, cmd: &Command, removals: &mut usize, favour: &mut [u8; MAX_PLAYERS]) {
         match *cmd {
             Command::Join { id } => self.seat(id, None),
             Command::JoinAs { id, save } => self.seat(id, Some(save)),
@@ -2922,8 +2940,25 @@ impl World {
                     }
                 }
             }
-            Command::Input { id, frame } => {
+            Command::Input {
+                id,
+                frame,
+                favour: want,
+            } => {
                 if let Some(slot) = self.slot_of(id) {
+                    // Clamped, not refused. `pose_at` is already total over
+                    // `back` — an out-of-range depth falls back to the live
+                    // body — so this is not a safety check but a statement
+                    // of the ceiling in one place, next to the ring it
+                    // indexes. `REWIND_MAX_TICKS` is 250 ms floored to
+                    // whole ticks (`limits.rs`), and the clamp direction is
+                    // the conservative one: a forged favour buys the
+                    // shooter *less* help, never more.
+                    //
+                    // Written on `slot_of`, not `live_slot_of`, for the
+                    // same reason the frame below is: the arm is one
+                    // condition, and a sleeper's verbs do not run anyway.
+                    favour[slot] = want.min(crate::rewind::Rewind::max_back());
                     let mut frame = frame;
                     if frame.sel as usize >= HOTBAR_SLOTS {
                         // The wire refuses 6–7 at decode; a non-wire
@@ -3391,8 +3426,25 @@ impl World {
         // so the verbs and the sweep spend one allowance between them.
         // Two budgets would be two caps and therefore no cap.
         let mut removals = MAX_REMOVALS_PER_TICK;
+        // How far back each slot's verbs may look this tick, in ticks.
+        //
+        // Minted here beside `removals` and for the same reason: it is
+        // spent and forgotten inside one tick, so it is a tick-local and
+        // never a `World` field. Storing it would put a latency-derived
+        // number into `state_hash` and `persist.rs`, and a replay of the
+        // same command stream would then have to reproduce a network
+        // condition — which is the determinism violation wall 5 forbids.
+        // Here the favour arrives *in the command*, so the WAL already
+        // carries everything a replay needs.
+        //
+        // Zero is the floor and the default, in three places at once: a
+        // slot nobody sent an input for this tick, a slot whose input
+        // arrived with `favour: 0`, and every non-server construction of
+        // `Command::Input`. Zero means `pose_at` returns the live body,
+        // which is the behaviour that predates lag compensation.
+        let mut favour = [0u8; MAX_PLAYERS];
         for cmd in commands.iter().take(MAX_COMMANDS_PER_TICK) {
-            self.apply(cmd, &mut removals);
+            self.apply(cmd, &mut removals, &mut favour);
         }
         let seed = self.seed;
         let tick = self.tick;
@@ -3411,7 +3463,10 @@ impl World {
         // one arm — `gather::swing` gets first claim on it (a tree in
         // reach is always the nearer target) and hands it on only when
         // nothing standing absorbed it.
-        for i in 0..MAX_PLAYERS {
+        // Iterated over the favour array rather than `0..MAX_PLAYERS`, which
+        // is the same slot order — the array is exactly `MAX_PLAYERS` wide
+        // and is never written inside this loop, only by `apply` above.
+        for (i, &granted) in favour.iter().enumerate() {
             if !self.players[i].active {
                 continue;
             }
@@ -3607,7 +3662,15 @@ impl World {
                 // far too — a node must not become cover — and stops at
                 // the animal: it was aimed at a gather node, so the wall
                 // behind that node is not a target (`Swing::Refused`).
-                match combat::strike(&self.combat, i, &mut self.players, &mut self.events) {
+                match combat::strike(
+                    &self.combat,
+                    i,
+                    &mut self.players,
+                    &mut self.events,
+                    &self.rewind,
+                    tick,
+                    granted,
+                ) {
                     combat::Strike::Killed {
                         victim,
                         item,

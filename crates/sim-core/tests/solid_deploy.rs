@@ -407,6 +407,7 @@ fn drive(w: &mut World, ticks: usize, buttons: u8) {
                 move_z: 127,
                 ..InputFrame::default()
             },
+            favour: 0,
         }]);
     }
 }
@@ -517,6 +518,7 @@ fn the_wall_survives_a_save_and_a_load() {
                 move_z: 127,
                 ..InputFrame::default()
             },
+            favour: 0,
         }]);
     }
     let (_, _, hd) = solid_vol(ARCH_FURNACE).unwrap();

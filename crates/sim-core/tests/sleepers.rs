@@ -173,6 +173,7 @@ fn a_sleeper_does_not_act_on_input() {
                 move_z: 0,
                 sel: 0,
             },
+            favour: 0,
         }]);
     }
 
@@ -211,6 +212,7 @@ fn a_sleeper_can_be_killed_and_stays_one() {
         w.tick(&[Command::Input {
             id: 1,
             frame: swing_frame(seq, yaw),
+            favour: 0,
         }]);
     }
 
@@ -332,6 +334,7 @@ fn waking_onto_a_corpse_beaches_you_alive() {
         w.tick(&[Command::Input {
             id: 1,
             frame: swing_frame(seq, yaw),
+            favour: 0,
         }]);
     }
     assert!(w.players[sleeper].dead, "setup: the sleeper must be dead");
@@ -425,6 +428,7 @@ fn a_takeover_of_a_dead_body_wakes_holding_the_spawn_kit() {
         w.tick(&[Command::Input {
             id: 1,
             frame: swing_frame(seq, yaw),
+            favour: 0,
         }]);
     }
     assert!(w.players[sleeper].dead, "setup: the sleeper must be dead");
