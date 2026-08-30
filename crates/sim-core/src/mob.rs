@@ -988,7 +988,12 @@ pub fn strike(
     // EV_HIT is the attacker's own fact and the server routes it by `a`,
     // so a tagged mob id in `b` reaches the hand that swung and nothing
     // else — the hitmarker, exactly as a player hit draws it.
-    events.push(EV_HIT, attacker_id, mob_id(slot), def.damage as u32);
+    events.push(
+        EV_HIT,
+        attacker_id,
+        mob_id(slot),
+        crate::world::hit_c(crate::collide::Part::Chest, def.damage),
+    );
     if !died {
         return true;
     }

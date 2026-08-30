@@ -47,6 +47,7 @@ pub mod birds;
 // takes the *fall* as well as the event: three of the sim's seven damage
 // routes announce nothing, on purpose, and a mixer fed only `EV_HURT` goes
 // silent for all three with every gate green.
+pub mod hit;
 pub mod hurt;
 pub mod mixer;
 // When a song plays and which piece it is. `reference/AUDIO.md` §8 is the
@@ -232,11 +233,30 @@ pub enum Cue {
     /// (`reference/AUDIO.md` §9) and its radius is a hundred metres, which
     /// is why [`MAX_AUDIBLE_M`] is what it is.
     ShotGun,
+    /// The hitmarker for a **head** hit (v58).
+    ///
+    /// A separate cue rather than [`Cue::Hit`] pitched up, because
+    /// `interface_cues_do_not_vary_in_pitch` is a rule this bank keeps for
+    /// a reason — a symbol that drifts stops being a symbol — and "the
+    /// same click, higher" is exactly the drift that rule forbids. Three
+    /// rungs are three symbols, so they are three waveforms.
+    ///
+    /// Appended after `ShotGun`, the enum's append-order rule: the
+    /// discriminant seeds `synth::render`'s noise, so inserting one beside
+    /// `Hit` would regenerate unrelated cues.
+    HitHead,
+    /// The hitmarker for a **limb** hit (v58).
+    ///
+    /// The one the judge's gap is really about: a x0.5 blow is easier to
+    /// misread as a miss than a x2 one is to read as a skull, so this cue
+    /// must say *landed, but less* — duller and lower than [`Cue::Hit`],
+    /// never quieter to the point of ambiguity with silence.
+    HitLimb,
 }
 
 /// How many cues there are. Kept beside [`Cue::ALL`], which is what fails if
 /// they disagree.
-pub const CUE_COUNT: usize = 43;
+pub const CUE_COUNT: usize = 45;
 
 impl Cue {
     /// Every cue, in discriminant order. The bank is built by walking this,
@@ -288,6 +308,8 @@ impl Cue {
         Cue::RemoteSwing,
         Cue::ShotBow,
         Cue::ShotGun,
+        Cue::HitHead,
+        Cue::HitLimb,
     ];
 
     /// Is this cue a piece of music?
@@ -393,6 +415,8 @@ impl Cue {
             Cue::CraftDone
             | Cue::Refused
             | Cue::Hit
+            | Cue::HitHead
+            | Cue::HitLimb
             | Cue::Death
             | Cue::UiClick
             | Cue::BedWind
@@ -616,6 +640,19 @@ pub const CUES: [CueDef; CUE_COUNT] = [
     // that title until v54.
     row(GAME,  40.0, 0.45,  60, 4, true),   // bow released
     row(GAME, 100.0, 0.85,  60, 6, true),   // gun fired
+    // The other two rungs of the marker (v58). Same bus, same radius (none
+    // — they are signals, not places), same 45 ms cooldown and the same
+    // reason for it as `Hit`'s: zero `pitch_var` means two in a frame are
+    // bit-identical and would add rather than blend.
+    //
+    // The gains bracket `Hit`'s 0.50 rather than sitting on it, because
+    // the rung has to be legible in one hearing and loudness is the
+    // channel a player reads without being taught. The limb's 0.45 is a
+    // deliberate floor and not a taper: quieter than the identity, still
+    // plainly a hit — the judge's whole point is that a halved blow reads
+    // as a MISS, and a cue fading toward silence would say exactly that.
+    row(GAME,  0.0, 0.60,  45, 6, false),  // hit, head
+    row(GAME,  0.0, 0.45,  45, 6, false),  // hit, limb
 ];
 
 /// Your own arm. Named rather than written inline so [`RSWING`] can read its

@@ -735,7 +735,8 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
 /// up to one segment below it.
 const ARROW_STEP_Q: i32 = 200;
 
-/// `EV_HIT: a = attacker player id, b = victim player id, c = damage`.
+/// `EV_HIT: a = attacker player id, b = victim player id, c = the rung
+/// packed over the damage` (v58).
 ///
 /// The sharpest case in the lane: `a` and `b` are the same kind of thing,
 /// so nothing but the values distinguishes them.
@@ -747,7 +748,30 @@ fn hit_names_the_attacker_then_the_victim_then_the_damage() {
     distinct3(hit, "EV_HIT");
     assert_eq!(hit.a, ATTACKER, "EV_HIT.a is the ATTACKER, not the victim");
     assert_eq!(hit.b, VICTIM, "EV_HIT.b is the VICTIM, not the attacker");
-    assert_eq!(hit.c, DAMAGE, "EV_HIT.c is the damage dealt");
+    // `c` is packed since v58, so it is read through the same accessors
+    // the server uses. Asserting on the raw `c` would pin the layout in
+    // two places and let them disagree.
+    assert_eq!(
+        sim_core::world::hit_damage(hit.c),
+        DAMAGE as u16,
+        "EV_HIT.c's low half is the damage dealt"
+    );
+    // A swing has no line to cross, so the identity rung is the truth here
+    // rather than a default that happens to look right — `part_damage`'s
+    // own doc says melee never asks the ladder.
+    assert_eq!(
+        sim_core::world::hit_part(hit.c),
+        sim_core::collide::Part::Chest,
+        "a swing pays the identity rung"
+    );
+    // And the pack is not degenerate: `DAMAGE` must not itself be a value
+    // that could be mistaken for the part half. Same discipline as
+    // `distinct_halves`, one field narrower.
+    assert!(
+        hit.c >> sim_core::world::HIT_PART_SHIFT != hit.c & 0xffff,
+        "EV_HIT.c carries the same number in both halves, so this check \
+         cannot see the pack reversed. Move the fixture, not the assertion."
+    );
 }
 
 /// `EV_HURT: a = victim id, b = bearing sector toward the attacker,

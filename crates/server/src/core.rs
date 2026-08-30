@@ -1788,7 +1788,16 @@ impl ShardCore {
                         continue; // that player left this tick
                     };
                     let enc = if ev.code == EV_HIT {
-                        encode_event_hit(ev.b, ev.c as u16, &mut self.ev_buf)
+                        // `c` is packed since v58: the rung above the
+                        // damage. Unpacked here rather than on the wire so
+                        // the encoder takes a `Part` and cannot be handed
+                        // a fourth rung by a caller doing its own shifting.
+                        encode_event_hit(
+                            ev.b,
+                            sim_core::world::hit_part(ev.c),
+                            sim_core::world::hit_damage(ev.c),
+                            &mut self.ev_buf,
+                        )
                     } else {
                         encode_event_health(ev.b as u16, ev.c as u16, &mut self.ev_buf)
                     };
