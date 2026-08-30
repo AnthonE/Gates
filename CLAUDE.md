@@ -102,7 +102,7 @@ pays the same doors and earns the same coins as a human.
 | `assets/sound/WANTED.md` | the SFX inventory: every cue the client plays with its length, character and delivery spec, the ElevenLabs prompt sheet, the open-source candidates with their licences, and the score's composer brief | **owns nothing** — `WANTED.md`'s shape for audio. The enum (`sound/mod.rs::Cue`) is the authority and the bank stays generated (`sound/synth.rs`) until a file lands with a manifest row; `DECISIONS.md` 2026-08-11 (ElevenLabs, paid plan) and 2026-08-07 (CC0/CC-BY, NC/SA refused) are the rail |
 | `assets/models/MANIFEST.md` | what **ships** in `assets/models/`: vendor, mode, prompt, task id and date per mesh, the KTX2/UASTC-at-1024 texture rule and its VRAM reason, and what the client actually loads | **owns the licence rail's audit trail**, which is the one thing here that is not just a note: `DECISIONS.md` 2026-08-07 is CC0 preferred, CC-BY with a `NOTICE` entry, **NC and SA refused** because the game is sold. Recording the provenance per file is what makes that rail auditable after the fact rather than a promise. `WANTED.md` is the inverse — what does not exist yet |
 | `PLAYERS.md` | the agent player: the verb set, the observation encoder, and the four walls that keep agent play measurable | **DESIGN — none of it built.** The research half is elo's `SUBSTRATE.md`; this owns only what an agent may do here |
-| `BRANCH-NOTES.md` | a **transient** handoff note, written on a branch by the loop's builder when it lands a partial slice (`gates-loop/GOAL.md` §the partial rule) — what landed, what is measured, what remains | **owns nothing and is not a queue.** It describes whatever branch wrote it last, so read the heading before trusting a word of it; the current one says it carries no handoff. Not deleted because the loop is paused, not retired, and its builder recreates this file by protocol |
+| `BRANCH-NOTES.md` | a **transient** handoff note, written on a branch by the loop's builder when it lands a partial slice (`gates-loop/GOAL.md` §the partial rule) — what landed, what is measured, what remains | **owns nothing and is not a queue.** It describes whatever branch wrote it last, so read the heading before trusting a word of it — checked 2026-08-30, the current one is `claude/game-visual-improvements-fj1qyz`'s seven visual slices from 2026-08-26, and this row said it carried no handoff until that was read. Not deleted because the loop is paused, not retired, and its builder recreates this file by protocol |
 | `NOW.md` | what next | **the only list that answers that** |
 
 Docs are dated notes, not law. Four things actually bind: the walls below,
@@ -335,6 +335,27 @@ do not rediscover)
   look right and not the same measurement. **`git status` before quoting a
   timing**, and if a counter has to exist, put it behind a cargo feature so the
   default build has no atomic in the hot path.
+- **An event count taken while the ring is overflowing is an UNDERCOUNT of the
+  thing it names, so a fixture that measures itself through the ring measures
+  the ring.** The event ring is drop-newest at `MAX_EVENTS_PER_TICK`, which
+  every wall-4 gate knows — but knowing it as a *policy* and remembering it as
+  a *measurement hazard* are different, and `sim-core/tests/loot_storm.rs`
+  found the second the hard way on 2026-08-30. Its first draft asserted "the
+  fight kept feeding the store while it was being emptied" by counting
+  `EV_BAG_DROPPED` during a loot burst. It counted **6**, where the run's own
+  death rate (1,700 over 1,050 ticks) implies roughly fifty across those 32
+  — because the same burst had saturated the ring with `EV_GATHER` and the
+  drops were thrown away. The assertion passed. Its number was a property of
+  the ring's saturation, and it was read as a property of the fight.
+  The rule: inside any fixture that deliberately overflows the ring, **ground
+  truth comes off the store, not off the announcements** (`Backpacks::len`,
+  not `EV_BAG_REMOVED`). And the gap between the two is worth gating rather
+  than working around — that file now asserts that 1,024 bags provably left
+  the store against 856 removals announced, which is the only place in this
+  tree where drop-newest has an observable consequence instead of a comment.
+  Same family as the byte-golden entry above: three green gates over a fact
+  nobody checked, and the one that was green for the wrong reason was the one
+  that looked most like coverage.
 - **A shaping curve interpolated with `lerp` is a contour map, and no gate in
   this repo could see it.** `terrain::remap` ran the height field through 17
   LUT knots with `lerp` between them from the first commit to 2026-08-26. A

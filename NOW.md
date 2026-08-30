@@ -67,21 +67,21 @@ person"*). ✅ **The deposit half landed 2026-08-30**:
 `sim-core/tests/combat_storm.rs` seats all 100 seats as 50 duels — 25 knife
 fights, 25 gunfights on `bots::brawl_step` — and over 600 ticks banks 954
 deaths, pins the bag store at `MAX_BACKPACKS` **evicting through
-`World::die`**, and fills the event ring. Four mutants, four kills. What
+`World::die`**, and fills the event ring. Four mutants, four kills.
+✅ **The withdrawal half landed 2026-08-30** — `tests/loot_storm.rs`
+fills to the cap, then runs four 8-tick bursts of 100 bodies fighting
+*and* sending `Command::Loot`; every burst begins full and reaches zero.
+Eight mutants, six killed, two survivors explained in its header. Its two
+carried findings are in that header and in `CLAUDE.md`'s trap list (an
+event count taken while the ring overflows is an undercount). What
 remains:
 
-1. **Nobody withdraws.** The storm drops bags and never picks one up:
-   `Command::Loot` empties the nearest bag in reach, and a hundred bodies
-   each emptying one a tick would hold the store near zero, so the two do
-   not fit in one fixture. The withdrawal side — `loot_nearest` and
-   `BAG_GONE_EMPTIED` at population, against a store that is already full —
-   wants its own driver step and its own saturation argument.
-2. **Nobody moves, so the rewind is a lookup and not a correction.**
+1. **Nobody moves, so the rewind is a lookup and not a correction.**
    `brawl_step` sends `move_x`/`move_z` zero and every command carries a
    drawn `favour`, so `Rewind::pose_at` runs a hundred distinct depths a
    tick against static poses. A duellist that strafes would make the depth
    change the *answer*, which is the claim `§0lc` still cannot make.
-3. **The raid storm still has no bodies in it** — `§0rs` item 1, unchanged.
+2. **The raid storm still has no bodies in it** — `§0rs` item 1, unchanged.
    The two storms are siblings by design (arming the raid fixture would
    desaturate its five equality assertions), so what is missing is the
    *third* case: a blast that takes a wall and the person behind it.
