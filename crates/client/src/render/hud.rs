@@ -1016,7 +1016,45 @@ pub fn toggle_diagnostics(
 #[derive(Component)]
 pub struct PadRoot;
 
+/// The ammo readout — `loaded / ceiling` for the weapon in hand, blank for
+/// a hand that takes no magazine.
+///
+/// **Above the hotbar and right of centre**, which is the reference's own
+/// placement (`gameplayfoundbase.jpeg`, `generichighview.jpeg`): the number
+/// belongs near the hand it describes and away from the crosshair, because
+/// a count under the reticle is read on every shot whether or not the
+/// player asked. Bold and larger than a cell count for the reason the
+/// reference draws it larger — this is the one HUD number a firefight is
+/// actually steered by.
+#[derive(Component)]
+pub struct AmmoText;
+
 pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
+    // The ammo readout, sitting one line above the hotbar and to the right
+    // of it. Spawned empty and left that way by `update` for every hand
+    // that takes no magazine, so a hatchet draws nothing rather than
+    // `0/0` — the ceiling is what says there is a readout at all
+    // (`ClientCore::mag`).
+    commands.spawn((
+        super::WorldEntity,
+        AmmoText,
+        Text::new(""),
+        super::ui::font_bold(22.0),
+        TextColor(Color::srgba(0.97, 0.95, 0.88, 0.95)),
+        Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(HOTBAR_BOTTOM_PX + HOTBAR_CELL_PX + 8.0),
+            // Right of the six centred cells rather than over them: three
+            // cells is half the strip, and the gap is the strip's own.
+            left: Val::Percent(50.0),
+            margin: UiRect::left(Val::Px(
+                HOTBAR_CELL_PX * HOTBAR_SLOTS as f32 * 0.5 + 6.0 * 3.0 + 8.0,
+            )),
+            ..default()
+        },
+        Pickable::IGNORE,
+    ));
+
     // The hotbar: six cells, bottom centre.
     commands
         .spawn((
@@ -1482,6 +1520,15 @@ pub fn update(
     mut cells: Query<(&Cell, &mut BorderColor, &mut BackgroundColor)>,
     mut icons: Query<(&CellIcon, &mut ImageNode, &mut Visibility)>,
     mut counts: Query<(&CellCount, &mut Text), (Without<Plan>, Without<VitalNum>)>,
+    mut ammo: Query<
+        &mut Text,
+        (
+            With<AmmoText>,
+            Without<Plan>,
+            Without<VitalNum>,
+            Without<CellCount>,
+        ),
+    >,
     mut pips: Query<(&CellPip, &mut Visibility), Without<CellIcon>>,
     mut pip_fills: Query<
         (&CellPipFill, &mut Node),
@@ -1497,6 +1544,26 @@ pub fn update(
     ghost: Option<Res<super::ghost::Ghost>>,
 ) {
     let core = &net.session.core;
+
+    // The ammo readout. `mag()` answers `(0, 0)` for a hand with no
+    // magazine AND for one whose magazine was last stated for a different
+    // item, so this needs no held-item test of its own — the staleness
+    // rule lives in one place (`ClientCore::mag_item`) rather than being
+    // re-derived by every reader.
+    if let Ok(mut text) = ammo.single_mut() {
+        let (loaded, ceiling) = core.mag();
+        let want = if ceiling == 0 {
+            String::new()
+        } else {
+            format!("{loaded} / {ceiling}")
+        };
+        // Written only when it changed: `Text` is change-detected and the
+        // hotbar counts beside it take the same care, because a string
+        // rewritten every frame re-lays out the node every frame.
+        if text.0 != want {
+            text.0 = want;
+        }
+    }
 
     if let (Ok(mut text), Some(ui)) = (plan.single_mut(), ui.as_ref()) {
         use crate::ui::build::{material_label, row_for, shape_label, PLACE_MATERIAL, SHAPES};
@@ -1752,6 +1819,19 @@ pub fn feedback(
                 };
                 crate::ui::refusals::gather(code, &held)
             }
+            // The second, on the same terms: *a rock takes no magazine*,
+            // *no rounds left for your Revolver*. `NO_ITEM` is reachable
+            // here where it is not on a gather — `REFUSE_RL_HAND` fires
+            // from an empty hand — so the bare-hands phrase is not a
+            // fallback but a real case.
+            super::feed::Refused::Reload => {
+                let held = if item == sim_core::gather::NO_ITEM {
+                    "bare hands".to_string()
+                } else {
+                    format!("your {}", crate::ui::craft::item_label(&core.catalog, item))
+                };
+                crate::ui::refusals::reload(code, &held)
+            }
         });
     }
 
@@ -1777,6 +1857,16 @@ pub fn feedback(
         // looking — the item left the pack and the meters moved — which puts
         // it beside the gather and craft lines rather than beside a refusal.
         toast.say(format!("used {label}"));
+    }
+    if feed.reloaded > 0 {
+        // "loaded 6", not "reloaded": the number is what the player did
+        // not know — a partial fill off a nearly empty pack takes fewer
+        // rounds than the cylinder wanted, and the readout above the
+        // hotbar states the result while this states the cost.
+        //
+        // `say`, not `warn`, by `Rank`'s rule: the rounds left the pack
+        // and the readout moved, so it is recoverable by looking.
+        toast.say(format!("loaded {}", feed.reloaded));
     }
     if feed.applied & client_core::core::APPLIED_DRANK != 0 {
         // `water restored << 16 | hp it cost`. The cost is the sea being salt

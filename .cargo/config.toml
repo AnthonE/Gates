@@ -1,6 +1,6 @@
 # The wasm shadow stack, stated rather than defaulted.
 #
-# `World` is 312 kB — fixed-capacity by design (wall 4), and `probe_parity`
+# `World` is 315 kB — fixed-capacity by design (wall 4), and `probe_parity`
 # builds one on the stack per sequence.
 #
 # ⚠ That number said **434 kB** from 2026-08-08 until 2026-08-30, when the

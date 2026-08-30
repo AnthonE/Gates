@@ -170,6 +170,20 @@ pub const GATHER: [&str; 3] = [
     "{} is broken — craft a new one",
 ];
 
+/// `ranged::REFUSE_RL_*` — why a reload (or a trigger pull on an empty
+/// magazine) did nothing. `{}` is the held item, [`GATHER`]'s substitution.
+pub const RELOAD: [&str; 6] = [
+    // Code 0 = "no refusal" — unreachable, `CONSUME[0]`'s posture.
+    "nothing was refused",
+    "{} takes no magazine",
+    "still busy",
+    "the magazine is full",
+    // The dry click, and the sentence names the fix rather than the state:
+    // `GATHER[2]`'s rule — a refusal a player cannot act on reads as a bug.
+    "empty — press R to reload",
+    "no rounds left for {}",
+];
+
 /// The sentence, or the bare code when the sim is ahead of the client.
 ///
 /// The fallback keeps a wire ahead of us honest rather than mislabelled: an
@@ -230,6 +244,16 @@ pub fn consume(code: u8) -> String {
 /// the sentence reads as a whole. Never called with 0, [`consume`]'s rule.
 pub fn gather(code: u8, held: &str) -> String {
     match GATHER.get(code as usize) {
+        Some(s) if code != 0 => s.replacen("{}", held, 1),
+        _ => format!("code {code}"),
+    }
+}
+
+/// Why a reload did nothing, with the held item's label spliced in —
+/// [`gather`]'s shape and its rule. Two of the six sentences carry no
+/// `{}`; `replacen` leaves those alone, so one call site covers both.
+pub fn reload(code: u8, held: &str) -> String {
+    match RELOAD.get(code as usize) {
         Some(s) if code != 0 => s.replacen("{}", held, 1),
         _ => format!("code {code}"),
     }

@@ -79,6 +79,7 @@ use sim_core::build::{
     foundation_terrain_ok, BuildContent, BUILD_CELL_M, LOC_EDGE_XLO, LOC_EDGE_ZLO, LOC_PLANE,
     REFUSE_B_COST, REFUSE_B_PIECE,
 };
+use sim_core::combat::NO_MAG;
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
 use sim_core::craft::{CraftContent, REFUSE_INPUTS, REFUSE_RECIPE};
 use sim_core::deploy::{box_key, DeployContent, REFUSE_D_KIND, REFUSE_D_SPOT};
@@ -98,10 +99,10 @@ use sim_core::world::{
     EV_CRAFT_REFUSED, EV_DEATH, EV_DEPLOY_PLACED, EV_DEPLOY_REFUSED, EV_DEPLOY_REMOVED, EV_DOOR,
     EV_DRANK, EV_GATHER, EV_GATHER_REFUSED, EV_HEALTH, EV_HIT, EV_HURT, EV_IMPACT, EV_KNOCK,
     EV_KNOWN, EV_MAX, EV_MOVED, EV_MOVE_REFUSED, EV_OVEN, EV_PIECE_PLACED, EV_PIECE_REMOVED,
-    EV_PIECE_REPAIRED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN, EV_SHOT, EV_SLOT_HARVESTED,
-    EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_TRUST, EV_VITALS, EV_WEAK_MARK,
-    PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX, STRUCT_DEPLOY_BIT, TRUST_AUTH,
-    TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
+    EV_PIECE_REPAIRED, EV_RELOAD, EV_RELOAD_REFUSED, EV_RESEARCH, EV_RESEARCH_REFUSED, EV_RESPAWN,
+    EV_SHOT, EV_SLOT_HARVESTED, EV_SLOT_RESPAWNED, EV_STOCK, EV_STRUCT_HIT, EV_SWING, EV_TRUST,
+    EV_VITALS, EV_WEAK_MARK, PRESENCE_ASLEEP, PRESENCE_AWAKE, PRESENCE_GONE, PRESENCE_MAX,
+    STRUCT_DEPLOY_BIT, TRUST_AUTH, TRUST_CONT, TRUST_DOOR, TRUST_VERB_MAX,
 };
 use sim_core::yaw_dir;
 
@@ -462,6 +463,12 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
         structure: 0,
         headshot_mult: 2,
         limb_pct: 50,
+        // No magazine: a bow spends straight out of the quiver
+        // (`RangedDef::magazine`), so the arrow path is unchanged by
+        // reload v1 and this fixture is what says so.
+        magazine: 0,
+        reload_ticks: 0,
+        mag_slot: NO_MAG,
     };
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: SPEED_MMPT,
@@ -532,6 +539,161 @@ fn shot_names_the_shooter_then_the_aim_then_the_ballistics() {
 /// fixture above uses and far under any muzzle speed in mm/tick, so a
 /// half-swap inside the word lands somewhere obviously wrong rather than
 /// somewhere plausible.
+/// A gun and its rounds, in a world where nothing else has a magazine.
+///
+/// `mag_slot` 0 and a `magazine` past one, so a swapped `loaded`/`ceiling`
+/// moves bytes; `RELOAD_TICKS` past `rate_ticks` so the beat a reload costs
+/// is distinguishable from the beat a shot costs.
+#[cfg(test)]
+fn gun_world() -> World {
+    let mut w = duel_world();
+    w.combat.ranged[RL_GUN as usize] = RangedDef {
+        damage: 20,
+        ammo: [RL_ROUND, NO_ITEM, NO_ITEM, NO_ITEM],
+        rate_ticks: 4,
+        hitscan: true,
+        range_mm: 50_000,
+        structure: 0,
+        headshot_mult: 2,
+        limb_pct: 50,
+        magazine: RL_MAG,
+        reload_ticks: RL_RELOAD_TICKS,
+        mag_slot: 0,
+    };
+    w.players[0].inv[0] = ItemStack {
+        item: RL_GUN,
+        count: 1,
+        cond: 0,
+    };
+    w.players[0].inv[1] = ItemStack {
+        item: RL_ROUND,
+        count: RL_PACK,
+        cond: 0,
+    };
+    w
+}
+
+/// The gun this world's magazine belongs to. Its own constants rather than
+/// the shot suite's, because these two suites disagree on purpose about
+/// cadence and reach.
+const RL_GUN: u16 = 5;
+const RL_ROUND: u16 = 6;
+/// Six, not eight: distinct from `RL_PACK` and from every slot index, so a
+/// field that ended up carrying the wrong one of them is visible.
+const RL_MAG: u16 = 6;
+/// More than one magazine's worth, so a fill can be partial or full
+/// depending on what is already loaded.
+const RL_PACK: u16 = 10;
+/// Past `rate_ticks`, so "the arm is busy for a reload" is a different
+/// number from "the arm is busy for a shot".
+const RL_RELOAD_TICKS: u16 = 20;
+
+/// **EV_RELOAD names the filler, the magazine's new state and what the
+/// fill cost the pack.**
+///
+/// The three are deliberately distinct here — 6 loaded of 6, taken 6 out of
+/// a pack of 10 — no. Six and six would hide a swap of `loaded` and `took`,
+/// which is exactly the positional-payload defect this file exists for
+/// (`reference/FINDINGS.md` §1), so the fill is driven from a **partly
+/// loaded** cylinder: two already in, four taken, six loaded. Three values,
+/// none equal to another.
+#[test]
+fn a_reload_names_the_magazine_and_what_it_cost() {
+    let mut w = gun_world();
+    w.players[0].mag[0] = 2;
+    w.players[0].mag_round[0] = RL_ROUND;
+    w.tick(&[Command::Reload { id: ATTACKER }]);
+
+    let ev = only(&w, EV_RELOAD);
+    assert_eq!(ev.a, ATTACKER, "EV_RELOAD.a is whose magazine it is");
+    assert_eq!(
+        sim_core::ranged::mag_loaded(ev.b),
+        RL_MAG,
+        "EV_RELOAD.b's high half is the rounds now loaded"
+    );
+    assert_eq!(
+        sim_core::ranged::mag_ceiling(ev.b),
+        RL_MAG,
+        "EV_RELOAD.b's low half is the magazine's ceiling"
+    );
+    assert_eq!(
+        ev.c,
+        (RL_MAG - 2) as u32,
+        "EV_RELOAD.c is what left the PACK, not what is in the magazine"
+    );
+    distinct3(ev, "EV_RELOAD");
+
+    // And the pack really paid it — the event is a report of a mutation,
+    // not a claim about one.
+    assert_eq!(
+        sim_core::craft::inv_count(&w.players[0].inv, RL_ROUND),
+        (RL_PACK - (RL_MAG - 2)) as u32,
+        "the rounds EV_RELOAD.c named came out of the inventory"
+    );
+    assert_eq!(w.players[0].mag[0], RL_MAG, "and went into the magazine");
+}
+
+/// **EV_RELOAD_REFUSED names the hand, the reason and the count.**
+///
+/// Driven by the dry click rather than by a refused reload, because that is
+/// the path the count exists for: the trigger is pulled on an empty
+/// cylinder, no `EV_SHOT` is raised, and this event is the only statement
+/// the client gets that the magazine is at zero.
+#[test]
+fn a_dry_click_names_the_hand_the_reason_and_the_count() {
+    let mut w = gun_world();
+    // Empty on purpose. `gun_world` loads nothing, so this is the state a
+    // freshly crafted revolver is in.
+    assert_eq!(w.players[0].mag[0], 0);
+    w.tick(&[Command::Input {
+        id: ATTACKER,
+        frame: InputFrame {
+            seq: 1,
+            buttons: BTN_PRIMARY,
+            yaw: 4_097,
+            pitch: 128,
+            move_x: 0,
+            move_z: 0,
+            sel: 0,
+        },
+        favour: 0,
+    }]);
+
+    let ev = only(&w, EV_RELOAD_REFUSED);
+    assert_eq!(ev.a, ATTACKER, "EV_RELOAD_REFUSED.a is whose hand it is");
+    assert_eq!(
+        (ev.b >> 16) as u16,
+        RL_GUN,
+        "EV_RELOAD_REFUSED.b's high half is the HELD ITEM, not the round"
+    );
+    assert_eq!(
+        ev.b & 0xFFFF,
+        sim_core::ranged::REFUSE_RL_EMPTY,
+        "EV_RELOAD_REFUSED.b's low half is the reason"
+    );
+    assert_eq!(
+        sim_core::ranged::mag_loaded(ev.c),
+        0,
+        "EV_RELOAD_REFUSED.c's high half is the rounds loaded — zero is the \
+         whole point of the dry click"
+    );
+    assert_eq!(
+        sim_core::ranged::mag_ceiling(ev.c),
+        RL_MAG,
+        "EV_RELOAD_REFUSED.c's low half is the ceiling, so the client can \
+         draw 0/6 rather than blanking the readout"
+    );
+    // The two halves of `b` must not be confusable, which is the whole of
+    // what a packed field can get wrong.
+    assert_ne!(ev.b >> 16, ev.b & 0xFFFF);
+    // And no shot was raised: a dry click is a refusal, not a round.
+    assert_eq!(
+        count(&w, EV_SHOT),
+        0,
+        "an empty magazine must not also announce a shot"
+    );
+}
+
 #[test]
 fn an_instant_shot_reads_zero_speed_and_a_reach() {
     /// Past a byte, for the same reason the bow fixture's is.
@@ -553,6 +715,12 @@ fn an_instant_shot_reads_zero_speed_and_a_reach() {
         structure: 0,
         headshot_mult: 2,
         limb_pct: 50,
+        // The shipped revolver's magazine (`content/weapons.toml`): eight
+        // rounds and 3.4 s, which is 102 ticks at 30 Hz. Slot 0 — this
+        // fixture bakes no other magazine.
+        magazine: 8,
+        reload_ticks: 102,
+        mag_slot: 0,
     };
     w.players[0].inv[0] = ItemStack {
         item: GUN,
@@ -564,6 +732,12 @@ fn an_instant_shot_reads_zero_speed_and_a_reach() {
         count: 5,
         cond: 0,
     };
+    // Loaded (reload v1). A gun with an empty cylinder raises
+    // `EV_RELOAD_REFUSED` and no `EV_SHOT`, which `only` reports as "the
+    // cause never fired" — this suite is about the shot's payload, so the
+    // magazine is filled here rather than reloaded in the middle of it.
+    w.players[0].mag[0] = 8;
+    w.players[0].mag_round[0] = ROUND;
     w.tick(&[Command::Input {
         id: ATTACKER,
         frame: InputFrame {
@@ -648,6 +822,12 @@ fn impact_names_the_surface_then_x_then_z_then_y() {
         structure: 0,
         headshot_mult: 2,
         limb_pct: 50,
+        // No magazine: a bow spends straight out of the quiver
+        // (`RangedDef::magazine`), so the arrow path is unchanged by
+        // reload v1 and this fixture is what says so.
+        magazine: 0,
+        reload_ticks: 0,
+        mag_slot: NO_MAG,
     };
     w.combat.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1_333,
@@ -3658,7 +3838,7 @@ fn swing_names_the_swinger_and_nothing_else() {
 #[test]
 fn coverage_is_stated_not_implied() {
     /// Driven through a real cause and asserted field by field above.
-    const COVERED: [(&str, u8); 41] = [
+    const COVERED: [(&str, u8); 43] = [
         ("EV_GATHER", EV_GATHER),
         ("EV_GATHER_REFUSED", EV_GATHER_REFUSED),
         ("EV_SLOT_HARVESTED", EV_SLOT_HARVESTED),
@@ -3700,6 +3880,8 @@ fn coverage_is_stated_not_implied() {
         ("EV_TRUST", EV_TRUST),
         ("EV_SWING", EV_SWING),
         ("EV_HURT", EV_HURT),
+        ("EV_RELOAD", EV_RELOAD),
+        ("EV_RELOAD_REFUSED", EV_RELOAD_REFUSED),
     ];
     /// What is knowingly still byte-golden only: nothing, since the last
     /// five landed. The seat stays — named, not just counted — so the next

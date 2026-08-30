@@ -31,6 +31,7 @@ use sim_core::build::{
     self, BUILD_CELL_M, LEVEL_H_M, LOC_PLANE, PLATE_RISE_MAX_BANDS, SHAPE_FLOOR, SHAPE_FOUNDATION,
 };
 use sim_core::collide::{ColIndex, PLANE_THICKNESS_M};
+use sim_core::combat::NO_MAG;
 // `fmath` only, never `f32::abs`: the walls' clippy list is crate-scoped, so
 // it binds this suite exactly as it binds the sim (`tests/flank.rs` says the
 // same). `i32::abs` is untouched by that list and stays as it is.
@@ -109,6 +110,12 @@ fn bow_fixture() -> CombatContent {
         structure: 0,
         headshot_mult: 2,
         limb_pct: 50,
+        // No magazine: a bow spends straight out of the quiver
+        // (`RangedDef::magazine`), so the arrow path is unchanged by
+        // reload v1 and this fixture is what says so.
+        magazine: 0,
+        reload_ticks: 0,
+        mag_slot: NO_MAG,
     };
     // The ballistics belong to the round now (`reference/PROJECTILES.md`
     // §9.3), so the fixture arms the arrow rather than the bow.

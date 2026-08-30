@@ -59,6 +59,41 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0rl · Reload v1 — what the magazine still cannot do *(systems+client lane)*
+
+*Landed 2026-08-30, gap 1 of `findings/pass-20260829-153230-18-judge.md`
+(also -17's gap 3): a firearm never reloaded, so a fight was an unbroken
+stream of clicks and three passes of damage-ladder work had nothing to be
+read against. Wire v59, world save format 12, `crates/sim-core/tests/
+reload.rs`. `DECISIONS.md` §open has the six knobs.*
+
+1. **The loaded rounds are destroyed on death, not shed into the bag.**
+   `die`'s spill drain moves `ItemStack`s and a magazine is not one
+   (`RangedDef::mag_slot` says why it is not on the stack), so up to a
+   magazine's worth vanishes per death — a killer loots an empty revolver.
+   Gated as the current truth (`tests/persist.rs`'s ledger,
+   `a_death_empties_the_cylinder`), not as the right one.
+2. **A reconnect off `PlayerSave` finds the cylinder empty.** The world
+   save carries the magazine (it had to — `state_hash` folds it), the
+   store's per-player record does not: that is a second format bump in
+   `server/src/store.rs` and this slice did not spend it.
+3. **No unload, and no ammo switch.** The reference refunds a partial
+   magazine and adopts the new round at `StartReload`; ours refuses to mix
+   (`REFUSE_RL_DRY`). Both need `reload` to see a stack ceiling, which
+   means `GatherContent` reaching a `CombatContent` caller.
+4. **The dry click rides `rate_ticks`; the reference gives it its own
+   1.0 s.** `BaseProjectile.ServerUse` starts a fixed attack cooldown on an
+   empty magazine rather than the weapon's cadence. Ours is 0.4 s on the
+   revolver. `DECISIONS.md` §open carries it as an unspoken knob.
+5. **Nobody has seen or heard it** (§LOOK). The readout over the hotbar,
+   whether `R` reading as reload-not-repair is a surprise, and whether
+   `Cue::Place` borrowed for a seated magazine reads as a reload are all
+   unmeasured — capture is off and this box has no sound card.
+6. **The bots do not reload.** `probe_combat` presses the verb every tick
+   in rotation, which is what keeps the gun on the parity surface; the
+   server's `botclient.rs` repertoire has no reload, so a 100-bot soak
+   still fires a magazine dry and stops.
+
 ## 0vs · The newest visual report's ranked gaps are **closed** — steer from the judge *(any lane)*
 
 Checked with commands rather than read, 2026-08-30, because this is a gap pass

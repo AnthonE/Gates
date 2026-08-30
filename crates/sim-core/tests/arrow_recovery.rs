@@ -22,6 +22,7 @@
 // harness is not sim code.
 #![allow(clippy::disallowed_macros)]
 
+use sim_core::combat::NO_MAG;
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
 use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
@@ -62,6 +63,12 @@ fn bow(break_pct: u16) -> CombatContent {
         structure: 0,
         headshot_mult: 2,
         limb_pct: 50,
+        // No magazine: a bow spends straight out of the quiver
+        // (`RangedDef::magazine`), so the arrow path is unchanged by
+        // reload v1 and this fixture is what says so.
+        magazine: 0,
+        reload_ticks: 0,
+        mag_slot: NO_MAG,
     };
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,

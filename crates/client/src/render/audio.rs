@@ -491,6 +491,18 @@ pub fn feed(net: NonSend<Net>, feed: Res<super::feed::Feed>, mut sound: ResMut<S
     for _ in feed.crafted() {
         sound.play(Request::own(Cue::CraftDone));
     }
+    // A magazine seated. `Cue::Place` borrowed rather than minted, on the
+    // spill's argument below and for its reason: the ear needs "that
+    // happened" and the readout above the hotbar says what — and what a
+    // reload sounds like is a mechanical thing seating, which is the cue
+    // a piece going down already is. A voice of its own is a fair later
+    // change and would cost a `synth.rs` row, a bank entry and a
+    // `WANTED.md` line (`assets/sound/WANTED.md` is the queue); the dry
+    // click needs no such argument, because it is a refusal and the
+    // variant-agnostic block below already answers it.
+    if feed.reloaded > 0 {
+        sound.play(Request::own(Cue::Place));
+    }
     // Every refusal kind, one sound. A player does not need to hear the
     // difference between a refused craft and a refused placement — the toast
     // already says which — they need to hear that the button did nothing.

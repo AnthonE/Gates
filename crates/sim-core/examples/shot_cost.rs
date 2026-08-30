@@ -122,6 +122,12 @@ fn main() {
         structure: 0,
         headshot_mult: 2,
         limb_pct: 50,
+        // The shipped revolver's magazine (`content/weapons.toml`): eight
+        // rounds and 3.4 s, which is 102 ticks at 30 Hz. Slot 0 — this
+        // fixture bakes no other magazine.
+        magazine: 8,
+        reload_ticks: 102,
+        mag_slot: 0,
     };
     let mut pristine = Scratch::with(SEED, Pristine);
     let mut barren = Scratch::barren();

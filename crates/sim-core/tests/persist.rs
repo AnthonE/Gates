@@ -730,7 +730,7 @@ mod carried_through_death {
     /// a field a death is *allowed* to erase — the inventory (the backpack
     /// takes it), the meters and health (a respawn is a whole body), the
     /// craft queue, the weak-spot chase, and the death record itself.
-    pub const RE_DERIVED: [&str; 27] = [
+    pub const RE_DERIVED: [&str; 29] = [
         "body",
         "inv",
         // **The corpse does not keep its plates.** `worn` is here rather
@@ -743,6 +743,23 @@ mod carried_through_death {
         // wrong way round.
         "worn",
         "next_swing",
+        // **A corpse's cylinder does not follow it to the beach.** `worn`'s
+        // argument one step on: the gun itself is on the other list by
+        // being inside `inv`, so it goes to the death bag, and a magazine
+        // that stayed with the *player* would mean a killer looted an
+        // empty revolver while the dead player respawned holding its
+        // rounds. `..Player::default()` is what clears it, and it is
+        // correct by construction — `Player::default` writes
+        // `[NO_ITEM; MAX_MAGS]` into `mag_round`, so an emptied magazine
+        // remembers no round rather than naming item 0.
+        //
+        // **What that costs is stated rather than hidden**: the loaded
+        // rounds are destroyed, not shed into the bag, because `die`'s
+        // spill drain moves `ItemStack`s and the magazine is not one
+        // (`RangedDef::mag_slot` says why it is not on the stack). Up to a
+        // magazine's worth per death. `NOW.md` §0rl carries it.
+        "mag",
+        "mag_round",
         "ws_cell",
         "ws_hits",
         "jobs",

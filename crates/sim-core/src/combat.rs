@@ -278,7 +278,62 @@ pub struct RangedDef {
     /// the melee rows in content and stays priced for a mechanic that
     /// does not exist yet, exactly as the head multiplier is.
     pub limb_pct: u16,
+    /// Rounds this weapon holds **loaded**, or 0 for a weapon that spends
+    /// straight out of the pack — the `magazine` column of
+    /// `content/weapons.toml`, set on the revolver and absent on both bows.
+    ///
+    /// Zero is read as exactly that and not as "unset": `ranged::draw`
+    /// (every bow) keeps spending out of the quiver, so a magazine is an
+    /// opt-in per row and the arrow path did not move for this.
+    ///
+    /// The mechanic it buys is the one a body-part ladder needs to be
+    /// legible: `rate_ticks` alone makes a firefight an unbroken stream of
+    /// identical clicks, and the difference between a leg and a chest is
+    /// then only a slightly longer stream. With a magazine, missing has a
+    /// price — you go dry, and [`RangedDef::reload_ticks`] is how long you
+    /// are helpless for.
+    pub magazine: u16,
+    /// Ticks to fill the magazine, from `reload_ms`. Zero exactly when
+    /// `magazine` is: `validate.rs` refuses one without the other, and the
+    /// bake refuses a `reload_ms` that rounds to nothing at `TICK_HZ`.
+    ///
+    /// Paid on `Player::next_swing`, which is the field the gather, melee
+    /// and both ranged cadences already share — so a reload stops a swing
+    /// and a swing stops a reload, for free and without a second clock to
+    /// keep in step. That sharing is the whole of "helpless for a beat".
+    pub reload_ticks: u16,
+    /// This weapon's index into `Player::mag`, or [`NO_MAG`].
+    ///
+    /// Dense and assigned at bake in `weapons.toml` order, so it is not
+    /// the item index: `Player::mag` is per-player state and
+    /// `MAX_ITEM_DEFS` slots of it would be sixty-four `u16` pairs per
+    /// body of which one is used. The bake refuses a weapon past
+    /// `limits::MAX_MAGS` rather than dropping its slot, because a weapon
+    /// with no slot falls back to spending out of the pack — the mechanic
+    /// silently gone with every gate green.
+    ///
+    /// **Keyed by the weapon row and not by the stack, and the cost is
+    /// stated.** Two revolvers in one pack share one magazine, and a gun
+    /// handed to another player arrives at the receiver's count for that
+    /// kind. The alternative was a fourth field on `ItemStack`, which is
+    /// ~500 struct literals across 82 files — and the alternative to
+    /// *that* was a side table keyed by inventory slot, which has ten
+    /// movers (move, loot, craft, pickup, spill, death, backpack,
+    /// containers…) and a silently wrong count at each. Keyed by the
+    /// content row there is nothing to move, so there is no site to miss.
+    /// `sim-core/tests/reload.rs` gates the corner rather than leaving it
+    /// to be rediscovered.
+    pub mag_slot: u8,
 }
+
+/// A weapon that carries no magazine, in [`RangedDef::mag_slot`].
+///
+/// `u8::MAX` and not 0, for the reason `NO_ITEM` is not 0 one field up:
+/// slot 0 is a real magazine, so a zero-defaulted `mag_slot` on a bow
+/// would name the first firearm's rounds — a bow that drained a revolver.
+/// Out of range of `MAX_MAGS` by construction, so an unguarded index with
+/// it panics in a debug build rather than aliasing.
+pub const NO_MAG: u8 = u8::MAX;
 
 /// **Hand-written rather than derived, and the reason is the ammo array.**
 /// `#[derive(Default)]` fills a `[u16; N]` with zeros, and zero is a valid
@@ -301,6 +356,9 @@ impl Default for RangedDef {
             structure: 0,
             headshot_mult: 1,
             limb_pct: 100,
+            magazine: 0,
+            reload_ticks: 0,
+            mag_slot: NO_MAG,
         }
     }
 }
@@ -453,6 +511,12 @@ impl CombatContent {
             // leg hit outright, which is the same defect spelled the other
             // way round.
             limb_pct: 100,
+            // No magazine on the empty row, and `NO_MAG` rather than slot
+            // 0 for the reason the constant states: a table nothing baked
+            // must not name the first firearm's rounds.
+            magazine: 0,
+            reload_ticks: 0,
+            mag_slot: NO_MAG,
         }; MAX_ITEM_DEFS],
         ammo: [AmmoDef {
             speed_mmpt: 0,
@@ -566,6 +630,16 @@ impl CombatContent {
             hitscan: true,
             range_mm: 20_000,
             structure: 0,
+            // A magazine on the fixture's firearm, because a fixture row
+            // nothing reaches rides the parity surface while covering
+            // nothing (the note four lines down says so about `limb_pct`).
+            // Six and a two-tick fill: short enough that a probe running a
+            // few hundred ticks empties it and reloads more than once, so
+            // the magazine is on the digest's surface rather than beside
+            // it. `mag_slot` 0 — the fixture bakes no other magazine.
+            magazine: 6,
+            reload_ticks: 2,
+            mag_slot: 0,
             headshot_mult: 2,
             //   limb_pct 50 — the reference's ×0.5 rather than the
             //     identity, so a leg hit is a *different* number in the

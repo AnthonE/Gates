@@ -494,4 +494,21 @@ fn main() {
         let len = encode_event_hurt(sector, damage, &mut buf).unwrap();
         write_fixture(goldens::FIXTURES[101], &buf[..len]);
     }
+
+    // Reload v1 (v59). The verb is payload-free like `action_pickup` above
+    // — a kind and a subtype — and the two events carry the magazine pair
+    // that lets a client with no content tables draw `5/8`.
+    {
+        let len = protocol::encode_action_reload(&mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[102], &buf[..len]);
+
+        let (loaded, ceiling, took) = goldens::event_reload();
+        let len = protocol::encode_event_reload(loaded, ceiling, took, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[103], &buf[..len]);
+
+        let (item, reason, loaded, ceiling) = goldens::event_reload_refused();
+        let len =
+            protocol::encode_event_reload_refused(item, reason, loaded, ceiling, &mut buf).unwrap();
+        write_fixture(goldens::FIXTURES[104], &buf[..len]);
+    }
 }

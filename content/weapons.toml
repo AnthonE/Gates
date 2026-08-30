@@ -156,6 +156,21 @@ limb_pct = 50
 rate_per_min = 150
 range_m = 50
 ammo = ["item.pistol_ammo"]
+# Eight rounds and 3.4 s, both the reference's own published figures for
+# this weapon, taken rather than argued (`reference/BALANCE.md` §6: take
+# theirs, a case is needed only to differ). The magazine is what gives a
+# firefight a rhythm — without it `rate_per_min` alone makes a gun an
+# unbroken stream of clicks and the body-part ladder above is only a
+# slightly longer stream of them.
+#
+# Neither bow carries one, and that IS a difference from the reference,
+# which models a bow as a one-round magazine reloaded between shots (a bow
+# is a `BaseProjectile` like every gun — `reference/PROJECTILES.md` §1).
+# The mechanism is the case: a one-round magazine reloaded after every shot
+# is the nock, and the nock is already `rate_per_min` here, so carrying
+# both would be two cadences to keep in step for one wait.
+magazine = 8
+reload_ms = 3400
 
 [[weapon]]
 id = "item.satchel_charge"

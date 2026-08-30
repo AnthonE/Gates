@@ -577,6 +577,81 @@ pub fn structural(c: &Content) -> Result<(), String> {
                 }
             }
         }
+        // The magazine belongs to exactly one kind, checked both ways for
+        // the fuse's reason: a firearm without one is the mechanic this
+        // column exists to add silently absent — a gun that fires the pack
+        // dry in one unbroken stream — and a magazine on a hatchet is a
+        // number nothing reads.
+        match w.kind {
+            WeaponKind::Firearm => {
+                if w.magazine.unwrap_or(0) == 0 {
+                    return Err(format!(
+                        "weapon `{}`: firearms need a nonzero magazine",
+                        w.id
+                    ));
+                }
+                if w.reload_ms.unwrap_or(0) == 0 {
+                    return Err(format!(
+                        "weapon `{}`: a magazine needs a nonzero reload_ms",
+                        w.id
+                    ));
+                }
+            }
+            _ => {
+                if w.magazine.is_some() {
+                    return Err(format!("weapon `{}`: only firearms carry a magazine", w.id));
+                }
+                if w.reload_ms.is_some() {
+                    return Err(format!(
+                        "weapon `{}`: only a weapon with a magazine carries a reload_ms",
+                        w.id
+                    ));
+                }
+            }
+        }
+        // Both baked fields are `u16` on `RangedDef`, so the ceiling is the
+        // field and not a taste — refused here, where a person reads the
+        // message, rather than truncated at the bake.
+        if w.magazine.unwrap_or(0) > u16::MAX as u32 {
+            return Err(format!("weapon `{}`: magazine over u16", w.id));
+        }
+        let reload_ticks =
+            w.reload_ms.unwrap_or(0) as u64 * sim_core::limits::TICK_HZ as u64 / 1000;
+        if reload_ticks > u16::MAX as u64 {
+            return Err(format!(
+                "weapon `{}`: reload_ms {} is {reload_ticks} ticks, over u16",
+                w.id,
+                w.reload_ms.unwrap_or(0)
+            ));
+        }
+        // A reload that rounds to nothing is a reload the player never
+        // pays, which is this whole column arriving armed and unread —
+        // `RangedDef`'s three doc comments name that failure by name.
+        if w.magazine.is_some() && reload_ticks == 0 {
+            return Err(format!(
+                "weapon `{}`: reload_ms {} rounds to zero ticks at {} Hz",
+                w.id,
+                w.reload_ms.unwrap_or(0),
+                sim_core::limits::TICK_HZ
+            ));
+        }
+    }
+
+    // `Player::mag` is indexed by a dense `mag_slot`, so the number of
+    // magazine-bearing rows is a hard cap and not a soft one. Refused here
+    // and asserted again at the bake: a ninth firearm that silently lost
+    // its slot would fire straight out of the pack, which is the mechanic
+    // gone rather than a number wrong.
+    let mags = c
+        .weapons
+        .iter()
+        .filter(|w| w.magazine.unwrap_or(0) > 0)
+        .count();
+    if mags > sim_core::limits::MAX_MAGS {
+        return Err(format!(
+            "{mags} weapons carry a magazine, over MAX_MAGS ({})",
+            sim_core::limits::MAX_MAGS
+        ));
     }
 
     // Ammo: item-backed rounds carrying the ballistics that used to sit on

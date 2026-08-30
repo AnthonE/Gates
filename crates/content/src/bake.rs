@@ -19,7 +19,7 @@ use sim_core::build::{
     SHAPE_TRI_ROOF, SHAPE_WALL, SHAPE_WINDOW,
 };
 use sim_core::combat::{
-    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, WEAR_BODY, WEAR_HEAD,
+    AmmoDef, ArmorDef, CombatContent, MeleeDef, RangedDef, ThrowDef, NO_MAG, WEAR_BODY, WEAR_HEAD,
     WEAR_NONE,
 };
 use sim_core::craft::{
@@ -38,7 +38,7 @@ use sim_core::limits::MAX_SPAWN_KIT;
 use sim_core::limits::{
     ARROW_STEP_MM, HEARTH_STOCK_ROWS, MAX_ARROW_SUBSTEPS, MAX_COOK_ROWS, MAX_DEPLOY_COSTS,
     MAX_DEPLOY_DEFS, MAX_HITSCAN_SAMPLES, MAX_ITEM_DEFS, MAX_LOOT_ENTRIES, MAX_LOOT_ROLLS,
-    MAX_LOOT_TABLES, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
+    MAX_LOOT_TABLES, MAX_MAGS, MAX_PIECE_COSTS, MAX_PIECE_DEFS, MAX_RECIPES, MAX_RECIPE_INPUTS,
     MAX_RESEARCH_ROWS, MAX_WEAPON_AMMO, TICK_HZ,
 };
 use sim_core::loot::{
@@ -599,9 +599,17 @@ impl Content {
         for a in &self.armors {
             self.bake_armor(a, &mut cc)?;
         }
+        // The dense magazine index, handed out in `self.weapons` order.
+        // A counter rather than a scan of `cc.ranged`, because `cc.ranged`
+        // is keyed by *item* and its order is the sorted-rank mapping's,
+        // not this file's — so a scan would make a weapon's slot depend on
+        // where its item happened to sort, and content is a hashed input
+        // to a replay (wall 7). Bake order is `weapons.toml` order, which
+        // is a thing a person can read.
+        let mut next_mag: u8 = 0;
         for w in &self.weapons {
             if w.kind == WeaponKind::Bow || w.kind == WeaponKind::Firearm {
-                self.bake_ranged(w, &mut cc)?;
+                self.bake_ranged(w, &mut next_mag, &mut cc)?;
                 continue;
             }
             if w.kind != WeaponKind::Melee && w.kind != WeaponKind::Throwable {
@@ -721,7 +729,12 @@ impl Content {
     /// `MAX_HITSCAN_SAMPLES`. Content past either is refused at boot rather
     /// than shipped and silently clamped, because a clamped shot is a
     /// weapon whose reach is a lie the data does not admit to.
-    fn bake_ranged(&self, w: &Weapon, cc: &mut CombatContent) -> Result<(), String> {
+    fn bake_ranged(
+        &self,
+        w: &Weapon,
+        next_mag: &mut u8,
+        cc: &mut CombatContent,
+    ) -> Result<(), String> {
         let idx = self
             .item_index(&w.id)
             .ok_or_else(|| format!("bake: weapon `{}` arms no item", w.id))?
@@ -793,6 +806,48 @@ impl Content {
             }
         }
 
+        // The magazine, and the dense slot that indexes `Player::mag`.
+        // `validate.rs` has already refused a firearm without one and a
+        // magazine on anything else; this arm is what turns the column
+        // into an index, and it is the only place that index is chosen.
+        let magazine = u16::try_from(w.magazine.unwrap_or(0))
+            .map_err(|_| format!("bake: `{}` magazine {:?} overflows u16", w.id, w.magazine))?;
+        let reload_ticks = u16::try_from(w.reload_ms.unwrap_or(0) as u64 * TICK_HZ as u64 / 1000)
+            .map_err(|_| {
+            format!(
+                "bake: `{}` reload_ms {:?} overflows u16 ticks",
+                w.id, w.reload_ms
+            )
+        })?;
+        if magazine > 0 && reload_ticks == 0 {
+            return Err(format!(
+                "bake: `{}` holds {magazine} rounds and reloads in no time at all",
+                w.id
+            ));
+        }
+        let mag_slot = if magazine > 0 {
+            // Refused rather than wrapped or dropped. A weapon that lost
+            // its slot would fall back to spending straight out of the
+            // pack — the mechanic silently gone, with every gate green,
+            // which is the shape `limits::MAX_MAGS` is written against.
+            if *next_mag as usize >= MAX_MAGS {
+                return Err(format!(
+                    "bake: `{}` is the {}th weapon with a magazine, past the {MAX_MAGS}                      `Player::mag` holds",
+                    w.id,
+                    *next_mag as usize + 1
+                ));
+            }
+            let s = *next_mag;
+            *next_mag += 1;
+            s
+        } else {
+            // `NO_MAG` and not 0: slot 0 is a real magazine, so a
+            // zero-defaulted `mag_slot` on a bow would name the first
+            // firearm's rounds. The `NO_ITEM`-padded `ammo` array two
+            // fields up refuses the identical mistake for the identical
+            // reason.
+            NO_MAG
+        };
         if cc.ranged[idx].damage != 0 {
             return Err(format!("bake: duplicate weapon row for `{}`", w.id));
         }
@@ -830,6 +885,14 @@ impl Content {
             // `validate` holds the value in `1..=100`, so the product
             // cannot overflow and the quotient cannot exceed the raw.
             limb_pct: w.limb_pct as u16,
+            // Reload v1's three, and unlike the four columns above them
+            // none arrives armed and unread: `ranged::hitscan` spends
+            // `magazine` and `ranged::reload` pays `reload_ticks` in the
+            // same commit that bakes them (`RangedDef::limb_pct` names
+            // that as the shape to copy).
+            magazine,
+            reload_ticks,
+            mag_slot,
         };
         Ok(())
     }

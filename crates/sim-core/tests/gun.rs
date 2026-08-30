@@ -73,6 +73,10 @@ const SEED: u64 = 20260731;
 /// The item index the fixture makes a revolver, and the one it makes its
 /// round. Arbitrary and distinct; nothing else in the fixture uses either.
 const GUN: u16 = 5;
+/// The fixture revolver's magazine — the shipped `content/weapons.toml`
+/// number (reload v1). `shooter` loads this many, or `rounds` if that is
+/// fewer, so a test that arms one round still gets exactly one shot.
+const MAG: u16 = 8;
 const ROUND: u16 = 6;
 
 /// Level pitch — `shoot.rs`'s constant and its reason: the client's encoding
@@ -103,6 +107,12 @@ fn gun_fixture() -> sim_core::combat::CombatContent {
         structure: 0,
         headshot_mult: 2,
         limb_pct: 50,
+        // The shipped revolver's magazine (`content/weapons.toml`): eight
+        // rounds and 3.4 s, which is 102 ticks at 30 Hz. Slot 0 — this
+        // fixture bakes no other magazine.
+        magazine: 8,
+        reload_ticks: 102,
+        mag_slot: 0,
     };
     c
 }
@@ -133,6 +143,13 @@ fn shooter(id: u32, x: f32, feet_y: f32, z: f32, yaw: u16, pitch: u8, rounds: u1
         count: rounds,
         cond: 0,
     };
+    // **And the magazine, loaded (reload v1).** The pack is no longer
+    // where a hitscan shot spends from — it is where a reload draws from —
+    // so a shooter armed only with rounds in the pocket now dry-clicks
+    // forever. Loading here keeps the helper's promise ("holding a LOADED
+    // revolver") true against the new mechanic rather than the old one.
+    p.mag[0] = MAG.min(rounds);
+    p.mag_round[0] = ROUND;
     p.frame = InputFrame {
         seq: 1,
         buttons: BTN_PRIMARY,
@@ -287,7 +304,15 @@ fn five_shots_kill_and_the_kill_names_the_gun() {
     );
     assert_eq!(players[1].hp, 0);
     assert_eq!(players[1].deaths, 1);
-    assert_eq!(players[0].inv[7].count, 1, "six rounds, five spent");
+    // The magazine paid, not the pack (reload v1): `face_off` loads six
+    // and five leave the cylinder. The pack is asserted too, because a gun
+    // that debited both would spend two rounds for one shot and neither
+    // assertion alone would see it.
+    assert_eq!(players[0].mag[0], 1, "six loaded, five spent");
+    assert_eq!(
+        players[0].inv[7].count, 6,
+        "and the pocket is untouched — a reload is what moves rounds into it"
+    );
 }
 
 /// An empty chamber fires nothing, hurts nobody, and takes nothing —
@@ -301,6 +326,11 @@ fn an_empty_chamber_fires_nothing_and_costs_nothing() {
     let cc = gun_fixture();
     let mut sc = Scratch::barren();
     let mut players = face_off();
+    // **The magazine, not the pack** (reload v1). Emptying the pocket no
+    // longer empties the gun — that is the whole of what a magazine is —
+    // so this clears both: the cylinder stops the shot, and the pack is
+    // cleared too so `nothing was taken` below still means something.
+    players[0].mag[0] = 0;
     players[0].inv[7] = ItemStack::default();
 
     let s = pull(0, &cc, &ColIndex::new(), &mut sc.occupants(), &mut players);
@@ -318,6 +348,19 @@ fn an_empty_chamber_fires_nothing_and_costs_nothing() {
     assert_eq!(
         players[0].next_swing, 12,
         "the cadence is paid on the pull, empty or not"
+    );
+    // The dry click, which is what an empty chamber says now. A refusal
+    // rather than a silence for the reason `REFUSE_RL_EMPTY` states: a gun
+    // going quiet is otherwise indistinguishable from the client having
+    // dropped the input, and the player is owed *press R*.
+    assert_eq!(
+        s.events
+            .entries()
+            .iter()
+            .filter(|e| e.code == sim_core::world::EV_RELOAD_REFUSED)
+            .count(),
+        1,
+        "an empty chamber says so exactly once, bounded by the cadence"
     );
 
     // And the control, on the same geometry: with a round in the pocket the
@@ -386,7 +429,7 @@ fn a_wall_stops_the_shot_and_the_body_behind_it_lives() {
                 "the wall is what stopped it, and the surface byte must say so"
             );
         }
-        assert_eq!(players[0].inv[7].count, 5, "the {what} shot spent a round");
+        assert_eq!(players[0].mag[0], 5, "the {what} shot spent a round");
     }
 }
 
@@ -399,7 +442,15 @@ fn a_shot_spends_one_round_at_the_weapons_own_cadence() {
     let mut players = face_off();
 
     pull(0, &cc, &ColIndex::new(), &mut sc.occupants(), &mut players);
-    assert_eq!(players[0].inv[7].count, 5, "one shot, one round");
+    // **The magazine pays, not the pack** (reload v1). Both are asserted:
+    // the round has to leave the cylinder, and it has to NOT leave the
+    // pocket, because a gun that debited both would spend two rounds for
+    // one shot and no single assertion would see it.
+    assert_eq!(players[0].mag[0], 5, "one shot, one round");
+    assert_eq!(
+        players[0].inv[7].count, 6,
+        "and the pack is untouched — a magazine is what stands between them"
+    );
     assert_eq!(
         players[0].next_swing, 12,
         "the revolver's 150/min is 12 ticks, not the melee 38"
@@ -410,16 +461,10 @@ fn a_shot_spends_one_round_at_the_weapons_own_cadence() {
     for t in 1..12u64 {
         pull(t, &cc, &ColIndex::new(), &mut sc.occupants(), &mut players);
     }
-    assert_eq!(
-        players[0].inv[7].count, 5,
-        "the cadence held the second shot"
-    );
+    assert_eq!(players[0].mag[0], 5, "the cadence held the second shot");
     assert_eq!(players[1].hp, 80);
     pull(12, &cc, &ColIndex::new(), &mut sc.occupants(), &mut players);
-    assert_eq!(
-        players[0].inv[7].count, 4,
-        "and released it on the twelfth tick"
-    );
+    assert_eq!(players[0].mag[0], 4, "and released it on the twelfth tick");
     assert_eq!(players[1].hp, 60);
 }
 

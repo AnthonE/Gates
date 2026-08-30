@@ -10,6 +10,7 @@ use protocol::InputDatagram;
 use server::core::{Lane, ShardCore};
 use server::stats::ShardStats;
 use server::view::{Applied, ClientView};
+use sim_core::combat::NO_MAG;
 use sim_core::combat::{AmmoDef, CombatContent, RangedDef};
 use sim_core::gather::{ItemStack, NO_ITEM, SWING_INTERVAL_TICKS};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
@@ -1640,6 +1641,12 @@ fn bow_fixture() -> CombatContent {
         structure: 0,
         headshot_mult: 2,
         limb_pct: 50,
+        // No magazine: a bow spends straight out of the quiver
+        // (`RangedDef::magazine`), so the arrow path is unchanged by
+        // reload v1 and this fixture is what says so.
+        magazine: 0,
+        reload_ticks: 0,
+        mag_slot: NO_MAG,
     };
     c.ammo[ARROW as usize] = AmmoDef {
         speed_mmpt: 1333,
@@ -1849,6 +1856,18 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
             count: 60_000,
             cond: 0,
         };
+        // The magazine, filled to its ceiling (reload v1). Without this
+        // the storm stops after eight shots per body and the anti-vacuity
+        // assert below catches it — which is the mechanic working, and not
+        // what this test is for: it measures the EVENT LANE under load, so
+        // the fixture has to keep firing.
+        //
+        // **This test is why the shot raises no `EV_RELOAD`.** It did for
+        // one build; at a hundred bodies that doubled the lane to 256
+        // events in a tick against a 256 cap, and the assert below said so
+        // in those words. The client counts its own shots instead
+        // (`ranged::hitscan` carries the whole finding).
+        p.mag[0] = u16::MAX;
     }
     let mut c = CombatContent::EMPTY;
     c.player_hp = 100;
@@ -1861,6 +1880,14 @@ fn storm_core(stats: &ShardStats) -> Box<ShardCore> {
         structure: 0,
         headshot_mult: 2,
         limb_pct: 50,
+        // A magazine that cannot run out inside forty ticks, so the storm
+        // storms. `u16::MAX` and not zero: a hitscan row with no magazine
+        // is a shape `content/validate.rs` refuses at boot, and a load
+        // fixture that could not ship is one that stops measuring the
+        // thing that ships. `mag_slot` 0 — this fixture bakes no other.
+        magazine: u16::MAX,
+        reload_ticks: 1,
+        mag_slot: 0,
     };
     core.world.combat = c;
     core
