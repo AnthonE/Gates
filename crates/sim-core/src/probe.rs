@@ -783,9 +783,62 @@ fn buildable_near(seed: u64, haven: &terrain::Haven, (x, z): (f32, f32)) -> (f32
     (x, z)
 }
 
+/// The fixture's firearm and its round (`CombatContent::probe_fixture`),
+/// and the slots `probe_combat` keeps them in.
+///
+/// The gun takes the **last** hotbar slot rather than a new one: `bot_frame`
+/// draws `sel` uniformly over `0..HOTBAR_SLOTS` and adding a seventh slot
+/// would put the gun out of reach of every bot that already exists. Slot 5
+/// held the fixture's 12-damage club, which is still on slots 1 and 3, so
+/// no melee row leaves the surface to pay for this.
+///
+/// The rounds live in a **backpack** slot, past the hotbar the fill above
+/// rewrites, for `probe_bags`' reason for `inv[10]`: a hand is chosen by
+/// `sel` and a pocket is not, so ammunition that shared the hotbar would be
+/// held instead of spent on whichever tick `sel` landed on it.
+const GUN_SLOT: usize = HOTBAR_SLOTS - 1;
+const ROUND_SLOT: usize = 10;
+const GUN_ITEM: u16 = 6;
+const ROUND_ITEM: u16 = 7;
+/// Rounds re-stamped per tick. Only one can be spent per tick per bot (the
+/// cadence is one shot per `rate_ticks`), so this is depth against the
+/// `Consume`/`Loot` verbs reaching into the same pack, not a magazine.
+const GUN_ROUNDS: u16 = 8;
+
+/// Put `probe_combat`'s firearm back in every bot's hand.
+///
+/// **Called every tick, and the cost of not doing it was measured rather
+/// than argued.** `World::die` clears `inv` through `..Player::default()`
+/// and hands the contents to a backpack, so a gun stamped once is gone at a
+/// bot's first death — and in this probe they die constantly and by design.
+/// Dropping this call and arming once before the loop takes the rewound-shot
+/// count from **2415 to 658** (500 × 256, measured 2026-08-30): not to zero,
+/// so the gate below would still have passed, and down to 27%, with what
+/// survives being whatever the `Command::Loot` rotation happened to hand
+/// back. Re-stamping buys 3.7× the coverage and, more to the point, makes
+/// the count a function of the fixture instead of the loot lottery.
+///
+/// The hotbar slots the fill writes are deliberately *not* re-stamped: their
+/// drop-and-loot cycle is coverage this probe already had, and re-arming
+/// them would delete it to buy nothing.
+fn arm_guns(world: &mut World) {
+    for p in world.players.iter_mut().take(3) {
+        p.inv[GUN_SLOT] = ItemStack {
+            item: GUN_ITEM,
+            count: 1,
+            cond: 0,
+        };
+        p.inv[ROUND_SLOT] = ItemStack {
+            item: ROUND_ITEM,
+            count: GUN_ROUNDS,
+            cond: 0,
+        };
+    }
+}
+
 /// Combat parity: `sequences` independent three-bot brawls, each a fresh
-/// world × `ticks` ticks, folded into one digest — the melee half of
-/// `test_parity_wasm`.
+/// world × `ticks` ticks, folded into one digest — the melee **and hitscan**
+/// half of `test_parity_wasm`.
 ///
 /// It is a probe of its own rather than three more lines inside
 /// `probe_parity` because the two want opposite worlds. `probe_parity`'s
@@ -798,9 +851,53 @@ fn buildable_near(seed: u64, haven: &terrain::Haven, (x, z): (f32, f32)) -> (f32
 /// of ending — and a weapon in every hotbar slot, so the held-item read
 /// is armed whichever slot a bot's wandering `sel` lands on. Hits, kills,
 /// respawns and the whiff scan all ride the surface, native and wasm.
+///
+/// # The gun, and why the count is returned rather than folded
+///
+/// One of those hotbar weapons is a **hitscan firearm** since 2026-08-30
+/// (`NOW.md` §0lc item 2). That matters because `ranged::hitscan` is the
+/// only shot path that reads the lag-comp ring — `Pose::Rewound` at
+/// `favour[i]` ticks back, where the arrow deliberately stays `Pose::Live`
+/// — and the three bots already press their triggers at three favour
+/// phases that share no period. Before it, this probe drove a nonzero
+/// favour through the *melee* reader only, so the sentence "the rewind is
+/// on the parity surface" was true of one of the two readers and was
+/// written as though it were true of both.
+///
+/// **The return value carries a count as well as a digest**, packed
+/// `rewound << 32 | (digest & 0xFFFF_FFFF)` — `probe_bags`' shape and its
+/// reason, which applies here twice over. Two targets agreeing on the
+/// digest of a path that never ran is a pass nobody earned, and this path
+/// is reached through four gates that can each silently close: the fixture
+/// row, `sel` landing on the gun, the shared swing cadence, and a round in
+/// the pack. `ci/gates.sh` reads the high half and fails on zero. The count
+/// saturates rather than wrapping, so it can never read zero for having
+/// been large.
+///
+/// **What is counted is the consequence, not the arithmetic**, which is the
+/// lesson §0lc paid for: sixteen gates were green under the `favour: 0`
+/// literal that shipped, because a counter written beside a value cannot
+/// witness that value reaching its destination. So `rewound` is not "a gun
+/// fired" — it is *a hitscan shot fired by a bot whose favour this tick was
+/// nonzero*, which is the only event that proves `Pose::Rewound` was the
+/// pose the scan actually used. A fixture that silently stopped arming the
+/// gun, and one that armed it while every favour collapsed to zero, both
+/// read zero here. Plain `shots` is folded into the digest instead: a
+/// native/wasm disagreement about how many rounds left a muzzle moves the
+/// hash, but it needs no gate of its own once `rewound` has one.
+///
+/// A **hitscan** shot specifically, not any shot. `EV_SHOT` is raised by
+/// every ranged thing, and the fixture also arms a throwable on item 3, so
+/// the filter is the wire's own partition: `c`'s high half is the speed and
+/// zero reads as *instantaneous* (`world.rs`, `EV_SHOT`), and its low half
+/// is then the reach in decimetres, which pins the shot to this row's
+/// `range_mm` and to no other. That stays exact on the day a bow joins this
+/// table, where a speed test alone would not.
 #[no_mangle]
 pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> u64 {
     let mut h = Xxh3::new();
+    let mut shots: u32 = 0;
+    let mut rewound: u32 = 0;
     for s in 0..sequences {
         let seq_seed = splitmix64(master_seed ^ (s as u64));
         let mut world = World::new(seq_seed);
@@ -836,6 +933,9 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
                 };
             }
         }
+        // …and the firearm over the top of the last of them, so tick 0 is
+        // already armed rather than waiting on the loop's first stamp.
+        arm_guns(&mut world);
         let mut rng = Pcg32::new(seq_seed, 11);
         let mut yaws = [0u16; 3];
         for t in 0..ticks {
@@ -884,21 +984,30 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
             // same float distance test as before, run against integers read
             // out of a ring, and if the two targets ever disagreed about a
             // quantized position the brawl would diverge here first.
+            //
+            // Bound rather than written inline, because the shot count
+            // below has to know which bots were rewound *this* tick — a
+            // second copy of these three expressions beside the counter is
+            // the hand-kept mirror `CLAUDE.md` warns about twice, and it
+            // would drift the first time a modulus moved.
+            let favours = [(t % 9) as u8, (t % 5) as u8, (t / 2 % 8) as u8];
+            // The gun, back in every hand, before the tick that fires it.
+            arm_guns(&mut world);
             world.tick(&[
                 Command::Input {
                     id: 1,
                     frame: f1,
-                    favour: (t % 9) as u8,
+                    favour: favours[0],
                 },
                 Command::Input {
                     id: 2,
                     frame: f2,
-                    favour: (t % 5) as u8,
+                    favour: favours[1],
                 },
                 Command::Input {
                     id: 3,
                     frame: f3,
-                    favour: (t / 2 % 8) as u8,
+                    favour: favours[2],
                 },
                 Command::Loot { id: (t % 3) + 1 },
                 Command::Consume {
@@ -919,8 +1028,54 @@ pub extern "C" fn probe_combat(master_seed: u64, sequences: u32, ticks: u32) -> 
                     on_bag: false,
                 },
             ]);
+            // Every bullet that left a muzzle this tick, and the subset of
+            // them whose shooter was being rewound while it did.
+            //
+            // `c`'s high half is the projectile speed and zero is the
+            // wire's *instantaneous* marker, which makes the low half the
+            // reach in decimetres — so this pair identifies a shot from the
+            // fixture's one firearm row and nothing else on the code.
+            //
+            // The reach is **read off the table the world is running**
+            // rather than written here as `20_000 / 100`. A literal would be
+            // a hand-kept mirror of a constant in another module, which is
+            // the drift `CLAUDE.md` names twice: move the fixture's
+            // `range_mm` and the filter silently matches nothing. It fails
+            // safe — the gate reads zero and goes red — but "the gate is red
+            // because the probe stopped recognising its own gun" is a
+            // morning spent in the wrong file.
+            let reach_dm = world.combat.ranged[GUN_ITEM as usize].range_mm / 100;
+            for e in world.events.entries() {
+                if e.code != crate::world::EV_SHOT || e.c >> 16 != 0 {
+                    continue;
+                }
+                if e.c & 0xFFFF != reach_dm {
+                    continue;
+                }
+                shots = shots.saturating_add(1);
+                // Ids are 1..=3 and `favours` is indexed from zero. A
+                // shooter outside that range cannot happen in this world
+                // and is not counted rather than being assumed.
+                //
+                // `favours` holds what the tick was *asked* for, and
+                // `World::tick` clamps it to `Rewind::max_back()` — which is
+                // why `% 9` is in the list at all. The clamp cannot turn a
+                // nonzero request into zero, so `back != 0` means the same
+                // thing on both sides of it.
+                if let Some(&back) = favours.get(e.a.wrapping_sub(1) as usize) {
+                    if back != 0 {
+                        rewound = rewound.saturating_add(1);
+                    }
+                }
+            }
         }
         h.update(&world.state_hash().to_le_bytes());
     }
-    h.digest()
+    // Folded rather than returned, for the reason `probe_bags` folds its
+    // corpse-ticks: the number of rounds fired is real parity surface — two
+    // targets that disagreed about a cadence or an empty pack would
+    // disagree here — but `rewound` is the count that carries the claim, so
+    // it is the one that gets a gate.
+    h.update(&shots.to_le_bytes());
+    ((rewound as u64) << 32) | (h.digest() & 0xFFFF_FFFF)
 }

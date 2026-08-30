@@ -61,41 +61,33 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 ## 0lc · Lag compensation — **on**, and never fired over a real link *(sim lane)*
 
-*Gap pass, from `findings/pass-20260829-153230-12-judge.md` gap 1 — "built
-twice over and switched off", rank 1 in four consecutive reports.*
+**Live since slice 5 (2026-08-30).** `stats::favour_for` mints
+`min((T−S)+3, 7)` at the one site that builds `Command::Input`; zero for an
+unacked client and past the ceiling. Four counters on `/status.json`.
 
-**Slice 5 landed 2026-08-30 and the feature is live.** `stats::favour_for`
-mints `min((T−S)+3, 7)` at the one site that builds `Command::Input`; zero
-for an unacked client and for a staleness past the ceiling. The ack is
-corroborated against `newest_acked` and the fresher wins, so acking
-backwards buys nothing — `favour_disagree`, in `anomaly::WATCHED`. Four
-counters on `/status.json`, because "is it on" had no answer short of
-reading the source. Eight mutants run, seven caught, one equivalent.
+**Slice 6 (2026-08-30) put the GUN's rewind on the parity surface** — item 2
+below, now closed. `combat::probe_fixture` gained a hitscan row (item 6, its
+round item 7) and `probe_combat` re-arms it every tick, because `World::die`
+clears `inv`. `ranged::hitscan` is the only shot path that reads the ring
+(`Pose::Rewound`; the arrow stays live), so before this `test_parity_wasm`
+covered the melee reader alone while this item read as though it covered
+both. The count gated is the **consequence** — a hitscan shot whose shooter
+was rewound that tick, 2415 of them at 500×256 — not "a gun fired".
+Gates: `ci/gates.sh` on the full run, `tests/rewind.rs` in `cargo test`.
+Both mutants red (fixture row inert, favours collapsed to zero → 0 each);
+measurements in `findings/note-20260830-the-gun-rides-the-parity-surface.md`.
 
-**The lesson is bigger than the slice and belongs in a trap list.** The
-sixteen gates the mint landed with are ALL green under the exact `favour: 0`
-literal that shipped — `record_favour` reads the same binding one line
-earlier, so a counter written beside a value cannot witness the value
-reaching its destination. Only
-`a_stale_aim_lands_a_swing_the_live_world_would_have_missed` (two players,
-one swing, hp asserted) goes red. Gate the consequence, not the arithmetic.
+**The lesson stands and belongs in a trap list.** The sixteen gates the mint
+landed with were ALL green under the `favour: 0` literal that shipped, and a
+digest is evidence of parity, never of coverage. Gate the consequence.
 
-Remaining:
+Remaining — **one item, and it is not a loop's to do:**
 
 1. **Nobody has fired at a moving remote player over a real link.** ~4.1
    ticks on loopback says nothing about 200 ms, and the clamp is not
    re-derivable from this box. Needs one session with two `--features render`
    clients and `/status.json` read at both ends — `favour_clamped` is the
    number that says whether 7 is right. §LOOK, and the judge's own caveat.
-2. **The gun's rewind is not on the parity surface.** `probe_combat` drives a
-   nonzero favour and `combat::probe_fixture` has **no hitscan row**, so
-   `test_parity_wasm` covers the melee reader and not this one. No new float
-   op was added, so the risk is low and the coverage claim is still false;
-   arming a `RangedDef` there moves the parity digest and wants its own pass.
-
-⚠ **The clamp is not re-derivable from this box** — ~4.1 ticks on loopback
-says nothing about a 200 ms link, and nobody has fired at a moving remote
-player over a real one (§LOOK, and the judge's gap 3, not a gate's).
 
 ## 0hrt · Being hit points somewhere — the rest of the fight *(systems+client lane)*
 

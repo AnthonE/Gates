@@ -63,12 +63,16 @@ const p = BigInt.asUintN(
 console.log(
   `parity ${hex(PARITY_MASTER_SEED)} ${PARITY_SEQUENCES} ${PARITY_TICKS} ${hex(p)}`,
 );
+// Packed `rewound << 32 | digest32` (see probe.rs) — the count of hitscan
+// shots fired at a nonzero lag-comp favour, split out the way the bags line
+// splits its wakes so gates.sh can read it.
 const c = BigInt.asUintN(
   64,
   probe_combat(PARITY_MASTER_SEED, COMBAT_SEQUENCES, COMBAT_TICKS),
 );
+const combatHex = "0x" + (c & 0xffffffffn).toString(16).padStart(8, "0");
 console.log(
-  `combat ${hex(PARITY_MASTER_SEED)} ${COMBAT_SEQUENCES} ${COMBAT_TICKS} ${hex(c)}`,
+  `combat ${hex(PARITY_MASTER_SEED)} ${COMBAT_SEQUENCES} ${COMBAT_TICKS} ${c >> 32n} ${combatHex}`,
 );
 // Packed `wakes << 32 | digest32` (see probe.rs) — split into the same two
 // fields examples/probe.rs prints, so gates.sh can read the count.
