@@ -2435,6 +2435,56 @@ impl World {
         // reason `backpack.rs`'s header names the others.
         let mut shed = [ItemStack::default(); INV_SLOTS];
         shed[..WEAR_SLOTS].copy_from_slice(&body.worn);
+        // **And the loaded rounds go with them** (`NOW.md` §0mag item 1).
+        // Until 2026-08-30 they did not: `mag`/`mag_round` are cleared by
+        // the `..Player::default()` above, so up to a magazine's worth was
+        // destroyed per death and the killer looted an empty revolver
+        // while the shot that emptied it had already been paid for. That
+        // is the armor argument one level down — a corpse that keeps its
+        // plates is a body nobody fights for, and a corpse that eats its
+        // ammunition is a body nobody reloads before.
+        //
+        // **No content lookup is needed and that is the whole trick.**
+        // `mag_round[slot]` already names the item and `mag[slot]` already
+        // counts it, so this does not need `self.combat` and does not need
+        // a reverse map from `mag_slot` to a weapon row — there is no such
+        // map in the tree, and adding one to shed ammunition would have
+        // been the expensive way to answer a question the pair of arrays
+        // answers by construction. The `NO_ITEM` guard is the same one
+        // `reload` uses: `hitscan` deliberately leaves `mag_round` naming
+        // the spent kind after the last round, so `loaded == 0` is the
+        // only honest emptiness test and the round check is belt-and-braces
+        // against a save that arrived with a count and no kind.
+        //
+        // `cond_max_of` and not zero, and not the source stack's own
+        // condition. The source stack's is unrecoverable — `reload`'s
+        // `inv_take` discards it, by the same content rule V7 that makes
+        // the question moot: a round stacks past 1 (the shipped one stacks
+        // 128) so it carries no condition and `cond_max_of` is 0 for every
+        // one of them. It is written as the ceiling rather than as 0
+        // because a hypothetical round that *did* carry condition should
+        // arrive as ammunition arrives, not as scrap.
+        //
+        // Bounded by `inv_add`, which tops up matching stacks before it
+        // fills empties and returns what fit; a remainder past the 28 free
+        // slots is destroyed, which is the stated overflow policy and the
+        // same one `inv_add`'s other bare callers carry. The shipped set
+        // cannot reach it — `the_shed_magazines_fit_the_bag_they_shed_into`
+        // measures the worst case at one slot against 28 — and a content
+        // set that could is one where eight firearms each carry a magazine
+        // deeper than four full stacks of its own round.
+        for (loaded, round) in body.mag.iter().zip(body.mag_round.iter()) {
+            if *loaded == 0 || *round == NO_ITEM {
+                continue;
+            }
+            gather::inv_add(
+                &mut shed,
+                *round,
+                *loaded,
+                self.gather.stack_max_of(*round),
+                self.gather.cond_max_of(*round),
+            );
+        }
         self.drain_spill(slot, &mut shed);
     }
 

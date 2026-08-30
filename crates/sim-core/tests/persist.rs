@@ -753,11 +753,14 @@ mod carried_through_death {
         // `[NO_ITEM; MAX_MAGS]` into `mag_round`, so an emptied magazine
         // remembers no round rather than naming item 0.
         //
-        // **What that costs is stated rather than hidden**: the loaded
-        // rounds are destroyed, not shed into the bag, because `die`'s
-        // spill drain moves `ItemStack`s and the magazine is not one
-        // (`RangedDef::mag_slot` says why it is not on the stack). Up to a
-        // magazine's worth per death. `NOW.md` §0mag carries it.
+        // **And the rounds are no longer destroyed on the way** — that
+        // cost stood here until 2026-08-30 and read "up to a magazine's
+        // worth per death". `die` now sheds `mag`/`mag_round` into the
+        // same `shed` buffer as `worn`, as an ordinary `ItemStack` built
+        // from the pair the arrays already hold, so the field stays on
+        // this list (the *player* keeps nothing) while the ammunition
+        // reaches the killer. `tests/reload.rs`'s
+        // `a_death_empties_the_cylinder` holds both halves.
         "mag",
         "mag_round",
         "ws_cell",
