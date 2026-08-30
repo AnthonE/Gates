@@ -335,6 +335,27 @@ do not rediscover)
   look right and not the same measurement. **`git status` before quoting a
   timing**, and if a counter has to exist, put it behind a cargo feature so the
   default build has no atomic in the hot path.
+- **An event count taken while the ring is overflowing is an UNDERCOUNT of the
+  thing it names, so a fixture that measures itself through the ring measures
+  the ring.** The event ring is drop-newest at `MAX_EVENTS_PER_TICK`, which
+  every wall-4 gate knows — but knowing it as a *policy* and remembering it as
+  a *measurement hazard* are different, and `sim-core/tests/loot_storm.rs`
+  found the second the hard way on 2026-08-30. Its first draft asserted "the
+  fight kept feeding the store while it was being emptied" by counting
+  `EV_BAG_DROPPED` during a loot burst. It counted **6**, where the run's own
+  death rate (1,700 over 1,050 ticks) implies roughly fifty across those 32
+  — because the same burst had saturated the ring with `EV_GATHER` and the
+  drops were thrown away. The assertion passed. Its number was a property of
+  the ring's saturation, and it was read as a property of the fight.
+  The rule: inside any fixture that deliberately overflows the ring, **ground
+  truth comes off the store, not off the announcements** (`Backpacks::len`,
+  not `EV_BAG_REMOVED`). And the gap between the two is worth gating rather
+  than working around — that file now asserts that 1,024 bags provably left
+  the store against 856 removals announced, which is the only place in this
+  tree where drop-newest has an observable consequence instead of a comment.
+  Same family as the byte-golden entry above: three green gates over a fact
+  nobody checked, and the one that was green for the wrong reason was the one
+  that looked most like coverage.
 - **A shaping curve interpolated with `lerp` is a contour map, and no gate in
   this repo could see it.** `terrain::remap` ran the height field through 17
   LUT knots with `lerp` between them from the first commit to 2026-08-26. A

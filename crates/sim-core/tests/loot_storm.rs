@@ -30,7 +30,7 @@
 //! overflow only a little more often than the fill ticks (8 against 6),
 //! because once the store is empty a `Loot` finds nothing and costs
 //! nothing. Averaged, the verb looks ordinary. The real number is the
-//! **worst tick: 303 events refused against a 256-slot ring** — one tick
+//! **worst tick: 291 events refused against a 256-slot ring** — one tick
 //! throwing away more than the ring can hold.
 //!
 //! ## What it is
@@ -92,17 +92,17 @@
 //! 2. **Every burst began against a full store** (4 of 4), earned through
 //!    `World::die` rather than by standing bags up — which also gates the
 //!    store's *recovery* from empty back to its cap.
-//! 3. **A hundred bodies actually withdrew**: 842 `BAG_GONE_EMPTIED`
-//!    announcements and 2,663 `EV_GATHER`s, which under an inert node
+//! 3. **A hundred bodies actually withdrew**: 856 `BAG_GONE_EMPTIED`
+//!    announcements and 2,729 `EV_GATHER`s, which under an inert node
 //!    table can only have come out of bags.
 //! 4. **Every burst took a full store to zero**, with the slowest drain
 //!    finishing on tick 5 of 8 — margin, not a fit, and gated as such.
-//! 5. **The ring's worst tick refuses more than the ring holds** (303 of
+//! 5. **The ring's worst tick refuses more than the ring holds** (291 of
 //!    256), and every burst reaches it.
 //! 6. **Drop-newest, with its consequence made observable.** At least
 //!    `bursts_to_zero * MAX_BACKPACKS` = 1,024 bags left the store — ground
-//!    truth off `Backpacks::len` — while only 842 removals were announced.
-//!    The 182 missing are events no client will ever hear, which is what
+//!    truth off `Backpacks::len` — while only 856 removals were announced.
+//!    The 168 missing are events no client will ever hear, which is what
 //!    the overflow policy promises and what
 //!    `event_ring_overflow_heals_by_resync` exists to recover from. No
 //!    other gate in the tree is positioned to measure that gap.
@@ -115,11 +115,41 @@
 //! **An event count taken while the ring is overflowing is an undercount
 //! of the thing it names.** During a burst the ring is saturated by
 //! `EV_GATHER`, so `EV_BAG_DROPPED` is itself dropped: **6** bags
-//! announced across the burst ticks against the ~50 the death rate stood
-//! up over 32 of them. The first draft of this file asserted "the fight
-//! kept feeding the store" off that counter and would have been asserting
-//! the ring's saturation while believing it was asserting the fight.
-//! Ground truth for anything inside a burst has to come off the store.
+//! announced across the 32 burst ticks, where the run's own death rate
+//! (1,700 over 1,050 ticks) implies roughly fifty. The first draft of this
+//! file asserted "the fight kept feeding the store" off that counter — a
+//! number that is a property of the ring's saturation, read as a property
+//! of the fight. Ground truth inside a burst has to come off the store.
+//!
+//! ## The mutants
+//!
+//! Eight run, six killed, and the two survivors are named because a
+//! survivor you cannot explain is a hole (`CLAUDE.md`: *after writing a
+//! gate for an optimization, run the mutant*).
+//!
+//! Killed: `loot_nearest` taking nothing; an emptied bag never removed;
+//! `Command::Loot`'s dispatch arm made a no-op; the eviction announcing
+//! `BAG_GONE_DESPAWN`; and **both** of `inv_add`'s stack ceilings —
+//! partial-slot and fresh-slot — dropped to `left`.
+//!
+//! The fresh-slot one is why `KEEPSAKE_COUNT` is 250, and it is the
+//! finding worth carrying out of this pass: with the keepsake at 10 that
+//! mutant **survived**, because nothing this fixture ever handed `inv_add`
+//! was over the ceiling, so deleting the ceiling was an equivalent
+//! mutation. The assertion read as coverage and was arithmetic about
+//! numbers that could not fail it.
+//!
+//! Survived, both explained:
+//! * **`loot_nearest`'s reach check deleted.** An unbounded reach makes
+//!   looting strictly *more* effective, so every assertion here still
+//!   passes. Not a hole: `tests/backpack.rs` gates the boundary exactly,
+//!   at `LOOT_REACH_M ± 0.5`, which is the right shape for a radius and
+//!   the wrong shape for a storm.
+//! * **`loot_nearest`'s `cap == 0` skip deleted.** Equivalent by
+//!   construction — `inv_add` opens with its own `if stack_max == 0 {
+//!   return 0; }`, and the call site already skips a zero `took`, so no
+//!   test anywhere can distinguish the two. The guard is defence in depth
+//!   and reads as duplication because it is.
 //!
 //! ## What it deliberately does NOT claim
 //!
@@ -235,12 +265,39 @@ const BLADE: u16 = 0;
 /// from `BackpackContent::probe_fixture`, and a bag lives as long as its
 /// longest-lived item.
 const KEEPSAKE: u16 = 2;
+/// How much of it a body carries, and it is deliberately **over the
+/// ladder's 100-per-slot ceiling**.
+///
+/// Not filler and not a round number picked for looks. Without it the
+/// per-tick ladder-ceiling assertion is **vacuous**, and that is measured
+/// rather than argued: with the keepsake at 10, mutating `inv_add`'s
+/// fresh-slot `stack_max.min(left)` to `left` — deleting the ceiling
+/// outright — SURVIVED the whole suite, because no stack this fixture
+/// ever handed it was over the ceiling to begin with, so the mutant was
+/// equivalent. It is `CLAUDE.md`'s limb-band lesson exactly: *shipped
+/// content agrees with a band by construction*.
+///
+/// 250 against a ceiling of 100 also buys the path it names — `inv_add`'s
+/// two-loop split, which fills partial stacks and then spreads the
+/// remainder over fresh slots. A single call still moves all 250 (the
+/// fresh-slot loop walks every slot), so the drain is not slowed.
+const KEEPSAKE_COUNT: u16 = 250;
 /// The fixture's hitscan firearm and its round.
 const GUN: u16 = 6;
 const ROUND: u16 = 7;
 
 /// The hotbar slot every duellist holds its weapon in.
 const WEAPON_SLOT: u8 = 0;
+
+/// Slots `restock` writes by hand: the weapon, its feed, and the
+/// over-stacked keepsake. **Everything above this can only have arrived
+/// through `inv_add`** — every node is inert so nothing is gathered, no
+/// command in this fixture crafts or picks up an arrow, and a respawn
+/// clears — so slots `KIT_SLOTS..` are the withdrawal's work and nobody
+/// else's. That is what makes the ceiling assertion below a statement
+/// about `loot_nearest` rather than about the fixture's own kit, which it
+/// deliberately over-stacks.
+const KIT_SLOTS: usize = 3;
 
 /// `probe_fixture`'s ladder with every node put back to `NodeDef::INERT`.
 ///
@@ -300,9 +357,20 @@ fn marks(seed: u64) -> [(u16, u16); DUELS] {
     out
 }
 
-/// Slot 0 is the weapon, slot 1 feeds it, slot 2 is the keepsake that
-/// keeps the bag on the ground.
+/// Slot 0 is the weapon, slot 1 feeds it, slot 2 is the over-stacked
+/// keepsake that keeps the bag on the ground.
+///
+/// **The whole inventory is cleared first**, which is a fixture act and
+/// the reason this file makes no conservation claim (header). It is also
+/// load-bearing rather than tidy: a scavenger accumulates ~2.5 slots per
+/// bag out of `KEEPSAKE_COUNT` alone, so without the clear every looter
+/// is full of keepsakes by the second burst and the store stops draining
+/// — the drain would then be measuring the looters' bookkeeping instead
+/// of the store, which is exactly what the header promises it is not.
 fn restock(inv: &mut [ItemStack], shooter: bool) {
+    for s in inv.iter_mut() {
+        *s = ItemStack::default();
+    }
     inv[0] = ItemStack {
         item: if shooter { GUN } else { BLADE },
         count: 1,
@@ -315,7 +383,7 @@ fn restock(inv: &mut [ItemStack], shooter: bool) {
     };
     inv[2] = ItemStack {
         item: KEEPSAKE,
-        count: 10,
+        count: KEEPSAKE_COUNT,
         cond: 0,
     };
 }
@@ -541,7 +609,7 @@ fn storm() -> Storm {
         // stack into a player without the player naming a slot, so a cap
         // it stopped reading would show up here and nowhere else.
         for p in w.players.iter().take(PLAYERS) {
-            for (sl, st) in p.inv.iter().enumerate().take(INV_SLOTS) {
+            for (sl, st) in p.inv.iter().enumerate().take(INV_SLOTS).skip(KIT_SLOTS) {
                 if st.count == 0 {
                     continue;
                 }
@@ -809,14 +877,14 @@ fn the_loot_storm_is_still_a_fight() {
     // `Backpacks::len`; what is asserted HERE is the fight that did it, so
     // a storm whose duels went quiet names the fight rather than the store.
     //
-    // Deliberately NOT asserted off `dropped_scavenge`/`emptied_scavenge`,
-    // and this is the file's sharpest lesson: during a burst the ring is
-    // saturated by `EV_GATHER`, so `EV_BAG_DROPPED` is itself dropped —
-    // measured, **1** announced bag against the ~32 the death rate stood up
-    // over 20 burst ticks. **An event count taken while the ring is
-    // overflowing is an undercount of the thing it names**, so ground truth
-    // for anything inside a burst has to come off the store. The two fields
-    // are kept in `Storm` because that gap is what assertion 6 gates.
+    // Deliberately NOT asserted off `dropped_scavenge`, and this is the
+    // file's sharpest lesson: during a burst the ring is saturated by
+    // `EV_GATHER`, so `EV_BAG_DROPPED` is itself dropped — 6 announced
+    // across 32 burst ticks where the death rate implies roughly fifty.
+    // **An event count taken while the ring is overflowing is an undercount
+    // of the thing it names**, so ground truth inside a burst comes off the
+    // store. The two fields stay in `Storm` because that gap is what
+    // assertion 6 gates.
     assert!(
         s.emptied_scavenge > s.dropped_scavenge,
         "{} bag removals announced against {} bags stood up during bursts — the \
