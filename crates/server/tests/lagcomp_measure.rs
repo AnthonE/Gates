@@ -38,11 +38,11 @@ use server::stats::{
 use sim_core::combat::CombatContent;
 use sim_core::gather::ItemStack;
 use sim_core::input::{InputFrame, BTN_PRIMARY};
-use sim_core::movement::POS_XZ_Q;
-use sim_core::yaw_dir;
 use sim_core::limits::{
     INTERP_DELAY_TICKS, REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS, SNAPSHOT_INTERVAL_TICKS,
 };
+use sim_core::movement::POS_XZ_Q;
+use sim_core::yaw_dir;
 
 const SEED: u64 = 20_260_731;
 /// The canonical dev spawn — the same one every other wire suite stands on.
@@ -451,7 +451,10 @@ fn ack_only(core: &mut ShardCore, tick_acked: u64) {
 #[test]
 fn the_favour_is_the_measurement_plus_three_clamped_at_seven() {
     let bias = INTERP_DELAY_TICKS - REWIND_ACK_BIAS_TICKS;
-    assert_eq!(bias, 3, "the shipped constants moved; the sweep below is written against them");
+    assert_eq!(
+        bias, 3,
+        "the shipped constants moved; the sweep below is written against them"
+    );
     for raw in 0..=20u16 {
         let want = (raw + bias as u16).min(REWIND_MAX_TICKS as u16) as u8;
         assert_eq!(
@@ -464,7 +467,10 @@ fn the_favour_is_the_measurement_plus_three_clamped_at_seven() {
     // promise `REWIND_MAX_TICKS` makes to the victim.
     assert_eq!(stats::favour_for(3, Some(0)), 6);
     assert_eq!(stats::favour_for(4, Some(0)), REWIND_MAX_TICKS);
-    assert_eq!(stats::favour_for(AIM_STALE_CEILING_TICKS, Some(0)), REWIND_MAX_TICKS);
+    assert_eq!(
+        stats::favour_for(AIM_STALE_CEILING_TICKS, Some(0)),
+        REWIND_MAX_TICKS
+    );
 }
 
 /// **5b · The two inputs that mint nothing.** Both are cases where the
@@ -487,7 +493,11 @@ fn an_unmeasurable_aim_mints_no_favour() {
     );
     // One past it, and the worst a forger can reach: nothing.
     assert_eq!(stats::favour_for(AIM_STALE_CEILING_TICKS + 1, Some(0)), 0);
-    assert_eq!(stats::favour_for(0, Some(1)), 0, "a whole u16 of forged staleness paid out");
+    assert_eq!(
+        stats::favour_for(0, Some(1)),
+        0,
+        "a whole u16 of forged staleness paid out"
+    );
 }
 
 /// **6 · The mint reaches the command — through the shard, not a stub.**
@@ -720,7 +730,8 @@ fn the_disagreement_relay_has_one_reader() {
                 if code.starts_with("//") || code.starts_with("*") {
                     continue;
                 }
-                if line.contains("take_ack_regressions") && !line.contains("fn take_ack_regressions")
+                if line.contains("take_ack_regressions")
+                    && !line.contains("fn take_ack_regressions")
                 {
                     sites.push(format!("{}:{}", p.display(), i + 1));
                 }
