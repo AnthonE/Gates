@@ -397,23 +397,57 @@ records what landed. Kept unedited — the reasoning is the reason the shape
 is what it is, and a prediction is worth more when you can still read what
 it said.)*
 
-### 9.4 · `headshot_mult` is armed and unread, which is a bug we have seen
+### 9.4 · `headshot_mult` was armed and unread — **BUILT 2026-08-30**
 
-Every row in `weapons.toml` carries `headshot_mult = 2`. It is validated
+*(Kept in its original terms, with what landed appended. The prediction is
+worth more when you can still read what it said.)*
+
+Every row in `weapons.toml` carries `headshot_mult = 2`. It was validated
 (`validate.rs`), band-checked (`balance.rs`), hashed into the content hash
-(`canon.rs`) — and **no sim code reads it**. `ranged.rs` says so plainly
-("No headshot, so the whole body is one target") and `combat.rs` says the
+(`canon.rs`) — and **no sim code read it**. `ranged.rs` said so plainly
+("No headshot, so the whole body is one target") and `combat.rs` said the
 same for melee.
 
 That is the same shape `ranged.rs`'s own header opens with: content armed,
 validated, hashed, and thrown away at the sim boundary. It was true of the
-bow for months before ranged v0 salvaged it. It is true of headshots now.
+bow for months before ranged v0 salvaged it, and of `structure` until
+2026-08-28.
 
-§7 says what to build when we do: **not** first-intersection. The body is
-one cylinder today; a head is a second, shorter cylinder at the top, and the
-rule is *most significant part along the segment*, which for two parts is
-"if the head interval is crossed at all, it is a headshot". The closest-
-approach solve in `ranged.rs` already produces the `t` this needs.
+§7 says what to build: **not** first-intersection. The body is one cylinder;
+a head is a second, shorter cylinder at the top, and the rule is *most
+significant part along the segment*, which for two parts is "if the head
+interval is crossed at all, it is a headshot". The closest-approach solve in
+`ranged.rs` already produces the `t` this needs.
+
+**What landed (headshot v0), and the two places it differs from the
+paragraph above.**
+
+1. **A band, not a second cylinder.** `collide::HEAD_BAND_M = 0.25` is the
+   top quarter-metre of the same 1.7 m cylinder. A second collider would
+   need its own radius, its own entry solve and its own place in the hit
+   decision, and with two parts it can answer no question the band cannot —
+   the reduction §9.4 itself states is what makes the band sufficient.
+2. **The `t` was necessary and not sufficient.** The closest approach is
+   one point, and §7's rule is about a *crossing*. `nearest_body` now
+   finishes the planar quadratic it was already taking the vertex of and
+   returns `BodyHit { t, slot, enter, exit }`; `ranged::head_crossed` is the
+   interval overlap. This is the difference between a shot that enters
+   through the crown being a headshot and being scored at whatever the
+   chest was — and it is the one behaviour a closest-approach reading gets
+   wrong, gated as `a_shot_that_enters_through_the_crown_is_a_headshot_at_
+   the_chest`.
+
+The multiplier is applied to raw damage before armor reduction (a plate
+stops a percentage of the blow that arrived), the span is clipped against
+the world's stop (cover between a chest and a crown is cover), and both
+`EV_HIT` and `EV_HURT` carry the scaled number — no wire change, because
+the field already meant damage. **Melee did not get one**: `strike` is
+planar, so §9.4's own "combat.rs says the same for melee" is still true and
+is now a decision with a gate on it rather than an omission.
+
+Gates: `crates/sim-core/tests/headshot.rs` (9 checks, ten mutants run and
+the two survivors written down in its header) and `content`'s
+`the_headshot_column_reaches_the_sim`.
 
 ### 9.5 · The rest, in the order a player notices
 
@@ -446,7 +480,7 @@ and no reason of ours to differ takes theirs and cites it. Candidates:
 |---|---|---|
 | bow damage 30 | ~35 | **hold.** §5 — theirs is priced against 85 % arrow recovery and ours against none. Move the recovery loop first, then the number |
 | `rate_per_min = 30` (2.0 s) | ~1 s draw + ~2.75 s reload ≈ 3.75 s | ours is fast. A real candidate once draw exists, because their number is *two* mechanics and ours is one |
-| headshot ×2 | ×2 head, ×1 chest, ×0.5 limbs | **take the structure** when §9.4 lands; ×2 already matches |
+| headshot ×2 | ×2 head, ×1 chest, ×0.5 limbs | **half taken** (§9.4, 2026-08-30): the ×2 head and the ×1 chest are live and already matched. The ×0.5 limb is not — we have no limb, and adding one is a *third* part, which is the point at which the band stops being sufficient and §7's ordering has to be built for real |
 | HV arrow −20 % damage | −20 % | take it whole — but it is blocked on §9.3 |
 
 The bands in `CONTENT.md` §4 still decide whether any of it may land;

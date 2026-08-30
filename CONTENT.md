@@ -230,6 +230,12 @@ reference's.
    every melee weapon's. `test_content` asserts all of it.
 2. **TTK bands** (body hits, no armor): melee 3–5 · bow 3–4 · revolver
    4–6; headshot × 2. Armor may add at most +2 hits. Asserted from data.
+   **"Body hits" is load-bearing since headshot v0** (2026-08-30): a ranged
+   hit crossing the top 0.25 m of the body pays the × 2, so the real
+   revolver TTK against a shooter who aims is 2–3. The bands are priced on
+   the body on purpose — they are the floor a fight cannot go below, not a
+   prediction of one — and they do not move when the multiplier lands.
+   Melee has no head (`combat::strike` is planar), so its band is whole.
 3. **Farm rate** — a node pays the reference game's total over ~10 swings
    (2026-08-10: stone 1000, metal 600, sulfur 300, large tree 870 — it
    read "≈ 300 units" for every node before that); a full wood wall ≈ **4**

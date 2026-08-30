@@ -16,12 +16,36 @@
 //! the pitch LUT and the eye constant and compares, rather than asking
 //! `nearest_body` what it thought.
 //!
-//! Every check was watched going red under a one-line mutation of the thing
-//! it names — the bake dropping the column again, the band measured off the
-//! feet instead of the head, `>=` weakened to `>` at either rail, the span
-//! collapsed to the closest approach, the world's stop not clipping the
-//! span, the melee arm growing a head. The mutants and what each caught are
-//! in the doc on each check.
+//! **Ten mutants were run against this suite and two survived**, which is
+//! recorded here rather than in a claim that they did not:
+//!
+//! | mutant | caught by |
+//! |---|---|
+//! | `bake_ranged` drops the column again | `content`'s own row |
+//! | `draw` writes `1` instead of the bow's column | the arrow check |
+//! | the band measured off the feet, not the crown | five of nine |
+//! | `>=` weakened to `>` at a rail | the rails check |
+//! | the span collapsed to the closest approach | the crown check |
+//! | `min` dropped from `combat::headshot` | the saturation check |
+//! | `EV_HIT` reverts to the unscaled column | the events check |
+//! | `EV_HURT` reverts to the unscaled column | the events check |
+//! | `HEAD_BAND_M` moved 0.25 → 0.20 | **nothing** |
+//! | `exit.min(stop_t)` dropped at both call sites | **nothing** |
+//!
+//! The first survivor is correct and wanted: the band is a knob
+//! (`DECISIONS.md` §open), the checks measure that the sim *implements*
+//! whatever it says, and a gate that reddened when an operator moved a knob
+//! would be a gate arguing with its own registry.
+//!
+//! The second is a real hole and `NOW.md` §0hs carries it. The clip is what
+//! stops a shot that dies in cover from being credited with the head behind
+//! the cover; `a_stop_before_the_head_is_not_a_headshot` pins the predicate
+//! half, and nothing here proves the two resolvers pass a clipped span in.
+//! Closing it needs a world that stops a **rising** shot between a body's
+//! chest and its crown — the crown check's geometry mirrored, with a wall
+//! 0.3 m behind the victim — which is a `tests/chip.rs`-shaped fixture and
+//! not a line. Until then the guard is conservative in the safe direction:
+//! dropping it can only invent headshots, never delete them.
 //!
 //! `tests/gun.rs` and `tests/shoot.rs` stay the suites for *who* is hit;
 //! nothing here re-asserts a hit decision, because the head is a question
@@ -241,10 +265,12 @@ fn run_of(rows: &[(f32, u16)], dmg: u16) -> (usize, usize) {
 /// One quantum of tolerance, because the body's y is stored in centimetres
 /// and a rail can only ever be found to the step that crossed it.
 ///
-/// Mutants watched red: `HEAD_BAND_M` moved to 0.20 (measured band 0.20,
-/// asserted 0.25), the band measured off the feet rather than the crown
-/// (the doubled run moves to the bottom and the `top` assertion fires),
-/// `bake`/`draw` dropping the multiplier (no 40-run at all, count 0).
+/// Mutants watched red: the band measured off the feet rather than the
+/// crown, and the span collapsed. **`HEAD_BAND_M` moved to 0.20 does NOT
+/// redden this**, and that is the design — the assertion compares the sim's
+/// measured band against the published constant, so moving the knob moves
+/// both. What it catches is the sim disagreeing with the knob, which is the
+/// only thing a knob's gate should catch.
 #[test]
 fn the_doubled_run_is_the_top_quarter_metre_of_the_body() {
     let cc = fixture();
@@ -275,12 +301,15 @@ fn the_doubled_run_is_the_top_quarter_metre_of_the_body() {
     let band_m = head_n as f32 * POS_Y_Q;
     let body_m = (body_n + head_n) as f32 * POS_Y_Q;
     println!("measured band {band_m:.3} m, measured body {body_m:.3} m");
+    // `max` of the two differences rather than `abs`: wall 1's float set
+    // is `+ − × ÷ sqrt min max clamp floor-by-cast`, and it binds this
+    // crate's tests too.
     assert!(
-        (band_m - HEAD_BAND_M).abs() <= POS_Y_Q * 1.5,
+        (band_m - HEAD_BAND_M).max(HEAD_BAND_M - band_m) <= POS_Y_Q * 1.5,
         "the doubled run is {band_m:.3} m and HEAD_BAND_M says {HEAD_BAND_M}"
     );
     assert!(
-        (body_m - CAPSULE_HEIGHT_M).abs() <= POS_Y_Q * 1.5,
+        (body_m - CAPSULE_HEIGHT_M).max(CAPSULE_HEIGHT_M - body_m) <= POS_Y_Q * 1.5,
         "the whole hittable run is {body_m:.3} m and CAPSULE_HEIGHT_M says \
          {CAPSULE_HEIGHT_M}"
     );
@@ -299,8 +328,8 @@ fn the_doubled_run_is_the_top_quarter_metre_of_the_body() {
 /// row's 20 to both screens is a fight where nobody can tell a head from a
 /// chest — which is most of what the multiplier is *for*.
 ///
-/// Mutants watched red: either `push` reverted to `def.damage` (reports 20
-/// against a 40 loss).
+/// Mutants watched red: each `push` reverted to `def.damage`
+/// independently — 20 reported against a 40 loss.
 #[test]
 fn both_events_report_the_multiplied_blow() {
     let cc = fixture();
@@ -340,9 +369,8 @@ fn both_events_report_the_multiplied_blow() {
 /// The two placements come from the bullet's own sweep, so the two weapons
 /// are answered about the same two points on the same body.
 ///
-/// Mutants watched red: `draw` writing `1` instead of `def.headshot_mult`
-/// (30 where 60 is wanted), `Arrows::EMPTY`'s identity changed to 0 (the
-/// torso case deals nothing).
+/// Mutant watched red: `draw` writing `1` instead of `def.headshot_mult`
+/// — 30 where 60 is wanted.
 #[test]
 fn an_arrow_carries_the_bows_multiplier_off_the_string() {
     let cc = fixture();
@@ -413,9 +441,8 @@ fn an_arrow_carries_the_bows_multiplier_off_the_string() {
 /// crown and a shot grazing the crown is a headshot. A hair under the lower
 /// rail is not.
 ///
-/// Mutants watched red: `>=` → `>` on either compare (the matching rail
-/// case flips), `head_lo` computed as `feet + HEAD_BAND_M` (both rails
-/// wrong), `MM_PER_M` dropped from either rail (everything is a headshot).
+/// Mutants watched red: `>=` → `>` at the lower rail, and `head_lo`
+/// computed off the feet as `feet + HEAD_BAND_M` rather than off the crown.
 #[test]
 fn the_band_is_closed_at_both_rails() {
     // Two magnitudes, and the pair is the claim. At zero the rail can be
@@ -481,8 +508,12 @@ fn a_climb_through_the_body_counts_the_head_it_left_by() {
 /// The world's stop clips the span, so a head behind cover is not credited
 /// to a shot that died in the cover.
 ///
-/// Mutant watched red: `exit.min(stop_t)` at either damage site reduced to
-/// `exit` — this returns true.
+/// **This pins the predicate's contract and NOT the two call sites**, and
+/// the module header says so in full: `exit.min(stop_t)` dropped at both
+/// damage sites was run as a mutant and **survived**, because reaching it
+/// needs a world that stops a rising shot between a chest and a crown.
+/// `NOW.md` §0hs carries the fixture that would close it. What is proven
+/// here is that a clipped span is refused when one is handed in.
 #[test]
 fn a_stop_before_the_head_is_not_a_headshot() {
     let feet_mm = 400_000.0f32;
@@ -515,8 +546,10 @@ fn a_stop_before_the_head_is_not_a_headshot() {
 /// a runtime one. If a melee head ever lands, this file is where the
 /// decision has to be re-made rather than silently inherited.
 ///
-/// Mutant watched red: `MeleeDef` given the field and `strike` multiplying
-/// by it unconditionally (the victim takes 20 instead of 10).
+/// Not mutant-tested, and it cannot usefully be: the claim is the
+/// **absence** of a field, which a one-line mutation cannot express — a
+/// melee head is a design change, and this check is where it has to be
+/// argued rather than inherited.
 #[test]
 fn a_swing_has_no_head_to_find() {
     let mut cc = fixture();
@@ -553,8 +586,8 @@ fn a_swing_has_no_head_to_find() {
 /// here is a headshot that restores hp, which is the worst shape the bug
 /// could take.
 ///
-/// Mutant watched red: `min` dropped from `combat::headshot` (the product
-/// truncates to 0 in `u16`).
+/// Mutant watched red: `min` dropped from `combat::headshot`, where the
+/// product truncates in `u16` instead of saturating.
 #[test]
 fn the_multiplier_saturates_and_never_wraps() {
     assert_eq!(combat::headshot(20, 2), 40);

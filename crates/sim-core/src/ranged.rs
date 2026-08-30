@@ -44,9 +44,22 @@
 //!
 //! # What v0 does not do
 //!
-//! No headshots (melee has none either — `frame.pitch` aims the shot but no
-//! part of a body is worth more than another) and no damage falloff (the
-//! schema has no curve to read).
+//! No damage falloff — the schema has no curve to read.
+//!
+//! **"No headshots" stood here until 2026-08-30** and is the third clause
+//! of this header to outlive its truth, after the bow and after the wall
+//! chip. A head is a band off the top of the body cylinder
+//! (`collide::HEAD_BAND_M`) and a hit whose line crosses it pays the
+//! weapon's `headshot_mult`, which had been priced, banded and
+//! content-hashed since the content crate and dropped at the bake every
+//! time (`reference/PROJECTILES.md` §9.4). The rule is §7's — the most
+//! significant part **along the segment**, so `nearest_body` carries the
+//! span the shot spent inside the body and `head_crossed` is the overlap.
+//!
+//! **Melee still has none**, and that half of the old sentence stays true
+//! for the reason it always gave: `combat::strike` resolves feet-to-feet in
+//! a plane, so there is no height for a band to test. `MeleeDef` has no
+//! such field.
 //!
 //! **A shot chips the wall it stops on, since 2026-08-28** (ranged
 //! structure damage v0) — this paragraph said it did not, for as long as
@@ -1074,8 +1087,15 @@ const _: () = assert!(
 ///
 /// It chips a wall exactly as an arrow does (the module header): the shot
 /// stops on a piece, `Chip` carries the address out and `World::chip`
-/// charges the revolver's `structure` against it. No falloff
-/// (`content/weapons.toml` has no curve to read) and no headshot.
+/// charges the revolver's `structure` against it. No falloff —
+/// `content/weapons.toml` has no curve to read.
+///
+/// **It pays the head band exactly as an arrow does**, from the same two
+/// functions and the same clip against the world's stop; this line said
+/// "and no headshot" until headshot v0. The one difference is where the
+/// multiplier is read from — a bullet takes it off `def` because a beam
+/// has no flight to outlive a rebake, while an arrow copies it onto the
+/// shaft at the draw.
 #[allow(clippy::too_many_arguments)]
 pub fn hitscan(
     seed: u64,

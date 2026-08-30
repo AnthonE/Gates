@@ -33,8 +33,10 @@
 //!
 //! **What v0 deliberately does not do**, all of it registered in
 //! `DECISIONS.md` §open ("melee combat v0" and "piece damage v0"): no
-//! headshots (aim is planar until M2's rewound raycasts, so there is no
-//! head to hit), no per-weapon cadence (every swing rides gather's one
+//! headshots **for a swing** — aim is planar until M2's rewound raycasts,
+//! so there is no head to hit, and this clause said it of the whole crate
+//! until headshot v0 gave one to `ranged` (`RangedDef::headshot_mult`, and
+//! `MeleeDef` deliberately has no twin) — no per-weapon cadence (every swing rides gather's one
 //! interval, which is the melee rows' own rate), and no corpse: death drops what you carried into a
 //! backpack where you fell. That last clause is about the SIM and stays
 //! true — there is no lootable body entity, only a bag — while the client
@@ -704,9 +706,12 @@ pub fn hurt(cc: &CombatContent, v: &mut Player, raw: u16) -> Hurt {
 /// slots, clamped at [`ARMOR_MAX_PCT`].
 ///
 /// **The sum, not the slot that was hit, and that is a v0 decision rather
-/// than an oversight.** Aim is planar and there is no head to hit
-/// (`combat.rs`'s header, still true), so a coverage model has nothing to
-/// key on: crediting only the body piece would ship
+/// than an oversight.** It used to rest on there being no head to hit at
+/// all; since headshot v0 a *shot* has one, so the reason is now the
+/// narrower and truer one — **a head band is not a coverage model.**
+/// `ranged` knows whether a line crossed the crown; nothing anywhere knows
+/// which worn piece was under it, and a swing still has no height at all.
+/// Crediting only the body piece would ship
 /// `item.armor_burlap_head` as *charged* dead content — craftable, priced,
 /// and protecting nobody — on the very day armor started working, which is
 /// the same defect this slice exists to remove. Until hit areas land
