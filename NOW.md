@@ -78,10 +78,18 @@ its three ranked gaps no longer describe this tree.**
   `capture.rs` has `Subject::Player` and `Subject::Build` extra shots. The
   panels-off rule and the missing hands are still real.
 
-So the live direction is the **judge** report's gap list, not this one: no
-contested source at the richest tier (nothing in `crates/sim-core/src/` or
-`content/` interrupts a player), and no session or wipe boundary. Both are
-larger than a pass and neither is sliced yet.
+The **judge** report's gap 2 is partly stale the same way, and its own grep is
+why: `airdrop|heli|Airdrop` cannot find **site guards v0**, which landed
+2026-08-14 and is gated (`tests/guard.rs`, six sections). What was genuinely
+missing is the half this pass took — the guard roster was **flat** while
+`ci/haven_prize.mjs` gates a strictly rising three-tier prize, so the richest
+site cost the same to rob as the middle one. `HAVEN_GUARDS`/`WAYSTATION_GUARDS`
+now rise with it (`DECISIONS.md` §open, "the guard chain").
+
+Still open from that gap and larger than a pass: a **world event** — a timed,
+announced window at the pad — and a guard **loot tier** (§0m 3, which needs a
+third species and five client arms). The judge's gap 3, no session or wipe
+boundary, is untouched and is the bigger of the two.
 
 ## 0h3 · The other flaky dial: `connection closed by peer: 261` *(server lane)*
 
