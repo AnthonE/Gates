@@ -156,6 +156,38 @@ const HURT_HOLD_FRAC: f32 = 0.5;
 /// and deliberately `CROSSHAIR_HIT`'s red rather than a second one: the
 /// palette already says "flesh took damage" in exactly this hue.
 const HURT_MARK_COLOR: Color = Color::srgba(0.98, 0.30, 0.24, 0.92);
+/// How many directions the ring can show at once.
+///
+/// Was one until 2026-08-30, which was the honest v0 and the wrong number
+/// the moment a fight has two people in it: two attackers on opposite sides
+/// collapsed to whichever blow the sim resolved second, so the ring was
+/// right about one real threat and silent about the other exactly when
+/// knowing about both mattered most.
+///
+/// **Three, and the ceiling is legibility rather than cost** — twenty nodes
+/// on the crosshair is nothing, and the ring itself is the scarce surface.
+/// Each arc spans 28° of a 360° ring, so three can be told apart at any
+/// spacing and a fourth starts to read as *everywhere*, which says the same
+/// thing as nothing at all. Three also covers what the sim can actually
+/// stage in one frame short of a gang-up: two attackers and a bear.
+/// Overflow evicts the arc with the least time left — the oldest threat,
+/// which is the one most likely to be dead or behind you (`Toast::hurt`).
+/// A knob (`DECISIONS.md` §open, hurt direction v1).
+pub const HURT_ARCS: usize = 3;
+
+/// One live direction on the ring.
+///
+/// `left` counts down from [`HURT_MARK_SECS`], `from` is the absolute world
+/// bearing sector it points at, and `weight` is how solid to draw it,
+/// [`HURT_ALPHA_MIN`]..=1, from the damage that arrived. Per-arc rather
+/// than shared: three blows do not land together, and a mark that inherited
+/// a neighbour's clock would vanish while its attacker was still shooting.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct HurtArc {
+    pub left: f32,
+    pub from: u8,
+    pub weight: f32,
+}
 
 /// Where the arc's blocks sit, px from the crosshair centre, for a blow that
 /// arrived on world bearing `sector` seen by a body facing `facing_deg`.
@@ -169,8 +201,13 @@ const HURT_MARK_COLOR: Color = Color::srgba(0.98, 0.30, 0.24, 0.92);
 ///
 /// `facing_deg` is a compass bearing (`crate::look::bearing_deg`), so both
 /// sides of the subtraction are clockwise-from-north and the axes are
-/// `look::bearing_of`'s. `tests/hurt_arc.rs` checks that against the sim's
-/// integer twin rather than restating either.
+/// `look::bearing_of`'s. That agreement with the sim's integer twin is
+/// checked by `the_compass_walks_the_sims_bearing` and
+/// `the_arc_points_at_the_attacker_and_not_at_north`, both in this file's
+/// own test module — this line named `tests/hurt_arc.rs` until 2026-08-30
+/// and **no such file has ever existed**, which is the dead-citation shape
+/// `CLAUDE.md` warns about: the doc read as covered while the reader had no
+/// way to check without an `ls`.
 pub fn hurt_arc_px(sector: u8, facing_deg: f32) -> [(f32, f32); HURT_ARC_MARKS] {
     let bearing = sector as f32 * (360.0 / sim_core::combat::HURT_SECTORS as f32);
     let centre = bearing - facing_deg;
@@ -183,9 +220,14 @@ pub fn hurt_arc_px(sector: u8, facing_deg: f32) -> [(f32, f32); HURT_ARC_MARKS] 
     out
 }
 
-/// A block of the hurt arc, by index along it.
+/// A block of a hurt arc: which arc, then which block along it.
+///
+/// Two indices rather than one flat run, because the pair is what the
+/// drawing system needs — the arc index picks the direction and the block
+/// index picks the offset within it, and flattening them would put the
+/// division back at the read site every frame.
 #[derive(Component)]
-pub struct HurtMark(pub usize);
+pub struct HurtMark(pub usize, pub usize);
 
 /// Point the hurt arc at whatever last hit you, and fade it out.
 ///
@@ -198,28 +240,34 @@ pub fn hurt_arc(
     look: Res<super::input::Look>,
     mut marks: Query<(&HurtMark, &mut Node, &mut BackgroundColor)>,
 ) {
-    let alpha = if toast.hurt_left <= 0.0 {
-        0.0
-    } else {
-        let t = (toast.hurt_left / HURT_MARK_SECS).clamp(0.0, 1.0);
-        toast.hurt_weight * (t / HURT_HOLD_FRAC).min(1.0)
-    };
-    let want = HURT_MARK_COLOR.with_alpha(HURT_MARK_COLOR.alpha() * alpha);
-    // Nothing on screen: recolour and stop. Moving an invisible node is the
-    // trig of a whole arc, every frame, for a frame nobody can see.
-    if alpha <= 0.0 {
-        for (_, _, mut bg) in marks.iter_mut() {
-            if bg.0 != want {
-                bg.0 = want;
-            }
+    let facing = crate::look::bearing_deg(look.yaw);
+    // One placement solve per live arc, reused by its blocks. The query
+    // arrives in whatever order the ECS holds the entities, so computing it
+    // per mark would run the same trig `HURT_ARC_MARKS` times for each arc.
+    let mut alpha = [0.0f32; HURT_ARCS];
+    let mut at = [[(0.0f32, 0.0f32); HURT_ARC_MARKS]; HURT_ARCS];
+    for (i, arc) in toast.hurts.iter().enumerate() {
+        if arc.left <= 0.0 {
+            continue; // stays at zero alpha; its blocks get blanked below
         }
-        return;
+        let t = (arc.left / HURT_MARK_SECS).clamp(0.0, 1.0);
+        alpha[i] = arc.weight * (t / HURT_HOLD_FRAC).min(1.0);
+        if alpha[i] > 0.0 {
+            at[i] = hurt_arc_px(arc.from, facing);
+        }
     }
-    let at = hurt_arc_px(toast.hurt_from, crate::look::bearing_deg(look.yaw));
     for (mark, mut node, mut bg) in marks.iter_mut() {
-        let (x, y) = at[mark.0.min(HURT_ARC_MARKS - 1)];
-        node.left = Val::Px(x - HURT_BLOCK_PX * 0.5);
-        node.top = Val::Px(y - HURT_BLOCK_PX * 0.5);
+        let arc = mark.0.min(HURT_ARCS - 1);
+        let want = HURT_MARK_COLOR.with_alpha(HURT_MARK_COLOR.alpha() * alpha[arc]);
+        // An invisible block is recoloured and not moved: the frame after
+        // the last one expires is the frame that has to blank it, and
+        // placing a mark nobody can see is the trig of a whole arc for
+        // nothing.
+        if alpha[arc] > 0.0 {
+            let (x, y) = at[arc][mark.1.min(HURT_ARC_MARKS - 1)];
+            node.left = Val::Px(x - HURT_BLOCK_PX * 0.5);
+            node.top = Val::Px(y - HURT_BLOCK_PX * 0.5);
+        }
         if bg.0 != want {
             bg.0 = want;
         }
@@ -431,17 +479,14 @@ pub struct Toast {
     pub hit_left: f32,
     /// Damage the last landed hit dealt, drawn beside the marker.
     pub hit_damage: u16,
-    /// Seconds left on the hurt arc, and the world bearing sector it points
-    /// at. `hit_*`'s pair from the other side of the blow (wire v57).
+    /// The live hurt arcs — `hit_*`'s pair from the other side of the blow
+    /// (wire v57), one entry per direction currently being pointed at.
     ///
-    /// One arc, latest wins. Two attackers on opposite sides collapse to
-    /// whichever blow the sim resolved second — wrong about one real threat,
-    /// never wrong about nothing, and the ring under `Feed` still carries
-    /// both for whoever draws the second one.
-    pub hurt_left: f32,
-    pub hurt_from: u8,
-    /// How solid to draw it, `HURT_ALPHA_MIN`..=1, from the damage taken.
-    pub hurt_weight: f32,
+    /// A fixed array, all `HURT_ARCS` of it always present: an expired arc
+    /// is one with `left <= 0.0`, not an absent one, so the drawing system
+    /// has a slot to blank rather than an entity to despawn on a fight's
+    /// hot path.
+    pub hurts: [HurtArc; HURT_ARCS],
 }
 
 impl Default for Toast {
@@ -454,9 +499,7 @@ impl Default for Toast {
             overflow: String::new(),
             hit_left: 0.0,
             hit_damage: 0,
-            hurt_left: 0.0,
-            hurt_from: 0,
-            hurt_weight: 0.0,
+            hurts: [HurtArc::default(); HURT_ARCS],
         }
     }
 }
@@ -579,8 +622,10 @@ impl Toast {
         if self.hit_left > 0.0 {
             self.hit_left = (self.hit_left - dt).max(0.0);
         }
-        if self.hurt_left > 0.0 {
-            self.hurt_left = (self.hurt_left - dt).max(0.0);
+        for arc in self.hurts.iter_mut() {
+            if arc.left > 0.0 {
+                arc.left = (arc.left - dt).max(0.0);
+            }
         }
     }
 
@@ -642,11 +687,49 @@ impl Toast {
     /// Restarts the clock rather than adding to it: a second blow from the
     /// same direction should read as *still happening*, not as a mark that
     /// outlives the fight by twice as long.
+    ///
+    /// **Which slot** is the whole of this function's judgement, and it is
+    /// three rules in order:
+    ///
+    /// 1. **The same bearing refreshes its own arc.** A rifle firing four
+    ///    times from the north is one threat and must stay one mark — if it
+    ///    took a slot per blow it would evict every other direction on the
+    ///    ring inside a second, which is the failure mode the single arc
+    ///    already had, arrived at from the opposite direction.
+    /// 2. **Otherwise an expired slot**, in order, so a quiet ring fills
+    ///    from the top and the arc indices stay stable across a fight
+    ///    rather than shuffling under the blocks that draw them.
+    /// 3. **Otherwise the arc with the least time left.** Three live
+    ///    directions and a fourth blow is a real choice about which threat
+    ///    to stop reporting, and the oldest is the one most likely to be
+    ///    dead, behind you, or already turned toward. It is never the new
+    ///    blow that loses: the thing that just hit you is the thing you
+    ///    most need to know about.
+    ///
+    /// Weight is taken from the new blow rather than kept at the maximum
+    /// seen, so an arc that has stopped being hit hard dims while it is
+    /// still being hit — a rifle that becomes a fist reads as a fight
+    /// turning, which is true.
     pub fn hurt(&mut self, sector: u8, damage: u16) {
-        self.hurt_left = HURT_MARK_SECS;
-        self.hurt_from = sector;
-        self.hurt_weight = HURT_ALPHA_MIN
+        let weight = HURT_ALPHA_MIN
             + (1.0 - HURT_ALPHA_MIN) * (damage as f32 / HURT_FULL_DMG).clamp(0.0, 1.0);
+        let mut slot = 0usize;
+        let mut worst = f32::INFINITY;
+        for (i, arc) in self.hurts.iter().enumerate() {
+            if arc.left > 0.0 && arc.from == sector {
+                slot = i;
+                break; // rule 1 wins outright
+            }
+            if arc.left < worst {
+                worst = arc.left;
+                slot = i;
+            }
+        }
+        self.hurts[slot] = HurtArc {
+            left: HURT_MARK_SECS,
+            from: sector,
+            weight,
+        };
     }
 }
 
@@ -1235,9 +1318,9 @@ pub fn setup(mut commands: Commands, icons: Option<Res<super::icons::Icons>>) {
             // that have to agree about where the middle of the screen is.
             // Spawned once and moved, never respawned: a mark that appears and
             // disappears is a spawn on a fight's hot path.
-            for i in 0..HURT_ARC_MARKS {
+            for (arc, i) in (0..HURT_ARCS).flat_map(|a| (0..HURT_ARC_MARKS).map(move |i| (a, i))) {
                 c.spawn((
-                    HurtMark(i),
+                    HurtMark(arc, i),
                     Node {
                         position_type: PositionType::Absolute,
                         left: Val::Px(-HURT_BLOCK_PX * 0.5),
@@ -1598,11 +1681,13 @@ pub fn feedback(
     if feed.hits > 0 {
         toast.hit(feed.damage);
     }
-    // And the same blow from the other end. Guarded on the sector rather
-    // than on the count, because `Feed::hurt_from` is an `Option` precisely
-    // so that a reader cannot mistake north for silence.
-    if let Some(sector) = feed.hurt_from {
-        toast.hurt(sector, feed.hurt_damage);
+    // And the same blow from the other end — every direction it came from,
+    // not just the last one. `Feed::hurt_from` is a list precisely so that a
+    // reader cannot mistake north for silence *or* two attackers for one:
+    // an empty slice is the quiet frame, and each entry is already merged
+    // by bearing, so a burst from one gun is one call here rather than four.
+    for h in feed.hurt_from() {
+        toast.hurt(h.from, h.damage);
     }
 
     // Refusals. Each store answers a different verb, and the reason codes are
@@ -2640,23 +2725,136 @@ mod tests {
         // constant; this is about what the clock does with it.
         let mut t = Toast::default();
         t.hurt(3, 40);
-        assert_eq!(t.hurt_from, 3);
-        let heavy = t.hurt_weight;
+        assert_eq!(t.hurts[0].from, 3);
+        let heavy = t.hurts[0].weight;
         assert!(
             (heavy - 1.0).abs() < 1e-6,
             "a blow at or past HURT_FULL_DMG draws at full weight, got {heavy}"
         );
+        // The same bearing again refreshes its own arc rather than taking a
+        // second one — four shots from one gun is one threat.
         t.hurt(3, 1);
+        assert_eq!(
+            t.hurts.iter().filter(|a| a.left > 0.0).count(),
+            1,
+            "a second blow from the same sector must not open a second arc"
+        );
         assert!(
-            t.hurt_weight < heavy && t.hurt_weight >= HURT_ALPHA_MIN,
+            t.hurts[0].weight < heavy && t.hurts[0].weight >= HURT_ALPHA_MIN,
             "a graze is fainter than a rifle round and never invisible, \
              got {}",
-            t.hurt_weight
+            t.hurts[0].weight
         );
         t.tick(HITMARK_SECS + 0.01);
-        assert!(t.hurt_left > 0.0, "still up when a hitmarker would be gone");
+        assert!(
+            t.hurts[0].left > 0.0,
+            "still up when a hitmarker would be gone"
+        );
         t.tick(HURT_MARK_SECS);
-        assert_eq!(t.hurt_left, 0.0, "and gone on its own clock");
+        assert_eq!(t.hurts[0].left, 0.0, "and gone on its own clock");
+    }
+
+    /// **Two attackers on opposite sides are two arcs**, which is the whole
+    /// of what hurt direction v1 is (`NOW.md` §0hrt item 2).
+    ///
+    /// Under v0 this test's second assertion read `8` — the latch kept one
+    /// sector and the north attacker vanished the instant the south one
+    /// fired. Asserted as a *set* rather than by slot, because which slot a
+    /// direction lands in is `Toast::hurt`'s business and not a promise to
+    /// anyone.
+    #[test]
+    fn two_attackers_are_two_arcs() {
+        let mut t = Toast::default();
+        t.hurt(0, 20);
+        t.hurt(8, 20);
+        let mut live: Vec<u8> = t
+            .hurts
+            .iter()
+            .filter(|a| a.left > 0.0)
+            .map(|a| a.from)
+            .collect();
+        live.sort_unstable();
+        assert_eq!(
+            live,
+            vec![0, 8],
+            "a blow from the north and one from the south are two threats \
+             and must be two marks — under one arc the second overwrote the \
+             first and the player turned toward whichever the sim happened \
+             to resolve last"
+        );
+        // Each runs its own clock: the older one goes first, and the newer
+        // one is still up after it does.
+        t.tick(HURT_MARK_SECS * 0.5);
+        t.hurt(4, 20);
+        t.tick(HURT_MARK_SECS * 0.6);
+        let live: Vec<u8> = t
+            .hurts
+            .iter()
+            .filter(|a| a.left > 0.0)
+            .map(|a| a.from)
+            .collect();
+        assert_eq!(
+            live,
+            vec![4],
+            "the two older arcs ran out on their own clocks and the newer \
+             one did not — a shared timer would have retired all three \
+             together or none of them"
+        );
+    }
+
+    /// A fourth direction evicts the **oldest**, never the newest.
+    ///
+    /// The one real choice in `Toast::hurt`'s third rule. The thing that
+    /// just hit you is the thing you most need to know about, so a full
+    /// ring must not refuse a new blow; and the arc with the least time
+    /// left is the threat most likely to be dead, behind you, or already
+    /// turned toward.
+    #[test]
+    fn a_full_ring_drops_the_oldest_and_never_the_newest() {
+        let mut t = Toast::default();
+        for i in 0..HURT_ARCS {
+            t.hurt(i as u8 * 2, 20);
+            // Stagger the clocks so "oldest" is a fact rather than a tie.
+            t.tick(0.01);
+            assert_eq!(
+                t.hurts.iter().filter(|a| a.left > 0.0).count(),
+                i + 1,
+                "{} distinct bearings must open {} arcs",
+                i + 1,
+                i + 1
+            );
+        }
+        // "Oldest" by the clock, not by slot: which slot a direction lands
+        // in is `Toast::hurt`'s business, and reading it off the array order
+        // would be this test agreeing with the implementation about a thing
+        // neither of them promises.
+        let oldest = t
+            .hurts
+            .iter()
+            .min_by(|a, b| a.left.total_cmp(&b.left))
+            .expect("the ring is never empty")
+            .from;
+        t.hurt(15, 20);
+        let live: Vec<u8> = t
+            .hurts
+            .iter()
+            .filter(|a| a.left > 0.0)
+            .map(|a| a.from)
+            .collect();
+        assert_eq!(
+            live.len(),
+            HURT_ARCS,
+            "the ring holds {HURT_ARCS} and a fourth blow must not grow it"
+        );
+        assert!(
+            live.contains(&15),
+            "the blow that just landed is the one that must be on screen"
+        );
+        assert!(
+            !live.contains(&oldest),
+            "sector {oldest} had the least time left and is the one that \
+             should have gone; the ring dropped something else"
+        );
     }
 
     /// The sim's integer bearing and this client's float one are the same

@@ -62,27 +62,33 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 ## 0hrt · Being hit points somewhere — the rest of the fight *(systems+client lane)*
 
-*From `findings/pass-20260829-153230-06-judge.md` gap 2, which named three
-slices; this was the first.* Wire v57 gave the **victim** a fact: `EV_HURT`,
-unicast to the body that took the blow, carrying a 16-sector world bearing
-and the damage, drawn as a fading arc around the crosshair. What is left:
+*From `findings/pass-20260829-153230-06-judge.md` gap 2.* Wire v57 gave the
+**victim** a fact: `EV_HURT`, a 16-sector world bearing drawn as a fading
+arc. Items 2, 3 and 5 have landed. What is left:
 
-1. **Being shot is silent** — §0pvp item 2's flesh cue, the judge's second
-   slice. `render/audio.rs:659` still derives "I was hurt" from a fall in
-   `core.hp`, which cannot separate two blows in one tick; `Feed::hurt_damage`
-   is the fact that can and **nothing reads it yet**. No camera shake either.
-2. **One arc, latest wins** — two attackers on opposite sides collapse to
-   whichever blow the sim resolved second. `ClientCore`'s ring carries both
-   and `render/feed.rs` keeps only the last. No wire change owed.
-3. ~~`headshot_mult` is still unread~~ **Landed 2026-08-30** (headshot v0,
-   the judge's third slice). What it left open is §0hs.
-4. **Nobody has seen the arc.** No capture vantage stands anywhere a shot
-   can land on the camera, so this shipped unlooked-at (§LOOK).
-5. **Two damage routes still say nothing.** A mob bite (`world.rs:3660`)
-   and a blast (`charge.rs:541`) raise no `EV_HURT` — both comments there
-   are about `EV_HIT`, which a pig and a fuse genuinely cannot draw, and
-   the victim's half is a different question. A predator in the dark is
-   the exact case the mark exists for.
+1. **Being shot is silent.** `render/audio.rs`'s `hurt` derives "I was hurt"
+   from a fall in `core.hp`; `Feed::hurt_from()` carries bearing, damage and
+   a hit count and the mixer reads none of it. ⚠ **Sized 2026-08-30: not a
+   one-liner.** Reading `EV_HURT` instead would silence starvation, thirst
+   and the keypad shock — `damage_routes.rs`'s announce column marks those
+   three silent and they are silent *correctly* — so the slice is "every
+   damage route reaches the mixer". `Cue::Hurt` is also non-positional on a
+   120 ms cooldown, so two blows in one tick are one sound whatever feeds
+   it. No camera shake either (§0pvp item 2).
+2. ~~One arc, latest wins~~ **Landed 2026-08-30** (hurt direction v1):
+   `Feed` merges by bearing, `Toast` holds `HURT_ARCS = 3` independent
+   clocks, a fourth direction evicts the oldest and never the new blow.
+3. ~~`headshot_mult` is still unread~~ **Landed 2026-08-30** (headshot v0).
+   What it left open is §0hs.
+4. **Nobody has seen the arc — now less so, and worse.** No capture vantage
+   stands where a shot can land on the camera, and three arcs at once on a
+   116 px ring is exactly the thing arithmetic cannot judge: whether three
+   28° smears read as three directions or as a red halo (§LOOK).
+5. ~~Two damage routes say nothing~~ **Landed 2026-08-30.** A bite reads the
+   animal's post-step body, a blast the epicentre's horizontal bearing.
+   `damage_routes.rs`'s `ROUTES` grew an announce column so the next route
+   is born announced or born exempt; `tests/hurt_routes.rs` drives both from
+   two sides each.
 
 
 ## 0hs · The head band — what headshot v0 left *(systems lane)*

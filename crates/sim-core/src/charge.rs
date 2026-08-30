@@ -538,10 +538,35 @@ fn detonate(
         if scaled == 0 {
             continue;
         }
+        // Which way the bomb was, from the body that just took it.
+        // Centimetres on both axes: `bearing_sector` reads only the ratio,
+        // so the unit is free as long as the two axes share one, and cm is
+        // what `dist_cm` already works in. Wall 1: subtract, multiply,
+        // floor-by-cast — no trig, which is the whole reason the sector is
+        // integer in the first place.
+        //
+        // **The vertical is dropped, and that is the honest answer rather
+        // than a shortcut.** A charge on the floor below you is still
+        // *that way* on a compass, and the arc the client draws is a ring
+        // around the crosshair with no pitch in it. A charge directly
+        // underfoot lands on `(0, 0)` and reports north by
+        // `bearing_sector`'s documented convention — wrong about a
+        // direction that does not exist, where the alternative is telling
+        // the player nothing at all while the wall comes down.
+        let sector =
+            crate::combat::bearing_sector(((ax - px) * 100.0) as i64, ((az - pz) * 100.0) as i64);
         // The funnel, reduced. No `EV_HIT`: a blast has no hitmarker to
-        // draw, which is why the funnel does not own the event set.
+        // draw, which is why the funnel does not own the event set. It
+        // does have an `EV_HURT` — a hitmarker is the attacker's fact and
+        // a fuse has no screen, but the body in the blast radius has one.
         let crate::combat::Hurt { left, died, .. } = crate::combat::hurt(cc, p, scaled);
         let victim_id = p.id;
+        events.push(
+            crate::world::EV_HURT,
+            victim_id,
+            sector as u32,
+            scaled as u32,
+        );
         events.push(
             crate::world::EV_HEALTH,
             victim_id,

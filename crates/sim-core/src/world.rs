@@ -521,6 +521,18 @@ pub const EV_SWING: u8 = 40;
 /// number, with no direction and no author. You could not tell a sniper
 /// from a bear from starving. This is the other half, unicast to `a`.
 ///
+/// **Five routes raise it, and the two that do not are named rather than
+/// forgotten.** A swing (`combat::strike`), an arrow and a bullet
+/// (`ranged`), a bite (the mob loop below) and a blast (`charge::detonate`)
+/// all point somewhere; starvation (`survival`) and the keypad shock
+/// (`deploy`) do not, because neither has a direction to point at. That
+/// split is the load-bearing part and it is gated rather than written down
+/// here alone: `tests/damage_routes.rs`'s `ROUTES` table carries an
+/// announce column, so a **new** damage route is born announced or born
+/// exempt with a reason, the same way it is already born reduced or
+/// unreduced. The bite and the blast were silent until 2026-08-30, which
+/// is what that column exists to stop happening again.
+///
 /// **`b` is a sector, not an angle, and that is a disclosure decision.**
 /// `combat::HURT_SECTORS` of them, 22.5° each, clockwise from north on
 /// `look::bearing_of`'s axes (+Z north, −X east). It is enough to turn
@@ -3682,20 +3694,36 @@ impl World {
         // `combat::hurt`, the one debit (this loop used to hand-copy
         // "`combat::strike`'s exact damage liturgy" and said so); what
         // stays here is the half the funnel deliberately does not own —
-        // EV_HEALTH to the victim, EV_DEATH broadcast, and `die` laying
-        // the body down with the cause the wire widened for. Still no
-        // EV_HIT: a hitmarker is an attacker's fact and a pig has no
-        // screen to draw one on.
+        // EV_HURT and EV_HEALTH to the victim, EV_DEATH broadcast, and
+        // `die` laying the body down with the cause the wire widened for.
+        // Still no EV_HIT: a hitmarker is an attacker's fact and a pig has
+        // no screen to draw one on. EV_HURT is the other side of exactly
+        // that asymmetry — the victim has a screen, and until 2026-08-30
+        // the only thing on it for a bear in the dark was a number going
+        // down (`NOW.md` §0hrt item 5).
         for b in bites.entries() {
             let victim = b.victim as usize;
+            // The animal's body, read before the victim is borrowed
+            // mutably — `combat::strike` takes the attacker's position in
+            // the same order and for the same borrow. Post-`mob::step`, so
+            // it is where the animal was standing when it bit rather than
+            // where it started the tick.
+            let (mqx, mqz) = {
+                let body = &self.mobs.m[b.mob_slot as usize].body;
+                (body.qx as i64, body.qz as i64)
+            };
             let v = &mut self.players[victim];
             if !v.active || v.hp == 0 {
                 continue; // died to something else since the roster looked
             }
+            let sector =
+                crate::combat::bearing_sector(mqx - v.body.qx as i64, mqz - v.body.qz as i64);
             // The funnel, reduced: a bite is a hit.
             let crate::combat::Hurt { left, died, .. } =
                 crate::combat::hurt(&self.combat, v, b.damage);
             let victim_id = v.id;
+            self.events
+                .push(EV_HURT, victim_id, sector as u32, b.damage as u32);
             self.events.push(
                 EV_HEALTH,
                 victim_id,
