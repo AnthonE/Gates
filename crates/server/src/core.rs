@@ -6,7 +6,7 @@
 
 use crate::client::ClientNetState;
 use crate::interest::{self, PIECE_SCAN_BATCH};
-use crate::stats::ShardStats;
+use crate::stats::{self, ShardStats, FAVOUR_DISAGREE_BAND_TICKS};
 use crate::store::PlayerKey;
 use protocol::{
     encode_event_auth, encode_event_bag_dropped, encode_event_bag_removed, encode_event_bag_sync,
@@ -708,13 +708,67 @@ impl ShardCore {
     /// the shard's entire uptime as one player's lag. Ordering matters and
     /// is the point of the two lines being adjacent: acking first means the
     /// very first datagram carrying a real ack is measured, not the second.
+    ///
+    /// **And the stamp is now the fresher of two readings, not the claim**
+    /// (lagcomp slice 5). Once a favour is minted from this number, the
+    /// number is worth lying about: a client that acks *backwards* looks
+    /// staler than it is and buys rewind depth it has not earned, which is
+    /// peeker's advantage on demand. `newest_acked` is the server's own
+    /// record of the newest snapshot it has seen this client ack, so the
+    /// two are independent and the smaller staleness wins
+    /// (`findings/lagcomp-design-20260818.md` §6.2's stated rule).
+    ///
+    /// ⚠ **§6.2's mechanism was a wall clock and this is not it.** That
+    /// bullet asks for an `Instant`-derived RTT estimate on the I/O thread
+    /// compared against the ack-derived staleness. It is not buildable as
+    /// written: the only transport RTT this shard reads is quinn's, folded
+    /// into a shard-wide `net_rtt_us_max` high-water mark at ~1 Hz
+    /// (`net.rs`), and there is no per-client channel from the I/O tasks to
+    /// this thread at all — `Link`'s four rings carry datagrams, not
+    /// derived numbers. Building one would be a per-slot table invented for
+    /// a counter, which is the thing `stats.rs`'s aim-staleness block
+    /// explicitly decided against. The check here is strictly cheaper and
+    /// strictly better: no clock (so it is a gate under `CLAUDE.md`'s
+    /// rule), no new transport, and it compares the claim against
+    /// *evidence* rather than against a second estimate.
     pub fn push_input(&mut self, slot: usize, dg: &InputDatagram) {
+        // Read before the client is borrowed: `world` and `clients` are two
+        // fields of one `self`, the `tick` loop's problem one method over.
+        let now = self.world.tick as u16;
         let c = &mut self.clients[slot];
         if !c.connected {
             return;
         }
         c.on_acks(dg.snapshot_ack, dg.ack_bits);
-        let view = c.newest_acked.map(|_| dg.snapshot_ack);
+        // Copied out before the block below, which needs `c` mutably to
+        // count a disagreement.
+        let newest = c.newest_acked;
+        let view = newest.map(|b| {
+            // **The cross-check, and it needed no clock**
+            // (`findings/lagcomp-design-20260818.md` §6.2, built differently
+            // — see this method's doc).
+            //
+            // Two independent readings of one quantity, both already here:
+            // `dg.snapshot_ack` is what the client *claims* its newest
+            // applied world is, and `newest_acked` is the newest snapshot
+            // the server has *watched it ack* out of the server's own sent
+            // ring. Compare them as ages against `now` rather than as
+            // magnitudes, because `snapshot_ack` is 16 bits of a `u64` tick
+            // and a shard crosses that boundary every 36 minutes.
+            let claim = now.wrapping_sub(dg.snapshot_ack);
+            let evidence = now.wrapping_sub(b as u16);
+            if evidence >= claim {
+                return dg.snapshot_ack;
+            }
+            // §6.2's rule verbatim — **use the smaller of the two
+            // estimates.** A client acking backwards is asking to be
+            // treated as staler than the server has seen it be, and
+            // staleness is what buys rewind depth.
+            if claim - evidence > FAVOUR_DISAGREE_BAND_TICKS {
+                c.note_ack_regression();
+            }
+            b as u16
+        });
         for f in dg.frames() {
             c.push_frame(*f, view);
         }
@@ -805,11 +859,38 @@ impl ShardCore {
                 // bias the distribution toward the quiet ticks, which is
                 // the reverse of what a lag measurement is for.
                 stats.record_aim_stale(now, view);
+                // Every disagreement this client's datagrams accumulated
+                // since the last tick, drained here because this is the one
+                // reader (`ClientNetState::take_ack_regressions`) and
+                // because it belongs beside the number it is about.
+                ShardStats::add(&stats.favour_disagree, c.take_ack_regressions());
                 if n < MAX_COMMANDS_PER_TICK {
+                    // **The mint** — lag compensation stops being dead code
+                    // on this line (`findings/lagcomp-design-20260818.md`
+                    // §7 slice 5). Everything under it shipped first and
+                    // sat unreachable behind the `0` that used to be here:
+                    // the ring (`sim_core::rewind`), the clamp
+                    // (`world.rs`'s `Input` arm), `combat::strike`'s
+                    // rewound target scan and `ranged::hitscan`'s.
+                    //
+                    // **Bound once and used twice**, deliberately. The
+                    // counter reads the same `favour` the command carries,
+                    // so `/status.json` cannot claim a rewind the sim was
+                    // not told about — calling `favour_for` a second time
+                    // for the counter would be a second derivation that
+                    // agrees with itself and proves nothing
+                    // (`CLAUDE.md`'s naive-rebuild trap, in a counter).
+                    //
+                    // Counted inside the command-room check, unlike the
+                    // staleness above it: a frame the buffer had no room
+                    // for spends no favour, and counting one would report
+                    // help nobody received.
+                    let favour = stats::favour_for(now, view);
+                    stats.record_favour(favour);
                     self.cmd_buf[n] = Command::Input {
                         id: c.id,
                         frame,
-                        favour: 0,
+                        favour,
                     };
                     n += 1;
                 }

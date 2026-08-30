@@ -17,7 +17,9 @@
 //!  "stream_in_bytes":0,"stream_in_frames":0,
 //!  "aim_stale_samples":0,"aim_stale_sum":0,"aim_stale_max":0,
 //!  "aim_stale_unacked":0,"aim_stale_refused":0,
-//!  "aim_stale_hist":[0,0,0,0,0,0,0,0]}
+//!  "aim_stale_hist":[0,0,0,0,0,0,0,0],
+//!  "favour_granted":0,"favour_sum":0,
+//!  "favour_clamped":0,"favour_disagree":0}
 //! ```
 //!
 //! (one line on the wire; wrapped here to fit)
@@ -54,6 +56,18 @@
 //!   (`stats.rs` L5 bans strings, not shape) — the alternative was eight
 //!   flat fields whose names would encode the bucket edges, which puts the
 //!   thing a reader must know in a key instead of in a doc comment.
+//! - the four **favour** counters — what the shard did with the readings
+//!   above (the favour block in `stats.rs`). `favour_granted` is frames
+//!   that got a nonzero rewind and `favour_sum / favour_granted` is their
+//!   mean depth in ticks; **`favour_granted` climbing at all is how an
+//!   operator sees that lag compensation is on**, which is worth a field
+//!   because it was *off* for three passes with every gate green.
+//!   `favour_clamped` is the fraction of those that hit
+//!   `REWIND_MAX_TICKS`, i.e. how often the 233 ms ceiling is the binding
+//!   constraint rather than the link — the evidence for moving that
+//!   number. `favour_disagree` is the cross-check: claims corrected down
+//!   to the server's own ack evidence, and the one favour counter that is
+//!   also in `anomaly::WATCHED`.
 //!
 //! ## What this thread is allowed to touch
 //!
@@ -208,7 +222,9 @@ fn answer(mut stream: TcpStream, stats: &ShardStats) -> std::io::Result<()> {
          \"stream_in_bytes\":{},\"stream_in_frames\":{},\
          \"aim_stale_samples\":{},\"aim_stale_sum\":{},\"aim_stale_max\":{},\
          \"aim_stale_unacked\":{},\"aim_stale_refused\":{},\
-         \"aim_stale_hist\":{}}}",
+         \"aim_stale_hist\":{},\
+         \"favour_granted\":{},\"favour_sum\":{},\
+         \"favour_clamped\":{},\"favour_disagree\":{}}}",
         ShardStats::get(&stats.players),
         sim_core::limits::MAX_PLAYERS,
         ShardStats::get(&stats.current_tick),
@@ -226,6 +242,10 @@ fn answer(mut stream: TcpStream, stats: &ShardStats) -> std::io::Result<()> {
         ShardStats::get(&stats.aim_stale_unacked),
         ShardStats::get(&stats.aim_stale_refused),
         hist,
+        ShardStats::get(&stats.favour_granted),
+        ShardStats::get(&stats.favour_sum),
+        ShardStats::get(&stats.favour_clamped),
+        ShardStats::get(&stats.favour_disagree),
     );
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

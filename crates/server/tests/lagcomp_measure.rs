@@ -32,9 +32,13 @@
 use protocol::InputDatagram;
 use server::client::ClientNetState;
 use server::core::ShardCore;
-use server::stats::{ShardStats, AIM_STALE_BUCKETS, AIM_STALE_CEILING_TICKS};
+use server::stats::{
+    self, ShardStats, AIM_STALE_BUCKETS, AIM_STALE_CEILING_TICKS, FAVOUR_DISAGREE_BAND_TICKS,
+};
 use sim_core::input::InputFrame;
-use sim_core::limits::SNAPSHOT_INTERVAL_TICKS;
+use sim_core::limits::{
+    INTERP_DELAY_TICKS, REWIND_ACK_BIAS_TICKS, REWIND_MAX_TICKS, SNAPSHOT_INTERVAL_TICKS,
+};
 
 const SEED: u64 = 20_260_731;
 /// The canonical dev spawn — the same one every other wire suite stands on.
@@ -387,5 +391,347 @@ fn the_throttle_reports_the_frame_that_executes() {
         (f.seq, view),
         (1, Some(1_001)),
         "the throttle reported a frame other than the one it executed"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Slice 5 — the mint. `findings/lagcomp-design-20260818.md` §7.
+//
+// Everything above measures. Everything below spends the measurement, and
+// it exists because the thing that shipped broken here was not a wrong
+// value anywhere — it was a `favour: 0` literal at the one site that mints
+// the number, with the ring, the clamp, the type, `combat::strike`'s
+// rewound scan and `ranged::hitscan`'s all landed, all gated, and all
+// unreachable. Three judge reports in a row ranked it first.
+//
+// So the shape of the gate matters more than usual: an assertion that
+// `favour_for` returns the right number proves the arithmetic and NOT that
+// anything calls it. `the_shard_mints_a_favour_through_the_real_path`
+// is the one that would have been red for those three passes, and it works
+// by reading a counter written from the same binding the command carries
+// (`core.rs` says why it is bound once).
+//
+// What is deliberately NOT gated here: that a rewound body changes a hit.
+// `sim-core/tests/{combat,gun}.rs` own that — a target hit at favour 7 and
+// missed at favour 0, both asserted — and duplicating it against a shard
+// would be a second, weaker copy of somebody else's gate. The chain is
+// mint (here) → clamp (`world.rs`'s `Input` arm) → reader (those suites),
+// and each link is held by the crate that owns it.
+
+/// The four favour counters as one tuple, `reading`'s shape and for its
+/// reason: `(granted, sum, clamped, disagree)`.
+fn favour_reading(s: &ShardStats) -> (u64, u64, u64, u64) {
+    (
+        ShardStats::get(&s.favour_granted),
+        ShardStats::get(&s.favour_sum),
+        ShardStats::get(&s.favour_clamped),
+        ShardStats::get(&s.favour_disagree),
+    )
+}
+
+/// Ack a snapshot and nothing else — a datagram with no frame tail, so it
+/// moves `newest_acked` without buffering anything to execute.
+fn ack_only(core: &mut ShardCore, tick_acked: u64) {
+    let dg = InputDatagram::new(tick_acked as u16, 0, 0);
+    core.push_input(0, &dg);
+}
+
+/// **5 · The formula, exhaustively, at the one function that owns it.**
+///
+/// `favour = min((T − S) + INTERP_DELAY_TICKS − REWIND_ACK_BIAS_TICKS,
+/// REWIND_MAX_TICKS)`, which at the shipped constants is `min(raw + 3, 7)`.
+/// Swept across the clamp rather than sampled either side of it, because
+/// the two defects this catches are an off-by-one at the ceiling and a
+/// dropped term — and a two-point test is green under both if the points
+/// are chosen badly.
+#[test]
+fn the_favour_is_the_measurement_plus_three_clamped_at_seven() {
+    let bias = INTERP_DELAY_TICKS - REWIND_ACK_BIAS_TICKS;
+    assert_eq!(bias, 3, "the shipped constants moved; the sweep below is written against them");
+    for raw in 0..=20u16 {
+        let want = (raw + bias as u16).min(REWIND_MAX_TICKS as u16) as u8;
+        assert_eq!(
+            stats::favour_for(raw, Some(0)),
+            want,
+            "a {raw}-tick-old aim minted the wrong favour"
+        );
+    }
+    // The clamp is reached at raw 4 and never exceeded, which is the whole
+    // promise `REWIND_MAX_TICKS` makes to the victim.
+    assert_eq!(stats::favour_for(3, Some(0)), 6);
+    assert_eq!(stats::favour_for(4, Some(0)), REWIND_MAX_TICKS);
+    assert_eq!(stats::favour_for(AIM_STALE_CEILING_TICKS, Some(0)), REWIND_MAX_TICKS);
+}
+
+/// **5b · The two inputs that mint nothing.** Both are cases where the
+/// server does not know, and a favour of 0 is the pre-lag-compensation sim
+/// bit for bit — so "no measurement" costs the shooter help rather than
+/// handing out an unearned rewind.
+///
+/// The ceiling half is the one with an attacker behind it: `snapshot_ack`
+/// is a client claim, and it is now a claim worth *money* — an hour-old ack
+/// asks for the deepest rewind the shard can give. It gets none.
+#[test]
+fn an_unmeasurable_aim_mints_no_favour() {
+    // Never acked a snapshot this shard sent.
+    assert_eq!(stats::favour_for(9_000, None), 0);
+    // At the ceiling: still believed, so still paid.
+    assert_eq!(
+        stats::favour_for(AIM_STALE_CEILING_TICKS, Some(0)),
+        REWIND_MAX_TICKS,
+        "the ceiling itself must stay inside the paid range, as it is for the statistic"
+    );
+    // One past it, and the worst a forger can reach: nothing.
+    assert_eq!(stats::favour_for(AIM_STALE_CEILING_TICKS + 1, Some(0)), 0);
+    assert_eq!(stats::favour_for(0, Some(1)), 0, "a whole u16 of forged staleness paid out");
+}
+
+/// **6 · The mint reaches the command — through the shard, not a stub.**
+///
+/// **This is the gate the slice exists for.** Under the `favour: 0` literal
+/// that stood at `core.rs` for three passes, every assertion here is red
+/// and every other gate in this repo is green, which is exactly the
+/// arrangement that let a finished feature sit switched off.
+///
+/// It reads `favour_granted`/`favour_sum` rather than the command buffer
+/// because `cmd_buf` is private — and the counter is written from the same
+/// binding `Command::Input` carries, one line apart, so it cannot report a
+/// rewind the sim was not told about.
+#[test]
+fn the_shard_mints_a_favour_through_the_real_path() {
+    let (mut core, stats) = shard();
+    // A fresh aim — one tick of staleness — is still worth three ticks of
+    // rewind, because the client drew its remotes INTERP_DELAY_TICKS back
+    // even on a perfect link. This is the case a "favour == staleness"
+    // mistake gets wrong while looking sane.
+    let raw = measure_one(&mut core, &stats, 1, 1);
+    assert_eq!(raw, 1);
+    assert_eq!(
+        favour_reading(&stats),
+        (1, 4, 0, 0),
+        "the shard executed a frame and granted it no rewind — lag compensation is off"
+    );
+
+    // A slower link: raw 2 ⇒ 5, still under the clamp, so `favour_clamped`
+    // must stay put. A mint that clamped everything would pass the line
+    // above and fail here.
+    let raw = measure_one(&mut core, &stats, 2, 2);
+    assert_eq!(raw, 2);
+    assert_eq!(favour_reading(&stats), (2, 9, 0, 0));
+
+    // Past the clamp: granted 7, and counted as clamped.
+    let raw = measure_one(&mut core, &stats, 3, 9);
+    assert_eq!(raw, 9);
+    assert_eq!(
+        favour_reading(&stats),
+        (3, 16, 1, 0),
+        "a 9-tick-old aim either got more than REWIND_MAX_TICKS or was not counted as clamped"
+    );
+}
+
+/// **6b · A client that has never acked executes its frames and buys
+/// nothing.** The frame still runs — this is not a refusal — and the
+/// counters must show the granted set is empty rather than showing nothing
+/// at all, which is how "the feature is off" and "nobody is playing" get
+/// told apart on `/status.json`.
+#[test]
+fn a_frame_from_an_unacked_client_runs_with_no_favour() {
+    let (mut core, stats) = shard();
+    for _ in 0..40 {
+        tick(&mut core, &stats);
+    }
+    let mut dg = InputDatagram::new(0, 0, 1);
+    dg.push(frame(1)).expect("one frame fits");
+    core.push_input(0, &dg);
+    tick(&mut core, &stats);
+    assert_eq!(
+        ShardStats::get(&stats.aim_stale_unacked),
+        1,
+        "the fixture did not reach the unacked path"
+    );
+    assert_eq!(
+        favour_reading(&stats),
+        (0, 0, 0, 0),
+        "a client with no acked snapshot was granted a rewind"
+    );
+}
+
+/// **7 · A client acking backwards is corrected down to the evidence, and
+/// counted.**
+///
+/// The attack the mint creates: staleness now buys rewind depth, so a
+/// client on a fast link can ack an *old* snapshot to look slow and collect
+/// `REWIND_MAX_TICKS` of peeker's advantage on demand. `newest_acked` is
+/// the server's own record of the newest snapshot it watched this client
+/// ack, so the two readings are independent and the smaller staleness wins
+/// (`findings/lagcomp-design-20260818.md` §6.2's stated rule, built without
+/// the wall clock that bullet asks for — `core.rs::push_input` says why).
+#[test]
+fn an_ack_that_regresses_past_the_band_is_corrected_and_counted() {
+    let (mut core, stats) = shard();
+    let old = advance_to_snapshot(&mut core, &stats);
+    ack_only(&mut core, old);
+    // Walk forward well past the band, acking honestly, so the server's
+    // evidence is unambiguous.
+    let mut newest = old;
+    for _ in 0..5 {
+        newest = advance_to_snapshot(&mut core, &stats);
+        ack_only(&mut core, newest);
+    }
+    assert!(
+        newest - old > FAVOUR_DISAGREE_BAND_TICKS as u64,
+        "the fixture did not open a gap wider than the band"
+    );
+
+    // Now claim the OLD view, which is worth `newest - old` extra ticks of
+    // rewind if believed.
+    let at = core.world.tick;
+    let mut dg = InputDatagram::new(old as u16, 0, 9);
+    dg.push(frame(9)).expect("one frame fits");
+    core.push_input(0, &dg);
+    let before = ShardStats::get(&stats.aim_stale_sum);
+    tick(&mut core, &stats);
+
+    let honest = at - newest;
+    assert_eq!(
+        ShardStats::get(&stats.aim_stale_sum) - before,
+        honest,
+        "the shard measured the claim instead of its own evidence"
+    );
+    let (granted, sum, _, disagree) = favour_reading(&stats);
+    assert_eq!(granted, 1);
+    assert_eq!(
+        sum,
+        stats::favour_for(honest as u16, Some(0)) as u64,
+        "the forged ack bought rewind depth the server had not seen it earn"
+    );
+    assert_eq!(disagree, 1, "the correction was silent");
+}
+
+/// **7b · Reordering is absorbed, and that is what the band is for.**
+///
+/// QUIC datagrams are unordered, so one acking snapshot `N-1` legitimately
+/// lands after one acking `N`; the client has lied about nothing. The claim
+/// is still corrected — the fresher reading is still the true one — but no
+/// accusation is recorded, because a counter that fires on ordinary jitter
+/// is a counter an operator learns to ignore.
+#[test]
+fn a_reordered_ack_is_corrected_without_an_accusation() {
+    let (mut core, stats) = shard();
+    let first = advance_to_snapshot(&mut core, &stats);
+    ack_only(&mut core, first);
+    let second = advance_to_snapshot(&mut core, &stats);
+    ack_only(&mut core, second);
+    assert!(
+        second - first <= FAVOUR_DISAGREE_BAND_TICKS as u64,
+        "consecutive snapshots are {} ticks apart, wider than the band — \
+         this test's premise is gone",
+        second - first
+    );
+
+    let at = core.world.tick;
+    let mut dg = InputDatagram::new(first as u16, 0, 4);
+    dg.push(frame(4)).expect("one frame fits");
+    core.push_input(0, &dg);
+    let before = ShardStats::get(&stats.aim_stale_sum);
+    tick(&mut core, &stats);
+
+    assert_eq!(
+        ShardStats::get(&stats.aim_stale_sum) - before,
+        at - second,
+        "the reordered datagram was measured against its own stale claim"
+    );
+    assert_eq!(
+        ShardStats::get(&stats.favour_disagree),
+        0,
+        "ordinary datagram reordering was logged as an accusation"
+    );
+}
+
+/// **7c · The evidence never makes a client look *staler* than it claims.**
+/// The rule is "the smaller of the two estimates", and a one-directional
+/// implementation is easy to write backwards — `evidence >= claim` keeping
+/// the claim is the whole of it. A client honestly reporting a fresh view
+/// while the server's newest ack is older (its newer acks are still in
+/// flight) must keep its own, fresher number.
+#[test]
+fn the_correction_only_ever_runs_one_way() {
+    let (mut core, stats) = shard();
+    let acked = advance_to_snapshot(&mut core, &stats);
+    ack_only(&mut core, acked);
+    let fresh = advance_to_snapshot(&mut core, &stats);
+    assert!(fresh > acked);
+
+    // Claim the newer snapshot in the same datagram that carries the frame:
+    // `on_acks` runs first, so this is also the ordinary path.
+    let at = core.world.tick;
+    let mut dg = InputDatagram::new(fresh as u16, 0, 3);
+    dg.push(frame(3)).expect("one frame fits");
+    core.push_input(0, &dg);
+    let before = ShardStats::get(&stats.aim_stale_sum);
+    tick(&mut core, &stats);
+    assert_eq!(
+        ShardStats::get(&stats.aim_stale_sum) - before,
+        at - fresh,
+        "a client was charged staleness its own ack disproved"
+    );
+    assert_eq!(ShardStats::get(&stats.favour_disagree), 0);
+}
+
+/// **8 · The disagreement relay has exactly one reader.**
+///
+/// `ack_regressions` is a destructive hand-over: `take_ack_regressions`
+/// zeroes it, so a second caller silently halves the shard's count of the
+/// only lag-compensation signal that accuses anybody, and nothing fails.
+/// That is `CLAUDE.md`'s clean-merge trap in miniature — two lanes each
+/// adding a reader, no conflicting line, a green build and a broken number.
+///
+/// The gate is a grep for the call site, not a value assertion, because the
+/// defect is a call site: a value test passes with one reader and passes
+/// again with two, since each drain is individually correct.
+#[test]
+fn the_disagreement_relay_has_one_reader() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sites = Vec::new();
+    let mut stack = vec![root.join("src")];
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).expect("the server crate has a src/") {
+            let p = e.expect("readable entry").path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if p.extension().is_none_or(|x| x != "rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(&p).expect("readable source");
+            for (i, line) in src.lines().enumerate() {
+                // A CALL site, which is what the defect is. The
+                // declaration is not one, and neither is a doc comment
+                // pointing at the rule — this file's own comment about the
+                // single-consumer contract would otherwise fail the gate
+                // that enforces it. A trailing comment on a real call is
+                // still caught: the line does not START with `//`.
+                let code = line.trim_start();
+                if code.starts_with("//") || code.starts_with("*") {
+                    continue;
+                }
+                if line.contains("take_ack_regressions") && !line.contains("fn take_ack_regressions")
+                {
+                    sites.push(format!("{}:{}", p.display(), i + 1));
+                }
+            }
+        }
+    }
+    assert_eq!(
+        sites.len(),
+        1,
+        "the disagreement relay is drained from {} places, and a destructive \
+         read with two readers loses half of what it counts: {sites:#?}",
+        sites.len()
+    );
+    assert!(
+        sites[0].contains("core.rs"),
+        "the drain moved out of the tick loop that mints the favour: {sites:?}"
     );
 }
