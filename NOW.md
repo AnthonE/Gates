@@ -95,15 +95,22 @@ Remaining — **one item, and it is not a loop's to do:**
 **victim** a fact: `EV_HURT`, a 16-sector world bearing drawn as a fading
 arc. Items 2, 3 and 5 have landed. What is left:
 
-1. **Being shot is silent.** `render/audio.rs`'s `hurt` derives "I was hurt"
-   from a fall in `core.hp`; `Feed::hurt_from()` carries bearing, damage and
-   a hit count and the mixer reads none of it. ⚠ **Sized 2026-08-30: not a
-   one-liner.** Reading `EV_HURT` instead would silence starvation, thirst
-   and the keypad shock — `damage_routes.rs`'s announce column marks those
-   three silent and they are silent *correctly* — so the slice is "every
-   damage route reaches the mixer". `Cue::Hurt` is also non-positional on a
-   120 ms cooldown, so two blows in one tick are one sound whatever feeds
-   it. No camera shake either (§0pvp item 2).
+1. **Being shot is silent** — **half landed 2026-08-30** (hurt weight v0):
+   `sound::hurt::request` takes the **fall and the event**, so the three
+   routes `damage_routes.rs` marks silent stay audible by construction, a
+   blow armor ate whole is no longer silent, and the cue's gain is the
+   blow's weight against `hp_max` instead of a flat 0.80. Eight mutants red;
+   `DECISIONS.md` §open has the knobs. Two residuals, both about the *cue*
+   rather than the routes:
+   · **The mixer still cannot say where.** `Feed` merges a bearing per
+     sector and only the arc reads it. `Cue::Hurt` is `positional: false`
+     with `radius_m: 0`, and turning that on needs a projected position at
+     an invented distance — the bearing is a direction, not a place.
+   · **Two blows in one frame are one voice**, now a heavier one (the
+     damage sums before the weight is taken), which is not two sounds. The
+     120 ms cooldown is per-CUE and binds inside a frame on purpose
+     (`a_cooldown_binds_within_one_frame`), so this is a second row, not a
+     smaller number. No camera shake either (§0pvp item 2).
 2. ~~One arc, latest wins~~ **Landed 2026-08-30** (hurt direction v1):
    `Feed` merges by bearing, `Toast` holds `HURT_ARCS = 3` independent
    clocks, a fourth direction evicts the oldest and never the new blow.

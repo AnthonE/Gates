@@ -651,26 +651,49 @@ pub fn voices(
 
 /// Health, as a change rather than as an event.
 ///
-/// `EV_HEALTH` is absolute and own-fact (`sim_core::world`), so "I was hurt"
-/// is a *fall* in `core.hp`, not a message. Tracked here rather than in the
-/// core because it is a presentation fact: the core is right to publish the
-/// value and wrong to publish a delta nobody but the HUD and this file wants.
+/// `EV_HEALTH` is absolute and own-fact (`sim_core::world`), so a *fall* in
+/// `core.hp` is what every damage route in the sim has in common — the four
+/// that announce and the three `damage_routes.rs` marks silent alike. Tracked
+/// here rather than in the core because it is a presentation fact: the core is
+/// right to publish the value and wrong to publish a delta nobody but the HUD
+/// and this file wants.
 #[derive(Resource, Default)]
 pub struct LastHp(pub u16);
 
-pub fn hurt(net: NonSend<Net>, mut last: ResMut<LastHp>, mut sound: ResMut<Sound>) {
-    let hp = net.session.core.hp;
+/// Being hurt, as a **blow** rather than as a health bar.
+///
+/// Two producers, one voice. The fall carries coverage — see
+/// [`crate::sound::hurt`] for why reading `EV_HURT` alone would silence
+/// starvation, thirst and the keypad shock — and this frame's announced blows
+/// carry the weight. `Feed` is taken immutably, which is the shape
+/// `CLAUDE.md`'s two-drains trap requires of every reader that is not
+/// `feed::drain` itself; scheduling puts this after it.
+pub fn hurt(
+    net: NonSend<Net>,
+    feed: Res<super::feed::Feed>,
+    mut last: ResMut<LastHp>,
+    mut sound: ResMut<Sound>,
+) {
+    let core = &net.session.core;
     // A rise (heal, respawn) and the first message of all are both silent.
     // `last.0 == 0` is "we have never seen one", which a fresh world is.
-    if last.0 > 0 && hp < last.0 {
-        sound.play(Request::own(Cue::Hurt));
+    let fall = if last.0 > 0 {
+        last.0.saturating_sub(core.hp)
+    } else {
+        0
+    };
+    last.0 = core.hp;
+    if let Some(req) = crate::sound::hurt::request(fall, feed.hurt_damage, feed.hurts, core.hp_max)
+    {
+        sound.play(req);
         // **The biggest bump, and theirs is too** (`reference/AUDIO.md` §8's
         // published order: a weapon in play < a bullet past your head <
         // taking damage). Two of these inside two sections is what puts the
-        // score in its top tier.
+        // score in its top tier. It rides the same decision as the cue, so a
+        // blow armor ate whole now tenses the music too — it is the shooting
+        // that matters to the score, not the bookkeeping.
         sound.music.bump(music::BUMP_HURT);
     }
-    last.0 = hp;
 }
 
 /// The ambience bed's level: quiet in the open, louder under trees.

@@ -43,6 +43,11 @@
 // The forest layer — sparse bird calls over the beds. `reference/AUDIO.md`
 // §3's *layers*, as distinct from its beds.
 pub mod birds;
+// What the mixer is told when the health bar moves. Pure, and deliberately
+// takes the *fall* as well as the event: three of the sim's seven damage
+// routes announce nothing, on purpose, and a mixer fed only `EV_HURT` goes
+// silent for all three with every gate green.
+pub mod hurt;
 pub mod mixer;
 // When a song plays and which piece it is. `reference/AUDIO.md` §8 is the
 // design; this is the whole of it.

@@ -91,10 +91,15 @@ pub enum Refused {
 ///
 /// `damage` is the total that arrived from that bearing this frame and
 /// `hits` how many blows it took. Both are kept: `damage` is what the arc's
-/// weight reads, and `hits` is the fact a mixer needs to tell one heavy
-/// blow from three light ones (`NOW.md` §0hrt item 1, unbuilt — the sound
-/// path still derives "I was hurt" from a fall in `core.hp`, which cannot
-/// separate two blows in one tick).
+/// weight reads, and the mixer reads the frame totals beside them —
+/// [`Feed::hurt_damage`] weighs the cue and [`Feed::hurts`] is what tells a
+/// blow from a starve tick, since a metabolic route announces nothing and
+/// has no entry here at all (`crate::sound::hurt`).
+///
+/// **The per-sector split is still the arc's alone.** `Cue::Hurt` is
+/// non-positional and its cooldown is per-cue, so three light blows from
+/// three directions are one voice at the weight of their sum — `NOW.md`
+/// §0hrt item 1 carries what that costs and why it is a second slice.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct Hurt {
     pub from: u8,

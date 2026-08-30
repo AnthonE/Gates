@@ -14,6 +14,7 @@
 //! loop seam) before any number about it is read.
 
 use client::sound::birds::Birds;
+use client::sound::hurt;
 use client::sound::mixer::{Mixer, Request};
 use client::sound::music::{self, Director, Mode, Piece, Tier};
 use client::sound::steps::{remote, surface_cue, Steps, STRIDE_M};
@@ -2483,5 +2484,331 @@ fn the_wolf_registers_are_a_table_pair() {
     assert!(
         Cue::Growl.def().priority < Cue::Hit.def().priority,
         "a growl outranks the hitmarker"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Being hurt (2026-08-30). `sound::hurt` decides what the mixer is told when
+// the health bar moves, and the load-bearing half of it is a NEGATIVE: three
+// of the sim's seven damage routes announce nothing on purpose, so a mixer
+// fed `EV_HURT` alone goes silent for starving, dehydrating and the keypad
+// shock with every gate in this repo green. `damage_routes.rs`'s `ROUTES`
+// table is the sim's half of that split; these are the client's.
+//
+// Every assertion below was run against its own mutant. The three that
+// matter, each proven red before it was written down:
+//
+//   · drop `fall` from the guard  → `a_fall_nobody_announced_is_still_heard`
+//   · read `fall` instead of max  → `a_blow_armor_ate_whole_is_still_heard`
+//   · drop the clamp's floor      → `the_lightest_blow_still_starts_a_voice`
+// ---------------------------------------------------------------------------
+
+/// **The one that cannot regress.** Starving, dehydrating and the keypad
+/// shock debit hp and push no event, by a decision `damage_routes.rs` records
+/// per row with its reason. If the only thing feeding the mixer were the
+/// event, all three would be inaudible — so a fall on its own is a sound,
+/// and it is a sound at the weight the fall itself says.
+#[test]
+fn a_fall_nobody_announced_is_still_heard() {
+    let req = hurt::request(3, 0, 0, 100).expect("a silent route went unheard");
+    assert_eq!(req.cue, Cue::Hurt);
+    assert!(
+        req.gain > 0.0,
+        "a hurt at gain 0 is refused by the mixer, which is silence with extra steps"
+    );
+    // And the big metabolic case is not floored away either.
+    let heavy = hurt::request(40, 0, 0, 100).expect("a large silent debit went unheard");
+    assert!(
+        heavy.gain > req.gain,
+        "starving to death sounds exactly like a scratch"
+    );
+}
+
+/// A blow armor ate completely moves no hp at all, so the fall-watcher this
+/// replaced had nothing to see: being shot while wearing a chest plate made
+/// **no sound**. The event is the only witness, and it is enough.
+#[test]
+fn a_blow_armor_ate_whole_is_still_heard() {
+    let req = hurt::request(0, 28, 1, 100).expect("an absorbed blow was silent");
+    assert_eq!(req.cue, Cue::Hurt);
+    assert!(
+        req.gain > hurt::weight(0, 100),
+        "the blow's own damage was thrown away and the floor used instead"
+    );
+    assert_eq!(
+        req.gain,
+        hurt::weight(28, 100),
+        "an absorbed blow is weighed by what was thrown, not by what landed"
+    );
+}
+
+/// Nothing happened. A heal, a respawn and the first snapshot of a world are
+/// all "no fall, no event", and none of them is an injury.
+#[test]
+fn a_frame_with_neither_is_silent() {
+    assert!(hurt::request(0, 0, 0, 100).is_none());
+    // An event count of zero with residual damage is not a blow either: the
+    // count is the fact, the damage is the detail.
+    assert!(hurt::request(0, 40, 0, 100).is_none());
+}
+
+/// The ordinary case has **both** witnesses and they agree. Reading them as a
+/// sum would double every blow in the game — the two cases above are the only
+/// ones where they disagree, and `max` is right in all three.
+#[test]
+fn the_two_witnesses_are_not_added_up() {
+    let both = hurt::request(20, 20, 1, 100).expect("a landed blow was silent");
+    assert_eq!(
+        both.gain,
+        hurt::weight(20, 100),
+        "one blow was weighed as two"
+    );
+    assert!(both.gain < hurt::weight(40, 100), "the damage was summed");
+}
+
+/// The curve's two ends, and the one that is not obvious: an unspoken health
+/// ceiling weighs **loud**. `hp_max` is zero until the server says otherwise,
+/// and the safe direction for the cue `reference/AUDIO.md` §8 puts above
+/// everything else is full gain, not a division.
+#[test]
+fn the_weight_curve_has_both_ends_nailed_down() {
+    assert_eq!(hurt::weight(0, 100), hurt::HURT_MIN_GAIN);
+    assert_eq!(hurt::weight(9999, 100), 1.0);
+    assert_eq!(
+        hurt::weight(1, 0),
+        1.0,
+        "an unknown ceiling must not silence"
+    );
+    // Monotonic across the interesting middle, and strictly so.
+    let mut prev = hurt::weight(15, 100);
+    for d in 16..=35u16 {
+        let w = hurt::weight(d, 100);
+        assert!(w >= prev, "the weight curve went backwards at {d}");
+        prev = w;
+    }
+    assert!(
+        hurt::weight(15, 100) < hurt::weight(30, 100),
+        "the curve is flat where every melee weapon in the game lives"
+    );
+}
+
+/// **The effect, not just the arithmetic.** A weight is only information if
+/// the shipped weapon table is actually spread across it — a floor set too
+/// high or a `HURT_FULL_FRAC` set too low collapses every blow onto one end
+/// and the pass would have changed nothing while every test above passed.
+///
+/// So this reads `content/weapons.toml` and `content/balance.toml` rather
+/// than restating their numbers: `CLAUDE.md` says twice over that a hand-kept
+/// mirror of another file's surface goes stale, and the melee band is not a
+/// taste call anyway — it is `[bands] ttk_melee` against `player_hp`, which
+/// is why a number typed here would be wrong the day that band moves.
+#[test]
+fn the_shipped_weapons_are_spread_across_the_curve() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("content");
+    let balance = std::fs::read_to_string(root.join("balance.toml")).expect("balance.toml");
+    let hp_max: u16 = balance
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("player_hp"))
+        .and_then(|r| r.split('=').nth(1))
+        .and_then(|v| v.trim().parse().ok())
+        .expect("player_hp is not in content/balance.toml in the shape this gate reads");
+
+    // One `[[weapon]]` block at a time: a row's `kind` and its `damage` are
+    // only a pair inside the block that holds both.
+    let src = std::fs::read_to_string(root.join("weapons.toml")).expect("weapons.toml");
+    let mut rows: Vec<(String, u16)> = Vec::new();
+    let (mut kind, mut damage) = (None::<String>, None::<u16>);
+    for line in src.lines().chain(std::iter::once("[[weapon]]")) {
+        let l = line.trim();
+        if l.starts_with("[[") {
+            if let (Some(k), Some(d)) = (kind.take(), damage.take()) {
+                rows.push((k, d));
+            }
+            continue;
+        }
+        if let Some(v) = l.strip_prefix("kind") {
+            kind = v
+                .split('=')
+                .nth(1)
+                .map(|s| s.trim().trim_matches('"').to_string());
+        } else if let Some(v) = l.strip_prefix("damage") {
+            damage = v.split('=').nth(1).and_then(|s| s.trim().parse().ok());
+        }
+    }
+    assert!(
+        rows.len() >= 8,
+        "the weapon scrape found {} rows - content/weapons.toml changed shape",
+        rows.len()
+    );
+
+    // The throwable is excluded on purpose and asserted separately: a satchel
+    // charge is 475 damage, so it saturates, and that is correct rather than a
+    // gap in the curve.
+    let mut lo = f32::MAX;
+    let mut hi = f32::MIN;
+    let mut ordinary = 0usize;
+    for (k, d) in &rows {
+        let w = hurt::weight(*d, hp_max);
+        assert!(w <= 1.0, "{k} at {d} damage weighs more than full");
+        if k == "throwable" {
+            assert_eq!(
+                w, 1.0,
+                "a {d}-damage charge is not the loudest thing there is"
+            );
+            continue;
+        }
+        ordinary += 1;
+        assert!(
+            w > hurt::HURT_MIN_GAIN,
+            "{k} at {d} damage sits ON the floor - every weapon in the game is as quiet \
+             as a starve tick, so the weight carries no information"
+        );
+        lo = lo.min(w);
+        hi = hi.max(w);
+    }
+    assert!(
+        ordinary >= 7,
+        "only {ordinary} ordinary weapon rows were read"
+    );
+    assert!(
+        hi - lo >= 0.25,
+        "the shipped weapons span {:.3} of the weight curve ({lo:.3}..{hi:.3}) - \
+         a rock and a metal spear sound the same",
+        hi - lo
+    );
+    // …and a metabolic tick is on the other side of the split from all of them.
+    assert!(
+        hurt::weight(2, hp_max) < lo,
+        "a 2-point debit weighs as much as the lightest weapon in the table"
+    );
+}
+
+/// **Through the real mixer, not just the arithmetic.** `Mixer::tick` refuses
+/// any request whose composed gain is not `> 0.0`, so the floor in
+/// `sound::hurt` is not a taste call — remove it and the quietest hurt is not
+/// quiet, it is gone. This is the assertion that catches that, and it catches
+/// it as silence rather than as a number.
+#[test]
+fn the_lightest_blow_still_starts_a_voice() {
+    // The lightest blow there is: an announced hit that cost **nothing** —
+    // armor ate it whole and the event reports no damage. Without the floor
+    // its weight is exactly 0.0, the mixer's `gain > 0.0` refuses it, and the
+    // one case this whole module exists to make audible is the one that
+    // disappears. A one-point debit is not a substitute: it weighs 1/35, which
+    // is quiet and still greater than zero.
+    for (fall, dmg, hits) in [(0u16, 0u16, 1u16), (1, 0, 0)] {
+        let mut m = Mixer::new();
+        let mix = Mix::default();
+        m.push(hurt::request(fall, dmg, hits, 100).expect("the lightest hurt was silent"));
+        let starts = m.tick(16.0, AT_ORIGIN, 0, &mix);
+        assert_eq!(
+            starts.len(),
+            1,
+            "a hurt of fall {fall} / damage {dmg} never reached a voice"
+        );
+        assert_eq!(starts[0].cue, Cue::Hurt);
+        assert!(starts[0].gain > 0.0);
+    }
+}
+
+/// The ceiling did not move. Every hurt in the tree played at the cue table's
+/// 0.80 before this; a full-weight blow still does, so the change opened the
+/// bottom of the range without making anything louder than it was.
+#[test]
+fn a_full_weight_blow_is_exactly_the_old_loudness() {
+    let mut m = Mixer::new();
+    let mix = Mix::default();
+    m.push(hurt::request(0, 999, 1, 100).expect("a lethal blow was silent"));
+    let starts = m.tick(16.0, AT_ORIGIN, 0, &mix);
+    assert_eq!(starts.len(), 1);
+    assert!(
+        (starts[0].gain - Cue::Hurt.def().gain).abs() < 1e-6,
+        "a full-weight hurt is {} and the table says {}",
+        starts[0].gain,
+        Cue::Hurt.def().gain
+    );
+}
+
+/// **One owner for the hurt cue, and the producer must still read both
+/// witnesses.** Everything above this test is arithmetic, and every bit of it
+/// stays green if the Bevy system that calls it stops passing the feed — the
+/// cue would simply go back to being a health bar with a speaker on it, and
+/// no assertion about a pure function can see that. It is a call site rather
+/// than a value, which is `CLAUDE.md`'s single-drain trap one layer out and
+/// the shape [`the_remote_swing_has_a_producer_and_the_local_one_is_not_it`]
+/// already gates for the swing.
+///
+/// Text, because the producer is behind `--features render`.
+#[test]
+fn the_hurt_cue_has_exactly_one_producer_and_it_reads_both_witnesses() {
+    const AUDIO: &str = include_str!("../src/render/audio.rs");
+    const REGISTER: &str = include_str!("../src/render/mod.rs");
+
+    assert!(
+        AUDIO.contains("crate::sound::hurt::request("),
+        "render/audio.rs no longer asks sound::hurt what to play - the split \
+         between the four announcing routes and the three silent ones is back \
+         in a Bevy system where nothing headless can check it"
+    );
+    assert!(
+        REGISTER.contains("audio::hurt,"),
+        "render/mod.rs no longer schedules audio::hurt - the system exists and \
+         never runs, which is silence with a longer fuse"
+    );
+
+    // Both witnesses, by name. Dropping either is a one-word edit that leaves
+    // every test in this file green: without the feed a blow armor ate whole
+    // is silent again and every hurt is the same loudness, and without the
+    // fall the three routes `damage_routes.rs` marks silent go inaudible.
+    for needle in ["feed.hurt_damage", "feed.hurts", "last.0"] {
+        assert!(
+            AUDIO.contains(needle),
+            "render/audio.rs stopped reading `{needle}` - sound::hurt is being \
+             fed a witness it cannot see is missing"
+        );
+    }
+
+    // And nothing else in the client builds a hurt request by hand. A second
+    // producer would bypass the coverage guarantee entirely, and it would do
+    // it without touching a line this file otherwise reads.
+    let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut stack = vec![src_dir];
+    let mut found = 0usize;
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("readable src tree") {
+            let p = entry.expect("readable entry").path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if p.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            // `sound/hurt.rs` is the owner; it is allowed to name the cue.
+            if p.ends_with("hurt.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&p).expect("readable source");
+            for line in text.lines() {
+                assert!(
+                    !line.contains("Request::own(Cue::Hurt")
+                        && !line.contains("Request::at(Cue::Hurt"),
+                    "{} builds a hurt request by hand: {}",
+                    p.display(),
+                    line.trim()
+                );
+                found += line.matches("Cue::Hurt").count();
+            }
+        }
+    }
+    // Anti-vacuity: the scan must actually be walking a tree with the cue in
+    // it, or an empty walk would pass this test forever.
+    assert!(
+        found > 0,
+        "the source walk found no mention of Cue::Hurt at all - it is not \
+         reading the tree it thinks it is"
     );
 }
