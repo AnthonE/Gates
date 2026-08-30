@@ -4,6 +4,7 @@
 //! to: orphan refs, duplicate ids, unknown fields (the never-table at the
 //! schema layer), and band breaks.
 
+use content::schema::WeaponKind;
 use content::Content;
 use std::path::Path;
 
@@ -135,12 +136,117 @@ fn the_headshot_column_reaches_the_sim() {
             w.headshot_mult,
             cc.ranged[idx].headshot_mult
         );
+        assert_eq!(
+            u32::from(cc.ranged[idx].limb_pct),
+            w.limb_pct,
+            "`{}` declares limb_pct {} and the sim's table says {}",
+            w.id,
+            w.limb_pct,
+            cc.ranged[idx].limb_pct
+        );
         checked += 1;
     }
     assert!(
         checked >= 3,
         "the file ships a bow, a crossbow and a revolver: only {checked} \
          ranged rows reached the table, so this passed by finding nothing"
+    );
+}
+
+/// Both ends of the ladder are pinned to a band, and the band is what
+/// stops a data edit from moving the shape of a fight.
+///
+/// **The TTK band says nothing about either end**, which is why this
+/// exists as a second check rather than a comment: `hits_to_kill` is
+/// measured on *body* hits, so `[bands] ttk_firearm` is green whether a
+/// leg is worth 100% or 1% of the column. `balance.rs` refuses a row that
+/// disagrees with `[bands] headshot_mult` / `limb_pct`, and this asserts
+/// the two the shipped file actually carries — so the values are here in
+/// one place rather than spread over eleven rows nobody diffs.
+///
+/// The throwable is skipped by `balance.rs` (a blast has no anatomy) and
+/// carries the identities at both ends; that is asserted too, because
+/// "skipped by the band" and "unset" look identical in a TOML file.
+///
+/// **This check cannot see a weakened predicate**, and that is measured
+/// rather than assumed: `balance.rs`'s `!=` mutated to `<` survived it and
+/// every other gate in the workspace. Asserting that the data agrees with
+/// the band says nothing about what happens when it disagrees, so
+/// `the_body_part_ladder_refuses_what_it_names` is the other half and the
+/// two are only useful together.
+///
+/// Mutant watched red: the shipped `[bands] limb_pct` moved off 50.
+#[test]
+fn the_body_part_ladder_is_the_band_on_every_row() {
+    let c = Content::load_dir(&content_dir()).expect("shipped content must load");
+    let b = &c.balance.bands;
+    assert_eq!(b.headshot_mult, 2, "the head is the reference's x2");
+    assert_eq!(b.limb_pct, 50, "and the leg its x0.5, as a percent");
+    let mut banded = 0;
+    let mut opted_out = 0;
+    for w in &c.weapons {
+        if matches!(w.kind, WeaponKind::Throwable) {
+            assert_eq!(
+                (w.headshot_mult, w.limb_pct),
+                (1, 100),
+                "`{}` is a throwable and must carry both identities",
+                w.id
+            );
+            opted_out += 1;
+            continue;
+        }
+        assert_eq!(
+            (w.headshot_mult, w.limb_pct),
+            (b.headshot_mult, b.limb_pct),
+            "`{}` is off the band",
+            w.id
+        );
+        banded += 1;
+    }
+    assert!(banded >= 10, "only {banded} banded rows: the file shrank");
+    assert_eq!(opted_out, 1, "exactly one throwable ships");
+}
+
+/// The ladder's refusals, driven from the file rather than from the
+/// predicate — because the check above **cannot see a weakened one.**
+///
+/// Measured, and it is the reason this test exists: `balance.rs`'s
+/// `w.limb_pct != bands.limb_pct` mutated to `<` was run and stayed
+/// **green** through every gate in the workspace. Every shipped row
+/// carries exactly the band, so a comparison that only fires *below* it
+/// never fires at all — a row-by-row assertion proves the data agrees with
+/// the band and says nothing about whether disagreeing would be caught.
+/// The only way to ask is to hand the loader a row that disagrees.
+///
+/// Both directions, because they fail for different reasons: 100 is a leg
+/// worth a chest (`Part`'s ordering inverted in data) and 25 is a leg the
+/// band never priced.
+///
+/// Mutants watched red: `!=` → `<` and `!=` → `>` in `balance.rs`, and
+/// each of `validate.rs`'s two bounds dropped.
+#[test]
+fn the_body_part_ladder_refuses_what_it_names() {
+    // The rock is the first weapon row in the file and the only one whose
+    // `damage = 20` line is unique, so it is where every bait below goes.
+    const ROCK: &str = "id = \"item.rock\"\nkind = \"melee\"\ndamage = 20\nstructure = 1\nheadshot_mult = 2\nlimb_pct = 50";
+    let bait = |limb: &str| ROCK.replace("limb_pct = 50", &format!("limb_pct = {limb}"));
+
+    // Above the band: a leg worth as much as the chest above it.
+    refuses("weapons.toml", ROCK, &bait("100"), "band break: limb pct");
+    // Below it: a leg the band never priced.
+    refuses("weapons.toml", ROCK, &bait("25"), "band break: limb pct");
+    // Past the ordering entirely — `validate` refuses this before
+    // `balance` ever sees it, which is the bound that stops a leg from
+    // being worth more than the chest `part_crossed` would have scored.
+    refuses("weapons.toml", ROCK, &bait("101"), "outside 1..=100");
+    // And a leg hit that costs the body nothing.
+    refuses("weapons.toml", ROCK, &bait("0"), "outside 1..=100");
+    // The head's twin, which had no refusal test of its own either.
+    refuses(
+        "weapons.toml",
+        ROCK,
+        &ROCK.replace("headshot_mult = 2", "headshot_mult = 3"),
+        "band break: headshot mult",
     );
 }
 

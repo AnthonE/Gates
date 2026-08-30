@@ -102,6 +102,7 @@ fn gun_fixture() -> sim_core::combat::CombatContent {
         range_mm: 50_000,
         structure: 0,
         headshot_mult: 2,
+        limb_pct: 50,
     };
     c
 }

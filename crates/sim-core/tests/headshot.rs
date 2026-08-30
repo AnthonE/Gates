@@ -1,4 +1,13 @@
-//! A head is worth double, and only where there is a head to hit.
+//! A head is worth double, a leg half, and only where there is one to hit.
+//!
+//! **The ladder, not the head** — since 2026-08-30 (limb band v0). The
+//! head arrived alone and the reduction that made it a boolean is written
+//! into `reference/PROJECTILES.md` §9.4: with a head and a body and
+//! nothing else, "most significant part crossed" is "was the head interval
+//! crossed at all". A third band retires that, so `ranged::head_crossed`
+//! is `ranged::part_crossed` returning a `collide::Part`, and §7's rule is
+//! the derived `Ord` — the `max` over the bands a span touches, never the
+//! one it entered through.
 //!
 //! **The subject is the multiplier's whole route**, from the column in
 //! `content/weapons.toml` to the number a body loses, because every previous
@@ -32,20 +41,66 @@
 //! | `HEAD_BAND_M` moved 0.25 → 0.20 | **nothing** |
 //! | `exit.min(stop_t)` dropped at both call sites | **nothing** |
 //!
+//! Eleven more were run for the leg band, across both crates. Ten were
+//! caught outright and the eleventh is the interesting one:
+//!
+//! | mutant | caught by |
+//! |---|---|
+//! | `bake_ranged` drops `limb_pct` | `content`'s own row |
+//! | `draw` writes `100` instead of the bow's column | the arrow check |
+//! | `Part::Limb` returned before the `hi > limb_hi` test | the shin check |
+//! | `Part`'s variant order reversed | the shin check, the ladder check |
+//! | `/ 100` dropped from `combat::limb` | the percent check |
+//! | `Part::Chest` routed through `combat::limb` | the ladder check |
+//! | `validate`'s `limb_pct == 0` bound dropped | `content`'s refusal row |
+//! | `validate`'s `> 100` bound dropped | `content`'s refusal row |
+//! | `balance`'s `!=` weakened to `<` | **nothing, at first** |
+//! | `balance`'s `!=` weakened to `>` | `content`'s refusal row |
+//! | `balance`'s headshot `!=` weakened to `<` | `content`'s refusal row |
+//!
+//! The ninth is worth carrying past this file. A row-by-row assertion that
+//! every weapon's column equals the band is green under a comparison that
+//! can never fire, because *shipped content agrees with the band* — which
+//! is the whole point of shipping it. Proving a refusal needs a row that
+//! disagrees, so `the_body_part_ladder_refuses_what_it_names` hands the
+//! loader one; it did not exist for `headshot_mult` either, in the eleven
+//! days that column had a band.
+//!
 //! The first survivor is correct and wanted: the band is a knob
 //! (`DECISIONS.md` §open), the checks measure that the sim *implements*
 //! whatever it says, and a gate that reddened when an operator moved a knob
 //! would be a gate arguing with its own registry.
 //!
-//! The second is a real hole and `NOW.md` §0hs carries it. The clip is what
-//! stops a shot that dies in cover from being credited with the head behind
-//! the cover; `a_stop_before_the_head_is_not_a_headshot` pins the predicate
-//! half, and nothing here proves the two resolvers pass a clipped span in.
-//! Closing it needs a world that stops a **rising** shot between a body's
-//! chest and its crown — the crown check's geometry mirrored, with a wall
-//! 0.3 m behind the victim — which is a `tests/chip.rs`-shaped fixture and
-//! not a line. Until then the guard is conservative in the safe direction:
-//! dropping it can only invent headshots, never delete them.
+//! The second is a real hole, `NOW.md` §0hs carries it, and the leg band
+//! sharpened what it would take to close — **the fixture `NOW.md` proposed
+//! cannot be built.** The clip is what stops a shot that dies in cover from
+//! being credited with the part behind the cover, and it only ever matters
+//! on a **rising** span, because clipping trims the far end and only a
+//! rising far end reaches a more significant band. So the world must go
+//! solid *inside* the victim's own cylinder, between the closest approach
+//! and the exit — `nearest_body` filters any body whose closest approach
+//! is past the stop, so the window is the far half of the footprint, 0.4 m
+//! of travel. A plain wall cannot do it: a body standing legally in front
+//! of one has its far edge at the wall's face, so `stop_t` lands on `exit`
+//! and there is nothing to clip. "The victim 0.3 m in front of the wall"
+//! puts a 0.4 m cylinder a quarter-metre inside the slab.
+//!
+//! What *can* reach it is the arrow's own tick boundary. `world_stop`
+//! returns 1.0 with nothing in the way, an arrow's segment is one tick of
+//! flight (1.33 m against a 0.8 m cylinder), and `BodyHit::exit` is
+//! deliberately unclipped — so a steeply-climbing shaft that enters late
+//! in its tick has `exit > 1` and the `min` is load-bearing with no cover
+//! anywhere. `t` is the midpoint of the span, so `exit` can exceed 1 by at
+//! most `1 - enter`: the fixture is an arrow entering near `t = 0.1` with
+//! a chord about 1.8 ticks long, which is a planar speed near 0.44 m/tick
+//! against 1.26 m/tick of climb. That is a `tests/shoot.rs`-shaped fixture
+//! driving `step`, not a line, and it is not in this pass.
+//!
+//! `a_stop_before_the_head_is_not_a_headshot` pins the predicate half at
+//! **both** ends of the ladder now — the head behind cover and the chest
+//! above a clipped shin — and nothing here proves the two resolvers pass a
+//! clipped span in. Until then the guard is conservative in the safe
+//! direction: dropping it can only promote a part, never delete one.
 //!
 //! `tests/gun.rs` and `tests/shoot.rs` stay the suites for *who* is hit;
 //! nothing here re-asserts a hit decision, because the head is a question
@@ -56,14 +111,16 @@
 // sim code.
 #![allow(clippy::disallowed_macros)]
 
-use sim_core::collide::{ColIndex, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M, HEAD_BAND_M};
+use sim_core::collide::{
+    ColIndex, Part, CAPSULE_HEIGHT_M, CAPSULE_RADIUS_M, HEAD_BAND_M, LIMB_BAND_M,
+};
 use sim_core::combat::{self, CombatContent, RangedDef};
 use sim_core::gather::{ItemStack, NO_ITEM};
 use sim_core::input::{InputFrame, BTN_PRIMARY};
 use sim_core::limits::{MAX_ARROWS, MAX_PLAYERS};
 use sim_core::movement::{Body, POS_XZ_Q, POS_Y_Q};
 use sim_core::occupy::Scratch;
-use sim_core::ranged::{self, head_crossed, Arrows, Kill};
+use sim_core::ranged::{self, part_crossed, Arrows, Kill};
 use sim_core::rewind::Rewind;
 use sim_core::spent::SpentArrows;
 use sim_core::terrain;
@@ -111,6 +168,7 @@ fn fixture() -> CombatContent {
         range_mm: 50_000,
         structure: 0,
         headshot_mult: 2,
+        limb_pct: 50,
     };
     c.ranged[BOW as usize] = RangedDef {
         damage: 30,
@@ -120,6 +178,7 @@ fn fixture() -> CombatContent {
         range_mm: 60_000,
         structure: 0,
         headshot_mult: 2,
+        limb_pct: 50,
     };
     c.ammo[ARROW as usize] = sim_core::combat::AmmoDef {
         speed_mmpt: 1333,
@@ -255,16 +314,18 @@ fn run_of(rows: &[(f32, u16)], dmg: u16) -> (usize, usize) {
     }
 }
 
-/// **The band is 25 cm tall and it is the top 25 cm of a 1.7 m body**, and
-/// both halves of that are measured off the sim rather than asserted from
-/// the constant that produced them.
+/// **The whole ladder, measured off the sim rather than asserted from the
+/// constants that produced it**: 85 cm of leg at half, 60 cm of torso at
+/// full, 25 cm of head at double, and 1.7 m of body when you add them up.
 ///
 /// A shot is fixed in space and a body walks down through it. What comes
-/// back is three runs: 20 damage while the line is in the torso, 40 while
-/// it is in the head, and nothing once it clears the crown. The height of
-/// the doubled run is `HEAD_BAND_M`; the height of the two together is
-/// `CAPSULE_HEIGHT_M`; and the doubled run must sit at the **top**, which
-/// is the assertion that separates a head from a shin.
+/// back is four runs: nothing while the line is under the soles, 10 while
+/// it is in the legs, 20 in the torso, 40 in the head, and nothing again
+/// once it clears the crown. The height of the doubled run is
+/// `HEAD_BAND_M`, the halved run is `LIMB_BAND_M`, the three together are
+/// `CAPSULE_HEIGHT_M` — and the **order** is the assertion that separates
+/// a head from a shin, which is the one thing a ladder can get wrong that
+/// a pair of bands could not.
 ///
 /// **Nothing here knows the pitch, the eye or the muzzle.** That is what
 /// makes it a second source: `arrival = muzzle − feet` never appears, so a
@@ -279,7 +340,7 @@ fn run_of(rows: &[(f32, u16)], dmg: u16) -> (usize, usize) {
 /// both. What it catches is the sim disagreeing with the knob, which is the
 /// only thing a knob's gate should catch.
 #[test]
-fn the_doubled_run_is_the_top_quarter_metre_of_the_body() {
+fn the_three_runs_are_the_ladder_measured_off_the_body() {
     let cc = fixture();
     let rows = sweep(&cc, GUN, ROUND, 10.0);
 
@@ -305,9 +366,31 @@ fn the_doubled_run_is_the_top_quarter_metre_of_the_body() {
          that hits nothing between the chest and the head"
     );
 
+    // The third rung, and it is the one that turned this sweep from two
+    // runs into a ladder: half of 20 is 10, the fixture's `limb_pct` of
+    // 50 applied to its `damage` of 20.
+    let (limb_i, limb_n) = run_of(&rows, 10);
+    assert!(
+        limb_n > 0,
+        "and on a leg somewhere: no halved run means `limb_pct` never \
+         reached the sim, which is the `headshot_mult` bug one column over"
+    );
+    assert!(
+        limb_i < body_i,
+        "the halved band must be at the BOTTOM of the body: halved run \
+         starts at {limb_i}, torso run at {body_i}"
+    );
+    assert_eq!(
+        body_i,
+        limb_i + limb_n,
+        "and contiguous with the torso — a gap means a placement between \
+         the hip and the chest that is neither"
+    );
+
     let band_m = head_n as f32 * POS_Y_Q;
-    let body_m = (body_n + head_n) as f32 * POS_Y_Q;
-    println!("measured band {band_m:.3} m, measured body {body_m:.3} m");
+    let leg_m = limb_n as f32 * POS_Y_Q;
+    let body_m = (limb_n + body_n + head_n) as f32 * POS_Y_Q;
+    println!("measured head band {band_m:.3} m, leg band {leg_m:.3} m, body {body_m:.3} m");
     // `max` of the two differences rather than `abs`: wall 1's float set
     // is `+ − × ÷ sqrt min max clamp floor-by-cast`, and it binds this
     // crate's tests too.
@@ -316,13 +399,19 @@ fn the_doubled_run_is_the_top_quarter_metre_of_the_body() {
         "the doubled run is {band_m:.3} m and HEAD_BAND_M says {HEAD_BAND_M}"
     );
     assert!(
+        (leg_m - LIMB_BAND_M).max(LIMB_BAND_M - leg_m) <= POS_Y_Q * 1.5,
+        "the halved run is {leg_m:.3} m and LIMB_BAND_M says {LIMB_BAND_M}"
+    );
+    assert!(
         (body_m - CAPSULE_HEIGHT_M).max(CAPSULE_HEIGHT_M - body_m) <= POS_Y_Q * 1.5,
-        "the whole hittable run is {body_m:.3} m and CAPSULE_HEIGHT_M says \
+        "the three runs together are {body_m:.3} m and CAPSULE_HEIGHT_M says \
          {CAPSULE_HEIGHT_M}"
     );
     // Above the crown and below the feet, nothing — or the runs above are
-    // the middle of something larger and mean nothing.
-    assert_eq!(rows[body_i - 1].1, 0, "clear air below the feet");
+    // the middle of something larger and mean nothing. **This line read
+    // `rows[body_i - 1] == 0` until the leg band landed**, and it was the
+    // check that noticed: what sits under the torso is no longer clear air.
+    assert_eq!(rows[limb_i - 1].1, 0, "clear air below the feet");
     assert_eq!(rows[head_i + head_n].1, 0, "clear air above the crown");
 }
 
@@ -384,11 +473,18 @@ fn an_arrow_carries_the_bows_multiplier_off_the_string() {
     let rows = sweep(&cc, GUN, ROUND, 10.0);
     let (body_i, body_n) = run_of(&rows, 20);
     let (head_i, head_n) = run_of(&rows, 40);
-    assert!(body_n > 0 && head_n > 0);
+    let (limb_i, limb_n) = run_of(&rows, 10);
+    assert!(body_n > 0 && head_n > 0 && limb_n > 0);
 
+    // 60 / 30 / 15: the bow's 30 doubled, taken plain, and halved. The
+    // third row is the one that makes this a **route** check for the new
+    // column rather than a second copy of the old one — `Arrow::limb_pct`
+    // is copied at the draw and read a dozen ticks later, so a bow that
+    // dropped it at the string would still deal 60 and 30 here.
     for (feet, expect) in [
         (rows[head_i + head_n / 2].0, 60u16),
         (rows[body_i + body_n / 2].0, 30),
+        (rows[limb_i + limb_n / 2].0, 15),
     ] {
         let mut players = Box::new([Player::default(); MAX_PLAYERS]);
         players[0] = shooter(1, 0.0, 400.0, 0.0, BOW, ARROW, LEVEL);
@@ -406,6 +502,12 @@ fn an_arrow_carries_the_bows_multiplier_off_the_string() {
             arrows.entries().next().unwrap().head_mult,
             2,
             "the shaft must carry the bow's column, not a default"
+        );
+        assert_eq!(
+            arrows.entries().next().unwrap().limb_pct,
+            50,
+            "and the other end of the ladder with it — 100 is the identity, \
+             so a dropped column is a shaft that never discounts a leg"
         );
 
         let mut sc = Scratch::barren();
@@ -464,19 +566,132 @@ fn the_band_is_closed_at_both_rails() {
         let hi = feet_mm + CAPSULE_HEIGHT_M * 1000.0;
         // A stationary "segment": the same altitude at both ends, so the
         // span is one point and the check is the rail and nothing else.
-        let at = |y: f32| head_crossed(y, 0.0, feet_mm, 0.0, 1.0);
+        let at = |y: f32| part_crossed(y, 0.0, feet_mm, 0.0, 1.0);
 
-        assert!(at(lo), "the lower rail itself is a head (at {feet_mm} mm)");
-        assert!(at(hi), "the crown itself is a head (at {feet_mm} mm)");
-        assert!(at((lo + hi) * 0.5), "the middle of the band is a head");
-        assert!(!at(lo - eps), "{eps} mm under the band is not");
-        assert!(!at(hi + eps), "{eps} mm over the crown is not");
-        assert!(!at(feet_mm), "the feet are not a head");
-        assert!(
-            !at(feet_mm + CAPSULE_HEIGHT_M * 0.5 * 1000.0),
-            "and the navel is not"
+        assert_eq!(
+            at(lo),
+            Part::Head,
+            "the lower rail itself is a head (at {feet_mm} mm)"
+        );
+        assert_eq!(
+            at(hi),
+            Part::Head,
+            "the crown itself is a head (at {feet_mm} mm)"
+        );
+        assert_eq!(
+            at((lo + hi) * 0.5),
+            Part::Head,
+            "the middle of the band is a head"
+        );
+        assert_eq!(
+            at(lo - eps),
+            Part::Chest,
+            "{eps} mm under the band is the chest"
+        );
+        // Over the crown is the **fallback**, and asserting it by name is
+        // what keeps the fallback honest: the three bands do not tile the
+        // cylinder's complement, so an altitude with no part is scored at
+        // the identity rather than at the nearest band. A mutant that made
+        // `Part::Limb` the fallback would deal half damage to a shot that
+        // sailed over a head, and only this line would see it.
+        assert_eq!(
+            at(hi + eps),
+            Part::Chest,
+            "{eps} mm over the crown is no part at all"
         );
     }
+}
+
+/// The leg band's two rails, exactly, off the published constant — the
+/// crown check's twin at the other end of the body, and written second
+/// because the leg band is what turned a boolean into an ordering.
+///
+/// **Closed at both rails for the same reason the head is**: the band is
+/// the bottom of a body, so its lower rail is the sole of the foot and its
+/// upper rail is the hip. A hair over the hip is the chest.
+///
+/// Mutants watched red: `>=` → `>` at the lower rail (the feet stop being
+/// a leg), `>` → `>=` at `hi > limb_hi` (the hip stops being a leg), and
+/// `LIMB_BAND_M` read off the crown rather than off the feet.
+#[test]
+fn the_leg_band_is_closed_at_both_rails() {
+    for (feet_mm, eps) in [(0.0f32, 0.001f32), (400_000.0, 1.0)] {
+        let hip = feet_mm + LIMB_BAND_M * 1000.0;
+        let at = |y: f32| part_crossed(y, 0.0, feet_mm, 0.0, 1.0);
+
+        assert_eq!(
+            at(feet_mm),
+            Part::Limb,
+            "the sole itself is a leg (at {feet_mm} mm)"
+        );
+        assert_eq!(
+            at(hip),
+            Part::Limb,
+            "the hip itself is a leg (at {feet_mm} mm)"
+        );
+        assert_eq!(
+            at(feet_mm + LIMB_BAND_M * 500.0),
+            Part::Limb,
+            "the knee is a leg"
+        );
+        assert_eq!(
+            at(hip + eps),
+            Part::Chest,
+            "{eps} mm over the hip is the chest"
+        );
+        // Under the sole is the fallback again, and it is the half a
+        // player can actually reach: a shot that passes under a body is
+        // refused as a hit long before this is asked (`nearest_body` has
+        // its own vertical test), so what this pins is that the predicate
+        // does not *invent* a leg out of an altitude below the feet.
+        assert_eq!(
+            at(feet_mm - eps),
+            Part::Chest,
+            "{eps} mm under the sole is no part at all"
+        );
+    }
+}
+
+/// §7's inversion, stated at the band that made it necessary: a line that
+/// crosses a shin **and** a chest is a chest hit.
+///
+/// **This is the assertion the whole `Part` type exists for.** With two
+/// parts, "most significant part crossed" reduced to a boolean and the
+/// only way to get it wrong was to ask about the closest approach. With
+/// three, a span can touch two bands neither of which is the head, and
+/// first-intersection and most-significant now disagree in the direction
+/// that reads as the game cheating — a visible torso saved by a leg in
+/// front of it (`reference/PROJECTILES.md` §7 says they inverted this on
+/// purpose).
+///
+/// Mutants watched red: `Part::Limb` returned before the `hi > limb_hi`
+/// check (every graze becomes a leg), and the `Ord` derive's variant order
+/// reversed (the ladder inverts and this reads `Limb`).
+#[test]
+fn a_shin_on_the_way_into_a_chest_is_a_chest_hit() {
+    let feet_mm = 400_000.0f32;
+    let hip = feet_mm + LIMB_BAND_M * 1000.0;
+    // Enters at the ankle, leaves a clear 200 mm above the hip.
+    let oy = feet_mm + 100.0;
+    let sy = hip + 200.0 - oy;
+    assert_eq!(
+        part_crossed(oy, sy, feet_mm, 0.0, 0.0),
+        Part::Limb,
+        "the entry alone is a leg, so a first-intersection rule would score one"
+    );
+    assert_eq!(
+        part_crossed(oy, sy, feet_mm, 0.0, 1.0),
+        Part::Chest,
+        "and the span rule scores the chest the line reached"
+    );
+    // The same line carried on into the skull is a headshot, not a chest —
+    // the ordering is a ladder and not a pair of special cases.
+    let sy_head = feet_mm + CAPSULE_HEIGHT_M * 1000.0 - oy;
+    assert_eq!(
+        part_crossed(oy, sy_head, feet_mm, 0.0, 1.0),
+        Part::Head,
+        "a shin-to-skull line is a headshot"
+    );
 }
 
 /// A shot that climbs into the head **on its way through the body** is a
@@ -502,12 +717,14 @@ fn a_climb_through_the_body_counts_the_head_it_left_by() {
     let sy = 600.0;
     let mid = oy + sy * 0.5;
     assert!(mid < head_lo, "the closest approach must be a chest hit");
-    assert!(
-        !head_crossed(oy, sy, feet_mm, 0.5, 0.5),
+    assert_eq!(
+        part_crossed(oy, sy, feet_mm, 0.5, 0.5),
+        Part::Chest,
         "and a closest-approach-only rule must call it a chest hit"
     );
-    assert!(
-        head_crossed(oy, sy, feet_mm, 0.0, 1.0),
+    assert_eq!(
+        part_crossed(oy, sy, feet_mm, 0.0, 1.0),
+        Part::Head,
         "while the span rule sees the head the line left by"
     );
 }
@@ -528,18 +745,38 @@ fn a_stop_before_the_head_is_not_a_headshot() {
     let oy = head_lo - 500.0;
     let sy = 600.0;
     // Unclipped, the line reaches the band.
-    assert!(head_crossed(oy, sy, feet_mm, 0.0, 1.0));
+    assert_eq!(part_crossed(oy, sy, feet_mm, 0.0, 1.0), Part::Head);
     // Stopped at the chest, it does not.
-    assert!(
-        !head_crossed(oy, sy, feet_mm, 0.0, 0.4),
+    assert_eq!(
+        part_crossed(oy, sy, feet_mm, 0.0, 0.4),
+        Part::Chest,
         "a span clipped before the band must not be a head"
     );
     // And a stop before the body was even entered is not a hit's question
     // at all — the guard, so a caller's `exit.min(stop_t)` going negative
     // relative to `enter` cannot read as a crossing.
-    assert!(
-        !head_crossed(oy, sy, feet_mm, 0.6, 0.4),
+    assert_eq!(
+        part_crossed(oy, sy, feet_mm, 0.6, 0.4),
+        Part::Chest,
         "an inverted span is not a crossing"
+    );
+    // The same clip at the other end of the ladder, and it is the half a
+    // world can actually produce: a span that starts at a shin and would
+    // climb into a chest, stopped inside the leg, is a **leg** hit. The
+    // head half needs cover between a chest and a crown; this one needs
+    // only the tick boundary an arrow's own segment imposes, which is
+    // where `stop_t` is 1.0 by default (`ranged::world_stop`).
+    let ankle = feet_mm + 100.0;
+    let rise = LIMB_BAND_M * 1000.0 + 400.0;
+    assert_eq!(
+        part_crossed(ankle, rise, feet_mm, 0.0, 1.0),
+        Part::Chest,
+        "unclipped, the line reaches the chest"
+    );
+    assert_eq!(
+        part_crossed(ankle, rise, feet_mm, 0.0, 0.4),
+        Part::Limb,
+        "clipped inside the leg, it is a leg"
     );
 }
 
@@ -614,6 +851,82 @@ fn the_multiplier_saturates_and_never_wraps() {
         "and 80 000 saturates rather than becoming 14 464"
     );
     assert_eq!(combat::headshot(u16::MAX, u16::MAX), u16::MAX);
+}
+
+/// The other end's arithmetic, and the two edges it has that a multiplier
+/// does not: a floor and an identity that is 100 rather than 1.
+///
+/// **The floor is real and is written down rather than guarded**, which is
+/// a decision. `limb(1, 50)` is 0 — a hit that spends a round, pushes
+/// `EV_HIT` and moves no hp — and the alternative, a `.max(1)` when the
+/// raw is nonzero, would be a number invented in code that no band, no
+/// content row and no operator ever spoke. `validate` refuses `damage ==
+/// 0` and the smallest shipped weapon is the rock's 20, so the smallest
+/// shipped leg hit is 10; the day a one-damage weapon is priced, this line
+/// is what says the cost was known.
+///
+/// Mutants watched red: `/ 100` dropped (the identity becomes ×100),
+/// `min` dropped from the clamp (65 535 × 100 wraps), and `pct` and `raw`
+/// swapped at the call site in `part_damage`.
+#[test]
+fn the_leg_percent_floors_and_never_wraps() {
+    assert_eq!(combat::limb(20, 50), 10);
+    assert_eq!(combat::limb(20, 100), 20, "100 is the identity");
+    assert_eq!(combat::limb(0, 50), 0, "nothing halved is nothing");
+    assert_eq!(
+        combat::limb(1, 50),
+        0,
+        "and the floor is a zero, on purpose"
+    );
+    assert_eq!(
+        combat::limb(3, 50),
+        1,
+        "3 halves to 1 and not to 2 — floored"
+    );
+    assert_eq!(
+        combat::limb(u16::MAX, u16::MAX),
+        u16::MAX,
+        "a pct `validate` refuses still saturates rather than wrapping"
+    );
+}
+
+/// The one door, and that every rung goes through it.
+///
+/// **`part_damage` is the reason a third rung did not double the number of
+/// places that can disagree.** `ranged` resolves a shot twice — an arrow
+/// in `step`, a beam in `hitscan` — and the head multiplier had to be
+/// remembered at both; the trap list's own entry for this repo is a verb
+/// whose validation and mutation drifted apart across call sites. So the
+/// ladder is asserted here as a table, and the two call sites are asserted
+/// to *reach* it by `the_three_runs_are_the_ladder_measured_off_the_body`
+/// (the beam) and `an_arrow_carries_the_bows_multiplier_off_the_string`
+/// (the shaft).
+///
+/// Mutants watched red: `Part::Chest` routed to `limb` (a chest hit is
+/// halved), `Part::Limb` routed to `headshot` (a leg hit is doubled by a
+/// percent read as a multiplier — 20 × 50 = 1000), and the `head_mult` and
+/// `limb_pct` arguments transposed.
+#[test]
+fn the_ladder_is_one_door_and_the_chest_is_the_identity() {
+    for (part, expect) in [(Part::Head, 40u16), (Part::Chest, 20), (Part::Limb, 10)] {
+        assert_eq!(
+            combat::part_damage(20, part, 2, 50),
+            expect,
+            "{part:?} on a 20-damage weapon at ×2 / 50%"
+        );
+    }
+    // The identities together: a weapon that opts out of the ladder at
+    // both ends deals its column whatever it hits, which is what the
+    // satchel's row says in content.
+    for part in [Part::Head, Part::Chest, Part::Limb] {
+        assert_eq!(
+            combat::part_damage(20, part, 1, 100),
+            20,
+            "{part:?} with both identities must be the raw column"
+        );
+    }
+    // And the ordering is a ladder, not three unrelated cases.
+    assert!(Part::Head > Part::Chest && Part::Chest > Part::Limb);
 }
 
 /// The altitude of the sim's own shot line at `dist`, measured by walking a

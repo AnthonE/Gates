@@ -108,6 +108,7 @@ fn bow_fixture() -> CombatContent {
         range_mm: 60_000,
         structure: 0,
         headshot_mult: 2,
+        limb_pct: 50,
     };
     // The ballistics belong to the round now (`reference/PROJECTILES.md`
     // §9.3), so the fixture arms the arrow rather than the bow.
@@ -324,8 +325,17 @@ fn a_trunk_stops_the_shot_and_the_body_behind_it_lives() {
         let (hp_open, spawned_open, _) =
             shoot_through(seed, &mut barren.occupants(), &s, STANDOFF_M, STANDOFF_M);
         assert!(spawned_open, "seed {seed}: the control shot never spawned");
+        // **85 and not 70, since the leg band landed (2026-08-30).** The
+        // number moved because the shot did not: `bow_fixture`'s round
+        // drops 22 mm/tick² and takes ~7.5 ticks to cross the standoff, so
+        // it arrives roughly 0.6 m below the muzzle's line and lands under
+        // `collide::LIMB_BAND_M` — a leg hit, and `limb_pct = 50` halves
+        // the bow's 30. The fixture's geometry is deliberately untouched:
+        // moving a target to keep a number is how a real behaviour change
+        // gets hidden, and what this check needs is that the control shot
+        // *landed*, which 85 says exactly as well as 70 did.
         assert_eq!(
-            hp_open, 70,
+            hp_open, 85,
             "seed {seed}: the control shot did not land, so the blocked case \
              proves nothing about the trunk"
         );
@@ -429,7 +439,10 @@ fn an_arrow_in_the_open_lands_and_is_announced() {
         );
         hits += events.entries().iter().filter(|e| e.code == EV_HIT).count();
     }
-    assert_eq!(players[1].hp, 70, "the arrow did not take its 30");
+    // The bow's 30, halved by `limb_pct` — see the note in
+    // `a_trunk_stops_the_shot_and_the_body_behind_it_lives`: this fixture's
+    // arrow drops about 0.6 m over the 10 m and lands on the legs.
+    assert_eq!(players[1].hp, 85, "the arrow did not take its half of 30");
     assert_eq!(hits, 1, "exactly one EV_HIT for one arrow");
 }
 

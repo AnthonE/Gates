@@ -153,6 +153,12 @@ pub fn check(c: &Content) -> Result<Anchors, String> {
                 w.id, w.headshot_mult, bands.headshot_mult
             ));
         }
+        if w.limb_pct != bands.limb_pct {
+            return Err(format!(
+                "band break: limb pct on `{}` is {}, the band says exactly {}",
+                w.id, w.limb_pct, bands.limb_pct
+            ));
+        }
         for a in &c.armors {
             let with = hits_to_kill(hp, w.damage, a.reduction_pct);
             if with - base > bands.armor_extra_hits_max {

@@ -419,6 +419,20 @@ pub fn structural(c: &Content) -> Result<(), String> {
         if w.damage == 0 || w.headshot_mult == 0 || w.rate_per_min == 0 {
             return Err(format!("weapon `{}`: zero damage/mult/rate", w.id));
         }
+        // Both ends of the ladder, and the bounds are not symmetric. Zero
+        // is a leg hit that costs the body nothing — a hit that announces
+        // itself on `EV_HIT`, spends the round and does not move the hp,
+        // which reads to the player as the game losing the shot. Above
+        // 100 is a leg worth more than the chest above it, which inverts
+        // `Part`'s ordering in data: `part_crossed` would still score the
+        // chest, correctly, and the shooter would be punished for the
+        // better hit.
+        if w.limb_pct == 0 || w.limb_pct > 100 {
+            return Err(format!(
+                "weapon `{}`: limb_pct is {}, outside 1..=100",
+                w.id, w.limb_pct
+            ));
+        }
         // A weapon with no reach cannot hit anything, and since wire v54 it
         // is also unsendable: a firearm's `EV_SHOT` carries `range_m` as a
         // reach in decimetres, and the encoder refuses an instant shot whose

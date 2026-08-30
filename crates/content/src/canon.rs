@@ -119,6 +119,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(w.damage);
         h.u(w.structure);
         h.u(w.headshot_mult);
+        h.u(w.limb_pct);
         h.u(w.rate_per_min);
         h.u(w.range_m);
         // The round list walks in **declared order, not sorted**, and that
@@ -282,6 +283,7 @@ pub fn hash(c: &Content) -> u64 {
         h.u(pair[1]);
     }
     h.u(b.headshot_mult);
+    h.u(b.limb_pct);
     h.u(b.armor_extra_hits_max);
     h.u(b.wall_breach_swings_min);
     h.u(b.upkeep_solo_daily_max_min);

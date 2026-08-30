@@ -63,11 +63,17 @@ pub const CAPSULE_HEIGHT_M: f32 = 1.7;
 /// headshot v0; `reference/PROJECTILES.md` §9.4 is the design).
 ///
 /// **A band and not a second collider**, because the body is one cylinder
-/// and a second one buys nothing a band does not: with exactly two parts,
-/// §7's *most significant part along the segment* rule reduces to "was the
-/// head interval crossed at all", which is an interval overlap. `ranged::
-/// head_crossed` is that overlap and `ranged::nearest_body` hands it the
-/// span the shot spent inside the body.
+/// and a second one buys nothing a band does not: a second collider needs
+/// its own radius, its own entry solve and its own place in the hit
+/// decision, and answers no question three bands cannot.
+///
+/// ⚠ **The reduction this doc used to rest on is retired.** It said that
+/// with exactly two parts §7's *most significant part along the segment*
+/// rule collapses to "was the head interval crossed at all" — true, and
+/// false the moment [`LIMB_BAND_M`] landed beside it. `ranged::part_crossed`
+/// is the ordering that replaced it and [`Part`] is what it returns;
+/// `ranged::nearest_body` still hands it the span the shot spent inside
+/// the body.
 ///
 /// 0.25 of 1.7 is 14.7% of stature, a shade over a real head's ~13%, and
 /// the generosity is deliberate — the reference rebuilt hit detection
@@ -76,6 +82,55 @@ pub const CAPSULE_HEIGHT_M: f32 = 1.7;
 /// a level shot between two bodies standing on the same ground is a
 /// headshot, which is the property that makes aim worth anything.
 pub const HEAD_BAND_M: f32 = 0.25;
+/// The legs, as a band off the **bottom** of the same cylinder: a hit
+/// whose line crosses `[0, LIMB_BAND_M]` above the feet and reaches
+/// nothing higher is worth the weapon's `limb_pct` (`DECISIONS.md` §open,
+/// limb band v0; `reference/PROJECTILES.md` §0 and §7 are the design).
+///
+/// **The third part is what makes [`Part`] an ordering rather than a
+/// boolean.** With a head and a body, "most significant part crossed"
+/// reduced to "was the head interval crossed at all" ([`HEAD_BAND_M`]);
+/// with a third band under the chest the reduction stops working, because
+/// a span that misses the head still has two answers. §7's rule is then
+/// literally what [`Part`]'s `Ord` says: take the *maximum* significance
+/// over the bands the span touches, never the first one entered.
+///
+/// 0.85 is exactly half of [`CAPSULE_HEIGHT_M`], and on a 1.7 m body the
+/// hip sits at 0.80–0.90 m, so half the cylinder is the legs to within
+/// the quantization the wire already imposes on a foot. It is a *band*
+/// and not an arm: a cylinder cannot tell an arm from the chest it hangs
+/// beside, and inventing a lateral test would be the second hit model
+/// `combat.rs` refuses for melee. The reference's own bow figures spread
+/// wider than a clean ×2/×1/×0.5 (`PROJECTILES.md` §0), so the ratio is
+/// theirs and the geometry is ours.
+pub const LIMB_BAND_M: f32 = 0.85;
+
+/// Which body part a shot is scored against, **least significant first**,
+/// so the derived `Ord` *is* `reference/PROJECTILES.md` §7's rule: a
+/// segment that touches several bands is scored at the `max`, never at
+/// the one it entered through.
+///
+/// That inversion is the whole reason §7 exists. First-intersection is
+/// what a raycast hands you and it is the wrong answer — limbs are in
+/// front of torsos constantly, so a shot that clips a shin on its way
+/// into a chest must not be a shin hit. Reading it off `Ord` rather than
+/// off a chain of `if`s means the next part cannot be inserted in the
+/// wrong place without moving this list, which is the ordering itself.
+///
+/// [`Chest`](Part::Chest) is the identity and the fallback: it is what a
+/// span that touches no band at all is scored as, which is exactly what
+/// shipped before there were three parts (a `head_crossed` of `false` was
+/// the raw damage). A degenerate span therefore costs the shooter
+/// nothing and pays them nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Part {
+    /// The legs: `[0, LIMB_BAND_M]` above the feet.
+    Limb,
+    /// Everything between the legs and the head — and the fallback.
+    Chest,
+    /// `[CAPSULE_HEIGHT_M - HEAD_BAND_M, CAPSULE_HEIGHT_M]` above the feet.
+    Head,
+}
 /// Edge-piece slab thickness (scene.js WALL_T, now sim truth).
 pub const WALL_THICKNESS_M: f32 = 0.24;
 /// Doorway post width from each end of the edge; the opening between is
