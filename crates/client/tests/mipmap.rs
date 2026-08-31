@@ -22,7 +22,9 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::image::Image;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use client::render::mipmap::{chain, chain_bytes, levels, wants, Filter};
+use client::render::mipmap::{
+    chain, chain_bytes, coverage, is_translucent, levels, wants, Filter, MASK_CUT,
+};
 
 // ---------------------------------------------------------------------------
 // Shape: the chain is complete, and it says how long it is.
@@ -242,16 +244,23 @@ fn the_linear_filter_is_a_plain_average() {
 #[test]
 fn the_filter_is_picked_from_the_path_then_the_format() {
     use TextureFormat::{Rgba8Unorm, Rgba8UnormSrgb};
-    for (path, format, want) in [
-        ("textures/rock_albedo.jpg", Rgba8UnormSrgb, Filter::Srgb),
-        ("textures/rock_normal.jpg", Rgba8Unorm, Filter::Normal),
-        ("textures/rock_rough.jpg", Rgba8Unorm, Filter::Linear),
-        ("textures/rock_ao.jpg", Rgba8Unorm, Filter::Linear),
+    for (path, format, translucent, want) in [
+        ("textures/rock_albedo.jpg", Rgba8UnormSrgb, false, Filter::Srgb),
+        ("textures/rock_normal.jpg", Rgba8Unorm, false, Filter::Normal),
+        ("textures/rock_rough.jpg", Rgba8Unorm, false, Filter::Linear),
+        ("textures/rock_ao.jpg", Rgba8Unorm, false, Filter::Linear),
         // A normal map that somehow arrived sRGB is still a normal map. The
         // path is the stronger statement.
-        ("textures/grass_normal.jpg", Rgba8UnormSrgb, Filter::Normal),
+        ("textures/grass_normal.jpg", Rgba8UnormSrgb, false, Filter::Normal),
+        // The cutout. It is an sRGB albedo like the first row and differs only
+        // by carrying alpha, which is measured and not guessed.
+        ("textures/grass_card_albedo.png", Rgba8UnormSrgb, true, Filter::Mask),
     ] {
-        assert_eq!(Filter::pick(path, format), want, "{path} picked wrong");
+        assert_eq!(
+            Filter::pick(path, format, translucent),
+            want,
+            "{path} picked wrong"
+        );
     }
 }
 
@@ -322,4 +331,124 @@ fn flat_image(w: u32, h: u32, format: TextureFormat) -> Image {
         format,
         RenderAssetUsages::RENDER_WORLD,
     )
+}
+
+// ---------------------------------------------------------------------------
+// The cutout: coverage, not alpha.
+// ---------------------------------------------------------------------------
+
+/// **A box-filtered cutout goes bald, and this is the assertion that says so.**
+///
+/// An alpha-tested surface does not draw its alpha — it draws the share of
+/// texels that survive the cutoff. Averaging a sparse mask drives every texel
+/// toward the mask's mean, and a grass card's mean is about 0.22, well under
+/// the 0.5 test. So each level loses coverage against the one above and the
+/// loss compounds; on the page that reads as grass THINNING with distance,
+/// which looks like a density bug and is a filtering one.
+/// `tree::needle_mips` measured its own version at 0.53x after one halving.
+#[test]
+fn a_cutout_keeps_its_coverage_all_the_way_down() {
+    let (w, h) = (256u32, 256u32);
+    let level0 = blades(w, h);
+    let want = coverage(&level0);
+    assert!(
+        (0.10..0.40).contains(&want),
+        "the fixture is not a sparse mask ({want}) and so cannot show the defect"
+    );
+
+    let out = chain(&level0, w, h, Filter::Mask);
+    let mut off = 0usize;
+    for lvl in 0..levels(w, h) {
+        let (lw, lh) = ((w >> lvl).max(1), (h >> lvl).max(1));
+        let n = (lw as usize) * (lh as usize) * 4;
+        let got = coverage(&out[off..off + n]);
+        // The bottom levels are a handful of texels where exact coverage is
+        // unreachable at any scale — 4x4 can only express sixteenths. Levels
+        // with room to be exact are held tight.
+        let tol = if lw >= 16 { 0.05 } else { 0.25 };
+        assert!(
+            (got - want).abs() <= tol,
+            "level {lvl} ({lw}x{lh}) draws {got:.3} of its texels, level 0 draws \
+             {want:.3} — the chain is losing coverage"
+        );
+        off += n;
+    }
+}
+
+/// The plain sRGB filter on the same fixture is what the Mask filter is NOT.
+///
+/// This is the mutant, run as a test rather than by hand: it proves the
+/// defect above is real and that `Filter::Mask` is the thing preventing it.
+/// If this ever stops failing to hold coverage, the two filters have become
+/// the same and the one above is gating nothing.
+#[test]
+fn the_plain_filter_would_have_gone_bald() {
+    let (w, h) = (256u32, 256u32);
+    let level0 = blades(w, h);
+    let want = coverage(&level0);
+    let out = chain(&level0, w, h, Filter::Srgb);
+    // Level 1 alone, one halving from full detail.
+    let n1 = ((w >> 1) as usize) * ((h >> 1) as usize) * 4;
+    let off = (w as usize) * (h as usize) * 4;
+    let got = coverage(&out[off..off + n1]);
+    assert!(
+        got < want * 0.9,
+        "a plain average held {got:.3} against {want:.3}; if it no longer \
+         loses coverage then `Filter::Mask` is not buying anything"
+    );
+}
+
+/// Alpha is measured, not assumed from the extension. A fully opaque RGBA
+/// image is an ordinary albedo and must not be put through a coverage
+/// bisection — which would rescale nothing but would say the wrong thing
+/// about what this module does.
+#[test]
+fn opacity_is_measured_and_not_guessed() {
+    let opaque: Vec<u8> = std::iter::repeat_n([12u8, 34, 56, 255], 64).flatten().collect();
+    assert!(!is_translucent(&opaque));
+    // 254 is not a cutout: a lossy re-encode of a solid interior lands there,
+    // and one such texel must not promote an albedo to a mask.
+    let nearly: Vec<u8> = std::iter::repeat_n([12u8, 34, 56, 254], 64).flatten().collect();
+    assert!(!is_translucent(&nearly));
+    let mut cut = opaque.clone();
+    cut[3] = 0;
+    assert!(is_translucent(&cut));
+}
+
+/// The cutoff this module preserves against and the one the frame tests with
+/// are one number. A drift between them preserves a coverage nothing draws.
+#[test]
+fn the_cutoff_is_the_one_the_frame_tests_with() {
+    // `clutter::CARD_ALPHA_CUT` is the runtime's `AlphaMode::Mask` value, 0..1.
+    let as_byte = (client::render::clutter::CARD_ALPHA_CUT * 255.0).round() as u8;
+    assert_eq!(
+        as_byte, MASK_CUT,
+        "the mip chain preserves coverage above {MASK_CUT} and the frame keeps \
+         texels above {as_byte} — the grass thins with distance by exactly \
+         that gap"
+    );
+}
+
+/// A sparse vertical-blade mask, deterministic — the shape a grass card's
+/// alpha actually has, which a uniform noise field is not: what makes a cutout
+/// hard to filter is that its coverage is well under the cutoff.
+fn blades(w: u32, h: u32) -> Vec<u8> {
+    let mut v = vec![0u8; (w * h * 4) as usize];
+    let mut seed = 0x9e37_79b9u32;
+    for _ in 0..(w / 4) {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let x0 = (seed >> 16) % w;
+        let bh = h / 2 + (seed >> 8) % (h / 2);
+        for y in (h - bh)..h {
+            for dx in 0..2u32 {
+                let x = (x0 + dx) % w;
+                let i = ((y * w + x) * 4) as usize;
+                v[i] = 90;
+                v[i + 1] = 140;
+                v[i + 2] = 60;
+                v[i + 3] = 255;
+            }
+        }
+    }
+    v
 }

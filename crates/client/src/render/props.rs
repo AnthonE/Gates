@@ -567,6 +567,49 @@ impl Soup {
         }
     }
 
+    /// One triangle with **explicit** UVs — the box projection bypassed.
+    ///
+    /// **Why the projection has to be bypassed rather than scaled.** Every
+    /// other builder here wears a tiling photograph, and a box projection is
+    /// the right answer for that: it is seamless inside a facet and costs
+    /// nothing. An atlas is the opposite case — the UV is not a surface
+    /// parameterisation at all, it is an ADDRESS, and a projection that
+    /// derives it from world position would land each card on whatever cell
+    /// its position happened to point at and slide between them as the tile
+    /// moved.
+    ///
+    /// The normal law is `tri_ramp`'s, unchanged and deliberately shared:
+    /// `clutter::card` wants exactly the root-bedded, tip-free ramp
+    /// `clutter::blade` established, and a second copy of it would be a second
+    /// thing to fix.
+    pub(super) fn tri_uv(
+        &mut self,
+        corners: [(Vec3, [f32; 2]); 3],
+        color: impl Fn(Vec3) -> [f32; 4],
+        volume_center: Option<Vec3>,
+        blend: impl Fn(Vec3) -> f32,
+    ) {
+        let (a, b, c) = (corners[0].0, corners[1].0, corners[2].0);
+        let facet = (b - a).cross(c - a).normalize_or_zero();
+        for (v, uv) in corners {
+            let n = match volume_center {
+                Some(ctr) => {
+                    let vol = (v - ctr).normalize_or_zero();
+                    let t = blend(v);
+                    (facet * (1.0 - t) + vol * t).normalize_or_zero()
+                }
+                None => facet,
+            };
+            self.pos.push([v.x, v.y, v.z]);
+            self.nrm.push([n.x, n.y, n.z]);
+            self.col.push(color(v));
+            // **Not multiplied by `uv_scale`.** That field means "tiles per
+            // metre" for a projected UV; an atlas address has no such unit and
+            // scaling one walks off the cell.
+            self.uv.push(uv);
+        }
+    }
+
     pub(super) fn mesh(self) -> Mesh {
         let n = self.pos.len() as u32;
         let mut m = Mesh::new(

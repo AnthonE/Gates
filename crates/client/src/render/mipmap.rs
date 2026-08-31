@@ -137,6 +137,12 @@ pub enum Filter {
     Normal,
     /// Plain average. `_rough`, `_ao`, and anything else linear.
     Linear,
+    /// sRGB on the colour, **coverage-preserved** on the alpha. Any cutout.
+    ///
+    /// See [`MASK_CUT`] — this is the one filter whose alpha is not an
+    /// average, and the reason is that an alpha-tested surface does not draw
+    /// its alpha, it draws *the share of texels that survive a threshold*.
+    Mask,
 }
 
 impl Filter {
@@ -148,15 +154,94 @@ impl Filter {
     /// `Rgba8Unorm` and the format alone cannot separate them. The `_normal`
     /// suffix is `textures::MapSet::load`'s own naming convention, already
     /// load-bearing there.
-    pub fn pick(path: &str, format: TextureFormat) -> Self {
+    ///
+    /// `translucent` is measured off the pixels, not guessed from the
+    /// extension: every map here is RGBA8 whether or not it uses the A, so
+    /// the format cannot say, and a `.png` is not automatically a cutout.
+    /// [`is_translucent`] is what answers it.
+    pub fn pick(path: &str, format: TextureFormat, translucent: bool) -> Self {
         if path.contains("_normal.") {
             Self::Normal
+        } else if translucent {
+            Self::Mask
         } else if format == TextureFormat::Rgba8UnormSrgb {
             Self::Srgb
         } else {
             Self::Linear
         }
     }
+}
+
+/// The alpha a cutout is tested against, as a byte.
+///
+/// **This is `AlphaMode::Mask(0.5)` written as the number the filter can
+/// measure**, and the two must agree or the chain preserves a coverage the
+/// frame does not draw. 0.5 of the 0..1 range is 128 and not 188: alpha is
+/// linear even in an sRGB-encoded texture — only RGB carries the transfer
+/// function. `tree::NEEDLE_MASK_BYTE` is the same number for the same reason.
+pub const MASK_CUT: u8 = 128;
+
+/// The bisection's upper bound on the alpha rescale.
+///
+/// Past this the scale is pushing near-empty texels over the cutoff, which
+/// INVENTS coverage rather than preserving it — and the bottom levels are a
+/// handful of texels where exact coverage is unreachable at any scale.
+/// `tree::needle_mips` uses the same ceiling for the same reason.
+const MASK_SCALE_MAX: f32 = 8.0;
+
+/// Whether any texel is less than fully opaque — i.e. whether the A channel
+/// carries a cutout rather than the padding every RGBA8 image has.
+///
+/// **Not `< 255`.** A photographic cutout re-encoded through a lossy step can
+/// carry 254 across a nominally solid interior, and one such texel would
+/// promote a plain albedo to [`Filter::Mask`] and put it through a coverage
+/// bisection it does not want. The margin is what makes this a property of
+/// the image rather than of its encoder.
+pub fn is_translucent(data: &[u8]) -> bool {
+    data.chunks_exact(4).any(|t| t[3] < 250)
+}
+
+/// Scale a level's alpha until the share of texels over [`MASK_CUT`] matches
+/// `want`, by bisection.
+///
+/// **Castaño's fix, and the reason a box filter alone is wrong here.**
+/// Averaging a sparse mask drives every texel toward the mask's mean, and the
+/// mean of a grass card is about 0.22 — well under the cutoff — so each level
+/// loses coverage against the one above it and the loss compounds down the
+/// chain. On the page that reads as grass THINNING with distance, which looks
+/// like a density or LOD bug and is neither. `tree::needle_mips` measured its
+/// own version of this at 0.53× of level 0's coverage after ONE halving.
+///
+/// Coverage is monotonic in the scale, so bisection is enough; 12 steps
+/// resolve it to better than one part in 4,000 of the span, finer than the
+/// 1/255 the channel can store.
+fn preserve_coverage(level: &mut [u8], want: f32) {
+    let coverage = |scale: f32| -> f32 {
+        let hit = level
+            .chunks_exact(4)
+            .filter(|t| (f32::from(t[3]) * scale).min(255.0) as u8 > MASK_CUT)
+            .count();
+        hit as f32 / (level.len() / 4) as f32
+    };
+    let (mut lo, mut hi) = (1.0f32, MASK_SCALE_MAX);
+    for _ in 0..12 {
+        let mid = 0.5 * (lo + hi);
+        if coverage(mid) < want {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let s = 0.5 * (lo + hi);
+    for t in level.chunks_exact_mut(4) {
+        t[3] = (f32::from(t[3]) * s).min(255.0) as u8;
+    }
+}
+
+/// The share of texels a cutout actually draws.
+pub fn coverage(data: &[u8]) -> f32 {
+    let hit = data.chunks_exact(4).filter(|t| t[3] > MASK_CUT).count();
+    hit as f32 / (data.len() / 4) as f32
 }
 
 /// sRGB → linear for one byte, as a 256-entry table.
@@ -236,6 +321,10 @@ pub fn chain(level0: &[u8], w: u32, h: u32, filter: Filter) -> Vec<u8> {
         "level 0 is not {w}x{h} RGBA8"
     );
     let table = decode_table();
+    // The target every level below 0 is rescaled to hold. Taken from level 0
+    // rather than from the level above, so the chain cannot drift a little at
+    // each step and arrive somewhere else entirely at the bottom.
+    let want = (filter == Filter::Mask).then(|| coverage(level0));
     let mut out = Vec::with_capacity(chain_bytes(w, h));
     out.extend_from_slice(level0);
 
@@ -262,6 +351,9 @@ pub fn chain(level0: &[u8], w: u32, h: u32, filter: Filter) -> Vec<u8> {
                 next.extend_from_slice(&reduce(quad, filter, &table));
             }
         }
+        if let Some(want) = want {
+            preserve_coverage(&mut next, want);
+        }
         out.extend_from_slice(&next);
         prev = next;
         pw = nw;
@@ -284,7 +376,12 @@ fn texel(level: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
 fn reduce(quad: [[u8; 4]; 4], filter: Filter, table: &[f32; 256]) -> [u8; 4] {
     let alpha = ((quad.iter().map(|t| t[3] as f32).sum::<f32>()) * 0.25).round() as u8;
     match filter {
-        Filter::Srgb => {
+        // **Mask shares Srgb's colour path and differs only after the level is
+        // whole.** Its RGB is an albedo and wants the same linear-space
+        // average; its alpha is averaged here and then rescaled across the
+        // FULL level by `preserve_coverage`, which is a property of the level
+        // and cannot be computed from one quad.
+        Filter::Srgb | Filter::Mask => {
             let mut rgb = [0u8; 3];
             for (c, out) in rgb.iter_mut().enumerate() {
                 let lin = quad.iter().map(|t| table[t[c] as usize]).sum::<f32>() * 0.25;
@@ -417,10 +514,10 @@ pub fn drain(mut pending: ResMut<Pending>, mut images: ResMut<Assets<Image>>, as
             continue;
         }
         let (w, h) = (image.texture_descriptor.size.width, image.texture_descriptor.size.height);
-        let filter = Filter::pick(&path, image.texture_descriptor.format);
         let Some(level0) = image.data.as_ref() else {
             continue;
         };
+        let filter = Filter::pick(&path, image.texture_descriptor.format, is_translucent(level0));
         let data = chain(level0, w, h, filter);
         // **The count and the buffer are set together or wgpu reads past the
         // end of one of them.** `Image::new` asserts `data.len()` against

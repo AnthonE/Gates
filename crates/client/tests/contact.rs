@@ -317,6 +317,13 @@ fn a_blades_two_triangles_do_not_wind_opposite_ways() {
 /// both, which is why `Soup::tri_ramp` exists.
 #[test]
 fn a_blade_separates_from_the_ground_it_grows_out_of() {
+    // ⚠ **A tuft is CARDS now, not blades** (`clutter::card`, grass cards v0)
+    // — this still runs on `Clutter::Tuft` and the law is unchanged, because
+    // it was never about blades: a standing thing's root shades with the turf
+    // and its tip shades as itself. What changed is that a card's base is up
+    // to 0.68 m wide where a blade's was 6 cm, so the bedding axis had to
+    // become proportional to that width (`clutter::CARD_BED`) to keep the
+    // root normal vertical. This gate is what found that, at 0.9863.
     let m = element_mesh(&elem(Clutter::Tuft, 91, 1.0));
     let (p, n) = (positions(&m), normals(&m));
     assert_eq!(p.len(), n.len());
