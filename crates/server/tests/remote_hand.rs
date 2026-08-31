@@ -88,7 +88,7 @@ fn give(core: &mut ShardCore, slot: usize, item: u16, cond: u16) {
 /// the light. Sent through `push_input` — the real path, so the button
 /// crosses `world::apply`'s mask exactly as a player's would.
 fn press(core: &mut ShardCore, slot: usize, seq: u16, light: bool) {
-    let mut dg = InputDatagram::new(0, 0, seq as u32);
+    let mut dg = InputDatagram::new(0, 0, 4);
     let f = InputFrame {
         seq,
         sel: 0,

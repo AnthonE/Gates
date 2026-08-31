@@ -16,6 +16,14 @@
 //! splat weights the mesh carries in its vertex colours still choose the
 //! identity, still ramp between them, and still multiply the photograph.
 //!
+//! **These load with no mip chain and `render/mipmap.rs` builds one.** Bevy
+//! 0.18 generates none for an ordinary image format — `ImageLoaderSettings`
+//! has no such setting — and a one-level photograph minified across the
+//! island is the static that module exists to remove. The sampler below is
+//! already right for a chain (`linear()` sets `mipmap_filter` to Linear, and
+//! `anisotropy_clamp: 4` needs one to mean anything); what was missing was
+//! the chain itself.
+//!
 //! **The budget that shaped these files is gone.** They were fetched at 1K
 //! and re-encoded to fit a 12 MB *download* — a browser boot cost. A desktop
 //! client pays it once from disk. Re-sourcing at 2K/4K is a later slice and
@@ -76,6 +84,29 @@ fn tiling(srgb: bool) -> impl Fn(&mut ImageLoaderSettings) + Send + Sync + 'stat
             // Anisotropy is what stops that becoming a smear at the horizon;
             // `ART.md` §7 registers the browser's ceiling as
             // `BASE_ANISOTROPY_MAX = 4` and this holds to it.
+            anisotropy_clamp: 4,
+            ..ImageSamplerDescriptor::linear()
+        });
+    }
+}
+
+/// A cutout ATLAS's sampler — clamped, not tiled.
+///
+/// **The opposite of [`tiling`] on the one axis that matters.** A tiling map
+/// wants `Repeat` because its UVs run to the hundreds; an atlas addresses
+/// cells inside 0..1 and `Repeat` on one would let a filter tap wrap from the
+/// left edge of the sheet to the right, splicing two unrelated cards together
+/// at the seam. `ClampToEdge` is also Bevy's default, so this exists for the
+/// other half: **anisotropy**, which the default leaves at 1. A grass card is
+/// seen at a grazing angle almost always — the camera stands 1.6 m up and the
+/// cards are 34 cm — and at anisotropy 1 that is a smear.
+pub fn atlas(srgb: bool) -> impl Fn(&mut ImageLoaderSettings) + Send + Sync + 'static {
+    move |s: &mut ImageLoaderSettings| {
+        s.is_srgb = srgb;
+        s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+            address_mode_u: ImageAddressMode::ClampToEdge,
+            address_mode_v: ImageAddressMode::ClampToEdge,
+            address_mode_w: ImageAddressMode::ClampToEdge,
             anisotropy_clamp: 4,
             ..ImageSamplerDescriptor::linear()
         });

@@ -63,10 +63,11 @@
 //!
 //! ## What is deliberately NOT reproduced, and which way each one leans
 //!
-//! - **No jitter buffer.** `client::consume_input` executes one buffered
-//!   frame per tick, so over the wire the frame carrying `charge_slot` need
-//!   not be the frame in force when the throw lands. Here the input command
-//!   is applied the same tick it is issued. That makes both arms the
+//! - **No jitter buffer.** `client::consume_input` buffers frames and can
+//!   throttle two into one tick (both stepping, netcode v2), so over the
+//!   wire the frame carrying `charge_slot` need not be the frame in force
+//!   when the throw lands. Here the input command is applied the same tick
+//!   it is issued. That makes both arms the
 //!   **optimistic** case for held-item timing: they can only find *more*
 //!   plants than the shard, never fewer.
 //! - No packet loss, no reordering, no join stagger. Same direction.

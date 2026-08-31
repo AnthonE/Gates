@@ -296,3 +296,13 @@ seed = 20260731
 # against configured, shifts started/ended/errored, and what the finished
 # shifts placed. `live` below the configured count is the health signal.
 # population = 8
+
+# Dev-only fake network on both datagram lanes: "lat_ms,jitter_ms,loss_pct".
+# Boot with this to FEEL the netcode at the RTT it is tuned for (netcode
+# v2's bar is 60 ms — that is `netsim = "30,10,1"`, latency each way) on
+# loopback, instead of tuning at zero and finding out on a real link. It
+# marks the shard `dev` in the welcome, seeds its jitter RNG from the knob
+# and the slot so a "feels wrong at 30,10,1" report reproduces, and never
+# touches the sim thread or the handshake — only late (and, per loss_pct,
+# missing) datagrams. Never set it on a public shard.
+# netsim = "30,10,1"

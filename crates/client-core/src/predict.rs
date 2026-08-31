@@ -19,16 +19,40 @@ use sim_core::occupy::Occupants;
 const RING: usize = 32;
 
 /// Correction smoothing (NETCODE.md §3, Gaffer's blend): exponential decay
-/// per render frame — 0.95 for small errors, 0.85 from 1 m up, blended in
-/// between — and a hard snap past `SNAP_AT_M` (NETCODE says "a few
-/// meters"). Rates are NETCODE-spoken; snap threshold, blend window, and
-/// dead zone are proposed defaults (DECISIONS.md §open, client fill-ins).
-const SMOOTH_NEAR: f32 = 0.95;
-const SMOOTH_FAR: f32 = 0.85;
+/// **in wall time** — τ 325 ms for small errors, 100 ms from 1 m up,
+/// blended in between — and a hard snap past `SNAP_AT_M` (NETCODE says "a
+/// few meters"). Time constants since netcode v2 S3: the rates shipped as
+/// per-RENDER-FRAME multipliers (0.95 / 0.85), so the same correction
+/// lingered five times longer at 30 fps than at 144 — a smoothing whose
+/// speed depended on the GPU. The τ values are those multipliers read at
+/// 60 fps (`0.95^60 ≈ e^-60/325ms·16.7ms`, `0.85 ≈ e^-16.7/100`), so a
+/// 60 fps client feels exactly what it shipped with and every other frame
+/// rate now feels the same thing. Snap threshold, blend window, and dead
+/// zone are proposed defaults (DECISIONS.md §open, client fill-ins).
+const TAU_NEAR_MS: f32 = 325.0;
+const TAU_FAR_MS: f32 = 100.0;
 const BLEND_FROM_M: f32 = 0.25;
 const BLEND_TO_M: f32 = 1.0;
 const SNAP_AT_M: f32 = 4.0;
 const DEAD_ZONE_M: f32 = 0.01;
+
+/// The minor-correction band, in quanta (netcode v2 S3): a reconcile whose
+/// disagreement fits inside it — one x/z quantum (3 cm) per axis, 5 cm of
+/// y, 5 cm/s of vertical velocity, grounded agreeing — is counted as
+/// `corrections_minor` rather than a misprediction. **Classification only,
+/// deliberately**: every mismatch still adopts the server body, replays
+/// the tail, and folds the jump into the smoothing offset, so convergence
+/// stays bit-exact and every exact-equality gate keeps its meaning. What
+/// the split buys is an honest diagnostic — post-S1 the starved-tick
+/// residue is sub-quantum jiggle the smoothing hides completely, and a
+/// `mispredictions` counter that lumped it in with real divergence would
+/// send whoever reads the netgraph hunting for a defect the player cannot
+/// feel. (Rocket League's "large difference requires correction" skips the
+/// rollback below the band; ours costs two movement steps, so honesty is
+/// the only thing worth buying here.)
+const MINOR_XZ_Q: i32 = 1;
+const MINOR_Y_Q: i32 = 5;
+const MINOR_VY_Q: i32 = 5;
 
 pub struct Predictor {
     seed: u64,
@@ -59,8 +83,14 @@ pub struct Predictor {
     err: [f32; 3],
     /// Reconciles where the ring held `last_executed_seq` bit-identical.
     pub confirmations: u64,
-    /// Reconciles that had to rewind and replay (mismatch or ring miss).
+    /// Reconciles that had to rewind and replay past the minor band
+    /// (real divergence: a collision disagreement, a missed input, a
+    /// world change mid-flight).
     pub mispredictions: u64,
+    /// Reconciles that rewound inside the minor band (netcode v2 S3) —
+    /// sub-quantum jiggle, mostly the residue of starved-tick decay,
+    /// invisible under the smoothing. Same rewind, different ledger.
+    pub corrections_minor: u64,
 }
 
 impl Predictor {
@@ -78,6 +108,7 @@ impl Predictor {
             err: [0.0; 3],
             confirmations: 0,
             mispredictions: 0,
+            corrections_minor: 0,
         }
     }
 
@@ -171,7 +202,27 @@ impl Predictor {
                 self.confirmations += 1;
                 return;
             }
-            self.mispredictions += 1;
+            // Classify before the rewind: which ledger this disagreement
+            // belongs to. Both take the identical adopt-replay-smooth path
+            // below — see MINOR_XZ_Q's doc for why the band buys honesty
+            // and deliberately nothing else.
+            let b = if self.ring_valid[i] && self.ring_seq[i] == last_executed {
+                Some(self.ring_body[i])
+            } else {
+                None
+            };
+            let minor = b.is_some_and(|b| {
+                (b.qx - own.qx).abs() <= MINOR_XZ_Q
+                    && (b.qz - own.qz).abs() <= MINOR_XZ_Q
+                    && (b.qy - own.qy).abs() <= MINOR_Y_Q
+                    && (b.qvy - own.qvy).abs() <= MINOR_VY_Q
+                    && b.grounded == own.grounded
+            });
+            if minor {
+                self.corrections_minor += 1;
+            } else {
+                self.mispredictions += 1;
+            }
         }
 
         let old = self.position();
@@ -279,8 +330,12 @@ impl Predictor {
         (self.err[0] * self.err[0] + self.err[1] * self.err[1] + self.err[2] * self.err[2]).sqrt()
     }
 
-    /// Decay the correction offset; call once per render frame.
-    pub fn decay_error(&mut self) {
+    /// Decay the correction offset by the wall time that actually passed —
+    /// call once per render frame with the frame's dt. Time-based since
+    /// netcode v2 S3 (`TAU_NEAR_MS`'s doc has the history): `exp(-dt/τ)`
+    /// makes ten 16.7 ms frames decay exactly what one 167 ms frame does,
+    /// so the smoothing's feel stops depending on the frame rate.
+    pub fn decay_error(&mut self, dt_ms: f64) {
         let m2 = self.err[0] * self.err[0] + self.err[1] * self.err[1] + self.err[2] * self.err[2];
         if m2 == 0.0 {
             return;
@@ -291,7 +346,8 @@ impl Predictor {
             return;
         }
         let t = ((m - BLEND_FROM_M) / (BLEND_TO_M - BLEND_FROM_M)).clamp(0.0, 1.0);
-        let rate = SMOOTH_NEAR + (SMOOTH_FAR - SMOOTH_NEAR) * t;
+        let tau = TAU_NEAR_MS + (TAU_FAR_MS - TAU_NEAR_MS) * t;
+        let rate = (-(dt_ms as f32) / tau).exp();
         for v in &mut self.err {
             *v *= rate;
         }
@@ -607,9 +663,37 @@ mod tests {
         assert_eq!(p.tail().len(), 3, "acked prefix dropped");
         assert!(p.error_magnitude() > 0.0, "visual error captured");
         for _ in 0..600 {
-            p.decay_error();
+            p.decay_error(1000.0 / 60.0);
         }
         assert_eq!(p.error_magnitude(), 0.0, "offset decays to zero");
+    }
+
+    /// **The smoothing is a function of wall time, not of how often the
+    /// GPU finishes a frame** (netcode v2 S3). One 167 ms frame and ten
+    /// 16.7 ms frames decay a correction identically; under the old
+    /// per-frame multiplier the ten-frame path decayed it ten times as
+    /// hard, so a 144 fps client barely saw corrections a 30 fps client
+    /// watched glide for half a second. Red by construction on that code.
+    #[test]
+    fn the_correction_decay_is_frame_rate_independent() {
+        let seed_err = |p: &mut Predictor| {
+            p.err = [0.10, 0.0, 0.0];
+        };
+        let mut coarse = Predictor::new(SEED);
+        seed_err(&mut coarse);
+        coarse.decay_error(167.0);
+        let mut fine = Predictor::new(SEED);
+        seed_err(&mut fine);
+        for _ in 0..10 {
+            fine.decay_error(16.7);
+        }
+        let (a, b) = (coarse.error_magnitude(), fine.error_magnitude());
+        assert!(
+            (a - b).abs() < 1e-4,
+            "one 167 ms frame decayed to {a} where ten 16.7 ms frames \
+             decayed to {b} — the smoothing depends on the frame rate"
+        );
+        assert!(a < 0.10, "wall time passed, the correction must shrink");
     }
 
     #[test]

@@ -76,6 +76,10 @@ pub mod loading;
 pub mod map;
 pub mod menu;
 pub mod mobs;
+// The mip chains for `assets/textures/`. Bevy builds none for an ordinary
+// image format, and a one-level photograph minified across the island is the
+// static the operator saw. Derived off `AssetEvent::Added`, not a list.
+pub mod mipmap;
 // The in-game panels — inventory, crafting, the build wheel. Distinct from
 // `ui`, which is the chrome the full-screen MENU screens share: `ui` is what a
 // player sees instead of the world, `panels` is what they see on top of it.
@@ -765,8 +769,18 @@ impl Plugin for GatesRenderPlugin {
                     // would lose a frame of its own life to the counter.
                     prewarm::warm,
                     prewarm::retire.after(prewarm::warm),
+                    // Every photograph out of `assets/textures/` gets the mip
+                    // chain Bevy will not build for it. `drain` after
+                    // `enqueue`, so an image that finishes loading on this
+                    // frame can be filtered on this frame rather than losing
+                    // one to the queue. Both are no-ops on a frame where
+                    // nothing loaded, which is every frame after the loading
+                    // screen.
+                    mipmap::enqueue,
+                    mipmap::drain.after(mipmap::enqueue),
                 ),
             )
+            .init_resource::<mipmap::Pending>()
             .init_resource::<tree::TreeLod>()
             // **The frame cap, and it must be `Last` and unconditional.**
             // `Last` because a cap has to be the final thing a frame does —

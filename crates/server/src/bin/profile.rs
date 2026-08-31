@@ -282,7 +282,7 @@ fn main() {
     let mut last_snap = vec![0u16; MAX_PLAYERS];
     let feed = |core: &mut ShardCore, seq: &mut u16, last_snap: &[u16]| {
         for (slot, &ack) in last_snap.iter().enumerate().take(a.clients) {
-            let mut dg = InputDatagram::new(ack, 0, *seq as u32);
+            let mut dg = InputDatagram::new(ack, 0, 4);
             let _ = dg.push(InputFrame {
                 seq: *seq,
                 // Held, because the arm is the verb this game is mostly

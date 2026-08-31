@@ -17,6 +17,13 @@ use std::net::SocketAddr;
 /// Proposed default, DECISIONS.md §open ("world persistence v0").
 pub const DEFAULT_WORLD_SAVE_INTERVAL_TICKS: u64 = 1_800;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NetSim {
+    pub lat_ms: u32,
+    pub jitter_ms: u32,
+    pub loss_pct: u8,
+}
+
 #[derive(Clone, Debug)]
 pub struct ShardConfig {
     /// UDP bind address. Port 0 binds ephemeral (the test path).
@@ -27,6 +34,16 @@ pub struct ShardConfig {
     /// "dev spawn override"). Unset is the shipping default; never set it
     /// on a public shard — every joiner lands on the same point.
     pub dev_spawn: Option<(f32, f32)>,
+    /// Dev-only fake network: `"lat_ms,jitter_ms,loss_pct"` — e.g.
+    /// `netsim = "30,10,1"` for a 60 ms-RTT-shaped link with a percent of
+    /// loss, applied to BOTH datagram lanes (C→S inputs and S→C
+    /// snapshots) at the connection tasks; the sim thread never knows.
+    /// Unset is the shipping default and the only sane public value: this
+    /// exists so the netcode can be FELT on loopback at the RTT it is
+    /// tuned for (netcode v2's bar is 60 ms) instead of tuned at zero and
+    /// shipped to find out. The jitter RNG is seeded from the knob and
+    /// the slot, so a report of "feels wrong at 30,10,1" reproduces.
+    pub netsim: Option<NetSim>,
     /// Dev-only spawn kit override: `"item.id:count, item.id:count, …"`,
     /// **replacing** `content/balance.toml`'s `[[spawn_kit]]` wholesale for
     /// this shard's fresh spawns and respawns. Unset is the shipping
@@ -257,6 +274,7 @@ impl ShardConfig {
             seed,
             dev_spawn: None,
             dev_spawn_kit: None,
+            netsim: None,
             cert_pem: None,
             key_pem: None,
             require_auth: false,
@@ -315,6 +333,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
     let mut seed: Option<u64> = None;
     let mut dev_spawn: Option<(f32, f32)> = None;
     let mut dev_spawn_kit: Option<Vec<(String, u32)>> = None;
+    let mut netsim: Option<NetSim> = None;
     let mut min_client: Option<u32> = None;
     let mut content_dir: Option<String> = None;
     let mut require_auth: Option<bool> = None;
@@ -387,6 +406,44 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
             // an id exists and that a count fits its stack are questions
             // for the loaded content, and this function has none
             // (`dev_spawn_kit`, below, is where the boot asks them).
+            "netsim" => {
+                // `dev_spawn`'s comma-string shape, inherited on purpose —
+                // this parser is one `key = value` per line, not TOML, so
+                // a compound value is a quoted comma string or nothing.
+                let mut parts = value.split(',');
+                let (a, b, c) = (parts.next(), parts.next(), parts.next());
+                let (Some(a), Some(b), Some(c), None) = (a, b, c, parts.next()) else {
+                    return Err(format!(
+                        "shard.toml line {}: netsim wants \"lat_ms,jitter_ms,loss_pct\"",
+                        n + 1
+                    ));
+                };
+                let lat_ms: u32 = a
+                    .trim()
+                    .parse()
+                    .map_err(|e| format!("shard.toml line {}: bad netsim lat_ms: {e}", n + 1))?;
+                let jitter_ms: u32 = b
+                    .trim()
+                    .parse()
+                    .map_err(|e| format!("shard.toml line {}: bad netsim jitter_ms: {e}", n + 1))?;
+                let loss_pct: u8 = c
+                    .trim()
+                    .parse()
+                    .map_err(|e| format!("shard.toml line {}: bad netsim loss_pct: {e}", n + 1))?;
+                // A dev tool, not a chaos monkey: bound where a typo would
+                // otherwise boot a shard nobody can reach and call it lag.
+                if lat_ms > 2_000 || jitter_ms > 1_000 || loss_pct > 50 {
+                    return Err(format!(
+                        "shard.toml line {}: netsim out of range (lat ≤ 2000, jitter ≤ 1000, loss ≤ 50)",
+                        n + 1
+                    ));
+                }
+                netsim = Some(NetSim {
+                    lat_ms,
+                    jitter_ms,
+                    loss_pct,
+                });
+            }
             "dev_spawn_kit" => {
                 let mut stacks = Vec::with_capacity(sim_core::limits::MAX_SPAWN_KIT);
                 for part in value.split(',') {
@@ -691,6 +748,7 @@ pub fn parse_shard_toml(text: &str) -> Result<ShardConfig, String> {
         seed: seed.ok_or("shard.toml: missing `seed`")?,
         dev_spawn,
         dev_spawn_kit,
+        netsim,
         cert_pem,
         key_pem,
         require_auth: require_auth.unwrap_or(false),

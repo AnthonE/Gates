@@ -352,6 +352,7 @@ fn file(
         r.net = Some(Netstat {
             confirmations: core.predict.confirmations,
             mispredictions: core.predict.mispredictions,
+            corrections_minor: core.predict.corrections_minor,
             snapshots_applied: core.snapshots_applied,
             snapshots_delta: core.snapshots_delta,
             snapshots_stale: core.snapshots_stale,

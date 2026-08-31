@@ -332,10 +332,10 @@ they're needed; buffer depth floats with measured jitter).
 | thing | number | why |
 |---|---|---|
 | sim tick | 30 Hz | survival pacing; Rust ships 10–30 |
-| snapshot send | 15 Hz per client (every 2nd tick), class-weighted | halves bandwidth; interp hides it |
+| snapshot send | 30 Hz per client (every tick; netcode v2 S2, was 15) | the interp buffer floor and the lost-datagram hole both halved with the interval |
 | input send | one datagram per client render frame, coalesced ≥ 30 Hz | inputs are tiny; redundancy below |
 | datagram budget | ≤ 1100 B payload | safe under QUIC's ~1200 B initial MTU, no fragmentation |
-| downstream target | ≤ 20 kB/s per client typical, 30 kB/s cap | 15 Hz × ≤ 1100 B + streams |
+| downstream target | ≤ 20 kB/s per client typical, 32 kB/s worst | 30 Hz × ≤ 1.06 kB is the all-64-moving worst case; typical is delta records + streams |
 | upstream target | ≤ 4 kB/s per client | inputs + occasional transactions |
 | interp delay | 2 × snapshot interval + measured jitter (≈ 133–200 ms) | standard interpolation window |
 | lag-comp rewind cap | 250 ms | generous to real latency, stingy to abusers |

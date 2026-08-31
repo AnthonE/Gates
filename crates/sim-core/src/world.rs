@@ -1280,6 +1280,29 @@ pub enum Command {
         frame: InputFrame,
         favour: u8,
     },
+    /// Two frames in one tick — the input-buffer throttle's catch-up
+    /// (`server/client.rs consume_input`: a buffer past
+    /// `INPUT_THROTTLE_DEPTH` consumes two frames in one tick to drain).
+    /// Both must MOVE the body: the client's prediction ring stepped every
+    /// seq exactly once, so a consumed-but-unexecuted frame is a
+    /// guaranteed reconcile mismatch — the shipped consume-2-execute-1
+    /// shape was one tick of walking silently dropped on every throttle
+    /// tick, and it read as a snap (netcode v2, DECISIONS.md 2026-08-31).
+    ///
+    /// `prev` is the OLDER frame and steps movement first, movement only —
+    /// exactly what the client's predictor did with it (`predict.rs` steps
+    /// nothing but `movement::step`). `frame` is the newer: it steps
+    /// second, it is the tick's stored frame, and the verbs, the wire and
+    /// any later starved reuse see it alone — bit-identical to the frame
+    /// having arrived by itself. A separate variant rather than an
+    /// `Option` on `Input`, so the hundred-odd existing constructions
+    /// (bots, tests, a replayed WAL) keep meaning what they said.
+    InputPair {
+        id: u32,
+        prev: InputFrame,
+        frame: InputFrame,
+        favour: u8,
+    },
     /// Enqueue `count` crafts of recipe row `recipe` (craft.rs validates
     /// and refuses by event, never by panic).
     Craft {
@@ -3093,7 +3116,27 @@ impl World {
         );
     }
 
-    fn apply(&mut self, cmd: &Command, removals: &mut usize, favour: &mut [u8; MAX_PLAYERS]) {
+    /// One frame's non-wire sanitation — `sel` falls back, unknown button
+    /// bits are masked. The wire refuses both at decode/accept; a non-wire
+    /// command (bot, test, WAL) is clamped instead, and the stored frame is
+    /// hashed, so a bit no verb reads must never reach it (NOW.md §5b).
+    /// One spelling for `Input` and `InputPair`, so the pair cannot drift
+    /// into a laxer door.
+    fn sanitize_frame(mut frame: InputFrame) -> InputFrame {
+        if frame.sel as usize >= HOTBAR_SLOTS {
+            frame.sel = 0;
+        }
+        frame.buttons &= crate::input::BTN_MASK;
+        frame
+    }
+
+    fn apply(
+        &mut self,
+        cmd: &Command,
+        removals: &mut usize,
+        favour: &mut [u8; MAX_PLAYERS],
+        catchup: &mut [Option<InputFrame>; MAX_PLAYERS],
+    ) {
         match *cmd {
             Command::Join { id } => self.seat(id, None),
             Command::JoinAs { id, save } => self.seat(id, Some(save)),
@@ -3174,19 +3217,26 @@ impl World {
                     // same reason the frame below is: the arm is one
                     // condition, and a sleeper's verbs do not run anyway.
                     favour[slot] = want.min(crate::rewind::Rewind::max_back());
-                    let mut frame = frame;
-                    if frame.sel as usize >= HOTBAR_SLOTS {
-                        // The wire refuses 6–7 at decode; a non-wire
-                        // command (bot, test, WAL) falls back to slot 0.
-                        frame.sel = 0;
-                    }
-                    // The wire refuses unknown button bits at the server's
-                    // accept boundary (net.rs `accept_input`); a non-wire
-                    // command is masked instead — `sel`'s rule, applied to
-                    // bits. The stored frame is hashed, so a bit no verb
-                    // reads must never reach it (NOW.md §5b).
-                    frame.buttons &= crate::input::BTN_MASK;
-                    self.players[slot].frame = frame;
+                    self.players[slot].frame = Self::sanitize_frame(frame);
+                }
+            }
+            Command::InputPair {
+                id,
+                prev,
+                frame,
+                favour: want,
+            } => {
+                if let Some(slot) = self.slot_of(id) {
+                    // `Input`'s arm, with the older frame set aside for the
+                    // movement pass. The catch-up is a tick-local exactly
+                    // as `favour` is and for `favour`'s reason: it is spent
+                    // inside this tick, and a `World` field would put a
+                    // network condition into `state_hash`. Here it arrives
+                    // in the command, so a replayed WAL reproduces the
+                    // double step bit for bit.
+                    favour[slot] = want.min(crate::rewind::Rewind::max_back());
+                    catchup[slot] = Some(Self::sanitize_frame(prev));
+                    self.players[slot].frame = Self::sanitize_frame(frame);
                 }
             }
             Command::Craft { id, recipe, count } => {
@@ -3671,8 +3721,14 @@ impl World {
         // `Command::Input`. Zero means `pose_at` returns the live body,
         // which is the behaviour that predates lag compensation.
         let mut favour = [0u8; MAX_PLAYERS];
+        // The throttle's older frame, per slot — `favour`'s shape, minted
+        // and spent inside this one tick for `favour`'s stated reason (a
+        // `World` field here would hash a network condition). ~1.4 KB of
+        // stack, zero allocation; wasm's shadow stack holds it with three
+        // orders of magnitude to spare.
+        let mut catchup: [Option<InputFrame>; MAX_PLAYERS] = [None; MAX_PLAYERS];
         for cmd in commands.iter().take(MAX_COMMANDS_PER_TICK) {
-            self.apply(cmd, &mut removals, &mut favour);
+            self.apply(cmd, &mut removals, &mut favour, &mut catchup);
         }
         let seed = self.seed;
         let tick = self.tick;
@@ -3791,6 +3847,31 @@ impl World {
             // the cheapest way to never spend an absent player's inventory
             // is to not run the sweep over them.
             crate::light::step(&mut self.players[i], &self.gather);
+            // The throttle's catch-up: the OLDER of two consumed frames
+            // steps first, movement only — the client's predictor stepped
+            // it exactly once through the same `movement::step`, so this
+            // is what keeps the per-seq ring bit-identical across a
+            // throttle tick. Only the live branch honors it: a corpse and
+            // a sleeper step a zeroed frame, and stepping one twice would
+            // double a tick of gravity for a body nobody is driving.
+            // The verbs below never see it — the older frame's buttons
+            // never act, exactly as they never acted when the throttle
+            // silently dropped it.
+            if let Some(prev) = catchup[i] {
+                movement::step(
+                    seed,
+                    &self.haven,
+                    self.pieces.cols(),
+                    &mut crate::occupy::Occupants {
+                        table: &self.scatter,
+                        haven: &self.haven,
+                        harvested: &self.slot_lives,
+                        cache: &mut self.slot_cache,
+                    },
+                    &mut self.players[i].body,
+                    &prev,
+                );
+            }
             let frame = self.players[i].frame;
             movement::step(
                 seed,

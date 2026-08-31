@@ -6,7 +6,7 @@
 //! exact struct against `ShardCore`; the browser drives it through
 //! `bridge.rs`.
 
-use crate::clock::ClientClock;
+use crate::clock::{self, ClientClock};
 use crate::interp::Interp;
 use crate::predict::Predictor;
 use crate::view::{Applied, ClientView};
@@ -823,12 +823,50 @@ struct InputState {
     sel: u8,
 }
 
+// The playout rails are spelled once, in `sim_core::limits`, because the
+// server clamps the reported delay to the same pair (netcode v2 S5) —
+// and NOT re-declared here even as a cast alias, because two declarations
+// of one knob is the shape `ci/knob_registry.mjs` refuses however honest
+// the second one is (the interp-delay lesson, re-paid). Read at the point
+// of use. `INTERP_DELAY_TICKS` (4) stays the starting point, so a fresh
+// session feels exactly what shipped before the delay learned to move.
+/// Delay above the floor per unit of smoothed jitter: two jitters of
+/// margin, the classic adaptive-playout sizing (a sample later than the
+/// mean by one jitter is ordinary; by two is the tail worth buffering).
+const PLAYOUT_JITTER_K: f64 = 2.0;
+/// How fast the playout delay may move, in ticks per second. A delay
+/// change slides every remote body on screen; half a tick per second is
+/// 16 ms of slide per second — beneath notice, and fast enough to double
+/// the buffer inside a rough patch's first seconds.
+const PLAYOUT_SLEW_PER_S: f64 = 0.5;
+/// RFC 3550's jitter gain: a 16-sample memory, ~0.5 s at 30 Hz.
+const JITTER_GAIN: f64 = 1.0 / 16.0;
+
 pub struct ClientCore {
     pub player_id: u32,
     pub view: ClientView,
     pub predict: Predictor,
     pub interp: Interp,
     pub clock: ClientClock,
+    /// Wall milliseconds accumulated by `advance` — the only clock this
+    /// crate has, fed to it, never read by it (the purity rule the module
+    /// header states). Arrival stamps below are quantized to the frame
+    /// that drained the ring, which errs the jitter estimate HIGH at low
+    /// frame rates — the direction that buys more buffer, which is the
+    /// direction a struggling client wants.
+    now_ms: f64,
+    /// The previous applied snapshot's arrival, for the estimator: when it
+    /// landed (frame-quantized wall ms) and the server tick it carried.
+    last_arrival_ms: f64,
+    last_arrival_tick: u32,
+    have_arrival: bool,
+    /// Smoothed delay variation between consecutive applied snapshots, in
+    /// ms — RFC 3550's estimator over (wall gap − tick gap).
+    pub jitter_ms: f64,
+    /// The adaptive playout delay, in ticks, slewed toward its target —
+    /// what `render_tick` subtracts where it used to subtract the
+    /// constant.
+    playout_ticks: f64,
     input: InputState,
     /// Buttons seen down at ANY point since the last input frame was built.
     ///
@@ -1318,6 +1356,12 @@ impl ClientCore {
             predict: Predictor::new(seed),
             interp: Interp::new(),
             clock: ClientClock::new(server_tick),
+            now_ms: 0.0,
+            last_arrival_ms: 0.0,
+            last_arrival_tick: 0,
+            have_arrival: false,
+            jitter_ms: 0.0,
+            playout_ticks: f64::from(sim_core::limits::INTERP_DELAY_TICKS),
             input: InputState::default(),
             sticky_buttons: 0,
             next_seq: 1,
@@ -3012,8 +3056,17 @@ impl ClientCore {
     /// carry two 30 Hz ticks would otherwise decay twice as fast as one
     /// that carried one.
     pub fn advance(&mut self, dt_ms: f64) -> u32 {
+        self.now_ms += dt_ms;
+        // The playout delay slews toward its jitter-derived target
+        // (netcode v2 S5): floor + K jitters of margin, bounded by the
+        // rails, moved slowly enough that the slide is beneath notice.
+        let lo = f64::from(sim_core::limits::PLAYOUT_MIN_TICKS);
+        let hi = f64::from(sim_core::limits::PLAYOUT_MAX_TICKS);
+        let target = (lo + self.jitter_ms * PLAYOUT_JITTER_K / clock::TICK_MS).clamp(lo, hi);
+        let max_step = PLAYOUT_SLEW_PER_S * dt_ms / 1000.0;
+        self.playout_ticks += (target - self.playout_ticks).clamp(-max_step, max_step);
         let steps = self.clock.advance(dt_ms);
-        self.predict.decay_error();
+        self.predict.decay_error(dt_ms);
         for _ in 0..steps {
             let frame = InputFrame {
                 seq: self.next_seq,
@@ -3077,8 +3130,11 @@ impl ClientCore {
         self.input_due = false;
         let (ack, ack_bits) = self.view.ack_fields();
         let tail = self.predict.tail();
-        let first_tick = self.clock.client_tick.wrapping_sub(tail.len() as u32);
-        let mut dg = InputDatagram::new(ack, ack_bits, first_tick);
+        // The playout report (wire v61): the delay this client actually
+        // renders remotes at, rounded to the tick, so the server's
+        // lag-comp favour prices the past THIS player sees rather than
+        // the old constant. The constructor saturates it to the field.
+        let mut dg = InputDatagram::new(ack, ack_bits, self.playout_ticks.round() as u8);
         for f in tail {
             if dg.push(*f).is_err() {
                 break; // tail is wire-capped already; defensive only
@@ -3101,7 +3157,13 @@ impl ClientCore {
                 };
                 let header = snap.header;
                 if header.baseline_age == 0 {
-                    self.interp.clear();
+                    // The keyframe restarts the entity SET, never the
+                    // motion history (netcode v2 S2): drop the ids it
+                    // does not name, keep the sample rings of the ones it
+                    // does. This was `interp.clear()`, which froze then
+                    // teleported every remote body on every ack gap —
+                    // the gap's own recovery packet was the snap.
+                    self.interp.retain_present(snap.entities());
                 }
                 for &id in snap.removed() {
                     self.interp.remove(id);
@@ -3111,7 +3173,30 @@ impl ClientCore {
                         self.interp.push(header.tick, e);
                     }
                 }
-                self.clock.on_snapshot(header.tick, header.nudge);
+                // The jitter estimator eats every applied snapshot's
+                // arrival (netcode v2 S5): wall gap minus tick gap is the
+                // delay variation, smoothed at RFC 3550's gain. Feeding it
+                // APPLIED snapshots only means a reordered stale datagram
+                // cannot spike it.
+                if self.have_arrival {
+                    let wall = self.now_ms - self.last_arrival_ms;
+                    let ticks = f64::from(header.tick.wrapping_sub(self.last_arrival_tick));
+                    let d = wall - ticks * clock::TICK_MS;
+                    self.jitter_ms += (d.abs() - self.jitter_ms) * JITTER_GAIN;
+                }
+                self.last_arrival_ms = self.now_ms;
+                self.last_arrival_tick = header.tick;
+                self.have_arrival = true;
+                if self
+                    .clock
+                    .on_snapshot(header.tick, header.nudge, header.buffered_depth)
+                {
+                    // A hard resync is a tick discontinuity: the next
+                    // arrival gap would read as one enormous jitter and
+                    // max the buffer for nothing. Start the estimator's
+                    // pairing over instead.
+                    self.have_arrival = false;
+                }
                 if let Some(own) = self.view.get(self.player_id).copied() {
                     self.predict.reconcile(
                         &own,
@@ -3146,9 +3231,20 @@ impl ClientCore {
         }
     }
 
-    /// The float server tick remote entities render at.
+    /// The float server tick remote entities render at: the server
+    /// estimate minus the ADAPTIVE playout delay (netcode v2 S5). The
+    /// delay starts at `sim_core::limits::INTERP_DELAY_TICKS` — still the
+    /// one home of the default, which is what the interp-delay pin in
+    /// `tests/interp_capacity.rs` now checks — and breathes between the
+    /// rails with measured jitter.
     pub fn render_tick(&self) -> f64 {
-        self.clock.server_est - f64::from(sim_core::limits::INTERP_DELAY_TICKS)
+        self.clock.server_est - self.playout_ticks
+    }
+
+    /// The current playout delay in ticks (HUD, and S5b reports it to the
+    /// server so lag-comp favour prices the delay actually in use).
+    pub fn playout_ticks(&self) -> f64 {
+        self.playout_ticks
     }
 }
 
@@ -3163,6 +3259,56 @@ mod tests {
 
     fn core() -> ClientCore {
         ClientCore::new(1, 0x107, 0)
+    }
+
+    /// The playout delay breathes with measured jitter and never leaves
+    /// its rails (netcode v2 S5): a smooth link settles it on the floor,
+    /// a tick of jitter buys two ticks of buffer above it, and the slew
+    /// takes seconds — a slide beneath notice — not a frame.
+    #[test]
+    fn the_playout_delay_slews_between_its_rails() {
+        let mut c = core();
+        assert!(
+            (c.playout_ticks() - 4.0).abs() < 1e-9,
+            "starts at the shipped INTERP_DELAY_TICKS default"
+        );
+        // A clean link: jitter 0, target = floor. Ten seconds of frames.
+        for _ in 0..600 {
+            c.advance(1000.0 / 60.0);
+        }
+        assert!(
+            (c.playout_ticks() - f64::from(sim_core::limits::PLAYOUT_MIN_TICKS)).abs() < 0.05,
+            "smooth link must settle on the floor, at {}",
+            c.playout_ticks()
+        );
+        // One tick of measured jitter: floor + two jitters = 4 ticks.
+        c.jitter_ms = clock::TICK_MS;
+        for _ in 0..600 {
+            c.advance(1000.0 / 60.0);
+        }
+        assert!(
+            (c.playout_ticks() - 4.0).abs() < 0.05,
+            "a tick of jitter buys two of buffer, at {}",
+            c.playout_ticks()
+        );
+        // Absurd jitter pins at the ceiling, not beyond it.
+        c.jitter_ms = 1_000.0;
+        for _ in 0..1200 {
+            c.advance(1000.0 / 60.0);
+        }
+        assert!(
+            (c.playout_ticks() - f64::from(sim_core::limits::PLAYOUT_MAX_TICKS)).abs() < 0.05,
+            "the ceiling binds, at {}",
+            c.playout_ticks()
+        );
+        // And the slew is a rate: one frame moves it imperceptibly.
+        c.jitter_ms = 0.0;
+        let before = c.playout_ticks();
+        c.advance(1000.0 / 60.0);
+        assert!(
+            (before - c.playout_ticks()).abs() < 0.01,
+            "a single frame slid the world by a visible amount"
+        );
     }
 
     /// Every `APPLIED_*` flag of word 0, in bit order. A new flag added

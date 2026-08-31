@@ -139,6 +139,30 @@ bodies read as near-black silhouettes against lit ground, where the second
 run's read as ordinary brown. Different frames, different distances; it may
 be exposure and it may be nothing. Someone with the frames open should look
 before it becomes a lighting item.
+## 0nc · Netcode v2 landed — what the overhaul still owes *(client+server lane)*
+
+All five slices shipped 2026-08-31 (DECISIONS.md dated row + four §open
+rows; wire v60→v61): starved-reuse decay + throttle double-execute +
+depth/repeat gauges (S1), 30 Hz snapshots + interp history across
+keyframes + the client datagram ring (S2), time-based correction
+smoothing + the minor-correction ledger (S3), the depth controller (S4),
+estimated velocity + bounded extrapolation + adaptive playout with the
+v61 favour report (S5), and the `netsim` shard knob. What remains:
+
+1. **Feel it at the bar.** `netsim = "30,10,1"` on a dev shard, two
+   humans (the stop test and the strafing-bro test are the two symptoms
+   the overhaul was cut against). Every gate here ran at zero RTT plus
+   the netsim boot gate; the operator's eyes are the visual gate's
+   sibling for feel.
+2. **NetLine gauges.** The F4 net row still shows err/confirm/mispredict
+   only — `buffered_depth`, `repeat_count`, `playout_ticks()`,
+   `jitter_ms`, `corrections_minor`, `DgRing::dropped` all exist and
+   nothing draws them (`render/hud.rs:2145`).
+3. **The event lane is not shimmed** (netsim §open row states the skew)
+   and the stream lane leads its snapshots by lat_ms under netsim.
+4. `RESYNC_AHEAD_TICKS = 3` is still the blind initial guess; with the
+   depth controller holding steady-state it only matters for the first
+   second after join/resync. Measure before touching.
 
 ## 0cs · The fight at population — what the combat storm left *(sim lane)*
 
@@ -939,9 +963,11 @@ The first two need a wire field (`DECISIONS.md` §open):
    two is wrong; the harness's "this leans optimistic" argument rests on
    it, so settle it before quoting that argument again.
 2. **The jitter buffer's held-item timing.** `Client::consume_input`
-   (`server/src/client.rs:576`) executes one buffered frame per tick, so
-   the frame carrying `charge_slot` need not be in force when the throw
-   lands. Cannot be the whole story: 27 charges did arm.
+   (`server/src/client.rs`) lets at most one frame's BUTTONS act per tick
+   (a throttle tick moves the body with both frames since netcode v2, but
+   the older frame's buttons still never act), so the frame carrying
+   `charge_slot` need not be in force when the throw lands. Cannot be the
+   whole story: 27 charges did arm.
 
 
 ## 0r · A blast is silent and cannot be stopped *(systems + audio lanes)*
@@ -1375,6 +1401,32 @@ Items 1–3 are struck and gated (`sim-core/tests/relief.rs`,
    mosaic is not itself a defect; the boundary still never reads as grass.
 
 
+## 0cards · The population wears photographs now — what is left *(client lane)*
+
+Landed: grass cards (`clutter::card`) and bush leaf cards
+(`props::bush_card_mesh`), both alpha-masked quads over baked CC0 atlases
+(`ci/bake_{grass,bush}_atlas.py`, Poly Haven `grass_medium_01` / `shrub_01`).
+`render::mipmap::Filter::Mask` preserves their coverage down the chain, which
+a box filter does not — measured 0.30× after one halving on a fixture built to
+match. Gates: `tests/{grass_card,bush_card}.rs`, `tests/mipmap.rs`.
+
+1. **The conifer's needle mask is still GENERATED** (`tree::needle_image`) and
+   `reference/PLANTS.md` §6.4 calls it "the weakest link in the canopy today".
+   Set 9.5 (Conifer sprig atlas, 14 rows) is fetched-and-waiting; the swap is
+   an atlas plus a `base_color` change, because the generated mask is white
+   and a photograph brings its own colour.
+2. **Standing litter is still authored geometry** — `stand`/`blade` with a
+   `Ramp`, which is what grass was. Set 9.8 (Fern / frond atlas) is fetched.
+   `PLANTS.md` §6.3 says a frond "is a shape a branch generator has no grammar
+   for … a texture-plus-quad job in `clutter.rs`'s existing bake", which is
+   now exactly the shape `card` already has.
+3. **The outer ring's tree hulls are untextured** (§0out item 1) and are the
+   largest flat-green area left in a frame.
+4. ⚠ **`tree::needle_mips` takes the midpoint of its bisection** where
+   `mipmap::preserve_coverage` now takes `hi`. Latent, not live — its alpha is
+   a soft stamp so the step is small — but it is the same bug, and its own
+   gate pins the numbers it currently produces.
+
 ## 0w · The props' remaining gaps — darks, density, unread roughness *(client lane)*
 
 1. **The p10 gap, still the top visual one** — 71.0 against a reference 41.0
@@ -1387,9 +1439,19 @@ Items 1–3 are struck and gated (`sim-core/tests/relief.rs`,
 3. **The dirt skirt is nobody's.** `props::SINK_M` (0.06 m) sinks every prop
    and `tests/greybox.rs` evaluates "nothing floats"; crowding where a
    boulder meets turf is still missing (`ART.md` rule 2).
-4. **The far mesh speckles.** Grazing-angle aliasing on the 8 m LOD;
-   `textures.rs` pins `anisotropy_clamp: 4` for a browser reason that did not
-   survive the port (`ART.md` §7) — a proposal, not an edit.
+4. **The far mesh speckles — LANDED, and the cause was not the one written
+   here.** This item said grazing-angle aliasing on the 8 m LOD and proposed
+   raising `anisotropy_clamp: 4`. That edit would have changed **nothing**:
+   anisotropic filtering *is* a mip-selection technique — it takes several
+   taps and reads them from a level chosen for the minor axis — and every
+   `.jpg` in `assets/textures/` reached the GPU with `mip_level_count = 1`,
+   so every tap read level 0. Bevy 0.18 builds no chain for an ordinary image
+   format (`ImageLoaderSettings` has no such setting; only KTX2/DDS carry one
+   from the file). `ground_splat.wgsl`'s careful `textureSampleGrad` gradients
+   were selecting among a chain of length one, and SMAA cannot touch it —
+   minification aliasing has no edge to find. Fixed by `render/mipmap.rs`,
+   gated by `tests/mipmap.rs`. The aniso pin stays as it was; with a chain
+   under it, it now does what its comment claims.
 5. **Roughness maps unread — ten now** (`assets/textures/*_rough.jpg`).
    Blocked on an ORM packing step: `metallic_roughness_texture` is
    glTF-packed and its B channel is metallic (`render/props.rs:1090`).
