@@ -50,9 +50,15 @@ pub const MAX_SNAPSHOT_ENTITIES: usize = 64;
 /// `state_hash` cadence in ticks (DESIGN.md §7).
 pub const STATE_HASH_INTERVAL: u64 = 32;
 
-/// Snapshot cadence: one snapshot every this many sim ticks — 15 Hz at the
-/// 30 Hz tick (DESIGN.md §5.3).
-pub const SNAPSHOT_INTERVAL_TICKS: u64 = 2;
+/// Snapshot cadence: one snapshot every this many sim ticks — every tick,
+/// 30 Hz, since netcode v2 S2 (DECISIONS.md 2026-08-31; was 2, 15 Hz).
+/// 15 Hz was the floor under every remote-motion defect: it set the
+/// minimum interpolation buffer, halved the sample density every lerp
+/// worked from, and made one lost datagram a 133 ms hole. The worst-case
+/// datagram is unchanged (~1.06 KB) and doubles in frequency, ~254 kbit/s
+/// against §2.1's ~300 kbit/s budget; typical traffic is a fraction of
+/// worst case (delta records, a few dozen entities).
+pub const SNAPSHOT_INTERVAL_TICKS: u64 = 1;
 
 /// AOI v0 radii in centimeters (DESIGN.md §5.5): subscribe entering at
 /// 176 m, unsubscribe leaving at 208 m — hysteresis so edge-dancers don't
@@ -123,10 +129,17 @@ const _: () = assert!(
 );
 
 /// Per-client ring of sent snapshots the server deltas against
-/// (NETCODE.md §3: "the last 32 sent states"). An ack that falls outside
-/// it drops the baseline to the canonical zero-state — recovery is the
-/// same code path, not a special one.
-pub const SENT_SNAPSHOT_RING: usize = 32;
+/// (NETCODE.md §3). An ack that falls outside it drops the baseline to
+/// the canonical zero-state — recovery is the same code path, not a
+/// special one. **64 since netcode v2 S2** (was 32): the ring is sized in
+/// SNAPSHOTS while its purpose — the baseline window, and the
+/// aim-staleness corroboration window derived from it — is wall time, so
+/// doubling the snapshot rate without doubling the ring would have halved
+/// both to ~1 s and raised zero-state fallbacks under the same loss.
+/// Doubling keeps the window at ~2.1 s and `AIM_STALE_CEILING_TICKS` at
+/// its measured 80. Cost: ~2.3 KB per slot per client, allocation at
+/// construction only (wall 2).
+pub const SENT_SNAPSHOT_RING: usize = 64;
 
 /// Staleness ceiling (NETCODE.md §3): an interest-set player may never
 /// exceed this many unsent snapshots — at the ceiling it preempts the
@@ -144,6 +157,17 @@ pub const INPUT_RING_CAP: usize = 32;
 /// Overflow policy: **skip** — a client not draining skips a snapshot
 /// (DESIGN.md §4); the next one supersedes it anyway.
 pub const SNAPSHOT_RING_CAP: usize = 4;
+
+/// The client's inbound datagram ring (netcode v2 S2): snapshots held
+/// between render frames, drained in arrival order every `Session::pump`.
+/// Overflow policy: **drop-oldest, counted** — past a ~266 ms frame stall
+/// at the 30 Hz snapshot rate, older world states are the ones a stalled
+/// client least wants to draw. This replaced a depth-one latest-wins
+/// `watch`, which was the right shape at 15 Hz for the OWN body (a
+/// snapshot replaces its predecessor) and starved the interpolator of the
+/// in-between samples every other body's motion is reconstructed from —
+/// at ≤ 30 fps, half of a 30 Hz snapshot stream never reached it.
+pub const CLIENT_DG_RING: usize = 8;
 
 /// Connection-lifecycle control rings (accept loop → sim, and the
 /// graveyard back). Overflow policy: **refuse** the join / retry the
@@ -228,8 +252,13 @@ pub const REWIND_TICKS: usize = 8;
 pub const REWIND_MAX_TICKS: u8 = 7;
 
 /// The interpolation delay both ends agree on: remote bodies are drawn this
-/// many ticks in the past (DESIGN.md §5.7, NETCODE.md §3 — 2 x the 66.7 ms
-/// snapshot interval).
+/// many ticks in the past. **Unchanged at 4 across netcode v2 S2 on
+/// purpose**: the same 133 ms of wall delay is now FOUR snapshot intervals
+/// instead of two, and the buffer is sized in intervals (Valve's
+/// `cl_interp_ratio` doctrine — ratio 2 is the bare minimum and survives
+/// zero dropped packets, ratio 4 survives two consecutive). S5 makes this
+/// adaptive; until then the fixed number errs toward robustness at
+/// unchanged latency.
 ///
 /// It lives **here** rather than in the client because the *server* needs it
 /// to know how stale a client's aim is
@@ -243,7 +272,11 @@ pub const INTERP_DELAY_TICKS: u8 = 4;
 
 /// Correction for the age of the newest snapshot a client had applied when
 /// it made an input. Snapshots land every `SNAPSHOT_INTERVAL_TICKS`, so the
-/// expected age of the newest one is half of that — **derived, not picked**.
+/// expected age of the newest one is half of that — **derived, not
+/// picked**, and at interval 1 the floor of that half is **0** (the
+/// expected age is 0.5 ticks and a bias is an integer; flooring is the
+/// generous-to-the-shooter direction by half a tick, which the
+/// `REWIND_MAX_TICKS` clamp still bounds).
 ///
 /// Written as the number with its derivation asserted beside it rather than
 /// substituted for it, which is `AOI_RANK_ENTER`'s shape above and for
@@ -254,7 +287,7 @@ pub const INTERP_DELAY_TICKS: u8 = 4;
 /// comment.
 ///
 /// Proposed default, DECISIONS.md §open ("lag compensation v0 — the ring").
-pub const REWIND_ACK_BIAS_TICKS: u8 = 1;
+pub const REWIND_ACK_BIAS_TICKS: u8 = 0;
 const _: () = assert!(
     REWIND_ACK_BIAS_TICKS as u64 == SNAPSHOT_INTERVAL_TICKS / 2,
     "REWIND_ACK_BIAS_TICKS must stay half the snapshot interval — the \

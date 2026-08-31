@@ -3086,7 +3086,13 @@ impl ClientCore {
                 };
                 let header = snap.header;
                 if header.baseline_age == 0 {
-                    self.interp.clear();
+                    // The keyframe restarts the entity SET, never the
+                    // motion history (netcode v2 S2): drop the ids it
+                    // does not name, keep the sample rings of the ones it
+                    // does. This was `interp.clear()`, which froze then
+                    // teleported every remote body on every ack gap —
+                    // the gap's own recovery packet was the snap.
+                    self.interp.retain_present(snap.entities());
                 }
                 for &id in snap.removed() {
                     self.interp.remove(id);

@@ -19,9 +19,19 @@ use protocol::EntityState;
 use sim_core::limits::{MAX_MOBS, MAX_PLAYERS};
 use sim_core::movement::{POS_XZ_Q, POS_Y_Q};
 
-/// Per-entity history depth: 16 samples ≈ 1 s at 15 Hz (proposed default,
-/// DECISIONS.md §open, client fill-ins). Overflow policy: drop oldest.
+/// Per-entity history depth: 16 samples ≈ 0.5 s at 30 Hz (proposed
+/// default, DECISIONS.md §open, client fill-ins). Overflow policy: drop
+/// oldest.
 const HISTORY: usize = 16;
+
+/// The widest tick gap `sample` will lerp across (netcode v2 S2). Wider
+/// straddles — a stall, a loss burst past the history, the far side of a
+/// keyframe that kept this body's ring — read as a teleport and take the
+/// newer sample, because a lerp across a gap is a body sliding through
+/// walls at gap-speed. Twice `INTERP_DELAY_TICKS`: anything the playout
+/// delay was sized to ride out lerps as before, anything past double it
+/// is not motion the buffer ever promised to reconstruct.
+const MAX_LERP_SPAN_TICKS: u32 = sim_core::limits::INTERP_DELAY_TICKS as u32 * 2;
 
 /// Entities this table can hold at once — **the world's size, not the
 /// wire's**, and the distinction is the whole reason the constant exists.
@@ -195,7 +205,27 @@ impl Interp {
         }
     }
 
-    /// Zero-state snapshot: the authoritative restart of the entity set.
+    /// Zero-state snapshot (netcode v2 S2): the keyframe restarts the
+    /// ENTITY SET, not the motion history. This drops every id the
+    /// keyframe does not name and keeps the sample rings of the ones it
+    /// does — `clear()` here wiped them all, so every ack gap froze every
+    /// remote body for a snapshot interval and then teleported it, which
+    /// is most of what "players snap around the screen" was. The
+    /// positions already held are not made wrong by a baseline reset:
+    /// that reset is about delta-coding, and the interpolator never
+    /// delta-codes. Bounded at `INTERP_SLOTS × MAX_SNAPSHOT_ENTITIES`
+    /// compares, keyframes only.
+    pub fn retain_present(&mut self, present: &[EntityState]) {
+        for s in 0..INTERP_SLOTS {
+            if self.used[s] && !present.iter().any(|e| e.id == self.ids[s]) {
+                self.used[s] = false;
+                self.len[s] = 0;
+            }
+        }
+    }
+
+    /// Full restart — session start and hard resync, where the history
+    /// genuinely is from another life. Keyframes use `retain_present`.
     pub fn clear(&mut self) {
         self.used = [false; INTERP_SLOTS];
         self.len = [0; INTERP_SLOTS];
@@ -238,6 +268,19 @@ impl Interp {
             let s1 = self.get(slot, i);
             let s0 = self.get(slot, i - 1);
             if at >= s0.tick as f64 {
+                // A straddle wider than the buffer's own design depth is
+                // not motion — it is a gap (a stall, a stretch of loss, a
+                // respawn) — and lerping across it would slide the body
+                // through the world at whatever speed the gap implies.
+                // Take the newer sample outright: a teleport reads as a
+                // teleport (the reference fixed the same "snapback near
+                // your corpse" defect, devblog 74). `live` stays true —
+                // the sample is real, only the path to it is unknown.
+                if s1.tick - s0.tick > MAX_LERP_SPAN_TICKS {
+                    dequant(s1, out);
+                    out.live = true;
+                    return true;
+                }
                 let span = (s1.tick - s0.tick) as f64;
                 let t = ((at - s0.tick as f64) / span) as f32;
                 let mut a = RemoteState::default();
@@ -386,6 +429,61 @@ mod tests {
         assert!(it.sample(5, 30.0, &mut r));
         assert!(!r.live, "clamped to newest must not read live");
         assert!((r.x - 2000.0 * 0.03).abs() < 1e-3);
+    }
+
+    /// **A keyframe keeps the motion history of everyone it names**
+    /// (netcode v2 S2). The old `clear()`-on-keyframe wiped every sample
+    /// ring, so the recovery packet after an ack gap was itself the freeze
+    /// -then-teleport the player saw. `retain_present` drops only the ids
+    /// the keyframe does not name.
+    #[test]
+    fn a_keyframe_keeps_named_history_and_drops_the_rest() {
+        let mut it = Interp::new();
+        it.push(10, &ent(5, 1000, 0));
+        it.push(12, &ent(5, 2000, 0));
+        it.push(12, &ent(9, 4000, 0));
+        // The keyframe names 5 and not 9.
+        it.retain_present(&[ent(5, 2000, 0)]);
+        let mut r = RemoteState::default();
+        assert!(
+            it.sample(5, 11.0, &mut r) && r.live,
+            "the named body lost its history to the keyframe"
+        );
+        assert!(
+            (r.x - 1500.0 * 0.03).abs() < 1e-3,
+            "history intact, mid-lerp"
+        );
+        assert!(!it.sample(9, 12.0, &mut r), "the unnamed body is gone");
+        assert_eq!(it.ids().count(), 1);
+    }
+
+    /// **A straddle wider than the buffer's design depth is a teleport,
+    /// not motion** — the newer sample wins outright instead of the body
+    /// sliding across the gap at gap-speed (a respawn would glide from
+    /// the corpse to the beach through every wall between).
+    #[test]
+    fn a_wide_gap_jumps_instead_of_sliding() {
+        let mut it = Interp::new();
+        it.push(10, &ent(5, 1000, 0));
+        it.push(10 + MAX_LERP_SPAN_TICKS + 5, &ent(5, 50_000, 0));
+        let mut r = RemoteState::default();
+        // Sampled mid-gap: the lerp would put the body in the void between.
+        assert!(it.sample(5, 12.0, &mut r));
+        assert!(r.live, "a real sample is live even across a gap");
+        assert!(
+            (r.x - 50_000.0 * 0.03).abs() < 1e-3,
+            "mid-gap sample slid ({}) instead of jumping to the newer side",
+            r.x
+        );
+        // A straddle at exactly the design depth still lerps.
+        let mut it = Interp::new();
+        it.push(10, &ent(5, 1000, 0));
+        it.push(10 + MAX_LERP_SPAN_TICKS, &ent(5, 2000, 0));
+        assert!(it.sample(5, 10.0 + MAX_LERP_SPAN_TICKS as f64 / 2.0, &mut r));
+        assert!(
+            (r.x - 1500.0 * 0.03).abs() < 1e-3,
+            "an in-depth straddle stopped lerping"
+        );
     }
 
     #[test]

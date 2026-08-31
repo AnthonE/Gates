@@ -405,8 +405,13 @@ fn the_constants_hold_their_stated_relationships() {
         )
     };
     assert_eq!(Rewind::max_back(), REWIND_MAX_TICKS);
-    // Derived, not picked: half the snapshot interval.
-    assert_eq!(REWIND_ACK_BIAS_TICKS as u64 * 2, SNAPSHOT_INTERVAL_TICKS);
+    // Derived, not picked: half the snapshot interval, floored — the
+    // expected age of the newest applied snapshot. Restated from
+    // `bias * 2 == interval` at netcode v2 S2, because that spelling is
+    // satisfiable by NO integer at an odd interval (interval 1 wants
+    // bias 0.5); the floor is the generous-to-the-shooter direction by
+    // half a tick, bounded by the `REWIND_MAX_TICKS` clamp as ever.
+    assert_eq!(REWIND_ACK_BIAS_TICKS as u64, SNAPSHOT_INTERVAL_TICKS / 2);
     // The interpolation delay now lives here because the SERVER needs it.
     // The client's `f64` spelling of it is checked from the other side, in
     // `client-core/tests/interp_capacity.rs` — `sim-core` cannot depend on

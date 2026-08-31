@@ -618,12 +618,14 @@ fn the_throttle_catchup_stays_bit_exact() {
         "the buffer never ran deep (deepest {deepest}) — the throttle was \
          not exercised and this test proved nothing"
     );
-    // Steady-state tail: the frame produced this tick plus at most one
-    // awaiting its snapshot (15 Hz reporting of a 30 Hz clock) — the
-    // sprint's ten-frame backlog is gone, so nothing was left unexecuted
-    // and nothing was gap-jumped (zero loss makes a jump impossible).
+    // Steady-state tail: the dilation controller parks the buffer inside
+    // the nudge's Ok band (depth ≤ 2 after consume), and one more frame is
+    // always in flight — so ≤ 3 unacked is home, and the sprint's
+    // ten-frame backlog is what must be gone. Nothing was gap-jumped
+    // (zero loss makes a jump impossible), so every frame that left the
+    // tail was executed.
     assert!(
-        c.predict.tail().len() <= 2,
+        c.predict.tail().len() <= 3,
         "the backlog never drained ({} frames still unacked)",
         c.predict.tail().len()
     );

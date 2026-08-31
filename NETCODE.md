@@ -35,7 +35,7 @@ pipeline. Nothing rides the snapshot path unless it moves.**
 
 | class | what's in it | changes | pipeline | steady-state cost |
 |---|---|---|---|---|
-| **D — dynamic** | awake players, projectiles in flight, items mid-physics | every tick | unreliable datagrams: delta snapshots vs acked baseline, priority-filled, 15 Hz | per-tick, bounded by datagram budget |
+| **D — dynamic** | awake players, projectiles in flight, items mid-physics | every tick | unreliable datagrams: delta snapshots vs acked baseline, priority-filled, 30 Hz (netcode v2 S2; was 15) | per-tick, bounded by datagram budget |
 | **S — structural** | building blocks, doors, tool cupboards, storage, settled items, death backpacks, **sleepers** | discrete events (placed, damaged, opened, looted, slept) | reliable **chunk event streams** with version numbers (§5) | zero between events |
 | **G — global** | time of day, wipe clock, shard notices | slow | a few bytes in every snapshot header + reliable notices | ~free |
 
@@ -165,8 +165,9 @@ Refinements over `DESIGN.md` §5, with the canon's shipped parameters:
   carries `snapshot_ack: u16` (newest snapshot tick received) plus
   `ack_bits: u32` (bit n ⇒ tick `ack − n` also received), so every ack is
   repeated ~32×; ack loss is a non-event. The server deltas each client
-  against the **newest acked baseline** in its ring of the last 32 sent
-  states (~2 s at 15 Hz). [gafferongames.com/post/reliable_ordered_messages]
+  against the **newest acked baseline** in its ring of the last 64 sent
+  states (~2 s at 30 Hz; the ring doubled with the rate at netcode v2 S2
+  so the window held). [gafferongames.com/post/reliable_ordered_messages]
 - **Resync is not a special path** — the Quake 3 trick: if a client's ack
   falls outside the ring (loss burst, tab-out, join), the baseline becomes
   the **canonical zero-state** and the same delta encoder produces an
@@ -200,8 +201,10 @@ Refinements over `DESIGN.md` §5, with the canon's shipped parameters:
   [gafferongames.com/post/state_synchronization ·
   gafferongames.com/post/packet_fragmentation_and_reassembly]
 - **Interpolation, with velocity.** Remote entities render 133 ms in the
-  past by default — 2 × the 66.7 ms snapshot interval, Source's shipped
-  `cl_interp` rule, tolerating exactly one lost snapshot — widening
+  past by default — since netcode v2 S2 that is FOUR 33.3 ms snapshot
+  intervals (Valve's ratio doctrine: ratio 2 survives zero drops, 4
+  survives two consecutive) at the same wall latency the old 2 × 66.7 ms
+  bought — widening
   adaptively to 200 ms on lossy links (Gaffer's tolerate-two rule) and
   floored at 100 ms. Interpolation is **Hermite using the snapshot's
   velocity**, not linear: at ≤ 15 Hz linear visibly pulses; Hermite at the
@@ -550,7 +553,7 @@ this is better.
 |---|---|
 | **the tick itself, 100 clients in one AOI cell, all acking, all swinging** | **~0.8 ms of the 33.3 ms budget** — sim ~0.15, interest + events + drip ~0.24, snapshot encode ~0.43. Measured 2026-08-11, `cargo run --release -p server --bin profile`; the periodic whole-world passes are `state_hash` 85 µs one tick in 32 and `encode_world` 24 µs one tick in 1,800. The one row here that was never measured, and the reason the AOI scan needs no spatial structure |
 | class D entities in a client's interest set, typical / cap | ~15 / 64 |
-| per-client downstream, steady | ≤ 20 kB/s (snapshots) + bursts on approach (chunk streams) |
+| per-client downstream, steady | ≤ 32 kB/s worst-case (30 Hz × ≤ 1.06 kB; typical is delta records over a few dozen entities, far less) + bursts on approach (chunk streams) |
 | chunk full-state, dense base chunk | ≤ 24 kB (1,500 blocks × 16 B) |
 | megabase approach burst | ≤ 100 kB across ~4 chunks, nearest-first, stream-paced |
 | structural events, raid storm, per subscriber | ≤ 40 events/s after coalescing |

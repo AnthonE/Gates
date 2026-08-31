@@ -281,8 +281,11 @@ fn the_first_real_ack_is_measured_immediately() {
 fn an_ack_of_a_snapshot_never_sent_is_not_measured() {
     let (mut core, stats) = shard();
     let s = advance_to_snapshot(&mut core, &stats);
-    // Snapshots land on even ticks (`SNAPSHOT_INTERVAL_TICKS`), so an odd
-    // tick names one that cannot exist.
+    // One past the newest tick ever snapshotted: a snapshot from the
+    // FUTURE, which cannot have been sent. (This read "snapshots land on
+    // even ticks, so an odd tick names one that cannot exist" until
+    // netcode v2 S2 put a snapshot on every tick — the future tick is the
+    // uncorroborated claim that survives any cadence.)
     let fake = (s + 1) as u16;
     let mut dg = InputDatagram::new(fake, 0, 1);
     dg.push(frame(1)).expect("fits");
@@ -447,16 +450,18 @@ fn ack_only(core: &mut ShardCore, tick_acked: u64) {
 /// **5 · The formula, exhaustively, at the one function that owns it.**
 ///
 /// `favour = min((T − S) + INTERP_DELAY_TICKS − REWIND_ACK_BIAS_TICKS,
-/// REWIND_MAX_TICKS)`, which at the shipped constants is `min(raw + 3, 7)`.
+/// REWIND_MAX_TICKS)`, which at the shipped constants is `min(raw + 4, 7)`
+/// (the flat add grew by one at netcode v2 S2: the bias floored to 0 with
+/// the 30 Hz interval while the interp delay deliberately held at 4).
 /// Swept across the clamp rather than sampled either side of it, because
 /// the two defects this catches are an off-by-one at the ceiling and a
 /// dropped term — and a two-point test is green under both if the points
 /// are chosen badly.
 #[test]
-fn the_favour_is_the_measurement_plus_three_clamped_at_seven() {
+fn the_favour_is_the_measurement_plus_four_clamped_at_seven() {
     let bias = INTERP_DELAY_TICKS - REWIND_ACK_BIAS_TICKS;
     assert_eq!(
-        bias, 3,
+        bias, 4,
         "the shipped constants moved; the sweep below is written against them"
     );
     for raw in 0..=20u16 {
@@ -467,10 +472,10 @@ fn the_favour_is_the_measurement_plus_three_clamped_at_seven() {
             "a {raw}-tick-old aim minted the wrong favour"
         );
     }
-    // The clamp is reached at raw 4 and never exceeded, which is the whole
+    // The clamp is reached at raw 3 and never exceeded, which is the whole
     // promise `REWIND_MAX_TICKS` makes to the victim.
-    assert_eq!(stats::favour_for(3, Some(0)), 6);
-    assert_eq!(stats::favour_for(4, Some(0)), REWIND_MAX_TICKS);
+    assert_eq!(stats::favour_for(2, Some(0)), 6);
+    assert_eq!(stats::favour_for(3, Some(0)), REWIND_MAX_TICKS);
     assert_eq!(
         stats::favour_for(AIM_STALE_CEILING_TICKS, Some(0)),
         REWIND_MAX_TICKS
@@ -518,7 +523,7 @@ fn an_unmeasurable_aim_mints_no_favour() {
 #[test]
 fn the_shard_mints_a_favour_through_the_real_path() {
     let (mut core, stats) = shard();
-    // A fresh aim — one tick of staleness — is still worth three ticks of
+    // A fresh aim — one tick of staleness — is still worth four ticks of
     // rewind, because the client drew its remotes INTERP_DELAY_TICKS back
     // even on a perfect link. This is the case a "favour == staleness"
     // mistake gets wrong while looking sane.
@@ -526,23 +531,23 @@ fn the_shard_mints_a_favour_through_the_real_path() {
     assert_eq!(raw, 1);
     assert_eq!(
         favour_reading(&stats),
-        (1, 4, 0, 0),
+        (1, 5, 0, 0),
         "the shard executed a frame and granted it no rewind — lag compensation is off"
     );
 
-    // A slower link: raw 2 ⇒ 5, still under the clamp, so `favour_clamped`
+    // A slower link: raw 2 ⇒ 6, still under the clamp, so `favour_clamped`
     // must stay put. A mint that clamped everything would pass the line
     // above and fail here.
     let raw = measure_one(&mut core, &stats, 2, 2);
     assert_eq!(raw, 2);
-    assert_eq!(favour_reading(&stats), (2, 9, 0, 0));
+    assert_eq!(favour_reading(&stats), (2, 11, 0, 0));
 
     // Past the clamp: granted 7, and counted as clamped.
     let raw = measure_one(&mut core, &stats, 3, 9);
     assert_eq!(raw, 9);
     assert_eq!(
         favour_reading(&stats),
-        (3, 16, 1, 0),
+        (3, 18, 1, 0),
         "a 9-tick-old aim either got more than REWIND_MAX_TICKS or was not counted as clamped"
     );
 }

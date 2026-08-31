@@ -182,12 +182,17 @@ fn the_table_is_sized_on_the_world_and_says_so() {
 /// declaration.
 #[test]
 fn the_interp_delay_has_one_home_and_the_client_reads_it() {
-    // The derivation the number came from (NETCODE.md §3's shipped rule):
-    // 2 x the snapshot interval. If the interval moves, this is the argument
-    // that has to be remade rather than the constant quietly kept.
+    // The derivation, remade at netcode v2 S2 exactly as this comment
+    // demanded: the interval moved 2 → 1 and the delay deliberately did
+    // NOT move with the old 2× rule (which would have thinned the buffer
+    // to 66 ms — the ratio-2 floor that survives zero dropped packets).
+    // The rule now is Valve's, in intervals: **ratio 4** — the same
+    // 133 ms of wall delay it always was, now four snapshots deep, so two
+    // consecutive losses lerp instead of freezing. S5 makes the ratio
+    // adaptive; this assert is the argument holding until then.
     assert_eq!(
         u64::from(sim_core::limits::INTERP_DELAY_TICKS),
-        sim_core::limits::SNAPSHOT_INTERVAL_TICKS * 2
+        sim_core::limits::SNAPSHOT_INTERVAL_TICKS * 4
     );
 
     // A re-typed literal anywhere in `client-core` would pass every other
