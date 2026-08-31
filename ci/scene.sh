@@ -83,6 +83,23 @@ HUD=1
 KEEP=0
 CHARGES=0
 PLAY=0
+# Extra items prepended to every inhabitant's kit, `dev_spawn_kit` syntax.
+#
+# **What it is for is the one question the default kit cannot answer.** The
+# base kit is wood, a box and a lock — the things a bot needs to BUILD — and
+# not one of them has a row in `ui::hold::HELD_MODELS`, so every body in
+# `7-player.png` is correctly empty-handed and the frame says nothing about
+# whether a remote's hand works. Measured on 2026-08-31, which is how this
+# flag came to exist: the first two-player frame this repo has ever taken
+# showed two silhouettes holding nothing, and there was no way to tell that
+# from the failure it looks exactly like.
+#
+#   ./ci/scene.sh --kit "item.hatchet_stone:1"
+#
+# The modelled rows are keyed on `HELD_MODELS`, not on the item id — the
+# hatchet is `item.hatchet_stone`. They are rock, stone hatchet, stone pickaxe, hammer,
+# building_plan, wooden_spear, hunting_bow, torch and revolver.
+KIT_EXTRA=""
 # Seconds the world runs before the camera arrives, and it is doing two jobs.
 #
 # **It is a safety number first.** `dev_spawn` puts every body on one point,
@@ -112,6 +129,7 @@ while [ $# -gt 0 ]; do
     --play)       PLAY=1;          shift ;;
     --settle)     SETTLE="$2";     shift 2 ;;
     --charges)    CHARGES=1;       shift ;;
+    --kit)        KIT_EXTRA="$2";  shift 2 ;;
     --no-hud)     HUD=0;           shift ;;
     --keep)       KEEP=1;          shift ;;
     -h|--help)    sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -158,6 +176,9 @@ trap cleanup EXIT
 # The base still goes up without them: wood is what a foundation costs.
 KIT="item.wood:1000, item.box_small:1, item.lock_code:1"
 [ "$CHARGES" = 0 ] || KIT="item.satchel_charge:1, $KIT"
+# Prepended, so it lands on hotbar slot 0 — which is the slot a bot selects,
+# and therefore the one that reaches the wire as `EntityState::held`.
+[ -z "$KIT_EXTRA" ] || KIT="$KIT_EXTRA, $KIT"
 
 # No save_file and no world_file on purpose: a scene is a fresh island every
 # time. Persisting one would pin this config's seed and content hash into a

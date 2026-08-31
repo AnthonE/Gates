@@ -11,15 +11,20 @@
 //! # It decides nothing
 //!
 //! `RENDER.md` §1, and this is `decal.rs`'s posture one verb over. Every burst
-//! is fired from a fact the SIM already announced — a gather payout, an
+//! is fired from a fact the SIM already announced — an `EV_SWING`, an
 //! `EV_HIT`, an `EV_STRUCT_HIT`, an arrow's `EV_IMPACT` — never from the
-//! button and never from the client's own reading of what is in reach. A
-//! whiff throws nothing because the sim announced nothing, which is the
-//! correct picture and is also why this file has no reach test in it.
+//! button and never from the client's own reading of what is in reach.
+//!
+//! ⚠ **The first of those four was `EV_GATHER` for one commit, and that was
+//! a defect rather than a looser reading of the same fact.** `EV_GATHER`'s
+//! own doc says it announces a *backpack loot* the same way it announces a
+//! node paying out, and deliberately — so emptying a corpse's pack while
+//! facing a tree threw wood chips off the tree, once per slot moved.
+//! [`gather_burst`] carries the correction in full.
 //!
 //! **One seam is honest to state.** Three of the four facts say what was hit
-//! and not *where*: `EV_GATHER` carries an item, `EV_HIT` a victim id,
-//! `EV_STRUCT_HIT` a build address. So the point a burst comes from is
+//! and not *where*: `EV_SWING` carries only the swinger, `EV_HIT` a victim
+//! id, `EV_STRUCT_HIT` a build address. So the point a burst comes from is
 //! recovered from something the client already holds and already trusts for
 //! the same question — the swing pick (`ui::interact::resolve_swing`, the
 //! client's mirror of the sim's own scan, which the prompt has drawn off
@@ -354,6 +359,45 @@ pub fn struck(victim: u32) -> Struck {
     }
 }
 
+/// Where a landed swing's chips come from, or `None` for a swing that hit
+/// nothing.
+///
+/// **A named decision for [`struck`]'s reason**, and it fixes a real defect
+/// in the first cut of this file rather than only tidying it. That cut fired
+/// the gather burst on `Feed::gathered()` being non-empty — a payout — and
+/// `EV_GATHER`'s own doc says what is wrong with that: *"looting a backpack
+/// announces its take the same way, and deliberately"*. So emptying a
+/// corpse's pack while facing a tree threw wood chips off the tree, once per
+/// slot moved.
+///
+/// What replaces it is the sim's own swing fact. `EV_SWING` is pushed by
+/// `gather::swing` **at the cadence gate, before the scan** — *"the only
+/// point in the tree that runs exactly once per swing regardless of what the
+/// swing goes on to find"* — and the server sends a body event to its own
+/// subject unconditionally (`body_event_visible`'s first line), so the
+/// swinger receives their own. Paired with the pick, which is the client's
+/// mirror of the very scan that swing ran, the two say *you swung, and there
+/// was something in reach* — which is the operator's *"when u actually
+/// connect with something"* stated exactly.
+///
+/// **Not gated on a payout**, and that is the other half of the correction: a
+/// barrel that pays nothing, a pack too full to take the wood, and a torch
+/// the node refuses (`REFUSE_G_*`) are all swings that CONNECTED. Chips are a
+/// fact about contact, not about income.
+pub fn gather_burst(swung_this_tick: bool, pick: &crate::ui::interact::SwingPick) -> Option<Burst> {
+    if !swung_this_tick || pick.occupant == 0 {
+        return None;
+    }
+    Some(Burst {
+        at: Vec3::new(pick.x, pick.y + strike_height(pick.occupant), pick.z),
+        // Filled in by the caller, which is the one thing here that needs
+        // the eye: chips come off the face that was struck, and which face
+        // that is depends on where the player is standing.
+        away: Vec3::Y,
+        matter: Matter::of_occupant(pick.occupant),
+    })
+}
+
 /// Where a blow lands up a standing player, as a fraction of their height.
 /// A chest on a 1.8 m figure is 1.12 m, which is the rung `combat`'s own
 /// bands put between the head and the limbs.
@@ -569,22 +613,15 @@ pub fn strike(
     let Some(net) = net else { return };
     let core = &net.session.core;
 
-    // ── A gather that paid out ───────────────────────────────────────────
+    // ── A swing that connected with a node ───────────────────────────────
     //
-    // The sim says a node gave something up; the pick says which node the
-    // crosshair is on. It is the same scan the sim ran (`interact::
-    // resolve_swing` mirrors `gather`'s), and the player is standing still
-    // swinging at it, so the two agree — see the header's one seam.
-    if !feed.gathered().is_empty() && swung.0.occupant != 0 {
-        let s = &swung.0;
-        let at = Vec3::new(s.x, s.y + strike_height(s.occupant), s.z);
-        pool.ignite(&Burst {
-            at,
-            // Back toward the player: chips come off the face that was
-            // struck, which is the one they are looking at.
-            away: (eye.pos - at).with_y(0.0),
-            matter: Matter::of_occupant(s.occupant),
-        });
+    // The sim's own swing fact plus the pick — see [`gather_burst`], which
+    // carries the whole argument and the defect it replaces.
+    if let Some(mut b) = gather_burst(feed.swings().contains(&core.player_id), &swung.0) {
+        // Back toward the player: chips come off the face that was struck,
+        // which is the one they are looking at.
+        b.away = (eye.pos - b.at).with_y(0.0);
+        pool.ignite(&b);
     }
 
     // ── A blow that landed on something alive ────────────────────────────

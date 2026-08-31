@@ -16,9 +16,10 @@
 
 use bevy::math::Vec3;
 use client::render::impact::{
-    struck, Burst, Chips, Matter, Struck, CHIP_BURST, CHIP_GRAVITY_MPS2 as GRAVITY, CHIP_LIFE_S,
-    CHIP_POOL, CHIP_SIZE_M,
+    gather_burst, strike_height, struck, Burst, Chips, Matter, Struck, CHIP_BURST,
+    CHIP_GRAVITY_MPS2 as GRAVITY, CHIP_LIFE_S, CHIP_POOL, CHIP_SIZE_M,
 };
+use client::ui::interact::SwingPick;
 use sim_core::terrain::Occupant;
 
 fn burst_at(at: Vec3, away: Vec3) -> Burst {
@@ -397,6 +398,81 @@ fn anything_alive_throws_flesh() {
         Matter::Dirt.color(),
         "a body and the ground throw the same colour, so a hit reads as a miss"
     );
+}
+
+/// **A burst is a fact about CONTACT, not about income** — and the trigger it
+/// replaced was a fact about income.
+///
+/// `EV_GATHER` announces a backpack loot the same way it announces a node
+/// paying out (its own doc says so, and deliberately), so the first cut fired
+/// wood chips off whatever the crosshair was near, once per slot, while a
+/// player emptied a corpse's pack. What decides now is the sim's `EV_SWING` —
+/// pushed at `gather::swing`'s cadence gate, once per swing, before the scan.
+#[test]
+fn only_a_swing_throws_chips_and_a_payout_does_not() {
+    let mut pick = SwingPick {
+        occupant: Occupant::Tree as u8,
+        cx: 40,
+        cz: 90,
+        x: 10.0,
+        y: 2.0,
+        z: -4.0,
+        ..SwingPick::default()
+    };
+    // The whole point: no swing, no chips — however much arrived.
+    assert!(
+        gather_burst(false, &pick).is_none(),
+        "a payout with no swing behind it throws debris — that is the \
+         backpack-loot defect back"
+    );
+    // A swing at open air throws nothing either, because the pick is what
+    // says whether anything was in reach.
+    let empty = SwingPick::default();
+    assert!(gather_burst(true, &empty).is_none());
+
+    // A swing at a node throws its own matter, from the node's own place.
+    let b = gather_burst(true, &pick).expect("a swing at a tree throws chips");
+    assert_eq!(b.matter, Matter::Wood);
+    assert!(
+        (b.at.x - pick.x).abs() < 1e-6 && (b.at.z - pick.z).abs() < 1e-6,
+        "the burst is not at the node the pick named"
+    );
+    assert!(
+        b.at.y > pick.y,
+        "the chips come off the ground under the tree rather than the trunk"
+    );
+
+    // And what it is made of follows the occupant, not the position.
+    pick.occupant = Occupant::StoneNode as u8;
+    assert_eq!(
+        gather_burst(true, &pick).expect("a swing at stone").matter,
+        Matter::Stone
+    );
+}
+
+/// The strike height puts the chips on the thing, not in the grass under it.
+#[test]
+fn a_node_is_struck_where_a_person_could_reach_it() {
+    // A tree is chopped at chest height and a stone node at the knee; one
+    // constant for both puts half the bursts in the wrong place.
+    let tree = strike_height(Occupant::Tree as u8);
+    let stone = strike_height(Occupant::StoneNode as u8);
+    assert!(
+        tree > stone,
+        "a tree is struck at {tree:.2} m and a stone node at {stone:.2} — \
+         the taller thing has to be struck higher"
+    );
+    for o in 0u8..16 {
+        if client::ui::interact::swing_label(o).is_empty() {
+            continue;
+        }
+        let h = strike_height(o);
+        assert!(
+            (0.2..=1.8).contains(&h),
+            "occupant {o} is struck {h:.2} m up — that is under the grass or \
+             over a person's head"
+        );
+    }
 }
 
 /// Leaving a world takes the debris with it.

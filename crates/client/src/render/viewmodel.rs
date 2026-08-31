@@ -378,6 +378,19 @@ pub fn swing_pose(s: f32) -> (Quat, Vec3) {
     )
 }
 
+/// When in the stroke the blow lands, seconds from its start.
+///
+/// The strike's own bump peaks at [`VIEWMODEL_SWING_ATTACK`] of the span
+/// left after the wind-up, so this is arithmetic over three constants rather
+/// than a fourth number — and it is published because a gate needs it:
+/// `tests/rig_asset.rs` holds this within half a tick of where the rig's own
+/// `Sword_Attack` strikes, which is what keeps the swinger's view and
+/// everybody else's view of one swing pointed at the same instant.
+pub fn swing_apex_s() -> f32 {
+    (VIEWMODEL_SWING_WINDUP + (1.0 - VIEWMODEL_SWING_WINDUP) * VIEWMODEL_SWING_ATTACK)
+        * VIEWMODEL_SWING_S
+}
+
 /// The rig's transform for a rotation about [`VIEWMODEL_SWING_PIVOT`] plus a
 /// displacement — the arithmetic that turns "turn about the shoulder" into
 /// the one `Transform` Bevy wants.

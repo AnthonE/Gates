@@ -462,9 +462,17 @@ pub fn stream(
 /// appearing is the one event the record exists to disclose), and a re-parent
 /// is one command where a deferred spawn is a second lifetime to keep in step
 /// with `Live`.
+/// Eight parameters, which clippy counts — `stream` above carries the same
+/// allow and the same argument. A `SystemParam` struct would exist only to
+/// satisfy the count: the walk needs a parent map, a child map and a name
+/// lookup, and those are three distinct questions about the scene graph
+/// rather than one bundle.
+#[allow(clippy::too_many_arguments)]
 pub fn bind_hands(
     mut commands: Commands,
     mut store: ResMut<Bodies>,
+    // Said once, and it is not decoration — see the `info!` at the bottom.
+    mut announced: Local<bool>,
     added: Query<Entity, Added<AnimationPlayer>>,
     parents: Query<&ChildOf>,
     children: Query<&Children>,
@@ -536,6 +544,25 @@ pub fn bind_hands(
         // function rather than of that one's early-out.
         live.held = None;
         live.lit = None;
+        if !*announced {
+            *announced = true;
+            // **The false→true edge, once, and `dress_arms`' precedent is
+            // why.** An empty remote hand has two causes that look identical
+            // from outside — the bone was never bound, or the body is
+            // genuinely holding something with no model — and on 2026-08-31
+            // the first frame this repo ever took with two players in it
+            // showed two empty-handed silhouettes with no way to tell which.
+            // (It was the second: the scene rig's kit is wood, a box and a
+            // lock, and none of the three has a `HELD_MODELS` row.
+            // `ci/scene.sh --kit` exists now for the same reason this line
+            // does.) A diagnostic that turns a guess into a fact earns its
+            // frame; `arms_report` is the same call one hand over.
+            info!(
+                "bodies: hands bound to {:?} — a remote drawing nothing is \
+                 holding nothing, not unbound",
+                super::anim::HAND_BONE
+            );
+        }
     }
 }
 

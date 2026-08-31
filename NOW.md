@@ -59,41 +59,47 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
-## 0fp · What the first-person pass left *(client lane)*
+## 0fp · The first-person pass, and the two judgements it is now waiting on *(client lane)*
 
-From play (operator, 2026-08-30): *"when i run my player is all blurry like
-its snapping around"*, *"held items are shitty looking like again they are
-not under the parent"*, *"the swing animation is the most underwhelming thing
-ever"*, *"we need some kinda effect particle wise when u actually connect"*.
-All four are answered (`DECISIONS.md` 2026-08-30 first-person feel v1, and
-2026-08-31 for the two it left) — `ClientCore::eye_position`,
-`VIEWMODEL_GRIP_M`, `viewmodel::swing_pose`, `render/impact.rs`,
-`bodies::bind_hands`. What remains:
+Four defects from play (operator, 2026-08-30) and the four items they left
+are all answered — `DECISIONS.md` 2026-08-30 (first-person feel v1) and the
+three 2026-08-31 rows have the account.
 
-1. **Nobody has seen any of it** — §LOOK. The arc, the grip and the chips
-   are gated as arithmetic (the item stays in frame, the grip reproduces the
-   hold pose, the pool holds its cap) and *how they read* is a person with a
-   GPU. The swing's timings especially: `VIEWMODEL_SWING_S` and the wind-up
-   split are PROPOSED, not spoken.
-2. ✅ **The remote body's item is in its hand** (2026-08-31). `bind_hands`
-   binds `anim::HAND_BONE` per body and both hands compose one
-   `viewmodel::grip`. The offset it replaced was **0.690 m wrong and on the
-   wrong shoulder** — `bodies::RETIRED_BODY_PALM` carries the retraction.
-3. **A gather burst is placed from the client's pick, not the sim's.**
-   `EV_GATHER` carries an item and no cell, so `impact::strike` reads
-   `verbs::Swung`. Right whenever the player is swinging at what they are
-   looking at, which is always in practice and not by construction. A cell on
-   the gather event would retire the seam; it is a wire field for a cosmetic,
-   so it is priced here rather than taken.
-4. ✅ **A mob takes a blow and throws chips** (2026-08-31) — `impact::struck`
-   splits the id space and `mobs::flank_h_of` reads the height off the
-   shipped mesh table.
-5. **A remote body's own swing is still the rig's `Sword_Attack`, and the
-   first-person one is not.** Two strokes for one event: 1.053 s of authored
-   clip out there against 0.45 s of `swing_pose` in here, so a duel's two
-   views disagree about how long a swing takes. Deliberate
-   (`VIEWMODEL_SWING_S`'s doc: your own apex must not lag the cue) and
-   unmeasured — nobody has watched the two side by side.
+**Somebody has now looked, which is new**: `ci/scene.sh` ran on this box for
+the first time (Xvfb + lavapipe; the four packages `CLAUDE.md` lists) and
+took nine frames, **including the first two this repo has ever held with two
+players in them**. What they show: the hatchet is in the first-person fist,
+a remote body carries it at its own right hand hanging at its side, and
+`bodies: hands bound to "RightHand"` is in the log. So the grip works on both
+hands and this is no longer a claim.
+
+What is left is two taste calls that only the operator can make, and one
+thing the probe cannot photograph:
+
+1. **The viewmodel is drawn at TRUE scale 0.52 m from the eye**, so a 0.6 m
+   hatchet fills about three-quarters of the frame height. That is
+   physically right and it reads as oversized — most games push the
+   viewmodel back and shrink it. `VIEWMODEL_HOLD` is the knob and it has
+   never been judged against a frame with a real model in it, because until
+   now there was no frame.
+2. **The grip reads as *beside* the fist rather than *in* it, up close.**
+   This rig's hand has **no finger bones** (`rig_asset.rs`'s curl gate says
+   so), so `VIEWMODEL_PALM` buys the read with occlusion — the open fingers
+   drawing in front of the shaft — and at this scale it half-works.
+   Unchanged by the grip work: the item is within a millimetre of where it
+   hung before, by construction.
+3. ⚠ **The motion is still unphotographable here, and this is worth knowing
+   before someone tries.** The swing arc and the chip burst are driven by
+   `Time::delta_secs`, and under lavapipe a frame is a large fraction of a
+   second — so a 0.45 s stroke and a 0.55 s chip life are consumed inside
+   one or two frames and never land on a shot. `./ci/scene.sh --play` on a
+   box with a GPU is the only way to see either.
+
+⚠ **Seen once and not chased**: in the first run's `7-player.png` two remote
+bodies read as near-black silhouettes against lit ground, where the second
+run's read as ordinary brown. Different frames, different distances; it may
+be exposure and it may be nothing. Someone with the frames open should look
+before it becomes a lighting item.
 
 ## 0cs · The fight at population — what the combat storm left *(sim lane)*
 
