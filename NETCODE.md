@@ -219,8 +219,16 @@ The model, named plainly (it's Overwatch's command-frame scheme): **the
 client's sim clock runs ahead of the server's by RTT/2 + one buffered
 tick**, so each input arrives just before the tick that consumes it. The
 server holds a per-client input buffer with a target depth of 1–2 ticks
-and never waits: an empty buffer means it reuses the previous input and
-the client will hear about it.
+and never waits: an empty buffer means it replays the previous input
+**decayed** — movement at 2/3, then 1/3, then zero (`input::decay_frame`,
+netcode v2 S1; Rocket League's undershoot ramp — catching up reads better
+than rubber-banding back), acting buttons cleared from the first reuse,
+look and the light latch held — and the client hears about it in the
+header (`repeat_count`). Until 2026-08-31 the reuse ran verbatim at full
+strength forever and the client heard nothing, which is what a stop felt
+like as a snap: the release frame arrived late, the server walked the body
+on at full stride, and the reconcile dragged the player back from a place
+they never went.
 
 Two feedback loops keep the buffer at target — both shipped mechanisms:
 
@@ -233,8 +241,14 @@ Two feedback loops keep the buffer at target — both shipped mechanisms:
    [gdcvault.com/play/1024001 — Overwatch Gameplay Architecture and Netcode]
 2. **Server-side consume throttle** (Rocket League's fallback, credited by
    them to the Overwatch talk): when dilation can't keep up, the server
-   consumes 0, 1, or 2 buffered inputs in a tick to re-center the buffer —
-   a minor, bounded desync instead of an unbounded drift.
+   consumes 0, 1, or 2 buffered inputs in a tick to re-center the buffer.
+   **Both consumed frames execute** (`Command::InputPair`, wire v60): the
+   older steps movement first, exactly as the client's prediction ring
+   stepped it, so a throttle tick is bit-exact rather than "a minor,
+   bounded desync" — the shipped code consumed two and executed one from
+   M0 to 2026-08-31, which was one guaranteed misprediction per throttle
+   tick with every gate green (`client_loop.rs` now holds the pigeonhole
+   gate that would have caught it).
    [media.gdcvault.com/gdc2018/presentations/Cone_Jared_It_Is_Rocket.pdf]
 
 Result: just-in-time inputs across drifting clocks, changing RTT, and
@@ -548,7 +562,7 @@ this is better.
 | failure | what happens |
 |---|---|
 | lost snapshot datagram | nothing; next snapshot supersedes (baselines make gaps free) |
-| lost input datagram | covered by unacked-input redundancy (≤ 10 frames ≈ 333 ms); beyond that the server reuses the last input (you glide briefly), dilation refills the buffer |
+| lost input datagram | covered by unacked-input redundancy (≤ 10 frames ≈ 333 ms); beyond that the server replays the last input on the decay ramp (2/3 → 1/3 → 0 over three ticks — you coast to a stop rather than glide on at full stride), dilation refills the buffer |
 | ack gap > baseline ring | baseline drops to the canonical zero-state; the same delta path streams the world back by priority (Q3's dummy-gamestate move) |
 | chunk event lane stalls | QUIC retransmits (reliable); if the stream resets, resubscribe at V → tail replay |
 | client stops stepping (was: a throttled background tab; now a suspended laptop, an unfocused window, a compositor stall) | dilation hard-resync on return; > 30 s → treated as disconnect: **you become a sleeper where you stand**. The cause changed with the client and the handling did not — §4 says why it never was tab-specific |

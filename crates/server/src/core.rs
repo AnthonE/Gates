@@ -852,9 +852,10 @@ impl ShardCore {
             if !c.connected {
                 continue;
             }
-            if let Some((frame, view)) = c.consume_input() {
-                // Measured on the frame the throttle CHOSE to execute (the
-                // newer of two, when it consumed two), and measured before
+            if let Some(consumed) = c.consume_input() {
+                let (frame, view) = (consumed.frame, consumed.view);
+                // Measured on the frame whose buttons ACT (the newer of
+                // two, when the throttle consumed two), and measured before
                 // the command-buffer check on purpose: dropping the sample
                 // exactly on the ticks that ran out of command room would
                 // bias the distribution toward the quiet ticks, which is
@@ -892,10 +893,42 @@ impl ShardCore {
                     // help nobody received.
                     let favour = stats::favour_for(now, view);
                     stats.record_favour(favour);
+                    // A throttle tick carries BOTH consumed frames — the
+                    // older must still move the body (`InputPair`'s doc:
+                    // the client's ring stepped every seq exactly once).
+                    self.cmd_buf[n] = match consumed.prev {
+                        Some(prev) => Command::InputPair {
+                            id: c.id,
+                            prev,
+                            frame,
+                            favour,
+                        },
+                        None => Command::Input {
+                            id: c.id,
+                            frame,
+                            favour,
+                        },
+                    };
+                    n += 1;
+                }
+            } else if let Some(ghost) = c.ghost_frame() {
+                // The starved tick's stand-in (netcode v2, DECISIONS.md
+                // 2026-08-31): feed the sim the last real frame DECAYED
+                // (2/3 → 1/3 → 0 on movement) instead of letting it re-run
+                // the stale one verbatim at full strength — the overshoot
+                // a player felt as a snap on every stop, because the
+                // release frame was late and the reconcile dragged them
+                // back from a place they never went. As a command, so the
+                // WAL carries it and a replay reproduces the ghost bit for
+                // bit; favour 0 — no aim was measured, nothing swings (the
+                // decay cleared every acting button). One command per
+                // player at most, so the input reserve arithmetic above
+                // this loop still holds.
+                if n < MAX_COMMANDS_PER_TICK {
                     self.cmd_buf[n] = Command::Input {
                         id: c.id,
-                        frame,
-                        favour,
+                        frame: ghost,
+                        favour: 0,
                     };
                     n += 1;
                 }
@@ -3783,6 +3816,10 @@ impl ShardCore {
             baseline_age: age,
             last_executed_seq: c.last_executed,
             nudge: c.nudge,
+            // Both cached at consume time earlier this tick, so the header
+            // reports the state the tick actually ran under (netcode v2).
+            buffered_depth: c.depth_report(),
+            repeat_count: c.repeat_report(),
         };
         let mut enc = match SnapshotEncoder::begin(
             &mut self.dg_buf,

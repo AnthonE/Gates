@@ -357,7 +357,8 @@ fn a_retransmitted_frame_keeps_the_ack_it_first_arrived_under() {
     // …and again in the redundancy tail of one acking 140, before it has
     // been executed.
     c.push_frame(frame(7), Some(140));
-    let (f, view) = c.consume_input().expect("the frame is buffered");
+    let got = c.consume_input().expect("the frame is buffered");
+    let (f, view) = (got.frame, got.view);
     assert_eq!(f.seq, 7);
     assert_eq!(
         view,
@@ -372,14 +373,15 @@ fn a_retransmitted_frame_keeps_the_ack_it_first_arrived_under() {
     c.push_frame(frame(1), Some(10));
     let _ = c.consume_input();
     c.push_frame(frame(2), Some(20));
-    let (f, view) = c.consume_input().expect("buffered");
-    assert_eq!((f.seq, view), (2, Some(20)));
+    let got = c.consume_input().expect("buffered");
+    assert_eq!((got.frame.seq, got.view), (2, Some(20)));
 }
 
-/// **4b · Two frames consumed in one tick report the one that executes.**
-/// The consume throttle takes two when the buffer runs deep; only the newer
-/// reaches the world, so measuring the older would price an aim nobody
-/// acted on — and the older is by definition the staler, so getting this
+/// **4b · Two frames consumed in one tick report the newer's stamp.**
+/// The consume throttle takes two when the buffer runs deep; both move the
+/// body since netcode v2 (`Command::InputPair`), but only the newer's
+/// buttons ACT, so measuring the older's aim would price a swing nobody
+/// swung — and the older is by definition the staler, so getting this
 /// backwards would inflate the number this whole slice exists to produce.
 #[test]
 fn the_throttle_reports_the_frame_that_executes() {
@@ -390,12 +392,14 @@ fn the_throttle_reports_the_frame_that_executes() {
     for s in 0..10u16 {
         c.push_frame(frame(s), Some(1_000 + s));
     }
-    let (f, view) = c.consume_input().expect("buffered");
+    let got = c.consume_input().expect("buffered");
     assert_eq!(
-        (f.seq, view),
+        (got.frame.seq, got.view),
         (1, Some(1_001)),
-        "the throttle reported a frame other than the one it executed"
+        "the throttle reported a frame other than the one whose buttons act"
     );
+    // And the older frame rides back beside it, owed its movement step.
+    assert_eq!(got.prev.expect("throttle carries the older frame").seq, 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────

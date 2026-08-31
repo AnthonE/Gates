@@ -76,6 +76,8 @@ fn snapshot(
         baseline_age,
         last_executed_seq: 0,
         nudge: protocol::Nudge::Ok,
+        buffered_depth: 0,
+        repeat_count: 0,
     };
     let mut enc = SnapshotEncoder::begin(buf, &header, baseline).expect("begin");
     for id in ids {

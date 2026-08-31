@@ -83,11 +83,30 @@ fn pump(
     clients: &mut [(usize, ClientCore)],
     mut lose: impl FnMut() -> bool,
 ) {
+    // One closure, both directions, called in the same order as it always
+    // was (input sends first, then snapshot deliveries) so the seeded loss
+    // sequences in the suites below keep their exact draws.
+    pump_dir(core, stats, clients, TICK_MS, &mut |_input, _slot| lose());
+}
+
+/// `pump` with the knobs the netcode-v2 gates need: a per-call `dt_ms` (a
+/// client fed two ticks of wall time produces two input frames in one
+/// datagram — how the server's buffer is legitimately driven deep), and
+/// loss that knows its direction (`input` true for the C→S send, false for
+/// a S→C snapshot to `slot`) so a one-way stall — the stop-under-starvation
+/// shape — is expressible.
+fn pump_dir(
+    core: &mut ShardCore,
+    stats: &ShardStats,
+    clients: &mut [(usize, ClientCore)],
+    dt_ms: f64,
+    lose: &mut impl FnMut(bool, usize) -> bool,
+) {
     let mut buf = [0u8; DATAGRAM_BUDGET_BYTES];
     for (slot, c) in clients.iter_mut() {
-        c.advance(TICK_MS);
+        c.advance(dt_ms);
         let n = c.poll_input(&mut buf);
-        if n > 0 && !lose() {
+        if n > 0 && !lose(true, *slot) {
             let dg = decode_input(&buf[..n]).expect("client encodes valid input");
             core.push_input(*slot, &dg);
         }
@@ -108,7 +127,7 @@ fn pump(
         }
     }
     for (slot, bytes) in outs {
-        if !lose() {
+        if !lose(false, slot) {
             let c = clients
                 .iter_mut()
                 .find(|(s, _)| *s == slot)
@@ -536,5 +555,150 @@ fn a_killed_body_is_marked_dead_on_the_wire() {
         "the body is still drawn as a live player — the wire's `dead` bit \
          is not arriving, so a killer cannot tell from the body in front of \
          them that the fight is over"
+    );
+}
+
+/// **Netcode v2, the throttle catch-up: a deep buffer drains without a
+/// single misprediction.** The client runs two input ticks per server tick
+/// for a stretch — a legitimate clock lead, the exact thing the consume
+/// throttle exists for — so the server's buffer climbs past
+/// `INPUT_THROTTLE_DEPTH` and the throttle consumes two frames per tick.
+/// Both must MOVE the body (`Command::InputPair`): until netcode v2 the
+/// older frame was consumed and never stepped, so every throttle tick was
+/// one tick of walking silently dropped and a guaranteed reconcile
+/// mismatch — this test is red by construction on that code.
+#[test]
+fn the_throttle_catchup_stays_bit_exact() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    pin_together(&mut core);
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+    let mut rng = Pcg32::new(SEED, 23);
+    let mut yaw = 7_000u16;
+
+    // Settle: adopt the spawn, walk normally.
+    for _ in 0..50u32 {
+        steer(&mut clients[0].1, &mut rng, &mut yaw, true);
+        pump(&mut core, &stats, &mut clients, || false);
+    }
+    // Sprint ahead: two client ticks of wall time per server tick. Each
+    // pump posts one datagram carrying the whole unacked tail, so the
+    // buffer legitimately deepens by one frame per tick.
+    let mut deepest = 0u8;
+    for _ in 0..10u32 {
+        steer(&mut clients[0].1, &mut rng, &mut yaw, true);
+        pump_dir(
+            &mut core,
+            &stats,
+            &mut clients,
+            TICK_MS * 2.0,
+            &mut |_, _| false,
+        );
+        deepest = deepest.max(clients[0].1.view.buffered_depth);
+    }
+    // Drain: back to lockstep; the dilation nudge and the throttle bring
+    // the buffer home.
+    for _ in 0..150u32 {
+        steer(&mut clients[0].1, &mut rng, &mut yaw, true);
+        pump(&mut core, &stats, &mut clients, || false);
+    }
+
+    let c = &clients[0].1;
+    // The throttle demonstrably fired, by pigeonhole rather than by a
+    // depth reading: the sprint phase produced two frames per server tick
+    // with zero loss, every produced frame ended up executed (the tail
+    // below is empty — nothing pending, nothing gap-jumped), so some ticks
+    // MUST have executed two — and those rode `Command::InputPair`. The
+    // gauge reading beside it proves the buffer genuinely ran deep: the
+    // throttle holds the post-consume plateau at 5 (pre-consume 7, past
+    // the threshold of 6, minus the two it takes).
+    assert!(
+        deepest >= 5,
+        "the buffer never ran deep (deepest {deepest}) — the throttle was \
+         not exercised and this test proved nothing"
+    );
+    // Steady-state tail: the frame produced this tick plus at most one
+    // awaiting its snapshot (15 Hz reporting of a 30 Hz clock) — the
+    // sprint's ten-frame backlog is gone, so nothing was left unexecuted
+    // and nothing was gap-jumped (zero loss makes a jump impossible).
+    assert!(
+        c.predict.tail().len() <= 2,
+        "the backlog never drained ({} frames still unacked)",
+        c.predict.tail().len()
+    );
+    assert_eq!(
+        c.predict.mispredictions, 0,
+        "a throttle tick diverged: the older consumed frame did not move \
+         the body the way the client's ring did"
+    );
+    assert!(c.predict.confirmations > 100, "reconciles actually ran");
+}
+
+/// **Netcode v2, the stop-snap kill: a one-way input stall no longer
+/// walks the body onward at full stride.** The player walks, stops, and
+/// the release frame never arrives (C→S loss; snapshots still flow — the
+/// asymmetry a real uplink stall has). The server used to re-run the last
+/// frame verbatim forever: at walk speed that is 0.1 m per starved tick —
+/// a metre of phantom travel over ten — all of it pulled back through the
+/// reconcile as the snap this slice is named for. The decay ramp
+/// (`sim_core::input::decay_frame`) spends the stale frame to zero in
+/// three ticks, so the overshoot is bounded at about one tick of walking.
+#[test]
+fn a_stop_under_starvation_does_not_overshoot() {
+    let stats = ShardStats::default();
+    let mut core = Box::new(ShardCore::new(SEED));
+    pin_together(&mut core);
+    assert!(core.connect(0, id_of(0)));
+    let mut clients = vec![(0usize, ClientCore::new(SEED, id_of(0), 0))];
+
+    // Walk straight at a fixed yaw — no sprint, so one tick is 0.1 m and
+    // the bound below is arithmetic rather than a tuned tolerance.
+    for _ in 0..60u32 {
+        clients[0].1.set_input(0, 12_000, 0, 0, 127, 0);
+        pump(&mut core, &stats, &mut clients, || false);
+    }
+    let at_stall = server_body(&core, id_of(0));
+
+    // The stop that never arrives: the client releases the stick, every
+    // input datagram is lost, snapshots keep flowing.
+    for _ in 0..12u32 {
+        clients[0].1.set_input(0, 12_000, 0, 0, 0, 0);
+        pump_dir(&mut core, &stats, &mut clients, TICK_MS, &mut |input, _| {
+            input
+        });
+    }
+    let stalled = server_body(&core, id_of(0));
+    let drift_m = {
+        let dx = (stalled.qx - at_stall.qx) as f32 * sim_core::movement::POS_XZ_Q;
+        let dz = (stalled.qz - at_stall.qz) as f32 * sim_core::movement::POS_XZ_Q;
+        (dx * dx + dz * dz).sqrt()
+    };
+    // Decay envelope: 2/3 + 1/3 of one walk tick ≈ 0.1 m, plus quanta
+    // slack. Full-strength reuse is 1.2 m over these twelve ticks.
+    assert!(
+        drift_m < 0.3,
+        "the server walked a stopped player {drift_m:.2} m past the stall \
+         — starved reuse is running at full strength"
+    );
+    assert!(
+        clients[0].1.view.repeat_count >= 3,
+        "the header never reported the starve (repeat_count {}) — the \
+         gauge this slice added is not flowing",
+        clients[0].1.view.repeat_count
+    );
+
+    // Delivery resumes; the two ends reconverge to the same quantized
+    // stop, bit for bit.
+    for _ in 0..40u32 {
+        clients[0].1.set_input(0, 12_000, 0, 0, 0, 0);
+        pump(&mut core, &stats, &mut clients, || false);
+    }
+    let server = server_body(&core, id_of(0));
+    let client = clients[0].1.predict.body;
+    assert_eq!(
+        (client.qx, client.qy, client.qz),
+        (server.qx, server.qy, server.qz),
+        "the ends did not reconverge after the stall"
     );
 }
