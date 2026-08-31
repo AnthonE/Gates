@@ -120,7 +120,7 @@ fn measure_one(core: &mut ShardCore, stats: &ShardStats, seq: u16, age: u64) -> 
         s + age,
         "the fixture lost count of its own ticks"
     );
-    let mut dg = InputDatagram::new(s as u16, 0, seq as u32);
+    let mut dg = InputDatagram::new(s as u16, 0, 4);
     dg.push(frame(seq)).expect("one frame fits");
     core.push_input(0, &dg);
     let before = ShardStats::get(&stats.aim_stale_sum);
@@ -231,7 +231,7 @@ fn a_client_that_never_acked_is_excluded_and_counted() {
         // ack 0 / bits 0 — exactly what a client sends before its first
         // snapshot, and `on_acks` credits none of it because tick 0 is
         // never a snapshot tick.
-        let mut dg = InputDatagram::new(0, 0, seq as u32);
+        let mut dg = InputDatagram::new(0, 0, 4);
         dg.push(frame(seq)).expect("one frame fits");
         core.push_input(0, &dg);
         tick(&mut core, &stats);
@@ -262,7 +262,7 @@ fn a_client_that_never_acked_is_excluded_and_counted() {
 #[test]
 fn the_first_real_ack_is_measured_immediately() {
     let (mut core, stats) = shard();
-    let mut dg = InputDatagram::new(0, 0, 1);
+    let mut dg = InputDatagram::new(0, 0, 4);
     dg.push(frame(1)).expect("fits");
     core.push_input(0, &dg);
     tick(&mut core, &stats);
@@ -287,7 +287,7 @@ fn an_ack_of_a_snapshot_never_sent_is_not_measured() {
     // netcode v2 S2 put a snapshot on every tick — the future tick is the
     // uncorroborated claim that survives any cadence.)
     let fake = (s + 1) as u16;
-    let mut dg = InputDatagram::new(fake, 0, 1);
+    let mut dg = InputDatagram::new(fake, 0, 4);
     dg.push(frame(1)).expect("fits");
     core.push_input(0, &dg);
     tick(&mut core, &stats);
@@ -443,7 +443,7 @@ fn favour_reading(s: &ShardStats) -> (u64, u64, u64, u64) {
 /// Ack a snapshot and nothing else — a datagram with no frame tail, so it
 /// moves `newest_acked` without buffering anything to execute.
 fn ack_only(core: &mut ShardCore, tick_acked: u64) {
-    let dg = InputDatagram::new(tick_acked as u16, 0, 0);
+    let dg = InputDatagram::new(tick_acked as u16, 0, 4);
     core.push_input(0, &dg);
 }
 
@@ -467,17 +467,20 @@ fn the_favour_is_the_measurement_plus_four_clamped_at_seven() {
     for raw in 0..=20u16 {
         let want = (raw + bias as u16).min(REWIND_MAX_TICKS as u16) as u8;
         assert_eq!(
-            stats::favour_for(raw, Some(0)),
+            stats::favour_for(raw, Some(0), INTERP_DELAY_TICKS),
             want,
             "a {raw}-tick-old aim minted the wrong favour"
         );
     }
     // The clamp is reached at raw 3 and never exceeded, which is the whole
     // promise `REWIND_MAX_TICKS` makes to the victim.
-    assert_eq!(stats::favour_for(2, Some(0)), 6);
-    assert_eq!(stats::favour_for(3, Some(0)), REWIND_MAX_TICKS);
+    assert_eq!(stats::favour_for(2, Some(0), INTERP_DELAY_TICKS), 6);
     assert_eq!(
-        stats::favour_for(AIM_STALE_CEILING_TICKS, Some(0)),
+        stats::favour_for(3, Some(0), INTERP_DELAY_TICKS),
+        REWIND_MAX_TICKS
+    );
+    assert_eq!(
+        stats::favour_for(AIM_STALE_CEILING_TICKS, Some(0), INTERP_DELAY_TICKS),
         REWIND_MAX_TICKS
     );
 }
@@ -493,17 +496,20 @@ fn the_favour_is_the_measurement_plus_four_clamped_at_seven() {
 #[test]
 fn an_unmeasurable_aim_mints_no_favour() {
     // Never acked a snapshot this shard sent.
-    assert_eq!(stats::favour_for(9_000, None), 0);
+    assert_eq!(stats::favour_for(9_000, None, INTERP_DELAY_TICKS), 0);
     // At the ceiling: still believed, so still paid.
     assert_eq!(
-        stats::favour_for(AIM_STALE_CEILING_TICKS, Some(0)),
+        stats::favour_for(AIM_STALE_CEILING_TICKS, Some(0), INTERP_DELAY_TICKS),
         REWIND_MAX_TICKS,
         "the ceiling itself must stay inside the paid range, as it is for the statistic"
     );
     // One past it, and the worst a forger can reach: nothing.
-    assert_eq!(stats::favour_for(AIM_STALE_CEILING_TICKS + 1, Some(0)), 0);
     assert_eq!(
-        stats::favour_for(0, Some(1)),
+        stats::favour_for(AIM_STALE_CEILING_TICKS + 1, Some(0), INTERP_DELAY_TICKS),
+        0
+    );
+    assert_eq!(
+        stats::favour_for(0, Some(1), INTERP_DELAY_TICKS),
         0,
         "a whole u16 of forged staleness paid out"
     );
@@ -563,7 +569,7 @@ fn a_frame_from_an_unacked_client_runs_with_no_favour() {
     for _ in 0..40 {
         tick(&mut core, &stats);
     }
-    let mut dg = InputDatagram::new(0, 0, 1);
+    let mut dg = InputDatagram::new(0, 0, 4);
     dg.push(frame(1)).expect("one frame fits");
     core.push_input(0, &dg);
     tick(&mut core, &stats);
@@ -609,7 +615,7 @@ fn an_ack_that_regresses_past_the_band_is_corrected_and_counted() {
     // Now claim the OLD view, which is worth `newest - old` extra ticks of
     // rewind if believed.
     let at = core.world.tick;
-    let mut dg = InputDatagram::new(old as u16, 0, 9);
+    let mut dg = InputDatagram::new(old as u16, 0, 4);
     dg.push(frame(9)).expect("one frame fits");
     core.push_input(0, &dg);
     let before = ShardStats::get(&stats.aim_stale_sum);
@@ -625,7 +631,7 @@ fn an_ack_that_regresses_past_the_band_is_corrected_and_counted() {
     assert_eq!(granted, 1);
     assert_eq!(
         sum,
-        stats::favour_for(honest as u16, Some(0)) as u64,
+        stats::favour_for(honest as u16, Some(0), INTERP_DELAY_TICKS) as u64,
         "the forged ack bought rewind depth the server had not seen it earn"
     );
     assert_eq!(disagree, 1, "the correction was silent");
@@ -688,7 +694,7 @@ fn the_correction_only_ever_runs_one_way() {
     // Claim the newer snapshot in the same datagram that carries the frame:
     // `on_acks` runs first, so this is also the ordinary path.
     let at = core.world.tick;
-    let mut dg = InputDatagram::new(fresh as u16, 0, 3);
+    let mut dg = InputDatagram::new(fresh as u16, 0, 4);
     dg.push(frame(3)).expect("one frame fits");
     core.push_input(0, &dg);
     let before = ShardStats::get(&stats.aim_stale_sum);
@@ -841,7 +847,7 @@ fn victim_walked_out_of_reach(core: &mut ShardCore, stats: &ShardStats) {
 /// mints the favour. Returns whether the victim lost hp.
 fn swing_acking(core: &mut ShardCore, stats: &ShardStats, snapshot: u64) -> bool {
     let before = core.world.players[1].hp;
-    let mut dg = InputDatagram::new(snapshot as u16, 0, 21);
+    let mut dg = InputDatagram::new(snapshot as u16, 0, 4);
     dg.push(InputFrame {
         seq: 21,
         buttons: BTN_PRIMARY,
@@ -886,7 +892,7 @@ fn a_stale_aim_lands_a_swing_the_live_world_would_have_missed() {
         "the victim stood {FAR_M} m away and {NEAR_M} m away four ticks earlier, the shard \
          minted a favour of {} for a {raw}-tick-old ack, and the swing still missed — \
          nothing rewound",
-        stats::favour_for(raw as u16, Some(0))
+        stats::favour_for(raw as u16, Some(0), INTERP_DELAY_TICKS)
     );
 
     // ── Fresh: identical geometry, identical swing, an ack from this tick.
@@ -901,7 +907,7 @@ fn a_stale_aim_lands_a_swing_the_live_world_would_have_missed() {
     let recent = core.world.tick;
     ack_only(&mut core, recent);
     let raw = core.world.tick - recent;
-    let favour = stats::favour_for(raw as u16, Some(0));
+    let favour = stats::favour_for(raw as u16, Some(0), INTERP_DELAY_TICKS);
     assert!(
         favour <= 4,
         "a {raw}-tick-old ack minted {favour}, which reaches the near window — \

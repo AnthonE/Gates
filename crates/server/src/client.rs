@@ -164,6 +164,12 @@ pub struct ClientNetState {
     /// compound (two thirds of two thirds). This one only moves when a
     /// frame the client actually sent executes.
     last_real: InputFrame,
+    /// The playout delay this client's newest input datagram reported
+    /// (wire v61), already saturated by the codec's 4-bit field; clamped
+    /// again to the shared rails where favour is minted. Defaults to the
+    /// pre-v61 constant so a client that has not spoken yet is priced
+    /// exactly as every client used to be.
+    pub reported_playout: u8,
     /// Post-consume input-buffer depth, cached at consume time for the
     /// snapshot header (`SnapshotHeader::buffered_depth`) — `buffered_depth()`
     /// is an O(cap) scan and the header is built later in the same tick.
@@ -334,6 +340,7 @@ impl ClientNetState {
             got_input: false,
             starve_ticks: 0,
             last_real: InputFrame::default(),
+            reported_playout: sim_core::limits::INTERP_DELAY_TICKS,
             depth_report: 0,
             nudge: Nudge::Ok,
             sent: [SentSnap::empty(); SENT_SNAPSHOT_RING],

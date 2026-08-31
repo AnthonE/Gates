@@ -203,15 +203,23 @@ Refinements over `DESIGN.md` §5, with the canon's shipped parameters:
 - **Interpolation, with velocity.** Remote entities render 133 ms in the
   past by default — since netcode v2 S2 that is FOUR 33.3 ms snapshot
   intervals (Valve's ratio doctrine: ratio 2 survives zero drops, 4
-  survives two consecutive) at the same wall latency the old 2 × 66.7 ms
-  bought — widening
-  adaptively to 200 ms on lossy links (Gaffer's tolerate-two rule) and
-  floored at 100 ms. Interpolation is **Hermite using the snapshot's
-  velocity**, not linear: at ≤ 15 Hz linear visibly pulses; Hermite at the
-  same rate shows no artifacts. Both straddling snapshots missing →
-  extrapolate linearly for at most **250 ms** (Source's bound), then
-  freeze honestly. [developer.valvesoftware.com/wiki/
-  Source_Multiplayer_Networking · gafferongames.com/post/snapshot_interpolation]
+  survives two consecutive) — and **adaptive since S5**: the delay
+  breathes between 2 and 8 intervals (67–267 ms) on an RFC 3550-style
+  jitter estimate over snapshot arrivals, slewed at half a tick per
+  second so the slide is beneath notice, starting at the 4-tick default.
+  Interpolation is **linear, and velocity is estimated rather than
+  carried** — the Hermite-with-wire-velocity this bullet used to specify
+  was designed against 15 Hz, where linear visibly pulses; at 30 Hz the
+  samples are the sim's own per-tick positions, so linear is exact to the
+  quantum and differencing adjacent samples reconstructs per-tick
+  velocity for zero wire bytes (the 64-moving worst case had 42 B of
+  headroom against ≥ +180 B for any honest velocity width). A dry buffer
+  **extrapolates on that estimate for 4 ticks (133 ms, well under
+  Source's 250 ms bound), then freezes honestly** — it used to freeze on
+  the spot and teleport when the next snapshot landed.
+  [developer.valvesoftware.com/wiki/
+  Source_Multiplayer_Networking · gafferongames.com/post/snapshot_interpolation
+  · rust.facepunch.com/news/devblog-196]
 - **Correction smoothing** on reconciliation error, Gaffer's blend:
   exponential 0.95/frame for errors ≤ 25 cm, 0.85 for ≥ 1 m, hard snap
   beyond a few meters. Corrections read as a nudge, never a teleport.
@@ -495,6 +503,8 @@ omitting the third term:
 
 ```
 rewind_to = server_now − that_client's_latency − that_client's_ACTUAL_interp_delay
+(built at wire v61: the input datagram reports the client's live playout
+delay and `stats::favour_for` prices it, clamped to the shared 2–8 rails)
 ```
 
 — the server tracks each client's current interpolation delay (it varies

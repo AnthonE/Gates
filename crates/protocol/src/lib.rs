@@ -13,7 +13,7 @@
 //! same encoder produced and can never notice the prose drifting.
 //!
 //! **Input, C→S** — `kind:4 · snapshot_ack:16 · ack_bits:32 ·
-//! first_client_tick:32 · frame_count:4`, then if any frames:
+//! playout_ticks:4 · frame_count:4`, then if any frames:
 //! `first_seq:16` and per frame `buttons:8 · yaw:16 · pitch:8 · move_x:8 ·
 //! move_z:8 · sel:3` (hotbar selector 0–5; 6–7 refuse as malformed).
 //! Frames are the client's unacked tail, oldest first, seq-consecutive by
@@ -807,7 +807,16 @@ use sim_core::limits::{HOTBAR_SLOTS, MAX_INPUT_FRAMES, MAX_ITEM_DEFS, MAX_SNAPSH
 /// BOTH consumed frames (`Command::InputPair`) — the consumed-but-never-
 /// stepped older frame was one guaranteed misprediction per throttle
 /// tick, felt as the client snapping on every stop.
-pub const PROTO_VER: u16 = 60;
+///
+/// **v61 — netcode v2, slice 5 (the playout report).** One layout move on
+/// the input datagram: the dead `first_client_tick:32` — read by nothing
+/// on the server since M0 — becomes `playout_ticks:4`, the client's
+/// current adaptive interpolation delay, so lag-comp favour prices the
+/// delay each client actually renders at instead of assuming the old
+/// constant (`stats::favour_for`; the claim is clamped to the shared
+/// `PLAYOUT_MIN/MAX_TICKS` rails at the mint). Every input datagram gets
+/// 28 bits shorter. Snapshot layout unchanged.
+pub const PROTO_VER: u16 = 61;
 
 /// This game's slug in the elo catalog.
 ///
@@ -2426,25 +2435,26 @@ pub struct InputDatagram {
     pub snapshot_ack: u16,
     /// Bit n set ⇒ snapshot tick `snapshot_ack − n − 1` also applied.
     pub ack_bits: u32,
-    /// Client tick of `frames[0]`; with no frames, the client's current
-    /// tick. **Nothing on the server reads it.** This line used to say the
-    /// field "feeds the server's clock estimate", which described an
-    /// estimate that was never built: `Core::push_input` folds the acks and
-    /// the frame tail and drops the rest, and the accessor below has no
-    /// callers. It stays on the wire because taking it off is a layout
-    /// change (wall 6) and because it is what a clock estimate would be
-    /// built from — the field is not evidence that one exists.
-    pub first_client_tick: u32,
+    /// The client's current playout delay in ticks — how far in the past
+    /// it renders remote bodies — **4 bits, saturating at 15** (netcode v2
+    /// S5, wire v61). The server clamps it to the shared rails
+    /// (`PLAYOUT_MIN/MAX_TICKS`) before lag-comp favour prices it, so a
+    /// forged value buys nothing an honest client at max jitter would not
+    /// get. This replaced `first_client_tick:32` — a field nothing on the
+    /// server ever read, kept only because removing it was a layout
+    /// change; a bump that adds a field is the one free moment to reclaim
+    /// one, and 28 of its bits come off every input datagram with it.
+    pub playout_ticks: u8,
     frames: [InputFrame; MAX_INPUT_FRAMES],
     frame_count: u8,
 }
 
 impl InputDatagram {
-    pub fn new(snapshot_ack: u16, ack_bits: u32, first_client_tick: u32) -> Self {
+    pub fn new(snapshot_ack: u16, ack_bits: u32, playout_ticks: u8) -> Self {
         Self {
             snapshot_ack,
             ack_bits,
-            first_client_tick,
+            playout_ticks: playout_ticks.min(0xF),
             frames: [InputFrame::default(); MAX_INPUT_FRAMES],
             frame_count: 0,
         }
@@ -2470,11 +2480,6 @@ impl InputDatagram {
     pub fn frames(&self) -> &[InputFrame] {
         &self.frames[..self.frame_count as usize]
     }
-
-    /// Client tick of frame `i` (ticks advance in lockstep with seqs).
-    pub fn client_tick_of(&self, i: usize) -> u32 {
-        self.first_client_tick.wrapping_add(i as u32)
-    }
 }
 
 pub fn encode_input(dg: &InputDatagram, buf: &mut [u8]) -> Result<usize, WireError> {
@@ -2482,7 +2487,7 @@ pub fn encode_input(dg: &InputDatagram, buf: &mut [u8]) -> Result<usize, WireErr
     w.write(KIND_INPUT, KIND_BITS)?;
     w.write(dg.snapshot_ack as u32, 16)?;
     w.write(dg.ack_bits, 32)?;
-    w.write(dg.first_client_tick, 32)?;
+    w.write(dg.playout_ticks.min(0xF) as u32, 4)?;
     let frames = dg.frames();
     w.write(frames.len() as u32, FRAME_COUNT_BITS)?;
     if let Some(first) = frames.first() {
@@ -2529,12 +2534,12 @@ pub fn decode_input(buf: &[u8]) -> Result<InputDatagram, WireError> {
     }
     let snapshot_ack = r.read(16)? as u16;
     let ack_bits = r.read(32)?;
-    let first_client_tick = r.read(32)?;
+    let playout_ticks = r.read(4)? as u8;
     let count = r.read(FRAME_COUNT_BITS)? as usize;
     if count > MAX_INPUT_FRAMES {
         return Err(WireError::Malformed);
     }
-    let mut dg = InputDatagram::new(snapshot_ack, ack_bits, first_client_tick);
+    let mut dg = InputDatagram::new(snapshot_ack, ack_bits, playout_ticks);
     if count > 0 {
         let first_seq = r.read(16)? as u16;
         for i in 0..count {

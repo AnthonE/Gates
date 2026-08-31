@@ -168,6 +168,14 @@ fn clean_delivery_predicts_bit_exact() {
         assert!(c.predict.confirmations > 200, "reconciliation engaged");
         assert!(c.snapshots_delta > 100, "ack loop produced deltas");
         assert_eq!(c.decode_errors, 0);
+        // The adaptive playout read this zero-jitter lockstep for what it
+        // is and settled on the floor (netcode v2 S5) — the estimator fed
+        // from real applied snapshots, not from anything the test set.
+        assert!(
+            c.playout_ticks() < 2.5,
+            "a jitterless link should sit near the playout floor, at {}",
+            c.playout_ticks()
+        );
         // Quiescent and fully acked: predicted state IS the server state.
         let sb = server_body(&core, id_of(*slot));
         assert_eq!(c.predict.body.qx, sb.qx);

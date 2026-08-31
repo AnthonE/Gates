@@ -688,7 +688,15 @@ pub async fn run_bot(
                     tail.remove(0);
                 }
                 let (ack, ack_bits) = view.ack_fields();
-                let mut dg = InputDatagram::new(ack, ack_bits, tail[0].seq as u32);
+                // A bot renders nothing, so its playout report is a
+                // DECISION, not a measurement: the shipped default
+                // (`INTERP_DELAY_TICKS`), the same value the server
+                // assumed for every client before wire v61 carried one.
+                let mut dg = InputDatagram::new(
+                    ack,
+                    ack_bits,
+                    sim_core::limits::INTERP_DELAY_TICKS,
+                );
                 for t in &tail {
                     if dg.push(*t).is_err() {
                         break;

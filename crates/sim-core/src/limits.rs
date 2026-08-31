@@ -270,6 +270,17 @@ pub const REWIND_MAX_TICKS: u8 = 7;
 /// Proposed default, DECISIONS.md §open ("lag compensation v0 — the ring").
 pub const INTERP_DELAY_TICKS: u8 = 4;
 
+/// The adaptive playout delay's rails (netcode v2 S5), here because BOTH
+/// ends read them: the client breathes its delay between them off measured
+/// jitter (`client-core/core.rs`), and the server clamps the delay a
+/// datagram REPORTS to the same rails before favour prices it
+/// (`server/stats.rs`) — a claim outside what any honest client can render
+/// buys nothing. Floor is Valve's ratio-2 minimum (survives zero dropped
+/// snapshots); ceiling is the interp span guard's own bound, past which a
+/// straddle reads as a teleport anyway.
+pub const PLAYOUT_MIN_TICKS: u8 = 2;
+pub const PLAYOUT_MAX_TICKS: u8 = 8;
+
 /// Correction for the age of the newest snapshot a client had applied when
 /// it made an input. Snapshots land every `SNAPSHOT_INTERVAL_TICKS`, so the
 /// expected age of the newest one is half of that — **derived, not

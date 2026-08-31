@@ -770,6 +770,11 @@ impl ShardCore {
             }
             b as u16
         });
+        // The playout report is a level, not an edge: latest datagram
+        // wins, exactly as the nudge and the gauges are levels in every
+        // header going the other way. Clamped at the favour mint, not
+        // here — the mint is the one place the claim buys anything.
+        c.reported_playout = dg.playout_ticks;
         for f in dg.frames() {
             c.push_frame(*f, view);
         }
@@ -891,7 +896,7 @@ impl ShardCore {
                     // staleness above it: a frame the buffer had no room
                     // for spends no favour, and counting one would report
                     // help nobody received.
-                    let favour = stats::favour_for(now, view);
+                    let favour = stats::favour_for(now, view, c.reported_playout);
                     stats.record_favour(favour);
                     // A throttle tick carries BOTH consumed frames — the
                     // older must still move the body (`InputPair`'s doc:
