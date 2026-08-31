@@ -560,6 +560,13 @@ fn element(s: &mut Soup, e: &ClutterElem) {
     }
 }
 
+// Eight injected parameters, and the eighth is `AssetServer` for the card
+// atlas. A Bevy system's arity is its dependency list rather than a signature
+// somebody designed, and the alternative here — a setup system that builds
+// both materials up front — would trade one lint for a second place the
+// ring's materials can be half-initialised. Same call the nine other
+// `render::` systems make.
+#[allow(clippy::too_many_arguments)]
 pub fn stream(
     mut commands: Commands,
     mut ring: ResMut<ClutterRing>,
@@ -606,7 +613,14 @@ pub fn stream(
                 // colour: the photograph ships its own colour whole
                 // (`textures::PropMaps` has the law).
                 base_color: Color::WHITE,
-                base_color_texture: Some(assets.load(CARD_ATLAS)),
+                // `textures::atlas`, not a bare `load`: Bevy's default sampler is
+                // clamped and linear (right for an atlas) but leaves anisotropy
+                // at 1, and a 34 cm card seen from 1.6 m is almost always at a
+                // grazing angle.
+                base_color_texture: Some(assets.load_with_settings(
+                    CARD_ATLAS,
+                    super::textures::atlas(true),
+                )),
                 alpha_mode: AlphaMode::Mask(CARD_ALPHA_CUT),
                 perceptual_roughness: 0.92,
                 reflectance: super::fresnel::DIELECTRIC,

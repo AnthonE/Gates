@@ -58,7 +58,15 @@ fn fixture() -> (App, PropAssets) {
         stone: MapSet::default(),
         metal: MapSet::default(),
     };
-    let a = assets(&mut meshes, &mut materials, &mut images, &maps);
+    let a = assets(
+        &mut meshes,
+        &mut materials,
+        &mut images,
+        &maps,
+        // Unresolved, like every `MapSet::default()` above it: this tier has no
+        // filesystem and a material clones the handle either way.
+        Handle::default(),
+    );
     world.insert_resource(meshes);
     world.insert_resource(materials);
     world.insert_resource(images);

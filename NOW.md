@@ -1294,6 +1294,32 @@ Items 1–3 are struck and gated (`sim-core/tests/relief.rs`,
    mosaic is not itself a defect; the boundary still never reads as grass.
 
 
+## 0cards · The population wears photographs now — what is left *(client lane)*
+
+Landed: grass cards (`clutter::card`) and bush leaf cards
+(`props::bush_card_mesh`), both alpha-masked quads over baked CC0 atlases
+(`ci/bake_{grass,bush}_atlas.py`, Poly Haven `grass_medium_01` / `shrub_01`).
+`render::mipmap::Filter::Mask` preserves their coverage down the chain, which
+a box filter does not — measured 0.30× after one halving on a fixture built to
+match. Gates: `tests/{grass_card,bush_card}.rs`, `tests/mipmap.rs`.
+
+1. **The conifer's needle mask is still GENERATED** (`tree::needle_image`) and
+   `reference/PLANTS.md` §6.4 calls it "the weakest link in the canopy today".
+   Set 9.5 (Conifer sprig atlas, 14 rows) is fetched-and-waiting; the swap is
+   an atlas plus a `base_color` change, because the generated mask is white
+   and a photograph brings its own colour.
+2. **Standing litter is still authored geometry** — `stand`/`blade` with a
+   `Ramp`, which is what grass was. Set 9.8 (Fern / frond atlas) is fetched.
+   `PLANTS.md` §6.3 says a frond "is a shape a branch generator has no grammar
+   for … a texture-plus-quad job in `clutter.rs`'s existing bake", which is
+   now exactly the shape `card` already has.
+3. **The outer ring's tree hulls are untextured** (§0out item 1) and are the
+   largest flat-green area left in a frame.
+4. ⚠ **`tree::needle_mips` takes the midpoint of its bisection** where
+   `mipmap::preserve_coverage` now takes `hi`. Latent, not live — its alpha is
+   a soft stamp so the step is small — but it is the same bug, and its own
+   gate pins the numbers it currently produces.
+
 ## 0w · The props' remaining gaps — darks, density, unread roughness *(client lane)*
 
 1. **The p10 gap, still the top visual one** — 71.0 against a reference 41.0

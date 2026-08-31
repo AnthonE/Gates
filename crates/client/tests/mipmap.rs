@@ -362,14 +362,24 @@ fn a_cutout_keeps_its_coverage_all_the_way_down() {
         let (lw, lh) = ((w >> lvl).max(1), (h >> lvl).max(1));
         let n = (lw as usize) * (lh as usize) * 4;
         let got = coverage(&out[off..off + n]);
-        // The bottom levels are a handful of texels where exact coverage is
-        // unreachable at any scale — 4x4 can only express sixteenths. Levels
-        // with room to be exact are held tight.
-        let tol = if lw >= 16 { 0.05 } else { 0.25 };
+        // **Asymmetric, because the two errors are not the same defect.**
+        // Losing coverage is the baldness this whole filter exists to stop and
+        // is held tight; gaining a little is `preserve_coverage` taking `hi`
+        // over the midpoint on purpose, and it costs a texel of extra grass at
+        // range. The bottom levels are a handful of texels where exact
+        // coverage is unreachable at any scale — a 4x4 can only express
+        // sixteenths — so they are only held against LOSS.
+        let (lose, gain) = if lw >= 16 { (0.02, 0.10) } else { (0.10, 1.0) };
         assert!(
-            (got - want).abs() <= tol,
-            "level {lvl} ({lw}x{lh}) draws {got:.3} of its texels, level 0 draws \
-             {want:.3} — the chain is losing coverage"
+            got >= want - lose,
+            "level {lvl} ({lw}x{lh}) draws {got:.3} of its texels against level \
+             0's {want:.3} — the chain is losing coverage and the grass thins \
+             with distance"
+        );
+        assert!(
+            got <= want + gain,
+            "level {lvl} ({lw}x{lh}) draws {got:.3} against level 0's \
+             {want:.3} — the rescale is inventing coverage, not preserving it"
         );
         off += n;
     }
@@ -432,21 +442,48 @@ fn the_cutoff_is_the_one_the_frame_tests_with() {
 /// A sparse vertical-blade mask, deterministic — the shape a grass card's
 /// alpha actually has, which a uniform noise field is not: what makes a cutout
 /// hard to filter is that its coverage is well under the cutoff.
+///
+/// **The edges are anti-aliased and that is not cosmetic.** The first version
+/// of this fixture drew hard 2-texel bars, so its alpha histogram had three
+/// values and its coverage could only be about 0.19 or about 0.40 — no scale
+/// existed that landed between them, and the test was demanding one. A
+/// photographic cutout is a photograph: its edge texels are partial coverage,
+/// its alpha is continuous, and a scale that hits the target exists. The hard
+/// fixture was still worth writing, because it is what found the midpoint bug
+/// in `preserve_coverage`.
 fn blades(w: u32, h: u32) -> Vec<u8> {
     let mut v = vec![0u8; (w * h * 4) as usize];
     let mut seed = 0x9e37_79b9u32;
-    for _ in 0..(w / 4) {
+    for _ in 0..(w / 3) {
         seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let x0 = (seed >> 16) % w;
         let bh = h / 2 + (seed >> 8) % (h / 2);
+        // **Sub-texel wide, and that is the whole mechanism.** A box filter
+        // does not lose coverage on a feature wider than its kernel — a soft
+        // 3-texel bar keeps its 0.5 crossing under halving and comes through
+        // fine. What a chain destroys is a feature THINNER than a texel: its
+        // peak alpha is averaged against its empty neighbour and drops under
+        // the cutoff, so the blade stops being drawn at all. A grass card is
+        // full of those (blade tips, the gaps between blades), which is why
+        // `tree::needle_mips` measured 0.53x after one halving and why this
+        // fixture measures 0.30x. Widths vary so the mask is not one spatial
+        // frequency.
+        let half = 0.15 + ((seed >> 4) % 3) as f32 * 0.15;
         for y in (h - bh)..h {
-            for dx in 0..2u32 {
-                let x = (x0 + dx) % w;
+            for dx in -3i32..=3 {
+                let cover = (half - dx.abs() as f32 + 0.5).clamp(0.0, 1.0);
+                if cover <= 0.0 {
+                    continue;
+                }
+                let x = ((x0 as i32 + dx).rem_euclid(w as i32)) as u32;
                 let i = ((y * w + x) * 4) as usize;
-                v[i] = 90;
-                v[i + 1] = 140;
-                v[i + 2] = 60;
-                v[i + 3] = 255;
+                let a = (cover * 255.0) as u8;
+                if a > v[i + 3] {
+                    v[i] = 90;
+                    v[i + 1] = 140;
+                    v[i + 2] = 60;
+                    v[i + 3] = a;
+                }
             }
         }
     }

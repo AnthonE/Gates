@@ -215,6 +215,24 @@ pub fn is_translucent(data: &[u8]) -> bool {
 /// Coverage is monotonic in the scale, so bisection is enough; 12 steps
 /// resolve it to better than one part in 4,000 of the span, finer than the
 /// 1/255 the channel can store.
+///
+/// ⚠ **It takes `hi`, not the midpoint, and that is a correctness choice
+/// rather than a rounding one.** The bisection's invariant is that `hi`
+/// reaches `want` and `lo` does not; their midpoint is on the `lo` side
+/// exactly as often as not, and coverage is a STEP function of the scale
+/// because alpha is 8-bit — so the midpoint can sit one step below the
+/// threshold and preserve nothing at all. Measured on a hard-edged fixture:
+/// the search converged to lo = 1.0068 (coverage 0.191) and hi = 1.0085
+/// (0.401) against a target of 0.296, and the midpoint 1.0077 returned the
+/// 0.191. Taking `hi` can only over-preserve, which thickens distant grass by
+/// a texel; taking the midpoint can under-preserve, which is the baldness this
+/// function exists to stop.
+///
+/// ⚠ **`tree::needle_mips` has the same line and takes the midpoint.** It has
+/// not been changed here: its alpha is a soft stamp, so its coverage is nearly
+/// continuous in the scale and the step is small, and its own gate pins the
+/// numbers it currently produces. It is a latent instance of this bug, not a
+/// live one — recorded so the next person to touch that file knows.
 fn preserve_coverage(level: &mut [u8], want: f32) {
     let coverage = |scale: f32| -> f32 {
         let hit = level
@@ -232,9 +250,10 @@ fn preserve_coverage(level: &mut [u8], want: f32) {
             hi = mid;
         }
     }
-    let s = 0.5 * (lo + hi);
+    // `hi`, never `0.5 * (lo + hi)` — see the warning above. `lo` is read by
+    // the loop that narrows it and is deliberately not read after it.
     for t in level.chunks_exact_mut(4) {
-        t[3] = (f32::from(t[3]) * s).min(255.0) as u8;
+        t[3] = (f32::from(t[3]) * hi).min(255.0) as u8;
     }
 }
 
