@@ -38,8 +38,10 @@
 #![cfg(feature = "render")]
 
 use client::render::viewmodel::{
-    VIEWMODEL_ARMS, VIEWMODEL_BOB_X, VIEWMODEL_BOB_Y, VIEWMODEL_HIDDEN_ARM, VIEWMODEL_HOLD,
-    VIEWMODEL_SWING_PUSH,
+    bump, rig_transform, swing_pose, VIEWMODEL_ARMS, VIEWMODEL_BOB_X, VIEWMODEL_BOB_Y,
+    VIEWMODEL_GRIP_M, VIEWMODEL_GRIP_Q, VIEWMODEL_GRIP_SCALE, VIEWMODEL_HIDDEN_ARM,
+    VIEWMODEL_HIDDEN_BEHIND_M, VIEWMODEL_HIDDEN_OFFSET, VIEWMODEL_HOLD, VIEWMODEL_SWING_ATTACK,
+    VIEWMODEL_SWING_WINDUP, VIEWMODEL_TILT,
 };
 
 /// Assets live beside the crate — `tests/rig_asset.rs`'s hop.
@@ -273,6 +275,63 @@ impl Glb {
         out
     }
 
+    /// Every node's world TRS, with `clip` posing it — [`Glb::skeleton`]'s
+    /// arithmetic, keeping the rotation and the scale it throws away.
+    ///
+    /// Its own function rather than a widening of `skeleton`, so the four
+    /// gates that only ever wanted a point keep reading as arithmetic about
+    /// points; this one exists because a GRIP is a frame, not a place.
+    fn skeleton_trs(&self, clip: &str, t: f32) -> Vec<(V3, Q, V3)> {
+        let over = self.pose(clip, t);
+        let nodes = self.nodes();
+        let mut out = vec![([0.0; 3], [0.0, 0.0, 0.0, 1.0], [1.0; 3]); nodes.len()];
+        let mut parent = vec![usize::MAX; nodes.len()];
+        for (i, n) in nodes.iter().enumerate() {
+            for c in n["children"].as_array().into_iter().flatten() {
+                parent[c.as_u64().unwrap() as usize] = i;
+            }
+        }
+        let roots: Vec<usize> = (0..nodes.len())
+            .filter(|i| parent[*i] == usize::MAX)
+            .collect();
+        let mut stack: Vec<(usize, V3, Q, V3)> = roots
+            .iter()
+            .map(|&r| (r, [0.0; 3], [0.0, 0.0, 0.0, 1.0], [1.0; 3]))
+            .collect();
+        while let Some((i, pt, pr, ps)) = stack.pop() {
+            let n = &nodes[i];
+            let o = over.get(&i);
+            let tr = o
+                .and_then(|o| o.translation)
+                .unwrap_or_else(|| vec3(&n["translation"], [0.0; 3]));
+            let ro = o
+                .and_then(|o| o.rotation)
+                .unwrap_or_else(|| vec4(&n["rotation"], [0.0, 0.0, 0.0, 1.0]));
+            let sc = o
+                .and_then(|o| o.scale)
+                .unwrap_or_else(|| vec3(&n["scale"], [1.0; 3]));
+            let scaled = [tr[0] * ps[0], tr[1] * ps[1], tr[2] * ps[2]];
+            let rotated = rotate(pr, scaled);
+            let wt = [pt[0] + rotated[0], pt[1] + rotated[1], pt[2] + rotated[2]];
+            let wr = qmul(pr, ro);
+            let ws = [ps[0] * sc[0], ps[1] * sc[1], ps[2] * sc[2]];
+            out[i] = (wt, wr, ws);
+            for c in n["children"].as_array().into_iter().flatten() {
+                stack.push((c.as_u64().unwrap() as usize, wt, wr, ws));
+            }
+        }
+        out
+    }
+
+    /// The node's parent, or `None` for a scene root.
+    fn parent_of(&self, node: usize) -> Option<usize> {
+        self.nodes().iter().position(|n| {
+            n["children"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|c| c.as_u64() == Some(node as u64)))
+        })
+    }
+
     /// Whether `ancestor` is on `node`'s parent chain (or is it).
     fn descends_from(&self, node: usize, ancestor: usize) -> bool {
         let nodes = self.nodes();
@@ -423,6 +482,27 @@ fn dist(a: V3, b: V3) -> f32 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
 }
 
+/// Where the collapsed off-arm's origin actually ends up, in view space, with
+/// `dress_arms`'s write applied — the joint moved to `VIEWMODEL_HIDDEN_OFFSET`
+/// in its parent's frame.
+///
+/// Rebuilt from the parent's own world frame rather than by re-running the
+/// skeleton with a patched node, because that is the composition Bevy does:
+/// `world = parent_t + parent_R · (parent_S · local_t)`.
+fn collapsed_off_arm(glb: &Glb, clip: &str, t: f32) -> V3 {
+    let bone = glb.node(VIEWMODEL_HIDDEN_ARM).unwrap();
+    let parent = glb.parent_of(bone).expect("the off arm has a parent");
+    let (pt, pr, ps) = glb.skeleton_trs(clip, t)[parent];
+    let (pt, pr) = (view(pt), view_rot(pr));
+    let l = [
+        VIEWMODEL_HIDDEN_OFFSET.x * ps[0],
+        VIEWMODEL_HIDDEN_OFFSET.y * ps[1],
+        VIEWMODEL_HIDDEN_OFFSET.z * ps[2],
+    ];
+    let r = rotate(pr, l);
+    [pt[0] + r[0], pt[1] + r[1], pt[2] + r[2]]
+}
+
 /// Every time the loop is sampled at.
 fn steps(glb: &Glb, clip: &str) -> Vec<f32> {
     let d = glb.duration(clip);
@@ -528,28 +608,30 @@ fn the_hidden_arm_collapses_to_a_point_off_screen() {
     // ON screen it is a speck of skin in the middle of the frame, which is a
     // worse defect than the one being fixed.
     //
-    // Checked over the loop AND over the motion envelope `animate` writes onto
-    // the arms — the bob's two amplitudes and the swing's push — because those
-    // move the collapse point too, and the swing's is 13 cm, which is not
-    // small next to how far outside the frame this sits.
+    // Checked over the loop AND over the bob envelope `animate` writes onto
+    // the rig, because that moves the collapse point too.
+    //
+    // **Scaling the joint was not enough and this gate is how that was
+    // found.** Its own origin sits 0.217 m from the lens, where the frame is
+    // 33 cm tall — so it cleared the bottom edge by a margin no viewmodel
+    // motion could respect, and the swing walked straight through it (ndc y
+    // −0.97, a speck of skin in shot). `dress_arms` moves the joint as well
+    // as collapsing it, and what this now asserts is the property that buys:
+    // the point is BEHIND the camera, where no rotation of the rig can bring
+    // it back. `ndc` answers `None` there, which `on_screen` already reads as
+    // off screen — so the assertion below did not have to change, only what
+    // it is pointed at.
     let glb = Glb::open(&asset_path(RIG));
     let clip = client::render::anim::ARMS_HOLD_CLIP;
-    let bone = glb.node(VIEWMODEL_HIDDEN_ARM).unwrap();
     let envelope = [
         [0.0, 0.0, 0.0],
         [VIEWMODEL_BOB_X, 0.0, 0.0],
         [-VIEWMODEL_BOB_X, -VIEWMODEL_BOB_Y, 0.0],
-        // Mid-swing: `animate`'s `arc` peaks at 1 and writes both terms.
-        [0.0, 0.05, VIEWMODEL_SWING_PUSH],
-        [
-            VIEWMODEL_BOB_X,
-            0.05 - VIEWMODEL_BOB_Y,
-            VIEWMODEL_SWING_PUSH,
-        ],
+        [VIEWMODEL_BOB_X, VIEWMODEL_BOB_Y, 0.0],
     ];
-    let mut worst = f32::MAX;
+    let mut nearest = f32::MAX;
     for t in steps(&glb, clip) {
-        let p = view(glb.skeleton(clip, t)[bone]);
+        let p = collapsed_off_arm(&glb, clip, t);
         for e in envelope {
             let q = [p[0] + e[0], p[1] + e[1], p[2] + e[2]];
             assert!(
@@ -557,22 +639,312 @@ fn the_hidden_arm_collapses_to_a_point_off_screen() {
                 "{VIEWMODEL_HIDDEN_ARM} collapses to {q:?} at t={t:.2} under \
                  offset {e:?}, which is inside the frame"
             );
-            // How much margin, in ndc — reported so a shrinking one is visible
-            // in the failure rather than only in a future red run.
-            if let Some((x, y)) = ndc(q) {
-                worst = worst.min(x.abs().max(y.abs()));
-            }
+            assert!(
+                q[2] > 0.0,
+                "{VIEWMODEL_HIDDEN_ARM} collapses to {q:?} at t={t:.2}, which \
+                 is IN FRONT of the camera — the whole point of the offset is \
+                 that it is behind, where no swing can rotate it back"
+            );
+            nearest = nearest.min(q[2]);
         }
     }
+    // **And the offset is load-bearing rather than decoration**, stated as its
+    // own assertion: the joint's UNMOVED origin is inside the frame under the
+    // same envelope. Without this the gate above passes just as well on a
+    // build that never writes the offset at all — which is a gate checking its
+    // own copy of the fix (`CLAUDE.md`'s naive-rebuild trap, one tier up).
+    let bone = glb.node(VIEWMODEL_HIDDEN_ARM).unwrap();
+    let unmoved = view(glb.skeleton(clip, 0.0)[bone]);
+    let (rot, off) = swing_pose(0.10);
+    let at = rig_transform(rot, off).transform_point(bevy::math::Vec3::from_array(unmoved));
     assert!(
-        worst > 1.2,
-        "the collapse point is only {worst:.2} of the way past the frame edge \
-         — that is inside a bob of visible"
+        on_screen([at.x, at.y, at.z]),
+        "the un-offset collapse point stays out of frame through the swing on \
+         its own, so VIEWMODEL_HIDDEN_OFFSET is checking nothing — either the \
+         rig or the arc has changed under this gate"
+    );
+
+    // The distance the constant claims, held to a centimetre. A re-import or a
+    // retarget that turns the parent's frame moves this and nothing else
+    // notices.
+    assert!(
+        (nearest - VIEWMODEL_HIDDEN_BEHIND_M).abs() < 0.05,
+        "the collapse point parks {nearest:.3} m behind the eye where \
+         VIEWMODEL_HIDDEN_BEHIND_M says {VIEWMODEL_HIDDEN_BEHIND_M:.3} — the \
+         offset is derived from this rig and one of them has moved"
+    );
+}
+
+/// A rig-space rotation in VIEW space. [`view`]'s companion: the arms carry a
+/// yaw of π, which as a quaternion is `(0, 1, 0, 0)`, so composing it on the
+/// left is the whole transform.
+fn view_rot(q: Q) -> Q {
+    qmul([0.0, 1.0, 0.0, 0.0], q)
+}
+
+/// The angle between two rotations, radians.
+fn angle_between(a: Q, b: Q) -> f32 {
+    let d = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]).abs();
+    2.0 * d.clamp(-1.0, 1.0).acos()
+}
+
+/// `Quat::from_euler(EulerRot::YXZ, a, b, c)` as this file's `(x, y, z, w)`
+/// array: intrinsic Y then X then Z, so `Ry(a) · Rx(b) · Rz(c)`.
+fn euler_yxz(a: f32, b: f32, c: f32) -> Q {
+    let ax = |i: usize, t: f32| {
+        let mut q = [0.0, 0.0, 0.0, (t / 2.0).cos()];
+        q[i] = (t / 2.0).sin();
+        q
+    };
+    qmul(qmul(ax(1, a), ax(0, b)), ax(2, c))
+}
+
+#[test]
+fn the_grip_hangs_the_item_exactly_where_the_camera_used_to() {
+    // **The gate that makes parenting to the hand a derivation rather than a
+    // taste call.** `VIEWMODEL_GRIP_M`/`_Q`/`_SCALE` are the item's transform
+    // in the `RightHand` bone's own frame, and the property that picks them is
+    // that composing them onto the hand reproduces the pose the item had as a
+    // child of the CAMERA — `VIEWMODEL_HOLD` with `VIEWMODEL_TILT` — so
+    // nothing about the resting frame moved and only the following is new.
+    //
+    // Three ways this goes wrong and none of them is a compile error: a
+    // re-import moves the hand bone, a retarget moves the hold clip, or
+    // somebody nudges `VIEWMODEL_HOLD` and leaves the grip behind. All three
+    // land here.
+    let glb = Glb::open(&asset_path(RIG));
+    let clip = client::render::anim::ARMS_HOLD_CLIP;
+    let bone = glb
+        .node(HOLD_BONE)
+        .unwrap_or_else(|| panic!("{RIG}: no {HOLD_BONE} bone"));
+    // The clip's FIRST frame, which is what the constant was derived at.
+    let (ht, hr, hs) = glb.skeleton_trs(clip, 0.0)[bone];
+    let (ht, hr) = (view(ht), view_rot(hr));
+
+    // The scale first, because it is the one an eye cannot check: the item's
+    // own offsets are metres and a bone on this rig carries the root's 0.01.
+    assert!(
+        (hs[0] - hs[1]).abs() < 1e-6 && (hs[1] - hs[2]).abs() < 1e-6,
+        "{HOLD_BONE} is non-uniformly scaled {hs:?} — the grip's single \
+         VIEWMODEL_GRIP_SCALE cannot express that"
+    );
+    let want_scale = 1.0 / hs[0];
+    assert!(
+        (VIEWMODEL_GRIP_SCALE - want_scale).abs() / want_scale < 1e-3,
+        "VIEWMODEL_GRIP_SCALE is {VIEWMODEL_GRIP_SCALE} where the hand's own \
+         scale asks for {want_scale} — the item would draw {:.0}× life size",
+        VIEWMODEL_GRIP_SCALE / want_scale
+    );
+
+    // Then the frame: hand ∘ grip must land on the hold pose.
+    let g = [
+        VIEWMODEL_GRIP_M.x * hs[0],
+        VIEWMODEL_GRIP_M.y * hs[1],
+        VIEWMODEL_GRIP_M.z * hs[2],
+    ];
+    let r = rotate(hr, g);
+    let at = [ht[0] + r[0], ht[1] + r[1], ht[2] + r[2]];
+    let target = [VIEWMODEL_HOLD.x, VIEWMODEL_HOLD.y, VIEWMODEL_HOLD.z];
+    let off = dist(at, target);
+    assert!(
+        off < 0.002,
+        "the grip puts the item {:.1} mm from VIEWMODEL_HOLD — it is derived \
+         from the hand and one of them has moved",
+        off * 1000.0
+    );
+
+    let grip_q = [
+        VIEWMODEL_GRIP_Q.x,
+        VIEWMODEL_GRIP_Q.y,
+        VIEWMODEL_GRIP_Q.z,
+        VIEWMODEL_GRIP_Q.w,
+    ];
+    let tilt = euler_yxz(VIEWMODEL_TILT.x, VIEWMODEL_TILT.y, VIEWMODEL_TILT.z);
+    let a = angle_between(qmul(hr, grip_q), tilt);
+    assert!(
+        a < 0.01,
+        "the grip's orientation is {:.2}° off VIEWMODEL_TILT — the item would \
+         sit in the hand at the wrong angle",
+        a.to_degrees()
     );
 }
 
 #[test]
-fn the_hold_clip_never_animates_the_hidden_bones_scale() {
+fn the_swing_keeps_the_item_in_frame_and_the_dead_arm_out_of_it() {
+    // **The one thing about a swing arc that is checkable without a GPU**, and
+    // it is the thing that actually decided the arc. The obvious way to
+    // animate a first-person swing is to play the rig's own `Sword_Attack` on
+    // the viewmodel arms — and measured, that clip carries the right hand
+    // BEHIND the camera for 40% of its length and to ndc y −2.36 at the
+    // strike, because it is authored for a body seen from outside. So the
+    // stroke is `swing_pose`, and what makes it a design rather than a dial is
+    // that the whole of it stays in shot.
+    //
+    // Both halves are asserted, because they fail in opposite directions: too
+    // small an arc and nothing moves (the defect), too large and the item
+    // leaves the frame — or drags the collapsed off-arm INTO it, which is the
+    // speck-of-skin failure `the_hidden_arm_collapses_to_a_point_off_screen`
+    // exists for, now that the collapse point rides a rotation rather than
+    // three centimetres of bob.
+    let glb = Glb::open(&asset_path(RIG));
+    let clip = client::render::anim::ARMS_HOLD_CLIP;
+    let hold = [VIEWMODEL_HOLD.x, VIEWMODEL_HOLD.y, VIEWMODEL_HOLD.z];
+
+    const N: usize = 120;
+    let mut path = 0.0f32;
+    let mut prev: Option<V3> = None;
+    let (mut lo, mut hi, mut wide) = (f32::MAX, f32::MIN, 0.0f32);
+    let mut near_dead = f32::MAX;
+    // The collapse point over the hold loop — the swing rides on top of
+    // whatever the clip is doing with that bone.
+    let dead_pts: Vec<V3> = steps(&glb, clip)
+        .into_iter()
+        .map(|t| collapsed_off_arm(&glb, clip, t))
+        .collect();
+
+    for i in 0..=N {
+        let s = i as f32 / N as f32;
+        let (rot, off) = swing_pose(s);
+        let rig = rig_transform(rot, off);
+        let place = |p: V3| {
+            let v = rig.transform_point(bevy::math::Vec3::new(p[0], p[1], p[2]));
+            [v.x, v.y, v.z]
+        };
+
+        let at = place(hold);
+        if let Some(p) = prev {
+            path += dist(at, p);
+        }
+        prev = Some(at);
+        let (x, y) = ndc(at).unwrap_or_else(|| {
+            panic!("the swing takes the item to {at:?} at s={s:.2} — behind the near plane")
+        });
+        assert!(
+            x.abs() <= 1.20 && (-1.15..=1.05).contains(&y),
+            "the swing takes the item to ndc ({x:.2}, {y:.2}) at s={s:.2}, \
+             which is outside the frame it is supposed to sweep across"
+        );
+        lo = lo.min(y);
+        hi = hi.max(y);
+        wide = wide.max(x.abs());
+
+        for p in &dead_pts {
+            let q = place(*p);
+            assert!(
+                !on_screen(q),
+                "{VIEWMODEL_HIDDEN_ARM}'s collapse point is dragged to {q:?} \
+                 at s={s:.2}, which is inside the frame"
+            );
+            // Behind the camera the whole way. Measured as a DEPTH rather than
+            // as an ndc margin, because ndc has no answer behind the lens —
+            // and the depth is the property that makes the arc safe at all.
+            near_dead = near_dead.min(q[2]);
+        }
+    }
+
+    // **The floor is the defect, stated as a number.** *"the swing animation
+    // is the most underwhelming thing ever. hardly anything moves"* — the arc
+    // it replaced rotated the item 1.15 rad about its own grip and pushed the
+    // rig 13 cm, so the grip itself travelled ~26 cm over the whole stroke.
+    // Half a metre is comfortably past that and comfortably under what the
+    // frame allows.
+    assert!(
+        path > 0.5,
+        "the whole swing moves the grip {path:.2} m — that is the arc this \
+         replaced, not a swing"
+    );
+    assert!(
+        hi - lo > 0.8,
+        "the swing spans only {:.2} of the frame vertically",
+        hi - lo
+    );
+    assert!(
+        near_dead > 1.0,
+        "the swing brings the collapsed arm to {near_dead:.2} m — it has to \
+         stay well behind the camera for the whole stroke"
+    );
+}
+
+#[test]
+fn the_swing_pulse_is_smooth_at_both_ends_and_at_its_peak() {
+    // `bump`'s doc claims C¹ at three points, and a slope step in a stroke
+    // this size is a visible flick. Same shape as `sim-core`'s `contour.rs`:
+    // gate the MECHANISM (a derivative), not a picture.
+    //
+    // Proven red under the shape it replaced — a bare `sin(π u)`, whose
+    // derivative at u = 0 is π rather than 0.
+    let h = 1e-3;
+    for attack in [0.5, VIEWMODEL_SWING_ATTACK] {
+        let d = |u: f32| (bump(u + h, attack) - bump(u - h, attack)) / (2.0 * h);
+        for (u, what) in [(0.0, "the start"), (1.0, "the end"), (attack, "the peak")] {
+            assert!(
+                d(u).abs() < 0.05,
+                "bump(attack {attack}) has slope {:.3} at {what} (u={u}) — a \
+                 step there is a flick in the middle of a stroke",
+                d(u)
+            );
+        }
+        assert!(
+            (bump(attack, attack) - 1.0).abs() < 1e-5,
+            "the pulse must reach exactly 1 at its peak"
+        );
+        assert_eq!(bump(0.0, attack), 0.0);
+        assert_eq!(bump(1.0, attack), 0.0);
+    }
+    // The two pulses meet at the wind-up boundary, and both are zero there —
+    // which is what makes the composed stroke C¹ across the join too.
+    assert_eq!(bump(1.0, 0.5), 0.0, "the wind-up ends at rest");
+    assert_eq!(
+        bump(0.0, VIEWMODEL_SWING_ATTACK),
+        0.0,
+        "the strike starts at rest"
+    );
+    let (rot, off) = swing_pose(VIEWMODEL_SWING_WINDUP);
+    assert!(
+        rot.angle_between(bevy::math::Quat::IDENTITY) < 1e-4 && off.length() < 1e-4,
+        "the rig passes back through its rest pose at the wind-up/strike join"
+    );
+}
+
+#[test]
+fn dress_arms_still_writes_both_halves_of_the_collapse() {
+    // **The one thing the arithmetic above cannot see.** Every other gate in
+    // this file reads the shipped GLB and the shipped constants; none of them
+    // runs `dress_arms`, so deleting the line that applies
+    // `VIEWMODEL_HIDDEN_OFFSET` leaves all of them green and puts a speck of
+    // skin back in the frame. Same shape as `tests/sound.rs`'s call-site grep
+    // and `tests/ui.rs` §H: when the defect is a CALL SITE and not a value,
+    // the gate has to read the source.
+    let src = std::fs::read_to_string("src/render/viewmodel.rs").expect("viewmodel.rs");
+    let body = src
+        .split_once("pub fn dress_arms(")
+        .expect("dress_arms is gone — this gate is stale")
+        .1;
+    let body = body.split_once("\npub fn ").map_or(body, |(b, _)| b);
+    // **Comments stripped first, and finding that out cost the mutant.** The
+    // body carries `// see [VIEWMODEL_HIDDEN_OFFSET] for why the scale alone
+    // does not do it` two lines above the write, so a bare `contains` was
+    // green with the write deleted — a gate satisfied by the prose describing
+    // the thing it is checking for.
+    let code: String = body
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for want in [
+        "t.scale = Vec3::splat(VIEWMODEL_HIDDEN_SCALE)",
+        "t.translation = VIEWMODEL_HIDDEN_OFFSET",
+    ] {
+        assert!(
+            code.contains(want),
+            "dress_arms no longer does `{want}` — the off arm is only half \
+             collapsed, which is invisible to every other gate here"
+        );
+    }
+}
+
+#[test]
+fn the_hold_clip_never_animates_the_hidden_bones_pose() {
     // The collapse is written ONCE, by `dress_arms`, and never re-applied.
     // That is free and it is correct only while the clip playing on these arms
     // leaves scale alone. `Pistol_Idle_Loop` writes rotation on 22 joints and
@@ -583,18 +955,27 @@ fn the_hold_clip_never_animates_the_hidden_bones_scale() {
     let glb = Glb::open(&asset_path(RIG));
     let clip = client::render::anim::ARMS_HOLD_CLIP;
     let hidden = glb.node(VIEWMODEL_HIDDEN_ARM).unwrap();
-    let scaled: Vec<usize> = glb
-        .channels(clip)
-        .into_iter()
-        .filter(|(_, path)| path == "scale")
-        .map(|(n, _)| n)
-        .filter(|&n| glb.descends_from(n, hidden))
-        .collect();
-    assert!(
-        scaled.is_empty(),
-        "{clip} animates scale on {scaled:?}, under {VIEWMODEL_HIDDEN_ARM} — \
-         the one-shot collapse in dress_arms would be overwritten on the next \
-         frame. Re-apply it after AnimationSystems (anim::head_look's shape) \
-         or pick a clip that leaves scale alone"
-    );
+    //
+    // **Both channels, since `VIEWMODEL_HIDDEN_OFFSET`.** The collapse is a
+    // scale AND a translation now, and the translation is the load-bearing
+    // half — it is what parks the joint behind the camera. `Pistol_Idle_Loop`
+    // does write translation, on the hips, so "this clip animates no
+    // translation" is not true in general and has to be asked about THIS bone.
+    for path in ["scale", "translation"] {
+        let written: Vec<usize> = glb
+            .channels(clip)
+            .into_iter()
+            .filter(|(_, p)| p == path)
+            .map(|(n, _)| n)
+            .filter(|&n| glb.descends_from(n, hidden))
+            .collect();
+        assert!(
+            written.is_empty(),
+            "{clip} animates {path} on {written:?}, under \
+             {VIEWMODEL_HIDDEN_ARM} — the one-shot collapse in dress_arms \
+             would be overwritten on the next frame. Re-apply it after \
+             AnimationSystems (anim::head_look's shape) or pick a clip that \
+             leaves it alone"
+        );
+    }
 }

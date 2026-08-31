@@ -3050,6 +3050,21 @@ impl ClientCore {
         steps
     }
 
+    /// Where to draw the **camera** this frame: the predicted body,
+    /// interpolated across the sim tick real time is currently inside.
+    ///
+    /// The two halves are `ClientClock::alpha` and
+    /// `Predictor::eye_position`, and both doc comments carry the argument —
+    /// this is only the seam that puts them together, so no caller has to
+    /// know that the clock owns the remainder the predictor needs.
+    ///
+    /// **Not a replacement for `predict.render_position()`**, which stays the
+    /// sim-truth reader every verb resolves against. See
+    /// `Predictor::eye_position`.
+    pub fn eye_position(&self) -> [f32; 3] {
+        self.predict.eye_position(self.clock.alpha())
+    }
+
     /// Encode the due input datagram — the unacked tail plus the redundant
     /// ack header — into `buf`. Returns 0 when none is due. One datagram
     /// per client tick (30 Hz): the tail already carries the loss cover,

@@ -1479,6 +1479,11 @@ fn the_mark_belongs_to_one_node() {
         cx: 40,
         cz: 90,
         d2: 1.0,
+        // The world position the pick now carries for `render::impact`. Not
+        // what this gate is about, and left at the default on purpose: the
+        // mark is keyed on the CELL, and a position agreeing with it would
+        // make the test read as though it were not.
+        ..SwingPick::default()
     };
     assert!(
         mark_is_for(cell_key(40, 90), &pick),

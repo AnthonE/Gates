@@ -102,7 +102,19 @@ Concretely, three directions of dependency:
 
 | allowed | why |
 |---|---|
-| ECS reads `ClientCore` (`predict.render_position`, `interp.sample`, `PieceSet`, `DeploySet`, `BagSet`, `HarvestedSet`) | the render contract, and it is already what `draw_bodies` does |
+| ECS reads `ClientCore` (`predict.render_position`, `core.eye_position`, `interp.sample`, `PieceSet`, `DeploySet`, `BagSet`, `HarvestedSet`) | the render contract, and it is already what `draw_bodies` does |
+
+⚠ **Two of those readers are the same question with different answers, and
+the split is deliberate.** `predict.render_position()` is the sim-truth
+position every VERB resolves against (`render::verbs::resolve`), on the
+quantize-both-sides law: a client that picked on a smoothed position offers a
+verb the server declines at the edge of a reach radius. `core.eye_position()`
+is the same body interpolated across the 30 Hz tick real time is inside, and
+**only the camera reads it** — the predictor steps on a fixed clock, so
+without it the eye is redrawn at the same place for every frame between two
+ticks, which is a staircase at 60 fps and a smear at 144 (reported from play,
+2026-08-30). The two agree exactly whenever the body is at rest. Neither is a
+decision: both are readings of a state the sim owns.
 | ECS calls pure `sim_core::terrain::*` (`height`, `slope`, `moisture`, `splat`, `scatter`, `clutter_fill`, `haven`) | worldgen is a pure function of the seed and both sides already agree on it; the browser client does exactly this through the wasm bridge |
 | ECS → sim: **only** `ClientCore::set_input` | one door, the same one the browser uses |
 

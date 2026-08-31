@@ -59,6 +59,37 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0fp · What the first-person pass left *(client lane)*
+
+From play (operator, 2026-08-30): *"when i run my player is all blurry like
+its snapping around"*, *"held items are shitty looking like again they are
+not under the parent"*, *"the swing animation is the most underwhelming thing
+ever"*, *"we need some kinda effect particle wise when u actually connect"*.
+All four are answered (`DECISIONS.md` 2026-08-30, first-person feel v1) —
+`ClientCore::eye_position`, `VIEWMODEL_GRIP_M`, `viewmodel::swing_pose`,
+`render/impact.rs`. What remains:
+
+1. **Nobody has seen any of it** — §LOOK. The arc, the grip and the chips
+   are gated as arithmetic (the item stays in frame, the grip reproduces the
+   hold pose, the pool holds its cap) and *how they read* is a person with a
+   GPU. The swing's timings especially: `VIEWMODEL_SWING_S` and the wind-up
+   split are PROPOSED, not spoken.
+2. **The remote body's item is still not in its hand.** `bodies::BODY_PALM`
+   hangs it off the body root at a fixed chest offset, so another player's
+   axe does not swing with their arm — the same defect the viewmodel just
+   closed, one entity over. The fix is the same shape (`hand_pose` already
+   divides out the scale) and it needs a bound hand bone per body, which
+   `anim::bind_head` shows the cost of.
+3. **A gather burst is placed from the client's pick, not the sim's.**
+   `EV_GATHER` carries an item and no cell, so `impact::strike` reads
+   `verbs::Swung`. Right whenever the player is swinging at what they are
+   looking at, which is always in practice and not by construction. A cell on
+   the gather event would retire the seam; it is a wire field for a cosmetic,
+   so it is priced here rather than taken.
+4. **Nothing throws chips for a mob.** `EV_HIT` on an animal resolves through
+   `Herd` rather than `Bodies`, so a wolf takes a blow and the frame is
+   unchanged — the exact gap this pass was opened for, one victim class over.
+
 ## 0cs · The fight at population — what the combat storm left *(sim lane)*
 
 From the merge-gate judge's ranked gap 3, `findings/pass-20260829-153230-21-judge.md`

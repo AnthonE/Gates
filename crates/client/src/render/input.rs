@@ -457,7 +457,13 @@ pub fn place_eye(
         return;
     }
 
-    let [x, y, z] = net.session.core.predict.render_position();
+    // **The eye's own reader, and it is not `render_position`.** The
+    // predictor steps at 30 Hz; every frame between two ticks would otherwise
+    // redraw the camera at the same place, which is a staircase at 60 fps and
+    // a smear at 144 (`Predictor::eye_position` carries the whole argument).
+    // Everything that resolves a VERB still reads `render_position` —
+    // `render::verbs` must pick on the position the sim will answer for.
+    let [x, y, z] = net.session.core.eye_position();
     if !*announced {
         *announced = true;
         info!("gates: the shard placed us at {x:.1}, {y:.1}, {z:.1} — building the world");
