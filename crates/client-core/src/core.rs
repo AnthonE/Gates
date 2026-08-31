@@ -3013,7 +3013,7 @@ impl ClientCore {
     /// that carried one.
     pub fn advance(&mut self, dt_ms: f64) -> u32 {
         let steps = self.clock.advance(dt_ms);
-        self.predict.decay_error();
+        self.predict.decay_error(dt_ms);
         for _ in 0..steps {
             let frame = InputFrame {
                 seq: self.next_seq,
