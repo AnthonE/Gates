@@ -613,10 +613,17 @@ pub fn needle_image() -> Image {
     );
     img.data = Some(chained);
     img.texture_descriptor.mip_level_count = mip_level_count;
-    // `ImageSampler::linear()` leaves `mipmap_filter` at Nearest, which would
-    // hard-cut between levels on a canopy that is already the highest-frequency
-    // thing in the frame. Trilinear across the chain, tiling off: the card's
-    // UVs are 0..1 and a wrapped needle mask bleeds the far edge into the near.
+    // Trilinear across the chain, tiling off: the card's UVs are 0..1 and a
+    // wrapped needle mask bleeds the far edge into the near.
+    //
+    // ⚠ This comment used to justify the `mipmap_filter` line by saying
+    // `ImageSampler::linear()` leaves it at Nearest. **It does not, in Bevy
+    // 0.18.1**: `ImageSamplerDescriptor::linear()` sets all three filters to
+    // Linear and it is bare `default()` that leaves `mipmap_filter` at Nearest
+    // (`bevy_image/src/image.rs`, the `linear()` and `Default` impls). Spelling
+    // the three out stays right — it is explicit and it survives the next
+    // upgrade — but the reason was wrong, and it was wrong in the one place
+    // somebody checking our mip filtering would read first.
     img.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
         mag_filter: bevy::image::ImageFilterMode::Linear,
         min_filter: bevy::image::ImageFilterMode::Linear,

@@ -1306,9 +1306,19 @@ Items 1–3 are struck and gated (`sim-core/tests/relief.rs`,
 3. **The dirt skirt is nobody's.** `props::SINK_M` (0.06 m) sinks every prop
    and `tests/greybox.rs` evaluates "nothing floats"; crowding where a
    boulder meets turf is still missing (`ART.md` rule 2).
-4. **The far mesh speckles.** Grazing-angle aliasing on the 8 m LOD;
-   `textures.rs` pins `anisotropy_clamp: 4` for a browser reason that did not
-   survive the port (`ART.md` §7) — a proposal, not an edit.
+4. **The far mesh speckles — LANDED, and the cause was not the one written
+   here.** This item said grazing-angle aliasing on the 8 m LOD and proposed
+   raising `anisotropy_clamp: 4`. That edit would have changed **nothing**:
+   anisotropic filtering *is* a mip-selection technique — it takes several
+   taps and reads them from a level chosen for the minor axis — and every
+   `.jpg` in `assets/textures/` reached the GPU with `mip_level_count = 1`,
+   so every tap read level 0. Bevy 0.18 builds no chain for an ordinary image
+   format (`ImageLoaderSettings` has no such setting; only KTX2/DDS carry one
+   from the file). `ground_splat.wgsl`'s careful `textureSampleGrad` gradients
+   were selecting among a chain of length one, and SMAA cannot touch it —
+   minification aliasing has no edge to find. Fixed by `render/mipmap.rs`,
+   gated by `tests/mipmap.rs`. The aniso pin stays as it was; with a chain
+   under it, it now does what its comment claims.
 5. **Roughness maps unread — ten now** (`assets/textures/*_rough.jpg`).
    Blocked on an ORM packing step: `metallic_roughness_texture` is
    glTF-packed and its B channel is metallic (`render/props.rs:1090`).

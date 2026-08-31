@@ -16,6 +16,14 @@
 //! splat weights the mesh carries in its vertex colours still choose the
 //! identity, still ramp between them, and still multiply the photograph.
 //!
+//! **These load with no mip chain and `render/mipmap.rs` builds one.** Bevy
+//! 0.18 generates none for an ordinary image format — `ImageLoaderSettings`
+//! has no such setting — and a one-level photograph minified across the
+//! island is the static that module exists to remove. The sampler below is
+//! already right for a chain (`linear()` sets `mipmap_filter` to Linear, and
+//! `anisotropy_clamp: 4` needs one to mean anything); what was missing was
+//! the chain itself.
+//!
 //! **The budget that shaped these files is gone.** They were fetched at 1K
 //! and re-encoded to fit a 12 MB *download* — a browser boot cost. A desktop
 //! client pays it once from disk. Re-sourcing at 2K/4K is a later slice and
