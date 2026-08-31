@@ -3102,7 +3102,8 @@ impl ClientCore {
                         self.interp.push(header.tick, e);
                     }
                 }
-                self.clock.on_snapshot(header.tick, header.nudge);
+                self.clock
+                    .on_snapshot(header.tick, header.nudge, header.buffered_depth);
                 if let Some(own) = self.view.get(self.player_id).copied() {
                     self.predict.reconcile(
                         &own,

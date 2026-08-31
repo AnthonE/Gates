@@ -235,12 +235,18 @@ they never went.
 
 Two feedback loops keep the buffer at target — both shipped mechanisms:
 
-1. **Time dilation** (Overwatch): every snapshot header carries a 2-bit
-   nudge — `ok / faster / slower / hard-resync`. On `faster` the client
-   shortens its 33.3 ms frame by ~5% (Overwatch runs 16 ms frames at
-   15.2 ms when starving — the same ratio) until the buffer refills, then
-   dilates back. `hard-resync` (buffer empty or > 6 ticks, or a
-   tab-throttle return) recomputes the offset outright from fresh pings.
+1. **Time dilation** (Overwatch): since netcode v2 S4 the header carries
+   the server's input-buffer gauge itself (`buffered_depth`, wire v60) and
+   the client runs a **proportional controller with a deadband** on it —
+   depth 1–3 is home and dilates nothing (the old 3-state nudge dilated at
+   depth 3, so a buffer breathing between 2 and 3 kept the clock hunting,
+   and every hunt was a small misprediction), one frame past the band
+   reaches the full ±5% (Overwatch's ratio: 16 ms frames at 15.2 ms when
+   starving). The 2-bit nudge still rides the header: `hard-resync`
+   (a second of starvation, a tab-throttle return) is starvation-driven —
+   a signal no depth reading carries — and still recenters the clock;
+   `faster`/`slower` are stamped and ignored, quantizations of the gauge
+   that now travels whole.
    [gdcvault.com/play/1024001 — Overwatch Gameplay Architecture and Netcode]
 2. **Server-side consume throttle** (Rocket League's fallback, credited by
    them to the Overwatch talk): when dilation can't keep up, the server

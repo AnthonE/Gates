@@ -751,6 +751,11 @@ impl ClientNetState {
         } else {
             self.starve_ticks += 1;
         }
+        // `HardResync` is the rung that still steers (netcode v2 S4):
+        // the client's clock runs a proportional controller on the
+        // header's `buffered_depth` gauge now, so `Faster`/`Slower` are
+        // stamped for the wire's continuity and diagnostics and ignored
+        // by the shipped client.
         self.nudge = if self.starve_ticks > STARVE_HARD_RESYNC_TICKS {
             Nudge::HardResync
         } else if depth_after == 0 {
