@@ -59,6 +59,31 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0nc · Netcode v2 landed — what the overhaul still owes *(client+server lane)*
+
+All five slices shipped 2026-08-31 (DECISIONS.md dated row + four §open
+rows; wire v60→v61): starved-reuse decay + throttle double-execute +
+depth/repeat gauges (S1), 30 Hz snapshots + interp history across
+keyframes + the client datagram ring (S2), time-based correction
+smoothing + the minor-correction ledger (S3), the depth controller (S4),
+estimated velocity + bounded extrapolation + adaptive playout with the
+v61 favour report (S5), and the `netsim` shard knob. What remains:
+
+1. **Feel it at the bar.** `netsim = "30,10,1"` on a dev shard, two
+   humans (the stop test and the strafing-bro test are the two symptoms
+   the overhaul was cut against). Every gate here ran at zero RTT plus
+   the netsim boot gate; the operator's eyes are the visual gate's
+   sibling for feel.
+2. **NetLine gauges.** The F4 net row still shows err/confirm/mispredict
+   only — `buffered_depth`, `repeat_count`, `playout_ticks()`,
+   `jitter_ms`, `corrections_minor`, `DgRing::dropped` all exist and
+   nothing draws them (`render/hud.rs:2145`).
+3. **The event lane is not shimmed** (netsim §open row states the skew)
+   and the stream lane leads its snapshots by lat_ms under netsim.
+4. `RESYNC_AHEAD_TICKS = 3` is still the blind initial guess; with the
+   depth controller holding steady-state it only matters for the first
+   second after join/resync. Measure before touching.
+
 ## 0cs · The fight at population — what the combat storm left *(sim lane)*
 
 From the merge-gate judge's ranked gap 3, `findings/pass-20260829-153230-21-judge.md`
@@ -858,9 +883,11 @@ The first two need a wire field (`DECISIONS.md` §open):
    two is wrong; the harness's "this leans optimistic" argument rests on
    it, so settle it before quoting that argument again.
 2. **The jitter buffer's held-item timing.** `Client::consume_input`
-   (`server/src/client.rs:576`) executes one buffered frame per tick, so
-   the frame carrying `charge_slot` need not be in force when the throw
-   lands. Cannot be the whole story: 27 charges did arm.
+   (`server/src/client.rs`) lets at most one frame's BUTTONS act per tick
+   (a throttle tick moves the body with both frames since netcode v2, but
+   the older frame's buttons still never act), so the frame carrying
+   `charge_slot` need not be in force when the throw lands. Cannot be the
+   whole story: 27 charges did arm.
 
 
 ## 0r · A blast is silent and cannot be stopped *(systems + audio lanes)*

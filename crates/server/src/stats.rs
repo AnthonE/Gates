@@ -225,6 +225,12 @@ pub struct ShardStats {
     pub input_dg_forged: AtomicU64,
     /// Inbound ring full — datagram dropped (redundancy re-carries).
     pub input_ring_drops: AtomicU64,
+    /// Datagrams the dev netsim shim (`config.rs netsim`) held for their
+    /// fake latency, both lanes. Zero on every shard with the knob unset.
+    pub netsim_delayed: AtomicU64,
+    /// Datagrams the shim discarded: the loss roll, plus a delay line at
+    /// its bound (drop, counted — a dev tool still states its policy).
+    pub netsim_dropped: AtomicU64,
     /// Snapshots encoded and handed to rings.
     pub snap_sent: AtomicU64,
     /// Outbound ring full — that client skipped a snapshot.
@@ -896,6 +902,8 @@ impl ShardStats {
             "input_dg_bad" => &self.input_dg_bad,
             "input_dg_forged" => &self.input_dg_forged,
             "input_ring_drops" => &self.input_ring_drops,
+            "netsim_delayed" => &self.netsim_delayed,
+            "netsim_dropped" => &self.netsim_dropped,
             "snap_ring_skips" => &self.snap_ring_skips,
             "snap_send_errors" => &self.snap_send_errors,
             "encode_range_errors" => &self.encode_range_errors,

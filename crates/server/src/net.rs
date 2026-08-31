@@ -515,11 +515,14 @@ pub async fn spawn_shard(
             seed: cfg.seed,
             // A shard running a dev override is a dev shard, and says so
             // in every welcome — that bit is the client's only dev gate.
-            dev: cfg.dev_spawn.is_some(),
+            // A shard with a fake network is a dev shard as surely as one
+            // with a pinned spawn — the client's dev affordances key on this.
+            dev: cfg.dev_spawn.is_some() || cfg.netsim.is_some(),
             require_auth: cfg.require_auth,
             domain: cfg.domain.clone(),
             entitle: cfg.entitle.clone(),
             min_client: cfg.min_client,
+            netsim: cfg.netsim,
         },
         ctrl_tx,
         grave_rx,
@@ -563,6 +566,9 @@ struct ShardFacts {
     /// whose `PROTO_VER` already matched, which is every client that could
     /// have got this far.
     min_client: u32,
+    /// The dev fake-network knob (`config.rs`), applied per connection at
+    /// the two datagram tasks. `None` on every shipping shard.
+    netsim: Option<crate::config::NetSim>,
 }
 
 /// What a handshake task hands back once the client said a valid hello.
@@ -1369,6 +1375,7 @@ async fn install(
         stats.clone(),
         slot,
         generation,
+        facts.netsim,
     ));
     // The bidi recv half stays open for the connection's life: after the
     // hello it is the C→S action lane (craft requests) and the chat lane,
@@ -1399,6 +1406,7 @@ async fn install(
         stats.clone(),
         slot,
         generation,
+        facts.netsim,
     ));
 }
 
@@ -1456,11 +1464,80 @@ async fn reader_task(
     stats: Arc<ShardStats>,
     slot: usize,
     generation: u32,
+    netsim: Option<crate::config::NetSim>,
 ) {
+    if let Some(ns) = netsim {
+        // The dev fake-network shim (`config.rs netsim`), ingress half: a
+        // FIFO delay line between the socket and the sim's input ring, so
+        // the netcode can be FELT at the RTT it is tuned for without
+        // leaving loopback. Lives entirely on the tokio side — the sim
+        // thread sees ordinary late datagrams and nothing else, so walls
+        // 1–3 are untouched. Bounded (`NETSIM_QUEUE`, drop-newest at the
+        // line, counted): a dev tool still states its overflow policy.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(
+            tokio::time::Instant,
+            wtransport::datagram::Datagram,
+        )>(NETSIM_QUEUE);
+        {
+            let stats = stats.clone();
+            tokio::spawn(async move {
+                while let Some((due, dg)) = rx.recv().await {
+                    tokio::time::sleep_until(due).await;
+                    accept_input(&dg, &mut input_tx, &stats);
+                }
+            });
+        }
+        let mut rng = netsim_rng(&ns, slot);
+        while let Ok(dg) = connection.receive_datagram().await {
+            match netsim_verdict(&ns, &mut rng) {
+                None => ShardStats::bump(&stats.netsim_dropped),
+                Some(delay) => {
+                    ShardStats::bump(&stats.netsim_delayed);
+                    let due = tokio::time::Instant::now() + delay;
+                    if tx.try_send((due, dg)).is_err() {
+                        ShardStats::bump(&stats.netsim_dropped);
+                    }
+                }
+            }
+        }
+        slots.mark_leaving(slot, generation);
+        return;
+    }
     while let Ok(dg) = connection.receive_datagram().await {
         accept_input(&dg, &mut input_tx, &stats);
     }
     slots.mark_leaving(slot, generation);
+}
+
+/// The delay line's bound, in datagrams. At 30 Hz per lane even the knob's
+/// 2 s latency ceiling holds ~60 in flight, so 64 is the honest working
+/// depth rather than a guess; past it the newest is dropped and counted
+/// (`netsim_dropped`) — freshness-over-completeness, the lane's own policy.
+const NETSIM_QUEUE: usize = 64;
+
+/// One datagram's fate under the shim: `None` ⇒ the loss roll took it;
+/// `Some(delay)` ⇒ deliver after `lat ± jitter` (clamped at zero). Seeded
+/// off the knob and the slot (`netsim_rng`), so a "feels wrong at 30,10,1"
+/// report reproduces exactly.
+fn netsim_verdict(
+    ns: &crate::config::NetSim,
+    rng: &mut sim_core::rng::Pcg32,
+) -> Option<std::time::Duration> {
+    if ns.loss_pct > 0 && rng.next_u32() % 100 < ns.loss_pct as u32 {
+        return None;
+    }
+    let jitter = if ns.jitter_ms > 0 {
+        rng.next_bounded(2 * ns.jitter_ms + 1) as i64 - ns.jitter_ms as i64
+    } else {
+        0
+    };
+    let ms = (ns.lat_ms as i64 + jitter).max(0) as u64;
+    Some(std::time::Duration::from_millis(ms))
+}
+
+fn netsim_rng(ns: &crate::config::NetSim, slot: usize) -> sim_core::rng::Pcg32 {
+    let key = ((ns.lat_ms as u64) << 40) | ((ns.jitter_ms as u64) << 8) | ns.loss_pct as u64;
+    sim_core::rng::Pcg32::new(0x4E45_5453_494D ^ key, slot as u64)
 }
 
 /// Reads length-prefixed C→S frames off the bidi stream for the
@@ -1577,7 +1654,27 @@ async fn writer_task(
     stats: Arc<ShardStats>,
     slot: usize,
     generation: u32,
+    netsim: Option<crate::config::NetSim>,
 ) {
+    // The dev fake-network shim, egress half (the ingress twin is in
+    // `reader_task`): snapshots detour through a FIFO delay line before
+    // the one real `send_datagram`. The drain-to-newest below still runs
+    // first, so what gets delayed is exactly what would have been sent.
+    let mut netsim_lane = netsim.map(|ns| {
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<(tokio::time::Instant, SnapMsg)>(NETSIM_QUEUE);
+        let conn = connection.clone();
+        let st = stats.clone();
+        tokio::spawn(async move {
+            while let Some((due, msg)) = rx.recv().await {
+                tokio::time::sleep_until(due).await;
+                if !send_snap(&conn, &msg, &st) {
+                    return;
+                }
+            }
+        });
+        (ns, netsim_rng(&ns, slot ^ 0x80), tx)
+    });
     let mut poll = tokio::time::interval(WRITER_POLL);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Per-connection previous readings, so what reaches `ShardStats` is a
@@ -1643,26 +1740,51 @@ async fn writer_task(
             newest = Some(msg);
         }
         if let Some(msg) = newest {
-            // Clamp against the live datagram budget (the trap list:
-            // oversize sends fail, and in a browser they fail silently).
-            let max = connection.max_datagram_size().unwrap_or(0);
-            if msg.bytes().len() > max {
-                ShardStats::bump(&stats.snap_send_errors);
+            if let Some((ns, rng, tx)) = netsim_lane.as_mut() {
+                match netsim_verdict(ns, rng) {
+                    None => ShardStats::bump(&stats.netsim_dropped),
+                    Some(delay) => {
+                        ShardStats::bump(&stats.netsim_delayed);
+                        let due = tokio::time::Instant::now() + delay;
+                        if tx.try_send((due, msg)).is_err() {
+                            ShardStats::bump(&stats.netsim_dropped);
+                        }
+                    }
+                }
                 continue;
             }
-            // Counted on `Ok` and nowhere else: the socket accepting the
-            // datagram is the event, not our intent to hand it one. The
-            // clamp above has already refused the oversize case into
-            // `snap_send_errors` without touching this pair.
-            let n = msg.bytes().len();
-            match connection.send_datagram(msg.bytes()) {
-                Ok(()) => ShardStats::add_msg(&stats.net_dg_out_count, &stats.net_dg_out_bytes, n),
-                Err(SendDatagramError::NotConnected) => break,
-                Err(_) => ShardStats::bump(&stats.snap_send_errors),
+            if !send_snap(&connection, &msg, &stats) {
+                break;
             }
         }
     }
     slots.mark_leaving(slot, generation);
+}
+
+/// The one real snapshot send, factored so the netsim delay line and the
+/// direct path cannot drift: the live-MTU clamp (the trap list: oversize
+/// sends fail, and in a browser they failed silently), and the counters —
+/// on `Ok` and nowhere else, because the socket accepting the datagram is
+/// the event, not our intent to hand it one. `false` ⇒ the connection is
+/// gone and the caller should stop.
+fn send_snap(connection: &Connection, msg: &SnapMsg, stats: &ShardStats) -> bool {
+    let max = connection.max_datagram_size().unwrap_or(0);
+    if msg.bytes().len() > max {
+        ShardStats::bump(&stats.snap_send_errors);
+        return true;
+    }
+    let n = msg.bytes().len();
+    match connection.send_datagram(msg.bytes()) {
+        Ok(()) => {
+            ShardStats::add_msg(&stats.net_dg_out_count, &stats.net_dg_out_bytes, n);
+            true
+        }
+        Err(SendDatagramError::NotConnected) => false,
+        Err(_) => {
+            ShardStats::bump(&stats.snap_send_errors);
+            true
+        }
+    }
 }
 
 /// Drains the per-connection event ring onto the reliable bidi stream —
