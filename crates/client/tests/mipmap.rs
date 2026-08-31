@@ -157,8 +157,7 @@ fn srgb_holds_away_from_the_rails() {
 fn a_flat_colour_survives_every_level() {
     for v in [0u8, 1, 17, 64, 128, 191, 254, 255] {
         let n = 16;
-        let level0: Vec<u8> = std::iter::repeat([v, v, v, 255])
-            .take((n * n) as usize)
+        let level0: Vec<u8> = std::iter::repeat_n([v, v, v, 255], (n * n) as usize)
             .flatten()
             .collect();
         for filter in [Filter::Srgb, Filter::Linear] {
