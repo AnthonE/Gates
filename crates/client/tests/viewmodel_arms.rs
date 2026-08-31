@@ -37,6 +37,7 @@
 
 #![cfg(feature = "render")]
 
+use client::render::bodies::RETIRED_BODY_PALM;
 use client::render::viewmodel::{
     bump, rig_transform, swing_pose, VIEWMODEL_ARMS, VIEWMODEL_BOB_X, VIEWMODEL_BOB_Y,
     VIEWMODEL_GRIP_M, VIEWMODEL_GRIP_Q, VIEWMODEL_GRIP_SCALE, VIEWMODEL_HIDDEN_ARM,
@@ -50,8 +51,10 @@ fn asset_path(rel: &str) -> std::path::PathBuf {
 }
 
 const RIG: &str = "models/stumpy.glb";
-/// The hand the item is in. `dress_arms` resolves this same literal.
-const HOLD_BONE: &str = "RightHand";
+/// The hand the item is in — `anim::HAND_BONE`, which `dress_arms` and
+/// `bodies::bind_hands` both resolve. Read from the crate rather than retyped,
+/// because a gate holding its own copy of a name is checking itself.
+const HOLD_BONE: &str = client::render::anim::HAND_BONE;
 /// The hand on the arm that gets collapsed.
 const OFF_BONE: &str = "LeftHand";
 /// `render::rig::FOV_DEG`, restated. Vertical, and 16:9 is the frame this is
@@ -900,9 +903,89 @@ fn the_swing_pulse_is_smooth_at_both_ends_and_at_its_peak() {
         "the strike starts at rest"
     );
     let (rot, off) = swing_pose(VIEWMODEL_SWING_WINDUP);
+    // Componentwise rather than `Quat::angle_between`, which is
+    // `acos(|dot|)` — and the dot of a float quaternion with an exact copy
+    // of itself can land a rounding step above 1, where `acos` is NaN and
+    // every comparison against it is false. `tests/remote_hand.rs` hit that
+    // for real.
     assert!(
-        rot.angle_between(bevy::math::Quat::IDENTITY) < 1e-4 && off.length() < 1e-4,
+        rot.to_array()
+            .iter()
+            .zip([0.0, 0.0, 0.0, 1.0])
+            .all(|(a, b)| (a.abs() - b).abs() < 1e-4)
+            && off.length() < 1e-4,
         "the rig passes back through its rest pose at the wind-up/strike join"
+    );
+}
+
+#[test]
+fn the_hand_bone_is_where_the_rig_says_and_the_retired_offset_was_not() {
+    // **A gate about the `RightHand` bone rather than about the viewmodel**,
+    // and it lives here because this is the file that reads the GLB. A second
+    // JSON-and-forward-kinematics decoder in `tests/remote_hand.rs` is the
+    // two-decoders trap `CLAUDE.md` records for JPEG, one format over — so
+    // that file gates the arithmetic that composes onto this bone, and this
+    // one gates where the bone actually is.
+    //
+    // ## The retraction
+    //
+    // `bodies::BODY_PALM` put a remote player's held item at (0.22, 1.25,
+    // 0.18) in the body's own frame, derived from a stated convention:
+    // *"the rig stands facing +Z with +Y up, so right is +X"*. The file says
+    // otherwise, and `render/viewmodel.rs` had already measured it —
+    // **right is −X on this skeleton**. So every remote in the game carried
+    // its axe on the wrong shoulder, 48 cm too high, for the whole life of
+    // the feature, and no gate could see it because every assertion about
+    // `BODY_PALM` measured it against itself.
+    let glb = Glb::open(&asset_path(RIG));
+    let bone = glb
+        .node(HOLD_BONE)
+        .unwrap_or_else(|| panic!("{RIG}: no {HOLD_BONE} bone"));
+
+    // The body's own frame: the rig at the origin, unrotated and unscaled by
+    // anything the client adds — which is what `bodies::stream` spawns
+    // (`Transform::from_translation(pos).with_rotation(facing)` about the
+    // body's own origin), so a point here is a point in that body's space.
+    let (at, _, sc) = glb.skeleton_trs(client::render::anim::ARMS_HOLD_CLIP, 0.0)[bone];
+    let idle = glb.skeleton_trs("Idle_Loop", 0.0)[bone].0;
+    let _ = at;
+
+    assert!(
+        idle[0] < 0.0,
+        "{HOLD_BONE} sits at x {:.3} — if the rig's right hand has moved to \
+         +X, `viewmodel.rs`'s measured chirality and every grip derived from \
+         it have to be re-derived, not just this assertion relaxed",
+        idle[0]
+    );
+    let retired = [
+        RETIRED_BODY_PALM.x,
+        RETIRED_BODY_PALM.y,
+        RETIRED_BODY_PALM.z,
+    ];
+    let off = dist(idle, retired);
+    assert!(
+        off > 0.5,
+        "the retired offset is {off:.3} m from the hand — if it is that close \
+         now, the rig moved and this retraction needs re-reading rather than \
+         re-asserting"
+    );
+    assert!(
+        retired[0] * idle[0] < 0.0,
+        "the retired offset is on the same side as the hand ({:.3} vs \
+         {:.3}); the wrong-shoulder half of the retraction is stale",
+        retired[0],
+        idle[0]
+    );
+
+    // And the bone's scale is the glTF root's centimetres, which is what
+    // `VIEWMODEL_GRIP_SCALE` cancels for BOTH hands — the property
+    // `remote_hand.rs` composes onto without opening this file.
+    assert!(
+        (VIEWMODEL_GRIP_SCALE * sc[0] - 1.0).abs() < 1e-3,
+        "the bone's own scale is {} and the grip cancels {VIEWMODEL_GRIP_SCALE} \
+         — a remote's item would draw {:.0}× life size",
+        sc[0],
+        VIEWMODEL_GRIP_SCALE * sc[0]
     );
 }
 

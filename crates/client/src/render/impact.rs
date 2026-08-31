@@ -313,6 +313,52 @@ impl Chips {
     }
 }
 
+/// Which store a landed blow's victim is drawn out of, and how high on it
+/// the blow lands.
+///
+/// **A named decision rather than a `match` inside the system**, which is
+/// `tests/tracer.rs`' whole lesson written down: a rule only a Bevy system
+/// can reach is a rule nothing holds, and the first cut of this rule was
+/// exactly that — an inline lookup in `Bodies` alone, so a wolf took a blow
+/// and the frame was unchanged. It failed silently because a miss and an
+/// unrecognised victim are the same `continue`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Struck {
+    /// A player, drawn by `bodies::stream`. `lift` is chest height on the
+    /// volume the sim shoots at (`anim::ANIM_BODY_H_M`) rather than a guess
+    /// about the mesh.
+    Player { lift: f32 },
+    /// An animal, drawn by `mobs::stream` — a different store, a different
+    /// component, and the same id space split by `mob::slot_of_id`.
+    Animal { slot: usize, lift: f32 },
+}
+
+impl Struck {
+    pub fn lift(self) -> f32 {
+        match self {
+            Struck::Player { lift } | Struck::Animal { lift, .. } => lift,
+        }
+    }
+}
+
+/// Where a blow on `victim` lands, from the wire id alone.
+pub fn struck(victim: u32) -> Struck {
+    match sim_core::mob::slot_of_id(victim) {
+        Some(slot) => Struck::Animal {
+            slot,
+            lift: super::mobs::flank_h_of(slot),
+        },
+        None => Struck::Player {
+            lift: super::anim::ANIM_BODY_H_M * PLAYER_CHEST_FRAC,
+        },
+    }
+}
+
+/// Where a blow lands up a standing player, as a fraction of their height.
+/// A chest on a 1.8 m figure is 1.12 m, which is the rung `combat`'s own
+/// bands put between the head and the limbs.
+pub const PLAYER_CHEST_FRAC: f32 = 0.62;
+
 /// Everything a burst needs, so the four callers below read as four facts
 /// rather than as four copies of the same six arguments.
 pub struct Burst {
@@ -504,6 +550,12 @@ pub fn fly(
 ///
 /// Reads `Res<Feed>` and never `pop_*`, for the single-drain reason
 /// `feed.rs`'s header narrates and `tests/sound.rs` greps for.
+/// Eight parameters, which clippy counts — `bodies::stream` carries the same
+/// allow and the same argument. A `SystemParam` struct would exist only to
+/// satisfy the count: the two victim stores are the eighth and they are as
+/// distinct from each other as `feed` is from `eye`, and bundling any two
+/// would hide which of the eight a future reader has to think about.
+#[allow(clippy::too_many_arguments)]
 pub fn strike(
     mut pool: ResMut<Chips>,
     feed: Res<Feed>,
@@ -512,6 +564,7 @@ pub fn strike(
     net: Option<NonSend<Net>>,
     swung: Res<super::verbs::Swung>,
     bodies: Query<(&super::bodies::Body, &GlobalTransform)>,
+    herd: Query<(&super::mobs::Animal, &GlobalTransform)>,
 ) {
     let Some(net) = net else { return };
     let core = &net.session.core;
@@ -534,14 +587,35 @@ pub fn strike(
         });
     }
 
-    // ── A blow that landed on a person ───────────────────────────────────
+    // ── A blow that landed on something alive ────────────────────────────
+    //
+    // **Two stores, and the wire id is what says which.** `EV_HIT` names a
+    // victim and nothing else, and this client draws players out of
+    // `bodies::Bodies` and animals out of `mobs::Herd` — two systems, two
+    // component types, one id space split by `mob::slot_of_id`. The first
+    // cut of this file looked only in `Bodies`, so a wolf took a blow and
+    // the frame was unchanged: the exact gap the whole slice was opened for,
+    // one victim class over, and invisible because a miss and an
+    // unrecognised victim are the same `continue`.
     for &victim in feed.hit_victims() {
-        let Some((_, gt)) = bodies.iter().find(|(b, _)| b.0 == victim) else {
+        let hit = struck(victim);
+        let at = match hit {
+            Struck::Animal { .. } => herd
+                .iter()
+                .find(|(a, _)| a.0 == victim)
+                .map(|(_, gt)| gt.translation()),
+            Struck::Player { .. } => bodies
+                .iter()
+                .find(|(b, _)| b.0 == victim)
+                .map(|(_, gt)| gt.translation()),
+        };
+        // Not in the interest set, or not drawn yet. A blow whose victim
+        // this client cannot place throws nothing rather than guessing at
+        // the crosshair — `RENDER.md` §1, and the same posture the gather
+        // burst takes when the pick is empty.
+        let Some(at) = at.map(|p| p + Vec3::Y * hit.lift()) else {
             continue;
         };
-        // Chest height on the drawn body, which is the volume the sim shoots
-        // at (`anim::ANIM_BODY_H_M`) rather than a guess about the mesh.
-        let at = gt.translation() + Vec3::Y * (super::anim::ANIM_BODY_H_M * 0.62);
         pool.ignite(&Burst {
             at,
             away: (eye.pos - at).normalize_or(Vec3::Y),

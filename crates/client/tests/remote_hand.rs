@@ -15,15 +15,22 @@
 //!    what it was holding. Split out of the system for
 //!    `viewmodel::apply_hand_light`'s reason — a decision a gate cannot
 //!    call is a decision nothing checks.
-//! 2. **The pose.** `hand_pose` divides `viewmodel::pose` by the rig's
-//!    uniform scale, because these are children of a scaled root. The
-//!    ratio is 1.0 today, so a missing division is invisible until the
-//!    rig is re-measured — which is exactly the class of bug that ships.
-//! 3. **The spawn shape**, as a call site rather than a value
-//!    (`tests/sound.rs`' rule, and `CLAUDE.md`: a spawn is not
+//! 2. **The pose.** `hand_pose` is `viewmodel::grip` — the FIRST-PERSON
+//!    grip, and there is only one — composed with the same `pose`, divided
+//!    by the rig's uniform scale because the bone hangs under a scaled
+//!    root. The ratio is 1.0 today, so a missing division is invisible
+//!    until the rig is re-measured, which is exactly the class of bug that
+//!    ships. **The constant this replaced was 0.690 m wrong and on the
+//!    wrong shoulder** (`bodies::RETIRED_BODY_PALM`), and it was wrong for
+//!    the whole life of the feature because it was a second, independent
+//!    answer to a question the tree had already measured once — so what is
+//!    gated here is the SHARING and not a number.
+//! 3. **The spawn shape and the re-parent**, as call sites rather than
+//!    values (`tests/sound.rs`' rule, and `CLAUDE.md`: a spawn is not
 //!    type-checked). Whether the two entities are children of the body
-//!    root is a claim about a bundle, and every value in them would still
-//!    be right if they were siblings floating at the origin.
+//!    root, and whether `bind_hands` then moves them onto the hand bone,
+//!    are claims about a hierarchy — and every value above would still be
+//!    right if they were siblings floating at the origin.
 //!
 //! **Not gated here and said plainly:** nobody has seen a remote hand.
 //! No capture in this repo contains two players (`NOW.md` §0tl, `§LOOK`).
@@ -31,7 +38,8 @@
 #![cfg(feature = "render")]
 
 use bevy::prelude::*;
-use client::render::bodies::{hand_pose, hand_wants, BODY_PALM};
+use client::render::bodies::{flame_pose, hand_pose, hand_wants, RETIRED_BODY_PALM};
+use client::render::viewmodel::{grip, VIEWMODEL_PALM};
 use client::ui::hold::{HELD_MODELS, TORCH_LIGHT};
 use client_core::interp::RemoteState;
 use protocol::ItemCatalog;
@@ -135,39 +143,101 @@ fn the_hand_reads_the_two_fields_and_the_corpse_bit() {
 /// division is bit-identical on the shipped rig and wrong the day the rig
 /// is re-measured.
 #[test]
+fn the_remote_hand_uses_the_first_persons_grip_and_no_second_copy() {
+    // **The gate the retired constant did not have.** `BODY_PALM` was an
+    // independent second answer to "where does a held thing sit", and being
+    // independent is what let it be 0.690 m wrong on the wrong shoulder for
+    // as long as remote hands existed — while every assertion about it
+    // passed, because they all measured it against itself.
+    //
+    // There is one grip now and this is what says so: `hand_pose` must be
+    // `viewmodel::grip` composed with the same `pose` the first-person hand
+    // uses, and a re-introduced offset of its own fails here rather than in
+    // a screenshot nobody takes.
+    for &scale in &[1.0f32, 0.5, 2.0] {
+        for (i, def) in HELD_MODELS.iter().enumerate() {
+            let mut g = grip();
+            g.translation /= scale;
+            g.scale /= scale;
+            let want = g * client::render::viewmodel::pose(def, VIEWMODEL_PALM);
+            let got = hand_pose(i, scale);
+            // Compared componentwise rather than with `Quat::angle_between`:
+            // that is `acos(|dot|)`, and the dot of a float quaternion with
+            // an exact copy of itself lands a rounding step ABOVE 1, so the
+            // arccos is NaN and every comparison against it is false. A
+            // gate whose failure mode is "identical values are not equal"
+            // is worse than no gate; this is the same two-decoders lesson
+            // one type down.
+            let same_rot = (0..4).all(|k| {
+                let (a, b) = (got.rotation.to_array()[k], want.rotation.to_array()[k]);
+                (a - b).abs() < 1e-5 || (a + b).abs() < 1e-5
+            });
+            assert!(
+                got.translation.distance(want.translation) < 1e-5
+                    && same_rot
+                    && (got.scale - want.scale).length() < 1e-6,
+                "{}: hand_pose is not the shared grip composed with the shared \
+                 pose (scale {scale})\n  got  {got:?}\n  want {want:?}",
+                def.key
+            );
+        }
+    }
+}
+
+#[test]
 fn the_grip_lands_in_the_fist_at_any_rig_scale() {
+    // The same claim the old gate made, one frame further down the chain:
+    // the model's grip point — `grip_m` up its own +Y — lands on the palm.
+    // What changed is the frame it lands in. It used to be `BODY_PALM` in
+    // the body's own space, a place picked by description; it is
+    // `VIEWMODEL_PALM` in the HAND BONE's space now, which is the wrist-to-
+    // palm correction of an actual fist and is the same centimetres the
+    // first-person hand uses.
+    //
+    // **The bone's own transform cancels out of this**, which is why no GLB
+    // is opened here: both sides of the composition are expressed in the
+    // bone's frame, so what is left to check is the arithmetic. Where that
+    // bone actually is, and that `RETIRED_BODY_PALM` is nowhere near it, is
+    // `tests/viewmodel_arms.rs`' — it owns the file reader.
     for &scale in &[1.0f32, 0.5, 2.0] {
         for (i, def) in HELD_MODELS.iter().enumerate() {
             let t = hand_pose(i, scale);
-            // The model's grip point is `grip_m` up its own +Y; the pose
-            // rotates the model and slides it so that point lands on the
-            // fist. Walk it back through the transform and it must be
-            // exactly `BODY_PALM`, in world metres.
+            let mut g = grip();
+            g.translation /= scale;
+            g.scale /= scale;
+            // Walk the model's own grip point out to the bone's frame, then
+            // back into the hold frame the palm is expressed in.
             let grip_local = Vec3::Y * def.grip_m() / def.scale;
-            let world = (t.translation + t.rotation * (grip_local * t.scale)) * scale;
+            let in_bone = t.translation + t.rotation * (grip_local * t.scale);
+            let in_hold = g
+                .rotation
+                .inverse()
+                .mul_vec3((in_bone - g.translation) / g.scale.x);
             assert!(
-                world.distance(BODY_PALM) < 1e-4,
-                "{}: grip landed at {world:?}, not {BODY_PALM:?} (scale {scale})",
+                in_hold.distance(VIEWMODEL_PALM) < 1e-4,
+                "{}: the grip point landed at {in_hold:?} in the hold frame, \
+                 not on the palm {VIEWMODEL_PALM:?} (scale {scale})",
                 def.key
             );
-            // And the item ends up its own size in the world, not the
-            // rig's size times its own.
+            // And the item ends up its own size in the world. The bone's
+            // global scale is the glTF root's 0.01 times the rig's own, so
+            // the composed local scale has to cancel both.
+            let world = t.scale.x * scale * 0.01;
             assert!(
-                (t.scale.x * scale - def.scale).abs() < 1e-5,
-                "{}: world scale {} against {} (rig scale {scale})",
+                (world - def.scale).abs() < 1e-5,
+                "{}: world scale {world} against {} (rig scale {scale})",
                 def.key,
-                t.scale.x * scale,
                 def.scale
             );
         }
     }
 }
 
-/// The flame's offset uses the same divisor, and it is derived from the
-/// mesh rather than typed — so a regenerated torch moves the light with
-/// it. Asserted against the row's own `flame_m`, which is the number
-/// `viewmodel::apply_hand_light` uses for the first-person hand: one
-/// flame height, two hands.
+/// The flame's offset uses the same grip, and it is derived from the mesh
+/// rather than typed — so a regenerated torch moves the light with it.
+/// Asserted against the row's own `flame_m`, which is the number
+/// `viewmodel::apply_hand_light` uses for the first-person hand: **one flame
+/// height, one grip, two hands.**
 #[test]
 fn the_flame_sits_above_the_fist_by_the_rows_own_lift() {
     let i = row("torch");
@@ -179,17 +249,51 @@ fn the_flame_sits_above_the_fist_by_the_rows_own_lift() {
         "the row declares the ladder's torch, not a second copy of it"
     );
     for &scale in &[1.0f32, 0.5, 2.0] {
-        // What `update_hand` writes, restated: palm plus the row's lift,
-        // in the root's local frame.
-        let local = (BODY_PALM + Vec3::Y * def.flame_m()) / scale;
-        let world = local * scale;
+        let mut g = grip();
+        g.translation /= scale;
+        g.scale /= scale;
+        let t = flame_pose(def.flame_m(), scale);
+        // Back into the hold frame: the lift is straight up its +Y and
+        // nothing else.
+        let in_hold = g
+            .rotation
+            .inverse()
+            .mul_vec3((t.translation - g.translation) / g.scale.x);
         assert!(
-            world.y > BODY_PALM.y,
-            "the flame is above the fist, not in it"
+            (in_hold - Vec3::Y * def.flame_m()).length() < 1e-4,
+            "the flame sits at {in_hold:?} in the hold frame, not {:?} up it \
+             (scale {scale})",
+            def.flame_m()
         );
-        assert!((world.y - BODY_PALM.y - def.flame_m()).abs() < 1e-4);
-        assert!((world.x - BODY_PALM.x).abs() < 1e-4);
+        assert!(def.flame_m() > 0.0, "a flame above the fist, not in it");
     }
+    // An unlit hand parks the emitter back at the fist rather than leaving
+    // it where the last flame was — `update_hand` passes a zero lift.
+    let mut g = grip();
+    g.translation /= 1.0;
+    assert_eq!(flame_pose(0.0, 1.0).translation, g.translation);
+}
+
+/// The retired constant is kept, and it is kept for one reason.
+#[test]
+fn the_retired_offset_is_not_reachable_from_the_draw_path() {
+    let src = std::fs::read_to_string("src/render/bodies.rs").expect("bodies.rs");
+    // Comments stripped, and the declaration itself skipped: what this
+    // forbids is a READ, and `pub const RETIRED_BODY_PALM` is the write.
+    let code: String = src
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .filter(|l| !l.contains("pub const RETIRED_BODY_PALM"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !code.contains("RETIRED_BODY_PALM"),
+        "RETIRED_BODY_PALM is referenced by bodies.rs' code — it is a \
+         retraction kept for the gate, not an offset to draw with"
+    );
+    // And it is still the number that shipped, so the measurement in
+    // `tests/viewmodel_arms.rs` is about what was actually wrong.
+    assert_eq!(RETIRED_BODY_PALM, Vec3::new(0.22, 1.25, 0.18));
 }
 
 /// **3 · The spawn shape, as a call site.**
@@ -236,5 +340,34 @@ fn the_hand_and_the_flame_hang_off_the_body() {
     assert!(
         block[hand_at..flame_at].matches("with_children").count() == 0,
         "the flame is nested under the held item"
+    );
+
+    // **And both are MOVED onto the hand bone**, which is the half the
+    // spawn cannot express and the whole of what 2026-08-31 changed. They
+    // are still spawned under the root (they have to exist from the body's
+    // first frame — `HeldOnBody`'s doc) and `bind_hands` re-parents them
+    // when the scene lands. Deleting either insert leaves every value above
+    // correct and puts the axe back at the body's feet at a hundred times
+    // its size, with no gate but this one pointing at it.
+    let code: String = src
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let bind = code
+        .split_once("pub fn bind_hands(")
+        .expect("bind_hands is gone — this gate is stale")
+        .1;
+    let bind = bind.split_once("\npub fn ").map_or(bind, |(b, _)| b);
+    for what in ["live.hand", "live.flame"] {
+        assert!(
+            bind.contains(&format!("commands.entity({what}).insert(ChildOf(bone))")),
+            "bind_hands no longer re-parents {what} onto the hand bone"
+        );
+    }
+    assert!(
+        bind.contains("live.bone = Some(bone)") && bind.contains("live.held = None"),
+        "bind_hands must record the bone AND forget what the hand was \
+         showing, or the item keeps the root-space pose it had while unbound"
     );
 }

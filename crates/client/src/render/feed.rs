@@ -138,8 +138,19 @@ pub struct Feed {
     /// `HitFact::part` is `None` for a structure, and a `Some(Chest)`
     /// there would promote a leg hit landed in the same frame.
     pub hit_part: Option<Part>,
-    /// The bodies this frame's own hits landed on, oldest first — an
+    /// What this frame's own hits landed on, oldest first — an
     /// **own-fact**, because `EV_HIT` is unicast to the attacker.
+    ///
+    /// ⚠ **Players AND animals**, and this line said "bodies" until
+    /// 2026-08-31 while `mob::hurt` had been pushing `EV_HIT` with a tagged
+    /// mob id in `b` the whole time. The two are one id space split by
+    /// `mob::slot_of_id`, they are drawn out of two different stores
+    /// (`bodies::Bodies` and `mobs::Herd`), and a reader that looks in one
+    /// of them silently does nothing for half the victims in the game —
+    /// which is what `render::impact` did on its first day. `bodies::stream`
+    /// is correct to test membership rather than assume it: a mob id simply
+    /// never matches a player entity, so the flinch is right by accident and
+    /// this doc is what stops the next reader inheriting the accident.
     ///
     /// Beside the sum rather than replacing it: the two readers of `damage`
     /// and `hits` want the total (the HUD prints it, the mixer asks only

@@ -596,6 +596,49 @@ fn the_flinch_blend_lands_on_the_clips_own_apex() {
 const HAND_CURL_MIN: f32 = 0.09;
 
 #[test]
+fn the_bone_that_holds_is_in_the_file_and_in_the_skin() {
+    // **The name two files resolve at runtime, checked at build.**
+    // `viewmodel::dress_arms` and `bodies::bind_hands` both look up
+    // `anim::HAND_BONE` in a spawned scene, and a rename in a re-imported
+    // rig fails neither: the viewmodel would draw an undressed body wrapped
+    // around the camera and every remote would carry nothing — two symptoms,
+    // one cause, both silent, neither a compile error. It was a bare
+    // `"RightHand"` literal in both files until 2026-08-31.
+    //
+    // **In the SKIN as well as in the nodes**, which is the half a name check
+    // alone misses: a bone that is not a joint of the skin is posed by no
+    // clip, so an item parented to it would be welded to the bind pose and
+    // never move — which reads exactly like the fixed offset this replaced.
+    let glb = Glb::open(&asset_path(RIG));
+    let bone = client::render::anim::HAND_BONE;
+    let node = glb
+        .json
+        .get("nodes")
+        .and_then(|n| n.as_array())
+        .expect("no nodes")
+        .iter()
+        .position(|n| n["name"].as_str() == Some(bone))
+        .unwrap_or_else(|| {
+            panic!(
+                "{RIG}: no bone named {bone:?} — the first-person arms would \
+                 stay undressed and every remote hand would stay empty, with \
+                 nothing else red"
+            )
+        });
+    let joints: Vec<usize> = glb.json["skins"][0]["joints"]
+        .as_array()
+        .expect("the rig has no skin")
+        .iter()
+        .map(|j| j.as_u64().unwrap() as usize)
+        .collect();
+    assert!(
+        joints.contains(&node),
+        "{RIG}: {bone:?} exists but is not a joint of the skin, so no clip \
+         poses it — an item hung there would never move"
+    );
+}
+
+#[test]
 fn the_hands_are_curled_out_of_their_bind_pose_splay() {
     // **`RightHand` is a LEAF on this skeleton** — the generator modelled five
     // digits per hand and rigged none of them — so the hand's pose is the

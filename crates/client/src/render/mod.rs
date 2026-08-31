@@ -874,6 +874,11 @@ impl Plugin for GatesRenderPlugin {
             (
                 anim::build,
                 anim::bind.after(Stream),
+                // The hand bone, per body — `anim::bind_head`'s trigger and
+                // its climb, one bone over. After `Stream` because the body
+                // it walks up to and the `Live` record it writes are both
+                // `bodies::stream`'s, spawned inside that set.
+                bodies::bind_hands.after(Stream),
                 anim::bind_head.after(Stream),
                 anim::reshade.after(Stream),
                 anim::drive.after(anim::bind),

@@ -274,11 +274,9 @@ pub struct InHand;
 pub fn item_pose(in_hand: bool, wrist: f32) -> Transform {
     let snap = Quat::from_rotation_x(-wrist);
     if in_hand {
-        Transform {
-            translation: VIEWMODEL_GRIP_M,
-            rotation: VIEWMODEL_GRIP_Q * snap,
-            scale: Vec3::splat(VIEWMODEL_GRIP_SCALE),
-        }
+        let mut t = grip();
+        t.rotation *= snap;
+        t
     } else {
         let rest = Quat::from_euler(
             EulerRot::YXZ,
@@ -291,6 +289,33 @@ pub fn item_pose(in_hand: bool, wrist: f32) -> Transform {
             rotation: rest * snap,
             scale: Vec3::ONE,
         }
+    }
+}
+
+/// The item's frame **in the `RightHand` bone's own space** — the constants
+/// above as one transform.
+///
+/// ## One grip, two hands, and that is the point
+///
+/// `bodies::hand_pose` composes this same function for a REMOTE body, and the
+/// sharing is the argument rather than a saving: a grip is a property of the
+/// fist and the item, not of the camera or of the body it hangs on. The same
+/// character rig holds the same hatchet the same way whether you are looking
+/// down your own arm or across a clearing at somebody else's, so a second
+/// constant for the third-person case would be a copy that can drift — and
+/// the one it replaced *had* drifted, by 0.69 m and onto the wrong side of
+/// the body (`bodies::hand_pose`'s doc carries the measurement).
+///
+/// It is derived against [`super::anim::ARMS_HOLD_CLIP`] and that does not
+/// make it first-person-only: the derivation reads the item's pose *relative
+/// to the hand*, so [`VIEWMODEL_ARMS`] and the camera cancel out of it. What
+/// the clip supplies is a fist actually gripping something, which is the only
+/// pose in which "where does a held thing sit" has an answer at all.
+pub fn grip() -> Transform {
+    Transform {
+        translation: VIEWMODEL_GRIP_M,
+        rotation: VIEWMODEL_GRIP_Q,
+        scale: Vec3::splat(VIEWMODEL_GRIP_SCALE),
     }
 }
 

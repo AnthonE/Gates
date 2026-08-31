@@ -16,8 +16,8 @@
 
 use bevy::math::Vec3;
 use client::render::impact::{
-    Burst, Chips, Matter, CHIP_BURST, CHIP_GRAVITY_MPS2 as GRAVITY, CHIP_LIFE_S, CHIP_POOL,
-    CHIP_SIZE_M,
+    struck, Burst, Chips, Matter, Struck, CHIP_BURST, CHIP_GRAVITY_MPS2 as GRAVITY, CHIP_LIFE_S,
+    CHIP_POOL, CHIP_SIZE_M,
 };
 use sim_core::terrain::Occupant;
 
@@ -297,6 +297,106 @@ fn every_swingable_node_has_a_matter() {
              `Matter::of_occupant` has not followed the scatter"
         );
     }
+}
+
+/// **A blow on an animal throws chips too, and it did not for one commit.**
+///
+/// `EV_HIT` carries a victim id and nothing else, and this client draws
+/// players out of `bodies::Bodies` and animals out of `mobs::Herd` — two
+/// stores, one id space, split by `mob::slot_of_id`. The first cut of
+/// `impact::strike` looked in `Bodies` alone, so a wolf took a hatchet and
+/// the frame was unchanged. Nothing was red: a miss and an unrecognised
+/// victim reach the same `continue`.
+///
+/// Driven through `struck`, which is the decision split out of the system
+/// for `tests/tracer.rs`' stated reason — a rule only a Bevy system can
+/// reach is a rule nothing holds.
+#[test]
+fn a_blow_on_an_animal_is_a_different_store_from_a_blow_on_a_player() {
+    // A plain wire id is a player.
+    assert!(matches!(struck(7), Struck::Player { .. }));
+    assert!(matches!(struck(0), Struck::Player { .. }));
+
+    // Every roster slot the sim can name is an animal, and each answers with
+    // its own slot back — read through `mob_id`/`slot_of_id` rather than by
+    // reconstructing the tag here, which would be this file keeping its own
+    // copy of a bit layout (`CLAUDE.md`'s positional-payload trap).
+    for slot in 0..sim_core::limits::MAX_MOBS {
+        let id = sim_core::mob::mob_id(slot);
+        assert!(
+            sim_core::mob::slot_of_id(id) == Some(slot),
+            "the fixture's own id round-trip is broken at slot {slot}"
+        );
+        match struck(id) {
+            Struck::Animal { slot: got, lift } => {
+                assert_eq!(got, slot);
+                assert!(
+                    lift > 0.0,
+                    "slot {slot} lands a blow at or below the ground"
+                );
+            }
+            other => panic!("mob {slot} resolved as {other:?}"),
+        }
+    }
+}
+
+/// A blow lands ON the animal, not over it or under it.
+///
+/// The lift is read off the shipped mesh table (`mobs::flank_h_of`) rather
+/// than taken as a fraction of a height constant, so this checks the read
+/// against the other numbers that describe the same animal.
+#[test]
+fn the_flank_a_blow_lands_on_is_inside_the_animal() {
+    use client::render::mobs::{flank_h_of, PIG_H_M, WOLF_H_M};
+    for slot in 0..sim_core::limits::MAX_MOBS {
+        let h = flank_h_of(slot);
+        let stand = match sim_core::mob::kind_of(slot) {
+            sim_core::mob::MOB_WOLF => WOLF_H_M,
+            _ => PIG_H_M,
+        };
+        assert!(
+            h > stand * 0.25 && h < stand,
+            "slot {slot}: a blow lands {h:.3} m up an animal that stands \
+             {stand:.3} m — that is off the body"
+        );
+    }
+    // The two species differ, which is the whole reason this is per-slot: a
+    // wolf's chest is higher than a boar's barrel, and one constant for both
+    // would put every blow on the wrong one of them.
+    let wolf = (0..sim_core::limits::MAX_MOBS)
+        .find(|&s| sim_core::mob::kind_of(s) == sim_core::mob::MOB_WOLF)
+        .expect("the roster has a wolf");
+    let pig = (0..sim_core::limits::MAX_MOBS)
+        .find(|&s| sim_core::mob::kind_of(s) != sim_core::mob::MOB_WOLF)
+        .expect("the roster has a pig");
+    assert!(
+        (flank_h_of(wolf) - flank_h_of(pig)).abs() > 0.01,
+        "both species take a blow at the same height — flank_h_of has stopped \
+         reading the per-species table"
+    );
+}
+
+/// Both victim classes throw the same matter, and it is not the default.
+#[test]
+fn anything_alive_throws_flesh() {
+    let mut p = Chips::default();
+    for at in [Vec3::new(1.0, 1.0, 1.0), Vec3::new(-4.0, 0.5, 2.0)] {
+        p.ignite(&Burst {
+            at,
+            away: Vec3::Y,
+            matter: Matter::Flesh,
+        });
+    }
+    let flesh = (0..CHIP_POOL)
+        .filter_map(|i| p.draw(i))
+        .filter(|d| d.3 == Matter::Flesh)
+        .count();
+    assert_eq!(flesh, CHIP_BURST * 2);
+    assert_ne!(
+        Matter::Flesh.color(),
+        Matter::Dirt.color(),
+        "a body and the ground throw the same colour, so a hit reads as a miss"
+    );
 }
 
 /// Leaving a world takes the debris with it.
