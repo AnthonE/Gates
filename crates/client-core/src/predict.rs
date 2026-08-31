@@ -61,6 +61,14 @@ pub struct Predictor {
     pub started: bool,
     /// Predicted body after applying the newest local input.
     pub body: Body,
+    /// The body as it stood **one tick ago**, kept only so the camera can be
+    /// drawn between two ticks instead of on them. See
+    /// [`Predictor::eye_position`].
+    ///
+    /// Never read by the sim, never sent, never reconciled against: a
+    /// rewind-and-replay overwrites it with wherever the replay's last-but-one
+    /// step landed, which is the right answer for the one thing it is for.
+    prev: Body,
     /// Unacked input tail, oldest first — the wire's redundancy source and
     /// the reconciliation replay source. Overflow policy: drop oldest, the
     /// wire cap (`limits.rs MAX_INPUT_FRAMES`); past it the server was
@@ -91,6 +99,7 @@ impl Predictor {
             seed,
             started: false,
             body: Body::default(),
+            prev: Body::default(),
             tail: [InputFrame::default(); MAX_INPUT_FRAMES],
             tail_len: 0,
             ring_seq: [0; RING],
@@ -134,6 +143,10 @@ impl Predictor {
             // against — two sources for one island is how a client and a
             // server come to disagree about where the floor is.
             let haven = occ.haven;
+            // **Before the step, not after** — the pair this keeps is
+            // (where the camera was at the last tick boundary, where it is
+            // at this one), and `eye_position` walks between them.
+            self.prev = self.body;
             movement::step(self.seed, haven, cols, occ, &mut self.body, &frame);
             self.record(frame.seq);
         }
@@ -214,9 +227,17 @@ impl Predictor {
 
         let old = self.position();
         self.body = Self::adopt(own);
+        // A rewind restarts the pair from the authoritative state; the replay
+        // below then walks it forward exactly as `step` does, so the last two
+        // steps of the replay leave `prev`/`body` one tick apart again. A
+        // replay with an empty tail leaves them equal, which reads as "not
+        // moving" for one frame and is the truth on the frame a snapshot
+        // caught us standing still.
+        self.prev = self.body;
         let haven = occ.haven;
         for i in 0..self.tail_len {
             let f = self.tail[i];
+            self.prev = self.body;
             movement::step(self.seed, haven, cols, occ, &mut self.body, &f);
             self.record(f.seq);
         }
@@ -236,17 +257,72 @@ impl Predictor {
 
     /// Predicted position in meters (the sim-truth one, no smoothing).
     pub fn position(&self) -> [f32; 3] {
-        [
-            self.body.qx as f32 * POS_XZ_Q,
-            self.body.qy as f32 * POS_Y_Q,
-            self.body.qz as f32 * POS_XZ_Q,
-        ]
+        Self::position_of(&self.body)
     }
 
     /// Render position: predicted + the decaying correction offset.
     pub fn render_position(&self) -> [f32; 3] {
         let p = self.position();
         [p[0] + self.err[0], p[1] + self.err[1], p[2] + self.err[2]]
+    }
+
+    /// Where to draw the **camera**, `alpha` of the way from the previous
+    /// tick's predicted body to this one's.
+    ///
+    /// ## Why the eye needs its own reader and the pick must not have one
+    ///
+    /// The predictor steps on a fixed 30 Hz clock (`ClientCore::advance`), so
+    /// [`Predictor::render_position`] is a staircase: at 60 fps every second
+    /// frame repeats the last one, at 144 fps four frames in five do. Sitting
+    /// still that is invisible. Running, it is the whole picture — the eye
+    /// jumps 8 cm at a sprint, holds for three frames, jumps again, and a
+    /// player tracking the world with their own eyes reads the repeats as
+    /// smear. That is the operator's *"all blurry like its snapping around"*
+    /// (2026-08-30) and it is not a renderer bug: nothing downstream of here
+    /// could smooth a position it is handed once per tick.
+    ///
+    /// **What this costs is one tick of camera latency and nothing else.**
+    /// Drawing between the last two ticks means the eye is up to 33 ms behind
+    /// the predictor — the standard price, and the alternative (extrapolating
+    /// past the newest tick) overshoots every stop and every wall, which reads
+    /// as rubber-banding on exactly the frames a player is looking hardest.
+    /// **Aim is untouched**: `Eye::yaw`/`pitch` come from the mouse at frame
+    /// rate (`render::input::place_eye`) and never from here, so the crosshair
+    /// stays as immediate as it was.
+    ///
+    /// **And it is deliberately NOT what `render_position` returns.**
+    /// `render::verbs::resolve` picks what a verb addresses off that function,
+    /// on the quantize-both-sides law — it must resolve on the position the
+    /// sim will answer for, not on a smoothed one a third of a tick behind it,
+    /// or the client offers a verb the server declines at the edge of a reach
+    /// radius. So this is a second reader for the camera alone, and the two
+    /// agree exactly whenever the body is at rest.
+    pub fn eye_position(&self, alpha: f32) -> [f32; 3] {
+        // `is_finite` first, because `f32::clamp` passes a NaN through
+        // unchanged — and a NaN reaching the camera transform is a black
+        // frame, not a wobble. The clock cannot produce one today
+        // (`ClientClock::alpha` divides by a period it has already tested);
+        // this is the reader refusing to be the place that finds out.
+        let a = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let p = self.position();
+        let q = Self::position_of(&self.prev);
+        [
+            q[0] + (p[0] - q[0]) * a + self.err[0],
+            q[1] + (p[1] - q[1]) * a + self.err[1],
+            q[2] + (p[2] - q[2]) * a + self.err[2],
+        ]
+    }
+
+    fn position_of(b: &Body) -> [f32; 3] {
+        [
+            b.qx as f32 * POS_XZ_Q,
+            b.qy as f32 * POS_Y_Q,
+            b.qz as f32 * POS_XZ_Q,
+        ]
     }
 
     /// Current correction magnitude in meters (HUD/diagnostics).
@@ -319,6 +395,134 @@ mod tests {
             // what a misprediction can be about.
             held: None,
             lit: false,
+        }
+    }
+
+    /// **The staircase, and that it is gone.** The defect this gate is
+    /// written against was reported from play — *"when i run my player is all
+    /// blurry like its snapping around"* — and its mechanism is that
+    /// `render_position` is only ever written on a tick boundary. Sampled at
+    /// a frame rate that is not the tick rate, the camera therefore repeats a
+    /// position and then jumps.
+    ///
+    /// Rebuilt from the PUBLISHED parts rather than by calling the thing under
+    /// test (`CLAUDE.md`'s naive-rebuild trap): the expected point is
+    /// `position()`'s own two endpoints, and the walk is arithmetic written
+    /// out here.
+    #[test]
+    fn the_eye_crosses_the_tick_instead_of_jumping_it() {
+        use sim_core::world::Command;
+        let mut world = World::new(SEED);
+        world.tick(&[Command::Join { id: 7 }]);
+        let cols = Box::new(ColIndex::new());
+        let mut occ = Scratch::live(SEED);
+        let mut p = Predictor::new(SEED);
+        p.reconcile(&own_state(&world, 7), 0, &cols, &mut occ.occupants());
+
+        // Walk a few ticks so the body is genuinely moving, then look at the
+        // pair the eye is drawn between.
+        for seq in 1..=8u16 {
+            p.step(frame(seq, 127), &cols, &mut occ.occupants());
+        }
+        let now = p.position();
+        let was = Predictor::position_of(&p.prev);
+        let travelled: f32 = (0..3)
+            .map(|i| (now[i] - was[i]).powi(2))
+            .sum::<f32>()
+            .sqrt();
+        assert!(
+            travelled > 0.05,
+            "the fixture has to be moving for this to mean anything, got {travelled} m/tick"
+        );
+
+        // The two ends are exactly the two ticks, and nothing in between
+        // leaves the segment.
+        assert_eq!(p.eye_position(0.0), was, "alpha 0 is the previous tick");
+        assert_eq!(p.eye_position(1.0), now, "alpha 1 is this tick");
+        for k in 0..=10 {
+            let a = k as f32 / 10.0;
+            let got = p.eye_position(a);
+            for i in 0..3 {
+                let want = was[i] + (now[i] - was[i]) * a;
+                assert!(
+                    (got[i] - want).abs() <= 1e-6,
+                    "alpha {a} axis {i}: {} vs {want}",
+                    got[i]
+                );
+            }
+        }
+
+        // The staircase, stated as the property that failed: four frames at
+        // 120 fps inside one 30 Hz tick must be four DIFFERENT places, where
+        // `render_position` gives one place four times.
+        let frames: Vec<[f32; 3]> = (0..4).map(|k| p.eye_position(k as f32 / 4.0)).collect();
+        for w in frames.windows(2) {
+            let d: f32 = (0..3)
+                .map(|i| (w[1][i] - w[0][i]).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            assert!(d > 0.0, "two frames inside one tick drew the same position");
+        }
+        assert_eq!(
+            p.render_position(),
+            now,
+            "the sim-truth reader every verb resolves against is untouched"
+        );
+    }
+
+    /// Out-of-range alphas are clamped, not extrapolated: a tab that slept
+    /// zeroes the clock's remainder and a renderer must not be the thing that
+    /// throws the camera past the body it is drawing.
+    #[test]
+    fn the_eye_never_leaves_the_segment() {
+        let mut p = Predictor::new(SEED);
+        p.prev = Body {
+            qx: 0,
+            qy: 0,
+            qz: 0,
+            qvy: 0,
+            grounded: true,
+        };
+        p.body = Body {
+            qx: 1000,
+            qy: 0,
+            qz: 0,
+            qvy: 0,
+            grounded: true,
+        };
+        assert_eq!(p.eye_position(-5.0), p.eye_position(0.0));
+        assert_eq!(p.eye_position(5.0), p.eye_position(1.0));
+        assert_eq!(p.eye_position(f32::NAN), p.eye_position(0.0));
+    }
+
+    /// A body at rest draws at exactly one place, so the camera and the verb
+    /// resolver cannot disagree about where you are standing when it matters.
+    #[test]
+    fn a_standing_body_draws_where_the_verbs_resolve() {
+        use sim_core::world::Command;
+        let mut world = World::new(SEED);
+        world.tick(&[Command::Join { id: 7 }]);
+        let cols = Box::new(ColIndex::new());
+        let mut occ = Scratch::live(SEED);
+        let mut p = Predictor::new(SEED);
+        p.reconcile(&own_state(&world, 7), 0, &cols, &mut occ.occupants());
+        // No movement input at all: `move_x`/`move_z` zero, no buttons.
+        for seq in 1..=20u16 {
+            p.step(
+                InputFrame {
+                    seq,
+                    ..InputFrame::default()
+                },
+                &cols,
+                &mut occ.occupants(),
+            );
+        }
+        for k in 0..=8 {
+            assert_eq!(
+                p.eye_position(k as f32 / 8.0),
+                p.render_position(),
+                "at rest the two readers are the same number"
+            );
         }
     }
 

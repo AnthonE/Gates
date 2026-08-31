@@ -323,7 +323,10 @@ fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
         let up_volume = Some(root - Vec3::Y * half_w * CARD_BED);
         let cell = (hash01(seed, i + 91) * CARD_CELLS as f32) as u32 % CARD_CELLS;
         let (du, dv) = (1.0 / CARD_COLS as f32, 1.0 / CARD_ROWS as f32);
-        let (cu, cv) = ((cell % CARD_COLS) as f32 * du, (cell / CARD_COLS) as f32 * dv);
+        let (cu, cv) = (
+            (cell % CARD_COLS) as f32 * du,
+            (cell / CARD_COLS) as f32 * dv,
+        );
 
         let b0 = root - side * half_w;
         let b1 = root + side * half_w;
@@ -346,8 +349,18 @@ fn card(s: &mut Soup, at: Vec3, yaw: f32, seed: u32, h: f32) {
         };
         // Both triangles wind the same way — `tests/contact.rs` holds their
         // facets in one hemisphere and that claim is not weakened by the UVs.
-        s.tri_uv([(b0, uv_b0), (t0, uv_t0), (b1, uv_b1)], col, up_volume, ramp);
-        s.tri_uv([(b1, uv_b1), (t0, uv_t0), (t1, uv_t1)], col, up_volume, ramp);
+        s.tri_uv(
+            [(b0, uv_b0), (t0, uv_t0), (b1, uv_b1)],
+            col,
+            up_volume,
+            ramp,
+        );
+        s.tri_uv(
+            [(b1, uv_b1), (t0, uv_t0), (t1, uv_t1)],
+            col,
+            up_volume,
+            ramp,
+        );
     }
 }
 
@@ -617,10 +630,9 @@ pub fn stream(
                 // clamped and linear (right for an atlas) but leaves anisotropy
                 // at 1, and a 34 cm card seen from 1.6 m is almost always at a
                 // grazing angle.
-                base_color_texture: Some(assets.load_with_settings(
-                    CARD_ATLAS,
-                    super::textures::atlas(true),
-                )),
+                base_color_texture: Some(
+                    assets.load_with_settings(CARD_ATLAS, super::textures::atlas(true)),
+                ),
                 alpha_mode: AlphaMode::Mask(CARD_ALPHA_CUT),
                 perceptual_roughness: 0.92,
                 reflectance: super::fresnel::DIELECTRIC,

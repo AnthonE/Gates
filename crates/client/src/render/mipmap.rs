@@ -470,9 +470,10 @@ pub fn wants(image: &Image) -> bool {
     if w < 2 || h < 2 || !w.is_power_of_two() || !h.is_power_of_two() {
         return false;
     }
-    image.data.as_ref().is_some_and(|data| {
-        data.len() == (w as usize) * (h as usize) * 4
-    })
+    image
+        .data
+        .as_ref()
+        .is_some_and(|data| data.len() == (w as usize) * (h as usize) * 4)
 }
 
 /// Images waiting for a chain.
@@ -515,7 +516,11 @@ pub fn enqueue(
 /// Popping from the back rather than draining from the front: the order is
 /// arbitrary (they are all wanted before the player sees the world) and a
 /// `remove(0)` would shift the tail every frame.
-pub fn drain(mut pending: ResMut<Pending>, mut images: ResMut<Assets<Image>>, assets: Res<AssetServer>) {
+pub fn drain(
+    mut pending: ResMut<Pending>,
+    mut images: ResMut<Assets<Image>>,
+    assets: Res<AssetServer>,
+) {
     for _ in 0..PER_FRAME {
         let Some(id) = pending.0.pop() else {
             return;
@@ -532,11 +537,18 @@ pub fn drain(mut pending: ResMut<Pending>, mut images: ResMut<Assets<Image>>, as
         if !wants(image) {
             continue;
         }
-        let (w, h) = (image.texture_descriptor.size.width, image.texture_descriptor.size.height);
+        let (w, h) = (
+            image.texture_descriptor.size.width,
+            image.texture_descriptor.size.height,
+        );
         let Some(level0) = image.data.as_ref() else {
             continue;
         };
-        let filter = Filter::pick(&path, image.texture_descriptor.format, is_translucent(level0));
+        let filter = Filter::pick(
+            &path,
+            image.texture_descriptor.format,
+            is_translucent(level0),
+        );
         let data = chain(level0, w, h, filter);
         // **The count and the buffer are set together or wgpu reads past the
         // end of one of them.** `Image::new` asserts `data.len()` against

@@ -21,29 +21,42 @@ use bevy::prelude::*;
 
 use super::anim::{BodyAnim, Reshade, Rig};
 use super::viewmodel::Models;
+use super::viewmodel::VIEWMODEL_PALM;
 use super::Net;
 use crate::ui::hold::{held_model_of, lit_model_of, HELD_MODELS};
 use sim_core::mob;
 
-/// Where a remote body's right fist is, in metres, in that body's own
-/// frame — the third-person twin of `viewmodel::VIEWMODEL_PALM`.
-/// **(knob)**, registered in `DECISIONS.md` §open ("remote hands v0").
+/// Where the shipped `BODY_PALM` used to put a remote's item, in that body's
+/// own frame — **retired 2026-08-31, and kept only so the gate can prove it
+/// was wrong.**
 ///
-/// The rig stands on its own origin facing +Z with +Y up
-/// (`bodies::stream`'s note on `facing`), so right is +X: 22 cm out, 1.25 m
-/// up and 18 cm forward is a hand carrying something in front of the chest
-/// on a 1.8 m figure (`anim::ANIM_BODY_H_M`).
+/// ## What it claimed, and what the rig actually does
 ///
-/// ⚠ **A fixed offset and not a bone**, and the compromise is deliberate.
-/// The rig has one bound bone in this client — `anim::HEAD_BONE` — and
-/// binding a second means a name that must exist in `models/stumpy.glb` or
-/// the whole feature is invisible; the local viewmodel does not attach to
-/// its hand bone either (`viewmodel.rs`, the `"RightHand"` lookup it
-/// deliberately does not parent to). So the item does not swing with the
-/// arm: it rides the body's root, which reads correctly at the distance
-/// this exists for — across a clearing — and reads as floating up close.
-/// `NOW.md` §0tl carries the bone bind.
-pub const BODY_PALM: Vec3 = Vec3::new(0.22, 1.25, 0.18);
+/// Its doc read: *"the rig stands on its own origin facing +Z with +Y up, so
+/// right is +X: 22 cm out, 1.25 m up and 18 cm forward is a hand carrying
+/// something in front of the chest on a 1.8 m figure."* Two of those three
+/// numbers are wrong and the first one is wrong in the way that matters.
+/// Measured off `assets/models/stumpy.glb` under `Idle_Loop`, this rig's
+/// **`RightHand` sits at (−0.227, 0.774, −0.042)** — so
+///
+///   · **x is on the far side.** Right is **−X** on this skeleton, which
+///     `viewmodel.rs` had already measured and written down (*"its shoulder
+///     is on +X, its hand on −X… on this rig right = −X, proven by the T-pose
+///     and by which hand `Punch_Cross` throws"*). `BODY_PALM`'s +0.22 is the
+///     LEFT shoulder. Every remote in the game carried its axe in the wrong
+///     hand, and the value was derived from a convention rather than from the
+///     file — the exact failure `anim::head_look`'s axis paid for once
+///     already, in the same skeleton, six weeks earlier.
+///   · **y is 48 cm high** and z 22 cm forward.
+///
+/// Total error **0.690 m** on a 1.8 m figure. The old doc excused it as
+/// *"reads correctly at the distance this exists for and reads as floating up
+/// close"*; it does not read correctly at any distance, because it is on the
+/// wrong shoulder.
+///
+/// `crates/client/tests/remote_hand.rs` asserts the retraction against the
+/// shipped file, so this cannot quietly come back as a fixed offset again.
+pub const RETIRED_BODY_PALM: Vec3 = Vec3::new(0.22, 1.25, 0.18);
 
 /// Wire yaw is `0..65536` over a full turn (`interp::RemoteState`), and this
 /// is the one place it becomes radians. The sim's convention is yaw 0 facing
@@ -112,6 +125,14 @@ struct Live {
     /// for a value that never moves.
     hand: Entity,
     flame: Entity,
+    /// The `RightHand` bone, once [`bind_hands`] has found it in this body's
+    /// spawned scene. `None` until then — and while it is `None` the hand
+    /// draws NOTHING, which is deliberate: the grip is expressed in the
+    /// bone's frame, so applying it to an unbound item would hang the axe
+    /// wherever the body's root happens to be, at a hundred times its size.
+    /// An empty hand for a frame is the pre-v56 picture; a hundredfold
+    /// hatchet at the feet is not.
+    bone: Option<Entity>,
     /// Which `HELD_MODELS` row the hand and the flame are currently
     /// showing, `sleeping`'s reason exactly — written on a TRANSITION.
     /// Assigning `Mesh3d` unconditionally marks it changed 60 times a
@@ -121,23 +142,54 @@ struct Live {
     lit: Option<usize>,
 }
 
-/// The pose and the two handles for one held row, in the body's own
-/// (rig-scaled) frame.
+/// The item's transform in the **`RightHand` bone's** own frame, for one
+/// held row.
 ///
-/// **Everything is divided by the rig's uniform scale**, and it has to be
-/// here rather than at the call site: these are children of a root that
-/// carries `Transform::with_scale(rig.scale)`, so a child's local metre is
-/// `rig.scale` world metres. `viewmodel::pose` answers in world metres —
-/// it is shared with the first-person hand, which hangs off an unscaled
-/// camera — so this is the one place the two frames meet. The ratio is
-/// 1.0 today (`ANIM_BODY_H_M / ANIM_RIG_H_M`, 1.8 / 1.8) and writing the
-/// division anyway is what keeps a re-measured rig from silently moving
-/// every held item.
+/// ## The same grip the first-person hand uses, and nothing else
+///
+/// `viewmodel::grip()` is the item's pose relative to the fist — derived off
+/// the shipped rig, and a property of the hand rather than of the camera, so
+/// there is exactly one of it and both hands compose it. What used to be here
+/// was a second, independent answer to the same question ([`RETIRED_BODY_PALM`])
+/// and it was wrong by **0.690 m**, on the **wrong side of the body**, for as
+/// long as remote hands have existed. That is the hand-kept-mirror failure
+/// `CLAUDE.md` keeps a trap for, in its most expensive shape: not a number
+/// that drifted, but a second derivation of a fact the tree had already
+/// measured once.
+///
+/// `VIEWMODEL_PALM` comes with it, and for the same reason: it is the
+/// wrist-to-palm correction of a *hand bone*, so it means the same
+/// centimetres on both bodies.
+///
+/// **`scale` is still divided out**, and it has to be here rather than at the
+/// call site: the bone hangs under a root carrying
+/// `Transform::with_scale(rig.scale)` as well as the glTF's own centimetres,
+/// and `viewmodel::grip` cancels only the second. The ratio is 1.0 today
+/// (`ANIM_BODY_H_M / ANIM_RIG_H_M`, 1.8 / 1.8) and writing the division
+/// anyway is what keeps a re-measured rig from silently resizing every held
+/// item — the same sentence this function has carried since it existed, now
+/// applied one level further down the chain.
 pub fn hand_pose(row: usize, scale: f32) -> Transform {
-    let mut t = super::viewmodel::pose(&HELD_MODELS[row], BODY_PALM);
-    t.translation /= scale;
-    t.scale /= scale;
-    t
+    grip(scale) * super::viewmodel::pose(&HELD_MODELS[row], VIEWMODEL_PALM)
+}
+
+/// The flame's transform in the same frame, `lift` metres up the hold frame's
+/// own +Y — `viewmodel::apply_hand_light`'s offset, on the other hand.
+///
+/// Its own function rather than a branch inside [`hand_pose`] because the two
+/// are written on different transitions (`Live::held` and `Live::lit`), which
+/// is the whole reason there are two entities.
+pub fn flame_pose(lift: f32, scale: f32) -> Transform {
+    grip(scale) * Transform::from_translation(Vec3::Y * lift)
+}
+
+/// [`viewmodel::grip`](super::viewmodel::grip) with the body root's own scale
+/// divided out — see [`hand_pose`].
+fn grip(scale: f32) -> Transform {
+    let mut g = super::viewmodel::grip();
+    g.translation /= scale;
+    g.scale /= scale;
+    g
 }
 
 #[derive(Resource, Default)]
@@ -368,6 +420,7 @@ pub fn stream(
                         // no ordering assumption about a command queue.
                         held: None,
                         lit: None,
+                        bone: None,
                     },
                 );
             }
@@ -382,6 +435,135 @@ pub fn stream(
         commands.entity(live.entity).despawn();
         false
     });
+}
+
+/// Hang each body's held item and its flame off that body's own hand bone.
+///
+/// ## Why this is a system and not two lines in `stream`
+///
+/// A body's skeleton does not exist on the frame the body is spawned —
+/// `SceneRoot` fills in asynchronously — so there is nothing to parent to
+/// until the scene lands. `anim::bind` and `anim::bind_head` solve the same
+/// problem the same way and this is their third instance: run on
+/// `Added<AnimationPlayer>`, which is the one moment a body's entities exist
+/// and nothing has posed them.
+///
+/// **The walk is DOWN from the body, not a global name scan.** `bind_head`
+/// searches every named entity in the world and then checks each candidate's
+/// ancestry, which is O(all bones) per body; a descendant walk is O(this
+/// body's bones) and cannot find somebody else's hand by construction rather
+/// than by a second test. Bounded at 512 for `viewmodel::dress_arms`'s reason
+/// — wall 4's habit applied to a traversal.
+///
+/// **The two entities keep being spawned under the body root** and are moved
+/// here, rather than being spawned under the bone once it exists. That is not
+/// laziness: they have to exist from the body's first frame (`HeldOnBody`'s
+/// doc — a command-queue round trip between raising a weapon and the weapon
+/// appearing is the one event the record exists to disclose), and a re-parent
+/// is one command where a deferred spawn is a second lifetime to keep in step
+/// with `Live`.
+/// Eight parameters, which clippy counts — `stream` above carries the same
+/// allow and the same argument. A `SystemParam` struct would exist only to
+/// satisfy the count: the walk needs a parent map, a child map and a name
+/// lookup, and those are three distinct questions about the scene graph
+/// rather than one bundle.
+#[allow(clippy::too_many_arguments)]
+pub fn bind_hands(
+    mut commands: Commands,
+    mut store: ResMut<Bodies>,
+    // Said once, and it is not decoration — see the `info!` at the bottom.
+    mut announced: Local<bool>,
+    added: Query<Entity, Added<AnimationPlayer>>,
+    parents: Query<&ChildOf>,
+    children: Query<&Children>,
+    names: Query<&Name>,
+    ids: Query<&Body>,
+) {
+    for player in &added {
+        // Up to the body root — `bind_head`'s climb, same bound.
+        let mut at = player;
+        let mut body = None;
+        for _ in 0..16 {
+            if ids.get(at).is_ok() {
+                body = Some(at);
+                break;
+            }
+            match parents.get(at) {
+                Ok(p) => at = p.0,
+                Err(_) => break,
+            }
+        }
+        let Some(body) = body else { continue };
+        let Ok(&Body(id)) = ids.get(body) else {
+            continue;
+        };
+
+        let mut stack = vec![body];
+        let mut seen = 0usize;
+        let mut bone = None;
+        while let Some(e) = stack.pop() {
+            seen += 1;
+            if seen > 512 {
+                break;
+            }
+            if names
+                .get(e)
+                .is_ok_and(|n| n.as_str() == super::anim::HAND_BONE)
+            {
+                bone = Some(e);
+                break;
+            }
+            if let Ok(kids) = children.get(e) {
+                stack.extend(kids.iter());
+            }
+        }
+        let Some(bone) = bone else {
+            // Loud, like `bind_head`'s: the consequence is a whole feature
+            // being invisible with every gate green, and the cause is one
+            // renamed bone in a re-imported file.
+            error!(
+                "bodies: no bone named {:?} under a body — every remote hand \
+                 will stay empty. `tests/rig_asset.rs` resolves this name \
+                 against the shipped file and should have gone red first",
+                super::anim::HAND_BONE
+            );
+            continue;
+        };
+        let Some(live) = store.live.get_mut(&id) else {
+            continue;
+        };
+        commands.entity(live.hand).insert(ChildOf(bone));
+        commands.entity(live.flame).insert(ChildOf(bone));
+        live.bone = Some(bone);
+        // Forget what the hand was showing, so the next frame's
+        // `update_hand` writes both transforms against the bone's frame.
+        // Without it the transition test is already satisfied and the item
+        // keeps whatever pose it was given while unbound. Today that is
+        // nothing at all — an unbound hand draws nothing ([`Live::bone`]) —
+        // so the reset is what makes the correctness a property of this
+        // function rather than of that one's early-out.
+        live.held = None;
+        live.lit = None;
+        if !*announced {
+            *announced = true;
+            // **The false→true edge, once, and `dress_arms`' precedent is
+            // why.** An empty remote hand has two causes that look identical
+            // from outside — the bone was never bound, or the body is
+            // genuinely holding something with no model — and on 2026-08-31
+            // the first frame this repo ever took with two players in it
+            // showed two empty-handed silhouettes with no way to tell which.
+            // (It was the second: the scene rig's kit is wood, a box and a
+            // lock, and none of the three has a `HELD_MODELS` row.
+            // `ci/scene.sh --kit` exists now for the same reason this line
+            // does.) A diagnostic that turns a guess into a fact earns its
+            // frame; `arms_report` is the same call one hand over.
+            info!(
+                "bodies: hands bound to {:?} — a remote drawing nothing is \
+                 holding nothing, not unbound",
+                super::anim::HAND_BONE
+            );
+        }
+    }
 }
 
 /// Point a remote body's hand and flame at what the wire says it is
@@ -441,7 +623,13 @@ fn update_hand(
     let Some(live) = store.live.get_mut(&id) else {
         return;
     };
-    let (want, want_lit) = hand_wants(&core.catalog, rs);
+    // Nothing is drawn in an unbound hand — [`Live::bone`] says why. The
+    // pair is left at `None` so the frame after the bind writes them both,
+    // which is what [`bind_hands`] resets them for.
+    let (want, want_lit) = match live.bone {
+        Some(_) => hand_wants(&core.catalog, rs),
+        None => (None, None),
+    };
     if live.held != want {
         let mut e = commands.entity(live.hand);
         match want {
@@ -486,12 +674,14 @@ fn update_hand(
                 shadows_enabled: false,
                 ..default()
             },
-            // Up the body's own +Y from the fist, divided by the rig
-            // scale for `hand_pose`'s reason. An unlit hand parks the
-            // emitter back at the origin rather than leaving it where the
-            // last flame was — a zero-intensity light is invisible, but a
-            // stale transform is a value a later reader could trust.
-            Transform::from_translation((BODY_PALM + Vec3::Y * lift) / scale),
+            // Up the HOLD frame's own +Y from the fist — the first-person
+            // flame's offset exactly (`viewmodel::apply_hand_light`), which
+            // is what makes one `flame_m` mean one height on two hands. An
+            // unlit hand parks the emitter back at the fist rather than
+            // leaving it where the last flame was: a zero-intensity light is
+            // invisible, but a stale transform is a value a later reader
+            // could trust.
+            flame_pose(lift, scale),
         ));
         live.lit = want_lit;
     }

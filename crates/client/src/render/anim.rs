@@ -937,6 +937,21 @@ pub fn bind_head(
 /// same kind of contract.
 const HEAD_BONE: &str = "Head";
 
+/// The bone that HOLDS. Published because two files resolve it — the
+/// first-person arms (`viewmodel::dress_arms`) and every remote body
+/// (`bodies::bind_hands`) — and it was a bare `"RightHand"` literal in both
+/// until 2026-08-31.
+///
+/// **A literal in two files is the hand-kept mirror `CLAUDE.md` warns about,
+/// with a twist that makes it worse than usual**: neither copy fails to
+/// compile if the rig renames the bone, and neither logs anything a player
+/// would see. The viewmodel would draw an undressed body wrapped around the
+/// camera and a remote would carry nothing — two different symptoms, one
+/// cause, and no gate pointing at the name itself. `tests/rig_asset.rs`
+/// resolves this constant against the shipped file, so a rename is a build
+/// failure now rather than two silent regressions.
+pub const HAND_BONE: &str = "RightHand";
+
 /// The clip the FIRST-PERSON arms hold (`render/viewmodel.rs`).
 ///
 /// **Chosen by measurement, and the name is the library's rather than ours.**

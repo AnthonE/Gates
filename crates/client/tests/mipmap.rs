@@ -19,6 +19,17 @@
 //!
 //! The person who decides whether it looks good boots the game and looks.
 
+//! ⚠ **Feature-gated, and it was not until this merge.** `client::render` is
+//! behind `--features render` (`crates/client/Cargo.toml` says why), so a
+//! file here that names it is red on a plain `cargo test --workspace` and on
+//! `ci/gates.sh`'s first clippy pass — which is what happened: this suite
+//! landed on `main` unguarded and the gate has been red since. 34 of the
+//! other test files carry this line; `tests/viewmodel_arms.rs`'s header
+//! spells out the failure. Added on the merge rather than left for main,
+//! because a branch cannot be green on top of a red base.
+
+#![cfg(feature = "render")]
+
 use bevy::asset::RenderAssetUsages;
 use bevy::image::Image;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -90,7 +101,11 @@ fn level_zero_is_untouched() {
     for filter in [Filter::Srgb, Filter::Normal, Filter::Linear] {
         let level0 = ramp(8, 8);
         let out = chain(&level0, 8, 8, filter);
-        assert_eq!(&out[..level0.len()], &level0[..], "{filter:?} moved level 0");
+        assert_eq!(
+            &out[..level0.len()],
+            &level0[..],
+            "{filter:?} moved level 0"
+        );
     }
 }
 
@@ -143,7 +158,10 @@ fn srgb_holds_away_from_the_rails() {
         level0.extend_from_slice(&[v, v, v, 255]);
     }
     let out = chain(&level0, 2, 2, Filter::Srgb);
-    assert_eq!(out[16], 146, "expected 146, the linear mean 0.2892 re-encoded");
+    assert_eq!(
+        out[16], 146,
+        "expected 146, the linear mean 0.2892 re-encoded"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -245,16 +263,36 @@ fn the_linear_filter_is_a_plain_average() {
 fn the_filter_is_picked_from_the_path_then_the_format() {
     use TextureFormat::{Rgba8Unorm, Rgba8UnormSrgb};
     for (path, format, translucent, want) in [
-        ("textures/rock_albedo.jpg", Rgba8UnormSrgb, false, Filter::Srgb),
-        ("textures/rock_normal.jpg", Rgba8Unorm, false, Filter::Normal),
+        (
+            "textures/rock_albedo.jpg",
+            Rgba8UnormSrgb,
+            false,
+            Filter::Srgb,
+        ),
+        (
+            "textures/rock_normal.jpg",
+            Rgba8Unorm,
+            false,
+            Filter::Normal,
+        ),
         ("textures/rock_rough.jpg", Rgba8Unorm, false, Filter::Linear),
         ("textures/rock_ao.jpg", Rgba8Unorm, false, Filter::Linear),
         // A normal map that somehow arrived sRGB is still a normal map. The
         // path is the stronger statement.
-        ("textures/grass_normal.jpg", Rgba8UnormSrgb, false, Filter::Normal),
+        (
+            "textures/grass_normal.jpg",
+            Rgba8UnormSrgb,
+            false,
+            Filter::Normal,
+        ),
         // The cutout. It is an sRGB albedo like the first row and differs only
         // by carrying alpha, which is measured and not guessed.
-        ("textures/grass_card_albedo.png", Rgba8UnormSrgb, true, Filter::Mask),
+        (
+            "textures/grass_card_albedo.png",
+            Rgba8UnormSrgb,
+            true,
+            Filter::Mask,
+        ),
     ] {
         assert_eq!(
             Filter::pick(path, format, translucent),
@@ -274,7 +312,10 @@ fn an_image_that_brought_its_own_chain_is_refused() {
     let mut img = flat_image(8, 8, TextureFormat::Rgba8Unorm);
     assert!(wants(&img), "a plain single-level image should be wanted");
     img.texture_descriptor.mip_level_count = 4;
-    assert!(!wants(&img), "an image with a chain was accepted for a second");
+    assert!(
+        !wants(&img),
+        "an image with a chain was accepted for a second"
+    );
 }
 
 /// Non-power-of-two is refused rather than filtered badly. A 2×2 box on an
@@ -319,7 +360,11 @@ fn ramp(w: u32, h: u32) -> Vec<u8> {
 
 /// A mid-grey image of a given size and format, for the `wants` screens.
 fn flat_image(w: u32, h: u32, format: TextureFormat) -> Image {
-    let bytes = if format == TextureFormat::R8Unorm { 1 } else { 4 };
+    let bytes = if format == TextureFormat::R8Unorm {
+        1
+    } else {
+        4
+    };
     Image::new(
         Extent3d {
             width: w,
@@ -414,11 +459,15 @@ fn the_plain_filter_would_have_gone_bald() {
 /// about what this module does.
 #[test]
 fn opacity_is_measured_and_not_guessed() {
-    let opaque: Vec<u8> = std::iter::repeat_n([12u8, 34, 56, 255], 64).flatten().collect();
+    let opaque: Vec<u8> = std::iter::repeat_n([12u8, 34, 56, 255], 64)
+        .flatten()
+        .collect();
     assert!(!is_translucent(&opaque));
     // 254 is not a cutout: a lossy re-encode of a solid interior lands there,
     // and one such texel must not promote an albedo to a mask.
-    let nearly: Vec<u8> = std::iter::repeat_n([12u8, 34, 56, 254], 64).flatten().collect();
+    let nearly: Vec<u8> = std::iter::repeat_n([12u8, 34, 56, 254], 64)
+        .flatten()
+        .collect();
     assert!(!is_translucent(&nearly));
     let mut cut = opaque.clone();
     cut[3] = 0;

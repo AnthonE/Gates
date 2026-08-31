@@ -132,6 +132,35 @@ impl ClientClock {
         }
         false
     }
+
+    /// How far into the current input frame real time has got, in `[0, 1)`.
+    ///
+    /// The one thing on this clock a renderer wants: `advance` hands back
+    /// whole steps and keeps the remainder, and the remainder is exactly the
+    /// weight the camera should sit at between the last two predicted bodies
+    /// (`Predictor::eye_position`). Without it the eye is redrawn at the same
+    /// place for every frame inside one 33 ms tick, which is a staircase at
+    /// any frame rate above 30.
+    ///
+    /// **Against the dilated period, not the nominal one**, so the depth
+    /// controller changes how fast the eye crosses the gap and never how far:
+    /// a fraction taken against `TICK_MS` while the clock is running a 105%
+    /// frame would reach 1.0 early and hold there for the tail of every tick,
+    /// which is the staircase back in miniature. (It said "a `Faster` or
+    /// `Slower` nudge" until netcode v2 S4 retired those rungs — the sentence
+    /// stayed true of the arithmetic and stopped being true of the cause,
+    /// which is the dead citation `CLAUDE.md` keeps a ⚠ for.)
+    ///
+    /// Clamped rather than asserted: `advance` zeroes `acc_ms` on the
+    /// catch-up bound and a hard resync, and a renderer must not be the thing
+    /// that panics on a tab that slept.
+    pub fn alpha(&self) -> f32 {
+        let period = TICK_MS * self.period_scale;
+        if period <= 0.0 {
+            return 0.0;
+        }
+        (self.acc_ms / period).clamp(0.0, 1.0) as f32
+    }
 }
 
 #[cfg(test)]
@@ -147,6 +176,73 @@ mod tests {
             steps += c.advance(TICK_MS);
         }
         assert_eq!(steps, 30);
+    }
+
+    /// The remainder the camera is drawn on: it walks a tick, wraps at the
+    /// step, and never leaves `[0, 1)`.
+    #[test]
+    fn alpha_walks_the_tick_and_wraps_at_the_step() {
+        let mut c = ClientClock::new(0);
+        assert_eq!(c.alpha(), 0.0, "a fresh clock is on a tick boundary");
+        // A quarter of a tick at a time: three frames inside one tick, then
+        // the fourth steps and the remainder falls back to zero.
+        let quarter = TICK_MS / 4.0;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            let steps = c.advance(quarter);
+            seen.push((steps, c.alpha()));
+        }
+        assert_eq!(
+            seen.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
+            vec![0, 0, 0, 1],
+            "a quarter tick per frame steps once every fourth frame"
+        );
+        for (i, (_, a)) in seen.iter().enumerate() {
+            assert!((0.0..1.0).contains(a), "frame {i}: alpha {a} left [0,1)");
+        }
+        assert!(
+            seen[0].1 < seen[1].1 && seen[1].1 < seen[2].1,
+            "the remainder has to grow across a tick, got {seen:?}"
+        );
+        assert!(seen[3].1 < seen[2].1, "the step resets it, got {seen:?}");
+    }
+
+    /// **Against the dilated period, not the nominal one.** With the buffer
+    /// one step past the deadband's far edge the input frame is stretched to
+    /// 105%, so one real tick of time is 95% of a frame and the remainder
+    /// must read 0.95 rather than 1.0 — a fraction taken against `TICK_MS`
+    /// would saturate early and hold, which is the staircase in miniature.
+    ///
+    /// **Driven by the DEPTH gauge, not by a nudge**, since netcode v2 S4:
+    /// `Nudge::Slower` is vestigial and ignored (`on_snapshot`'s doc), so a
+    /// test that still asked for one would assert the right property against
+    /// a clock that never dilated — green, and about nothing.
+    #[test]
+    fn alpha_is_taken_against_the_dilated_frame() {
+        let mut c = ClientClock::new(0);
+        // One past the deadband's upper edge: `DEPTH_TARGET + DEPTH_DEADBAND
+        // + 1`, which is the smallest reading that reaches the full `DILATE`.
+        c.on_snapshot(0, Nudge::Ok, 4);
+        assert_eq!(
+            c.advance(TICK_MS),
+            0,
+            "a stretched frame has not lapsed yet"
+        );
+        let a = c.alpha();
+        assert!(
+            (a - 1.0 / 1.05).abs() < 1e-3,
+            "alpha must be the fraction of the STRETCHED frame, got {a}"
+        );
+        assert!(a < 1.0);
+    }
+
+    /// A tab that slept zeroes the remainder rather than leaving the camera
+    /// pinned at the far end of a tick it never crossed.
+    #[test]
+    fn a_slept_tab_leaves_no_remainder_behind() {
+        let mut c = ClientClock::new(0);
+        c.advance(5000.0);
+        assert_eq!(c.alpha(), 0.0);
     }
 
     /// The controller, across the gauge (netcode v2 S4): starving runs

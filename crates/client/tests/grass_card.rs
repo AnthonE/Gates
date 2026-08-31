@@ -17,6 +17,17 @@
 //!
 //! The person who decides whether it looks good boots the game and looks.
 
+//! ⚠ **Feature-gated, and it was not until this merge.** `client::render` is
+//! behind `--features render` (`crates/client/Cargo.toml` says why), so a
+//! file here that names it is red on a plain `cargo test --workspace` and on
+//! `ci/gates.sh`'s first clippy pass — which is what happened: this suite
+//! landed on `main` unguarded and the gate has been red since. 34 of the
+//! other test files carry this line; `tests/viewmodel_arms.rs`'s header
+//! spells out the failure. Added on the merge rather than left for main,
+//! because a branch cannot be green on top of a red base.
+
+#![cfg(feature = "render")]
+
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::*;
 use client::render::clutter::{
@@ -126,7 +137,10 @@ fn a_tuft_is_crossed_cards() {
         CARDS_PER_TUFT * 6,
         "a tuft should be {CARDS_PER_TUFT} quads of two triangles"
     );
-    assert!(masked(Clutter::Tuft), "the tuft must draw through the cutout");
+    assert!(
+        masked(Clutter::Tuft),
+        "the tuft must draw through the cutout"
+    );
     for k in [Clutter::Pebble, Clutter::Twig, Clutter::Shard] {
         assert!(
             !masked(k),

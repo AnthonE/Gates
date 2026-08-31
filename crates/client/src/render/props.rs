@@ -936,18 +936,14 @@ pub fn bush_card_mesh(variant: u32) -> Mesh {
     for i in 0..BUSH_CARDS {
         // Evenly spread, then jittered, so the pool's four variants do not all
         // present a card at the same yaw.
-        let a = i as f32 * std::f32::consts::PI / BUSH_CARDS as f32
-            + hash01(seed, i) * 0.7;
+        let a = i as f32 * std::f32::consts::PI / BUSH_CARDS as f32 + hash01(seed, i) * 0.7;
         let side = Vec3::new(a.sin(), 0.0, a.cos());
         // One jitter for both axes, so a card stays square and the leaves on
         // it stay unstretched — see `BUSH_CARD_HALF`.
         let half = BUSH_CARD_HALF * (0.86 + 0.28 * hash01(seed, i + 11));
         let (hw, hh) = (half, half);
         let cell = (hash01(seed, i + 41) * BUSH_CARD_CELLS as f32) as u32 % BUSH_CARD_CELLS;
-        let (du, dv) = (
-            1.0 / BUSH_CARD_COLS as f32,
-            1.0 / BUSH_CARD_ROWS as f32,
-        );
+        let (du, dv) = (1.0 / BUSH_CARD_COLS as f32, 1.0 / BUSH_CARD_ROWS as f32);
         let (cu, cv) = (
             (cell % BUSH_CARD_COLS) as f32 * du,
             (cell / BUSH_CARD_COLS) as f32 * dv,
@@ -1585,11 +1581,10 @@ pub fn stream(
     eye: Res<Eye>,
     lod: Res<tree::TreeLod>,
 ) {
-    let a = store
-        .get_or_insert_with(|| {
-            let card = server.load_with_settings(BUSH_CARD_ATLAS, super::textures::atlas(true));
-            assets(&mut meshes, &mut materials, &mut images, &maps, card)
-        });
+    let a = store.get_or_insert_with(|| {
+        let card = server.load_with_settings(BUSH_CARD_ATLAS, super::textures::atlas(true));
+        assets(&mut meshes, &mut materials, &mut images, &maps, card)
+    });
 
     let cx = (eye.pos.x / CHUNK_M).floor() as i32;
     let cz = (eye.pos.z / CHUNK_M).floor() as i32;

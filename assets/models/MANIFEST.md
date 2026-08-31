@@ -30,6 +30,7 @@ private ownership with no attribution owed and no `NOTICE` entry due.
 |---|---|
 | file | `stumpy.glb`, **4.2 MB** |
 | mesh | one skinned character, 21,360 verts / 31,252 tris, **24 joints**, split into `char1_arms` (8,184 tris) + `char1_body` for the first-person view |
+| albedo | `Material_1_baseColor`, KTX2/UASTC 1024², **linear luma 0.056** — measured off the shipped file 2026-08-31 at mips 0/2/4/6 (0.0568 / 0.0564 / 0.0553 / 0.0556), 94% of texels in the darkest eighth. ⚠ **That is level with `grass` (0.054), the darkest identity in the game, and one thousandth over `ALBEDO_LUMA_BAND`'s 0.05 floor** — against granite 0.292, sand 0.178, twig 0.167 and litter 0.135. It is why the operator reads other players as dark in a frame (`NOW.md` §0dk), and it is the asset rather than the light: an A/B capture rules out SSAO at under 1% and the fill gives a shaded vertical face 14.3% of lit ground, which is physically correct. |
 | clips | **53** — the delivery's 7, plus 46 retargeted off the mannequin |
 | texture | one 4096² base colour, packed to **1024 UASTC** (28.9 MB → 2.8 MB) |
 | stands | **1.800 m**, feet on y = 0 — the sim's own `Capsule3d::new(0.4, 1.0)` exactly, so `ANIM_RIG_H_M` is 1.8 and the scale is 1 |

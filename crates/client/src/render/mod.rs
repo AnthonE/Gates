@@ -68,6 +68,7 @@ pub mod tracer;
 pub mod heldgen;
 pub mod hub;
 pub mod hud;
+pub mod impact;
 pub mod input;
 pub mod loading;
 // The island map. Painted from the same `terrain::splat_from` the ground
@@ -433,6 +434,7 @@ impl Plugin for GatesRenderPlugin {
             .init_resource::<highlight::Highlight>()
             .init_resource::<tracer::Tracers>()
             .init_resource::<decal::Marks>()
+            .init_resource::<impact::Chips>()
             .init_resource::<hud::Toast>()
             .init_resource::<hud::Readout>()
             .init_resource::<feed::Feed>()
@@ -540,6 +542,10 @@ impl Plugin for GatesRenderPlugin {
                 // specializes, and a pipeline compiled mid-fight is the
                 // pop `decal.rs`'s `PREWARM_FRAMES` exists to avoid.
                 decal::setup,
+                // The chip pool, `tracer::setup`'s reason exactly: a landed
+                // blow must not spawn an entity inside a fight
+                // (`impact.rs`).
+                impact::setup,
                 // The shared warm mesh. Before anything that could create a
                 // material, so `prewarm::warm` never sees an `Added` it has
                 // no mesh to draw against.
@@ -683,7 +689,7 @@ impl Plugin for GatesRenderPlugin {
             )
             .add_systems(
                 OnEnter(Screen::Disconnected),
-                (map::forget, viewmodel::forget),
+                (map::forget, viewmodel::forget, impact::forget),
             )
             .add_systems(OnExit(Screen::Disconnected), disconnected::teardown)
             .add_systems(
@@ -720,7 +726,10 @@ impl Plugin for GatesRenderPlugin {
                     .after(pause::open)
                     .run_if(in_state(Screen::InWorld)),
             )
-            .add_systems(OnEnter(Screen::Menu), (map::forget, viewmodel::forget));
+            .add_systems(
+                OnEnter(Screen::Menu),
+                (map::forget, viewmodel::forget, impact::forget),
+            );
 
         // ---- settings ------------------------------------------------
         // The two `apply_*` systems are deliberately NOT gated on the screen
@@ -859,6 +868,13 @@ impl Plugin for GatesRenderPlugin {
                 // claimed, which is what releases the prewarm slot.
                 decal::mark.after(feed::drain),
                 decal::fade.after(decal::mark),
+                // The impact burst, the same two halves for the same
+                // reasons. `strike` reads the drained feed AND the frame's
+                // swing pick, so it follows both — a burst resolved against
+                // last frame's pick is a burst at the node you were looking
+                // at before you turned.
+                impact::strike.after(feed::drain).after(verbs::resolve),
+                impact::fly.after(impact::strike),
             )
                 .run_if(world_running)
                 .run_if(move || !plate),
@@ -872,6 +888,11 @@ impl Plugin for GatesRenderPlugin {
             (
                 anim::build,
                 anim::bind.after(Stream),
+                // The hand bone, per body — `anim::bind_head`'s trigger and
+                // its climb, one bone over. After `Stream` because the body
+                // it walks up to and the `Live` record it writes are both
+                // `bodies::stream`'s, spawned inside that set.
+                bodies::bind_hands.after(Stream),
                 anim::bind_head.after(Stream),
                 anim::reshade.after(Stream),
                 anim::drive.after(anim::bind),

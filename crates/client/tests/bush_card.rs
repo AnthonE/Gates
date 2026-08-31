@@ -21,6 +21,16 @@
 //! the grid is such a relation — fold it away and a hash can address a cell
 //! that is not there.
 
+//! ⚠ **Feature-gated, and it was not until this merge.** `client::render` is
+//! behind `--features render` (`crates/client/Cargo.toml` says why), so a
+//! file here that names it is red on a plain `cargo test --workspace` and on
+//! `ci/gates.sh`'s first clippy pass — which is what happened: this suite
+//! landed on `main` unguarded and the gate has been red since. 34 of the
+//! other test files carry this line; `tests/viewmodel_arms.rs`'s header
+//! spells out the failure. Added on the merge rather than left for main,
+//! because a branch cannot be green on top of a red base.
+
+#![cfg(feature = "render")]
 #![allow(clippy::assertions_on_constants)]
 
 use bevy::mesh::VertexAttributeValues;
@@ -139,10 +149,7 @@ fn the_pool_is_crossed_cards_and_they_differ() {
 /// two different bushes down one quad's middle.
 #[test]
 fn every_card_stays_inside_one_cell() {
-    let (du, dv) = (
-        1.0 / BUSH_CARD_COLS as f32,
-        1.0 / BUSH_CARD_ROWS as f32,
-    );
+    let (du, dv) = (1.0 / BUSH_CARD_COLS as f32, 1.0 / BUSH_CARD_ROWS as f32);
     const EPS: f32 = 1e-5;
     for v in 0..BUSH_CARD_POOL as u32 {
         let m = bush_card_mesh(v);

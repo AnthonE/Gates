@@ -698,6 +698,18 @@ pub struct SwingPick {
     pub cz: u16,
     /// Planar squared distance. Diagnostics for the gate; nothing draws it.
     pub d2: f32,
+    /// Where the picked slot stands, world metres — the scatter's own
+    /// `Slot { x, y, z }`, carried out rather than re-derived.
+    ///
+    /// **Additive and cosmetic**: no verb reads it and the wire never sees
+    /// it. It exists because `render::impact` needs a point to throw chips
+    /// from, and the alternative — a second walk of the scatter from the
+    /// cell key — is the two-copies-of-one-rule failure that
+    /// `column_floor_y` was written to end. Zero when `occupant` is 0,
+    /// which is the same "nothing picked" the other fields already say.
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
 }
 
 /// Whether an occupant is something a swing takes.
@@ -892,6 +904,9 @@ fn scan_slots(
                 cx: cx as u16,
                 cz: cz as u16,
                 d2,
+                x: s.x,
+                y: s.y,
+                z: s.z,
             };
         }
         dz_cell += 1;
