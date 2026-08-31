@@ -59,6 +59,45 @@ deleted, not checked — history lives in git and `DECISIONS.md`. An item is
 
 # Buildable now — a loop can pick any of these
 
+## 0dk · The player character is as dark as grass — measured *(art lane)*
+
+From the operator, off the capture frames: *"other players do look a bit dark
+in screenshots tbh"* (2026-08-31). Right, and it is **the texture, not the
+light**. Four measurements, in the order they ruled things out:
+
+1. **Not a remote-body bug.** In one frame a remote's torso reads luma 71 and
+   the first-person arms — same mesh, same skeleton, same material — read 77.
+   An 8% gap, which is pose. `BodyShades` and `anim::build` are fine.
+2. **Not SSAO.** A/B capture at the same seed, spawn, yaw and hour with
+   `ScreenSpaceAmbientOcclusion` removed: hand 77.1 → 77.7, haft 107.1 →
+   108.0, ground unchanged. Under 1%.
+3. **Not the fill.** `fill_at` gives a shaded vertical surface 9,849 lux
+   against lit ground's 68,976 — **14.3%** — so a standing figure spans 9.3:1
+   across itself and the eye reads the dark half. That is physically right and
+   would be true in any renderer.
+4. **The albedo.** `stumpy.glb`'s baked `Material_1_baseColor`, decoded off the
+   shipped file (UASTC, checked at mip 0/2/4/6 — 0.0568 / 0.0564 / 0.0553 /
+   0.0556, so it is not a sampling artefact): **linear luma 0.056**, and
+   **94% of its texels sit in the darkest eighth**.
+
+That is the number against everything it stands next to: granite 0.292,
+`ground_detail` 0.247, sand 0.178, twig 0.167, litter 0.135 — and **grass
+0.054**. The character is the darkest identity in the game, level with grass,
+and one thousandth above `ALBEDO_LUMA_BAND`'s 0.05 floor, which
+`terrain_mesh.rs` describes as existing *"because no real material is a black
+hole"*. A person is not a black hole either.
+
+**The cheapest lever is costed and it is nearly free.** `base_color`
+multiplies the texture, and the texture has headroom: ×2.4 (to litter's 0.135)
+clips **0.14%** of texels, ×3.0 (to twig's 0.167) clips 0.34%. So a lift is
+available without re-baking anything.
+
+⚠ **Not taken, because the size of it is a look and `ART.md` owns looks.**
+What is measured is that the character is at the floor; *where it should sit*
+is the operator's word, and it moves both hands and every remote at once.
+A re-baked brighter texture is the other road and costs a Meshy round trip
+(`assets/models/MANIFEST.md`).
+
 ## 0fp · The first-person pass, and the two judgements it is now waiting on *(client lane)*
 
 Four defects from play (operator, 2026-08-30) and the four items they left
